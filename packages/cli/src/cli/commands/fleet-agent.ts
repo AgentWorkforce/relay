@@ -101,6 +101,7 @@ export type Presence =
   | 'empty (live?)'
   | 'remote live'
   | 'remote live+roster'
+  | 'remote stale (control plane unavailable)'
   | 'count only'
   | 'count only (degraded)';
 
@@ -112,8 +113,19 @@ export interface RenderedRow {
   pending: string;
   lastActive: string;
   presence: Presence;
+  /** Control-plane reachability is independent from hosted worker liveness. */
+  controlPlane?: 'online' | 'offline' | 'degraded' | 'unknown';
+  /** Best available evidence about workers hosted by this node. */
+  workerLiveness?: 'live' | 'empty' | 'degraded' | 'unknown';
   /** Optional annotation appended by the renderer, e.g. `(retried)`. */
   note?: string;
+}
+
+function controlPlaneState(node: RelayNode): RenderedRow['controlPlane'] {
+  if (node.status === 'online' && node.live === true && node.handlersLive === true) return 'online';
+  if (node.status === 'offline' || node.live === false) return 'offline';
+  if (node.handlersLive === false) return 'degraded';
+  return 'unknown';
 }
 
 /**
@@ -200,6 +212,10 @@ function cliModel(agent: ListAgent): string {
 export function buildRows(input: BuildRowsInput, now: Date): BuildRowsOutput {
   const perNode: RenderedRow[] = [];
   const errors: { node: string; message: string }[] = [];
+  // Stable per-row identity: node *names* collide for unnamed nodes
+  // (`(unnamed)`), so the control-plane/worker-liveness backfill below must
+  // key off this object identity map instead of `row.node === contribution`.
+  const contributionByRow = new Map<RenderedRow, FleetNodeContribution>();
 
   // Cache roster names in a Set for O(1) membership; the roster today runs to
   // 1600+ records so linear scans per row would be visible.
@@ -210,7 +226,7 @@ export function buildRows(input: BuildRowsInput, now: Date): BuildRowsOutput {
     const nodeName = contribution.node.name || '(unnamed)';
 
     if (contribution.error) {
-      perNode.push({
+      const row: RenderedRow = {
         node: nodeName,
         name: '',
         cliModel: '',
@@ -219,13 +235,17 @@ export function buildRows(input: BuildRowsInput, now: Date): BuildRowsOutput {
         lastActive: '-',
         presence: 'count only',
         ...(contribution.retried ? { note: 'retried' } : {}),
-      });
+      };
+      perNode.push(row);
+      contributionByRow.set(row, contribution);
       errors.push({ node: nodeName, message: contribution.error });
       continue;
     }
 
     if (!contribution.isLocal) {
       const count = contribution.node.activeAgents;
+      const controlPlane = controlPlaneState(contribution.node);
+      const hostedWorkersUnavailable = controlPlane !== 'online';
       if (contribution.remoteAgents === undefined) {
         const renderedCount =
           count === undefined
@@ -234,7 +254,7 @@ export function buildRows(input: BuildRowsInput, now: Date): BuildRowsOutput {
         const detail = contribution.remoteError
           ? `live-name heartbeat unavailable: ${sanitizeCell(contribution.remoteError)}`
           : 'live-name heartbeat unavailable';
-        perNode.push({
+        const row: RenderedRow = {
           node: nodeName,
           name: `<${renderedCount} — names unavailable: ${detail}>`,
           cliModel: '',
@@ -242,8 +262,12 @@ export function buildRows(input: BuildRowsInput, now: Date): BuildRowsOutput {
           pending: '-',
           lastActive: '-',
           presence: 'count only (degraded)',
+          controlPlane,
+          workerLiveness: 'unknown',
           note: contribution.retried ? 'retried' : 'inventory unavailable',
-        });
+        };
+        perNode.push(row);
+        contributionByRow.set(row, contribution);
         if (contribution.remoteError) {
           errors.push({ node: nodeName, message: sanitizeCell(contribution.remoteError) });
         }
@@ -254,51 +278,75 @@ export function buildRows(input: BuildRowsInput, now: Date): BuildRowsOutput {
       const mismatch = count !== undefined && count !== remoteAgents.length;
       const noteParts = [
         ...(contribution.retried ? ['retried'] : []),
-        ...(contribution.remoteWarning ? [`degraded: ${contribution.remoteWarning}`] : []),
-        ...(mismatch ? [`degraded: heartbeat reports ${count}, broker returned ${remoteAgents.length}`] : []),
+        ...(contribution.remoteWarning
+          ? [`${hostedWorkersUnavailable ? 'stale' : 'degraded'}: ${contribution.remoteWarning}`]
+          : []),
+        ...(mismatch
+          ? [
+              `${hostedWorkersUnavailable ? 'stale' : 'degraded'}: heartbeat reports ${count}, broker returned ${remoteAgents.length}`,
+            ]
+          : []),
       ];
       const note = noteParts.length > 0 ? noteParts.join('; ') : undefined;
 
       for (const agent of remoteAgents) {
         const inRoster = rosterNames.has(agent.name);
         if (inRoster) rosterPlaced.add(agent.name);
-        perNode.push({
+        const row: RenderedRow = {
           node: nodeName,
           name: sanitizeCell(agent.name),
           cliModel: '',
           state: '· remote',
           pending: '-',
           lastActive: '-',
-          presence: inRoster ? 'remote live+roster' : 'remote live',
+          presence: hostedWorkersUnavailable
+            ? 'remote stale (control plane unavailable)'
+            : inRoster
+              ? 'remote live+roster'
+              : 'remote live',
+          controlPlane,
+          workerLiveness: hostedWorkersUnavailable ? 'unknown' : 'live',
           ...(note ? { note: sanitizeCell(note) } : {}),
-        });
+        };
+        perNode.push(row);
+        contributionByRow.set(row, contribution);
       }
 
       if (remoteAgents.length === 0 && count === 0) {
-        perNode.push({
+        const row: RenderedRow = {
           node: nodeName,
           name: '<0 agents on this node>',
           cliModel: '',
           state: '· empty',
           pending: '-',
           lastActive: '-',
-          presence: 'remote live',
+          presence: hostedWorkersUnavailable ? 'remote stale (control plane unavailable)' : 'remote live',
+          controlPlane,
+          workerLiveness: hostedWorkersUnavailable ? 'unknown' : 'empty',
           ...(note ? { note: sanitizeCell(note) } : {}),
-        });
+        };
+        perNode.push(row);
+        contributionByRow.set(row, contribution);
       } else if (count !== undefined && count > remoteAgents.length) {
         const missing = count - remoteAgents.length;
-        perNode.push({
+        const row: RenderedRow = {
           node: nodeName,
           name: `<${missing} additional agent${missing === 1 ? '' : 's'} — names unavailable: broker/heartbeat mismatch>`,
           cliModel: '',
-          state: '· remote degraded',
+          state: hostedWorkersUnavailable ? '· remote stale' : '· remote degraded',
           pending: '-',
           lastActive: '-',
-          presence: 'count only (degraded)',
+          presence: hostedWorkersUnavailable
+            ? 'remote stale (control plane unavailable)'
+            : 'count only (degraded)',
+          controlPlane,
+          workerLiveness: hostedWorkersUnavailable ? 'unknown' : 'degraded',
           ...(note ? { note: sanitizeCell(note) } : {}),
-        });
+        };
+        perNode.push(row);
+        contributionByRow.set(row, contribution);
       } else if (remoteAgents.length === 0) {
-        perNode.push({
+        const row: RenderedRow = {
           node: nodeName,
           name: '<node inventory returned no names; active count unavailable>',
           cliModel: '',
@@ -306,8 +354,12 @@ export function buildRows(input: BuildRowsInput, now: Date): BuildRowsOutput {
           pending: '-',
           lastActive: '-',
           presence: 'count only (degraded)',
+          controlPlane,
+          workerLiveness: 'unknown',
           note: 'inventory/count comparison unavailable',
-        });
+        };
+        perNode.push(row);
+        contributionByRow.set(row, contribution);
       }
       continue;
     }
@@ -334,7 +386,7 @@ export function buildRows(input: BuildRowsInput, now: Date): BuildRowsOutput {
       // strictly stronger than the pre-fix behaviour, which produced an ERROR
       // row whenever EITHER half failed and threw away the surviving map.
       const combined = [contribution.liveError, contribution.inventoryError].filter(Boolean).join('; ');
-      perNode.push({
+      const row: RenderedRow = {
         node: nodeName,
         name: '',
         cliModel: '',
@@ -343,7 +395,9 @@ export function buildRows(input: BuildRowsInput, now: Date): BuildRowsOutput {
         lastActive: '-',
         presence: 'count only',
         ...(contribution.retried ? { note: 'retried' } : {}),
-      });
+      };
+      perNode.push(row);
+      contributionByRow.set(row, contribution);
       errors.push({ node: nodeName, message: combined || 'local broker unavailable' });
       continue;
     }
@@ -353,7 +407,7 @@ export function buildRows(input: BuildRowsInput, now: Date): BuildRowsOutput {
       // so plainly rather than rendering "0 agents on this node" — a
       // partially-observed empty result is not a confirmed empty node.
       if (liveKnown && inventoryKnown) {
-        perNode.push({
+        const row: RenderedRow = {
           node: nodeName,
           name: '<0 agents on this node>',
           cliModel: '',
@@ -362,10 +416,12 @@ export function buildRows(input: BuildRowsInput, now: Date): BuildRowsOutput {
           lastActive: '-',
           presence: 'live+inventory',
           ...(contribution.retried ? { note: 'retried' } : {}),
-        });
+        };
+        perNode.push(row);
+        contributionByRow.set(row, contribution);
       } else {
         const missing = liveKnown ? 'inventory' : 'live';
-        perNode.push({
+        const row: RenderedRow = {
           node: nodeName,
           name: `<local ${missing} map unavailable — other map empty; total unknown>`,
           cliModel: '',
@@ -374,7 +430,9 @@ export function buildRows(input: BuildRowsInput, now: Date): BuildRowsOutput {
           lastActive: '-',
           presence: liveKnown ? 'empty (inventory?)' : 'empty (live?)',
           ...(contribution.retried ? { note: 'retried' } : {}),
-        });
+        };
+        perNode.push(row);
+        contributionByRow.set(row, contribution);
       }
       continue;
     }
@@ -392,7 +450,7 @@ export function buildRows(input: BuildRowsInput, now: Date): BuildRowsOutput {
         inRoster
       );
 
-      perNode.push({
+      const row: RenderedRow = {
         node: nodeName,
         name: sanitizeCell(name),
         cliModel: liveEntry ? sanitizeCell(cliModel(liveEntry)) : '',
@@ -401,7 +459,9 @@ export function buildRows(input: BuildRowsInput, now: Date): BuildRowsOutput {
         lastActive: liveEntry ? sanitizeCell(renderRelative(liveEntry.last_activity_at, now)) : '-',
         presence,
         ...(contribution.retried ? { note: 'retried' } : {}),
-      });
+      };
+      perNode.push(row);
+      contributionByRow.set(row, contribution);
     }
   }
 
@@ -418,7 +478,29 @@ export function buildRows(input: BuildRowsInput, now: Date): BuildRowsOutput {
       pending: '-',
       lastActive: sanitizeCell(renderRelative(entry.lastSeenAt, now)),
       presence: 'roster only',
+      controlPlane: 'unknown',
+      workerLiveness: 'unknown',
     });
+  }
+
+  // Every row carries both axes explicitly. In particular, a local broker can
+  // lose its control-plane link while its child workers continue doing useful
+  // work; that must render as offline control-plane + live hosted workers.
+  for (const row of perNode) {
+    if (row.controlPlane !== undefined) continue;
+    const contribution = contributionByRow.get(row);
+    if (!contribution) continue;
+    row.controlPlane = controlPlaneState(contribution.node);
+    row.workerLiveness =
+      contribution.liveAgents === undefined
+        ? 'unknown'
+        : contribution.liveAgents.length > 0
+          ? 'live'
+          : contribution.inventoryAgents === undefined
+            ? 'unknown'
+            : contribution.inventoryAgents.length > 0
+              ? 'degraded'
+              : 'empty';
   }
 
   perNode.sort((a, b) => (a.node === b.node ? a.name.localeCompare(b.name) : a.node.localeCompare(b.node)));
@@ -477,6 +559,8 @@ export function formatPretty(output: BuildRowsOutput): string {
     { header: 'NODE', values: rows.map((r) => r.node) },
     { header: 'NAME', values: rows.map((r) => r.name) },
     { header: 'CLI / MODEL', values: rows.map((r) => r.cliModel) },
+    { header: 'CONTROL PLANE', values: rows.map((r) => r.controlPlane ?? 'unknown') },
+    { header: 'WORKERS', values: rows.map((r) => r.workerLiveness ?? 'unknown') },
     { header: 'STATE', values: rows.map((r) => r.state) },
     { header: 'PENDING', values: rows.map((r) => r.pending) },
     { header: 'LAST ACTIVE', values: rows.map((r) => r.lastActive) },
@@ -509,6 +593,16 @@ export function formatPretty(output: BuildRowsOutput): string {
   if (output.perNode.some((row) => row.presence === 'remote live' || row.presence === 'remote live+roster')) {
     notes.push(
       "remote live: names come from the broker's live WorkerName set on the node heartbeat; PTY detail remains node-local."
+    );
+  }
+  if (output.perNode.some((row) => row.presence === 'remote stale (control plane unavailable)')) {
+    notes.push(
+      'remote stale: names came from the last broker heartbeat while the control plane was unavailable; worker liveness is unknown.'
+    );
+  }
+  if (rows.some((row) => row.controlPlane !== undefined || row.workerLiveness !== undefined)) {
+    notes.push(
+      'CONTROL PLANE reports node reachability/handler health; WORKERS reports hosted-worker evidence. Offline or degraded control plane does not prove workers are dead.'
     );
   }
   if (output.perNode.some((row) => row.presence === 'count only (degraded)')) {

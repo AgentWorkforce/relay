@@ -20,6 +20,7 @@ import {
   createRealtimeClient,
   createWorkspaceClient,
   isInvalidAgentTokenError,
+  safeRelayErrorMessage,
 } from '@agent-relay/sdk';
 import { z } from 'zod';
 import { declaredWorkforceMetadata } from './lib/registration-metadata.js';
@@ -29,6 +30,12 @@ import {
   withDeadline,
 } from './lib/agent-registration.js';
 import { attributableReleaseReason } from './lib/release-reason.js';
+import {
+  sanitizedSpawnReceipt,
+  spawnPlacementReceipt,
+  type SpawnDispatchState,
+  type SpawnLifecycleState,
+} from './lib/spawn-lifecycle.js';
 import { initTelemetry, shutdown as shutdownTelemetry } from './telemetry/index.js';
 import { RealtimeResourceBridge, SubscriptionManager, registerResourceDefinitions } from './mcp/resources.js';
 import { jsonContent, jsonResult, textContent } from './mcp/tool-results.js';
@@ -81,6 +88,36 @@ const VERIFIED_SPAWN_MISSING_READY_MESSAGE =
 const VERIFIED_SPAWN_SUCCESS_STATUSES = new Set(['completed', 'succeeded', 'success']);
 const VERIFIED_SPAWN_FAILURE_STATUSES = new Set(['failed', 'error', 'cancelled', 'canceled', 'denied']);
 
+class VerifiedSpawnError extends Error {
+  readonly code: 'spawn_unconfirmed' | 'spawn_failed';
+  readonly invocationId?: string;
+  readonly state: SpawnLifecycleState;
+  readonly dispatchState: SpawnDispatchState;
+  readonly node?: string;
+  readonly receipt?: Record<string, unknown>;
+
+  constructor(
+    message: string,
+    context: {
+      code?: 'spawn_unconfirmed' | 'spawn_failed';
+      state: SpawnLifecycleState;
+      dispatchState?: SpawnDispatchState;
+      invocationId?: string;
+      node?: string;
+      receipt?: Record<string, unknown>;
+    }
+  ) {
+    super(message);
+    this.name = 'VerifiedSpawnError';
+    this.code = context.code ?? (context.state === 'failed' ? 'spawn_failed' : 'spawn_unconfirmed');
+    this.state = context.state;
+    this.dispatchState = context.dispatchState ?? 'unknown';
+    this.invocationId = context.invocationId;
+    this.node = context.node;
+    this.receipt = context.receipt;
+  }
+}
+
 type InvocationReader = {
   getInvocation(name: string, invocationId: string): Promise<unknown>;
 };
@@ -88,6 +125,8 @@ type InvocationReader = {
 type InvocationRef = {
   actionName: string;
   invocationId: string;
+  node?: string;
+  dispatchState: SpawnDispatchState;
 };
 
 function recordValue(value: unknown): Record<string, unknown> {
@@ -105,9 +144,70 @@ function invocationRef(value: unknown): InvocationRef | undefined {
   const record = recordValue(value);
   const invocationId = invocationText(record, 'invocationId', 'invocation_id');
   if (!invocationId) return undefined;
+  const node =
+    invocationText(record, 'handlerNodeId', 'handler_node_id') ??
+    invocationText(record, 'dispatchedNodeId', 'dispatched_node_id');
   return {
     invocationId,
     actionName: invocationText(record, 'actionName', 'action_name') ?? 'spawn',
+    ...(node ? { node } : {}),
+    dispatchState: dispatchStateFor(record),
+  };
+}
+
+function spawnReceipt(value: Record<string, unknown>): Record<string, unknown> {
+  return spawnPlacementReceipt(value);
+}
+
+function dispatchStateFor(
+  value: Record<string, unknown>,
+  fallback: SpawnDispatchState = 'unknown'
+): SpawnDispatchState {
+  const state = spawnReceipt(value).dispatchState;
+  return state === 'dispatched' || state === 'not_dispatched' ? state : fallback;
+}
+
+/**
+ * Dispatch evidence for a *later* invocation read, given the dispatch state
+ * already frozen from the ack. `spawnReceipt`/`dispatchStateFor` treats a
+ * terminal status (e.g. `completed`) as dispatch evidence on its own — valid
+ * for the ack itself, where a synchronous handler really can report a
+ * terminal status immediately. It is not valid here: once the ack is known
+ * `not_dispatched` (a `pending`/`queued` ack with no node id), a later poll
+ * observing `completed`/`invoked` must not retroactively manufacture
+ * `dispatched` from that status. A node id appearing on the later record is
+ * real, new routing evidence and is trusted; a bare status change is not.
+ */
+function dispatchStateForRecord(
+  record: Record<string, unknown>,
+  ackDispatchState: SpawnDispatchState
+): SpawnDispatchState {
+  if (ackDispatchState === 'dispatched') return 'dispatched';
+  const nodeId =
+    invocationText(record, 'dispatchedNodeId', 'dispatched_node_id') ??
+    invocationText(record, 'handlerNodeId', 'handler_node_id');
+  return nodeId ? 'dispatched' : ackDispatchState;
+}
+
+function terminalSpawnFailureResult(invocation: Record<string, unknown>) {
+  const placement = spawnReceipt(invocation);
+  if (placement.state !== 'failed') return undefined;
+  return {
+    ...jsonContent({
+      ok: false,
+      error: {
+        code: 'spawn_failed',
+        state: 'failed',
+        ...(placement.invocationId ? { invocationId: placement.invocationId } : {}),
+        dispatchState: dispatchStateFor(invocation),
+        receipt: sanitizedSpawnReceipt(invocation),
+        message:
+          typeof invocation.error === 'string' && invocation.error.trim()
+            ? safeRelayErrorMessage(invocation.error)
+            : 'Fleet spawn invocation reported a terminal failure.',
+      },
+    }),
+    isError: true as const,
   };
 }
 
@@ -156,9 +256,29 @@ async function pollInvocation(
     try {
       return await getInvocationBeforeDeadline(actions, current, deadline);
     } catch (error) {
-      if (isInvocationAuthorizationError(error)) throw error;
+      if (isInvocationAuthorizationError(error)) {
+        throw new VerifiedSpawnError(
+          `Spawn confirmation could not be read after acceptance (${error instanceof Error ? error.message : String(error)}). The invocation may still be running; do not retry without checking it first. Invocation: ${current.invocationId}.`,
+          {
+            code: 'spawn_unconfirmed',
+            state: 'unconfirmed_may_be_running',
+            invocationId: current.invocationId,
+            dispatchState: current.dispatchState,
+            ...(current.node ? { node: current.node } : {}),
+          }
+        );
+      }
       if (Date.now() >= deadline) {
-        throw new Error(VERIFIED_SPAWN_TIMEOUT_MESSAGE, { cause: error });
+        throw new VerifiedSpawnError(
+          `${VERIFIED_SPAWN_TIMEOUT_MESSAGE} The invocation may still be running; do not retry without checking it first. Invocation: ${current.invocationId}.`,
+          {
+            state: 'unconfirmed_may_be_running',
+            invocationId: current.invocationId,
+            dispatchState: current.dispatchState,
+            ...(current.node ? { node: current.node } : {}),
+            receipt: { status: 'unknown' },
+          }
+        );
       }
       await new Promise<void>((resolve) => setTimeout(resolve, VERIFIED_SPAWN_POLL_MS));
     }
@@ -185,7 +305,12 @@ async function waitForVerifiedSpawn(
 ): Promise<unknown> {
   const ack = recordValue(ackValue);
   let current = invocationRef(ack);
-  if (!current) throw new Error('Spawn did not return an invocation id.');
+  if (!current) {
+    throw new VerifiedSpawnError(
+      'Spawn returned no invocation id; the dispatch is unconfirmed and may still be running. Do not retry blindly.',
+      { state: 'unconfirmed_may_be_running', dispatchState: dispatchStateFor(ack) }
+    );
+  }
 
   const deadline = Date.now() + timeoutMs;
   const followed = new Set([`${current.actionName}\u001f${current.invocationId}`]);
@@ -198,7 +323,13 @@ async function waitForVerifiedSpawn(
       if (nested) {
         const key = `${nested.actionName}\u001f${nested.invocationId}`;
         if (followed.has(key)) {
-          throw new Error('Persona spawn returned a cyclic nested invocation.');
+          throw new VerifiedSpawnError('Persona spawn returned a cyclic nested invocation.', {
+            code: 'spawn_failed',
+            state: 'failed',
+            dispatchState: dispatchStateForRecord(record, current.dispatchState),
+            invocationId: current.invocationId,
+            receipt: record,
+          });
         }
         followed.add(key);
         current = nested;
@@ -206,15 +337,48 @@ async function waitForVerifiedSpawn(
       }
       const output = recordValue(record.output);
       if (output.spawned !== true || output.ready !== true) {
-        throw new Error(missingVerifiedSpawnProof(record, ack, current.invocationId));
+        throw new VerifiedSpawnError(missingVerifiedSpawnProof(record, ack, current.invocationId), {
+          code: 'spawn_failed',
+          state: 'failed',
+          dispatchState: dispatchStateForRecord(record, current.dispatchState),
+          invocationId: current.invocationId,
+          node:
+            invocationText(record, 'handlerNodeId', 'handler_node_id') ??
+            invocationText(record, 'dispatchedNodeId', 'dispatched_node_id') ??
+            current.node,
+          receipt: record,
+        });
       }
       return invocation;
     }
     if (status && VERIFIED_SPAWN_FAILURE_STATUSES.has(status)) {
-      throw new Error(invocationText(record, 'error') ?? `Spawn ${status}.`);
+      throw new VerifiedSpawnError(invocationText(record, 'error') ?? `Spawn ${status}.`, {
+        code: 'spawn_failed',
+        state: 'failed',
+        dispatchState: dispatchStateForRecord(record, current.dispatchState),
+        invocationId: current.invocationId,
+        node:
+          invocationText(record, 'handlerNodeId', 'handler_node_id') ??
+          invocationText(record, 'dispatchedNodeId', 'dispatched_node_id') ??
+          current.node,
+        receipt: record,
+      });
     }
     if (Date.now() >= deadline) {
-      throw new Error(VERIFIED_SPAWN_TIMEOUT_MESSAGE);
+      throw new VerifiedSpawnError(
+        `${VERIFIED_SPAWN_TIMEOUT_MESSAGE} The invocation may still be running; do not retry without checking it first. Invocation: ${current.invocationId}.`,
+        {
+          code: 'spawn_unconfirmed',
+          state: 'unconfirmed_may_be_running',
+          dispatchState: dispatchStateForRecord(record, current.dispatchState),
+          invocationId: current.invocationId,
+          node:
+            invocationText(record, 'handlerNodeId', 'handler_node_id') ??
+            invocationText(record, 'dispatchedNodeId', 'dispatched_node_id') ??
+            current.node,
+          receipt: record,
+        }
+      );
     }
     await new Promise<void>((resolve) => setTimeout(resolve, VERIFIED_SPAWN_POLL_MS));
   }
@@ -697,6 +861,24 @@ async function invokeVerifiedSpawn(
   return waitForVerifiedSpawn(commands, invocation);
 }
 
+function verifiedSpawnErrorResult(error: VerifiedSpawnError) {
+  return {
+    ...jsonContent({
+      ok: false,
+      error: {
+        code: error.code,
+        state: error.state,
+        dispatchState: error.dispatchState,
+        ...(error.invocationId ? { invocationId: error.invocationId } : {}),
+        ...(error.node ? { node: error.node } : {}),
+        ...(error.receipt ? { receipt: sanitizedSpawnReceipt(error.receipt) } : {}),
+        message: safeRelayErrorMessage(error),
+      },
+    }),
+    isError: true as const,
+  };
+}
+
 /**
  * Read the agent record back and confirm the supplied metadata is on it.
  *
@@ -1118,26 +1300,28 @@ function registerAgentRelayTools(
       outputSchema: jsonResult,
       annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: true, openWorldHint: true },
     },
-    async ({ name, cli, task, channel, persona, model, spawn_mode, exit_after_task }) =>
-      jsonContent(
-        await getRelay().agents.spawn({
-          name,
-          cli,
-          task:
-            exit_after_task ||
-            spawn_mode === 'task_exit' ||
-            spawn_mode === 'task-exit' ||
-            spawn_mode === 'single_shot' ||
-            spawn_mode === 'single-shot'
-              ? withExitAfterTaskInstruction(task)
-              : task,
-          channel,
-          persona,
-          // SpawnAgentRequest has no top-level model field; pass via metadata
-          // so the broker can extract it and forward --model to the launched CLI.
-          metadata: model ? { model } : undefined,
-        })
-      )
+    async ({ name, cli, task, channel, persona, model, spawn_mode, exit_after_task }) => {
+      const invocation = await getRelay().agents.spawn({
+        name,
+        cli,
+        task:
+          exit_after_task ||
+          spawn_mode === 'task_exit' ||
+          spawn_mode === 'task-exit' ||
+          spawn_mode === 'single_shot' ||
+          spawn_mode === 'single-shot'
+            ? withExitAfterTaskInstruction(task)
+            : task,
+        channel,
+        persona,
+        // SpawnAgentRequest has no top-level model field; pass via metadata
+        // so the broker can extract it and forward --model to the launched CLI.
+        metadata: model ? { model } : undefined,
+      });
+      const failure = terminalSpawnFailureResult(invocation);
+      if (failure) return failure;
+      return jsonContent({ ...invocation, placement: spawnReceipt(invocation) });
+    }
   );
 
   server.registerTool(
@@ -1230,8 +1414,16 @@ function registerAgentRelayTools(
       };
       validateSpawnRequest(request);
       const actionInput = buildSpawnActionInput(request);
-      const invocation = await invokeVerifiedSpawn(getSession(), as, baseUrl, actionInput);
-      return jsonContent({ invocation });
+      try {
+        const invocation = await invokeVerifiedSpawn(getSession(), as, baseUrl, actionInput);
+        return jsonContent({
+          invocation,
+          placement: { state: 'ready', ...spawnReceipt(recordValue(invocation)) },
+        });
+      } catch (error) {
+        if (error instanceof VerifiedSpawnError) return verifiedSpawnErrorResult(error);
+        throw error;
+      }
     }
   );
 

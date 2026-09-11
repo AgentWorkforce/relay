@@ -27,9 +27,12 @@ const LIVE_NODE = {
   repo_keys: ['relay'],
 };
 
-function createClient(getInvocation?: (name: string, invocationId: string) => Promise<unknown>) {
+function createClient(
+  getInvocation?: (name: string, invocationId: string) => Promise<unknown>,
+  acceptedInvocationId = 'inv-1430'
+) {
   const invoke = vi.fn(async (name: string, input?: Record<string, unknown>) => ({
-    invocation_id: 'inv-1430',
+    invocation_id: acceptedInvocationId,
     action_name: name,
     handler_node_id: 'node_a',
     dispatched_node_id: 'node_a',
@@ -99,6 +102,40 @@ describe('fleet spawn confirmation is observable from the requester (#1430)', ()
     expect(reader).toHaveBeenCalled();
   });
 
+  it('preserves a live accepted dispatch as unconfirmed and warns against blind retry', async () => {
+    const invocationId = 'inv_223936432626290688';
+    const { client, reader } = createClient(
+      async (name, id) => ({
+        invocation_id: id,
+        action_name: name,
+        handler_node_id: 'chief-broker',
+        dispatched_node_id: 'chief-broker',
+        status: 'invoked',
+      }),
+      invocationId
+    );
+
+    const error = await client.placement
+      .spawn(
+        spawnInput({
+          node: 'chief-broker',
+          input: { name: 'opencode-live-repro' },
+          confirm: true,
+          confirmTimeoutMs: 60,
+          confirmPollIntervalMs: 10,
+        })
+      )
+      .catch((caught: unknown) => caught);
+
+    expect(error).toBeInstanceOf(RelayPlacementError);
+    expect((error as RelayPlacementError).code).toBe('spawn_unconfirmed');
+    expect((error as RelayPlacementError).state).toBe('unconfirmed_may_be_running');
+    expect((error as RelayPlacementError).dispatchState).toBe('dispatched');
+    expect((error as RelayPlacementError).invocationId).toBe(invocationId);
+    expect((error as Error).message).toContain('do not retry blindly');
+    expect(reader).toHaveBeenCalled();
+  });
+
   // MUST-FIRE — a node that reports its failure honestly still surfaced as
   // success before this change, because nothing read the action result. The
   // broker's detail (startup exit status and worker log path) must survive.
@@ -128,7 +165,7 @@ describe('fleet spawn confirmation is observable from the requester (#1430)', ()
       invocation_id: invocationId,
       action_name: name,
       status: 'completed',
-      output: { spawned: true, name: 'worker-1430' },
+      output: { spawned: true, ready: true, name: 'worker-1430' },
     }));
 
     const ack = await client.placement.spawn(
@@ -137,6 +174,26 @@ describe('fleet spawn confirmation is observable from the requester (#1430)', ()
 
     expect(ack.placement.confirmed).toBe(true);
     expect(ack.confirmation?.status).toBe('completed');
+  });
+
+  it('fails a completed invocation that omits readiness proof', async () => {
+    const { client } = createClient(async (name, invocationId) => ({
+      invocation_id: invocationId,
+      action_name: name,
+      status: 'completed',
+      output: { spawned: true, name: 'worker-1430' },
+    }));
+
+    const error = await client.placement
+      .spawn(spawnInput({ confirm: true, confirmTimeoutMs: 1_000, confirmPollIntervalMs: 10 }))
+      .catch((caught: unknown) => caught);
+
+    expect(error).toBeInstanceOf(RelayPlacementError);
+    expect((error as RelayPlacementError).code).toBe('spawn_failed');
+    expect((error as RelayPlacementError).state).toBe('failed');
+    expect((error as RelayPlacementError).invocationId).toBe('inv-1430');
+    expect((error as RelayPlacementError).dispatchState).toBe('dispatched');
+    expect((error as RelayPlacementError).message).toContain('spawned:true and ready:true proof');
   });
 
   // VACUITY CONTROL — without `confirm` the invocation is never read back, so

@@ -5,6 +5,7 @@ import path from 'node:path';
 import { Command } from 'commander';
 import { CloudFleetSandboxProvisionError } from '@agent-relay/cloud';
 import { defineNode, invokeNodeHandler, spawn as fleetSpawn } from '@agent-relay/fleet';
+import { RelayPlacementError } from '@agent-relay/sdk';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
 afterEach(() => vi.unstubAllEnvs());
@@ -45,6 +46,7 @@ vi.mock('@agent-relay/harness-driver', async (importOriginal) => ({
 
 import { registerFleetCommands } from './fleet.js';
 import { writeProjectWorkspaceKey } from '../lib/project-workspace-key.js';
+import { spawnPlacementReceipt } from '../lib/spawn-lifecycle.js';
 
 const REPLAY_SANDBOX_ID = 'sbx_123e4567-e89b-42d3-a456-426614174000';
 const REPLAY_SANDBOX_NAME = 'fleet-sandbox-123e4567-e89b-42d3-a456-426614174000';
@@ -69,6 +71,40 @@ const liveAgentCapabilities = (...names: string[]) => [
     metadata: { names },
   },
 ];
+
+describe('spawn lifecycle receipts', () => {
+  it('preserves no-dispatch pending evidence separately from a dispatched timeout', () => {
+    expect(
+      spawnPlacementReceipt({ invocation_id: 'inv_pending', status: 'pending', dispatched_node_id: null })
+    ).toEqual({
+      state: 'accepted',
+      dispatchState: 'not_dispatched',
+      invocationId: 'inv_pending',
+    });
+    expect(
+      spawnPlacementReceipt({
+        invocation_id: 'inv_dispatched',
+        status: 'invoked',
+        dispatched_node_id: 'node-a',
+      })
+    ).toEqual({
+      state: 'unconfirmed_may_be_running',
+      dispatchState: 'dispatched',
+      invocationId: 'inv_dispatched',
+      dispatchedNodeId: 'node-a',
+    });
+    expect(
+      spawnPlacementReceipt({
+        invocation_id: 'inv_ready',
+        status: 'completed',
+        output: { spawned: true, ready: true },
+      })
+    ).toMatchObject({ state: 'ready', dispatchState: 'dispatched' });
+    expect(
+      spawnPlacementReceipt({ invocation_id: 'inv_completed_without_proof', status: 'completed' })
+    ).toMatchObject({ state: 'failed', dispatchState: 'dispatched' });
+  });
+});
 
 describe('fleet command support', () => {
   it.each([
@@ -230,6 +266,51 @@ describe('fleet command support', () => {
     expect(output.perNode.map((row: { node: string }) => row.node)).toEqual(['finn-mini']);
     expect(output.perNode.map((row: { name: string }) => row.name)).toEqual(['finn-worker']);
     expect(output.perNode.some((row: { node: string }) => row.node === 'live-node')).toBe(false);
+  });
+
+  it('preserves known offline metadata when the local node is filtered from the default list', async () => {
+    const nodes = {
+      list: vi.fn(async () => [
+        {
+          name: 'live-node',
+          status: 'offline',
+          live: false,
+          handlersLive: false,
+          capabilities: [],
+        },
+      ]),
+    };
+    const agents = { list: vi.fn(async () => []) };
+    const logs: string[] = [];
+    const program = new Command();
+    program.exitOverride();
+    registerFleetCommands(program, {
+      core: {
+        getProjectPaths: () => ({ projectRoot: '/p', dataDir: '/p/.agentworkforce/relay', teamDir: '/p' }),
+        exit: vi.fn(),
+      } as never,
+      sdk: {
+        createAgentRelay: vi.fn() as never,
+        createWorkspaceRelay: vi.fn(() => ({ nodes, agents })) as never,
+        createWorkspace: vi.fn() as never,
+        log: (message: unknown) => logs.push(String(message)),
+        error: vi.fn(),
+        exit: vi.fn() as never,
+      },
+      log: () => undefined,
+      warn: () => undefined,
+      error: () => undefined,
+    });
+
+    await program.parseAsync(['fleet', 'agent', 'list', '--json', '--workspace-key', 'rk_live_test'], {
+      from: 'user',
+    });
+
+    expect(JSON.parse(logs[0]!).perNode[0]).toMatchObject({
+      node: 'live-node',
+      controlPlane: 'offline',
+      workerLiveness: 'empty',
+    });
   });
 
   it('must-not-fire: fleet agent list --node excludes other nodes and roster-only rows', async () => {
@@ -656,6 +737,153 @@ describe('fleet command support', () => {
     expect(JSON.parse(logs[0]!)).toMatchObject({
       invocation: { invocationId: 'inv_targeted' },
     });
+  });
+
+  // relay#1751 CodeRabbit thread: `spawnPlacementReceipt` derives a lifecycle
+  // receipt from top-level invocation fields and must never replace the
+  // SDK's own `invocation.placement` (state/confirmed) on the targeted spawn
+  // path — it must only be merged in as extra `dispatchState`/`invocationId`
+  // evidence. With `--no-confirm`, the top-level invocation has no terminal
+  // `status`, so a naive replacement would downgrade a confirmed SDK
+  // `accepted` placement to `unconfirmed_may_be_running`.
+  it('preserves the SDK placement state and confirmed flag on a targeted --no-confirm spawn', async () => {
+    const placement = {
+      spawn: vi.fn(async () => ({
+        invocationId: 'inv_no_confirm',
+        actionName: 'spawn',
+        node: { name: 'sf-mini' },
+        placement: {
+          capability: 'spawn:codex',
+          node: 'sf-mini',
+          attempts: 1,
+          queued: false,
+          state: 'accepted',
+          confirmed: false,
+        },
+      })),
+    };
+    const createAgentRelay = vi.fn(() => ({ messaging: { placement } }));
+    const logs: string[] = [];
+    const program = new Command();
+    program.exitOverride();
+    registerFleetCommands(program, {
+      sdk: {
+        createAgentRelay: createAgentRelay as never,
+        createWorkspaceRelay: vi.fn() as never,
+        createWorkspace: vi.fn() as never,
+        log: (message: unknown) => logs.push(String(message)),
+        error: vi.fn(),
+        exit: vi.fn() as never,
+      },
+      createFleetWorkspaceClient: vi.fn() as never,
+      log: () => undefined,
+      warn: () => undefined,
+      error: () => undefined,
+    });
+
+    await program.parseAsync(
+      [
+        'fleet',
+        'spawn',
+        'codex',
+        '--name',
+        'api-worker',
+        '--task',
+        'ACK and wait',
+        '--target-node',
+        'sf-mini',
+        '--no-confirm',
+        '--workspace-key',
+        'rk_live_test',
+        '--token',
+        'at_live_lead',
+      ],
+      { from: 'user' }
+    );
+
+    const printed = JSON.parse(logs[0]!);
+    // The SDK's own evidence (state: 'accepted', confirmed: false) must
+    // survive untouched...
+    expect(printed.invocation.placement).toMatchObject({
+      capability: 'spawn:codex',
+      node: 'sf-mini',
+      state: 'accepted',
+      confirmed: false,
+    });
+    // ...augmented with the normalized dispatch evidence and invocation id,
+    // not replaced by them.
+    expect(printed.invocation.placement.dispatchState).toBeDefined();
+    expect(printed.invocation.placement.state).not.toBe('unconfirmed_may_be_running');
+  });
+
+  it('terminates an accepted-but-unconfirmed live invocation without inviting a blind retry', async () => {
+    const invocationId = 'inv_223936432626290688';
+    const placement = {
+      spawn: vi.fn(async () => {
+        throw new RelayPlacementError(
+          'spawn_unconfirmed',
+          `node 'chief-broker' accepted spawn (invocation ${invocationId}) but never reported a result. ` +
+            'The invocation may still be running, so do not retry blindly.',
+          {
+            capability: 'spawn:opencode',
+            node: 'chief-broker',
+            attempts: 1,
+            invocationId,
+            state: 'unconfirmed_may_be_running',
+            dispatchState: 'dispatched',
+          }
+        );
+      }),
+    };
+    const errors: string[] = [];
+    const program = new Command();
+    program.exitOverride();
+    registerFleetCommands(program, {
+      sdk: {
+        createAgentRelay: vi.fn(() => ({ messaging: { placement } })) as never,
+        createWorkspaceRelay: vi.fn() as never,
+        createWorkspace: vi.fn() as never,
+        log: vi.fn(),
+        error: (message: unknown) => errors.push(String(message)),
+        exit: vi.fn(() => {
+          throw new Error('__exit__');
+        }) as never,
+      },
+      createFleetWorkspaceClient: vi.fn() as never,
+      log: () => undefined,
+      warn: () => undefined,
+      error: () => undefined,
+    });
+
+    await expect(
+      program.parseAsync(
+        [
+          'fleet',
+          'spawn',
+          'opencode',
+          '--name',
+          'opencode-live-repro',
+          '--task',
+          'reproduce accepted dispatch',
+          '--node',
+          'chief-broker',
+          '--confirm-timeout',
+          '120000',
+          '--workspace-key',
+          'rk_live_test',
+          '--token',
+          'at_live_fleet',
+        ],
+        { from: 'user' }
+      )
+    ).rejects.toThrow('__exit__');
+
+    const rendered = errors.join('\n');
+    expect(rendered).toContain('do not retry blindly');
+    expect(rendered).toContain('"code":"spawn_unconfirmed"');
+    expect(rendered).toContain('"state":"unconfirmed_may_be_running"');
+    expect(rendered).toContain('"dispatchState":"dispatched"');
+    expect(rendered).toContain(`"invocationId":"${invocationId}"`);
   });
 
   it('fleet spawn --sandbox-provider agent37 provisions the isolated canary and uses a temporary launcher', async () => {
@@ -1131,8 +1359,20 @@ describe('fleet command support', () => {
     expect(createAgentRelay).not.toHaveBeenCalled();
   });
 
-  it('fleet spawn --sandbox deletes a freshly provisioned sandbox when dispatch fails', async () => {
-    const placement = { spawn: vi.fn(async () => Promise.reject(new Error('dispatch failed'))) };
+  it('fleet spawn --sandbox preserves a freshly provisioned sandbox when placement is unconfirmed', async () => {
+    const placement = {
+      spawn: vi.fn(async () =>
+        Promise.reject(
+          new RelayPlacementError('spawn_unconfirmed', 'dispatch may still be running', {
+            capability: 'spawn:codex',
+            node: 'agent37-codex',
+            attempts: 1,
+            invocationId: 'inv_unconfirmed_sandbox',
+            state: 'unconfirmed_may_be_running',
+          })
+        )
+      ),
+    };
     const deleteCloudFleetSandbox = vi.fn(async () => undefined);
     const ensureCloudFleetSandbox = vi.fn(async () => ({
       outcome: 'provisioned' as const,
@@ -1204,17 +1444,13 @@ describe('fleet command support', () => {
       )
     ).rejects.toThrow('__exit__');
 
-    expect(errors.join('\n')).toContain('dispatch failed');
+    expect(errors.join('\n')).toContain('dispatch may still be running');
     expect(ensureCloudFleetSandbox).toHaveBeenCalledWith(
       expect.objectContaining({
         workloadProfile: 'long-running-agent',
       })
     );
-    expect(deleteCloudFleetSandbox).toHaveBeenCalledWith({
-      cloudWorkspaceId: 'cloud-workspace',
-      sandboxId: 'sandbox-1',
-      providerId: 'agent37',
-    });
+    expect(deleteCloudFleetSandbox).not.toHaveBeenCalled();
   });
 
   it('preserves legacy custom sandbox names without sending a sandbox identity', async () => {
@@ -2344,8 +2580,106 @@ describe('fleet command support', () => {
       },
     });
     expect(JSON.parse(logs[0]!)).toEqual({
-      invocation: { invocation_id: 'inv_auto', status: 'accepted' },
+      invocation: {
+        invocation_id: 'inv_auto',
+        status: 'accepted',
+        placement: { state: 'accepted', dispatchState: 'unknown', invocationId: 'inv_auto' },
+      },
     });
+  });
+
+  it('fleet spawn propagates a terminal automatic failure with structured correlation', async () => {
+    const spawn = vi.fn(async () => ({
+      invocation_id: 'inv_auto_failed',
+      status: 'failed',
+      error: 'spawn_harness_not_ready',
+    }));
+    const errors: string[] = [];
+    const program = new Command();
+    program.exitOverride();
+    registerFleetCommands(program, {
+      sdk: {
+        createAgentRelay: vi.fn() as never,
+        createWorkspaceRelay: vi.fn() as never,
+        createWorkspace: vi.fn() as never,
+        log: vi.fn(),
+        error: (message: unknown) => errors.push(String(message)),
+        exit: vi.fn(() => {
+          throw new Error('__exit__');
+        }) as never,
+      },
+      createFleetWorkspaceClient: vi.fn(() => ({ agents: { spawn } })) as never,
+      log: () => undefined,
+      warn: () => undefined,
+      error: () => undefined,
+    });
+
+    await expect(
+      program.parseAsync(
+        [
+          'fleet',
+          'spawn',
+          'codex',
+          '--name',
+          'failed-worker',
+          '--task',
+          'Work',
+          '--workspace-key',
+          'rk_live_test',
+        ],
+        { from: 'user' }
+      )
+    ).rejects.toThrow('__exit__');
+
+    expect(errors.join('\n')).toContain('spawn_harness_not_ready');
+    expect(errors.join('\n')).toContain('"code":"spawn_failed"');
+    expect(errors.join('\n')).toContain('"state":"failed"');
+    expect(errors.join('\n')).toContain('"invocationId":"inv_auto_failed"');
+  });
+
+  it('fleet spawn rejects a terminal completed result without launch/readiness proof', async () => {
+    const spawn = vi.fn(async () => ({
+      invocation_id: 'inv_auto_unproven',
+      status: 'completed',
+      output: { spawned: true, ready: false },
+    }));
+    const errors: string[] = [];
+    const program = new Command();
+    program.exitOverride();
+    registerFleetCommands(program, {
+      sdk: {
+        createAgentRelay: vi.fn() as never,
+        createWorkspaceRelay: vi.fn() as never,
+        createWorkspace: vi.fn() as never,
+        log: vi.fn(),
+        error: (message: unknown) => errors.push(String(message)),
+        exit: vi.fn(() => {
+          throw new Error('__exit__');
+        }) as never,
+      },
+      createFleetWorkspaceClient: vi.fn(() => ({ agents: { spawn } })) as never,
+    });
+
+    await expect(
+      program.parseAsync(
+        [
+          'fleet',
+          'spawn',
+          'codex',
+          '--name',
+          'unproven-worker',
+          '--task',
+          'Work',
+          '--workspace-key',
+          'rk_live_test',
+        ],
+        { from: 'user' }
+      )
+    ).rejects.toThrow('__exit__');
+
+    expect(errors.join('\n')).toContain('"code":"spawn_failed"');
+    expect(errors.join('\n')).toContain('"state":"failed"');
+    expect(errors.join('\n')).toContain('"invocationId":"inv_auto_unproven"');
   });
 
   it('fleet spawn mints and removes a temporary launcher for tokenless targeted placement', async () => {

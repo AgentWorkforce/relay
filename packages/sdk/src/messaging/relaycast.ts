@@ -11,6 +11,7 @@ import {
   placementActionInput,
   placementActionName,
   RelayPlacementError,
+  resolveDispatchState,
   type PlacementSelection,
 } from './relaycast-placement.js';
 import {
@@ -123,6 +124,7 @@ import type {
 // client-construction concerns moved into sibling modules. Consumers import
 // these from './relaycast.js' via the messaging index.
 export { RelayPlacementError } from './relaycast-placement.js';
+export type { RelaySpawnDispatchState, RelaySpawnPlacementState } from './relaycast-placement.js';
 export type { RelaycastMessagingOptions } from './relaycast-client.js';
 
 const DEFAULT_CONFIRM_TIMEOUT_MS = 120_000;
@@ -140,6 +142,10 @@ const CONFIRM_SUCCESS_STATUSES = new Set(['completed', 'succeeded', 'success']);
  * that client surfaces as a non-retryable `action_denied` error.
  */
 const CONFIRM_FAILURE_STATUSES = new Set(['failed', 'error', 'denied', 'cancelled', 'canceled']);
+
+function hasExplicitSpawnReadinessProof(value: { output?: Record<string, unknown> | null }): boolean {
+  return value.output?.spawned === true && value.output?.ready === true;
+}
 
 /** Distinguishes "the read outlived its budget" from any value a read returns. */
 const READ_TIMED_OUT = Symbol('relay.confirm.readTimedOut');
@@ -736,6 +742,53 @@ export class RelaycastMessagingClient implements RelayMessagingClient {
               : await this.resolvePlacementAckNode(ack, capability);
             const placedNodeLabel =
               placedNode?.name ?? ack.dispatchedNodeId ?? ack.handlerNodeId ?? 'engine-selected node';
+            // A synchronous handler can reject or deny the invocation before
+            // this call even returns, so the ack itself can already carry a
+            // terminal failure. The terminal-status checks in
+            // confirmPlacementInvocation only run once polling starts, so
+            // `confirm: false` — the default, and `fleet spawn --no-confirm`
+            // — must not skip straight to `state: 'accepted'` for a dispatch
+            // already known to have failed or been denied.
+            const ackStatus = ack.status?.toLowerCase();
+            if (ackStatus && CONFIRM_FAILURE_STATUSES.has(ackStatus)) {
+              throw new RelayPlacementError(
+                'spawn_failed',
+                `node '${placedNodeLabel}' reported ${ackStatus} for ${actionName} immediately upon dispatch`,
+                {
+                  capability,
+                  node: placedNodeLabel,
+                  repo,
+                  attempts,
+                  state: 'failed',
+                  dispatchState: resolveDispatchState(ack),
+                  invocationId: ack.invocationId,
+                  receipt: ack as unknown as Record<string, unknown>,
+                }
+              );
+            }
+            const ackOutput = (ack as unknown as { output?: Record<string, unknown> | null }).output;
+            if (
+              !input.confirm &&
+              capability.startsWith('spawn:') &&
+              ackStatus &&
+              CONFIRM_SUCCESS_STATUSES.has(ackStatus) &&
+              !hasExplicitSpawnReadinessProof({ output: ackOutput })
+            ) {
+              throw new RelayPlacementError(
+                'spawn_failed',
+                `node '${placedNodeLabel}' reported ${ackStatus} for ${actionName} without explicit spawned:true and ready:true proof`,
+                {
+                  capability,
+                  node: placedNodeLabel,
+                  repo,
+                  attempts,
+                  state: 'failed',
+                  dispatchState: resolveDispatchState(ack),
+                  invocationId: ack.invocationId,
+                  receipt: ack as unknown as Record<string, unknown>,
+                }
+              );
+            }
             // The ack proves only that the engine accepted the dispatch. Unless
             // the caller asks for confirmation, a node that accepted the
             // invocation and launched nothing resolves identically to a real
@@ -762,6 +815,7 @@ export class RelaycastMessagingClient implements RelayMessagingClient {
                 attempts,
                 queued,
                 confirmed: Boolean(confirmation),
+                state: confirmation ? 'ready' : 'accepted',
               },
               ...(confirmation ? { confirmation } : {}),
             };
@@ -879,11 +933,19 @@ export class RelaycastMessagingClient implements RelayMessagingClient {
   ): Promise<RelayActionInvocation> {
     const { timeoutMs, pollIntervalMs, ...errorContext } = context;
     const invocationId = ack.invocationId;
+    // Dispatch evidence is fixed at ack time: a node id here means the engine
+    // already routed the invocation to a node before this method starts
+    // polling. A `pending`/`queued` ack with no node id has not routed yet,
+    // and confirmation timing out or reading a terminal status later does not
+    // retroactively manufacture that evidence — see `resolveDispatchState`.
+    // Computed before either early exit below so every `spawn_unconfirmed`
+    // path, not just the timeout/failure paths, carries this evidence.
+    const dispatchState = resolveDispatchState(ack);
     if (!invocationId) {
       throw new RelayPlacementError(
         'spawn_unconfirmed',
         `node '${context.node}' accepted ${actionName} without returning an invocation id, so the dispatch cannot be confirmed`,
-        errorContext
+        { ...errorContext, state: 'unconfirmed_may_be_running', dispatchState }
       );
     }
 
@@ -899,7 +961,12 @@ export class RelaycastMessagingClient implements RelayMessagingClient {
       throw new RelayPlacementError(
         'spawn_unconfirmed',
         `node '${context.node}' accepted ${actionName} (invocation ${invocationId}), but confirmation requires an agent-scoped client with the actions API, so the dispatch cannot be read back`,
-        errorContext
+        {
+          ...errorContext,
+          state: 'unconfirmed_may_be_running',
+          invocationId,
+          dispatchState,
+        }
       );
     }
 
@@ -923,13 +990,35 @@ export class RelaycastMessagingClient implements RelayMessagingClient {
             const invocation = outcome.value;
             const status = invocation?.status?.toLowerCase();
             if (status && CONFIRM_SUCCESS_STATUSES.has(status)) {
+              if (
+                errorContext.capability.startsWith('spawn:') &&
+                !hasExplicitSpawnReadinessProof(invocation)
+              ) {
+                throw new RelayPlacementError(
+                  'spawn_failed',
+                  `node '${context.node}' reported ${status} for ${actionName} without explicit spawned:true and ready:true proof`,
+                  {
+                    ...errorContext,
+                    state: 'failed',
+                    invocationId,
+                    dispatchState,
+                    receipt: invocation as unknown as Record<string, unknown>,
+                  }
+                );
+              }
               return invocation;
             }
             if (status && CONFIRM_FAILURE_STATUSES.has(status)) {
               throw new RelayPlacementError(
                 'spawn_failed',
                 invocation?.error?.trim() || `node '${context.node}' reported ${status} for ${actionName}`,
-                errorContext
+                {
+                  ...errorContext,
+                  state: 'failed',
+                  invocationId,
+                  dispatchState,
+                  receipt: invocation as unknown as Record<string, unknown>,
+                }
               );
             }
           } else {
@@ -945,9 +1034,15 @@ export class RelaycastMessagingClient implements RelayMessagingClient {
           'spawn_unconfirmed',
           `node '${context.node}' accepted ${actionName} (invocation ${invocationId}) but never reported a result within ${budgetMs}ms. ` +
             `The node advertised capacity and acknowledged the dispatch; nothing confirmed that it launched. ` +
+            `The invocation may still be running, so do not retry blindly. ` +
             `Check that node's broker version, or re-run without confirmation to accept an unconfirmed dispatch.` +
             (lastReadError ? ` Last read error: ${lastReadError}` : ''),
-          errorContext
+          {
+            ...errorContext,
+            state: 'unconfirmed_may_be_running',
+            invocationId,
+            dispatchState,
+          }
         );
       }
       // Never sleep past the deadline: that would buy one more pointless read.
