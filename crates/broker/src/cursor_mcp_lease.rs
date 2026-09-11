@@ -1697,6 +1697,8 @@ impl CursorMcpLeaseRegistry {
         let mut held_locks = Vec::new();
         for entry in journal.entries {
             let path = entry.path.clone();
+            #[cfg(windows)]
+            let generated_identity = entry.generated_identity;
             let pre_existing = match PreExisting::from_journal(entry.pre_existing.clone()) {
                 Ok(pre_existing) => pre_existing,
                 Err(error) => {
@@ -1710,6 +1712,8 @@ impl CursorMcpLeaseRegistry {
                 remaining.push(JournalEntry {
                     path,
                     pre_existing: pre_existing.journal()?,
+                    #[cfg(windows)]
+                    generated_identity,
                 });
                 continue;
             }
@@ -1720,6 +1724,8 @@ impl CursorMcpLeaseRegistry {
                     remaining.push(JournalEntry {
                         path,
                         pre_existing: pre_existing.journal()?,
+                        #[cfg(windows)]
+                        generated_identity,
                     });
                     continue;
                 }
@@ -1730,6 +1736,8 @@ impl CursorMcpLeaseRegistry {
                 remaining.push(JournalEntry {
                     path,
                     pre_existing: pre_existing.journal()?,
+                    #[cfg(windows)]
+                    generated_identity,
                 });
                 continue;
             }
@@ -1740,6 +1748,8 @@ impl CursorMcpLeaseRegistry {
                     remaining.push(JournalEntry {
                         path,
                         pre_existing: pre_existing.journal()?,
+                        #[cfg(windows)]
+                        generated_identity,
                     });
                     continue;
                 }
@@ -1749,6 +1759,8 @@ impl CursorMcpLeaseRegistry {
                 remaining.push(JournalEntry {
                     path,
                     pre_existing: pre_existing.journal()?,
+                    #[cfg(windows)]
+                    generated_identity,
                 });
                 continue;
             }
@@ -1759,6 +1771,8 @@ impl CursorMcpLeaseRegistry {
                     remaining.push(JournalEntry {
                         path,
                         pre_existing: pre_existing.journal()?,
+                        #[cfg(windows)]
+                        generated_identity,
                     });
                     continue;
                 }
@@ -1767,6 +1781,8 @@ impl CursorMcpLeaseRegistry {
                     remaining.push(JournalEntry {
                         path,
                         pre_existing: pre_existing.journal()?,
+                        #[cfg(windows)]
+                        generated_identity,
                     });
                     held_locks.push(lock);
                     continue;
@@ -1777,6 +1793,8 @@ impl CursorMcpLeaseRegistry {
                 remaining.push(JournalEntry {
                     path,
                     pre_existing: pre_existing.journal()?,
+                    #[cfg(windows)]
+                    generated_identity,
                 });
                 held_locks.push(lock);
                 continue;
@@ -1789,12 +1807,14 @@ impl CursorMcpLeaseRegistry {
                 #[cfg(windows)]
                 Some(windows_directory_identity(path.parent().unwrap_or(root))?),
                 #[cfg(windows)]
-                entry.generated_identity,
+                generated_identity,
             ) {
                 tracing::warn!(path = %path.display(), error = %error, "Cursor MCP lease recovery deferred");
                 remaining.push(JournalEntry {
                     path,
                     pre_existing: pre_existing.journal()?,
+                    #[cfg(windows)]
+                    generated_identity,
                 });
                 held_locks.push(lock);
             } else {
