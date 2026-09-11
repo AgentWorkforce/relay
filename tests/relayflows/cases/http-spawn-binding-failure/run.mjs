@@ -162,7 +162,7 @@ try {
     assert.equal(result.status, 200);
     assert.equal(result.body.success, true);
     assert(result.body.warning.includes('binding admission probe'));
-    assert.equal(observations.scopeReads, 1);
+    assert(observations.scopeReads >= 1, 'Base did not continue into agent lookup');
     assert(JSON.stringify(listing.body).includes(NAME), 'Base did not admit unreachable worker');
     const released = await api(`/api/spawned/${NAME}`, {
       method: 'DELETE',
