@@ -504,7 +504,9 @@ async function startRelaycastStub() {
       const rejected = revokedCredentials.has(token) || !activeCredentials.has(token);
       if (rejected) {
         response.writeHead(403, { 'content-type': 'application/json' });
-        response.end(JSON.stringify({ ok: false, error: { code: 'forbidden', message: 'credential revoked' } }));
+        response.end(
+          JSON.stringify({ ok: false, error: { code: 'forbidden', message: 'credential revoked' } })
+        );
         return;
       }
       payload = { ok: true, data: { token, status: 'active' } };
