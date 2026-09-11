@@ -301,7 +301,9 @@ impl BrokerRuntime {
                 .unwrap()
                 .await
                 .unwrap_or_else(|error| Err(format!("cleanup task failed: {error}")));
-            if result.is_ok() && pending.delete_identity {
+            // Both deletion and retained-identity release end this generation's
+            // custody, but only after its exact binding was acknowledged detached.
+            if result.is_ok() {
                 if let Some(registration) = &pending.registration {
                     if let Err(error) = registration.retire_after_cleanup(pending.generation) {
                         tracing::warn!(worker = %name, %error, "remote cleanup complete but durable reservation retirement failed");

@@ -959,10 +959,10 @@ impl BrokerRuntime {
                     return;
                 }
                 if let Some(pending) = workers.identity_cleanups.get_mut(&name) {
-                    if delete_identity
-                        && pending.delete_identity
-                        && expected_generation.as_deref()
+                    if delete_identity == pending.delete_identity
+                        && (expected_generation.as_deref()
                             == Some(pending.generation.to_string().as_str())
+                            || (!delete_identity && expected_generation.is_none()))
                     {
                         pending
                             .completions
@@ -982,6 +982,13 @@ impl BrokerRuntime {
                     .get(&name)
                     .map(|(_, http)| http.clone());
                 let relaycast_http = owned_http.as_ref().unwrap_or(relaycast_http);
+                let registered_release = workers
+                    .spawn_registrations
+                    .entries
+                    .get(&name)
+                    .is_some_and(|entry| !entry.retired());
+                let retained_registration =
+                    !delete_identity && registered_release && !workers.has_worker(&name);
                 let retired_owned = delete_identity
                     && !workers.has_worker(&name)
                     && expected_generation.as_deref().is_some_and(|expected| {
@@ -992,6 +999,12 @@ impl BrokerRuntime {
                     });
                 if let Some(expected) = expected_generation.as_deref() {
                     if !retired_owned
+                        && !(retained_registration
+                            && workers
+                                .spawn_registrations
+                                .entries
+                                .get(&name)
+                                .is_some_and(|entry| entry.generation().to_string() == expected))
                         && workers
                             .workers
                             .get(&name)
@@ -1025,13 +1038,13 @@ impl BrokerRuntime {
                 // auto-restart of intentionally released agents.
                 workers.supervisor.unregister(&name);
                 workers.metrics.on_release(&name);
-                match if retired_owned {
+                match if retired_owned || retained_registration {
                     Ok(())
                 } else {
                     workers.release(&name).await
                 } {
                     Ok(()) => {
-                        let fleet_deregistration_error = if delete_identity {
+                        let fleet_deregistration_error = if delete_identity || registered_release {
                             None
                         } else {
                             super::fleet::deregister_fleet_agent(
@@ -1049,7 +1062,7 @@ impl BrokerRuntime {
                                 "released worker fleet deregistration was not queued; retaining its identity for retry"
                             );
                         }
-                        let relaycast_release_error = if delete_identity {
+                        let relaycast_release_error = if delete_identity || registered_release {
                             None
                         } else {
                             relaycast_http
@@ -1090,7 +1103,10 @@ impl BrokerRuntime {
                         if paths.persist {
                             let _ = state.save(&paths.state);
                         }
-                        if !delete_identity && fleet_deregistration_error.is_none() {
+                        if !delete_identity
+                            && !registered_release
+                            && fleet_deregistration_error.is_none()
+                        {
                             super::fleet::prune_fleet_agent_state(
                                 fleet_control_tx,
                                 fleet_inventory,
@@ -1133,7 +1149,7 @@ impl BrokerRuntime {
                             Some("http_api_release"),
                         )
                         .await;
-                        if delete_identity {
+                        if delete_identity || registered_release {
                             super::identity_cleanup::schedule_identity_cleanup(
                                 workers,
                                 fleet_control_tx,
@@ -1141,7 +1157,7 @@ impl BrokerRuntime {
                                 fleet_inventory,
                                 relaycast_http,
                                 &name,
-                                true,
+                                delete_identity,
                                 Some(super::identity_cleanup::CleanupCompletion::Api(
                                     reply,
                                     Ok(json!({"success":true,"name":name})),

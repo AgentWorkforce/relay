@@ -719,3 +719,100 @@ async fn v3_checkpoint_failure_still_tears_down_owned_workers() {
     eprintln!("V3 checkpoint failure runtime_returned_error=true owned_child_survives={survives} fixture_pid={pid}");
     assert!(!survives,"checkpoint error returned before workers.shutdown_all(), leaving owned child alive");
 }
+
+
+#[tokio::test]
+async fn retained_identity_release_retires_custody_only_after_confirmed_deregistration() {
+    use httpmock::MockServer;
+    let (_dir, mut fixture) = review_fixture();
+    let server = MockServer::start();
+    let mutation = server.mock(|when, then| { when.any_request(); then.status(500); });
+    let http = RelaycastHttpClient::new(Some(server.base_url()), "workspace-test", "broker", "codex");
+    let name = WorkerName::new("retained-release");
+    let custody = fixture.runtime.workers.spawn_registrations.reserve(name.clone(), http.clone()).unwrap();
+    assert!(custody.begin_send("node", "instance", std::sync::Arc::new(std::sync::atomic::AtomicBool::new(true))));
+    custody.record_reply(&review_success(&custody));
+    let generation = custody.admit("test-only-original").unwrap();
+    fixture.runtime.workers.owned_spawn_generations.insert(name.clone(), (generation, http.clone()));
+    fixture.runtime.fleet_delivery_book.bind_authoritative_identity(name.as_str(), "original-id");
+    super::identity_cleanup::schedule_identity_cleanup(
+        &mut fixture.runtime.workers, &fixture.runtime.fleet_control_tx,
+        &fixture.runtime.fleet_delivery_book, &mut fixture.runtime.fleet_inventory,
+        &http, &name, false, None,
+    );
+    let acknowledgement = loop {
+        if let FleetControlCommand::DeregisterAgent { request, reply } = fixture.fleet_control_rx.recv().await.unwrap() {
+            assert_eq!(request.agent_id, "original-id");
+            break reply;
+        }
+    };
+    fixture.runtime.reconcile_identity_cleanups().await;
+    assert!(fixture.runtime.workers.spawn_registrations.blocked(&name));
+    acknowledgement.send(Err("connection lost before acknowledgement".into())).unwrap();
+    for _ in 0..20 { tokio::task::yield_now().await; fixture.runtime.reconcile_identity_cleanups().await; }
+    assert!(fixture.runtime.workers.spawn_registrations.blocked(&name));
+    assert!(fixture.runtime.workers.identity_cleanups.contains_key(&name));
+    fixture.runtime.workers.identity_cleanups.get_mut(&name).unwrap().retry_at = Instant::now();
+    fixture.runtime.reconcile_identity_cleanups().await;
+    loop {
+        if let FleetControlCommand::DeregisterAgent { request, reply } = fixture.fleet_control_rx.recv().await.unwrap() {
+            assert_eq!(request.agent_id, "original-id"); reply.send(Ok(())).unwrap(); break;
+        }
+    }
+    tokio::time::timeout(Duration::from_secs(1), async {
+        while fixture.runtime.workers.identity_cleanups.contains_key(&name) {
+            fixture.runtime.reconcile_identity_cleanups().await; tokio::task::yield_now().await;
+        }
+    }).await.unwrap();
+    assert!(!fixture.runtime.workers.spawn_registrations.blocked(&name), "acknowledged non-deleting release must permit a new generation");
+    assert!(!fixture.runtime.workers.owned_spawn_generations.contains_key(&name));
+    assert!(fixture.runtime.workers.completed_owned_releases.is_empty(), "retaining an identity is not deletion");
+    mutation.assert_hits(0);
+}
+
+
+#[tokio::test]
+async fn retained_http_release_waits_for_ack_and_rejects_stale_generation() {
+    use crate::listen_api::ListenApiRequest;
+    use httpmock::MockServer;
+    let (_dir, mut fixture) = review_fixture();
+    let server = MockServer::start();
+    let mutation = server.mock(|when, then| { when.any_request(); then.status(500); });
+    let http = RelaycastHttpClient::new(Some(server.base_url()), "workspace-test", "broker", "codex");
+    let name = WorkerName::new("retained-http");
+    let custody = fixture.runtime.workers.spawn_registrations.reserve(name.clone(), http.clone()).unwrap();
+    assert!(custody.begin_send("node", "instance", std::sync::Arc::new(std::sync::atomic::AtomicBool::new(true))));
+    custody.record_reply(&review_success(&custody));
+    let generation = custody.admit("test-only-original").unwrap();
+    fixture.runtime.workers.owned_spawn_generations.insert(name.clone(), (generation, http));
+    fixture.runtime.fleet_delivery_book.bind_authoritative_identity(name.as_str(), "original-id");
+    let (reply, result) = tokio::sync::oneshot::channel();
+    fixture.runtime.handle_api_request(ListenApiRequest::Release {
+        name: name.clone(), reason: None, expected_generation: Some(Uuid::new_v4().to_string()),
+        delete_identity: false, reply,
+    }).await;
+    assert!(result.await.unwrap().unwrap_err().contains("generation changed"));
+    assert!(fixture.fleet_control_rx.try_recv().is_err());
+    let (reply, mut result) = tokio::sync::oneshot::channel();
+    fixture.runtime.handle_api_request(ListenApiRequest::Release {
+        name: name.clone(), reason: None, expected_generation: Some(generation.to_string()),
+        delete_identity: false, reply,
+    }).await;
+    assert!(matches!(result.try_recv(), Err(tokio::sync::oneshot::error::TryRecvError::Empty)));
+    assert!(fixture.runtime.workers.spawn_registrations.blocked(&name));
+    loop {
+        if let FleetControlCommand::DeregisterAgent { request, reply } = fixture.fleet_control_rx.recv().await.unwrap() {
+            assert_eq!(request.agent_id, "original-id"); reply.send(Ok(())).unwrap(); break;
+        }
+    }
+    tokio::time::timeout(Duration::from_secs(1), async {
+        loop {
+            fixture.runtime.reconcile_identity_cleanups().await;
+            if let Ok(response) = result.try_recv() { assert_eq!(response.unwrap()["success"], true); break; }
+            tokio::task::yield_now().await;
+        }
+    }).await.unwrap();
+    assert!(!fixture.runtime.workers.spawn_registrations.blocked(&name));
+    assert!(fixture.runtime.workers.completed_owned_releases.is_empty());
+    mutation.assert_hits(0);
+}

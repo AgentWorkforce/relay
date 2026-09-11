@@ -1535,8 +1535,14 @@ impl BrokerRuntime {
 
         self.pty_observability.remove(&name);
 
+        let registered_release = self
+            .workers
+            .spawn_registrations
+            .entries
+            .get(&name)
+            .is_some_and(|entry| !entry.retired());
         let mut deregistration_failed = false;
-        if outcome == super::relaycast_events::ReleaseOutcome::Released {
+        if outcome == super::relaycast_events::ReleaseOutcome::Released && !registered_release {
             match deregister_fleet_agent(&self.fleet_control_tx, &self.fleet_delivery_book, &name)
                 .await
             {
@@ -1570,6 +1576,29 @@ impl BrokerRuntime {
         }
         self.publish_fleet_load(true).await;
         match outcome {
+            super::relaycast_events::ReleaseOutcome::Released if registered_release => {
+                // Keep the original identity, but do not acknowledge release or
+                // allow name reuse until this generation's binding is detached.
+                super::identity_cleanup::schedule_identity_cleanup(
+                    &mut self.workers,
+                    &self.fleet_control_tx,
+                    &self.fleet_delivery_book,
+                    &mut self.fleet_inventory,
+                    &workspace_state.http_client,
+                    &name,
+                    false,
+                    Some(super::identity_cleanup::CleanupCompletion::Fleet(
+                        ActionResult {
+                            v: FLEET_WIRE_VERSION,
+                            id: None,
+                            invocation_id: invoke.invocation_id.clone(),
+                            result: ActionResultPayload::Output(ActionResultOutput {
+                                output: json!({ "released": true, "name": name.as_str() }),
+                            }),
+                        },
+                    )),
+                );
+            }
             super::relaycast_events::ReleaseOutcome::Released if deregistration_failed => {
                 self.reply_action_error(&invoke.invocation_id, "release_deregistration_failed")
                     .await;
