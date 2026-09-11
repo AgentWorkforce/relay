@@ -206,12 +206,19 @@ fn validate_windows_cursor_identity(
 }
 
 #[cfg(windows)]
-fn validate_windows_restore_path(lock: &LeaseLock, path: &Path) -> io::Result<()> {
+fn validate_windows_restore_path(
+    lock: &LeaseLock,
+    path: &Path,
+    expected: Option<(u32, u64)>,
+) -> io::Result<()> {
     lock.validate_root()?;
     let cursor = path
         .parent()
         .ok_or_else(|| invalid_path("Cursor MCP path has no parent"))?;
-    if cursor != lock.root.join(".cursor") || windows_directory_identity(cursor).is_err() {
+    if cursor != lock.root.join(".cursor")
+        || expected.is_some_and(|identity| windows_directory_identity(cursor) != Ok(identity))
+        || windows_directory_identity(cursor).is_err()
+    {
         return Err(io::Error::new(
             io::ErrorKind::WouldBlock,
             "Cursor .cursor directory was replaced during cleanup",
@@ -331,11 +338,22 @@ fn protect_journal_bytes(bytes: &[u8]) -> io::Result<Vec<u8>> {
     let result =
         unsafe { std::slice::from_raw_parts(output.pb_data, output.cb_data as usize) }.to_vec();
     unsafe { LocalFree(output.pb_data as *mut std::ffi::c_void) };
-    Ok(result)
+    let mut versioned = b"relay-dpapi-v1:".to_vec();
+    versioned.extend(result);
+    Ok(versioned)
 }
 
 #[cfg(windows)]
 fn unprotect_journal_bytes(bytes: &[u8]) -> io::Result<Vec<u8>> {
+    const PREFIX: &[u8] = b"relay-dpapi-v1:";
+    if !bytes.starts_with(PREFIX) {
+        // Journals written before Windows encryption used ordinary base64
+        // bytes. Treat those as a supported legacy format and immediately
+        // rewrite them through the versioned DPAPI path on the next persist;
+        // never attempt DPAPI on an unversioned payload.
+        return Ok(bytes.to_vec());
+    }
+    let bytes = &bytes[PREFIX.len()..];
     let input = WindowsDataBlob {
         cb_data: bytes.len().try_into().map_err(|_| {
             io::Error::new(
@@ -717,12 +735,18 @@ pub(crate) fn write_credential_file(path: &Path, contents: &[u8]) -> io::Result<
 fn secure_windows_file(path: &Path) -> io::Result<()> {
     use std::process::Command;
 
+    let system_root = std::env::var_os("SystemRoot")
+        .ok_or_else(|| io::Error::new(io::ErrorKind::PermissionDenied, "SystemRoot is not set"))?;
+    let system32 = PathBuf::from(system_root).join("System32");
+    let whoami_path = system32.join("whoami.exe");
+    let icacls_path = system32.join("icacls.exe");
+
     // `icacls` is part of supported Windows installations. Resolve the SID
     // rather than trusting a username, then remove inherited permissions and
     // grant access only to the current user and SYSTEM. Fail closed if either
     // utility is unavailable; an unprotected generated config must not be
     // published because it may contain restored user configuration.
-    let whoami = Command::new("whoami")
+    let whoami = Command::new(whoami_path)
         .args(["/user", "/fo", "csv", "/nh"])
         .output()?;
     if !whoami.status.success() {
@@ -745,7 +769,7 @@ fn secure_windows_file(path: &Path) -> io::Result<()> {
                 "whoami did not return a Windows user SID",
             )
         })?;
-    let status = Command::new("icacls")
+    let status = Command::new(icacls_path)
         .arg(path)
         .args(["/inheritance:r", "/grant:r"])
         .arg(format!("{sid}:F"))
@@ -1074,7 +1098,14 @@ impl CursorMcpLeaseRegistry {
                 mode: *mode,
             },
         };
-        Self::restore(path, &pre_existing, &state.lock, state.cursor_dir.as_ref())?;
+        Self::restore(
+            path,
+            &pre_existing,
+            &state.lock,
+            state.cursor_dir.as_ref(),
+            #[cfg(windows)]
+            Some(state.cursor_identity),
+        )?;
         let state = self.leases.remove(path).expect("lease checked above");
         self.path_by_worker.remove(worker);
         if let Err(error) = self.persist_journal() {
@@ -1094,6 +1125,7 @@ impl CursorMcpLeaseRegistry {
         pre_existing: &PreExisting,
         lock: &LeaseLock,
         pinned_cursor: Option<&fs::File>,
+        #[cfg(windows)] expected_cursor_identity: Option<(u32, u64)>,
     ) -> io::Result<()> {
         #[cfg(unix)]
         {
@@ -1132,7 +1164,7 @@ impl CursorMcpLeaseRegistry {
         #[cfg(not(unix))]
         {
             #[cfg(windows)]
-            validate_windows_restore_path(lock, _path)?;
+            validate_windows_restore_path(lock, _path, expected_cursor_identity)?;
             match pre_existing {
                 PreExisting::Absent { created_dir } => {
                     match fs::symlink_metadata(_path) {
@@ -1169,7 +1201,7 @@ impl CursorMcpLeaseRegistry {
                 PreExisting::Present { contents, mode } => restore_file(_path, contents, *mode)?,
             }
             #[cfg(windows)]
-            validate_windows_restore_path(lock, _path)?;
+            validate_windows_restore_path(lock, _path, expected_cursor_identity)?;
             Ok(())
         }
     }
@@ -1330,7 +1362,14 @@ impl CursorMcpLeaseRegistry {
                 held_locks.push(lock);
                 continue;
             }
-            if let Err(error) = Self::restore(&path, &pre_existing, &lock, cursor_dir.as_ref()) {
+            if let Err(error) = Self::restore(
+                &path,
+                &pre_existing,
+                &lock,
+                cursor_dir.as_ref(),
+                #[cfg(windows)]
+                Some(windows_directory_identity(path.parent().unwrap_or(root))?),
+            ) {
                 tracing::warn!(path = %path.display(), error = %error, "Cursor MCP lease recovery deferred");
                 remaining.push(JournalEntry {
                     path,

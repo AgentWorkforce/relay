@@ -34,15 +34,41 @@ const stateDir = path.join(workDir, 'state');
 const logsDir = path.join(workDir, 'logs');
 const cwd = path.join(workDir, 'cwd');
 const fakeBinDir = path.join(workDir, 'fake-bin');
+const fakeMcp = path.join(fakeBinDir, process.platform === 'win32' ? 'agent-relay-mcp.cmd' : 'agent-relay-mcp');
 await mkdir(stateDir, { recursive: true });
 await mkdir(logsDir, { recursive: true });
 await mkdir(path.join(cwd, '.cursor'), { recursive: true });
 await mkdir(fakeBinDir, { recursive: true });
 const fakeCursor = path.join(fakeBinDir, process.platform === 'win32' ? 'cursor.cmd' : 'cursor');
+const fakeAgent = path.join(fakeBinDir, process.platform === 'win32' ? 'agent.cmd' : 'agent');
+const fakeCursorAgent = path.join(fakeBinDir, process.platform === 'win32' ? 'cursor-agent.cmd' : 'cursor-agent');
 if (process.platform === 'win32') {
-  await writeFile(fakeCursor, '@echo off\r\nping 127.0.0.1 -n 601 >NUL\r\n');
+  await writeFile(fakeCursor, '@echo off\r\necho -^>pty:ready\r\nping 127.0.0.1 -n 601 >NUL\r\n');
+  await writeFile(fakeAgent, '@echo off\r\necho -^>pty:ready\r\nping 127.0.0.1 -n 601 >NUL\r\n');
+  await writeFile(fakeCursorAgent, '@echo off\r\necho -^>pty:ready\r\nping 127.0.0.1 -n 601 >NUL\r\n');
 } else {
-  await writeFile(fakeCursor, '#!/bin/sh\nexec sleep 600\n', { mode: 0o755 });
+  await writeFile(fakeCursor, '#!/bin/sh\nprintf \'->pty:ready\\n\'\nexec sleep 600\n', { mode: 0o755 });
+  await writeFile(fakeAgent, '#!/bin/sh\nprintf \'->pty:ready\\n\'\nexec sleep 600\n', { mode: 0o755 });
+  await writeFile(fakeCursorAgent, '#!/bin/sh\nprintf \'->pty:ready\\n\'\nexec sleep 600\n', { mode: 0o755 });
+}
+const fakeMcpServer = path.join(fakeBinDir, 'fake-agent-relay-mcp.mjs');
+await writeFile(
+  fakeMcpServer,
+  `import readline from 'node:readline';\n` +
+    `const rl = readline.createInterface({ input: process.stdin });\n` +
+    `rl.on('line', (line) => {\n` +
+    `  let request; try { request = JSON.parse(line); } catch { return; }\n` +
+    `  if (request.id === undefined) return;\n` +
+    `  const result = request.method === 'initialize'\n` +
+    `    ? { protocolVersion: '2024-11-05', capabilities: { tools: {} }, serverInfo: { name: 'fake-agent-relay', version: '1.0.0' } }\n` +
+    `    : request.method === 'tools/list' ? { tools: ['send_dm', 'post_message', 'check_inbox'].map((name) => ({ name, description: 'deterministic proof stub', inputSchema: { type: 'object' } })) } : {};\n` +
+    `  process.stdout.write(JSON.stringify({ jsonrpc: '2.0', id: request.id, result }) + '\\n');\n` +
+    `});\n`,
+);
+if (process.platform === 'win32') {
+  await writeFile(fakeMcp, `@echo off\r\nnode "%~dp0fake-agent-relay-mcp.mjs"\r\n`);
+} else {
+  await writeFile(fakeMcp, `#!/bin/sh\nexec "${process.execPath}" "${fakeMcpServer}"\n`, { mode: 0o755 });
 }
 
 const original = Buffer.from('{"mcpServers":{"filesystem":{}}}\n', 'utf8');
@@ -52,6 +78,7 @@ await writeFile(cursorPath, original);
 const relaycast = await startRelaycastStub();
 const brokerEnv = {
   PATH: `${fakeBinDir}${path.delimiter}${process.env.PATH ?? ''}`,
+  AGENT_RELAY_MCP_COMMAND: fakeMcp,
   HOME: workDir,
   TMPDIR: workDir,
   NO_COLOR: '1',
@@ -123,7 +150,10 @@ try {
   const generated = await waitFor(async () => {
     const contents = await readFile(cursorPath, 'utf8').catch(() => null);
     if (!contents) return null;
-    return contents.includes('${env:RELAY_API_KEY}') ? contents : null;
+    const expected = arm === 'base'
+      ? [relaycast.workspaceKey, relaycast.nodeToken].some((secret) => contents.includes(secret))
+      : contents.includes('${env:RELAY_API_KEY}');
+    return expected ? contents : null;
   }, 20_000, 'Cursor MCP file to be generated');
 
   const leakedCredential = [relaycast.workspaceKey, relaycast.nodeToken].some((secret) =>
