@@ -1090,17 +1090,35 @@ fn write_credential_file_with_identity(
 
 #[cfg(windows)]
 fn secure_windows_file(path: &Path) -> io::Result<()> {
+    use std::mem::ManuallyDrop;
+    use std::os::windows::ffi::OsStrExt;
     use std::process::Command;
+
+    #[link(name = "Advapi32")]
+    unsafe extern "system" {
+        fn ConvertStringSidToSidW(string_sid: *const u16, sid: *mut *mut u8) -> i32;
+        fn SetNamedSecurityInfoW(
+            name: *const u16,
+            object_type: u32,
+            security_info: u32,
+            owner: *mut u8,
+            group: *mut u8,
+            dacl: *mut u8,
+            sacl: *mut u8,
+        ) -> u32;
+    }
+
+    const SE_FILE_OBJECT: u32 = 1;
+    const DACL_SECURITY_INFORMATION: u32 = 0x0000_0004;
+    const ACCESS_ALLOWED_ACE_TYPE: u8 = 0;
+    const FILE_GENERIC_ALL: u32 = 0x001F_01FF;
 
     let system32 = windows_system_directory()?;
     let whoami_path = system32.join("whoami.exe");
-    let icacls_path = system32.join("icacls.exe");
 
-    // `icacls` is part of supported Windows installations.  Resolve the SID
-    // rather than trusting a username, then remove inherited permissions and
-    // grant access only to the current user and SYSTEM.  Fail closed if
-    // either utility is unavailable; an unprotected generated config must
-    // not be published because it may contain restored user configuration.
+    // Resolve the SID rather than trusting a username.  Fail closed if the
+    // utility is unavailable; an unprotected generated config must not be
+    // published because it may contain restored user configuration.
     let whoami = Command::new(&whoami_path)
         .args(["/user", "/fo", "csv", "/nh"])
         .output()?;
@@ -1137,54 +1155,155 @@ fn secure_windows_file(path: &Path) -> io::Result<()> {
                 "whoami did not return a Windows user SID",
             )
         })?;
-    // Step 1 – Grant the current user and SYSTEM full control.  This is the
-    // critical security property: without it anyone on the box could read the
-    // credential file.
-    let grant_out = Command::new(&icacls_path)
-        .arg(path)
-        .args(["/grant:r", &format!("{sid}:F"), "SYSTEM:F"])
-        .output()?;
-    let grant_stdout = String::from_utf8_lossy(&grant_out.stdout).into_owned();
-    let grant_stderr = String::from_utf8_lossy(&grant_out.stderr).into_owned();
-    if !grant_out.status.success() {
+
+    // Convert the SID string to a binary SID via Win32 API.  icacls cannot
+    // accept raw SID strings on some Windows Server configurations (error
+    // 1332 – ERROR_NONE_MAPPED), so we use the native API directly.
+    let mut wide_sid: Vec<u16> = sid.encode_utf16().chain(std::iter::once(0)).collect();
+    let mut psid: *mut u8 = std::ptr::null_mut();
+    let ok = unsafe { ConvertStringSidToSidW(wide_sid.as_ptr(), &mut psid) };
+    if ok == 0 || psid.is_null() {
         tracing::error!(
-            icacls = %icacls_path.display(),
+            sid = %sid,
+            last_os_error = io::Error::last_os_error(),
+            "ConvertStringSidToSidW failed for Cursor config ACL"
+        );
+        return Err(io::Error::new(
+            io::ErrorKind::PermissionDenied,
+            format!("unable to convert SID string '{sid}' for Windows ACL"),
+        ));
+    }
+    // Prevent Rust from dropping the SID before SetNamedSecurityInfoW uses it.
+    // The pointer is consumed by the ACE we build; SetNamedSecurityInfoW reads
+    // the DACL synchronously, so the SID must remain valid for this scope.
+    let _sid_guard = ManuallyDrop::new(SidGuard(psid));
+
+    // Build a minimal DACL: [ACL header][ACE(user)][ACE(SYSTEM)]
+    // ACCESS_ALLOWED_ACE: AceType(1) + AceFlags(1) + AceSize(2) + Mask(4) + Sid
+    let sid_user_len = (8 + 28) as usize; // SID revision(1)+sub_count(1)+authority(6)+5*sub_auth(20)=28
+    let sid_system_len = (8 + 12) as usize; // S-1-5-18: revision(1)+sub_count(1)+authority(6)+1*sub_auth(4)=12
+    let ace_user_size = 8 + sid_user_len; // ACE header(8) + SID
+    let ace_system_size = 8 + sid_system_len;
+    let acl_size = 8 + ace_user_size + ace_system_size;
+    let mut acl_buf: Vec<u8> = vec![0u8; acl_size];
+
+    // ACL header
+    acl_buf[0] = 2; // AclRevision
+    acl_buf[1] = 0; // Sbz1
+    let total = (acl_size as u16).to_le_bytes();
+    acl_buf[2] = total[0];
+    acl_buf[3] = total[1];
+    let count = 2u16.to_le_bytes();
+    acl_buf[4] = count[0];
+    acl_buf[5] = count[1];
+    acl_buf[6] = 0; // Sbz2
+    acl_buf[7] = 0;
+
+    // ACE for the current user
+    let mut offset = 8usize;
+    let ace_user_size_u16 = (ace_user_size as u16).to_le_bytes();
+    acl_buf[offset] = ACCESS_ALLOWED_ACE_TYPE;
+    acl_buf[offset + 1] = 0; // No inheritance
+    acl_buf[offset + 2] = ace_user_size_u16[0];
+    acl_buf[offset + 3] = ace_user_size_u16[1];
+    let mask_user = FILE_GENERIC_ALL.to_le_bytes();
+    acl_buf[offset + 4..offset + 8].copy_from_slice(&mask_user);
+    unsafe {
+        let ace_sid_ptr = acl_buf.as_mut_ptr().add(offset + 8);
+        std::ptr::copy_nonoverlapping(psid, ace_sid_ptr, sid_user_len);
+    }
+    offset += ace_user_size;
+
+    // ACE for SYSTEM (S-1-5-18)
+    let ace_sys_size_u16 = (ace_system_size as u16).to_le_bytes();
+    acl_buf[offset] = ACCESS_ALLOWED_ACE_TYPE;
+    acl_buf[offset + 1] = 0;
+    acl_buf[offset + 2] = ace_sys_size_u16[0];
+    acl_buf[offset + 3] = ace_sys_size_u16[1];
+    let mask_sys = FILE_GENERIC_ALL.to_le_bytes();
+    acl_buf[offset + 4..offset + 8].copy_from_slice(&mask_sys);
+    // S-1-5-18 binary: Revision(1)=1, SubAuthorityCount(1)=1, IdentifierAuthority(6)={0,0,0,0,0,5}, SubAuthority(4)=18
+    let system_sid: [u8; 12] = [1, 1, 0, 0, 0, 0, 0, 5, 18, 0, 0, 0];
+    unsafe {
+        let ace_sid_ptr = acl_buf.as_mut_ptr().add(offset + 8);
+        std::ptr::copy_nonoverlapping(system_sid.as_ptr(), ace_sid_ptr, sid_system_len);
+    }
+
+    // Build an absolute security descriptor with the DACL.
+    // Layout: Revision(1) + Sbz1(1) + Control(2) + Owner ptr + Group ptr +
+    //         Sacl ptr + Dacl ptr.  Pointer size is 4 on 32-bit, 8 on x64.
+    let ptr_size = std::mem::size_of::<usize>();
+    let sd_size = 4 + 4 * ptr_size;
+    let mut sd: Vec<u8> = vec![0u8; sd_size];
+    sd[0] = 1; // Revision
+    sd[1] = 0; // Sbz1
+    sd[2] = 0x80; // Control low byte: SE_DACL_PRESENT
+    sd[3] = 0; // Control high byte
+               // Owner (bytes 4..4+ptr_size) – leave null (not needed for DACL-only set)
+               // Group (bytes 4+ptr_size..4+2*ptr_size) – leave null
+               // Sacl  (bytes 4+2*ptr_size..4+3*ptr_size) – leave null
+               // Dacl  (bytes 4+3*ptr_size..4+4*ptr_size) – set to acl_buf pointer
+    let dacl_offset = 4 + 3 * ptr_size;
+    let acl_ptr = acl_buf.as_ptr();
+    unsafe {
+        let field = sd.as_mut_ptr().add(dacl_offset) as *mut *const u8;
+        std::ptr::write(field, acl_ptr);
+    }
+
+    let wide_path: Vec<u16> = path
+        .as_os_str()
+        .encode_wide()
+        .chain(std::iter::once(0))
+        .collect();
+
+    let status = unsafe {
+        SetNamedSecurityInfoW(
+            wide_path.as_ptr(),
+            SE_FILE_OBJECT,
+            DACL_SECURITY_INFORMATION,
+            std::ptr::null_mut(),
+            std::ptr::null_mut(),
+            sd.as_mut_ptr().add(4), // Pass body (skip 4-byte header) as absolute SD
+            std::ptr::null_mut(),
+        )
+    };
+
+    if status != 0 {
+        tracing::error!(
             path = %path.display(),
             sid = %sid,
-            exit = ?grant_out.status,
-            stdout = %grant_stdout,
-            stderr = %grant_stderr,
-            "icacls /grant:r failed to secure generated Cursor config"
+            status = status,
+            last_os_error = io::Error::last_os_error(),
+            "SetNamedSecurityInfoW failed to secure generated Cursor config"
         );
         return Err(io::Error::new(
             io::ErrorKind::PermissionDenied,
             format!(
                 "unable to apply owner-only Windows ACL to generated Cursor config: \
-                 icacls exit {:?}, stderr: {}",
-                grant_out.status,
-                grant_stderr.trim(),
+                 SetNamedSecurityInfoW returned {status}"
             ),
         ));
     }
-    // Step 2 – Strip inherited ACEs (best-effort).  On locked-down hosts
-    // (e.g. GitHub Actions runners) /inheritance:r may fail because the
-    // parent DACL denies the modification, but the explicit grant above
-    // already enforces owner-only access.
-    let inh_out = Command::new(&icacls_path)
-        .arg(path)
-        .args(["/inheritance:r"])
-        .output();
-    if let Ok(result) = inh_out {
-        if !result.status.success() {
-            tracing::warn!(
-                path = %path.display(),
-                exit = ?result.status,
-                stderr = %String::from_utf8_lossy(&result.stderr),
-                "icacls /inheritance:r failed; owner-only ACL still enforced via explicit grant"
-            );
+    Ok(())
+}
+
+/// RAII guard that calls `LocalFree` on a Win32-allocated SID pointer.
+#[cfg(windows)]
+struct SidGuard(*mut u8);
+
+#[cfg(windows)]
+impl Drop for SidGuard {
+    fn drop(&mut self) {
+        if !self.0.is_null() {
+            unsafe {
+                #[link(name = "Kernel32")]
+                unsafe extern "system" {
+                    fn LocalFree(ptr: *mut u8) -> *mut u8;
+                }
+                LocalFree(self.0);
+            }
         }
     }
-    Ok(())
 }
 
 #[cfg(windows)]
