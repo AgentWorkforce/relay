@@ -4,6 +4,12 @@ import os from 'node:os';
 import nodePath from 'node:path';
 import { afterAll, beforeEach, describe, expect, it, vi } from 'vitest';
 
+import {
+  brokerIdentityPath,
+  persistBrokerIdentity,
+  readBrokerIdentities,
+  readBrokerProcessIdentity,
+} from '../lib/broker-process-identity.js';
 import { readProjectWorkspaceKey, readProjectWorkspaceSession } from '../lib/project-workspace-key.js';
 
 const sdkStatusClient = {
@@ -112,6 +118,7 @@ function createRelayMock(overrides: Partial<CoreRelay> = {}): CoreRelay {
     spawn: vi.fn(async () => undefined),
     getStatus: vi.fn(async () => ({ agent_count: 0, pending_delivery_count: 0 })),
     shutdown: vi.fn(async () => undefined),
+    brokerPid: 222,
     workspaceKey: 'rk_live_defaultkey01',
     ...overrides,
   };
@@ -121,6 +128,8 @@ function createFsMock(initialFiles: Record<string, string> = {}): CoreFileSystem
   const files = new Map(Object.entries(initialFiles));
 
   return {
+    realpathSync: vi.fn((p: string) => p),
+    statSync: vi.fn(() => ({ dev: 256n, ino: 9876n, ctimeNs: 1000000001n, mtimeNs: 1000000001n })),
     existsSync: vi.fn((filePath: string) => files.has(filePath)),
     readFileSync: vi.fn((filePath: string) => files.get(filePath) ?? ''),
     writeFileSync: vi.fn((filePath: string, data: string) => {
@@ -134,7 +143,11 @@ function createFsMock(initialFiles: Record<string, string> = {}): CoreFileSystem
     unlinkSync: vi.fn((filePath: string) => {
       files.delete(filePath);
     }),
-    readdirSync: vi.fn(() => []),
+    readdirSync: vi.fn((directory: string) =>
+      [...files.keys()]
+        .filter((file) => nodePath.dirname(file) === directory)
+        .map((file) => nodePath.basename(file))
+    ),
     mkdirSync: vi.fn(() => undefined),
     rmSync: vi.fn((filePath: string) => {
       files.delete(filePath);
@@ -161,6 +174,7 @@ function createHarness(options?: {
   cliScript?: string;
   argv?: string[];
   checkForUpdatesResult?: Awaited<ReturnType<CoreDependencies['checkForUpdates']>>;
+  configureDependencies?: (deps: CoreDependencies) => void;
 }) {
   const projectRoot = '/tmp/project';
   const dataDir = '/tmp/project/.agentworkforce/relay';
@@ -191,7 +205,24 @@ function createHarness(options?: {
     createRelay: options?.createRelay ?? vi.fn(() => relay),
     spawnProcess:
       options?.spawnImpl ?? (vi.fn(() => spawnedProcess) as unknown as CoreDependencies['spawnProcess']),
-    execCommand: options?.execCommand ?? vi.fn(async () => ({ stdout: '', stderr: '' })),
+    execCommand:
+      options?.execCommand ??
+      vi.fn(async (command) => {
+        const pid = relay.brokerPid;
+        const name =
+          vi.mocked(deps.createRelay).mock.calls.at(-1)?.[2]?.trim() ||
+          deps.env.AGENT_RELAY_BROKER_NAME?.trim() ||
+          'project';
+        const state = deps.env.AGENT_RELAY_STATE_DIR || dataDir;
+        const lock = `${state}/broker-${name.replace(/[^\p{Alphabetic}\p{Number}-]/gu, '-')}.lock`;
+        if (command === `LC_ALL=C TZ=UTC ps -p ${pid} -o lstart=`)
+          return { stdout: 'Thu Sep 10 18:00:00 2026\n', stderr: '' };
+        if (command === `lsof -nP -a -p ${pid} -d txt -FfDi`)
+          return { stdout: `p${pid}\nftxt\nD0x100\ni1234\n`, stderr: '' };
+        if (command === `lsof -nP -a -p ${pid} -FfnDi`)
+          return { stdout: `p${pid}\nf10\nD0x100\ni9876\nn${lock}\n`, stderr: '' };
+        return { stdout: '', stderr: '' };
+      }),
     killProcess: options?.killImpl ?? vi.fn(() => undefined),
     fs,
     generateAgentName: vi.fn(() => 'AutoAgent'),
@@ -215,6 +246,7 @@ function createHarness(options?: {
     exit,
   };
 
+  options?.configureDependencies?.(deps);
   const program = new Command();
   registerCoreCommands(program, deps);
 
@@ -277,7 +309,7 @@ describe('registerCoreCommands', () => {
     const exitCode = await runCommand(program, ['up', '--verbose']);
 
     expect(exitCode).toBeUndefined();
-    expect(deps.createRelay).toHaveBeenCalledWith('/tmp/project', 3889, undefined, true);
+    expect(deps.createRelay).toHaveBeenCalledWith('/tmp/project', 3889, 'project', true);
     expect(deps.log).toHaveBeenCalledWith(
       expect.stringMatching(/^\[verbose\] Resolving a free API port starting near/)
     );
@@ -408,7 +440,7 @@ describe('registerCoreCommands', () => {
     // Port probing happens before createRelay — only one broker is spawned
     expect(deps.createRelay).toHaveBeenCalledTimes(1);
     // API port = base port (3888) + 1 = 3889
-    expect(deps.createRelay).toHaveBeenCalledWith('/tmp/project', 3889, undefined, undefined);
+    expect(deps.createRelay).toHaveBeenCalledWith('/tmp/project', 3889, 'project', undefined);
     expect(relay.getStatus).toHaveBeenCalledTimes(1);
   });
 
@@ -423,7 +455,7 @@ describe('registerCoreCommands', () => {
 
     expect(exitCode).toBeUndefined();
     expect(deps.isPortInUse).not.toHaveBeenCalled();
-    expect(deps.createRelay).toHaveBeenCalledWith('/tmp/project', 0, undefined, undefined);
+    expect(deps.createRelay).toHaveBeenCalledWith('/tmp/project', 0, 'project', undefined);
     expect(deps.log).toHaveBeenCalledWith('Relay API: http://localhost:43123');
   });
 
@@ -485,7 +517,7 @@ describe('registerCoreCommands', () => {
 
     expect(exitCode).toBeUndefined();
     expect(deps.createRelay).toHaveBeenCalledTimes(1);
-    expect(deps.createRelay).toHaveBeenCalledWith('/tmp/project', 3889, undefined, undefined);
+    expect(deps.createRelay).toHaveBeenCalledWith('/tmp/project', 3889, 'project', undefined);
     expect(relay.getStatus).toHaveBeenCalledTimes(1);
   });
 
@@ -507,6 +539,7 @@ describe('registerCoreCommands', () => {
       killImpl,
       nowImpl: vi.fn(() => now),
       sleepImpl,
+      configureDependencies: enableBackgroundIdentity,
     });
 
     const exitCode = await runCommand(program, ['up', '--background']);
@@ -549,6 +582,7 @@ describe('registerCoreCommands', () => {
       killImpl,
       nowImpl: vi.fn(() => now),
       sleepImpl,
+      configureDependencies: (deps) => enableBackgroundIdentity(deps, 'relayfile-dev', stateDir, 5151),
     });
     deps.argv = [
       'node',
@@ -666,6 +700,7 @@ describe('registerCoreCommands', () => {
       nowImpl: vi.fn(() => now),
       sleepImpl,
       execPath: '/tmp/agent-relay-darwin-arm64',
+      configureDependencies: (deps) => enableBackgroundIdentity(deps, 'sf-mini'),
       cliScript: '/$bunfs/root/agent-relay-darwin-arm64',
       argv: [
         'bun',
@@ -739,7 +774,8 @@ describe('registerCoreCommands', () => {
     expect(deps.error).toHaveBeenCalledWith(
       'Cloud enrollment identity mismatch: expected node name "sf-mini", got "project".'
     );
-    expect(killImpl).toHaveBeenCalledWith(4242, 'SIGTERM');
+    expect(killImpl).not.toHaveBeenCalledWith(4242, 'SIGTERM');
+    expect(fs.existsSync('/tmp/project/.agentworkforce/relay/connection.json')).toBe(true);
     expect(deps.log).not.toHaveBeenCalledWith('Broker started.');
   });
 
@@ -775,7 +811,8 @@ describe('registerCoreCommands', () => {
     expect(deps.error).toHaveBeenCalledWith(
       'Cloud enrollment credentials are incomplete: RELAY_NODE_ID is required when RELAY_NODE_TOKEN is set.'
     );
-    expect(killImpl).toHaveBeenCalledWith(4242, 'SIGTERM');
+    expect(killImpl).not.toHaveBeenCalledWith(4242, 'SIGTERM');
+    expect(fs.existsSync('/tmp/project/.agentworkforce/relay/connection.json')).toBe(true);
     expect(deps.log).not.toHaveBeenCalledWith('Broker started.');
   });
 
@@ -824,7 +861,7 @@ describe('registerCoreCommands', () => {
     expect(exitCode).toBe(1);
     expect(deps.error).toHaveBeenCalledWith(
       'Failed to stop broker process after Cloud enrollment startup failed (pid: 4242). ' +
-        'Run `agent-relay down --force` to retry cleanup.'
+        'Verify process ownership before stopping it manually; inspect identities in /tmp/project/.agentworkforce/relay.'
     );
     expect(fs.existsSync(connectionPath)).toBe(true);
     expect(deps.log).not.toHaveBeenCalledWith('Broker started.');
@@ -980,119 +1017,906 @@ describe('registerCoreCommands', () => {
     }
   );
 
-  it('down --force only kills actual orphaned broker executables for the project', async () => {
-    const runningPids = new Set([222, 444, 666]);
-    const execCommand = vi.fn(async (command: string) => {
-      if (command === 'ps aux') {
-        return {
-          stdout: [
-            'USER PID %CPU %MEM VSZ RSS TT STAT STARTED TIME COMMAND',
-            'khaliqgant 111 0.0 0.0 1 1 ?? S 1:00PM 0:00.01 /bin/zsh -lc BROKER=/tmp/project/target/release/agent-relay-broker node /tmp/agent-relay.js down --force',
-            'khaliqgant 222 0.0 0.0 1 1 ?? S 1:00PM 0:00.01 /opt/bin/agent-relay-broker init --name project --channels general --persist',
-            'khaliqgant 333 0.0 0.0 1 1 ?? S 1:00PM 0:00.01 /opt/bin/agent-relay-broker init --name project --channels general --persist',
-            'khaliqgant 444 0.0 0.0 1 1 ?? S 1:00PM 0:00.01 /opt/bin/agent-relay-broker init --state-dir /tmp/project/.agentworkforce/relay --persist',
-            'khaliqgant 555 0.0 0.0 1 1 ?? S 1:00PM 0:00.01 /opt/bin/agent-relay-broker init --state-dir /tmp/project-other/.agentworkforce/relay --persist',
-            'khaliqgant 666 0.0 0.0 1 1 ?? S 1:00PM 0:00.01 /Users/test/.agentworkforce/relay/bin/agent-relay up',
-            'khaliqgant 777 0.0 0.0 1 1 ?? S 1:00PM 0:00.01 /Users/test/.agentworkforce/relay/bin/agent-relay status --wait-for=30',
-          ].join('\n'),
-          stderr: '',
-        };
-      }
-      if (command.includes('-p 222 ')) {
-        return { stdout: 'p222\nfcwd\nn/tmp/project\n', stderr: '' };
-      }
-      if (command.includes('-p 333 ')) {
-        return { stdout: 'p333\nfcwd\nn/tmp/project-other\n', stderr: '' };
-      }
-      if (command.includes('-p 666 ')) {
-        return { stdout: 'p666\nfcwd\nn/tmp/project\n', stderr: '' };
-      }
-      throw new Error(`unexpected command: ${command}`);
+  const fixedStart = 'Thu Sep 10 18:00:00 2026';
+  function identityCommand(pid = 222, lockPath = '/tmp/project/.agentworkforce/relay/broker-project.lock') {
+    return vi.fn(async (command: string) => {
+      if (command === `LC_ALL=C TZ=UTC ps -p ${pid} -o lstart=`)
+        return { stdout: `Thu Sep 10  18:00:00 2026   \n`, stderr: '' };
+      if (command === `lsof -nP -a -p ${pid} -d txt -FfDi`)
+        return { stdout: `p${pid}\nftxt\nD0x100\ni1234\n`, stderr: '' };
+      if (command === `lsof -nP -a -p ${pid} -FfnDi`)
+        return { stdout: `p${pid}\nf10\nD0x100\ni9876\nn${lockPath}\n`, stderr: '' };
+      throw new Error(`Unexpected command: ${command}`);
     });
+  }
+
+  function enableBackgroundIdentity(
+    deps: CoreDependencies,
+    name = 'project',
+    stateDir = deps.getProjectPaths().dataDir,
+    pid = 4242
+  ) {
+    deps.pid = 9999;
+    const originalExec = deps.execCommand;
+    const command = identityCommand(pid, `${stateDir}/broker-${name}.lock`);
+    deps.execCommand = (value) => (value.includes(`-p ${pid} `) ? command(value) : originalExec(value));
+    const sleep = deps.sleep;
+    deps.sleep = async (ms) => {
+      await sleep(ms);
+      await persistBrokerIdentity({ ...deps.getProjectPaths(), dataDir: stateDir }, pid, name, deps);
+    };
+  }
+
+  it.each([
+    '/tmp/project/relay  state',
+    '/tmp/project/.agentworkforce/relay',
+    nodePath.resolve('nested/candidate-state'),
+  ])('force cleanup stops only the recorded custom broker in %s', async (stateDir) => {
+    const running = new Set([222, 333, 444, 555]);
+    const execCommand = identityCommand(222, `${stateDir}/broker-custom-node.lock`);
     const killImpl = vi.fn((pid: number, signal?: NodeJS.Signals | number) => {
       if (signal === 0) {
-        if (runningPids.has(pid)) return;
-        throw new Error('not running');
+        if (!running.has(pid)) throw new Error('not running');
+        return;
       }
-      runningPids.delete(pid);
+      running.delete(pid);
     });
-    let now = 0;
+    const { program, deps } = createHarness({ execCommand, killImpl });
+    const paths = { ...deps.getProjectPaths(), dataDir: stateDir };
+    await persistBrokerIdentity(paths, 222, 'custom-node', deps);
+    const filename = brokerIdentityPath(paths, deps, 'custom-node');
+    expect(filename).toMatch(/^\/tmp\/project\/\.agentworkforce\/relay\/broker-identity-/);
+    expect(deps.fs.existsSync(filename)).toBe(true);
+    const stateArg =
+      stateDir === nodePath.resolve('nested/candidate-state') ? 'nested/candidate-state' : stateDir;
+    await runCommand(program, ['down', '--force', '--state-dir', stateArg]);
+    expect(killImpl).toHaveBeenCalledWith(222, 'SIGTERM');
+    expect([...running]).toEqual([333, 444, 555]);
+    expect(deps.fs.existsSync(filename)).toBe(false);
+    expect(execCommand).not.toHaveBeenCalledWith('ps aux');
+  });
+
+  it('up persists the actual broker identity outside redirected state before force recovery', async () => {
+    const running = new Set([222, 333]);
+    const execCommand = identityCommand(222, '/tmp/project/redirected state/broker-custom-node.lock');
+    const killImpl = vi.fn((pid: number, signal?: NodeJS.Signals | number) => {
+      if (signal === 0) {
+        if (!running.has(pid)) throw new Error('not running');
+        return;
+      }
+      running.delete(pid);
+    });
     const { program, deps } = createHarness({
       execCommand,
       killImpl,
-      nowImpl: vi.fn(() => now),
-      sleepImpl: vi.fn(async (ms: number) => {
+      relay: createRelayMock({ brokerPid: 222 }),
+    });
+    const stateDir = '/tmp/project/redirected state';
+    await runCommand(program, ['up', '--state-dir', stateDir, '--broker-name', 'custom-node']);
+    const filename = brokerIdentityPath(
+      { ...deps.getProjectPaths(), dataDir: stateDir },
+      deps,
+      'custom-node'
+    );
+    expect(JSON.parse(deps.fs.readFileSync(filename, 'utf-8'))).toMatchObject({
+      pid: 222,
+      brokerName: 'custom-node',
+      stateDirectory: stateDir,
+      startedAt: fixedStart,
+      executable: '0x100:1234',
+    });
+    // Discovery files can disappear while the native runtime lock stays open.
+    deps.fs.unlinkSync(`${stateDir}/connection.json`);
+    await runCommand(program, ['down', '--force', '--state-dir', stateDir]);
+    expect([...running]).toEqual([333]);
+    expect(deps.fs.existsSync(filename)).toBe(false);
+  });
+
+  it.each([
+    'missing',
+    'malformed',
+    'legacy',
+    'start-mismatch',
+    'executable-mismatch',
+    'dead',
+    'unsupported',
+    'wrong-state',
+  ])('force cleanup preserves processes and identity when ownership is %s', async (kind) => {
+    const running = new Set([222, 333]);
+    const execCommand = identityCommand();
+    const killImpl = vi.fn((pid: number, signal?: NodeJS.Signals | number) => {
+      if (signal === 0) {
+        if (!running.has(pid)) throw new Error('not running');
+        return;
+      }
+      running.delete(pid);
+    });
+    const { program, deps } = createHarness({ execCommand, killImpl });
+    const paths = deps.getProjectPaths();
+    await persistBrokerIdentity(paths, 222, 'project', deps);
+    const filename = brokerIdentityPath(paths, deps);
+    const value = JSON.parse(deps.fs.readFileSync(filename, 'utf-8'));
+    if (kind === 'missing') deps.fs.unlinkSync(filename);
+    if (kind === 'malformed') deps.fs.writeFileSync(filename, '{');
+    if (kind === 'legacy') deps.fs.writeFileSync(filename, JSON.stringify({ pid: 222 }));
+    if (kind === 'start-mismatch')
+      deps.fs.writeFileSync(filename, JSON.stringify({ ...value, startedAt: 'Thu Sep 10 17:59:59 2026' }));
+    if (kind === 'executable-mismatch')
+      deps.fs.writeFileSync(filename, JSON.stringify({ ...value, executable: '0x100:999' }));
+    if (kind === 'wrong-state')
+      deps.fs.writeFileSync(filename, JSON.stringify({ ...value, stateDirectory: '/tmp/project/peer' }));
+    if (kind === 'dead') running.delete(222);
+    if (kind === 'unsupported') execCommand.mockRejectedValue(new Error('lsof unavailable'));
+    const before = deps.fs.readFileSync(filename, 'utf-8');
+    await runCommand(program, ['down', '--force']);
+    expect(killImpl.mock.calls.filter(([, signal]) => signal !== 0)).toEqual([]);
+    expect(deps.fs.readFileSync(filename, 'utf-8')).toBe(before);
+    expect(running.has(333)).toBe(true);
+    expect(execCommand).not.toHaveBeenCalledWith('ps aux');
+  });
+
+  it.each(['reopened', 'replaced', 'missing', 'descriptor-mismatch'])(
+    'same-second PID and executable reuse cannot adopt a %s runtime lock',
+    async (kind) => {
+      const execCommand = identityCommand();
+      const { program, deps } = createHarness({ execCommand });
+      await persistBrokerIdentity(deps.getProjectPaths(), 222, 'project', deps);
+      const filename = brokerIdentityPath(deps.getProjectPaths(), deps);
+      expect(deps.fs.existsSync(filename)).toBe(true);
+      const record = deps.fs.readFileSync(filename, 'utf-8');
+      if (kind === 'reopened')
+        vi.mocked(deps.fs.statSync!).mockReturnValue({
+          dev: 256n,
+          ino: 9876n,
+          ctimeNs: 1000000002n,
+          mtimeNs: 1000000002n,
+        });
+      if (kind === 'replaced')
+        vi.mocked(deps.fs.statSync!).mockReturnValue({
+          dev: 256n,
+          ino: 9877n,
+          ctimeNs: 1000000001n,
+          mtimeNs: 1000000001n,
+        });
+      if (kind === 'missing')
+        vi.mocked(deps.fs.statSync!).mockImplementation(() => {
+          throw new Error('ENOENT');
+        });
+      if (kind === 'descriptor-mismatch') {
+        const original = execCommand.getMockImplementation()!;
+        execCommand.mockImplementation(async (command) =>
+          command.endsWith('-FfnDi')
+            ? {
+                stdout: 'p222\nf10\nD0x100\ni9999\nn/tmp/project/.agentworkforce/relay/broker-project.lock\n',
+                stderr: '',
+              }
+            : original(command)
+        );
+      }
+      await runCommand(program, ['down', '--force']);
+      expect(vi.mocked(deps.killProcess).mock.calls.filter(([, signal]) => signal !== 0)).toEqual([]);
+      expect(deps.fs.readFileSync(filename, 'utf-8')).toBe(record);
+    }
+  );
+
+  it.each([false, true])(
+    'unsupported-platform up refuses before spawning (background=%s)',
+    async (background) => {
+      const { program, deps } = createHarness();
+      const descriptor = Object.getOwnPropertyDescriptor(process, 'platform')!;
+      Object.defineProperty(process, 'platform', { ...descriptor, value: 'win32' });
+      try {
+        expect(await runCommand(program, background ? ['up', '--background'] : ['up'])).toBe(1);
+        expect(deps.createRelay).not.toHaveBeenCalled();
+        expect(deps.spawnProcess).not.toHaveBeenCalled();
+        expect(deps.killProcess).not.toHaveBeenCalled();
+        expect(deps.error).toHaveBeenCalledWith(expect.stringContaining('refusing to start on win32'));
+      } finally {
+        Object.defineProperty(process, 'platform', descriptor);
+      }
+    }
+  );
+
+  it.each(
+    [false, true].flatMap((backgroundChild) =>
+      ['missing-tools', 'uninspectable-lock', 'write-denied', 'missing-pid'].map((failure) => ({
+        backgroundChild,
+        failure,
+      }))
+    )
+  )(
+    'supported startup rejects failed identity capture ($backgroundChild, $failure)',
+    async ({ backgroundChild, failure }) => {
+      const relay = createRelayMock(failure === 'missing-pid' ? { brokerPid: undefined } : {});
+      const { program, deps } = createHarness({
+        relay,
+        configureDependencies: (configured) => {
+          if (failure === 'missing-tools')
+            configured.execCommand = vi.fn(async () => {
+              throw new Error('lsof unavailable');
+            });
+          if (failure === 'uninspectable-lock')
+            configured.fs.statSync = vi.fn(() => {
+              throw new Error('permission denied');
+            });
+          if (failure === 'write-denied')
+            configured.fs.renameSync = vi.fn(() => {
+              throw new Error('read only directory');
+            });
+        },
+      });
+      const exitCode = await runCommand(program, backgroundChild ? ['up', '--background-child'] : ['up']);
+      expect(exitCode).toBe(1);
+      expect(relay.shutdown).toHaveBeenCalledExactlyOnceWith();
+      expect(relay.spawn).not.toHaveBeenCalled();
+      expect(deps.holdOpen).not.toHaveBeenCalled();
+      expect(deps.log).not.toHaveBeenCalledWith('Broker started.');
+      expect(deps.error).toHaveBeenCalledWith(
+        expect.stringContaining('Could not persist a verified broker process identity')
+      );
+      expect(readBrokerIdentities(deps.getProjectPaths(), deps)).toEqual([]);
+      if (backgroundChild)
+        expect(
+          deps.fs.readFileSync(`${deps.getProjectPaths().dataDir}/background-start-error.log`, 'utf-8')
+        ).toContain('Could not persist a verified broker process identity');
+      expect(vi.mocked(deps.killProcess).mock.calls.filter(([, signal]) => signal !== 0)).toEqual([]);
+    }
+  );
+
+  it.each([false, true].flatMap((connected) => [false, true].map((replace) => ({ connected, replace }))))(
+    'verified ESRCH removes only its unchanged record (connected=$connected, replace=$replace)',
+    async ({ connected, replace }) => {
+      let running = true;
+      const { program, deps } = createHarness({
+        execCommand: identityCommand(),
+        killImpl: vi.fn((pid, signal) => {
+          if (pid === 222 && signal === 'SIGTERM') {
+            running = false;
+            if (replace) {
+              const filename = brokerIdentityPath(deps.getProjectPaths(), deps);
+              const original = JSON.parse(deps.fs.readFileSync(filename, 'utf-8'));
+              deps.fs.writeFileSync(filename, JSON.stringify({ ...original, pid: 333 }));
+              deps.fs.writeFileSync(
+                '/tmp/project/.agentworkforce/relay/connection.json',
+                connectionFile(333)
+              );
+            }
+            throw Object.assign(new Error('exited before signal'), { code: 'ESRCH' });
+          }
+          if (pid === 222 && signal === 0 && !running)
+            throw Object.assign(new Error('not running'), { code: 'ESRCH' });
+        }),
+      });
+      await persistBrokerIdentity(deps.getProjectPaths(), 222, 'project', deps);
+      if (connected)
+        deps.fs.writeFileSync('/tmp/project/.agentworkforce/relay/connection.json', connectionFile(222));
+      const runtime = '/tmp/project/.agentworkforce/relay/runtime.json';
+      deps.fs.writeFileSync(runtime, 'retained');
+      expect(await runCommand(program, ['down', '--force'])).toBeUndefined();
+      const filename = brokerIdentityPath(deps.getProjectPaths(), deps);
+      expect(deps.fs.existsSync(filename)).toBe(replace);
+      expect(deps.fs.existsSync(runtime)).toBe(replace);
+      if (replace) expect(JSON.parse(deps.fs.readFileSync(filename, 'utf-8')).pid).toBe(333);
+      expect(vi.mocked(deps.killProcess).mock.calls.filter(([, signal]) => signal !== 0)).toEqual([
+        [222, 'SIGTERM'],
+      ]);
+    }
+  );
+
+  it('force escalation rechecks PID reuse and retains the identity of an unconfirmed exit', async () => {
+    let now = 0;
+    let terminated = false;
+    const execCommand = identityCommand();
+    const { program, deps } = createHarness({
+      execCommand,
+      killImpl: vi.fn((_pid, signal) => {
+        if (signal === 'SIGTERM') terminated = true;
+      }),
+      nowImpl: () => now,
+      sleepImpl: async (ms) => {
         now += ms;
+        if (terminated) execCommand.mockResolvedValue({ stdout: '', stderr: '' });
+      },
+    });
+    await persistBrokerIdentity(deps.getProjectPaths(), 222, 'project', deps);
+    const filename = brokerIdentityPath(deps.getProjectPaths(), deps);
+    expect(await runCommand(program, ['down', '--force'])).toBe(1);
+    expect(deps.killProcess).toHaveBeenCalledWith(222, 'SIGTERM');
+    expect(deps.killProcess).not.toHaveBeenCalledWith(222, 'SIGKILL');
+    expect(deps.fs.existsSync(filename)).toBe(true);
+  });
+
+  it.each(
+    [false, true].flatMap((connected) =>
+      ['missing', 'malformed', 'replacement'].map((change) => ({ connected, change }))
+    )
+  )(
+    'force escalation rejects $change authorization (connected=$connected)',
+    async ({ connected, change }) => {
+      let now = 0;
+      let terminated = false;
+      let changed = false;
+      const { program, deps } = createHarness({
+        execCommand: identityCommand(),
+        killImpl: vi.fn((_pid, signal) => {
+          if (signal === 'SIGTERM') terminated = true;
+        }),
+        nowImpl: () => now,
+        sleepImpl: async (ms) => {
+          now += ms;
+          if (!terminated || changed) return;
+          changed = true;
+          const filename = brokerIdentityPath(deps.getProjectPaths(), deps);
+          if (change === 'missing') deps.fs.unlinkSync(filename);
+          else if (change === 'malformed') deps.fs.writeFileSync(filename, '{');
+          else {
+            const original = JSON.parse(deps.fs.readFileSync(filename, 'utf-8'));
+            deps.fs.writeFileSync(filename, JSON.stringify({ ...original, pid: 333 }));
+          }
+        },
+      });
+      await persistBrokerIdentity(deps.getProjectPaths(), 222, 'project', deps);
+      const connection = '/tmp/project/.agentworkforce/relay/connection.json';
+      if (connected) deps.fs.writeFileSync(connection, connectionFile(222));
+      const runtime = '/tmp/project/.agentworkforce/relay/runtime.json';
+      deps.fs.writeFileSync(runtime, 'retained');
+      expect(await runCommand(program, ['down', '--force', '--timeout', '500'])).toBe(1);
+      expect(vi.mocked(deps.killProcess).mock.calls.filter(([, signal]) => signal !== 0)).toEqual([
+        [222, 'SIGTERM'],
+      ]);
+      expect(deps.fs.readFileSync(runtime, 'utf-8')).toBe('retained');
+      if (connected) expect(deps.fs.readFileSync(connection, 'utf-8')).toBe(connectionFile(222));
+      const filename = brokerIdentityPath(deps.getProjectPaths(), deps);
+      if (change === 'missing') expect(deps.fs.existsSync(filename)).toBe(false);
+      else if (change === 'malformed') expect(deps.fs.readFileSync(filename, 'utf-8')).toBe('{');
+      else expect(JSON.parse(deps.fs.readFileSync(filename, 'utf-8')).pid).toBe(333);
+    }
+  );
+
+  it('identity removal during OS verification prevents the initial signal', async () => {
+    const command = identityCommand();
+    let armed = false;
+    const { program, deps } = createHarness({
+      execCommand: async (value) => {
+        const result = await command(value);
+        if (armed && value.endsWith('-FfnDi'))
+          deps.fs.unlinkSync(brokerIdentityPath(deps.getProjectPaths(), deps));
+        return result;
+      },
+    });
+    await persistBrokerIdentity(deps.getProjectPaths(), 222, 'project', deps);
+    armed = true;
+    expect(await runCommand(program, ['down', '--force'])).toBe(1);
+    expect(vi.mocked(deps.killProcess).mock.calls.filter(([, signal]) => signal !== 0)).toEqual([]);
+  });
+
+  it('force escalation kills a still-matching process and removes its record after exit', async () => {
+    let now = 0;
+    let running = true;
+    const { program, deps } = createHarness({
+      execCommand: identityCommand(),
+      killImpl: vi.fn((_pid, signal) => {
+        if (signal === 'SIGKILL') running = false;
+        if (signal === 0 && !running) throw new Error('not running');
+      }),
+      nowImpl: () => now,
+      sleepImpl: async (ms) => {
+        now += ms;
+      },
+    });
+    await persistBrokerIdentity(deps.getProjectPaths(), 222, 'project', deps);
+    await runCommand(program, ['down', '--force']);
+    expect(deps.killProcess).toHaveBeenCalledWith(222, 'SIGKILL');
+    expect(deps.fs.existsSync(brokerIdentityPath(deps.getProjectPaths(), deps))).toBe(false);
+  });
+
+  it('cleanup keeps a newer record and discovery files written while the matched broker exits', async () => {
+    let running = true;
+    const { program, deps } = createHarness({
+      execCommand: identityCommand(),
+      killImpl: vi.fn((_pid, signal) => {
+        if (signal === 'SIGTERM') {
+          running = false;
+          const filename = brokerIdentityPath(deps.getProjectPaths(), deps);
+          const value = JSON.parse(deps.fs.readFileSync(filename, 'utf-8'));
+          deps.fs.writeFileSync(filename, JSON.stringify({ ...value, pid: 333 }));
+          deps.fs.writeFileSync('/tmp/project/.agentworkforce/relay/connection.json', connectionFile(333));
+          deps.fs.writeFileSync('/tmp/project/.agentworkforce/relay/runtime.json', 'replacement');
+        }
+        if (signal === 0 && !running) throw new Error('not running');
       }),
     });
-
-    const exitCode = await runCommand(program, ['down', '--force']);
-
-    expect(exitCode).toBeUndefined();
-    expect(killImpl).toHaveBeenCalledWith(222, 'SIGTERM');
-    expect(killImpl).toHaveBeenCalledWith(444, 'SIGTERM');
-    expect(killImpl).toHaveBeenCalledWith(666, 'SIGTERM');
-    expect(killImpl).not.toHaveBeenCalledWith(111, 'SIGTERM');
-    expect(killImpl).not.toHaveBeenCalledWith(333, 'SIGTERM');
-    expect(killImpl).not.toHaveBeenCalledWith(555, 'SIGTERM');
-    expect(killImpl).not.toHaveBeenCalledWith(777, 'SIGTERM');
-    expect(deps.warn).toHaveBeenCalledWith('Killing orphaned broker process (pid: 222)');
-    expect(deps.warn).toHaveBeenCalledWith('Killing orphaned broker process (pid: 444)');
-    expect(deps.warn).toHaveBeenCalledWith('Killing orphaned broker process (pid: 666)');
-    expect(deps.log).toHaveBeenCalledWith('Cleaned up (was not running)');
+    await persistBrokerIdentity(deps.getProjectPaths(), 222, 'project', deps);
+    await runCommand(program, ['down', '--force']);
+    expect(
+      JSON.parse(deps.fs.readFileSync(brokerIdentityPath(deps.getProjectPaths(), deps), 'utf-8')).pid
+    ).toBe(333);
+    expect(
+      JSON.parse(deps.fs.readFileSync('/tmp/project/.agentworkforce/relay/connection.json', 'utf-8')).pid
+    ).toBe(333);
+    expect(deps.fs.readFileSync('/tmp/project/.agentworkforce/relay/runtime.json', 'utf-8')).toBe(
+      'replacement'
+    );
   });
 
-  it('up --background reaps a broker orphan before starting cleanly', async () => {
-    const spawnedProcess = createSpawnedProcessMock({ pid: 9001 });
-    const runningPids = new Set([777, 9001, 4242]);
-    const fs = createFsMock();
+  it('up --background reaps only its recorded broker before starting cleanly', async () => {
+    const running = new Set([222, 9001, 4242]);
     let now = 0;
-    const execCommand = vi.fn(async (command: string) => {
-      if (command === 'ps aux') {
-        return {
-          stdout: [
-            'USER PID %CPU %MEM VSZ RSS TT STAT STARTED TIME COMMAND',
-            'khaliqgant 777 0.0 0.0 1 1 ?? S 1:00PM 0:00.01 /Users/test/.agentworkforce/relay/bin/agent-relay up',
-          ].join('\n'),
-          stderr: '',
-        };
-      }
-      if (command.includes('-p 777 ')) {
-        return { stdout: 'p777\nfcwd\nn/tmp/project\n', stderr: '' };
-      }
-      throw new Error(`unexpected command: ${command}`);
-    });
-    const sleepImpl = vi.fn(async (ms: number) => {
-      now += ms;
-      fs.writeFileSync('/tmp/project/.agentworkforce/relay/connection.json', connectionFile(4242));
-    });
-    const killImpl = vi.fn((pid: number, signal?: NodeJS.Signals | number) => {
-      if (signal === 0) {
-        if (runningPids.has(pid)) return;
-        throw new Error('not running');
-      }
-      runningPids.delete(pid);
-    });
+    const fs = createFsMock();
     const { program, deps } = createHarness({
       fs,
-      spawnedProcess,
-      execCommand,
-      killImpl,
-      nowImpl: vi.fn(() => now),
-      sleepImpl,
+      execCommand: identityCommand(),
+      killImpl: vi.fn((pid, signal) => {
+        if (signal === 0) {
+          if (!running.has(pid)) throw new Error('not running');
+          return;
+        }
+        running.delete(pid);
+      }),
+      nowImpl: () => now,
+      sleepImpl: async (ms) => {
+        now += ms;
+        fs.writeFileSync('/tmp/project/.agentworkforce/relay/connection.json', connectionFile(4242));
+      },
+      configureDependencies: enableBackgroundIdentity,
     });
-
-    const exitCode = await runCommand(program, ['up', '--background']);
-
-    expect(exitCode).toBe(0);
-    expect(killImpl).toHaveBeenCalledWith(777, 'SIGTERM');
-    expect(deps.warn).toHaveBeenCalledWith('Killing orphaned broker process (pid: 777)');
+    await persistBrokerIdentity(deps.getProjectPaths(), 222, 'project', deps);
+    expect(await runCommand(program, ['up', '--background'])).toBe(0);
+    expect(deps.killProcess).toHaveBeenCalledWith(222, 'SIGTERM');
     expect(deps.spawnProcess).toHaveBeenCalledTimes(1);
-    expect(deps.log).toHaveBeenCalledWith('Broker started.');
-    expect(deps.log).toHaveBeenCalledWith('Broker PID: 4242');
   });
 
-  it('up --background replaces a live broker PID whose API never becomes ready', async () => {
+  it.each([false, true])(
+    'cleanup preserves a replacement connection before its identity is captured (orphan=%s)',
+    async (orphan) => {
+      const running = new Set([222, 333]);
+      const { program, deps } = createHarness({
+        execCommand: identityCommand(),
+        killImpl: vi.fn((pid, signal) => {
+          if (signal === 0) {
+            if (!running.has(pid)) throw new Error('not running');
+            return;
+          }
+          running.delete(pid);
+          deps.fs.writeFileSync('/tmp/project/.agentworkforce/relay/connection.json', connectionFile(333));
+          deps.fs.writeFileSync('/tmp/project/.agentworkforce/relay/runtime.json', 'replacement');
+        }),
+      });
+      await persistBrokerIdentity(deps.getProjectPaths(), 222, 'project', deps);
+      if (!orphan)
+        deps.fs.writeFileSync('/tmp/project/.agentworkforce/relay/connection.json', connectionFile(222));
+      await runCommand(program, ['down', '--force']);
+      expect(
+        JSON.parse(deps.fs.readFileSync('/tmp/project/.agentworkforce/relay/connection.json', 'utf-8')).pid
+      ).toBe(333);
+      expect(deps.fs.readFileSync('/tmp/project/.agentworkforce/relay/runtime.json', 'utf-8')).toBe(
+        'replacement'
+      );
+      expect(deps.fs.existsSync(brokerIdentityPath(deps.getProjectPaths(), deps))).toBe(false);
+    }
+  );
+
+  it('startup does not adopt a recorded broker with another name', async () => {
+    const { program, deps } = createHarness({
+      execCommand: identityCommand(222, '/tmp/project/.agentworkforce/relay/broker-peer-node.lock'),
+    });
+    await persistBrokerIdentity(deps.getProjectPaths(), 222, 'peer-node', deps);
+    await runCommand(program, ['up', '--broker-name', 'selected-node']);
+    expect(vi.mocked(deps.killProcess).mock.calls.filter(([, signal]) => signal !== 0)).toEqual([]);
+  });
+
+  it.each(['  custom-node  ', ''])(
+    'startup normalizes broker name %j before identity capture',
+    async (name) => {
+      const normalized = name.trim() || 'project';
+      const { program, deps } = createHarness({
+        relay: createRelayMock({ brokerPid: 222 }),
+        env: { AGENT_RELAY_BROKER_NAME: name },
+        execCommand: identityCommand(222, `/tmp/project/.agentworkforce/relay/broker-${normalized}.lock`),
+      });
+      await runCommand(program, name ? ['up', '--broker-name', name] : ['up']);
+      expect(
+        JSON.parse(
+          deps.fs.readFileSync(brokerIdentityPath(deps.getProjectPaths(), deps, normalized), 'utf-8')
+        ).brokerName
+      ).toBe(normalized);
+    }
+  );
+
+  it('state-directory aliases find the same persisted broker', async () => {
+    let running = true;
+    const fs = createFsMock();
+    fs.realpathSync = (p) => p.replace('/tmp/project/alias', '/tmp/project/canonical');
+    const { program, deps } = createHarness({
+      fs,
+      execCommand: identityCommand(222, '/tmp/project/canonical/broker-project.lock'),
+      killImpl: vi.fn((_pid, signal) => {
+        if (signal === 'SIGTERM') running = false;
+        if (signal === 0 && !running) throw new Error('not running');
+      }),
+    });
+    await persistBrokerIdentity(
+      { ...deps.getProjectPaths(), dataDir: '/tmp/project/alias' },
+      222,
+      'project',
+      deps
+    );
+    await runCommand(program, ['down', '--force', '--state-dir', '/tmp/project/canonical']);
+    expect(deps.killProcess).toHaveBeenCalledWith(222, 'SIGTERM');
+  });
+
+  it('different names retain independent records and forced cleanup verifies each', async () => {
+    const running = new Set([222, 333]);
+    const first = identityCommand(222, '/tmp/project/.agentworkforce/relay/broker-first.lock');
+    const second = identityCommand(333, '/tmp/project/.agentworkforce/relay/broker-second.lock');
+    const { program, deps } = createHarness({
+      execCommand: async (command) => (command.includes('-p 222 ') ? first(command) : second(command)),
+      killImpl: vi.fn((pid, signal) => {
+        if (signal === 0) {
+          if (!running.has(pid)) throw new Error('not running');
+          return;
+        }
+        running.delete(pid);
+      }),
+    });
+    const paths = deps.getProjectPaths();
+    await persistBrokerIdentity(paths, 222, 'first', deps);
+    await persistBrokerIdentity(paths, 333, 'second', deps);
+    const firstPath = brokerIdentityPath(paths, deps, 'first');
+    const secondPath = brokerIdentityPath(paths, deps, 'second');
+    expect(deps.fs.existsSync(firstPath)).toBe(true);
+    expect(deps.fs.existsSync(secondPath)).toBe(true);
+    await runCommand(program, ['down', '--force']);
+    expect([...running]).toEqual([]);
+    expect(deps.fs.existsSync(firstPath)).toBe(false);
+    expect(deps.fs.existsSync(secondPath)).toBe(false);
+  });
+
+  it('background startup retains all state and refuses an unverified live generation', async () => {
+    const { program, deps } = createHarness({ execCommand: identityCommand() });
+    await persistBrokerIdentity(deps.getProjectPaths(), 222, 'project', deps);
+    deps.fs.writeFileSync('/tmp/project/.agentworkforce/relay/runtime.json', 'keep');
+    vi.mocked(deps.fs.statSync!).mockReturnValue({
+      dev: 256n,
+      ino: 9876n,
+      ctimeNs: 1000000002n,
+      mtimeNs: 1000000002n,
+    });
+    expect(await runCommand(program, ['up', '--background'])).toBe(1);
+    expect(deps.spawnProcess).not.toHaveBeenCalled();
+    expect(deps.fs.readFileSync('/tmp/project/.agentworkforce/relay/runtime.json', 'utf-8')).toBe('keep');
+    expect(vi.mocked(deps.killProcess).mock.calls.filter(([, signal]) => signal !== 0)).toEqual([]);
+  });
+
+  it.each([false, true])(
+    'graceful down removes its verified record and preserves a replacement=%s',
+    async (replace) => {
+      let running = true;
+      const { program, deps } = createHarness({
+        execCommand: identityCommand(),
+        killImpl: vi.fn((_pid, signal) => {
+          if (signal === 'SIGTERM') {
+            running = false;
+            if (replace) {
+              const filename = brokerIdentityPath(deps.getProjectPaths(), deps);
+              const value = JSON.parse(deps.fs.readFileSync(filename, 'utf-8'));
+              deps.fs.writeFileSync(filename, JSON.stringify({ ...value, pid: 333 }));
+              deps.fs.writeFileSync(
+                '/tmp/project/.agentworkforce/relay/connection.json',
+                connectionFile(333)
+              );
+              deps.fs.writeFileSync('/tmp/project/.agentworkforce/relay/runtime.json', 'replacement');
+            }
+          }
+          if (signal === 0 && !running) throw new Error('not running');
+        }),
+      });
+      await persistBrokerIdentity(deps.getProjectPaths(), 222, 'project', deps);
+      deps.fs.writeFileSync('/tmp/project/.agentworkforce/relay/connection.json', connectionFile(222));
+      await runCommand(program, ['down']);
+      expect(deps.fs.existsSync(brokerIdentityPath(deps.getProjectPaths(), deps))).toBe(replace);
+      if (replace) {
+        expect(
+          JSON.parse(deps.fs.readFileSync('/tmp/project/.agentworkforce/relay/connection.json', 'utf-8')).pid
+        ).toBe(333);
+        expect(deps.fs.readFileSync('/tmp/project/.agentworkforce/relay/runtime.json', 'utf-8')).toBe(
+          'replacement'
+        );
+      }
+    }
+  );
+
+  it.each(['down', 'up'])(
+    'a stale connection does not bypass the recorded generation during %s',
+    async (command) => {
+      const { program, deps } = createHarness({ execCommand: identityCommand() });
+      await persistBrokerIdentity(deps.getProjectPaths(), 222, 'project', deps);
+      deps.fs.writeFileSync('/tmp/project/.agentworkforce/relay/connection.json', connectionFile(222));
+      vi.mocked(deps.fs.statSync!).mockReturnValue({
+        dev: 256n,
+        ino: 9876n,
+        ctimeNs: 1000000002n,
+        mtimeNs: 1000000002n,
+      });
+      sdkStatusClient.getStatus.mockRejectedValue(new Error('API unavailable'));
+      expect(await runCommand(program, command === 'up' ? ['up', '--background'] : ['down', '--force'])).toBe(
+        1
+      );
+      expect(vi.mocked(deps.killProcess).mock.calls.filter(([, signal]) => signal !== 0)).toEqual([]);
+      expect(deps.fs.existsSync('/tmp/project/.agentworkforce/relay/connection.json')).toBe(true);
+    }
+  );
+
+  it('stops the node supervisor and services when its broker child exits', async () => {
+    let brokerExited: (() => void) | undefined;
+    const unsubscribe = vi.fn();
+    const relay = createRelayMock({
+      onBrokerExit: (listener) => {
+        brokerExited = listener;
+        return unsubscribe;
+      },
+    });
+    const { program, deps } = createHarness({
+      relay,
+      holdOpen: () => {
+        brokerExited!();
+        return new Promise(() => undefined);
+      },
+    });
+    expect(await runCommand(program, ['up'])).toBe(1);
+    expect(relay.shutdown).toHaveBeenCalledTimes(1);
+    expect(unsubscribe).toHaveBeenCalledTimes(1);
+    expect(deps.error).toHaveBeenCalledWith(
+      expect.stringContaining('Broker exited; stopping the node supervisor.')
+    );
+  });
+
+  it.each([false, true])(
+    'an observed managed-child exit removes only its captured record (replacement=%s)',
+    async (replace) => {
+      let exited = false;
+      let onExit: (() => void) | undefined;
+      const relay = createRelayMock({
+        brokerPid: 222,
+        onBrokerExit: (listener) => {
+          onExit = listener;
+          return () => undefined;
+        },
+      });
+      Object.defineProperty(relay, 'brokerPid', { get: () => (exited ? undefined : 222) });
+      const { program, deps } = createHarness({
+        relay,
+        execCommand: identityCommand(),
+        killImpl: vi.fn((pid, signal) => {
+          if (pid === 222 && signal === 0 && exited) throw new Error('not running');
+        }),
+        holdOpen: () => {
+          if (replace) {
+            const filename = brokerIdentityPath(deps.getProjectPaths(), deps);
+            const value = JSON.parse(deps.fs.readFileSync(filename, 'utf-8'));
+            deps.fs.writeFileSync(filename, JSON.stringify({ ...value, pid: 333 }));
+          }
+          exited = true;
+          onExit!();
+          return new Promise(() => undefined);
+        },
+      });
+      expect(await runCommand(program, ['up'])).toBe(1);
+      expect(deps.fs.existsSync(brokerIdentityPath(deps.getProjectPaths(), deps))).toBe(replace);
+    }
+  );
+
+  it('foreground orphan cleanup waits through native graceful drain before starting', async () => {
+    let now = 0;
+    let stopping = false;
+    const { program, deps } = createHarness({
+      relay: createRelayMock({ brokerPid: 333 }),
+      execCommand: vi.fn(async (command: string) =>
+        identityCommand(command.includes('-p 222') ? 222 : 333)(command)
+      ),
+      nowImpl: () => now,
+      sleepImpl: async (ms) => {
+        now += ms;
+      },
+      killImpl: vi.fn((pid, signal) => {
+        if (pid === 222 && signal === 'SIGTERM') stopping = true;
+        if (pid === 222 && signal === 0 && stopping && now >= 3500) throw new Error('not running');
+      }),
+    });
+    await persistBrokerIdentity(deps.getProjectPaths(), 222, 'project', deps);
+    const createRelay = vi.mocked(deps.createRelay);
+    const createStartedRelay = createRelay.getMockImplementation()!;
+    createRelay.mockImplementationOnce(async (...args) => {
+      expect(readBrokerIdentities(deps.getProjectPaths(), deps)).toEqual([]);
+      return createStartedRelay(...args);
+    });
+    expect(await runCommand(program, ['up'])).not.toBe(1);
+    expect(now).toBeGreaterThanOrEqual(3500);
+    expect(readBrokerIdentities(deps.getProjectPaths(), deps).map((identity) => identity.pid)).toEqual([333]);
+    expect(deps.killProcess).not.toHaveBeenCalledWith(222, 'SIGKILL');
+  });
+
+  it.each([true, false])(
+    'background success waits for persisted identity (eventually=%s)',
+    async (eventually) => {
+      let now = 0;
+      const { program, deps } = createHarness({
+        execCommand: identityCommand(4242),
+        configureDependencies: (deps) => {
+          deps.pid = 9999;
+        },
+        nowImpl: () => now,
+        sleepImpl: async (ms) => {
+          now += ms;
+          deps.fs.writeFileSync('/tmp/project/.agentworkforce/relay/connection.json', connectionFile(4242));
+          if (eventually && now >= 500)
+            await persistBrokerIdentity(deps.getProjectPaths(), 4242, 'project', deps);
+        },
+      });
+      expect(await runCommand(program, ['up', '--background'])).toBe(eventually ? 0 : 1);
+      expect(now).toBeGreaterThanOrEqual(500);
+      if (!eventually) {
+        expect(deps.log).not.toHaveBeenCalledWith('Broker started.');
+        expect(deps.fs.existsSync('/tmp/project/.agentworkforce/relay/connection.json')).toBe(true);
+      }
+      expect(vi.mocked(deps.killProcess).mock.calls.filter(([, signal]) => signal !== 0)).toEqual([]);
+    }
+  );
+
+  it('an exiting supervisor preserves the connection of a replacement broker', async () => {
+    let brokerExited: (() => void) | undefined;
+    let exited = false;
+    const relay = createRelayMock({
+      brokerPid: 222,
+      onBrokerExit: (listener) => {
+        brokerExited = listener;
+        return () => undefined;
+      },
+    });
+    Object.defineProperty(relay, 'brokerPid', { get: () => (exited ? undefined : 222) });
+    const { program, deps } = createHarness({
+      relay,
+      execCommand: identityCommand(),
+      holdOpen: () => {
+        deps.fs.writeFileSync('/tmp/project/.agentworkforce/relay/connection.json', connectionFile(333));
+        exited = true;
+        brokerExited!();
+        return new Promise(() => undefined);
+      },
+    });
+    expect(await runCommand(program, ['up'])).toBe(1);
+    expect(
+      JSON.parse(deps.fs.readFileSync('/tmp/project/.agentworkforce/relay/connection.json', 'utf-8')).pid
+    ).toBe(333);
+  });
+
+  it('an interrupted identity write preserves the prior record and removes its partial temporary file', async () => {
+    const { deps } = createHarness({ execCommand: identityCommand() });
+    const paths = deps.getProjectPaths();
+    await persistBrokerIdentity(paths, 222, 'project', deps);
+    const filename = brokerIdentityPath(paths, deps);
+    const before = deps.fs.readFileSync(filename, 'utf-8');
+    const write = vi.mocked(deps.fs.writeFileSync).getMockImplementation()!;
+    vi.mocked(deps.fs.writeFileSync).mockImplementation((file, data, encoding) => {
+      write(file, data.slice(0, 5), encoding);
+      throw new Error('ENOSPC');
+    });
+    await persistBrokerIdentity(paths, 222, 'project', deps);
+    expect(deps.fs.readFileSync(filename, 'utf-8')).toBe(before);
+    expect(deps.fs.readdirSync(nodePath.dirname(filename))).toEqual([nodePath.basename(filename)]);
+  });
+
+  it('a listed identity disappearing fails closed instead of enabling legacy shutdown', async () => {
+    const { program, deps } = createHarness({ execCommand: identityCommand() });
+    const paths = deps.getProjectPaths();
+    await persistBrokerIdentity(paths, 222, 'project', deps);
+    const filename = brokerIdentityPath(paths, deps);
+    deps.fs.writeFileSync('/tmp/project/.agentworkforce/relay/connection.json', connectionFile(222));
+    const read = vi.mocked(deps.fs.readFileSync).getMockImplementation()!;
+    vi.mocked(deps.fs.readFileSync).mockImplementation((file, encoding) => {
+      if (file === filename) throw Object.assign(new Error('record disappeared'), { code: 'ENOENT' });
+      return read(file, encoding);
+    });
+    expect(readBrokerIdentities(paths, deps)).toBeNull();
+    expect(await runCommand(program, ['down', '--force'])).toBe(1);
+    expect(vi.mocked(deps.killProcess).mock.calls.filter(([, signal]) => signal !== 0)).toEqual([]);
+  });
+
+  it.each(['ENOENT', 'EACCES'])('identity directory listing distinguishes %s', async (code) => {
+    const { deps } = createHarness();
+    vi.mocked(deps.fs.readdirSync).mockImplementation(() => {
+      throw Object.assign(new Error(code), { code });
+    });
+    expect(readBrokerIdentities(deps.getProjectPaths(), deps)).toEqual(code === 'ENOENT' ? [] : null);
+  });
+
+  it('permission denial while observing exit retains the matched identity', async () => {
+    let now = 0;
+    let signalled = false;
+    const { program, deps } = createHarness({
+      execCommand: identityCommand(),
+      nowImpl: () => now,
+      sleepImpl: async (ms) => {
+        now += ms;
+      },
+      killImpl: vi.fn((_pid, signal) => {
+        if (signal === 'SIGTERM') signalled = true;
+        if (signal === 0 && signalled) throw Object.assign(new Error('permission denied'), { code: 'EPERM' });
+      }),
+    });
+    await persistBrokerIdentity(deps.getProjectPaths(), 222, 'project', deps);
+    expect(await runCommand(program, ['down', '--force'])).toBe(1);
+    expect(deps.fs.existsSync(brokerIdentityPath(deps.getProjectPaths(), deps))).toBe(true);
+  });
+
+  it.each([false, true])(
+    'startup preserves a dead identity without replacing it (background=%s)',
+    async (background) => {
+      const { program, deps } = createHarness({
+        execCommand: identityCommand(),
+        killImpl: vi.fn((pid, signal) => {
+          if (pid === 222 && signal === 0) throw new Error('not running');
+        }),
+      });
+      const paths = deps.getProjectPaths();
+      await persistBrokerIdentity(paths, 222, 'project', deps);
+      const filename = brokerIdentityPath(paths, deps);
+      const before = deps.fs.readFileSync(filename, 'utf-8');
+      expect(await runCommand(program, background ? ['up', '--background'] : ['up'])).toBe(1);
+      expect(deps.fs.readFileSync(filename, 'utf-8')).toBe(before);
+      expect(deps.spawnProcess).not.toHaveBeenCalled();
+    }
+  );
+
+  it('malformed orphan records identify the recovery directory', async () => {
+    const { program, deps } = createHarness({ execCommand: identityCommand() });
+    deps.fs.writeFileSync(brokerIdentityPath(deps.getProjectPaths(), deps), '{broken');
+    expect(await runCommand(program, ['down', '--force'])).toBe(1);
+    expect(deps.warn).toHaveBeenCalledWith(
+      expect.stringContaining('Broker identities could not be read in /tmp/project/.agentworkforce/relay')
+    );
+  });
+
+  it.each(['changed', 'still-running'])(
+    'normal forced down exits nonzero when escalation is %s',
+    async (mode) => {
+      let now = 0;
+      let signalled = false;
+      const execCommand = identityCommand();
+      const { program, deps } = createHarness({
+        execCommand,
+        killImpl: vi.fn((_pid, signal) => {
+          if (signal === 'SIGTERM') signalled = true;
+        }),
+        nowImpl: () => now,
+        sleepImpl: async (ms) => {
+          now += ms;
+          if (signalled && mode === 'changed') execCommand.mockResolvedValue({ stdout: '', stderr: '' });
+        },
+      });
+      const paths = deps.getProjectPaths();
+      await persistBrokerIdentity(paths, 222, 'project', deps);
+      deps.fs.writeFileSync('/tmp/project/.agentworkforce/relay/connection.json', connectionFile(222));
+      expect(await runCommand(program, ['down', '--force', '--timeout', '1'])).toBe(1);
+      expect(deps.fs.existsSync(brokerIdentityPath(paths, deps))).toBe(true);
+      expect(deps.fs.existsSync('/tmp/project/.agentworkforce/relay/connection.json')).toBe(true);
+      if (mode === 'changed') expect(deps.killProcess).not.toHaveBeenCalledWith(222, 'SIGKILL');
+    }
+  );
+
+  it('fixed OS identity rejects unsupported systems and malformed process fields', async () => {
+    const { deps } = createHarness({ execCommand: identityCommand() });
+    expect(await readBrokerProcessIdentity(222, deps, 'win32')).toBeNull();
+    expect(await readBrokerProcessIdentity(-1, deps)).toBeNull();
+    expect(await readBrokerProcessIdentity(deps.pid, deps)).toBeNull();
+    vi.mocked(deps.execCommand).mockResolvedValue({
+      stdout: 'Thu Sep 10 18:00:00 2026\nThu Sep 10 18:00:00 2026',
+      stderr: '',
+    });
+    expect(await readBrokerProcessIdentity(222, deps)).toBeNull();
+  });
+
+  it('up --background refuses a legacy connection-only PID whose API never becomes ready', async () => {
     const spawnedProcess = createSpawnedProcessMock({ pid: 9001 });
     const runningPids = new Set([3030, 9001, 4242]);
     const fs = createFsMock({ ['/tmp/project/.agentworkforce/relay/connection.json']: connectionFile(3030) });
@@ -1121,14 +1945,13 @@ describe('registerCoreCommands', () => {
 
     const exitCode = await runCommand(program, ['up', '--background']);
 
-    expect(exitCode).toBe(0);
-    expect(killImpl).toHaveBeenCalledWith(3030, 'SIGTERM');
-    expect(fs.unlinkSync).toHaveBeenCalledWith('/tmp/project/.agentworkforce/relay/connection.json');
-    expect(deps.warn).toHaveBeenCalledWith(
-      'Broker process is running but the API is not ready; killing half-started broker (pid: 3030).'
+    expect(exitCode).toBe(1);
+    expect(killImpl).not.toHaveBeenCalledWith(3030, 'SIGTERM');
+    expect(fs.existsSync('/tmp/project/.agentworkforce/relay/connection.json')).toBe(true);
+    expect(deps.error).toHaveBeenCalledWith(
+      expect.stringContaining('Connection metadata alone cannot authorize a signal.')
     );
-    expect(deps.spawnProcess).toHaveBeenCalledTimes(1);
-    expect(deps.log).toHaveBeenCalledWith('Broker PID: 4242');
+    expect(deps.spawnProcess).not.toHaveBeenCalled();
   });
 
   it('up --background reports the broker PID when the detached broker is live but API-unready', async () => {
@@ -1168,7 +1991,8 @@ describe('registerCoreCommands', () => {
     );
     expect(deps.error).toHaveBeenCalledWith('Broker process is running, but the API did not become ready.');
     expect(killImpl).toHaveBeenCalledWith(9001, 'SIGTERM');
-    expect(killImpl).toHaveBeenCalledWith(4242, 'SIGTERM');
+    expect(killImpl).not.toHaveBeenCalledWith(4242, 'SIGTERM');
+    expect(fs.existsSync('/tmp/project/.agentworkforce/relay/connection.json')).toBe(true);
   });
 
   it('up --background reports spawn failures without claiming background success', async () => {
@@ -1200,16 +2024,7 @@ describe('registerCoreCommands', () => {
     // signal arriving during startup is handled gracefully too), so
     // registration alone no longer implies `relay` is set. Wait for the
     // broker to actually be up before firing the signal.
-    for (
-      let i = 0;
-      i < 20 &&
-      !(deps.log as unknown as { mock: { calls: unknown[][] } }).mock.calls.some(
-        (call) => call[0] === 'Broker started.'
-      );
-      i += 1
-    ) {
-      await Promise.resolve();
-    }
+    await vi.waitFor(() => expect(deps.log).toHaveBeenCalledWith('Broker started.'));
 
     const onSignalMock = deps.onSignal as unknown as { mock: { calls: unknown[][] } };
     const sigintHandler = onSignalMock.mock.calls.find((call) => call[0] === 'SIGINT')?.[1] as
@@ -1219,7 +2034,7 @@ describe('registerCoreCommands', () => {
     const sigint = sigintHandler as () => Promise<void>;
 
     void sigint();
-    await Promise.resolve();
+    await vi.waitFor(() => expect(relay.shutdown).toHaveBeenCalledTimes(1));
     await expect(sigint()).rejects.toMatchObject({ code: 130 });
 
     expect(relay.shutdown).toHaveBeenCalledTimes(1);
@@ -1297,7 +2112,8 @@ describe('registerCoreCommands', () => {
       }
     });
 
-    const { program } = createHarness({ fs, killImpl });
+    const { program, deps } = createHarness({ fs, killImpl, execCommand: identityCommand(3030) });
+    await persistBrokerIdentity(deps.getProjectPaths(), 3030, 'project', deps);
 
     const exitCode = await runCommand(program, ['down']);
 
@@ -1306,6 +2122,25 @@ describe('registerCoreCommands', () => {
     expect(fs.unlinkSync).toHaveBeenCalledWith(connectionPath);
     expect(fs.unlinkSync).toHaveBeenCalledWith(relaySockPath);
     expect(fs.unlinkSync).toHaveBeenCalledWith(runtimePath);
+  });
+
+  it.each([false, true])('down refuses legacy connection-only ownership (force=%s)', async (force) => {
+    const connectionPath = '/tmp/project/.agentworkforce/relay/connection.json';
+    const fs = createFsMock({ [connectionPath]: connectionFile(3030) });
+    const { program, deps } = createHarness({ fs });
+    expect(await runCommand(program, force ? ['down', '--force'] : ['down'])).toBe(1);
+    expect(vi.mocked(deps.killProcess).mock.calls.filter(([, signal]) => signal !== 0)).toEqual([]);
+    expect(fs.readFileSync(connectionPath, 'utf-8')).toBe(connectionFile(3030));
+    expect(deps.error).toHaveBeenCalledWith(
+      expect.stringContaining('Connection metadata alone cannot authorize a signal.')
+    );
+  });
+
+  it('forced down with no identity reports preservation and does not signal', async () => {
+    const { program, deps } = createHarness();
+    expect(await runCommand(program, ['down', '--force'])).toBeUndefined();
+    expect(deps.log).toHaveBeenCalledWith('No verified orphan broker found; retained existing state.');
+    expect(vi.mocked(deps.killProcess).mock.calls.filter(([, signal]) => signal !== 0)).toEqual([]);
   });
 
   it('down reports not running when connection metadata is missing', async () => {
@@ -1844,6 +2679,7 @@ describe('registerCoreCommands', () => {
       killImpl,
       nowImpl: vi.fn(() => now),
       sleepImpl,
+      configureDependencies: (deps) => enableBackgroundIdentity(deps, 'project', undefined, 5151),
     });
 
     const exitCode = await runCommand(program, ['up', '--background']);

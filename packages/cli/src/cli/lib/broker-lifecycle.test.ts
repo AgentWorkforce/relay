@@ -13,6 +13,7 @@ import {
   resolveNodeIdentityFromSession,
   waitForNodeDelivery,
 } from './broker-lifecycle.js';
+import { brokerIdentityPath, readBrokerIdentities } from './broker-process-identity.js';
 import type { CoreDependencies, CoreRelay } from '../commands/core.js';
 
 describe('isBundledBunExecutableEntrypoint', () => {
@@ -324,13 +325,22 @@ function createUpHarness() {
     api_key: 'test',
     pid: 999999,
   });
-  const createRelay = vi.fn(async () => ({
-    spawn: vi.fn(async () => undefined),
-    getStatus: vi.fn(async () => ({})),
-    shutdown: vi.fn(async () => undefined),
-    workspaceKey: 'rk_test',
-    workspaceId: 'rw_test',
-  }));
+  let lockPath = pathReal.join(dataDir, `broker-${pathReal.basename(projectRoot)}.lock`);
+  const createRelay = vi.fn(async (_projectRoot: string, _port: number, brokerName?: string) => {
+    lockPath = pathReal.join(
+      dataDir,
+      `broker-${(brokerName || pathReal.basename(projectRoot)).replace(/[^\p{Alphabetic}\p{Number}-]/gu, '-')}.lock`
+    );
+    fsReal.writeFileSync(lockPath, 'fixture lock');
+    return {
+      brokerPid: 999999,
+      spawn: vi.fn(async () => undefined),
+      getStatus: vi.fn(async () => ({})),
+      shutdown: vi.fn(async () => undefined),
+      workspaceKey: 'rk_test',
+      workspaceId: 'rw_test',
+    };
+  });
   const exit = vi.fn((code: number) => {
     throw new ExitSignal(code);
   });
@@ -343,11 +353,26 @@ function createUpHarness() {
     loadTeamsConfig: () => null,
     createRelay,
     spawnProcess: vi.fn(),
-    execCommand: vi.fn(async () => ({ stdout: '', stderr: '' })),
+    execCommand: vi.fn(async (command: string) => {
+      if (command === 'LC_ALL=C TZ=UTC ps -p 999999 -o lstart=')
+        return { stdout: 'Thu Sep 10 18:00:00 2026\n', stderr: '' };
+      if (command === 'lsof -nP -a -p 999999 -d txt -FfDi')
+        return { stdout: 'p999999\nftxt\nD0x100\ni1234\n', stderr: '' };
+      if (command === 'lsof -nP -a -p 999999 -FfnDi') {
+        const stat = fsReal.statSync(lockPath, { bigint: true });
+        return {
+          stdout: `p999999\nf10\nD0x${stat.dev.toString(16)}\ni${stat.ino}\nn${fsReal.realpathSync(lockPath)}\n`,
+          stderr: '',
+        };
+      }
+      throw new Error(`Unexpected fixture command: ${command}`);
+    }),
     killProcess: vi.fn(() => {
       throw new Error('not running');
     }),
     fs: {
+      realpathSync: fsReal.realpathSync,
+      statSync: fsReal.statSync,
       existsSync: fsReal.existsSync,
       // The connection file is "written by the broker" — our mock relay writes
       // nothing, so serve it from memory for any connection.json read.
@@ -548,12 +573,12 @@ describe('runUpCommand node-config gating', () => {
     deps.argv = ['bun', '/$bunfs/root/agent-relay', 'node', 'up'];
     deps.cliScript = '/$bunfs/root/agent-relay';
     deps.holdOpen = async () => delay(100);
-    deps.execCommand = vi.fn(async (command: string) => ({
-      stdout: command.includes('--describe')
-        ? '__AGENT_RELAY_NODE_DESCRIPTOR__{"name":"child","capabilities":[]}\n'
-        : '',
-      stderr: '',
-    }));
+    const inspectProcess = deps.execCommand;
+    deps.execCommand = vi.fn(async (command: string) =>
+      command.includes('--describe')
+        ? { stdout: '__AGENT_RELAY_NODE_DESCRIPTOR__{"name":"child","capabilities":[]}\n', stderr: '' }
+        : inspectProcess(command)
+    );
 
     const child = Object.assign(new EventEmitter(), {
       pid: 42,
@@ -728,10 +753,9 @@ describe('runUpCommand workspace precedence', () => {
       relaycastRoute: 'agent37-isolated',
       relaycastBaseUrl: 'https://agent37-cast.agentrelay.com',
     });
-    createRelay.mockImplementationOnce(async () => ({
-      spawn: vi.fn(async () => undefined),
-      getStatus: vi.fn(async () => ({})),
-      shutdown: vi.fn(async () => undefined),
+    const createDefaultRelay = createRelay.getMockImplementation()!;
+    createRelay.mockImplementationOnce(async (...args) => ({
+      ...(await createDefaultRelay(...args)),
       workspaceKey: 'rk_new',
       workspaceId: 'rw_new',
     }));
@@ -754,6 +778,24 @@ describe('runUpCommand workspace precedence', () => {
       .join('\n');
     expect(output).not.toContain('rk_repository');
     expect(output).not.toContain('rk_global');
+  });
+
+  it('uses one trimmed broker name for relay creation, identity persistence, and lock lookup', async () => {
+    const { deps, projectRoot, dataDir, createRelay } = createUpHarness();
+    const paddedName = '  spaced broker  ';
+    const trimmedName = 'spaced broker';
+
+    await runUpCommand({ brokerName: paddedName }, deps);
+
+    expect(createRelay).toHaveBeenCalledWith(projectRoot, 3889, trimmedName, undefined);
+    expect(vi.mocked(createRelay).mock.calls[0]?.[2]).toBe(trimmedName);
+    expect(readBrokerIdentities({ projectRoot, dataDir, teamDir: projectRoot }, deps)).toHaveLength(1);
+    expect(brokerIdentityPath({ projectRoot, dataDir, teamDir: projectRoot }, deps, trimmedName)).toContain(
+      'broker-identity-'
+    );
+    expect(
+      brokerIdentityPath({ projectRoot, dataDir, teamDir: projectRoot }, deps, trimmedName)
+    ).not.toContain(paddedName);
   });
 });
 

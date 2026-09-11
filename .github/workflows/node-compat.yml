@@ -43,6 +43,11 @@ jobs:
           node --version
           npm --version
 
+      - name: Install native process identity test tools
+        run: |
+          apt-get update
+          apt-get install -y --no-install-recommends lsof procps
+
       - name: Install dependencies
         run: npm ci
 
