@@ -188,7 +188,7 @@ export function correlate({
         e.name === actor &&
         ['agent_exited', 'delivery_failed'].includes(e.kind) &&
         Date.parse(e.observedAt) >= Date.parse(idle.at(-1)?.observedAt ?? stimulus.createdAt) &&
-        Date.parse(e.observedAt) <= Date.parse(action.created_at)
+        Date.parse(e.observedAt) <= deadline
     )
   )
     return { pass: false, missing: 'uninterrupted receiver lifecycle', ingestId: ingest.id };

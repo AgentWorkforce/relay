@@ -329,3 +329,12 @@ test('strict fixture assertion rejects incomplete external schemas and mismatche
     }
   }
 });
+
+for (const kind of ['agent_exited', 'delivery_failed'])
+  test(`rejects ${kind} after ACK within response deadline`, () => {
+    const f = fixture();
+    f.events.push({ kind, name: f.actor, observedAt: '2026-09-08T12:00:06Z' });
+    assert.equal(correlate(f).pass, false);
+    f.events.at(-1).observedAt = '2026-09-08T12:03:00Z';
+    assert.equal(correlate(f).pass, true);
+  });
