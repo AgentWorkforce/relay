@@ -17,7 +17,8 @@ if (arm !== 'base' && arm !== 'head') {
   throw new Error(`RELAY_PR_PROOF_ARM must be base or head, received ${JSON.stringify(arm)}.`);
 }
 
-const expectedSha = arm === 'base' ? process.env.RELAY_PR_PROOF_BASE_SHA : process.env.RELAY_PR_PROOF_HEAD_SHA;
+const expectedSha =
+  arm === 'base' ? process.env.RELAY_PR_PROOF_BASE_SHA : process.env.RELAY_PR_PROOF_HEAD_SHA;
 if (!expectedSha) throw new Error(`Missing expected ${arm} SHA.`);
 const targetSha = execFileSync('git', ['-C', targetDir, 'rev-parse', 'HEAD'], { encoding: 'utf8' }).trim();
 if (targetSha !== expectedSha) {
@@ -35,22 +36,28 @@ const logsDir = path.join(workDir, 'logs');
 const journalPath = path.join(stateDir, 'team', 'worker-logs', '.cursor-mcp-leases.json');
 const cwd = path.join(workDir, 'cwd');
 const fakeBinDir = path.join(workDir, 'fake-bin');
-const fakeMcp = path.join(fakeBinDir, process.platform === 'win32' ? 'agent-relay-mcp.cmd' : 'agent-relay-mcp');
+const fakeMcp = path.join(
+  fakeBinDir,
+  process.platform === 'win32' ? 'agent-relay-mcp.cmd' : 'agent-relay-mcp'
+);
 await mkdir(stateDir, { recursive: true });
 await mkdir(logsDir, { recursive: true });
 await mkdir(path.join(cwd, '.cursor'), { recursive: true });
 await mkdir(fakeBinDir, { recursive: true });
 const fakeCursor = path.join(fakeBinDir, process.platform === 'win32' ? 'cursor.cmd' : 'cursor');
 const fakeAgent = path.join(fakeBinDir, process.platform === 'win32' ? 'agent.cmd' : 'agent');
-const fakeCursorAgent = path.join(fakeBinDir, process.platform === 'win32' ? 'cursor-agent.cmd' : 'cursor-agent');
+const fakeCursorAgent = path.join(
+  fakeBinDir,
+  process.platform === 'win32' ? 'cursor-agent.cmd' : 'cursor-agent'
+);
 if (process.platform === 'win32') {
   await writeFile(fakeCursor, '@echo off\r\necho -^>pty:ready\r\nping 127.0.0.1 -n 601 >NUL\r\n');
   await writeFile(fakeAgent, '@echo off\r\necho -^>pty:ready\r\nping 127.0.0.1 -n 601 >NUL\r\n');
   await writeFile(fakeCursorAgent, '@echo off\r\necho -^>pty:ready\r\nping 127.0.0.1 -n 601 >NUL\r\n');
 } else {
-  await writeFile(fakeCursor, '#!/bin/sh\nprintf \'->pty:ready\\n\'\nexec sleep 600\n', { mode: 0o755 });
-  await writeFile(fakeAgent, '#!/bin/sh\nprintf \'->pty:ready\\n\'\nexec sleep 600\n', { mode: 0o755 });
-  await writeFile(fakeCursorAgent, '#!/bin/sh\nprintf \'->pty:ready\\n\'\nexec sleep 600\n', { mode: 0o755 });
+  await writeFile(fakeCursor, "#!/bin/sh\nprintf '->pty:ready\\n'\nexec sleep 600\n", { mode: 0o755 });
+  await writeFile(fakeAgent, "#!/bin/sh\nprintf '->pty:ready\\n'\nexec sleep 600\n", { mode: 0o755 });
+  await writeFile(fakeCursorAgent, "#!/bin/sh\nprintf '->pty:ready\\n'\nexec sleep 600\n", { mode: 0o755 });
 }
 const fakeMcpServer = path.join(fakeBinDir, 'fake-agent-relay-mcp.mjs');
 await writeFile(
@@ -64,7 +71,7 @@ await writeFile(
     `    ? { protocolVersion: '2024-11-05', capabilities: { tools: {} }, serverInfo: { name: 'fake-agent-relay', version: '1.0.0' } }\n` +
     `    : request.method === 'tools/list' ? { tools: ['send_dm', 'post_message', 'check_inbox'].map((name) => ({ name, description: 'deterministic proof stub', inputSchema: { type: 'object' } })) } : {};\n` +
     `  process.stdout.write(JSON.stringify({ jsonrpc: '2.0', id: request.id, result }) + '\\n');\n` +
-    `});\n`,
+    `});\n`
 );
 if (process.platform === 'win32') {
   await writeFile(fakeMcp, `@echo off\r\nnode "%~dp0fake-agent-relay-mcp.mjs"\r\n`);
@@ -99,40 +106,54 @@ let brokerUrl;
 let brokerStderr = '';
 try {
   const previousBrokerUrl = brokerUrl;
-  broker = spawn(binaryPath, ['init', '--api-port', '0', '--api-bind', '127.0.0.1', '--state-dir', stateDir], {
-    cwd: workDir,
-    env: brokerEnv,
-    stdio: ['ignore', 'pipe', 'pipe'],
-  });
+  broker = spawn(
+    binaryPath,
+    ['init', '--api-port', '0', '--api-bind', '127.0.0.1', '--state-dir', stateDir],
+    {
+      cwd: workDir,
+      env: brokerEnv,
+      stdio: ['ignore', 'pipe', 'pipe'],
+    }
+  );
   broker.stderr.on('data', (chunk) => {
     brokerStderr += chunk.toString('utf8').slice(-4096);
   });
   const connectionPath = path.join(stateDir, 'connection.json');
-  brokerUrl = await waitFor(async () => {
-    if (broker.exitCode !== null) {
-      throw new Error(`broker exited early with code ${broker.exitCode}: ${redactDiagnostic(brokerStderr)}`);
-    }
-    const connectionText = await readFile(connectionPath, 'utf8').catch(() => null);
-    if (!connectionText) return null;
-    let connection;
-    try {
-      connection = JSON.parse(connectionText);
-    } catch {
-      return null;
-    }
-    return connection.url === previousBrokerUrl ? null : connection.url;
-  }, 30_000, 'broker connection');
+  brokerUrl = await waitFor(
+    async () => {
+      if (broker.exitCode !== null) {
+        throw new Error(
+          `broker exited early with code ${broker.exitCode}: ${redactDiagnostic(brokerStderr)}`
+        );
+      }
+      const connectionText = await readFile(connectionPath, 'utf8').catch(() => null);
+      if (!connectionText) return null;
+      let connection;
+      try {
+        connection = JSON.parse(connectionText);
+      } catch {
+        return null;
+      }
+      return connection.url === previousBrokerUrl ? null : connection.url;
+    },
+    30_000,
+    'broker connection'
+  );
 
   const api = brokerClient(brokerUrl, brokerEnv.RELAY_BROKER_API_KEY);
   await waitFor(
     () => {
       if (broker.exitCode !== null) {
-        throw new Error(`broker exited before API readiness with code ${broker.exitCode}: ${redactDiagnostic(brokerStderr)}`);
+        throw new Error(
+          `broker exited before API readiness with code ${broker.exitCode}: ${redactDiagnostic(brokerStderr)}`
+        );
       }
-      return api('GET', '/api/status').then((response) => response.status < 500).catch(() => false);
+      return api('GET', '/api/status')
+        .then((response) => response.status < 500)
+        .catch(() => false);
     },
     10_000,
-    'broker api',
+    'broker api'
   );
 
   const workerName = 'cursor-cleanup-worker';
@@ -148,60 +169,84 @@ try {
     throw new Error(`spawn failed: ${JSON.stringify(spawnResponse.body).slice(0, 500)}`);
   }
 
-  const generated = await waitFor(async () => {
-    const contents = await readFile(cursorPath, 'utf8').catch(() => null);
-    if (!contents) return null;
-    const expected = arm === 'base'
-      ? [relaycast.workspaceKey, relaycast.nodeToken].some((secret) => contents.includes(secret))
-      : contents.includes('${env:RELAY_API_KEY}');
-    return expected ? contents : null;
-  }, 20_000, 'Cursor MCP file to be generated');
+  const generated = await waitFor(
+    async () => {
+      const contents = await readFile(cursorPath, 'utf8').catch(() => null);
+      if (!contents) return null;
+      const expected =
+        arm === 'base'
+          ? [relaycast.workspaceKey, relaycast.nodeToken].some((secret) => contents.includes(secret))
+          : contents.includes('${env:RELAY_API_KEY}');
+      return expected ? contents : null;
+    },
+    20_000,
+    'Cursor MCP file to be generated'
+  );
 
   const leakedCredential = [relaycast.workspaceKey, relaycast.nodeToken].some((secret) =>
-    generated.includes(secret),
+    generated.includes(secret)
   );
 
   const beforeCrash = generated;
   broker.kill('SIGKILL');
   await waitForProcessExit(broker, 10_000, 'broker crash');
-  const journalAfterCrash = arm === 'head'
-    ? await waitFor(() => readFile(journalPath, 'utf8').catch(() => null), 5_000, 'Cursor MCP journal after crash')
-    : await readFile(journalPath, 'utf8').catch(() => null);
+  const journalAfterCrash =
+    arm === 'head'
+      ? await waitFor(
+          () => readFile(journalPath, 'utf8').catch(() => null),
+          5_000,
+          'Cursor MCP journal after crash'
+        )
+      : await readFile(journalPath, 'utf8').catch(() => null);
 
   const oldBrokerUrl = brokerUrl;
-  broker = spawn(binaryPath, ['init', '--api-port', '0', '--api-bind', '127.0.0.1', '--state-dir', stateDir], {
-    cwd: workDir,
-    env: brokerEnv,
-    stdio: ['ignore', 'pipe', 'pipe'],
-  });
+  broker = spawn(
+    binaryPath,
+    ['init', '--api-port', '0', '--api-bind', '127.0.0.1', '--state-dir', stateDir],
+    {
+      cwd: workDir,
+      env: brokerEnv,
+      stdio: ['ignore', 'pipe', 'pipe'],
+    }
+  );
   broker.stderr.on('data', (chunk) => {
     brokerStderr += chunk.toString('utf8').slice(-4096);
   });
-  brokerUrl = await waitFor(async () => {
-    if (broker.exitCode !== null) {
-      throw new Error(`broker restarted but exited with code ${broker.exitCode}: ${redactDiagnostic(brokerStderr)}`);
-    }
-    const connectionText = await readFile(connectionPath, 'utf8').catch(() => null);
-    if (!connectionText) return null;
-    let connection;
-    try {
-      connection = JSON.parse(connectionText);
-    } catch {
-      return null;
-    }
-    return connection.url === oldBrokerUrl ? null : connection.url;
-  }, 30_000, 'broker restart');
+  brokerUrl = await waitFor(
+    async () => {
+      if (broker.exitCode !== null) {
+        throw new Error(
+          `broker restarted but exited with code ${broker.exitCode}: ${redactDiagnostic(brokerStderr)}`
+        );
+      }
+      const connectionText = await readFile(connectionPath, 'utf8').catch(() => null);
+      if (!connectionText) return null;
+      let connection;
+      try {
+        connection = JSON.parse(connectionText);
+      } catch {
+        return null;
+      }
+      return connection.url === oldBrokerUrl ? null : connection.url;
+    },
+    30_000,
+    'broker restart'
+  );
 
   const restartedApi = brokerClient(brokerUrl, brokerEnv.RELAY_BROKER_API_KEY);
   await waitFor(
     () => {
       if (broker.exitCode !== null) {
-        throw new Error(`restarted broker exited before API readiness with code ${broker.exitCode}: ${redactDiagnostic(brokerStderr)}`);
+        throw new Error(
+          `restarted broker exited before API readiness with code ${broker.exitCode}: ${redactDiagnostic(brokerStderr)}`
+        );
       }
-      return restartedApi('GET', '/api/status').then((response) => response.status < 500).catch(() => false);
+      return restartedApi('GET', '/api/status')
+        .then((response) => response.status < 500)
+        .catch(() => false);
     },
     30_000,
-    'restarted broker api',
+    'restarted broker api'
   );
 
   const releaseResponse = await restartedApi('DELETE', `/api/spawned/${workerName}`);
@@ -215,14 +260,28 @@ try {
   let outcome;
   let signature;
   let details;
-  if (arm === 'base' && leakedCredential && afterRelease === beforeCrash && !journalAfter && !journalAfterCrash) {
+  if (
+    arm === 'base' &&
+    leakedCredential &&
+    afterRelease === beforeCrash &&
+    !journalAfter &&
+    !journalAfterCrash
+  ) {
     outcome = 'bug';
     signature = 'cursor_mcp_credentials_leak_and_no_recovery';
-    details = 'The base broker wrote raw credentials into Cursor MCP state and left that generated state behind after a crash/restart/release cycle without a recovery journal.';
-  } else if (arm === 'head' && !leakedCredential && afterRelease === original.toString('utf8') && journalAfterCrash && !journalAfter) {
+    details =
+      'The base broker wrote raw credentials into Cursor MCP state and left that generated state behind after a crash/restart/release cycle without a recovery journal.';
+  } else if (
+    arm === 'head' &&
+    !leakedCredential &&
+    afterRelease === original.toString('utf8') &&
+    journalAfterCrash &&
+    !journalAfter
+  ) {
     outcome = 'fixed';
     signature = 'cursor_mcp_state_restores_or_removes_cleanly';
-    details = 'The head broker used environment placeholders, restored the original Cursor MCP file on release after restart, and removed the retained lease state.';
+    details =
+      'The head broker used environment placeholders, restored the original Cursor MCP file on release after restart, and removed the retained lease state.';
   } else {
     throw new Error(
       `Unexpected Cursor MCP cleanup observation: ${JSON.stringify({ arm, leakedCredential, restored: afterRelease === original.toString('utf8'), journalAfterCrash: Boolean(journalAfterCrash), journalAfterRelease: Boolean(journalAfter) })}`
@@ -230,7 +289,10 @@ try {
   }
 
   await mkdir(path.dirname(resultPath), { recursive: true });
-  await writeFile(resultPath, `${JSON.stringify({ version: 1, caseId: CASE_ID, arm, outcome, signature, details })}\n`);
+  await writeFile(
+    resultPath,
+    `${JSON.stringify({ version: 1, caseId: CASE_ID, arm, outcome, signature, details })}\n`
+  );
 } finally {
   if (broker?.pid) {
     try {
@@ -256,12 +318,18 @@ function requiredExecutable(name) {
 function redactDiagnostic(value) {
   return String(value)
     .replace(/(rk_|at_)[A-Za-z0-9_-]+/g, '[REDACTED_TOKEN]')
-    .replace(/(RELAY_API_KEY|RELAY_WORKSPACE_KEY|RELAY_NODE_TOKEN|RELAY_BROKER_API_KEY)=\S+/g, '$1=[REDACTED]');
+    .replace(
+      /(RELAY_API_KEY|RELAY_WORKSPACE_KEY|RELAY_NODE_TOKEN|RELAY_BROKER_API_KEY)=\S+/g,
+      '$1=[REDACTED]'
+    );
 }
 
 function isWithin(directory, candidate) {
   const relative = path.relative(directory, candidate);
-  return relative === '' || (!relative.startsWith(`..${path.sep}`) && relative !== '..' && !path.isAbsolute(relative));
+  return (
+    relative === '' ||
+    (!relative.startsWith(`..${path.sep}`) && relative !== '..' && !path.isAbsolute(relative))
+  );
 }
 
 async function waitFor(check, timeoutMs, label) {
@@ -280,7 +348,9 @@ async function waitForProcessExit(child, timeoutMs, label) {
   if (child.exitCode !== null) return;
   await Promise.race([
     new Promise((resolve) => child.once('exit', resolve)),
-    new Promise((_, reject) => setTimeout(() => reject(new Error(`Timed out waiting for ${label}`)), timeoutMs)),
+    new Promise((_, reject) =>
+      setTimeout(() => reject(new Error(`Timed out waiting for ${label}`)), timeoutMs)
+    ),
   ]);
 }
 
@@ -339,37 +409,45 @@ async function startRelaycastStub() {
         },
       };
     } else if (request.url.startsWith('/v1/agents/')) {
-      payload = request.url === '/v1/agents/release'
-        ? {
-          ok: true,
-          data: {
-            status: 'completed',
-            invocation_id: 'inv_release_1753',
-            action_name: 'release',
-            handler_agent_id: null,
-            handler_node_id: null,
-            dispatched_node_id: null,
-            input: body,
-            created_at: '2025-01-01T00:00:00Z',
-          },
-        }
-        : {
-        ok: true,
-        data: {
-          id: 'agent_relayflow_1753',
-          name: 'cursor-cleanup-worker',
-          token: nodeToken,
-          status: 'online',
-          workspace_id: 'rw_relayflow_1753',
-          created_at: '2025-01-01T00:00:00Z',
-          metadata: {},
-          channels: [{ name: 'general' }, { name: 'engineering' }],
-        },
-      };
+      payload =
+        request.url === '/v1/agents/release'
+          ? {
+              ok: true,
+              data: {
+                status: 'completed',
+                invocation_id: 'inv_release_1753',
+                action_name: 'release',
+                handler_agent_id: null,
+                handler_node_id: null,
+                dispatched_node_id: null,
+                input: body,
+                created_at: '2025-01-01T00:00:00Z',
+              },
+            }
+          : {
+              ok: true,
+              data: {
+                id: 'agent_relayflow_1753',
+                name: 'cursor-cleanup-worker',
+                token: nodeToken,
+                status: 'online',
+                workspace_id: 'rw_relayflow_1753',
+                created_at: '2025-01-01T00:00:00Z',
+                metadata: {},
+                channels: [{ name: 'general' }, { name: 'engineering' }],
+              },
+            };
     } else if (request.method === 'GET' && request.url.endsWith('/members')) {
       payload = {
         ok: true,
-        data: [{ agent_id: 'agent_relayflow_1753', agent_name: 'cursor-cleanup-worker', role: 'member', joined_at: '2025-01-01T00:00:00Z' }],
+        data: [
+          {
+            agent_id: 'agent_relayflow_1753',
+            agent_name: 'cursor-cleanup-worker',
+            role: 'member',
+            joined_at: '2025-01-01T00:00:00Z',
+          },
+        ],
       };
     } else if (request.url === '/v1/channels' || request.url.startsWith('/v1/channels/')) {
       payload = {
