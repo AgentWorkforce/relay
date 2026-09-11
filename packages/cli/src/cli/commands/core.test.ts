@@ -2233,6 +2233,47 @@ describe('registerCoreCommands', () => {
     expect(sdkStatusClient.disconnect).toHaveBeenCalled();
   });
 
+  it('status visibly reports local-only degradation and reconciliation backlog', async () => {
+    sdkStatusClient.getStatus.mockResolvedValue({
+      agent_count: 1,
+      pending_delivery_count: 2,
+      mode: 'local_only',
+      degraded: { reconciliation: { configured: true, connected: false, pending_records: 3 } },
+    } as Awaited<ReturnType<typeof sdkStatusClient.getStatus>>);
+    const fs = createFsMock({ '/tmp/project/.agentworkforce/relay/connection.json': connectionFile(4242) });
+    const { program, deps } = createHarness({ fs });
+    await runCommand(program, ['status']);
+    expect(deps.log).toHaveBeenCalledWith('Status: DEGRADED (LOCAL ONLY)');
+    expect(deps.log).not.toHaveBeenCalledWith('Status: RUNNING');
+    expect(deps.warn).toHaveBeenCalledWith(
+      expect.stringContaining('remote delivery and remote attachment: DISABLED')
+    );
+    expect(deps.log).toHaveBeenCalledWith('Reconciliation: disconnected; pending records: 3');
+  });
+
+  it('status retains visible degradation when the runtime status request fails', async () => {
+    sdkStatusClient.getStatus.mockRejectedValue(new Error('runtime busy'));
+    const connection = { ...JSON.parse(connectionFile(4242)), operation_mode: 'local_only' };
+    const fs = createFsMock({
+      '/tmp/project/.agentworkforce/relay/connection.json': JSON.stringify(connection),
+    });
+    const { program, deps } = createHarness({ fs });
+    await runCommand(program, ['status']);
+    expect(deps.log).toHaveBeenCalledWith('Status: DEGRADED (LOCAL ONLY)');
+    expect(deps.log).not.toHaveBeenCalledWith('Status: RUNNING');
+  });
+
+  it('up --local-only skips fleet readiness and capability providers while spawning local agents', async () => {
+    const { program, deps, relay } = createHarness({
+      teamsConfig: { agents: [{ name: 'local-worker', cli: 'cat' }] },
+    });
+    await runCommand(program, ['up', '--local-only', '--spawn']);
+    expect(deps.env.AGENT_RELAY_LOCAL_ONLY).toBe('1');
+    expect(deps.warn).toHaveBeenCalledWith(expect.stringContaining('DEGRADED'));
+    expect(relay.spawn).toHaveBeenCalledWith(expect.objectContaining({ name: 'local-worker' }));
+    expect(deps.error).not.toHaveBeenCalledWith(expect.stringContaining('Refusing to auto-spawn'));
+  });
+
   it('status cleans stale connection metadata when broker is not running', async () => {
     const connectionPath = '/tmp/project/.agentworkforce/relay/connection.json';
     const fs = createFsMock({ [connectionPath]: connectionFile(9999) });

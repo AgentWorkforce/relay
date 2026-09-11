@@ -242,6 +242,11 @@ function applyResolvedNodeSession(
  * delegating to the shared broker `up` flow.
  */
 async function runNodeUp(options: UpCommandOptions, deps: NodeCommandDependencies): Promise<void> {
+  if (options.localOnly || deps.core.env.AGENT_RELAY_LOCAL_ONLY === '1') {
+    await runUpCommand({ ...options, localOnly: true, discoverConfig: false }, deps.core);
+    return;
+  }
+
   const env = deps.core.env;
   // Fleet nodes may be started concurrently on one machine. Let the broker
   // bind an ephemeral API port atomically unless the operator explicitly

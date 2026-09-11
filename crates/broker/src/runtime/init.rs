@@ -2,6 +2,26 @@ use super::*;
 use std::net::{IpAddr, SocketAddr};
 
 pub(crate) async fn run_init(cmd: InitCommand, telemetry: TelemetryClient) -> Result<()> {
+    let local_only =
+        cmd.local_only || std::env::var("AGENT_RELAY_LOCAL_ONLY").as_deref() == Ok("1");
+    if local_only {
+        anyhow::ensure!(
+            cmd.persist || cmd.state_dir.is_some(),
+            "local-only mode requires --persist or --state-dir for durable delivery state"
+        );
+        let bind: IpAddr = unbracket_ipv6(cmd.api_bind.trim())
+            .parse()
+            .context("local-only mode requires a loopback IP bind address")?;
+        anyhow::ensure!(
+            bind.is_loopback(),
+            "local-only mode requires a loopback API bind address"
+        );
+        anyhow::ensure!(
+            std::env::var("RELAY_WORKSPACES_JSON").map_or(true, |v| v.trim().is_empty()),
+            "local-only mode supports one workspace key; unset RELAY_WORKSPACES_JSON"
+        );
+        eprintln!("{}", super::degraded::WARNING);
+    }
     let broker_start = Instant::now();
     let startup_debug = startup_debug_enabled();
     let agent_spawn_count: u32 = 0;
@@ -127,7 +147,8 @@ pub(crate) async fn run_init(cmd: InitCommand, telemetry: TelemetryClient) -> Re
     let relay_ready = Arc::new(Notify::new());
     let relay_ready_state: Arc<RwLock<Option<RelayReadyState>>> = Arc::new(RwLock::new(None));
     let (api_tx, api_rx) = mpsc::channel::<ListenApiRequest>(32);
-    let bind_addr = format!("{}:{}", cmd.api_bind, cmd.api_port);
+    let api_host = bracket_ipv6_host(unbracket_ipv6(cmd.api_bind.trim()));
+    let bind_addr = format!("{}:{}", api_host, cmd.api_port);
     log_startup_phase(
         startup_debug,
         broker_start,
@@ -141,23 +162,24 @@ pub(crate) async fn run_init(cmd: InitCommand, telemetry: TelemetryClient) -> Re
     log_startup_phase(
         startup_debug,
         broker_start,
-        format!("API listener bound on {}:{}", cmd.api_bind, actual_port),
+        format!("API listener bound on {}:{}", api_host, actual_port),
     );
     // Machine-readable on stdout (SDK parses this to discover the port).
     // Diagnostic logs stay on stderr via tracing/eprintln.
     println!(
         "[agent-relay] API listening on http://{}:{}",
-        cmd.api_bind, actual_port
+        api_host, actual_port
     );
 
     // Write connection file so CLI commands can find this broker.
     let connection_dir = paths.state.parent().unwrap();
     let connection_path = connection_dir.join("connection.json");
     let connection = json!({
-        "url": format!("http://{}:{}", cmd.api_bind, actual_port),
+        "url": format!("http://{}:{}", api_host, actual_port),
         "port": actual_port,
         "api_key": &api_key,
         "pid": std::process::id(),
+        "operation_mode": if local_only { "local_only" } else { "normal" },
     });
     if let Ok(json_str) = serde_json::to_string_pretty(&connection) {
         if let Ok(mut tmp) = tempfile::NamedTempFile::new_in(connection_dir) {
@@ -173,24 +195,29 @@ pub(crate) async fn run_init(cmd: InitCommand, telemetry: TelemetryClient) -> Re
         tokio::sync::oneshot::channel::<tokio::net::TcpListener>();
     let relay_ready_for_startup = relay_ready.clone();
     tokio::spawn(async move {
-        let listener = serve_startup_api_until_ready(listener, relay_ready_for_startup).await;
+        let listener =
+            serve_startup_api_until_ready(listener, relay_ready_for_startup, local_only).await;
         let _ = startup_listener_tx.send(listener);
     });
 
     log_startup_phase(startup_debug, broker_start, "calling connect_relay");
-    let relay = connect_relay(RelaySessionOptions {
-        paths: &paths,
-        requested_name: &resolved_name,
-        channels: channels_from_csv(&cmd.channels),
-        // Ephemeral brokers are short-lived and frequently restarted by tests/SDK
-        // callers. Use non-strict registration so stale Relaycast identities from
-        // prior runs don't hard-fail startup.
-        strict_name: cmd.persist,
-        agent_type: Some(agent_type_ref),
-        read_mcp_identity: true,
-        runtime_cwd: &runtime_cwd,
-    })
-    .await?;
+    let relay = if local_only {
+        super::degraded::local_session(&resolved_name)
+    } else {
+        connect_relay(RelaySessionOptions {
+            paths: &paths,
+            requested_name: &resolved_name,
+            channels: channels_from_csv(&cmd.channels),
+            // Ephemeral brokers are short-lived and frequently restarted by tests/SDK
+            // callers. Use non-strict registration so stale Relaycast identities from
+            // prior runs don't hard-fail startup.
+            strict_name: cmd.persist,
+            agent_type: Some(agent_type_ref),
+            read_mcp_identity: true,
+            runtime_cwd: &runtime_cwd,
+        })
+        .await?
+    };
     log_startup_phase(startup_debug, broker_start, "connect_relay completed");
 
     let RelaySession {
@@ -235,7 +262,11 @@ pub(crate) async fn run_init(cmd: InitCommand, telemetry: TelemetryClient) -> Re
         hosted_agent_event_rx,
     ));
     let node_workspace_id = default_workspace.workspace_id.as_str().to_string();
-    let node_id = resolve_broker_node_id(&node_workspace_id);
+    let node_id = if local_only {
+        format!("local-{}", Uuid::new_v4().simple())
+    } else {
+        resolve_broker_node_id(&node_workspace_id)
+    };
     // The node registers under its resolved instance name (--instance-name, the
     // legacy --name/--broker-name alias, or AGENT_RELAY_BROKER_NAME), falling back
     // to the machine hostname only when none is set. Deriving this from the raw
@@ -271,8 +302,11 @@ pub(crate) async fn run_init(cmd: InitCommand, telemetry: TelemetryClient) -> Re
     // node-control client mints one in the background (it holds the same minter)
     // and publishes it to `session_node_token`, so realtime delivery still comes
     // online without gating startup on it.
-    let node_token =
-        resolve_cached_node_token(&node_id, &node_workspace_id, node_base_url.as_deref());
+    let node_token = if local_only {
+        None
+    } else {
+        resolve_cached_node_token(&node_id, &node_workspace_id, node_base_url.as_deref())
+    };
     let node_manifest = bootstrap_node_manifest(&node_name, &node_id, &broker_version);
     // Retain the node name for the runtime: the HTTP `bind_agent_to_node`
     // fallback (used when node-control `agent.register` is unavailable) binds
@@ -320,40 +354,47 @@ pub(crate) async fn run_init(cmd: InitCommand, telemetry: TelemetryClient) -> Re
     let (terminal_event_tx, terminal_event_rx) =
         mpsc::channel::<crate::terminal_control::TerminalControlEvent>(1024);
     let node_delivery_token_present = node_token.is_some();
-    tokio::spawn(crate::node_control::run_node_control_client(
-        crate::node_control::FleetControlConfig {
-            ws_url: fleet_ws_url,
-            node_token,
-            node_id,
-            node_name,
-            broker_version,
-            token_minter,
-            session_token: Some(session_node_token.clone()),
-            read_idle_timeout: None,
-        },
-        fleet_control_rx,
-        fleet_event_tx,
-    ));
-    tokio::spawn(crate::terminal_control::run_terminal_control_client(
-        crate::terminal_control::TerminalControlConfig {
-            ws_url: terminal_ws_url,
-            session_token: session_node_token.clone(),
-            read_idle_timeout: None,
-        },
-        terminal_control_rx,
-        terminal_event_tx,
-    ));
-    // Register this node unconditionally on connect (no sidecar required). This
-    // is the only command that flips the control client out of its idle state
-    // and into the connect loop, so the broker enrolls every startup.
-    if let Err(error) = fleet_control_tx
-        .send(FleetControlCommand::RegisterNode {
-            manifest: node_manifest,
-            resume_cursor: None,
-        })
-        .await
-    {
-        tracing::warn!(error = %error, "failed to queue node.register at startup");
+    if !local_only {
+        tokio::spawn(crate::node_control::run_node_control_client(
+            crate::node_control::FleetControlConfig {
+                ws_url: fleet_ws_url,
+                node_token,
+                node_id,
+                node_name,
+                broker_version,
+                token_minter,
+                session_token: Some(session_node_token.clone()),
+                read_idle_timeout: None,
+            },
+            fleet_control_rx,
+            fleet_event_tx,
+        ));
+        tokio::spawn(crate::terminal_control::run_terminal_control_client(
+            crate::terminal_control::TerminalControlConfig {
+                ws_url: terminal_ws_url,
+                session_token: session_node_token.clone(),
+                read_idle_timeout: None,
+            },
+            terminal_control_rx,
+            terminal_event_tx,
+        ));
+        // Register this node unconditionally on connect (no sidecar required). This
+        // is the only command that flips the control client out of its idle state
+        // and into the connect loop, so the broker enrolls every startup.
+        if let Err(error) = fleet_control_tx
+            .send(FleetControlCommand::RegisterNode {
+                manifest: node_manifest,
+                resume_cursor: None,
+            })
+            .await
+        {
+            tracing::warn!(error = %error, "failed to queue node.register at startup");
+        }
+    } else {
+        drop(fleet_control_rx);
+        drop(fleet_event_tx);
+        drop(terminal_control_rx);
+        drop(terminal_event_tx);
     }
     let workspace_memberships: Vec<WorkspaceMembershipSummary> = workspaces
         .iter()
@@ -384,18 +425,52 @@ pub(crate) async fn run_init(cmd: InitCommand, telemetry: TelemetryClient) -> Re
     let (events_tx, _events_rx) = broadcast::channel::<String>(512);
     let replay_buffer = ReplayBuffer::new(DEFAULT_REPLAY_CAPACITY);
 
+    let degraded = if local_only {
+        Some(super::degraded::DegradedState::start(
+            &paths,
+            &resolved_name,
+        )?)
+    } else {
+        None
+    };
+    // A normal restart also drains retained audit records without replaying
+    // them as messages or changing the normal broker capability state. A
+    // backlog that cannot be reconciled must not block normal startup.
+    let _previous_local_reconciliation =
+        if !local_only && paths.state.with_extension("local-outbox.json").exists() {
+            match super::degraded::DegradedState::start(&paths, &resolved_name) {
+                Ok(reconciliation) => Some(reconciliation),
+                Err(error) => {
+                    eprintln!(
+                        "[agent-relay] local audit backlog retained without reconciliation: {error}"
+                    );
+                    None
+                }
+            }
+        } else {
+            None
+        };
     let ready_router = listen_api_router(ListenApiConfig {
+        local_only,
         tx: api_tx.clone(),
         events_tx: events_tx.clone(),
         replay_buffer: replay_buffer.clone(),
-        workspace_key: Some(relay_workspace_key.clone()),
+        workspace_key: (!local_only).then(|| relay_workspace_key.clone()),
         relay_base_url: configured_base.clone(),
-        memberships: workspace_memberships.clone(),
-        default_workspace_id: default_workspace_id.clone(),
+        memberships: if local_only {
+            vec![]
+        } else {
+            workspace_memberships.clone()
+        },
+        default_workspace_id: if local_only {
+            None
+        } else {
+            default_workspace_id.clone()
+        },
         node_id: session_node_id,
         node_name: session_node_name,
         node_token: session_node_token,
-        persist: cmd.persist,
+        persist: paths.persist,
     });
     {
         let mut ready = relay_ready_state.write().await;
@@ -524,6 +599,11 @@ pub(crate) async fn run_init(cmd: InitCommand, telemetry: TelemetryClient) -> Re
         ));
     }
 
+    if local_only {
+        worker_env.retain(|(key, _)| key == "AGENT_RELAY_RESULT_URL");
+        worker_env.push(("AGENT_RELAY_LOCAL_ONLY".into(), "1".into()));
+    }
+
     let (sdk_out_tx, mut sdk_out_rx) = mpsc::channel::<ProtocolEnvelope<Value>>(1024);
     let events_tx_for_stdout = events_tx.clone();
     let replay_buffer_for_stdout = replay_buffer.clone();
@@ -643,7 +723,7 @@ pub(crate) async fn run_init(cmd: InitCommand, telemetry: TelemetryClient) -> Re
     // Owner lease: in ephemeral mode, the broker shuts down if the SDK
     // doesn't renew the lease within this duration. Replaces stdin EOF
     // detection. Disabled in persist mode.
-    let lease_duration = if cmd.persist {
+    let lease_duration = if paths.persist {
         None
     } else {
         Some(Duration::from_secs(120))
@@ -661,7 +741,8 @@ pub(crate) async fn run_init(cmd: InitCommand, telemetry: TelemetryClient) -> Re
     let mut sigterm = tokio::signal::windows::ctrl_shutdown()?;
 
     let runtime = BrokerRuntime {
-        persist: cmd.persist,
+        degraded,
+        persist: paths.persist,
         broker_start,
         agent_spawn_count,
         paths,

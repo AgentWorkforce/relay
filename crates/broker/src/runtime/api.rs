@@ -270,6 +270,15 @@ fn observer_token_filters_are_empty(filters: &ObserverTokenFilters) -> bool {
 
 impl BrokerRuntime {
     pub(super) async fn handle_api_request(&mut self, req: ListenApiRequest) {
+        let req = if self.degraded.is_some() {
+            match self.handle_local_request(req).await {
+                Some(req) => req,
+                None => return,
+            }
+        } else {
+            req
+        };
+        let local_only = self.degraded.is_some();
         let paths = &self.paths;
         let state = &mut self.state;
         let workspaces = &self.workspaces;
@@ -354,7 +363,7 @@ impl BrokerRuntime {
                     let _ = reply.send(Err(format!("agent '{name}' already exists")));
                     return;
                 }
-                let owns_identity = agent_token.is_none();
+                let owns_identity = !local_only && agent_token.is_none();
                 let effective_channels = channels.unwrap_or_else(default_spawn_channels);
                 let effective_channels = match super::relaycast_events::relaycast_spawn_channels(
                     &json!({"channels": effective_channels}),
@@ -386,6 +395,10 @@ impl BrokerRuntime {
                         return;
                     }
                 };
+                if local_only && agent_token.is_some() {
+                    let _ = reply.send(Err("DEGRADED: supplied Relaycast agent tokens are unsupported in local-only mode".into()));
+                    return;
+                }
                 let mut preregistration_warning: Option<String> = None;
                 // Caller-supplied agent_token is authoritative. In fleet mode it
                 // was minted by the node control connection, and the worker must
@@ -396,7 +409,10 @@ impl BrokerRuntime {
                 // so the worker MCP never re-registers over HTTP.
                 let mut fleet_registration = None;
                 let session_ref = super::fleet::fleet_initial_session_ref(&spec);
-                let worker_relay_key = if let Some(token) = agent_token {
+                let worker_relay_key = if local_only {
+                    preregistration_warning = Some(super::degraded::WARNING.into());
+                    None
+                } else if let Some(token) = agent_token {
                     seed_supplied_agent_token(relaycast_http, &name, &token);
                     match super::fleet::resolve_fleet_agent_token_identity(
                         relaycast_http,
@@ -531,6 +547,13 @@ impl BrokerRuntime {
                     }
                 }
 
+                let skip_relay_prompt = skip_relay_prompt || local_only;
+                let task = if local_only {
+                    normalize_initial_task(task)
+                        .map(|task| format!("{}\n\n{}", super::degraded::WARNING, task))
+                } else {
+                    task
+                };
                 let mut effective_task = if exit_after_task {
                     Some(apply_exit_after_task_instruction(task))
                 } else {
@@ -2041,13 +2064,14 @@ impl BrokerRuntime {
                     .collect();
                 let auth_workspaces: Vec<Value> = workspaces
                     .iter()
+                    .filter(|_| !local_only)
                     .map(|workspace| {
                         json!({
                             "workspace_id": workspace.workspace_id,
                             "workspace_alias": workspace.workspace_alias,
                             "self_name": workspace.self_name,
                             "self_agent_id": workspace.self_agent_id,
-                            "authenticated": true,
+                            "authenticated": !local_only,
                             "default": default_workspace_id
                                 .as_deref()
                                 .is_some_and(|id| id == workspace.workspace_id),
@@ -2055,6 +2079,9 @@ impl BrokerRuntime {
                     })
                     .collect();
                 let _ = reply.send(Ok(json!({
+                    "mode": if local_only { "local_only" } else { "normal" },
+                    "status": if local_only { "degraded" } else { "running" },
+                    "degraded": self.degraded.as_ref().map(|state| state.status()),
                     "agent_count": workers.workers.len(),
                     "agents": workers.list(&super::delivery::pending_message_counts(
                         delivery_states,
@@ -2069,7 +2096,7 @@ impl BrokerRuntime {
                     },
                     "dead_letter_count": dead_letters.len(),
                     "auth": {
-                        "authenticated": !auth_workspaces.is_empty(),
+                        "authenticated": !local_only && !auth_workspaces.is_empty(),
                         "workspace_count": auth_workspaces.len(),
                         "default_workspace_id": default_workspace_id,
                         "workspaces": auth_workspaces,
