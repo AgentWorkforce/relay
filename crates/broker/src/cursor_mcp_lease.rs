@@ -982,10 +982,10 @@ fn remove_cursor_dir(lock: &LeaseLock, cursor: &fs::File) -> io::Result<()> {
     if result != 0 {
         let error = io::Error::last_os_error();
         if error.kind() == io::ErrorKind::NotFound {
-            return Err(io::Error::new(
-                io::ErrorKind::NotFound,
-                "pinned Cursor directory was renamed before cleanup",
-            ));
+            // The directory was already removed — cleanup is idempotently
+            // complete.  Another process or a prior retry may have removed
+            // it between the credential-file write and journal persistence.
+            return Ok(());
         }
         return Err(error);
     }
@@ -1484,8 +1484,16 @@ impl CursorMcpLeaseRegistry {
                 .lock()
                 .map_err(|_| io::Error::other("Cursor MCP generated identity lock poisoned"))? =
                 generated_identity;
-            #[cfg(windows)]
-            self.persist_journal()?;
+            // Persist the journal immediately so the generated identity is
+            // durable before any crash can occur.  Without this, a crash
+            // between identity capture and journal write would orphan the
+            // credential file with no recoverable identity for cleanup.
+            if let Err(error) = self.persist_journal() {
+                // Journal persistence failed — remove the credential file to
+                // avoid leaving a secret on disk with no recoverable identity.
+                let _ = fs::remove_file(path);
+                return Err(error);
+            }
             Ok(())
         }
     }
@@ -2734,5 +2742,121 @@ mod tests {
         // with the owning handle. A later broker can recover after a clean exit
         // and the same mechanism also releases on process termination.
         let _second = LeaseLock::acquire(dir.path(), None).unwrap();
+    }
+
+    #[test]
+    fn absent_file_cleanup_retry_is_idempotent_after_directory_removal() {
+        let dir = tempdir().unwrap();
+        let worker = WorkerName::new("w1");
+        let mut registry = CursorMcpLeaseRegistry::new();
+        let path = registry.acquire(dir.path(), &worker).unwrap();
+        registry.write_worker_cursor_file(&worker, b"{}").unwrap();
+        assert!(path.exists());
+        assert!(path.parent().unwrap().exists());
+
+        // Simulate an external process or a prior retry removing the .cursor
+        // directory between the credential-file write and journal persistence.
+        fs::remove_dir_all(path.parent().unwrap()).unwrap();
+
+        // Release must succeed even though the directory is already gone.
+        registry.release_worker(&worker).unwrap();
+        assert!(registry.is_empty());
+        assert!(!path.exists());
+        assert!(
+            !path.parent().unwrap().exists(),
+            ".cursor directory must not be recreated"
+        );
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn credential_file_removed_on_journal_persist_failure() {
+        let dir = tempdir().unwrap();
+        let journal = dir.path().join("journal.json");
+        let mut registry = CursorMcpLeaseRegistry::with_journal(journal.clone());
+        let worker = WorkerName::new("w1");
+        let path = registry.acquire(dir.path(), &worker).unwrap();
+
+        // Hold the journal lock file so persist_journal() fails with
+        // WouldBlock — the same failure mode as another broker updating.
+        let lock_path = journal.with_file_name(".cursor-mcp-leases.lock");
+        let _held_lock = fs::OpenOptions::new()
+            .read(true)
+            .write(true)
+            .create(true)
+            .truncate(false)
+            .open(&lock_path)
+            .unwrap();
+        _held_lock.try_lock().unwrap();
+
+        // write_worker_cursor_file writes the credential file, then attempts
+        // persist_journal which fails.  The new code must remove the
+        // credential file to avoid leaving a secret on disk without a
+        // recoverable journal identity.
+        let error = registry
+            .write_worker_cursor_file(&worker, b"secret placeholders")
+            .unwrap_err();
+        assert_eq!(error.kind(), io::ErrorKind::WouldBlock);
+        assert!(
+            !path.exists(),
+            "credential file must be removed when journal persistence fails"
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn absent_file_release_journal_failure_retains_lease_for_retry() {
+        let dir = tempdir().unwrap();
+        let journal = dir.path().join("journal.json");
+        let mut registry = CursorMcpLeaseRegistry::with_journal(journal.clone());
+        let worker = WorkerName::new("w1");
+        let path = registry.acquire(dir.path(), &worker).unwrap();
+        registry.write_worker_cursor_file(&worker, b"{}").unwrap();
+        assert!(path.exists(), "cursor file must exist after write");
+        assert!(
+            path.parent().unwrap().exists(),
+            ".cursor directory must exist"
+        );
+
+        // Hold the journal lock to force persist_journal() failure on release.
+        let lock_path = journal.with_file_name(".cursor-mcp-leases.lock");
+        let held_lock = fs::OpenOptions::new()
+            .read(true)
+            .write(true)
+            .create(true)
+            .open(&lock_path)
+            .unwrap();
+        held_lock.try_lock().unwrap();
+
+        // Release removes the file and directory (Absent path) but journal
+        // persistence fails.  The lease must remain in-memory for retry.
+        let error = registry.release_worker(&worker).unwrap_err();
+        assert_eq!(error.kind(), io::ErrorKind::WouldBlock);
+        assert!(
+            !registry.is_empty(),
+            "failed journal persist must retain lease"
+        );
+        // The file and directory must still be cleaned up on-disk.
+        assert!(
+            !path.exists(),
+            "generated file must be removed even if journal fails"
+        );
+        assert!(
+            !path.parent().unwrap().exists(),
+            ".cursor directory must be removed even if journal fails"
+        );
+
+        // Drop the lock and retry — the retry should succeed and clean up
+        // the in-memory lease.
+        drop(held_lock);
+        registry.retry_pending_cleanups();
+        assert!(
+            registry.is_empty(),
+            "retry after lock release must clear lease"
+        );
+        assert!(
+            !journal.exists(),
+            "journal must be cleaned up after successful retry"
+        );
     }
 }
