@@ -56,6 +56,7 @@ impl BrokerRuntime {
         let hosted_agent_event_tx = &self.hosted_agent_event_tx;
         let hosted_agent_exit_backlog = &mut self.hosted_agent_exit_backlog;
         let hosted_agent_exit_dropped_total = &mut self.hosted_agent_exit_dropped_total;
+        let hosted_agent_exit_in_flight = &mut self.hosted_agent_exit_in_flight;
         let pty_observability = &mut self.pty_observability;
         let workers = &mut self.workers;
         let fleet_control_tx = &self.fleet_control_tx;
@@ -91,10 +92,24 @@ impl BrokerRuntime {
         // previous tick could not hand to the publisher because its channel
         // was momentarily full. Doing this before generating any new events
         // this tick preserves delivery order.
-        super::event_loop::drain_hosted_agent_exit_backlog(
+        super::event_loop::drain_hosted_agent_exit_backlog_tracked(
             hosted_agent_event_tx,
             hosted_agent_exit_backlog,
             hosted_agent_exit_dropped_total,
+            Some(hosted_agent_exit_in_flight),
+        );
+
+        // Continuously replenish the in-memory backlog from durable pending
+        // records so overflow drops above `HOSTED_AGENT_EXIT_BACKLOG_CAP`
+        // are not permanent for the life of the process — no broker restart
+        // required. `hosted_agent_exit_in_flight` guards against ever
+        // re-queuing a record that is already backlogged or already
+        // in-flight to the publisher, so this can never produce a duplicate
+        // in-flight delivery.
+        super::event_loop::replenish_hosted_agent_exit_backlog(
+            crash_insights,
+            hosted_agent_exit_backlog,
+            hosted_agent_exit_in_flight,
         );
 
         // A worker can disappear before answering `snapshot_pty`. Bound these
@@ -508,14 +523,18 @@ impl BrokerRuntime {
                 hosted_delivery: crate::crash_insights::HostedDeliveryState::Pending,
             };
             crash_insights.record(crash_record.clone());
-            if paths.persist {
-                if let Err(error) = crash_insights.save(crash_insights_path) {
-                    tracing::warn!(
-                        path = %crash_insights_path.display(),
-                        error = %error,
-                        "failed to persist worker exit record"
-                    );
-                }
+            if paths.persist && !crash_insights.persist(crash_insights_path) {
+                // `persist` already re-armed the dirty flag and bumped
+                // `save_failures_total` (surfaced via `GetCrashInsights`);
+                // the next maintenance tick's flush
+                // (`BrokerRuntime::flush_persisted_stores`) retries this
+                // write automatically, so a transient failure here cannot
+                // silently and permanently lose this exit's durability —
+                // only the logged warning below is best-effort.
+                tracing::warn!(
+                    path = %crash_insights_path.display(),
+                    "failed to persist worker exit record; will retry on next maintenance flush"
+                );
             }
             // Delivery to hosted consumers must not silently drop the
             // terminal event on backpressure: a full channel is retried via
@@ -526,11 +545,12 @@ impl BrokerRuntime {
             // anything short of a successful handoff, stays) `Pending`, so
             // it is always the authoritative record of what still needs
             // delivering — including across a broker restart, which replays
-            // every still-`Pending` record. See `enqueue_hosted_agent_exit_event`.
-            super::event_loop::enqueue_hosted_agent_exit_event(
+            // every still-`Pending` record. See `enqueue_hosted_agent_exit_event_tracked`.
+            super::event_loop::enqueue_hosted_agent_exit_event_tracked(
                 hosted_agent_event_tx,
                 hosted_agent_exit_backlog,
                 hosted_agent_exit_dropped_total,
+                Some(hosted_agent_exit_in_flight),
                 super::event_loop::hosted_agent_event_from_crash_record(&crash_record),
             );
 

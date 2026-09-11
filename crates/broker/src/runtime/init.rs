@@ -580,6 +580,14 @@ pub(crate) async fn run_init(cmd: InitCommand, telemetry: TelemetryClient) -> Re
         &crash_insights,
         &mut hosted_agent_exit_dropped_total,
     );
+    // Seed the in-flight dedupe-key guard with every record just replayed
+    // into the backlog above, so this restart's first
+    // `replenish_hosted_agent_exit_backlog` pass (see the maintenance tick)
+    // does not immediately re-enqueue a second copy of any of them.
+    let hosted_agent_exit_in_flight: std::collections::HashSet<String> = hosted_agent_exit_backlog
+        .iter()
+        .map(|event| event.dedupe_key.clone())
+        .collect();
 
     let sdk_lines = BufReader::new(tokio::io::stdin()).lines();
     let stdin_open = true;
@@ -699,6 +707,7 @@ pub(crate) async fn run_init(cmd: InitCommand, telemetry: TelemetryClient) -> Re
         relaycast_http,
         hosted_agent_event_tx,
         hosted_agent_exit_backlog,
+        hosted_agent_exit_in_flight,
         hosted_agent_exit_dropped_total,
         hosted_delivery_result_rx,
         hosted_delivery_result_open: true,

@@ -2,6 +2,29 @@
 //!
 //! Classifies agent crashes by exit code and signal, maintains a bounded
 //! history, detects patterns, and computes a health score.
+//!
+//! ## Storage tradeoff: diagnostics vs. the durable pending outbox
+//!
+//! This module deliberately applies two different durability policies to
+//! two different halves of the same on-disk file:
+//!
+//! - **Diagnostics** (patterns, health score, "recent" crash history for
+//!   already-delivered exits) are bounded and *lossy by design*: once
+//!   [`CrashInsights::record`] pushes the store past `max_records`, the
+//!   oldest already-delivered records are evicted to keep the file bounded.
+//!   Losing old, already-delivered diagnostic history is an acceptable
+//!   tradeoff — it is presentation/analysis data, not the mechanism backing
+//!   at-least-once delivery.
+//! - **The durable pending outbox** — [`CrashRecord`]s whose
+//!   [`HostedDeliveryState`] is still `Pending` — backs at-least-once hosted
+//!   `agent_exited` delivery and is **never silently evicted** under
+//!   retention pressure, even if that means the on-disk file temporarily
+//!   grows past `max_records` while deliveries are outstanding. When
+//!   retention pressure hits a store that is entirely (or mostly) pending
+//!   records, `record` skips eviction, logs loudly, and increments
+//!   [`CrashInsights::retention_pressure_total`] — an explicit,
+//!   operator-visible counter (surfaced via [`CrashInsights::to_json`] and
+//!   the broker's `GetCrashInsights` API) rather than a silent drop.
 
 use std::collections::HashMap;
 use std::path::Path;
@@ -128,6 +151,35 @@ pub struct CrashInsights {
     records: Vec<CrashRecord>,
     #[serde(default = "default_max_records")]
     max_records: usize,
+    /// True when in-memory state has changed since the last confirmed
+    /// successful [`save`](CrashInsights::save). Set on every mutation and,
+    /// crucially, re-set on a *failed* [`persist`](CrashInsights::persist)
+    /// call so a later flush attempt is guaranteed rather than the failure
+    /// being silently swallowed after a single log line. Never persisted:
+    /// a freshly loaded snapshot is by definition not dirty relative to
+    /// itself.
+    #[serde(skip)]
+    dirty: bool,
+    /// Count of [`persist`](CrashInsights::persist) calls whose underlying
+    /// [`save`](CrashInsights::save) failed, since process start. Purely
+    /// observability — never persisted to disk — so a transient write
+    /// failure (full disk, permissions, etc.) is visible to operators via
+    /// the broker's status/API surface (`GetCrashInsights`), not only in
+    /// logs that can scroll away unnoticed.
+    #[serde(skip)]
+    save_failures_total: u64,
+    /// Count of times [`record`](CrashInsights::record) hit generic
+    /// retention pressure (more than `max_records` records) but could not
+    /// evict anything because every record above the cap was still a
+    /// pending hosted-delivery outbox entry. Never persisted. This is the
+    /// operator-visible signal for the documented pressure policy: the
+    /// durable pending outbox is *never* silently evicted, so under
+    /// sustained pressure the on-disk file grows past `max_records` instead
+    /// — this counter says exactly how often that happened, so an operator
+    /// (or alert) can see the pressure building rather than discovering an
+    /// unbounded file after the fact.
+    #[serde(skip)]
+    retention_pressure_total: u64,
 }
 
 fn default_max_records() -> usize {
@@ -145,6 +197,9 @@ impl CrashInsights {
         Self {
             records: Vec::new(),
             max_records: 500,
+            dirty: false,
+            save_failures_total: 0,
+            retention_pressure_total: 0,
         }
     }
 
@@ -188,6 +243,7 @@ impl CrashInsights {
 
     /// Record a crash. Trims oldest records if over the limit.
     pub fn record(&mut self, crash: CrashRecord) {
+        self.dirty = true;
         self.records.push(crash);
         if self.records.len() > self.max_records {
             let mut excess = self.records.len() - self.max_records;
@@ -203,9 +259,11 @@ impl CrashInsights {
                     self.records.remove(index);
                     excess -= 1;
                 } else {
+                    self.retention_pressure_total += 1;
                     tracing::error!(
                         max_records = self.max_records,
                         pending_hosted_deliveries = self.pending_hosted_deliveries().len(),
+                        retention_pressure_total = self.retention_pressure_total,
                         "crash-insights retention is full of pending hosted exits; preserving durable outbox records above the generic cap"
                     );
                     break;
@@ -305,10 +363,82 @@ impl CrashInsights {
                 && record.dedupe_key() == dedupe_key
             {
                 record.hosted_delivery = HostedDeliveryState::Delivered;
+                self.dirty = true;
                 return true;
             }
         }
         false
+    }
+
+    /// Whether in-memory state has changed since the last confirmed
+    /// successful [`save`]/[`persist`](CrashInsights::persist). Exposed
+    /// mainly for tests; production code should prefer
+    /// [`take_dirty`](CrashInsights::take_dirty) so a check-and-clear is
+    /// atomic.
+    pub fn is_dirty(&self) -> bool {
+        self.dirty
+    }
+
+    /// Read and clear the dirty flag. Callers that get `true` back are
+    /// responsible for attempting a [`persist`](CrashInsights::persist); if
+    /// that attempt fails, `persist` re-sets the flag itself so the next
+    /// caller retries.
+    pub fn take_dirty(&mut self) -> bool {
+        std::mem::take(&mut self.dirty)
+    }
+
+    /// Force the dirty flag on, e.g. after an external caller detects a
+    /// failed write through some other path and wants to guarantee a future
+    /// retry.
+    pub fn mark_dirty(&mut self) {
+        self.dirty = true;
+    }
+
+    /// Total count of failed [`persist`] attempts since process start. Pure
+    /// observability, surfaced via the broker's `GetCrashInsights` API so an
+    /// operator can see durability trouble without having to grep logs.
+    pub fn save_failures_total(&self) -> u64 {
+        self.save_failures_total
+    }
+
+    /// Count of retention-pressure events where the durable pending outbox
+    /// filled the generic cap and no eviction could happen (see `record`).
+    /// Operator-visible pressure signal — pairs with
+    /// `pending_hosted_deliveries().len()` to distinguish "growing but
+    /// healthy" from "under sustained backpressure."
+    pub fn retention_pressure_total(&self) -> u64 {
+        self.retention_pressure_total
+    }
+
+    /// Attempt to durably persist the current state to `path`, with
+    /// built-in failure bookkeeping: a successful write clears the dirty
+    /// flag; a failed write increments [`save_failures_total`] and leaves
+    /// (or re-sets) the dirty flag so a later call — e.g. from a periodic
+    /// maintenance flush — retries automatically. This turns a transient
+    /// write failure into a bounded-retry-until-success operation instead
+    /// of a silent, one-shot, log-only data loss: the in-memory state (and
+    /// therefore the next in-process read of it, e.g. via the API) is never
+    /// wrong, and the on-disk copy is guaranteed another attempt as long as
+    /// the process keeps calling this on its normal cadence (every
+    /// maintenance tick).
+    ///
+    /// Returns `true` on success, `false` on failure (the error itself is
+    /// intentionally not returned — callers that want the error text should
+    /// call [`save`](CrashInsights::save) directly and do their own
+    /// bookkeeping, as the durable-outbox-critical call sites still do so
+    /// they can log full context).
+    pub fn persist(&mut self, path: &Path) -> bool {
+        match self.save(path) {
+            Ok(()) => {
+                self.dirty = false;
+                true
+            }
+            Err(_) => {
+                self.save_failures_total += 1;
+                self.dirty = true;
+                false
+            }
+        }
     }
 
     /// Load from a JSON file. Returns empty insights if file doesn't exist or is invalid.
@@ -348,6 +478,21 @@ impl CrashInsights {
             // broker restart. Backward-compatible addition: older clients
             // that don't read this field are unaffected.
             "hosted_delivery_pending": self.pending_hosted_deliveries().len(),
+            // Durability status for the on-disk snapshot itself (distinct
+            // from hosted-delivery status above). Non-zero means at least
+            // one `persist` write has failed since process start; `dirty ==
+            // true` means the in-memory state is not yet confirmed written
+            // to disk and a retry is pending on the next maintenance flush.
+            "save_failures_total": self.save_failures_total,
+            "dirty": self.dirty,
+            // Pressure policy visibility (see `record`): diagnostics
+            // (patterns/health_score/recent above) are intentionally
+            // bounded/lossy by design — old, already-delivered crash
+            // history is dropped once `max_records` is exceeded. The
+            // durable pending outbox is the opposite: it is *never*
+            // silently evicted under pressure, so this counter increments
+            // instead whenever eviction was skipped to protect it.
+            "retention_pressure_total": self.retention_pressure_total,
         })
     }
 }
@@ -449,14 +594,24 @@ mod tests {
     }
 
     #[test]
-    fn records_trimmed_to_max() {
+    fn records_trimmed_to_max_when_all_delivered() {
+        // Deliberate retention semantics: the generic cap only ever evicts
+        // records whose hosted delivery has already succeeded (see
+        // `retention_bounds_pending_hosted_delivery_backlog` below for the
+        // pending-preserving half of this contract). With none pending,
+        // trimming behaves like a plain bounded ring: oldest evicted first.
         let mut ci = CrashInsights {
             records: Vec::new(),
             max_records: 3,
+            dirty: false,
+            save_failures_total: 0,
+            retention_pressure_total: 0,
         };
 
         for i in 0..5 {
-            ci.record(make_record(&format!("w{}", i), Some(1), None));
+            let mut record = make_record(&format!("w{}", i), Some(1), None);
+            record.hosted_delivery = HostedDeliveryState::Delivered;
+            ci.record(record);
         }
 
         assert_eq!(ci.total(), 3);
@@ -464,6 +619,36 @@ mod tests {
         assert_eq!(ci.records[0].agent_name, "w2");
         assert_eq!(ci.records[1].agent_name, "w3");
         assert_eq!(ci.records[2].agent_name, "w4");
+    }
+
+    #[test]
+    fn records_over_cap_are_retained_while_pending_hosted_delivery() {
+        // Deliberate retention semantics (the other half of the contract
+        // above): the durable pending-delivery outbox must never be
+        // silently evicted by the generic crash-history cap, even though
+        // that means the on-disk file can temporarily grow past
+        // `max_records` while deliveries are outstanding. This is
+        // documented, bounded-but-not-silently-lossy behavior — see
+        // `CrashInsights::record` and `pending_hosted_deliveries`.
+        let mut ci = CrashInsights {
+            records: Vec::new(),
+            max_records: 3,
+            dirty: false,
+            save_failures_total: 0,
+            retention_pressure_total: 0,
+        };
+
+        for i in 0..5 {
+            // Default `hosted_delivery` is `Pending` (see `make_record`).
+            ci.record(make_record(&format!("w{}", i), Some(1), None));
+        }
+
+        assert_eq!(
+            ci.total(),
+            5,
+            "pending hosted-delivery records must survive past the generic retention cap"
+        );
+        assert_eq!(ci.pending_hosted_deliveries().len(), 5);
     }
 
     #[test]
@@ -720,6 +905,9 @@ mod tests {
         let mut ci = CrashInsights {
             records: Vec::new(),
             max_records: 3,
+            dirty: false,
+            save_failures_total: 0,
+            retention_pressure_total: 0,
         };
         let mut delivered = make_record("delivered", Some(1), None);
         delivered.generation = "gen-delivered".to_string();
@@ -789,6 +977,138 @@ mod tests {
 
         let reloaded_again = CrashInsights::load(&path);
         assert_eq!(reloaded_again.pending_hosted_deliveries().len(), 0);
+    }
+
+    #[test]
+    fn retention_pressure_counter_increments_when_pending_outbox_blocks_eviction() {
+        // Documented pressure policy: when every record above the generic
+        // cap is a still-pending durable outbox entry, `record` must not
+        // silently evict any of them — instead it must count the pressure
+        // event so operators can see it (see `retention_pressure_total`
+        // doc comment and the module-level storage-tradeoff docs above).
+        let mut ci = CrashInsights {
+            records: Vec::new(),
+            max_records: 3,
+            dirty: false,
+            save_failures_total: 0,
+            retention_pressure_total: 0,
+        };
+
+        for i in 0..6 {
+            let mut record = make_record(&format!("w{}", i), Some(1), None);
+            record.generation = format!("gen-{}", i);
+            ci.record(record);
+        }
+
+        assert_eq!(
+            ci.total(),
+            6,
+            "pending outbox records must never be silently evicted under pressure"
+        );
+        assert_eq!(ci.pending_hosted_deliveries().len(), 6);
+        // Pressure fires once per `record` call once the cap is exceeded
+        // and nothing evictable is found: records 4, 5, and 6 (indices 3..6)
+        // each hit the cap with zero non-pending candidates.
+        assert_eq!(
+            ci.retention_pressure_total(),
+            3,
+            "every record call that could not evict anything must count as pressure"
+        );
+
+        // Once a delivery is acknowledged, the evictable record is removed
+        // (never counted as pressure for that removal); pressure only fires
+        // again for the remaining, still-all-pending excess above the cap.
+        let delivered_key = ci.records[0].dedupe_key();
+        assert!(ci.mark_hosted_delivered(&delivered_key));
+        let mut record = make_record("w6", Some(1), None);
+        record.generation = "gen-6".to_string();
+        ci.record(record);
+        assert_eq!(
+            ci.retention_pressure_total(),
+            4,
+            "the one evictable (delivered) record is removed for free; pressure fires \
+             again only for the remaining pending excess above the cap"
+        );
+        assert_eq!(ci.pending_hosted_deliveries().len(), 6);
+        assert_eq!(
+            ci.total(),
+            6,
+            "the delivered record was evicted, keeping total at 6"
+        );
+    }
+
+    #[test]
+    fn persist_failure_increments_counter_and_stays_dirty() {
+        // Deterministic forced-failure fixture: `parent` is a *file*, not a
+        // directory, so `std::fs::create_dir_all(parent)` inside `save`
+        // fails every time on every platform — no flaky IO mocking needed.
+        let dir = tempfile::tempdir().unwrap();
+        let not_a_dir = dir.path().join("not-a-directory");
+        std::fs::write(&not_a_dir, b"blocking file").unwrap();
+        let path = not_a_dir.join("crashes.json");
+
+        let mut ci = CrashInsights::new();
+        ci.record(make_record("w1", Some(1), None));
+        assert!(ci.is_dirty());
+        assert_eq!(ci.save_failures_total(), 0);
+
+        assert!(!ci.persist(&path), "forced-failure path must fail");
+        assert_eq!(
+            ci.save_failures_total(),
+            1,
+            "a failed persist must be counted, not merely logged"
+        );
+        assert!(
+            ci.is_dirty(),
+            "a failed persist must leave (or re-set) the dirty flag so a later flush retries"
+        );
+
+        // A second failed attempt keeps incrementing and stays dirty —
+        // durability is never silently given up on.
+        assert!(!ci.persist(&path));
+        assert_eq!(ci.save_failures_total(), 2);
+        assert!(ci.is_dirty());
+    }
+
+    #[test]
+    fn persist_recovery_clears_dirty_and_stops_incrementing() {
+        let dir = tempfile::tempdir().unwrap();
+        let not_a_dir = dir.path().join("not-a-directory");
+        std::fs::write(&not_a_dir, b"blocking file").unwrap();
+        let bad_path = not_a_dir.join("crashes.json");
+        let good_path = dir.path().join("crashes.json");
+
+        let mut ci = CrashInsights::new();
+        ci.record(make_record("w1", Some(1), None));
+
+        // Fail twice against the unwritable path.
+        assert!(!ci.persist(&bad_path));
+        assert!(!ci.persist(&bad_path));
+        assert_eq!(ci.save_failures_total(), 2);
+        assert!(ci.is_dirty());
+
+        // Recovery: the next attempt against a writable path succeeds,
+        // clears the dirty flag, and does not touch the failure counter.
+        assert!(ci.persist(&good_path));
+        assert_eq!(
+            ci.save_failures_total(),
+            2,
+            "a successful persist must not increment the failure counter"
+        );
+        assert!(
+            !ci.is_dirty(),
+            "a confirmed-successful persist must clear the dirty flag"
+        );
+
+        // take_dirty() reflects the cleared state and further successful
+        // persists remain no-ops on the counter.
+        assert!(!ci.take_dirty());
+        assert!(ci.persist(&good_path));
+        assert_eq!(ci.save_failures_total(), 2);
+
+        let loaded = CrashInsights::load(&good_path);
+        assert_eq!(loaded.total(), 1);
+        assert_eq!(loaded.records[0].agent_name, "w1");
     }
 
     #[test]
