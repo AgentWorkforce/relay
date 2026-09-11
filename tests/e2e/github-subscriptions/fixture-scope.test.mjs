@@ -137,3 +137,30 @@ test('semantic fixture identity pins thread location, submitted review time and 
   const merge = fixtureExpected({ ...stimulus, kind: 'merge' }, record, 'test-123');
   assert.equal(merge.record.base.ref, stimulus.base);
 });
+
+test('rejects malformed captured review dates and lossy review associations', async () => {
+  const { fixtureExpected } = await import('./fixture-scope.mjs');
+  const stimulus = {
+    repo: 'AgentWorkforce/relay',
+    pr: 123,
+    headSha: 'a'.repeat(40),
+    file: 'owned.txt',
+    line: 2,
+    side: 'RIGHT',
+  };
+  const record = {
+    id: '456',
+    user: { login: 'owner' },
+    submitted_at: '2026-09-11T12:00:00Z',
+    pull_request_review_id: '9007199254740993',
+  };
+  assert.doesNotThrow(() => fixtureExpected({ ...stimulus, kind: 'thread' }, record, 'test'));
+  for (const id of [null, undefined, 'null', 'undefined', 9007199254740992, 0, -1])
+    assert.throws(() =>
+      fixtureExpected({ ...stimulus, kind: 'thread' }, { ...record, pull_request_review_id: id }, 'test')
+    );
+  for (const submitted_at of ['not-a-date', '', null])
+    assert.throws(() =>
+      fixtureExpected({ ...stimulus, kind: 'review' }, { ...record, submitted_at }, 'test')
+    );
+});

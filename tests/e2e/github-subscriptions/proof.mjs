@@ -1,3 +1,4 @@
+import { validFixtureExpected } from './fixture-scope.mjs';
 import { createHash } from 'node:crypto';
 import { writeFileSync } from 'node:fs';
 import path from 'node:path';
@@ -125,7 +126,7 @@ export function correlate({
     stimulus.accepted === false
   )
     return { pass: false, missing: 'accepted producer intent and bounded deadline' };
-  if (strictFixture && (stimulus.accepted !== true || !stimulus.expected))
+  if (strictFixture && (stimulus.accepted !== true || !validFixtureExpected(stimulus)))
     return { pass: false, missing: 'independently captured exact provider fixture' };
   const deadline = after + maxLatencyMs;
   const ingest = messages.find(

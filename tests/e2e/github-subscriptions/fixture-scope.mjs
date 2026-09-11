@@ -14,7 +14,7 @@ export function fixtureExpected(stimulus, record, runId) {
   const id = record.id;
   if (!(typeof id === 'string' && /^\d+$/.test(id)) && !(Number.isSafeInteger(id) && id > 0))
     throw new Error('A lossless provider object ID is required');
-  const expected = { id: String(id) };
+  const expected = { id: providerId(id) };
   let canonicalPath;
   switch (stimulus.kind) {
     case 'comment':
@@ -35,7 +35,7 @@ export function fixtureExpected(stimulus, record, runId) {
       expected.path = stimulus.file;
       expected.line = stimulus.line;
       expected.side = stimulus.side;
-      expected.pull_request_review_id = String(record.pull_request_review_id);
+      expected.pull_request_review_id = providerId(record.pull_request_review_id);
       break;
     case 'merge':
       canonicalPath = githubPullRequestPath(owner, repo, stimulus.pr, fixtureTitle(runId));
@@ -62,7 +62,82 @@ export function fixtureExpected(stimulus, record, runId) {
     return typeof value !== 'object' || Object.values(value).every(complete);
   }
   if (!complete(expected)) throw new Error('Incomplete provider fixture identity');
-  return { path: canonicalPath, record: expected };
+  validateFields(stimulus, expected);
+  return { path: canonicalPath, record: expected, runId };
+}
+
+function providerId(value) {
+  if ((typeof value === 'string' && /^[1-9]\d*$/.test(value)) || (Number.isSafeInteger(value) && value > 0))
+    return String(value);
+  throw new Error('Incomplete or non-lossless provider association ID');
+}
+
+function validateFields(stimulus, record) {
+  const text = (value) => typeof value === 'string' && value.trim().length > 0;
+  const sha = (value) => typeof value === 'string' && /^[a-f0-9]{40}$/.test(value);
+  const require = (condition) => {
+    if (!condition) throw new Error('Incomplete or invalid provider fixture schema');
+  };
+  require(typeof stimulus.repo === 'string' && /^[^/\s]+\/[^/\s]+$/.test(stimulus.repo));
+  require(Number.isSafeInteger(stimulus.pr) && stimulus.pr > 0);
+  providerId(record.id);
+  if (stimulus.kind !== 'ci') require(text(record.user?.login));
+  if (stimulus.kind !== 'comment') require(sha(stimulus.headSha));
+  switch (stimulus.kind) {
+    case 'comment':
+      require(record.issue_url === `https://api.github.com/repos/${stimulus.repo}/issues/${stimulus.pr}`);
+      break;
+    case 'review':
+      require(
+        record.pull_request_url === `https://api.github.com/repos/${stimulus.repo}/pulls/${stimulus.pr}`
+      );
+      require(record.state === 'commented' && record.commit_id === stimulus.headSha);
+      require(
+        typeof record.submitted_at === 'string' &&
+          /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?Z$/.test(record.submitted_at) &&
+          Number.isFinite(Date.parse(record.submitted_at))
+      );
+      break;
+    case 'thread':
+      require(
+        record.pull_request_url === `https://api.github.com/repos/${stimulus.repo}/pulls/${stimulus.pr}`
+      );
+      require(record.commit_id === stimulus.headSha && text(stimulus.file) && record.path === stimulus.file);
+      require(Number.isSafeInteger(stimulus.line) && stimulus.line > 0 && record.line === stimulus.line);
+      require(['LEFT', 'RIGHT'].includes(stimulus.side) && record.side === stimulus.side);
+      providerId(record.pull_request_review_id);
+      break;
+    case 'merge':
+      require(record.number === stimulus.pr && record.merged === true && sha(record.merge_commit_sha));
+      require(
+        record.head?.sha === stimulus.headSha && text(stimulus.base) && record.base?.ref === stimulus.base
+      );
+      break;
+    case 'ci':
+      require(record.head_sha === stimulus.headSha && text(record.name));
+      require(
+        record.status === 'completed' &&
+          record.conclusion === 'success' &&
+          record.app?.slug === 'github-actions'
+      );
+      break;
+    default:
+      throw new Error('Unknown provider event kind');
+  }
+}
+
+/** External manifests are untrusted proof input: require the whole semantic tuple. */
+export function validFixtureExpected(stimulus) {
+  try {
+    const expected = stimulus.expected;
+    if (!expected || typeof expected.runId !== 'string' || !expected.runId) return false;
+    if (providerId(stimulus.providerId) !== providerId(expected.record.id)) return false;
+    validateFields(stimulus, expected.record);
+    const canonical = fixtureExpected(stimulus, expected.record, expected.runId);
+    return expected.path === canonical.path;
+  } catch {
+    return false;
+  }
 }
 
 export function fixtureTitle(runId) {

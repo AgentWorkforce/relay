@@ -582,9 +582,13 @@ function emit() {
       commit_title: `Fixture only ${config.runId}`,
       commit_message: text,
     });
-    if (!response.merged) throw new Error('Fixture merge did not complete');
+    if (response.merged !== true || !/^[a-f0-9]{40}$/.test(response.sha ?? ''))
+      throw new Error('Fixture merge did not return a valid acknowledgement');
     fixture.merged = true;
     fixture.baseSha = response.sha;
+    stimulus.accepted = true;
+    stimulus.mergeSha = response.sha;
+    save(); // Persist acknowledged ownership before the fallible provider readback.
     response = gh(`repos/${fixture.repo}/pulls/${fixture.pr}`);
   } else {
     // A genuine GitHub Actions check_run.completed; no synthetic check completion or product merge.

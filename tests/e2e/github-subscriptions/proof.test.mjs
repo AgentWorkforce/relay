@@ -274,3 +274,58 @@ test('exact fixture matching rejects another GitHub object and unsafe numeric ID
 test('strict live fixture mode cannot accept an unbound rehearsal trace', () => {
   assert.equal(correlate({ ...fixture(), strictFixture: true }).pass, false);
 });
+
+test('strict fixture assertion rejects incomplete external schemas and mismatched stimulus bindings', async () => {
+  const { fixtureExpected } = await import('./fixture-scope.mjs');
+  for (const kind of ['comment', 'review', 'thread', 'merge', 'ci']) {
+    const f = fixture();
+    Object.assign(f.stimulus, {
+      kind,
+      accepted: true,
+      repo: 'AgentWorkforce/relay',
+      pr: 123,
+      providerId: '456',
+      headSha: 'a'.repeat(40),
+      base: 'owned-base',
+      file: 'owned.txt',
+      line: 2,
+      side: 'RIGHT',
+    });
+    f.strictFixture = true;
+    f.stimulus.expected = fixtureExpected(
+      f.stimulus,
+      {
+        id: '456',
+        user: { login: 'owner' },
+        submitted_at: '2026-09-11T12:00:00Z',
+        pull_request_review_id: '789',
+        merge_commit_sha: 'b'.repeat(40),
+        name: 'owned-check',
+      },
+      'test'
+    );
+    Object.assign(f.messages[0].metadata, {
+      path: f.stimulus.expected.path,
+      record: structuredClone(f.stimulus.expected.record),
+      provider_event_type: {
+        comment: 'issue_comment.created',
+        review: 'pull_request_review.submitted',
+        thread: 'pull_request_review_comment.created',
+        merge: 'pull_request.closed',
+        ci: 'check_run.completed',
+      }[kind],
+    });
+    assert.equal(correlate(f).pass, true, kind);
+    for (const key of Object.keys(f.stimulus.expected.record)) {
+      const adverse = structuredClone(f);
+      delete adverse.stimulus.expected.record[key];
+      assert.equal(correlate(adverse).pass, false, kind + ' missing ' + key);
+    }
+    for (const patch of [{ providerId: '999' }, { repo: 'AgentWorkforce/other' }, { headSha: 'bad' }]) {
+      if (kind === 'comment' && patch.headSha) continue;
+      const adverse = structuredClone(f);
+      Object.assign(adverse.stimulus, patch);
+      assert.equal(correlate(adverse).pass, false, kind + JSON.stringify(patch));
+    }
+  }
+});
