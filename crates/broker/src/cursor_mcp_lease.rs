@@ -1880,7 +1880,9 @@ impl CursorMcpLeaseRegistry {
                 Err(e) => return Err(e),
             };
             #[cfg(windows)]
-            if parent_guard.is_some() {
+            let had_guard = parent_guard.is_some();
+            #[cfg(windows)]
+            if had_guard {
                 validate_windows_restore_path(lock, _path, expected_cursor_identity)?;
             }
             match pre_existing {
@@ -1991,7 +1993,7 @@ impl CursorMcpLeaseRegistry {
                 }
             }
             #[cfg(windows)]
-            if parent_guard.is_some() {
+            if had_guard {
                 validate_windows_restore_path(lock, _path, expected_cursor_identity)?;
             }
             Ok(())
