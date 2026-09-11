@@ -321,8 +321,7 @@ try {
     signature = absentCleanup
       ? 'cursor_mcp_credentials_leak_and_no_recovery'
       : 'cursor_mcp_credentials_leak_and_legacy_absent_file_leak';
-    details =
-      `The base broker wrote raw credentials into Cursor MCP state and left that generated state behind after a crash/restart/release cycle without a recovery journal.${absentCleanup ? ' Its separate absent-file cleanup completed.' : ' Its legacy absent-file cleanup also left generated state behind.'}`;
+    details = `The base broker wrote raw credentials into Cursor MCP state and left that generated state behind after a crash/restart/release cycle without a recovery journal.${absentCleanup ? ' Its separate absent-file cleanup completed.' : ' Its legacy absent-file cleanup also left generated state behind.'}`;
   } else if (
     arm === 'head' &&
     !leakedCredential &&
