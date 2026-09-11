@@ -6606,7 +6606,12 @@ async fn assert_http_spawn_metadata_publication(supplied_token: bool, valid_cwd:
     });
     let bind = server.mock(|when, then| {
         when.method(POST).path("/v1/nodes/test-node/agents");
-        then.status(200).json_body(json!({"ok":true,"data":{}}));
+        then.status(200).json_body(json!({"ok":true,"data":{
+            "id":"binding-id", "agent_id":"metadata-id", "agent_name":"metadata-worker",
+            "node_id":"node-id", "node_name":"test-node", "node_kind":"local", "node_role":"broker",
+            "status":"active", "session_ref":null, "priority":0,
+            "created_at":"2026-09-11T12:00:00Z", "updated_at":null
+        }}));
     });
     let lookup = server.mock(|when, then| {
         when.method(GET)
@@ -6691,9 +6696,11 @@ async fn assert_http_spawn_metadata_publication(supplied_token: bool, valid_cwd:
             reply,
         })
         .await;
-    let response = result.await.unwrap();
+    let response = tokio::time::timeout(Duration::from_secs(3), result).await;
+    // A fixture or admission regression must fail promptly rather than hang CI.
     // Stop the owned harness before assertions, including on a regression failure.
     fixture.runtime.workers.shutdown_all().await.unwrap();
+    let response = response.expect("spawn reply must settle").unwrap();
     if valid_cwd {
         assert_eq!(response.unwrap()["success"], true);
         let published = tokio::time::timeout(Duration::from_secs(2), async {
