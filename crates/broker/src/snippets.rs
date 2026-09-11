@@ -14,7 +14,10 @@ use tokio::{
     process::Command,
 };
 
-use crate::{cursor_mcp_lease::write_credential_file, types::AgentResultMcpConfig};
+use crate::{
+    cursor_mcp_lease::{validate_cursor_root, write_credential_file},
+    types::AgentResultMcpConfig,
+};
 
 const AGENT_RELAY_MCP_PACKAGE: &str = "agent-relay";
 const AGENT_RELAY_MCP_SUBCOMMAND: &str = "mcp";
@@ -1065,6 +1068,7 @@ pub fn ensure_cursor_mcp_config(
     default_workspace: Option<&str>,
     agent_result: Option<&AgentResultMcpConfig>,
 ) -> io::Result<bool> {
+    validate_cursor_root(root)?;
     let cursor_dir = root.join(".cursor");
     fs::create_dir_all(&cursor_dir)?;
     let path = cursor_dir.join("mcp.json");

@@ -262,11 +262,11 @@ pub(crate) struct WorkerRegistry {
     pub(crate) completed_owned_releases: VecDeque<(WorkerName, Uuid)>,
     pub(crate) supervisor: Supervisor,
     pub(crate) metrics: MetricsCollector,
-    /// Lease over any `.cursor/mcp.json` files this registry has injected
-    /// Agent Relay credentials into (relay#1753). Every worker-removal path
+    /// Lease over any `.cursor/mcp.json` files this registry has generated
+    /// Agent Relay placeholders into (relay#1753). Every worker-removal path
     /// (`release`, `cleanup_rejected_spawn`, `reap_exited`) must call
-    /// `cursor_mcp_leases.release_worker(name)` so a generated credential
-    /// file never outlives every worker that shares its cwd.
+    /// `cursor_mcp_leases.release_worker(name)` so generated config never
+    /// outlives every worker that shares its cwd.
     pub(crate) cursor_mcp_leases: CursorMcpLeaseRegistry,
 }
 
@@ -628,6 +628,23 @@ impl WorkerRegistry {
         }
     }
 
+    fn apply_cursor_worker_env(
+        command: &mut Command,
+        worker_name: &WorkerName,
+        worker_relay_api_key: Option<&str>,
+        cursor_mcp_worker: bool,
+        skip_relay_prompt: bool,
+    ) {
+        if cursor_mcp_worker && !skip_relay_prompt {
+            if let Some(relay_key) = worker_relay_api_key {
+                command.env("RELAY_AGENT_TOKEN", relay_key);
+            }
+            command.env("RELAY_AGENT_NAME", worker_name);
+            command.env("RELAY_AGENT_TYPE", "agent");
+            command.env("RELAY_STRICT_AGENT_NAME", "1");
+        }
+    }
+
     #[allow(clippy::too_many_arguments)]
     pub(crate) async fn spawn(
         &mut self,
@@ -643,6 +660,13 @@ impl WorkerRegistry {
         let mut spec = spec;
         if self.identity_cleanups.contains_key(&spec.name) {
             anyhow::bail!("agent '{}' has pending owned cleanup", spec.name);
+        }
+        self.cursor_mcp_leases.retry_pending_cleanups();
+        if self.cursor_mcp_leases.has_pending_cleanup(&spec.name) {
+            anyhow::bail!(
+                "agent '{}' has pending Cursor MCP cleanup; retry before reusing the name",
+                spec.name
+            );
         }
         if self.workers.contains_key(&spec.name) {
             anyhow::bail!("agent '{}' already exists", spec.name);
@@ -1305,9 +1329,8 @@ impl WorkerRegistry {
             &spec.runtime,
             direct_native_harness_sidecar,
             skip_relay_prompt,
-        ) || (cursor_mcp_worker && !skip_relay_prompt)
-        {
-            if let Some(relay_key) = worker_relay_api_key {
+        ) {
+            if let Some(relay_key) = worker_relay_api_key.as_deref() {
                 command.env("RELAY_AGENT_TOKEN", relay_key);
             }
             command.env("RELAY_AGENT_NAME", &spec.name);
@@ -1334,7 +1357,15 @@ impl WorkerRegistry {
             }
             command.env("AGENT_RELAY_LOCAL_ONLY", "1");
         }
-        // Prevent nested Claude Code instances from sharing the parent session.
+        Self::apply_cursor_worker_env(
+            &mut command,
+            &spec.name,
+            worker_relay_api_key.as_deref(),
+            cursor_mcp_worker,
+            skip_relay_prompt,
+        );
+        // Remove CLAUDECODE from child env to prevent nested Claude Code instances
+        // from interfering with the parent's session management
         command.env_remove("CLAUDECODE");
         if let Some(cwd) = spec.cwd.as_ref() {
             command.current_dir(cwd);
@@ -1597,6 +1628,7 @@ impl WorkerRegistry {
 
     pub(crate) async fn release(&mut self, name: &str) -> Result<()> {
         tracing::info!(target = "broker::release", name = %name, "releasing worker");
+        self.cursor_mcp_leases.retry_pending_cleanups();
         self.initial_tasks.remove(name);
         // An explicit release is terminal even when the process already exited
         // and disappeared from `workers`. Cancel any pending restart before
@@ -1673,6 +1705,7 @@ impl WorkerRegistry {
     }
 
     pub(crate) async fn shutdown_all(&mut self) -> Result<()> {
+        self.cursor_mcp_leases.retry_pending_cleanups();
         let names: Vec<WorkerName> = self.workers.keys().cloned().collect();
         for name in names {
             if let Err(error) = self.release(&name).await {
@@ -1683,6 +1716,7 @@ impl WorkerRegistry {
     }
 
     pub(crate) async fn reap_exited(&mut self) -> Result<Vec<ExitedWorker>> {
+        self.cursor_mcp_leases.retry_pending_cleanups();
         let names: Vec<WorkerName> = self.workers.keys().cloned().collect();
         let mut exited = Vec::new();
         for name in names {
@@ -3017,6 +3051,30 @@ sleep 30
 
     #[cfg(unix)]
     #[tokio::test]
+    async fn cursor_worker_child_env_matches_placeholder_names_without_file_literals() {
+        let registry = make_registry(vec![]);
+        let worker = WorkerName::from("cursor-child-env-worker");
+        let mut command = Command::new("sh");
+        command.args(["-c", "printf '%s\\n' \"$RELAY_AGENT_TOKEN|$RELAY_AGENT_NAME|$RELAY_AGENT_TYPE|$RELAY_STRICT_AGENT_NAME\""]);
+        command.stdout(Stdio::piped());
+        WorkerRegistry::apply_cursor_worker_env(
+            &mut command,
+            &worker,
+            Some("agent-token-test-only"),
+            true,
+            false,
+        );
+        let output = command.output().await.expect("child env command");
+        assert!(output.status.success());
+        assert_eq!(
+            String::from_utf8_lossy(&output.stdout).trim(),
+            "agent-token-test-only|cursor-child-env-worker|agent|1"
+        );
+        drop(registry);
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
     async fn cursor_worker_registry_fails_closed_when_lease_capture_fails() {
         let cwd = tempfile::tempdir().expect("cursor cwd");
         let logs = tempfile::tempdir().expect("worker logs");
@@ -3046,6 +3104,269 @@ sleep 30
             .await;
         assert!(result.is_err());
         assert!(cursor_dir.join("mcp.json").is_dir());
+        assert!(registry.cursor_mcp_leases.is_empty());
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn cursor_worker_registry_rejects_hostile_cursor_symlink() {
+        use std::os::unix::fs::symlink;
+
+        let cwd = tempfile::tempdir().expect("cursor cwd");
+        let outside = tempfile::tempdir().expect("outside target");
+        let logs = tempfile::tempdir().expect("worker logs");
+        let (tx, _rx) = mpsc::channel::<WorkerEvent>(16);
+        let mut registry = WorkerRegistry::new(
+            tx,
+            vec![("RELAY_API_KEY".into(), "workspace-secret-test-only".into())],
+            logs.path().to_path_buf(),
+            Instant::now(),
+        );
+        let outside_file = outside.path().join("mcp.json");
+        std::fs::write(&outside_file, b"outside bytes").unwrap();
+        symlink(outside.path(), cwd.path().join(".cursor")).unwrap();
+
+        let result = registry
+            .build_mcp_args(
+                "cursor",
+                &WorkerName::from("cursor-symlink-hostile"),
+                &[],
+                cwd.path(),
+                Some("agent-token-test-only"),
+                false,
+                None,
+            )
+            .await;
+        assert!(result.is_err());
+        assert_eq!(std::fs::read(&outside_file).unwrap(), b"outside bytes");
+        assert!(registry.cursor_mcp_leases.is_empty());
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn cursor_cleanup_failure_is_retried_and_name_reuse_is_blocked() {
+        let cwd = tempfile::tempdir().expect("cursor cwd");
+        let logs = tempfile::tempdir().expect("worker logs");
+        let (tx, _rx) = mpsc::channel::<WorkerEvent>(16);
+        let mut registry = WorkerRegistry::new(
+            tx,
+            vec![("RELAY_API_KEY".into(), "workspace-secret-test-only".into())],
+            logs.path().to_path_buf(),
+            Instant::now(),
+        );
+        let worker = WorkerName::from("cursor-retry-worker");
+        registry
+            .build_mcp_args(
+                "cursor",
+                &worker,
+                &[],
+                cwd.path(),
+                Some("agent-token-test-only"),
+                false,
+                None,
+            )
+            .await
+            .unwrap();
+        let path = cwd.path().join(".cursor/mcp.json");
+        std::fs::remove_file(&path).unwrap();
+        std::fs::create_dir(&path).unwrap();
+        assert!(registry.cursor_mcp_leases.release_worker(&worker).is_err());
+        assert!(registry.cursor_mcp_leases.has_pending_cleanup(&worker));
+
+        // A reused worker name cannot attach a new lease while the old path
+        // still owns cleanup responsibility.
+        assert!(registry
+            .build_mcp_args(
+                "cursor",
+                &worker,
+                &[],
+                cwd.path(),
+                Some("agent-token-test-only"),
+                false,
+                None,
+            )
+            .await
+            .is_err());
+
+        std::fs::remove_dir(&path).unwrap();
+        registry.reap_exited().await.unwrap();
+        assert!(!registry.cursor_mcp_leases.has_pending_cleanup(&worker));
+        registry
+            .build_mcp_args(
+                "cursor",
+                &worker,
+                &[],
+                cwd.path(),
+                Some("agent-token-test-only"),
+                false,
+                None,
+            )
+            .await
+            .unwrap();
+        registry.cursor_mcp_leases.release_worker(&worker).unwrap();
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn worker_release_removes_cursor_config() {
+        let cwd = tempfile::tempdir().expect("cursor cwd");
+        let logs = tempfile::tempdir().expect("worker logs");
+        let (tx, _rx) = mpsc::channel::<WorkerEvent>(16);
+        let mut registry = WorkerRegistry::new(
+            tx,
+            vec![("RELAY_API_KEY".into(), "workspace-secret-test-only".into())],
+            logs.path().to_path_buf(),
+            Instant::now(),
+        );
+        let worker = WorkerName::from("cursor-explicit-release");
+        registry
+            .build_mcp_args(
+                "cursor",
+                &worker,
+                &[],
+                cwd.path(),
+                Some("agent-token-test-only"),
+                false,
+                None,
+            )
+            .await
+            .unwrap();
+        let path = cwd.path().join(".cursor/mcp.json");
+        let mut child = Command::new("sleep")
+            .arg("30")
+            .stdin(Stdio::piped())
+            .spawn()
+            .unwrap();
+        let stdin = child.stdin.take().unwrap();
+        let generation = Uuid::new_v4();
+        let (command_tx, command_rx) = mpsc::channel(WORKER_WRITE_QUEUE_CAPACITY);
+        spawn_worker_writer(
+            registry.event_tx.clone(),
+            worker.clone(),
+            generation,
+            stdin,
+            command_rx,
+        );
+        registry.workers.insert(
+            worker.clone(),
+            WorkerHandle {
+                generation,
+                spec: spec_for_test(worker.as_str()),
+                parent: None,
+                workspace_id: None,
+                child,
+                command_tx,
+                harness_pid: None,
+                spawned_at: Instant::now(),
+                ready_at: None,
+                last_activity_at: Instant::now(),
+                context_budget_pct: None,
+                state: AgentWorkState::Working,
+                exit_reason: None,
+            },
+        );
+        registry.release(worker.as_str()).await.unwrap();
+        assert!(!path.exists());
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn worker_task_exit_reaps_cursor_config() {
+        let cwd = tempfile::tempdir().expect("cursor cwd");
+        let logs = tempfile::tempdir().expect("worker logs");
+        let (tx, _rx) = mpsc::channel::<WorkerEvent>(16);
+        let mut registry = WorkerRegistry::new(
+            tx,
+            vec![("RELAY_API_KEY".into(), "workspace-secret-test-only".into())],
+            logs.path().to_path_buf(),
+            Instant::now(),
+        );
+        let worker = WorkerName::from("cursor-task-exit");
+        registry
+            .build_mcp_args(
+                "cursor",
+                &worker,
+                &[],
+                cwd.path(),
+                Some("agent-token-test-only"),
+                false,
+                None,
+            )
+            .await
+            .unwrap();
+        let path = cwd.path().join(".cursor/mcp.json");
+        let mut child = Command::new("sh")
+            .args(["-c", "exit 0"])
+            .stdin(Stdio::piped())
+            .spawn()
+            .unwrap();
+        let stdin = child.stdin.take().unwrap();
+        let generation = Uuid::new_v4();
+        let (command_tx, command_rx) = mpsc::channel(WORKER_WRITE_QUEUE_CAPACITY);
+        spawn_worker_writer(
+            registry.event_tx.clone(),
+            worker.clone(),
+            generation,
+            stdin,
+            command_rx,
+        );
+        for _ in 0..50 {
+            if child.try_wait().unwrap().is_some() {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+        registry.workers.insert(
+            worker.clone(),
+            WorkerHandle {
+                generation,
+                spec: spec_for_test(worker.as_str()),
+                parent: None,
+                workspace_id: None,
+                child,
+                command_tx,
+                harness_pid: None,
+                spawned_at: Instant::now(),
+                ready_at: None,
+                last_activity_at: Instant::now(),
+                context_budget_pct: None,
+                state: AgentWorkState::Working,
+                exit_reason: None,
+            },
+        );
+        let exited = registry.reap_exited().await.unwrap();
+        assert_eq!(exited.len(), 1);
+        assert!(!path.exists());
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn pre_registration_spawn_failure_releases_cursor_config() {
+        let cwd = tempfile::tempdir().expect("cursor cwd");
+        let logs = tempfile::tempdir().expect("worker logs");
+        let (tx, _rx) = mpsc::channel::<WorkerEvent>(16);
+        let mut registry = WorkerRegistry::new(
+            tx,
+            vec![("RELAY_API_KEY".into(), "workspace-secret-test-only".into())],
+            logs.path().to_path_buf(),
+            Instant::now(),
+        );
+        let worker = WorkerName::from("cursor-pre-registration-failure");
+        registry
+            .build_mcp_args(
+                "cursor",
+                &worker,
+                &[],
+                cwd.path(),
+                Some("agent-token-test-only"),
+                false,
+                None,
+            )
+            .await
+            .unwrap();
+        let path = cwd.path().join(".cursor/mcp.json");
+        registry.cleanup_unregistered_spawn(&worker, None).await;
+        assert!(!path.exists());
         assert!(registry.cursor_mcp_leases.is_empty());
     }
 
