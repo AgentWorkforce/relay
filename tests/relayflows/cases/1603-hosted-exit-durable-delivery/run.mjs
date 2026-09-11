@@ -1,11 +1,21 @@
-// This case replaces the retired `1603-raw-spawn-readiness` case (see PR
-// #1750). That case proved a *different*, already-fixed bug — raw CLI spawn
-// readiness — via the MCP `spawn` tool against a mocked HTTP actions API. On
-// current `main` the readiness-wait behavior it asserted against `base` is
-// already present, so its `base` arm no longer reproduces anything, and it
-// never touched a real broker/Relaycast boundary at all, so it could not
-// stand in as proof of issue #1603's actual fix here: durable, restart-safe
-// delivery of the hosted `agent_exited` event.
+// This case supersedes `1603-raw-spawn-readiness` as issue #1603's declared
+// RelayFlow proof (see PR #1750). That case proved a *different*,
+// already-fixed bug — raw CLI spawn readiness — via the MCP `spawn` tool
+// against a mocked HTTP actions API. On current `main` the readiness-wait
+// behavior it asserted against `base` is already present, so its `base` arm
+// no longer reproduces anything, and it never touched a real
+// broker/Relaycast boundary at all, so it could not stand in as proof of
+// issue #1603's actual fix here: durable, restart-safe delivery of the
+// hosted `agent_exited` event.
+//
+// `1603-raw-spawn-readiness` itself is left in place, unmodified, rather
+// than deleted: it predates this branch (merged to `main` in #1708, well
+// before this PR's base), the RelayFlow PR-proof dispatcher requires a PR to
+// touch exactly its one declared case
+// (`scripts/pr-proof/prepare.mjs`/`contract.mjs`), and it is still an
+// accurate (if now redundant) regression case for the readiness-wait
+// behavior it covers. Retiring it — if still wanted once it no longer
+// carries the #1603 proof — is a separate, standalone change.
 //
 // This case is an honest, binary-boundary proof of exactly that restart
 // durability, scoped to what it can truthfully drive without a real
