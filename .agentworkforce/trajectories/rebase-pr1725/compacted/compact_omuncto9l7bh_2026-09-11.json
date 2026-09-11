@@ -1,0 +1,37 @@
+{
+  "id": "compact_omuncto9l7bh",
+  "version": 1,
+  "type": "compacted",
+  "compactedAt": "2026-09-11T11:55:48.393Z",
+  "sourceTrajectories": [
+    "traj_xyxqurywhbk6"
+  ],
+  "dateRange": {
+    "start": "2026-09-11T11:55:20.198Z",
+    "end": "2026-09-11T11:55:36.955Z"
+  },
+  "summary": {
+    "totalDecisions": 1,
+    "totalEvents": 1,
+    "uniqueAgents": [
+      "default"
+    ]
+  },
+  "decisionGroups": [
+    {
+      "category": "testing",
+      "decisions": [
+        {
+          "question": "Preserve main Major release heading; reaper production and proof code unchanged",
+          "chosen": "Preserve main Major release heading; reaper production and proof code unchanged",
+          "reasoning": "Only conflict was pending changelog level. All destructive safety tests use temporary repositories; real lanes are never targeted.",
+          "fromTrajectory": "traj_xyxqurywhbk6"
+        }
+      ]
+    }
+  ],
+  "keyLearnings": [],
+  "keyFindings": [],
+  "filesAffected": [],
+  "commits": []
+}
