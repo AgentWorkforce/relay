@@ -1699,9 +1699,28 @@ impl CursorMcpLeaseRegistry {
             let _parent_guard = windows_directory_guard(
                 path.parent()
                     .ok_or_else(|| invalid_path("Cursor MCP path has no parent"))?,
-            )?;
+            )
+            .map_err(|e| {
+                io::Error::new(
+                    e.kind(),
+                    format!(
+                        "guard .cursor directory in write_worker_cursor_file {}: {e}",
+                        path.display()
+                    ),
+                )
+            })?;
             #[cfg(windows)]
-            validate_windows_cursor_identity(&state.lock, path, state.cursor_identity)?;
+            validate_windows_cursor_identity(&state.lock, path, state.cursor_identity).map_err(
+                |e| {
+                    io::Error::new(
+                        e.kind(),
+                        format!(
+                            "validate cursor identity in write_worker_cursor_file {}: {e}",
+                            path.display()
+                        ),
+                    )
+                },
+            )?;
             let generated_identity = write_credential_file_with_identity(path, contents)?;
             #[cfg(windows)]
             {
