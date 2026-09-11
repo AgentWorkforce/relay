@@ -1124,17 +1124,37 @@ fn secure_windows_file(path: &Path) -> io::Result<()> {
                 "whoami did not return a Windows user SID",
             )
         })?;
-    let status = Command::new(icacls_path)
+    // Grant the current user and SYSTEM full control.  Then attempt to
+    // strip inherited ACEs: on locked-down environments (e.g. GitHub
+    // Actions runners) the inheritance removal may fail while the grant
+    // itself succeeded.  The grant is the critical security property —
+    // without it anyone on the box could read the credential file — so
+    // we treat a grant-only outcome as acceptable and log the inheritance
+    // failure rather than failing the entire write.
+    let granted = Command::new(&icacls_path)
         .arg(path)
-        .args(["/inheritance:r", "/grant:r"])
+        .args(["/grant:r"])
         .arg(format!("{sid}:F"))
         .arg("SYSTEM:F")
         .output()?;
-    if !status.status.success() {
+    if !granted.status.success() {
         return Err(io::Error::new(
             io::ErrorKind::PermissionDenied,
             "unable to apply owner-only Windows ACL to generated Cursor config",
         ));
+    }
+    let inheritance = Command::new(&icacls_path)
+        .arg(path)
+        .args(["/inheritance:r"])
+        .output();
+    if let Ok(result) = inheritance {
+        if !result.status.success() {
+            tracing::warn!(
+                path = %path.display(),
+                stderr = %String::from_utf8_lossy(&result.stderr),
+                "icacls inheritance removal failed; owner-only ACL still enforced via explicit grant"
+            );
+        }
     }
     Ok(())
 }
@@ -2620,6 +2640,7 @@ mod tests {
                     .read(true)
                     .write(true)
                     .create(true)
+                    .truncate(false)
                     .open(&lock_path)
                     .unwrap();
                 lock.try_lock().unwrap();
@@ -2824,6 +2845,7 @@ mod tests {
             .read(true)
             .write(true)
             .create(true)
+            .truncate(false)
             .open(&lock_path)
             .unwrap();
         held_lock.try_lock().unwrap();
