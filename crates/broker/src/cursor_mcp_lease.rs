@@ -818,7 +818,11 @@ fn sync_file(path: &Path) -> io::Result<()> {
     }
     #[cfg(not(unix))]
     {
-        fs::File::open(path)?.sync_all()
+        fs::OpenOptions::new()
+            .read(true)
+            .write(true)
+            .open(path)?
+            .sync_all()
     }
 }
 
