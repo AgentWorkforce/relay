@@ -2041,7 +2041,7 @@ mod tests {
         let worker = WorkerName::new("w1");
         let mut registry = CursorMcpLeaseRegistry::new();
         let path = registry.acquire(dir.path(), &worker).unwrap();
-        write_credential_file(&path, b"{} ").unwrap();
+        registry.write_worker_cursor_file(&worker, b"{} ").unwrap();
         registry.release_worker(&worker).unwrap();
         assert!(!path.exists());
         assert!(!path.parent().unwrap().exists());
@@ -2086,7 +2086,9 @@ mod tests {
         let mut registry = CursorMcpLeaseRegistry::new();
         let worker = WorkerName::new("w1");
         registry.acquire(dir.path(), &worker).unwrap();
-        write_credential_file(&path, b"generated").unwrap();
+        registry
+            .write_worker_cursor_file(&worker, b"generated")
+            .unwrap();
         registry.release_worker(&worker).unwrap();
         assert_eq!(read(&path), original);
         assert_eq!(
@@ -2103,7 +2105,9 @@ mod tests {
         let w1 = WorkerName::new("w1");
         let w2 = WorkerName::new("w2");
         registry.acquire(dir.path(), &w1).unwrap();
-        write_credential_file(&path, b"generated").unwrap();
+        registry
+            .write_worker_cursor_file(&w1, b"generated")
+            .unwrap();
         registry.acquire(dir.path(), &w2).unwrap();
         registry.release_worker(&w1).unwrap();
         assert!(path.exists());
@@ -2124,7 +2128,9 @@ mod tests {
             let mut registry = CursorMcpLeaseRegistry::with_journal(journal.clone());
             let worker = WorkerName::new("w1");
             registry.acquire(dir.path(), &worker).unwrap();
-            write_credential_file(&path, b"placeholders only").unwrap();
+            registry
+                .write_worker_cursor_file(&worker, b"placeholders only")
+                .unwrap();
         }
         let recovered = CursorMcpLeaseRegistry::with_journal(journal.clone());
         assert!(recovered.is_empty());
@@ -2138,7 +2144,9 @@ mod tests {
         let mut registry = CursorMcpLeaseRegistry::new();
         let worker = WorkerName::new("w1");
         let path = registry.acquire(dir.path(), &worker).unwrap();
-        write_credential_file(&path, b"generated").unwrap();
+        registry
+            .write_worker_cursor_file(&worker, b"generated")
+            .unwrap();
         fs::remove_file(&path).unwrap();
         fs::create_dir(&path).unwrap();
 

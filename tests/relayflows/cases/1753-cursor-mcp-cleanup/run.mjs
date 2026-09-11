@@ -435,6 +435,7 @@ async function startRelaycastStub() {
   const workspaceKey = 'rk_live_relayflow_1753';
   const nodeToken = 'at_live_relayflow_1753';
   const nodeId = 'node_relayflow_1753';
+  const agents = new Map();
   const server = http.createServer(async (request, response) => {
     const chunks = [];
     for await (const chunk of request) chunks.push(chunk);
@@ -449,11 +450,14 @@ async function startRelaycastStub() {
         data: { token: nodeToken, id: nodeId, name: body.name ?? 'node_relayflow_1753' },
       };
     } else if (request.method === 'POST' && request.url === '/v1/agents') {
+      const name = body.name ?? 'agent_relayflow_1753';
+      const id = `agent_${name}`;
+      agents.set(id, name);
       payload = {
         ok: true,
         data: {
-          id: 'agent_relayflow_1753',
-          name: body.name ?? 'agent_relayflow_1753',
+          id,
+          name,
           token: nodeToken,
           status: 'online',
           workspace_id: 'rw_relayflow_1753',
@@ -479,8 +483,8 @@ async function startRelaycastStub() {
           : {
               ok: true,
               data: {
-                id: 'agent_relayflow_1753',
-                name: 'cursor-cleanup-worker',
+                id: request.url.slice('/v1/agents/'.length),
+                name: agents.get(request.url.slice('/v1/agents/'.length)) ?? 'cursor-cleanup-worker',
                 token: nodeToken,
                 status: 'online',
                 workspace_id: 'rw_relayflow_1753',
@@ -492,14 +496,12 @@ async function startRelaycastStub() {
     } else if (request.method === 'GET' && request.url.endsWith('/members')) {
       payload = {
         ok: true,
-        data: [
-          {
-            agent_id: 'agent_relayflow_1753',
-            agent_name: 'cursor-cleanup-worker',
-            role: 'member',
-            joined_at: '2025-01-01T00:00:00Z',
-          },
-        ],
+        data: [...agents].map(([agent_id, agent_name]) => ({
+          agent_id,
+          agent_name,
+          role: 'member',
+          joined_at: '2025-01-01T00:00:00Z',
+        })),
       };
     } else if (request.url === '/v1/channels' || request.url.startsWith('/v1/channels/')) {
       payload = {
