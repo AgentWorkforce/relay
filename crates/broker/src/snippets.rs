@@ -15,10 +15,7 @@ use tokio::{
 };
 
 use crate::{
-    cursor_mcp_lease::{
-        read_cursor_credential_file, validate_cursor_root, write_cursor_credential_file,
-    },
-    types::AgentResultMcpConfig,
+    cursor_mcp_lease::CursorMcpLeaseRegistry, ids::WorkerName, types::AgentResultMcpConfig,
 };
 
 const AGENT_RELAY_MCP_PACKAGE: &str = "agent-relay";
@@ -1070,8 +1067,42 @@ pub fn ensure_cursor_mcp_config(
     default_workspace: Option<&str>,
     agent_result: Option<&AgentResultMcpConfig>,
 ) -> io::Result<bool> {
-    validate_cursor_root(root)?;
+    // Standalone one-shot callers (for example `mcp-args`) still get a
+    // descriptor-relative write. WorkerRegistry passes its longer-lived lease
+    // through `ensure_cursor_mcp_config_with_lease` instead.
+    let mut leases = CursorMcpLeaseRegistry::new();
+    let worker = WorkerName::new("cursor-config-one-shot");
+    leases.acquire(root, &worker)?;
+    ensure_cursor_mcp_config_with_lease(
+        root,
+        relay_api_key,
+        relay_base_url,
+        relay_agent_name,
+        relay_agent_token,
+        workspaces_json,
+        default_workspace,
+        agent_result,
+        &leases,
+        &worker,
+    )
+}
 
+/// Configure a Cursor file through the descriptors held by the worker's
+/// already-acquired lease. `root` is retained for API context and diagnostics,
+/// but is never reopened or traversed here.
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn ensure_cursor_mcp_config_with_lease(
+    _root: &Path,
+    relay_api_key: Option<&str>,
+    relay_base_url: Option<&str>,
+    relay_agent_name: Option<&str>,
+    relay_agent_token: Option<&str>,
+    workspaces_json: Option<&str>,
+    default_workspace: Option<&str>,
+    agent_result: Option<&AgentResultMcpConfig>,
+    leases: &CursorMcpLeaseRegistry,
+    worker: &WorkerName,
+) -> io::Result<bool> {
     let new_value = json!({"mcpServers": {"agent-relay":
         cursor_agent_relay_mcp_server_config(
             relay_api_key,
@@ -1084,15 +1115,11 @@ pub fn ensure_cursor_mcp_config(
         )
     }});
 
-    let existing_bytes = match read_cursor_credential_file(root) {
-        Ok(bytes) => Some(bytes),
-        Err(error) if error.kind() == io::ErrorKind::NotFound => None,
-        Err(error) => return Err(error),
-    };
+    let existing_bytes = leases.read_worker_cursor_file(worker)?;
     if existing_bytes.is_none() {
         let body = serde_json::to_vec_pretty(&new_value)
             .map_err(|error| io::Error::other(error.to_string()))?;
-        write_cursor_credential_file(root, &body)?;
+        leases.write_worker_cursor_file(worker, &body)?;
         return Ok(true);
     }
 
@@ -1123,7 +1150,7 @@ pub fn ensure_cursor_mcp_config(
     if changed {
         let body = serde_json::to_vec_pretty(&parsed)
             .map_err(|error| io::Error::other(error.to_string()))?;
-        write_cursor_credential_file(root, &body)?;
+        leases.write_worker_cursor_file(worker, &body)?;
     }
     Ok(changed)
 }
@@ -1199,6 +1226,36 @@ pub async fn configure_agent_relay_mcp_with_result(
     workspaces_json: Option<&str>,
     default_workspace: Option<&str>,
     agent_result: Option<&AgentResultMcpConfig>,
+) -> Result<Vec<String>> {
+    configure_agent_relay_mcp_with_result_and_cursor_lease(
+        cli,
+        agent_name,
+        api_key,
+        base_url,
+        existing_args,
+        cwd,
+        agent_token,
+        workspaces_json,
+        default_workspace,
+        agent_result,
+        None,
+    )
+    .await
+}
+
+#[allow(clippy::too_many_arguments)]
+pub(crate) async fn configure_agent_relay_mcp_with_result_and_cursor_lease(
+    cli: &str,
+    agent_name: &str,
+    api_key: Option<&str>,
+    base_url: Option<&str>,
+    existing_args: &[String],
+    cwd: &Path,
+    agent_token: Option<&str>,
+    workspaces_json: Option<&str>,
+    default_workspace: Option<&str>,
+    agent_result: Option<&AgentResultMcpConfig>,
+    cursor_lease: Option<(&CursorMcpLeaseRegistry, &WorkerName)>,
 ) -> Result<Vec<String>> {
     let cli_lower = detect_cli_name(cli).to_lowercase();
     let is_claude = cli_lower == "claude" || cli_lower.starts_with("claude:");
@@ -1411,17 +1468,32 @@ pub async fn configure_agent_relay_mcp_with_result(
         args.push("--agent".to_string());
         args.push(AGENT_RELAY_MCP_SERVER.to_string());
     } else if is_cursor {
-        ensure_cursor_mcp_config(
-            cwd,
-            api_key,
-            base_url,
-            Some(agent_name),
-            agent_token,
-            workspaces_json,
-            default_workspace,
-            agent_result,
-        )
-        .with_context(|| {
+        let result = if let Some((leases, worker)) = cursor_lease {
+            ensure_cursor_mcp_config_with_lease(
+                cwd,
+                api_key,
+                base_url,
+                Some(agent_name),
+                agent_token,
+                workspaces_json,
+                default_workspace,
+                agent_result,
+                leases,
+                worker,
+            )
+        } else {
+            ensure_cursor_mcp_config(
+                cwd,
+                api_key,
+                base_url,
+                Some(agent_name),
+                agent_token,
+                workspaces_json,
+                default_workspace,
+                agent_result,
+            )
+        };
+        result.with_context(|| {
             "failed to write .cursor/mcp.json for Agent Relay MCP. \
                  Please configure the Agent Relay MCP server manually in .cursor/mcp.json"
         })?;

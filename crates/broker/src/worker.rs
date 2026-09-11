@@ -14,7 +14,7 @@ use crate::{
         HeadlessHarnessConfig, HeadlessHarnessDriver, ProtocolEnvelope, RelayDelivery,
         ResolvedHarnessConfig, PROTOCOL_VERSION,
     },
-    relaycast::{configure_agent_relay_mcp_with_result, is_cursor_cli_name},
+    relaycast::{configure_agent_relay_mcp_with_result_and_cursor_lease, is_cursor_cli_name},
     supervisor::Supervisor,
     types::{AgentResultMcpConfig, CommitAttestation},
 };
@@ -488,7 +488,7 @@ impl WorkerRegistry {
                 })?;
         }
 
-        let result = configure_agent_relay_mcp_with_result(
+        let result = configure_agent_relay_mcp_with_result_and_cursor_lease(
             cli_name,
             agent_name.as_str(),
             self.env_value("RELAY_API_KEY"),
@@ -499,6 +499,11 @@ impl WorkerRegistry {
             self.env_value("RELAY_WORKSPACES_JSON"),
             self.env_value("RELAY_DEFAULT_WORKSPACE"),
             agent_result,
+            if is_cursor {
+                Some((&self.cursor_mcp_leases, agent_name))
+            } else {
+                None
+            },
         )
         .await;
 
