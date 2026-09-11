@@ -36,10 +36,9 @@ use crate::{
         ProtocolEnvelope, RelayDelivery, ResolvedHarnessConfig, PROTOCOL_VERSION,
     },
     relaycast::{
-        agent_identity_key, format_worker_preregistration_error, identity_key_fingerprint,
-        reclaim_legacy_identity, registration_retry_after_secs, stable_node_identity_key,
-        AuthClient, MultiWorkspaceSession, RegRetryOutcome, RelaycastHttpClient,
-        WorkspaceInboundMessage, WorkspaceMembershipSummary, WsControl,
+        agent_identity_key, identity_key_fingerprint, reclaim_legacy_identity,
+        registration_retry_after_secs, stable_node_identity_key, AuthClient, MultiWorkspaceSession,
+        RelaycastHttpClient, WorkspaceInboundMessage, WorkspaceMembershipSummary, WsControl,
     },
     replay_buffer::{ReplayBuffer, DEFAULT_REPLAY_CAPACITY},
     telemetry::{ActionSource, TelemetryClient, TelemetryEvent},

@@ -36,6 +36,7 @@ pub(crate) mod redact;
 #[allow(dead_code)]
 pub(crate) mod relaycast;
 pub(crate) mod replay_buffer;
+pub(crate) mod spawn_registration;
 // Local-target routing helpers, kept for their unit tests but no longer
 // called from production code: the HTTP/sidecar send path (runtime/api.rs)
 // no longer resolves local targets and injects directly — it always

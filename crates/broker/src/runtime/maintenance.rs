@@ -4,6 +4,30 @@ use crate::terminal_control::TerminalToCloud;
 
 impl BrokerRuntime {
     pub(super) async fn handle_maintenance_tick(&mut self) {
+        // A timed-out caller may no longer be present when the owned token
+        // arrives. Retained custody, not a dropped reply channel, drives cleanup.
+        let abandoned: Vec<_> = self
+            .workers
+            .spawn_registrations
+            .entries
+            .iter()
+            .filter(|(name, custody)| {
+                custody.needs_cleanup() && !self.workers.identity_cleanups.contains_key(*name)
+            })
+            .map(|(name, custody)| (name.clone(), custody.http.clone()))
+            .collect();
+        for (name, http) in abandoned {
+            super::identity_cleanup::schedule_identity_cleanup(
+                &mut self.workers,
+                &self.fleet_control_tx,
+                &self.fleet_delivery_book,
+                &mut self.fleet_inventory,
+                &http,
+                &name,
+                true,
+                None,
+            );
+        }
         self.reconcile_identity_cleanups().await;
         let paths = &self.paths;
         let state = &mut self.state;

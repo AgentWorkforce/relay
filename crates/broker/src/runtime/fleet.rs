@@ -15,6 +15,7 @@ use crate::{
 };
 use base64::{engine::general_purpose::STANDARD as BASE64, Engine as _};
 
+#[cfg(test)]
 const FLEET_AGENT_REGISTER_TIMEOUT: Duration = Duration::from_secs(30);
 const VERIFIED_SPAWN_READY_TIMEOUT: Duration = Duration::from_secs(90);
 const TERMINAL_INPUT_MAX_BYTES: usize = 64 * 1024;
@@ -1276,6 +1277,7 @@ impl BrokerRuntime {
         if self.workers.workers.contains_key(&name)
             || self.pending_verified_spawns.contains_key(&name)
             || self.workers.identity_cleanups.contains_key(&name)
+            || self.workers.spawn_registrations.blocked(&name)
         {
             self.reply_action_error(&invoke.invocation_id, "spawn_agent_name_in_use")
                 .await;
@@ -1984,6 +1986,7 @@ pub(super) fn spawn_declared_metadata_publish(
 /// `via_node`-bound to the broker. The returned token is injected into the
 /// worker as `RELAY_AGENT_TOKEN` (which also sets `RELAY_SKIP_BOOTSTRAP`), so
 /// the worker MCP never re-registers over HTTP.
+#[cfg(test)]
 pub(super) async fn register_node_agent_token(
     fleet_control_tx: &mpsc::Sender<FleetControlCommand>,
     fleet_delivery_book: &mut FleetDeliveryBook,
@@ -2020,6 +2023,55 @@ pub(super) async fn register_node_agent_token(
         fleet_delivery_book.seed_cursor(token.name.clone(), token.agent_id.clone(), up_to_seq);
     }
     Ok(token)
+}
+
+/// Fresh registration shared by API, node action, and workspace-control spawn.
+/// Retain identity custody before a reply can wake a caller; no HTTP fallback.
+#[allow(clippy::too_many_arguments)]
+pub(super) async fn register_owned_node_agent_token(
+    workers: &mut WorkerRegistry,
+    http: &RelaycastHttpClient,
+    tx: &mpsc::Sender<FleetControlCommand>,
+    book: &mut FleetDeliveryBook,
+    name: &WorkerName,
+    channels: &[ChannelName],
+    invocation_id: Option<String>,
+    session_ref: Option<String>,
+) -> Result<
+    (
+        crate::node_control::AgentRegistrationToken,
+        Arc<crate::spawn_registration::SpawnRegistration>,
+    ),
+    String,
+> {
+    let custody = workers
+        .spawn_registrations
+        .reserve(name.clone(), http.clone())?;
+    let request = AgentRegister {
+        v: FLEET_WIRE_VERSION,
+        id: Some(custody.request_id()),
+        name: name.to_string(),
+        auto_join_general: (!channels.iter().any(|channel| channel.as_str() == "general"))
+            .then_some(false),
+        invocation_id,
+        session_ref: session_ref.clone(),
+        resumable: session_ref.as_ref().map(|_| true),
+    };
+    if tx
+        .try_send(FleetControlCommand::RegisterFreshAgent {
+            request,
+            custody: custody.clone(),
+        })
+        .is_err()
+    {
+        custody.reject_unsent("fleet_control_unavailable");
+    }
+    let token = custody.wait().await?;
+    book.bind_authoritative_identity(token.name.clone(), token.agent_id.clone());
+    if let Some(cursor) = token.delivery_ack_seq {
+        book.seed_cursor(token.name.clone(), token.agent_id.clone(), cursor);
+    }
+    Ok((token, custody))
 }
 
 pub(super) async fn publish_fleet_load_snapshot(

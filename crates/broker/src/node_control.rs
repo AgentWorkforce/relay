@@ -567,9 +567,14 @@ pub(crate) enum FleetControlCommand {
         request: AgentDeregister,
         reply: oneshot::Sender<Result<(), String>>,
     },
+    #[cfg(test)]
     RegisterAgent {
         request: AgentRegister,
         reply: oneshot::Sender<Result<AgentRegistrationToken, String>>,
+    },
+    RegisterFreshAgent {
+        request: AgentRegister,
+        custody: std::sync::Arc<crate::spawn_registration::SpawnRegistration>,
     },
     Shutdown,
 }
@@ -1576,8 +1581,12 @@ fn handle_disconnected_command(
         Some(FleetControlCommand::DeregisterAgent { reply, .. }) => {
             let _ = reply.send(Err(register_agent_error.to_string()));
         }
+        #[cfg(test)]
         Some(FleetControlCommand::RegisterAgent { reply, .. }) => {
             let _ = reply.send(Err(register_agent_error.to_string()));
+        }
+        Some(FleetControlCommand::RegisterFreshAgent { custody, .. }) => {
+            custody.reject_unsent(register_agent_error);
         }
         Some(FleetControlCommand::Send(_)) | Some(FleetControlCommand::HeartbeatNow) => {}
         Some(FleetControlCommand::Shutdown) | None => return DisconnectedCommandOutcome::Shutdown,
@@ -1819,6 +1828,7 @@ async fn run_connected_once(
         instance_id: format!("broker_{}", Uuid::new_v4().simple()),
     };
     node_register.provider = Some(provider.clone());
+    node_register.id = Some(format!("node_register_{}", Uuid::new_v4()));
     *registration = Some(node_register.clone());
 
     let mut request = match config.ws_url.as_str().into_client_request() {
@@ -1866,6 +1876,18 @@ async fn run_connected_once(
     };
     let _ = event_tx.send(FleetControlEvent::Connected).await;
     let (mut sink, mut stream) = ws.split();
+    // The handshake alone does not acknowledge broker-provider registration.
+    struct Readiness(std::sync::Arc<std::sync::atomic::AtomicBool>);
+    impl Drop for Readiness {
+        fn drop(&mut self) {
+            self.0.store(false, std::sync::atomic::Ordering::Release);
+        }
+    }
+    let mut admission = Readiness(std::sync::Arc::new(std::sync::atomic::AtomicBool::new(
+        false,
+    )));
+    let mut fresh: HashMap<String, std::sync::Arc<crate::spawn_registration::SpawnRegistration>> =
+        HashMap::new();
     let mut pending_agent_registrations: HashMap<String, PendingAgentRegistration> = HashMap::new();
     let mut pending_deregistrations: HashMap<String, oneshot::Sender<Result<(), String>>> =
         HashMap::new();
@@ -1915,6 +1937,9 @@ async fn run_connected_once(
                         load.handlers_live = true;
                         let mut next = build_node_register(&manifest, &config.node_id, &config.node_name, &config.broker_version, resume_cursor);
                         next.provider = Some(provider.clone());
+                        next.id = Some(format!("node_register_{}", Uuid::new_v4()));
+                        admission.0.store(false, std::sync::atomic::Ordering::Release);
+                        admission = Readiness(std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)));
                         node_register = next.clone();
                         *registration = Some(next.clone());
                         if send_wire(&mut sink, &BrokerToRelaycast::NodeRegister(next)).await.is_err() {
@@ -1955,6 +1980,24 @@ async fn run_connected_once(
                             return ControlRunResult::Disconnected;
                         }
                     }
+                    Some(FleetControlCommand::RegisterFreshAgent { request, custody }) => {
+                        fresh.retain(|_, entry| !entry.retired());
+                        let id = custody.request_id();
+                        let service_matches = config.token_minter.as_ref().is_some_and(|minter|
+                            custody.matches_service(&normalized_relaycast_base_url(minter.base_url.as_deref()), &minter.workspace_key, &config.ws_url));
+                        if !service_matches || !admission.0.load(std::sync::atomic::Ordering::Acquire)
+                            || request.id.as_deref() != Some(id.as_str()) || request.name != custody.name()
+                            || fresh.contains_key(&id) || fresh.len() >= 256 {
+                            custody.reject_unsent("node_registration_contract_unavailable");
+                            continue;
+                        }
+                        if !custody.begin_send(&config.node_id, &provider.instance_id, admission.0.clone()) { continue; }
+                        fresh.insert(id, custody);
+                        if send_wire(&mut sink, &BrokerToRelaycast::AgentRegister(request)).await.is_err() {
+                            return ControlRunResult::Disconnected;
+                        }
+                    }
+                    #[cfg(test)]
                     Some(FleetControlCommand::RegisterAgent { mut request, reply }) => {
                         let request_id = request.id.clone().unwrap_or_else(|| {
                             format!("agent_register_{}", Uuid::new_v4().simple())
@@ -2040,6 +2083,29 @@ async fn run_connected_once(
                 // answering our ping, which is the only traffic a healthy but
                 // idle engine is guaranteed to send.
                 last_inbound = Instant::now();
+                if let Message::Text(text) = &message {
+                    if let Ok(frame) = serde_json::from_str::<RelaycastToBroker>(text) {
+                        match frame {
+                            RelaycastToBroker::Reply(reply) if node_register.id.as_deref() == Some(reply.id.as_str()) => {
+                                let accepted = reply.ok
+                                    && reply.data.get("registration_contract").and_then(serde_json::Value::as_str) == Some("relay:node-registration-v1")
+                                    && reply.data.pointer("/provider/name").and_then(serde_json::Value::as_str) == Some(provider.name.as_str())
+                                    && reply.data.pointer("/provider/instance_id").and_then(serde_json::Value::as_str) == Some(provider.instance_id.as_str());
+                                admission.0.store(accepted, std::sync::atomic::Ordering::Release);
+                                continue;
+                            }
+                            RelaycastToBroker::Reply(reply) if fresh.contains_key(&reply.id) => {
+                                fresh[&reply.id].record_reply(&reply);
+                                continue;
+                            }
+                            RelaycastToBroker::Error(error) if fresh.contains_key(&error.id) => {
+                                fresh[&error.id].record_error(&error.code);
+                                continue;
+                            }
+                            _ => {}
+                        }
+                    }
+                }
                 if !handle_server_message(message, event_tx, &mut pending_agent_registrations, &mut pending_deregistrations, &mut sink).await {
                     drain_agent_registrations(&mut pending_agent_registrations, "node_control_disconnected");
                     return ControlRunResult::Disconnected;
@@ -3676,6 +3742,178 @@ mod tests {
             .await
             .unwrap()
             .unwrap();
+    }
+
+    #[tokio::test]
+    async fn fresh_registration_requires_correlated_server_contract_and_provider_ack() {
+        for variant in [
+            "valid",
+            "missing",
+            "forged-capability",
+            "wrong-provider",
+            "wrong-id",
+            "unknown",
+        ] {
+            let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+            let address = listener.local_addr().unwrap();
+            let base = format!("http://{address}");
+            let (command_tx, command_rx) = mpsc::channel(32);
+            let (event_tx, mut event_rx) = mpsc::channel(32);
+            let client = tokio::spawn(run_node_control_client(
+                FleetControlConfig {
+                    ws_url: format!("ws://{address}/v1/node/ws"),
+                    node_token: Some("nt_test".into()),
+                    node_id: "node-test".into(),
+                    node_name: "host-test".into(),
+                    broker_version: "broker/test".into(),
+                    token_minter: Some(NodeTokenMinter {
+                        workspace_key: "workspace-test".into(),
+                        workspace_id: "workspace".into(),
+                        base_url: Some(base.clone()),
+                        node_id: "node-test".into(),
+                        node_name: "host-test".into(),
+                        broker_version: "broker/test".into(),
+                        token_path: None,
+                    }),
+                    session_token: None,
+                    read_idle_timeout: None,
+                },
+                command_rx,
+                event_tx,
+            ));
+            command_tx
+                .send(FleetControlCommand::RegisterNode {
+                    manifest: test_manifest(),
+                    resume_cursor: None,
+                })
+                .await
+                .unwrap();
+            let (stream, _) = tokio::time::timeout(Duration::from_secs(3), listener.accept())
+                .await
+                .unwrap()
+                .unwrap();
+            let mut socket = accept_async(stream).await.unwrap();
+            let node = match next_node_to_server(&mut socket).await {
+                BrokerToRelaycast::NodeRegister(node) => node,
+                other => panic!("{other:?}"),
+            };
+            assert!(matches!(
+                next_node_to_server(&mut socket).await,
+                BrokerToRelaycast::InventorySync(_)
+            ));
+            assert_eq!(event_rx.recv().await.unwrap(), FleetControlEvent::Connected);
+            let mut data = json!({ "provider": node.provider, "registration_contract":"relay:node-registration-v1", "accepted_capabilities":[] });
+            if variant == "missing" || variant == "forged-capability" {
+                data.as_object_mut()
+                    .unwrap()
+                    .remove("registration_contract");
+            }
+            if variant == "forged-capability" {
+                data["accepted_capabilities"] =
+                    json!([{"name":"relay:node-registration-v1","accepted":true}]);
+            }
+            if variant == "wrong-provider" {
+                data["provider"]["name"] = json!("other");
+            }
+            if variant == "unknown" {
+                data["registration_contract"] = json!("relay:node-registration-v99");
+            }
+            let id = if variant == "wrong-id" {
+                "other-request".to_string()
+            } else {
+                node.id.unwrap()
+            };
+            socket
+                .send(Message::Text(
+                    json!({"v":1,"type":"reply","id":id,"ok":true,"data":data}).to_string(),
+                ))
+                .await
+                .unwrap();
+            // A later frame on this socket provides a deterministic processing
+            // barrier without timing sleeps or equating Connected with ready.
+            socket
+                .send(Message::Text(json!({"v":1,"type":"ping"}).to_string()))
+                .await
+                .unwrap();
+            assert!(matches!(
+                event_rx.recv().await.unwrap(),
+                FleetControlEvent::Message(RelaycastToBroker::Ping(_))
+            ));
+            let dir = tempfile::tempdir().unwrap();
+            let mut registrations =
+                crate::spawn_registration::SpawnRegistrations::load(dir.path().join("custody"));
+            let custody = registrations
+                .reserve(
+                    crate::ids::WorkerName::new("fresh"),
+                    crate::relaycast::RelaycastHttpClient::new(
+                        Some(base),
+                        "workspace-test",
+                        "broker",
+                        "codex",
+                    ),
+                )
+                .unwrap();
+            command_tx
+                .send(FleetControlCommand::RegisterFreshAgent {
+                    request: AgentRegister {
+                        v: FLEET_WIRE_VERSION,
+                        id: Some(custody.request_id()),
+                        name: "fresh".into(),
+                        auto_join_general: Some(false),
+                        invocation_id: None,
+                        session_ref: None,
+                        resumable: None,
+                    },
+                    custody: custody.clone(),
+                })
+                .await
+                .unwrap();
+            if variant == "valid" {
+                let request = match next_non_heartbeat_node_to_server(&mut socket).await {
+                    BrokerToRelaycast::AgentRegister(request) => request,
+                    other => panic!("{other:?}"),
+                };
+                assert_eq!(request.auto_join_general, Some(false));
+                let data = json!({"name":"fresh","agent_id":"owned-id","token":"owned-token"});
+                socket
+                    .send(Message::Text(
+                        json!({"v":1,"type":"reply","id":"wrong-id","ok":true,"data":data})
+                            .to_string(),
+                    ))
+                    .await
+                    .unwrap();
+                socket
+                    .send(Message::Text(
+                        json!({"v":1,"type":"reply","id":request.id,"ok":true,"data":data})
+                            .to_string(),
+                    ))
+                    .await
+                    .unwrap();
+                let token = custody.wait().await.unwrap();
+                assert_eq!(token.agent_id, "owned-id");
+                socket.close(None).await.unwrap();
+                assert_eq!(
+                    event_rx.recv().await.unwrap(),
+                    FleetControlEvent::Disconnected
+                );
+                assert!(custody.admit(&token.token).is_err());
+            } else {
+                assert!(custody
+                    .wait()
+                    .await
+                    .unwrap_err()
+                    .contains("contract_unavailable"));
+                assert!(custody.retired());
+                assert!(tokio::time::timeout(
+                    Duration::from_millis(50),
+                    next_non_heartbeat_node_to_server(&mut socket)
+                )
+                .await
+                .is_err());
+            }
+            client.abort();
+            let _ = client.await;
+        }
     }
 
     #[tokio::test]

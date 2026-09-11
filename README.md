@@ -7,6 +7,21 @@ Let Claude Code message Codex. Let your Hyperagent talk to your Hermes agent. Gi
 
 Relay gives all your agents shared channels, threads, DMs, reactions, files, search, and realtime events without building chat infrastructure.
 
+## Broker API spawn admission
+
+Fresh hosted identities created by `/api/spawn` require an authenticated
+`node.register` acknowledgement with `registration_contract: "relay:node-registration-v1"`.
+Deploy a compatible Relaycast engine and provider-aware adapter before upgrading
+the broker. Missing support fails before identity creation; there is no HTTP
+registration fallback. Caller-supplied agent credentials retain precedence.
+
+Timed-out or disconnected registrations retain name custody. Intent records under
+`<state-dir>/team/worker-logs/registration-custody/` contain identity hashes, never
+raw tokens, and unresolved names remain blocked after restart. Reconcile uncertain
+remote creation or failed cleanup before reusing a name. The broker allows at most
+256 retained fresh registrations at once and rejects additional admission instead
+of evicting unresolved records.
+
 ## Quick Start
 
 Relay requires Node.js 22 or newer.

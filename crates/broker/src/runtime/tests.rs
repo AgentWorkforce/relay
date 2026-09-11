@@ -6190,7 +6190,7 @@ async fn duplicate_http_spawn_preserves_live_identity_and_generation() {
 }
 
 #[tokio::test]
-async fn tokenless_http_spawn_requires_create_only_before_fleet_registration() {
+async fn tokenless_http_spawn_uses_create_only_node_registration_without_http_fallback() {
     use crate::listen_api::ListenApiRequest;
     use httpmock::{Method::POST, MockServer};
     use tokio::sync::oneshot;
@@ -6231,13 +6231,29 @@ async fn tokenless_http_spawn_requires_create_only_before_fleet_registration() {
         replay_buffer: crate::replay_buffer::ReplayBuffer::new(16),
         reply,
     };
-    tokio::select! {
-        _ = fixture.runtime.handle_api_request(request) => {},
-        command = fixture.fleet_control_rx.recv() => panic!("must not adopt an existing identity through node control: {command:?}"),
-        _ = tokio::time::sleep(Duration::from_secs(2)) => panic!("create-only refusal timed out"),
-    }
+    let request_work = fixture.runtime.handle_api_request(request);
+    let reply_work = async {
+        match fixture.fleet_control_rx.recv().await.unwrap() {
+            FleetControlCommand::RegisterFreshAgent { request, custody } => {
+                assert_eq!(request.auto_join_general, Some(false));
+                assert_eq!(request.id.as_deref(), Some(custody.request_id().as_str()));
+                assert!(custody.begin_send(
+                    "node",
+                    "instance",
+                    std::sync::Arc::new(std::sync::atomic::AtomicBool::new(true))
+                ));
+                custody.record_error("agent_already_exists");
+            }
+            other => panic!("unexpected registration command: {other:?}"),
+        }
+    };
+    tokio::time::timeout(Duration::from_secs(2), async {
+        tokio::join!(request_work, reply_work);
+    })
+    .await
+    .unwrap();
     assert!(result.await.unwrap().is_err());
-    create.assert_hits(1);
+    create.assert_hits(0);
     assert!(!fixture
         .runtime
         .workers
@@ -6350,7 +6366,7 @@ async fn owned_cleanup_retries_delete_without_repeating_acknowledged_deregistrat
 }
 
 #[tokio::test]
-async fn http_spawn_binding_failure_stops_before_launch_and_cleans_owned_identity() {
+async fn http_spawn_unacknowledged_provider_stops_before_any_identity_mutation() {
     use crate::listen_api::ListenApiRequest;
     use httpmock::{
         Method::{GET, PATCH, POST},
@@ -6391,37 +6407,47 @@ async fn http_spawn_binding_failure_stops_before_launch_and_cleans_owned_identit
         RelaycastHttpClient::new(Some(server.base_url()), "rk_live_test", "broker", "codex");
     let name = WorkerName::from("binding-refused");
     let (reply, mut result) = oneshot::channel();
-    fixture
-        .runtime
-        .handle_api_request(ListenApiRequest::Spawn {
-            name: name.clone(),
-            cli: "missing-binding-fixture-cli".into(),
-            transport: None,
-            model: None,
-            args: vec![],
-            task: None,
-            registration_metadata: crate::fleet_wire::AgentRegistrationMetadata {
-                organization: Some("original-spawn".into()),
-                project: Some("must-not-leak-to-retry".into()),
-                ..Default::default()
-            },
-            channels: Some(vec![]),
-            cwd: None,
-            team: None,
-            shadow_of: None,
-            shadow_mode: None,
-            continue_from: None,
-            idle_threshold_secs: None,
-            exit_after_task: false,
-            skip_relay_prompt: true,
-            restart_policy: Box::new(None),
-            harness_config: None,
-            agent_token: None,
-            agent_result_schema: None,
-            replay_buffer: crate::replay_buffer::ReplayBuffer::new(16),
-            reply,
-        })
-        .await;
+    let request_work = fixture.runtime.handle_api_request(ListenApiRequest::Spawn {
+        name: name.clone(),
+        cli: "missing-binding-fixture-cli".into(),
+        transport: None,
+        model: None,
+        args: vec![],
+        task: None,
+        registration_metadata: crate::fleet_wire::AgentRegistrationMetadata {
+            organization: Some("original-spawn".into()),
+            project: Some("must-not-leak-to-retry".into()),
+            ..Default::default()
+        },
+        channels: Some(vec![]),
+        cwd: None,
+        team: None,
+        shadow_of: None,
+        shadow_mode: None,
+        continue_from: None,
+        idle_threshold_secs: None,
+        exit_after_task: false,
+        skip_relay_prompt: true,
+        restart_policy: Box::new(None),
+        harness_config: None,
+        agent_token: None,
+        agent_result_schema: None,
+        replay_buffer: crate::replay_buffer::ReplayBuffer::new(16),
+        reply,
+    });
+    let reject_work = async {
+        match fixture.fleet_control_rx.recv().await.unwrap() {
+            FleetControlCommand::RegisterFreshAgent { custody, .. } => {
+                custody.reject_unsent("node_registration_contract_unavailable")
+            }
+            other => panic!("unexpected command: {other:?}"),
+        }
+    };
+    tokio::time::timeout(Duration::from_secs(2), async {
+        tokio::join!(request_work, reject_work);
+    })
+    .await
+    .unwrap();
     let response = tokio::time::timeout(Duration::from_secs(3), async {
         loop {
             fixture.runtime.reconcile_identity_cleanups().await;
@@ -6446,16 +6472,16 @@ async fn http_spawn_binding_failure_stops_before_launch_and_cleans_owned_identit
         .expect("binding failure cleanup must settle")
         .unwrap_err();
     assert!(
-        error.contains("binding") && error.contains("workspace_busy"),
+        error.contains("node_registration_contract_unavailable"),
         "{error}"
     );
-    create.assert_hits(1);
-    bind.assert_hits(1);
+    create.assert_hits(0);
+    bind.assert_hits(0);
     // Let any incorrectly detached request run before the name can be reused.
     tokio::time::sleep(Duration::from_millis(100)).await;
     metadata.assert_hits(0);
     scope.assert_hits(0);
-    cleanup.assert_hits(1);
+    cleanup.assert_hits(0);
     assert!(unrelated_survived);
     assert!(!fixture.runtime.workers.has_worker(&name));
     assert!(!fixture
@@ -6646,56 +6672,76 @@ async fn assert_http_spawn_metadata_publication(supplied_token: bool, valid_cwd:
     fixture.runtime.relaycast_http =
         RelaycastHttpClient::new(Some(server.base_url()), "rk_live_test", "broker", "codex");
     let (reply, result) = oneshot::channel();
-    fixture
-        .runtime
-        .handle_api_request(ListenApiRequest::Spawn {
-            name: name.clone(),
-            cli: "cat".into(),
-            transport: None,
-            model: None,
-            args: vec![],
-            task: None,
-            registration_metadata: crate::fleet_wire::AgentRegistrationMetadata {
-                organization: Some("demo-org".into()),
-                project: Some("demo-project".into()),
-                workstream: Some("subscriptions".into()),
-                role: Some("reviewer".into()),
-                objective: Some("prove delivery".into()),
+    let request_work = fixture.runtime.handle_api_request(ListenApiRequest::Spawn {
+        name: name.clone(),
+        cli: "cat".into(),
+        transport: None,
+        model: None,
+        args: vec![],
+        task: None,
+        registration_metadata: crate::fleet_wire::AgentRegistrationMetadata {
+            organization: Some("demo-org".into()),
+            project: Some("demo-project".into()),
+            workstream: Some("subscriptions".into()),
+            role: Some("reviewer".into()),
+            objective: Some("prove delivery".into()),
+        },
+        channels: Some(vec![]),
+        cwd: Some(
+            if valid_cwd {
+                dir.path().to_path_buf()
+            } else {
+                dir.path().join("missing")
+            }
+            .to_string_lossy()
+            .into_owned(),
+        ),
+        team: None,
+        shadow_of: None,
+        shadow_mode: None,
+        continue_from: None,
+        idle_threshold_secs: None,
+        exit_after_task: false,
+        skip_relay_prompt: true,
+        restart_policy: Box::new(None),
+        harness_config: Some(crate::protocol::ResolvedHarnessConfig::Native(
+            crate::protocol::NativeHarnessConfig {
+                command: "cat".into(),
+                args: vec![],
+                cwd: None,
+                env: None,
+                session_id: "metadata-session".into(),
+                metadata: None,
             },
-            channels: Some(vec![]),
-            cwd: Some(
-                if valid_cwd {
-                    dir.path().to_path_buf()
-                } else {
-                    dir.path().join("missing")
-                }
-                .to_string_lossy()
-                .into_owned(),
-            ),
-            team: None,
-            shadow_of: None,
-            shadow_mode: None,
-            continue_from: None,
-            idle_threshold_secs: None,
-            exit_after_task: false,
-            skip_relay_prompt: true,
-            restart_policy: Box::new(None),
-            harness_config: Some(crate::protocol::ResolvedHarnessConfig::Native(
-                crate::protocol::NativeHarnessConfig {
-                    command: "cat".into(),
-                    args: vec![],
-                    cwd: None,
-                    env: None,
-                    session_id: "metadata-session".into(),
-                    metadata: None,
-                },
-            )),
-            agent_token: supplied_token.then(|| token.to_string()),
-            agent_result_schema: None,
-            replay_buffer: crate::replay_buffer::ReplayBuffer::new(16),
-            reply,
-        })
-        .await;
+        )),
+        agent_token: supplied_token.then(|| token.to_string()),
+        agent_result_schema: None,
+        replay_buffer: crate::replay_buffer::ReplayBuffer::new(16),
+        reply,
+    });
+    let registration_work = async {
+        if supplied_token {
+            return;
+        }
+        match fixture.fleet_control_rx.recv().await.unwrap() {
+            FleetControlCommand::RegisterFreshAgent { request, custody } => {
+                assert!(custody.begin_send(
+                    "node",
+                    "instance",
+                    std::sync::Arc::new(std::sync::atomic::AtomicBool::new(true))
+                ));
+                custody.record_reply(&crate::fleet_wire::Reply { v: FLEET_WIRE_VERSION,
+                    id: request.id.unwrap(), ok: true,
+                    data: json!({"name":"metadata-worker", "agent_id":"metadata-id", "token":token}) });
+            }
+            other => panic!("unexpected command: {other:?}"),
+        }
+    };
+    tokio::time::timeout(Duration::from_secs(3), async {
+        tokio::join!(request_work, registration_work);
+    })
+    .await
+    .unwrap();
     let response = tokio::time::timeout(Duration::from_secs(3), result).await;
     // A fixture or admission regression must fail promptly rather than hang CI.
     // Stop the owned harness before assertions, including on a regression failure.
@@ -6719,9 +6765,9 @@ async fn assert_http_spawn_metadata_publication(supplied_token: bool, valid_cwd:
         tokio::time::sleep(Duration::from_millis(100)).await;
         metadata.assert_hits(0);
     }
-    create.assert_hits(usize::from(!supplied_token));
-    bind.assert_hits(usize::from(!supplied_token));
-    lookup.assert_hits(1);
+    create.assert_hits(0);
+    bind.assert_hits(0);
+    lookup.assert_hits(usize::from(supplied_token));
     unexpected_cleanup.assert_hits(0);
     assert!(!fixture
         .runtime

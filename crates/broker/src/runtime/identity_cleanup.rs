@@ -116,21 +116,43 @@ pub(super) fn schedule_identity_cleanup(
         return;
     }
     workers.supervisor.unregister(name);
-    let generation = workers
-        .owned_spawn_generations
+    let registration = workers
+        .spawn_registrations
+        .entries
         .get(name)
-        .map(|(generation, _)| *generation)
-        .unwrap_or_else(Uuid::new_v4);
+        .cloned()
+        .filter(|entry| !entry.retired());
+    let generation = registration
+        .as_ref()
+        .map(|entry| entry.generation())
+        .unwrap_or_else(|| {
+            workers
+                .owned_spawn_generations
+                .get(name)
+                .map(|(generation, _)| *generation)
+                .unwrap_or_else(Uuid::new_v4)
+        });
     if delete_identity {
         workers
             .owned_spawn_generations
             .entry(name.clone())
             .or_insert((generation, http.clone()));
     }
-    let expected_token_hash = http
-        .owned_identity_token_hash(name)
-        .map_err(|error| error.to_string());
-    let agent_id = book.active_agent_id(name.as_str()).map(ToString::to_string);
+    let (agent_id, expected_token_hash) = if let Some(registration) = &registration {
+        match registration.cleanup_identity() {
+            Some((id, hash)) => (Some(id), Ok(hash)),
+            None => (
+                None,
+                Err("registration has no proven identity custody".into()),
+            ),
+        }
+    } else {
+        (
+            book.active_agent_id(name.as_str()).map(ToString::to_string),
+            http.owned_identity_token_hash(name)
+                .map_err(|error| error.to_string()),
+        )
+    };
     let deregistered = Arc::new(AtomicBool::new(false));
     let task = start_attempt(
         tx,
@@ -213,6 +235,15 @@ impl BrokerRuntime {
                 .unwrap()
                 .await
                 .unwrap_or_else(|error| Err(format!("cleanup task failed: {error}")));
+            if result.is_ok() && pending.delete_identity {
+                if let Some(registration) = self.workers.spawn_registrations.entries.get(&name) {
+                    if let Err(error) = registration.retire_after_cleanup(pending.generation) {
+                        tracing::warn!(worker = %name, %error, "remote cleanup complete but durable reservation retirement failed");
+                        pending.task = Some(tokio::spawn(async { Ok(()) }));
+                        continue;
+                    }
+                }
+            }
             let completions = std::mem::take(&mut pending.completions);
             let generation = pending.generation;
             if let Err(error) = &result {

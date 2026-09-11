@@ -13,6 +13,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- Fresh broker API spawns verify the server registration contract, create identities under the authenticated broker provider, and retain generation custody across timeouts and cleanup; unresolved names remain reserved after restart.
+
 - HTTP agent spawn rejects failed Relaycast node binding, cleans up the newly registered identity, and publishes declared metadata for successful spawns using either new or supplied tokens.
 
 - `agent-relay node up` retries the narrowly transient Relaycast `workspace_busy` admission response while keeping unrelated rate limits terminal and preserving bounded startup diagnostics.

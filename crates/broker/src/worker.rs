@@ -2,6 +2,7 @@ use std::{
     collections::{HashMap, VecDeque},
     path::{Path, PathBuf},
     process::Stdio,
+    sync::Arc,
     time::{Duration, Instant},
 };
 
@@ -258,6 +259,7 @@ pub(crate) struct WorkerRegistry {
     pub(crate) owned_spawn_generations:
         HashMap<WorkerName, (Uuid, crate::relaycast::RelaycastHttpClient)>,
     pub(crate) identity_cleanups: HashMap<WorkerName, crate::runtime::PendingIdentityCleanup>,
+    pub(crate) spawn_registrations: crate::spawn_registration::SpawnRegistrations,
     pub(crate) completed_owned_releases: VecDeque<(WorkerName, Uuid)>,
     pub(crate) supervisor: Supervisor,
     pub(crate) metrics: MetricsCollector,
@@ -361,6 +363,9 @@ impl WorkerRegistry {
             workers: HashMap::new(),
             event_tx,
             worker_env,
+            spawn_registrations: crate::spawn_registration::SpawnRegistrations::load(
+                worker_logs_dir.join("registration-custody"),
+            ),
             worker_logs_dir,
             commit_hooks_dir: None,
             initial_tasks: HashMap::new(),
@@ -584,7 +589,44 @@ impl WorkerRegistry {
         agent_result: Option<AgentResultMcpConfig>,
         commit_attestation: Option<CommitAttestation>,
     ) -> Result<AgentSpec> {
+        self.spawn_registered(
+            spec,
+            parent,
+            idle_threshold_secs,
+            worker_relay_api_key,
+            skip_relay_prompt,
+            workspace_id,
+            agent_result,
+            commit_attestation,
+            None,
+        )
+        .await
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) async fn spawn_registered(
+        &mut self,
+        spec: AgentSpec,
+        parent: Option<String>,
+        idle_threshold_secs: Option<u64>,
+        worker_relay_api_key: Option<String>,
+        skip_relay_prompt: bool,
+        workspace_id: Option<crate::ids::WorkspaceId>,
+        agent_result: Option<AgentResultMcpConfig>,
+        commit_attestation: Option<CommitAttestation>,
+        registration: Option<Arc<crate::spawn_registration::SpawnRegistration>>,
+    ) -> Result<AgentSpec> {
         let mut spec = spec;
+        if self.spawn_registrations.blocked(&spec.name)
+            && !registration.as_ref().is_some_and(|owned| {
+                self.spawn_registrations
+                    .entries
+                    .get(&spec.name)
+                    .is_some_and(|entry| Arc::ptr_eq(entry, owned))
+            })
+        {
+            anyhow::bail!("agent '{}' has unresolved registration custody", spec.name);
+        }
         if self.identity_cleanups.contains_key(&spec.name) {
             anyhow::bail!("agent '{}' has pending owned cleanup", spec.name);
         }
@@ -1246,7 +1288,7 @@ impl WorkerRegistry {
             direct_native_harness_sidecar,
             skip_relay_prompt,
         ) {
-            if let Some(relay_key) = worker_relay_api_key {
+            if let Some(relay_key) = worker_relay_api_key.as_ref() {
                 command.env("RELAY_AGENT_TOKEN", relay_key);
             }
             command.env("RELAY_AGENT_NAME", &spec.name);
@@ -1279,6 +1321,12 @@ impl WorkerRegistry {
             command.current_dir(cwd);
         }
 
+        let generation = match registration.as_ref() {
+            Some(custody) => custody
+                .admit(worker_relay_api_key.as_deref().unwrap_or(""))
+                .map_err(anyhow::Error::msg)?,
+            None => Uuid::new_v4(),
+        };
         let mut child = command.spawn().context("failed to spawn worker")?;
         if direct_native_harness_sidecar {
             initial_harness_pid = child.id();
@@ -1289,7 +1337,6 @@ impl WorkerRegistry {
         let log_file = self.worker_log_path(&spec.name);
         let startup_log_file = log_file.clone();
 
-        let generation = Uuid::new_v4();
         spawn_worker_reader(
             self.event_tx.clone(),
             spec.name.clone(),
