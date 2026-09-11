@@ -13,6 +13,7 @@ import {
   resolveNodeIdentityFromSession,
   waitForNodeDelivery,
 } from './broker-lifecycle.js';
+import { brokerIdentityPath, readBrokerIdentities } from './broker-process-identity.js';
 import type { CoreDependencies, CoreRelay } from '../commands/core.js';
 
 describe('isBundledBunExecutableEntrypoint', () => {
@@ -777,6 +778,24 @@ describe('runUpCommand workspace precedence', () => {
       .join('\n');
     expect(output).not.toContain('rk_repository');
     expect(output).not.toContain('rk_global');
+  });
+
+  it('uses one trimmed broker name for relay creation, identity persistence, and lock lookup', async () => {
+    const { deps, projectRoot, dataDir, createRelay } = createUpHarness();
+    const paddedName = '  spaced broker  ';
+    const trimmedName = 'spaced broker';
+
+    await runUpCommand({ brokerName: paddedName }, deps);
+
+    expect(createRelay).toHaveBeenCalledWith(projectRoot, 3889, trimmedName, undefined);
+    expect(vi.mocked(createRelay).mock.calls[0]?.[2]).toBe(trimmedName);
+    expect(readBrokerIdentities({ projectRoot, dataDir, teamDir: projectRoot }, deps)).toHaveLength(1);
+    expect(brokerIdentityPath({ projectRoot, dataDir, teamDir: projectRoot }, deps, trimmedName)).toContain(
+      'broker-identity-'
+    );
+    expect(
+      brokerIdentityPath({ projectRoot, dataDir, teamDir: projectRoot }, deps, trimmedName)
+    ).not.toContain(paddedName);
   });
 });
 

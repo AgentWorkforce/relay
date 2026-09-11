@@ -1581,6 +1581,15 @@ function recordWorkspaceBindingSource(
   return source;
 }
 
+function resolveBrokerName(options: UpOptions, deps: CoreDependencies, projectRoot: string): string {
+  return (
+    options.brokerName?.trim() ||
+    deps.env.AGENT_RELAY_BROKER_NAME?.trim() ||
+    path.basename(projectRoot) ||
+    'project'
+  );
+}
+
 export async function runUpCommand(options: UpOptions, deps: CoreDependencies): Promise<void> {
   if (!['darwin', 'linux'].includes(process.platform)) {
     deps.error(
@@ -1813,6 +1822,7 @@ export async function runUpCommand(options: UpOptions, deps: CoreDependencies): 
   const basePort = resolveBrokerBasePort(deps);
   deps.fs.mkdirSync(paths.dataDir, { recursive: true });
   const existingPid = readBrokerPid(paths.dataDir, deps);
+  const brokerName = resolveBrokerName(options, deps, paths.projectRoot);
 
   let relay: CoreRelay | null = null;
   let nodeProviders: RunningNodeProviders | undefined;
@@ -1908,7 +1918,7 @@ export async function runUpCommand(options: UpOptions, deps: CoreDependencies): 
     // process identity and original runtime lock still prove ownership.
     vlog(deps, options.verbose, 'Checking for orphaned broker processes...');
     const orphanCleanup = await killOrphanedBrokerProcesses(paths, deps, {
-      brokerName: options.brokerName,
+      brokerName,
       matchBrokerName: true,
     });
     if (orphanCleanup.matchedCount > orphanCleanup.killedCount) {
@@ -1919,7 +1929,7 @@ export async function runUpCommand(options: UpOptions, deps: CoreDependencies): 
       paths,
       basePort,
       deps,
-      options.brokerName,
+      brokerName,
       options.verbose,
       // Assign `relay` as soon as the broker child process exists, not only
       // once the handshake/status-check retries above also succeed. A
@@ -1943,15 +1953,7 @@ export async function runUpCommand(options: UpOptions, deps: CoreDependencies): 
       if (!shuttingDown) rejectBrokerExit(new Error('Broker exited; stopping the node supervisor.'));
     });
     if (relay.brokerPid)
-      managedIdentity = await persistBrokerIdentity(
-        paths,
-        relay.brokerPid,
-        options.brokerName?.trim() ||
-          deps.env.AGENT_RELAY_BROKER_NAME?.trim() ||
-          path.basename(paths.projectRoot) ||
-          'project',
-        deps
-      );
+      managedIdentity = await persistBrokerIdentity(paths, relay.brokerPid, brokerName, deps);
     if (!managedIdentity) {
       throw new Error(
         'Could not persist a verified broker process identity. Startup was stopped; ensure ps and lsof are available, process inspection is permitted, and the project identity directory is writable.'
