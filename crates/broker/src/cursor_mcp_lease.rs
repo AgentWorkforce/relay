@@ -1030,7 +1030,12 @@ fn write_credential_file_with_identity(
     validate_credential_parent(parent)?;
     let _ = validate_target(path)?;
     #[cfg(windows)]
-    let _parent_guard = windows_directory_guard(parent)?;
+    let _parent_guard = windows_directory_guard(parent).map_err(|e| {
+        io::Error::new(
+            e.kind(),
+            format!("guard credential parent directory {path}: {e}"),
+        )
+    })?;
     #[cfg(windows)]
     if validate_target(path)? {
         // Preserve the user's security descriptor for an existing config.
@@ -1057,11 +1062,26 @@ fn write_credential_file_with_identity(
             use std::os::unix::fs::OpenOptionsExt;
             options.mode(0o600);
         }
-        let mut file = options.open(&temporary)?;
+        let mut file = options.open(&temporary).map_err(|e| {
+            io::Error::new(
+                e.kind(),
+                format!("create temp credential file {}: {e}", temporary.display()),
+            )
+        })?;
         #[cfg(windows)]
         secure_windows_file(&temporary)?;
-        file.write_all(contents)?;
-        file.sync_all()?;
+        file.write_all(contents).map_err(|e| {
+            io::Error::new(
+                e.kind(),
+                format!("write temp credential file {}: {e}", temporary.display()),
+            )
+        })?;
+        file.sync_all().map_err(|e| {
+            io::Error::new(
+                e.kind(),
+                format!("sync temp credential file {}: {e}", temporary.display()),
+            )
+        })?;
         drop(file);
         validate_credential_parent(parent)?;
         // The generated path was absent when this lease was acquired. Never
@@ -1069,15 +1089,35 @@ fn write_credential_file_with_identity(
         // on Windows that pathname race could otherwise delete an unrelated
         // replacement. A rename failure is fail-closed and leaves the
         // replacement untouched.
-        fs::rename(&temporary, path)?;
+        fs::rename(&temporary, path).map_err(|e| {
+            io::Error::new(
+                e.kind(),
+                format!(
+                    "rename temp credential file {} -> {}: {e}",
+                    temporary.display(),
+                    path.display()
+                ),
+            )
+        })?;
         #[cfg(unix)]
         set_mode(path, 0o600)?;
         sync_file(path)?;
         sync_entry_parent(path)?;
         #[cfg(windows)]
-        let identity = Some(windows_handle_identity(&windows_child_file(
-            path, false, false,
-        )?)?);
+        let identity = Some(
+            windows_handle_identity(&windows_child_file(path, false, false).map_err(|e| {
+                io::Error::new(
+                    e.kind(),
+                    format!("open credential file for identity {}: {e}", path.display()),
+                )
+            })?)
+            .map_err(|e| {
+                io::Error::new(
+                    e.kind(),
+                    format!("capture credential file identity {}: {e}", path.display()),
+                )
+            })?,
+        );
         #[cfg(not(windows))]
         let identity = None;
         Ok(identity)
