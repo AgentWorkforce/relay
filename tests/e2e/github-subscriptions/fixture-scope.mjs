@@ -26,12 +26,15 @@ export function fixtureExpected(stimulus, record, runId) {
       expected.pull_request_url = `https://api.github.com/repos/${stimulus.repo}/pulls/${stimulus.pr}`;
       expected.state = 'commented';
       expected.commit_id = stimulus.headSha;
+      expected.submitted_at = record.submitted_at;
       break;
     case 'thread':
       canonicalPath = githubReviewCommentPath(owner, repo, id);
       expected.pull_request_url = `https://api.github.com/repos/${stimulus.repo}/pulls/${stimulus.pr}`;
       expected.commit_id = stimulus.headSha;
       expected.path = stimulus.file;
+      expected.line = stimulus.line;
+      expected.side = stimulus.side;
       expected.pull_request_review_id = String(record.pull_request_review_id);
       break;
     case 'merge':
@@ -40,6 +43,7 @@ export function fixtureExpected(stimulus, record, runId) {
       expected.merged = true;
       expected.merge_commit_sha = record.merge_commit_sha;
       expected.head = { sha: stimulus.headSha };
+      expected.base = { ref: stimulus.base };
       break;
     case 'ci':
       canonicalPath = githubCheckRunPath(owner, repo, id);

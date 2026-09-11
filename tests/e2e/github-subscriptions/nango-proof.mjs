@@ -47,7 +47,9 @@ export function nangoForwardReceipts(operation, messages, expected) {
   for (const message of messages) {
     const request = message.request ?? {},
       body = request.body ?? {},
-      headers = request.headers ?? {};
+      headers = Object.fromEntries(
+        Object.entries(request.headers ?? {}).map(([key, value]) => [key.toLowerCase(), value])
+      );
     const payload = body.payload ?? {};
     if (
       request.url !== expected.destination ||
@@ -68,7 +70,7 @@ export function nangoForwardReceipts(operation, messages, expected) {
       environment: operation.environmentName,
       observedAt: message.createdAt,
       endedAt: message.endedAt,
-      destination: request.url,
+      destination: new URL(request.url).origin + new URL(request.url).pathname,
       status: message.response?.code,
       connectionId: body.connectionId,
       providerConfigKey: body.providerConfigKey,

@@ -537,6 +537,9 @@ function emit() {
     nonce,
     headSha: fixture.headSha,
     file: fixture.file,
+    base: fixture.base,
+    line: 2,
+    side: 'RIGHT',
     createdAt: new Date().toISOString(),
     idleAfter,
     busy: args.includes('--busy'),
@@ -600,6 +603,7 @@ function emit() {
   stimulus.providerId = response.id ?? response.sha ?? response.commit?.sha;
   stimulus.url = response.html_url ?? response.content?.html_url ?? fixture.url;
   stimulus.accepted = true;
+  save(); // Preserve acknowledged ownership even if provider-shape validation fails below.
   if (kind !== 'ci') stimulus.expected = fixtureExpected(stimulus, response, config.runId);
   save();
   console.log(JSON.stringify({ repo: stimulus.repo, kind, url: stimulus.url, at: stimulus.createdAt }));

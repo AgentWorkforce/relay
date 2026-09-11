@@ -72,8 +72,20 @@ test('selects the canonical comment even when a newer legacy copy has the same n
 
 test('review, thread, and check scopes use exact adapter record paths outside PR directories', async () => {
   const { fixtureExpected } = await import('./fixture-scope.mjs');
-  const stimulus = { repo: 'AgentWorkforce/relay', pr: 1714, headSha: 'a'.repeat(40), file: 'owned.txt' };
-  const review = { id: '9007199254740993', user: { login: 'owner' }, pull_request_review_id: '123' };
+  const stimulus = {
+    repo: 'AgentWorkforce/relay',
+    pr: 1714,
+    headSha: 'a'.repeat(40),
+    file: 'owned.txt',
+    line: 2,
+    side: 'RIGHT',
+  };
+  const review = {
+    id: '9007199254740993',
+    user: { login: 'owner' },
+    pull_request_review_id: '123',
+    submitted_at: '2026-09-11T12:00:00Z',
+  };
   for (const [kind, directory] of [
     ['review', 'reviews'],
     ['thread', 'comments'],
@@ -97,4 +109,31 @@ test('review, thread, and check scopes use exact adapter record paths outside PR
       ),
     /Incomplete/
   );
+});
+
+test('semantic fixture identity pins thread location, submitted review time and owned merge base', async () => {
+  const { fixtureExpected } = await import('./fixture-scope.mjs');
+  const stimulus = {
+    repo: 'AgentWorkforce/relay',
+    pr: 1714,
+    headSha: 'a'.repeat(40),
+    base: 'ghsub-demo/test-123/base',
+    file: 'owned.txt',
+    line: 2,
+    side: 'RIGHT',
+  };
+  const record = {
+    id: '123',
+    user: { login: 'owner' },
+    pull_request_review_id: '456',
+    submitted_at: '2026-09-11T12:00:00Z',
+    merge_commit_sha: 'b'.repeat(40),
+  };
+  const thread = fixtureExpected({ ...stimulus, kind: 'thread' }, record, 'test-123');
+  assert.equal(thread.record.line, 2);
+  assert.equal(thread.record.side, 'RIGHT');
+  const review = fixtureExpected({ ...stimulus, kind: 'review' }, record, 'test-123');
+  assert.equal(review.record.submitted_at, record.submitted_at);
+  const merge = fixtureExpected({ ...stimulus, kind: 'merge' }, record, 'test-123');
+  assert.equal(merge.record.base.ref, stimulus.base);
 });

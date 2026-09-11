@@ -82,3 +82,18 @@ test('rejects stalled pagination and non-log calls', async () => {
   );
   await assert.rejects(nangoLogsCall('connections_delete', {}, 'key'), /read-only/);
 });
+
+test('receipt projection removes URL credentials and handles HTTP header casing', () => {
+  const configured = {
+    ...expected,
+    destination: 'https://user:private-pass@example.com/nango?secret=private-query#private-fragment',
+  };
+  const row = structuredClone(message);
+  row.request.url = configured.destination;
+  row.request.headers = { 'X-GitHub-Delivery': 'guid', 'X-GitHub-Event': 'pull_request' };
+  const receipts = nangoForwardReceipts(operation, [row], configured);
+  assert.equal(receipts.length, 1);
+  assert.equal(receipts[0].destination, 'https://example.com/nango');
+  assert.equal(receipts[0].githubEvent, 'pull_request');
+  assert(!JSON.stringify(receipts).includes('private-'));
+});
