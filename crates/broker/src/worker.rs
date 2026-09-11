@@ -355,6 +355,7 @@ impl WorkerRegistry {
         worker_env: Vec<(String, String)>,
         worker_logs_dir: PathBuf,
         broker_start: Instant,
+        broker_name: &str,
     ) -> Self {
         if let Err(error) = std::fs::create_dir_all(&worker_logs_dir) {
             tracing::warn!(
@@ -363,7 +364,21 @@ impl WorkerRegistry {
                 "failed to create worker log directory"
             );
         }
-        let cursor_mcp_journal = worker_logs_dir.join(".cursor-mcp-leases.json");
+        let safe_name = if broker_name.is_empty() {
+            String::new()
+        } else {
+            let sanitized: String = broker_name
+                .chars()
+                .filter(|c| c.is_alphanumeric() || *c == '-' || *c == '_')
+                .collect();
+            if sanitized.is_empty() {
+                String::new()
+            } else {
+                format!("-{sanitized}")
+            }
+        };
+        let cursor_mcp_journal =
+            worker_logs_dir.join(format!(".cursor-mcp-leases{safe_name}.json"));
         Self {
             workers: HashMap::new(),
             event_tx,
@@ -1341,7 +1356,17 @@ impl WorkerRegistry {
             command.env("RELAY_AGENT_TYPE", "agent");
             command.env("RELAY_STRICT_AGENT_NAME", "1");
         }
+        Self::apply_cursor_worker_env(
+            &mut command,
+            &spec.name,
+            worker_relay_api_key.as_deref(),
+            cursor_mcp_worker,
+            skip_relay_prompt,
+        );
         // Local-only workers must not bootstrap a separate Relaycast session.
+        // This block runs after apply_cursor_worker_env so that the cleanup
+        // removes credentials injected by both the participant-env path and
+        // the cursor-worker-env path.
         if self.env_value("AGENT_RELAY_LOCAL_ONLY") == Some("1") {
             for key in [
                 "AGENT_RELAY_ORIGIN_ACTOR",
@@ -1361,13 +1386,6 @@ impl WorkerRegistry {
             }
             command.env("AGENT_RELAY_LOCAL_ONLY", "1");
         }
-        Self::apply_cursor_worker_env(
-            &mut command,
-            &spec.name,
-            worker_relay_api_key.as_deref(),
-            cursor_mcp_worker,
-            skip_relay_prompt,
-        );
         // Remove CLAUDECODE from child env to prevent nested Claude Code instances
         // from interfering with the parent's session management
         command.env_remove("CLAUDECODE");
@@ -2689,7 +2707,13 @@ mod tests {
 
     fn make_registry(env: Vec<(String, String)>) -> WorkerRegistry {
         let (tx, _rx) = mpsc::channel::<WorkerEvent>(16);
-        WorkerRegistry::new(tx, env, PathBuf::from("/tmp/worker-tests"), Instant::now())
+        WorkerRegistry::new(
+            tx,
+            env,
+            PathBuf::from("/tmp/worker-tests"),
+            Instant::now(),
+            "test-broker",
+        )
     }
 
     #[cfg(unix)]
@@ -2994,6 +3018,7 @@ sleep 30
             ],
             logs.path().to_path_buf(),
             Instant::now(),
+            "test-broker",
         );
         let worker = WorkerName::from("cursor-placeholder-worker");
         let second_worker = WorkerName::from("cursor-placeholder-worker-2");
@@ -3088,6 +3113,7 @@ sleep 30
             vec![("RELAY_API_KEY".into(), "workspace-secret-test-only".into())],
             logs.path().to_path_buf(),
             Instant::now(),
+            "test-broker",
         );
         let cursor_dir = cwd.path().join(".cursor");
         std::fs::create_dir_all(&cursor_dir).unwrap();
@@ -3122,6 +3148,7 @@ sleep 30
             vec![("RELAY_API_KEY".into(), "workspace-secret-test-only".into())],
             logs.path().to_path_buf(),
             Instant::now(),
+            "test-broker",
         );
 
         let worker = WorkerName::from("cursor-windows-worker");
@@ -3161,6 +3188,7 @@ sleep 30
             vec![("RELAY_API_KEY".into(), "workspace-secret-test-only".into())],
             logs.path().to_path_buf(),
             Instant::now(),
+            "test-broker",
         );
         let outside_file = outside.path().join("mcp.json");
         std::fs::write(&outside_file, b"outside bytes").unwrap();
@@ -3193,6 +3221,7 @@ sleep 30
             vec![("RELAY_API_KEY".into(), "workspace-secret-test-only".into())],
             logs.path().to_path_buf(),
             Instant::now(),
+            "test-broker",
         );
         let worker = WorkerName::from("cursor-retry-worker");
         registry
@@ -3257,6 +3286,7 @@ sleep 30
             vec![("RELAY_API_KEY".into(), "workspace-secret-test-only".into())],
             logs.path().to_path_buf(),
             Instant::now(),
+            "test-broker",
         );
         let worker = WorkerName::from("cursor-explicit-release");
         registry
@@ -3320,6 +3350,7 @@ sleep 30
             vec![("RELAY_API_KEY".into(), "workspace-secret-test-only".into())],
             logs.path().to_path_buf(),
             Instant::now(),
+            "test-broker",
         );
         let worker = WorkerName::from("cursor-task-exit");
         registry
@@ -3390,6 +3421,7 @@ sleep 30
             vec![("RELAY_API_KEY".into(), "workspace-secret-test-only".into())],
             logs.path().to_path_buf(),
             Instant::now(),
+            "test-broker",
         );
         let worker = WorkerName::from("cursor-pre-registration-failure");
         registry
@@ -3598,6 +3630,7 @@ sleep 30
             Vec::new(),
             PathBuf::from("/tmp/worker-tests"),
             Instant::now(),
+            "test-broker",
         );
         let name = "writer-serialization";
         let mut child = Command::new("cat")

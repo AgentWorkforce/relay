@@ -992,6 +992,7 @@ mod tests {
             Vec::new(),
             temp.path().join("worker-logs"),
             Instant::now(),
+            "test-broker",
         );
         let released_agent = WorkerName::from("released-view-target");
         let healthy_agent = WorkerName::from("healthy-idle-view-target");
@@ -1197,6 +1198,7 @@ mod tests {
             Vec::new(),
             temp.path().join("worker-logs"),
             Instant::now(),
+            "test-broker",
         );
         let workspace_id = WorkspaceId::from("ws_test_1430".to_string());
         let (ws_control_tx, _ws_control_rx) = mpsc::channel::<WsControl>(4);

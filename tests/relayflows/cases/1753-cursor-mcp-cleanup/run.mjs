@@ -306,6 +306,13 @@ try {
       `Absent-file cleanup left state: ${JSON.stringify({ file: Boolean(absentAfterRelease), journal: Boolean(absentJournalAfter) })}`
     );
   }
+  await waitFor(
+    async () =>
+      (await relaycast.credentialRejected(relaycast.workspaceKey)) &&
+      (await relaycast.credentialRejected(relaycast.nodeToken)),
+    10_000,
+    'revoked relaycast credentials'
+  );
 
   let outcome;
   let signature;
@@ -435,6 +442,17 @@ async function startRelaycastStub() {
   const nodeToken = 'at_live_relayflow_1753';
   const nodeId = 'node_relayflow_1753';
   const agents = new Map();
+  const activeCredentials = new Set();
+  const revokedCredentials = new Set();
+  const issueCredential = (token) => {
+    activeCredentials.add(token);
+  };
+  const revokeIssuedCredentials = () => {
+    for (const token of activeCredentials) {
+      revokedCredentials.add(token);
+    }
+    activeCredentials.clear();
+  };
   const server = http.createServer(async (request, response) => {
     const chunks = [];
     for await (const chunk of request) chunks.push(chunk);
@@ -442,8 +460,10 @@ async function startRelaycastStub() {
     const body = bodyText ? JSON.parse(bodyText) : {};
     let payload;
     if (request.method === 'POST' && request.url === '/v1/workspaces') {
+      issueCredential(workspaceKey);
       payload = { ok: true, data: { api_key: workspaceKey, id: 'rw_relayflow_1753' } };
     } else if (request.method === 'POST' && request.url === '/v1/nodes') {
+      issueCredential(nodeToken);
       payload = {
         ok: true,
         data: { token: nodeToken, id: nodeId, name: body.name ?? 'node_relayflow_1753' },
@@ -463,35 +483,31 @@ async function startRelaycastStub() {
           created_at: '2025-01-01T00:00:00Z',
         },
       };
-    } else if (request.url.startsWith('/v1/agents/')) {
-      payload =
-        request.url === '/v1/agents/release'
-          ? {
-              ok: true,
-              data: {
-                status: 'completed',
-                invocation_id: 'inv_release_1753',
-                action_name: 'release',
-                handler_agent_id: null,
-                handler_node_id: null,
-                dispatched_node_id: null,
-                input: body,
-                created_at: '2025-01-01T00:00:00Z',
-              },
-            }
-          : {
-              ok: true,
-              data: {
-                id: request.url.slice('/v1/agents/'.length),
-                name: agents.get(request.url.slice('/v1/agents/'.length)) ?? 'cursor-cleanup-worker',
-                token: nodeToken,
-                status: 'online',
-                workspace_id: 'rw_relayflow_1753',
-                created_at: '2025-01-01T00:00:00Z',
-                metadata: {},
-                channels: [{ name: 'general' }, { name: 'engineering' }],
-              },
-            };
+    } else if (request.method === 'POST' && request.url === '/v1/agents/release') {
+      revokeIssuedCredentials();
+      payload = {
+        ok: true,
+        data: {
+          status: 'completed',
+          invocation_id: 'inv_release_1753',
+          action_name: 'release',
+          handler_agent_id: null,
+          handler_node_id: null,
+          dispatched_node_id: null,
+          input: body,
+          created_at: '2025-01-01T00:00:00Z',
+        },
+      };
+    } else if (request.method === 'GET' && request.url === '/v1/credential-check') {
+      const authorization = request.headers.authorization ?? '';
+      const token = authorization.startsWith('Bearer ') ? authorization.slice('Bearer '.length) : '';
+      const rejected = revokedCredentials.has(token) || !activeCredentials.has(token);
+      if (rejected) {
+        response.writeHead(403, { 'content-type': 'application/json' });
+        response.end(JSON.stringify({ ok: false, error: { code: 'forbidden', message: 'credential revoked' } }));
+        return;
+      }
+      payload = { ok: true, data: { token, status: 'active' } };
     } else if (request.method === 'GET' && request.url.endsWith('/members')) {
       payload = {
         ok: true,
@@ -532,6 +548,12 @@ async function startRelaycastStub() {
     workspaceKey,
     nodeToken,
     nodeId,
+    credentialRejected: async (token) => {
+      const response = await fetch(new URL('/v1/credential-check', `http://127.0.0.1:${address.port}`), {
+        headers: { authorization: `Bearer ${token}` },
+      });
+      return response.status === 403;
+    },
     close: () => new Promise((resolve) => server.close(resolve)),
   };
 }

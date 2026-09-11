@@ -1461,14 +1461,17 @@ impl CursorMcpLeaseRegistry {
     }
 
     fn lock_path(&self, root: &Path) -> io::Result<PathBuf> {
-        let journal_dir = self
-            .journal_path
-            .as_ref()
-            .and_then(|path| path.parent().map(Path::to_path_buf))
-            .unwrap_or_else(|| std::env::temp_dir().join("agent-relay-cursor-mcp"));
+        // Keep the lease lock independent from the broker state directory so
+        // brokers with different journals still coordinate on the same cwd.
+        let journal_dir = std::env::temp_dir().join("agent-relay-cursor-mcp");
         fs::create_dir_all(&journal_dir)?;
         let digest = Sha256::digest(root.as_os_str().to_string_lossy().as_bytes());
         Ok(journal_dir.join(format!(".cursor-mcp-lease-{:x}.lock", digest)))
+    }
+
+    fn purge_path_workers(&mut self, path: &Path) {
+        self.path_by_worker
+            .retain(|_, worker_path| worker_path != path);
     }
 
     pub(crate) fn acquire(&mut self, root: &Path, worker: &WorkerName) -> io::Result<PathBuf> {
@@ -1781,7 +1784,7 @@ impl CursorMcpLeaseRegistry {
 
     fn release_path(&mut self, path: &Path, worker: &WorkerName) -> io::Result<()> {
         let Some(state) = self.leases.get_mut(path) else {
-            self.path_by_worker.remove(worker);
+            self.purge_path_workers(path);
             return Ok(());
         };
         state.holders.remove(worker);
@@ -1813,7 +1816,7 @@ impl CursorMcpLeaseRegistry {
                 .map_err(|_| io::Error::other("Cursor MCP generated identity lock poisoned"))?,
         )?;
         let state = self.leases.remove(path).expect("lease checked above");
-        self.path_by_worker.remove(worker);
+        self.purge_path_workers(path);
         if let Err(error) = self.persist_journal() {
             // The file is restored, but journal removal was not durable. Keep
             // ownership in memory so the periodic retry can finish the
@@ -3121,5 +3124,58 @@ mod tests {
             !journal.exists(),
             "journal must be cleaned up after successful retry"
         );
+    }
+
+    #[test]
+    fn final_cleanup_purges_stale_worker_names() {
+        let dir = tempdir().unwrap();
+        let journal = dir.path().join("journal.json");
+        let mut registry = CursorMcpLeaseRegistry::with_journal(journal.clone());
+        let primary = WorkerName::new("w1");
+        let secondary = WorkerName::new("w2");
+        let path = registry.acquire(dir.path(), &primary).unwrap();
+        registry.write_worker_cursor_file(&primary, b"{}").unwrap();
+
+        // Force the last-holder release to fail after the on-disk cleanup has
+        // completed so the original worker remains pending retry in memory.
+        let lock_path = journal.with_file_name(".cursor-mcp-leases.lock");
+        let held_lock = fs::OpenOptions::new()
+            .read(true)
+            .write(true)
+            .create(true)
+            .truncate(false)
+            .open(&lock_path)
+            .unwrap();
+        held_lock.try_lock().unwrap();
+        let error = registry.release_worker(&primary).unwrap_err();
+        assert_eq!(error.kind(), io::ErrorKind::WouldBlock);
+        drop(held_lock);
+
+        // Another worker can join the same lease and finish the cleanup.
+        registry.acquire(dir.path(), &secondary).unwrap();
+        registry.release_worker(&secondary).unwrap();
+
+        assert!(registry.is_empty());
+        assert!(
+            registry.acquire(dir.path(), &primary).is_ok(),
+            "stale worker names must be cleared after final cleanup"
+        );
+        assert!(!path.exists());
+    }
+
+    #[test]
+    fn lock_path_does_not_depend_on_journal_location() {
+        let dir = tempdir().unwrap();
+        let root = dir.path().join("cwd");
+        fs::create_dir_all(root.join(".cursor")).unwrap();
+        let journal_a = dir.path().join("state-a").join("journal.json");
+        let journal_b = dir.path().join("state-b").join("journal.json");
+        let registry_a = CursorMcpLeaseRegistry::with_journal(journal_a);
+        let registry_b = CursorMcpLeaseRegistry::with_journal(journal_b);
+
+        let lock_a = registry_a.lock_path(&root).unwrap();
+        let lock_b = registry_b.lock_path(&root).unwrap();
+
+        assert_eq!(lock_a, lock_b);
     }
 }

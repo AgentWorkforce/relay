@@ -80,6 +80,7 @@ async fn make_worker_registry_with_worker(name: &str) -> WorkerRegistry {
         Vec::new(),
         PathBuf::from("/tmp/agent-relay-broker-tests"),
         Instant::now(),
+        "test-broker",
     );
     let mut child = tokio::process::Command::new("cat")
         .stdin(Stdio::piped())
@@ -142,6 +143,7 @@ async fn make_worker_registry_with_stalled_worker(name: &str) -> WorkerRegistry 
         Vec::new(),
         PathBuf::from("/tmp/agent-relay-broker-tests"),
         Instant::now(),
+        "test-broker",
     );
     let child = tokio::process::Command::new("cat")
         .stdin(Stdio::piped())
@@ -236,6 +238,7 @@ async fn owned_cleanup_exhaustion_signals_once_and_explicit_release_restarts() {
             Vec::new(),
             PathBuf::from("/tmp/cleanup-exhaustion-fixture"),
             Instant::now(),
+            "test-broker",
         );
         let mut fixture = worker_event_runtime_fixture(registry, HashMap::new());
         let name = WorkerName::from("exhausted-owner");
@@ -897,6 +900,7 @@ async fn inbound_queue_worker_missing_does_not_create_state() {
         Vec::new(),
         PathBuf::from("/tmp/agent-relay-broker-tests"),
         Instant::now(),
+        "test-broker",
     );
     let mut delivery_states = HashMap::new();
 
@@ -1432,6 +1436,7 @@ async fn manual_flush_failure_retains_failed_message_and_suffix_without_ack() {
         Vec::new(),
         PathBuf::from("/tmp/agent-relay-broker-tests"),
         Instant::now(),
+        "test-broker",
     );
     let first = fleet_deliver(1);
     let second = fleet_deliver(2);
@@ -1940,6 +1945,7 @@ async fn retry_exhaustion_dead_letters_instead_of_discarding() {
         Vec::new(),
         PathBuf::from("/tmp/agent-relay-broker-tests"),
         Instant::now(),
+        "test-broker",
     );
     let mut exhausted = make_pending_delivery("del_exhausted", "ghost");
     exhausted.attempts = MAX_DELIVERY_RETRIES;
@@ -2087,6 +2093,7 @@ async fn terminal_disposition_helpers_remove_withheld_fleet_ack_state() {
             Vec::new(),
             PathBuf::from("/tmp/agent-relay-broker-tests"),
             Instant::now(),
+            "test-broker",
         );
         let mut exhausted = make_pending_delivery("del_exhausted_ack", "ghost");
         exhausted.attempts = MAX_DELIVERY_RETRIES;
@@ -2192,6 +2199,7 @@ async fn terminal_disposition_helpers_remove_withheld_fleet_ack_state() {
             Vec::new(),
             PathBuf::from("/tmp/agent-relay-broker-tests"),
             Instant::now(),
+            "test-broker",
         ); // no worker ever registered
         let relay_delivery = RelayDelivery {
             delivery_id: DeliveryId::new("del_worker_missing"),
@@ -2743,6 +2751,7 @@ async fn restored_ack_floor_survives_lower_failure_and_a_second_restart() {
         Vec::new(),
         dir.path().join("worker-logs"),
         Instant::now(),
+        "test-broker",
     );
     let outcome = retry_pending_delivery(
         &first_id,
@@ -2891,6 +2900,7 @@ async fn delivery_retry_fails_promptly_when_recipient_is_gone() {
         Vec::new(),
         PathBuf::from("/tmp/agent-relay-broker-tests"),
         Instant::now(),
+        "test-broker",
     );
     let mut pending_deliveries = HashMap::from([(
         DeliveryId::new("del_gone"),
@@ -2956,6 +2966,7 @@ async fn initial_delivery_failure_stays_owned_until_dead_lettered() {
         Vec::new(),
         PathBuf::from("/tmp/agent-relay-broker-tests"),
         Instant::now(),
+        "test-broker",
     );
     let mut pending_deliveries = HashMap::new();
 
@@ -6368,7 +6379,13 @@ async fn local_only_queued_work_survives_restart_and_replays_when_recipient_reco
     super::save_pending_deliveries(&path, &pending).unwrap();
     pending = load_pending_deliveries(&path);
     let (tx, _rx) = mpsc::channel(8);
-    let mut absent = WorkerRegistry::new(tx, vec![], dir.path().join("logs"), Instant::now());
+    let mut absent = WorkerRegistry::new(
+        tx,
+        vec![],
+        dir.path().join("logs"),
+        Instant::now(),
+        "test-broker",
+    );
     assert!(matches!(
         retry_pending_delivery(&id, &mut absent, &mut pending, Duration::from_secs(1))
             .await
@@ -6406,7 +6423,13 @@ async fn local_only_exhausted_delivery_survives_absence_and_replays_after_restar
     // Exercise the live exhausted queue first: loading a snapshot resets the
     // failure budget and would hide an exhaustion check before absence handling.
     let (tx, _rx) = mpsc::channel(8);
-    let mut absent = WorkerRegistry::new(tx, vec![], dir.path().join("logs"), Instant::now());
+    let mut absent = WorkerRegistry::new(
+        tx,
+        vec![],
+        dir.path().join("logs"),
+        Instant::now(),
+        "test-broker",
+    );
     for _ in 0..2 {
         assert!(matches!(
             retry_pending_delivery(&id, &mut absent, &mut pending, Duration::from_secs(1))
