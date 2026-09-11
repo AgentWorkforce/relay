@@ -192,6 +192,7 @@ pub(super) fn schedule_identity_cleanup(
         agent_id,
         expected_token_hash,
         completion,
+        true,
     );
 }
 
@@ -206,6 +207,7 @@ fn schedule_identity_cleanup_with_hash(
     agent_id: Option<String>,
     expected_token_hash: Result<String, String>,
     completion: Option<CleanupCompletion>,
+    persist_journal_now: bool,
 ) {
     if let Some(pending) = workers.identity_cleanups.get_mut(name) {
         if let Some(completion) = completion {
@@ -251,7 +253,9 @@ fn schedule_identity_cleanup_with_hash(
             completions: completion.into_iter().collect(),
         },
     );
-    persist_journal(workers);
+    if persist_journal_now {
+        persist_journal(workers);
+    }
 }
 
 pub(super) fn restore_identity_cleanups(runtime: &mut BrokerRuntime) -> Result<()> {
@@ -273,8 +277,10 @@ pub(super) fn restore_identity_cleanups(runtime: &mut BrokerRuntime) -> Result<(
             entry.agent_id,
             Ok(entry.expected_token_hash),
             None,
+            false,
         );
     }
+    persist_journal(&runtime.workers);
     Ok(())
 }
 

@@ -997,6 +997,7 @@ impl BrokerRuntime {
                     })
                     || (name_only_release
                         && !workers.has_worker(&name)
+                        && !workers.owned_spawn_generations.contains_key(&name)
                         && workers
                             .completed_owned_releases
                             .iter()

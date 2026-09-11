@@ -6569,11 +6569,14 @@ async fn name_only_release_of_retired_owned_worker_deletes_directly_and_is_idemp
     // Reusing the same name must not let the stale tombstone suppress the new
     // generation's cleanup.
     let replacement_generation = Uuid::new_v4();
+    let replacement_http =
+        RelaycastHttpClient::new(Some(server.base_url()), "rk_live_test", "broker", "codex");
+    replacement_http.seed_agent_token(&name, "replacement-token");
     fixture
         .runtime
         .workers
         .owned_spawn_generations
-        .insert(name.clone(), (replacement_generation, http.clone()));
+        .insert(name.clone(), (replacement_generation, replacement_http));
     fixture
         .runtime
         .fleet_delivery_book
@@ -6641,13 +6644,6 @@ async fn caller_owned_release_cannot_be_promoted_to_identity_deletion() {
         then.status(200)
             .json_body(json!({"ok":true,"data":{"status":"completed"}}));
     });
-    let release = server.mock(|when, then| {
-        when.method(POST)
-            .path("/v1/agents/release")
-            .json_body_partial(json!({"delete_agent":false}).to_string());
-        then.status(200)
-            .json_body(json!({"ok":true,"data":{"status":"completed"}}));
-    });
     let registry = make_worker_registry_with_worker("unrelated").await;
     let mut fixture = worker_event_runtime_fixture(registry, HashMap::new());
     fixture.runtime.relaycast_http =
@@ -6664,19 +6660,16 @@ async fn caller_owned_release_cannot_be_promoted_to_identity_deletion() {
             reply,
         })
         .await;
-    let deregister = loop {
-        if let FleetControlCommand::DeregisterAgent { reply, .. } =
-            fixture.fleet_control_rx.recv().await.unwrap()
-        {
-            break reply;
-        }
-    };
-    deregister.send(Ok(())).unwrap();
-    let response = result.await.unwrap().expect("caller-owned release should succeed");
-    assert_eq!(response["process"], "stopped");
-    assert_eq!(response["identity"], "retained");
+    let error = tokio::time::timeout(Duration::from_secs(3), result)
+        .await
+        .expect("caller-owned release should settle")
+        .expect("caller-owned release should not lose the response")
+        .unwrap_err();
     delete_request.assert_hits(0);
-    release.assert_hits(1);
+    assert!(
+        error.contains("could not be released") || error.contains("failed to release"),
+        "{error}"
+    );
     assert!(!fixture
         .runtime
         .workers

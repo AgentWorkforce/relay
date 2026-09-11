@@ -78,9 +78,20 @@ async fn ${probeTest}() {
         loop {
             fixture.runtime.reconcile_identity_cleanups().await;
             if let Ok(response) = result.try_recv() {
-                let response = response.expect("owned cleanup should succeed");
-                assert_eq!(response["process"], "stopped");
-                assert_eq!(response["identity"], "deleted");
+                match response {
+                    Ok(response) => {
+                        if response["process"] != "stopped" || response["identity"] != "deleted" {
+                            panic!(
+                                "relayflow_1710_probe_name_only_release detected expected cleanup mismatch: {response}"
+                            );
+                        }
+                    }
+                    Err(error) => {
+                        panic!(
+                            "relayflow_1710_probe_name_only_release detected expected cleanup mismatch: {error}"
+                        );
+                    }
+                }
                 break;
             }
             tokio::task::yield_now().await;
@@ -106,10 +117,15 @@ const originalTests = await readFile(testPath, 'utf8');
 try {
   await writeFile(testPath, `${originalTests}\n${PROBE_TEST}\n`, 'utf8');
   const probe = runCargo(probeTest, cargoEnv);
-  const probePassed = probe.status === 0 && probe.stdout.includes(`test runtime::tests::${probeTest} ... ok`);
+  const probeOutput = `${probe.stdout}\n${probe.stderr}`;
+  const probePassed = probe.status === 0 && probeOutput.includes(`test runtime::tests::${probeTest} ... ok`);
   if (arm === 'base') {
-    if (probePassed || probe.status === 0) {
-      throw new Error(`Base unexpectedly passed the owned name-only release probe: ${probe.stdout}`);
+    if (
+      probe.status === 0 ||
+      !probeOutput.includes(`test runtime::tests::${probeTest} ... FAILED`) ||
+      !probeOutput.includes('relayflow_1710_probe_name_only_release detected expected cleanup mismatch')
+    ) {
+      throw new Error(`Base did not report the expected cleanup mismatch:\n${probeOutput}`);
     }
     await writeResult({
       outcome: 'bug',
