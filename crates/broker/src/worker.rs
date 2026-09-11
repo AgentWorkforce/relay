@@ -477,12 +477,6 @@ impl WorkerRegistry {
         // `reap_exited`) releases this same lease on every exit path.
         let is_cursor = is_cursor_cli_name(cli_name);
         if is_cursor {
-            #[cfg(not(unix))]
-            {
-                return Err(anyhow::anyhow!(
-                    "Cursor workers are not supported on Windows; refuse to start before leasing .cursor/mcp.json"
-                ));
-            }
             self.cursor_mcp_leases
                 .acquire(cwd, agent_name)
                 .with_context(|| {
@@ -3119,7 +3113,7 @@ sleep 30
 
     #[cfg(not(unix))]
     #[tokio::test]
-    async fn cursor_worker_registry_refuses_windows_cursor_startup() {
+    async fn cursor_worker_registry_supports_locked_cursor_startup_and_release() {
         let cwd = tempfile::tempdir().expect("cursor cwd");
         let logs = tempfile::tempdir().expect("worker logs");
         let (tx, _rx) = mpsc::channel::<WorkerEvent>(16);
@@ -3130,10 +3124,11 @@ sleep 30
             Instant::now(),
         );
 
-        let error = registry
+        let worker = WorkerName::from("cursor-windows-worker");
+        let args = registry
             .build_mcp_args(
                 "cursor",
-                &WorkerName::from("cursor-windows-worker"),
+                &worker,
                 &[],
                 cwd.path(),
                 Some("agent-token-test-only"),
@@ -3141,14 +3136,14 @@ sleep 30
                 None,
             )
             .await
-            .expect_err("Cursor startup should be refused on Windows before leasing");
-
-        assert!(
-            error
-                .to_string()
-                .contains("Cursor workers are not supported on Windows"),
-            "unexpected refusal error: {error:#}"
-        );
+            .expect("Cursor startup should use the non-Unix locked fallback");
+        assert!(args.is_empty());
+        assert!(cwd.path().join(".cursor/mcp.json").is_file());
+        registry
+            .cursor_mcp_leases
+            .release_worker(&worker)
+            .expect("Cursor release should restore the non-Unix fallback");
+        assert!(!cwd.path().join(".cursor/mcp.json").exists());
         assert!(registry.cursor_mcp_leases.is_empty());
     }
 
