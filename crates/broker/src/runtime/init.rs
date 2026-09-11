@@ -219,6 +219,16 @@ pub(crate) async fn run_init(cmd: InitCommand, telemetry: TelemetryClient) -> Re
     let ws_control_tx = default_workspace.ws_control_tx.clone();
     let relaycast_http = default_workspace.http_client.clone();
     let (hosted_agent_event_tx, hosted_agent_event_rx) = mpsc::channel::<HostedAgentEvent>(10_000);
+    // Delivery-result channel: the publisher task reports the real outcome
+    // of every Relaycast HTTP emit back here so `BrokerRuntime` — the sole
+    // owner of `CrashInsights` — is the only thing that ever marks a durable
+    // crash record `Delivered`. Sized generously relative to the event
+    // channel above; a full result channel would only cause a warning log in
+    // the publisher (see `run_hosted_agent_event_publisher`), never data loss
+    // for the durable record itself, since an unconfirmed record simply
+    // stays `Pending` and is replayed on restart.
+    let (hosted_delivery_result_tx, hosted_delivery_result_rx) =
+        mpsc::channel::<super::event_loop::HostedDeliveryOutcome>(10_000);
     let hosted_event_client = relaycast_http.clone();
     let hosted_event_clients = workspaces
         .iter()
@@ -233,6 +243,7 @@ pub(crate) async fn run_init(cmd: InitCommand, telemetry: TelemetryClient) -> Re
         hosted_event_client,
         hosted_event_clients,
         hosted_agent_event_rx,
+        hosted_delivery_result_tx,
     ));
     let node_workspace_id = default_workspace.workspace_id.as_str().to_string();
     let node_id = resolve_broker_node_id(&node_workspace_id);
@@ -556,6 +567,27 @@ pub(crate) async fn run_init(cmd: InitCommand, telemetry: TelemetryClient) -> Re
     // Load crash insights from previous session
     let crash_insights_path = paths.state.parent().unwrap().join("crash-insights.json");
     let crash_insights = crate::crash_insights::CrashInsights::load(&crash_insights_path);
+    // Replay the durable hosted-delivery outbox: any exit whose
+    // `agent_exited` hand-off to the hosted publisher channel never
+    // succeeded (crash before or during that handoff, or a channel that was
+    // closed for the remainder of the previous process's life) is still
+    // `Pending` on disk and gets a fresh in-memory retry entry here, in the
+    // same order it was recorded, so this restart's normal maintenance-tick
+    // drain path retries it exactly as it would a same-session backlog
+    // entry. See `crate::crash_insights::CrashRecord::hosted_delivery`.
+    let mut hosted_agent_exit_dropped_total = 0u64;
+    let hosted_agent_exit_backlog = super::event_loop::reload_pending_hosted_agent_exit_backlog(
+        &crash_insights,
+        &mut hosted_agent_exit_dropped_total,
+    );
+    // Seed the in-flight dedupe-key guard with every record just replayed
+    // into the backlog above, so this restart's first
+    // `replenish_hosted_agent_exit_backlog` pass (see the maintenance tick)
+    // does not immediately re-enqueue a second copy of any of them.
+    let hosted_agent_exit_in_flight: std::collections::HashSet<String> = hosted_agent_exit_backlog
+        .iter()
+        .map(|event| event.dedupe_key.clone())
+        .collect();
 
     let sdk_lines = BufReader::new(tokio::io::stdin()).lines();
     let stdin_open = true;
@@ -674,6 +706,12 @@ pub(crate) async fn run_init(cmd: InitCommand, telemetry: TelemetryClient) -> Re
         ws_control_tx,
         relaycast_http,
         hosted_agent_event_tx,
+        hosted_agent_exit_backlog,
+        hosted_agent_exit_in_flight,
+        hosted_agent_exit_dropped_total,
+        hosted_delivery_result_rx,
+        hosted_delivery_result_open: true,
+        hosted_agent_exit_publish_failures_total: 0,
         pty_observability: HashMap::new(),
         api_rx,
         api_open: true,

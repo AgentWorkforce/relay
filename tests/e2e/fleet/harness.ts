@@ -160,7 +160,7 @@ export interface EngineHandle {
   baseUrl: string;
   port: number;
   stop(): Promise<void>;
-  fetchJson(pathname: string, init?: RequestInit): Promise<{ status: number; body: any }>;
+  fetchJson(pathname: string, init?: RequestInit): Promise<{ status: number; body: any; headers: Headers }>;
 }
 
 export async function startEngine(
@@ -183,7 +183,7 @@ export async function startEngine(
 
   const fetchJson = async (pathname: string, init: RequestInit = {}) => {
     const res = await fetch(`${baseUrl}${pathname}`, init);
-    return { status: res.status, body: await res.json().catch(() => ({})) };
+    return { status: res.status, body: await res.json().catch(() => ({})), headers: res.headers };
   };
 
   await waitFor(
@@ -670,24 +670,95 @@ export async function listMessages(
   return items as Array<{ text: string }>;
 }
 
+/** Bound on the number of `getAgent` attempts (including the first) that
+ * `rate_limit_exceeded` 429s may be retried before giving up. Exported for
+ * tests. */
+export const GET_AGENT_RATE_LIMIT_MAX_ATTEMPTS = 4;
+
+/** Bound on the total wall-clock time `getAgent` may spend retrying
+ * `rate_limit_exceeded` 429s before giving up, regardless of how many
+ * attempts remain. Exported for tests. */
+export const GET_AGENT_RATE_LIMIT_MAX_WAIT_MS = 5_000;
+
+/** Fallback backoff (ms) used when a `rate_limit_exceeded` 429 response
+ * carries no usable `Retry-After`. Exported for tests. */
+export const GET_AGENT_RATE_LIMIT_DEFAULT_BACKOFF_MS = 250;
+
+function isRateLimitExceededBody(body: unknown): boolean {
+  return (
+    typeof body === 'object' &&
+    body !== null &&
+    (body as { ok?: unknown }).ok === false &&
+    typeof (body as { error?: { code?: unknown } }).error === 'object' &&
+    (body as { error?: { code?: unknown } }).error !== null &&
+    (body as { error: { code?: unknown } }).error.code === 'rate_limit_exceeded'
+  );
+}
+
+/** Parse a `Retry-After` value (header or mirrored body field) into a
+ * millisecond backoff. Supports the HTTP-standard delta-seconds form; any
+ * other value (including an HTTP-date, which this helper does not attempt
+ * to parse) is treated as absent so callers fall back to a deterministic
+ * default rather than guessing. Returns `null` when no usable value is
+ * present. */
+function parseRetryAfterMs(retryAfter: string | null | undefined): number | null {
+  if (!retryAfter) return null;
+  const seconds = Number(retryAfter);
+  if (!Number.isFinite(seconds) || seconds < 0) return null;
+  return seconds * 1000;
+}
+
+function sleep(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
 /** Read one agent's engine record, including the metadata bag.
  *
  * Returns null ONLY for 404 — "the agent does not exist yet", which callers
  * poll on. Every other failure throws: mapping auth, server, and not-found
  * errors all to null makes a broken read indistinguishable from a legitimately
  * absent agent, and a `waitFor` polling on null would then time out (or an
- * assertion would pass) for entirely the wrong reason. */
+ * assertion would pass) for entirely the wrong reason.
+ *
+ * The one exception is a `429 rate_limit_exceeded` response (the free-plan
+ * Relaycast quota): that specific, transient shape is retried with a
+ * bounded, deterministic backoff (honoring a valid `Retry-After` when
+ * present, no jitter) capped at both `GET_AGENT_RATE_LIMIT_MAX_ATTEMPTS`
+ * attempts and `GET_AGENT_RATE_LIMIT_MAX_WAIT_MS` total wall-clock time, so a
+ * persistent rate limit still fails fast instead of hanging. Any other 429
+ * error code, or any other status, throws immediately exactly as before. */
 export async function getAgent(
   engine: EngineHandle,
   workspaceKey: string,
   name: string
 ): Promise<{ name: string; metadata?: Record<string, unknown> } | null> {
-  const { status, body } = await engine.fetchJson(`/v1/agents/${name}`, {
-    headers: { authorization: `Bearer ${workspaceKey}` },
-  });
-  if (status === 404) return null;
-  if (status >= 300) throw new Error(`getAgent(${name}) ${status}: ${JSON.stringify(body)}`);
-  return body.data ?? null;
+  const deadline = Date.now() + GET_AGENT_RATE_LIMIT_MAX_WAIT_MS;
+  let attempt = 0;
+  for (;;) {
+    attempt += 1;
+    const { status, body, headers } = await engine.fetchJson(`/v1/agents/${name}`, {
+      headers: { authorization: `Bearer ${workspaceKey}` },
+    });
+    if (status === 404) return null;
+    if (status === 429 && isRateLimitExceededBody(body)) {
+      const remainingMs = deadline - Date.now();
+      if (attempt >= GET_AGENT_RATE_LIMIT_MAX_ATTEMPTS || remainingMs <= 0) {
+        throw new Error(
+          `getAgent(${name}) ${status}: ${JSON.stringify(body)} (gave up after ${attempt} attempts)`
+        );
+      }
+      const retryAfterMs =
+        parseRetryAfterMs(headers?.get?.('retry-after')) ??
+        parseRetryAfterMs(
+          (body as { error?: { retry_after?: unknown } }).error?.retry_after as string | undefined
+        ) ??
+        GET_AGENT_RATE_LIMIT_DEFAULT_BACKOFF_MS;
+      await sleep(Math.max(0, Math.min(retryAfterMs, remainingMs)));
+      continue;
+    }
+    if (status >= 300) throw new Error(`getAgent(${name}) ${status}: ${JSON.stringify(body)}`);
+    return body.data ?? null;
+  }
 }
 
 /** Release (delete) an agent, freeing its location — used to model a resumable

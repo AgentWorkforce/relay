@@ -355,6 +355,15 @@ export interface CrashRecord {
   uptime_secs: number;
   category: CrashCategory;
   description: string;
+  workspace_id?: string;
+  spawn_invocation_id?: string;
+  generation?: string;
+  became_ready?: boolean;
+  spawned_at?: number;
+  ready_at?: number;
+  exited_at?: number;
+  exit_reason?: string;
+  fleet_node_name?: string;
 }
 
 export interface CrashPattern {
@@ -407,6 +416,13 @@ export type BrokerEvent =
       signal?: string;
       reason?: string;
       generation?: string;
+      workspace_id?: string;
+      spawn_invocation_id?: string;
+      fleet_node_name?: string;
+      became_ready?: boolean;
+      spawned_at?: number;
+      ready_at?: number;
+      exited_at?: number;
     }
   | {
       kind: 'agent_context_low';

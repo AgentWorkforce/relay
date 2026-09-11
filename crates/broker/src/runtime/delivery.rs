@@ -970,6 +970,17 @@ pub(crate) async fn retry_pending_delivery(
     {
         Ok(()) => {
             if let Some(current) = pending_deliveries.get_mut(delivery_id) {
+                // `attempts` is a pure observability counter of successful
+                // handoffs, never the failure-budget gate — only
+                // `failed_attempts` (reset below) is compared against
+                // `MAX_DELIVERY_RETRIES` to decide termination. A long-lived
+                // `Wait`-mode delivery can be handed off successfully far
+                // more than `MAX_DELIVERY_RETRIES` times while its ack is
+                // still outstanding (each successful handoff resets the
+                // failure budget), so capping this counter at the failure
+                // budget previously misrepresented — and, if ever read as a
+                // budget check elsewhere, could prematurely treat — a
+                // perfectly healthy, still-pending delivery as exhausted.
                 current.attempts = current.attempts.saturating_add(1);
                 current.failed_attempts = 0;
                 current.next_retry_at = Instant::now()
@@ -985,8 +996,11 @@ pub(crate) async fn retry_pending_delivery(
         }
         Err(error) => {
             let should_fail = if let Some(current) = pending_deliveries.get_mut(delivery_id) {
-                current.attempts = current.attempts.saturating_add(1);
-                current.failed_attempts = current.failed_attempts.saturating_add(1);
+                current.attempts = current.attempts.saturating_add(1).min(MAX_DELIVERY_RETRIES);
+                current.failed_attempts = current
+                    .failed_attempts
+                    .saturating_add(1)
+                    .min(MAX_DELIVERY_RETRIES);
                 current.next_retry_at = Instant::now() + retry_interval;
                 current.last_error = Some(error.to_string());
                 current.failed_attempts >= MAX_DELIVERY_RETRIES

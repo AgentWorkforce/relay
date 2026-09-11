@@ -193,13 +193,27 @@ pub(crate) struct WorkerHandle {
     pub(crate) context_budget_pct: Option<u8>,
     pub(crate) state: AgentWorkState,
     pub(crate) exit_reason: Option<String>,
+    /// Fleet correlation for this specific spawned generation. Captured at
+    /// spawn time (or immediately after, once the fleet registration
+    /// resolves) and carried on the handle itself rather than looked up by
+    /// worker name at reap time — a same-name replacement worker can
+    /// overwrite a by-name `fleet_inventory` entry before the old
+    /// generation is reaped, which would otherwise misattribute the new
+    /// generation's invocation id to the old generation's exit.
+    pub(crate) invocation_id: Option<String>,
 }
 
+/// `invocation_id` is the last element so this stays append-only for
+/// existing positional destructuring call sites.
 pub(crate) type ExitedWorker = (
     WorkerName,
     Uuid,
     Option<i32>,
     Option<String>,
+    Option<String>,
+    Option<crate::ids::WorkspaceId>,
+    Instant,
+    Option<Instant>,
     Option<String>,
 );
 
@@ -1312,6 +1326,7 @@ impl WorkerRegistry {
             context_budget_pct: None,
             state: AgentWorkState::Working,
             exit_reason: None,
+            invocation_id: None,
         };
         self.workers.insert(spec.name.clone(), handle);
 
@@ -1564,6 +1579,16 @@ impl WorkerRegistry {
         Ok(())
     }
 
+    /// Record the Fleet invocation id that correlates to the currently live
+    /// generation of `name`, once it is known (fleet registration resolves
+    /// asynchronously after the process is spawned). A no-op if the worker
+    /// is no longer registered under that name.
+    pub(crate) fn set_invocation_id(&mut self, name: &WorkerName, invocation_id: Option<String>) {
+        if let Some(handle) = self.workers.get_mut(name) {
+            handle.invocation_id = invocation_id;
+        }
+    }
+
     pub(crate) async fn reap_exited(&mut self) -> Result<Vec<ExitedWorker>> {
         let names: Vec<WorkerName> = self.workers.keys().cloned().collect();
         let mut exited = Vec::new();
@@ -1625,16 +1650,23 @@ impl WorkerRegistry {
                 None
             };
             if let Some(orphan) = orphaned {
-                let generation = self
+                let (generation, workspace_id, spawned_at, ready_at, reason, invocation_id) = self
                     .workers
                     .get(&name)
-                    .expect("orphaned worker must still be registered")
-                    .generation;
-                let reason = self
-                    .workers
-                    .get(&name)
-                    .and_then(|handle| handle.exit_reason.clone())
-                    .or_else(|| Some(orphan.reason().to_string()));
+                    .map(|handle| {
+                        (
+                            handle.generation,
+                            handle.workspace_id.clone(),
+                            handle.spawned_at,
+                            handle.ready_at,
+                            handle
+                                .exit_reason
+                                .clone()
+                                .or_else(|| Some(orphan.reason().to_string())),
+                            handle.invocation_id.clone(),
+                        )
+                    })
+                    .expect("orphaned worker must still be registered");
                 if let Some(handle) = self.workers.get_mut(&name) {
                     tracing::warn!(
                         worker = %name,
@@ -1667,15 +1699,34 @@ impl WorkerRegistry {
                 }
                 self.workers.remove(&name);
                 self.initial_tasks.remove(&name);
-                exited.push((name, generation, None, None, reason));
+                exited.push((
+                    name,
+                    generation,
+                    None,
+                    None,
+                    reason,
+                    workspace_id,
+                    spawned_at,
+                    ready_at,
+                    invocation_id,
+                ));
                 continue;
             }
             if let Some(status) = status {
-                let generation = self
+                let (generation, workspace_id, spawned_at, ready_at, reason, invocation_id) = self
                     .workers
                     .get(&name)
-                    .expect("exited worker must still be registered")
-                    .generation;
+                    .map(|handle| {
+                        (
+                            handle.generation,
+                            handle.workspace_id.clone(),
+                            handle.spawned_at,
+                            handle.ready_at,
+                            handle.exit_reason.clone(),
+                            handle.invocation_id.clone(),
+                        )
+                    })
+                    .expect("exited worker must still be registered");
                 let code = status.code();
                 #[cfg(unix)]
                 let signal = {
@@ -1684,26 +1735,47 @@ impl WorkerRegistry {
                 };
                 #[cfg(not(unix))]
                 let signal: Option<String> = None;
-                let reason = self
-                    .workers
-                    .get(&name)
-                    .and_then(|handle| handle.exit_reason.clone());
                 self.workers.remove(&name);
                 self.initial_tasks.remove(&name);
-                exited.push((name, generation, code, signal, reason));
+                exited.push((
+                    name,
+                    generation,
+                    code,
+                    signal,
+                    reason,
+                    workspace_id,
+                    spawned_at,
+                    ready_at,
+                    invocation_id,
+                ));
             } else if gone_via_kill0 {
-                let generation = self
+                let (generation, workspace_id, spawned_at, ready_at, reason, invocation_id) = self
                     .workers
                     .get(&name)
-                    .expect("gone worker must still be registered")
-                    .generation;
-                let reason = self
-                    .workers
-                    .get(&name)
-                    .and_then(|handle| handle.exit_reason.clone());
+                    .map(|handle| {
+                        (
+                            handle.generation,
+                            handle.workspace_id.clone(),
+                            handle.spawned_at,
+                            handle.ready_at,
+                            handle.exit_reason.clone(),
+                            handle.invocation_id.clone(),
+                        )
+                    })
+                    .expect("gone worker must still be registered");
                 self.workers.remove(&name);
                 self.initial_tasks.remove(&name);
-                exited.push((name, generation, None, None, reason));
+                exited.push((
+                    name,
+                    generation,
+                    None,
+                    None,
+                    reason,
+                    workspace_id,
+                    spawned_at,
+                    ready_at,
+                    invocation_id,
+                ));
             }
         }
         Ok(exited)
@@ -2876,6 +2948,170 @@ sleep 30
 
     #[cfg(unix)]
     #[tokio::test]
+    async fn reap_exited_preserves_worker_correlation_metadata() {
+        let mut reg = make_registry(vec![]);
+        let name = WorkerName::from("correlated-exit");
+        let generation = Uuid::new_v4();
+        let workspace_id = crate::ids::WorkspaceId::new("workspace-1");
+        let spawned_at = Instant::now() - Duration::from_secs(5);
+        let ready_at = Instant::now() - Duration::from_secs(2);
+        let child = Command::new("sh")
+            .args(["-c", "exit 7"])
+            .spawn()
+            .expect("short-lived worker should spawn");
+        let (command_tx, _command_rx) = mpsc::channel(WORKER_WRITE_QUEUE_CAPACITY);
+        reg.workers.insert(
+            name.clone(),
+            WorkerHandle {
+                generation,
+                spec: spec_for_test(name.as_str()),
+                parent: None,
+                workspace_id: Some(workspace_id.clone()),
+                child,
+                command_tx,
+                harness_pid: None,
+                spawned_at,
+                ready_at: Some(ready_at),
+                last_activity_at: ready_at,
+                context_budget_pct: None,
+                state: AgentWorkState::Working,
+                exit_reason: Some("worker_write_failed".to_string()),
+                invocation_id: Some("inv-original".to_string()),
+            },
+        );
+
+        tokio::time::sleep(Duration::from_millis(50)).await;
+        let exited = reg.reap_exited().await.expect("reap should succeed");
+        assert_eq!(exited.len(), 1);
+        let (
+            exited_name,
+            exited_generation,
+            exit_code,
+            _signal,
+            exit_reason,
+            exited_workspace,
+            exited_spawned_at,
+            exited_ready_at,
+            exited_invocation_id,
+        ) = &exited[0];
+        assert_eq!(exited_name, &name);
+        assert_eq!(*exited_generation, generation);
+        assert_eq!(*exit_code, Some(7));
+        assert_eq!(exit_reason.as_deref(), Some("worker_write_failed"));
+        assert_eq!(exited_workspace.as_ref(), Some(&workspace_id));
+        assert_eq!(*exited_spawned_at, spawned_at);
+        assert_eq!(*exited_ready_at, Some(ready_at));
+        assert_eq!(exited_invocation_id.as_deref(), Some("inv-original"));
+    }
+
+    /// Regression for the same-name-replacement correlation race: the exited
+    /// generation's Fleet invocation id must come from the handle captured
+    /// at reap time, not from a by-name lookup performed after a same-name
+    /// replacement has already overwritten that entry with its own id.
+    /// `reap_exited` itself has no by-name lookup (the correlation travels
+    /// on the handle), so this proves the two generations' invocation ids
+    /// can never cross even when the replacement is registered before the
+    /// old generation is reaped.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn reap_exited_does_not_cross_invocation_ids_across_same_name_replacement() {
+        let mut reg = make_registry(vec![]);
+        let name = WorkerName::from("replaced-worker");
+        let old_generation = Uuid::new_v4();
+        let old_child = Command::new("sh")
+            .args(["-c", "exit 3"])
+            .spawn()
+            .expect("old-generation worker should spawn");
+        let (old_command_tx, _old_command_rx) = mpsc::channel(WORKER_WRITE_QUEUE_CAPACITY);
+        reg.workers.insert(
+            name.clone(),
+            WorkerHandle {
+                generation: old_generation,
+                spec: spec_for_test(name.as_str()),
+                parent: None,
+                workspace_id: None,
+                child: old_child,
+                command_tx: old_command_tx,
+                harness_pid: None,
+                spawned_at: Instant::now(),
+                ready_at: Some(Instant::now()),
+                last_activity_at: Instant::now(),
+                context_budget_pct: None,
+                state: AgentWorkState::Working,
+                exit_reason: None,
+                invocation_id: Some("inv-old-generation".to_string()),
+            },
+        );
+
+        // Let the old generation's process exit, but do not reap it yet —
+        // model a same-name respawn racing ahead of the maintenance reap
+        // sweep for the dead generation.
+        tokio::time::sleep(Duration::from_millis(50)).await;
+
+        // A same-name replacement now overwrites the registry entry (a real
+        // spawn always removes the old entry first; mirror that here) and
+        // carries a *different* invocation id — exactly the scenario that
+        // corrupted correlation when the lookup was by name instead of
+        // generation.
+        let new_generation = Uuid::new_v4();
+        let new_child = Command::new("sleep")
+            .arg("30")
+            .spawn()
+            .expect("new-generation worker should spawn");
+        let new_pid = new_child.id().expect("new child has a pid");
+        let (new_command_tx, _new_command_rx) = mpsc::channel(WORKER_WRITE_QUEUE_CAPACITY);
+        reg.workers.insert(
+            name.clone(),
+            WorkerHandle {
+                generation: new_generation,
+                spec: spec_for_test(name.as_str()),
+                parent: None,
+                workspace_id: None,
+                child: new_child,
+                command_tx: new_command_tx,
+                harness_pid: None,
+                spawned_at: Instant::now(),
+                ready_at: None,
+                last_activity_at: Instant::now(),
+                context_budget_pct: None,
+                state: AgentWorkState::Working,
+                exit_reason: None,
+                invocation_id: Some("inv-new-generation".to_string()),
+            },
+        );
+
+        // Only the live (new) generation remains under this name; reaping
+        // now must report the new generation as still alive (no exit), never
+        // resurrecting the old generation's exit under the new id.
+        let exited = reg.reap_exited().await.expect("reap should succeed");
+        assert!(
+            exited.is_empty(),
+            "the new generation is alive and must not be reaped: {exited:?}"
+        );
+        let live = reg
+            .workers
+            .get(&name)
+            .expect("new generation remains registered");
+        assert_eq!(live.generation, new_generation);
+        assert_eq!(live.invocation_id.as_deref(), Some("inv-new-generation"));
+
+        // Clean up the still-running replacement process.
+        use nix::{
+            sys::signal::{kill, Signal},
+            unistd::Pid,
+        };
+        let _ = kill(Pid::from_raw(new_pid as i32), Signal::SIGKILL);
+        let _ = reg
+            .workers
+            .get_mut(&name)
+            .expect("worker still registered")
+            .child
+            .wait()
+            .await;
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
     async fn cleanup_rejected_spawn_terminates_a_still_alive_child_and_removes_it() {
         // Regression test: a rejected spawn used to remove the registry entry
         // (and, before that fix, sometimes not even run cleanup — see the
@@ -2922,6 +3158,7 @@ sleep 30
                 context_budget_pct: None,
                 state: AgentWorkState::Working,
                 exit_reason: None,
+                invocation_id: None,
             },
         );
 
@@ -2975,6 +3212,7 @@ sleep 30
                 context_budget_pct: None,
                 state: AgentWorkState::Working,
                 exit_reason: None,
+                invocation_id: None,
             },
         );
 
@@ -3036,6 +3274,7 @@ sleep 30
                 context_budget_pct: None,
                 state: AgentWorkState::Working,
                 exit_reason: None,
+                invocation_id: None,
             },
         );
 
@@ -3096,6 +3335,7 @@ sleep 30
                 context_budget_pct: None,
                 state: AgentWorkState::Working,
                 exit_reason: None,
+                invocation_id: None,
             },
         );
 

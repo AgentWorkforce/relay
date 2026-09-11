@@ -34,17 +34,433 @@ pub(crate) const RESIZE_OWNER_STALE: Duration = Duration::from_secs(300);
 /// would instead cost up to N times this much.
 const SHUTDOWN_RELAYCAST_PHASE_TIMEOUT: Duration = Duration::from_millis(2500);
 
+#[derive(Clone)]
 pub(crate) struct HostedAgentEvent {
     pub(super) name: String,
     pub(super) event_type: String,
     pub(super) payload: serde_json::Map<String, Value>,
     pub(super) workspace_id: Option<WorkspaceId>,
+    /// Idempotency key hosted consumers can use to discard a duplicate
+    /// delivery. Matches `CrashRecord::dedupe_key` (`agent_name::generation`)
+    /// for the durable record this event was derived from, so a replay after
+    /// restart can be recognized as the same logical exit even though it is
+    /// a distinct in-memory `HostedAgentEvent`.
+    ///
+    /// Sent to Relaycast as part of the HTTP payload (see
+    /// [`run_hosted_agent_event_publisher`]) so a hosted consumer receiving
+    /// this event can itself discard a duplicate delivery. Relaycast's HTTP
+    /// API has no server-side idempotency/dedupe key parameter today (it is
+    /// an external SDK maintained out of this repo), so the *server* cannot
+    /// yet reject a duplicate `POST` outright — this is documented,
+    /// deliberately at-least-once behavior, not exactly-once, until a
+    /// companion change lands server-side. Tracked as
+    /// AgentWorkforce/relay#1752.
+    pub(super) dedupe_key: String,
 }
 
+/// Outcome of one publisher attempt (including its bounded in-process
+/// retries) to deliver a [`HostedAgentEvent`] to Relaycast, reported back to
+/// [`BrokerRuntime`] — the sole owner of [`crate::crash_insights::CrashInsights`]
+/// — so *it* decides what the durable record's state should be.
+///
+/// This is the real ack boundary the durable outbox is supposed to have: a
+/// crash record is only ever marked
+/// [`Delivered`](crate::crash_insights::HostedDeliveryState::Delivered) after
+/// this outcome reports `success = true`, i.e. after Relaycast actually
+/// accepted the HTTP `POST` — never merely because the event was somehow
+/// handed to this task's channel.
+#[derive(Debug, Clone)]
+pub(crate) struct HostedDeliveryOutcome {
+    pub(super) dedupe_key: String,
+    pub(super) worker: String,
+    pub(super) event_type: String,
+    pub(super) success: bool,
+}
+
+/// Bound on in-process retry attempts for one hosted-agent event before the
+/// publisher gives up and reports failure back to [`BrokerRuntime`], leaving
+/// the durable crash record `Pending` for a future broker restart to replay.
+/// Small and bounded deliberately: this task processes events from a single
+/// queue in order, so retrying one event here blocks every later event
+/// behind it. A handful of quick attempts absorbs a blip (a single slow or
+/// flaky 5xx); anything that outlives them is better handled by the
+/// restart-replay fallback than by stalling the whole publisher queue.
+const HOSTED_PUBLISH_MAX_ATTEMPTS: u32 = 3;
+
+/// Base backoff between in-process retry attempts, scaled linearly by
+/// attempt number (1x, 2x, ...). Kept short since attempts are already
+/// capped by [`HOSTED_PUBLISH_MAX_ATTEMPTS`] and each attempt itself may
+/// wait up to the per-attempt HTTP timeout below.
+const HOSTED_PUBLISH_RETRY_BASE_DELAY: Duration = Duration::from_millis(200);
+
+/// Rebuild the hosted `agent_exited` event for a durable crash record.
+///
+/// Used both for the live path (immediately after
+/// [`crate::crash_insights::CrashInsights::record`]) and for replay on
+/// broker restart (see `reload_pending_hosted_agent_exit_backlog`), so the
+/// two can never drift: whatever a live exit would have published is
+/// bit-for-bit what a restart replays from the durable record.
+pub(crate) fn hosted_agent_event_from_crash_record(
+    record: &crate::crash_insights::CrashRecord,
+) -> HostedAgentEvent {
+    let payload = serde_json::json!({
+        "code": record.exit_code,
+        "signal": record.signal,
+        "reason": record.exit_reason,
+        "generation": record.generation,
+        "workspace_id": record.workspace_id,
+        "spawn_invocation_id": record.spawn_invocation_id,
+        "fleet_node_name": record.fleet_node_name,
+        "became_ready": record.became_ready,
+        "spawned_at": record.spawned_at,
+        "ready_at": record.ready_at,
+        "exited_at": record.exited_at,
+    })
+    .as_object()
+    .cloned()
+    .unwrap_or_default();
+    HostedAgentEvent {
+        name: record.agent_name.clone(),
+        event_type: "agent_exited".to_string(),
+        payload,
+        workspace_id: record
+            .workspace_id
+            .as_deref()
+            .map(crate::ids::WorkspaceId::new),
+        dedupe_key: record.dedupe_key(),
+    }
+}
+
+/// Rebuild the bounded in-memory retry backlog from durable pending records
+/// on broker startup, in original (chronological) order.
+///
+/// This is the "replay" half of the durable outbox: [`CrashInsights`] on
+/// disk is the source of truth for *what* still needs delivering; this
+/// merely reconstructs the in-memory `HostedAgentEvent`s the maintenance
+/// tick's normal drain/enqueue path already knows how to retry. Bounded by
+/// [`HOSTED_AGENT_EXIT_BACKLOG_CAP`] exactly like the live path, so a broker
+/// that comes back after accumulating an enormous pending set still starts
+/// with a small, boring backlog rather than an unbounded one — the loudly
+/// logged overflow-drop is the same code path live delivery uses.
+///
+/// [`CrashInsights`]: crate::crash_insights::CrashInsights
+pub(crate) fn reload_pending_hosted_agent_exit_backlog(
+    crash_insights: &crate::crash_insights::CrashInsights,
+    dropped_total: &mut u64,
+) -> VecDeque<HostedAgentEvent> {
+    let mut backlog: VecDeque<HostedAgentEvent> = crash_insights
+        .pending_hosted_deliveries()
+        .into_iter()
+        .map(hosted_agent_event_from_crash_record)
+        .collect();
+    let replayed = backlog.len();
+    enforce_hosted_agent_exit_backlog_cap(&mut backlog, dropped_total);
+    if replayed > 0 {
+        tracing::info!(
+            replayed,
+            retained = backlog.len(),
+            "replaying pending hosted agent-exit deliveries from durable crash insights after restart"
+        );
+    }
+    backlog
+}
+
+/// Trim `backlog` down to [`HOSTED_AGENT_EXIT_BACKLOG_CAP`], dropping the
+/// oldest entries first and counting/logging every drop loudly. Shared by
+/// the live enqueue path and startup replay so both bound growth identically.
+fn enforce_hosted_agent_exit_backlog_cap(
+    backlog: &mut VecDeque<HostedAgentEvent>,
+    dropped_total: &mut u64,
+) {
+    enforce_hosted_agent_exit_backlog_cap_tracked(backlog, dropped_total, None);
+}
+
+/// Same as [`enforce_hosted_agent_exit_backlog_cap`], but also clears the
+/// dropped event's dedupe key from `in_flight` (when tracking is in use) so
+/// a later [`replenish_hosted_agent_exit_backlog`] pass can pick this
+/// still-`Pending`-on-disk record back up instead of it being permanently
+/// stuck as "in-flight" for a delivery attempt that was actually discarded.
+fn enforce_hosted_agent_exit_backlog_cap_tracked(
+    backlog: &mut VecDeque<HostedAgentEvent>,
+    dropped_total: &mut u64,
+    mut in_flight: Option<&mut HashSet<String>>,
+) {
+    while backlog.len() > HOSTED_AGENT_EXIT_BACKLOG_CAP {
+        if let Some(dropped) = backlog.pop_front() {
+            *dropped_total += 1;
+            if let Some(in_flight) = in_flight.as_deref_mut() {
+                in_flight.remove(&dropped.dedupe_key);
+            }
+            tracing::error!(
+                worker = %dropped.name,
+                event_type = %dropped.event_type,
+                dropped_total = *dropped_total,
+                "hosted agent exit backlog overflowed; oldest terminal event was dropped — hosted consumers may miss this exit (durable crash-insights record on disk remains authoritative)"
+            );
+        }
+    }
+}
+
+/// Upper bound on how many terminal hosted-agent events (e.g. `agent_exited`)
+/// are held in [`BrokerRuntime::hosted_agent_exit_backlog`] awaiting a retry
+/// once `hosted_agent_event_tx` has capacity again. Bounded so a stuck or
+/// permanently closed publisher cannot grow this queue without limit; the
+/// oldest entry is dropped (and counted, loudly) once the cap is exceeded.
+/// Durable state for these events already lives in crash insights on disk —
+/// this backlog exists purely to make *delivery* to hosted consumers durable
+/// against transient backpressure, not to be a second source of truth.
+pub(crate) const HOSTED_AGENT_EXIT_BACKLOG_CAP: usize = 256;
+
+/// Rebuild the in-memory backlog from durable pending records after
+/// overflow drops, without a broker restart.
+///
+/// [`HOSTED_AGENT_EXIT_BACKLOG_CAP`] bounds the in-memory backlog, but the
+/// durable pending outbox on disk ([`crate::crash_insights::CrashInsights`])
+/// is not similarly bounded to that cap (see the crate-level storage-tradeoff
+/// docs) — a broker that falls far enough behind can accumulate far more
+/// pending records than the in-memory backlog can hold at once. Previously
+/// the only way to pick those dropped-from-memory (but still `Pending` on
+/// disk) records back up was a full broker restart (via
+/// [`reload_pending_hosted_agent_exit_backlog`]). This function does the
+/// same reconstruction *within* the running process: called periodically
+/// (every maintenance tick), it scans current durable pending records and
+/// re-enqueues any that are neither already backlogged nor currently
+/// in-flight to the publisher, up to the cap.
+///
+/// `in_flight` is the guard against duplicate in-flight delivery: every
+/// dedupe key handed to the backlog or the publisher channel is tracked
+/// there until [`BrokerRuntime::handle_hosted_delivery_outcome`] reports its
+/// outcome (or it is dropped from the backlog, which also clears the
+/// tracking entry so a still-pending record remains eligible for a later
+/// replenishment pass). A record already tracked is skipped here — it is
+/// either already queued for retry or already being delivered — so this
+/// function can never enqueue a second in-flight copy of the same logical
+/// exit.
+pub(crate) fn replenish_hosted_agent_exit_backlog(
+    crash_insights: &crate::crash_insights::CrashInsights,
+    backlog: &mut VecDeque<HostedAgentEvent>,
+    in_flight: &mut HashSet<String>,
+) -> usize {
+    let mut replenished = 0usize;
+    for record in crash_insights.pending_hosted_deliveries() {
+        if backlog.len() >= HOSTED_AGENT_EXIT_BACKLOG_CAP {
+            break;
+        }
+        let key = record.dedupe_key();
+        if in_flight.contains(&key) {
+            // Already backlogged or already in-flight to the publisher for
+            // this exact logical exit — never enqueue a duplicate.
+            continue;
+        }
+        backlog.push_back(hosted_agent_event_from_crash_record(record));
+        in_flight.insert(key);
+        replenished += 1;
+    }
+    if replenished > 0 {
+        tracing::info!(
+            replenished,
+            backlog_len = backlog.len(),
+            "replenished hosted agent-exit backlog from durable pending records \
+             after prior overflow drops (no restart required)"
+        );
+    }
+    replenished
+}
+
+/// Attempt to hand a terminal hosted-agent event (`agent_exited`) to the
+/// publisher without blocking maintenance. Unlike a bare `try_send`, a full
+/// channel does not silently drop the event: it is held in a small bounded
+/// backlog and retried on the next call (typically the next maintenance
+/// tick, via [`drain_hosted_agent_exit_backlog_tracked`]) once capacity frees up.
+///
+/// A *closed* channel (publisher task gone) can never succeed, so the event
+/// is not backlogged in that case — only counted and logged at error level so
+/// the miss is observable — and the caller's crash-insights persistence
+/// (already durable on disk) remains the authoritative record either way.
+/// Mark `event` delivered in the durable crash-insights record it was
+/// derived from and persist that transition immediately.
+///
+/// This is the real "ack boundary" for hosted delivery: it must only be
+/// called once [`run_hosted_agent_event_publisher`] reports a
+/// [`HostedDeliveryOutcome`] with `success = true`, i.e. after Relaycast's
+/// HTTP endpoint actually accepted the event — never merely because the
+/// event was handed to the publisher's channel (a successful `try_send`
+/// only proves the publisher task received it, not that Relaycast did; an
+/// HTTP timeout or 5xx after that handoff must leave the record `Pending`).
+/// Persisting right here, synchronously, on the confirmed-success path means
+/// a crash immediately after this call still leaves the on-disk record
+/// correctly marked `Delivered` — and a crash at any point before it
+/// (including while Relaycast's own HTTP call is still in flight, retrying,
+/// or has permanently failed) leaves the record `Pending`, so a restart
+/// replays it again. That replay is safe (not silently duplicate-lossy)
+/// only because consumers dedupe on `dedupe_key`; this is the accepted
+/// at-least-once tradeoff.
+pub(crate) fn mark_hosted_delivered_and_persist(
+    crash_insights: &mut crate::crash_insights::CrashInsights,
+    crash_insights_path: &std::path::Path,
+    persist: bool,
+    dedupe_key: &str,
+) {
+    if crash_insights.mark_hosted_delivered(dedupe_key)
+        && persist
+        && !crash_insights.persist(crash_insights_path)
+    {
+        // `persist` re-armed the dirty flag and bumped the durability
+        // failure counter; `flush_persisted_stores` retries on the next
+        // tick, so this is not a permanent loss. Until it succeeds, the
+        // on-disk record still says `Pending`, so a restart in the
+        // meantime would harmlessly replay this already-delivered exit
+        // (safe: hosted consumers dedupe on `dedupe_key`).
+        tracing::warn!(
+            path = %crash_insights_path.display(),
+            dedupe_key = %dedupe_key,
+            "failed to persist hosted-delivery acknowledgement; will retry on next maintenance flush (a restart in the meantime may harmlessly replay this already-delivered exit)"
+        );
+    }
+}
+
+/// Attempt to hand `event` to the hosted publisher's channel. This is only a
+/// *handoff*, not delivery: the durable crash record stays `Pending` even
+/// after a successful `try_send` here, because Relaycast's real HTTP call
+/// happens later, in [`run_hosted_agent_event_publisher`]. That task reports
+/// the true outcome back over its own result channel, and only that outcome
+/// (see [`mark_hosted_delivered_and_persist`]) may mark the record
+/// `Delivered`. This function's job is purely to make sure a momentarily
+/// full or permanently closed channel doesn't cause the event to be
+/// silently dropped short of ever reaching the publisher at all.
+/// Maintains the
+/// `in_flight` dedupe-key set that [`replenish_hosted_agent_exit_backlog`]
+/// relies on to avoid ever queuing a second in-memory copy of the same
+/// logical exit while one is already backlogged or handed to the publisher.
+pub(crate) fn enqueue_hosted_agent_exit_event_tracked(
+    tx: &mpsc::Sender<HostedAgentEvent>,
+    backlog: &mut VecDeque<HostedAgentEvent>,
+    dropped_total: &mut u64,
+    mut in_flight: Option<&mut HashSet<String>>,
+    event: HostedAgentEvent,
+) {
+    drain_hosted_agent_exit_backlog_tracked(tx, backlog, dropped_total, in_flight.as_deref_mut());
+    if let Some(in_flight) = in_flight.as_deref_mut() {
+        in_flight.insert(event.dedupe_key.clone());
+    }
+    match tx.try_send(event) {
+        Ok(()) => {
+            // Handed to the publisher task only — the durable record
+            // remains `Pending` until that task's real HTTP call to
+            // Relaycast succeeds and reports back over the delivery-result
+            // channel. See `BrokerRuntime::handle_hosted_delivery_outcome`.
+        }
+        Err(mpsc::error::TrySendError::Full(event)) => {
+            tracing::warn!(
+                worker = %event.name,
+                event_type = %event.event_type,
+                backlog_len = backlog.len(),
+                "hosted agent event queue full; holding terminal event in bounded backlog for retry"
+            );
+            backlog.push_back(event);
+            enforce_hosted_agent_exit_backlog_cap_tracked(backlog, dropped_total, in_flight);
+        }
+        Err(mpsc::error::TrySendError::Closed(event)) => {
+            *dropped_total += 1;
+            if let Some(in_flight) = in_flight {
+                in_flight.remove(&event.dedupe_key);
+            }
+            tracing::error!(
+                worker = %event.name,
+                event_type = %event.event_type,
+                dropped_total = *dropped_total,
+                "hosted agent event publisher channel is closed; terminal event could not be delivered to hosted consumers for the remaining process lifetime (durable crash-insights record on disk remains authoritative and pending — it will be replayed on the next broker restart)"
+            );
+        }
+    }
+}
+
+/// Retry every backlogged terminal hosted-agent event against the publisher
+/// channel, in original order, stopping at the first one that still does not
+/// fit so relative ordering is preserved and this call cannot itself stall
+/// maintenance on a persistently full channel (bounded work per tick, never
+/// blocking maintenance indefinitely on a stuck or closed channel).
+/// Clears dropped
+/// events' dedupe keys from `in_flight` — see
+/// [`enqueue_hosted_agent_exit_event_tracked`] and
+/// [`replenish_hosted_agent_exit_backlog`].
+pub(crate) fn drain_hosted_agent_exit_backlog_tracked(
+    tx: &mpsc::Sender<HostedAgentEvent>,
+    backlog: &mut VecDeque<HostedAgentEvent>,
+    dropped_total: &mut u64,
+    mut in_flight: Option<&mut HashSet<String>>,
+) {
+    while let Some(event) = backlog.pop_front() {
+        match tx.try_send(event) {
+            Ok(()) => {
+                // Handoff only — see `enqueue_hosted_agent_exit_event_tracked`. The
+                // durable record stays `Pending` until the publisher's real
+                // HTTP call confirms success. Already tracked in `in_flight`
+                // since the moment it was backlogged/enqueued.
+            }
+            Err(mpsc::error::TrySendError::Full(event)) => {
+                backlog.push_front(event);
+                break;
+            }
+            Err(mpsc::error::TrySendError::Closed(event)) => {
+                *dropped_total += 1;
+                if let Some(in_flight) = in_flight.as_deref_mut() {
+                    in_flight.remove(&event.dedupe_key);
+                }
+                tracing::error!(
+                    worker = %event.name,
+                    event_type = %event.event_type,
+                    dropped_total = *dropped_total,
+                    "hosted agent event publisher channel closed while draining backlog; terminal event could not be delivered for the remaining process lifetime (durable crash-insights record on disk remains authoritative and pending — it will be replayed on the next broker restart)"
+                );
+                // The channel cannot recover for the rest of this process's
+                // lifetime; draining further entries would only repeat the
+                // same closed-channel error for each of them. Report them
+                // all now rather than one per future tick. Every one of
+                // these events' durable crash records is still `Pending` on
+                // disk (never marked delivered) so a broker restart replays
+                // them — this in-memory backlog is only ever a delivery
+                // *retry* aid, not the durability boundary itself.
+                for remaining in backlog.drain(..) {
+                    *dropped_total += 1;
+                    if let Some(in_flight) = in_flight.as_deref_mut() {
+                        in_flight.remove(&remaining.dedupe_key);
+                    }
+                    tracing::error!(
+                        worker = %remaining.name,
+                        event_type = %remaining.event_type,
+                        dropped_total = *dropped_total,
+                        "hosted agent event publisher channel closed; discarding backlogged terminal event from the in-memory retry queue (durable crash-insights record remains pending for replay on restart)"
+                    );
+                }
+                break;
+            }
+        }
+    }
+}
+
+/// Drive the real Relaycast HTTP emit for every hosted-agent event, with a
+/// small bounded number of same-process retries on failure (timeout or
+/// non-2xx), and report the true outcome back over `result_tx`.
+///
+/// This is the actual delivery boundary: [`BrokerRuntime`] must not treat an
+/// event as delivered until this task reports `success = true` here — a
+/// successful handoff into this task's `rx` channel only proves the event
+/// reached this task, not that Relaycast accepted it. See
+/// [`HostedDeliveryOutcome`] and [`mark_hosted_delivered_and_persist`].
+///
+/// Retries are deliberately bounded and processed in-line (this task
+/// consumes `rx` in order, so a stuck event's retries block later events
+/// behind it in the queue). Anything that exhausts
+/// [`HOSTED_PUBLISH_MAX_ATTEMPTS`] is reported as a failure so the durable
+/// crash record is left `Pending` for the broker-restart replay fallback
+/// (see `reload_pending_hosted_agent_exit_backlog`) rather than stalling
+/// this queue indefinitely.
 pub(crate) async fn run_hosted_agent_event_publisher(
     default_client: RelaycastHttpClient,
     clients: HashMap<WorkspaceId, RelaycastHttpClient>,
     mut rx: mpsc::Receiver<HostedAgentEvent>,
+    result_tx: mpsc::Sender<HostedDeliveryOutcome>,
 ) {
     while let Some(event) = rx.recv().await {
         let client = event
@@ -52,15 +468,75 @@ pub(crate) async fn run_hosted_agent_event_publisher(
             .as_ref()
             .and_then(|workspace_id| clients.get(workspace_id))
             .unwrap_or(&default_client);
-        if let Err(error) = tokio::time::timeout(
-            Duration::from_secs(5),
-            client.emit_agent_event(&event.name, event.event_type, event.payload),
-        )
-        .await
-        .map_err(|_| anyhow::anyhow!("Relaycast agent event publish timed out"))
-        .and_then(|result| result)
+
+        // Carry the dedupe identity into the actual HTTP payload sent to
+        // Relaycast so a hosted consumer receiving this event — including a
+        // replayed one after a broker restart — can discard a duplicate
+        // itself. Relaycast's HTTP API has no server-side idempotency-key
+        // parameter today (it's an external SDK maintained out of this
+        // repo), so this is client-observable dedupe support only; delivery
+        // remains documented at-least-once, not exactly-once, until a
+        // companion server-side change lands (AgentWorkforce/relay#1752).
+        let mut payload = event.payload.clone();
+        payload
+            .entry("dedupe_key".to_string())
+            .or_insert_with(|| Value::String(event.dedupe_key.clone()));
+
+        let mut attempt = 0u32;
+        let success = loop {
+            attempt += 1;
+            let outcome = tokio::time::timeout(
+                Duration::from_secs(5),
+                client.emit_agent_event(&event.name, event.event_type.clone(), payload.clone()),
+            )
+            .await
+            .map_err(|_| anyhow::anyhow!("Relaycast agent event publish timed out"))
+            .and_then(|result| result);
+
+            match outcome {
+                Ok(()) => break true,
+                Err(error) => {
+                    tracing::warn!(
+                        worker = %event.name,
+                        error = %error,
+                        attempt,
+                        max_attempts = HOSTED_PUBLISH_MAX_ATTEMPTS,
+                        dedupe_key = %event.dedupe_key,
+                        "failed to publish agent event to Relaycast"
+                    );
+                    if attempt >= HOSTED_PUBLISH_MAX_ATTEMPTS {
+                        break false;
+                    }
+                    tokio::time::sleep(HOSTED_PUBLISH_RETRY_BASE_DELAY * attempt).await;
+                }
+            }
+        };
+
+        if !success {
+            tracing::error!(
+                worker = %event.name,
+                event_type = %event.event_type,
+                dedupe_key = %event.dedupe_key,
+                attempts = attempt,
+                "exhausted in-process retries publishing hosted agent event to Relaycast; durable crash record remains pending for replay on the next broker restart"
+            );
+        }
+
+        if result_tx
+            .send(HostedDeliveryOutcome {
+                dedupe_key: event.dedupe_key.clone(),
+                worker: event.name.clone(),
+                event_type: event.event_type.clone(),
+                success,
+            })
+            .await
+            .is_err()
         {
-            tracing::warn!(worker = %event.name, error = %error, "failed to publish agent event to Relaycast");
+            tracing::warn!(
+                worker = %event.name,
+                dedupe_key = %event.dedupe_key,
+                "hosted delivery outcome channel closed; durable crash-insights record's fate now relies solely on restart replay"
+            );
         }
     }
 }
@@ -203,6 +679,39 @@ pub(crate) struct BrokerRuntime {
     pub(super) ws_control_tx: mpsc::Sender<WsControl>,
     pub(super) relaycast_http: RelaycastHttpClient,
     pub(super) hosted_agent_event_tx: mpsc::Sender<HostedAgentEvent>,
+    /// Bounded retry buffer for terminal hosted-agent events (currently
+    /// `agent_exited`) that could not be handed to the publisher because its
+    /// channel was momentarily full. See [`enqueue_hosted_agent_exit_event_tracked`].
+    pub(super) hosted_agent_exit_backlog: VecDeque<HostedAgentEvent>,
+    /// Dedupe keys of hosted-agent events currently backlogged or handed to
+    /// the publisher's channel awaiting a [`HostedDeliveryOutcome`]. Guards
+    /// [`replenish_hosted_agent_exit_backlog`] against ever queuing a
+    /// second in-memory copy of the same logical exit while one delivery
+    /// attempt is already outstanding. Cleared for a key once its outcome
+    /// is reported (success or failure — see
+    /// `BrokerRuntime::handle_hosted_delivery_outcome`) or once the event is
+    /// dropped from the backlog (overflow or closed channel), at which
+    /// point it becomes eligible for replenishment again if — and only if —
+    /// its durable record is still `Pending`.
+    pub(super) hosted_agent_exit_in_flight: HashSet<String>,
+    /// Count of terminal hosted-agent events that were ultimately never
+    /// delivered to hosted consumers (backlog overflow or a closed
+    /// publisher channel). Observable via logs at error level; kept here so
+    /// tests can assert on it directly.
+    pub(super) hosted_agent_exit_dropped_total: u64,
+    /// Receives the true delivery outcome of every hosted-agent event from
+    /// [`run_hosted_agent_event_publisher`] — the only place a durable crash
+    /// record may be marked `Delivered` (see
+    /// [`BrokerRuntime::handle_hosted_delivery_outcome`]).
+    pub(super) hosted_delivery_result_rx: mpsc::Receiver<HostedDeliveryOutcome>,
+    pub(super) hosted_delivery_result_open: bool,
+    /// Count of hosted-agent events whose publisher exhausted in-process
+    /// retries (see [`HOSTED_PUBLISH_MAX_ATTEMPTS`]) without success. These
+    /// records remain `Pending` on disk and are candidates for restart
+    /// replay; this counter is purely observability (truthful operator
+    /// status), exposed alongside `hosted_delivery_pending` in
+    /// `GetCrashInsights`.
+    pub(super) hosted_agent_exit_publish_failures_total: u64,
     pub(super) pty_observability: HashMap<WorkerName, PtyObservabilityState>,
     pub(super) api_rx: mpsc::Receiver<ListenApiRequest>,
     pub(super) api_open: bool,
@@ -290,6 +799,7 @@ enum RuntimeEvent {
     Fleet(Option<FleetControlEvent>),
     Terminal(Option<TerminalControlEvent>),
     Worker(Option<WorkerEvent>),
+    HostedDeliveryResult(Option<HostedDeliveryOutcome>),
     MaintenanceTick,
 }
 
@@ -335,6 +845,7 @@ impl BrokerRuntime {
                 event = self.fleet_event_rx.recv(), if self.fleet_control_open => RuntimeEvent::Fleet(event),
                 event = self.terminal_event_rx.recv(), if self.terminal_control_open => RuntimeEvent::Terminal(event),
                 event = self.worker_event_rx.recv(), if self.worker_events_open => RuntimeEvent::Worker(event),
+                outcome = self.hosted_delivery_result_rx.recv(), if self.hosted_delivery_result_open => RuntimeEvent::HostedDeliveryResult(outcome),
                 _ = self.reap_tick.tick() => RuntimeEvent::MaintenanceTick,
             };
 
@@ -383,6 +894,12 @@ impl BrokerRuntime {
                 }
                 RuntimeEvent::Worker(None) => {
                     self.worker_events_open = false;
+                }
+                RuntimeEvent::HostedDeliveryResult(Some(outcome)) => {
+                    self.handle_hosted_delivery_outcome(outcome);
+                }
+                RuntimeEvent::HostedDeliveryResult(None) => {
+                    self.hosted_delivery_result_open = false;
                 }
                 RuntimeEvent::MaintenanceTick => {
                     self.handle_maintenance_tick().await;
@@ -446,6 +963,57 @@ impl BrokerRuntime {
                 self.dedup.mark_dirty();
             }
         }
+        // Guaranteed-retry flush for crash insights (the durable
+        // hosted-delivery outbox), mirroring the dirty-flag pattern above.
+        // Every mutation (`record`, `mark_hosted_delivered`) — live or via a
+        // prior failed `persist` call re-arming the flag — sets `dirty`;
+        // this runs every event-loop iteration (not just maintenance ticks)
+        // so a transient write failure gets retried promptly rather than
+        // waiting for the next reap interval.
+        if self.crash_insights.take_dirty()
+            && !self.crash_insights.persist(&self.crash_insights_path)
+        {
+            tracing::warn!(
+                path = %self.crash_insights_path.display(),
+                save_failures_total = self.crash_insights.save_failures_total(),
+                "failed to persist crash insights — will retry on next flush"
+            );
+        }
+    }
+
+    /// Apply the real outcome of a hosted-agent event's Relaycast HTTP
+    /// publish, reported by [`run_hosted_agent_event_publisher`]. This is
+    /// the only place a durable crash record's `hosted_delivery` field may
+    /// transition to `Delivered` — success here means Relaycast actually
+    /// accepted the event, not merely that it reached the publisher's
+    /// channel. On failure the record is deliberately left `Pending`
+    /// (already its state — this function is a no-op on the durable record
+    /// in that case) so a future broker restart replays it; the only action
+    /// taken is bumping the observability counter so operator status
+    /// reflects the real failure rather than a false `Delivered`.
+    fn handle_hosted_delivery_outcome(&mut self, outcome: HostedDeliveryOutcome) {
+        // This delivery attempt is resolved either way (delivered, or
+        // failed and left `Pending` for replay) — it is no longer
+        // in-flight, so a still-pending record becomes eligible for
+        // `replenish_hosted_agent_exit_backlog` again on the next tick.
+        self.hosted_agent_exit_in_flight.remove(&outcome.dedupe_key);
+        if outcome.success {
+            mark_hosted_delivered_and_persist(
+                &mut self.crash_insights,
+                &self.crash_insights_path,
+                self.paths.persist,
+                &outcome.dedupe_key,
+            );
+        } else {
+            self.hosted_agent_exit_publish_failures_total += 1;
+            tracing::error!(
+                worker = %outcome.worker,
+                event_type = %outcome.event_type,
+                dedupe_key = %outcome.dedupe_key,
+                publish_failures_total = self.hosted_agent_exit_publish_failures_total,
+                "hosted agent event publish to Relaycast failed after in-process retries; durable crash record remains pending for restart replay"
+            );
+        }
     }
 
     fn handle_lease_tick(&mut self) {
@@ -464,10 +1032,11 @@ impl BrokerRuntime {
     async fn shutdown_runtime(mut self) -> Result<()> {
         self.drain_identity_cleanups_on_shutdown().await;
         // Save crash insights before shutdown (only in persist mode)
-        if self.paths.persist {
-            if let Err(error) = self.crash_insights.save(&self.crash_insights_path) {
-                tracing::warn!(error = %error, "failed to save crash insights");
-            }
+        if self.paths.persist && !self.crash_insights.persist(&self.crash_insights_path) {
+            tracing::warn!(
+                save_failures_total = self.crash_insights.save_failures_total(),
+                "failed to save crash insights on shutdown"
+            );
         }
 
         self.telemetry.track(TelemetryEvent::BrokerStop {
@@ -602,23 +1171,155 @@ mod resize_owner_tests {
         );
         let workspace_id = WorkspaceId::new("ws_secondary");
         let (tx, rx) = mpsc::channel(4);
+        let (result_tx, mut result_rx) = mpsc::channel(4);
         let task = tokio::spawn(run_hosted_agent_event_publisher(
             default_client,
             HashMap::from([(workspace_id.clone(), secondary_client)]),
             rx,
+            result_tx,
         ));
         tx.send(HostedAgentEvent {
             name: "Worker".to_string(),
             event_type: "activity.changed".to_string(),
             payload: serde_json::Map::new(),
             workspace_id: Some(workspace_id),
+            dedupe_key: "Worker::activity.changed".to_string(),
         })
         .await
         .expect("publisher queue open");
+        let outcome = result_rx
+            .recv()
+            .await
+            .expect("publisher must report a delivery outcome");
+        assert!(outcome.success, "successful HTTP emit must report success");
+        assert_eq!(outcome.dedupe_key, "Worker::activity.changed");
         drop(tx);
         task.await.expect("publisher task");
         secondary_post.assert_hits(1);
         default_post.assert_hits(0);
+    }
+
+    /// Critical fix for #1603/#1750 review: an HTTP timeout or 5xx from
+    /// Relaycast must not leave the durable crash record silently marked
+    /// `Delivered`. This drives the publisher directly against a mock
+    /// server that always fails, asserting the reported outcome is
+    /// `success = false` and that the bounded in-process retry actually
+    /// attempted more than once before giving up.
+    #[tokio::test]
+    async fn publisher_reports_failure_after_exhausting_retries_on_persistent_5xx() {
+        let server = MockServer::start();
+        let failing = server.mock(|when, then| {
+            when.method(POST).path("/v1/agents/Worker/events");
+            then.status(500)
+                .json_body(json!({"ok": false, "error": "boom"}));
+        });
+        let client =
+            RelaycastHttpClient::new(Some(server.base_url()), "rk_test", "broker", "codex");
+        let (tx, rx) = mpsc::channel(4);
+        let (result_tx, mut result_rx) = mpsc::channel(4);
+        let task = tokio::spawn(run_hosted_agent_event_publisher(
+            client,
+            HashMap::new(),
+            rx,
+            result_tx,
+        ));
+        tx.send(HostedAgentEvent {
+            name: "Worker".to_string(),
+            event_type: "agent_exited".to_string(),
+            payload: serde_json::Map::new(),
+            workspace_id: None,
+            dedupe_key: "Worker::gen-1".to_string(),
+        })
+        .await
+        .expect("publisher queue open");
+
+        let outcome = result_rx
+            .recv()
+            .await
+            .expect("publisher must report an outcome even on total failure");
+        assert!(
+            !outcome.success,
+            "persistent 5xx must be reported as failure, never as a false success"
+        );
+        assert_eq!(outcome.dedupe_key, "Worker::gen-1");
+        drop(tx);
+        task.await.expect("publisher task");
+        failing.assert_hits(HOSTED_PUBLISH_MAX_ATTEMPTS as usize);
+    }
+
+    /// The success half of the same scenario: Relaycast 5xxs on the first
+    /// attempt but recovers within the bounded retry budget — the publisher
+    /// must report `success = true` only once the real HTTP call actually
+    /// went through, and the failing mock must have been hit at least once
+    /// (proving an in-process retry actually happened, not a first-try
+    /// fluke).
+    #[tokio::test]
+    async fn publisher_recovers_and_reports_success_after_transient_5xx() {
+        let server = MockServer::start();
+        let mut failing = server.mock(|when, then| {
+            when.method(POST).path("/v1/agents/Worker/events");
+            then.status(503)
+                .json_body(json!({"ok": false, "error": "unavailable"}));
+        });
+        let client =
+            RelaycastHttpClient::new(Some(server.base_url()), "rk_test", "broker", "codex");
+        let (tx, rx) = mpsc::channel(4);
+        let (result_tx, mut result_rx) = mpsc::channel(4);
+        let task = tokio::spawn(run_hosted_agent_event_publisher(
+            client,
+            HashMap::new(),
+            rx,
+            result_tx,
+        ));
+
+        // Once the first (failing) attempt lands, swap the mock for a
+        // success response so the bounded retry's next attempt recovers —
+        // driven concurrently with the publisher awaiting its retry backoff.
+        let recover = async {
+            while failing.hits() == 0 {
+                tokio::time::sleep(Duration::from_millis(5)).await;
+            }
+            failing.delete();
+            server.mock(|when, then| {
+                when.method(POST).path("/v1/agents/Worker/events");
+                then.status(200).json_body(json!({"ok":true,"data":{"id":"evt_recovered","agent_id":"a","type":"agent_exited","payload":{},"created_at":"2026-07-16T00:00:00Z"}}));
+            });
+        };
+
+        let send = async {
+            tx.send(HostedAgentEvent {
+                name: "Worker".to_string(),
+                event_type: "agent_exited".to_string(),
+                payload: serde_json::Map::new(),
+                workspace_id: None,
+                dedupe_key: "Worker::gen-2".to_string(),
+            })
+            .await
+            .expect("publisher queue open");
+        };
+
+        let (outcome, _, ()) = tokio::time::timeout(Duration::from_secs(10), async {
+            tokio::join!(
+                async {
+                    result_rx
+                        .recv()
+                        .await
+                        .expect("publisher must report an outcome")
+                },
+                recover,
+                send,
+            )
+        })
+        .await
+        .expect("publisher recovery must complete within the retry budget");
+
+        assert!(
+            outcome.success,
+            "recovery within the bounded retry budget must be reported as success"
+        );
+        assert_eq!(outcome.dedupe_key, "Worker::gen-2");
+        drop(tx);
+        task.await.expect("publisher task");
     }
 
     #[test]

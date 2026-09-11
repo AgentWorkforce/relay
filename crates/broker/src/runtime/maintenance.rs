@@ -2,6 +2,49 @@ use super::fleet::{release_terminal_resize_ownership, try_send_terminal};
 use super::*;
 use crate::terminal_control::TerminalToCloud;
 
+fn instant_to_unix_secs(at: Instant, now: Instant, now_unix: u64) -> u64 {
+    now_unix.saturating_sub(now.saturating_duration_since(at).as_secs())
+}
+
+fn bounded_exit_reason(reason: Option<&str>) -> Option<String> {
+    reason.map(|reason| {
+        const MAX_BYTES: usize = 256;
+        if reason.len() <= MAX_BYTES {
+            reason.to_string()
+        } else {
+            let end = reason.floor_char_boundary(MAX_BYTES - '…'.len_utf8());
+            format!("{}…", &reason[..end])
+        }
+    })
+}
+
+#[cfg(test)]
+mod exit_diagnostic_tests {
+    use super::*;
+
+    #[test]
+    fn exit_reason_is_bounded_without_splitting_utf8() {
+        let reason = "é".repeat(300);
+        let bounded = bounded_exit_reason(Some(&reason)).expect("reason is present");
+        assert!(bounded.len() <= 256);
+        assert!(bounded.ends_with('…'));
+        assert!(std::str::from_utf8(bounded.as_bytes()).is_ok());
+    }
+
+    #[test]
+    fn instant_conversion_is_monotonic_and_bounded() {
+        let now = Instant::now();
+        let spawned = now - Duration::from_secs(12);
+        let ready = now - Duration::from_secs(5);
+        assert_eq!(instant_to_unix_secs(spawned, now, 1_000), 988);
+        assert_eq!(instant_to_unix_secs(ready, now, 1_000), 995);
+        assert_eq!(
+            instant_to_unix_secs(now + Duration::from_secs(1), now, 1_000),
+            1_000
+        );
+    }
+}
+
 impl BrokerRuntime {
     pub(super) async fn handle_maintenance_tick(&mut self) {
         self.reconcile_identity_cleanups().await;
@@ -11,6 +54,9 @@ impl BrokerRuntime {
         let ws_control_tx = &self.ws_control_tx;
         let relaycast_http = &self.relaycast_http;
         let hosted_agent_event_tx = &self.hosted_agent_event_tx;
+        let hosted_agent_exit_backlog = &mut self.hosted_agent_exit_backlog;
+        let hosted_agent_exit_dropped_total = &mut self.hosted_agent_exit_dropped_total;
+        let hosted_agent_exit_in_flight = &mut self.hosted_agent_exit_in_flight;
         let pty_observability = &mut self.pty_observability;
         let workers = &mut self.workers;
         let fleet_control_tx = &self.fleet_control_tx;
@@ -37,8 +83,34 @@ impl BrokerRuntime {
         let delivery_retry_interval = self.delivery_retry_interval;
         let shutdown = &self.shutdown;
         let default_workspace = &self.default_workspace;
+        let fleet_node_name = self.fleet_node_name.clone();
+        let crash_insights_path = &self.crash_insights_path;
 
         let now = Instant::now();
+
+        // Retry any terminal hosted-agent events (e.g. `agent_exited`) that a
+        // previous tick could not hand to the publisher because its channel
+        // was momentarily full. Doing this before generating any new events
+        // this tick preserves delivery order.
+        super::event_loop::drain_hosted_agent_exit_backlog_tracked(
+            hosted_agent_event_tx,
+            hosted_agent_exit_backlog,
+            hosted_agent_exit_dropped_total,
+            Some(hosted_agent_exit_in_flight),
+        );
+
+        // Continuously replenish the in-memory backlog from durable pending
+        // records so overflow drops above `HOSTED_AGENT_EXIT_BACKLOG_CAP`
+        // are not permanent for the life of the process — no broker restart
+        // required. `hosted_agent_exit_in_flight` guards against ever
+        // re-queuing a record that is already backlogged or already
+        // in-flight to the publisher, so this can never produce a duplicate
+        // in-flight delivery.
+        super::event_loop::replenish_hosted_agent_exit_backlog(
+            crash_insights,
+            hosted_agent_exit_backlog,
+            hosted_agent_exit_in_flight,
+        );
 
         // A worker can disappear before answering `snapshot_pty`. Bound these
         // terminal-only RPCs so their sessions cannot remain live forever.
@@ -276,8 +348,42 @@ impl BrokerRuntime {
                 vec![]
             }
         };
+        // Use the instant immediately surrounding reaping for wall-clock
+        // conversion; delivery/reconciliation awaits earlier in this tick
+        // must not make the terminal timestamp stale.
+        let reaped_at = Instant::now();
+        let reaped_at_unix = unix_timestamp_secs();
         let mut fleet_load_changed = !expired_verified_spawns.is_empty() || !exited.is_empty();
-        for (name, generation, code, signal, exit_reason) in &exited {
+        for (
+            name,
+            generation,
+            code,
+            signal,
+            exit_reason,
+            workspace_id,
+            spawned_at,
+            ready_at,
+            generation_invocation_id,
+        ) in &exited
+        {
+            // Correlation is carried directly on the exited generation's
+            // handle (captured by `reap_exited` before the handle was
+            // removed), not re-derived from the by-name `fleet_inventory`
+            // map here. A same-name replacement worker can register and
+            // overwrite that by-name entry before this older generation is
+            // reaped, which would otherwise misattribute the *new*
+            // generation's invocation id to *this* (old) generation's exit.
+            // Fall back to the by-name lookup only for legacy handles that
+            // never carried an `invocation_id` (e.g. pre-upgrade in-flight
+            // workers), preserving prior behavior for that narrow case.
+            let spawn_invocation_id = generation_invocation_id.clone().or_else(|| {
+                fleet_inventory
+                    .get(name)
+                    .and_then(|agent| agent.invocation_id.clone())
+            });
+            let was_pending_verified_spawn = pending_verified_spawns
+                .get(name)
+                .is_some_and(|pending| pending.generation == *generation);
             let mut retain_fleet_identity = workers
                 .owned_spawn_generations
                 .get(name)
@@ -334,7 +440,27 @@ impl BrokerRuntime {
                         .await;
                 }
             }
-            let lifecycle_reason = exit_reason.as_deref().unwrap_or("worker_exited");
+            let exited_at = reaped_at_unix;
+            let spawned_at_unix = instant_to_unix_secs(*spawned_at, reaped_at, reaped_at_unix);
+            let ready_at_unix =
+                ready_at.map(|at| instant_to_unix_secs(at, reaped_at, reaped_at_unix));
+            let (category, description) =
+                crate::crash_insights::CrashInsights::analyze(*code, signal.as_deref());
+            let durable_reason = bounded_exit_reason(exit_reason.as_deref())
+                .or_else(|| {
+                    was_pending_verified_spawn.then(|| "spawn_harness_not_ready".to_string())
+                })
+                .or_else(|| {
+                    if *code == Some(0) && signal.is_none() {
+                        Some("clean_exit".to_string())
+                    } else {
+                        Some(description.clone())
+                    }
+                });
+            let generation_id = generation.to_string();
+            let workspace_id = workspace_id.as_ref().map(ToString::to_string);
+            let fleet_node_name = (!fleet_node_name.is_empty()).then(|| fleet_node_name.clone());
+            let lifecycle_reason = durable_reason.as_deref().unwrap_or("worker_exited");
             if (code.is_some_and(|code| code != 0) || signal.is_some())
                 && state
                     .agents
@@ -370,21 +496,63 @@ impl BrokerRuntime {
                     tracing::warn!(target = "relay_broker::terminal", session_id = %session_id, "terminal queue full or closed while closing exited worker session");
                 }
             }
-            // Record crash in insights
-            let (category, description) =
-                crate::crash_insights::CrashInsights::analyze(*code, signal.as_deref());
-            crash_insights.record(crate::crash_insights::CrashRecord {
+            // Record and persist the terminal crash record — with hosted
+            // delivery defaulted to `Pending` — *before* any attempt to hand
+            // it to the hosted publisher channel below. This ordering is the
+            // core of the durable outbox: a broker crash between this save
+            // and the enqueue attempt still leaves a `Pending` record on
+            // disk, so a restart replays it; there is no window in which the
+            // event is neither durably queued nor delivered.
+            let crash_record = crate::crash_insights::CrashRecord {
                 agent_name: name.as_str().to_string(),
                 exit_code: *code,
                 signal: signal.clone(),
-                timestamp: std::time::SystemTime::now()
-                    .duration_since(std::time::UNIX_EPOCH)
-                    .unwrap_or_default()
-                    .as_secs(),
-                uptime_secs: 0,
+                timestamp: exited_at,
+                uptime_secs: exited_at.saturating_sub(spawned_at_unix),
                 category,
-                description,
-            });
+                description: description.clone(),
+                workspace_id: workspace_id.clone(),
+                spawn_invocation_id: spawn_invocation_id.clone(),
+                generation: generation_id.clone(),
+                became_ready: ready_at.is_some(),
+                spawned_at: spawned_at_unix,
+                ready_at: ready_at_unix,
+                exited_at,
+                exit_reason: durable_reason.clone(),
+                fleet_node_name: fleet_node_name.clone(),
+                hosted_delivery: crate::crash_insights::HostedDeliveryState::Pending,
+            };
+            crash_insights.record(crash_record.clone());
+            if paths.persist && !crash_insights.persist(crash_insights_path) {
+                // `persist` already re-armed the dirty flag and bumped
+                // `save_failures_total` (surfaced via `GetCrashInsights`);
+                // the next maintenance tick's flush
+                // (`BrokerRuntime::flush_persisted_stores`) retries this
+                // write automatically, so a transient failure here cannot
+                // silently and permanently lose this exit's durability —
+                // only the logged warning below is best-effort.
+                tracing::warn!(
+                    path = %crash_insights_path.display(),
+                    "failed to persist worker exit record; will retry on next maintenance flush"
+                );
+            }
+            // Delivery to hosted consumers must not silently drop the
+            // terminal event on backpressure: a full channel is retried via
+            // the bounded backlog (drained every tick) rather than dropped
+            // outright, and a closed channel is at least made observable via
+            // an error-level log and a counter. Either way the durable
+            // crash-insights record saved just above starts (and, on
+            // anything short of a successful handoff, stays) `Pending`, so
+            // it is always the authoritative record of what still needs
+            // delivering — including across a broker restart, which replays
+            // every still-`Pending` record. See `enqueue_hosted_agent_exit_event_tracked`.
+            super::event_loop::enqueue_hosted_agent_exit_event_tracked(
+                hosted_agent_event_tx,
+                hosted_agent_exit_backlog,
+                hosted_agent_exit_dropped_total,
+                Some(hosted_agent_exit_in_flight),
+                super::event_loop::hosted_agent_event_from_crash_record(&crash_record),
+            );
 
             telemetry.track(TelemetryEvent::AgentCrash {
                 cli: String::new(),
@@ -416,6 +584,15 @@ impl BrokerRuntime {
                             "signal": signal,
                             "restart_count": restart_count,
                             "delay_ms": delay.as_millis() as u64,
+                            "reason": durable_reason,
+                            "generation": generation_id,
+                            "workspace_id": workspace_id,
+                            "spawn_invocation_id": spawn_invocation_id,
+                            "fleet_node_name": fleet_node_name,
+                            "became_ready": ready_at.is_some(),
+                            "spawned_at": spawned_at_unix,
+                            "ready_at": ready_at_unix,
+                            "exited_at": exited_at,
                         }),
                     )
                     .await;
@@ -463,7 +640,20 @@ impl BrokerRuntime {
                     agent_result_tokens.retain(|_, agent| agent != name);
                     let _ = send_event(
                         sdk_out_tx,
-                        json!({"kind":"agent_permanently_dead","name":name,"reason":reason}),
+                        json!({
+                            "kind":"agent_permanently_dead",
+                            "name":name,
+                            "reason":reason,
+                            "exit_reason":durable_reason,
+                            "generation":generation_id,
+                            "workspace_id":workspace_id,
+                            "spawn_invocation_id":spawn_invocation_id,
+                            "fleet_node_name":fleet_node_name,
+                            "became_ready":ready_at.is_some(),
+                            "spawned_at":spawned_at_unix,
+                            "ready_at":ready_at_unix,
+                            "exited_at":exited_at,
+                        }),
                     )
                     .await;
                     publish_agent_state_transition(
@@ -537,7 +727,14 @@ impl BrokerRuntime {
                             "code":code,
                             "signal":signal,
                             "reason": lifecycle_reason,
-                            "generation": generation,
+                            "generation": generation_id,
+                            "workspace_id": workspace_id,
+                            "spawn_invocation_id": spawn_invocation_id,
+                            "fleet_node_name": fleet_node_name,
+                            "became_ready": ready_at.is_some(),
+                            "spawned_at": spawned_at_unix,
+                            "ready_at": ready_at_unix,
+                            "exited_at": exited_at,
                         }),
                     )
                     .await;

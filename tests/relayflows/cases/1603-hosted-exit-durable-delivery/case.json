@@ -1,0 +1,21 @@
+{
+  "version": 1,
+  "id": "1603-hosted-exit-durable-delivery",
+  "kind": "bugfix",
+  "title": "Persist and restart-replay a real fleet-spawned child exit",
+  "requirements": ["broker-linux-x64"],
+  "runner": {
+    "command": ["node", "tests/relayflows/cases/1603-hosted-exit-durable-delivery/run.mjs"]
+  },
+  "timeoutSeconds": 900,
+  "expected": {
+    "base": {
+      "outcome": "bug",
+      "signature": "live_exit_never_enters_durable_hosted_outbox"
+    },
+    "head": {
+      "outcome": "fixed",
+      "signature": "live_fleet_child_exit_persists_then_replays_once_after_restart"
+    }
+  }
+}

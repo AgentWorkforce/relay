@@ -124,6 +124,7 @@ async fn make_worker_registry_with_worker(name: &str) -> WorkerRegistry {
             context_budget_pct: None,
             state: AgentWorkState::Working,
             exit_reason: None,
+            invocation_id: None,
         },
     );
     registry
@@ -185,6 +186,7 @@ async fn make_worker_registry_with_stalled_worker(name: &str) -> WorkerRegistry 
             context_budget_pct: None,
             state: AgentWorkState::Working,
             exit_reason: None,
+            invocation_id: None,
         },
     );
     registry
@@ -621,6 +623,12 @@ fn worker_event_runtime_fixture(
         ws_control_tx,
         relaycast_http,
         hosted_agent_event_tx,
+        hosted_agent_exit_backlog: std::collections::VecDeque::new(),
+        hosted_agent_exit_in_flight: std::collections::HashSet::new(),
+        hosted_agent_exit_dropped_total: 0,
+        hosted_delivery_result_rx: mpsc::channel(4).1,
+        hosted_delivery_result_open: true,
+        hosted_agent_exit_publish_failures_total: 0,
         pty_observability: HashMap::new(),
         api_rx,
         api_open: true,
@@ -3006,6 +3014,14 @@ async fn delivery_retry_transient_blip_emits_failed_event_for_present_worker() {
             .expect("present worker handle");
         let _ = handle.child.start_kill();
         let _ = handle.child.wait().await;
+        // The child is gone, but its old writer task can still win a race with
+        // the retry loop and accept one final pipe write on macOS. Replace the
+        // transport with a closed queue so every retry observes the intended
+        // writer failure deterministically while the worker remains present in
+        // the registry.
+        let (closed_tx, closed_rx) = mpsc::channel(1);
+        drop(closed_rx);
+        handle.command_tx = closed_tx;
     }
     assert!(
         workers.has_worker(worker_name),
@@ -3063,9 +3079,21 @@ async fn delivery_retry_transient_blip_emits_failed_event_for_present_worker() {
                 break;
             }
             Ok(DeliveryAttemptOutcome::Attempted { attempts, .. }) => {
+                // `attempts` increments by exactly one per call regardless
+                // of outcome and is only ever capped at
+                // `MAX_DELIVERY_RETRIES` on the *failure* path (where it
+                // tracks the same budget as `failed_attempts`). A spurious
+                // successful write on a dead recipient (see the platform
+                // note above) resets `failed_attempts` and is deliberately
+                // *not* capped here — it is not a failure retry, so it must
+                // not be constrained by the failure budget (see
+                // `wait_delivery_successful_handoffs_do_not_exhaust_failure_budget`).
+                // The only invariant that must hold regardless of the
+                // success/failure mix is that attempts can't outrun the
+                // number of calls actually made.
                 assert!(
-                    attempts <= MAX_DELIVERY_RETRIES,
-                    "retry attempts must stay within the retry cap"
+                    attempts <= retry_index,
+                    "attempts must never exceed the number of retry calls made so far"
                 );
                 assert!(
                     retry_index <= MAX_DELIVERY_RETRIES,
@@ -6346,4 +6374,698 @@ async fn owned_cleanup_retries_delete_without_repeating_acknowledged_deregistrat
         .owned_spawn_generations
         .contains_key(&name));
     fixture.runtime.workers.release("unrelated").await.unwrap();
+}
+
+/// Regression for #1603 P2 #1: a same-name replacement's Fleet
+/// re-registration overwrote the by-name `fleet_inventory` entry *before*
+/// the old (already-dead) generation was reaped, so the maintenance tick's
+/// by-name correlation lookup misattributed the *new* generation's
+/// invocation id to the *old* generation's exit. Correlation must instead
+/// travel on the exited generation's own handle.
+#[cfg(unix)]
+#[tokio::test]
+async fn maintenance_tick_attributes_old_generation_exit_to_old_invocation_id() {
+    let (tx, _rx) = mpsc::channel(16);
+    let mut registry = WorkerRegistry::new(
+        tx,
+        Vec::new(),
+        PathBuf::from("/tmp/agent-relay-broker-tests-reap-correlation"),
+        Instant::now(),
+    );
+    let name = WorkerName::from("same-name-replacement");
+    let old_generation = Uuid::new_v4();
+    let old_child = tokio::process::Command::new("sh")
+        .args(["-c", "exit 0"])
+        .spawn()
+        .expect("old-generation worker should spawn");
+    let (old_command_tx, _old_command_rx) = mpsc::channel(16);
+    registry.workers.insert(
+        name.clone(),
+        WorkerHandle {
+            generation: old_generation,
+            spec: AgentSpec {
+                name: name.clone(),
+                runtime: AgentRuntime::Headless,
+                provider: None,
+                cli: None,
+                session_id: None,
+                harness_config: None,
+                model: None,
+                cwd: None,
+                team: None,
+                shadow_of: None,
+                shadow_mode: None,
+                args: Vec::new(),
+                channels: Vec::new(),
+                restart_policy: None,
+            },
+            parent: None,
+            workspace_id: None,
+            child: old_child,
+            command_tx: old_command_tx,
+            harness_pid: None,
+            spawned_at: Instant::now(),
+            ready_at: Some(Instant::now()),
+            last_activity_at: Instant::now(),
+            context_budget_pct: None,
+            state: AgentWorkState::Working,
+            exit_reason: None,
+            // Set at spawn time (see `set_invocation_id` call sites) — this
+            // is the correlation for *this* generation specifically.
+            invocation_id: Some("inv-old-generation".to_string()),
+        },
+    );
+    // Let the old generation's process actually exit before the tick runs.
+    tokio::time::sleep(Duration::from_millis(50)).await;
+
+    let mut fixture = worker_event_runtime_fixture(registry, HashMap::new());
+    // Simulate the same-name replacement's Fleet registration landing in the
+    // by-name inventory map *before* maintenance reaps the old generation —
+    // this is the exact overwrite the bug report describes.
+    fixture.runtime.fleet_inventory.insert(
+        name.clone(),
+        crate::fleet_wire::InventoryAgent {
+            agent_id: "agent-new-generation".to_string(),
+            name: name.to_string(),
+            invocation_id: Some("inv-new-generation".to_string()),
+            session_ref: None,
+        },
+    );
+
+    fixture.runtime.handle_maintenance_tick().await;
+
+    let mut saw_exit_event = false;
+    while let Ok(envelope) = fixture._sdk_out_rx.try_recv() {
+        let payload = &envelope.payload;
+        if payload.get("kind").and_then(Value::as_str) == Some("agent_exited")
+            && payload.get("name").and_then(Value::as_str) == Some(name.as_str())
+        {
+            assert_eq!(
+                payload.get("spawn_invocation_id").and_then(Value::as_str),
+                Some("inv-old-generation"),
+                "the old generation's exit must never be attributed to the \
+                 same-name replacement's invocation id: {payload:?}"
+            );
+            saw_exit_event = true;
+        }
+    }
+    assert!(saw_exit_event, "expected an agent_exited sdk event");
+
+    // The durable crash-insights record must carry the same correlation.
+    let crash_json = fixture.runtime.crash_insights.to_json();
+    let records = crash_json
+        .get("recent")
+        .and_then(Value::as_array)
+        .cloned()
+        .unwrap_or_default();
+    let record = records
+        .iter()
+        .find(|record| record.get("agent_name").and_then(Value::as_str) == Some(name.as_str()))
+        .expect("crash insight record for the old generation must exist");
+    assert_eq!(
+        record.get("spawn_invocation_id").and_then(Value::as_str),
+        Some("inv-old-generation")
+    );
+}
+
+/// Regression for #1603 P2 #2: a full or closed `hosted_agent_event_tx`
+/// channel must not silently drop the terminal `agent_exited` hosted event.
+/// A full channel is retried via the bounded backlog on the next
+/// maintenance tick; a closed channel cannot be retried but is at least
+/// counted so the miss is observable.
+#[tokio::test]
+async fn hosted_agent_exit_event_survives_full_channel_and_reports_closed_channel() {
+    use super::event_loop::{enqueue_hosted_agent_exit_event_tracked, HostedAgentEvent};
+
+    // Full channel: the event must land in the backlog, not be dropped, and
+    // must be delivered once capacity frees up.
+    let (tx, mut rx) = mpsc::channel::<HostedAgentEvent>(1);
+    // Occupy the only slot so the next enqueue observes `Full`.
+    tx.try_send(HostedAgentEvent {
+        name: "occupant".to_string(),
+        event_type: "agent_exited".to_string(),
+        payload: serde_json::Map::new(),
+        workspace_id: None,
+        dedupe_key: "occupant::gen-occupant".to_string(),
+    })
+    .unwrap();
+
+    let mut backlog = std::collections::VecDeque::new();
+    let mut dropped_total = 0u64;
+    enqueue_hosted_agent_exit_event_tracked(
+        &tx,
+        &mut backlog,
+        &mut dropped_total,
+        None,
+        HostedAgentEvent {
+            name: "full-channel-victim".to_string(),
+            event_type: "agent_exited".to_string(),
+            payload: serde_json::Map::new(),
+            workspace_id: None,
+            dedupe_key: "full-channel-victim::gen-full".to_string(),
+        },
+    );
+    assert_eq!(
+        backlog.len(),
+        1,
+        "event must be held for retry, not dropped"
+    );
+    assert_eq!(dropped_total, 0);
+
+    // Drain the occupant so capacity frees up, then simulate the next tick's
+    // backlog drain — the held event must now be delivered.
+    let occupant = rx.recv().await.expect("occupant should be received");
+    assert_eq!(occupant.name, "occupant");
+    super::event_loop::drain_hosted_agent_exit_backlog_tracked(
+        &tx,
+        &mut backlog,
+        &mut dropped_total,
+        None,
+    );
+    assert!(backlog.is_empty(), "backlog must drain once capacity frees");
+    let delivered = rx
+        .recv()
+        .await
+        .expect("backlogged event must eventually be delivered");
+    assert_eq!(delivered.name, "full-channel-victim");
+    assert_eq!(dropped_total, 0);
+
+    // Closed channel: cannot ever be retried, so it must not accumulate in
+    // the backlog — but the miss must be observable via the drop counter.
+    let (tx, rx) = mpsc::channel::<HostedAgentEvent>(4);
+    drop(rx);
+    enqueue_hosted_agent_exit_event_tracked(
+        &tx,
+        &mut backlog,
+        &mut dropped_total,
+        None,
+        HostedAgentEvent {
+            name: "closed-channel-victim".to_string(),
+            event_type: "agent_exited".to_string(),
+            payload: serde_json::Map::new(),
+            workspace_id: None,
+            dedupe_key: "closed-channel-victim::gen-closed".to_string(),
+        },
+    );
+    assert!(
+        backlog.is_empty(),
+        "a closed channel can never succeed; must not be backlogged"
+    );
+    assert_eq!(
+        dropped_total, 1,
+        "closed-channel miss must be observable via the drop counter"
+    );
+}
+
+/// Regression for #1603 P2 #3: the in-memory hosted publish queue must be
+/// continuously replenished from durable `Pending` records after overflow
+/// drops above `HOSTED_AGENT_EXIT_BACKLOG_CAP` (256), *within the running
+/// process* — no broker restart required — and must never produce a
+/// duplicate in-flight delivery for the same logical exit.
+///
+/// Deterministic by construction: this drives
+/// `replenish_hosted_agent_exit_backlog` directly, in a loop, simulating
+/// each backlogged event's successful delivery outcome (exactly what
+/// `BrokerRuntime::handle_hosted_delivery_outcome` does) between passes.
+/// No sleeping, no real clock/publisher task — just repeated direct calls
+/// until the durable pending set is fully drained.
+#[test]
+fn replenish_backlog_drains_a_large_pending_backlog_without_restart_or_duplicates() {
+    use super::event_loop::{replenish_hosted_agent_exit_backlog, HostedAgentEvent};
+    use std::collections::{HashSet, VecDeque};
+
+    const TOTAL_PENDING: usize = 600;
+    const _: () = assert!(
+        TOTAL_PENDING > 500 && TOTAL_PENDING > super::event_loop::HOSTED_AGENT_EXIT_BACKLOG_CAP,
+        "fixture must exceed both the required minimums"
+    );
+
+    let mut crash_insights = crate::crash_insights::CrashInsights::new();
+    for i in 0..TOTAL_PENDING {
+        let (category, description) = crate::crash_insights::CrashInsights::analyze(Some(1), None);
+        crash_insights.record(crate::crash_insights::CrashRecord {
+            agent_name: format!("worker-{i}"),
+            exit_code: Some(1),
+            signal: None,
+            timestamp: 1,
+            uptime_secs: 1,
+            category,
+            description,
+            workspace_id: None,
+            spawn_invocation_id: None,
+            generation: format!("gen-{i}"),
+            became_ready: true,
+            spawned_at: 0,
+            ready_at: None,
+            exited_at: 1,
+            exit_reason: None,
+            fleet_node_name: None,
+            hosted_delivery: crate::crash_insights::HostedDeliveryState::Pending,
+        });
+    }
+    assert_eq!(
+        crash_insights.pending_hosted_deliveries().len(),
+        TOTAL_PENDING
+    );
+
+    let mut backlog: VecDeque<HostedAgentEvent> = VecDeque::new();
+    let mut in_flight: HashSet<String> = HashSet::new();
+    let mut ever_delivered: HashSet<String> = HashSet::new();
+    let mut passes = 0usize;
+
+    // Bounded loop: draining `TOTAL_PENDING` records at up to
+    // `HOSTED_AGENT_EXIT_BACKLOG_CAP` per pass can never take more passes
+    // than that ratio (rounded up), plus a small safety margin — if it ever
+    // needed more, that itself would be a bug (a stall), so the test must
+    // fail loudly rather than hang.
+    let max_passes = TOTAL_PENDING.div_ceil(super::event_loop::HOSTED_AGENT_EXIT_BACKLOG_CAP) + 2;
+
+    while !crash_insights.pending_hosted_deliveries().is_empty() {
+        passes += 1;
+        assert!(
+            passes <= max_passes,
+            "replenishment did not converge within the expected number of passes — \
+             possible stall in the drain/replenish loop"
+        );
+
+        let replenished =
+            replenish_hosted_agent_exit_backlog(&crash_insights, &mut backlog, &mut in_flight);
+        assert!(
+            backlog.len() <= super::event_loop::HOSTED_AGENT_EXIT_BACKLOG_CAP,
+            "replenishment must never push the in-memory backlog past its cap"
+        );
+        if replenished == 0 && backlog.is_empty() {
+            panic!(
+                "no progress possible: no records replenished and nothing in-flight to \
+                 resolve — pending records would be stuck forever"
+            );
+        }
+
+        // Simulate the publisher delivering and BrokerRuntime acking every
+        // currently-backlogged event successfully — exactly the
+        // `handle_hosted_delivery_outcome(success = true)` path — before
+        // the next replenishment pass. This is also the duplicate-delivery
+        // guard check: no dedupe key must ever be handed off a second time
+        // while it could still be in flight from a prior pass.
+        while let Some(event) = backlog.pop_front() {
+            assert!(
+                ever_delivered.insert(event.dedupe_key.clone()),
+                "duplicate in-flight delivery detected: '{}' was handed off more than once",
+                event.dedupe_key
+            );
+            assert!(
+                crash_insights.mark_hosted_delivered(&event.dedupe_key),
+                "delivered dedupe key must correspond to a still-pending durable record"
+            );
+            in_flight.remove(&event.dedupe_key);
+        }
+    }
+
+    assert_eq!(
+        ever_delivered.len(),
+        TOTAL_PENDING,
+        "every pending record must eventually be delivered exactly once — none lost, none duplicated"
+    );
+    assert_eq!(
+        crash_insights.pending_hosted_deliveries().len(),
+        0,
+        "no pending exit may remain after the drain completes"
+    );
+    assert!(
+        in_flight.is_empty(),
+        "in-flight tracking must be fully cleared once every delivery is acknowledged"
+    );
+    assert!(
+        passes > 1,
+        "fixture must actually exercise multiple replenishment passes (backlog cap < total pending)"
+    );
+}
+
+/// Once a durable crash record's dedupe key has been acknowledged (marked
+/// `Delivered`), replaying the outbox (as a restart would) must not
+/// reconstruct or redeliver it.
+#[tokio::test]
+async fn delivered_dedupe_key_is_excluded_from_replay() {
+    use super::event_loop::{
+        enqueue_hosted_agent_exit_event_tracked, hosted_agent_event_from_crash_record,
+        reload_pending_hosted_agent_exit_backlog, HostedAgentEvent,
+    };
+    use crate::crash_insights::{CrashInsights, CrashRecord, HostedDeliveryState};
+
+    let dir = tempfile::tempdir().unwrap();
+    let crash_insights_path = dir.path().join("crashes.json");
+    let mut crash_insights = CrashInsights::new();
+
+    let record = CrashRecord {
+        agent_name: "delivered-agent".to_string(),
+        exit_code: Some(1),
+        signal: None,
+        timestamp: 1,
+        uptime_secs: 1,
+        category: crate::crash_insights::CrashCategory::Error,
+        description: "Exited with code 1".to_string(),
+        workspace_id: None,
+        spawn_invocation_id: None,
+        generation: "gen-delivered".to_string(),
+        became_ready: true,
+        spawned_at: 0,
+        ready_at: None,
+        exited_at: 1,
+        exit_reason: None,
+        fleet_node_name: None,
+        hosted_delivery: HostedDeliveryState::Pending,
+    };
+    crash_insights.record(record.clone());
+    crash_insights.save(&crash_insights_path).unwrap();
+
+    // Room for one, so the handoff to the publisher's channel succeeds
+    // immediately — but a handoff is not delivery: the critical fix for
+    // #1750's review is that this must NOT mark the durable record
+    // delivered by itself. Only the publisher's real HTTP-success outcome
+    // (simulated here via `mark_hosted_delivered_and_persist`, the same
+    // call `BrokerRuntime::handle_hosted_delivery_outcome` makes) may do
+    // that.
+    let (tx, mut rx) = mpsc::channel::<HostedAgentEvent>(1);
+    let mut backlog = std::collections::VecDeque::new();
+    let mut dropped_total = 0u64;
+    enqueue_hosted_agent_exit_event_tracked(
+        &tx,
+        &mut backlog,
+        &mut dropped_total,
+        None,
+        hosted_agent_event_from_crash_record(&record),
+    );
+    let handed_off = rx.recv().await.expect("event should reach the publisher");
+    assert_eq!(handed_off.name, "delivered-agent");
+    assert_eq!(
+        crash_insights.pending_hosted_deliveries().len(),
+        1,
+        "a mere channel handoff must not mark the durable record delivered — \
+         only a confirmed Relaycast HTTP success may (critical fix for #1750 review)"
+    );
+
+    // Restart replay must still see this as pending, since the publisher
+    // has not yet confirmed Relaycast accepted it.
+    let reloaded_before_confirmation = CrashInsights::load(&crash_insights_path);
+    assert_eq!(
+        reloaded_before_confirmation
+            .pending_hosted_deliveries()
+            .len(),
+        1,
+        "on-disk record must remain pending until real delivery is confirmed"
+    );
+
+    // Now simulate the publisher confirming the real HTTP call succeeded —
+    // this is the only path that may flip the durable record to Delivered.
+    super::event_loop::mark_hosted_delivered_and_persist(
+        &mut crash_insights,
+        &crash_insights_path,
+        true,
+        &record.dedupe_key(),
+    );
+    assert_eq!(
+        crash_insights.pending_hosted_deliveries().len(),
+        0,
+        "confirmed HTTP success must mark the durable record delivered"
+    );
+
+    let reloaded = CrashInsights::load(&crash_insights_path);
+    assert_eq!(
+        reloaded.pending_hosted_deliveries().len(),
+        0,
+        "delivered state must have been persisted, not just held in memory"
+    );
+
+    let mut replay_dropped_total = 0u64;
+    let replayed = reload_pending_hosted_agent_exit_backlog(&reloaded, &mut replay_dropped_total);
+    assert!(
+        replayed.is_empty(),
+        "a delivered record must not be replayed on restart"
+    );
+}
+
+/// Regression for #1603 P2 #2, exercised at the full maintenance-tick level:
+/// a hosted event channel with zero remaining capacity at reap time must not
+/// silently lose the terminal `agent_exited` event — it is retried from the
+/// bounded backlog on the very next tick once the channel has capacity.
+#[cfg(unix)]
+#[tokio::test]
+async fn maintenance_tick_backlogs_and_redelivers_agent_exited_when_hosted_channel_is_full() {
+    let (tx, _rx) = mpsc::channel(16);
+    let mut registry = WorkerRegistry::new(
+        tx,
+        Vec::new(),
+        PathBuf::from("/tmp/agent-relay-broker-tests-hosted-backlog"),
+        Instant::now(),
+    );
+    let name = WorkerName::from("hosted-backlog-victim");
+    let generation = Uuid::new_v4();
+    let child = tokio::process::Command::new("sh")
+        .args(["-c", "exit 0"])
+        .spawn()
+        .expect("worker should spawn");
+    let (command_tx, _command_rx) = mpsc::channel(16);
+    registry.workers.insert(
+        name.clone(),
+        WorkerHandle {
+            generation,
+            spec: AgentSpec {
+                name: name.clone(),
+                runtime: AgentRuntime::Headless,
+                provider: None,
+                cli: None,
+                session_id: None,
+                harness_config: None,
+                model: None,
+                cwd: None,
+                team: None,
+                shadow_of: None,
+                shadow_mode: None,
+                args: Vec::new(),
+                channels: Vec::new(),
+                restart_policy: None,
+            },
+            parent: None,
+            workspace_id: None,
+            child,
+            command_tx,
+            harness_pid: None,
+            spawned_at: Instant::now(),
+            ready_at: Some(Instant::now()),
+            last_activity_at: Instant::now(),
+            context_budget_pct: None,
+            state: AgentWorkState::Working,
+            exit_reason: None,
+            invocation_id: Some("inv-hosted-backlog".to_string()),
+        },
+    );
+    tokio::time::sleep(Duration::from_millis(50)).await;
+
+    let mut fixture = worker_event_runtime_fixture(registry, HashMap::new());
+    // Replace the fixture's hosted-agent-event channel with a zero-capacity
+    // one that is already full, forcing `try_send` to observe `Full` when
+    // the tick emits `agent_exited`.
+    let (hosted_tx, mut hosted_rx) = mpsc::channel(1);
+    hosted_tx
+        .try_send(super::event_loop::HostedAgentEvent {
+            name: "occupant".to_string(),
+            event_type: "agent_exited".to_string(),
+            payload: serde_json::Map::new(),
+            workspace_id: None,
+            dedupe_key: "occupant::gen-occupant".to_string(),
+        })
+        .unwrap();
+    fixture.runtime.hosted_agent_event_tx = hosted_tx;
+
+    fixture.runtime.handle_maintenance_tick().await;
+
+    // The channel was full, so the real terminal event must be sitting in
+    // the backlog now, not lost.
+    assert_eq!(fixture.runtime.hosted_agent_exit_backlog.len(), 1);
+    assert_eq!(fixture.runtime.hosted_agent_exit_dropped_total, 0);
+
+    // Drain the occupant to free capacity, then run another tick (a no-op
+    // for this already-reaped worker otherwise) — the backlog drain at the
+    // top of the tick must redeliver the held event.
+    let occupant = hosted_rx.recv().await.expect("occupant received");
+    assert_eq!(occupant.name, "occupant");
+    fixture.runtime.handle_maintenance_tick().await;
+    assert!(fixture.runtime.hosted_agent_exit_backlog.is_empty());
+    let redelivered = hosted_rx
+        .recv()
+        .await
+        .expect("backlogged agent_exited must be redelivered");
+    assert_eq!(redelivered.name, name.as_str());
+    assert_eq!(redelivered.event_type, "agent_exited");
+    assert_eq!(fixture.runtime.hosted_agent_exit_dropped_total, 0);
+}
+
+/// End-to-end durable-outbox regression: a worker exits while the hosted
+/// event channel is *closed* (the unrecoverable-for-this-process-lifetime
+/// case), so the in-memory backlog can never redeliver it — the only way it
+/// can ever reach a hosted consumer is a full broker restart replaying the
+/// still-`Pending` durable crash record from disk. This simulates exactly
+/// that: build a fresh `CrashInsights` from the same on-disk path a restart
+/// would load, replay its pending entries into a new backlog, wire that
+/// backlog to a live (non-closed) channel, and confirm the very next
+/// maintenance tick's backlog-drain step redelivers the event that the
+/// prior "process" could never have delivered itself.
+#[cfg(unix)]
+#[tokio::test]
+async fn restart_before_drain_replays_pending_delivery_from_disk() {
+    let (tx, _rx) = mpsc::channel(16);
+    let mut registry = WorkerRegistry::new(
+        tx,
+        Vec::new(),
+        PathBuf::from("/tmp/agent-relay-broker-tests-restart-replay"),
+        Instant::now(),
+    );
+    let name = WorkerName::from("restart-replay-victim");
+    let generation = Uuid::new_v4();
+    let child = tokio::process::Command::new("sh")
+        .args(["-c", "exit 0"])
+        .spawn()
+        .expect("worker should spawn");
+    let (command_tx, _command_rx) = mpsc::channel(16);
+    registry.workers.insert(
+        name.clone(),
+        WorkerHandle {
+            generation,
+            spec: AgentSpec {
+                name: name.clone(),
+                runtime: AgentRuntime::Headless,
+                provider: None,
+                cli: None,
+                session_id: None,
+                harness_config: None,
+                model: None,
+                cwd: None,
+                team: None,
+                shadow_of: None,
+                shadow_mode: None,
+                args: Vec::new(),
+                channels: Vec::new(),
+                restart_policy: None,
+            },
+            parent: None,
+            workspace_id: None,
+            child,
+            command_tx,
+            harness_pid: None,
+            spawned_at: Instant::now(),
+            ready_at: Some(Instant::now()),
+            last_activity_at: Instant::now(),
+            context_budget_pct: None,
+            state: AgentWorkState::Working,
+            exit_reason: None,
+            invocation_id: Some("inv-restart-replay".to_string()),
+        },
+    );
+    tokio::time::sleep(Duration::from_millis(50)).await;
+
+    let mut fixture = worker_event_runtime_fixture(registry, HashMap::new());
+    // Persistence must actually be on disk for a "restart" to have anything
+    // to reload.
+    fixture.runtime.paths.persist = true;
+    let crash_insights_path = fixture.runtime.crash_insights_path.clone();
+
+    // Close the hosted channel entirely — the unrecoverable-within-this-
+    // process case. The durable record is the only thing that can save this
+    // delivery now.
+    let (hosted_tx, hosted_rx) = mpsc::channel(4);
+    drop(hosted_rx);
+    fixture.runtime.hosted_agent_event_tx = hosted_tx;
+
+    fixture.runtime.handle_maintenance_tick().await;
+
+    // Closed channel: never backlogged in-memory, and counted as a miss —
+    // but the durable record on disk must still be `Pending`.
+    assert!(fixture.runtime.hosted_agent_exit_backlog.is_empty());
+    assert_eq!(fixture.runtime.hosted_agent_exit_dropped_total, 1);
+    assert_eq!(
+        fixture
+            .runtime
+            .crash_insights
+            .pending_hosted_deliveries()
+            .len(),
+        1
+    );
+
+    // Simulate the restart: load a brand-new `CrashInsights` from the same
+    // path (nothing shared with the "crashed" process above) and replay its
+    // pending entries into a fresh backlog.
+    let reloaded = crate::crash_insights::CrashInsights::load(&crash_insights_path);
+    assert_eq!(reloaded.pending_hosted_deliveries().len(), 1);
+    let mut replay_dropped_total = 0u64;
+    let replayed_backlog = super::event_loop::reload_pending_hosted_agent_exit_backlog(
+        &reloaded,
+        &mut replay_dropped_total,
+    );
+    assert_eq!(replayed_backlog.len(), 1);
+    assert_eq!(replayed_backlog[0].name, name.as_str());
+    assert_eq!(replay_dropped_total, 0);
+
+    // Wire the replayed backlog into a fresh runtime with a live channel —
+    // the very next maintenance tick's top-of-tick drain must redeliver it.
+    let empty_registry = WorkerRegistry::new(
+        mpsc::channel(16).0,
+        Vec::new(),
+        PathBuf::from("/tmp/agent-relay-broker-tests-restart-replay-2"),
+        Instant::now(),
+    );
+    let mut restarted = worker_event_runtime_fixture(empty_registry, HashMap::new());
+    restarted.runtime.crash_insights = reloaded;
+    restarted.runtime.crash_insights_path = crash_insights_path;
+    // Mirror what `init.rs` does for a real restart: seed the in-flight
+    // dedupe guard with every record replayed into the backlog, so the
+    // maintenance tick's replenishment pass doesn't immediately re-enqueue
+    // a second in-memory copy of the same still-`Pending` record.
+    restarted.runtime.hosted_agent_exit_in_flight = replayed_backlog
+        .iter()
+        .map(|event| event.dedupe_key.clone())
+        .collect();
+    restarted.runtime.hosted_agent_exit_backlog = replayed_backlog;
+    let (live_tx, mut live_rx) = mpsc::channel(4);
+    restarted.runtime.hosted_agent_event_tx = live_tx;
+
+    restarted.runtime.handle_maintenance_tick().await;
+
+    assert!(restarted.runtime.hosted_agent_exit_backlog.is_empty());
+    let redelivered = live_rx
+        .recv()
+        .await
+        .expect("restart replay must redeliver the event the crashed process never could");
+    assert_eq!(redelivered.name, name.as_str());
+    assert_eq!(redelivered.event_type, "agent_exited");
+
+    // Critical fix for #1750's review: reaching the publisher's queue again
+    // (a mere handoff) must NOT yet mark the durable record delivered — it
+    // stays `Pending` until the publisher's real Relaycast HTTP call is
+    // confirmed. Only then (simulated here exactly as
+    // `BrokerRuntime::handle_hosted_delivery_outcome` would on a real
+    // success outcome) does it flip to `Delivered`.
+    assert_eq!(
+        restarted
+            .runtime
+            .crash_insights
+            .pending_hosted_deliveries()
+            .len(),
+        1,
+        "replay handoff alone must not mark the record delivered before real hosted success"
+    );
+    super::event_loop::mark_hosted_delivered_and_persist(
+        &mut restarted.runtime.crash_insights,
+        &restarted.runtime.crash_insights_path,
+        true,
+        &redelivered.dedupe_key,
+    );
+    assert_eq!(
+        restarted
+            .runtime
+            .crash_insights
+            .pending_hosted_deliveries()
+            .len(),
+        0,
+        "redelivery must mark the durable record delivered"
+    );
 }
