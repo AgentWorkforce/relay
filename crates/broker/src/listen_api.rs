@@ -440,7 +440,7 @@ fn configured_broker_api_key() -> Option<String> {
         .filter(|value| !value.is_empty())
 }
 
-fn listen_api_router_with_auth(
+pub(crate) fn listen_api_router_with_auth(
     config: ListenApiConfig,
     broker_api_key: Option<String>,
 ) -> axum::Router {

@@ -1,4 +1,6 @@
 import { EventEmitter } from 'node:events';
+import { readFileSync } from 'node:fs';
+import { resolve } from 'node:path';
 import { setTimeout as delay } from 'node:timers/promises';
 
 import { afterEach, describe, expect, it, vi } from 'vitest';
@@ -6,6 +8,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import {
   classifyBrokerStartError,
   classifyBrokerStartStage,
+  DETACHED_START_READY_TIMEOUT_MS,
   describeErrorWithCause,
   getBrokerStatusWithRetry,
   isBundledBunExecutableEntrypoint,
@@ -15,6 +18,20 @@ import {
 } from './broker-lifecycle.js';
 import { brokerIdentityPath, readBrokerIdentities } from './broker-process-identity.js';
 import type { CoreDependencies, CoreRelay } from '../commands/core.js';
+
+describe('detached startup readiness contract', () => {
+  it('leaves setup margin above the broker handshake budget', () => {
+    const brokerSession = readFileSync(resolve('crates/broker/src/runtime/session.rs'), 'utf8');
+    const brokerTimeoutMatch = brokerSession.match(
+      /const HANDSHAKE_TOTAL_TIMEOUT\s*:\s*Duration\s*=\s*Duration::from_secs\(([0-9]+)\);/
+    );
+
+    expect(brokerTimeoutMatch).not.toBeNull();
+    const brokerTimeoutMs = Number(brokerTimeoutMatch?.[1]) * 1_000;
+    expect(DETACHED_START_READY_TIMEOUT_MS).toBe(60_000);
+    expect(DETACHED_START_READY_TIMEOUT_MS).toBeGreaterThanOrEqual(brokerTimeoutMs + 10_000);
+  });
+});
 
 describe('isBundledBunExecutableEntrypoint', () => {
   it.each(['/$bunfs/root/agent-relay', 'B:/~BUN/root/agent-relay.exe', 'B:\\~BUN\\root\\agent-relay.exe'])(

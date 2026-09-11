@@ -21,7 +21,7 @@ unset RELAY_WORKSPACES_JSON RELAY_WORKSPACE_KEY AGENT_RELAY_WORKSPACE_KEY RELAY_
 # handshake budget on a loaded macOS runner. Keep the outer supervisor at
 # least ten seconds above that bound so an override cannot reintroduce the race
 # this smoke is meant to catch.
-MIN_STARTUP_TIMEOUT_SECONDS=50
+MIN_STARTUP_TIMEOUT_SECONDS=60
 # Keep every accepted startup override inside the ephemeral workspace lease,
 # with a full minute left for shutdown and deletion verification.
 WORKSPACE_LEASE_SECONDS=300
