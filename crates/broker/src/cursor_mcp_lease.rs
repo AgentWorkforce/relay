@@ -1096,22 +1096,30 @@ fn secure_windows_file(path: &Path) -> io::Result<()> {
     let whoami_path = system32.join("whoami.exe");
     let icacls_path = system32.join("icacls.exe");
 
-    // `icacls` is part of supported Windows installations. Resolve the SID
+    // `icacls` is part of supported Windows installations.  Resolve the SID
     // rather than trusting a username, then remove inherited permissions and
-    // grant access only to the current user and SYSTEM. Fail closed if either
-    // utility is unavailable; an unprotected generated config must not be
-    // published because it may contain restored user configuration.
-    let whoami = Command::new(whoami_path)
+    // grant access only to the current user and SYSTEM.  Fail closed if
+    // either utility is unavailable; an unprotected generated config must
+    // not be published because it may contain restored user configuration.
+    let whoami = Command::new(&whoami_path)
         .args(["/user", "/fo", "csv", "/nh"])
         .output()?;
+    let whoami_stdout = String::from_utf8_lossy(&whoami.stdout).into_owned();
+    let whoami_stderr = String::from_utf8_lossy(&whoami.stderr).into_owned();
     if !whoami.status.success() {
+        tracing::error!(
+            whoami = %whoami_path.display(),
+            exit = ?whoami.status,
+            stdout = %whoami_stdout,
+            stderr = %whoami_stderr,
+            "whoami failed to resolve Windows user SID"
+        );
         return Err(io::Error::new(
             io::ErrorKind::PermissionDenied,
             "unable to resolve current Windows user SID",
         ));
     }
-    let line = String::from_utf8_lossy(&whoami.stdout);
-    let sid = line
+    let sid = whoami_stdout
         .trim()
         .split(',')
         .next_back()
@@ -1119,40 +1127,60 @@ fn secure_windows_file(path: &Path) -> io::Result<()> {
         .map(|sid| sid.trim_matches('"'))
         .filter(|sid| sid.starts_with("S-"))
         .ok_or_else(|| {
+            tracing::error!(
+                whoami = %whoami_path.display(),
+                stdout = %whoami_stdout,
+                "whoami did not return a SID in the expected CSV format"
+            );
             io::Error::new(
                 io::ErrorKind::PermissionDenied,
                 "whoami did not return a Windows user SID",
             )
         })?;
-    // Grant the current user and SYSTEM full control.  Then attempt to
-    // strip inherited ACEs: on locked-down environments (e.g. GitHub
-    // Actions runners) the inheritance removal may fail while the grant
-    // itself succeeded.  The grant is the critical security property —
-    // without it anyone on the box could read the credential file — so
-    // we treat a grant-only outcome as acceptable and log the inheritance
-    // failure rather than failing the entire write.
-    let granted = Command::new(&icacls_path)
+    // Step 1 – Grant the current user and SYSTEM full control.  This is the
+    // critical security property: without it anyone on the box could read the
+    // credential file.
+    let grant_out = Command::new(&icacls_path)
         .arg(path)
-        .args(["/grant:r"])
-        .arg(format!("{sid}:F"))
-        .arg("SYSTEM:F")
+        .args(["/grant:r", &format!("{sid}:F"), "SYSTEM:F"])
         .output()?;
-    if !granted.status.success() {
+    let grant_stdout = String::from_utf8_lossy(&grant_out.stdout).into_owned();
+    let grant_stderr = String::from_utf8_lossy(&grant_out.stderr).into_owned();
+    if !grant_out.status.success() {
+        tracing::error!(
+            icacls = %icacls_path.display(),
+            path = %path.display(),
+            sid = %sid,
+            exit = ?grant_out.status,
+            stdout = %grant_stdout,
+            stderr = %grant_stderr,
+            "icacls /grant:r failed to secure generated Cursor config"
+        );
         return Err(io::Error::new(
             io::ErrorKind::PermissionDenied,
-            "unable to apply owner-only Windows ACL to generated Cursor config",
+            format!(
+                "unable to apply owner-only Windows ACL to generated Cursor config: \
+                 icacls exit {:?}, stderr: {}",
+                grant_out.status,
+                grant_stderr.trim(),
+            ),
         ));
     }
-    let inheritance = Command::new(&icacls_path)
+    // Step 2 – Strip inherited ACEs (best-effort).  On locked-down hosts
+    // (e.g. GitHub Actions runners) /inheritance:r may fail because the
+    // parent DACL denies the modification, but the explicit grant above
+    // already enforces owner-only access.
+    let inh_out = Command::new(&icacls_path)
         .arg(path)
         .args(["/inheritance:r"])
         .output();
-    if let Ok(result) = inheritance {
+    if let Ok(result) = inh_out {
         if !result.status.success() {
             tracing::warn!(
                 path = %path.display(),
+                exit = ?result.status,
                 stderr = %String::from_utf8_lossy(&result.stderr),
-                "icacls inheritance removal failed; owner-only ACL still enforced via explicit grant"
+                "icacls /inheritance:r failed; owner-only ACL still enforced via explicit grant"
             );
         }
     }
