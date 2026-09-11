@@ -173,6 +173,53 @@ fn windows_directory_identity(path: &Path) -> io::Result<(u32, u64)> {
 }
 
 #[cfg(windows)]
+struct WindowsDirectoryGuard(std::os::windows::io::OwnedHandle);
+
+#[cfg(windows)]
+fn windows_directory_guard(path: &Path) -> io::Result<WindowsDirectoryGuard> {
+    use std::os::windows::ffi::OsStrExt;
+    use std::os::windows::io::{FromRawHandle, OwnedHandle};
+
+    #[link(name = "Kernel32")]
+    unsafe extern "system" {
+        fn CreateFileW(
+            name: *const u16,
+            access: u32,
+            share: u32,
+            security: *const std::ffi::c_void,
+            disposition: u32,
+            flags: u32,
+            template: *mut std::ffi::c_void,
+        ) -> *mut std::ffi::c_void;
+    }
+    const GENERIC_READ: u32 = 0x8000_0000;
+    const FILE_SHARE_READ: u32 = 1;
+    const FILE_SHARE_WRITE: u32 = 2;
+    const OPEN_EXISTING: u32 = 3;
+    const FILE_FLAG_BACKUP_SEMANTICS: u32 = 0x0200_0000;
+    const FILE_FLAG_OPEN_REPARSE_POINT: u32 = 0x0020_0000;
+    let mut wide: Vec<u16> = path.as_os_str().encode_wide().collect();
+    wide.push(0);
+    let handle = unsafe {
+        CreateFileW(
+            wide.as_ptr(),
+            GENERIC_READ,
+            FILE_SHARE_READ | FILE_SHARE_WRITE,
+            std::ptr::null(),
+            OPEN_EXISTING,
+            FILE_FLAG_BACKUP_SEMANTICS | FILE_FLAG_OPEN_REPARSE_POINT,
+            std::ptr::null_mut(),
+        )
+    };
+    if handle == (-1isize) as *mut std::ffi::c_void {
+        return Err(io::Error::last_os_error());
+    }
+    Ok(WindowsDirectoryGuard(unsafe {
+        OwnedHandle::from_raw_handle(handle)
+    }))
+}
+
+#[cfg(windows)]
 impl LeaseLock {
     fn validate_root(&self) -> io::Result<()> {
         let canonical = canonical_root(&self.root)?;
@@ -693,6 +740,8 @@ pub(crate) fn write_credential_file(path: &Path, contents: &[u8]) -> io::Result<
     }
     validate_credential_parent(parent)?;
     let _ = validate_target(path)?;
+    #[cfg(windows)]
+    let _parent_guard = windows_directory_guard(parent)?;
     let file_name = path
         .file_name()
         .and_then(|name| name.to_str())
@@ -1163,6 +1212,12 @@ impl CursorMcpLeaseRegistry {
         }
         #[cfg(not(unix))]
         {
+            #[cfg(windows)]
+            let _parent_guard = windows_directory_guard(
+                _path
+                    .parent()
+                    .ok_or_else(|| invalid_path("Cursor MCP path has no parent"))?,
+            )?;
             #[cfg(windows)]
             validate_windows_restore_path(lock, _path, expected_cursor_identity)?;
             match pre_existing {
