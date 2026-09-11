@@ -1100,10 +1100,7 @@ fn is_transient_server_error(error: &RelayError) -> bool {
             code,
             status: 500 | 502 | 503 | 504,
             ..
-        } if matches!(
-            code.trim(),
-            "database_overloaded" | "workspace_storage_unavailable"
-        )
+        } if matches!(code.as_str(), "database_overloaded" | "workspace_storage_unavailable")
     ) || is_workspace_busy_error(error)
 }
 
@@ -3183,16 +3180,14 @@ mod tests {
 
     #[test]
     fn transient_retry_requires_both_a_safe_code_and_server_status() {
-        assert!(is_transient_server_error(&RelayError::api(
-            "database_overloaded",
-            "overloaded",
-            503,
-        )));
-        assert!(is_transient_server_error(&RelayError::api(
-            "workspace_storage_unavailable",
-            "storage unavailable",
-            502,
-        )));
+        for code in ["database_overloaded", "workspace_storage_unavailable"] {
+            for status in [500, 502, 503, 504] {
+                assert!(
+                    is_transient_server_error(&RelayError::api(code, "overloaded", status)),
+                    "exact code {code:?} should be retryable for HTTP {status}"
+                );
+            }
+        }
         assert!(!is_transient_server_error(&RelayError::api(
             "database_overloaded",
             "conflict",
@@ -3203,6 +3198,40 @@ mod tests {
             "server failure",
             500,
         )));
+    }
+
+    /// These are deliberately unkeyed `/v1/agents` POSTs. A near-match typed
+    /// code is not proof of a pre-commit overload, so replaying it could create
+    /// a duplicate agent after a response that arrived post-commit.
+    #[tokio::test]
+    async fn transient_5xx_near_match_codes_are_terminal_without_replay() {
+        for code in [
+            "DATABASE_OVERLOADED",
+            "database_overloaded_extra",
+            "extra_database_overloaded",
+            " database_overloaded",
+            "database_overloaded ",
+            "WORKSPACE_STORAGE_UNAVAILABLE",
+            "workspace_storage_unavailable_extra",
+            "extra_workspace_storage_unavailable",
+            " workspace_storage_unavailable",
+            "workspace_storage_unavailable ",
+        ] {
+            let calls = std::sync::atomic::AtomicUsize::new(0);
+            let error = retry_transient_relay_error("registering an unkeyed agent", || {
+                calls.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                async move { Err::<(), _>(RelayError::api(code, "typed overload near-match", 503)) }
+            })
+            .await
+            .expect_err("a near-match 5xx code must remain terminal");
+
+            assert_eq!(
+                calls.load(std::sync::atomic::Ordering::SeqCst),
+                1,
+                "near-match code {code:?} must not replay an unkeyed POST"
+            );
+            assert!(!is_transient_server_error(&error));
+        }
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
