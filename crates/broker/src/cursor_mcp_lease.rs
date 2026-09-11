@@ -230,9 +230,17 @@ fn windows_lock_file(path: &Path) -> io::Result<fs::File> {
 }
 
 #[cfg(windows)]
-fn windows_child_file(path: &Path, create_new: bool, truncate: bool) -> io::Result<fs::File> {
+fn windows_child_file(path: &Path, write: bool) -> io::Result<fs::File> {
     use std::os::windows::ffi::OsStrExt;
+    use std::os::windows::fs::MetadataExt;
     use std::os::windows::io::{FromRawHandle, OwnedHandle};
+
+    let before = fs::symlink_metadata(path)?;
+    if before.file_type().is_symlink() || !before.is_file() || before.reparse_tag() != 0 {
+        return Err(invalid_path(
+            "Cursor MCP child must be a regular non-reparse file",
+        ));
+    }
 
     #[link(name = "Kernel32")]
     unsafe extern "system" {
@@ -250,26 +258,21 @@ fn windows_child_file(path: &Path, create_new: bool, truncate: bool) -> io::Resu
     const GENERIC_WRITE: u32 = 0x4000_0000;
     const FILE_SHARE_READ: u32 = 1;
     const FILE_SHARE_WRITE: u32 = 2;
-    const CREATE_NEW: u32 = 1;
     const OPEN_EXISTING: u32 = 3;
-    const TRUNCATE_EXISTING: u32 = 5;
     const FILE_FLAG_OPEN_REPARSE_POINT: u32 = 0x0020_0000;
     let mut wide: Vec<u16> = path.as_os_str().encode_wide().collect();
     wide.push(0);
-    let disposition = if create_new {
-        CREATE_NEW
-    } else if truncate {
-        TRUNCATE_EXISTING
-    } else {
-        OPEN_EXISTING
-    };
     let handle = unsafe {
         CreateFileW(
             wide.as_ptr(),
-            GENERIC_READ | GENERIC_WRITE,
+            if write {
+                GENERIC_READ | GENERIC_WRITE
+            } else {
+                GENERIC_READ
+            },
             FILE_SHARE_READ | FILE_SHARE_WRITE,
             std::ptr::null(),
-            disposition,
+            OPEN_EXISTING,
             FILE_FLAG_OPEN_REPARSE_POINT,
             std::ptr::null_mut(),
         )
@@ -277,7 +280,52 @@ fn windows_child_file(path: &Path, create_new: bool, truncate: bool) -> io::Resu
     if handle == (-1isize) as *mut std::ffi::c_void {
         return Err(io::Error::last_os_error());
     }
-    Ok(unsafe { fs::File::from(OwnedHandle::from_raw_handle(handle)) })
+    let file = unsafe { fs::File::from(OwnedHandle::from_raw_handle(handle)) };
+    let opened = windows_handle_identity(&file)?;
+    let expected = (before.volume_serial_number(), before.file_index());
+    if opened != expected {
+        return Err(io::Error::new(
+            io::ErrorKind::WouldBlock,
+            "Cursor MCP child was replaced while opening",
+        ));
+    }
+    Ok(file)
+}
+
+#[cfg(windows)]
+fn windows_handle_identity(file: &fs::File) -> io::Result<(u32, u64)> {
+    use std::os::windows::io::AsRawHandle;
+    #[repr(C)]
+    struct Information {
+        attributes: u32,
+        creation: [u32; 2],
+        access: [u32; 2],
+        write: [u32; 2],
+        volume: u32,
+        size_high: u32,
+        size_low: u32,
+        links: u32,
+        index_high: u32,
+        index_low: u32,
+    }
+    #[link(name = "Kernel32")]
+    unsafe extern "system" {
+        fn GetFileInformationByHandle(file: *mut std::ffi::c_void, info: *mut Information) -> i32;
+    }
+    let mut info = std::mem::MaybeUninit::<Information>::uninit();
+    if unsafe { GetFileInformationByHandle(file.as_raw_handle(), info.as_mut_ptr()) } == 0 {
+        return Err(io::Error::last_os_error());
+    }
+    let info = unsafe { info.assume_init() };
+    if info.attributes & 0x10 != 0 || info.attributes & 0x400 != 0 {
+        return Err(invalid_path(
+            "Cursor MCP child handle is not a regular non-reparse file",
+        ));
+    }
+    Ok((
+        info.volume,
+        (u64::from(info.index_high) << 32) | u64::from(info.index_low),
+    ))
 }
 
 #[cfg(windows)]
@@ -868,9 +916,10 @@ pub(crate) fn write_credential_file(path: &Path, contents: &[u8]) -> io::Result<
     if validate_target(path)? {
         // Preserve the user's security descriptor for an existing config.
         // Replacing it with a temporary file would silently change ACLs and
-        // make exact restoration impossible. The pinned parent handle prevents
-        // replacement while this in-place mutation is active.
-        let mut file = windows_child_file(path, false, true)?;
+        // make exact restoration impossible. The child handle and identity
+        // check bind this mutation to the file validated above.
+        let mut file = windows_child_file(path, true)?;
+        file.set_len(0)?;
         file.write_all(contents)?;
         file.sync_all()?;
         return Ok(());
@@ -1219,7 +1268,7 @@ impl CursorMcpLeaseRegistry {
             if validate_target(path)? {
                 #[cfg(windows)]
                 {
-                    let mut file = windows_child_file(path, false, false)?;
+                    let mut file = windows_child_file(path, false)?;
                     let mut contents = Vec::new();
                     file.read_to_end(&mut contents)?;
                     Ok(Some(contents))
