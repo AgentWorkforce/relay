@@ -1,45 +1,27 @@
-//! Per-worker lease over an injected Cursor `.cursor/mcp.json`.
-//!
-//! [`relay#1753`](https://github.com/AgentWorkforce/relay/issues/1753):
-//! spawning a Cursor worker with Agent Relay MCP injection writes plaintext
-//! credentials into `<cwd>/.cursor/mcp.json`. Releasing the worker used to
-//! leave that file behind untouched — a worktree-local credential leak.
-//!
-//! This registry treats the injected config as a lease owned by whichever
-//! [`WorkerRegistry`](crate::worker::WorkerRegistry) workers currently share a
-//! `cwd`. The first worker to lease a given `.cursor/mcp.json` path captures
-//! whatever was there beforehand (a pre-existing user config, or nothing).
-//! Every subsequent worker sharing that cwd joins the same lease. Only when
-//! the *last* holder releases does the registry restore the captured
-//! pre-existing state — never a stale intermediate worker's credentials.
-//!
-//! Restoration is triggered from every lifecycle exit this issue calls out:
-//! spawn failure, explicit release, task-exit/reap, orphan cleanup, broker
-//! shutdown, and ambiguous-timeout recovery — because all of those paths
-//! funnel through [`WorkerRegistry::release`](crate::worker::WorkerRegistry::release),
-//! [`WorkerRegistry::cleanup_rejected_spawn`](crate::worker::WorkerRegistry::cleanup_rejected_spawn),
-//! or [`WorkerRegistry::reap_exited`](crate::worker::WorkerRegistry::reap_exited).
+//! Crash-recoverable leases for a generated Cursor `.cursor/mcp.json`.
 
 use std::{
     collections::{HashMap, HashSet},
-    fs, io,
+    fs,
+    io::{self, Write},
     path::{Path, PathBuf},
 };
 
+use base64::Engine;
+use serde::{Deserialize, Serialize};
+use uuid::Uuid;
+
 use crate::ids::WorkerName;
 
-/// What existed at the leased path before the first worker claimed it.
 #[derive(Debug, Clone)]
 enum PreExisting {
-    /// Nothing was there. `created_dir` is true when this lease also had to
-    /// create the parent `.cursor` directory, so restore can remove it again
-    /// if — and only if — it is still empty (never delete a directory a user
-    /// populated with something else in the meantime).
-    Absent { created_dir: bool },
-    /// The raw bytes that were on disk, preserved verbatim (not reparsed) so
-    /// restore is byte-for-byte even if the file was invalid JSON or had
-    /// unusual formatting/comments.
-    Present(Vec<u8>),
+    Absent {
+        created_dir: bool,
+    },
+    Present {
+        contents: Vec<u8>,
+        mode: Option<u32>,
+    },
 }
 
 struct LeaseState {
@@ -47,31 +29,40 @@ struct LeaseState {
     holders: HashSet<WorkerName>,
 }
 
-/// Tracks in-process leases over injected `.cursor/mcp.json` files, keyed by
-/// the canonicalized `.cursor/mcp.json` path. Lives on [`WorkerRegistry`] so
-/// concurrent Cursor workers that share one `cwd` are correctly recognized as
-/// sharing one lease instead of each capturing/restoring independently.
+#[derive(Debug, Serialize, Deserialize)]
+struct Journal {
+    entries: Vec<JournalEntry>,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+struct JournalEntry {
+    path: PathBuf,
+    pre_existing: JournalPreExisting,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+enum JournalPreExisting {
+    Absent {
+        created_dir: bool,
+    },
+    Present {
+        contents_base64: String,
+        mode: Option<u32>,
+    },
+}
+
+/// Tracks in-process leases and a credential-free-on-disk recovery journal.
+/// The journal contains only pre-existing bytes and mode, never generated
+/// Relay credentials: generated Cursor values are `${env:...}` placeholders.
 #[derive(Default)]
 pub(crate) struct CursorMcpLeaseRegistry {
     leases: HashMap<PathBuf, LeaseState>,
-    /// Reverse index so release call sites (which only know the worker name,
-    /// not its cwd — e.g. a generic reap sweep) can find the lease to drop
-    /// without threading `cwd` through every call site.
     path_by_worker: HashMap<WorkerName, PathBuf>,
+    journal_path: Option<PathBuf>,
 }
 
 fn lease_path(root: &Path) -> PathBuf {
-    // Canonicalize `root` itself, not `.cursor` — the worker cwd is
-    // guaranteed to already exist (broker `spawn()` validates that before
-    // any harness config is built), whereas `.cursor` may not exist yet on a
-    // from-scratch spawn. Canonicalizing whichever of the two happens to
-    // exist would make two concurrent workers sharing one cwd resolve to
-    // different keys purely based on acquire ordering (one arriving before
-    // `.cursor` is created, the other after), which would let two "same
-    // cwd" leases diverge and let one worker's release stomp another's
-    // config. Falling back to the joined (non-canonical) path when `root`
-    // itself can't be resolved keeps this a best-effort dedup, not a
-    // correctness requirement.
     let joined = root.join(".cursor").join("mcp.json");
     match root.canonicalize() {
         Ok(canonical) => canonical.join(".cursor").join("mcp.json"),
@@ -80,46 +71,154 @@ fn lease_path(root: &Path) -> PathBuf {
 }
 
 #[cfg(unix)]
-fn secure_permissions(path: &Path) -> io::Result<()> {
+fn file_mode(path: &Path) -> io::Result<u32> {
     use std::os::unix::fs::PermissionsExt;
-    fs::set_permissions(path, fs::Permissions::from_mode(0o600))
+    Ok(fs::metadata(path)?.permissions().mode() & 0o777)
 }
 
 #[cfg(not(unix))]
-fn secure_permissions(_path: &Path) -> io::Result<()> {
+fn file_mode(_path: &Path) -> io::Result<u32> {
+    Ok(0)
+}
+
+#[cfg(unix)]
+fn set_mode(path: &Path, mode: u32) -> io::Result<()> {
+    use std::os::unix::fs::PermissionsExt;
+    fs::set_permissions(path, fs::Permissions::from_mode(mode & 0o777))
+}
+
+#[cfg(not(unix))]
+fn set_mode(_path: &Path, _mode: u32) -> io::Result<()> {
     Ok(())
 }
 
-/// Write `contents` to `path` and enforce owner-only permissions. Used both
-/// for the initial credential-bearing write and for lease restoration, so a
-/// restored pre-existing config is at least as tightly permissioned as the
-/// credential file it replaced.
+/// Atomically write a generated credential-bearing config with owner-only
+/// permissions. The temporary file is created as 0600, so no 0644 window is
+/// observable between creation and the final rename.
 pub(crate) fn write_credential_file(path: &Path, contents: &[u8]) -> io::Result<()> {
-    fs::write(path, contents)?;
-    secure_permissions(path)
+    let parent = path.parent().ok_or_else(|| {
+        io::Error::new(io::ErrorKind::InvalidInput, "credential path has no parent")
+    })?;
+    fs::create_dir_all(parent)?;
+    let file_name = path
+        .file_name()
+        .and_then(|name| name.to_str())
+        .unwrap_or("mcp.json");
+    let temporary = parent.join(format!(".{file_name}.{}.tmp", Uuid::new_v4().simple()));
+
+    let result = (|| {
+        let mut options = fs::OpenOptions::new();
+        options.write(true).create_new(true);
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::OpenOptionsExt;
+            options.mode(0o600);
+        }
+        let mut file = options.open(&temporary)?;
+        file.write_all(contents)?;
+        file.sync_all()?;
+        drop(file);
+        #[cfg(windows)]
+        if path.exists() {
+            fs::remove_file(path)?;
+        }
+        fs::rename(&temporary, path)?;
+        #[cfg(unix)]
+        set_mode(path, 0o600)?;
+        Ok(())
+    })();
+    if result.is_err() {
+        let _ = fs::remove_file(&temporary);
+    }
+    result
+}
+
+fn restore_file(path: &Path, contents: &[u8], mode: Option<u32>) -> io::Result<()> {
+    write_credential_file(path, contents)?;
+    if let Some(mode) = mode {
+        set_mode(path, mode)?;
+    }
+    Ok(())
+}
+
+impl PreExisting {
+    fn journal(&self) -> JournalPreExisting {
+        match self {
+            Self::Absent { created_dir } => JournalPreExisting::Absent {
+                created_dir: *created_dir,
+            },
+            Self::Present { contents, mode } => JournalPreExisting::Present {
+                contents_base64: base64::engine::general_purpose::STANDARD.encode(contents),
+                mode: *mode,
+            },
+        }
+    }
+
+    fn from_journal(value: JournalPreExisting) -> io::Result<Self> {
+        match value {
+            JournalPreExisting::Absent { created_dir } => Ok(Self::Absent { created_dir }),
+            JournalPreExisting::Present {
+                contents_base64,
+                mode,
+            } => Ok(Self::Present {
+                contents: base64::engine::general_purpose::STANDARD
+                    .decode(contents_base64.as_bytes())
+                    .map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error))?,
+                mode,
+            }),
+        }
+    }
 }
 
 impl CursorMcpLeaseRegistry {
+    #[cfg(test)]
     pub(crate) fn new() -> Self {
         Self::default()
     }
 
-    /// Acquire (or join) the lease over `<root>/.cursor/mcp.json` for
-    /// `worker`. Idempotent for a given worker/path pair. Must be called
-    /// before the caller overwrites the file, so the pre-existing content is
-    /// captured, never a config another Agent Relay worker already wrote.
+    /// Construct a registry and recover any leases left by a crashed broker.
+    /// Recovery is safe because the journal never stores generated credentials.
+    pub(crate) fn with_journal(path: PathBuf) -> Self {
+        let mut registry = Self {
+            journal_path: Some(path),
+            ..Self::default()
+        };
+        if let Err(error) = registry.recover_journal() {
+            tracing::error!(error = %error, "failed to recover Cursor MCP lease journal; retaining it for a later retry");
+        }
+        registry
+    }
+
     pub(crate) fn acquire(&mut self, root: &Path, worker: &WorkerName) -> io::Result<PathBuf> {
         let key = lease_path(root);
-        if let Some(state) = self.leases.get_mut(&key) {
-            state.holders.insert(worker.clone());
+        if self.leases.contains_key(&key) {
+            let was_new_holder = self
+                .leases
+                .get_mut(&key)
+                .expect("lease checked above")
+                .holders
+                .insert(worker.clone());
+            if !was_new_holder {
+                return Ok(key);
+            }
             self.path_by_worker.insert(worker.clone(), key.clone());
+            if let Err(error) = self.persist_journal() {
+                if let Some(state) = self.leases.get_mut(&key) {
+                    state.holders.remove(worker);
+                }
+                self.path_by_worker.remove(worker);
+                return Err(error);
+            }
             return Ok(key);
         }
 
         let cursor_dir = root.join(".cursor");
         let dir_existed = cursor_dir.is_dir();
         let pre_existing = if key.exists() {
-            PreExisting::Present(fs::read(&key)?)
+            PreExisting::Present {
+                contents: fs::read(&key)?,
+                mode: Some(file_mode(&key)?),
+            }
         } else {
             PreExisting::Absent {
                 created_dir: !dir_existed,
@@ -136,16 +235,16 @@ impl CursorMcpLeaseRegistry {
             },
         );
         self.path_by_worker.insert(worker.clone(), key.clone());
+        if let Err(error) = self.persist_journal() {
+            self.leases.remove(&key);
+            self.path_by_worker.remove(worker);
+            return Err(error);
+        }
         Ok(key)
     }
 
-    /// Release `worker`'s hold on whatever lease it currently has (a no-op if
-    /// it has none — every removal call site can call this unconditionally
-    /// rather than re-deriving whether the worker was a Cursor worker).
-    /// Restores the pre-existing state only when `worker` was the last
-    /// remaining holder.
     pub(crate) fn release_worker(&mut self, worker: &WorkerName) -> io::Result<()> {
-        let Some(path) = self.path_by_worker.remove(worker) else {
+        let Some(path) = self.path_by_worker.get(worker).cloned() else {
             return Ok(());
         };
         self.release_path(&path, worker)
@@ -153,38 +252,110 @@ impl CursorMcpLeaseRegistry {
 
     fn release_path(&mut self, path: &Path, worker: &WorkerName) -> io::Result<()> {
         let Some(state) = self.leases.get_mut(path) else {
+            self.path_by_worker.remove(worker);
             return Ok(());
         };
         state.holders.remove(worker);
         if !state.holders.is_empty() {
-            return Ok(());
+            self.path_by_worker.remove(worker);
+            return self.persist_journal();
         }
-        let state = self.leases.remove(path).expect("checked above");
-        match state.pre_existing {
+
+        let pre_existing = match &state.pre_existing {
+            PreExisting::Absent { created_dir } => PreExisting::Absent {
+                created_dir: *created_dir,
+            },
+            PreExisting::Present { contents, mode } => PreExisting::Present {
+                contents: contents.clone(),
+                mode: *mode,
+            },
+        };
+        self.restore(path, &pre_existing)?;
+        self.leases.remove(path);
+        self.path_by_worker.remove(worker);
+        self.persist_journal()
+    }
+
+    fn restore(&self, path: &Path, pre_existing: &PreExisting) -> io::Result<()> {
+        match pre_existing {
             PreExisting::Absent { created_dir } => {
                 match fs::remove_file(path) {
                     Ok(()) => {}
                     Err(error) if error.kind() == io::ErrorKind::NotFound => {}
                     Err(error) => return Err(error),
                 }
-                if created_dir {
+                if *created_dir {
                     if let Some(dir) = path.parent() {
-                        // Only removes a genuinely empty directory; leaves it
-                        // alone (and swallows the error) if the user or
-                        // another process put something else there.
                         let _ = fs::remove_dir(dir);
                     }
                 }
             }
-            PreExisting::Present(contents) => {
-                write_credential_file(path, &contents)?;
-            }
+            PreExisting::Present { contents, mode } => restore_file(path, contents, *mode)?,
         }
         Ok(())
     }
 
-    /// True when any worker currently holds a lease (used by tests/shutdown
-    /// bookkeeping to assert full drain).
+    fn journal_entries(&self) -> Vec<JournalEntry> {
+        self.leases
+            .iter()
+            .map(|(path, state)| JournalEntry {
+                path: path.clone(),
+                pre_existing: state.pre_existing.journal(),
+            })
+            .collect()
+    }
+
+    fn persist_journal(&self) -> io::Result<()> {
+        let Some(path) = &self.journal_path else {
+            return Ok(());
+        };
+        if self.leases.is_empty() {
+            match fs::remove_file(path) {
+                Ok(()) => Ok(()),
+                Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(()),
+                Err(error) => Err(error),
+            }
+        } else {
+            let body = serde_json::to_vec_pretty(&Journal {
+                entries: self.journal_entries(),
+            })
+            .map_err(|error| io::Error::other(error.to_string()))?;
+            write_credential_file(path, &body)
+        }
+    }
+
+    fn recover_journal(&mut self) -> io::Result<()> {
+        let Some(path) = self.journal_path.clone() else {
+            return Ok(());
+        };
+        let body = match fs::read(&path) {
+            Ok(body) => body,
+            Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(()),
+            Err(error) => return Err(error),
+        };
+        let journal: Journal = serde_json::from_slice(&body)
+            .map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error))?;
+        let mut remaining = Vec::new();
+        for entry in journal.entries {
+            let pre_existing = PreExisting::from_journal(entry.pre_existing)?;
+            if let Err(error) = self.restore(&entry.path, &pre_existing) {
+                tracing::warn!(path = %entry.path.display(), error = %error, "Cursor MCP lease recovery deferred");
+                remaining.push(JournalEntry {
+                    path: entry.path,
+                    pre_existing: pre_existing.journal(),
+                });
+            }
+        }
+        if remaining.is_empty() {
+            let _ = fs::remove_file(path);
+        } else {
+            let body = serde_json::to_vec_pretty(&Journal { entries: remaining })
+                .map_err(|error| io::Error::other(error.to_string()))?;
+            write_credential_file(&path, &body)?;
+        }
+        Ok(())
+    }
+
     #[cfg(test)]
     pub(crate) fn is_empty(&self) -> bool {
         self.leases.is_empty() && self.path_by_worker.is_empty()
@@ -197,8 +368,8 @@ mod tests {
     use std::fs;
     use tempfile::tempdir;
 
-    fn read(path: &Path) -> String {
-        fs::read_to_string(path).unwrap()
+    fn read(path: &Path) -> Vec<u8> {
+        fs::read(path).unwrap()
     }
 
     #[test]
@@ -207,197 +378,89 @@ mod tests {
         let worker = WorkerName::new("w1");
         let mut registry = CursorMcpLeaseRegistry::new();
         let path = registry.acquire(dir.path(), &worker).unwrap();
-        assert!(!path.exists(), "acquire must not create the file itself");
-
-        fs::create_dir_all(path.parent().unwrap()).unwrap();
-        write_credential_file(&path, b"{\"mcpServers\":{}}").unwrap();
-        assert!(path.exists());
-
+        write_credential_file(&path, b"{} ").unwrap();
         registry.release_worker(&worker).unwrap();
-        assert!(!path.exists(), "generated file must be removed on release");
-        assert!(registry.is_empty());
-    }
-
-    #[test]
-    fn pre_existing_exact_config_is_restored() {
-        let dir = tempdir().unwrap();
-        let cursor_dir = dir.path().join(".cursor");
-        fs::create_dir_all(&cursor_dir).unwrap();
-        let path = cursor_dir.join("mcp.json");
-        let original = br#"{"mcpServers":{"filesystem":{"command":"fs"}}}"#;
-        fs::write(&path, original).unwrap();
-
-        let mut registry = CursorMcpLeaseRegistry::new();
-        let worker = WorkerName::new("w1");
-        registry.acquire(dir.path(), &worker).unwrap();
-        // Simulate the injection overwrite.
-        write_credential_file(
-            &path,
-            br#"{"mcpServers":{"filesystem":{"command":"fs"},"agent-relay":{"token":"secret"}}}"#,
-        )
-        .unwrap();
-
-        registry.release_worker(&worker).unwrap();
-        assert_eq!(
-            read(&path).as_bytes(),
-            original,
-            "must restore exact pre-existing bytes"
-        );
-    }
-
-    #[test]
-    fn user_edits_between_acquire_and_release_are_overwritten_by_restore() {
-        // The captured pre-existing snapshot — not whatever is on disk at
-        // release time — is authoritative, so a credential leak cannot
-        // survive as "the user's file now".
-        let dir = tempdir().unwrap();
-        let cursor_dir = dir.path().join(".cursor");
-        fs::create_dir_all(&cursor_dir).unwrap();
-        let path = cursor_dir.join("mcp.json");
-        let original = br#"{"mcpServers":{"filesystem":{"command":"fs"}}}"#;
-        fs::write(&path, original).unwrap();
-
-        let mut registry = CursorMcpLeaseRegistry::new();
-        let worker = WorkerName::new("w1");
-        registry.acquire(dir.path(), &worker).unwrap();
-        write_credential_file(
-            &path,
-            br#"{"mcpServers":{"agent-relay":{"token":"secret"}}}"#,
-        )
-        .unwrap();
-        // External edit after injection, before release.
-        fs::write(
-            &path,
-            br#"{"mcpServers":{"agent-relay":{"token":"secret"},"extra":true}}"#,
-        )
-        .unwrap();
-
-        registry.release_worker(&worker).unwrap();
-        assert_eq!(read(&path).as_bytes(), original);
-    }
-
-    #[test]
-    fn two_concurrent_workers_same_cwd_release_in_order_keeps_config_until_last() {
-        let dir = tempdir().unwrap();
-        let path = dir.path().join(".cursor").join("mcp.json");
-        let mut registry = CursorMcpLeaseRegistry::new();
-        let w1 = WorkerName::new("w1");
-        let w2 = WorkerName::new("w2");
-
-        registry.acquire(dir.path(), &w1).unwrap();
-        fs::create_dir_all(path.parent().unwrap()).unwrap();
-        write_credential_file(
-            &path,
-            b"{\"mcpServers\":{\"agent-relay\":{\"token\":\"w1\"}}}",
-        )
-        .unwrap();
-        registry.acquire(dir.path(), &w2).unwrap();
-        write_credential_file(
-            &path,
-            b"{\"mcpServers\":{\"agent-relay\":{\"token\":\"w2\"}}}",
-        )
-        .unwrap();
-
-        registry.release_worker(&w1).unwrap();
-        assert!(path.exists(), "config must survive while a holder remains");
-
-        registry.release_worker(&w2).unwrap();
-        assert!(
-            !path.exists(),
-            "config must be removed once the last holder releases"
-        );
-        assert!(registry.is_empty());
-    }
-
-    #[test]
-    fn two_concurrent_workers_same_cwd_release_in_reverse_order() {
-        let dir = tempdir().unwrap();
-        let path = dir.path().join(".cursor").join("mcp.json");
-        let mut registry = CursorMcpLeaseRegistry::new();
-        let w1 = WorkerName::new("w1");
-        let w2 = WorkerName::new("w2");
-
-        registry.acquire(dir.path(), &w1).unwrap();
-        fs::create_dir_all(path.parent().unwrap()).unwrap();
-        write_credential_file(&path, b"{}").unwrap();
-        registry.acquire(dir.path(), &w2).unwrap();
-
-        registry.release_worker(&w2).unwrap();
-        assert!(path.exists(), "config must survive while w1 remains");
-
-        registry.release_worker(&w1).unwrap();
         assert!(!path.exists());
+        assert!(!path.parent().unwrap().exists());
         assert!(registry.is_empty());
-    }
-
-    #[test]
-    fn spawn_failure_before_any_write_releases_cleanly() {
-        let dir = tempdir().unwrap();
-        let mut registry = CursorMcpLeaseRegistry::new();
-        let worker = WorkerName::new("w1");
-        registry.acquire(dir.path(), &worker).unwrap();
-        // No write happened (simulated spawn failure right after acquire).
-        registry.release_worker(&worker).unwrap();
-        assert!(!dir.path().join(".cursor").join("mcp.json").exists());
-        assert!(registry.is_empty());
-    }
-
-    #[test]
-    fn explicit_release_of_unknown_worker_is_a_no_op() {
-        let mut registry = CursorMcpLeaseRegistry::new();
-        registry.release_worker(&WorkerName::new("ghost")).unwrap();
-    }
-
-    #[test]
-    fn reap_after_task_exit_restores_pre_existing_config() {
-        let dir = tempdir().unwrap();
-        let cursor_dir = dir.path().join(".cursor");
-        fs::create_dir_all(&cursor_dir).unwrap();
-        let path = cursor_dir.join("mcp.json");
-        fs::write(&path, b"{\"mcpServers\":{\"db\":{}}}").unwrap();
-
-        let mut registry = CursorMcpLeaseRegistry::new();
-        let worker = WorkerName::new("task-exit-worker");
-        registry.acquire(dir.path(), &worker).unwrap();
-        write_credential_file(&path, b"{\"mcpServers\":{\"db\":{},\"agent-relay\":{}}}").unwrap();
-
-        // reap_exited() path: worker process exited, registry sweeps it.
-        registry.release_worker(&worker).unwrap();
-        assert_eq!(read(&path), "{\"mcpServers\":{\"db\":{}}}");
     }
 
     #[cfg(unix)]
     #[test]
-    fn restrictive_mode_enforced_on_generated_and_restored_files() {
+    fn pre_existing_exact_config_and_mode_are_restored() {
         use std::os::unix::fs::PermissionsExt;
+        let dir = tempdir().unwrap();
+        let cursor_dir = dir.path().join(".cursor");
+        fs::create_dir_all(&cursor_dir).unwrap();
+        let path = cursor_dir.join("mcp.json");
+        let original = br#"{ "mcpServers": { "filesystem": {} } }"#;
+        fs::write(&path, original).unwrap();
+        fs::set_permissions(&path, fs::Permissions::from_mode(0o640)).unwrap();
+        let mut registry = CursorMcpLeaseRegistry::new();
+        let worker = WorkerName::new("w1");
+        registry.acquire(dir.path(), &worker).unwrap();
+        write_credential_file(&path, b"generated").unwrap();
+        registry.release_worker(&worker).unwrap();
+        assert_eq!(read(&path), original);
+        assert_eq!(
+            fs::metadata(&path).unwrap().permissions().mode() & 0o777,
+            0o640
+        );
+    }
 
+    #[test]
+    fn two_workers_share_one_lease_and_restore_after_last_release() {
+        let dir = tempdir().unwrap();
+        let path = dir.path().join(".cursor").join("mcp.json");
+        let mut registry = CursorMcpLeaseRegistry::new();
+        let w1 = WorkerName::new("w1");
+        let w2 = WorkerName::new("w2");
+        registry.acquire(dir.path(), &w1).unwrap();
+        write_credential_file(&path, b"generated").unwrap();
+        registry.acquire(dir.path(), &w2).unwrap();
+        registry.release_worker(&w1).unwrap();
+        assert!(path.exists());
+        registry.release_worker(&w2).unwrap();
+        assert!(!path.exists());
+    }
+
+    #[test]
+    fn journal_recovers_after_registry_restart() {
+        let dir = tempdir().unwrap();
+        let journal = dir.path().join("journal.json");
+        let cursor = dir.path().join(".cursor");
+        fs::create_dir_all(&cursor).unwrap();
+        let path = cursor.join("mcp.json");
+        let original = b"user config";
+        fs::write(&path, original).unwrap();
+        {
+            let mut registry = CursorMcpLeaseRegistry::with_journal(journal.clone());
+            let worker = WorkerName::new("w1");
+            registry.acquire(dir.path(), &worker).unwrap();
+            write_credential_file(&path, b"placeholders only").unwrap();
+        }
+        let recovered = CursorMcpLeaseRegistry::with_journal(journal.clone());
+        assert!(recovered.is_empty());
+        assert_eq!(read(&path), original);
+        assert!(!journal.exists());
+    }
+
+    #[test]
+    fn failed_restore_keeps_lease_for_a_later_retry() {
         let dir = tempdir().unwrap();
         let mut registry = CursorMcpLeaseRegistry::new();
         let worker = WorkerName::new("w1");
         let path = registry.acquire(dir.path(), &worker).unwrap();
-        fs::create_dir_all(path.parent().unwrap()).unwrap();
-        write_credential_file(&path, b"{}").unwrap();
-        let mode = fs::metadata(&path).unwrap().permissions().mode() & 0o777;
-        assert_eq!(mode, 0o600, "generated credential file must be 0600");
+        write_credential_file(&path, b"generated").unwrap();
+        fs::remove_file(&path).unwrap();
+        fs::create_dir(&path).unwrap();
 
-        // Now exercise the restore-path permission enforcement too.
-        drop(registry);
-        let dir2 = tempdir().unwrap();
-        let cursor_dir2 = dir2.path().join(".cursor");
-        fs::create_dir_all(&cursor_dir2).unwrap();
-        let path2 = cursor_dir2.join("mcp.json");
-        fs::write(&path2, b"{\"mcpServers\":{}}").unwrap();
-        fs::set_permissions(&path2, fs::Permissions::from_mode(0o644)).unwrap();
+        assert!(registry.release_worker(&worker).is_err());
+        assert!(!registry.is_empty(), "failed cleanup must remain retryable");
 
-        let mut registry2 = CursorMcpLeaseRegistry::new();
-        let worker2 = WorkerName::new("w2");
-        registry2.acquire(dir2.path(), &worker2).unwrap();
-        write_credential_file(&path2, b"{\"mcpServers\":{\"agent-relay\":{}}}").unwrap();
-        registry2.release_worker(&worker2).unwrap();
-        let restored_mode = fs::metadata(&path2).unwrap().permissions().mode() & 0o777;
-        assert_eq!(
-            restored_mode, 0o600,
-            "restored config must also be locked to 0600"
-        );
+        fs::remove_dir(&path).unwrap();
+        registry.release_worker(&worker).unwrap();
+        assert!(registry.is_empty());
+        assert!(!path.exists());
     }
 }

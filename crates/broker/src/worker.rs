@@ -363,6 +363,7 @@ impl WorkerRegistry {
                 "failed to create worker log directory"
             );
         }
+        let cursor_mcp_journal = worker_logs_dir.join(".cursor-mcp-leases.json");
 
         Self {
             workers: HashMap::new(),
@@ -376,7 +377,7 @@ impl WorkerRegistry {
             identity_cleanups: HashMap::new(),
             supervisor: Supervisor::new(),
             metrics: MetricsCollector::new(broker_start),
-            cursor_mcp_leases: CursorMcpLeaseRegistry::new(),
+            cursor_mcp_leases: CursorMcpLeaseRegistry::with_journal(cursor_mcp_journal),
         }
     }
 
@@ -477,14 +478,14 @@ impl WorkerRegistry {
         // `reap_exited`) releases this same lease on every exit path.
         let is_cursor = is_cursor_cli_name(cli_name);
         if is_cursor {
-            if let Err(error) = self.cursor_mcp_leases.acquire(cwd, agent_name) {
-                tracing::warn!(
-                    worker = %agent_name,
-                    cwd = %cwd.display(),
-                    %error,
-                    "failed to capture pre-existing .cursor/mcp.json before injecting Agent Relay MCP config"
-                );
-            }
+            self.cursor_mcp_leases
+                .acquire(cwd, agent_name)
+                .with_context(|| {
+                    format!(
+                        "failed to capture pre-existing .cursor/mcp.json before injecting Agent Relay MCP config for '{}'",
+                        agent_name
+                    )
+                })?;
         }
 
         let result = configure_agent_relay_mcp_with_result(
@@ -615,6 +616,18 @@ impl WorkerRegistry {
         }
     }
 
+    /// Clean a Cursor lease when process setup fails before the child can be
+    /// inserted into `self.workers`. This boundary is intentionally separate
+    /// from `cleanup_rejected_spawn`, which only handles registered children.
+    async fn cleanup_unregistered_spawn(&mut self, name: &WorkerName, child: Option<&mut Child>) {
+        if let Some(child) = child {
+            let _ = terminate_child(child, ORPHAN_REAP_TIMEOUT).await;
+        }
+        if let Err(error) = self.cursor_mcp_leases.release_worker(name) {
+            tracing::warn!(worker = %name, %error, "failed to release .cursor/mcp.json lease after pre-registration spawn failure");
+        }
+    }
+
     #[allow(clippy::too_many_arguments)]
     pub(crate) async fn spawn(
         &mut self,
@@ -679,6 +692,7 @@ impl WorkerRegistry {
         let mut suppress_worker_env: Vec<&'static str> = Vec::new();
         let mut initial_harness_pid: Option<u32> = None;
         let mut direct_native_harness_sidecar = false;
+        let mut cursor_mcp_worker = false;
 
         match spec.harness_config.clone() {
             Some(ResolvedHarnessConfig::Pty(config)) => {
@@ -822,6 +836,7 @@ impl WorkerRegistry {
                         agent_result.as_ref(),
                     )
                     .await?;
+                cursor_mcp_worker = is_cursor_cli_name(&resolved_cli);
 
                 let model_flag = resolve_model_flag_for_cli(
                     &resolved_cli,
@@ -1055,6 +1070,7 @@ impl WorkerRegistry {
                             agent_result.as_ref(),
                         )
                         .await?;
+                    cursor_mcp_worker = is_cursor_cli_name(cli);
 
                     let model_flag = resolve_model_flag_for_cli(
                         &resolved_cli,
@@ -1113,6 +1129,7 @@ impl WorkerRegistry {
                             agent_result.as_ref(),
                         )
                         .await?;
+                    cursor_mcp_worker = is_cursor_cli_name(provider_cli);
 
                     let model_arg = resolve_model_flag_for_cli(
                         provider_cli,
@@ -1288,7 +1305,8 @@ impl WorkerRegistry {
             &spec.runtime,
             direct_native_harness_sidecar,
             skip_relay_prompt,
-        ) {
+        ) || (cursor_mcp_worker && !skip_relay_prompt)
+        {
             if let Some(relay_key) = worker_relay_api_key {
                 command.env("RELAY_AGENT_TOKEN", relay_key);
             }
@@ -1322,13 +1340,40 @@ impl WorkerRegistry {
             command.current_dir(cwd);
         }
 
-        let mut child = command.spawn().context("failed to spawn worker")?;
+        let mut child = match command.spawn().context("failed to spawn worker") {
+            Ok(child) => child,
+            Err(error) => {
+                self.cleanup_unregistered_spawn(&spec.name, None).await;
+                return Err(error);
+            }
+        };
         if direct_native_harness_sidecar {
             initial_harness_pid = child.id();
         }
-        let stdin = child.stdin.take().context("worker missing stdin pipe")?;
-        let stdout = child.stdout.take().context("worker missing stdout pipe")?;
-        let stderr = child.stderr.take().context("worker missing stderr pipe")?;
+        let stdin = match child.stdin.take() {
+            Some(stdin) => stdin,
+            None => {
+                self.cleanup_unregistered_spawn(&spec.name, Some(&mut child))
+                    .await;
+                anyhow::bail!("worker missing stdin pipe");
+            }
+        };
+        let stdout = match child.stdout.take() {
+            Some(stdout) => stdout,
+            None => {
+                self.cleanup_unregistered_spawn(&spec.name, Some(&mut child))
+                    .await;
+                anyhow::bail!("worker missing stdout pipe");
+            }
+        };
+        let stderr = match child.stderr.take() {
+            Some(stderr) => stderr,
+            None => {
+                self.cleanup_unregistered_spawn(&spec.name, Some(&mut child))
+                    .await;
+                anyhow::bail!("worker missing stderr pipe");
+            }
+        };
         let log_file = self.worker_log_path(&spec.name);
         let startup_log_file = log_file.clone();
 
@@ -2893,6 +2938,115 @@ sleep 30
     fn worker_registry_starts_empty() {
         let reg = make_registry(vec![]);
         assert!(reg.list(&HashMap::new()).is_empty());
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn cursor_worker_registry_injection_is_placeholder_only_and_cleans_up() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let cwd = tempfile::tempdir().expect("cursor cwd");
+        let logs = tempfile::tempdir().expect("worker logs");
+        let (tx, _rx) = mpsc::channel::<WorkerEvent>(16);
+        let mut registry = WorkerRegistry::new(
+            tx,
+            vec![
+                ("RELAY_API_KEY".into(), "workspace-secret-test-only".into()),
+                ("RELAY_BASE_URL".into(), "https://relay.invalid".into()),
+            ],
+            logs.path().to_path_buf(),
+            Instant::now(),
+        );
+        let worker = WorkerName::from("cursor-placeholder-worker");
+        let second_worker = WorkerName::from("cursor-placeholder-worker-2");
+
+        registry
+            .build_mcp_args(
+                "cursor",
+                &worker,
+                &[],
+                cwd.path(),
+                Some("agent-token-test-only"),
+                false,
+                None,
+            )
+            .await
+            .expect("Cursor MCP config should be written");
+
+        let path = cwd.path().join(".cursor/mcp.json");
+        let contents = std::fs::read_to_string(&path).expect("read Cursor MCP config");
+        assert!(!contents.contains("workspace-secret-test-only"));
+        assert!(!contents.contains("agent-token-test-only"));
+        assert!(contents.contains("${env:RELAY_API_KEY}"));
+        assert!(contents.contains("${env:RELAY_AGENT_TOKEN}"));
+        assert_eq!(
+            std::fs::metadata(&path).unwrap().permissions().mode() & 0o777,
+            0o600
+        );
+
+        registry
+            .build_mcp_args(
+                "cursor",
+                &second_worker,
+                &[],
+                cwd.path(),
+                Some("different-agent-token-must-not-rewrite-the-file"),
+                false,
+                None,
+            )
+            .await
+            .expect("a same-cwd Cursor worker should join the existing lease");
+        let second_contents =
+            std::fs::read_to_string(&path).expect("read shared Cursor MCP config");
+        assert_eq!(
+            contents, second_contents,
+            "same-cwd workers use stable placeholders"
+        );
+
+        registry
+            .cursor_mcp_leases
+            .release_worker(&worker)
+            .expect("release Cursor lease");
+        assert!(path.exists(), "the last same-cwd worker owns cleanup");
+        registry
+            .cursor_mcp_leases
+            .release_worker(&second_worker)
+            .expect("release second Cursor lease");
+        assert!(!path.exists());
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn cursor_worker_registry_fails_closed_when_lease_capture_fails() {
+        let cwd = tempfile::tempdir().expect("cursor cwd");
+        let logs = tempfile::tempdir().expect("worker logs");
+        let (tx, _rx) = mpsc::channel::<WorkerEvent>(16);
+        let mut registry = WorkerRegistry::new(
+            tx,
+            vec![("RELAY_API_KEY".into(), "workspace-secret-test-only".into())],
+            logs.path().to_path_buf(),
+            Instant::now(),
+        );
+        let cursor_dir = cwd.path().join(".cursor");
+        std::fs::create_dir_all(&cursor_dir).unwrap();
+        // A directory at the config path makes lease capture fail before the
+        // injection writer can replace it. This is the fail-closed boundary.
+        std::fs::create_dir(cursor_dir.join("mcp.json")).unwrap();
+
+        let result = registry
+            .build_mcp_args(
+                "cursor",
+                &WorkerName::from("cursor-capture-failure"),
+                &[],
+                cwd.path(),
+                Some("agent-token-test-only"),
+                false,
+                None,
+            )
+            .await;
+        assert!(result.is_err());
+        assert!(cursor_dir.join("mcp.json").is_dir());
+        assert!(registry.cursor_mcp_leases.is_empty());
     }
 
     #[cfg(unix)]

@@ -14,7 +14,7 @@ use tokio::{
     process::Command,
 };
 
-use crate::types::AgentResultMcpConfig;
+use crate::{cursor_mcp_lease::write_credential_file, types::AgentResultMcpConfig};
 
 const AGENT_RELAY_MCP_PACKAGE: &str = "agent-relay";
 const AGENT_RELAY_MCP_SUBCOMMAND: &str = "mcp";
@@ -691,6 +691,66 @@ fn agent_relay_mcp_server_config(
     Value::Object(server)
 }
 
+fn cursor_env_placeholder(name: &str) -> Value {
+    Value::String(format!("${{env:{name}}}"))
+}
+
+/// Cursor expands `${env:NAME}` when it launches an MCP server. Keep the
+/// generated project file credential-free while still selecting which optional
+/// variables the worker actually has available in its process environment.
+fn cursor_agent_relay_mcp_server_config(
+    relay_api_key: Option<&str>,
+    relay_base_url: Option<&str>,
+    relay_agent_name: Option<&str>,
+    relay_agent_token: Option<&str>,
+    workspaces_json: Option<&str>,
+    default_workspace: Option<&str>,
+    agent_result: Option<&AgentResultMcpConfig>,
+) -> Value {
+    let command = agent_relay_mcp_command();
+    let mut server = Map::new();
+    server.insert("command".into(), Value::String(command.command));
+    server.insert(
+        "args".into(),
+        Value::Array(command.args.into_iter().map(Value::String).collect()),
+    );
+    let mut env = Map::new();
+    let add_if_present = |env: &mut Map<String, Value>, key: &str, value: Option<&str>| {
+        if value.map(str::trim).is_some_and(|value| !value.is_empty()) {
+            env.insert(key.into(), cursor_env_placeholder(key));
+        }
+    };
+    add_if_present(&mut env, "RELAY_API_KEY", relay_api_key);
+    add_if_present(&mut env, "RELAY_BASE_URL", relay_base_url);
+    add_if_present(&mut env, "RELAY_AGENT_NAME", relay_agent_name);
+    if relay_agent_name
+        .map(str::trim)
+        .is_some_and(|value| !value.is_empty())
+    {
+        env.insert("RELAY_AGENT_TYPE".into(), Value::String("agent".into()));
+        env.insert("RELAY_STRICT_AGENT_NAME".into(), Value::String("1".into()));
+    }
+    if relay_agent_token
+        .map(str::trim)
+        .is_some_and(|value| !value.is_empty())
+    {
+        env.insert(
+            "RELAY_AGENT_TOKEN".into(),
+            cursor_env_placeholder("RELAY_AGENT_TOKEN"),
+        );
+        env.insert("RELAY_SKIP_BOOTSTRAP".into(), Value::String("1".into()));
+    }
+    add_if_present(&mut env, "RELAY_WORKSPACES_JSON", workspaces_json);
+    add_if_present(&mut env, "RELAY_DEFAULT_WORKSPACE", default_workspace);
+    if let Some(config) = agent_result {
+        for (key, _) in config.env_pairs() {
+            env.insert(key.into(), cursor_env_placeholder(key));
+        }
+    }
+    server.insert("env".into(), Value::Object(env));
+    Value::Object(server)
+}
+
 fn apply_agent_result_env(
     env: &mut Map<String, Value>,
     agent_result: Option<&AgentResultMcpConfig>,
@@ -990,8 +1050,9 @@ pub fn ensure_opencode_config_with_result(
 /// for idempotency). For Opencode this writes `opencode.json` on disk.
 ///
 /// # Parameters
-/// Write `.cursor/mcp.json` in the given directory with the Agent Relay MCP server
-/// configured with per-agent credentials (name + token).
+/// Write `.cursor/mcp.json` in the given directory with the Agent Relay MCP
+/// server configured with Cursor environment placeholders. The worker process
+/// supplies the per-agent values; no credential literal is persisted.
 /// Returns `true` if the config was created or updated.
 #[allow(clippy::too_many_arguments)]
 pub fn ensure_cursor_mcp_config(
@@ -1002,48 +1063,28 @@ pub fn ensure_cursor_mcp_config(
     relay_agent_token: Option<&str>,
     workspaces_json: Option<&str>,
     default_workspace: Option<&str>,
-    _agent_result: Option<&AgentResultMcpConfig>,
+    agent_result: Option<&AgentResultMcpConfig>,
 ) -> io::Result<bool> {
     let cursor_dir = root.join(".cursor");
     fs::create_dir_all(&cursor_dir)?;
     let path = cursor_dir.join("mcp.json");
 
-    let mcp_json = agent_relay_mcp_config_json_with_result(
-        relay_api_key,
-        relay_base_url,
-        relay_agent_name,
-        relay_agent_token,
-        workspaces_json,
-        default_workspace,
-        None,
-    );
-    let mut new_value: Value = serde_json::from_str(&mcp_json).map_err(|e| {
-        io::Error::new(
-            io::ErrorKind::InvalidData,
-            format!("MCP config serialization error: {e}"),
+    let new_value = json!({"mcpServers": {"agent-relay":
+        cursor_agent_relay_mcp_server_config(
+            relay_api_key,
+            relay_base_url,
+            relay_agent_name,
+            relay_agent_token,
+            workspaces_json,
+            default_workspace,
+            agent_result,
         )
-    })?;
-    // Cursor does not pass parent process env vars to MCP server subprocesses,
-    // so RELAY_API_KEY must be in the .cursor/mcp.json env block explicitly.
-    // (The shared agent_relay_mcp_server_config omits it because codex strips API keys.)
-    if let Some(key) = relay_api_key.map(str::trim).filter(|s| !s.is_empty()) {
-        if let Some(env_obj) = new_value
-            .pointer_mut("/mcpServers/agent-relay/env")
-            .and_then(Value::as_object_mut)
-        {
-            env_obj.insert("RELAY_API_KEY".into(), Value::String(key.to_string()));
-        } else if let Some(server) = new_value
-            .pointer_mut("/mcpServers/agent-relay")
-            .and_then(Value::as_object_mut)
-        {
-            let mut env_map = Map::new();
-            env_map.insert("RELAY_API_KEY".into(), Value::String(key.to_string()));
-            server.insert("env".into(), Value::Object(env_map));
-        }
-    }
+    }});
 
     if !path.exists() {
-        write_pretty_json(&path, &new_value)?;
+        let body = serde_json::to_vec_pretty(&new_value)
+            .map_err(|error| io::Error::other(error.to_string()))?;
+        write_credential_file(&path, &body)?;
         return Ok(true);
     }
 
@@ -1071,7 +1112,9 @@ pub fn ensure_cursor_mcp_config(
     };
 
     if changed {
-        write_pretty_json(&path, &parsed)?;
+        let body = serde_json::to_vec_pretty(&parsed)
+            .map_err(|error| io::Error::other(error.to_string()))?;
+        write_credential_file(&path, &body)?;
     }
     Ok(changed)
 }
@@ -1327,7 +1370,7 @@ pub async fn configure_agent_relay_mcp_with_result(
             is_gemini,
             workspaces_json,
             default_workspace,
-            None,
+            agent_result,
         )
         .await?;
     } else if is_grok {
@@ -1367,7 +1410,7 @@ pub async fn configure_agent_relay_mcp_with_result(
             agent_token,
             workspaces_json,
             default_workspace,
-            None,
+            agent_result,
         )
         .with_context(|| {
             "failed to write .cursor/mcp.json for Agent Relay MCP. \
@@ -2974,20 +3017,23 @@ exit 0
         let path = temp.path().join(".cursor").join("mcp.json");
         assert!(path.exists(), ".cursor/mcp.json must be created");
         let contents = fs::read_to_string(path).expect("read cursor mcp config");
+        assert!(!contents.contains("rk_live_cursor"));
+        assert!(!contents.contains("https://cast.agentrelay.com"));
+        assert!(!contents.contains("CursorAgent"));
         let json: Value = serde_json::from_str(&contents).expect("parse cursor mcp config");
 
         assert_is_agent_relay_mcp_config(&json["mcpServers"]["agent-relay"]);
         assert_eq!(
             json["mcpServers"]["agent-relay"]["env"]["RELAY_API_KEY"].as_str(),
-            Some("rk_live_cursor")
+            Some("${env:RELAY_API_KEY}")
         );
         assert_eq!(
             json["mcpServers"]["agent-relay"]["env"]["RELAY_BASE_URL"].as_str(),
-            Some("https://cast.agentrelay.com")
+            Some("${env:RELAY_BASE_URL}")
         );
         assert_eq!(
             json["mcpServers"]["agent-relay"]["env"]["RELAY_AGENT_NAME"].as_str(),
-            Some("CursorAgent")
+            Some("${env:RELAY_AGENT_NAME}")
         );
         assert_eq!(
             json["mcpServers"]["agent-relay"]["env"]["RELAY_AGENT_TYPE"].as_str(),
@@ -2996,6 +3042,15 @@ exit 0
         assert_eq!(
             json["mcpServers"]["agent-relay"]["env"]["RELAY_STRICT_AGENT_NAME"].as_str(),
             Some("1")
+        );
+        #[cfg(unix)]
+        assert_eq!(
+            fs::metadata(temp.path().join(".cursor").join("mcp.json"))
+                .unwrap()
+                .permissions()
+                .mode()
+                & 0o777,
+            0o600
         );
     }
 
@@ -3024,8 +3079,17 @@ exit 0
         );
         let contents = fs::read_to_string(temp.path().join(".cursor").join("mcp.json"))
             .expect("read cursor mcp config");
+        assert!(!contents.contains("http://127.0.0.1:3889/api/agent-result"));
+        assert!(!contents.contains("arr_test"));
+        assert!(!contents.contains("rk_live_cursor"));
+        assert!(!contents.contains("https://cast.agentrelay.com"));
         let json: Value = serde_json::from_str(&contents).expect("parse cursor mcp config");
-        assert_agent_result_env_absent(&json["mcpServers"]["agent-relay"]["env"]);
+        let env = &json["mcpServers"]["agent-relay"]["env"];
+        assert_eq!(
+            env["AGENT_RELAY_RESULT_URL"].as_str(),
+            Some("${env:AGENT_RELAY_RESULT_URL}")
+        );
+        assert_eq!(env["RELAY_AGENT_TOKEN"].as_str(), None);
     }
 
     #[tokio::test]
@@ -3057,7 +3121,7 @@ exit 0
 
         assert_eq!(
             json["mcpServers"]["agent-relay"]["env"]["RELAY_AGENT_TOKEN"].as_str(),
-            Some("tok_cursor_123")
+            Some("${env:RELAY_AGENT_TOKEN}")
         );
     }
 
