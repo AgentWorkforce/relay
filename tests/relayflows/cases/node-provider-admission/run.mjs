@@ -24,7 +24,16 @@ try {
   // One exact engine release on both arms; do not resolve latest or use hosted services.
   execFileSync(
     'npm',
-    ['install', '--prefix', temporary, '--no-audit', '--no-fund', '@relaycast/engine@8.9.0'],
+    [
+      'install',
+      '--prefix',
+      temporary,
+      '--no-audit',
+      '--no-fund',
+      '--ignore-scripts=false',
+      '--prefer-online',
+      '@relaycast/engine@8.9.0',
+    ],
     { timeout: 120000, stdio: 'pipe' }
   );
   const engine = path.join(temporary, 'node_modules/@relaycast/engine/dist/bin/serve.js');
