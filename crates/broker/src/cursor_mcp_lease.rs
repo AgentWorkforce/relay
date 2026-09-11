@@ -230,6 +230,57 @@ fn windows_lock_file(path: &Path) -> io::Result<fs::File> {
 }
 
 #[cfg(windows)]
+fn windows_child_file(path: &Path, create_new: bool, truncate: bool) -> io::Result<fs::File> {
+    use std::os::windows::ffi::OsStrExt;
+    use std::os::windows::io::{FromRawHandle, OwnedHandle};
+
+    #[link(name = "Kernel32")]
+    unsafe extern "system" {
+        fn CreateFileW(
+            name: *const u16,
+            access: u32,
+            share: u32,
+            security: *const std::ffi::c_void,
+            disposition: u32,
+            flags: u32,
+            template: *mut std::ffi::c_void,
+        ) -> *mut std::ffi::c_void;
+    }
+    const GENERIC_READ: u32 = 0x8000_0000;
+    const GENERIC_WRITE: u32 = 0x4000_0000;
+    const FILE_SHARE_READ: u32 = 1;
+    const FILE_SHARE_WRITE: u32 = 2;
+    const CREATE_NEW: u32 = 1;
+    const OPEN_EXISTING: u32 = 3;
+    const TRUNCATE_EXISTING: u32 = 5;
+    const FILE_FLAG_OPEN_REPARSE_POINT: u32 = 0x0020_0000;
+    let mut wide: Vec<u16> = path.as_os_str().encode_wide().collect();
+    wide.push(0);
+    let disposition = if create_new {
+        CREATE_NEW
+    } else if truncate {
+        TRUNCATE_EXISTING
+    } else {
+        OPEN_EXISTING
+    };
+    let handle = unsafe {
+        CreateFileW(
+            wide.as_ptr(),
+            GENERIC_READ | GENERIC_WRITE,
+            FILE_SHARE_READ | FILE_SHARE_WRITE,
+            std::ptr::null(),
+            disposition,
+            FILE_FLAG_OPEN_REPARSE_POINT,
+            std::ptr::null_mut(),
+        )
+    };
+    if handle == (-1isize) as *mut std::ffi::c_void {
+        return Err(io::Error::last_os_error());
+    }
+    Ok(unsafe { fs::File::from(OwnedHandle::from_raw_handle(handle)) })
+}
+
+#[cfg(windows)]
 fn windows_directory_identity(path: &Path) -> io::Result<(u32, u64)> {
     use std::os::windows::fs::MetadataExt;
     let metadata = fs::symlink_metadata(path)?;
@@ -798,9 +849,10 @@ fn remove_cursor_dir(lock: &LeaseLock, cursor: &fs::File) -> io::Result<()> {
     }
 }
 
-/// Atomically write a generated credential-bearing config with owner-only
-/// permissions. The temporary file is created as 0600, so no 0644 window is
-/// observable between creation and the final rename.
+/// Write a generated credential-bearing config safely for the platform. Unix
+/// uses an owner-only temporary file and atomic rename. Windows uses a pinned
+/// parent and child handle: existing files are updated in place to preserve
+/// their security descriptor, while new files use a secured temporary file.
 pub(crate) fn write_credential_file(path: &Path, contents: &[u8]) -> io::Result<()> {
     let parent = path.parent().ok_or_else(|| {
         io::Error::new(io::ErrorKind::InvalidInput, "credential path has no parent")
@@ -818,10 +870,7 @@ pub(crate) fn write_credential_file(path: &Path, contents: &[u8]) -> io::Result<
         // Replacing it with a temporary file would silently change ACLs and
         // make exact restoration impossible. The pinned parent handle prevents
         // replacement while this in-place mutation is active.
-        let mut file = fs::OpenOptions::new()
-            .write(true)
-            .truncate(true)
-            .open(path)?;
+        let mut file = windows_child_file(path, false, true)?;
         file.write_all(contents)?;
         file.sync_all()?;
         return Ok(());
@@ -868,9 +917,7 @@ pub(crate) fn write_credential_file(path: &Path, contents: &[u8]) -> io::Result<
 fn secure_windows_file(path: &Path) -> io::Result<()> {
     use std::process::Command;
 
-    let system_root = std::env::var_os("SystemRoot")
-        .ok_or_else(|| io::Error::new(io::ErrorKind::PermissionDenied, "SystemRoot is not set"))?;
-    let system32 = PathBuf::from(system_root).join("System32");
+    let system32 = windows_system_directory()?;
     let whoami_path = system32.join("whoami.exe");
     let icacls_path = system32.join("icacls.exe");
 
@@ -915,6 +962,33 @@ fn secure_windows_file(path: &Path) -> io::Result<()> {
         ));
     }
     Ok(())
+}
+
+#[cfg(windows)]
+fn windows_system_directory() -> io::Result<PathBuf> {
+    use std::os::windows::ffi::OsStringExt;
+    #[link(name = "Kernel32")]
+    unsafe extern "system" {
+        fn GetSystemDirectoryW(buffer: *mut u16, length: u32) -> u32;
+    }
+    let mut buffer = vec![0u16; 260];
+    loop {
+        let length = unsafe { GetSystemDirectoryW(buffer.as_mut_ptr(), buffer.len() as u32) };
+        if length == 0 {
+            return Err(io::Error::last_os_error());
+        }
+        if (length as usize) < buffer.len() {
+            let path = PathBuf::from(std::ffi::OsString::from_wide(&buffer[..length as usize]));
+            if !path.is_absolute() {
+                return Err(io::Error::new(
+                    io::ErrorKind::PermissionDenied,
+                    "Windows system directory is not absolute",
+                ));
+            }
+            return Ok(path);
+        }
+        buffer.resize(buffer.len().saturating_mul(2), 0);
+    }
 }
 
 #[cfg(not(unix))]
@@ -1143,6 +1217,14 @@ impl CursorMcpLeaseRegistry {
             #[cfg(windows)]
             validate_windows_cursor_identity(&state.lock, path, state.cursor_identity)?;
             if validate_target(path)? {
+                #[cfg(windows)]
+                {
+                    let mut file = windows_child_file(path, false, false)?;
+                    let mut contents = Vec::new();
+                    file.read_to_end(&mut contents)?;
+                    Ok(Some(contents))
+                }
+                #[cfg(not(windows))]
                 Ok(Some(fs::read(path)?))
             } else {
                 Ok(None)
