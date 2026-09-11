@@ -816,3 +816,168 @@ async fn retained_http_release_waits_for_ack_and_rejects_stale_generation() {
     assert!(fixture.runtime.workers.completed_owned_releases.is_empty());
     mutation.assert_hits(0);
 }
+
+fn r1759_release(name: &str, invocation: &str) -> crate::fleet_wire::ActionInvoke {
+    let mut invoke = crate::fleet_wire::ActionInvoke { v: FLEET_WIRE_VERSION, invocation_id: invocation.into(), action: "release".into(), input: json!({}), agent_name: Some(name.into()), agent_id: None };
+    invoke.action = "release".into();
+    invoke.invocation_id = invocation.into();
+    invoke.input = json!({});
+    invoke
+}
+
+fn r1759_custody(f: &mut WorkerEventRuntimeFixture, name: &WorkerName, http: RelaycastHttpClient) -> std::sync::Arc<crate::spawn_registration::SpawnRegistration> {
+    let c = f.runtime.workers.spawn_registrations.reserve(name.clone(), http.clone()).unwrap();
+    assert!(c.begin_send("node", "instance", std::sync::Arc::new(std::sync::atomic::AtomicBool::new(true))));
+    c.record_reply(&review_success(&c));
+    let generation = c.admit("test-only-original").unwrap();
+    f.runtime.workers.owned_spawn_generations.insert(name.clone(), (generation, http));
+    f.runtime.fleet_delivery_book.bind_authoritative_identity(name.as_str(), "original-id");
+    c
+}
+
+async fn r1759_ack(f: &mut WorkerEventRuntimeFixture) -> tokio::sync::oneshot::Sender<Result<(), String>> {
+    tokio::time::timeout(Duration::from_secs(1), async {
+        loop {
+            if let FleetControlCommand::DeregisterAgent {request, reply} = f.fleet_control_rx.recv().await.unwrap() {
+                assert_eq!(request.agent_id, "original-id");
+                return reply;
+            }
+        }
+    }).await.unwrap()
+}
+
+async fn r1759_settle_failure(f: &mut WorkerEventRuntimeFixture, name: &WorkerName) {
+    tokio::time::timeout(Duration::from_secs(1), async {
+        loop {
+            f.runtime.reconcile_identity_cleanups().await;
+            if f.runtime.workers.identity_cleanups[name].retry_at > Instant::now() { break; }
+            tokio::task::yield_now().await;
+        }
+    }).await.unwrap();
+}
+
+#[tokio::test]
+async fn r1759_fleet_explicit_retry_after_exhaustion_must_restart_cleanup() {
+    let (_dir, mut f) = review_fixture();
+    let server = httpmock::MockServer::start();
+    let mutations = server.mock(|when, then| {when.any_request(); then.status(500);});
+    let http = RelaycastHttpClient::new(Some(server.base_url()), "workspace-test", "broker", "codex");
+    let name = WorkerName::new("fleet-exhausted");
+    let custody = r1759_custody(&mut f, &name, http);
+    f.runtime.handle_fleet_action_invoke(r1759_release(name.as_str(), "first-release")).await;
+    for attempt in 1..=5 {
+        r1759_ack(&mut f).await.send(Err("fixture lost ACK".into())).unwrap();
+        r1759_settle_failure(&mut f, &name).await;
+        assert_eq!(f.runtime.workers.identity_cleanups[&name].attempts, attempt);
+        f.runtime.workers.identity_cleanups.get_mut(&name).unwrap().retry_at = Instant::now();
+        f.runtime.reconcile_identity_cleanups().await;
+    }
+    while f.fleet_control_rx.try_recv().is_ok() {}
+    let http = f.runtime.relaycast_http.clone();
+    super::identity_cleanup::schedule_identity_cleanup(
+        &mut f.runtime.workers, &f.runtime.fleet_control_tx,
+        &f.runtime.fleet_delivery_book, &mut f.runtime.fleet_inventory,
+        &http, &name, false, None,
+    );
+    f.runtime.reconcile_identity_cleanups().await;
+    assert_eq!(f.runtime.workers.identity_cleanups[&name].attempts, 5);
+    assert!(f.fleet_control_rx.try_recv().is_err(), "maintenance must not restart exhausted cleanup");
+    while let Some(response) = f.runtime.fleet_responses.front() { f.runtime.fleet_responses.flushed(&response.invocation_id); }
+    f.runtime.handle_fleet_action_invoke(r1759_release(name.as_str(), "explicit-release-retry")).await;
+    for _ in 0..20 {f.runtime.reconcile_identity_cleanups().await;tokio::task::yield_now().await;}
+    let mut deregistrations = 0;
+    while let Ok(command) = f.fleet_control_rx.try_recv() {
+        if let FleetControlCommand::DeregisterAgent {reply, ..} = command {deregistrations += 1;let _ = reply.send(Ok(()));}
+    }
+    let p = &f.runtime.workers.identity_cleanups[&name];
+    eprintln!("R1759 exhausted fleet retry attempts={} new_deregistrations={} held_completions={} name_blocked={}", p.attempts, deregistrations, p.completions.len(), f.runtime.workers.spawn_registrations.blocked(&name));
+    mutations.assert_hits(0);
+    assert_eq!(deregistrations, 1, "explicit fleet release retry was accepted but never restarts exhausted cleanup");
+    tokio::time::timeout(Duration::from_secs(1), async {
+        while f.runtime.workers.identity_cleanups.contains_key(&name) {
+            f.runtime.reconcile_identity_cleanups().await;
+            tokio::task::yield_now().await;
+        }
+    }).await.unwrap();
+    assert!(custody.retired());
+    assert!(!f.runtime.workers.spawn_registrations.blocked(&name));
+    assert!(f.runtime.fleet_responses.front().is_some_and(|response|
+        response.invocation_id == "explicit-release-retry" && matches!(response.result, crate::fleet_wire::ActionResultPayload::Output(_))));
+    mutations.assert_hits(0);
+}
+
+
+#[tokio::test]
+async fn retained_fleet_release_coalesces_without_incidental_retry_budget_reset() {
+    let (_dir, mut f) = review_fixture();
+    let server = httpmock::MockServer::start();
+    let mutations = server.mock(|when, then| { when.any_request(); then.status(500); });
+    let http = RelaycastHttpClient::new(Some(server.base_url()), "workspace-test", "broker", "codex");
+    let name = WorkerName::new("fleet-coalesced");
+    let custody = r1759_custody(&mut f, &name, http.clone());
+    f.runtime.handle_fleet_action_invoke(r1759_release(name.as_str(), "initial")).await;
+    let ack = r1759_ack(&mut f).await;
+    let attempts = f.runtime.workers.identity_cleanups[&name].attempts;
+    super::identity_cleanup::schedule_identity_cleanup(
+        &mut f.runtime.workers, &f.runtime.fleet_control_tx,
+        &f.runtime.fleet_delivery_book, &mut f.runtime.fleet_inventory,
+        &http, &name, false, None,
+    );
+    assert_eq!(f.runtime.workers.identity_cleanups[&name].attempts, attempts);
+    f.runtime.handle_fleet_action_invoke(r1759_release(name.as_str(), "coalesced")).await;
+    assert_eq!(f.runtime.workers.identity_cleanups[&name].completions.len(), 2);
+    assert_eq!(f.runtime.workers.identity_cleanups[&name].generation, custody.generation());
+    assert!(!f.runtime.workers.identity_cleanups[&name].delete_identity);
+    assert!(f.runtime.fleet_responses.front().is_none());
+    while let Ok(command) = f.fleet_control_rx.try_recv() {
+        assert!(!matches!(command, FleetControlCommand::DeregisterAgent { .. }));
+    }
+    ack.send(Ok(())).unwrap();
+    tokio::time::timeout(Duration::from_secs(1), async {
+        while f.runtime.workers.identity_cleanups.contains_key(&name) {
+            f.runtime.reconcile_identity_cleanups().await;
+            tokio::task::yield_now().await;
+        }
+    }).await.unwrap();
+    for id in ["initial", "coalesced"] {
+        let response = f.runtime.fleet_responses.front().unwrap();
+        assert_eq!(response.invocation_id, id);
+        assert!(matches!(response.result, crate::fleet_wire::ActionResultPayload::Output(_)));
+        f.runtime.fleet_responses.flushed(id);
+    }
+    assert!(custody.retired());
+    mutations.assert_hits(0);
+}
+
+#[tokio::test]
+async fn retained_fleet_retry_rejects_deletion_policy_or_generation_conflict() {
+    for delete_identity in [false, true] {
+        let (_dir, mut f) = review_fixture();
+        let server = httpmock::MockServer::start();
+        let mutations = server.mock(|when, then| { when.any_request(); then.status(500); });
+        let http = RelaycastHttpClient::new(Some(server.base_url()), "workspace-test", "broker", "codex");
+        let name = WorkerName::new("fleet-conflict");
+        let custody = r1759_custody(&mut f, &name, http.clone());
+        super::identity_cleanup::schedule_identity_cleanup(
+            &mut f.runtime.workers, &f.runtime.fleet_control_tx,
+            &f.runtime.fleet_delivery_book, &mut f.runtime.fleet_inventory,
+            &http, &name, delete_identity, None,
+        );
+        let ack = r1759_ack(&mut f).await;
+        if !delete_identity {
+            f.runtime.workers.owned_spawn_generations.insert(name.clone(), (Uuid::new_v4(), http));
+        }
+        let attempts = f.runtime.workers.identity_cleanups[&name].attempts;
+        f.runtime.handle_fleet_action_invoke(r1759_release(name.as_str(), "conflict")).await;
+        assert!(matches!(f.runtime.fleet_responses.front().unwrap().result, crate::fleet_wire::ActionResultPayload::Error(_)));
+        let pending = &f.runtime.workers.identity_cleanups[&name];
+        assert_eq!(pending.attempts, attempts);
+        assert_eq!(pending.generation, custody.generation());
+        assert_eq!(pending.delete_identity, delete_identity);
+        assert!(pending.completions.is_empty());
+        ack.send(Err("fixture ACK failed".into())).unwrap();
+        r1759_settle_failure(&mut f, &name).await;
+        assert!(!custody.retired());
+        mutations.assert_hits(0);
+    }
+}

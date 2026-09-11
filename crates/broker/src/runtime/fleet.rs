@@ -1503,6 +1503,50 @@ impl BrokerRuntime {
                 .await;
             return;
         };
+        if let Some(pending) = self.workers.identity_cleanups.get_mut(&name) {
+            // An explicit release may restart exhausted retained cleanup. Keep
+            // its captured identity and confirmed progress; incidental cleanup
+            // scheduling must never reset the automatic retry budget.
+            let same_registration = self
+                .workers
+                .spawn_registrations
+                .entries
+                .get(&name)
+                .is_some_and(|entry| !entry.retired() && entry.generation() == pending.generation);
+            let replacement = self
+                .workers
+                .workers
+                .get(&name)
+                .is_some_and(|worker| worker.generation != pending.generation)
+                || self
+                    .workers
+                    .owned_spawn_generations
+                    .get(&name)
+                    .is_some_and(|(generation, _)| *generation != pending.generation);
+            if pending.delete_identity || !same_registration || replacement {
+                self.reply_action_error(
+                    &invoke.invocation_id,
+                    "release_cleanup_generation_or_policy_conflict",
+                )
+                .await;
+                return;
+            }
+            pending
+                .completions
+                .push(super::identity_cleanup::CleanupCompletion::Fleet(
+                    ActionResult {
+                        v: FLEET_WIRE_VERSION,
+                        id: None,
+                        invocation_id: invoke.invocation_id.clone(),
+                        result: ActionResultPayload::Output(ActionResultOutput {
+                            output: json!({ "released": true, "name": name.as_str() }),
+                        }),
+                    },
+                ));
+            pending.attempts = 0;
+            pending.retry_at = Instant::now();
+            return;
+        }
         let workspace_id = self
             .default_workspace_id
             .clone()

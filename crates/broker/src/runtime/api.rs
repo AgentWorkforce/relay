@@ -998,13 +998,13 @@ impl BrokerRuntime {
                             .is_some_and(|(generation, _)| generation.to_string() == expected)
                     });
                 if let Some(expected) = expected_generation.as_deref() {
-                    if !retired_owned
-                        && !(retained_registration
+                    if !(retired_owned
+                        || (retained_registration
                             && workers
                                 .spawn_registrations
                                 .entries
                                 .get(&name)
-                                .is_some_and(|entry| entry.generation().to_string() == expected))
+                                .is_some_and(|entry| entry.generation().to_string() == expected)))
                         && workers
                             .workers
                             .get(&name)
