@@ -470,13 +470,6 @@ impl BrokerRuntime {
                                 );
                                 return;
                             } else {
-                                // A failed bind releases this name during cleanup. Do not
-                                // leave a detached name-based PATCH that could hit a retry.
-                                super::fleet::spawn_declared_metadata_publish(
-                                    relaycast_http,
-                                    name.as_str(),
-                                    registration_metadata,
-                                );
                                 match super::fleet::resolve_fleet_agent_token_identity(
                                     relaycast_http,
                                     fleet_delivery_book,
@@ -703,6 +696,16 @@ impl BrokerRuntime {
                     .await
                 {
                     Ok(effective_spec) => {
+                        // Both hosted credential paths publish declared metadata. Wait for
+                        // admission to succeed before scheduling a detached PATCH.
+                        // Local-only workers have no hosted identity to update.
+                        if worker_relay_key.is_some() {
+                            super::fleet::spawn_declared_metadata_publish(
+                                relaycast_http,
+                                name.as_str(),
+                                registration_metadata,
+                            );
+                        }
                         if owns_identity {
                             if let Some(worker) = workers.workers.get(&name) {
                                 workers.owned_spawn_generations.insert(
