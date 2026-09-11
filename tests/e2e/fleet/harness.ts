@@ -160,10 +160,7 @@ export interface EngineHandle {
   baseUrl: string;
   port: number;
   stop(): Promise<void>;
-  fetchJson(
-    pathname: string,
-    init?: RequestInit
-  ): Promise<{ status: number; body: any; headers: Headers }>;
+  fetchJson(pathname: string, init?: RequestInit): Promise<{ status: number; body: any; headers: Headers }>;
 }
 
 export async function startEngine(

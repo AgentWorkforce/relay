@@ -9,9 +9,10 @@ import {
 /** Minimal fake `EngineHandle` whose `fetchJson` is driven by a scripted list
  * of responses (one per call), so `getAgent`'s retry logic can be exercised
  * deterministically without a real Relaycast engine or network. */
-function fakeEngine(
-  responses: Array<{ status: number; body: unknown; headers?: Record<string, string> }>
-): { engine: EngineHandle; calls: number[] } {
+function fakeEngine(responses: Array<{ status: number; body: unknown; headers?: Record<string, string> }>): {
+  engine: EngineHandle;
+  calls: number[];
+} {
   const calls: number[] = [];
   let index = 0;
   const engine: EngineHandle = {
@@ -34,7 +35,10 @@ function fakeEngine(
 
 const RATE_LIMIT_BODY = {
   ok: false,
-  error: { code: 'rate_limit_exceeded', message: 'Rate limit exceeded. 300 requests per minute allowed for free plan.' },
+  error: {
+    code: 'rate_limit_exceeded',
+    message: 'Rate limit exceeded. 300 requests per minute allowed for free plan.',
+  },
 };
 
 describe('getAgent 429 rate_limit_exceeded retry', () => {
@@ -72,8 +76,7 @@ describe('getAgent 429 rate_limit_exceeded retry', () => {
 
     // Default backoff is bounded and small; the whole retry budget must stay
     // well under the deadline cap, not hang.
-    const worstCase =
-      GET_AGENT_RATE_LIMIT_DEFAULT_BACKOFF_MS * GET_AGENT_RATE_LIMIT_MAX_ATTEMPTS + 1_000;
+    const worstCase = GET_AGENT_RATE_LIMIT_DEFAULT_BACKOFF_MS * GET_AGENT_RATE_LIMIT_MAX_ATTEMPTS + 1_000;
     expect(elapsedMs).toBeLessThan(worstCase);
   });
 
