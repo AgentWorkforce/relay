@@ -32,6 +32,7 @@ if (!isWithin(harnessDir, runnerPath)) {
 const workDir = await mkdtemp(path.join(tmpdir(), 'relayflow-1753-'));
 const stateDir = path.join(workDir, 'state');
 const logsDir = path.join(workDir, 'logs');
+const journalPath = path.join(stateDir, 'team', 'worker-logs', '.cursor-mcp-leases.json');
 const cwd = path.join(workDir, 'cwd');
 const fakeBinDir = path.join(workDir, 'fake-bin');
 const fakeMcp = path.join(fakeBinDir, process.platform === 'win32' ? 'agent-relay-mcp.cmd' : 'agent-relay-mcp');
@@ -163,6 +164,9 @@ try {
   const beforeCrash = generated;
   broker.kill('SIGKILL');
   await waitForProcessExit(broker, 10_000, 'broker crash');
+  const journalAfterCrash = arm === 'head'
+    ? await waitFor(() => readFile(journalPath, 'utf8').catch(() => null), 5_000, 'Cursor MCP journal after crash')
+    : await readFile(journalPath, 'utf8').catch(() => null);
 
   const oldBrokerUrl = brokerUrl;
   broker = spawn(binaryPath, ['init', '--api-port', '0', '--api-bind', '127.0.0.1', '--state-dir', stateDir], {
@@ -206,23 +210,22 @@ try {
   }
 
   const afterRelease = await readFile(cursorPath, 'utf8').catch(() => null);
-  const journalPath = path.join(logsDir, '.cursor-mcp-leases.json');
   const journalAfter = await readFile(journalPath, 'utf8').catch(() => null);
 
   let outcome;
   let signature;
   let details;
-  if (arm === 'base' && leakedCredential && afterRelease === beforeCrash && !journalAfter) {
+  if (arm === 'base' && leakedCredential && afterRelease === beforeCrash && !journalAfter && !journalAfterCrash) {
     outcome = 'bug';
     signature = 'cursor_mcp_credentials_leak_and_no_recovery';
     details = 'The base broker wrote raw credentials into Cursor MCP state and left that generated state behind after a crash/restart/release cycle without a recovery journal.';
-  } else if (arm === 'head' && !leakedCredential && afterRelease === original.toString('utf8') && !journalAfter) {
+  } else if (arm === 'head' && !leakedCredential && afterRelease === original.toString('utf8') && journalAfterCrash && !journalAfter) {
     outcome = 'fixed';
     signature = 'cursor_mcp_state_restores_or_removes_cleanly';
     details = 'The head broker used environment placeholders, restored the original Cursor MCP file on release after restart, and removed the retained lease state.';
   } else {
     throw new Error(
-      `Unexpected Cursor MCP cleanup observation: ${JSON.stringify({ arm, leakedCredential, restored: afterRelease === original.toString('utf8'), journalPresent: Boolean(journalAfter) })}`
+      `Unexpected Cursor MCP cleanup observation: ${JSON.stringify({ arm, leakedCredential, restored: afterRelease === original.toString('utf8'), journalAfterCrash: Boolean(journalAfterCrash), journalAfterRelease: Boolean(journalAfter) })}`
     );
   }
 
