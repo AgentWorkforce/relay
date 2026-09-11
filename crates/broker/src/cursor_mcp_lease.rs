@@ -28,6 +28,8 @@ struct LeaseState {
     /// replaced while a worker is running, but all generated-file I/O and
     /// cleanup must continue to address the original directory.
     cursor_dir: Option<fs::File>,
+    #[cfg(windows)]
+    cursor_identity: (u32, u64),
 }
 
 /// A kernel-held lock on the requested cwd. Locking the existing cwd rather
@@ -38,7 +40,11 @@ struct LeaseLock {
     #[cfg(unix)]
     _file: fs::File,
     #[cfg(not(unix))]
-    lock_path: PathBuf,
+    _file: fs::File,
+    #[cfg(windows)]
+    root: PathBuf,
+    #[cfg(windows)]
+    root_identity: (u32, u64),
 }
 
 enum CursorAcquireError {
@@ -104,22 +110,25 @@ impl LeaseLock {
         #[cfg(not(unix))]
         {
             let lock_path = root.join(".cursor-mcp-lease.lock");
-            let result = fs::OpenOptions::new()
+            let file = fs::OpenOptions::new()
+                .read(true)
                 .write(true)
-                .create_new(true)
-                .open(&lock_path);
-            match result {
-                Ok(mut file) => {
-                    use std::io::Write as _;
-                    let _ = writeln!(file, "{}", std::process::id());
-                    Ok(Self { lock_path })
-                }
-                Err(error) if error.kind() == io::ErrorKind::AlreadyExists => Err(io::Error::new(
+                .create(true)
+                .open(&lock_path)?;
+            file.try_lock().map_err(|error| match error {
+                fs::TryLockError::WouldBlock => io::Error::new(
                     io::ErrorKind::WouldBlock,
                     "another broker owns the Cursor MCP cwd lease",
-                )),
-                Err(error) => Err(error),
-            }
+                ),
+                fs::TryLockError::Error(error) => error,
+            })?;
+            Ok(Self {
+                _file: file,
+                #[cfg(windows)]
+                root: root.to_path_buf(),
+                #[cfg(windows)]
+                root_identity: windows_directory_identity(root)?,
+            })
         }
     }
 
@@ -150,13 +159,65 @@ impl LeaseLock {
     }
 }
 
-impl Drop for LeaseLock {
-    fn drop(&mut self) {
-        #[cfg(not(unix))]
-        {
-            let _ = fs::remove_file(&self.lock_path);
-        }
+#[cfg(windows)]
+fn windows_directory_identity(path: &Path) -> io::Result<(u32, u64)> {
+    use std::os::windows::fs::MetadataExt;
+    let metadata = fs::symlink_metadata(path)?;
+    if metadata.file_type().is_symlink() || !metadata.is_dir() || metadata.reparse_tag() != 0 {
+        return Err(invalid_path(format!(
+            "Cursor worker cwd is not a non-reparse directory: {}",
+            path.display()
+        )));
     }
+    Ok((metadata.volume_serial_number(), metadata.file_index()))
+}
+
+#[cfg(windows)]
+impl LeaseLock {
+    fn validate_root(&self) -> io::Result<()> {
+        let canonical = canonical_root(&self.root)?;
+        if canonical != self.root || windows_directory_identity(&canonical)? != self.root_identity {
+            return Err(io::Error::new(
+                io::ErrorKind::WouldBlock,
+                "Cursor worker cwd was replaced during lease",
+            ));
+        }
+        Ok(())
+    }
+}
+
+#[cfg(windows)]
+fn validate_windows_cursor_identity(
+    lock: &LeaseLock,
+    path: &Path,
+    expected: (u32, u64),
+) -> io::Result<()> {
+    lock.validate_root()?;
+    let cursor = path
+        .parent()
+        .ok_or_else(|| invalid_path("Cursor MCP path has no parent"))?;
+    if cursor != lock.root.join(".cursor") || windows_directory_identity(cursor)? != expected {
+        return Err(io::Error::new(
+            io::ErrorKind::WouldBlock,
+            "Cursor .cursor directory was replaced during lease",
+        ));
+    }
+    Ok(())
+}
+
+#[cfg(windows)]
+fn validate_windows_restore_path(lock: &LeaseLock, path: &Path) -> io::Result<()> {
+    lock.validate_root()?;
+    let cursor = path
+        .parent()
+        .ok_or_else(|| invalid_path("Cursor MCP path has no parent"))?;
+    if cursor != lock.root.join(".cursor") || windows_directory_identity(cursor).is_err() {
+        return Err(io::Error::new(
+            io::ErrorKind::WouldBlock,
+            "Cursor .cursor directory was replaced during cleanup",
+        ));
+    }
+    Ok(())
 }
 
 #[cfg(unix)]
@@ -202,10 +263,116 @@ enum JournalPreExisting {
     Present { contents_base64: String, mode: u32 },
 }
 
+#[cfg(windows)]
+#[repr(C)]
+struct WindowsDataBlob {
+    cb_data: u32,
+    pb_data: *mut u8,
+}
+
+#[cfg(windows)]
+#[link(name = "Crypt32")]
+unsafe extern "system" {
+    fn CryptProtectData(
+        data_in: *const WindowsDataBlob,
+        description: *const u16,
+        entropy: *const WindowsDataBlob,
+        reserved: *mut std::ffi::c_void,
+        prompt: *mut std::ffi::c_void,
+        flags: u32,
+        data_out: *mut WindowsDataBlob,
+    ) -> i32;
+    fn CryptUnprotectData(
+        data_in: *const WindowsDataBlob,
+        description: *mut *mut u16,
+        entropy: *const WindowsDataBlob,
+        reserved: *mut std::ffi::c_void,
+        prompt: *mut std::ffi::c_void,
+        flags: u32,
+        data_out: *mut WindowsDataBlob,
+    ) -> i32;
+}
+
+#[cfg(windows)]
+#[link(name = "Kernel32")]
+unsafe extern "system" {
+    fn LocalFree(memory: *mut std::ffi::c_void) -> *mut std::ffi::c_void;
+}
+
+#[cfg(windows)]
+fn protect_journal_bytes(bytes: &[u8]) -> io::Result<Vec<u8>> {
+    let input = WindowsDataBlob {
+        cb_data: bytes.len().try_into().map_err(|_| {
+            io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "Cursor MCP journal entry is too large",
+            )
+        })?,
+        pb_data: bytes.as_ptr() as *mut u8,
+    };
+    let mut output = WindowsDataBlob {
+        cb_data: 0,
+        pb_data: std::ptr::null_mut(),
+    };
+    let ok = unsafe {
+        CryptProtectData(
+            &input,
+            std::ptr::null(),
+            std::ptr::null(),
+            std::ptr::null_mut(),
+            std::ptr::null_mut(),
+            0,
+            &mut output,
+        )
+    };
+    if ok == 0 {
+        return Err(io::Error::last_os_error());
+    }
+    let result =
+        unsafe { std::slice::from_raw_parts(output.pb_data, output.cb_data as usize) }.to_vec();
+    unsafe { LocalFree(output.pb_data as *mut std::ffi::c_void) };
+    Ok(result)
+}
+
+#[cfg(windows)]
+fn unprotect_journal_bytes(bytes: &[u8]) -> io::Result<Vec<u8>> {
+    let input = WindowsDataBlob {
+        cb_data: bytes.len().try_into().map_err(|_| {
+            io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "Cursor MCP journal entry is too large",
+            )
+        })?,
+        pb_data: bytes.as_ptr() as *mut u8,
+    };
+    let mut output = WindowsDataBlob {
+        cb_data: 0,
+        pb_data: std::ptr::null_mut(),
+    };
+    let ok = unsafe {
+        CryptUnprotectData(
+            &input,
+            std::ptr::null_mut(),
+            std::ptr::null(),
+            std::ptr::null_mut(),
+            std::ptr::null_mut(),
+            0,
+            &mut output,
+        )
+    };
+    if ok == 0 {
+        return Err(io::Error::last_os_error());
+    }
+    let result =
+        unsafe { std::slice::from_raw_parts(output.pb_data, output.cb_data as usize) }.to_vec();
+    unsafe { LocalFree(output.pb_data as *mut std::ffi::c_void) };
+    Ok(result)
+}
+
 /// Tracks leases and a recovery journal. The journal contains pre-existing
 /// bytes and mode, which may themselves be sensitive user data; it is written
-/// 0600 and never contains generated Relay credentials because generated Cursor
-/// values are `${env:...}` placeholders.
+/// 0600 on Unix and protected with the current user's DPAPI on Windows. The
+/// generated Relay values are always `${env:...}` placeholders, never secrets.
 #[derive(Default)]
 pub(crate) struct CursorMcpLeaseRegistry {
     leases: HashMap<PathBuf, LeaseState>,
@@ -523,6 +690,8 @@ pub(crate) fn write_credential_file(path: &Path, contents: &[u8]) -> io::Result<
             options.mode(0o600);
         }
         let mut file = options.open(&temporary)?;
+        #[cfg(windows)]
+        secure_windows_file(&temporary)?;
         file.write_all(contents)?;
         file.sync_all()?;
         drop(file);
@@ -544,6 +713,53 @@ pub(crate) fn write_credential_file(path: &Path, contents: &[u8]) -> io::Result<
     result
 }
 
+#[cfg(windows)]
+fn secure_windows_file(path: &Path) -> io::Result<()> {
+    use std::process::Command;
+
+    // `icacls` is part of supported Windows installations. Resolve the SID
+    // rather than trusting a username, then remove inherited permissions and
+    // grant access only to the current user and SYSTEM. Fail closed if either
+    // utility is unavailable; an unprotected generated config must not be
+    // published because it may contain restored user configuration.
+    let whoami = Command::new("whoami")
+        .args(["/user", "/fo", "csv", "/nh"])
+        .output()?;
+    if !whoami.status.success() {
+        return Err(io::Error::new(
+            io::ErrorKind::PermissionDenied,
+            "unable to resolve current Windows user SID",
+        ));
+    }
+    let line = String::from_utf8_lossy(&whoami.stdout);
+    let sid = line
+        .trim()
+        .split(',')
+        .next_back()
+        .map(str::trim)
+        .map(|sid| sid.trim_matches('"'))
+        .filter(|sid| sid.starts_with("S-"))
+        .ok_or_else(|| {
+            io::Error::new(
+                io::ErrorKind::PermissionDenied,
+                "whoami did not return a Windows user SID",
+            )
+        })?;
+    let status = Command::new("icacls")
+        .arg(path)
+        .args(["/inheritance:r", "/grant:r"])
+        .arg(format!("{sid}:F"))
+        .arg("SYSTEM:F")
+        .output()?;
+    if !status.status.success() {
+        return Err(io::Error::new(
+            io::ErrorKind::PermissionDenied,
+            "unable to apply owner-only Windows ACL to generated Cursor config",
+        ));
+    }
+    Ok(())
+}
+
 #[cfg(not(unix))]
 fn restore_file(path: &Path, contents: &[u8], mode: u32) -> io::Result<()> {
     let _ = validate_target(path)?;
@@ -555,16 +771,22 @@ fn restore_file(path: &Path, contents: &[u8], mode: u32) -> io::Result<()> {
 }
 
 impl PreExisting {
-    fn journal(&self) -> JournalPreExisting {
-        match self {
+    fn journal(&self) -> io::Result<JournalPreExisting> {
+        Ok(match self {
             Self::Absent { created_dir } => JournalPreExisting::Absent {
                 created_dir: *created_dir,
             },
-            Self::Present { contents, mode } => JournalPreExisting::Present {
-                contents_base64: base64::engine::general_purpose::STANDARD.encode(contents),
-                mode: *mode,
-            },
-        }
+            Self::Present { contents, mode } => {
+                #[cfg(windows)]
+                let contents = protect_journal_bytes(contents)?;
+                #[cfg(not(windows))]
+                let contents = contents.clone();
+                JournalPreExisting::Present {
+                    contents_base64: base64::engine::general_purpose::STANDARD.encode(contents),
+                    mode: *mode,
+                }
+            }
+        })
     }
 
     fn from_journal(value: JournalPreExisting) -> io::Result<Self> {
@@ -573,12 +795,14 @@ impl PreExisting {
             JournalPreExisting::Present {
                 contents_base64,
                 mode,
-            } => Ok(Self::Present {
-                contents: base64::engine::general_purpose::STANDARD
+            } => {
+                let contents = base64::engine::general_purpose::STANDARD
                     .decode(contents_base64.as_bytes())
-                    .map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error))?,
-                mode,
-            }),
+                    .map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error))?;
+                #[cfg(windows)]
+                let contents = unprotect_journal_bytes(&contents)?;
+                Ok(Self::Present { contents, mode })
+            }
         }
     }
 }
@@ -680,6 +904,9 @@ impl CursorMcpLeaseRegistry {
             (created_dir, pre_existing)
         };
 
+        #[cfg(windows)]
+        let cursor_identity = windows_directory_identity(&canonical.join(".cursor"))?;
+
         let mut holders = HashSet::new();
         holders.insert(worker.clone());
         self.leases.insert(
@@ -689,6 +916,8 @@ impl CursorMcpLeaseRegistry {
                 holders,
                 lock,
                 cursor_dir,
+                #[cfg(windows)]
+                cursor_identity,
             },
         );
         self.path_by_worker.insert(worker.clone(), key.clone());
@@ -743,13 +972,14 @@ impl CursorMcpLeaseRegistry {
         }
         #[cfg(not(unix))]
         {
-            let _ = state;
             let path = self.path_by_worker.get(worker).ok_or_else(|| {
                 io::Error::new(
                     io::ErrorKind::NotFound,
                     format!("no Cursor MCP lease for worker '{worker}'"),
                 )
             })?;
+            #[cfg(windows)]
+            validate_windows_cursor_identity(&state.lock, path, state.cursor_identity)?;
             if validate_target(path)? {
                 Ok(Some(fs::read(path)?))
             } else {
@@ -779,13 +1009,14 @@ impl CursorMcpLeaseRegistry {
         }
         #[cfg(not(unix))]
         {
-            let _ = state;
             let path = self.path_by_worker.get(worker).ok_or_else(|| {
                 io::Error::new(
                     io::ErrorKind::NotFound,
                     format!("no Cursor MCP lease for worker '{worker}'"),
                 )
             })?;
+            #[cfg(windows)]
+            validate_windows_cursor_identity(&state.lock, path, state.cursor_identity)?;
             write_credential_file(path, contents)
         }
     }
@@ -899,53 +1130,58 @@ impl CursorMcpLeaseRegistry {
             Ok(())
         }
         #[cfg(not(unix))]
-        match pre_existing {
-            PreExisting::Absent { created_dir } => {
-                match fs::symlink_metadata(_path) {
-                    Ok(metadata) if metadata.file_type().is_symlink() => {
-                        return Err(invalid_path(
-                            "refusing to remove a symlink at generated Cursor MCP path",
-                        ));
+        {
+            #[cfg(windows)]
+            validate_windows_restore_path(lock, _path)?;
+            match pre_existing {
+                PreExisting::Absent { created_dir } => {
+                    match fs::symlink_metadata(_path) {
+                        Ok(metadata) if metadata.file_type().is_symlink() => {
+                            return Err(invalid_path(
+                                "refusing to remove a symlink at generated Cursor MCP path",
+                            ));
+                        }
+                        Ok(metadata) if !metadata.is_file() => {
+                            return Err(invalid_path(
+                                "refusing to remove a non-regular generated Cursor MCP path",
+                            ));
+                        }
+                        Ok(_) => {}
+                        Err(error) if error.kind() == io::ErrorKind::NotFound => {}
+                        Err(error) => return Err(error),
                     }
-                    Ok(metadata) if !metadata.is_file() => {
-                        return Err(invalid_path(
-                            "refusing to remove a non-regular generated Cursor MCP path",
-                        ));
+                    let removed = match fs::remove_file(_path) {
+                        Ok(()) => true,
+                        Err(error) if error.kind() == io::ErrorKind::NotFound => false,
+                        Err(error) => return Err(error),
+                    };
+                    if removed {
+                        sync_entry_parent(_path)?;
                     }
-                    Ok(_) => {}
-                    Err(error) if error.kind() == io::ErrorKind::NotFound => {}
-                    Err(error) => return Err(error),
-                }
-                let removed = match fs::remove_file(_path) {
-                    Ok(()) => true,
-                    Err(error) if error.kind() == io::ErrorKind::NotFound => false,
-                    Err(error) => return Err(error),
-                };
-                if removed {
-                    sync_entry_parent(_path)?;
-                }
-                if *created_dir {
-                    if let Some(dir) = _path.parent() {
-                        if fs::remove_dir(dir).is_ok() {
-                            sync_entry_parent(dir)?;
+                    if *created_dir {
+                        if let Some(dir) = _path.parent() {
+                            if fs::remove_dir(dir).is_ok() {
+                                sync_entry_parent(dir)?;
+                            }
                         }
                     }
                 }
+                PreExisting::Present { contents, mode } => restore_file(_path, contents, *mode)?,
             }
-            PreExisting::Present { contents, mode } => restore_file(path, contents, *mode)?,
-        }
-        #[cfg(not(unix))]
-        {
+            #[cfg(windows)]
+            validate_windows_restore_path(lock, _path)?;
             Ok(())
         }
     }
 
-    fn journal_entries(&self) -> Vec<JournalEntry> {
+    fn journal_entries(&self) -> io::Result<Vec<JournalEntry>> {
         self.leases
             .iter()
-            .map(|(path, state)| JournalEntry {
-                path: path.clone(),
-                pre_existing: state.pre_existing.journal(),
+            .map(|(path, state)| {
+                Ok(JournalEntry {
+                    path: path.clone(),
+                    pre_existing: state.pre_existing.journal()?,
+                })
             })
             .collect()
     }
@@ -973,7 +1209,7 @@ impl CursorMcpLeaseRegistry {
                 Err(error) if error.kind() == io::ErrorKind::NotFound => HashMap::new(),
                 Err(error) => return Err(error),
             };
-            for entry in self.journal_entries() {
+            for entry in self.journal_entries()? {
                 merged.insert(entry.path.clone(), entry);
             }
             let body = serde_json::to_vec_pretty(&Journal {
@@ -1022,7 +1258,7 @@ impl CursorMcpLeaseRegistry {
                 tracing::warn!(path = %path.display(), "Cursor MCP lease recovery skipped a non-absolute path");
                 remaining.push(JournalEntry {
                     path,
-                    pre_existing: pre_existing.journal(),
+                    pre_existing: pre_existing.journal()?,
                 });
                 continue;
             }
@@ -1032,7 +1268,7 @@ impl CursorMcpLeaseRegistry {
                     tracing::warn!(path = %path.display(), "Cursor MCP lease recovery skipped an invalid path");
                     remaining.push(JournalEntry {
                         path,
-                        pre_existing: pre_existing.journal(),
+                        pre_existing: pre_existing.journal()?,
                     });
                     continue;
                 }
@@ -1042,7 +1278,7 @@ impl CursorMcpLeaseRegistry {
                 tracing::warn!(path = %path.display(), "Cursor MCP lease recovery skipped a non-canonical path");
                 remaining.push(JournalEntry {
                     path,
-                    pre_existing: pre_existing.journal(),
+                    pre_existing: pre_existing.journal()?,
                 });
                 continue;
             }
@@ -1052,7 +1288,7 @@ impl CursorMcpLeaseRegistry {
                     tracing::warn!(path = %path.display(), %error, "Cursor MCP lease recovery skipped an unsafe cwd");
                     remaining.push(JournalEntry {
                         path,
-                        pre_existing: pre_existing.journal(),
+                        pre_existing: pre_existing.journal()?,
                     });
                     continue;
                 }
@@ -1061,7 +1297,7 @@ impl CursorMcpLeaseRegistry {
                 tracing::warn!(path = %path.display(), "Cursor MCP lease recovery skipped a non-canonical path");
                 remaining.push(JournalEntry {
                     path,
-                    pre_existing: pre_existing.journal(),
+                    pre_existing: pre_existing.journal()?,
                 });
                 continue;
             }
@@ -1071,7 +1307,7 @@ impl CursorMcpLeaseRegistry {
                     tracing::warn!(path = %path.display(), %error, "Cursor MCP lease recovery deferred because another broker owns the cwd");
                     remaining.push(JournalEntry {
                         path,
-                        pre_existing: pre_existing.journal(),
+                        pre_existing: pre_existing.journal()?,
                     });
                     continue;
                 }
@@ -1079,7 +1315,7 @@ impl CursorMcpLeaseRegistry {
                     tracing::warn!(path = %path.display(), %error, "Cursor MCP lease recovery deferred because .cursor could not be opened safely");
                     remaining.push(JournalEntry {
                         path,
-                        pre_existing: pre_existing.journal(),
+                        pre_existing: pre_existing.journal()?,
                     });
                     held_locks.push(lock);
                     continue;
@@ -1089,7 +1325,7 @@ impl CursorMcpLeaseRegistry {
                 tracing::warn!(path = %path.display(), %error, "Cursor MCP lease recovery rejected an unsafe path");
                 remaining.push(JournalEntry {
                     path,
-                    pre_existing: pre_existing.journal(),
+                    pre_existing: pre_existing.journal()?,
                 });
                 held_locks.push(lock);
                 continue;
@@ -1098,7 +1334,7 @@ impl CursorMcpLeaseRegistry {
                 tracing::warn!(path = %path.display(), error = %error, "Cursor MCP lease recovery deferred");
                 remaining.push(JournalEntry {
                     path,
-                    pre_existing: pre_existing.journal(),
+                    pre_existing: pre_existing.journal()?,
                 });
                 held_locks.push(lock);
             } else {
@@ -1641,5 +1877,23 @@ mod tests {
         assert_eq!(read(&first), b"first-original");
         assert_eq!(read(&second), b"second-original");
         assert!(journal.exists(), "bad entry must remain journaled");
+    }
+
+    #[cfg(not(unix))]
+    #[test]
+    fn windows_lease_lock_is_reusable_after_owner_exit() {
+        let dir = tempdir().unwrap();
+        let first = LeaseLock::acquire(dir.path()).unwrap();
+        let error = match LeaseLock::acquire(dir.path()) {
+            Ok(_) => panic!("second broker must not acquire a held cwd lease"),
+            Err(error) => error,
+        };
+        assert_eq!(error.kind(), io::ErrorKind::WouldBlock);
+        drop(first);
+
+        // The stable lock file remains on disk, but the kernel lock is released
+        // with the owning handle. A later broker can recover after a clean exit
+        // and the same mechanism also releases on process termination.
+        let _second = LeaseLock::acquire(dir.path()).unwrap();
     }
 }
