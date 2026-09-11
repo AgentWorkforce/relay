@@ -35,7 +35,10 @@ struct LeaseState {
 /// behind and makes separate broker processes fail closed before they can
 /// overwrite one another's placeholder config.
 struct LeaseLock {
+    #[cfg(unix)]
     _file: fs::File,
+    #[cfg(not(unix))]
+    lock_path: PathBuf,
 }
 
 #[cfg(unix)]
@@ -81,14 +84,6 @@ impl LeaseLock {
 
 impl LeaseLock {
     fn acquire(root: &Path) -> io::Result<Self> {
-        #[cfg(not(unix))]
-        {
-            let _ = root;
-            return Err(io::Error::new(
-                io::ErrorKind::Unsupported,
-                "Cursor MCP leasing requires kernel directory locks on this platform",
-            ));
-        }
         #[cfg(unix)]
         {
             let file = open_dir_nofollow(root)?;
@@ -100,6 +95,26 @@ impl LeaseLock {
                 fs::TryLockError::Error(error) => error,
             })?;
             Ok(Self { _file: file })
+        }
+        #[cfg(not(unix))]
+        {
+            let lock_path = root.join(".cursor-mcp-lease.lock");
+            let result = fs::OpenOptions::new()
+                .write(true)
+                .create_new(true)
+                .open(&lock_path);
+            match result {
+                Ok(mut file) => {
+                    use std::io::Write as _;
+                    let _ = writeln!(file, "{}", std::process::id());
+                    Ok(Self { lock_path })
+                }
+                Err(error) if error.kind() == io::ErrorKind::AlreadyExists => Err(io::Error::new(
+                    io::ErrorKind::WouldBlock,
+                    "another broker owns the Cursor MCP cwd lease",
+                )),
+                Err(error) => Err(error),
+            }
         }
     }
 
@@ -126,6 +141,15 @@ impl LeaseLock {
         {
             let _ = create_cursor;
             Ok((lock, None, false))
+        }
+    }
+}
+
+impl Drop for LeaseLock {
+    fn drop(&mut self) {
+        #[cfg(not(unix))]
+        {
+            let _ = fs::remove_file(&self.lock_path);
         }
     }
 }
@@ -166,7 +190,7 @@ struct JournalEntry {
     pre_existing: JournalPreExisting,
 }
 
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 enum JournalPreExisting {
     Absent { created_dir: bool },
@@ -898,8 +922,23 @@ impl CursorMcpLeaseRegistry {
                 Err(error) => Err(error),
             }
         } else {
+            let mut merged: HashMap<PathBuf, JournalEntry> = match fs::read(path) {
+                Ok(body) => match serde_json::from_slice::<Journal>(&body) {
+                    Ok(journal) => journal
+                        .entries
+                        .into_iter()
+                        .map(|entry| (entry.path.clone(), entry))
+                        .collect(),
+                    Err(error) => return Err(io::Error::new(io::ErrorKind::InvalidData, error)),
+                },
+                Err(error) if error.kind() == io::ErrorKind::NotFound => HashMap::new(),
+                Err(error) => return Err(error),
+            };
+            for entry in self.journal_entries() {
+                merged.insert(entry.path.clone(), entry);
+            }
             let body = serde_json::to_vec_pretty(&Journal {
-                entries: self.journal_entries(),
+                entries: merged.into_values().collect(),
             })
             .map_err(|error| io::Error::other(error.to_string()))?;
             write_credential_file(path, &body)
@@ -931,35 +970,68 @@ impl CursorMcpLeaseRegistry {
         // that this recovery pass would then unlink or replace.
         let mut held_locks = Vec::new();
         for entry in journal.entries {
-            let pre_existing = PreExisting::from_journal(entry.pre_existing)?;
-            if !entry.path.is_absolute() {
-                return Err(invalid_path(
-                    "Cursor MCP lease journal path must be absolute",
-                ));
+            let path = entry.path.clone();
+            let pre_existing = match PreExisting::from_journal(entry.pre_existing.clone()) {
+                Ok(pre_existing) => pre_existing,
+                Err(error) => {
+                    tracing::warn!(path = %path.display(), %error, "Cursor MCP lease recovery skipped an undecodable entry");
+                    remaining.push(entry);
+                    continue;
+                }
+            };
+            if !path.is_absolute() {
+                tracing::warn!(path = %path.display(), "Cursor MCP lease recovery skipped a non-absolute path");
+                remaining.push(JournalEntry {
+                    path,
+                    pre_existing: pre_existing.journal(),
+                });
+                continue;
             }
-            let root = entry
-                .path
-                .parent()
-                .and_then(Path::parent)
-                .ok_or_else(|| invalid_path("invalid Cursor MCP lease journal path"))?;
+            let root = match path.parent().and_then(Path::parent) {
+                Some(root) => root,
+                None => {
+                    tracing::warn!(path = %path.display(), "Cursor MCP lease recovery skipped an invalid path");
+                    remaining.push(JournalEntry {
+                        path,
+                        pre_existing: pre_existing.journal(),
+                    });
+                    continue;
+                }
+            };
             let expected_path = root.join(".cursor").join("mcp.json");
-            if entry.path != expected_path {
-                return Err(invalid_path(
-                    "Cursor MCP lease journal path is outside its cwd",
-                ));
+            if path != expected_path {
+                tracing::warn!(path = %path.display(), "Cursor MCP lease recovery skipped a non-canonical path");
+                remaining.push(JournalEntry {
+                    path,
+                    pre_existing: pre_existing.journal(),
+                });
+                continue;
             }
-            let canonical = canonical_root(root)?;
-            if entry.path != canonical.join(".cursor").join("mcp.json") {
-                return Err(invalid_path(
-                    "Cursor MCP lease journal path is not canonical",
-                ));
+            let canonical = match canonical_root(root) {
+                Ok(canonical) => canonical,
+                Err(error) => {
+                    tracing::warn!(path = %path.display(), %error, "Cursor MCP lease recovery skipped an unsafe cwd");
+                    remaining.push(JournalEntry {
+                        path,
+                        pre_existing: pre_existing.journal(),
+                    });
+                    continue;
+                }
+            };
+            if path != canonical.join(".cursor").join("mcp.json") {
+                tracing::warn!(path = %path.display(), "Cursor MCP lease recovery skipped a non-canonical path");
+                remaining.push(JournalEntry {
+                    path,
+                    pre_existing: pre_existing.journal(),
+                });
+                continue;
             }
             let lock = match LeaseLock::acquire(root) {
                 Ok(lock) => lock,
                 Err(error) => {
-                    tracing::warn!(path = %entry.path.display(), %error, "Cursor MCP lease recovery deferred because another broker owns the cwd");
+                    tracing::warn!(path = %path.display(), %error, "Cursor MCP lease recovery deferred because another broker owns the cwd");
                     remaining.push(JournalEntry {
-                        path: entry.path,
+                        path,
                         pre_existing: pre_existing.journal(),
                     });
                     continue;
@@ -969,9 +1041,9 @@ impl CursorMcpLeaseRegistry {
                 Ok((cursor, _)) => Some(cursor),
                 Err(error) if error.kind() == io::ErrorKind::NotFound => None,
                 Err(error) => {
-                    tracing::warn!(path = %entry.path.display(), %error, "Cursor MCP lease recovery deferred because .cursor could not be opened safely");
+                    tracing::warn!(path = %path.display(), %error, "Cursor MCP lease recovery deferred because .cursor could not be opened safely");
                     remaining.push(JournalEntry {
-                        path: entry.path,
+                        path,
                         pre_existing: pre_existing.journal(),
                     });
                     held_locks.push(lock);
@@ -979,20 +1051,18 @@ impl CursorMcpLeaseRegistry {
                 }
             };
             if let Err(error) = validate_cursor_root(root) {
-                tracing::warn!(path = %entry.path.display(), %error, "Cursor MCP lease recovery rejected an unsafe path");
+                tracing::warn!(path = %path.display(), %error, "Cursor MCP lease recovery rejected an unsafe path");
                 remaining.push(JournalEntry {
-                    path: entry.path,
+                    path,
                     pre_existing: pre_existing.journal(),
                 });
                 held_locks.push(lock);
                 continue;
             }
-            if let Err(error) =
-                Self::restore(&entry.path, &pre_existing, &lock, cursor_dir.as_ref())
-            {
-                tracing::warn!(path = %entry.path.display(), error = %error, "Cursor MCP lease recovery deferred");
+            if let Err(error) = Self::restore(&path, &pre_existing, &lock, cursor_dir.as_ref()) {
+                tracing::warn!(path = %path.display(), error = %error, "Cursor MCP lease recovery deferred");
                 remaining.push(JournalEntry {
-                    path: entry.path,
+                    path,
                     pre_existing: pre_existing.journal(),
                 });
                 held_locks.push(lock);
@@ -1418,5 +1488,52 @@ mod tests {
         );
         assert_eq!(read(&path), b"outside bytes");
         assert_eq!(read(&outside_file), b"outside bytes");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn journal_recovery_skips_bad_entry_and_restores_later_entries() {
+        let dir = tempdir().unwrap();
+        let journal = dir.path().join("journal.json");
+        let root = dir.path().canonicalize().unwrap();
+        let first = root.join(".cursor/mcp.json");
+        let second_root = dir.path().join("other");
+        fs::create_dir(&second_root).unwrap();
+        let second = second_root.join(".cursor/mcp.json");
+        fs::create_dir_all(first.parent().unwrap()).unwrap();
+        fs::create_dir_all(second.parent().unwrap()).unwrap();
+        fs::write(&first, b"first-original").unwrap();
+        fs::write(&second, b"second-original").unwrap();
+        let body = serde_json::to_vec(&Journal {
+            entries: vec![
+                JournalEntry {
+                    path: first.clone(),
+                    pre_existing: JournalPreExisting::Present {
+                        contents_base64: "!!!not-base64!!!".into(),
+                        mode: 0o600,
+                    },
+                },
+                JournalEntry {
+                    path: second.clone(),
+                    pre_existing: JournalPreExisting::Present {
+                        contents_base64: base64::engine::general_purpose::STANDARD
+                            .encode(b"second-original"),
+                        mode: 0o600,
+                    },
+                },
+            ],
+        })
+        .unwrap();
+        fs::write(&journal, body).unwrap();
+
+        let mut recovery = CursorMcpLeaseRegistry {
+            leases: HashMap::new(),
+            path_by_worker: HashMap::new(),
+            journal_path: Some(journal.clone()),
+        };
+        recovery.recover_journal().unwrap();
+        assert_eq!(read(&first), b"first-original");
+        assert_eq!(read(&second), b"second-original");
+        assert!(journal.exists(), "bad entry must remain journaled");
     }
 }

@@ -364,7 +364,6 @@ impl WorkerRegistry {
             );
         }
         let cursor_mcp_journal = worker_logs_dir.join(".cursor-mcp-leases.json");
-
         Self {
             workers: HashMap::new(),
             event_tx,
