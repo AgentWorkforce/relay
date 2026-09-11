@@ -386,7 +386,6 @@ impl BrokerRuntime {
                         return;
                     }
                 };
-                let mut preregistration_warning: Option<String> = None;
                 // Caller-supplied agent_token is authoritative. In fleet mode it
                 // was minted by the node control connection, and the worker must
                 // receive that exact token before its harness starts.
@@ -433,8 +432,8 @@ impl BrokerRuntime {
                             // without a node binding; the engine only
                             // delivers to `via_node` agents in node-only
                             // delivery. Bind it to this node so it is
-                            // deliverable, surfacing a loud warning if the
-                            // bind fails.
+                            // deliverable. A failed binding is an admission
+                            // failure: never launch an unreachable worker.
                             let bind_warning =
                                 super::relaycast_events::bind_http_registered_agent_to_node(
                                     relaycast_http,
@@ -443,7 +442,21 @@ impl BrokerRuntime {
                                 )
                                 .await;
                             if let Some(warning) = bind_warning {
-                                preregistration_warning = Some(warning);
+                                seed_supplied_agent_token(relaycast_http, &name, &token);
+                                super::identity_cleanup::schedule_identity_cleanup(
+                                    workers,
+                                    fleet_control_tx,
+                                    fleet_delivery_book,
+                                    fleet_inventory,
+                                    relaycast_http,
+                                    &name,
+                                    true,
+                                    Some(super::identity_cleanup::CleanupCompletion::Api(
+                                        reply,
+                                        Err(warning),
+                                    )),
+                                );
+                                return;
                             } else {
                                 match super::fleet::resolve_fleet_agent_token_identity(
                                     relaycast_http,
@@ -764,7 +777,7 @@ impl BrokerRuntime {
                                 "pid":pid,
                                 "source":"http_api",
                                 "pre_registered": worker_relay_key.is_some(),
-                                "registration_warning": preregistration_warning.clone(),
+                                "registration_warning": null,
                             }),
                         )
                         .await;
@@ -794,7 +807,7 @@ impl BrokerRuntime {
                             "channels": effective_spec.channels,
                             "sessionId": effective_spec.session_id.clone(),
                             "pre_registered": worker_relay_key.is_some(),
-                            "warning": preregistration_warning,
+                            "warning": null,
                         })));
                     }
                     Err(e) => {

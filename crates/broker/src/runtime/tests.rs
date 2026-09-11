@@ -6347,3 +6347,113 @@ async fn owned_cleanup_retries_delete_without_repeating_acknowledged_deregistrat
         .contains_key(&name));
     fixture.runtime.workers.release("unrelated").await.unwrap();
 }
+
+#[tokio::test]
+async fn http_spawn_binding_failure_stops_before_launch_and_cleans_owned_identity() {
+    use crate::listen_api::ListenApiRequest;
+    use httpmock::{
+        Method::{GET, POST},
+        MockServer,
+    };
+    use tokio::sync::oneshot;
+    let server = MockServer::start();
+    let create = server.mock(|when, then| {
+        when.method(POST).path("/v1/agents");
+        then.status(201).json_body(json!({"ok":true,"data":{
+            "id":"owned-binding-id","workspace_id":"ws_demo","name":"binding-refused",
+            "status":"active","created_at":"2026-09-11T12:00:00Z","token":"at_live_binding_fixture"
+        }}));
+    });
+    let bind = server.mock(|when, then| {
+        when.method(POST).path("/v1/nodes/test-node/agents");
+        then.status(503).json_body(json!({"ok":false,"error":{
+            "code":"workspace_busy","message":"binding admission busy"
+        }}));
+    });
+    let scope = server.mock(|when, then| {
+        when.method(GET).path("/v1/agents/binding-refused");
+        then.status(200)
+            .json_body(json!({"ok":true,"data":{"channels":[]}}));
+    });
+    let cleanup = server.mock(|when, then| {
+        when.method(POST).path("/v1/agents/release");
+        then.status(200)
+            .json_body(json!({"ok":true,"data":{"status":"completed"}}));
+    });
+    let registry = make_worker_registry_with_worker("unrelated-binding-worker").await;
+    let mut fixture = worker_event_runtime_fixture(registry, HashMap::new());
+    fixture.runtime.relaycast_http =
+        RelaycastHttpClient::new(Some(server.base_url()), "rk_live_test", "broker", "codex");
+    let name = WorkerName::from("binding-refused");
+    let (reply, mut result) = oneshot::channel();
+    fixture
+        .runtime
+        .handle_api_request(ListenApiRequest::Spawn {
+            name: name.clone(),
+            cli: "missing-binding-fixture-cli".into(),
+            transport: None,
+            model: None,
+            args: vec![],
+            task: None,
+            registration_metadata: Default::default(),
+            channels: Some(vec![]),
+            cwd: None,
+            team: None,
+            shadow_of: None,
+            shadow_mode: None,
+            continue_from: None,
+            idle_threshold_secs: None,
+            exit_after_task: false,
+            skip_relay_prompt: true,
+            restart_policy: Box::new(None),
+            harness_config: None,
+            agent_token: None,
+            agent_result_schema: None,
+            replay_buffer: crate::replay_buffer::ReplayBuffer::new(16),
+            reply,
+        })
+        .await;
+    let response = tokio::time::timeout(Duration::from_secs(3), async {
+        loop {
+            fixture.runtime.reconcile_identity_cleanups().await;
+            if let Ok(response) = result.try_recv() {
+                break response;
+            }
+            tokio::task::yield_now().await;
+        }
+    })
+    .await;
+    let unrelated_survived = fixture
+        .runtime
+        .workers
+        .has_worker("unrelated-binding-worker");
+    fixture
+        .runtime
+        .workers
+        .release("unrelated-binding-worker")
+        .await
+        .unwrap();
+    let error = response
+        .expect("binding failure cleanup must settle")
+        .unwrap_err();
+    assert!(
+        error.contains("binding") && error.contains("workspace_busy"),
+        "{error}"
+    );
+    create.assert_hits(1);
+    bind.assert_hits(1);
+    scope.assert_hits(0);
+    cleanup.assert_hits(1);
+    assert!(unrelated_survived);
+    assert!(!fixture.runtime.workers.has_worker(&name));
+    assert!(!fixture
+        .runtime
+        .workers
+        .identity_cleanups
+        .contains_key(&name));
+    assert!(!fixture
+        .runtime
+        .workers
+        .owned_spawn_generations
+        .contains_key(&name));
+}
