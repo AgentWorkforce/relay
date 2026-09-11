@@ -405,11 +405,13 @@ export function registerFleetCommands(
           // exact workspace Cloud returned.
           try {
             const target = sandbox.relaycastTarget;
+            const returnedRelayWorkspaceId =
+              'relayWorkspaceId' in sandbox ? sandbox.relayWorkspaceId?.trim() : undefined;
             if (
               (sandboxProvider === 'agent37' && target.route !== 'agent37-isolated') ||
-              target.workspaceId.trim() !== relayWorkspaceId.trim() ||
-              (sandbox.outcome === 'provisioned' &&
-                sandbox.relayWorkspaceId.trim() !== relayWorkspaceId.trim())
+              (returnedRelayWorkspaceId !== undefined &&
+                target.workspaceId.trim() !== returnedRelayWorkspaceId) ||
+              (sandbox.outcome === 'provisioned' && !returnedRelayWorkspaceId)
             ) {
               throw new Error(
                 sandboxProvider === 'agent37' && target.route !== 'agent37-isolated'
@@ -427,8 +429,7 @@ export function registerFleetCommands(
             const postEnsureWorkspaceId = postEnsureWorkspace.id?.trim();
             if (
               !postEnsureWorkspaceId ||
-              (sandbox.outcome === 'provisioned' &&
-                postEnsureWorkspaceId !== sandbox.relayWorkspaceId.trim()) ||
+              (sandbox.outcome === 'provisioned' && postEnsureWorkspaceId !== returnedRelayWorkspaceId) ||
               postEnsureWorkspaceId !== target.workspaceId.trim()
             ) {
               throw new Error(
@@ -540,7 +541,16 @@ export function registerFleetCommands(
             }
           }
 
-          const relay = deps.sdk.createAgentRelay({ ...relaycastClientOptions, token: agentToken });
+          // A sandbox launcher token is already scoped to the exact workspace
+          // and Relaycast deployment selected by Cloud. Keep the workspace key
+          // only on `workspaceRelay`, where it mints and releases that token;
+          // passing both authorities to the agent client is rejected by the
+          // SDK and would prevent every sandbox placement from dispatching.
+          const relay = deps.sdk.createAgentRelay(
+            sandbox
+              ? { token: agentToken, baseUrl: relaycastClientOptions.baseUrl }
+              : { ...relaycastClientOptions, token: agentToken }
+          );
           // Placement alone only proves the node accepted the dispatch. A node
           // running an obsolete broker advertises `spawn:<cli>` capacity, acks
           // the invocation and launches nothing, which is indistinguishable from

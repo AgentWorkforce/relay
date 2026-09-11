@@ -1,0 +1,20 @@
+{
+  "version": 1,
+  "id": "1746-sandbox-launcher-token-authority",
+  "kind": "bugfix",
+  "title": "Dispatch a Fleet sandbox with one launcher-token authority",
+  "runner": {
+    "command": ["node", "tests/relayflows/cases/1746-sandbox-launcher-token-authority/run.mjs"]
+  },
+  "timeoutSeconds": 900,
+  "expected": {
+    "base": {
+      "outcome": "bug",
+      "signature": "sandbox_dispatch_rejected_for_dual_credentials"
+    },
+    "head": {
+      "outcome": "fixed",
+      "signature": "sandbox_dispatch_uses_scoped_launcher_token_only"
+    }
+  }
+}
