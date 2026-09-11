@@ -22,7 +22,7 @@ enum PreExisting {
 struct LeaseState {
     pre_existing: PreExisting,
     holders: HashSet<WorkerName>,
-    _lock: LeaseLock,
+    lock: LeaseLock,
 }
 
 /// A kernel-held lock on the requested cwd. Locking the existing cwd rather
@@ -31,6 +31,33 @@ struct LeaseState {
 /// overwrite one another's placeholder config.
 struct LeaseLock {
     _file: fs::File,
+}
+
+#[cfg(unix)]
+impl LeaseLock {
+    fn root_fd(&self) -> std::os::unix::io::RawFd {
+        use std::os::unix::io::AsRawFd;
+        self._file.as_raw_fd()
+    }
+
+    fn open_cursor_dir(&self, create: bool) -> io::Result<(fs::File, bool)> {
+        let cursor = std::ffi::CString::new(".cursor").expect("literal has no NUL");
+        match openat_dir(self.root_fd(), &cursor) {
+            Ok(file) => Ok((file, false)),
+            Err(error) if error.kind() == io::ErrorKind::NotFound && create => {
+                let mode = 0o700;
+                let result = unsafe { libc::mkdirat(self.root_fd(), cursor.as_ptr(), mode) };
+                if result != 0 {
+                    let error = io::Error::last_os_error();
+                    if error.kind() != io::ErrorKind::AlreadyExists {
+                        return Err(error);
+                    }
+                }
+                Ok((openat_dir(self.root_fd(), &cursor)?, true))
+            }
+            Err(error) => Err(error),
+        }
+    }
 }
 
 impl LeaseLock {
@@ -45,7 +72,7 @@ impl LeaseLock {
         }
         #[cfg(unix)]
         {
-            let file = fs::File::open(root)?;
+            let file = open_dir_nofollow(root)?;
             file.try_lock().map_err(|error| match error {
                 fs::TryLockError::WouldBlock => io::Error::new(
                     io::ErrorKind::WouldBlock,
@@ -56,6 +83,31 @@ impl LeaseLock {
             Ok(Self { _file: file })
         }
     }
+}
+
+#[cfg(unix)]
+fn open_dir_nofollow(path: &Path) -> io::Result<fs::File> {
+    use std::os::unix::ffi::OsStrExt;
+    use std::os::unix::io::FromRawFd;
+    let path = std::ffi::CString::new(path.as_os_str().as_bytes())
+        .map_err(|_| invalid_path("directory path contains NUL"))?;
+    let flags = libc::O_RDONLY | libc::O_DIRECTORY | libc::O_NOFOLLOW | libc::O_CLOEXEC;
+    let fd = unsafe { libc::open(path.as_ptr(), flags) };
+    if fd < 0 {
+        return Err(io::Error::last_os_error());
+    }
+    Ok(unsafe { fs::File::from_raw_fd(fd) })
+}
+
+#[cfg(unix)]
+fn openat_dir(parent: std::os::unix::io::RawFd, name: &std::ffi::CStr) -> io::Result<fs::File> {
+    use std::os::unix::io::FromRawFd;
+    let flags = libc::O_RDONLY | libc::O_DIRECTORY | libc::O_NOFOLLOW | libc::O_CLOEXEC;
+    let fd = unsafe { libc::openat(parent, name.as_ptr(), flags) };
+    if fd < 0 {
+        return Err(io::Error::last_os_error());
+    }
+    Ok(unsafe { fs::File::from_raw_fd(fd) })
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -152,17 +204,6 @@ fn lease_path(root: &Path) -> io::Result<(PathBuf, PathBuf)> {
 }
 
 #[cfg(unix)]
-fn file_mode(path: &Path) -> io::Result<u32> {
-    use std::os::unix::fs::PermissionsExt;
-    Ok(open_read_nofollow(path)?.metadata()?.permissions().mode() & 0o777)
-}
-
-#[cfg(not(unix))]
-fn file_mode(_path: &Path) -> io::Result<u32> {
-    Ok(0)
-}
-
-#[cfg(unix)]
 fn set_mode(path: &Path, mode: u32) -> io::Result<()> {
     use std::os::unix::fs::PermissionsExt;
     open_write_nofollow(path)?.set_permissions(fs::Permissions::from_mode(mode & 0o777))
@@ -238,6 +279,7 @@ fn open_write_nofollow(path: &Path) -> io::Result<fs::File> {
         .open(path)
 }
 
+#[cfg(not(unix))]
 fn read_regular_file(path: &Path) -> io::Result<Vec<u8>> {
     #[cfg(unix)]
     {
@@ -250,6 +292,170 @@ fn read_regular_file(path: &Path) -> io::Result<Vec<u8>> {
     {
         fs::read(path)
     }
+}
+
+#[cfg(unix)]
+fn open_cursor_target(cursor: &fs::File) -> io::Result<Option<fs::File>> {
+    use std::os::unix::io::{AsRawFd, FromRawFd};
+    let name = std::ffi::CString::new("mcp.json").expect("literal has no NUL");
+    let flags = libc::O_RDONLY | libc::O_NOFOLLOW | libc::O_CLOEXEC;
+    let fd = unsafe { libc::openat(cursor.as_raw_fd(), name.as_ptr(), flags) };
+    if fd < 0 {
+        let error = io::Error::last_os_error();
+        return if error.kind() == io::ErrorKind::NotFound {
+            Ok(None)
+        } else if error.raw_os_error() == Some(libc::ELOOP) {
+            Err(invalid_path(".cursor/mcp.json must not be a symlink"))
+        } else {
+            Err(error)
+        };
+    }
+    let file = unsafe { fs::File::from_raw_fd(fd) };
+    if !file.metadata()?.is_file() {
+        return Err(invalid_path(".cursor/mcp.json must be a regular file"));
+    }
+    Ok(Some(file))
+}
+
+#[cfg(unix)]
+fn read_cursor_target(cursor: &fs::File) -> io::Result<Option<(Vec<u8>, u32)>> {
+    use std::os::unix::fs::PermissionsExt;
+    let Some(mut file) = open_cursor_target(cursor)? else {
+        return Ok(None);
+    };
+    let mut contents = Vec::new();
+    file.read_to_end(&mut contents)?;
+    let mode = file.metadata()?.permissions().mode() & 0o777;
+    Ok(Some((contents, mode)))
+}
+
+#[cfg(unix)]
+fn write_cursor_target(cursor: &fs::File, contents: &[u8]) -> io::Result<()> {
+    use std::os::unix::io::{AsRawFd, FromRawFd};
+    let temp_name = format!(".mcp.json.{}.tmp", Uuid::new_v4().simple());
+    let temp = std::ffi::CString::new(temp_name.as_str()).expect("UUID has no NUL");
+    let target = std::ffi::CString::new("mcp.json").expect("literal has no NUL");
+    let flags = libc::O_WRONLY | libc::O_CREAT | libc::O_EXCL | libc::O_NOFOLLOW | libc::O_CLOEXEC;
+    let fd = unsafe { libc::openat(cursor.as_raw_fd(), temp.as_ptr(), flags, 0o600) };
+    if fd < 0 {
+        return Err(io::Error::last_os_error());
+    }
+    let mut file = unsafe { fs::File::from_raw_fd(fd) };
+    let result = (|| {
+        file.write_all(contents)?;
+        file.sync_all()?;
+        drop(file);
+        let result = unsafe {
+            libc::renameat(
+                cursor.as_raw_fd(),
+                temp.as_ptr(),
+                cursor.as_raw_fd(),
+                target.as_ptr(),
+            )
+        };
+        if result != 0 {
+            return Err(io::Error::last_os_error());
+        }
+        let target_file = open_cursor_target(cursor)?.ok_or_else(|| {
+            io::Error::new(
+                io::ErrorKind::NotFound,
+                "renamed Cursor MCP target disappeared",
+            )
+        })?;
+        target_file.sync_all()?;
+        cursor.sync_all()
+    })();
+    if result.is_err() {
+        let _ = unsafe { libc::unlinkat(cursor.as_raw_fd(), temp.as_ptr(), 0) };
+    }
+    result
+}
+
+#[cfg(unix)]
+fn remove_cursor_target(cursor: &fs::File) -> io::Result<bool> {
+    use std::os::unix::io::AsRawFd;
+    let name = std::ffi::CString::new("mcp.json").expect("literal has no NUL");
+    let _ = open_cursor_target(cursor)?;
+    let result = unsafe { libc::unlinkat(cursor.as_raw_fd(), name.as_ptr(), 0) };
+    if result == 0 {
+        cursor.sync_all()?;
+        return Ok(true);
+    }
+    let error = io::Error::last_os_error();
+    if error.kind() == io::ErrorKind::NotFound {
+        Ok(false)
+    } else {
+        Err(error)
+    }
+}
+
+#[cfg(unix)]
+fn remove_cursor_dir(lock: &LeaseLock, cursor: &fs::File) -> io::Result<()> {
+    let name = std::ffi::CString::new(".cursor").expect("literal has no NUL");
+    let result = unsafe { libc::unlinkat(lock.root_fd(), name.as_ptr(), libc::AT_REMOVEDIR) };
+    if result == 0 {
+        lock._file.sync_all()?;
+        return Ok(());
+    }
+    let error = io::Error::last_os_error();
+    if error.kind() == io::ErrorKind::NotFound {
+        Ok(())
+    } else {
+        let _ = cursor;
+        Err(error)
+    }
+}
+
+/// Write the Cursor config through directory descriptors. This is used after
+/// the registry has acquired the cwd lease; the descriptor-relative rename
+/// remains safe even if `.cursor` is concurrently renamed or replaced.
+#[cfg(unix)]
+pub(crate) fn write_cursor_credential_file(root: &Path, contents: &[u8]) -> io::Result<()> {
+    use std::os::unix::io::AsRawFd;
+    let root_file = open_dir_nofollow(root)?;
+    let cursor = std::ffi::CString::new(".cursor").expect("literal has no NUL");
+    let cursor_dir = match openat_dir(root_file.as_raw_fd(), &cursor) {
+        Ok(file) => file,
+        Err(error) if error.kind() == io::ErrorKind::NotFound => {
+            let result = unsafe { libc::mkdirat(root_file.as_raw_fd(), cursor.as_ptr(), 0o700) };
+            if result != 0 {
+                let error = io::Error::last_os_error();
+                if error.kind() != io::ErrorKind::AlreadyExists {
+                    return Err(error);
+                }
+            }
+            openat_dir(root_file.as_raw_fd(), &cursor)?
+        }
+        Err(error) => return Err(error),
+    };
+    write_cursor_target(&cursor_dir, contents)
+}
+
+#[cfg(not(unix))]
+pub(crate) fn write_cursor_credential_file(root: &Path, contents: &[u8]) -> io::Result<()> {
+    write_credential_file(&root.join(".cursor").join("mcp.json"), contents)
+}
+
+#[cfg(unix)]
+pub(crate) fn read_cursor_credential_file(root: &Path) -> io::Result<Vec<u8>> {
+    use std::os::unix::io::AsRawFd;
+    let root_file = open_dir_nofollow(root)?;
+    let cursor = std::ffi::CString::new(".cursor").expect("literal has no NUL");
+    let cursor_dir = openat_dir(root_file.as_raw_fd(), &cursor)?;
+    let Some(mut file) = open_cursor_target(&cursor_dir)? else {
+        return Err(io::Error::new(
+            io::ErrorKind::NotFound,
+            "Cursor MCP config missing",
+        ));
+    };
+    let mut contents = Vec::new();
+    file.read_to_end(&mut contents)?;
+    Ok(contents)
+}
+
+#[cfg(not(unix))]
+pub(crate) fn read_cursor_credential_file(root: &Path) -> io::Result<Vec<u8>> {
+    read_regular_file(&root.join(".cursor").join("mcp.json"))
 }
 
 /// Atomically write a generated credential-bearing config with owner-only
@@ -300,6 +506,7 @@ pub(crate) fn write_credential_file(path: &Path, contents: &[u8]) -> io::Result<
     result
 }
 
+#[cfg(not(unix))]
 fn restore_file(path: &Path, contents: &[u8], mode: u32) -> io::Result<()> {
     let _ = validate_target(path)?;
     write_credential_file(path, contents)?;
@@ -395,19 +602,19 @@ impl CursorMcpLeaseRegistry {
         }
 
         let lock = LeaseLock::acquire(&canonical)?;
-        // Re-check after taking the kernel lock so cooperating brokers cannot
-        // race a parent/file replacement between validation and capture.
-        let dir_existed = validate_cursor_dir(&canonical)?;
-        let pre_existing = if validate_target(&key)? {
-            PreExisting::Present {
-                contents: read_regular_file(&key)?,
-                mode: file_mode(&key)?,
-            }
+        // Re-check after taking the kernel lock using descriptor-relative
+        // operations. A hostile process can rename `.cursor` after a pathname
+        // check, but it cannot redirect the already-open directory descriptor.
+        #[cfg(unix)]
+        let (cursor_dir, created_dir) = lock.open_cursor_dir(true)?;
+        #[cfg(unix)]
+        let pre_existing = if let Some((contents, mode)) = read_cursor_target(&cursor_dir)? {
+            PreExisting::Present { contents, mode }
         } else {
-            PreExisting::Absent {
-                created_dir: !dir_existed,
-            }
+            PreExisting::Absent { created_dir }
         };
+        #[cfg(not(unix))]
+        let pre_existing = unreachable!("LeaseLock acquisition is unsupported on non-Unix");
 
         let mut holders = HashSet::new();
         holders.insert(worker.clone());
@@ -416,7 +623,7 @@ impl CursorMcpLeaseRegistry {
             LeaseState {
                 pre_existing,
                 holders,
-                _lock: lock,
+                lock,
             },
         );
         self.path_by_worker.insert(worker.clone(), key.clone());
@@ -481,7 +688,7 @@ impl CursorMcpLeaseRegistry {
                 mode: *mode,
             },
         };
-        self.restore(path, &pre_existing)?;
+        Self::restore(path, &pre_existing, &state.lock)?;
         let state = self.leases.remove(path).expect("lease checked above");
         self.path_by_worker.remove(worker);
         if let Err(error) = self.persist_journal() {
@@ -496,7 +703,46 @@ impl CursorMcpLeaseRegistry {
         Ok(())
     }
 
-    fn restore(&self, path: &Path, pre_existing: &PreExisting) -> io::Result<()> {
+    fn restore(_path: &Path, pre_existing: &PreExisting, lock: &LeaseLock) -> io::Result<()> {
+        #[cfg(unix)]
+        {
+            let cursor = match lock.open_cursor_dir(false) {
+                Ok((cursor, _)) => Some(cursor),
+                Err(error) if error.kind() == io::ErrorKind::NotFound => None,
+                Err(error) => return Err(error),
+            };
+            match pre_existing {
+                PreExisting::Absent { created_dir } => {
+                    if let Some(cursor) = cursor {
+                        let _ = remove_cursor_target(&cursor)?;
+                        if *created_dir {
+                            remove_cursor_dir(lock, &cursor)?;
+                        }
+                    }
+                }
+                PreExisting::Present { contents, mode } => {
+                    let cursor = cursor.ok_or_else(|| {
+                        io::Error::new(
+                            io::ErrorKind::NotFound,
+                            "Cursor directory disappeared during restore",
+                        )
+                    })?;
+                    write_cursor_target(&cursor, contents)?;
+                    let target = open_cursor_target(&cursor)?.ok_or_else(|| {
+                        io::Error::new(
+                            io::ErrorKind::NotFound,
+                            "Cursor MCP target disappeared after restore",
+                        )
+                    })?;
+                    use std::os::unix::fs::PermissionsExt;
+                    target.set_permissions(fs::Permissions::from_mode(*mode & 0o777))?;
+                    target.sync_all()?;
+                    cursor.sync_all()?;
+                }
+            }
+            Ok(())
+        }
+        #[cfg(not(unix))]
         match pre_existing {
             PreExisting::Absent { created_dir } => {
                 match fs::symlink_metadata(path) {
@@ -532,7 +778,10 @@ impl CursorMcpLeaseRegistry {
             }
             PreExisting::Present { contents, mode } => restore_file(path, contents, *mode)?,
         }
-        Ok(())
+        #[cfg(not(unix))]
+        {
+            Ok(())
+        }
     }
 
     fn journal_entries(&self) -> Vec<JournalEntry> {
@@ -565,6 +814,13 @@ impl CursorMcpLeaseRegistry {
     }
 
     fn recover_journal(&mut self) -> io::Result<()> {
+        self.recover_journal_with_hook(|| {})
+    }
+
+    fn recover_journal_with_hook<F>(&mut self, mut before_finalize: F) -> io::Result<()>
+    where
+        F: FnMut(),
+    {
         let Some(path) = self.journal_path.clone() else {
             return Ok(());
         };
@@ -576,6 +832,11 @@ impl CursorMcpLeaseRegistry {
         let journal: Journal = serde_json::from_slice(&body)
             .map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error))?;
         let mut remaining = Vec::new();
+        // Keep every successfully acquired cwd lock until the journal
+        // transaction is finalized. Dropping a lock immediately after restore
+        // leaves a window where another broker can create a new live journal
+        // that this recovery pass would then unlink or replace.
+        let mut held_locks = Vec::new();
         for entry in journal.entries {
             let pre_existing = PreExisting::from_journal(entry.pre_existing)?;
             if !entry.path.is_absolute() {
@@ -600,7 +861,7 @@ impl CursorMcpLeaseRegistry {
                     "Cursor MCP lease journal path is not canonical",
                 ));
             }
-            let _lock = match LeaseLock::acquire(root) {
+            let lock = match LeaseLock::acquire(root) {
                 Ok(lock) => lock,
                 Err(error) => {
                     tracing::warn!(path = %entry.path.display(), %error, "Cursor MCP lease recovery deferred because another broker owns the cwd");
@@ -619,14 +880,17 @@ impl CursorMcpLeaseRegistry {
                 });
                 continue;
             }
-            if let Err(error) = self.restore(&entry.path, &pre_existing) {
+            if let Err(error) = Self::restore(&entry.path, &pre_existing, &lock) {
                 tracing::warn!(path = %entry.path.display(), error = %error, "Cursor MCP lease recovery deferred");
                 remaining.push(JournalEntry {
                     path: entry.path,
                     pre_existing: pre_existing.journal(),
                 });
+            } else {
+                held_locks.push(lock);
             }
         }
+        before_finalize();
         if remaining.is_empty() {
             match fs::remove_file(&path) {
                 Ok(()) => sync_entry_parent(&path)?,
@@ -788,5 +1052,65 @@ mod tests {
         symlink(&outside_file, cwd.path().join(".cursor/mcp.json")).unwrap();
         assert!(registry.acquire(cwd.path(), &worker).is_err());
         assert_eq!(read(&outside_file), b"outside bytes");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn descriptor_relative_write_survives_hostile_cursor_parent_swap() {
+        use std::os::unix::fs::symlink;
+        use std::os::unix::io::AsRawFd;
+
+        let cwd = tempdir().unwrap();
+        let outside = tempdir().unwrap();
+        let outside_file = outside.path().join("mcp.json");
+        fs::write(&outside_file, b"outside bytes").unwrap();
+        fs::create_dir(cwd.path().join(".cursor")).unwrap();
+        let root_file = open_dir_nofollow(cwd.path()).unwrap();
+        let cursor_name = std::ffi::CString::new(".cursor").unwrap();
+        let cursor = openat_dir(root_file.as_raw_fd(), &cursor_name).unwrap();
+
+        fs::rename(cwd.path().join(".cursor"), cwd.path().join(".cursor-moved")).unwrap();
+        symlink(outside.path(), cwd.path().join(".cursor")).unwrap();
+        write_cursor_target(&cursor, b"inside bytes").unwrap();
+
+        assert_eq!(
+            read(&cwd.path().join(".cursor-moved/mcp.json")),
+            b"inside bytes"
+        );
+        assert_eq!(read(&outside_file), b"outside bytes");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn journal_recovery_retains_cwd_lock_until_journal_finalization() {
+        let dir = tempdir().unwrap();
+        let journal = dir.path().join("journal.json");
+        let path = dir.path().join(".cursor/mcp.json");
+        fs::create_dir_all(path.parent().unwrap()).unwrap();
+        fs::write(&path, b"original").unwrap();
+        {
+            let mut registry = CursorMcpLeaseRegistry::with_journal(journal.clone());
+            registry
+                .acquire(dir.path(), &WorkerName::new("w1"))
+                .unwrap();
+            write_cursor_credential_file(dir.path(), b"generated").unwrap();
+        }
+
+        let mut recovery = CursorMcpLeaseRegistry {
+            leases: HashMap::new(),
+            path_by_worker: HashMap::new(),
+            journal_path: Some(journal.clone()),
+        };
+        let mut second = CursorMcpLeaseRegistry::new();
+        recovery
+            .recover_journal_with_hook(|| {
+                let error = second
+                    .acquire(dir.path(), &WorkerName::new("racing"))
+                    .unwrap_err();
+                assert_eq!(error.kind(), io::ErrorKind::WouldBlock);
+            })
+            .unwrap();
+        assert!(!journal.exists());
+        assert_eq!(read(&path), b"original");
     }
 }

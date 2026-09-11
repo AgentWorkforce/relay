@@ -15,7 +15,9 @@ use tokio::{
 };
 
 use crate::{
-    cursor_mcp_lease::{validate_cursor_root, write_credential_file},
+    cursor_mcp_lease::{
+        read_cursor_credential_file, validate_cursor_root, write_cursor_credential_file,
+    },
     types::AgentResultMcpConfig,
 };
 
@@ -1069,9 +1071,6 @@ pub fn ensure_cursor_mcp_config(
     agent_result: Option<&AgentResultMcpConfig>,
 ) -> io::Result<bool> {
     validate_cursor_root(root)?;
-    let cursor_dir = root.join(".cursor");
-    fs::create_dir_all(&cursor_dir)?;
-    let path = cursor_dir.join("mcp.json");
 
     let new_value = json!({"mcpServers": {"agent-relay":
         cursor_agent_relay_mcp_server_config(
@@ -1085,14 +1084,20 @@ pub fn ensure_cursor_mcp_config(
         )
     }});
 
-    if !path.exists() {
+    let existing_bytes = match read_cursor_credential_file(root) {
+        Ok(bytes) => Some(bytes),
+        Err(error) if error.kind() == io::ErrorKind::NotFound => None,
+        Err(error) => return Err(error),
+    };
+    if existing_bytes.is_none() {
         let body = serde_json::to_vec_pretty(&new_value)
             .map_err(|error| io::Error::other(error.to_string()))?;
-        write_credential_file(&path, &body)?;
+        write_cursor_credential_file(root, &body)?;
         return Ok(true);
     }
 
-    let existing = fs::read_to_string(&path)?;
+    let existing = String::from_utf8(existing_bytes.expect("checked above"))
+        .map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error))?;
     let mut parsed: Value = serde_json::from_str(&existing).unwrap_or(Value::Object(Map::new()));
 
     let changed = if let (Some(existing_servers), Some(new_servers)) = (
@@ -1118,7 +1123,7 @@ pub fn ensure_cursor_mcp_config(
     if changed {
         let body = serde_json::to_vec_pretty(&parsed)
             .map_err(|error| io::Error::other(error.to_string()))?;
-        write_credential_file(&path, &body)?;
+        write_cursor_credential_file(root, &body)?;
     }
     Ok(changed)
 }
