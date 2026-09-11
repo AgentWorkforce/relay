@@ -17,6 +17,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - `agent-relay node up` retries the narrowly transient Relaycast `workspace_busy` admission response while keeping unrelated rate limits terminal and preserving bounded startup diagnostics.
 - `fleet spawn --sandbox` dispatches with only its temporary launcher token after Cloud target selection, avoiding the SDK's dual-credential rejection while keeping workspace-key authority limited to launcher registration and release.
+- `fleet spawn` and `mcp-args --register` retry only typed Relaycast overloads with bounded, idempotent admission handling.
 
 - SDK fleet spawn placement receipts preserve invocation correlation and distinguish accepted, ready, unconfirmed, and terminal-failed outcomes.
 

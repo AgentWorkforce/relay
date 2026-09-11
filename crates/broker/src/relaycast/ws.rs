@@ -1756,7 +1756,7 @@ fn is_typed_registration_overload(error: &RelaycastRegistrationError) -> bool {
                 "workspace_storage_unavailable",
             ]
             .iter()
-            .any(|code| detail.contains(&format!("code: {code}")))
+            .any(|code| registration_error_code(detail) == Some(*code))
         }
         _ => false,
     }
@@ -2520,6 +2520,41 @@ mod tests {
         };
         assert!(is_workspace_busy_registration_error(&exact));
         assert!(is_typed_registration_overload(&exact));
+    }
+
+    #[test]
+    fn typed_5xx_registration_classifier_requires_exact_wire_codes() {
+        for code in [
+            "database_overloaded",
+            "registration_backend_overloaded",
+            "workspace_storage_unavailable",
+        ] {
+            let exact = RelaycastRegistrationError::Api {
+                agent_name: "worker-a".to_string(),
+                status: 503,
+                detail: format!("busy (code: {code}); request_id: req"),
+            };
+            assert!(
+                is_typed_registration_overload(&exact),
+                "exact code {code:?} should be retryable"
+            );
+
+            for near_match in [
+                format!("{code}_extra"),
+                format!("extra_{code}"),
+                code.to_ascii_uppercase(),
+            ] {
+                let error = RelaycastRegistrationError::Api {
+                    agent_name: "worker-a".to_string(),
+                    status: 503,
+                    detail: format!("busy (code: {near_match}); request_id: req"),
+                };
+                assert!(
+                    !is_typed_registration_overload(&error),
+                    "near-match code {near_match:?} must remain terminal"
+                );
+            }
+        }
     }
 
     #[tokio::test(start_paused = true)]
