@@ -1090,7 +1090,7 @@ fn write_credential_file_with_identity(
 
 #[cfg(windows)]
 fn secure_windows_file(path: &Path) -> io::Result<()> {
-    use std::mem::{self, ManuallyDrop};
+    use std::mem::ManuallyDrop;
     use std::os::windows::ffi::OsStrExt;
     use std::process::Command;
 
@@ -1101,7 +1101,9 @@ fn secure_windows_file(path: &Path) -> io::Result<()> {
         MultipleTrusteeOperation: u32,
         TrusteeForm: u32,
         TrusteeType: u32,
-        ptstrName: *mut u16,
+        // For TRUSTEE_IS_SID, this holds a *mut u8 pointing to a binary SID,
+        // despite the Win32 header declaring it as LPWSTR.
+        ptstrName: *mut u8,
     }
 
     #[repr(C)]
