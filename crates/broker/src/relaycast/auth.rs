@@ -370,6 +370,7 @@ impl AuthClient {
             let preferred_name = requested_name;
             let mut memberships = Vec::with_capacity(sources.len());
             let mut auth_rejections = Vec::new();
+            let mut workspace_busy_rejection: Option<anyhow::Error> = None;
 
             for source in sources {
                 let Some(api_key) = normalize_workspace_key(&source.api_key) else {
@@ -394,6 +395,9 @@ impl AuthClient {
                         session.credentials.workspace_alias = source.workspace_alias.clone();
                         memberships.push(session);
                     }
+                    Err(error) if is_workspace_busy_anyhow(&error) => {
+                        workspace_busy_rejection.get_or_insert(error);
+                    }
                     Err(error) if is_auth_rejection(&error) => {
                         auth_rejections
                             .push(source.workspace_id.unwrap_or_else(|| "env".to_string()));
@@ -413,6 +417,11 @@ impl AuthClient {
             }
 
             if memberships.is_empty() {
+                if let Some(error) = workspace_busy_rejection {
+                    return Err(error).context(
+                        "all configured multi-workspace memberships were rejected; workspace admission remained busy",
+                    );
+                }
                 anyhow::bail!(
                     "all configured multi-workspace memberships were rejected ({})",
                     auth_rejections.join(", ")
@@ -582,6 +591,14 @@ impl AuthClient {
                         memberships: vec![session],
                     });
                 }
+                Err(error) if is_workspace_busy_anyhow(&error) => {
+                    // RELAY_API_KEY is a join hint, not permission to mint a
+                    // replacement workspace when admission is temporarily busy.
+                    return Err(error).context(format!(
+                        "failed registering agent with {} workspace key; workspace admission remained busy",
+                        candidate.source
+                    ));
+                }
                 Err(error) if is_auth_rejection(&error) => {
                     if candidate.explicit_join {
                         return Err(error).context(format!(
@@ -592,13 +609,22 @@ impl AuthClient {
                     auth_rejections.push(format!("{} key rejected", candidate.source));
                 }
                 Err(error) if is_rate_limited(&error) => {
-                    if candidate.explicit_join {
-                        return Err(error).context(format!(
-                            "explicit workspace key from {} was rate-limited",
-                            candidate.source
-                        ));
-                    }
-                    auth_rejections.push(format!("{} key rate-limited", candidate.source));
+                    // Only the exact `workspace_busy` code (handled above by
+                    // `is_workspace_busy_anyhow`, which retries and then stays
+                    // terminal) is a safe, narrowly-scoped signal to keep
+                    // going. Any other 429 reaching this arm — a near-match
+                    // code, an unrelated quota/policy 429, or no code at all —
+                    // is *not* proof that the existing workspace is gone or
+                    // that RELAY_API_KEY was invalid. Treating it as a soft
+                    // rejection here would fall through to minting a brand
+                    // new workspace below, which is exactly the accidental
+                    // duplicate-workspace behavior the issue calls out.
+                    // Terminal for both explicit and implicit key sources.
+                    return Err(error).context(format!(
+                        "{} workspace key was rate-limited by a non-workspace_busy 429; \
+                         this is not a safe signal to mint a replacement workspace",
+                        candidate.source
+                    ));
                 }
                 Err(error) => {
                     return Err(error).context(format!(
@@ -791,6 +817,10 @@ impl AuthClient {
     /// prior divergence — strict silently handed over the incumbent's token,
     /// non-strict silently minted a `-suffix` sibling — was itself the
     /// spawn-admission defect (see `admit_agent_registration`).
+    /// Registration is used by startup and by `rotate_token`'s 404 recovery.
+    /// Keep the admission retry shared intentionally: both paths issue the
+    /// same unkeyed pre-commit POST, and retries remain limited to Relaycast's
+    /// exact `workspace_busy` contract with the same bounded budget.
     async fn register_agent_with_workspace_key(
         &self,
         workspace_key: &str,
@@ -901,6 +931,23 @@ fn is_rate_limited(err: &anyhow::Error) -> bool {
     auth_http_status(err).is_some_and(|status| status == StatusCode::TOO_MANY_REQUESTS)
 }
 
+/// `anyhow::Error`-flavored counterpart to `is_workspace_busy_error`. Uses an
+/// exact, case-sensitive comparison against `WORKSPACE_BUSY_CODE` — no
+/// `trim()`/case normalization — because this classifier gates a replay of
+/// an unkeyed `POST /v1/agents`. Retrying on a whitespace-padded or
+/// otherwise near-match code would replay on an unverified admission signal,
+/// risking the AR-448 duplicate-workspace shape; near-matches must stay
+/// terminal after a single attempt.
+fn is_workspace_busy_anyhow(err: &anyhow::Error) -> bool {
+    err.downcast_ref::<AuthHttpError>().is_some_and(|error| {
+        error.status == StatusCode::TOO_MANY_REQUESTS
+            && error
+                .code
+                .as_deref()
+                .is_some_and(|code| code == WORKSPACE_BUSY_CODE)
+    })
+}
+
 fn auth_http_status(err: &anyhow::Error) -> Option<StatusCode> {
     err.downcast_ref::<AuthHttpError>()
         .map(|e| e.status)
@@ -933,6 +980,11 @@ const RELAYCAST_HTTP_TIMEOUT: std::time::Duration = std::time::Duration::from_se
 /// 34099838274 lost three jobs to exactly that.
 const TRANSIENT_STARTUP_RETRY_BACKOFFS_MS: [u64; 2] = [200, 400];
 
+/// Relaycast uses this exact code for temporary workspace write-admission
+/// saturation. Generic 429s remain terminal because they may represent quota
+/// or policy failures rather than a safe pre-commit admission signal.
+const WORKSPACE_BUSY_CODE: &str = "workspace_busy";
+
 /// Replay only server failures whose typed error code establishes that the
 /// request failed at the storage-admission boundary. Retrying every 5xx by
 /// status is unsafe for these unkeyed POSTs: an application-level 503 or a 500
@@ -953,6 +1005,22 @@ fn is_transient_server_error(error: &RelayError) -> bool {
             code.trim(),
             "database_overloaded" | "workspace_storage_unavailable"
         )
+    ) || is_workspace_busy_error(error)
+}
+
+/// Exact, case-sensitive match against the typed wire code — replay safety
+/// for this unkeyed POST depends on the code being the literal
+/// `workspace_busy` contract, not a whitespace-padded, differently-cased, or
+/// otherwise near-match string. See `is_workspace_busy_anyhow` for the
+/// rationale.
+fn is_workspace_busy_error(error: &RelayError) -> bool {
+    matches!(
+        error,
+        RelayError::Api {
+            code,
+            status: 429,
+            ..
+        } if code == WORKSPACE_BUSY_CODE
     )
 }
 
@@ -1080,11 +1148,15 @@ fn relay_error_to_anyhow(error: RelayError) -> anyhow::Error {
             status: StatusCode::from_u16(*status).unwrap_or(StatusCode::INTERNAL_SERVER_ERROR),
             message: message.clone(),
             code: {
-                let trimmed = code.trim();
-                if trimmed.is_empty() {
+                // Only whitespace-only/empty codes collapse to `None`; a
+                // non-empty code is preserved verbatim (not trimmed) so
+                // that exact-match classifiers such as
+                // `is_workspace_busy_anyhow` see the literal wire value and
+                // correctly reject whitespace-padded near-matches.
+                if code.trim().is_empty() {
                     None
                 } else {
-                    Some(trimmed.to_string())
+                    Some(code.clone())
                 }
             },
             request_id: request_id.clone(),
@@ -1544,10 +1616,11 @@ mod tests {
 
     use super::{
         hash_identity_key, is_agent_token_invalid, is_agent_token_invalid_anyhow,
-        is_agent_token_invalid_code, is_transient_server_error, reclaim_legacy_identity,
-        relay_error_to_anyhow, relay_request_with_timeout, resolve_relaycast_base_url,
-        retry_transient_relay_error, stable_node_identity_key, AuthClient, AuthHttpError,
-        CredentialCache, AGENT_TOKEN_INVALID_CODE, DEFAULT_RELAYCAST_BASE_URL,
+        is_agent_token_invalid_code, is_transient_server_error, is_workspace_busy_anyhow,
+        is_workspace_busy_error, reclaim_legacy_identity, relay_error_to_anyhow,
+        relay_request_with_timeout, resolve_relaycast_base_url, retry_transient_relay_error,
+        stable_node_identity_key, AuthClient, AuthHttpError, CredentialCache,
+        AGENT_TOKEN_INVALID_CODE, DEFAULT_RELAYCAST_BASE_URL, TRANSIENT_STARTUP_RETRY_BACKOFFS_MS,
     };
     use relaycast::RelayError;
 
@@ -1602,6 +1675,59 @@ mod tests {
             attempts: 1,
         });
         assert!(is_agent_token_invalid_anyhow(&err));
+    }
+
+    #[test]
+    fn workspace_busy_classifier_requires_the_exact_case_sensitive_code() {
+        assert!(is_workspace_busy_error(&RelayError::api(
+            "workspace_busy",
+            "workspace admission is busy",
+            429,
+        )));
+
+        for code in [
+            "WORKSPACE_BUSY",
+            "Workspace_Busy",
+            "workspace_busy_extra",
+            "workspace-busy",
+            " workspace_busy",
+            "workspace_busy ",
+            " workspace_busy ",
+            "\tworkspace_busy\n",
+            "workspace_busy\u{a0}",
+        ] {
+            let error = RelayError::api(code, "not the workspace admission contract", 429);
+            assert!(
+                !is_workspace_busy_error(&error),
+                "unexpected match for {code:?}"
+            );
+            let anyhow_error = relay_error_to_anyhow(error);
+            assert!(
+                !is_workspace_busy_anyhow(&anyhow_error),
+                "unexpected anyhow match for {code:?}"
+            );
+        }
+
+        // Whitespace padding must remain terminal, not retried: replaying an
+        // unkeyed POST on a near-match code (rather than the exact typed
+        // wire contract) risks the AR-448 duplicate-workspace shape.
+        assert!(!is_workspace_busy_error(&RelayError::api(
+            " workspace_busy ",
+            "workspace admission is busy",
+            429,
+        )));
+        assert!(!is_workspace_busy_error(&RelayError::api(
+            "workspace_busy",
+            "workspace admission is busy",
+            503,
+        )));
+    }
+
+    #[test]
+    fn startup_retry_backoff_budget_is_deterministic_and_bounded() {
+        assert_eq!(TRANSIENT_STARTUP_RETRY_BACKOFFS_MS, [200, 400]);
+        assert_eq!(TRANSIENT_STARTUP_RETRY_BACKOFFS_MS.len() + 1, 3);
+        assert_eq!(TRANSIENT_STARTUP_RETRY_BACKOFFS_MS.iter().sum::<u64>(), 600);
     }
 
     #[test]
@@ -2047,6 +2173,341 @@ mod tests {
         );
 
         server.abort();
+    }
+
+    #[tokio::test]
+    async fn workspace_busy_retries_once_even_with_retry_after_header() {
+        use std::sync::{
+            atomic::{AtomicUsize, Ordering},
+            Arc,
+        };
+
+        use axum::{
+            body::Body,
+            extract::State,
+            http::{Response, StatusCode as AxumStatusCode},
+            routing::post,
+            Router,
+        };
+
+        async fn register(State(calls): State<Arc<AtomicUsize>>) -> Response<Body> {
+            let attempt = calls.fetch_add(1, Ordering::SeqCst);
+            let (status, body) = if attempt == 0 {
+                (
+                    AxumStatusCode::TOO_MANY_REQUESTS,
+                    json!({
+                        "ok": false,
+                        "error": {
+                            "code": "workspace_busy",
+                            "message": "workspace admission is busy"
+                        }
+                    }),
+                )
+            } else {
+                (
+                    AxumStatusCode::OK,
+                    json!({
+                        "ok": true,
+                        "data": {
+                            "id": "a1",
+                            "workspace_id": "ws_busy",
+                            "name": "lead",
+                            "token": "at_live_1",
+                            "status": "online",
+                            "created_at": "2025-01-01T00:00:00Z"
+                        }
+                    }),
+                )
+            };
+            let mut response = Response::new(Body::from(body.to_string()));
+            *response.status_mut() = status;
+            response.headers_mut().insert(
+                "content-type",
+                "application/json".parse().expect("valid content type"),
+            );
+            if attempt == 0 {
+                response
+                    .headers_mut()
+                    .insert("retry-after", "0".parse().expect("valid retry-after"));
+            }
+            response
+        }
+
+        let calls = Arc::new(AtomicUsize::new(0));
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let server = tokio::spawn({
+            let calls = calls.clone();
+            async move {
+                axum::serve(
+                    listener,
+                    Router::new()
+                        .route("/v1/agents", post(register))
+                        .with_state(calls),
+                )
+                .await
+            }
+        });
+
+        let _env_guard = clear_relay_env();
+        unsafe {
+            std::env::set_var("RELAY_API_KEY", "rk_live_busy");
+        }
+        let session = AuthClient::new(Some(format!("http://{address}")))
+            .startup_session(Some("lead"))
+            .await
+            .expect("workspace_busy should clear on the bounded retry");
+
+        assert_eq!(session.credentials.workspace_id, "ws_busy");
+        assert_eq!(calls.load(Ordering::SeqCst), 2);
+        server.abort();
+        unsafe {
+            std::env::remove_var("RELAY_API_KEY");
+        }
+    }
+
+    #[tokio::test]
+    async fn workspace_busy_exhaustion_is_bounded_and_preserves_diagnostics() {
+        let _env_guard = clear_relay_env();
+        let server = MockServer::start();
+        unsafe {
+            std::env::set_var("RELAY_API_KEY", "rk_live_busy");
+        }
+        let register = server.mock(|when, then| {
+            when.method(POST)
+                .path("/v1/agents")
+                .header("authorization", "Bearer rk_live_busy");
+            then.status(429)
+                .header("content-type", "application/json")
+                .header("retry-after", "0")
+                .header("x-request-id", "workspace-busy-test")
+                .body(r#"{"ok":false,"error":{"code":"workspace_busy","message":"workspace admission is busy"}}"#);
+        });
+        let workspace = server.mock(|when, then| {
+            when.method(POST).path("/v1/workspaces");
+            then.status(500);
+        });
+        let error = AuthClient::new(Some(server.base_url()))
+            .startup_session(Some("lead"))
+            .await
+            .expect_err("persistent workspace_busy must remain terminal");
+        let message = format!("{error:#}");
+        for marker in [
+            "workspace_busy",
+            "429 Too Many Requests",
+            "workspace admission is busy",
+            "request_id: workspace-busy-test",
+            "attempts: 3",
+        ] {
+            assert!(message.contains(marker), "missing {marker}: {message}");
+        }
+        register.assert_hits(3);
+        workspace.assert_hits(0);
+        unsafe {
+            std::env::remove_var("RELAY_API_KEY");
+        }
+    }
+
+    /// A whitespace-padded (or otherwise near-match) `workspace_busy` code is
+    /// not the typed wire contract, so `retry_transient_relay_error` — the
+    /// bounded-retry layer `admit_agent_registration` uses for the unkeyed
+    /// `POST /v1/agents` — must treat it as terminal after exactly one
+    /// attempt, the same as any other non-workspace-busy 429. Replaying on a
+    /// near-match code would replay an unkeyed POST on an unverified
+    /// admission signal, risking the AR-448 duplicate-workspace shape.
+    #[tokio::test]
+    async fn workspace_busy_near_match_code_stays_terminal_after_one_attempt() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+
+        for near_match in [
+            "WORKSPACE_BUSY",
+            "Workspace_Busy",
+            "workspace_busy_extra",
+            "workspace-busy",
+            " workspace_busy",
+            "workspace_busy ",
+            " workspace_busy ",
+            "\tworkspace_busy\n",
+            "workspace_busy\u{a0}",
+        ] {
+            let calls = AtomicUsize::new(0);
+            let error = retry_transient_relay_error("registering the broker agent", || {
+                calls.fetch_add(1, Ordering::SeqCst);
+                async {
+                    Err::<(), _>(RelayError::api(
+                        near_match,
+                        "workspace admission is busy",
+                        429,
+                    ))
+                }
+            })
+            .await
+            .expect_err("a near-match code must remain terminal, not be treated as workspace_busy");
+
+            assert_eq!(
+                calls.load(Ordering::SeqCst),
+                1,
+                "near-match code {near_match:?} must not be retried"
+            );
+            assert!(
+                !is_workspace_busy_error(&error),
+                "near-match code {near_match:?} must not classify as workspace_busy"
+            );
+            let anyhow_error = relay_error_to_anyhow(error);
+            assert!(
+                !is_workspace_busy_anyhow(&anyhow_error),
+                "near-match code {near_match:?} must not classify as workspace_busy via anyhow"
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn multi_workspace_selection_preserves_workspace_busy_diagnostics() {
+        let _env_guard = clear_relay_env();
+        let server = MockServer::start();
+        unsafe {
+            std::env::set_var(
+                "RELAY_WORKSPACES_JSON",
+                r#"[{"workspace_id":"ws_busy","api_key":"rk_live_busy"},{"workspace_id":"ws_auth","api_key":"rk_live_auth"}]"#,
+            );
+        }
+        let busy_register = server.mock(|when, then| {
+            when.method(POST)
+                .path("/v1/agents")
+                .header("authorization", "Bearer rk_live_busy");
+            then.status(429)
+                .header("content-type", "application/json")
+                .header("x-request-id", "multi-workspace-busy-374")
+                .body(
+                    r#"{"ok":false,"error":{"code":"workspace_busy","message":"Workspace write capacity is busy"}}"#,
+                );
+        });
+        let auth_register = server.mock(|when, then| {
+            when.method(POST)
+                .path("/v1/agents")
+                .header("authorization", "Bearer rk_live_auth");
+            then.status(401)
+                .header("content-type", "application/json")
+                .body(r#"{"ok":false,"error":{"code":"unauthorized","message":"unauthorized"}}"#);
+        });
+
+        let error = AuthClient::new(Some(server.base_url()))
+            .startup_session_set(Some("lead"))
+            .await
+            .expect_err("a busy membership must remain diagnosable when all fail");
+        let message = format!("{error:#}");
+        for marker in [
+            "workspace_busy",
+            "429 Too Many Requests",
+            "Workspace write capacity is busy",
+            "request_id: multi-workspace-busy-374",
+            "attempts: 3",
+        ] {
+            assert!(message.contains(marker), "missing {marker}: {message}");
+        }
+        busy_register.assert_hits(3);
+        auth_register.assert_hits(1);
+
+        unsafe {
+            std::env::remove_var("RELAY_WORKSPACES_JSON");
+        }
+    }
+
+    /// Full `startup_session` HTTP-path proof for the outer admission
+    /// fallback in `startup_single_session_set_from_sources`: a near-match
+    /// `workspace_busy` code or an unrelated 429 reaching `/v1/agents` for an
+    /// *implicit* `RELAY_API_KEY` candidate (`explicit_join: false`) must
+    /// stay terminal end-to-end, exactly like an explicit key. Before this
+    /// fix, that arm treated any 429 as a soft rejection and fell through to
+    /// `create_workspace`, minting a fresh workspace behind a caller's back
+    /// merely because the response happened to carry a 429 status — even
+    /// though only the literal `workspace_busy` code is a safe, narrowly
+    /// scoped retry/terminal signal. This must not regress: exactly one
+    /// `/v1/agents` attempt, and zero `POST /v1/workspaces` calls, for every
+    /// near-match casing/whitespace variant and for a wholly unrelated 429
+    /// code.
+    #[tokio::test]
+    async fn startup_session_near_match_and_unrelated_rate_limit_never_mints_workspace() {
+        let near_match_and_unrelated_codes = [
+            "WORKSPACE_BUSY",
+            "Workspace_Busy",
+            "workspace_busy_extra",
+            "workspace-busy",
+            " workspace_busy",
+            "workspace_busy ",
+            " workspace_busy ",
+            "\tworkspace_busy\n",
+            "workspace_busy\u{a0}",
+            "registration_rate_limited",
+        ];
+
+        for code in near_match_and_unrelated_codes {
+            let _env_guard = clear_relay_env();
+            let server = MockServer::start();
+            unsafe {
+                std::env::set_var("RELAY_API_KEY", "rk_live_ratelimited");
+            }
+            let register = server.mock(|when, then| {
+                when.method(POST)
+                    .path("/v1/agents")
+                    .header("authorization", "Bearer rk_live_ratelimited");
+                then.status(429)
+                    .header("content-type", "application/json")
+                    .body(format!(
+                        r#"{{"ok":false,"error":{{"code":{code:?},"message":"rate limited"}}}}"#
+                    ));
+            });
+            let workspace = server.mock(|when, then| {
+                when.method(POST).path("/v1/workspaces");
+                then.status(200)
+                    .header("content-type", "application/json")
+                    .body(
+                        r#"{"ok":true,"workspace_id":"ws_should_never_be_created","api_key":"rk_live_should_never_exist"}"#,
+                    );
+            });
+
+            let error = AuthClient::new(Some(server.base_url()))
+                .startup_session(Some("lead"))
+                .await
+                .expect_err(&format!(
+                    "code {code:?} must remain terminal and never mint a workspace"
+                ));
+            let message = format!("{error:#}");
+            assert!(
+                message.contains("rate-limited") || message.contains("429"),
+                "error for {code:?} should describe the rate limit: {message}"
+            );
+
+            register.assert_hits(1);
+            workspace.assert_hits(0);
+
+            unsafe {
+                std::env::remove_var("RELAY_API_KEY");
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn unrelated_rate_limit_is_terminal_without_replay() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+
+        let calls = AtomicUsize::new(0);
+        let error = retry_transient_relay_error("admitting a workspace", || {
+            calls.fetch_add(1, Ordering::SeqCst);
+            async {
+                Err::<(), _>(RelayError::api(
+                    "registration_rate_limited",
+                    "registration rate limit exceeded",
+                    429,
+                ))
+            }
+        })
+        .await
+        .expect_err("an unrelated 429 must not be replayed");
+
+        assert_eq!(calls.load(Ordering::SeqCst), 1);
+        assert!(!is_workspace_busy_error(&error));
+        assert!(matches!(error, RelayError::Api { status: 429, .. }));
     }
 
     /// A failure that *changes* mid-retry — a 401 after a 503 — is terminal,
