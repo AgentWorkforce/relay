@@ -2198,8 +2198,8 @@ pub(super) async fn deregister_fleet_agent_confirmed(
             .filter(|(candidate, _)| *candidate != name)
             .map(|(_, agent)| agent.clone())
             .collect();
-        fleet_control_tx
-            .try_send(FleetControlCommand::UpdateInventory(snapshot))
+        fleet_inventory
+            .try_publish_snapshot(fleet_control_tx, snapshot)
             .map_err(|_| "fleet inventory removal backpressure".to_string())?;
         fleet_inventory.remove(name);
     }
@@ -2225,12 +2225,8 @@ pub(super) async fn publish_fleet_inventory_snapshot(
     fleet_control_tx: &mpsc::Sender<FleetControlCommand>,
     fleet_inventory: &super::fleet_inventory::FleetInventory,
 ) {
-    let snapshot: Vec<_> = fleet_inventory.values().cloned().collect();
-    let fingerprint = serde_json::to_value(&snapshot).expect("inventory serializes");
-    if let Err(error) = fleet_control_tx.try_send(FleetControlCommand::UpdateInventory(snapshot)) {
+    if let Err(error) = fleet_inventory.try_publish(fleet_control_tx) {
         tracing::warn!(error = %error, "fleet inventory publication deferred; desired snapshot retained for retry");
-    } else {
-        fleet_inventory.mark_published(fingerprint);
     }
 }
 

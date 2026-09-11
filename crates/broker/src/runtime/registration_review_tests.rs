@@ -672,3 +672,50 @@ async fn review_response_flood_retains_one_unadmitted_invocation_without_side_ef
     fixture.runtime.handle_fleet_action_invoke(held).await;
     assert_eq!(fixture.runtime.fleet_responses.unresolved().last().unwrap().invocation_id, "flood-257");
 }
+
+#[tokio::test]
+async fn v3_cleanup_publication_fingerprint_tracks_actual_enqueue() {
+    let (_dir,mut f)=review_fixture();let(tx,mut rx)=mpsc::channel(2);f.runtime.fleet_control_tx=tx.clone();
+    let name=WorkerName::new("cleanup-aba");
+    f.runtime.fleet_delivery_book.bind_authoritative_identity(name.as_str(),"id-a");
+    f.runtime.fleet_inventory.insert(name.clone(),crate::fleet_wire::InventoryAgent{agent_id:"id-a".into(),name:name.to_string(),invocation_id:None,session_ref:None});
+    super::fleet::publish_fleet_inventory_snapshot(&tx,&f.runtime.fleet_inventory).await;rx.recv().await.unwrap();
+
+    super::identity_cleanup::schedule_identity_cleanup(&mut f.runtime.workers,&tx,&f.runtime.fleet_delivery_book,&mut f.runtime.fleet_inventory,&f.runtime.relaycast_http,&name,false,None);
+    assert!(matches!(rx.recv().await,Some(FleetControlCommand::UpdateInventory(rows)) if rows.is_empty()));
+    let Some(FleetControlCommand::DeregisterAgent{reply,..})=rx.recv().await else {panic!("cleanup deregistration")};
+    reply.send(Ok(())).unwrap();
+    tokio::time::timeout(Duration::from_millis(200),async {while f.runtime.workers.identity_cleanups.contains_key(&name) {f.runtime.reconcile_identity_cleanups().await;tokio::task::yield_now().await;}}).await.unwrap();
+    // A supplied identity can be attached again after confirmed non-deleting cleanup.
+    for _ in 0..2 {tx.try_send(FleetControlCommand::HeartbeatNow).unwrap();}
+    let token=crate::node_control::AgentRegistrationToken{name:name.to_string(),agent_id:"id-a".into(),token:"local-supplied-token".into(),delivery_ack_seq:None};
+    super::fleet::record_fleet_inventory_agent(&tx,&mut f.runtime.fleet_inventory,&token,None,None).await;
+    let dirty=f.runtime.fleet_inventory.needs_publication();
+    eprintln!("V3 cleanup ABA latest_actual=[] desired=[id-a] failed_restoration_dirty={dirty}");
+    assert!(dirty,"cleanup enqueued B but never recorded that publication; failed restored A is falsely clean");
+}
+
+#[tokio::test]
+async fn v3_checkpoint_failure_still_tears_down_owned_workers() {
+    let mut workers=make_worker_registry_with_worker("evidence-failure").await;
+    let worker=workers.workers.get_mut(&WorkerName::new("evidence-failure")).unwrap();
+    worker.child.kill().await.unwrap();worker.child.wait().await.unwrap();
+    // Fixture child ignores stdin EOF, so only actual worker teardown can stop it.
+    worker.child=tokio::process::Command::new("sleep").arg("60").stdin(Stdio::null()).stdout(Stdio::null()).stderr(Stdio::null()).spawn().unwrap();
+    let pid=worker.child.id().unwrap();
+    let mut f=worker_event_runtime_fixture(workers,HashMap::new());
+    let blocker=f._temp_dir.path().join("not-a-directory");std::fs::write(&blocker,b"evidence fault fixture").unwrap();
+    f.runtime.paths.state=blocker.join("state.json");
+    let invoke = crate::fleet_wire::ActionInvoke { v: FLEET_WIRE_VERSION, invocation_id: "evidence-terminal".into(), action: "unknown".into(), input: json!({}), agent_name: None, agent_id: None };
+    f.runtime.handle_fleet_action_invoke(invoke).await;
+    let(api,api_rx)=mpsc::channel(1);f.runtime.api_rx=api_rx;let actor=tokio::spawn(f.runtime.run());
+    let(reply,got)=tokio::sync::oneshot::channel();api.send(crate::listen_api::ListenApiRequest::Shutdown{reply}).await.unwrap();got.await.unwrap().unwrap();
+    let ended=tokio::time::timeout(Duration::from_secs(5),actor).await.unwrap().unwrap();
+    assert!(ended.is_err());
+    tokio::time::sleep(Duration::from_millis(50)).await;
+    let survives=unsafe{libc::kill(pid as i32,0)}==0;
+    // Always clean only the child created above, including on a failing assertion.
+    if survives {unsafe{libc::kill(pid as i32,libc::SIGKILL);}}
+    eprintln!("V3 checkpoint failure runtime_returned_error=true owned_child_survives={survives} fixture_pid={pid}");
+    assert!(!survives,"checkpoint error returned before workers.shutdown_all(), leaving owned child alive");
+}

@@ -72,10 +72,9 @@ fn start_attempt(
         if deregistered.load(Ordering::Acquire) {
             return Ok(None);
         }
-        tx.try_send(FleetControlCommand::UpdateInventory(
-            inventory.values().cloned().collect(),
-        ))
-        .map_err(|error| format!("cleanup inventory unavailable: {error}"))?;
+        inventory
+            .try_publish(tx)
+            .map_err(|error| format!("cleanup inventory unavailable: {error}"))?;
         let Some(agent_id) = &agent_id else {
             return Ok(None);
         };

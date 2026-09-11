@@ -18,8 +18,25 @@ impl FleetInventory {
             published: Default::default(),
         }
     }
-    pub(super) fn mark_published(&self, fingerprint: Value) {
+    pub(super) fn try_publish(
+        &self,
+        tx: &mpsc::Sender<FleetControlCommand>,
+    ) -> Result<(), &'static str> {
+        self.try_publish_snapshot(tx, self.agents.values().cloned().collect())
+    }
+    pub(super) fn try_publish_snapshot(
+        &self,
+        tx: &mpsc::Sender<FleetControlCommand>,
+        snapshot: Vec<InventoryAgent>,
+    ) -> Result<(), &'static str> {
+        let fingerprint = serde_json::to_value(&snapshot).expect("inventory serializes");
+        tx.try_send(FleetControlCommand::UpdateInventory(snapshot))
+            .map_err(|error| match error {
+                mpsc::error::TrySendError::Full(_) => "fleet_control_backpressure",
+                mpsc::error::TrySendError::Closed(_) => "fleet_control_unavailable",
+            })?;
         *self.published.lock().unwrap() = Some(fingerprint);
+        Ok(())
     }
     pub(super) fn needs_publication(&self) -> bool {
         let snapshot: Vec<_> = self.agents.values().collect();

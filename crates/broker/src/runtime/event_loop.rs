@@ -541,8 +541,6 @@ impl BrokerRuntime {
             tracing::warn!(error = %error, "failed to send ws shutdown signal");
         }
         self.fleet_responses.stop();
-        self.fleet_responses
-            .checkpoint(self.paths.state.parent().expect("runtime state has parent"))?;
         if let Err(error) = self
             .fleet_control_tx
             .try_send(FleetControlCommand::Shutdown)
@@ -583,6 +581,13 @@ impl BrokerRuntime {
         }
         self.workers.shutdown_all().await?;
 
+        // Evidence I/O must never skip owned-worker teardown. A broken or
+        // stalled filesystem cannot keep children alive behind this checkpoint.
+        // This synchronous evidence write is not a universal process-exit SLA.
+        let checkpoint_result = self
+            .fleet_responses
+            .checkpoint(self.paths.state.parent().expect("runtime state has parent"));
+
         // Clean up state and connection files on graceful shutdown
         if self.paths.persist {
             let _ = std::fs::remove_file(&self.paths.state);
@@ -590,6 +595,8 @@ impl BrokerRuntime {
         let connection_path = self.paths.state.parent().unwrap().join("connection.json");
         let _ = std::fs::remove_file(&connection_path);
 
+        checkpoint_result
+            .context("failed to retain unconfirmed fleet outcomes after worker teardown")?;
         Ok(())
     }
 }
