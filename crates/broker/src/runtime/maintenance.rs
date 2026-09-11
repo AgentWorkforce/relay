@@ -4,6 +4,14 @@ use crate::terminal_control::TerminalToCloud;
 
 impl BrokerRuntime {
     pub(super) async fn handle_maintenance_tick(&mut self) {
+        self.fleet_delivery_book.retry_acks(&self.fleet_control_tx);
+        if self.fleet_inventory.needs_publication() {
+            super::fleet::publish_fleet_inventory_snapshot(
+                &self.fleet_control_tx,
+                &self.fleet_inventory,
+            )
+            .await;
+        }
         // A timed-out caller may no longer be present when the owned token
         // arrives. Retained custody, not a dropped reply channel, drives cleanup.
         let abandoned: Vec<_> = self
@@ -38,6 +46,7 @@ impl BrokerRuntime {
         let pty_observability = &mut self.pty_observability;
         let workers = &mut self.workers;
         let fleet_control_tx = &self.fleet_control_tx;
+        let fleet_responses = &self.fleet_responses;
         let fleet_inventory = &mut self.fleet_inventory;
         let fleet_inventory_reconcile_retry_after = &mut self.fleet_inventory_reconcile_retry_after;
         let fleet_delivery_book = &mut self.fleet_delivery_book;
@@ -285,11 +294,7 @@ impl BrokerRuntime {
                     )
                     .await;
                 }
-                let _ = fleet_control_tx
-                    .send(FleetControlCommand::Send(
-                        crate::fleet_wire::BrokerToRelaycast::ActionResult(completion),
-                    ))
-                    .await;
+                fleet_responses.complete(completion);
             }
         }
 
@@ -351,11 +356,7 @@ impl BrokerRuntime {
                     )
                     .await
                     .is_err();
-                    let _ = fleet_control_tx
-                        .send(FleetControlCommand::Send(
-                            crate::fleet_wire::BrokerToRelaycast::ActionResult(completion),
-                        ))
-                        .await;
+                    fleet_responses.complete(completion);
                 }
             }
             let lifecycle_reason = exit_reason.as_deref().unwrap_or("worker_exited");

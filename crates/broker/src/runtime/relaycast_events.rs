@@ -463,7 +463,7 @@ pub(super) async fn spawn_worker_from_request(
     agent_spawn_count: &mut u32,
     fleet_control_tx: &mpsc::Sender<FleetControlCommand>,
     fleet_delivery_book: &mut FleetDeliveryBook,
-    fleet_inventory: &mut HashMap<WorkerName, InventoryAgent>,
+    fleet_inventory: &mut super::fleet_inventory::FleetInventory,
     _node_name: &str,
     invocation_id: Option<String>,
     session_ref: Option<String>,
@@ -1112,7 +1112,7 @@ mod tests {
         let mut agent_spawn_count = 0;
         let (fleet_control_tx, _fleet_control_rx) = mpsc::channel(4);
         let mut fleet_delivery_book = FleetDeliveryBook::default();
-        let mut fleet_inventory = HashMap::new();
+        let mut fleet_inventory = crate::runtime::fleet_inventory::FleetInventory::new();
         let (hosted_agent_event_tx, _hosted_agent_event_rx) = mpsc::channel(4);
         let mut pty_observability = HashMap::new();
         let name = WorkerName::from("failed-native-worker-1430");

@@ -75,6 +75,7 @@ mod degraded;
 mod delivery;
 mod event_loop;
 mod fleet;
+mod fleet_inventory;
 mod headless;
 mod identity_cleanup;
 mod identity_recovery;

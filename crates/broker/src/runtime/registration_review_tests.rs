@@ -551,7 +551,7 @@ async fn review_stalled_api_and_fleet_registration_allow_runtime_shutdown() {
         if fleet {
             fixture
                 .runtime
-                .dispatch_fleet_spawn(crate::fleet_wire::ActionInvoke {
+                .handle_fleet_action_invoke(crate::fleet_wire::ActionInvoke {
                     v: FLEET_WIRE_VERSION,
                     invocation_id: "stalled-fleet".into(),
                     action: "spawn".into(),
@@ -612,4 +612,63 @@ async fn review_stalled_api_and_fleet_registration_allow_runtime_shutdown() {
         );
         assert!(custody.admit("test-only-original").is_err());
     }
+}
+
+#[tokio::test]
+async fn review_full_result_queue_keeps_actual_actor_responsive_and_outcomes_retained() {
+    for capacity in [1, 256] {
+        for deferred in [false, true] {
+            let (_dir, mut fixture) = review_fixture();
+            let (commands, mut command_rx) = mpsc::channel(capacity);
+            fixture.runtime.fleet_control_tx = commands.clone();
+            let (api_tx, api_rx) = mpsc::channel(8); fixture.runtime.api_rx = api_rx;
+            let responses = fixture.runtime.fleet_responses.clone();
+            let invoke = crate::fleet_wire::ActionInvoke {
+                v: FLEET_WIRE_VERSION, invocation_id: "backpressure-original".into(), action: "spawn".into(),
+                input: if deferred { json!({"name":"refused", "cli":"cat", "channels":[]}) } else { json!({}) },
+                agent_name: None, agent_id: None,
+            };
+            if deferred {
+                fixture.runtime.handle_fleet_action_invoke(invoke).await;
+                let custody = loop {
+                    if let FleetControlCommand::RegisterFreshAgent { custody, .. } = command_rx.recv().await.unwrap() { break custody; }
+                };
+                custody.reject_unsent("diagnostic_refusal");
+            } else {
+                for _ in 0..capacity { commands.try_send(FleetControlCommand::HeartbeatNow).unwrap(); }
+                tokio::time::timeout(Duration::from_millis(200), fixture.runtime.handle_fleet_action_invoke(invoke)).await.unwrap();
+            }
+            if deferred { for _ in 0..capacity { commands.try_send(FleetControlCommand::HeartbeatNow).unwrap(); } }
+            assert_eq!(commands.capacity(), 0);
+            let actor = tokio::spawn(fixture.runtime.run());
+            let (reply, listed) = tokio::sync::oneshot::channel(); api_tx.send(crate::listen_api::ListenApiRequest::List { reply }).await.unwrap();
+            tokio::time::timeout(Duration::from_millis(200), listed).await.unwrap().unwrap().unwrap();
+            tokio::time::timeout(Duration::from_millis(200), async { while responses.front().is_none() { tokio::task::yield_now().await; } }).await.unwrap();
+            let response = responses.front().unwrap(); assert_eq!(response.invocation_id, "backpressure-original");
+            let (reply, stopped) = tokio::sync::oneshot::channel(); api_tx.send(crate::listen_api::ListenApiRequest::Shutdown { reply }).await.unwrap();
+            tokio::time::timeout(Duration::from_millis(200), stopped).await.unwrap().unwrap().unwrap();
+            tokio::time::timeout(Duration::from_secs(5), actor).await.unwrap().unwrap().unwrap();
+            assert_eq!(responses.unresolved().len(), 1, "shutdown preserves accepted terminal result");
+            assert_eq!(responses.front().unwrap().invocation_id, response.invocation_id);
+        }
+    }
+}
+
+#[tokio::test]
+async fn review_response_flood_retains_one_unadmitted_invocation_without_side_effects() {
+    let (_dir, mut fixture) = review_fixture();
+    for i in 0..258 {
+        fixture.runtime.handle_fleet_action_invoke(crate::fleet_wire::ActionInvoke {
+            v: FLEET_WIRE_VERSION, invocation_id: format!("flood-{i}"), action: "spawn".into(),
+            input: json!({}), agent_name: None, agent_id: None,
+        }).await;
+    }
+    assert_eq!(fixture.runtime.fleet_responses.unresolved().len(), 257);
+    assert_eq!(fixture.runtime.held_fleet_invoke.as_ref().unwrap().invocation_id, "flood-257");
+    assert!(fixture.runtime.workers.workers.is_empty());
+    assert!(fixture.runtime.workers.spawn_registrations.entries.is_empty());
+    fixture.runtime.fleet_responses.flushed("flood-0");
+    let held = fixture.runtime.held_fleet_invoke.take().unwrap();
+    fixture.runtime.handle_fleet_action_invoke(held).await;
+    assert_eq!(fixture.runtime.fleet_responses.unresolved().last().unwrap().invocation_id, "flood-257");
 }

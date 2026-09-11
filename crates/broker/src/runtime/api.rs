@@ -305,7 +305,7 @@ impl BrokerRuntime {
         let fleet_control_tx = &self.fleet_control_tx;
         let fleet_node_name = self.fleet_node_name.as_str();
         let node_delivery_token_present = self.node_delivery_token_present;
-        let node_delivery_connected = self.node_delivery_connected;
+        let node_delivery_connected = self.fleet_responses.connected();
         let fleet_inventory = &mut self.fleet_inventory;
         let fleet_delivery_book = &mut self.fleet_delivery_book;
         let fleet_max_agents = self.fleet_max_agents;

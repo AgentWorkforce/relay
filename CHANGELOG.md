@@ -13,6 +13,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- Fleet action completion, delivery acknowledgements, and inventory retries stay bounded under control-queue pressure; broker shutdown retains unconfirmed action outcomes for reconciliation.
+
 - Fresh broker API spawns verify the server registration contract, create identities under the authenticated broker provider, and retain generation custody across timeouts and cleanup; unresolved names remain reserved after restart.
 
 - HTTP agent spawn rejects failed Relaycast node binding, cleans up the newly registered identity, and publishes declared metadata for successful spawns using either new or supplied tokens.

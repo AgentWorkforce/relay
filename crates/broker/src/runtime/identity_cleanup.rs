@@ -1,7 +1,6 @@
 use super::*;
 use crate::fleet_wire::{
-    ActionResult, ActionResultError, ActionResultPayload, AgentDeregister, BrokerToRelaycast,
-    FLEET_WIRE_VERSION,
+    ActionResult, ActionResultError, ActionResultPayload, AgentDeregister, FLEET_WIRE_VERSION,
 };
 use std::sync::atomic::{AtomicBool, Ordering};
 use tokio::{sync::oneshot, task::JoinHandle};
@@ -40,7 +39,7 @@ pub(crate) struct PendingIdentityCleanup {
 fn start_attempt(
     tx: &mpsc::Sender<FleetControlCommand>,
     agent_id: Option<String>,
-    inventory: &mut HashMap<WorkerName, InventoryAgent>,
+    inventory: &mut super::fleet_inventory::FleetInventory,
     http: RelaycastHttpClient,
     name: WorkerName,
     delete_identity: bool,
@@ -134,7 +133,7 @@ pub(super) fn schedule_identity_cleanup(
     workers: &mut WorkerRegistry,
     tx: &mpsc::Sender<FleetControlCommand>,
     book: &FleetDeliveryBook,
-    inventory: &mut HashMap<WorkerName, InventoryAgent>,
+    inventory: &mut super::fleet_inventory::FleetInventory,
     http: &RelaycastHttpClient,
     name: &WorkerName,
     delete_identity: bool,
@@ -382,12 +381,7 @@ impl BrokerRuntime {
                                 error: format!("{original}; {error}"),
                             });
                         }
-                        let _ = self
-                            .fleet_control_tx
-                            .send(FleetControlCommand::Send(BrokerToRelaycast::ActionResult(
-                                response,
-                            )))
-                            .await;
+                        self.fleet_responses.complete(response);
                     }
                 }
             }

@@ -434,17 +434,15 @@ async fn owned_cleanup_waits_off_actor_and_retains_custody_until_confirmed() {
             }),
         ))
         .await;
-    loop {
-        if let FleetControlCommand::Send(BrokerToRelaycast::ActionResult(result)) =
-            fixture.fleet_control_rx.recv().await.unwrap()
-        {
-            assert_eq!(result.invocation_id, "replacement-attempt");
-            assert!(
-                matches!(result.result, crate::fleet_wire::ActionResultPayload::Error(error) if error.error.contains("name_in_use"))
-            );
-            break;
-        }
-    }
+    let result = fixture
+        .runtime
+        .fleet_responses
+        .front()
+        .expect("reserved result retained");
+    assert_eq!(result.invocation_id, "replacement-attempt");
+    assert!(
+        matches!(result.result, crate::fleet_wire::ActionResultPayload::Error(error) if error.error.contains("name_in_use"))
+    );
     let mut replacement_spec = fixture.runtime.workers.workers["unrelated"].spec.clone();
     replacement_spec.name = name.clone();
     assert!(fixture
@@ -626,6 +624,8 @@ fn worker_event_runtime_fixture(
         api_rx,
         api_open: true,
         pending_spawns: Default::default(),
+        fleet_responses: std::sync::Arc::new(Default::default()),
+        held_fleet_invoke: None,
         ws_inbound_rx,
         relaycast_open: true,
         fleet_control_tx,
@@ -642,7 +642,7 @@ fn worker_event_runtime_fixture(
         terminal_input_requests: HashMap::new(),
         fleet_delivery_book: FleetDeliveryBook::default(),
         fleet_max_agents: 0,
-        fleet_inventory: HashMap::new(),
+        fleet_inventory: super::fleet_inventory::FleetInventory::new(),
         fleet_inventory_reconcile_retry_after: HashMap::new(),
         sdk_out_tx,
         worker_event_rx,

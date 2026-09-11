@@ -209,6 +209,8 @@ pub(crate) struct BrokerRuntime {
     pub(super) api_rx: mpsc::Receiver<ListenApiRequest>,
     pub(super) api_open: bool,
     pub(super) pending_spawns: super::pending_spawn::PendingSpawns,
+    pub(super) fleet_responses: Arc<crate::fleet_responses::FleetResponses>,
+    pub(super) held_fleet_invoke: Option<crate::fleet_wire::ActionInvoke>,
     pub(super) ws_inbound_rx: mpsc::Receiver<WorkspaceInboundMessage>,
     pub(super) relaycast_open: bool,
     pub(super) fleet_control_tx: mpsc::Sender<FleetControlCommand>,
@@ -233,7 +235,7 @@ pub(crate) struct BrokerRuntime {
     pub(super) terminal_input_requests: HashMap<String, TerminalInputRequest>,
     pub(super) fleet_delivery_book: FleetDeliveryBook,
     pub(super) fleet_max_agents: u32,
-    pub(super) fleet_inventory: HashMap<WorkerName, InventoryAgent>,
+    pub(super) fleet_inventory: super::fleet_inventory::FleetInventory,
     /// Per-worker retry deadlines for failed Relaycast identity lookups while
     /// rebuilding the reconnect inventory.
     pub(super) fleet_inventory_reconcile_retry_after:
@@ -295,6 +297,7 @@ enum RuntimeEvent {
     Terminal(Option<TerminalControlEvent>),
     Worker(Option<WorkerEvent>),
     MaintenanceTick,
+    FleetResponseCapacity,
 }
 
 #[derive(Debug, Clone)]
@@ -336,14 +339,22 @@ impl BrokerRuntime {
                 },
                 result = self.sdk_lines.next_line(), if self.stdin_open => RuntimeEvent::Stdin(result),
                 message = self.ws_inbound_rx.recv(), if self.relaycast_open => RuntimeEvent::Relaycast(message),
-                event = self.fleet_event_rx.recv(), if self.fleet_control_open => RuntimeEvent::Fleet(event),
+                event = self.fleet_event_rx.recv(), if self.fleet_control_open && self.held_fleet_invoke.is_none() => RuntimeEvent::Fleet(event),
                 event = self.terminal_event_rx.recv(), if self.terminal_control_open => RuntimeEvent::Terminal(event),
                 event = self.worker_event_rx.recv(), if self.worker_events_open => RuntimeEvent::Worker(event),
                 Some(prepared) = self.pending_spawns.next(), if !self.pending_spawns.is_empty() => RuntimeEvent::PreparedSpawn(prepared),
+                _ = self.fleet_responses.capacity_changed(), if self.held_fleet_invoke.is_some() => RuntimeEvent::FleetResponseCapacity,
                 _ = self.reap_tick.tick() => RuntimeEvent::MaintenanceTick,
             };
 
             match event {
+                RuntimeEvent::FleetResponseCapacity => {
+                    if self.fleet_responses.can_admit() {
+                        if let Some(invoke) = self.held_fleet_invoke.take() {
+                            self.handle_fleet_action_invoke(invoke).await;
+                        }
+                    }
+                }
                 RuntimeEvent::CtrlC => {
                     self.shutdown = true;
                 }
@@ -473,6 +484,7 @@ impl BrokerRuntime {
         // Cancel admission before any teardown await; durable custody survives.
         self.pending_spawns.clear();
         self.drain_identity_cleanups_on_shutdown().await;
+        self.fleet_responses.cancel_pending();
         // Save crash insights before shutdown (only in persist mode)
         if self.paths.persist {
             if let Err(error) = self.crash_insights.save(&self.crash_insights_path) {
@@ -525,13 +537,15 @@ impl BrokerRuntime {
             );
         }
 
-        if let Err(error) = self.ws_control_tx.send(WsControl::Shutdown).await {
+        if let Err(error) = self.ws_control_tx.try_send(WsControl::Shutdown) {
             tracing::warn!(error = %error, "failed to send ws shutdown signal");
         }
+        self.fleet_responses.stop();
+        self.fleet_responses
+            .checkpoint(self.paths.state.parent().expect("runtime state has parent"))?;
         if let Err(error) = self
             .fleet_control_tx
-            .send(FleetControlCommand::Shutdown)
-            .await
+            .try_send(FleetControlCommand::Shutdown)
         {
             tracing::debug!(error = %error, "failed to send fleet control shutdown signal");
         }

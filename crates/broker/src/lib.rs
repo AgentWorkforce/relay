@@ -23,6 +23,7 @@ pub(crate) mod conversation_log;
 pub(crate) mod dedup;
 #[allow(dead_code)]
 pub(crate) mod events;
+pub(crate) mod fleet_responses;
 pub(crate) mod listen_api;
 #[allow(dead_code)]
 pub(crate) mod metrics;
