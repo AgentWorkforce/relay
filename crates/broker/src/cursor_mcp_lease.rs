@@ -1874,15 +1874,13 @@ impl CursorMcpLeaseRegistry {
                 .parent()
                 .ok_or_else(|| invalid_path("Cursor MCP path has no parent"))?;
             #[cfg(windows)]
-            let parent_guard = match windows_directory_guard(parent) {
+            let mut parent_guard = match windows_directory_guard(parent) {
                 Ok(guard) => Some(guard),
                 Err(e) if e.kind() == io::ErrorKind::NotFound => None,
                 Err(e) => return Err(e),
             };
             #[cfg(windows)]
-            let had_guard = parent_guard.is_some();
-            #[cfg(windows)]
-            if had_guard {
+            if parent_guard.is_some() {
                 validate_windows_restore_path(lock, _path, expected_cursor_identity)?;
             }
             match pre_existing {
@@ -1950,7 +1948,9 @@ impl CursorMcpLeaseRegistry {
                         // Drop the directory guard before attempting removal so
                         // Windows does not block the delete with an open handle.
                         #[cfg(windows)]
-                        drop(parent_guard);
+                        {
+                            parent_guard = None;
+                        }
                         if let Some(dir) = _path.parent() {
                             if fs::remove_dir(dir).is_ok() {
                                 sync_entry_parent(dir)?;
@@ -1993,7 +1993,7 @@ impl CursorMcpLeaseRegistry {
                 }
             }
             #[cfg(windows)]
-            if had_guard {
+            if parent_guard.is_some() {
                 validate_windows_restore_path(lock, _path, expected_cursor_identity)?;
             }
             Ok(())
