@@ -440,17 +440,12 @@ impl BrokerRuntime {
                     // new identity to the node for normal delivery/inventory.
                     match register_new_spawn_identity(relaycast_http, &name, Some(&cli)).await {
                         Ok(token) => {
-                            super::fleet::spawn_declared_metadata_publish(
-                                relaycast_http,
-                                name.as_str(),
-                                registration_metadata,
-                            );
                             // HTTP registration alone leaves the agent
                             // without a node binding; the engine only
                             // delivers to `via_node` agents in node-only
                             // delivery. Bind it to this node so it is
-                            // deliverable, surfacing a loud warning if the
-                            // bind fails.
+                            // deliverable. A failed binding is an admission
+                            // failure: never launch an unreachable worker.
                             let bind_warning =
                                 super::relaycast_events::bind_http_registered_agent_to_node(
                                     relaycast_http,
@@ -459,7 +454,21 @@ impl BrokerRuntime {
                                 )
                                 .await;
                             if let Some(warning) = bind_warning {
-                                preregistration_warning = Some(warning);
+                                seed_supplied_agent_token(relaycast_http, &name, &token);
+                                super::identity_cleanup::schedule_identity_cleanup(
+                                    workers,
+                                    fleet_control_tx,
+                                    fleet_delivery_book,
+                                    fleet_inventory,
+                                    relaycast_http,
+                                    &name,
+                                    true,
+                                    Some(super::identity_cleanup::CleanupCompletion::Api(
+                                        reply,
+                                        Err(warning),
+                                    )),
+                                );
+                                return;
                             } else {
                                 match super::fleet::resolve_fleet_agent_token_identity(
                                     relaycast_http,
@@ -687,6 +696,16 @@ impl BrokerRuntime {
                     .await
                 {
                     Ok(effective_spec) => {
+                        // Both hosted credential paths publish declared metadata. Wait for
+                        // admission to succeed before scheduling a detached PATCH.
+                        // Local-only workers have no hosted identity to update.
+                        if worker_relay_key.is_some() {
+                            super::fleet::spawn_declared_metadata_publish(
+                                relaycast_http,
+                                name.as_str(),
+                                registration_metadata,
+                            );
+                        }
                         if owns_identity {
                             if let Some(worker) = workers.workers.get(&name) {
                                 workers.owned_spawn_generations.insert(
