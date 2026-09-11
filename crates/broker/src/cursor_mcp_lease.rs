@@ -41,6 +41,11 @@ struct LeaseLock {
     lock_path: PathBuf,
 }
 
+enum CursorAcquireError {
+    Lock(io::Error),
+    Cursor { lock: LeaseLock, error: io::Error },
+}
+
 #[cfg(unix)]
 impl LeaseLock {
     fn root_fd(&self) -> std::os::unix::io::RawFd {
@@ -121,8 +126,8 @@ impl LeaseLock {
     fn acquire_with_cursor(
         root: &Path,
         create_cursor: bool,
-    ) -> io::Result<(Self, Option<fs::File>, bool)> {
-        let lock = Self::acquire(root)?;
+    ) -> Result<(Self, Option<fs::File>, bool), CursorAcquireError> {
+        let lock = Self::acquire(root).map_err(CursorAcquireError::Lock)?;
         #[cfg(unix)]
         {
             match lock.open_cursor_dir(create_cursor) {
@@ -134,7 +139,7 @@ impl LeaseLock {
                     // still holding this lock.
                     Ok((lock, None, false))
                 }
-                Err(error) => Err(error),
+                Err(error) => Err(CursorAcquireError::Cursor { lock, error }),
             }
         }
         #[cfg(not(unix))]
@@ -637,7 +642,12 @@ impl CursorMcpLeaseRegistry {
         // operations. A hostile process can rename `.cursor` after a pathname
         // check, but it cannot redirect the descriptor captured here. Keep
         // that descriptor in LeaseState for the full lease lifetime.
-        let (lock, cursor_dir, created_dir) = LeaseLock::acquire_with_cursor(&canonical, true)?;
+        let (lock, cursor_dir, created_dir) = match LeaseLock::acquire_with_cursor(&canonical, true)
+        {
+            Ok(value) => value,
+            Err(CursorAcquireError::Lock(error))
+            | Err(CursorAcquireError::Cursor { error, .. }) => return Err(error),
+        };
         #[cfg(unix)]
         let pre_existing = if let Some(cursor) = cursor_dir.as_ref() {
             if let Some((contents, mode)) = read_cursor_target(cursor)? {
@@ -649,7 +659,26 @@ impl CursorMcpLeaseRegistry {
             unreachable!("Unix lease must retain a Cursor directory descriptor")
         };
         #[cfg(not(unix))]
-        let pre_existing = unreachable!("LeaseLock acquisition is unsupported on non-Unix");
+        let (created_dir, pre_existing) = {
+            let cursor = canonical.join(".cursor");
+            let created_dir = match validate_cursor_dir(&canonical)? {
+                true => false,
+                false => match fs::create_dir(&cursor) {
+                    Ok(()) => true,
+                    Err(error) if error.kind() == io::ErrorKind::AlreadyExists => false,
+                    Err(error) => return Err(error),
+                },
+            };
+            let pre_existing = if validate_target(&key)? {
+                PreExisting::Present {
+                    contents: fs::read(&key)?,
+                    mode: 0o600,
+                }
+            } else {
+                PreExisting::Absent { created_dir }
+            };
+            (created_dir, pre_existing)
+        };
 
         let mut holders = HashSet::new();
         holders.insert(worker.clone());
@@ -715,10 +744,17 @@ impl CursorMcpLeaseRegistry {
         #[cfg(not(unix))]
         {
             let _ = state;
-            Err(io::Error::new(
-                io::ErrorKind::Unsupported,
-                "Cursor MCP leasing requires Unix directory descriptors",
-            ))
+            let path = self.path_by_worker.get(worker).ok_or_else(|| {
+                io::Error::new(
+                    io::ErrorKind::NotFound,
+                    format!("no Cursor MCP lease for worker '{worker}'"),
+                )
+            })?;
+            if validate_target(path)? {
+                Ok(Some(fs::read(path)?))
+            } else {
+                Ok(None)
+            }
         }
     }
 
@@ -743,11 +779,14 @@ impl CursorMcpLeaseRegistry {
         }
         #[cfg(not(unix))]
         {
-            let _ = (state, contents);
-            Err(io::Error::new(
-                io::ErrorKind::Unsupported,
-                "Cursor MCP leasing requires Unix directory descriptors",
-            ))
+            let _ = state;
+            let path = self.path_by_worker.get(worker).ok_or_else(|| {
+                io::Error::new(
+                    io::ErrorKind::NotFound,
+                    format!("no Cursor MCP lease for worker '{worker}'"),
+                )
+            })?;
+            write_credential_file(path, contents)
         }
     }
 
@@ -862,7 +901,7 @@ impl CursorMcpLeaseRegistry {
         #[cfg(not(unix))]
         match pre_existing {
             PreExisting::Absent { created_dir } => {
-                match fs::symlink_metadata(path) {
+                match fs::symlink_metadata(_path) {
                     Ok(metadata) if metadata.file_type().is_symlink() => {
                         return Err(invalid_path(
                             "refusing to remove a symlink at generated Cursor MCP path",
@@ -877,16 +916,16 @@ impl CursorMcpLeaseRegistry {
                     Err(error) if error.kind() == io::ErrorKind::NotFound => {}
                     Err(error) => return Err(error),
                 }
-                let removed = match fs::remove_file(path) {
+                let removed = match fs::remove_file(_path) {
                     Ok(()) => true,
                     Err(error) if error.kind() == io::ErrorKind::NotFound => false,
                     Err(error) => return Err(error),
                 };
                 if removed {
-                    sync_entry_parent(path)?;
+                    sync_entry_parent(_path)?;
                 }
                 if *created_dir {
-                    if let Some(dir) = path.parent() {
+                    if let Some(dir) = _path.parent() {
                         if fs::remove_dir(dir).is_ok() {
                             sync_entry_parent(dir)?;
                         }
@@ -1026,9 +1065,9 @@ impl CursorMcpLeaseRegistry {
                 });
                 continue;
             }
-            let lock = match LeaseLock::acquire(root) {
-                Ok(lock) => lock,
-                Err(error) => {
+            let (lock, cursor_dir, _) = match LeaseLock::acquire_with_cursor(root, false) {
+                Ok(value) => value,
+                Err(CursorAcquireError::Lock(error)) => {
                     tracing::warn!(path = %path.display(), %error, "Cursor MCP lease recovery deferred because another broker owns the cwd");
                     remaining.push(JournalEntry {
                         path,
@@ -1036,11 +1075,7 @@ impl CursorMcpLeaseRegistry {
                     });
                     continue;
                 }
-            };
-            let cursor_dir = match lock.open_cursor_dir(false) {
-                Ok((cursor, _)) => Some(cursor),
-                Err(error) if error.kind() == io::ErrorKind::NotFound => None,
-                Err(error) => {
+                Err(CursorAcquireError::Cursor { lock, error }) => {
                     tracing::warn!(path = %path.display(), %error, "Cursor MCP lease recovery deferred because .cursor could not be opened safely");
                     remaining.push(JournalEntry {
                         path,
@@ -1488,6 +1523,77 @@ mod tests {
         );
         assert_eq!(read(&path), b"outside bytes");
         assert_eq!(read(&outside_file), b"outside bytes");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn journal_recovery_defers_regular_cursor_and_keeps_root_locked() {
+        let dir = tempdir().unwrap();
+        let journal = dir.path().join("journal.json");
+        let root = dir.path().canonicalize().unwrap();
+        let cursor_path = root.join(".cursor");
+        fs::write(&cursor_path, b"not a directory").unwrap();
+        let path = cursor_path.join("mcp.json");
+        let body = serde_json::to_vec(&Journal {
+            entries: vec![JournalEntry {
+                path: path.clone(),
+                pre_existing: JournalPreExisting::Absent { created_dir: false },
+            }],
+        })
+        .unwrap();
+        fs::write(&journal, body).unwrap();
+
+        let mut recovery = CursorMcpLeaseRegistry {
+            leases: HashMap::new(),
+            path_by_worker: HashMap::new(),
+            journal_path: Some(journal.clone()),
+        };
+        recovery
+            .recover_journal_with_hook(|| match LeaseLock::acquire(&root) {
+                Err(error) => assert_eq!(error.kind(), io::ErrorKind::WouldBlock),
+                Ok(_) => panic!("root lock should stay held until journal finalization"),
+            })
+            .unwrap();
+        assert!(
+            journal.exists(),
+            "invalid cursor entry must remain journaled"
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn journal_recovery_defers_invalid_child_and_keeps_root_locked() {
+        let dir = tempdir().unwrap();
+        let journal = dir.path().join("journal.json");
+        let root = dir.path().canonicalize().unwrap();
+        let cursor_path = root.join(".cursor");
+        fs::create_dir(&cursor_path).unwrap();
+        let path = cursor_path.join("mcp.json");
+        fs::create_dir(&path).unwrap();
+        let body = serde_json::to_vec(&Journal {
+            entries: vec![JournalEntry {
+                path: path.clone(),
+                pre_existing: JournalPreExisting::Absent { created_dir: false },
+            }],
+        })
+        .unwrap();
+        fs::write(&journal, body).unwrap();
+
+        let mut recovery = CursorMcpLeaseRegistry {
+            leases: HashMap::new(),
+            path_by_worker: HashMap::new(),
+            journal_path: Some(journal.clone()),
+        };
+        recovery
+            .recover_journal_with_hook(|| match LeaseLock::acquire(&root) {
+                Err(error) => assert_eq!(error.kind(), io::ErrorKind::WouldBlock),
+                Ok(_) => panic!("root lock should stay held until journal finalization"),
+            })
+            .unwrap();
+        assert!(
+            journal.exists(),
+            "invalid child entry must remain journaled"
+        );
     }
 
     #[cfg(unix)]
