@@ -758,6 +758,7 @@ pub(crate) async fn run_init(cmd: InitCommand, telemetry: TelemetryClient) -> Re
         pty_observability: HashMap::new(),
         api_rx,
         api_open: true,
+        pending_spawns: Default::default(),
         ws_inbound_rx,
         relaycast_open: true,
         fleet_control_tx,

@@ -269,6 +269,17 @@ fn observer_token_filters_are_empty(filters: &ObserverTokenFilters) -> bool {
 
 impl BrokerRuntime {
     pub(super) async fn handle_api_request(&mut self, req: ListenApiRequest) {
+        self.handle_api_request_registered(req, None).await;
+    }
+
+    pub(super) async fn handle_api_request_registered(
+        &mut self,
+        req: ListenApiRequest,
+        resumed: Option<Arc<crate::spawn_registration::SpawnRegistration>>,
+    ) {
+        let _admission_guard = resumed
+            .clone()
+            .map(crate::spawn_registration::AdmissionGuard);
         let req = if self.degraded.is_some() {
             match self.handle_local_request(req).await {
                 Some(req) => req,
@@ -348,11 +359,15 @@ impl BrokerRuntime {
                 replay_buffer,
                 reply,
             } => {
+                if reply.is_closed() {
+                    return;
+                }
                 // Tokenless HTTP registration below is create-only;
                 // only their successful new identity may be deleted on failure.
                 // A supplied credential never grants cleanup ownership.
                 if workers.identity_cleanups.contains_key(&name)
-                    || workers.spawn_registrations.blocked(&name)
+                    || (workers.spawn_registrations.blocked(&name)
+                        && !super::pending_spawn::owns_resume(workers, &name, resumed.as_ref()))
                 {
                     let _ = reply.send(Err(
                         "worker name has pending owned cleanup; complete it before reuse"
@@ -446,6 +461,7 @@ impl BrokerRuntime {
                         &effective_channels,
                         None,
                         session_ref.clone(),
+                        resumed.clone(),
                     )
                     .await
                     {
@@ -470,7 +486,10 @@ impl BrokerRuntime {
                 if owns_identity {
                     workers.owned_spawn_generations.remove(&name);
                 }
-                if let Some(token) = worker_relay_key.as_deref() {
+                let _fresh_guard = spawn_registration
+                    .clone()
+                    .map(crate::spawn_registration::AdmissionGuard);
+                if let Some(token) = worker_relay_key.as_deref().filter(|_| resumed.is_none()) {
                     // Node registration returns a token without populating the
                     // HTTP client's worker cache. Seed it before authenticating
                     // as the worker so channel reconciliation cannot rotate an
@@ -647,7 +666,7 @@ impl BrokerRuntime {
                     return;
                 }
                 match workers
-                    .spawn_registered(
+                    .spawn_registered_if_eligible(
                         spec,
                         Some("Dashboard".to_string()),
                         idle_threshold_secs,
@@ -657,6 +676,7 @@ impl BrokerRuntime {
                         agent_result.clone(),
                         None,
                         spawn_registration,
+                        &|| !reply.is_closed(),
                     )
                     .await
                 {

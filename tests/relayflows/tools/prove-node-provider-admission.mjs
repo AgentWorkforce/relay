@@ -11,7 +11,9 @@ import path from 'node:path';
 import { createRequire } from 'node:module';
 import { setTimeout as sleep } from 'node:timers/promises';
 
-const [binary, engineBin, directory] = process.argv.slice(2).map((value) => path.resolve(value));
+const [binary, engineBin, directory] = process.argv.slice(2, 5).map((value) => path.resolve(value));
+const arm = process.argv[5] ?? 'head';
+assert(['base', 'head'].includes(arm));
 assert(
   binary && engineBin && directory,
   'broker binary, engine serve.js, and evidence directory are required'
@@ -136,136 +138,182 @@ try {
   await writeFile(path.join(directory, 'identity-private.json'), JSON.stringify(identity, null, 2), {
     mode: 0o600,
   });
-  const inventory = await api('/api/fleet-inventory');
-  await writeFile(path.join(directory, 'inventory-private.json'), JSON.stringify(inventory, null, 2), {
-    mode: 0o600,
-  });
-  const duplicate = await api('/api/spawn', 'POST', { name: 'provider-worker', cli: 'cat', channels: [] });
-  assert(duplicate.status >= 400);
-  const held = await api('/api/spawned/provider-worker/delivery-mode', 'PUT', { mode: 'manual_flush' });
-  assert.equal(held.status, 200, JSON.stringify(held));
-  const sender = await request(origin, '/v1/agents', 'POST', { name: 'provider-sender', type: 'agent' }, key);
-  assert.equal(sender.status, 201);
-  const fleet = await request(
-    origin,
-    '/v1/actions/spawn/invoke',
-    'POST',
-    {
-      input: {
-        name: 'fleet-provider-worker',
-        cli: 'codex',
-        channels: [],
-        target_node: inventory.value.node_name,
-        harnessConfig: { runtime: 'native', command: 'cat', args: [], sessionId: 'fleet-provider-session' },
-      },
-    },
-    sender.value.data.token
-  );
-  assert.equal(fleet.status, 201, JSON.stringify(fleet));
-  const invocationId = fleet.value.data.invocation_id;
-  await wait(async () => {
-    const outcome = await request(
-      origin,
-      `/v1/actions/spawn/invocations/${invocationId}`,
-      'GET',
-      undefined,
-      key
-    );
-    if (outcome.value?.data?.status === 'failed')
-      throw new Error('Fleet admission failed: ' + JSON.stringify(outcome.value.data.error));
-    return outcome.value?.data?.status === 'completed';
-  }, 'fleet node action admission');
-  const marker = `provider-delivery-${randomUUID()}`;
-  const dm = await request(
-    origin,
-    '/v1/dm',
-    'POST',
-    { to: 'provider-worker', text: marker },
-    sender.value.data.token
-  );
-  assert(dm.status < 300);
-  await wait(
-    async () => JSON.stringify(await api('/api/spawned/provider-worker/pending')).includes(marker),
-    'real engine DM reaches exact broker recipient'
-  );
-  const Database = createRequire(engineBin)('better-sqlite3');
-  const database = new Database(path.join(directory, 'engine.sqlite'), { readonly: true });
-  try {
-    const stored = database
-      .prepare('SELECT id, provider_name, origin_node_id FROM agents WHERE name = ?')
-      .get('provider-worker');
-    assert.equal(stored.provider_name, 'broker');
-    assert.equal(stored.origin_node_id, nodeId);
-    const fleetStored = database
-      .prepare('SELECT id, provider_name, origin_node_id FROM agents WHERE name = ?')
-      .get('fleet-provider-worker');
-    assert.equal(fleetStored.provider_name, 'broker');
-    assert.equal(fleetStored.origin_node_id, nodeId);
-    assert.equal(
-      database.prepare('SELECT count(*) AS count FROM channel_members WHERE agent_id = ?').get(fleetStored.id)
-        .count,
-      0
-    );
-    assert.equal(
-      database.prepare('SELECT count(*) AS count FROM channel_members WHERE agent_id = ?').get(stored.id)
-        .count,
-      0
-    );
-    assert(JSON.stringify(inventory).includes(stored.id));
-    const guarded = await request(
-      origin,
-      '/v1/agents/release',
-      'POST',
-      { name: 'provider-worker', expected_token_hash: '0'.repeat(64) },
-      key
-    );
-    assert.equal(guarded.status, 409);
-    assert.equal(
-      database.prepare('SELECT id FROM agents WHERE name = ?').get('provider-worker').id,
-      stored.id
-    );
-    const failed = await api('/api/spawn', 'POST', {
-      name: 'failed-provider-worker',
-      cli: 'cat',
-      transport: 'pty',
-      channels: [],
-      cwd: path.join(directory, 'missing-cwd'),
+  if (arm === 'base') {
+    const Database = createRequire(engineBin)('better-sqlite3');
+    const database = new Database(path.join(directory, 'engine.sqlite'), { readonly: true });
+    try {
+      const stored = database
+        .prepare('SELECT id, provider_name, origin_node_id FROM agents WHERE name = ?')
+        .get('provider-worker');
+      assert.equal(stored.provider_name, 'default', 'base must reproduce HTTP/default-provider admission');
+      assert.match(
+        stored.origin_node_id,
+        /^node_direct_/,
+        'base identity belongs to its virtual direct node'
+      );
+      assert.notEqual(
+        stored.origin_node_id,
+        nodeId,
+        'REST binding must not establish authenticated broker origin'
+      );
+      report = {
+        passed: true,
+        acceptanceEvidence: false,
+        arm,
+        defaultProviderBug: true,
+        brokerSha256: createHash('sha256')
+          .update(await readFile(binary))
+          .digest('hex'),
+        engineServeSha256: createHash('sha256')
+          .update(await readFile(engineBin))
+          .digest('hex'),
+      };
+    } finally {
+      database.close();
+    }
+  } else {
+    const inventory = await api('/api/fleet-inventory');
+    await writeFile(path.join(directory, 'inventory-private.json'), JSON.stringify(inventory, null, 2), {
+      mode: 0o600,
     });
-    assert(failed.status >= 400);
-    assert(JSON.stringify(failed).includes('cwd'));
-    assert.equal(
-      database.prepare('SELECT id FROM agents WHERE name = ?').get('failed-provider-worker'),
-      undefined
+    const duplicate = await api('/api/spawn', 'POST', { name: 'provider-worker', cli: 'cat', channels: [] });
+    assert(duplicate.status >= 400);
+    const held = await api('/api/spawned/provider-worker/delivery-mode', 'PUT', { mode: 'manual_flush' });
+    assert.equal(held.status, 200, JSON.stringify(held));
+    const sender = await request(
+      origin,
+      '/v1/agents',
+      'POST',
+      { name: 'provider-sender', type: 'agent' },
+      key
     );
-  } finally {
-    database.close();
+    assert.equal(sender.status, 201);
+    const fleet = await request(
+      origin,
+      '/v1/actions/spawn/invoke',
+      'POST',
+      {
+        input: {
+          name: 'fleet-provider-worker',
+          cli: 'codex',
+          channels: [],
+          target_node: inventory.value.node_name,
+          harnessConfig: { runtime: 'native', command: 'cat', args: [], sessionId: 'fleet-provider-session' },
+        },
+      },
+      sender.value.data.token
+    );
+    assert.equal(fleet.status, 201, JSON.stringify(fleet));
+    const invocationId = fleet.value.data.invocation_id;
+    await wait(async () => {
+      const outcome = await request(
+        origin,
+        `/v1/actions/spawn/invocations/${invocationId}`,
+        'GET',
+        undefined,
+        key
+      );
+      if (outcome.value?.data?.status === 'failed')
+        throw new Error('Fleet admission failed: ' + JSON.stringify(outcome.value.data.error));
+      return outcome.value?.data?.status === 'completed';
+    }, 'fleet node action admission');
+    const marker = `provider-delivery-${randomUUID()}`;
+    const dm = await request(
+      origin,
+      '/v1/dm',
+      'POST',
+      { to: 'provider-worker', text: marker },
+      sender.value.data.token
+    );
+    assert(dm.status < 300);
+    await wait(
+      async () => JSON.stringify(await api('/api/spawned/provider-worker/pending')).includes(marker),
+      'real engine DM reaches exact broker recipient'
+    );
+    const Database = createRequire(engineBin)('better-sqlite3');
+    const database = new Database(path.join(directory, 'engine.sqlite'), { readonly: true });
+    try {
+      const stored = database
+        .prepare('SELECT id, provider_name, origin_node_id FROM agents WHERE name = ?')
+        .get('provider-worker');
+      assert.equal(stored.provider_name, 'broker');
+      assert.equal(stored.origin_node_id, nodeId);
+      const fleetStored = database
+        .prepare('SELECT id, provider_name, origin_node_id FROM agents WHERE name = ?')
+        .get('fleet-provider-worker');
+      assert.equal(fleetStored.provider_name, 'broker');
+      assert.equal(fleetStored.origin_node_id, nodeId);
+      assert.equal(
+        database
+          .prepare('SELECT count(*) AS count FROM channel_members WHERE agent_id = ?')
+          .get(fleetStored.id).count,
+        0
+      );
+      assert.equal(
+        database.prepare('SELECT count(*) AS count FROM channel_members WHERE agent_id = ?').get(stored.id)
+          .count,
+        0
+      );
+      assert(JSON.stringify(inventory).includes(stored.id));
+      const guarded = await request(
+        origin,
+        '/v1/agents/release',
+        'POST',
+        { name: 'provider-worker', expected_token_hash: '0'.repeat(64) },
+        key
+      );
+      assert.equal(guarded.status, 409);
+      assert.equal(
+        database.prepare('SELECT id FROM agents WHERE name = ?').get('provider-worker').id,
+        stored.id
+      );
+      const failed = await api('/api/spawn', 'POST', {
+        name: 'failed-provider-worker',
+        cli: 'cat',
+        transport: 'pty',
+        channels: [],
+        cwd: path.join(directory, 'missing-cwd'),
+      });
+      assert(failed.status >= 400);
+      assert(JSON.stringify(failed).includes('cwd'));
+      assert.equal(
+        database.prepare('SELECT id FROM agents WHERE name = ?').get('failed-provider-worker'),
+        undefined
+      );
+    } finally {
+      database.close();
+    }
+    report = {
+      passed: true,
+      acceptanceEvidence: false,
+      brokerSha256: createHash('sha256')
+        .update(await readFile(binary))
+        .digest('hex'),
+      engineServeSha256: createHash('sha256')
+        .update(await readFile(engineBin))
+        .digest('hex'),
+      freshSpawn: true,
+      fleetSpawn: true,
+      duplicateRejected: true,
+      providerAndOriginCorrect: true,
+      isolatedChannels: true,
+      guardedReleaseRejectedWrongHash: true,
+      failedLaunchCleanedOwnedIdentity: true,
+      brokerReceivedRealDm: true,
+      identityId: row.id,
+      note: 'Real engine and compiled broker with local disposable identities; no hosted or Nango proof.',
+    };
   }
-  report = {
-    passed: true,
-    acceptanceEvidence: false,
-    brokerSha256: createHash('sha256')
-      .update(await readFile(binary))
-      .digest('hex'),
-    engineServeSha256: createHash('sha256')
-      .update(await readFile(engineBin))
-      .digest('hex'),
-    freshSpawn: true,
-    fleetSpawn: true,
-    duplicateRejected: true,
-    providerAndOriginCorrect: true,
-    isolatedChannels: true,
-    guardedReleaseRejectedWrongHash: true,
-    failedLaunchCleanedOwnedIdentity: true,
-    brokerReceivedRealDm: true,
-    identityId: row.id,
-    note: 'Real engine and compiled broker with local disposable identities; no hosted or Nango proof.',
-  };
 } finally {
   for (const child of children.reverse()) {
     if (child.exitCode === null && child.signalCode === null) {
       child.kill('SIGTERM');
       await Promise.race([new Promise((resolve) => child.once('exit', resolve)), sleep(3000)]);
-      if (child.exitCode === null && child.signalCode === null) child.kill('SIGKILL');
+      if (child.exitCode === null && child.signalCode === null) {
+        const exited = new Promise((resolve) => child.once('exit', resolve));
+        child.kill('SIGKILL');
+        await exited;
+      }
     }
   }
   for (const [label, text] of Object.entries(logs))

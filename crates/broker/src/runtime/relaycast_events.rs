@@ -145,7 +145,9 @@ pub(super) fn relaycast_spawn_spec_session_id(
         })
 }
 
-fn relaycast_harness_config(value: &Value) -> Result<Option<ResolvedHarnessConfig>, String> {
+pub(super) fn relaycast_harness_config(
+    value: &Value,
+) -> Result<Option<ResolvedHarnessConfig>, String> {
     let agent = value.get("agent");
     let harness_id = agent
         .and_then(|agent| {
@@ -188,7 +190,11 @@ fn relaycast_harness_config(value: &Value) -> Result<Option<ResolvedHarnessConfi
     }
 }
 
-fn harness_metadata_flag(config: &ResolvedHarnessConfig, snake: &str, camel: &str) -> bool {
+pub(super) fn harness_metadata_flag(
+    config: &ResolvedHarnessConfig,
+    snake: &str,
+    camel: &str,
+) -> bool {
     config
         .metadata()
         .and_then(|metadata| metadata.get(snake).or_else(|| metadata.get(camel)))
@@ -463,8 +469,12 @@ pub(super) async fn spawn_worker_from_request(
     session_ref: Option<String>,
     hosted_agent_event_tx: &mpsc::Sender<HostedAgentEvent>,
     pty_observability: &mut HashMap<WorkerName, PtyObservabilityState>,
+    resumed: Option<Arc<crate::spawn_registration::SpawnRegistration>>,
 ) -> Result<()> {
-    if workers.identity_cleanups.contains_key(&name) || workers.spawn_registrations.blocked(&name) {
+    if workers.identity_cleanups.contains_key(&name)
+        || (workers.spawn_registrations.blocked(&name)
+            && !super::pending_spawn::owns_resume(workers, &name, resumed.as_ref()))
+    {
         anyhow::bail!("worker name has pending owned cleanup; complete it before reuse");
     }
     anyhow::ensure!(!workers.has_worker(&name), "agent '{name}' already exists");
@@ -645,6 +655,7 @@ pub(super) async fn spawn_worker_from_request(
                 &channels,
                 invocation_id.clone(),
                 session_ref.clone(),
+                resumed.clone(),
             )
             .await
             .map_err(anyhow::Error::msg)?;
@@ -657,8 +668,11 @@ pub(super) async fn spawn_worker_from_request(
     if owns_identity {
         workers.owned_spawn_generations.remove(&name);
     }
+    let _fresh_guard = spawn_registration
+        .clone()
+        .map(crate::spawn_registration::AdmissionGuard);
     let channel_membership_warning: Option<String> =
-        if let Some(token) = worker_relay_key.as_deref() {
+        if let Some(token) = worker_relay_key.as_deref().filter(|_| resumed.is_none()) {
             seed_supplied_agent_token(workspace_http, &name, token);
             if let Err(error) = async {
                 workspace_http
@@ -1149,6 +1163,7 @@ mod tests {
             None,
             &hosted_agent_event_tx,
             &mut pty_observability,
+            None,
         )
         .await
         .expect_err("a sidecar that exits during the stability window must fail the spawn");

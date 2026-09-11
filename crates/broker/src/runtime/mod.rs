@@ -83,6 +83,7 @@ mod io;
 mod maintenance;
 mod messages;
 mod paths;
+mod pending_spawn;
 mod relaycast_events;
 mod session;
 mod spawn_spec;

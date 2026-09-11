@@ -20,7 +20,9 @@ Timed-out or disconnected registrations retain name custody. Intent records unde
 raw tokens, and unresolved names remain blocked after restart. Reconcile uncertain
 remote creation or failed cleanup before reusing a name. The broker allows at most
 256 retained fresh registrations at once and rejects additional admission instead
-of evicting unresolved records.
+of evicting unresolved records. Registration and channel checks do not block
+unrelated broker requests or shutdown. Caller cancellation before admission
+prevents launch; contradictory replies preserve quarantine even during cleanup.
 
 ## Quick Start
 

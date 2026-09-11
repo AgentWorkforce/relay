@@ -49,6 +49,17 @@ struct State {
     error: Option<String>,
     token: Option<AgentRegistrationToken>,
     connection: Option<Arc<AtomicBool>>,
+    caller_eligible: Option<Arc<dyn Fn() -> bool + Send + Sync>>,
+    deadline: tokio::time::Instant,
+}
+
+/// Owns the entire admission interval, including awaits after token receipt.
+/// Dropping a canceled continuation transfers known identity to cleanup.
+pub(crate) struct AdmissionGuard(pub(crate) Arc<SpawnRegistration>);
+impl Drop for AdmissionGuard {
+    fn drop(&mut self) {
+        self.0.abandon();
+    }
 }
 
 pub(crate) struct SpawnRegistration {
@@ -111,6 +122,13 @@ fn sync_directory(path: &Path) -> Result<(), String> {
 }
 
 impl SpawnRegistration {
+    pub(crate) fn set_caller_eligibility(
+        &self,
+        caller: Option<Arc<dyn Fn() -> bool + Send + Sync>>,
+    ) {
+        self.state.lock().unwrap().caller_eligible = caller;
+    }
+
     pub(crate) fn matches_service(
         &self,
         service: &str,
@@ -154,6 +172,16 @@ impl SpawnRegistration {
     ) -> bool {
         let mut state = self.state.lock().unwrap();
         if state.phase != Phase::Reserved || state.abandoned {
+            return false;
+        }
+        if tokio::time::Instant::now() >= state.deadline
+            || state
+                .caller_eligible
+                .as_ref()
+                .is_some_and(|eligible| !eligible())
+        {
+            drop(state);
+            self.reject_unsent("spawn caller disconnected before dispatch");
             return false;
         }
         if (!state.intent.node_id.is_empty() && state.intent.node_id != node_id)
@@ -201,7 +229,8 @@ impl SpawnRegistration {
 
     pub(crate) fn record_reply(&self, reply: &crate::fleet_wire::Reply) {
         let mut state = self.state.lock().unwrap();
-        if reply.id != state.intent.request_id || !matches!(state.phase, Phase::Sent | Phase::Owned)
+        if reply.id != state.intent.request_id
+            || !matches!(state.phase, Phase::Sent | Phase::Owned | Phase::Running)
         {
             return;
         }
@@ -268,9 +297,21 @@ impl SpawnRegistration {
         self.changed.notify_one();
     }
 
+    pub(crate) fn connection_lost(&self) {
+        let mut state = self.state.lock().unwrap();
+        if matches!(state.phase, Phase::Sent | Phase::Owned) {
+            state.error = Some("node_control_disconnected; name quarantined".into());
+            state.abandoned = true;
+            self.changed.notify_one();
+        }
+    }
+
     pub(crate) fn abandon(&self) {
         let unsent = {
             let mut state = self.state.lock().unwrap();
+            if matches!(state.phase, Phase::Running | Phase::Retired) {
+                return;
+            }
             state.abandoned = true;
             state.phase == Phase::Reserved
         };
@@ -289,12 +330,16 @@ impl SpawnRegistration {
             }
         }
         let mut guard = Abandon(self, true);
-        let result = tokio::time::timeout(std::time::Duration::from_secs(30), async {
+        let deadline = self.state.lock().unwrap().deadline;
+        let result = tokio::time::timeout_at(deadline, async {
             loop {
                 {
                     let state = self.state.lock().unwrap();
                     if let Some(error) = &state.error {
                         return Err(error.clone());
+                    }
+                    if tokio::time::Instant::now() >= state.deadline {
+                        return Err("agent_register_timeout; name quarantined".into());
                     }
                     if let Some(token) = &state.token {
                         return Ok(token.clone());
@@ -316,6 +361,11 @@ impl SpawnRegistration {
         if state.phase != Phase::Owned
             || state.abandoned
             || state.error.is_some()
+            || tokio::time::Instant::now() >= state.deadline
+            || state
+                .caller_eligible
+                .as_ref()
+                .is_some_and(|eligible| !eligible())
             || !state
                 .connection
                 .as_ref()
@@ -345,10 +395,31 @@ impl SpawnRegistration {
         state.abandoned && state.phase == Phase::Owned && state.connection.is_some()
     }
 
+    pub(crate) fn authorizes_cleanup(
+        &self,
+        generation: Uuid,
+        agent_id: Option<&str>,
+        token_hash: Option<&str>,
+    ) -> bool {
+        let state = self.state.lock().unwrap();
+        state.intent.generation == generation
+            && state.connection.is_some()
+            && matches!(state.phase, Phase::Owned | Phase::Running)
+            && state.intent.agent_id.as_deref() == agent_id
+            && state.intent.token_hash.as_deref() == token_hash
+            && agent_id.is_some()
+            && token_hash.is_some()
+    }
+
     pub(crate) fn retire_after_cleanup(&self, generation: Uuid) -> Result<(), String> {
         let mut state = self.state.lock().unwrap();
-        if state.intent.generation != generation {
-            return Err("registration generation mismatch".into());
+        if state.intent.generation != generation
+            || state.connection.is_none()
+            || !matches!(state.phase, Phase::Owned | Phase::Running)
+            || state.intent.agent_id.is_none()
+            || state.intent.token_hash.is_none()
+        {
+            return Err("registration cleanup authority revoked; name quarantined".into());
         }
         Self::remove_intent(&self.path)?;
         state.phase = Phase::Retired;
@@ -455,6 +526,8 @@ impl SpawnRegistrations {
                 error: None,
                 token: None,
                 connection: None,
+                caller_eligible: None,
+                deadline: tokio::time::Instant::now() + std::time::Duration::from_secs(30),
             }),
             path,
             http,

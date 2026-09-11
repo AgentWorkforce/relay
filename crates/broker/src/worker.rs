@@ -616,6 +616,35 @@ impl WorkerRegistry {
         commit_attestation: Option<CommitAttestation>,
         registration: Option<Arc<crate::spawn_registration::SpawnRegistration>>,
     ) -> Result<AgentSpec> {
+        self.spawn_registered_if_eligible(
+            spec,
+            parent,
+            idle_threshold_secs,
+            worker_relay_api_key,
+            skip_relay_prompt,
+            workspace_id,
+            agent_result,
+            commit_attestation,
+            registration,
+            &|| true,
+        )
+        .await
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) async fn spawn_registered_if_eligible(
+        &mut self,
+        spec: AgentSpec,
+        parent: Option<String>,
+        idle_threshold_secs: Option<u64>,
+        worker_relay_api_key: Option<String>,
+        skip_relay_prompt: bool,
+        workspace_id: Option<crate::ids::WorkspaceId>,
+        agent_result: Option<AgentResultMcpConfig>,
+        commit_attestation: Option<CommitAttestation>,
+        registration: Option<Arc<crate::spawn_registration::SpawnRegistration>>,
+        eligible: &(dyn Fn() -> bool + Sync),
+    ) -> Result<AgentSpec> {
         let mut spec = spec;
         if self.spawn_registrations.blocked(&spec.name)
             && !registration.as_ref().is_some_and(|owned| {
@@ -1321,6 +1350,9 @@ impl WorkerRegistry {
             command.current_dir(cwd);
         }
 
+        // Last eligibility check after asynchronous CLI/session/MCP setup.
+        // No await separates this check, custody admission, and child launch.
+        anyhow::ensure!(eligible(), "spawn caller disconnected before admission");
         let generation = match registration.as_ref() {
             Some(custody) => custody
                 .admit(worker_relay_api_key.as_deref().unwrap_or(""))

@@ -1877,15 +1877,22 @@ async fn run_connected_once(
     let _ = event_tx.send(FleetControlEvent::Connected).await;
     let (mut sink, mut stream) = ws.split();
     // The handshake alone does not acknowledge broker-provider registration.
-    struct Readiness(std::sync::Arc<std::sync::atomic::AtomicBool>);
+    struct Readiness(
+        std::sync::Arc<std::sync::atomic::AtomicBool>,
+        Vec<std::sync::Arc<crate::spawn_registration::SpawnRegistration>>,
+    );
     impl Drop for Readiness {
         fn drop(&mut self) {
             self.0.store(false, std::sync::atomic::Ordering::Release);
+            for custody in &self.1 {
+                custody.connection_lost();
+            }
         }
     }
-    let mut admission = Readiness(std::sync::Arc::new(std::sync::atomic::AtomicBool::new(
-        false,
-    )));
+    let mut admission = Readiness(
+        std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
+        Vec::new(),
+    );
     let mut fresh: HashMap<String, std::sync::Arc<crate::spawn_registration::SpawnRegistration>> =
         HashMap::new();
     let mut pending_agent_registrations: HashMap<String, PendingAgentRegistration> = HashMap::new();
@@ -1939,7 +1946,7 @@ async fn run_connected_once(
                         next.provider = Some(provider.clone());
                         next.id = Some(format!("node_register_{}", Uuid::new_v4()));
                         admission.0.store(false, std::sync::atomic::Ordering::Release);
-                        admission = Readiness(std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)));
+                        admission = Readiness(std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)), Vec::new());
                         node_register = next.clone();
                         *registration = Some(next.clone());
                         if send_wire(&mut sink, &BrokerToRelaycast::NodeRegister(next)).await.is_err() {
@@ -1992,6 +1999,8 @@ async fn run_connected_once(
                             continue;
                         }
                         if !custody.begin_send(&config.node_id, &provider.instance_id, admission.0.clone()) { continue; }
+                        admission.1.retain(|entry| !entry.retired());
+                        admission.1.push(custody.clone());
                         fresh.insert(id, custody);
                         if send_wire(&mut sink, &BrokerToRelaycast::AgentRegister(request)).await.is_err() {
                             return ControlRunResult::Disconnected;

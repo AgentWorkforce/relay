@@ -625,6 +625,7 @@ fn worker_event_runtime_fixture(
         pty_observability: HashMap::new(),
         api_rx,
         api_open: true,
+        pending_spawns: Default::default(),
         ws_inbound_rx,
         relaycast_open: true,
         fleet_control_tx,
@@ -6782,3 +6783,5 @@ async fn assert_http_spawn_metadata_publication(supplied_token: bool, valid_cwd:
             .contains_key(&name));
     }
 }
+
+include!("registration_review_tests.rs");

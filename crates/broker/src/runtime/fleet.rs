@@ -1269,6 +1269,17 @@ impl BrokerRuntime {
     /// to this node). Replies with `action.result { output }` on success or
     /// `{ error }` on failure.
     async fn handle_fleet_action_spawn(&mut self, invoke: ActionInvoke) {
+        self.dispatch_fleet_spawn(invoke).await;
+    }
+
+    pub(super) async fn finish_fleet_action_spawn(
+        &mut self,
+        invoke: ActionInvoke,
+        resumed: Option<Arc<crate::spawn_registration::SpawnRegistration>>,
+    ) {
+        let _admission_guard = resumed
+            .clone()
+            .map(crate::spawn_registration::AdmissionGuard);
         let Some(name) = action_invoke_agent_name(&invoke) else {
             self.reply_action_error(&invoke.invocation_id, "spawn_missing_agent_name")
                 .await;
@@ -1277,7 +1288,8 @@ impl BrokerRuntime {
         if self.workers.workers.contains_key(&name)
             || self.pending_verified_spawns.contains_key(&name)
             || self.workers.identity_cleanups.contains_key(&name)
-            || self.workers.spawn_registrations.blocked(&name)
+            || (self.workers.spawn_registrations.blocked(&name)
+                && !super::pending_spawn::owns_resume(&self.workers, &name, resumed.as_ref()))
         {
             self.reply_action_error(&invoke.invocation_id, "spawn_agent_name_in_use")
                 .await;
@@ -1370,6 +1382,7 @@ impl BrokerRuntime {
             session_ref,
             &self.hosted_agent_event_tx,
             &mut self.pty_observability,
+            resumed,
         )
         .await;
 
@@ -1571,7 +1584,7 @@ impl BrokerRuntime {
         .await;
     }
 
-    async fn reply_action_error(&self, invocation_id: &str, error: &str) {
+    pub(super) async fn reply_action_error(&self, invocation_id: &str, error: &str) {
         self.send_fleet_action_result(ActionResult {
             v: FLEET_WIRE_VERSION,
             id: None,
@@ -2037,6 +2050,7 @@ pub(super) async fn register_owned_node_agent_token(
     channels: &[ChannelName],
     invocation_id: Option<String>,
     session_ref: Option<String>,
+    resumed: Option<Arc<crate::spawn_registration::SpawnRegistration>>,
 ) -> Result<
     (
         crate::node_control::AgentRegistrationToken,
@@ -2044,9 +2058,46 @@ pub(super) async fn register_owned_node_agent_token(
     ),
     String,
 > {
+    let custody = if let Some(custody) = resumed {
+        if !super::pending_spawn::owns_resume(workers, name, Some(&custody)) {
+            return Err("invalid spawn continuation custody".into());
+        }
+        custody
+    } else {
+        begin_owned_node_registration(
+            workers,
+            http,
+            tx,
+            name,
+            channels,
+            invocation_id,
+            session_ref,
+            None,
+        )?
+    };
+    let token = custody.wait().await?;
+    book.bind_authoritative_identity(token.name.clone(), token.agent_id.clone());
+    if let Some(cursor) = token.delivery_ack_seq {
+        book.seed_cursor(token.name.clone(), token.agent_id.clone(), cursor);
+    }
+    Ok((token, custody))
+}
+
+#[allow(clippy::too_many_arguments)]
+pub(super) fn begin_owned_node_registration(
+    workers: &mut WorkerRegistry,
+    http: &RelaycastHttpClient,
+    tx: &mpsc::Sender<FleetControlCommand>,
+    name: &WorkerName,
+    channels: &[ChannelName],
+    invocation_id: Option<String>,
+    session_ref: Option<String>,
+    caller_eligible: Option<Arc<dyn Fn() -> bool + Send + Sync>>,
+) -> Result<Arc<crate::spawn_registration::SpawnRegistration>, String> {
     let custody = workers
         .spawn_registrations
         .reserve(name.clone(), http.clone())?;
+    custody.set_caller_eligibility(caller_eligible);
     let request = AgentRegister {
         v: FLEET_WIRE_VERSION,
         id: Some(custody.request_id()),
@@ -2066,12 +2117,7 @@ pub(super) async fn register_owned_node_agent_token(
     {
         custody.reject_unsent("fleet_control_unavailable");
     }
-    let token = custody.wait().await?;
-    book.bind_authoritative_identity(token.name.clone(), token.agent_id.clone());
-    if let Some(cursor) = token.delivery_ack_seq {
-        book.seed_cursor(token.name.clone(), token.agent_id.clone(), cursor);
-    }
-    Ok((token, custody))
+    Ok(custody)
 }
 
 pub(super) async fn publish_fleet_load_snapshot(
@@ -2602,7 +2648,7 @@ fn fleet_dashboard_relay_inbound_event(
 /// Resolve the worker name a node `action.invoke` targets: prefer the frame's
 /// `agent_name`, then the input's `name`/`agent`/`agent_name`/`agent_id`
 /// fields. Returns `None` when no non-empty identity is present.
-fn action_invoke_agent_name(invoke: &ActionInvoke) -> Option<WorkerName> {
+pub(super) fn action_invoke_agent_name(invoke: &ActionInvoke) -> Option<WorkerName> {
     invoke
         .agent_name
         .as_deref()
@@ -2624,7 +2670,7 @@ fn action_invoke_agent_name(invoke: &ActionInvoke) -> Option<WorkerName> {
 /// Read the first non-empty string at any of the given top-level keys of an
 /// `action.invoke` input object (also checks under a nested `agent` object,
 /// mirroring the firehose payload shape).
-fn action_invoke_string(input: &Value, keys: &[&str]) -> Option<String> {
+pub(super) fn action_invoke_string(input: &Value, keys: &[&str]) -> Option<String> {
     for key in keys {
         if let Some(value) = input.get(key).and_then(Value::as_str).and_then(non_empty) {
             return Some(value.to_string());

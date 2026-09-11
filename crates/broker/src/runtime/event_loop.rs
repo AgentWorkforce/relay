@@ -1,6 +1,7 @@
 use super::*;
 
 use futures_util::future::{join, join_all};
+use futures_util::StreamExt;
 
 /// Current PTY resize owner for a worker under the single-resizer policy.
 ///
@@ -207,6 +208,7 @@ pub(crate) struct BrokerRuntime {
     pub(super) pty_observability: HashMap<WorkerName, PtyObservabilityState>,
     pub(super) api_rx: mpsc::Receiver<ListenApiRequest>,
     pub(super) api_open: bool,
+    pub(super) pending_spawns: super::pending_spawn::PendingSpawns,
     pub(super) ws_inbound_rx: mpsc::Receiver<WorkspaceInboundMessage>,
     pub(super) relaycast_open: bool,
     pub(super) fleet_control_tx: mpsc::Sender<FleetControlCommand>,
@@ -286,6 +288,7 @@ enum RuntimeEvent {
     Sigterm,
     Api(Box<ListenApiRequest>),
     ApiClosed,
+    PreparedSpawn(super::pending_spawn::PreparedSpawn),
     Stdin(std::io::Result<Option<String>>),
     Relaycast(Option<WorkspaceInboundMessage>),
     Fleet(Option<FleetControlEvent>),
@@ -336,6 +339,7 @@ impl BrokerRuntime {
                 event = self.fleet_event_rx.recv(), if self.fleet_control_open => RuntimeEvent::Fleet(event),
                 event = self.terminal_event_rx.recv(), if self.terminal_control_open => RuntimeEvent::Terminal(event),
                 event = self.worker_event_rx.recv(), if self.worker_events_open => RuntimeEvent::Worker(event),
+                Some(prepared) = self.pending_spawns.next(), if !self.pending_spawns.is_empty() => RuntimeEvent::PreparedSpawn(prepared),
                 _ = self.reap_tick.tick() => RuntimeEvent::MaintenanceTick,
             };
 
@@ -351,7 +355,10 @@ impl BrokerRuntime {
                     self.shutdown = true;
                 }
                 RuntimeEvent::Api(request) => {
-                    self.handle_api_request(*request).await;
+                    self.dispatch_api_request(*request).await;
+                }
+                RuntimeEvent::PreparedSpawn(prepared) => {
+                    self.finish_prepared_spawn(prepared).await;
                 }
                 RuntimeEvent::ApiClosed => {
                     self.api_open = false;
@@ -463,6 +470,8 @@ impl BrokerRuntime {
     }
 
     async fn shutdown_runtime(mut self) -> Result<()> {
+        // Cancel admission before any teardown await; durable custody survives.
+        self.pending_spawns.clear();
         self.drain_identity_cleanups_on_shutdown().await;
         // Save crash insights before shutdown (only in persist mode)
         if self.paths.persist {
