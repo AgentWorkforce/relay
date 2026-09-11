@@ -217,9 +217,29 @@ fn windows_lock_file(path: &Path) -> io::Result<fs::File> {
         return Err(invalid_path("Cursor MCP lock file became a reparse point"));
     }
     if let Some(before) = before {
-        if before.file_index() != after.file_index()
-            || before.volume_serial_number() != after.volume_serial_number()
-        {
+        let before_identity = (
+            before.volume_serial_number().ok_or_else(|| {
+                io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    "lock file has no volume identity",
+                )
+            })?,
+            before.file_index().ok_or_else(|| {
+                io::Error::new(io::ErrorKind::InvalidData, "lock file has no file identity")
+            })?,
+        );
+        let after_identity = (
+            after.volume_serial_number().ok_or_else(|| {
+                io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    "lock file has no volume identity",
+                )
+            })?,
+            after.file_index().ok_or_else(|| {
+                io::Error::new(io::ErrorKind::InvalidData, "lock file has no file identity")
+            })?,
+        );
+        if before_identity != after_identity {
             return Err(io::Error::new(
                 io::ErrorKind::WouldBlock,
                 "Cursor MCP lock file was replaced",
@@ -282,7 +302,20 @@ fn windows_child_file(path: &Path, write: bool) -> io::Result<fs::File> {
     }
     let file = unsafe { fs::File::from(OwnedHandle::from_raw_handle(handle)) };
     let opened = windows_handle_identity(&file)?;
-    let expected = (before.volume_serial_number(), before.file_index());
+    let expected = (
+        before.volume_serial_number().ok_or_else(|| {
+            io::Error::new(
+                io::ErrorKind::InvalidData,
+                "Cursor MCP child has no volume identity",
+            )
+        })?,
+        before.file_index().ok_or_else(|| {
+            io::Error::new(
+                io::ErrorKind::InvalidData,
+                "Cursor MCP child has no file identity",
+            )
+        })?,
+    );
     if opened != expected {
         return Err(io::Error::new(
             io::ErrorKind::WouldBlock,
@@ -338,7 +371,20 @@ fn windows_directory_identity(path: &Path) -> io::Result<(u32, u64)> {
             path.display()
         )));
     }
-    Ok((metadata.volume_serial_number(), metadata.file_index()))
+    Ok((
+        metadata.volume_serial_number().ok_or_else(|| {
+            io::Error::new(
+                io::ErrorKind::InvalidData,
+                "Cursor directory has no volume identity",
+            )
+        })?,
+        metadata.file_index().ok_or_else(|| {
+            io::Error::new(
+                io::ErrorKind::InvalidData,
+                "Cursor directory has no file identity",
+            )
+        })?,
+    ))
 }
 
 #[cfg(windows)]
