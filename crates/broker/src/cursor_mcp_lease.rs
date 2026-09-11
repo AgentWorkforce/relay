@@ -1033,7 +1033,10 @@ fn write_credential_file_with_identity(
     let _parent_guard = windows_directory_guard(parent).map_err(|e| {
         io::Error::new(
             e.kind(),
-            format!("guard credential parent directory {path}: {e}"),
+            format!(
+                "guard credential parent directory {}: {e}",
+                parent.display()
+            ),
         )
     })?;
     #[cfg(windows)]
