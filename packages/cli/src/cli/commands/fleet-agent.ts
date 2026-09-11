@@ -320,7 +320,7 @@ export function buildRows(input: BuildRowsInput, now: Date): BuildRowsOutput {
           state: '· empty',
           pending: '-',
           lastActive: '-',
-          presence: hostedWorkersUnavailable ? 'count only (degraded)' : 'remote live',
+          presence: hostedWorkersUnavailable ? 'remote stale (control plane unavailable)' : 'remote live',
           controlPlane,
           workerLiveness: hostedWorkersUnavailable ? 'unknown' : 'empty',
           ...(note ? { note: sanitizeCell(note) } : {}),

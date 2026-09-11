@@ -330,12 +330,15 @@ describe('buildRows — the diagnostic column exists', () => {
     });
   });
 
-  it('treats an online node with omitted liveness as unknown, matching conservative placement eligibility', () => {
+  it.each([
+    ['offline', { status: 'offline', live: false }],
+    ['unknown', { status: 'online', live: undefined }],
+  ])('keeps a reconciled empty inventory remote-stale when the control plane is %s', (_label, state) => {
     const out = buildRows(
       {
         contributions: [
           {
-            node: node({ name: 'chief-broker', status: 'online', live: undefined, activeAgents: 0 }),
+            node: node({ name: 'chief-broker', ...state, activeAgents: 0 }),
             isLocal: false,
             remoteAgents: [],
           },
@@ -344,7 +347,13 @@ describe('buildRows — the diagnostic column exists', () => {
       },
       NOW
     );
-    expect(out.perNode[0]).toMatchObject({ controlPlane: 'unknown', workerLiveness: 'unknown' });
+    expect(out.perNode[0]).toMatchObject({
+      controlPlane: _label,
+      workerLiveness: 'unknown',
+      presence: 'remote stale (control plane unavailable)',
+    });
+    expect(formatPretty(out)).toContain('remote stale');
+    expect(formatPretty(out)).not.toContain('names may be incomplete');
   });
 
   // relay#1563 Low: the backfill loop used to key off the *rendered* node
