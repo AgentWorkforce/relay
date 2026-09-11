@@ -423,11 +423,6 @@ impl BrokerRuntime {
                     // new identity to the node for normal delivery/inventory.
                     match register_new_spawn_identity(relaycast_http, &name, Some(&cli)).await {
                         Ok(token) => {
-                            super::fleet::spawn_declared_metadata_publish(
-                                relaycast_http,
-                                name.as_str(),
-                                registration_metadata,
-                            );
                             // HTTP registration alone leaves the agent
                             // without a node binding; the engine only
                             // delivers to `via_node` agents in node-only
@@ -458,6 +453,13 @@ impl BrokerRuntime {
                                 );
                                 return;
                             } else {
+                                // A failed bind releases this name during cleanup. Do not
+                                // leave a detached name-based PATCH that could hit a retry.
+                                super::fleet::spawn_declared_metadata_publish(
+                                    relaycast_http,
+                                    name.as_str(),
+                                    registration_metadata,
+                                );
                                 match super::fleet::resolve_fleet_agent_token_identity(
                                     relaycast_http,
                                     fleet_delivery_book,

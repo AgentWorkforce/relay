@@ -6352,7 +6352,7 @@ async fn owned_cleanup_retries_delete_without_repeating_acknowledged_deregistrat
 async fn http_spawn_binding_failure_stops_before_launch_and_cleans_owned_identity() {
     use crate::listen_api::ListenApiRequest;
     use httpmock::{
-        Method::{GET, POST},
+        Method::{GET, PATCH, POST},
         MockServer,
     };
     use tokio::sync::oneshot;
@@ -6369,6 +6369,10 @@ async fn http_spawn_binding_failure_stops_before_launch_and_cleans_owned_identit
         then.status(503).json_body(json!({"ok":false,"error":{
             "code":"workspace_busy","message":"binding admission busy"
         }}));
+    });
+    let metadata = server.mock(|when, then| {
+        when.method(PATCH).path("/v1/agents/binding-refused");
+        then.status(200).json_body(json!({"ok":true,"data":{}}));
     });
     let scope = server.mock(|when, then| {
         when.method(GET).path("/v1/agents/binding-refused");
@@ -6395,7 +6399,11 @@ async fn http_spawn_binding_failure_stops_before_launch_and_cleans_owned_identit
             model: None,
             args: vec![],
             task: None,
-            registration_metadata: Default::default(),
+            registration_metadata: crate::fleet_wire::AgentRegistrationMetadata {
+                organization: Some("original-spawn".into()),
+                project: Some("must-not-leak-to-retry".into()),
+                ..Default::default()
+            },
             channels: Some(vec![]),
             cwd: None,
             team: None,
@@ -6442,6 +6450,9 @@ async fn http_spawn_binding_failure_stops_before_launch_and_cleans_owned_identit
     );
     create.assert_hits(1);
     bind.assert_hits(1);
+    // Let any incorrectly detached request run before the name can be reused.
+    tokio::time::sleep(Duration::from_millis(100)).await;
+    metadata.assert_hits(0);
     scope.assert_hits(0);
     cleanup.assert_hits(1);
     assert!(unrelated_survived);

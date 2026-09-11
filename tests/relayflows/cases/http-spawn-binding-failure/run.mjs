@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict';
 import { execFileSync, spawn } from 'node:child_process';
-import { access, mkdtemp, mkdir, readFile, rm, writeFile } from 'node:fs/promises';
+import { access, mkdtemp, mkdir, rm, writeFile } from 'node:fs/promises';
+import { existsSync } from 'node:fs';
 import http from 'node:http';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
@@ -28,9 +29,11 @@ assert(relative && !relative.startsWith('..') && !path.isAbsolute(relative));
 await access(binary, 1);
 const probe = await mkdtemp(path.join(tmpdir(), 'relayflow-binding-'));
 let broker,
+  calibration,
+  calibrationTimer,
   stderr = '';
 const sockets = new Set();
-const observations = { registrations: 0, bindings: 0, scopeReads: 0, releases: [], launches: 0 };
+const observations = { registrations: 0, bindings: 0, scopeReads: 0, releases: [], metadataWrites: 0 };
 const server = http.createServer(async (request, response) => {
   const chunks = [];
   for await (const chunk of request) chunks.push(chunk);
@@ -67,8 +70,8 @@ const server = http.createServer(async (request, response) => {
   } else if (request.method === 'POST' && pathname === '/v1/agents/release') {
     observations.releases.push(body.name);
     send(200, { status: 'completed' });
-  } else if (pathname === '/probe-launch') {
-    observations.launches++;
+  } else if (request.method === 'PATCH' && pathname === `/v1/agents/${NAME}`) {
+    observations.metadataWrites++;
     send(200, {});
   } else send(404, { code: 'not_found', message: 'unsupported fixture route' }, false);
 });
@@ -84,11 +87,21 @@ try {
   // No WebSocket endpoint: force the supported HTTP registration fallback.
   // A probe executable records any launch independently of the spawn response.
   const cli = path.join(probe, 'binding-probe-cli');
+  const launchMarker = path.join(probe, 'launched');
   await writeFile(
     cli,
-    `#!${process.execPath}\nfetch('${baseUrl}/probe-launch'); setInterval(() => {}, 1000);\n`,
+    `#!${process.execPath}\nrequire('node:fs').appendFileSync(${JSON.stringify(launchMarker)}, 'started\\n'); setInterval(() => {}, 1000);\n`,
     { mode: 0o700 }
   );
+  // Calibrate the negative observer with a deliberately delayed real launch.
+  calibrationTimer = setTimeout(() => {
+    calibration = spawn(cli, [], { stdio: 'ignore' });
+  }, 200);
+  await assert.rejects(assertNoLaunch(launchMarker), /Probe process launched/);
+  clearTimeout(calibrationTimer);
+  await stopProcess(calibration);
+  calibration = undefined;
+  await rm(launchMarker);
   const env = Object.fromEntries(
     Object.entries(process.env).filter(([key]) => !/^(RELAY|AGENT_RELAY)/.test(key))
   );
@@ -124,19 +137,21 @@ try {
   broker.stderr.on('data', (chunk) => {
     stderr = (stderr + chunk).slice(-12000);
   });
-  let connection;
+  let apiPort;
   for (let i = 0; i < 200; i++) {
     if (broker.exitCode !== null) throw new Error(`Broker exited: ${stderr}`);
-    try {
-      connection = JSON.parse(await readFile(path.join(state, 'connection.json'), 'utf8'));
+    const announced = stderr.match(/API listening on http:\/\/127\.0\.0\.1:([1-9]\d{0,4})(?:\s|$)/);
+    if (announced) {
+      const parsed = Number(announced[1]);
+      assert(Number.isInteger(parsed) && parsed <= 65535, 'Invalid loopback API port');
+      apiPort = parsed;
       break;
-    } catch {
-      await new Promise((resolve) => setTimeout(resolve, 100));
     }
+    await new Promise((resolve) => setTimeout(resolve, 100));
   }
-  assert(connection, `No broker API: ${stderr}`);
+  assert(apiPort, `No broker loopback API announcement: ${stderr}`);
   const api = async (route, options = {}) => {
-    const response = await fetch(`http://127.0.0.1:${connection.port}${route}`, {
+    const response = await fetch(`http://127.0.0.1:${apiPort}${route}`, {
       ...options,
       headers: { 'content-type': 'application/json', 'x-api-key': API_KEY },
       signal: AbortSignal.timeout(45000),
@@ -163,7 +178,14 @@ try {
   assert(apiReady, `Broker API did not become ready: ${stderr}`);
   const result = await api('/api/spawn', {
     method: 'POST',
-    body: JSON.stringify({ name: NAME, cli, channels: [], cwd: probe }),
+    body: JSON.stringify({
+      name: NAME,
+      cli,
+      channels: [],
+      cwd: probe,
+      organization: 'original-spawn',
+      project: 'no-stale-metadata',
+    }),
   });
   const listing = await api('/api/spawned');
   assert.equal(observations.registrations, 1);
@@ -173,7 +195,8 @@ try {
     assert(result.status >= 400);
     assert(JSON.stringify(result.body).includes('binding admission probe'));
     assert.equal(observations.scopeReads, 0);
-    assert.equal(observations.launches, 0);
+    await assertNoLaunch(launchMarker);
+    assert.equal(observations.metadataWrites, 0, 'Failed bind published stale metadata');
     assert(!JSON.stringify(listing.body).includes(NAME), 'Failed worker remains in inventory');
   } else {
     assert.equal(result.status, 200);
@@ -181,6 +204,7 @@ try {
     assert(result.body.warning.includes('binding admission probe'));
     assert(observations.scopeReads >= 1, 'Base did not continue into agent lookup');
     assert(JSON.stringify(listing.body).includes(NAME), 'Base did not admit unreachable worker');
+    assert(observations.metadataWrites >= 1, 'Base did not exercise metadata publication');
     const released = await api(`/api/spawned/${NAME}`, {
       method: 'DELETE',
       body: JSON.stringify({ expected_generation: result.body.generation, delete_identity: true }),
@@ -197,10 +221,16 @@ try {
       arm,
       outcome: arm === 'head' ? 'fixed' : 'bug',
       signature: arm === 'head' ? 'binding_failure_rejects_before_launch' : 'binding_failure_continues_spawn',
-      details: JSON.stringify({ status: result.status, observations }),
+      // Persist only closed, locally authored outcomes; never response/file data.
+      details:
+        arm === 'head'
+          ? 'Rejected failed binding; no process launch throughout a calibrated 2000ms observation, no metadata PATCH, and exact owned cleanup.'
+          : 'Admitted a worker despite failed binding, published metadata, and completed guarded fixture cleanup.',
     }) + '\n'
   );
 } finally {
+  clearTimeout(calibrationTimer);
+  await stopProcess(calibration);
   if (broker && broker.exitCode === null) {
     const exited = new Promise((resolve) => broker.once('exit', resolve));
     broker.kill('SIGTERM');
@@ -211,4 +241,24 @@ try {
   for (const socket of sockets) socket.destroy();
   await new Promise((resolve) => server.close(resolve));
   await rm(probe, { recursive: true, force: true });
+}
+
+/** Reject any synchronous startup marker observed during the full settling interval. */
+async function assertNoLaunch(marker, settleMs = 2000) {
+  const deadline = performance.now() + settleMs;
+  do {
+    assert(!existsSync(marker), 'Probe process launched during failed admission');
+    await new Promise((resolve) => setTimeout(resolve, 25));
+  } while (performance.now() < deadline);
+  assert(!existsSync(marker), 'Probe process launched at the observation boundary');
+}
+
+/** Stop only a child this case started and wait until it has exited. */
+async function stopProcess(child) {
+  if (!child || child.exitCode !== null || child.signalCode !== null) return;
+  const exited = new Promise((resolve) => child.once('exit', resolve));
+  child.kill('SIGTERM');
+  const timer = setTimeout(() => child.kill('SIGKILL'), 2000);
+  await exited;
+  clearTimeout(timer);
 }
