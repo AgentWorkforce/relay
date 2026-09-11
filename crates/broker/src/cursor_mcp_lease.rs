@@ -1991,7 +1991,9 @@ impl CursorMcpLeaseRegistry {
                 }
             }
             #[cfg(windows)]
-            validate_windows_restore_path(lock, _path, expected_cursor_identity)?;
+            if parent_guard.is_some() {
+                validate_windows_restore_path(lock, _path, expected_cursor_identity)?;
+            }
             Ok(())
         }
     }
