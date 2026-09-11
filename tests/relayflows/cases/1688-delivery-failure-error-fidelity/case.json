@@ -1,0 +1,21 @@
+{
+  "version": 1,
+  "id": "1688-delivery-failure-error-fidelity",
+  "kind": "bugfix",
+  "title": "Terminal message_delivery_failed must carry the write error verbatim, not a wrapped or substituted one",
+  "requirements": ["broker-linux-x64"],
+  "runner": {
+    "command": ["node", "tests/relayflows/cases/1688-delivery-failure-error-fidelity/run.mjs"]
+  },
+  "timeoutSeconds": 1800,
+  "expected": {
+    "base": {
+      "outcome": "bug",
+      "signature": "wrapped_delivery_error_undetected"
+    },
+    "head": {
+      "outcome": "fixed",
+      "signature": "wrapped_delivery_error_detected"
+    }
+  }
+}
