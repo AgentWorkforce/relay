@@ -54,13 +54,19 @@ pub enum CrashCategory {
 /// recorded [`Pending`](HostedDeliveryState::Pending) in the same atomic
 /// write as the rest of the crash record (see [`CrashInsights::record`] /
 /// [`CrashInsights::save`]), *before* the broker attempts to hand the event
-/// to the hosted publisher channel. It flips to
-/// [`Delivered`](HostedDeliveryState::Delivered) only after that handoff
-/// actually succeeds (a successful `mpsc::Sender::try_send`), and that
-/// transition is itself persisted immediately. A broker crash at any point
-/// between the two writes therefore always leaves the on-disk record in
-/// exactly one of those two states — never a state that claims delivery
-/// happened when it didn't.
+/// to the hosted publisher channel. A successful handoff into that
+/// channel (a successful `mpsc::Sender::try_send`) is **not** an
+/// acknowledgment — it only proves the publisher task received the event,
+/// not that Relaycast did. The record flips to
+/// [`Delivered`](HostedDeliveryState::Delivered) only after the publisher
+/// task's own HTTP call to Relaycast actually succeeds and reports that
+/// outcome back over its result channel to
+/// `BrokerRuntime::handle_hosted_delivery_outcome`, and that transition is
+/// itself persisted immediately. A broker crash at any point before that
+/// confirmed-success report — including while the handoff, the HTTP call,
+/// or its retries are still in flight — therefore always leaves the
+/// on-disk record `Pending`; it never claims delivery happened when it
+/// didn't.
 ///
 /// On restart, every still-`Pending` record is a candidate for replay (see
 /// `hosted_agent_event_from_crash_record` in the broker crate), giving
@@ -334,13 +340,17 @@ impl CrashInsights {
     /// in the original (chronological) order they were recorded.
     ///
     /// This is the durable hosted-delivery outbox's replay source: the
-    /// broker walks this on startup and on-disk retention (`max_records`,
-    /// via [`CrashInsights::record`]) is this outbox's explicit bound on
-    /// disk growth — a broker that is offline (or whose hosted channel stays
-    /// closed) long enough to accumulate more than `max_records` crashes
-    /// will lose the oldest still-pending deliveries rather than grow the
-    /// file without limit. That loss is logged loudly wherever eviction
-    /// happens; it never happens silently.
+    /// broker walks this on startup. `max_records` (via
+    /// [`CrashInsights::record`]) bounds *diagnostic* history only — the
+    /// oldest already-`Delivered` records are evicted first to keep the
+    /// on-disk file from growing without limit. Still-`Pending` records are
+    /// never evicted by that cap: a broker that is offline (or whose hosted
+    /// channel stays closed) long enough to accumulate more than
+    /// `max_records` outstanding deliveries will let the on-disk file grow
+    /// past `max_records` instead of losing any of them. That pressure is
+    /// logged loudly (and counted via `retention_pressure_total`) whenever
+    /// it happens; it is never silent, and it is never lossy for pending
+    /// deliveries.
     pub fn pending_hosted_deliveries(&self) -> Vec<&CrashRecord> {
         self.records
             .iter()

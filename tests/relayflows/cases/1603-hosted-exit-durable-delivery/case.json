@@ -1,0 +1,21 @@
+{
+  "version": 1,
+  "id": "1603-hosted-exit-durable-delivery",
+  "kind": "bugfix",
+  "title": "Restart-replay a durably pending hosted agent_exited delivery",
+  "requirements": ["broker-linux-x64"],
+  "runner": {
+    "command": ["node", "tests/relayflows/cases/1603-hosted-exit-durable-delivery/run.mjs"]
+  },
+  "timeoutSeconds": 900,
+  "expected": {
+    "base": {
+      "outcome": "bug",
+      "signature": "restart_never_replays_pending_hosted_exit"
+    },
+    "head": {
+      "outcome": "fixed",
+      "signature": "restart_replays_pending_hosted_exit_through_transient_failure"
+    }
+  }
+}
