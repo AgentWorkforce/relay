@@ -118,6 +118,7 @@ test('semantic fixture identity pins thread location, submitted review time and 
     pr: 1714,
     headSha: 'a'.repeat(40),
     base: 'ghsub-demo/test-123/base',
+    mergeSha: 'b'.repeat(40),
     file: 'owned.txt',
     line: 2,
     side: 'RIGHT',
@@ -163,4 +164,23 @@ test('rejects malformed captured review dates and lossy review associations', as
     assert.throws(() =>
       fixtureExpected({ ...stimulus, kind: 'review' }, { ...record, submitted_at }, 'test')
     );
+});
+
+test('binds captured merge identity to the acknowledged merge SHA', async () => {
+  const { fixtureExpected, validFixtureExpected } = await import('./fixture-scope.mjs');
+  const stimulus = {
+    kind: 'merge',
+    repo: 'AgentWorkforce/relay',
+    pr: 123,
+    providerId: '456',
+    headSha: 'a'.repeat(40),
+    base: 'owned-base',
+    mergeSha: 'b'.repeat(40),
+  };
+  const record = { id: '456', user: { login: 'owner' }, merge_commit_sha: stimulus.mergeSha };
+  stimulus.expected = fixtureExpected(stimulus, record, 'test');
+  assert.equal(validFixtureExpected(stimulus), true);
+  assert.throws(() => fixtureExpected(stimulus, { ...record, merge_commit_sha: 'c'.repeat(40) }, 'test'));
+  stimulus.expected.record.merge_commit_sha = 'c'.repeat(40);
+  assert.equal(validFixtureExpected(stimulus), false);
 });

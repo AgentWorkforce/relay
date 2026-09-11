@@ -18,8 +18,11 @@ export async function collectUnseenMessages(fetchPage, seen, since, pageLimit = 
     for (const message of messages) {
       if (!message.id || !Number.isFinite(Date.parse(message.created_at)))
         throw new Error('Channel history lacks ID or timestamp');
-      if (seen.has(message.id) || Date.parse(message.created_at) < since) reachedBoundary = true;
-      else output.push(message);
+      if (seen.has(message.id) || Date.parse(message.created_at) < since) {
+        reachedBoundary = true;
+        break;
+      }
+      output.push(message);
     }
     if (reachedBoundary || messages.length < pageLimit) return output;
     before = messages.at(-1).id;

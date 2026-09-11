@@ -41,7 +41,9 @@ export function fixtureExpected(stimulus, record, runId) {
       canonicalPath = githubPullRequestPath(owner, repo, stimulus.pr, fixtureTitle(runId));
       expected.number = stimulus.pr;
       expected.merged = true;
-      expected.merge_commit_sha = record.merge_commit_sha;
+      if (record.merge_commit_sha !== stimulus.mergeSha)
+        throw new Error('Merge readback does not match acknowledged SHA');
+      expected.merge_commit_sha = stimulus.mergeSha;
       expected.head = { sha: stimulus.headSha };
       expected.base = { ref: stimulus.base };
       break;
@@ -108,7 +110,12 @@ function validateFields(stimulus, record) {
       providerId(record.pull_request_review_id);
       break;
     case 'merge':
-      require(record.number === stimulus.pr && record.merged === true && sha(record.merge_commit_sha));
+      require(
+        record.number === stimulus.pr &&
+          record.merged === true &&
+          sha(stimulus.mergeSha) &&
+          record.merge_commit_sha === stimulus.mergeSha
+      );
       require(
         record.head?.sha === stimulus.headSha && text(stimulus.base) && record.base?.ref === stimulus.base
       );

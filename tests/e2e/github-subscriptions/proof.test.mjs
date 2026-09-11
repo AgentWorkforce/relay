@@ -242,7 +242,7 @@ for (const [name, mutate] of [
   [
     'nonce acknowledged before terminal event',
     (f) => {
-      f.messages.push({ ...f.messages[1], id: 'early', created_at: '2026-09-08T11:59:59Z' });
+      f.messages[1].created_at = '2026-09-08T11:59:59Z';
     },
   ],
 ])
@@ -287,6 +287,7 @@ test('strict fixture assertion rejects incomplete external schemas and mismatche
       providerId: '456',
       headSha: 'a'.repeat(40),
       base: 'owned-base',
+      mergeSha: 'b'.repeat(40),
       file: 'owned.txt',
       line: 2,
       side: 'RIGHT',
@@ -338,3 +339,16 @@ for (const kind of ['agent_exited', 'delivery_failed'])
     f.events.at(-1).observedAt = '2026-09-08T12:03:00Z';
     assert.equal(correlate(f).pass, true);
   });
+
+test('history collector stops within a page at the first known boundary', async () => {
+  const message = (id) => ({ id, created_at: '2026-09-08T12:00:00Z' });
+  const pages = [
+    ['4', '3'],
+    ['2', '1'],
+  ];
+  const records = await collectUnseenMessages(async () => pages.shift().map(message), new Set(['2']), 0, 2);
+  assert.deepEqual(
+    records.map((m) => m.id),
+    ['4', '3']
+  );
+});
