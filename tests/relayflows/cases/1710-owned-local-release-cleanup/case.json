@@ -1,0 +1,21 @@
+{
+  "version": 1,
+  "id": "1710-owned-local-release-cleanup",
+  "kind": "bugfix",
+  "title": "Clean up broker-owned local releases by exact generation",
+  "runner": {
+    "command": ["node", "tests/relayflows/cases/1710-owned-local-release-cleanup/run.mjs"]
+  },
+  "requirements": [],
+  "timeoutSeconds": 900,
+  "expected": {
+    "base": {
+      "outcome": "bug",
+      "signature": "name_only_release_routes_without_generation_custody"
+    },
+    "head": {
+      "outcome": "fixed",
+      "signature": "owned_release_deletes_exactly_and_repeats_safely"
+    }
+  }
+}
