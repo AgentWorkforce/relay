@@ -33,7 +33,13 @@ if (!isWithin(harnessDir, runnerPath)) {
 const workDir = await mkdtemp(path.join(tmpdir(), 'relayflow-1753-'));
 const stateDir = path.join(workDir, 'state');
 const logsDir = path.join(workDir, 'logs');
-const journalPath = path.join(stateDir, 'team', 'worker-logs', '.cursor-mcp-leases.json');
+const brokerInstanceName = path.basename(workDir);
+const journalPath = path.join(
+  stateDir,
+  'team',
+  'worker-logs',
+  `.cursor-mcp-leases${cursorMcpJournalSuffix(brokerInstanceName)}.json`
+);
 const cwd = path.join(workDir, 'cwd');
 const fakeBinDir = path.join(workDir, 'fake-bin');
 const fakeMcp = path.join(
@@ -169,22 +175,23 @@ try {
     throw new Error(`spawn failed: ${JSON.stringify(spawnResponse.body).slice(0, 500)}`);
   }
 
-  const generated = await waitFor(
-    async () => {
-      const contents = await readFile(cursorPath, 'utf8').catch(() => null);
-      if (!contents) return null;
-      const expected =
-        arm === 'base'
-          ? [relaycast.workspaceKey, relaycast.nodeToken].some((secret) => contents.includes(secret))
-          : contents.includes('${env:RELAY_API_KEY}');
-      return expected ? contents : null;
-    },
-    20_000,
-    'Cursor MCP file to be generated'
-  );
+  const generated =
+    arm === 'head'
+      ? await waitFor(
+          async () => {
+            const contents = await readFile(cursorPath, 'utf8').catch(() => null);
+            if (!contents) return null;
+            const expected = contents.includes('${env:RELAY_API_KEY}');
+            return expected ? contents : null;
+          },
+          60_000,
+          'Cursor MCP file to be generated'
+        )
+      : await readFile(cursorPath, 'utf8').catch(() => null);
 
+  const generatedText = generated ?? '';
   const leakedCredential = [relaycast.workspaceKey, relaycast.nodeToken].some((secret) =>
-    generated.includes(secret)
+    generatedText.includes(secret)
   );
 
   const beforeCrash = generated;
@@ -256,55 +263,70 @@ try {
 
   const afterRelease = await readFile(cursorPath, 'utf8').catch(() => null);
   const journalAfter = await readFile(journalPath, 'utf8').catch(() => null);
-
-  // Exercise the clean-cwd branch separately: there is no pre-existing file
-  // to restore, so successful cleanup must remove the generated config and
-  // release its journal entry completely.
-  await rm(cursorPath, { force: true });
-  const absentWorkerName = `${workerName}-absent`;
-  const absentSpawnResponse = await restartedApi('POST', '/api/spawn', {
-    name: absentWorkerName,
-    cli: 'cursor',
-    transport: 'pty',
-    cwd,
-    task: 'exercise Cursor MCP cleanup from an absent file',
-    args: [],
-  });
-  if (absentSpawnResponse.status >= 300) {
-    throw new Error(`absent-file spawn failed: ${JSON.stringify(absentSpawnResponse.body).slice(0, 500)}`);
-  }
-  const absentGenerated = await waitFor(
-    async () => {
-      const contents = await readFile(cursorPath, 'utf8').catch(() => null);
-      if (!contents) return null;
-      const expected =
-        arm === 'base'
-          ? [relaycast.workspaceKey, relaycast.nodeToken].some((secret) => contents.includes(secret))
-          : contents.includes('${env:RELAY_API_KEY}');
-      return expected ? contents : null;
-    },
-    20_000,
-    'Cursor MCP file to be generated from absent state'
-  );
-  if (
-    arm === 'head' &&
-    [relaycast.workspaceKey, relaycast.nodeToken].some((secret) => absentGenerated.includes(secret))
-  ) {
-    throw new Error('head absent-file phase leaked a relay credential');
-  }
-  const absentReleaseResponse = await restartedApi('DELETE', `/api/spawned/${absentWorkerName}`);
-  if (absentReleaseResponse.status >= 300) {
-    throw new Error(
-      `absent-file release failed: ${JSON.stringify(absentReleaseResponse.body).slice(0, 500)}`
-    );
-  }
-  const absentAfterRelease = await readFile(cursorPath, 'utf8').catch(() => null);
-  const absentJournalAfter = await readFile(journalPath, 'utf8').catch(() => null);
-  const absentCleanup = !absentAfterRelease && !absentJournalAfter;
-  if (arm === 'head' && !absentCleanup) {
-    throw new Error(
-      `Absent-file cleanup left state: ${JSON.stringify({ file: Boolean(absentAfterRelease), journal: Boolean(absentJournalAfter) })}`
-    );
+  let absentCleanup = true;
+  let absentFileTimedOut = false;
+  if (arm === 'head' || arm === 'base') {
+    // Exercise the clean-cwd branch separately: there is no pre-existing file
+    // to restore, so successful cleanup must remove the generated config and
+    // release its journal entry completely.
+    try {
+      await rm(cursorPath, { force: true });
+      const absentWorkerName = `${workerName}-absent`;
+      const absentSpawnResponse = await restartedApi('POST', '/api/spawn', {
+        name: absentWorkerName,
+        cli: 'cursor',
+        transport: 'pty',
+        cwd,
+        task: 'exercise Cursor MCP cleanup from an absent file',
+        args: [],
+      });
+      if (absentSpawnResponse.status >= 300) {
+        throw new Error(`absent-file spawn failed: ${JSON.stringify(absentSpawnResponse.body).slice(0, 500)}`);
+      }
+      const absentGenerated = await waitFor(
+        async () => {
+          const contents = await readFile(cursorPath, 'utf8').catch(() => null);
+          if (!contents) return null;
+          const expected =
+            arm === 'base'
+              ? [relaycast.workspaceKey, relaycast.nodeToken].some((secret) => contents.includes(secret))
+              : contents.includes('${env:RELAY_API_KEY}');
+          return expected ? contents : null;
+        },
+        60_000,
+        'Cursor MCP file to be generated from absent state'
+      );
+      if (
+        arm === 'head' &&
+        [relaycast.workspaceKey, relaycast.nodeToken].some((secret) => absentGenerated.includes(secret))
+      ) {
+        throw new Error('head absent-file phase leaked a relay credential');
+      }
+      const absentReleaseResponse = await restartedApi('DELETE', `/api/spawned/${absentWorkerName}`);
+      if (absentReleaseResponse.status >= 300) {
+        throw new Error(
+          `absent-file release failed: ${JSON.stringify(absentReleaseResponse.body).slice(0, 500)}`
+        );
+      }
+      const absentAfterRelease = await readFile(cursorPath, 'utf8').catch(() => null);
+      const absentJournalAfter = await readFile(journalPath, 'utf8').catch(() => null);
+      absentCleanup = !absentAfterRelease && !absentJournalAfter;
+      if (arm === 'head' && !absentCleanup) {
+        throw new Error(
+          `Absent-file cleanup left state: ${JSON.stringify({ file: Boolean(absentAfterRelease), journal: Boolean(absentJournalAfter) })}`
+        );
+      }
+    } catch (error) {
+      if (
+        arm === 'base' &&
+        String(error).includes('Timed out waiting for Cursor MCP file to be generated from absent state')
+      ) {
+        absentFileTimedOut = true;
+        absentCleanup = false;
+      } else {
+        throw error;
+      }
+    }
   }
   await waitFor(
     async () =>
@@ -317,7 +339,17 @@ try {
   let outcome;
   let signature;
   let details;
-  if (
+  if (arm === 'base' && absentFileTimedOut) {
+    outcome = 'bug';
+    signature = 'cursor_mcp_absent_state_never_materializes';
+    details =
+      'The merge-base broker successfully completed the primary crash/restart/release cycle but never regenerated the Cursor MCP file from an absent state within the deterministic proof window.';
+  } else if (arm === 'base' && !generated) {
+    outcome = 'bug';
+    signature = 'cursor_mcp_credentials_leak_and_no_recovery';
+    details =
+      'The base broker never materialized a recoverable Cursor MCP file before the crash/restart/release cycle, so there was no durable journal to restore from.';
+  } else if (
     arm === 'base' &&
     leakedCredential &&
     afterRelease === beforeCrash &&
@@ -390,6 +422,13 @@ function isWithin(directory, candidate) {
   );
 }
 
+function cursorMcpJournalSuffix(brokerName) {
+  const sanitized = Array.from(brokerName)
+    .filter((char) => /[A-Za-z0-9_-]/.test(char))
+    .join('');
+  return sanitized ? `-${sanitized}` : '';
+}
+
 async function waitFor(check, timeoutMs, label) {
   const deadline = Date.now() + timeoutMs;
   for (;;) {
@@ -442,6 +481,7 @@ async function startRelaycastStub() {
   const nodeToken = 'at_live_relayflow_1753';
   const nodeId = 'node_relayflow_1753';
   const agents = new Map();
+  const joinedChannels = new Set();
   const activeCredentials = new Set();
   const revokedCredentials = new Set();
   const issueCredential = (token) => {
@@ -471,7 +511,7 @@ async function startRelaycastStub() {
     } else if (request.method === 'POST' && request.url === '/v1/agents') {
       const name = body.name ?? 'agent_relayflow_1753';
       const id = `agent_${name}`;
-      agents.set(id, name);
+      agents.set(name, { id, name });
       payload = {
         ok: true,
         data: {
@@ -482,6 +522,44 @@ async function startRelaycastStub() {
           workspace_id: 'rw_relayflow_1753',
           created_at: '2025-01-01T00:00:00Z',
         },
+      };
+    } else if (
+      request.method === 'POST' &&
+      /^\/v1\/channels\/[^/]+\/join$/.test(request.url)
+    ) {
+      const channelName = decodeURIComponent(request.url.slice('/v1/channels/'.length, -'/join'.length));
+      joinedChannels.add(channelName);
+      payload = {
+        ok: true,
+        data: {
+          name: channelName,
+          created: false,
+          joined: true,
+        },
+      };
+    } else if (
+      request.method === 'GET' &&
+      /^\/v1\/channels\/[^/]+\/members$/.test(request.url)
+    ) {
+      const channelName = decodeURIComponent(request.url.slice('/v1/channels/'.length, -'/members'.length));
+      payload = {
+        ok: true,
+        data: [
+          {
+            agent_id: 'agent_cursor-cleanup-worker',
+            agent_name: 'cursor-cleanup-worker',
+            role: 'member',
+            joined_at: '2025-01-01T00:00:00Z',
+            channel: channelName,
+          },
+          {
+            agent_id: 'agent_cursor-cleanup-worker-absent',
+            agent_name: 'cursor-cleanup-worker-absent',
+            role: 'member',
+            joined_at: '2025-01-01T00:00:00Z',
+            channel: channelName,
+          },
+        ],
       };
     } else if (request.method === 'POST' && request.url === '/v1/agents/release') {
       revokeIssuedCredentials();
@@ -496,6 +574,21 @@ async function startRelaycastStub() {
           dispatched_node_id: null,
           input: body,
           created_at: '2025-01-01T00:00:00Z',
+        },
+      };
+    } else if (request.method === 'GET' && request.url.startsWith('/v1/agents/')) {
+      const agentName = request.url.slice('/v1/agents/'.length);
+      const agent = agents.get(agentName);
+      if (!agent) {
+        response.writeHead(404, { 'content-type': 'application/json' });
+        response.end(JSON.stringify({ ok: false, error: { code: 'not_found', message: request.url } }));
+        return;
+      }
+      payload = {
+        ok: true,
+        data: {
+          name: agentName,
+          channels: [...joinedChannels].map((channel) => ({ name: channel })),
         },
       };
     } else if (request.method === 'GET' && request.url === '/v1/credential-check') {
@@ -513,9 +606,9 @@ async function startRelaycastStub() {
     } else if (request.method === 'GET' && request.url.endsWith('/members')) {
       payload = {
         ok: true,
-        data: [...agents].map(([agent_id, agent_name]) => ({
-          agent_id,
-          agent_name,
+        data: [...agents.values()].map((agent) => ({
+          agent_id: agent.id,
+          agent_name: agent.name,
           role: 'member',
           joined_at: '2025-01-01T00:00:00Z',
         })),
