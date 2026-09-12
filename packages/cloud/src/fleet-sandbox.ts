@@ -357,11 +357,19 @@ function validateRequestedRepos(repos: readonly string[] | undefined): void {
     throw new Error('Cloud fleet sandbox requests may include at most 16 repositories.');
   }
   const seen = new Set<string>();
+  const seenCheckoutNames = new Set<string>();
   for (const repo of repos) {
-    if (seen.has(repo)) {
+    const normalizedRepo = repo.toLowerCase();
+    if (seen.has(normalizedRepo)) {
       throw new Error('Cloud fleet sandbox repositories must not contain duplicates.');
     }
-    seen.add(repo);
+    seen.add(normalizedRepo);
+    const slash = repo.lastIndexOf('/');
+    const checkoutName = (slash === -1 ? repo : repo.slice(slash + 1)).toLowerCase();
+    if (seenCheckoutNames.has(checkoutName)) {
+      throw new Error('Cloud fleet sandbox repositories must have unique checkout names.');
+    }
+    seenCheckoutNames.add(checkoutName);
   }
 }
 
