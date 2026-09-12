@@ -1,4 +1,5 @@
 import fs from 'node:fs';
+import { createHash, randomUUID } from 'node:crypto';
 import os from 'node:os';
 import path from 'node:path';
 
@@ -14,11 +15,231 @@ export interface WorkspaceStore {
   workspaces: Record<string, { key: string }>;
 }
 
+export interface RelaycastCredential {
+  workspaceId: string;
+  route: 'canonical' | 'agent37-isolated';
+  baseUrl: string;
+  apiKey: string;
+}
+
 const RESERVED_WORKSPACE_NAMES = new Set(['__proto__', 'prototype', 'constructor']);
 
 export function workspaceStorePath(env: NodeJS.ProcessEnv = process.env): string {
   const dir = env.AGENT_RELAY_HOME ?? path.join(os.homedir(), '.agentworkforce/relay');
   return path.join(dir, 'workspaces.json');
+}
+
+export function relaycastCredentialStorePath(env: NodeJS.ProcessEnv = process.env): string {
+  const dir = env.AGENT_RELAY_HOME ?? path.join(os.homedir(), '.agentworkforce/relay');
+  return path.join(dir, 'relaycast-credentials.json');
+}
+
+export function relaycastCredentialRef(
+  projectDataDir: string,
+  workspaceId: string,
+  route: string,
+  baseUrl?: string
+): string {
+  let endpoint = baseUrl?.trim() ?? '';
+  try {
+    endpoint = new URL(endpoint).origin;
+  } catch {
+    // The caller performs route-origin validation; retain a deterministic
+    // value here for malformed legacy metadata and let that validation fail
+    // closed at read/transport time.
+  }
+  return createHash('sha256')
+    .update(`${path.resolve(projectDataDir)}\0${workspaceId}\0${route}\0${endpoint}`)
+    .digest('hex');
+}
+
+export function readRelaycastCredential(
+  ref: string,
+  env: NodeJS.ProcessEnv = process.env
+): RelaycastCredential | undefined {
+  try {
+    const parsed = JSON.parse(fs.readFileSync(relaycastCredentialStorePath(env), 'utf8')) as {
+      credentials?: Record<string, RelaycastCredential>;
+    };
+    const value = parsed.credentials?.[ref];
+    if (!value || typeof value.apiKey !== 'string') return undefined;
+    return value;
+  } catch (error) {
+    if (isNodeError(error) && error.code === 'ENOENT') return undefined;
+    return undefined;
+  }
+}
+
+export function writeRelaycastCredential(
+  ref: string,
+  credential: RelaycastCredential,
+  env: NodeJS.ProcessEnv = process.env
+): void {
+  const file = relaycastCredentialStorePath(env);
+  withRelaycastCredentialLock(file, () => {
+    let store: { credentials: Record<string, RelaycastCredential> } = { credentials: {} };
+    try {
+      store = JSON.parse(fs.readFileSync(file, 'utf8')) as typeof store;
+    } catch (error) {
+      if (!(isNodeError(error) && error.code === 'ENOENT')) throw error;
+    }
+    store.credentials ??= {};
+    store.credentials[ref] = credential;
+    writeRelaycastCredentialAtomically(file, store);
+  });
+}
+
+const RELAYCAST_CREDENTIAL_LOCK_TIMEOUT_MS = 10_000;
+const RELAYCAST_CREDENTIAL_LOCK_STALE_MS = 30_000;
+const RELAYCAST_CREDENTIAL_LOCK_RETRY_MS = 10;
+const RELAYCAST_CREDENTIAL_LOCK_WAIT = new Int32Array(new SharedArrayBuffer(4));
+const RELAYCAST_CREDENTIAL_LOCK_OWNER_VERSION = 1;
+
+interface RelaycastCredentialLockOwner {
+  version: number;
+  pid: number;
+  token: string;
+}
+
+function withRelaycastCredentialLock<T>(file: string, fn: () => T): T {
+  const directory = path.dirname(file);
+  const lock = `${file}.lock`;
+  const ownerToken = randomUUID();
+  const ownerPath = path.join(lock, ownerToken);
+  const startedAt = Date.now();
+  fs.mkdirSync(directory, { recursive: true, mode: 0o700 });
+  while (true) {
+    try {
+      fs.mkdirSync(lock, { mode: 0o700 });
+      try {
+        fs.writeFileSync(
+          ownerPath,
+          JSON.stringify({
+            version: RELAYCAST_CREDENTIAL_LOCK_OWNER_VERSION,
+            pid: process.pid,
+            token: ownerToken,
+          }),
+          { mode: 0o600, flag: 'wx' }
+        );
+      } catch (error) {
+        fs.rmSync(ownerPath, { force: true });
+        try {
+          fs.rmdirSync(lock);
+        } catch (cleanupError) {
+          if (!(isNodeError(cleanupError) && cleanupError.code === 'ENOENT')) throw cleanupError;
+        }
+        throw error;
+      }
+      break;
+    } catch (error) {
+      if (!(isNodeError(error) && error.code === 'EEXIST')) throw error;
+    }
+    try {
+      if (Date.now() - fs.statSync(lock).mtimeMs >= RELAYCAST_CREDENTIAL_LOCK_STALE_MS) {
+        const observedLock = inspectRelaycastCredentialLock(lock);
+        if (!observedLock.ownerIsAlive) {
+          for (const entry of observedLock.entries) {
+            fs.rmSync(path.join(lock, entry), { force: true });
+          }
+          try {
+            fs.rmdirSync(lock);
+          } catch (error) {
+            if (isNodeError(error) && (error.code === 'ENOENT' || error.code === 'ENOTEMPTY')) {
+              continue;
+            }
+            throw error;
+          }
+          continue;
+        }
+      }
+    } catch (error) {
+      if (isNodeError(error) && error.code === 'ENOENT') continue;
+      throw error;
+    }
+    if (Date.now() - startedAt >= RELAYCAST_CREDENTIAL_LOCK_TIMEOUT_MS) {
+      throw new Error('Timed out waiting for the Relaycast credential store lock.');
+    }
+    Atomics.wait(RELAYCAST_CREDENTIAL_LOCK_WAIT, 0, 0, RELAYCAST_CREDENTIAL_LOCK_RETRY_MS);
+  }
+  try {
+    return fn();
+  } finally {
+    if (fs.existsSync(ownerPath)) {
+      fs.rmSync(ownerPath, { force: true });
+      try {
+        fs.rmdirSync(lock);
+      } catch (error) {
+        if (isNodeError(error) && (error.code === 'ENOENT' || error.code === 'ENOTEMPTY')) {
+          // Another writer may have replaced the lock after our marker was
+          // removed. Leave that replacement untouched.
+        } else {
+          throw error;
+        }
+      }
+    }
+  }
+}
+
+function inspectRelaycastCredentialLock(lock: string): {
+  entries: string[];
+  ownerIsAlive: boolean;
+} {
+  const entries = fs.readdirSync(lock);
+  let sawLiveOwner = false;
+  for (const entry of entries) {
+    let owner: Partial<RelaycastCredentialLockOwner>;
+    try {
+      owner = JSON.parse(
+        fs.readFileSync(path.join(lock, entry), 'utf8')
+      ) as Partial<RelaycastCredentialLockOwner>;
+    } catch {
+      continue;
+    }
+    const pid = owner.pid;
+    if (
+      owner.version !== RELAYCAST_CREDENTIAL_LOCK_OWNER_VERSION ||
+      typeof pid !== 'number' ||
+      !Number.isInteger(pid) ||
+      pid <= 0 ||
+      typeof owner.token !== 'string' ||
+      owner.token !== entry
+    ) {
+      continue;
+    }
+    try {
+      process.kill(pid, 0);
+      sawLiveOwner = true;
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== 'ESRCH') sawLiveOwner = true;
+    }
+  }
+  return { entries, ownerIsAlive: sawLiveOwner };
+}
+
+function writeRelaycastCredentialAtomically(
+  file: string,
+  store: { credentials: Record<string, RelaycastCredential> }
+): void {
+  const temporary = `${file}.tmp.${process.pid}.${randomUUID()}`;
+  let descriptor: number | undefined;
+  try {
+    descriptor = fs.openSync(temporary, 'wx', 0o600);
+    fs.writeSync(descriptor, `${JSON.stringify(store, null, 2)}\n`);
+    fs.fsyncSync(descriptor);
+    fs.closeSync(descriptor);
+    descriptor = undefined;
+    fs.chmodSync(temporary, 0o600);
+    fs.renameSync(temporary, file);
+    fs.chmodSync(file, 0o600);
+  } catch (error) {
+    if (descriptor !== undefined) fs.closeSync(descriptor);
+    try {
+      fs.unlinkSync(temporary);
+    } catch (cleanupError) {
+      if (!(isNodeError(cleanupError) && cleanupError.code === 'ENOENT')) throw cleanupError;
+    }
+    throw error;
+  }
 }
 
 function isNodeError(err: unknown): err is NodeJS.ErrnoException {
