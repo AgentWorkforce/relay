@@ -2,6 +2,7 @@ import fs from 'node:fs';
 import { createHash, randomUUID } from 'node:crypto';
 import os from 'node:os';
 import path from 'node:path';
+import { assertWindowsCredentialDirectory } from './credential-directory-windows.js';
 
 /**
  * Local store of named workspace keys plus which one is active. This is the
@@ -109,6 +110,33 @@ function assertRelaycastCredentialLockDirectory(lock: string): fs.Stats {
   return info;
 }
 
+function assertCredentialAncestors(directory: string): void {
+  if (process.platform === 'win32') {
+    assertWindowsCredentialDirectory(directory);
+    return;
+  }
+  const uid = process.getuid?.();
+  // Check both the supplied path and its canonical target. System-owned
+  // aliases such as macOS /var -> /private/var remain usable, while neither
+  // a foreign-owned ancestor nor a writable non-sticky parent can be swapped.
+  for (const start of new Set([path.resolve(directory), fs.realpathSync(directory)])) {
+    let current = start;
+    while (true) {
+      const info = fs.lstatSync(current);
+      const trustedOwner = info.uid === uid || info.uid === 0;
+      const sticky = (info.mode & 0o1000) !== 0;
+      if (!trustedOwner || (!info.isSymbolicLink() && (info.mode & 0o022) !== 0 && !sticky)) {
+        throw new Error(
+          'Relaycast credential storage has an unsafe ancestor; choose a directory under your private home.'
+        );
+      }
+      const parent = path.dirname(current);
+      if (parent === current) break;
+      current = parent;
+    }
+  }
+}
+
 function withRelaycastCredentialLock<T>(file: string, fn: () => T): T {
   const directory = path.dirname(file);
   const lock = `${file}.lock`;
@@ -129,6 +157,7 @@ function withRelaycastCredentialLock<T>(file: string, fn: () => T): T {
       'Relaycast credential storage requires a directory owned by the current user without group or other write permissions.'
     );
   }
+  assertCredentialAncestors(directory);
   while (true) {
     try {
       fs.mkdirSync(lock, { mode: 0o700 });
