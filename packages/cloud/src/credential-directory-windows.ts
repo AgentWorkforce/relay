@@ -149,10 +149,13 @@ export function assertWindowsCredentialDirectory(directory: string): void {
   if (process.platform !== 'win32') return;
 
   const absoluteDirectory = path.resolve(directory);
+  const systemRoot = process.env.SystemRoot?.trim() || 'C:\\Windows';
+  if (!/^[A-Za-z]:[\\/]/.test(systemRoot)) throw privateDirectoryError();
+  const powershell = path.win32.join(systemRoot, 'System32', 'WindowsPowerShell', 'v1.0', 'powershell.exe');
   let output: string;
   try {
     output = execFileSync(
-      'powershell.exe',
+      powershell,
       ['-NoLogo', '-NoProfile', '-NonInteractive', '-Command', WINDOWS_ACL_SCRIPT],
       {
         input: JSON.stringify({ directory: absoluteDirectory }),
