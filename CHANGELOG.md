@@ -5,7 +5,7 @@ All notable changes to Agent Relay will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased - Major]
+## [Unreleased - Minor]
 
 ### Added
 
@@ -32,13 +32,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - Node startup recovery and shutdown require a persisted process and runtime-lock identity for the selected state directory, preserving unrelated agents.
 
-### Breaking Changes
+### Changed
 
-- `up` and `node up` refuse startup outside macOS and Linux because broker ownership cannot be verified on other platforms. Legacy brokers without a verifiable identity no longer support automatic shutdown or recovery.
-
-### Migration Guidance
-
-- Run nodes on macOS or Linux (including WSL) with `ps` and `lsof` available. Manually verify and stop legacy brokers before removing their retained state and restarting to create a verifiable identity.
+- `up` and `node up` refuse startup outside macOS and Linux (including WSL, with `ps` and `lsof` available) because broker ownership cannot be verified elsewhere. Brokers started by earlier versions have no verifiable identity and are not shut down or recovered automatically; stop them manually and restart once to create one.
 
 ## [12.0.0] - 2026-09-10
 
