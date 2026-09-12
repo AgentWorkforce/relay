@@ -1,6 +1,8 @@
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
+import { createServer } from 'node:http';
+import { once } from 'node:events';
 
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
@@ -113,8 +115,85 @@ describe('resolveWorkspaceByKey', () => {
     expect(String(request)).toBe('https://cloud.example.test/api/v1/workspaces/current/resolve');
     expect(String(request)).not.toContain('rk_live_selected');
     expect((init as RequestInit).method).toBe('POST');
+    expect((init as RequestInit).redirect).toBe('error');
     expect(JSON.parse(String((init as RequestInit).body))).toEqual({
       workspaceKey: 'rk_live_selected',
+    });
+  });
+
+  it.each(['http://cloud.example.test', 'https://user:password@cloud.example.test', 'file:///tmp/cloud'])(
+    'rejects unsafe resolver transport before any credential request: %s',
+    async (apiUrl) => {
+      const fetchSpy = vi.fn();
+      vi.stubGlobal('fetch', fetchSpy);
+      await expect(resolveWorkspaceByKey('rk_live_selected', { apiUrl })).rejects.toThrow('requires HTTPS');
+      expect(fetchSpy).not.toHaveBeenCalled();
+    }
+  );
+
+  it.each([307, 308])('never forwards a workspace key to a redirect target (%s)', async (status) => {
+    let forwardedRequests = 0;
+    let sourceRequests = 0;
+    const target = createServer((_request, response) => {
+      forwardedRequests++;
+      response.end('{}');
+    });
+    target.listen(0, '127.0.0.1');
+    await once(target, 'listening');
+    const targetAddress = target.address() as { port: number };
+    const source = createServer((_request, response) => {
+      sourceRequests++;
+      response.writeHead(status, { location: `http://127.0.0.1:${targetAddress.port}/capture` });
+      response.end();
+    });
+    source.listen(0, '127.0.0.1');
+    await once(source, 'listening');
+    const sourceAddress = source.address() as { port: number };
+    process.env.CLOUD_API_URL = `http://127.0.0.1:${sourceAddress.port}`;
+    try {
+      await expect(resolveWorkspaceByKey('rk_live_selected')).rejects.toThrow();
+      expect(sourceRequests).toBe(1);
+      expect(forwardedRequests).toBe(0);
+    } finally {
+      source.closeAllConnections();
+      target.closeAllConnections();
+      await Promise.all([
+        new Promise<void>((resolve) => source.close(() => resolve())),
+        new Promise<void>((resolve) => target.close(() => resolve())),
+      ]);
+    }
+  });
+
+  it('rejects an insecure stored session host before refreshing its credentials', async () => {
+    process.env.CLOUD_API_URL = 'http://insecure.example.test';
+    process.env.CLOUD_API_ACCESS_TOKEN_EXPIRES_AT = '2000-01-01T00:00:00.000Z';
+    const fetchSpy = vi.fn();
+    vi.stubGlobal('fetch', fetchSpy);
+    await expect(
+      resolveWorkspaceByKey('rk_live_selected', { apiUrl: 'https://cloud.example.test' })
+    ).rejects.toThrow('requires HTTPS');
+    expect(fetchSpy).not.toHaveBeenCalled();
+  });
+
+  it('accepts the canonical Cloud relaycastApiKey echo without a legacy key alias', async () => {
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(
+        async () =>
+          new Response(
+            JSON.stringify({
+              workspace: {
+                ...resolvedWorkspace.workspace,
+                key: undefined,
+                relaycastApiKey: 'rk_live_selected',
+              },
+            }),
+            { status: 200 }
+          )
+      )
+    );
+    await expect(resolveWorkspaceByKey('rk_live_selected')).resolves.toMatchObject({
+      key: 'rk_live_selected',
     });
   });
 

@@ -623,7 +623,9 @@ async function withDeliveryModeClient<T>(
 ): Promise<T | undefined> {
   let node = typeof opts.node === 'string' && opts.node.trim() ? opts.node.trim() : undefined;
   if (!node && opts.workspaceKey !== undefined) {
-    deps.error('Error: --workspace-key requires an explicit --node.');
+    deps.error(
+      'Error: --workspace-key requires an explicit --node. To target the local broker instead, use --broker-url / --api-key or read connection.json from --state-dir.'
+    );
     deps.exit(1);
     return undefined;
   }

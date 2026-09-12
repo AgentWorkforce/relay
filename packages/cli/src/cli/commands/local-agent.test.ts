@@ -944,7 +944,9 @@ describe('local agent subtree', () => {
         { from: 'user' }
       );
       expect(error).toHaveBeenCalledWith(
-        expect.stringContaining('--workspace-key requires an explicit --node')
+        expect.stringContaining(
+          'To target the local broker instead, use --broker-url / --api-key or read connection.json from --state-dir'
+        )
       );
       expect(connectLocal).not.toHaveBeenCalled();
     }

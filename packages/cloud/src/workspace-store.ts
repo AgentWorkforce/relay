@@ -116,6 +116,19 @@ function withRelaycastCredentialLock<T>(file: string, fn: () => T): T {
   const ownerPath = path.join(lock, ownerToken);
   const startedAt = Date.now();
   fs.mkdirSync(directory, { recursive: true, mode: 0o700 });
+  // The parent is the credential boundary: other users must not be able to
+  // replace lock entries between inspection and cleanup.
+  const directoryInfo = fs.lstatSync(directory);
+  if (
+    !directoryInfo.isDirectory() ||
+    directoryInfo.isSymbolicLink() ||
+    (process.platform !== 'win32' &&
+      (directoryInfo.uid !== process.getuid?.() || (directoryInfo.mode & 0o022) !== 0))
+  ) {
+    throw new Error(
+      'Relaycast credential storage requires a directory owned by the current user without group or other write permissions.'
+    );
+  }
   while (true) {
     try {
       fs.mkdirSync(lock, { mode: 0o700 });

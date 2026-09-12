@@ -69,6 +69,50 @@ describe('workspace store', () => {
     expect(mode).toBe(0o600);
   });
 
+  it.skipIf(process.platform === 'win32')(
+    'rejects a credential parent that is group or world writable',
+    () => {
+      const originalMode = fs.statSync(dir).mode & 0o777;
+      try {
+        fs.chmodSync(dir, 0o777);
+        expect(() =>
+          writeRelaycastCredential('must-reject-insecure-parent', {
+            workspaceId: 'rw_insecure_parent',
+            route: 'canonical',
+            baseUrl: 'https://relay.example',
+            apiKey: 'rk_live_insecure_parent',
+          })
+        ).toThrow(/without group or other write permissions/);
+      } finally {
+        fs.chmodSync(dir, originalMode);
+      }
+    }
+  );
+
+  it('rejects a symlinked credential parent', () => {
+    const target = fs.mkdtempSync(path.join(os.tmpdir(), 'relay-ws-parent-target-'));
+    const linkContainer = fs.mkdtempSync(path.join(os.tmpdir(), 'relay-ws-parent-link-'));
+    const link = path.join(linkContainer, 'home');
+    fs.symlinkSync(target, link, 'dir');
+    const previousHome = process.env.AGENT_RELAY_HOME;
+    process.env.AGENT_RELAY_HOME = link;
+    try {
+      expect(() =>
+        writeRelaycastCredential('must-reject-symlink-parent', {
+          workspaceId: 'rw_symlink_parent',
+          route: 'canonical',
+          baseUrl: 'https://relay.example',
+          apiKey: 'rk_live_symlink_parent',
+        })
+      ).toThrow(/without group or other write permissions/);
+    } finally {
+      if (previousHome === undefined) delete process.env.AGENT_RELAY_HOME;
+      else process.env.AGENT_RELAY_HOME = previousHome;
+      fs.rmSync(linkContainer, { recursive: true, force: true });
+      fs.rmSync(target, { recursive: true, force: true });
+    }
+  });
+
   it('stores route credentials outside the project with a scoped reference', () => {
     const ref = relaycastCredentialRef(
       '/checkout/.agentworkforce/relay',
@@ -176,21 +220,25 @@ describe('workspace store', () => {
   it('refuses to inspect or clean a stale credential lock symlink', () => {
     const lock = `${relaycastCredentialStorePath()}.lock`;
     const outside = fs.mkdtempSync(path.join(os.tmpdir(), 'relay-lock-target-'));
-    const sentinel = path.join(outside, 'keep.txt');
-    fs.writeFileSync(sentinel, 'keep');
-    fs.symlinkSync(outside, lock, 'dir');
-    const staleAt = new Date(Date.now() - 60_000);
-    fs.lutimesSync(lock, staleAt, staleAt);
+    try {
+      const sentinel = path.join(outside, 'keep.txt');
+      fs.writeFileSync(sentinel, 'keep');
+      fs.symlinkSync(outside, lock, 'dir');
+      const staleAt = new Date(Date.now() - 60_000);
+      fs.lutimesSync(lock, staleAt, staleAt);
 
-    expect(() =>
-      writeRelaycastCredential('must-fail-closed', {
-        workspaceId: 'rw_must_fail_closed',
-        route: 'canonical',
-        baseUrl: 'https://relay.example',
-        apiKey: 'rk_live_must_fail_closed',
-      })
-    ).toThrow(/real directory/);
-    expect(fs.readFileSync(sentinel, 'utf8')).toBe('keep');
+      expect(() =>
+        writeRelaycastCredential('must-fail-closed', {
+          workspaceId: 'rw_must_fail_closed',
+          route: 'canonical',
+          baseUrl: 'https://relay.example',
+          apiKey: 'rk_live_must_fail_closed',
+        })
+      ).toThrow(/real directory/);
+      expect(fs.readFileSync(sentinel, 'utf8')).toBe('keep');
+    } finally {
+      fs.rmSync(outside, { recursive: true, force: true });
+    }
   });
 
   it('scopes route references to the selected endpoint', () => {

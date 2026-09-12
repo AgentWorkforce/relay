@@ -42,8 +42,18 @@ describe('shared repository workspace boundary', () => {
     fs.writeFileSync(path.join(root, '.git'), 'gitdir: /unused/metadata');
     expect(findProjectRoot(nested)).toBe(root);
   });
+  it('accepts a valid symlinked Git marker', () => {
+    const gitTarget = path.join(root, 'gitdir-file');
+    fs.writeFileSync(gitTarget, 'gitdir: /valid/worktree/metadata');
+    fs.symlinkSync(gitTarget, path.join(root, '.git'));
+
+    expect(findProjectRoot(root)).toBe(root);
+  });
   it('fails closed for a malformed Git marker rather than selecting a package workspace', () => {
+    const nested = path.join(root, 'packages', 'web');
+    fs.mkdirSync(nested, { recursive: true });
+    fs.writeFileSync(path.join(nested, 'package.json'), '{}');
     fs.symlinkSync('/nonexistent/git', path.join(root, '.git'));
-    expect(() => findProjectRoot(root)).toThrow('Cannot resolve the repository workspace');
+    expect(() => findProjectRoot(nested)).toThrow('Cannot resolve the repository workspace');
   });
 });

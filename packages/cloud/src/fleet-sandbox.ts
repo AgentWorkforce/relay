@@ -351,6 +351,20 @@ function requiredString(payload: JsonRecord, key: string, context: string): stri
 const REPOSITORY_KEY_PATTERN = /^[A-Za-z0-9][A-Za-z0-9_.-]*\/[A-Za-z0-9][A-Za-z0-9_.-]*$/;
 const REPOSITORY_REVISION_PATTERN = /^[0-9a-f]{40}$/;
 
+function validateRequestedRepos(repos: readonly string[] | undefined): void {
+  if (repos === undefined || repos.length === 0) return;
+  if (repos.length > 16) {
+    throw new Error('Cloud fleet sandbox requests may include at most 16 repositories.');
+  }
+  const seen = new Set<string>();
+  for (const repo of repos) {
+    if (seen.has(repo)) {
+      throw new Error('Cloud fleet sandbox repositories must not contain duplicates.');
+    }
+    seen.add(repo);
+  }
+}
+
 function validateRepoRevisions(
   repos: readonly string[] | undefined,
   repoRevisions: Readonly<Record<string, string>> | undefined
@@ -358,7 +372,14 @@ function validateRepoRevisions(
   if (repoRevisions === undefined) return undefined;
   const entries = Object.entries(repoRevisions);
   const allowedRepos = new Set(repos ?? []);
-  if (entries.length === 0 || entries.length > 16 || entries.length !== allowedRepos.size) {
+  if (
+    entries.length === 0 ||
+    entries.length > 16 ||
+    repos === undefined ||
+    repos.length > 16 ||
+    repos.length !== allowedRepos.size ||
+    entries.length !== allowedRepos.size
+  ) {
     throw new Error(
       'Cloud fleet sandbox revisions must cover every requested repository exactly once (maximum 16).'
     );
@@ -665,6 +686,7 @@ export async function ensureCloudFleetSandbox(
   if (input.relayfilePaths !== undefined && input.relayfilePaths.length === 0) {
     throw new Error('At least one Relayfile subtree path is required when relayfilePaths is provided.');
   }
+  validateRequestedRepos(input.repos);
   const repoRevisions = validateRepoRevisions(input.repos, input.repoRevisions);
 
   const session = await ensureCloudSession({

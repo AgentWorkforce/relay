@@ -981,6 +981,29 @@ describe('Cloud fleet sandbox client', () => {
     expect(mocks.ensureCloudSession).not.toHaveBeenCalled();
   });
 
+  it('rejects duplicate repositories before Cloud authentication', async () => {
+    await expect(
+      ensureCloudFleetSandbox({
+        workspaceId: 'rw_abc',
+        requiredCapability: 'spawn:codex',
+        repos: ['AgentWorkforce/relay', 'AgentWorkforce/relay'],
+      })
+    ).rejects.toThrow('must not contain duplicates');
+    expect(mocks.ensureCloudSession).not.toHaveBeenCalled();
+  });
+
+  it('rejects more than sixteen repositories before Cloud authentication', async () => {
+    const repos = Array.from({ length: 17 }, (_, index) => `AgentWorkforce/repo-${index}`);
+    await expect(
+      ensureCloudFleetSandbox({
+        workspaceId: 'rw_abc',
+        requiredCapability: 'spawn:codex',
+        repos,
+      })
+    ).rejects.toThrow('at most 16 repositories');
+    expect(mocks.ensureCloudSession).not.toHaveBeenCalled();
+  });
+
   it('rejects an explicitly empty Relayfile path list before provisioning', async () => {
     await expect(
       ensureCloudFleetSandbox({
