@@ -46,14 +46,27 @@ export function findProjectRoot(startDir: string = process.cwd()): string {
     // Existing subproject pins remain intentional namespaces. A package.json
     // alone must not split spawn, rebind, node up and attach across projects.
     if (fs.existsSync(path.join(current, PROJECT_DATA_DIR, 'workspace-key.json'))) return current;
+    const gitMarkerPath = path.join(current, '.git');
+    let marker: fs.Stats | undefined;
     try {
-      const marker = fs.lstatSync(path.join(current, '.git'));
-      if (marker.isDirectory() || marker.isFile()) return current;
-      throw new Error('Invalid Git project marker.');
+      marker = fs.lstatSync(gitMarkerPath);
     } catch (error) {
       if ((error as NodeJS.ErrnoException).code !== 'ENOENT') {
         throw new Error('Cannot resolve the repository workspace; check access to its Git project marker.');
       }
+    }
+    if (marker) {
+      if (marker.isDirectory() || marker.isFile()) return current;
+      if (marker.isSymbolicLink()) {
+        try {
+          const target = fs.statSync(gitMarkerPath);
+          if (target.isDirectory() || target.isFile()) return current;
+        } catch {
+          // A dangling or inaccessible .git symlink is a malformed Git marker,
+          // not evidence that this directory is outside a checkout.
+        }
+      }
+      throw new Error('Cannot resolve the repository workspace; check access to its Git project marker.');
     }
     for (const marker of markers) {
       if (!nearestPackage && fs.existsSync(path.join(current, marker))) nearestPackage = current;

@@ -1,4 +1,4 @@
-import { authorizedApiFetch, ensureAuthenticated } from './auth.js';
+import { authorizedApiFetch, ensureAuthenticated, readStoredAuth } from './auth.js';
 import { redactCredentialValues } from './redact.js';
 import {
   type ActiveWorkspaceDescriptor,
@@ -342,6 +342,25 @@ export async function issueWorkspaceToken(
   );
 }
 
+function assertWorkspaceResolverTransport(apiUrl: string): void {
+  let url: URL;
+  try {
+    url = new URL(apiUrl);
+  } catch {
+    throw new Error('Project workspace resolution requires a valid Cloud API URL.');
+  }
+  const loopback = ['localhost', '127.0.0.1', '[::1]'].includes(url.hostname);
+  if (
+    url.username ||
+    url.password ||
+    (url.protocol !== 'https:' && !(url.protocol === 'http:' && loopback))
+  ) {
+    throw new Error(
+      'Project workspace resolution requires HTTPS (HTTP is allowed only for a local development server).'
+    );
+  }
+}
+
 /** Resolve a selected project pin without exposing its key in URLs or changing the active workspace. */
 export async function resolveWorkspaceByKey(
   workspaceKey: string,
@@ -350,16 +369,23 @@ export async function resolveWorkspaceByKey(
   const key = workspaceKey.trim();
   if (!/^rk_live_[A-Za-z0-9_-]{1,512}$/.test(key)) throw new Error('A valid workspace key is required.');
   const apiUrl = options.apiUrl || defaultApiUrl();
+  assertWorkspaceResolverTransport(apiUrl);
+  // Stored sessions keep their own API host; validate it before a refresh can
+  // send credentials, even when the requested/default host is secure.
+  const stored = await readStoredAuth();
+  if (stored) assertWorkspaceResolverTransport(stored.apiUrl);
   const auth = await ensureAuthenticated(apiUrl, {
     interactive: false,
     refreshTimeoutMs: options.refreshTimeoutMs,
   });
+  assertWorkspaceResolverTransport(auth.apiUrl);
   const endpoint = '/api/v1/workspaces/current/resolve';
   const { response } = await authorizedApiFetch(
     auth,
     endpoint,
     {
       method: 'POST',
+      redirect: 'error',
       body: JSON.stringify({ workspaceKey: key }),
       signal: AbortSignal.timeout(options.refreshTimeoutMs ?? 30_000),
     },
