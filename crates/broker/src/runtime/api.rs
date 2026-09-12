@@ -997,7 +997,9 @@ impl BrokerRuntime {
                     })
                     || (name_only_release
                         && !workers.has_worker(&name)
+                        && !workers.identity_cleanups.contains_key(&name)
                         && !workers.owned_spawn_generations.contains_key(&name)
+                        && fleet_delivery_book.active_agent_id(name.as_str()).is_none()
                         && workers
                             .completed_owned_releases
                             .iter()

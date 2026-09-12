@@ -6544,7 +6544,6 @@ async fn name_only_release_of_retired_owned_worker_deletes_directly_and_is_idemp
         .workers
         .completed_owned_releases
         .contains(&(name.clone(), generation)));
-
     // A repeated name-only release must use the completed tombstone and must
     // not route a second mutation through the host or a replacement identity.
     let (reply, repeated) = oneshot::channel();
@@ -6627,6 +6626,52 @@ async fn name_only_release_of_retired_owned_worker_deletes_directly_and_is_idemp
         .owned_spawn_generations
         .contains_key(&name));
     assert!(fixture.fleet_control_rx.try_recv().is_err());
+
+    // If the worker is already gone but the name is currently re-bound, the
+    // stale tombstone still must not return an idempotent success without the
+    // fleet and Relaycast cleanup path.
+    fixture
+        .runtime
+        .fleet_delivery_book
+        .bind_authoritative_identity(name.to_string(), "caller-owned-replacement-id-2");
+    let (reply, mut rebound_result) = oneshot::channel();
+    fixture
+        .runtime
+        .handle_api_request(ListenApiRequest::Release {
+            name: name.clone(),
+            reason: None,
+            expected_generation: None,
+            delete_identity: false,
+            reply,
+        })
+        .await;
+    loop {
+        if let FleetControlCommand::Send(crate::fleet_wire::BrokerToRelaycast::AgentDeregister(
+            request,
+        )) = fixture.fleet_control_rx.recv().await.unwrap()
+        {
+            assert_eq!(request.name.as_deref(), Some(name.as_str()));
+            assert_eq!(request.agent_id, "caller-owned-replacement-id-2");
+            break;
+        }
+    }
+    tokio::time::timeout(Duration::from_secs(2), async {
+        loop {
+            fixture.runtime.reconcile_identity_cleanups().await;
+            if let Ok(response) = rebound_result.try_recv() {
+                let error = response.expect_err("rebound cleanup should not false-success");
+                assert!(
+                    error.contains("could not be released") || error.contains("Invalid API key"),
+                    "{error}"
+                );
+                break;
+            }
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .expect("rebound replacement cleanup should complete");
+    release.assert_hits(2);
     fixture.runtime.workers.release("unrelated").await.unwrap();
 }
 
@@ -6954,7 +6999,6 @@ async fn assert_http_spawn_metadata_publication(supplied_token: bool, valid_cwd:
             .owned_spawn_generations
             .contains_key(&name));
     }
-    fixture.runtime.workers.release("unrelated").await.unwrap();
 }
 
 #[tokio::test]
