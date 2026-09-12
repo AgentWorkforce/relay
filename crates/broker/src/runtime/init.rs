@@ -307,7 +307,7 @@ pub(crate) async fn run_init(cmd: InitCommand, telemetry: TelemetryClient) -> Re
     } else {
         resolve_cached_node_token(&node_id, &node_workspace_id, node_base_url.as_deref())
     };
-    let node_manifest = bootstrap_node_manifest(&node_name, &node_id, &broker_version);
+    let node_manifest = bootstrap_node_manifest(&node_name, &node_id, &broker_version)?;
     // Retain the node name for the runtime: the HTTP `bind_agent_to_node`
     // fallback (used when node-control `agent.register` is unavailable) binds
     // spawned agents to this node so they become `via_node` and node delivery
@@ -941,7 +941,11 @@ const DEFAULT_NODE_HARNESSES: &[&str] = &["claude", "codex", "gemini", "opencode
 /// placement for the whole workspace. The harness set comes from the
 /// `AGENT_RELAY_NODE_HARNESSES` CSV (the CLI sets it from the project's
 /// teams.json / node definition), falling back to a built-in default.
-fn bootstrap_node_manifest(node_name: &str, node_id: &str, broker_version: &str) -> NodeManifest {
+fn bootstrap_node_manifest(
+    node_name: &str,
+    node_id: &str,
+    broker_version: &str,
+) -> Result<NodeManifest> {
     let mut capabilities: Vec<crate::protocol::NodeCapabilityManifest> = node_capacity_harnesses()
         .into_iter()
         .map(|harness| crate::protocol::NodeCapabilityManifest {
@@ -955,15 +959,32 @@ fn bootstrap_node_manifest(node_name: &str, node_id: &str, broker_version: &str)
         kind: Some("capacity".to_string()),
         metadata: None,
     });
-    NodeManifest {
+    Ok(NodeManifest {
         name: node_name.to_string(),
         node_id: Some(node_id.to_string()),
         capabilities,
         max_agents: node_max_agents(),
-        tags: None,
+        tags: parse_node_tags(std::env::var("AGENT_RELAY_NODE_TAGS").ok().as_deref())?,
         repo_keys: None,
         version: Some(broker_version.to_string()),
-    }
+    })
+}
+
+/// Enrollment does not persist through a broker registration: the engine
+/// replaces tags with this frame's declaration on every connect. Read the
+/// provisioner's JSON array into the retained native manifest so reconnects
+/// publish the same tags without adding a second capacity provider.
+fn parse_node_tags(raw: Option<&str>) -> Result<Option<Vec<String>>> {
+    let Some(raw) = raw else { return Ok(None) };
+    let tags: Vec<String> = serde_json::from_str(raw)
+        .map_err(|_| anyhow::anyhow!("AGENT_RELAY_NODE_TAGS must be a JSON array of strings"))?;
+    let mut seen = std::collections::HashSet::new();
+    let tags: Vec<String> = tags
+        .into_iter()
+        .map(|tag| tag.trim().to_string())
+        .filter(|tag| !tag.is_empty() && seen.insert(tag.clone()))
+        .collect();
+    Ok(Some(tags))
 }
 
 /// The harness names this broker can spawn, from `AGENT_RELAY_NODE_HARNESSES`
@@ -1017,6 +1038,8 @@ mod tests {
         _guard: MutexGuard<'static, ()>,
         original_node_id: Option<OsString>,
         original_node_token: Option<OsString>,
+        original_node_tags: Option<OsString>,
+        original_max_agents: Option<OsString>,
     }
 
     impl Drop for NodeIdEnvGuard {
@@ -1033,6 +1056,15 @@ mod tests {
                     Some(value) => std::env::set_var("RELAY_NODE_TOKEN", value),
                     None => std::env::remove_var("RELAY_NODE_TOKEN"),
                 }
+                for (key, original) in [
+                    ("AGENT_RELAY_NODE_TAGS", &self.original_node_tags),
+                    ("AGENT_RELAY_NODE_MAX_AGENTS", &self.original_max_agents),
+                ] {
+                    match original {
+                        Some(value) => std::env::set_var(key, value),
+                        None => std::env::remove_var(key),
+                    }
+                }
             }
         }
     }
@@ -1045,17 +1077,23 @@ mod tests {
         let guard = NODE_ID_ENV_MUTEX.lock().unwrap();
         let original_node_id = std::env::var_os("RELAY_NODE_ID");
         let original_node_token = std::env::var_os("RELAY_NODE_TOKEN");
+        let original_node_tags = std::env::var_os("AGENT_RELAY_NODE_TAGS");
+        let original_max_agents = std::env::var_os("AGENT_RELAY_NODE_MAX_AGENTS");
         // SAFETY: NODE_ID_ENV_MUTEX serializes environment mutations for these
         // tests before any code under test observes RELAY_NODE_* values.
         unsafe {
             std::env::remove_var("RELAY_NODE_ID");
             std::env::remove_var("RELAY_NODE_TOKEN");
+            std::env::remove_var("AGENT_RELAY_NODE_TAGS");
+            std::env::remove_var("AGENT_RELAY_NODE_MAX_AGENTS");
         }
         (
             NodeIdEnvGuard {
                 _guard: guard,
                 original_node_id: original_node_id.clone(),
                 original_node_token: original_node_token.clone(),
+                original_node_tags,
+                original_max_agents,
             },
             original_node_id,
             original_node_token,
@@ -1083,11 +1121,12 @@ mod tests {
 
     #[test]
     fn bootstrap_node_manifest_advertises_capacity_not_bare_spawn() {
+        let _env_guard = clear_node_id_env();
         // The broker registers its run capacity: `spawn:<harness>` + `release`,
         // all `kind: "capacity"`. It must never advertise a bare `"spawn"`, which
         // the engine would materialize as a generic action pinned to this node,
         // hijacking capability-based spawn placement for the whole workspace.
-        let manifest = bootstrap_node_manifest("node-a", "node_a", "relay-broker/9.1.1");
+        let manifest = bootstrap_node_manifest("node-a", "node_a", "relay-broker/9.1.1").unwrap();
         assert!(
             !manifest.capabilities.is_empty(),
             "broker manifest must advertise its capacity"
@@ -1121,6 +1160,54 @@ mod tests {
         assert_eq!(manifest.name, "node-a");
         assert_eq!(manifest.node_id.as_deref(), Some("node_a"));
         assert_eq!(manifest.version.as_deref(), Some("relay-broker/9.1.1"));
+    }
+
+    #[test]
+    fn bootstrap_registration_publishes_configured_capacity_and_repo_tags() {
+        let _env_guard = clear_node_id_env();
+        std::env::set_var("AGENT_RELAY_NODE_MAX_AGENTS", "1");
+        std::env::set_var(
+            "AGENT_RELAY_NODE_TAGS",
+            r#"["repo:AgentWorkforce/cloud","cloud:sandbox-provider:daytona"]"#,
+        );
+        let manifest = bootstrap_node_manifest("fleet-ensure-test", "node_test", "test").unwrap();
+        // Assert the serialized wire signal, including a subsequent reconnect
+        // frame built from the retained manifest, rather than readiness timing.
+        for cursor in [None, Some("cursor-after-reconnect".to_string())] {
+            let registration = crate::node_control::build_node_register(
+                &manifest,
+                "node_test",
+                "fleet-ensure-test",
+                "test",
+                cursor,
+            );
+            let payload = serde_json::to_value(registration).unwrap();
+            assert!(payload["max_agents"].as_u64().unwrap() > 0);
+            assert_eq!(payload["max_agents"], 1);
+            assert_eq!(
+                payload["tags"],
+                serde_json::json!([
+                    "repo:AgentWorkforce/cloud",
+                    "cloud:sandbox-provider:daytona",
+                ])
+            );
+        }
+    }
+
+    #[test]
+    fn node_tags_validate_configuration_without_echoing_it() {
+        assert_eq!(parse_node_tags(None).unwrap(), None);
+        assert_eq!(parse_node_tags(Some("[]")).unwrap(), Some(vec![]));
+        assert_eq!(
+            parse_node_tags(Some(r#"[" repo:a/b ","repo:a/b",""]"#)).unwrap(),
+            Some(vec!["repo:a/b".to_string()])
+        );
+        for raw in ["", "sensitive-invalid-value", r#"{"tags":[]}"#, "[1]"] {
+            assert_eq!(
+                parse_node_tags(Some(raw)).unwrap_err().to_string(),
+                "AGENT_RELAY_NODE_TAGS must be a JSON array of strings"
+            );
+        }
     }
 
     #[test]
