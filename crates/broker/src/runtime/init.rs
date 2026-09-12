@@ -307,7 +307,7 @@ pub(crate) async fn run_init(cmd: InitCommand, telemetry: TelemetryClient) -> Re
     } else {
         resolve_cached_node_token(&node_id, &node_workspace_id, node_base_url.as_deref())
     };
-    let node_manifest = bootstrap_node_manifest(&node_name, &node_id, &broker_version);
+    let node_manifest = bootstrap_node_manifest(&node_name, &node_id, &broker_version)?;
     // Retain the node name for the runtime: the HTTP `bind_agent_to_node`
     // fallback (used when node-control `agent.register` is unavailable) binds
     // spawned agents to this node so they become `via_node` and node delivery
@@ -941,7 +941,33 @@ const DEFAULT_NODE_HARNESSES: &[&str] = &["claude", "codex", "gemini", "opencode
 /// placement for the whole workspace. The harness set comes from the
 /// `AGENT_RELAY_NODE_HARNESSES` CSV (the CLI sets it from the project's
 /// teams.json / node definition), falling back to a built-in default.
-fn bootstrap_node_manifest(node_name: &str, node_id: &str, broker_version: &str) -> NodeManifest {
+fn bootstrap_node_manifest(
+    node_name: &str,
+    node_id: &str,
+    broker_version: &str,
+) -> Result<NodeManifest> {
+    let raw_registration = match std::env::var("AGENT_RELAY_NODE_REGISTRATION") {
+        Ok(value) => Some(value),
+        Err(std::env::VarError::NotPresent) => None,
+        Err(_) => anyhow::bail!("AGENT_RELAY_NODE_REGISTRATION must contain valid JSON"),
+    };
+    build_bootstrap_node_manifest(
+        node_name,
+        node_id,
+        broker_version,
+        node_max_agents(),
+        raw_registration.as_deref(),
+    )
+}
+
+fn build_bootstrap_node_manifest(
+    node_name: &str,
+    node_id: &str,
+    broker_version: &str,
+    max_agents: Option<u32>,
+    raw_registration: Option<&str>,
+) -> Result<NodeManifest> {
+    let registration = parse_node_registration(raw_registration)?;
     let mut capabilities: Vec<crate::protocol::NodeCapabilityManifest> = node_capacity_harnesses()
         .into_iter()
         .map(|harness| crate::protocol::NodeCapabilityManifest {
@@ -955,14 +981,34 @@ fn bootstrap_node_manifest(node_name: &str, node_id: &str, broker_version: &str)
         kind: Some("capacity".to_string()),
         metadata: None,
     });
-    NodeManifest {
+    Ok(NodeManifest {
         name: node_name.to_string(),
         node_id: Some(node_id.to_string()),
         capabilities,
-        max_agents: node_max_agents(),
-        tags: None,
-        repo_keys: None,
+        max_agents,
+        tags: registration.tags,
+        repo_keys: registration.repo_keys,
         version: Some(broker_version.to_string()),
+    })
+}
+
+/// Public node metadata supplied by an enrollment/bootstrap owner. Capacity
+/// continues to use AGENT_RELAY_NODE_MAX_AGENTS and its existing enforcement.
+#[derive(Default, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+struct BootstrapNodeRegistration {
+    tags: Option<Vec<String>>,
+    repo_keys: Option<Vec<String>>,
+}
+
+fn parse_node_registration(raw: Option<&str>) -> Result<BootstrapNodeRegistration> {
+    match raw {
+        None => Ok(BootstrapNodeRegistration::default()),
+        Some(raw) => serde_json::from_str(raw).map_err(|_| {
+            // Do not include the supplied JSON or serde's unknown-field detail:
+            // an accidental credential must never appear in a boot error.
+            anyhow::anyhow!("AGENT_RELAY_NODE_REGISTRATION must be a JSON object with only tags and repo_keys string arrays")
+        }),
     }
 }
 
@@ -1082,12 +1128,62 @@ mod tests {
     }
 
     #[test]
+    fn bootstrap_node_registration_rejects_malformed_metadata_without_echoing_it() {
+        for raw in [
+            "not-json",
+            r#"{"tags":[1]}"#,
+            r#"{"unexpected-sensitive-field":"secret"}"#,
+        ] {
+            let error = parse_node_registration(Some(raw))
+                .err()
+                .unwrap()
+                .to_string();
+            assert!(error.starts_with("AGENT_RELAY_NODE_REGISTRATION must be a JSON object"));
+            assert!(!error.contains(raw));
+            assert!(!error.contains("secret"));
+            assert!(!error.contains("unexpected-sensitive-field"));
+        }
+        let absent = parse_node_registration(None).unwrap();
+        assert!(absent.tags.is_none());
+        assert!(absent.repo_keys.is_none());
+        let empty = parse_node_registration(Some(r#"{"tags":[],"repo_keys":[]}"#)).unwrap();
+        assert_eq!(empty.tags, Some(vec![]));
+        assert_eq!(empty.repo_keys, Some(vec![]));
+    }
+
+    #[test]
+    fn bootstrap_node_registration_publishes_capacity_and_repo_tags() {
+        let manifest = build_bootstrap_node_manifest(
+            "fleet-ensure-test", "node_test", "relay-broker/test", Some(1),
+            Some(r#"{"tags":["cloud:node-type:daytona-jit","repo:AgentWorkforce/cloud"],"repo_keys":["AgentWorkforce/cloud"]}"#),
+        ).unwrap();
+        let wire = crate::node_control::build_node_register(
+            &manifest,
+            "node_test",
+            "fleet-ensure-test",
+            "relay-broker/test",
+            None,
+        );
+        let payload = serde_json::to_value(wire).unwrap();
+        assert!(payload["max_agents"].as_u64().unwrap() > 0);
+        assert_eq!(payload["max_agents"], 1);
+        assert_eq!(
+            payload["repo_keys"],
+            serde_json::json!(["AgentWorkforce/cloud"])
+        );
+        assert!(payload["tags"]
+            .as_array()
+            .unwrap()
+            .contains(&serde_json::json!("repo:AgentWorkforce/cloud")));
+    }
+
+    #[test]
     fn bootstrap_node_manifest_advertises_capacity_not_bare_spawn() {
         // The broker registers its run capacity: `spawn:<harness>` + `release`,
         // all `kind: "capacity"`. It must never advertise a bare `"spawn"`, which
         // the engine would materialize as a generic action pinned to this node,
         // hijacking capability-based spawn placement for the whole workspace.
-        let manifest = bootstrap_node_manifest("node-a", "node_a", "relay-broker/9.1.1");
+        let manifest = bootstrap_node_manifest("node-a", "node_a", "relay-broker/9.1.1").unwrap();
         assert!(
             !manifest.capabilities.is_empty(),
             "broker manifest must advertise its capacity"
