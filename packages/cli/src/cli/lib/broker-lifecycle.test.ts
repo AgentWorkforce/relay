@@ -482,8 +482,24 @@ describe('runUpCommand node-config gating', () => {
       reflexOptions?.log?.('[reflex] history sync tick');
 
       const structuredLog = fsReal.readFileSync(logFile, 'utf-8');
-      expect(structuredLog).toContain('[WARN] [reflex] cloud sync failed: database is locked');
-      expect(structuredLog).toContain('[INFO] [reflex] history sync tick');
+      const structuredEntries = structuredLog
+        .trim()
+        .split('\n')
+        .map((line) => JSON.parse(line) as { level?: string; component?: string; msg?: string });
+      expect(structuredEntries).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({
+            level: 'WARN',
+            component: 'reflex',
+            msg: 'cloud sync failed: database is locked',
+          }),
+          expect.objectContaining({
+            level: 'INFO',
+            component: 'reflex',
+            msg: 'history sync tick',
+          }),
+        ])
+      );
       expect(log).not.toHaveBeenCalledWith(expect.stringContaining('[reflex]'));
     } finally {
       if (previousLogFile === undefined) {

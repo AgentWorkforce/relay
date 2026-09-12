@@ -4088,6 +4088,7 @@ async fn api_spawn_retries_overload_and_only_safe_mode_falls_back() {
             workspace_key: None,
             relay_base_url: Some(server.base_url()),
             memberships: Vec::new(),
+            local_only: false,
             default_workspace_id: Some(WorkspaceId::new("ws_demo")),
             node_id: "node_test".to_string(),
             node_name: "test-node".to_string(),

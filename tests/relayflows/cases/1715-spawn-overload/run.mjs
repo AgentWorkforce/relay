@@ -332,6 +332,7 @@ async function startRelayProbe() {
             data: {
               id: `agent_${SAFE_AGENT}`,
               workspace_id: 'ws_relayflow_1715',
+              agent_name: SAFE_AGENT,
               name: SAFE_AGENT,
               token: `at_${SAFE_AGENT}`,
               status: 'active',
@@ -356,6 +357,7 @@ async function startRelayProbe() {
         data: {
           id: 'agent_relayflow_1715_broker',
           workspace_id: 'ws_relayflow_1715',
+          agent_name: BROKER_NAME,
           name: BROKER_NAME,
           token: 'at_relayflow_1715_broker',
           status: 'active',
@@ -410,8 +412,17 @@ async function startRelayProbe() {
       data: {
         id: 'resource_relayflow_1715',
         agent_id: `agent_${SAFE_AGENT}`,
+        agent_name: SAFE_AGENT,
         name: 'relayflow-1715-resource',
+        node_id: 'node_relayflow_1715',
+        node_name: BROKER_NAME,
+        node_kind: 'local',
+        node_role: 'broker',
+        status: 'active',
+        session_ref: null,
+        priority: 0,
         created_at: '2026-09-10T00:00:00Z',
+        updated_at: null,
         channels: [
           { id: 'channel_general', name: 'general' },
           { id: 'channel_engineering', name: 'engineering' },
