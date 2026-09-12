@@ -11,10 +11,13 @@ const harnessDir = requiredDirectory('RELAY_PR_PROOF_HARNESS_DIR');
 const resultPath = requiredValue('RELAY_PR_PROOF_RESULT_PATH');
 const arm = requiredValue('RELAY_PR_PROOF_ARM');
 if (arm !== 'base' && arm !== 'head') throw new Error(`Invalid proof arm ${JSON.stringify(arm)}.`);
-const expectedSha = arm === 'base' ? process.env.RELAY_PR_PROOF_BASE_SHA : process.env.RELAY_PR_PROOF_HEAD_SHA;
+const expectedSha =
+  arm === 'base' ? process.env.RELAY_PR_PROOF_BASE_SHA : process.env.RELAY_PR_PROOF_HEAD_SHA;
 const targetSha = execFileSync('git', ['-C', targetDir, 'rev-parse', 'HEAD'], { encoding: 'utf8' }).trim();
-if (!expectedSha || targetSha !== expectedSha) throw new Error(`Target ${targetSha} is not expected ${arm} ${expectedSha}.`);
-if (!isWithin(harnessDir, fileURLToPath(import.meta.url))) throw new Error('Runner is not from exact-head harness.');
+if (!expectedSha || targetSha !== expectedSha)
+  throw new Error(`Target ${targetSha} is not expected ${arm} ${expectedSha}.`);
+if (!isWithin(harnessDir, fileURLToPath(import.meta.url)))
+  throw new Error('Runner is not from exact-head harness.');
 
 let excludeState;
 const probePath = path.join(targetDir, 'packages/cloud/src/.relayflow-1763-zero-config-sandbox.test.ts');
@@ -69,22 +72,107 @@ test('fleet sandbox CLI forwards exact repo revision and uses returned provider 
 });
 `;
 try {
-  if (process.env.RELAY_PR1763_SKIP_INSTALL !== '1') run('npm', ['ci', '--ignore-scripts', '--no-audit', '--no-fund'], targetDir, 'Cloud dependency installation', INSTALL_TIMEOUT_MS);
+  if (process.env.RELAY_PR1763_SKIP_INSTALL !== '1')
+    run(
+      'npm',
+      ['ci', '--ignore-scripts', '--no-audit', '--no-fund'],
+      targetDir,
+      'Cloud dependency installation',
+      INSTALL_TIMEOUT_MS
+    );
   excludeState = await prepareGitExclude(targetDir);
-  await writeGeneratedFile(probePath, probeSource); await mkdir(path.dirname(configPath), { recursive: true }); await writeGeneratedFile(configPath, configSource);
-  run('npm', ['exec', '--', 'vitest', 'run', '--config', path.relative(targetDir, configPath)], targetDir, 'CLI repository revision proof', PROBE_TIMEOUT_MS, { RELAY_PR1763_OBSERVATION_PATH: observationPath });
+  await writeGeneratedFile(probePath, probeSource);
+  await mkdir(path.dirname(configPath), { recursive: true });
+  await writeGeneratedFile(configPath, configSource);
+  run(
+    'npm',
+    ['exec', '--', 'vitest', 'run', '--config', path.relative(targetDir, configPath)],
+    targetDir,
+    'CLI repository revision proof',
+    PROBE_TIMEOUT_MS,
+    { RELAY_PR1763_OBSERVATION_PATH: observationPath }
+  );
   const observation = JSON.parse(await readFile(observationPath, 'utf8'));
-  const forwarded = JSON.stringify(observation.requestRepoRevisions) === JSON.stringify({ 'AgentWorkforce/relay': revision });
+  const forwarded =
+    JSON.stringify(observation.requestRepoRevisions) === JSON.stringify({ 'AgentWorkforce/relay': revision });
   const absent = observation.requestRepoRevisions === null;
   const outcome = arm === 'head' && forwarded ? 'fixed' : arm === 'base' && absent ? 'absent' : null;
-  if (!outcome) throw new Error(`Unexpected repository revision observation: ${JSON.stringify(observation)}.`);
+  if (!outcome)
+    throw new Error(`Unexpected repository revision observation: ${JSON.stringify(observation)}.`);
   await mkdir(path.dirname(resultPath), { recursive: true });
-  await writeFile(resultPath, `${JSON.stringify({ version: 1, caseId: CASE_ID, arm, outcome, signature: outcome === 'fixed' ? 'sandbox_repository_revision_contract_forwarded' : 'sandbox_repository_revision_contract_absent', details: outcome === 'fixed' ? 'The real fleet spawn command inferred the repository, forwarded its exact revision to Cloud, and retained the returned provider attribution through the CLI path.' : 'The base fleet spawn command omitted the exact repository revision contract.' })}\n`);
-} finally { await rm(probePath, { force: true }); await rm(configPath, { force: true }); await rm(observationPath, { force: true }); if (excludeState) await restoreGitExclude(excludeState); }
-function requiredValue(name) { const value = process.env[name]?.trim(); if (!value) throw new Error(`Missing ${name}.`); return value; }
-function requiredDirectory(name) { return path.resolve(requiredValue(name)); }
-function isWithin(directory, candidate) { const relative = path.relative(directory, candidate); return relative === '' || (!relative.startsWith(`..${path.sep}`) && relative !== '..' && !path.isAbsolute(relative)); }
-function run(command, args, cwd, label, timeoutMs, extraEnv = {}) { const result = spawnSync(command, args, { cwd, env: { ...process.env, ...extraEnv }, stdio: ['ignore', 'inherit', 'inherit'], timeout: timeoutMs }); if (result.error) throw new Error(`${label} could not start: ${result.error.message}`); if (result.status !== 0) throw new Error(`${label} failed with ${result.status}`); }
-async function prepareGitExclude(root) { const raw = execFileSync('git', ['-C', root, 'rev-parse', '--git-path', 'info/exclude'], { encoding: 'utf8' }).trim(); const file = path.isAbsolute(raw) ? raw : path.resolve(root, raw); let original = null; try { original = await readFile(file); } catch (error) { if (error?.code !== 'ENOENT') throw error; } const marker = Buffer.from('\n# relayflow-1763 generated probe\n.relayflow-1763-zero-config-sandbox-observation.json\npackages/cloud/src/.relayflow-1763-zero-config-sandbox.test.ts\n.relayflow/1763-zero-config-sandbox.vitest.config.mjs\nnode_modules\n'); const existing = original ?? Buffer.alloc(0); if (!existing.includes(marker)) await appendFile(file, marker); return { file, original }; }
-async function restoreGitExclude(state) { if (state.original === null) { await rm(state.file, { force: true }); } else { await writeFile(state.file, state.original); } }
-async function writeGeneratedFile(file, contents) { try { const existing = await lstat(file); if (!existing.isFile()) throw new Error(`Refusing non-file ${file}.`); } catch (error) { if (error?.code !== 'ENOENT') throw error; } const tmp = `${file}.tmp-${process.pid}`; const handle = await open(tmp, 'wx', 0o600); try { await handle.writeFile(contents, 'utf8'); } finally { await handle.close(); } await rename(tmp, file); }
+  await writeFile(
+    resultPath,
+    `${JSON.stringify({ version: 1, caseId: CASE_ID, arm, outcome, signature: outcome === 'fixed' ? 'sandbox_repository_revision_contract_forwarded' : 'sandbox_repository_revision_contract_absent', details: outcome === 'fixed' ? 'The real fleet spawn command inferred the repository, forwarded its exact revision to Cloud, and retained the returned provider attribution through the CLI path.' : 'The base fleet spawn command omitted the exact repository revision contract.' })}\n`
+  );
+} finally {
+  await rm(probePath, { force: true });
+  await rm(configPath, { force: true });
+  await rm(observationPath, { force: true });
+  if (excludeState) await restoreGitExclude(excludeState);
+}
+function requiredValue(name) {
+  const value = process.env[name]?.trim();
+  if (!value) throw new Error(`Missing ${name}.`);
+  return value;
+}
+function requiredDirectory(name) {
+  return path.resolve(requiredValue(name));
+}
+function isWithin(directory, candidate) {
+  const relative = path.relative(directory, candidate);
+  return (
+    relative === '' ||
+    (!relative.startsWith(`..${path.sep}`) && relative !== '..' && !path.isAbsolute(relative))
+  );
+}
+function run(command, args, cwd, label, timeoutMs, extraEnv = {}) {
+  const result = spawnSync(command, args, {
+    cwd,
+    env: { ...process.env, ...extraEnv },
+    stdio: ['ignore', 'inherit', 'inherit'],
+    timeout: timeoutMs,
+  });
+  if (result.error) throw new Error(`${label} could not start: ${result.error.message}`);
+  if (result.status !== 0) throw new Error(`${label} failed with ${result.status}`);
+}
+async function prepareGitExclude(root) {
+  const raw = execFileSync('git', ['-C', root, 'rev-parse', '--git-path', 'info/exclude'], {
+    encoding: 'utf8',
+  }).trim();
+  const file = path.isAbsolute(raw) ? raw : path.resolve(root, raw);
+  let original = null;
+  try {
+    original = await readFile(file);
+  } catch (error) {
+    if (error?.code !== 'ENOENT') throw error;
+  }
+  const marker = Buffer.from(
+    '\n# relayflow-1763 generated probe\n.relayflow-1763-zero-config-sandbox-observation.json\npackages/cloud/src/.relayflow-1763-zero-config-sandbox.test.ts\n.relayflow/1763-zero-config-sandbox.vitest.config.mjs\nnode_modules\n'
+  );
+  const existing = original ?? Buffer.alloc(0);
+  if (!existing.includes(marker)) await appendFile(file, marker);
+  return { file, original };
+}
+async function restoreGitExclude(state) {
+  if (state.original === null) {
+    await rm(state.file, { force: true });
+  } else {
+    await writeFile(state.file, state.original);
+  }
+}
+async function writeGeneratedFile(file, contents) {
+  try {
+    const existing = await lstat(file);
+    if (!existing.isFile()) throw new Error(`Refusing non-file ${file}.`);
+  } catch (error) {
+    if (error?.code !== 'ENOENT') throw error;
+  }
+  const tmp = `${file}.tmp-${process.pid}`;
+  const handle = await open(tmp, 'wx', 0o600);
+  try {
+    await handle.writeFile(contents, 'utf8');
+  } finally {
+    await handle.close();
+  }
+  await rename(tmp, file);
+}
