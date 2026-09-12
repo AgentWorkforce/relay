@@ -640,11 +640,7 @@ export function resolveWorkspaceKey(options: ResolveWorkspaceKeyOptions = {}): s
 }
 
 function projectDataDir(projectRoot: string | undefined): string | undefined {
-  try {
-    return getProjectPaths(projectRoot).dataDir;
-  } catch {
-    return undefined;
-  }
+  return getProjectPaths(projectRoot).dataDir;
 }
 
 function trimOrUndefined(value: string | undefined): string | undefined {
