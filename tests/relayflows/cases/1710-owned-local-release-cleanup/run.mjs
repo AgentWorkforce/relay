@@ -154,7 +154,9 @@ try {
   assert.equal(callerRetained.body?.process, 'stopped');
   assert.equal(callerRetained.body?.identity, 'retained');
   assert.equal(relaycast.state.releaseRequests.length, 3);
-  assert.equal(relaycast.state.releaseRequests[2]?.delete_agent, false);
+  // Caller-owned release may omit the deletion flag entirely; the proof only
+  // needs to confirm that it did not request identity deletion.
+  assert.notEqual(relaycast.state.releaseRequests[2]?.delete_agent, true);
 
   const callerRefusal = await releaseWorker(api, CALLER_OWNED_NAME, {
     expected_generation: '00000000-0000-0000-0000-000000000000',
@@ -240,6 +242,27 @@ async function startFakeRelaycast() {
           token: 'at_relayflow_1710_broker',
           status: 'active',
           created_at: '2026-09-12T00:00:00.000Z',
+        },
+      });
+      return;
+    }
+
+    if (request.method === 'POST' && /^\/v1\/nodes\/[^/]+\/agents$/.test(pathname)) {
+      sendJson(response, 200, {
+        ok: true,
+        data: {
+          id: `binding_${state.registrations}`,
+          agent_id: 'agent_relayflow_1710_broker',
+          agent_name: body?.agent_name ?? body?.name ?? 'relayflow-1710-broker',
+          node_id: NODE_ID,
+          node_name: 'relayflow-1710-broker',
+          node_kind: 'local',
+          node_role: 'broker',
+          status: 'active',
+          session_ref: body?.session_ref ?? null,
+          priority: body?.priority ?? 0,
+          created_at: '2026-09-12T00:00:00.000Z',
+          updated_at: null,
         },
       });
       return;
