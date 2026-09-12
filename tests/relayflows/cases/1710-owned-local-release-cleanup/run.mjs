@@ -1,243 +1,504 @@
-import { execFileSync } from 'node:child_process';
+import assert from 'node:assert/strict';
+import { createHash } from 'node:crypto';
+import { execFileSync, spawn } from 'node:child_process';
 import { constants as fsConstants } from 'node:fs';
-import { access, readFile } from 'node:fs/promises';
-import { mkdir, writeFile } from 'node:fs/promises';
+import { access, mkdtemp, mkdir, readFile, rm, writeFile } from 'node:fs/promises';
+import http from 'node:http';
+import { tmpdir } from 'node:os';
 import path from 'node:path';
 import process from 'node:process';
 import { fileURLToPath } from 'node:url';
 
 const CASE_ID = '1710-owned-local-release-cleanup';
+const BROKER_API_KEY = 'rk_relayflow_1710';
+const WORKSPACE_KEY = 'rk_relayflow_1710';
+const NODE_ID = 'node_relayflow_1710';
+const NODE_TOKEN = 'nt_relayflow_1710';
+const WORKSPACE_ID = 'ws_relayflow_1710';
+const OWNED_NAME = 'relayflow-1710-owned';
+const CALLER_OWNED_NAME = 'relayflow-1710-caller-owned';
+
 const targetDir = requiredDirectory('RELAY_PR_PROOF_TARGET_DIR');
 const harnessDir = requiredDirectory('RELAY_PR_PROOF_HARNESS_DIR');
+const binaryPath = await requiredExecutable('RELAY_PR_PROOF_BROKER_BINARY');
 const resultPath = requiredValue('RELAY_PR_PROOF_RESULT_PATH');
 const arm = requiredValue('RELAY_PR_PROOF_ARM');
-const cargoPath = await resolveCargoExecutable();
-const cargoEnv = await sanitizedEnvironment(cargoPath);
+
+if (arm !== 'base' && arm !== 'head') {
+  throw new Error(`RELAY_PR_PROOF_ARM must be base or head, received ${JSON.stringify(arm)}.`);
+}
+
 const expectedSha =
   arm === 'base' ? process.env.RELAY_PR_PROOF_BASE_SHA : process.env.RELAY_PR_PROOF_HEAD_SHA;
-
-if (!['base', 'head'].includes(arm) || !expectedSha) {
-  throw new Error('Invalid RelayFlow arm identity.');
-}
+if (!expectedSha) throw new Error(`Missing expected ${arm} SHA.`);
 const targetSha = execFileSync('git', ['-C', targetDir, 'rev-parse', 'HEAD'], {
   encoding: 'utf8',
 }).trim();
 if (targetSha !== expectedSha) {
-  throw new Error(`Target checkout ${targetSha} does not match exact arm SHA ${expectedSha}.`);
+  throw new Error(`Target checkout ${targetSha} does not match exact ${arm} SHA ${expectedSha}.`);
 }
-if (!isWithin(harnessDir, fileURLToPath(import.meta.url))) {
+const runnerPath = fileURLToPath(import.meta.url);
+if (!isWithin(harnessDir, runnerPath)) {
   throw new Error('The RelayFlow runner must execute from the exact-head harness checkout.');
 }
 
-const apiSource = await readFile(path.join(targetDir, 'crates/broker/src/runtime/api.rs'), 'utf8');
-const headMarker = 'promote that request to the same';
-const headTest = 'name_only_release_of_retired_owned_worker_deletes_directly_and_is_idempotent';
-const callerTest = 'caller_owned_release_cannot_be_promoted_to_identity_deletion';
-const probeTest = 'relayflow_1710_probe_name_only_release';
-const testPath = path.join(targetDir, 'crates/broker/src/runtime/tests.rs');
-const PROBE_TEST = String.raw`
-#[tokio::test]
-async fn ${probeTest}() {
-    use crate::listen_api::ListenApiRequest;
-    use httpmock::{Method::POST, MockServer};
-    use tokio::sync::oneshot;
+const probeDir = await mkdtemp(path.join(tmpdir(), 'relayflow-1710-'));
+const stateDir = path.join(probeDir, 'state');
+await mkdir(stateDir, { recursive: true });
 
-    let server = MockServer::start();
-    let release = server.mock(|when, then| {
-        when.method(POST)
-            .path("/v1/agents/release")
-            .json_body_partial(json!({"delete_agent":true,"expected_token_hash":"bec092bff160b23541205064ab9f4485d6c2089760b1bb4e5f5ce19f0274aad3"}).to_string());
-        then.status(200)
-            .json_body(json!({"ok":true,"data":{"status":"completed"}}));
-    });
-    let registry = make_worker_registry_with_worker("relayflow-1710-unrelated").await;
-    let mut fixture = worker_event_runtime_fixture(registry, HashMap::new());
-    fixture.runtime.relaycast_http = RelaycastHttpClient::new(
-        None,
-        "rk_live_relayflow",
-        "broker",
-        "codex",
-    );
-    let name = WorkerName::from("relayflow-1710-retired");
-    let generation = Uuid::new_v4();
-    let http = RelaycastHttpClient::new(Some(server.base_url()), "rk_live_relayflow", "broker", "codex");
-    http.seed_agent_token(&name, "owned-token");
-    fixture.runtime.workers.owned_spawn_generations.insert(name.clone(), (generation, http));
-    fixture.runtime.fleet_delivery_book.bind_authoritative_identity(name.to_string(), "relayflow-1710-id");
-
-    let (reply, mut result) = oneshot::channel();
-    fixture.runtime.handle_api_request(ListenApiRequest::Release {
-        name: name.clone(), reason: None, expected_generation: None, delete_identity: false, reply,
-    }).await;
-    let deregister = loop {
-        match fixture.fleet_control_rx.recv().await.unwrap() {
-            FleetControlCommand::DeregisterAgent { reply, .. } => break Some(reply),
-            FleetControlCommand::Send(BrokerToRelaycast::AgentDeregister(_)) => break None,
-            _ => {}
-        }
-    };
-    if let Some(deregister) = deregister { deregister.send(Ok(())).unwrap(); }
-    tokio::time::timeout(Duration::from_secs(2), async {
-        loop {
-            fixture.runtime.reconcile_identity_cleanups().await;
-            if let Ok(response) = result.try_recv() {
-                match response {
-                    Ok(response) => {
-                        if response["process"] != "stopped" || response["identity"] != "deleted" {
-                            panic!(
-                                "relayflow_1710_probe_name_only_release detected expected cleanup mismatch: {response}"
-                            );
-                        }
-                    }
-                    Err(error) => {
-                        panic!(
-                            "relayflow_1710_probe_name_only_release detected expected cleanup mismatch: {error}"
-                        );
-                    }
-                }
-                break;
-            }
-            tokio::task::yield_now().await;
-        }
-    }).await.expect("owned cleanup should complete");
-    release.assert_hits(1);
-
-    let (reply, repeated) = oneshot::channel();
-    fixture.runtime.handle_api_request(ListenApiRequest::Release {
-        name: name.clone(), reason: None, expected_generation: None, delete_identity: false, reply,
-    }).await;
-    let repeated = repeated.await.unwrap().expect("repeat should be idempotent");
-    assert_eq!(repeated["process"], "stopped");
-    assert_eq!(repeated["identity"], "deleted");
-    release.assert_hits(1);
-    assert!(fixture.fleet_control_rx.try_recv().is_err());
-    fixture.runtime.workers.release("relayflow-1710-unrelated").await.unwrap();
-}
-`;
-
-const originalTests = await readFile(testPath, 'utf8');
+const relaycast = await startFakeRelaycast();
+let broker;
 try {
-  await writeFile(testPath, `${originalTests}\n${PROBE_TEST}\n`, 'utf8');
-  const probe = runCargo(probeTest, cargoEnv);
-  const probeOutput = `${probe.stdout}\n${probe.stderr}`;
-  const probePassed = probe.status === 0 && probeOutput.includes(`test runtime::tests::${probeTest} ... ok`);
-  if (arm === 'base') {
-    if (
-      probe.status === 0 ||
-      !probeOutput.includes(`test runtime::tests::${probeTest} ... FAILED`) ||
-      !probeOutput.includes('relayflow_1710_probe_name_only_release detected expected cleanup mismatch')
-    ) {
-      throw new Error(`Base did not report the expected cleanup mismatch:\n${probeOutput}`);
+  broker = spawn(
+    binaryPath,
+    ['init', '--instance-name', 'relayflow-1710-broker', '--api-port', '0', '--api-bind', '127.0.0.1', '--state-dir', stateDir, '--channels', ''],
+    {
+      cwd: probeDir,
+      stdio: ['ignore', 'pipe', 'pipe'],
+      env: {
+        PATH: process.env.PATH ?? '/usr/bin:/bin',
+        HOME: probeDir,
+        TMPDIR: probeDir,
+        NO_COLOR: '1',
+        RUST_LOG: 'info',
+        RELAYCAST_BASE_URL: relaycast.baseUrl,
+        RELAY_BASE_URL: relaycast.baseUrl,
+        RELAYCAST_WS_URL: relaycast.baseUrl,
+        RELAY_API_KEY: WORKSPACE_KEY,
+        RELAY_WORKSPACE_KEY: WORKSPACE_KEY,
+        AGENT_RELAY_WORKSPACE_KEY: WORKSPACE_KEY,
+        RELAY_BROKER_API_KEY: BROKER_API_KEY,
+        RELAY_NODE_ID: NODE_ID,
+        RELAY_NODE_TOKEN: NODE_TOKEN,
+        AGENT_RELAY_TELEMETRY_DISABLED: '1',
+        DO_NOT_TRACK: '1',
+      },
     }
+  );
+
+  const brokerUrl = await waitForConnection(stateDir, broker);
+  const api = async (pathname, { timeoutMs = 15_000, ...options } = {}) => {
+    const response = await fetch(`${brokerUrl}${pathname}`, {
+      ...options,
+      redirect: 'error',
+      headers: {
+        'content-type': 'application/json',
+        'x-api-key': BROKER_API_KEY,
+        ...(options.headers ?? {}),
+      },
+      signal: AbortSignal.timeout(timeoutMs),
+    });
+    const raw = await response.text();
+    let body;
+    try {
+      body = raw ? JSON.parse(raw) : undefined;
+    } catch {
+      body = { raw };
+    }
+    return { status: response.status, body };
+  };
+
+  await waitFor(async () => (await api('/api/status', { timeoutMs: 2_000 })).status === 200, 30_000, 'broker readiness');
+
+  const ownedGeneration = await spawnWorker(api, OWNED_NAME);
+  await waitFor(async () => (await liveWorkerNames(api)).includes(OWNED_NAME), 20_000, 'owned worker to appear');
+
+  const ownedRelease = await releaseWorker(api, OWNED_NAME, {
+    expected_generation: ownedGeneration,
+    delete_identity: true,
+  });
+  const ownedDeleted = ownedRelease.status === 200 && ownedRelease.body?.process === 'stopped' && ownedRelease.body?.identity === 'deleted';
+  if (!ownedDeleted) {
     await writeResult({
+      arm,
       outcome: 'bug',
       signature: 'release_outcome_not_machine_readable',
-      details:
-        'The injected executable probe drove the base broker release actor with a retired broker-owned generation and exact local Relaycast mock; process and identity outcomes were not separately machine-readable.',
+      details: `The broker completed an owned release request, but the public response did not surface separate machine-readable process and identity outcomes: ${JSON.stringify(ownedRelease.body)}`,
     });
-  } else {
-    if (!apiSource.includes(headMarker) || !probePassed) {
-      throw new Error(`Head did not pass the generation-bound probe: ${probe.stdout}\n${probe.stderr}`);
-    }
-    for (const [filter, description] of [
-      [headTest, 'direct delete and repeat idempotence'],
-      ['owned_cleanup_waits_off_actor_and_retains_custody_until_confirmed', 'replacement custody'],
-      [callerTest, 'caller-owned deletion refusal'],
-      [
-        'owned_cleanup_journal_restores_generation_and_retries_without_plaintext_token',
-        'restart journal recovery',
-      ],
-    ]) {
-      const result = runCargo(filter, cargoEnv);
-      if (result.status !== 0 || !result.stdout.includes(`test runtime::tests::${filter} ... ok`)) {
-        throw new Error(`RelayFlow test did not execute ${description}: ${result.stdout}\n${result.stderr}`);
-      }
-    }
-    await writeResult({
-      outcome: 'fixed',
-      signature: 'owned_release_deletes_exactly_and_repeats_safely',
-      details:
-        'Deterministic broker integration drove the real release actor with a loopback Relaycast mock: the same executable probe failed on base and passed on head, while committed tests proved token-hash deletion, repeat idempotence, replacement custody, and caller-owned refusal.',
-    });
+  }
+
+  if (ownedDeleted) {
+    await waitFor(async () => !(await liveWorkerNames(api)).includes(OWNED_NAME), 20_000, 'owned worker to disappear after release');
+
+  const repeatRelease = await releaseWorker(api, OWNED_NAME, {
+    expected_generation: ownedGeneration,
+    delete_identity: true,
+  });
+  assert.equal(repeatRelease.status, 200);
+  assert.equal(repeatRelease.body?.process, 'stopped');
+  assert.equal(repeatRelease.body?.identity, 'deleted');
+  assert.equal(relaycast.state.releaseRequests.length, 1);
+  assert.equal(relaycast.state.releaseRequests[0]?.delete_agent, true);
+
+  const replacementGeneration = await spawnWorker(api, OWNED_NAME);
+  assert.notEqual(replacementGeneration, ownedGeneration);
+  await waitFor(async () => (await liveWorkerNames(api)).includes(OWNED_NAME), 20_000, 'replacement worker to appear');
+
+  const replacementRelease = await releaseWorker(api, OWNED_NAME, {
+    expected_generation: replacementGeneration,
+    delete_identity: true,
+  });
+  assert.equal(replacementRelease.status, 200);
+  assert.equal(replacementRelease.body?.process, 'stopped');
+  assert.equal(replacementRelease.body?.identity, 'deleted');
+  assert.equal(relaycast.state.releaseRequests.length, 2);
+  assert.equal(relaycast.state.releaseRequests[1]?.delete_agent, true);
+
+  await waitFor(async () => !(await liveWorkerNames(api)).includes(OWNED_NAME), 20_000, 'replacement worker to disappear after release');
+
+  const callerRetained = await releaseWorker(api, CALLER_OWNED_NAME, {
+    reason: 'caller-owned release proof',
+    delete_identity: false,
+  });
+  assert.equal(callerRetained.status, 200);
+  assert.equal(callerRetained.body?.process, 'stopped');
+  assert.equal(callerRetained.body?.identity, 'retained');
+  assert.equal(relaycast.state.releaseRequests.length, 3);
+  assert.equal(relaycast.state.releaseRequests[2]?.delete_agent, false);
+
+  const callerRefusal = await releaseWorker(api, CALLER_OWNED_NAME, {
+    expected_generation: '00000000-0000-0000-0000-000000000000',
+    delete_identity: true,
+  });
+  assert.equal(callerRefusal.status, 500);
+  assert.match(JSON.stringify(callerRefusal.body), /refusing/i);
+  assert.equal(relaycast.state.releaseRequests.length, 3);
+
+  await writeResult({
+    arm,
+    outcome: 'fixed',
+    signature: 'owned_release_deletes_exactly_and_repeats_safely',
+    details:
+      'The exact attested broker binary deleted an owned worker identity with separate process and identity fields, repeated the same release idempotently without a second Relaycast deletion, allowed a replacement generation to clean up independently, and retained/refused caller-owned releases through the public HTTP API.',
+  });
   }
 } finally {
-  await writeFile(testPath, originalTests, 'utf8');
-}
-
-function runCargo(filter, env) {
-  try {
-    return {
-      status: 0,
-      stdout: execFileSync(cargoPath, ['test', '-p', 'agent-relay-broker', filter, '--lib'], {
-        cwd: targetDir,
-        env,
-        encoding: 'utf8',
-        stdio: ['ignore', 'pipe', 'pipe'],
-      }),
-      stderr: '',
-    };
-  } catch (error) {
-    return {
-      status: error.status ?? 1,
-      stdout: error.stdout?.toString() ?? '',
-      stderr: error.stderr?.toString() ?? error.message,
-    };
+  if (broker && broker.exitCode === null) {
+    broker.kill('SIGTERM');
+    await Promise.race([
+      new Promise((resolve) => broker.once('exit', resolve)),
+      new Promise((resolve) => setTimeout(resolve, 5_000)),
+    ]);
+    if (broker.exitCode === null) broker.kill('SIGKILL');
   }
+  await relaycast.close();
+  await rm(probeDir, { recursive: true, force: true });
 }
 
-async function resolveCargoExecutable() {
-  const candidates = [];
-  const envCargo = process.env.RELAY_PR_PROOF_CARGO_BIN?.trim() ?? process.env.CARGO?.trim();
-  if (envCargo) candidates.push(envCargo);
-  const cargoHome = process.env.CARGO_HOME?.trim();
-  if (cargoHome) candidates.push(path.join(cargoHome, 'bin', 'cargo'));
-  const home = process.env.HOME?.trim();
-  if (home) candidates.push(path.join(home, '.cargo', 'bin', 'cargo'));
-  candidates.push('/usr/local/cargo/bin/cargo', '/usr/bin/cargo', '/opt/homebrew/bin/cargo');
+async function spawnWorker(api, name) {
+  const response = await api('/api/spawn', {
+    method: 'POST',
+    body: JSON.stringify({
+      name,
+      cli: 'cat',
+      cwd: process.cwd(),
+      channels: [],
+      transport: 'pty',
+      skip_relay_prompt: true,
+    }),
+  });
+  assert.equal(response.status, 200, JSON.stringify(response.body));
+  assert.equal(response.body?.success, true, JSON.stringify(response.body));
+  assert.equal(typeof response.body?.generation, 'string');
+  return response.body.generation;
+}
 
-  const seen = new Set();
-  for (const candidate of candidates) {
-    const resolved = path.resolve(candidate);
-    if (seen.has(resolved)) continue;
-    seen.add(resolved);
-    try {
-      await access(resolved, fsConstants.X_OK);
-      return resolved;
-    } catch {
-      // Keep searching deterministic fallback locations.
+async function releaseWorker(api, name, body) {
+  return api(`/api/spawned/${encodeURIComponent(name)}`, {
+    method: 'DELETE',
+    body: JSON.stringify(body),
+  });
+}
+
+async function liveWorkerNames(api) {
+  const response = await api('/api/spawned', { timeoutMs: 5_000 });
+  const agents = response.body?.agents;
+  return Array.isArray(agents) ? agents.map((agent) => agent?.name).filter(Boolean) : [];
+}
+
+async function startFakeRelaycast() {
+  const state = {
+    registrations: 0,
+    releaseRequests: [],
+    nodeFrames: [],
+    nodeSocket: undefined,
+  };
+
+  const sockets = new Set();
+  const server = http.createServer(async (request, response) => {
+    const pathname = new URL(request.url ?? '/', 'http://relayflow.invalid').pathname;
+    const body = await readJson(request).catch(() => undefined);
+
+    if (request.method === 'POST' && pathname === '/v1/agents') {
+      state.registrations += 1;
+      sendJson(response, 200, {
+        ok: true,
+        data: {
+          id: 'agent_relayflow_1710_broker',
+          workspace_id: WORKSPACE_ID,
+          name: body?.name ?? 'relayflow-1710-broker',
+          token: 'at_relayflow_1710_broker',
+          status: 'active',
+          created_at: '2026-09-12T00:00:00.000Z',
+        },
+      });
+      return;
     }
-  }
 
-  throw new Error(
-    'Unable to resolve a Cargo executable in the Daytona sandbox; this proof requires the exact rustup toolchain to be preinstalled or supplied via RELAY_PR_PROOF_CARGO_BIN.'
+    if (request.method === 'GET' && pathname.startsWith('/v1/agents/')) {
+      const name = decodeURIComponent(pathname.slice('/v1/agents/'.length));
+      sendJson(response, 200, {
+        ok: true,
+        data: {
+          id: `agent_${name.replaceAll('-', '_')}`,
+          workspace_id: WORKSPACE_ID,
+          name,
+          type: 'agent',
+          status: 'active',
+          persona: null,
+          metadata: {},
+          channels: [],
+        },
+      });
+      return;
+    }
+
+    if (request.method === 'POST' && pathname === '/v1/agents/release') {
+      state.releaseRequests.push(body ?? {});
+      sendJson(response, 200, {
+        ok: true,
+        data: {
+          invocation_id: `invocation_release_${state.releaseRequests.length}`,
+          action_name: 'release',
+          handler_agent_id: null,
+          handler_node_id: null,
+          dispatched_node_id: null,
+          input: { name: body?.name ?? '' },
+          status: 'completed',
+          created_at: '2026-09-12T00:00:00.000Z',
+        },
+      });
+      return;
+    }
+
+    if (request.method === 'POST' && pathname === '/v1/dm') {
+      sendJson(response, 200, {
+        ok: true,
+        data: {
+          conversation_id: 'dm_relayflow_1710',
+          message: {
+            id: `msg_${state.registrations}`,
+            agent_id: 'agent_relayflow_1710_broker',
+            agent_name: 'relayflow-1710-broker',
+            text: body?.text ?? '',
+            injection_mode: body?.mode ?? 'wait',
+          },
+          created_at: '2026-09-12T00:00:00.000Z',
+        },
+      });
+      return;
+    }
+
+    if (request.method === 'POST' && pathname === '/v1/channels/general/messages') {
+      sendJson(response, 200, { ok: true, data: {} });
+      return;
+    }
+
+    sendJson(response, 200, { ok: true, data: {} });
+  });
+
+  server.on('connection', (socket) => {
+    sockets.add(socket);
+    socket.once('close', () => sockets.delete(socket));
+  });
+
+  server.on('upgrade', (request, socket, head) => {
+    const key = request.headers['sec-websocket-key'];
+    if (typeof key !== 'string') {
+      socket.destroy();
+      return;
+    }
+    const accept = createHash('sha1').update(key + '258EAFA5-E914-47DA-95CA-C5AB0DC85B11').digest('base64');
+    socket.write(
+      'HTTP/1.1 101 Switching Protocols\r\n' +
+        'Upgrade: websocket\r\n' +
+        'Connection: Upgrade\r\n' +
+        `Sec-WebSocket-Accept: ${accept}\r\n\r\n`
+    );
+    const pathname = new URL(request.url ?? '/', 'http://relayflow.invalid').pathname;
+    if (pathname !== '/v1/node/ws') {
+      socket.destroy();
+      return;
+    }
+    attachFrameReader(
+      socket,
+      (frame) => {
+        if (frame.opcode === 0x9) {
+          sendFrame(socket, 0x0a, frame.payload);
+          return;
+        }
+        if (frame.opcode !== 0x1) return;
+        const message = JSON.parse(frame.payload.toString('utf8'));
+        state.nodeFrames.push(message);
+        if (message.type === 'agent.register') {
+          sendText(socket, {
+            type: 'reply',
+            v: 1,
+            id: message.id,
+            ok: true,
+            data: {
+              agent_id: 'agent_relayflow_1710_node',
+              token: 'at_relayflow_1710_node',
+              name: message.name,
+              delivery_ack_seq: 0,
+            },
+          });
+        }
+      },
+      head
+    );
+  });
+
+  await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
+  const address = server.address();
+  if (!address || typeof address === 'string') throw new Error('Expected Relaycast TCP address.');
+
+  return {
+    baseUrl: `http://127.0.0.1:${address.port}`,
+    state,
+    async close() {
+      for (const socket of sockets) socket.destroy();
+      await new Promise((resolve) => server.close(resolve));
+    },
+  };
+}
+
+async function waitForConnection(stateDir, child) {
+  let lastError;
+  return waitFor(
+    async () => {
+      if (child.exitCode !== null) {
+        throw new Error(`Broker exited during startup (${child.exitCode}).`);
+      }
+      try {
+        const connection = JSON.parse(await readFile(path.join(stateDir, 'connection.json'), 'utf8'));
+        const url = new URL(connection.url);
+        if (url.protocol !== 'http:' || url.hostname !== '127.0.0.1' || url.pathname !== '/' || url.search !== '' || url.hash !== '') {
+          throw new Error(`Broker connection URL is not a plain loopback origin: ${url.origin}`);
+        }
+        return `http://127.0.0.1:${Number(url.port)}`;
+      } catch (error) {
+        lastError = error;
+        return false;
+      }
+    },
+    30_000,
+    `connection metadata (${lastError?.message ?? 'not written'})`
   );
 }
 
-async function sanitizedEnvironment(resolvedCargoPath) {
-  const env = { ...process.env, AGENT_RELAY_TELEMETRY_DISABLED: '1' };
-  for (const key of Object.keys(env)) {
-    if (/(TOKEN|SECRET|PASSWORD|API_KEY|WORKSPACE_KEY)/i.test(key)) delete env[key];
-  }
-  const cargoBinDir = path.dirname(resolvedCargoPath);
-  const cargoHome = path.dirname(cargoBinDir);
-  if (path.basename(cargoHome) === '.cargo') {
-    env.CARGO_HOME ??= cargoHome;
-    const inferredRustupHome = path.join(path.dirname(cargoHome), '.rustup');
+async function waitFor(check, timeoutMs, label) {
+  const deadline = Date.now() + timeoutMs;
+  let lastError;
+  while (Date.now() < deadline) {
     try {
-      await access(inferredRustupHome, fsConstants.X_OK);
-      env.RUSTUP_HOME ??= inferredRustupHome;
-    } catch {
-      // Some sandboxes ship a plain Cargo install instead of rustup-managed state.
+      const result = await check();
+      if (result) return result;
+    } catch (error) {
+      lastError = error;
     }
+    await new Promise((resolve) => setTimeout(resolve, 50));
   }
-  const currentPath = env.PATH?.trim() ? env.PATH : '/usr/local/bin:/usr/bin:/bin';
-  if (!currentPath.split(path.delimiter).includes(cargoBinDir)) {
-    env.PATH = `${cargoBinDir}${path.delimiter}${currentPath}`;
-  }
-  return env;
+  throw new Error(`Timed out waiting for ${label}${lastError ? `: ${lastError.message}` : ''}.`);
 }
 
-async function writeResult({ outcome, signature, details }) {
+function sendJson(response, status, value) {
+  response.writeHead(status, { 'content-type': 'application/json' });
+  response.end(JSON.stringify(value));
+}
+
+async function readJson(request) {
+  const chunks = [];
+  for await (const chunk of request) chunks.push(chunk);
+  if (chunks.length === 0) return undefined;
+  const raw = Buffer.concat(chunks).toString('utf8');
+  return raw ? JSON.parse(raw) : undefined;
+}
+
+function attachFrameReader(socket, onFrame, initialData = Buffer.alloc(0)) {
+  let buffered = Buffer.from(initialData);
+  const consume = (chunk) => {
+    buffered = Buffer.concat([buffered, chunk]);
+    while (true) {
+      const decoded = decodeFrame(buffered);
+      if (!decoded) return;
+      buffered = buffered.subarray(decoded.consumed);
+      onFrame(decoded);
+    }
+  };
+  socket.on('data', consume);
+  if (buffered.length > 0) consume(Buffer.alloc(0));
+}
+
+function decodeFrame(buffer) {
+  if (buffer.length < 2) return undefined;
+  const opcode = buffer[0] & 0x0f;
+  const masked = (buffer[1] & 0x80) !== 0;
+  let length = buffer[1] & 0x7f;
+  let offset = 2;
+  if (length === 126) {
+    if (buffer.length < 4) return undefined;
+    length = buffer.readUInt16BE(2);
+    offset = 4;
+  } else if (length === 127) {
+    if (buffer.length < 10) return undefined;
+    const wideLength = buffer.readBigUInt64BE(2);
+    if (wideLength > BigInt(Number.MAX_SAFE_INTEGER)) throw new Error('WebSocket frame is too large.');
+    length = Number(wideLength);
+    offset = 10;
+  }
+  let mask;
+  if (masked) {
+    if (buffer.length < offset + 4) return undefined;
+    mask = buffer.subarray(offset, offset + 4);
+    offset += 4;
+  }
+  if (buffer.length < offset + length) return undefined;
+  const payload = Buffer.from(buffer.subarray(offset, offset + length));
+  if (mask) {
+    for (let index = 0; index < payload.length; index += 1) {
+      payload[index] ^= mask[index % 4];
+    }
+  }
+  return { opcode, payload, consumed: offset + length };
+}
+
+function sendText(socket, value) {
+  if (!socket || socket.destroyed) return false;
+  sendFrame(socket, 0x1, Buffer.from(JSON.stringify(value)));
+  return true;
+}
+
+function sendFrame(socket, opcode, payload) {
+  const length = payload.length;
+  let header;
+  if (length < 126) {
+    header = Buffer.from([0x80 | opcode, length]);
+  } else if (length <= 0xffff) {
+    header = Buffer.alloc(4);
+    header[0] = 0x80 | opcode;
+    header[1] = 126;
+    header.writeUInt16BE(length, 2);
+  } else {
+    header = Buffer.alloc(10);
+    header[0] = 0x80 | opcode;
+    header[1] = 127;
+    header.writeBigUInt64BE(BigInt(length), 2);
+  }
+  socket.write(Buffer.concat([header, payload]));
+}
+
+async function writeResult({ arm, outcome, signature, details }) {
   await mkdir(path.dirname(resultPath), { recursive: true });
   await writeFile(
     resultPath,
@@ -256,10 +517,17 @@ function requiredDirectory(name) {
   return path.resolve(requiredValue(name));
 }
 
+async function requiredExecutable(name) {
+  const candidate = path.resolve(requiredValue(name));
+  try {
+    await access(candidate, fsConstants.R_OK | fsConstants.X_OK);
+  } catch {
+    throw new Error(`${name} must name a readable executable file.`);
+  }
+  return candidate;
+}
+
 function isWithin(directory, candidate) {
   const relative = path.relative(directory, candidate);
-  return (
-    relative === '' ||
-    (!relative.startsWith(`..${path.sep}`) && relative !== '..' && !path.isAbsolute(relative))
-  );
+  return relative === '' || (!relative.startsWith(`..${path.sep}`) && relative !== '..' && !path.isAbsolute(relative));
 }

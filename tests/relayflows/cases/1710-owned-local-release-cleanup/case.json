@@ -6,7 +6,7 @@
   "runner": {
     "command": ["node", "tests/relayflows/cases/1710-owned-local-release-cleanup/run.mjs"]
   },
-  "requirements": [],
+  "requirements": ["broker-linux-x64"],
   "timeoutSeconds": 900,
   "expected": {
     "base": {
