@@ -285,6 +285,26 @@ describe('project workspace key resolution', () => {
     });
   });
 
+  it('fails closed on a malformed Git project marker instead of falling back globally', () => {
+    const env = { AGENT_RELAY_HOME: home };
+    const malformedProject = path.join(root, 'malformed-git-project');
+    fs.mkdirSync(malformedProject, { recursive: true });
+    fs.symlinkSync(path.join(root, 'missing-git-metadata'), path.join(malformedProject, '.git'));
+    setWorkspaceKey('global', 'rk_global', env);
+
+    const previousCwd = process.cwd();
+    const previousProject = process.env.AGENT_RELAY_PROJECT;
+    delete process.env.AGENT_RELAY_PROJECT;
+    process.chdir(malformedProject);
+    try {
+      expect(() => resolveWorkspaceSelection({ env })).toThrow('Cannot resolve the repository workspace');
+    } finally {
+      process.chdir(previousCwd);
+      if (previousProject === undefined) delete process.env.AGENT_RELAY_PROJECT;
+      else process.env.AGENT_RELAY_PROJECT = previousProject;
+    }
+  });
+
   it('records the absent project session snapshot for an active-store selection', () => {
     const env = { AGENT_RELAY_HOME: home };
     setWorkspaceKey('global', 'rk_global', env);
