@@ -281,7 +281,9 @@ try {
         args: [],
       });
       if (absentSpawnResponse.status >= 300) {
-        throw new Error(`absent-file spawn failed: ${JSON.stringify(absentSpawnResponse.body).slice(0, 500)}`);
+        throw new Error(
+          `absent-file spawn failed: ${JSON.stringify(absentSpawnResponse.body).slice(0, 500)}`
+        );
       }
       const absentGenerated = await waitFor(
         async () => {
@@ -523,10 +525,7 @@ async function startRelaycastStub() {
           created_at: '2025-01-01T00:00:00Z',
         },
       };
-    } else if (
-      request.method === 'POST' &&
-      /^\/v1\/channels\/[^/]+\/join$/.test(request.url)
-    ) {
+    } else if (request.method === 'POST' && /^\/v1\/channels\/[^/]+\/join$/.test(request.url)) {
       const channelName = decodeURIComponent(request.url.slice('/v1/channels/'.length, -'/join'.length));
       joinedChannels.add(channelName);
       payload = {
@@ -537,10 +536,7 @@ async function startRelaycastStub() {
           joined: true,
         },
       };
-    } else if (
-      request.method === 'GET' &&
-      /^\/v1\/channels\/[^/]+\/members$/.test(request.url)
-    ) {
+    } else if (request.method === 'GET' && /^\/v1\/channels\/[^/]+\/members$/.test(request.url)) {
       const channelName = decodeURIComponent(request.url.slice('/v1/channels/'.length, -'/members'.length));
       payload = {
         ok: true,
