@@ -10,6 +10,7 @@ import {
   readProjectWorkspaceSession,
   resolveWorkspaceKeyWithSource,
   resolveWorkspaceSelection,
+  writeProjectWorkspaceTargetIfSelectionCurrent,
   writeProjectWorkspaceKey,
 } from './project-workspace-key.js';
 import { setWorkspaceKey } from './workspace-store.js';
@@ -34,6 +35,81 @@ describe('project workspace key resolution', () => {
     writeProjectWorkspaceKey(dataDir, '  rk_project  ');
     expect(readProjectWorkspaceKey(dataDir)).toBe('rk_project');
     expect(fs.statSync(projectWorkspaceKeyPath(dataDir)).mode & 0o777).toBe(0o600);
+  });
+
+  it('keeps a temporary Relaycast key out of the project file', () => {
+    const previousHome = process.env.AGENT_RELAY_HOME;
+    process.env.AGENT_RELAY_HOME = home;
+    try {
+      writeProjectWorkspaceKey(dataDir, 'rk_canonical', { workspaceId: 'rw_abc' });
+      const selection = resolveWorkspaceSelection({ projectDataDir: dataDir, env: { AGENT_RELAY_HOME: home } });
+      expect(
+        writeProjectWorkspaceTargetIfSelectionCurrent(dataDir, selection!, {
+          workspaceId: 'rw_abc',
+          relaycastRoute: 'agent37-isolated',
+          relaycastBaseUrl: 'https://agent37-cast.agentrelay.com',
+          relaycastApiKey: 'rk_live_temporary',
+        })
+      ).toBe(true);
+      const raw = fs.readFileSync(projectWorkspaceKeyPath(dataDir), 'utf8');
+      expect(raw).not.toContain('rk_live_temporary');
+      expect(readProjectWorkspaceSession(dataDir)?.relaycastApiKey).toBe('rk_live_temporary');
+    } finally {
+      if (previousHome === undefined) delete process.env.AGENT_RELAY_HOME;
+      else process.env.AGENT_RELAY_HOME = previousHome;
+    }
+  });
+
+  it('fails closed when a project reference is paired with another route scope', () => {
+    const previousHome = process.env.AGENT_RELAY_HOME;
+    process.env.AGENT_RELAY_HOME = home;
+    try {
+      writeProjectWorkspaceKey(dataDir, 'rk_canonical', { workspaceId: 'rw_abc' });
+      const selection = resolveWorkspaceSelection({ projectDataDir: dataDir, env: { AGENT_RELAY_HOME: home } });
+      expect(
+        writeProjectWorkspaceTargetIfSelectionCurrent(dataDir, selection!, {
+          workspaceId: 'rw_abc',
+          relaycastRoute: 'agent37-isolated',
+          relaycastBaseUrl: 'https://agent37-cast.agentrelay.com',
+          relaycastApiKey: 'rk_live_temporary',
+        })
+      ).toBe(true);
+      const file = projectWorkspaceKeyPath(dataDir);
+      const parsed = JSON.parse(fs.readFileSync(file, 'utf8')) as Record<string, unknown>;
+      parsed.relaycastApiKeyRef = 'wrong-scope';
+      fs.writeFileSync(file, `${JSON.stringify(parsed)}\n`);
+      expect(readProjectWorkspaceSession(dataDir)?.relaycastApiKey).toBeUndefined();
+    } finally {
+      if (previousHome === undefined) delete process.env.AGENT_RELAY_HOME;
+      else process.env.AGENT_RELAY_HOME = previousHome;
+    }
+  });
+
+  it('rotates a bound route credential without retaining the old key in project metadata', () => {
+    const previousHome = process.env.AGENT_RELAY_HOME;
+    process.env.AGENT_RELAY_HOME = home;
+    try {
+      const target = {
+        workspaceId: 'rw_abc',
+        relaycastRoute: 'agent37-isolated' as const,
+        relaycastBaseUrl: 'https://agent37-cast.agentrelay.com',
+      };
+      writeProjectWorkspaceKey(dataDir, 'rk_canonical', {
+        ...target,
+        relaycastApiKey: 'rk_live_old',
+      });
+      writeProjectWorkspaceKey(dataDir, 'rk_canonical', {
+        ...target,
+        relaycastApiKey: 'rk_live_new',
+      });
+      const raw = fs.readFileSync(projectWorkspaceKeyPath(dataDir), 'utf8');
+      expect(raw).not.toContain('rk_live_old');
+      expect(raw).not.toContain('rk_live_new');
+      expect(readProjectWorkspaceSession(dataDir)?.relaycastApiKey).toBe('rk_live_new');
+    } finally {
+      if (previousHome === undefined) delete process.env.AGENT_RELAY_HOME;
+      else process.env.AGENT_RELAY_HOME = previousHome;
+    }
   });
 
   it('does not remove a replacement lock when the original holder finishes', () => {
@@ -185,27 +261,35 @@ describe('workspace precedence ladder diagnostics', () => {
   });
 
   it('carries a persisted Relaycast target when an explicit key matches the project pin', () => {
-    writeProjectWorkspaceKey(dataDir, 'rk_canonical', {
-      workspaceId: 'rw_pinned',
-      relaycastRoute: 'agent37-isolated',
-      relaycastBaseUrl: 'https://agent37-cast.agentrelay.com',
-      relaycastApiKey: 'rk_agent37',
-    });
+    const previousHome = process.env.AGENT_RELAY_HOME;
+    process.env.AGENT_RELAY_HOME = home;
+    try {
+      writeProjectWorkspaceKey(dataDir, 'rk_canonical', {
+        workspaceId: 'rw_pinned',
+        relaycastRoute: 'agent37-isolated',
+        relaycastBaseUrl: 'https://agent37-cast.agentrelay.com',
+        relaycastApiKey: 'rk_agent37',
+      });
 
-    expect(
-      resolveWorkspaceSelection({
-        workspaceKey: 'rk_canonical',
-        projectDataDir: dataDir,
-        env: { AGENT_RELAY_HOME: home },
-      })
-    ).toMatchObject({
-      key: 'rk_canonical',
-      source: 'flag',
-      workspaceId: 'rw_pinned',
-      relaycastRoute: 'agent37-isolated',
-      relaycastBaseUrl: 'https://agent37-cast.agentrelay.com',
-      relaycastApiKey: 'rk_agent37',
-    });
+      expect(
+        resolveWorkspaceSelection({
+          workspaceKey: 'rk_canonical',
+          projectDataDir: dataDir,
+          env: { AGENT_RELAY_HOME: home },
+        })
+      ).toMatchObject({
+        key: 'rk_canonical',
+        source: 'flag',
+        workspaceId: 'rw_pinned',
+        relaycastRoute: 'agent37-isolated',
+        relaycastBaseUrl: 'https://agent37-cast.agentrelay.com',
+        relaycastApiKey: 'rk_agent37',
+        relaycastApiKeyRef: expect.stringMatching(/^[0-9a-f]{64}$/),
+      });
+    } finally {
+      if (previousHome === undefined) delete process.env.AGENT_RELAY_HOME;
+      else process.env.AGENT_RELAY_HOME = previousHome;
+    }
   });
 
   it.each(['flag', 'env'] as const)(

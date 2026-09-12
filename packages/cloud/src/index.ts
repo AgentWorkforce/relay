@@ -148,6 +148,11 @@ export {
   validateWorkspaceName,
   workspaceStorePath,
   writeWorkspaceStore,
+  readRelaycastCredential,
+  relaycastCredentialRef,
+  relaycastCredentialStorePath,
+  writeRelaycastCredential,
+  type RelaycastCredential,
   type WorkspaceStore,
 } from './workspace-store.js';
 

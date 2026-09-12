@@ -206,6 +206,7 @@ describe('sdk client option resolution', () => {
       relaycastRoute: 'agent37-isolated',
       relaycastBaseUrl: 'https://agent37-cast.agentrelay.com',
       relaycastApiKey: 'rk_live_agent37',
+      relaycastApiKeyRef: expect.stringMatching(/^[0-9a-f]{64}$/),
     });
 
     const replayOptions = {
@@ -254,6 +255,7 @@ describe('sdk client option resolution', () => {
         relaycastRoute: 'agent37-isolated',
         relaycastBaseUrl: 'https://agent37-cast.agentrelay.com',
         relaycastApiKey: 'rk_live_fresh_agent37',
+        relaycastApiKeyRef: expect.stringMatching(/^[0-9a-f]{64}$/),
       });
     }
   );
@@ -282,6 +284,7 @@ describe('sdk client option resolution', () => {
       relaycastRoute: 'agent37-isolated',
       relaycastBaseUrl: 'https://agent37-cast.agentrelay.com',
       relaycastApiKey: 'rk_live_store_agent37',
+      relaycastApiKeyRef: expect.stringMatching(/^[0-9a-f]{64}$/),
     });
   });
 
@@ -354,7 +357,7 @@ describe('sdk client option resolution', () => {
     expect(readProjectWorkspaceSession(projectDataDir())?.relaycastApiKey).toBe('rk_live_newer_route');
   });
 
-  it('keeps legacy persisted targets usable when no separate Relaycast key exists', () => {
+  it('fails closed when an isolated target has no external Relaycast credential', () => {
     writeProjectWorkspaceKey(projectDataDir(), 'rk_live_legacy_agent37', {
       workspaceId: 'rw_abc',
       relaycastRoute: 'agent37-isolated',
@@ -362,19 +365,55 @@ describe('sdk client option resolution', () => {
     });
 
     const options = { env: { AGENT_RELAY_HOME: dir } };
-    expect(resolveWorkspaceKey(options)).toBe('rk_live_legacy_agent37');
-    expect(resolveBaseUrl(options)).toBe('https://agent37-cast.agentrelay.com');
+    expect(() => resolveWorkspaceTransport(options)).toThrow(/credential is unavailable or mismatched/);
   });
 
-  it('rejects a separate Relaycast key without a complete persisted route', () => {
+  it('fails closed when the persisted route credential reference is tampered', () => {
+    writeProjectWorkspaceKey(projectDataDir(), 'rk_live_canonical', {
+      workspaceId: 'rw_abc',
+      relaycastRoute: 'agent37-isolated',
+      relaycastBaseUrl: 'https://agent37-cast.agentrelay.com',
+      relaycastApiKey: 'rk_live_agent37',
+    });
+    const file = path.join(projectDataDir(), 'workspace-key.json');
+    const parsed = JSON.parse(fs.readFileSync(file, 'utf8')) as Record<string, unknown>;
+    parsed.relaycastApiKeyRef = 'wrong-scope';
+    fs.writeFileSync(file, `${JSON.stringify(parsed)}\n`);
+
+    expect(() => resolveWorkspaceTransport({ env: { AGENT_RELAY_HOME: dir } })).toThrow(
+      /credential is unavailable or mismatched/
+    );
+  });
+
+  it('fails closed when the persisted credential workspace binding is tampered', () => {
+    writeProjectWorkspaceKey(projectDataDir(), 'rk_live_canonical', {
+      workspaceId: 'rw_abc',
+      relaycastRoute: 'agent37-isolated',
+      relaycastBaseUrl: 'https://agent37-cast.agentrelay.com',
+      relaycastApiKey: 'rk_live_agent37',
+    });
+    const file = path.join(projectDataDir(), 'workspace-key.json');
+    const parsed = JSON.parse(fs.readFileSync(file, 'utf8')) as Record<string, unknown>;
+    parsed.workspaceId = 'rw_other';
+    fs.writeFileSync(file, `${JSON.stringify(parsed)}\n`);
+
+    expect(() => resolveWorkspaceTransport({ env: { AGENT_RELAY_HOME: dir } })).toThrow(
+      /credential is unavailable or mismatched/
+    );
+  });
+
+  it('drops a raw Relaycast key without a complete persisted route', () => {
     writeProjectWorkspaceKey(projectDataDir(), 'rk_live_canonical', {
       workspaceId: 'rw_abc',
       relaycastApiKey: 'rk_live_agent37',
     });
 
     const options = { env: { AGENT_RELAY_HOME: dir } };
-    expect(() => resolveWorkspaceKey(options)).toThrow(/persisted Relaycast workspace route is incomplete/);
-    expect(() => resolveBaseUrl(options)).toThrow(/persisted Relaycast workspace route is incomplete/);
+    expect(readProjectWorkspaceSession(projectDataDir())).toEqual({
+      workspaceKey: 'rk_live_canonical',
+      workspaceId: 'rw_abc',
+    });
+    expect(resolveWorkspaceKey(options)).toBe('rk_live_canonical');
   });
 
   it('rejects a persisted route that is not the exact server-owned origin', () => {

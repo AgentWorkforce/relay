@@ -1,3 +1,4 @@
+import { lstatSync } from 'node:fs';
 import path from 'node:path';
 
 import { AgentRelay, type AgentRelayAgent } from '@agent-relay/sdk';
@@ -15,6 +16,8 @@ export interface SdkClientOptions {
   token?: string;
   baseUrl?: string;
   env?: NodeJS.ProcessEnv;
+  /** Explicit project root for nested invocations such as packages/web. */
+  projectRoot?: string;
   /** Use the canonical gateway instead of a persisted server-selected route. */
   ignorePersistedRelaycastTarget?: boolean;
 }
@@ -40,10 +43,38 @@ export type WorkspaceTransport = {
 
 /** Resolve the selected key and any previously persisted Relay workspace identity. */
 export function resolveWorkspaceSelection(options: SdkClientOptions = {}): WorkspaceSelection | undefined {
+  const projectRoot = options.projectRoot ?? inferGitProjectRoot(env(options));
   return resolveCloudWorkspaceSelection({
     workspaceKey: options.workspaceKey,
     env: env(options),
+    ...(projectRoot ? { projectRoot } : {}),
   });
+}
+
+/** Resolve the repository root for nested package invocations. */
+function inferGitProjectRoot(environment: NodeJS.ProcessEnv): string | undefined {
+  // The config package intentionally honours this override for worktrees and
+  // subprojects. Do not replace an operator-selected namespace with Git's
+  // answer.
+  if (environment.AGENT_RELAY_PROJECT?.trim() || process.env.AGENT_RELAY_PROJECT?.trim()) return undefined;
+  // Follow-up commands only need the project boundary, not Git execution.
+  // Recognize both ordinary repositories and worktree .git files so a missing
+  // Git binary or a Git subprocess failure cannot select a different workspace.
+  let directory = process.cwd();
+  while (true) {
+    try {
+      const marker = lstatSync(path.join(directory, '.git'));
+      if (marker.isDirectory() || marker.isFile()) return directory;
+      throw new Error('Invalid Git project marker.');
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== 'ENOENT') {
+        throw new Error('Cannot resolve the repository workspace; check access to its Git project marker.');
+      }
+    }
+    const parent = path.dirname(directory);
+    if (parent === directory) return undefined;
+    directory = parent;
+  }
 }
 
 /**
@@ -77,6 +108,7 @@ function selectionForTransport(options: SdkClientOptions): WorkspaceSelection | 
     relaycastRoute: _relaycastRoute,
     relaycastBaseUrl: _relaycastBaseUrl,
     relaycastApiKey: _relaycastApiKey,
+    relaycastApiKeyRef: _relaycastApiKeyRef,
     ...canonicalSelection
   } = selection;
   return canonicalSelection;
@@ -125,8 +157,18 @@ export function resolveWorkspaceTransport(options: SdkClientOptions = {}): Works
     );
   }
   const baseUrl = resolveBaseUrlForSelection(selection, options);
+  // Project-session loading already validates the reference against the
+  // project/workspace/route/base tuple. Never re-read a ref here: doing so
+  // would let a tampered ref bypass that binding and pair an unrelated key
+  // with this route.
+  const routeCredential = trimOrUndefined(selection.relaycastApiKey);
+  if (selection.relaycastRoute === 'agent37-isolated' && !routeCredential) {
+    throw new Error(
+      'The persisted isolated Relaycast credential is unavailable or mismatched; rerun the sandbox command to mint a fresh route.'
+    );
+  }
   return {
-    workspaceKey: trimOrUndefined(selection.relaycastApiKey) ?? selection.key,
+    workspaceKey: routeCredential ?? selection.key,
     ...(baseUrl ? { baseUrl } : {}),
     source: selection.source,
   };

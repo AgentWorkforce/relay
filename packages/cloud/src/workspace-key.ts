@@ -16,3 +16,9 @@ export {
   type WorkspaceKeySource,
   type WorkspaceSelection,
 } from './project-workspace-key.js';
+export {
+  readRelaycastCredential,
+  relaycastCredentialRef,
+  writeRelaycastCredential,
+  type RelaycastCredential,
+} from './workspace-store.js';

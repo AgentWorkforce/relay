@@ -5,7 +5,17 @@ All notable changes to Agent Relay will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
+## [Unreleased - Minor]
+
+### Added
+
+- `fleet spawn --sandbox` attests a clean, pushed GitHub checkout at its exact
+  commit before dispatch and maps nested local directories to the sandbox clone.
+- `node agent attach <name>` automatically routes to a unique live Fleet node;
+  ambiguous placements require `--node`.
+- Temporary isolated Relaycast credentials are stored in the machine-local
+  0600 credential store, while project metadata keeps only a non-secret
+  reference.
 
 ## [12.1.0] - 2026-09-12
 
