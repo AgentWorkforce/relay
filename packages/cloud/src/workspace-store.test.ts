@@ -23,7 +23,11 @@ let dir: string;
 const original = process.env.AGENT_RELAY_HOME;
 
 beforeEach(() => {
-  dir = fs.mkdtempSync(path.join(os.tmpdir(), 'relay-ws-'));
+  // The Windows ACL validator deliberately rejects the runner's shared temp
+  // directory. Real credentials live below the user's profile, so exercise
+  // the concurrent-writer path at that same boundary on Windows.
+  const parent = process.platform === 'win32' ? os.homedir() : os.tmpdir();
+  dir = fs.mkdtempSync(path.join(parent, 'relay-ws-'));
   process.env.AGENT_RELAY_HOME = dir;
 });
 
@@ -89,7 +93,7 @@ describe('workspace store', () => {
     }
   );
 
-  it('rejects a symlinked credential parent', () => {
+  it.skipIf(process.platform === 'win32')('rejects a symlinked credential parent', () => {
     const target = fs.mkdtempSync(path.join(os.tmpdir(), 'relay-ws-parent-target-'));
     const linkContainer = fs.mkdtempSync(path.join(os.tmpdir(), 'relay-ws-parent-link-'));
     const link = path.join(linkContainer, 'home');

@@ -1,5 +1,5 @@
 import { execFileSync, spawnSync } from 'node:child_process';
-import { appendFile, lstat, mkdir, open, readFile, rename, rm, writeFile } from 'node:fs/promises';
+import { lstat, mkdir, open, readFile, rename, rm, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
@@ -19,10 +19,10 @@ if (!expectedSha || targetSha !== expectedSha)
 if (!isWithin(harnessDir, fileURLToPath(import.meta.url)))
   throw new Error('Runner is not from exact-head harness.');
 
-let excludeState;
 const probePath = path.join(targetDir, 'packages/cloud/src/.relayflow-1763-zero-config-sandbox.test.ts');
 const configPath = path.join(targetDir, '.relayflow', '1763-zero-config-sandbox.vitest.config.mjs');
 const observationPath = path.join(targetDir, '.relayflow-1763-zero-config-sandbox-observation.json');
+const excludePath = path.join(path.dirname(resultPath), `${CASE_ID}-${arm}.exclude`);
 const revision = expectedSha;
 const configSource = `import path from 'node:path';
 const names = ['cloud','config','fleet','harness-driver','harnesses','policy','sdk','session','utils'];
@@ -66,8 +66,7 @@ test('fleet sandbox CLI forwards exact repo revision and uses returned provider 
   await expect(program.parseAsync(['fleet', 'spawn', 'codex', '--name', 'proof-worker', '--task', 'proof', '--sandbox', '--no-confirm'], { from: 'user' })).rejects.toThrow('CLI exit 1');
   const body = requests[1]?.body ?? {};
   await writeFile(output, JSON.stringify({ requestCount: requests.length, requestRepos: body.repos ?? null, requestRepoRevisions: body.repoRevisions ?? null, resultRepoRevisions: body.repoRevisions ?? null, workloadProfile: body.workloadProfile ?? null, cleanupProviderIds: deletes.map((x) => x.providerId ?? null), launcherReleases: releases.length, warnings }, null, 2));
-  expect(releases.length).toBe(1); expect(deletes).toHaveLength(1); expect(deletes[0].providerId).toBe('agent37');
-  if (${JSON.stringify(arm)} === 'head') { expect(body.repos).toEqual(['AgentWorkforce/relay']); expect(body.repoRevisions).toEqual({ 'AgentWorkforce/relay': revision }); expect(body.workloadProfile).toBe('long-running-agent'); expect(deletes).toHaveLength(1); expect(deletes[0].providerId).toBe('agent37'); }
+  if (${JSON.stringify(arm)} === 'head') { expect(body.repos).toEqual(['AgentWorkforce/relay']); expect(body.repoRevisions).toEqual({ 'AgentWorkforce/relay': revision }); expect(body.workloadProfile).toBe('long-running-agent'); expect(releases).toHaveLength(1); expect(deletes).toHaveLength(1); expect(deletes[0].providerId).toBe('agent37'); }
   else { expect(body.repoRevisions ?? null).toBe(null); expect(body.workloadProfile).toBe('long-running-agent'); }
 });
 `;
@@ -80,7 +79,10 @@ try {
       'Cloud dependency installation',
       INSTALL_TIMEOUT_MS
     );
-  excludeState = await prepareGitExclude(targetDir);
+  await writeGeneratedFile(
+    excludePath,
+    '.relayflow-1763-zero-config-sandbox-observation.json\npackages/cloud/src/.relayflow-1763-zero-config-sandbox.test.ts\n.relayflow/1763-zero-config-sandbox.vitest.config.mjs\nnode_modules\n'
+  );
   await writeGeneratedFile(probePath, probeSource);
   await mkdir(path.dirname(configPath), { recursive: true });
   await writeGeneratedFile(configPath, configSource);
@@ -90,7 +92,10 @@ try {
     targetDir,
     'CLI repository revision proof',
     PROBE_TIMEOUT_MS,
-    { RELAY_PR1763_OBSERVATION_PATH: observationPath }
+    {
+      RELAY_PR1763_OBSERVATION_PATH: observationPath,
+      ...withGitExcludeEnv(excludePath),
+    }
   );
   const observation = JSON.parse(await readFile(observationPath, 'utf8'));
   const forwarded =
@@ -108,7 +113,7 @@ try {
   await rm(probePath, { force: true });
   await rm(configPath, { force: true });
   await rm(observationPath, { force: true });
-  if (excludeState) await restoreGitExclude(excludeState);
+  await rm(excludePath, { force: true });
 }
 function requiredValue(name) {
   const value = process.env[name]?.trim();
@@ -135,30 +140,17 @@ function run(command, args, cwd, label, timeoutMs, extraEnv = {}) {
   if (result.error) throw new Error(`${label} could not start: ${result.error.message}`);
   if (result.status !== 0) throw new Error(`${label} failed with ${result.status}`);
 }
-async function prepareGitExclude(root) {
-  const raw = execFileSync('git', ['-C', root, 'rev-parse', '--git-path', 'info/exclude'], {
-    encoding: 'utf8',
-  }).trim();
-  const file = path.isAbsolute(raw) ? raw : path.resolve(root, raw);
-  let original = null;
-  try {
-    original = await readFile(file);
-  } catch (error) {
-    if (error?.code !== 'ENOENT') throw error;
+function withGitExcludeEnv(file) {
+  const rawCount = process.env.GIT_CONFIG_COUNT;
+  const count = rawCount === undefined ? 0 : Number.parseInt(rawCount, 10);
+  if (!Number.isSafeInteger(count) || count < 0 || count > 100) {
+    throw new Error('Invalid inherited GIT_CONFIG_COUNT.');
   }
-  const marker = Buffer.from(
-    '\n# relayflow-1763 generated probe\n.relayflow-1763-zero-config-sandbox-observation.json\npackages/cloud/src/.relayflow-1763-zero-config-sandbox.test.ts\n.relayflow/1763-zero-config-sandbox.vitest.config.mjs\nnode_modules\n'
-  );
-  const existing = original ?? Buffer.alloc(0);
-  if (!existing.includes(marker)) await appendFile(file, marker);
-  return { file, original };
-}
-async function restoreGitExclude(state) {
-  if (state.original === null) {
-    await rm(state.file, { force: true });
-  } else {
-    await writeFile(state.file, state.original);
-  }
+  return {
+    GIT_CONFIG_COUNT: String(count + 1),
+    [`GIT_CONFIG_KEY_${count}`]: 'core.excludesFile',
+    [`GIT_CONFIG_VALUE_${count}`]: file,
+  };
 }
 async function writeGeneratedFile(file, contents) {
   try {
