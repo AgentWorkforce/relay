@@ -14,7 +14,7 @@ use uuid::Uuid;
 
 use crate::ids::WorkerName;
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 enum PreExisting {
     Absent { created_dir: bool },
     Present { contents: Vec<u8>, mode: u32 },
@@ -535,12 +535,15 @@ fn validate_windows_restore_path(
     let cursor = path
         .parent()
         .ok_or_else(|| invalid_path("Cursor MCP path has no parent"))?;
-    let actual = windows_directory_identity(cursor).map_err(|error| {
-        io::Error::new(
-            error.kind(),
-            format!("Cursor .cursor directory cannot be validated during cleanup: {error}"),
-        )
-    })?;
+    let actual = match windows_directory_identity(cursor) {
+        Ok(identity) => identity,
+        Err(error) => {
+            return Err(io::Error::new(
+                error.kind(),
+                format!("Cursor .cursor directory cannot be validated during cleanup: {error}"),
+            ));
+        }
+    };
     if cursor != lock.root.join(".cursor") || expected.is_some_and(|identity| identity != actual) {
         return Err(io::Error::new(
             io::ErrorKind::WouldBlock,
@@ -575,12 +578,12 @@ fn openat_dir(parent: std::os::unix::io::RawFd, name: &std::ffi::CStr) -> io::Re
     Ok(unsafe { fs::File::from_raw_fd(fd) })
 }
 
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, PartialEq, Eq, Serialize, Deserialize)]
 struct Journal {
     entries: Vec<JournalEntry>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 struct JournalEntry {
     path: PathBuf,
     pre_existing: JournalPreExisting,
@@ -589,7 +592,7 @@ struct JournalEntry {
     generated_identity: Option<(u32, u64)>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 enum JournalPreExisting {
     Absent { created_dir: bool },
@@ -1460,6 +1463,17 @@ impl CursorMcpLeaseRegistry {
         registry
     }
 
+    fn current_journal_entry(journal_path: &Path, path: &Path) -> io::Result<Option<JournalEntry>> {
+        let body = match fs::read(journal_path) {
+            Ok(body) => body,
+            Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(None),
+            Err(error) => return Err(error),
+        };
+        let journal: Journal = serde_json::from_slice(&body)
+            .map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error))?;
+        Ok(journal.entries.into_iter().find(|entry| entry.path == path))
+    }
+
     fn lock_path(&self, root: &Path) -> io::Result<PathBuf> {
         // Keep the lease lock independent from the broker state directory so
         // brokers with different journals still coordinate on the same cwd.
@@ -2113,20 +2127,29 @@ impl CursorMcpLeaseRegistry {
         self.recover_journal_with_hook(|| {})
     }
 
-    fn recover_journal_with_hook<F>(&mut self, mut before_finalize: F) -> io::Result<()>
+    fn recover_journal_with_hook<F>(&mut self, before_finalize: F) -> io::Result<()>
     where
         F: FnMut(),
     {
-        let Some(path) = self.journal_path.clone() else {
+        self.recover_journal_impl(|| {}, before_finalize)
+    }
+
+    fn recover_journal_impl<F, G>(&mut self, mut after_snapshot: F, mut before_finalize: G) -> io::Result<()>
+    where
+        F: FnMut(),
+        G: FnMut(),
+    {
+        let Some(journal_path) = self.journal_path.clone() else {
             return Ok(());
         };
-        let body = match fs::read(&path) {
+        let body = match fs::read(&journal_path) {
             Ok(body) => body,
             Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(()),
             Err(error) => return Err(error),
         };
         let journal: Journal = serde_json::from_slice(&body)
             .map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error))?;
+        after_snapshot();
         self.journal_owned_paths
             .extend(journal.entries.iter().map(|entry| entry.path.clone()));
         let mut remaining = Vec::new();
@@ -2241,6 +2264,37 @@ impl CursorMcpLeaseRegistry {
                     #[cfg(windows)]
                     generated_identity,
                 });
+                held_locks.push(lock);
+                continue;
+            }
+            let current_entry = match Self::current_journal_entry(&journal_path, &path) {
+                Ok(entry) => entry,
+                Err(error) => {
+                    tracing::warn!(path = %path.display(), %error, "Cursor MCP lease recovery deferred because the journal could not be revalidated");
+                    remaining.push(JournalEntry {
+                        path,
+                        pre_existing: pre_existing.journal()?,
+                        #[cfg(windows)]
+                        generated_identity,
+                    });
+                    held_locks.push(lock);
+                    continue;
+                }
+            };
+            let Some(current_entry) = current_entry else {
+                tracing::warn!(path = %path.display(), "Cursor MCP lease recovery deferred because the journal entry disappeared");
+                remaining.push(JournalEntry {
+                    path,
+                    pre_existing: pre_existing.journal()?,
+                    #[cfg(windows)]
+                    generated_identity,
+                });
+                held_locks.push(lock);
+                continue;
+            };
+            if current_entry != entry {
+                tracing::warn!(path = %path.display(), "Cursor MCP lease recovery deferred because the journal entry changed");
+                remaining.push(current_entry);
                 held_locks.push(lock);
                 continue;
             }
@@ -2989,6 +3043,77 @@ mod tests {
         assert_eq!(read(&first), b"first-original");
         assert_eq!(read(&second), b"second-original");
         assert!(journal.exists(), "bad entry must remain journaled");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn journal_recovery_revalidates_snapshot_before_restore() {
+        use base64::Engine;
+
+        let dir = tempdir().unwrap();
+        let journal = dir.path().join("journal.json");
+        let root = dir.path().canonicalize().unwrap();
+        let path = root.join(".cursor/mcp.json");
+        fs::create_dir_all(path.parent().unwrap()).unwrap();
+        fs::write(&path, b"original").unwrap();
+        let initial_entry = JournalEntry {
+            path: path.clone(),
+            pre_existing: JournalPreExisting::Present {
+                contents_base64: base64::engine::general_purpose::STANDARD.encode(b"original"),
+                mode: 0o600,
+            },
+        };
+        fs::write(
+            &journal,
+            serde_json::to_vec(&Journal {
+                entries: vec![initial_entry],
+            })
+            .unwrap(),
+        )
+        .unwrap();
+
+        let mut recovery = CursorMcpLeaseRegistry {
+            leases: HashMap::new(),
+            path_by_worker: HashMap::new(),
+            journal_path: Some(journal.clone()),
+            ..Default::default()
+        };
+        recovery
+            .recover_journal_impl(
+                || {
+                    let updated_entry = JournalEntry {
+                        path: path.clone(),
+                        pre_existing: JournalPreExisting::Present {
+                            contents_base64: base64::engine::general_purpose::STANDARD
+                                .encode(b"replacement"),
+                            mode: 0o600,
+                        },
+                    };
+                    fs::write(&path, b"replacement").unwrap();
+                    fs::write(
+                        &journal,
+                        serde_json::to_vec(&Journal {
+                            entries: vec![updated_entry],
+                        })
+                        .unwrap(),
+                    )
+                    .unwrap();
+                },
+                || {},
+            )
+            .unwrap();
+
+        assert_eq!(read(&path), b"replacement");
+        let journal: Journal = serde_json::from_slice(&fs::read(&journal).unwrap()).unwrap();
+        assert_eq!(journal.entries.len(), 1);
+        assert_eq!(
+            journal.entries[0].pre_existing,
+            JournalPreExisting::Present {
+                contents_base64: base64::engine::general_purpose::STANDARD
+                    .encode(b"replacement"),
+                mode: 0o600,
+            }
+        );
     }
 
     #[cfg(not(unix))]
