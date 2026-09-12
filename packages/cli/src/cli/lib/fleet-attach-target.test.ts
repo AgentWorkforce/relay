@@ -20,7 +20,7 @@ describe('resolveFleetAttachTarget', () => {
         () => ({ baseUrl: 'https://agent37-cast.agentrelay.com' })
       )
     ).resolves.toEqual({
-      target: { node: 'sandbox-1', baseUrl: 'https://agent37-cast.agentrelay.com' },
+      target: { node: 'sandbox-1-id', baseUrl: 'https://agent37-cast.agentrelay.com' },
     });
   });
 
@@ -32,6 +32,31 @@ describe('resolveFleetAttachTarget', () => {
         () => ({})
       )
     ).resolves.toMatchObject({ error: expect.stringContaining('multiple fleet nodes') });
+  });
+
+  it('uses the unique id when another node shares the same name', async () => {
+    const selected = { ...node('shared', ['worker']), nodeId: 'selected-id' };
+    const other = { ...node('shared', []), nodeId: 'other-id' };
+    expect(
+      await resolveFleetAttachTarget(
+        'worker',
+        () => ({ nodes: { list: async () => [other, selected] } }) as never,
+        () => ({}),
+        () => undefined
+      )
+    ).toEqual({ target: { node: 'selected-id' } });
+  });
+
+  it('fails closed for incomplete persisted remote metadata', async () => {
+    const result = await resolveFleetAttachTarget(
+      'worker',
+      (() => {
+        throw new Error('invalid target');
+      }) as never,
+      () => ({}),
+      () => ({ key: 'rk_live_pin', source: 'project', origin: 'test', relaycastApiKeyRef: 'stale-ref' })
+    );
+    expect(result.error).toContain('persisted remote Fleet session');
   });
 
   it('redacts transport error details before returning persisted-session diagnostics', async () => {

@@ -75,7 +75,7 @@ export {
   type ConnectProviderResult,
 } from './connect.js';
 
-export { createWorkspace, issueWorkspaceToken, resolveActiveWorkspace } from './workspaces.js';
+export { createWorkspace, issueWorkspaceToken, resolveActiveWorkspace, resolveWorkspaceByKey } from './workspaces.js';
 export { redactCredentialValues } from './redact.js';
 export {
   ensureCloudFleetSandbox,

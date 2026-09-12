@@ -622,6 +622,11 @@ async function withDeliveryModeClient<T>(
   run: (client: ReturnType<typeof createBrokerClient>) => Promise<T>
 ): Promise<T | undefined> {
   let node = typeof opts.node === 'string' && opts.node.trim() ? opts.node.trim() : undefined;
+  if (!node && opts.workspaceKey !== undefined) {
+    deps.error('Error: --workspace-key requires an explicit --node.');
+    deps.exit(1);
+    return undefined;
+  }
   let targetBaseUrl: string | undefined;
   if (!node && opts.brokerUrl === undefined && opts.apiKey === undefined && opts.stateDir === undefined) {
     const fleetTarget = await deps.resolveFleetAttachTarget(name);

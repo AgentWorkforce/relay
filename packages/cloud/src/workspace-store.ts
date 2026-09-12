@@ -101,6 +101,14 @@ interface RelaycastCredentialLockOwner {
   token: string;
 }
 
+function assertRelaycastCredentialLockDirectory(lock: string): fs.Stats {
+  const info = fs.lstatSync(lock);
+  if (!info.isDirectory() || info.isSymbolicLink()) {
+    throw new Error('Refusing to operate on a Relaycast credential lock that is not a real directory.');
+  }
+  return info;
+}
+
 function withRelaycastCredentialLock<T>(file: string, fn: () => T): T {
   const directory = path.dirname(file);
   const lock = `${file}.lock`;
@@ -135,13 +143,18 @@ function withRelaycastCredentialLock<T>(file: string, fn: () => T): T {
       if (!(isNodeError(error) && error.code === 'EEXIST')) throw error;
     }
     try {
-      if (Date.now() - fs.statSync(lock).mtimeMs >= RELAYCAST_CREDENTIAL_LOCK_STALE_MS) {
+      if (
+        Date.now() - assertRelaycastCredentialLockDirectory(lock).mtimeMs >=
+        RELAYCAST_CREDENTIAL_LOCK_STALE_MS
+      ) {
         const observedLock = inspectRelaycastCredentialLock(lock);
         if (!observedLock.ownerIsAlive) {
           for (const entry of observedLock.entries) {
+            assertRelaycastCredentialLockDirectory(lock);
             fs.rmSync(path.join(lock, entry), { force: true });
           }
           try {
+            assertRelaycastCredentialLockDirectory(lock);
             fs.rmdirSync(lock);
           } catch (error) {
             if (isNodeError(error) && (error.code === 'ENOENT' || error.code === 'ENOTEMPTY')) {
@@ -161,20 +174,29 @@ function withRelaycastCredentialLock<T>(file: string, fn: () => T): T {
     }
     Atomics.wait(RELAYCAST_CREDENTIAL_LOCK_WAIT, 0, 0, RELAYCAST_CREDENTIAL_LOCK_RETRY_MS);
   }
+  let callbackFailed = false;
   try {
     return fn();
+  } catch (error) {
+    callbackFailed = true;
+    throw error;
   } finally {
     if (fs.existsSync(ownerPath)) {
-      fs.rmSync(ownerPath, { force: true });
+      let cleanupError: unknown;
       try {
-        fs.rmdirSync(lock);
-      } catch (error) {
-        if (isNodeError(error) && (error.code === 'ENOENT' || error.code === 'ENOTEMPTY')) {
-          // Another writer may have replaced the lock after our marker was
-          // removed. Leave that replacement untouched.
-        } else {
-          throw error;
+        fs.rmSync(ownerPath, { force: true });
+        try {
+          fs.rmdirSync(lock);
+        } catch (error) {
+          if (!(isNodeError(error) && (error.code === 'ENOENT' || error.code === 'ENOTEMPTY'))) {
+            cleanupError = error;
+          }
         }
+      } catch (error) {
+        cleanupError = error;
+      }
+      if (cleanupError && !callbackFailed) {
+        throw cleanupError;
       }
     }
   }
@@ -184,6 +206,7 @@ function inspectRelaycastCredentialLock(lock: string): {
   entries: string[];
   ownerIsAlive: boolean;
 } {
+  assertRelaycastCredentialLockDirectory(lock);
   const entries = fs.readdirSync(lock);
   let sawLiveOwner = false;
   for (const entry of entries) {

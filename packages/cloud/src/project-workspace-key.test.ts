@@ -11,6 +11,7 @@ import {
   resolveWorkspaceKeyWithSource,
   resolveWorkspaceSelection,
   writeProjectWorkspaceTargetIfSelectionCurrent,
+  writeProjectWorkspaceKeyPreservingSession,
   writeProjectWorkspaceKey,
 } from './project-workspace-key.js';
 import { setWorkspaceKey } from './workspace-store.js';
@@ -35,6 +36,55 @@ describe('project workspace key resolution', () => {
     writeProjectWorkspaceKey(dataDir, '  rk_project  ');
     expect(readProjectWorkspaceKey(dataDir)).toBe('rk_project');
     expect(fs.statSync(projectWorkspaceKeyPath(dataDir)).mode & 0o777).toBe(0o600);
+  });
+
+  it('uses an explicit credential home without mutating process.env or the project file', () => {
+    const credentialHome = fs.mkdtempSync(path.join(os.tmpdir(), 'relay-project-credential-home-'));
+    const processHome = process.env.AGENT_RELAY_HOME;
+    try {
+      writeProjectWorkspaceKey(dataDir, 'rk_canonical', {
+        workspaceId: 'rw_abc',
+        relaycastRoute: 'agent37-isolated',
+        relaycastBaseUrl: 'https://agent37-cast.agentrelay.com',
+        relaycastApiKey: 'rk_live_temporary',
+        env: { AGENT_RELAY_HOME: credentialHome },
+      });
+
+      expect(process.env.AGENT_RELAY_HOME).toBe(processHome);
+      expect(readProjectWorkspaceSession(dataDir, fs, { AGENT_RELAY_HOME: credentialHome })).toMatchObject({
+        workspaceKey: 'rk_canonical',
+        relaycastApiKey: 'rk_live_temporary',
+      });
+      expect(
+        readProjectWorkspaceSession(dataDir, fs, { AGENT_RELAY_HOME: `${credentialHome}-other` })
+          ?.relaycastApiKey
+      ).toBeUndefined();
+      expect(fs.readFileSync(projectWorkspaceKeyPath(dataDir), 'utf8')).not.toContain('rk_live_temporary');
+    } finally {
+      fs.rmSync(credentialHome, { recursive: true, force: true });
+    }
+  });
+
+  it('preserves a route credential through metadata updates in the selected credential home', () => {
+    writeProjectWorkspaceKey(dataDir, 'rk_canonical', {
+      workspaceId: 'rw_abc',
+      relaycastRoute: 'agent37-isolated',
+      relaycastBaseUrl: 'https://agent37-cast.agentrelay.com',
+      relaycastApiKey: 'rk_live_temporary',
+      env: { AGENT_RELAY_HOME: home },
+    });
+
+    writeProjectWorkspaceKeyPreservingSession(dataDir, 'rk_canonical', {
+      enrolledNodeId: 'node_1',
+      env: { AGENT_RELAY_HOME: home },
+    });
+
+    expect(readProjectWorkspaceSession(dataDir, fs, { AGENT_RELAY_HOME: home })).toMatchObject({
+      workspaceKey: 'rk_canonical',
+      enrolledNodeId: 'node_1',
+      relaycastApiKey: 'rk_live_temporary',
+    });
+    expect(fs.readFileSync(projectWorkspaceKeyPath(dataDir), 'utf8')).not.toContain('rk_live_temporary');
   });
 
   it('keeps a temporary Relaycast key out of the project file', () => {

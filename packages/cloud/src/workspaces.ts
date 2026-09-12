@@ -342,6 +342,40 @@ export async function issueWorkspaceToken(
   );
 }
 
+/** Resolve a selected project pin without exposing its key in URLs or changing the active workspace. */
+export async function resolveWorkspaceByKey(
+  workspaceKey: string,
+  options: ResolveActiveWorkspaceOptions = {}
+): Promise<ActiveWorkspaceDescriptor> {
+  const key = workspaceKey.trim();
+  if (!/^rk_live_[A-Za-z0-9_-]{1,512}$/.test(key)) throw new Error('A valid workspace key is required.');
+  const apiUrl = options.apiUrl || defaultApiUrl();
+  const auth = await ensureAuthenticated(apiUrl, {
+    interactive: false,
+    refreshTimeoutMs: options.refreshTimeoutMs,
+  });
+  const endpoint = '/api/v1/workspaces/current/resolve';
+  const { response } = await authorizedApiFetch(
+    auth,
+    endpoint,
+    {
+      method: 'POST',
+      body: JSON.stringify({ workspaceKey: key }),
+      signal: AbortSignal.timeout(options.refreshTimeoutMs ?? 30_000),
+    },
+    { interactive: false }
+  );
+  const payload = await readJson(response);
+  if (!response.ok) throw buildEndpointError('Project workspace resolve', endpoint, response, payload);
+  // Unlike the legacy active-workspace resolver, this endpoint is an
+  // attestation for a specific project pin. A response that omits the echoed
+  // key must fail closed rather than being filled in from the request.
+  const resolved = normalizeActiveWorkspaceDescriptor(payload, '', auth.apiUrl);
+  if (resolved.key !== key)
+    throw new Error('Cloud resolved a different workspace credential than the selected project pin.');
+  return resolved;
+}
+
 export async function resolveActiveWorkspace(
   options: ResolveActiveWorkspaceOptions = {}
 ): Promise<ActiveWorkspaceDescriptor> {

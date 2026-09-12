@@ -35,7 +35,12 @@ export async function resolveFleetAttachTarget(
         `Pass --node explicitly or repair the project session. (${describeError(error)})`,
     };
   }
-  const knownRemoteSession = Boolean(selection?.relaycastRoute && selection.relaycastBaseUrl);
+  const knownRemoteSession = Boolean(
+    selection?.relaycastRoute ||
+    selection?.relaycastBaseUrl ||
+    selection?.relaycastApiKey ||
+    selection?.relaycastApiKeyRef
+  );
   try {
     const relay = createRelay();
     const nodes = await relay.nodes.list();
@@ -74,7 +79,7 @@ export async function resolveFleetAttachTarget(
 }
 
 function nodeLabel(node: RelayNode): string | undefined {
-  return [node.name, node.nodeId, node.id].find(
+  return [node.nodeId, node.id, node.name].find(
     (candidate): candidate is string => typeof candidate === 'string' && candidate.trim().length > 0
   );
 }

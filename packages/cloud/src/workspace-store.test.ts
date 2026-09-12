@@ -135,11 +135,13 @@ describe('workspace store', () => {
         });
       });
 
-    await Promise.all([
+    const results = await Promise.allSettled([
       ...Array.from({ length: 8 }, (_, index) => run('writer', `writer-${index}`)),
       run('reader', 'reader-a'),
       run('reader', 'reader-b'),
     ]);
+    const failed = results.find((result): result is PromiseRejectedResult => result.status === 'rejected');
+    if (failed) throw failed.reason;
 
     const stored = JSON.parse(fs.readFileSync(relaycastCredentialStorePath(), 'utf8')) as {
       credentials: Record<string, RelaycastCredential>;
@@ -169,6 +171,26 @@ describe('workspace store', () => {
 
     expect(readRelaycastCredential('after-stale-lock')?.apiKey).toBe('rk_live_after_stale');
     expect(fs.existsSync(lock)).toBe(false);
+  });
+
+  it('refuses to inspect or clean a stale credential lock symlink', () => {
+    const lock = `${relaycastCredentialStorePath()}.lock`;
+    const outside = fs.mkdtempSync(path.join(os.tmpdir(), 'relay-lock-target-'));
+    const sentinel = path.join(outside, 'keep.txt');
+    fs.writeFileSync(sentinel, 'keep');
+    fs.symlinkSync(outside, lock, 'dir');
+    const staleAt = new Date(Date.now() - 60_000);
+    fs.lutimesSync(lock, staleAt, staleAt);
+
+    expect(() =>
+      writeRelaycastCredential('must-fail-closed', {
+        workspaceId: 'rw_must_fail_closed',
+        route: 'canonical',
+        baseUrl: 'https://relay.example',
+        apiKey: 'rk_live_must_fail_closed',
+      })
+    ).toThrow(/real directory/);
+    expect(fs.readFileSync(sentinel, 'utf8')).toBe('keep');
   });
 
   it('scopes route references to the selected endpoint', () => {

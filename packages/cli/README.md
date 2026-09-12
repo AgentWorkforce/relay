@@ -241,8 +241,9 @@ absent, it creates and removes a short-lived launcher identity automatically.
 Automatic placement and release need only the workspace key.
 
 The sandbox path provisions a fresh hosted instance and makes the Relayfile
-mount mandatory by default, so the spawned worker starts in `/workspace` and
-sees the same synced Relayfile workspace. Use `--sandbox-provider daytona` or
+mount mandatory by default. Outside Git, the worker starts in `/workspace`;
+inside Git it starts in the corresponding repository checkout described below.
+Both paths see the same synced Relayfile workspace. Use `--sandbox-provider daytona` or
 `--sandbox-provider e2b` to require an operator-enabled provider; omit the flag
 to let Cloud's sandbox router choose. Pass `--no-sandbox-relayfile` only when a
 deliberately bare sandbox is desired. If provisioning times out or the spawn
@@ -316,6 +317,11 @@ credential requires rerunning sandbox provisioning for that workspace.
 `--base-url`, `--workspace-id`, `--node`, provider selection, and `--cwd` remain
 advanced overrides. Outside Git, the existing mount-based sandbox behavior is
 preserved.
+
+Pins created before workspace IDs were recorded are resolved automatically
+through Cloud at spawn time. The key travels in an authenticated POST body,
+never a URL. Nested packages share the repository pin; an existing subproject
+pin or `AGENT_RELAY_PROJECT` remains an explicit workspace override.
 
 Large workspaces should select only the live subtree an agent needs. Pass one
 or more explicit directory roots after `--sandbox-relayfile-path`; Cloud

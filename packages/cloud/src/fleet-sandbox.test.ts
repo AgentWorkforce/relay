@@ -969,6 +969,18 @@ describe('Cloud fleet sandbox client', () => {
     });
   });
 
+  it('rejects incomplete revision maps before Cloud authentication', async () => {
+    await expect(
+      ensureCloudFleetSandbox({
+        workspaceId: 'rw_abc',
+        requiredCapability: 'spawn:codex',
+        repos: ['AgentWorkforce/cloud', 'AgentWorkforce/relay'],
+        repoRevisions: { 'AgentWorkforce/cloud': '0123456789abcdef0123456789abcdef01234567' },
+      })
+    ).rejects.toThrow('cover every requested repository');
+    expect(mocks.ensureCloudSession).not.toHaveBeenCalled();
+  });
+
   it('rejects an explicitly empty Relayfile path list before provisioning', async () => {
     await expect(
       ensureCloudFleetSandbox({

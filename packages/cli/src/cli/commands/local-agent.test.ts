@@ -934,6 +934,22 @@ describe('local agent subtree', () => {
     expect(log).toHaveBeenCalledWith(JSON.stringify({ name: 'claude', flushed: 2 }, null, 2));
   });
 
+  it.each(['flush', 'hold', 'auto'])(
+    'message %s rejects an explicit workspace key without a node',
+    async (mode) => {
+      const connectLocal = vi.fn();
+      const { program, error } = harness({ connectLocal });
+      await program.parseAsync(
+        ['local', 'agent', 'message', mode, 'worker', '--workspace-key', 'rk_live_other'],
+        { from: 'user' }
+      );
+      expect(error).toHaveBeenCalledWith(
+        expect.stringContaining('--workspace-key requires an explicit --node')
+      );
+      expect(connectLocal).not.toHaveBeenCalled();
+    }
+  );
+
   it('message hold and auto switch local broker delivery mode', async () => {
     const client = {
       setInboundDeliveryMode: vi.fn(async (_name: string, mode: string) => ({ mode, flushed: 0 })),

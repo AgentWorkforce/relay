@@ -13,9 +13,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   commit before dispatch and maps nested local directories to the sandbox clone.
 - `node agent attach <name>` automatically routes to a unique live Fleet node;
   ambiguous placements require `--node`.
-- Temporary isolated Relaycast credentials are stored in the machine-local
-  0600 credential store, while project metadata keeps only a non-secret
-  reference.
+- `fleet spawn --sandbox` keeps temporary routing credentials out of project files.
 
 ## [12.1.0] - 2026-09-12
 
