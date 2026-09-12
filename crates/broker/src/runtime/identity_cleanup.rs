@@ -262,7 +262,18 @@ pub(super) fn restore_identity_cleanups(runtime: &mut BrokerRuntime) -> Result<(
     let Some(path) = runtime.workers.owned_cleanup_journal.clone() else {
         return Ok(());
     };
-    for (name, entry) in load_journal(&path).map_err(|error| anyhow::anyhow!(error))? {
+    let entries = match load_journal(&path) {
+        Ok(entries) => entries,
+        Err(error) => {
+            tracing::warn!(
+                path = %path.display(),
+                error = %error,
+                "failed to restore owned cleanup journal; skipping recovery"
+            );
+            return Ok(());
+        }
+    };
+    for (name, entry) in entries {
         runtime.workers.owned_spawn_generations.insert(
             name.clone(),
             (entry.generation, runtime.relaycast_http.clone()),

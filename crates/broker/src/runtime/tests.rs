@@ -6997,17 +6997,36 @@ async fn owned_cleanup_journal_restores_generation_and_retries_without_plaintext
         fixture.runtime.workers.owned_spawn_generations[&name].0,
         generation
     );
-    while fixture
-        .runtime
-        .workers
-        .identity_cleanups
-        .contains_key(&name)
-    {
-        fixture.runtime.reconcile_identity_cleanups().await;
-        tokio::task::yield_now().await;
-    }
+    tokio::time::timeout(Duration::from_secs(2), async {
+        while fixture
+            .runtime
+            .workers
+            .identity_cleanups
+            .contains_key(&name)
+        {
+            fixture.runtime.reconcile_identity_cleanups().await;
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .expect("restored cleanup should complete");
     release.assert_hits(1);
     let persisted = std::fs::read_to_string(journal).unwrap();
     assert!(!persisted.contains("restart-owned"));
+    fixture.runtime.workers.release("unrelated").await.unwrap();
+}
+
+#[tokio::test]
+async fn restore_identity_cleanups_skips_corrupt_journal_without_blocking_startup() {
+    let registry = make_worker_registry_with_worker("unrelated").await;
+    let mut fixture = worker_event_runtime_fixture(registry, HashMap::new());
+    let journal = fixture._temp_dir.path().join("owned-cleanups.json");
+    std::fs::write(&journal, "{not valid json").unwrap();
+    fixture.runtime.workers.owned_cleanup_journal = Some(journal);
+
+    super::identity_cleanup::restore_identity_cleanups(&mut fixture.runtime).unwrap();
+
+    assert!(fixture.runtime.workers.identity_cleanups.is_empty());
+    assert!(fixture.runtime.workers.owned_spawn_generations.is_empty());
     fixture.runtime.workers.release("unrelated").await.unwrap();
 }
