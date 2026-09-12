@@ -145,7 +145,9 @@ pub(super) fn relaycast_spawn_spec_session_id(
         })
 }
 
-fn relaycast_harness_config(value: &Value) -> Result<Option<ResolvedHarnessConfig>, String> {
+pub(super) fn relaycast_harness_config(
+    value: &Value,
+) -> Result<Option<ResolvedHarnessConfig>, String> {
     let agent = value.get("agent");
     let harness_id = agent
         .and_then(|agent| {
@@ -188,7 +190,11 @@ fn relaycast_harness_config(value: &Value) -> Result<Option<ResolvedHarnessConfi
     }
 }
 
-fn harness_metadata_flag(config: &ResolvedHarnessConfig, snake: &str, camel: &str) -> bool {
+pub(super) fn harness_metadata_flag(
+    config: &ResolvedHarnessConfig,
+    snake: &str,
+    camel: &str,
+) -> bool {
     config
         .metadata()
         .and_then(|metadata| metadata.get(snake).or_else(|| metadata.get(camel)))
@@ -272,57 +278,6 @@ pub(super) fn relaycast_spawn_verifies_ready(value: &Value) -> bool {
             .flatten()
             .as_ref()
             .is_some_and(|config| harness_metadata_flag(config, "verify_ready", "verifyReady"))
-}
-
-/// Bind a freshly HTTP-registered agent to this broker's relaycast node so it
-/// becomes `locationType='via_node'`.
-///
-/// In node-only delivery the engine only delivers to `via_node` agents. The HTTP
-/// `register_agent_token` fallback (taken when node-control `agent.register` is
-/// unavailable) registers a plain agent with NO node binding, so without this
-/// bind the agent receives zero messages. Returns the warning message to surface
-/// on failure (the agent is registered but undeliverable), or `None` on success.
-pub(super) async fn bind_http_registered_agent_to_node(
-    relaycast_http: &RelaycastHttpClient,
-    node_name: &str,
-    agent_name: &str,
-) -> Option<String> {
-    let Some(relay) = relaycast_http.relay_client() else {
-        let message = format!(
-            "agent '{agent_name}' was HTTP-registered but no relaycast client is available to \
-             bind it to node '{node_name}'; node-only delivery will NOT reach this agent"
-        );
-        tracing::error!(worker = %agent_name, node = %node_name, "{message}");
-        return Some(message);
-    };
-    let request = relaycast::BindAgentToNodeRequest {
-        agent_name: agent_name.to_string(),
-        session_ref: None,
-        priority: None,
-    };
-    match relay.bind_agent_to_node(node_name, request).await {
-        Ok(_) => {
-            tracing::info!(
-                worker = %agent_name,
-                node = %node_name,
-                "bound HTTP-registered agent to node (via_node) after agent.register fallback"
-            );
-            None
-        }
-        Err(error) => {
-            let message = format!(
-                "agent '{agent_name}' was HTTP-registered but binding it to node '{node_name}' \
-                 failed ({error}); node-only delivery will NOT reach this agent until it is bound"
-            );
-            tracing::error!(
-                worker = %agent_name,
-                node = %node_name,
-                error = %error,
-                "failed to bind HTTP-registered agent to node; delivery will not work for this agent"
-            );
-            Some(message)
-        }
-    }
 }
 
 /// Outcome of a local release request, so callers can report a faithful
@@ -508,14 +463,18 @@ pub(super) async fn spawn_worker_from_request(
     agent_spawn_count: &mut u32,
     fleet_control_tx: &mpsc::Sender<FleetControlCommand>,
     fleet_delivery_book: &mut FleetDeliveryBook,
-    fleet_inventory: &mut HashMap<WorkerName, InventoryAgent>,
-    node_name: &str,
+    fleet_inventory: &mut super::fleet_inventory::FleetInventory,
+    _node_name: &str,
     invocation_id: Option<String>,
     session_ref: Option<String>,
     hosted_agent_event_tx: &mpsc::Sender<HostedAgentEvent>,
     pty_observability: &mut HashMap<WorkerName, PtyObservabilityState>,
+    resumed: Option<Arc<crate::spawn_registration::SpawnRegistration>>,
 ) -> Result<()> {
-    if workers.identity_cleanups.contains_key(&name) {
+    if workers.identity_cleanups.contains_key(&name)
+        || (workers.spawn_registrations.blocked(&name)
+            && !super::pending_spawn::owns_resume(workers, &name, resumed.as_ref()))
+    {
         anyhow::bail!("worker name has pending owned cleanup; complete it before reuse");
     }
     anyhow::ensure!(!workers.has_worker(&name), "agent '{name}' already exists");
@@ -652,9 +611,10 @@ pub(super) async fn spawn_worker_from_request(
     // step the HTTP `/api/spawn` path converges on — so the agent is born
     // `via_node`-bound and delivery flows over /v1/node/ws. The minted token is
     // injected as RELAY_AGENT_TOKEN (which also sets RELAY_SKIP_BOOTSTRAP), so
-    // the worker MCP never re-registers over HTTP. Falls back to HTTP
-    // pre-registration when node binding is unavailable.
+    // the worker MCP never re-registers over HTTP. Unknown admission or
+    // ambiguous registration fails closed without another creation attempt.
     let mut fleet_registration = None;
+    let mut spawn_registration = None;
     let mut owns_identity = true;
     let registration_metadata =
         crate::fleet_wire::AgentRegistrationMetadata::from_spawn_input(ws_value, task.as_deref());
@@ -686,114 +646,33 @@ pub(super) async fn spawn_worker_from_request(
             }
             Some(token)
         } else {
-            match super::fleet::register_node_agent_token(
+            let (token, custody) = super::fleet::register_owned_node_agent_token(
+                workers,
+                workspace_http,
                 fleet_control_tx,
                 fleet_delivery_book,
-                name.as_str(),
+                &name,
                 &channels,
                 invocation_id.clone(),
                 session_ref.clone(),
+                resumed.clone(),
             )
             .await
-            {
-                Ok(token) => {
-                    tracing::info!(
-                        worker = %name,
-                        "bound agent to node via agent.register for action.invoke spawn"
-                    );
-                    super::fleet::spawn_declared_metadata_publish(
-                        workspace_http,
-                        name.as_str(),
-                        registration_metadata,
-                    );
-                    let relay_key = token.token.clone();
-                    fleet_registration = Some((token, invocation_id.clone(), session_ref.clone()));
-                    Some(relay_key)
-                }
-                Err(node_error) => {
-                    if require_node_registration || relaycast_spawn_verifies_ready(ws_value) {
-                        tracing::warn!(
-                            worker = %name,
-                            error = %node_error,
-                            "rejecting verified spawn because node agent.register failed"
-                        );
-                        anyhow::bail!(
-                            "node agent.register failed for agent '{name}': {node_error}"
-                        );
-                    }
-                    tracing::warn!(
-                        worker = %name,
-                        error = %node_error,
-                        "node agent.register unavailable; falling back to HTTP pre-registration"
-                    );
-                    match crate::relaycast::register_new_spawn_identity(
-                        workspace_http,
-                        &name,
-                        Some(cli.as_str()),
-                    )
-                    .await
-                    {
-                        Ok(token) => {
-                            // Declared metadata is published over the agent API
-                            // exactly as on the node path; registration itself
-                            // stays on the cache- and rate-limit-aware call.
-                            super::fleet::spawn_declared_metadata_publish(
-                                workspace_http,
-                                name.as_str(),
-                                registration_metadata,
-                            );
-                            tracing::info!(
-                                worker = %name,
-                                "pre-registered agent via broker for WS spawn"
-                            );
-                            // HTTP registration alone leaves the agent without a
-                            // node binding; in node-only delivery the engine only
-                            // delivers to `via_node` agents. Bind it to this node
-                            // so it becomes deliverable.
-                            let bind_warning = bind_http_registered_agent_to_node(
-                                workspace_http,
-                                node_name,
-                                &name,
-                            )
-                            .await;
-                            if bind_warning.is_none() {
-                                match super::fleet::resolve_fleet_agent_token_identity(
-                                    workspace_http,
-                                    fleet_delivery_book,
-                                    &name,
-                                    &token,
-                                )
-                                .await
-                                {
-                                    Ok(registration) => {
-                                        fleet_registration = Some((
-                                            registration,
-                                            invocation_id.clone(),
-                                            session_ref.clone(),
-                                        ));
-                                    }
-                                    Err(error) => {
-                                        tracing::warn!(
-                                            worker = %name,
-                                            error = %error,
-                                            "could not resolve HTTP-registered agent for reconnect inventory"
-                                        );
-                                    }
-                                }
-                            }
-                            Some(token)
-                        }
-                        Err(error) => anyhow::bail!("WS spawn registration failed: {error:?}"),
-                    }
-                }
-            }
+            .map_err(anyhow::Error::msg)?;
+            let relay_key = token.token.clone();
+            fleet_registration = Some((token, invocation_id.clone(), session_ref.clone()));
+            spawn_registration = Some(custody);
+            Some(relay_key)
         }
     };
     if owns_identity {
         workers.owned_spawn_generations.remove(&name);
     }
+    let _fresh_guard = spawn_registration
+        .clone()
+        .map(crate::spawn_registration::AdmissionGuard);
     let channel_membership_warning: Option<String> =
-        if let Some(token) = worker_relay_key.as_deref() {
+        if let Some(token) = worker_relay_key.as_deref().filter(|_| resumed.is_none()) {
             seed_supplied_agent_token(workspace_http, &name, token);
             if let Err(error) = async {
                 workspace_http
@@ -835,7 +714,7 @@ pub(super) async fn spawn_worker_from_request(
         };
 
     match workers
-        .spawn(
+        .spawn_registered(
             spec,
             Some("Relaycast".to_string()),
             None,
@@ -844,10 +723,18 @@ pub(super) async fn spawn_worker_from_request(
             Some(workspace_id.clone()),
             None,
             commit_attestation,
+            spawn_registration,
         )
         .await
     {
         Ok(effective_spec) => {
+            if worker_relay_key.is_some() {
+                super::fleet::spawn_declared_metadata_publish(
+                    workspace_http,
+                    name.as_str(),
+                    registration_metadata,
+                );
+            }
             if owns_identity {
                 if let Some(worker) = workers.workers.get(&name) {
                     workers
@@ -1225,7 +1112,7 @@ mod tests {
         let mut agent_spawn_count = 0;
         let (fleet_control_tx, _fleet_control_rx) = mpsc::channel(4);
         let mut fleet_delivery_book = FleetDeliveryBook::default();
-        let mut fleet_inventory = HashMap::new();
+        let mut fleet_inventory = crate::runtime::fleet_inventory::FleetInventory::new();
         let (hosted_agent_event_tx, _hosted_agent_event_rx) = mpsc::channel(4);
         let mut pty_observability = HashMap::new();
         let name = WorkerName::from("failed-native-worker-1430");
@@ -1276,6 +1163,7 @@ mod tests {
             None,
             &hosted_agent_event_tx,
             &mut pty_observability,
+            None,
         )
         .await
         .expect_err("a sidecar that exits during the stability window must fail the spawn");

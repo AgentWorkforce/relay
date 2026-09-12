@@ -1,7 +1,6 @@
 use super::*;
 use crate::fleet_wire::{
-    ActionResult, ActionResultError, ActionResultPayload, AgentDeregister, BrokerToRelaycast,
-    FLEET_WIRE_VERSION,
+    ActionResult, ActionResultError, ActionResultPayload, AgentDeregister, FLEET_WIRE_VERSION,
 };
 use std::sync::atomic::{AtomicBool, Ordering};
 use tokio::{sync::oneshot, task::JoinHandle};
@@ -21,6 +20,7 @@ pub(super) enum CleanupCompletion {
 /// A failed attempt retains its original generation, client and binding for retry.
 pub(crate) struct PendingIdentityCleanup {
     pub(super) generation: Uuid,
+    registration: Option<Arc<crate::spawn_registration::SpawnRegistration>>,
     http: RelaycastHttpClient,
     pub(super) delete_identity: bool,
     agent_id: Option<String>,
@@ -39,23 +39,43 @@ pub(crate) struct PendingIdentityCleanup {
 fn start_attempt(
     tx: &mpsc::Sender<FleetControlCommand>,
     agent_id: Option<String>,
-    inventory: &mut HashMap<WorkerName, InventoryAgent>,
+    inventory: &mut super::fleet_inventory::FleetInventory,
     http: RelaycastHttpClient,
     name: WorkerName,
     delete_identity: bool,
     expected_token_hash: Result<String, String>,
     deregistered: Arc<AtomicBool>,
+    registration: Option<Arc<crate::spawn_registration::SpawnRegistration>>,
+    generation: Uuid,
 ) -> JoinHandle<Result<(), String>> {
-    inventory.remove(&name);
+    let authorized = || {
+        registration.as_ref().is_none_or(|custody| {
+            custody.authorizes_cleanup(
+                generation,
+                agent_id.as_deref(),
+                expected_token_hash.as_ref().ok().map(String::as_str),
+            )
+        })
+    };
+    if !authorized() {
+        return tokio::spawn(async {
+            Err("registration cleanup authority revoked; name quarantined".into())
+        });
+    }
+    if inventory
+        .get(&name)
+        .is_some_and(|entry| Some(entry.agent_id.as_str()) == agent_id.as_deref())
+    {
+        inventory.remove(&name);
+    }
     let acknowledgement = (|| {
         if deregistered.load(Ordering::Acquire) {
             return Ok(None);
         }
-        tx.try_send(FleetControlCommand::UpdateInventory(
-            inventory.values().cloned().collect(),
-        ))
-        .map_err(|error| format!("cleanup inventory unavailable: {error}"))?;
-        let Some(agent_id) = agent_id else {
+        inventory
+            .try_publish(tx)
+            .map_err(|error| format!("cleanup inventory unavailable: {error}"))?;
+        let Some(agent_id) = &agent_id else {
             return Ok(None);
         };
         let (reply, received) = oneshot::channel();
@@ -85,6 +105,15 @@ fn start_attempt(
         // Only delete an identity created by this generation. A supplied token
         // can request binding teardown, but never grants deletion ownership.
         if delete_identity {
+            if registration.as_ref().is_some_and(|custody| {
+                !custody.authorizes_cleanup(
+                    generation,
+                    agent_id.as_deref(),
+                    expected_token_hash.as_ref().ok().map(String::as_str),
+                )
+            }) {
+                return Err("registration cleanup authority revoked; name quarantined".into());
+            }
             http.release_agent_identity_guarded(
                 &name,
                 Some("owned worker cleanup"),
@@ -103,34 +132,88 @@ pub(super) fn schedule_identity_cleanup(
     workers: &mut WorkerRegistry,
     tx: &mpsc::Sender<FleetControlCommand>,
     book: &FleetDeliveryBook,
-    inventory: &mut HashMap<WorkerName, InventoryAgent>,
+    inventory: &mut super::fleet_inventory::FleetInventory,
     http: &RelaycastHttpClient,
     name: &WorkerName,
     delete_identity: bool,
     completion: Option<CleanupCompletion>,
 ) {
+    let registration = workers
+        .spawn_registrations
+        .entries
+        .get(name)
+        .cloned()
+        .filter(|entry| !entry.retired());
+    let generation = registration
+        .as_ref()
+        .map(|entry| entry.generation())
+        .unwrap_or_else(|| {
+            workers
+                .owned_spawn_generations
+                .get(name)
+                .map(|(generation, _)| *generation)
+                .or_else(|| workers.workers.get(name).map(|worker| worker.generation))
+                .or_else(|| {
+                    workers
+                        .identity_cleanups
+                        .get(name)
+                        .map(|pending| pending.generation)
+                })
+                .unwrap_or_else(Uuid::new_v4)
+        });
+    // Never coalesce another generation or touch its supervisor/inventory.
+    if workers
+        .workers
+        .get(name)
+        .is_some_and(|worker| worker.generation != generation)
+        || workers
+            .owned_spawn_generations
+            .get(name)
+            .is_some_and(|(owned, _)| *owned != generation)
+    {
+        tracing::error!(worker = %name, %generation, "refusing stale identity cleanup");
+        return;
+    }
     if let Some(pending) = workers.identity_cleanups.get_mut(name) {
-        if let Some(completion) = completion {
-            pending.completions.push(completion);
+        if pending.generation == generation {
+            if let Some(completion) = completion {
+                pending.completions.push(completion);
+            }
+        } else {
+            tracing::error!(worker = %name, %generation, "refusing cleanup completion for another generation");
         }
         return;
     }
-    workers.supervisor.unregister(name);
-    let generation = workers
-        .owned_spawn_generations
-        .get(name)
-        .map(|(generation, _)| *generation)
-        .unwrap_or_else(Uuid::new_v4);
     if delete_identity {
         workers
             .owned_spawn_generations
             .entry(name.clone())
             .or_insert((generation, http.clone()));
     }
-    let expected_token_hash = http
-        .owned_identity_token_hash(name)
-        .map_err(|error| error.to_string());
-    let agent_id = book.active_agent_id(name.as_str()).map(ToString::to_string);
+    let (agent_id, expected_token_hash) = if let Some(registration) = &registration {
+        match registration.cleanup_identity() {
+            Some((id, hash)) => (Some(id), Ok(hash)),
+            None => (
+                None,
+                Err("registration has no proven identity custody".into()),
+            ),
+        }
+    } else {
+        (
+            book.active_agent_id(name.as_str()).map(ToString::to_string),
+            http.owned_identity_token_hash(name)
+                .map_err(|error| error.to_string()),
+        )
+    };
+    if registration.as_ref().is_none_or(|custody| {
+        custody.authorizes_cleanup(
+            generation,
+            agent_id.as_deref(),
+            expected_token_hash.as_ref().ok().map(String::as_str),
+        )
+    }) {
+        workers.supervisor.unregister(name);
+    }
     let deregistered = Arc::new(AtomicBool::new(false));
     let task = start_attempt(
         tx,
@@ -141,11 +224,14 @@ pub(super) fn schedule_identity_cleanup(
         delete_identity,
         expected_token_hash.clone(),
         deregistered.clone(),
+        registration.clone(),
+        generation,
     );
     workers.identity_cleanups.insert(
         name.clone(),
         PendingIdentityCleanup {
             generation,
+            registration,
             http: http.clone(),
             delete_identity,
             agent_id,
@@ -203,16 +289,40 @@ impl BrokerRuntime {
                         pending.delete_identity,
                         pending.expected_token_hash.clone(),
                         pending.deregistered.clone(),
+                        pending.registration.clone(),
+                        pending.generation,
                     ));
                 }
                 continue;
             }
-            let result = pending
+            let mut result = pending
                 .task
                 .take()
                 .unwrap()
                 .await
                 .unwrap_or_else(|error| Err(format!("cleanup task failed: {error}")));
+            // Both deletion and retained-identity release end this generation's
+            // custody, but only after its exact binding was acknowledged detached.
+            if result.is_ok() {
+                if let Some(registration) = &pending.registration {
+                    if let Err(error) = registration.retire_after_cleanup(pending.generation) {
+                        tracing::warn!(worker = %name, %error, "remote cleanup complete but durable reservation retirement failed");
+                        if registration.authorizes_cleanup(
+                            pending.generation,
+                            pending.agent_id.as_deref(),
+                            pending
+                                .expected_token_hash
+                                .as_ref()
+                                .ok()
+                                .map(String::as_str),
+                        ) {
+                            pending.task = Some(tokio::spawn(async { Ok(()) }));
+                            continue;
+                        }
+                        result = Err(error);
+                    }
+                }
+            }
             let completions = std::mem::take(&mut pending.completions);
             let generation = pending.generation;
             if let Err(error) = &result {
@@ -272,12 +382,7 @@ impl BrokerRuntime {
                                 error: format!("{original}; {error}"),
                             });
                         }
-                        let _ = self
-                            .fleet_control_tx
-                            .send(FleetControlCommand::Send(BrokerToRelaycast::ActionResult(
-                                response,
-                            )))
-                            .await;
+                        self.fleet_responses.complete(response);
                     }
                 }
             }
