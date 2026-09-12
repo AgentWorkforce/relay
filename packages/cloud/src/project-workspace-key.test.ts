@@ -42,7 +42,10 @@ describe('project workspace key resolution', () => {
     process.env.AGENT_RELAY_HOME = home;
     try {
       writeProjectWorkspaceKey(dataDir, 'rk_canonical', { workspaceId: 'rw_abc' });
-      const selection = resolveWorkspaceSelection({ projectDataDir: dataDir, env: { AGENT_RELAY_HOME: home } });
+      const selection = resolveWorkspaceSelection({
+        projectDataDir: dataDir,
+        env: { AGENT_RELAY_HOME: home },
+      });
       expect(
         writeProjectWorkspaceTargetIfSelectionCurrent(dataDir, selection!, {
           workspaceId: 'rw_abc',
@@ -65,7 +68,10 @@ describe('project workspace key resolution', () => {
     process.env.AGENT_RELAY_HOME = home;
     try {
       writeProjectWorkspaceKey(dataDir, 'rk_canonical', { workspaceId: 'rw_abc' });
-      const selection = resolveWorkspaceSelection({ projectDataDir: dataDir, env: { AGENT_RELAY_HOME: home } });
+      const selection = resolveWorkspaceSelection({
+        projectDataDir: dataDir,
+        env: { AGENT_RELAY_HOME: home },
+      });
       expect(
         writeProjectWorkspaceTargetIfSelectionCurrent(dataDir, selection!, {
           workspaceId: 'rw_abc',

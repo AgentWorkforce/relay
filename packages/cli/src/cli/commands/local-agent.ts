@@ -623,12 +623,7 @@ async function withDeliveryModeClient<T>(
 ): Promise<T | undefined> {
   let node = typeof opts.node === 'string' && opts.node.trim() ? opts.node.trim() : undefined;
   let targetBaseUrl: string | undefined;
-  if (
-    !node &&
-    opts.brokerUrl === undefined &&
-    opts.apiKey === undefined &&
-    opts.stateDir === undefined
-  ) {
+  if (!node && opts.brokerUrl === undefined && opts.apiKey === undefined && opts.stateDir === undefined) {
     const fleetTarget = await deps.resolveFleetAttachTarget(name);
     if (fleetTarget.error) {
       deps.error(`Error: ${fleetTarget.error}`);
@@ -993,11 +988,7 @@ export function registerLocalAgentCommands(
       // A sandbox worker has no local broker. Resolve a unique live fleet
       // placement before falling back to the local connection contract so a
       // flag-free attach follows the worker automatically.
-      if (
-        options.brokerUrl === undefined &&
-        options.apiKey === undefined &&
-        options.stateDir === undefined
-      ) {
+      if (options.brokerUrl === undefined && options.apiKey === undefined && options.stateDir === undefined) {
         const fleetTarget = await deps.resolveFleetAttachTarget(name);
         if (fleetTarget.error) {
           deps.error(`Error: ${fleetTarget.error}`);
