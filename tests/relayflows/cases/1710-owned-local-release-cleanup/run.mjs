@@ -413,6 +413,20 @@ async function startFakeRelaycast() {
               delivery_ack_seq: 0,
             },
           });
+          return;
+        }
+        if (message.type === 'agent.deregister') {
+          sendText(socket, {
+            type: 'reply',
+            v: 1,
+            id: message.id,
+            ok: true,
+            data: {
+              agent_id: message.agent_id,
+              name: message.name,
+              deregistered: true,
+            },
+          });
         }
       },
       head
