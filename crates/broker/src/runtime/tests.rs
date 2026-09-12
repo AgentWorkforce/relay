@@ -6491,6 +6491,8 @@ async fn name_only_release_of_retired_owned_worker_deletes_directly_and_is_idemp
     });
     let registry = make_worker_registry_with_worker("unrelated").await;
     let mut fixture = worker_event_runtime_fixture(registry, HashMap::new());
+    fixture.runtime.relaycast_http =
+        RelaycastHttpClient::new(Some(server.base_url()), "rk_live_test", "broker", "codex");
     let name = WorkerName::from("retired-name-only");
     let generation = Uuid::new_v4();
     let http = RelaycastHttpClient::new(Some(server.base_url()), "rk_live_test", "broker", "codex");
@@ -6645,16 +6647,20 @@ async fn name_only_release_of_retired_owned_worker_deletes_directly_and_is_idemp
             reply,
         })
         .await;
-    loop {
-        if let FleetControlCommand::Send(crate::fleet_wire::BrokerToRelaycast::AgentDeregister(
-            request,
-        )) = fixture.fleet_control_rx.recv().await.unwrap()
-        {
-            assert_eq!(request.name.as_deref(), Some(name.as_str()));
-            assert_eq!(request.agent_id, "caller-owned-replacement-id-2");
-            break;
+    tokio::time::timeout(Duration::from_secs(2), async {
+        loop {
+            if let FleetControlCommand::Send(
+                crate::fleet_wire::BrokerToRelaycast::AgentDeregister(request),
+            ) = fixture.fleet_control_rx.recv().await.unwrap()
+            {
+                assert_eq!(request.name.as_deref(), Some(name.as_str()));
+                assert_eq!(request.agent_id, "caller-owned-replacement-id-2");
+                break;
+            }
         }
-    }
+    })
+    .await
+    .expect("rebound replacement cleanup should emit AgentDeregister");
     tokio::time::timeout(Duration::from_secs(2), async {
         loop {
             fixture.runtime.reconcile_identity_cleanups().await;
@@ -6671,7 +6677,7 @@ async fn name_only_release_of_retired_owned_worker_deletes_directly_and_is_idemp
     })
     .await
     .expect("rebound replacement cleanup should complete");
-    release.assert_hits(2);
+    release.assert_hits(3);
     fixture.runtime.workers.release("unrelated").await.unwrap();
 }
 
