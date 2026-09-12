@@ -74,6 +74,12 @@ try {
   $leafRiskMask = $leafRiskMask -bor [int64][Security.AccessControl.FileSystemRights]::Delete
   $leafRiskMask = $leafRiskMask -bor [int64][Security.AccessControl.FileSystemRights]::ChangePermissions
   $leafRiskMask = $leafRiskMask -bor [int64][Security.AccessControl.FileSystemRights]::TakeOwnership
+  # Access rules can retain generic masks rather than their expanded file
+  # rights. Normalize those high bits explicitly so they cannot bypass the
+  # specific-rights checks above.
+  $leafRiskMask = $leafRiskMask -bor [int64]0x10000000 # GENERIC_ALL
+  $leafRiskMask = $leafRiskMask -bor [int64]0x80000000 # GENERIC_READ
+  $leafRiskMask = $leafRiskMask -bor [int64]0x40000000 # GENERIC_WRITE
 
   # Directory WriteData is intentionally excluded: the credential directory's
   # existing owner must be protected from replacement, while ordinary parent
@@ -82,6 +88,7 @@ try {
   $ancestorRiskMask = $ancestorRiskMask -bor [int64][Security.AccessControl.FileSystemRights]::Delete
   $ancestorRiskMask = $ancestorRiskMask -bor [int64][Security.AccessControl.FileSystemRights]::ChangePermissions
   $ancestorRiskMask = $ancestorRiskMask -bor [int64][Security.AccessControl.FileSystemRights]::TakeOwnership
+  $ancestorRiskMask = $ancestorRiskMask -bor [int64]0x10000000 # GENERIC_ALL
 
   $cursor = $leaf
   while ($null -ne $cursor) {
@@ -111,7 +118,7 @@ try {
       if (Is-Trusted $principalSid) {
         continue
       }
-      $rightsValue = [int64]$entry.FileSystemRights
+      $rightsValue = [int64]([uint32]$entry.FileSystemRights)
       $riskMask = if ($isLeaf) { $leafRiskMask } else { $ancestorRiskMask }
       if (($rightsValue -band $riskMask) -ne 0) {
         Emit-Failure 'credential-parent-untrusted-allow'
