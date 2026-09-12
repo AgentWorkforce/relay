@@ -1,10 +1,12 @@
 import { randomUUID } from 'node:crypto';
+import path from 'node:path';
 
 import { InvalidArgumentError, type Command } from 'commander';
 import {
   CloudFleetSandboxProvisionError,
   deleteCloudFleetSandbox,
   ensureCloudFleetSandbox,
+  resolveWorkspaceByKey,
   type CloudFleetSandboxProviderId,
   type EnsureCloudFleetSandboxResult,
 } from '@agent-relay/cloud';
@@ -70,7 +72,7 @@ function assertSandboxRepositoryRevision(
   const expected = { [selection.repository]: selection.revision };
   if (sandbox.outcome === 'provisioning_timeout') {
     throw new Error(
-      'Cloud did not verify the requested repository revision before the sandbox became ready.'
+      `Sandbox node '${sandbox.nodeName}' did not become ready within ${sandbox.waitedMs}ms; the repository revision was not verified.`
     );
   }
   const actual = sandbox.repoRevisions?.[selection.repository];
@@ -84,6 +86,14 @@ function assertSandboxRepositoryRevision(
   if (JSON.stringify(sandbox.repoRevisions) !== JSON.stringify(expected)) {
     throw new Error(`Cloud returned an unexpected repository revision for ${selection.repository}.`);
   }
+}
+
+function pathContains(parent: string, child: string): boolean {
+  const relative = path.relative(path.resolve(parent), path.resolve(child));
+  return (
+    relative === '' ||
+    (relative !== '..' && !relative.startsWith(`..${path.sep}`) && !path.isAbsolute(relative))
+  );
 }
 
 // The targeted spawn path (relay.messaging.placement.spawn) returns an
@@ -136,6 +146,7 @@ export interface FleetCommandDependencies {
   createFleetWorkspaceClient: (options: SdkClientOptions) => RelayWorkspaceThinClient;
   resolveWorkspaceSelection: typeof resolveWorkspaceSelection;
   resolveSandboxRepository: typeof resolveSandboxRepository;
+  resolveWorkspaceByKey: typeof resolveWorkspaceByKey;
   persistWorkspaceRelaycastTarget: typeof persistWorkspaceRelaycastTarget;
   ensureCloudFleetSandbox: typeof ensureCloudFleetSandbox;
   deleteCloudFleetSandbox: typeof deleteCloudFleetSandbox;
@@ -157,6 +168,7 @@ function withFleetDefaults(overrides: Partial<FleetCommandDependencies> = {}): F
     },
     resolveWorkspaceSelection,
     resolveSandboxRepository,
+    resolveWorkspaceByKey,
     persistWorkspaceRelaycastTarget,
     ensureCloudFleetSandbox,
     deleteCloudFleetSandbox,
@@ -360,25 +372,53 @@ export function registerFleetCommands(
       let relaycastClientOptions = clientOptions;
       let legacyWorkspaceClientOptions = clientOptions;
       if (useSandbox) {
-        const projectRoot = deps.core.getProjectPaths().projectRoot;
+        const coreProjectRoot = deps.core.getProjectPaths().projectRoot;
+        const hasExplicitProjectOverride = Boolean(
+          deps.core.env?.AGENT_RELAY_PROJECT?.trim() || process.env.AGENT_RELAY_PROJECT?.trim()
+        );
+        // AGENT_RELAY_PROJECT selects the workspace namespace, while repository
+        // inference must remain anchored to the actual checkout from which the
+        // command was invoked. This also lets --cwd point at a sibling checkout.
+        const repositoryRootHint = hasExplicitProjectOverride ? process.cwd() : coreProjectRoot;
         sandboxRepository = deps.resolveSandboxRepository(
-          projectRoot,
+          repositoryRootHint,
           optionalText(options.cwd, 'Worker cwd')
         );
         if (sandboxRepository) workerCwd = sandboxRepository.workerCwd;
+        const workspaceProjectRoot = hasExplicitProjectOverride
+          ? coreProjectRoot
+          : sandboxRepository && pathContains(sandboxRepository.projectRoot, coreProjectRoot)
+            ? coreProjectRoot
+            : (sandboxRepository?.projectRoot ?? coreProjectRoot);
+        const sandboxClientOptions = {
+          ...clientOptions,
+          projectRoot: workspaceProjectRoot,
+        };
+        relaycastClientOptions = sandboxClientOptions;
         // Cloud must be the first network authority for a sandbox invocation.
         // A canonical Relaycast info call would both leak the workspace key and
         // make it impossible to prove that Cloud's isolated target is the one
         // subsequently used for registration and dispatch.
         const workspaceSelection = deps.resolveWorkspaceSelection({
-          ...clientOptions,
-          ...(sandboxRepository ? { projectRoot: sandboxRepository.projectRoot } : {}),
+          ...sandboxClientOptions,
         });
         legacyWorkspaceClientOptions = {
-          ...clientOptions,
+          ...sandboxClientOptions,
           ...(sandboxProvider === 'agent37' ? {} : { ignorePersistedRelaycastTarget: true }),
         };
         let relayWorkspaceId = explicitWorkspaceId ?? workspaceSelection?.workspaceId?.trim();
+        // Older/rebound project pins contain only the canonical key. Resolve
+        // that exact selection with Cloud using a POST body, never a key URL
+        // or an ambient active workspace. Successful target persistence below
+        // records the identity for the next invocation.
+        if (
+          !relayWorkspaceId &&
+          workspaceSelection?.key &&
+          (sandboxProvider === undefined || sandboxProvider === 'agent37')
+        ) {
+          const resolved = await deps.resolveWorkspaceByKey(workspaceSelection.key);
+          relayWorkspaceId = resolved.cloudWorkspaceId;
+        }
         // Legacy providers remain backward compatible: they may resolve the
         // workspace from canonical Relaycast. Agent37 may not, because even a
         // read there mutates rate-limit/presence accounting on the shared
@@ -537,7 +577,7 @@ export function registerFleetCommands(
               );
             }
             relaycastClientOptions = {
-              ...clientOptions,
+              ...relaycastClientOptions,
               workspaceKey: target.relaycastApiKey,
               baseUrl: target.baseUrl,
             };

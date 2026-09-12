@@ -83,6 +83,28 @@ describe('sdk client option resolution', () => {
     expect(resolveWorkspaceKey({ env: { AGENT_RELAY_HOME: dir } })).toBe('rk_project_broker');
   });
 
+  it('honors an explicit AGENT_RELAY_PROJECT override when resolving a workspace selection', () => {
+    const overrideRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'relay-sdk-override-project-'));
+    try {
+      writeProjectWorkspaceKey(path.join(overrideRoot, '.agentworkforce/relay'), 'rk_override');
+      expect(
+        resolveWorkspaceSelection({
+          projectRoot,
+          env: {
+            AGENT_RELAY_HOME: dir,
+            AGENT_RELAY_PROJECT: overrideRoot,
+          },
+        })
+      ).toMatchObject({
+        key: 'rk_override',
+        source: 'project',
+        origin: path.join(overrideRoot, '.agentworkforce/relay/workspace-key.json'),
+      });
+    } finally {
+      fs.rmSync(overrideRoot, { recursive: true, force: true });
+    }
+  });
+
   it('lets an explicit flag and env override the CWD broker workspace key', () => {
     writeProjectWorkspaceKey(projectDataDir(), 'rk_project_broker');
 
@@ -223,6 +245,38 @@ describe('sdk client option resolution', () => {
     });
     expect(resolveWorkspaceKey(replayOptions)).toBe('rk_live_agent37');
     expect(resolveBaseUrl(replayOptions)).toBe('https://agent37-cast.agentrelay.com');
+  });
+
+  it('persists a selected route credential under the selected credential home without mutating process.env', () => {
+    const selectedHome = fs.mkdtempSync(path.join(os.tmpdir(), 'relay-sdk-selected-home-'));
+    const processHome = process.env.AGENT_RELAY_HOME;
+    try {
+      writeProjectWorkspaceKey(projectDataDir(), 'rk_live_selected');
+      const selectedEnv = { AGENT_RELAY_HOME: selectedHome };
+      const selection = resolveWorkspaceSelection({ env: selectedEnv });
+      expect(selection).toMatchObject({ credentialHome: selectedHome });
+
+      expect(
+        persistWorkspaceRelaycastTarget(selection, {
+          route: 'agent37-isolated',
+          baseUrl: 'https://agent37-cast.agentrelay.com',
+          workspaceId: 'rw_selected',
+          relaycastApiKey: 'rk_live_selected_agent37',
+        })
+      ).toBe(true);
+
+      expect(process.env.AGENT_RELAY_HOME).toBe(processHome);
+      expect(readProjectWorkspaceSession(projectDataDir(), undefined, selectedEnv)).toMatchObject({
+        relaycastApiKey: 'rk_live_selected_agent37',
+      });
+      expect(
+        readProjectWorkspaceSession(projectDataDir(), undefined, {
+          AGENT_RELAY_HOME: `${selectedHome}-other`,
+        })?.relaycastApiKey
+      ).toBeUndefined();
+    } finally {
+      fs.rmSync(selectedHome, { recursive: true, force: true });
+    }
   });
 
   it.each(['flag', 'env'] as const)(

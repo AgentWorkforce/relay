@@ -1,0 +1,21 @@
+{
+  "version": 1,
+  "id": "1763-zero-config-sandbox",
+  "kind": "feature",
+  "title": "Forward exact repository identity for zero-config sandbox provisioning",
+  "runner": {
+    "command": ["node", "tests/relayflows/cases/1763-zero-config-sandbox/run.mjs"]
+  },
+  "requirements": [],
+  "timeoutSeconds": 900,
+  "expected": {
+    "base": {
+      "outcome": "absent",
+      "signature": "sandbox_repository_revision_contract_absent"
+    },
+    "head": {
+      "outcome": "fixed",
+      "signature": "sandbox_repository_revision_contract_forwarded"
+    }
+  }
+}

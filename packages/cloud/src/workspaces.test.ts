@@ -4,8 +4,8 @@ import path from 'node:path';
 
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
-import { setWorkspaceKey } from './workspace-store.js';
-import { resolveActiveWorkspace } from './workspaces.js';
+import { readWorkspaceStore, setWorkspaceKey } from './workspace-store.js';
+import { resolveActiveWorkspace, resolveWorkspaceByKey } from './workspaces.js';
 
 let dir: string;
 const originalEnv = { ...process.env };
@@ -79,5 +79,99 @@ describe('resolveActiveWorkspace', () => {
     );
     const init = fetchSpy.mock.calls[0][1] as RequestInit;
     expect(new Headers(init.headers).get('authorization')).toBe('Bearer access-token');
+  });
+});
+
+describe('resolveWorkspaceByKey', () => {
+  const resolvedWorkspace = {
+    workspace: {
+      name: 'Selected',
+      key: 'rk_live_selected',
+      cloudWorkspaceId: 'cloud_selected',
+      relaycastWorkspaceId: 'rw_selected',
+      relayfileWorkspaceId: 'rf_selected',
+      relayauthWorkspaceId: 'ra_selected',
+    },
+  };
+
+  it('sends the selected key in a POST body and never in the request URL', async () => {
+    const fetchSpy = vi.fn(
+      async () =>
+        new Response(JSON.stringify(resolvedWorkspace), {
+          status: 200,
+          headers: { 'content-type': 'application/json' },
+        })
+    );
+    vi.stubGlobal('fetch', fetchSpy);
+
+    await expect(resolveWorkspaceByKey('rk_live_selected')).resolves.toMatchObject({
+      key: 'rk_live_selected',
+      cloudWorkspaceId: 'cloud_selected',
+    });
+
+    const [request, init] = fetchSpy.mock.calls[0]!;
+    expect(String(request)).toBe('https://cloud.example.test/api/v1/workspaces/current/resolve');
+    expect(String(request)).not.toContain('rk_live_selected');
+    expect((init as RequestInit).method).toBe('POST');
+    expect(JSON.parse(String((init as RequestInit).body))).toEqual({
+      workspaceKey: 'rk_live_selected',
+    });
+  });
+
+  it('fails closed when Cloud returns a descriptor for a different selected key', async () => {
+    const fetchSpy = vi.fn(
+      async () =>
+        new Response(
+          JSON.stringify({
+            workspace: {
+              ...resolvedWorkspace.workspace,
+              key: 'rk_live_other',
+            },
+          }),
+          { status: 200, headers: { 'content-type': 'application/json' } }
+        )
+    );
+    vi.stubGlobal('fetch', fetchSpy);
+
+    await expect(resolveWorkspaceByKey('rk_live_selected')).rejects.toThrow(
+      'Cloud resolved a different workspace credential than the selected project pin.'
+    );
+  });
+
+  it('fails closed when Cloud omits the selected key from the resolver response', async () => {
+    const fetchSpy = vi.fn(
+      async () =>
+        new Response(
+          JSON.stringify({
+            workspace: {
+              ...resolvedWorkspace.workspace,
+              key: undefined,
+            },
+          }),
+          { status: 200, headers: { 'content-type': 'application/json' } }
+        )
+    );
+    vi.stubGlobal('fetch', fetchSpy);
+
+    await expect(resolveWorkspaceByKey('rk_live_selected')).rejects.toThrow(
+      'Cloud resolved a different workspace credential than the selected project pin.'
+    );
+  });
+
+  it('does not change the active workspace while resolving a selected project key', async () => {
+    setWorkspaceKey('active', 'rk_live_active');
+    const fetchSpy = vi.fn(
+      async () =>
+        new Response(JSON.stringify(resolvedWorkspace), {
+          status: 200,
+          headers: { 'content-type': 'application/json' },
+        })
+    );
+    vi.stubGlobal('fetch', fetchSpy);
+
+    await resolveWorkspaceByKey('rk_live_selected');
+
+    expect(readWorkspaceStore().active).toBe('active');
+    expect(readWorkspaceStore().workspaces.active?.key).toBe('rk_live_active');
   });
 });

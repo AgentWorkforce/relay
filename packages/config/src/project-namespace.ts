@@ -28,7 +28,8 @@ function hashPath(projectPath: string): string {
  *
  * Priority:
  * 1. AGENT_RELAY_PROJECT environment variable (for worktrees/subprojects)
- * 2. Find project root by looking for markers (.git, package.json, etc.)
+ * 2. An explicitly pinned nested project, or the enclosing Git checkout
+ * 3. The nearest package marker when outside Git
  */
 export function findProjectRoot(startDir: string = process.cwd()): string {
   // Allow explicit override for worktrees and subprojects
@@ -39,19 +40,30 @@ export function findProjectRoot(startDir: string = process.cwd()): string {
   let current = path.resolve(startDir);
   const root = path.parse(current).root;
 
-  const markers = ['.git', 'package.json', 'Cargo.toml', 'go.mod', 'pyproject.toml', '.agentworkforce/relay'];
-
-  while (current !== root) {
-    for (const marker of markers) {
-      if (fs.existsSync(path.join(current, marker))) {
-        return current;
+  const markers = ['package.json', 'Cargo.toml', 'go.mod', 'pyproject.toml', '.agentworkforce/relay'];
+  let nearestPackage: string | undefined;
+  while (true) {
+    // Existing subproject pins remain intentional namespaces. A package.json
+    // alone must not split spawn, rebind, node up and attach across projects.
+    if (fs.existsSync(path.join(current, PROJECT_DATA_DIR, 'workspace-key.json'))) return current;
+    try {
+      const marker = fs.lstatSync(path.join(current, '.git'));
+      if (marker.isDirectory() || marker.isFile()) return current;
+      throw new Error('Invalid Git project marker.');
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== 'ENOENT') {
+        throw new Error('Cannot resolve the repository workspace; check access to its Git project marker.');
       }
     }
+    for (const marker of markers) {
+      if (!nearestPackage && fs.existsSync(path.join(current, marker))) nearestPackage = current;
+    }
+    if (current === root) break;
     current = path.dirname(current);
   }
 
   // Fallback to start directory
-  return path.resolve(startDir);
+  return nearestPackage ?? path.resolve(startDir);
 }
 
 /**

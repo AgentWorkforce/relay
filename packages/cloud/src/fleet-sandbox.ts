@@ -357,8 +357,12 @@ function validateRepoRevisions(
 ): Record<string, string> | undefined {
   if (repoRevisions === undefined) return undefined;
   const entries = Object.entries(repoRevisions);
-  if (entries.length === 0) return undefined;
   const allowedRepos = new Set(repos ?? []);
+  if (entries.length === 0 || entries.length > 16 || entries.length !== allowedRepos.size) {
+    throw new Error(
+      'Cloud fleet sandbox revisions must cover every requested repository exactly once (maximum 16).'
+    );
+  }
   for (const [repo, revision] of entries) {
     if (!REPOSITORY_KEY_PATTERN.test(repo) || repo.includes('..')) {
       throw new Error(`Cloud fleet sandbox repository key '${repo}' must use owner/name form.`);

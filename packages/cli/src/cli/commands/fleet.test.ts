@@ -1032,6 +1032,8 @@ describe('fleet command support', () => {
     );
     expect(deleteCloudFleetSandbox).not.toHaveBeenCalled();
     expect(createWorkspaceRelay).toHaveBeenNthCalledWith(1, {
+      projectRoot: process.cwd(),
+      token: undefined,
       workspaceKey: 'rk_live_agent37_target',
       baseUrl: 'https://agent37-cast.agentrelay.com',
     });
@@ -1158,6 +1160,214 @@ describe('fleet command support', () => {
     expect(JSON.parse(logs[0]!).attachCommand).toBe(
       "agent-relay node agent attach 'cloud-worker' --mode drive"
     );
+  });
+
+  it('keeps cross-repo --cwd inference on the actual checkout while using the explicit project workspace', async () => {
+    vi.stubEnv('AGENT_RELAY_PROJECT', '/workspace-project');
+    const revision = '0123456789abcdef0123456789abcdef01234567';
+    const resolveSandboxRepository = vi.fn(() => ({
+      repository: 'AgentWorkforce/legacyprovider',
+      repositoryName: 'legacyprovider',
+      revision,
+      projectRoot: '/actual/legacyprovider',
+      workerCwd: '/srv/agent-workforce/legacyprovider/packages/web',
+    }));
+    const placement = {
+      spawn: vi.fn(async () => ({ invocationId: 'inv_cross_repo', node: { name: 'legacy-node' } })),
+    };
+    const register = vi.fn(async () => ({ token: 'at_live_legacy' }));
+    const release = vi.fn(async () => ({ released: true, deleted: true }));
+    const createWorkspaceRelay = vi.fn(() => ({
+      workspace: { register, release },
+    }));
+    const ensureCloudFleetSandbox = vi.fn(async () => ({
+      outcome: 'provisioned' as const,
+      providerId: 'e2b' as const,
+      cloudWorkspaceId: 'cloud-workspace',
+      nodeId: 'node-legacy',
+      nodeName: 'legacy-node',
+      sandboxId: 'sandbox-cross-repo',
+      providerSandboxId: 'provider-cross-repo',
+      relayWorkspaceId: 'rw_abc',
+      relayfileMounted: false,
+      repoRevisions: { 'AgentWorkforce/legacyprovider': revision },
+    }));
+    const resolveWorkspaceSelection = vi.fn(() => ({
+      key: 'rk_live_test',
+      source: 'project' as const,
+      origin: '/workspace-project/.agentworkforce/relay/workspace-key.json',
+      workspaceId: 'rw_abc',
+    }));
+    const program = new Command();
+    program.exitOverride();
+    registerFleetCommands(program, {
+      resolveSandboxRepository,
+      sdk: {
+        createAgentRelay: vi.fn(() => ({ messaging: { placement } })) as never,
+        createWorkspaceRelay: createWorkspaceRelay as never,
+        createWorkspace: vi.fn() as never,
+        log: vi.fn(),
+        error: vi.fn(),
+        exit: vi.fn() as never,
+      },
+      ensureCloudFleetSandbox,
+      resolveWorkspaceSelection: resolveWorkspaceSelection as never,
+      persistWorkspaceRelaycastTarget: vi.fn(() => true),
+      deleteCloudFleetSandbox: vi.fn(async () => undefined),
+      createFleetWorkspaceClient: vi.fn() as never,
+      log: () => undefined,
+      warn: () => undefined,
+      error: () => undefined,
+    });
+
+    await program.parseAsync(
+      [
+        'fleet',
+        'spawn',
+        'codex',
+        '--sandbox',
+        '--sandbox-provider',
+        'e2b',
+        '--no-sandbox-relayfile',
+        '--workspace-id',
+        'rw_abc',
+        '--cwd',
+        '../legacyprovider/packages/web',
+        '--name',
+        'legacy-worker',
+        '--task',
+        'Review the legacy provider',
+        '--workspace-key',
+        'rk_live_test',
+      ],
+      { from: 'user' }
+    );
+
+    expect(resolveSandboxRepository).toHaveBeenCalledWith(process.cwd(), '../legacyprovider/packages/web');
+    expect(resolveWorkspaceSelection).toHaveBeenCalledWith(
+      expect.objectContaining({ projectRoot: '/workspace-project' })
+    );
+    expect(createWorkspaceRelay).toHaveBeenCalledWith(
+      expect.objectContaining({
+        projectRoot: '/workspace-project',
+        ignorePersistedRelaycastTarget: true,
+      })
+    );
+    expect(ensureCloudFleetSandbox).toHaveBeenCalledWith(
+      expect.objectContaining({
+        repos: ['AgentWorkforce/legacyprovider'],
+        repoRevisions: { 'AgentWorkforce/legacyprovider': revision },
+      })
+    );
+    expect(placement.spawn).toHaveBeenCalledWith(
+      expect.objectContaining({
+        input: expect.objectContaining({
+          worker_cwd: '/srv/agent-workforce/legacyprovider/packages/web',
+        }),
+      })
+    );
+  });
+
+  it('resolves a key-only project pin through Cloud before provisioning a default sandbox', async () => {
+    const target = { ...AGENT37_RELAYCAST_TARGET, workspaceId: 'rw_pinned' };
+    const resolveWorkspaceByKey = vi.fn(async (key: string) => ({
+      name: 'Pinned workspace',
+      key,
+      cloudWorkspaceId: 'cloud-pinned',
+      relaycastWorkspaceId: 'rw_pinned',
+      relayfileWorkspaceId: 'rf_pinned',
+      relayauthWorkspaceId: 'ra_pinned',
+      apiUrl: 'https://cloud.example.test',
+      urls: {},
+    }));
+    const placement = {
+      spawn: vi.fn(async () => ({ invocationId: 'inv_key_only', node: { name: 'pinned-node' } })),
+    };
+    const register = vi.fn(async () => ({ token: 'at_live_pinned' }));
+    const release = vi.fn(async () => ({ released: true, deleted: true }));
+    const createWorkspaceRelay = vi.fn(() => ({
+      workspace: {
+        info: vi.fn(async () => ({ id: 'rw_pinned' })),
+        register,
+        release,
+      },
+    }));
+    const persistWorkspaceRelaycastTarget = vi.fn(() => true);
+    const ensureCloudFleetSandbox = vi.fn(async () => ({
+      outcome: 'provisioned' as const,
+      providerId: 'agent37' as const,
+      cloudWorkspaceId: 'cloud-pinned',
+      nodeId: 'node-pinned',
+      nodeName: 'pinned-node',
+      sandboxId: 'sandbox-key-only',
+      providerSandboxId: 'provider-key-only',
+      relayWorkspaceId: 'rw_pinned',
+      relaycastTarget: target,
+      relayfileMounted: true,
+      relayfileMountPath: '/workspace',
+    }));
+    const createAgentRelay = vi.fn(() => ({ messaging: { placement } }));
+    const program = new Command();
+    program.exitOverride();
+    registerFleetCommands(program, {
+      resolveSandboxRepository: () => undefined,
+      resolveWorkspaceByKey: resolveWorkspaceByKey as never,
+      sdk: {
+        createAgentRelay: createAgentRelay as never,
+        createWorkspaceRelay: createWorkspaceRelay as never,
+        createWorkspace: vi.fn() as never,
+        log: vi.fn(),
+        error: vi.fn(),
+        exit: vi.fn() as never,
+      },
+      ensureCloudFleetSandbox,
+      resolveWorkspaceSelection: () => ({
+        key: 'rk_live_pinned',
+        source: 'project',
+        origin: '/project/.agentworkforce/relay/workspace-key.json',
+      }),
+      persistWorkspaceRelaycastTarget,
+      deleteCloudFleetSandbox: vi.fn(async () => undefined),
+      createFleetWorkspaceClient: vi.fn() as never,
+      log: () => undefined,
+      warn: () => undefined,
+      error: () => undefined,
+    });
+
+    await program.parseAsync(
+      [
+        'fleet',
+        'spawn',
+        'codex',
+        '--sandbox',
+        '--name',
+        'pinned-worker',
+        '--task',
+        'Use the selected workspace',
+        '--workspace-key',
+        'rk_live_pinned',
+      ],
+      { from: 'user' }
+    );
+
+    expect(resolveWorkspaceByKey).toHaveBeenCalledWith('rk_live_pinned');
+    expect(ensureCloudFleetSandbox).toHaveBeenCalledWith(
+      expect.objectContaining({ workspaceId: 'cloud-pinned', workloadProfile: 'long-running-agent' })
+    );
+    expect(createWorkspaceRelay).toHaveBeenCalledWith(
+      expect.objectContaining({
+        workspaceKey: AGENT37_RELAYCAST_TARGET.relaycastApiKey,
+        baseUrl: target.baseUrl,
+      })
+    );
+    expect(persistWorkspaceRelaycastTarget).toHaveBeenCalledWith(
+      expect.objectContaining({ key: 'rk_live_pinned' }),
+      target
+    );
+    expect(createAgentRelay).toHaveBeenCalledWith({
+      token: 'at_live_pinned',
+      baseUrl: target.baseUrl,
+    });
   });
 
   it.each([
@@ -1363,6 +1573,8 @@ describe('fleet command support', () => {
     );
 
     expect(createWorkspaceRelay).toHaveBeenCalledWith({
+      projectRoot: process.cwd(),
+      token: undefined,
       workspaceKey: AGENT37_RELAYCAST_TARGET.relaycastApiKey,
       baseUrl: AGENT37_RELAYCAST_TARGET.baseUrl,
     });
@@ -1530,6 +1742,8 @@ describe('fleet command support', () => {
     );
 
     expect(createWorkspaceRelay).toHaveBeenCalledWith({
+      projectRoot: process.cwd(),
+      token: undefined,
       workspaceKey: CANONICAL_RELAYCAST_TARGET.relaycastApiKey,
       baseUrl: CANONICAL_RELAYCAST_TARGET.baseUrl,
     });
@@ -1626,6 +1840,7 @@ describe('fleet command support', () => {
     );
 
     expect(createWorkspaceRelay).toHaveBeenCalledWith({
+      projectRoot: process.cwd(),
       workspaceKey: 'rk_live_test',
       token: undefined,
       baseUrl: undefined,
@@ -1876,6 +2091,7 @@ describe('fleet command support', () => {
     const ensureInput = ensureCloudFleetSandbox.mock.calls[0]?.[0];
     expect(persistWorkspaceRelaycastTarget).not.toHaveBeenCalled();
     expect(createWorkspaceRelay).toHaveBeenCalledWith({
+      projectRoot: process.cwd(),
       workspaceKey: 'rk_live_test',
       token: undefined,
       baseUrl: undefined,
@@ -2074,6 +2290,8 @@ describe('fleet command support', () => {
       expect.objectContaining({ workspaceId: cloudWorkspaceId })
     );
     expect(createWorkspaceRelay).toHaveBeenCalledWith({
+      projectRoot: process.cwd(),
+      token: undefined,
       workspaceKey: target.relaycastApiKey,
       baseUrl: target.baseUrl,
     });

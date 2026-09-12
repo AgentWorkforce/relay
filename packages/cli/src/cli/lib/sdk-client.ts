@@ -1,4 +1,3 @@
-import { lstatSync } from 'node:fs';
 import path from 'node:path';
 
 import { AgentRelay, type AgentRelayAgent } from '@agent-relay/sdk';
@@ -43,38 +42,13 @@ export type WorkspaceTransport = {
 
 /** Resolve the selected key and any previously persisted Relay workspace identity. */
 export function resolveWorkspaceSelection(options: SdkClientOptions = {}): WorkspaceSelection | undefined {
-  const projectRoot = options.projectRoot ?? inferGitProjectRoot(env(options));
+  const explicitProject = trimOrUndefined(env(options).AGENT_RELAY_PROJECT);
+  const projectRoot = explicitProject ? path.resolve(explicitProject) : options.projectRoot;
   return resolveCloudWorkspaceSelection({
     workspaceKey: options.workspaceKey,
     env: env(options),
     ...(projectRoot ? { projectRoot } : {}),
   });
-}
-
-/** Resolve the repository root for nested package invocations. */
-function inferGitProjectRoot(environment: NodeJS.ProcessEnv): string | undefined {
-  // The config package intentionally honours this override for worktrees and
-  // subprojects. Do not replace an operator-selected namespace with Git's
-  // answer.
-  if (environment.AGENT_RELAY_PROJECT?.trim() || process.env.AGENT_RELAY_PROJECT?.trim()) return undefined;
-  // Follow-up commands only need the project boundary, not Git execution.
-  // Recognize both ordinary repositories and worktree .git files so a missing
-  // Git binary or a Git subprocess failure cannot select a different workspace.
-  let directory = process.cwd();
-  while (true) {
-    try {
-      const marker = lstatSync(path.join(directory, '.git'));
-      if (marker.isDirectory() || marker.isFile()) return directory;
-      throw new Error('Invalid Git project marker.');
-    } catch (error) {
-      if ((error as NodeJS.ErrnoException).code !== 'ENOENT') {
-        throw new Error('Cannot resolve the repository workspace; check access to its Git project marker.');
-      }
-    }
-    const parent = path.dirname(directory);
-    if (parent === directory) return undefined;
-    directory = parent;
-  }
 }
 
 /**
