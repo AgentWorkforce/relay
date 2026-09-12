@@ -17,6 +17,7 @@ const originalPlatform = process.platform;
 
 afterEach(() => {
   vi.clearAllMocks();
+  vi.unstubAllEnvs();
   Object.defineProperty(process, 'platform', { value: originalPlatform });
 });
 
@@ -33,13 +34,14 @@ describe('assertWindowsCredentialDirectory', () => {
 
   it('passes the directory as JSON stdin to a static PowerShell probe', () => {
     withWindowsPlatform();
+    vi.stubEnv('SystemRoot', 'C:\\Windows');
     execFileSyncMock.mockReturnValue('{"ok":true}');
     const directory = path.join(os.tmpdir(), 'relay-acl-private');
 
     expect(() => assertWindowsCredentialDirectory(directory)).not.toThrow();
 
     const [command, args, options] = execFileSyncMock.mock.calls[0]!;
-    expect(command).toBe('powershell.exe');
+    expect(command).toBe('C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe');
     expect(args).toEqual(['-NoLogo', '-NoProfile', '-NonInteractive', '-Command', expect.any(String)]);
     expect(options).toMatchObject({
       input: JSON.stringify({ directory: path.resolve(directory) }),
@@ -91,4 +93,16 @@ describe('assertWindowsCredentialDirectory', () => {
       'choose a private directory under the current user profile'
     );
   });
+
+  it.each(['.', 'C:Windows', '\\Windows'])(
+    'rejects a drive-relative SystemRoot %s instead of resolving an executable from the repository',
+    (systemRoot) => {
+      withWindowsPlatform();
+      vi.stubEnv('SystemRoot', systemRoot);
+      expect(() => assertWindowsCredentialDirectory('/tmp/relay-acl-private')).toThrow(
+        'Windows Relaycast credential storage requires a private directory'
+      );
+      expect(execFileSyncMock).not.toHaveBeenCalled();
+    }
+  );
 });

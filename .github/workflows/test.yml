@@ -62,10 +62,10 @@ jobs:
     runs-on: windows-latest
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
 
       - name: Setup Node.js
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
         with:
           node-version: '22.14.0'
           cache: 'npm'
@@ -78,6 +78,12 @@ jobs:
           npx vitest run
           packages/cloud/src/credential-directory-windows.test.ts
           packages/cloud/src/credential-directory-windows.native.test.ts
+          --pool=forks --maxWorkers=1
+
+      - name: Verify concurrent Windows credential writes
+        run: >-
+          npx vitest run packages/cloud/src/workspace-store.test.ts
+          --testNamePattern="preserves concurrent credential writes"
           --pool=forks --maxWorkers=1
 
   coverage:

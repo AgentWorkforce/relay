@@ -157,78 +157,86 @@ describe('workspace store', () => {
     expect(fs.statSync(relaycastCredentialStorePath()).mode & 0o777).toBe(0o600);
   });
 
-  it('preserves concurrent credential writes and never exposes a partial JSON read', async () => {
-    writeRelaycastCredential('sentinel', {
-      workspaceId: 'rw_sentinel',
-      route: 'canonical',
-      baseUrl: 'https://relay.example',
-      apiKey: 'rk_live_sentinel',
-    });
-    const source = fs.readFileSync(new URL('./workspace-store.ts', import.meta.url), 'utf8');
-    fs.writeFileSync(path.join(dir, 'package.json'), JSON.stringify({ type: 'module' }));
-    fs.writeFileSync(
-      path.join(dir, 'credential-directory-windows.js'),
-      ts.transpileModule(
-        fs.readFileSync(new URL('./credential-directory-windows.ts', import.meta.url), 'utf8'),
-        { compilerOptions: { target: ts.ScriptTarget.ES2022, module: ts.ModuleKind.ES2022 } }
-      ).outputText
-    );
-    const worker = path.join(dir, 'workspace-store-worker.mjs');
-    fs.writeFileSync(
-      worker,
-      `${
-        ts.transpileModule(source, {
-          compilerOptions: { target: ts.ScriptTarget.ES2022, module: ts.ModuleKind.ES2022 },
-        }).outputText
-      }\n${[
-        'const mode = process.argv[2];',
-        'const id = process.argv[3] ?? "reader";',
-        'if (mode === "reader") {',
-        '  for (let index = 0; index < 500; index += 1) {',
-        '    if (!readRelaycastCredential("sentinel")) process.exit(3);',
-        '  }',
-        '  process.exit(0);',
-        '}',
-        'for (let index = 0; index < 12; index += 1) {',
-        '  writeRelaycastCredential(`${id}-${index}`, { workspaceId: `${id}-${index}`, route: "canonical", baseUrl: "https://relay.example", apiKey: `rk_live_${id}_${index}` });',
-        '}',
-        'process.exit(0);',
-      ].join('\n')}`,
-      { mode: 0o600 }
-    );
-
-    const run = (mode: 'reader' | 'writer', id: string): Promise<void> =>
-      new Promise((resolve, reject) => {
-        const child = spawn(process.execPath, [worker, mode, id], {
-          env: { AGENT_RELAY_HOME: dir, NODE_ENV: 'test' },
-          stdio: ['ignore', 'ignore', 'pipe'],
-        });
-        let stderr = '';
-        child.stderr.on('data', (chunk: Buffer) => {
-          stderr += chunk.toString();
-        });
-        child.once('error', reject);
-        child.once('exit', (code) => {
-          if (code === 0) resolve();
-          else reject(new Error(`credential ${mode} worker ${id} exited ${code}: ${stderr}`));
-        });
+  it(
+    'preserves concurrent credential writes and never exposes a partial JSON read',
+    async () => {
+      writeRelaycastCredential('sentinel', {
+        workspaceId: 'rw_sentinel',
+        route: 'canonical',
+        baseUrl: 'https://relay.example',
+        apiKey: 'rk_live_sentinel',
       });
+      const source = fs.readFileSync(new URL('./workspace-store.ts', import.meta.url), 'utf8');
+      fs.writeFileSync(path.join(dir, 'package.json'), JSON.stringify({ type: 'module' }));
+      fs.writeFileSync(
+        path.join(dir, 'credential-directory-windows.js'),
+        ts.transpileModule(
+          fs.readFileSync(new URL('./credential-directory-windows.ts', import.meta.url), 'utf8'),
+          { compilerOptions: { target: ts.ScriptTarget.ES2022, module: ts.ModuleKind.ES2022 } }
+        ).outputText
+      );
+      const worker = path.join(dir, 'workspace-store-worker.mjs');
+      fs.writeFileSync(
+        worker,
+        `${
+          ts.transpileModule(source, {
+            compilerOptions: { target: ts.ScriptTarget.ES2022, module: ts.ModuleKind.ES2022 },
+          }).outputText
+        }\n${[
+          'const mode = process.argv[2];',
+          'const id = process.argv[3] ?? "reader";',
+          'if (mode === "reader") {',
+          '  for (let index = 0; index < 500; index += 1) {',
+          '    if (!readRelaycastCredential("sentinel")) process.exit(3);',
+          '  }',
+          '  process.exit(0);',
+          '}',
+          'for (let index = 0; index < 12; index += 1) {',
+          '  writeRelaycastCredential(`${id}-${index}`, { workspaceId: `${id}-${index}`, route: "canonical", baseUrl: "https://relay.example", apiKey: `rk_live_${id}_${index}` });',
+          '}',
+          'process.exit(0);',
+        ].join('\n')}`,
+        { mode: 0o600 }
+      );
 
-    const results = await Promise.allSettled([
-      ...Array.from({ length: 8 }, (_, index) => run('writer', `writer-${index}`)),
-      run('reader', 'reader-a'),
-      run('reader', 'reader-b'),
-    ]);
-    const failed = results.find((result): result is PromiseRejectedResult => result.status === 'rejected');
-    if (failed) throw failed.reason;
+      const run = (mode: 'reader' | 'writer', id: string): Promise<void> =>
+        new Promise((resolve, reject) => {
+          const child = spawn(process.execPath, [worker, mode, id], {
+            env: {
+              AGENT_RELAY_HOME: dir,
+              NODE_ENV: 'test',
+              ...(process.env.SystemRoot ? { SystemRoot: process.env.SystemRoot } : {}),
+            },
+            stdio: ['ignore', 'ignore', 'pipe'],
+          });
+          let stderr = '';
+          child.stderr.on('data', (chunk: Buffer) => {
+            stderr += chunk.toString();
+          });
+          child.once('error', reject);
+          child.once('exit', (code) => {
+            if (code === 0) resolve();
+            else reject(new Error(`credential ${mode} worker ${id} exited ${code}: ${stderr}`));
+          });
+        });
 
-    const stored = JSON.parse(fs.readFileSync(relaycastCredentialStorePath(), 'utf8')) as {
-      credentials: Record<string, RelaycastCredential>;
-    };
-    expect(Object.keys(stored.credentials)).toHaveLength(1 + 8 * 12);
-    expect(stored.credentials.sentinel.apiKey).toBe('rk_live_sentinel');
-    expect(readRelaycastCredential('writer-7-11')?.apiKey).toBe('rk_live_writer-7_11');
-  }, 30_000);
+      const results = await Promise.allSettled([
+        ...Array.from({ length: 8 }, (_, index) => run('writer', `writer-${index}`)),
+        run('reader', 'reader-a'),
+        run('reader', 'reader-b'),
+      ]);
+      const failed = results.find((result): result is PromiseRejectedResult => result.status === 'rejected');
+      if (failed) throw failed.reason;
+
+      const stored = JSON.parse(fs.readFileSync(relaycastCredentialStorePath(), 'utf8')) as {
+        credentials: Record<string, RelaycastCredential>;
+      };
+      expect(Object.keys(stored.credentials)).toHaveLength(1 + 8 * 12);
+      expect(stored.credentials.sentinel.apiKey).toBe('rk_live_sentinel');
+      expect(readRelaycastCredential('writer-7-11')?.apiKey).toBe('rk_live_writer-7_11');
+    },
+    process.platform === 'win32' ? 120_000 : 30_000
+  );
 
   it('reclaims a stale credential lock left by an exited writer', () => {
     const lock = `${relaycastCredentialStorePath()}.lock`;
