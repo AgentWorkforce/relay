@@ -254,6 +254,7 @@ describe('workspace session persistence', () => {
       relaycastRoute: 'canonical',
       relaycastBaseUrl: 'https://cast.agentrelay.com',
       relaycastApiKey: 'rk_live_stale_canonical',
+      env,
     });
 
     persistWorkspaceSession({
