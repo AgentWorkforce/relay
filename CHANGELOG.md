@@ -5,13 +5,15 @@ All notable changes to Agent Relay will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased - Major]
+## [Unreleased - Minor]
 
 ### Added
 
 - `agent-relay node up --local-only` runs local agents during Relaycast outages, visibly reports degraded capabilities, and retains local delivery records for reconciliation after reconnect.
 
 ### Fixed
+
+- HTTP agent spawn rejects failed Relaycast node binding, cleans up the newly registered identity, and publishes declared metadata for successful spawns using either new or supplied tokens.
 
 - `agent-relay node up` retries the narrowly transient Relaycast `workspace_busy` admission response while keeping unrelated rate limits terminal and preserving bounded startup diagnostics.
 - `fleet spawn --sandbox` dispatches with only its temporary launcher token after Cloud target selection, avoiding the SDK's dual-credential rejection while keeping workspace-key authority limited to launcher registration and release.
@@ -29,15 +31,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - Node startup recovery and shutdown require a persisted process and runtime-lock identity for the selected state directory, preserving unrelated agents.
 
+### Changed
 - Spawning a Cursor worker no longer leaves plaintext Agent Relay credentials in `<cwd>/.cursor/mcp.json` after release. The broker leases that file per-cwd across concurrent workers and restores the pre-existing config or absence on every cleanup path; Unix files remain `0600`, while Windows secures new files and preserves existing ACLs.
-
-### Breaking Changes
-
-- `up` and `node up` refuse startup outside macOS and Linux because broker ownership cannot be verified on other platforms. Legacy brokers without a verifiable identity no longer support automatic shutdown or recovery.
-
-### Migration Guidance
-
-- Run nodes on macOS or Linux (including WSL) with `ps` and `lsof` available. Manually verify and stop legacy brokers before removing their retained state and restarting to create a verifiable identity.
+- `up` and `node up` refuse startup outside macOS and Linux (including WSL, with `ps` and `lsof` available) because broker ownership cannot be verified elsewhere. Brokers started by earlier versions have no verifiable identity and are not shut down or recovered automatically; stop them manually and restart once to create one.
 
 ## [12.0.0] - 2026-09-10
 

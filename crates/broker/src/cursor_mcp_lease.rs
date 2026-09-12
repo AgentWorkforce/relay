@@ -2134,7 +2134,11 @@ impl CursorMcpLeaseRegistry {
         self.recover_journal_impl(|| {}, before_finalize)
     }
 
-    fn recover_journal_impl<F, G>(&mut self, mut after_snapshot: F, mut before_finalize: G) -> io::Result<()>
+    fn recover_journal_impl<F, G>(
+        &mut self,
+        mut after_snapshot: F,
+        mut before_finalize: G,
+    ) -> io::Result<()>
     where
         F: FnMut(),
         G: FnMut(),
@@ -3109,8 +3113,7 @@ mod tests {
         assert_eq!(
             journal.entries[0].pre_existing,
             JournalPreExisting::Present {
-                contents_base64: base64::engine::general_purpose::STANDARD
-                    .encode(b"replacement"),
+                contents_base64: base64::engine::general_purpose::STANDARD.encode(b"replacement"),
                 mode: 0o600,
             }
         );
