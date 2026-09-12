@@ -19,6 +19,36 @@ import {
 import { brokerIdentityPath, readBrokerIdentities } from './broker-process-identity.js';
 import type { CoreDependencies, CoreRelay } from '../commands/core.js';
 
+type StructuredLogEntry = { level?: string; component?: string; msg?: string };
+
+function parseStructuredLogEntries(logText: string): StructuredLogEntry[] {
+  return logText
+    .trim()
+    .split('\n')
+    .flatMap((line) => {
+      const trimmed = line.trim();
+      if (!trimmed) return [];
+
+      if (trimmed.startsWith('{')) {
+        try {
+          return [JSON.parse(trimmed) as StructuredLogEntry];
+        } catch {
+          return [];
+        }
+      }
+
+      const match = trimmed.match(/^\S+\s+\[(?<level>[A-Z]+)\]\s+\[(?<component>[^\]]+)\]\s+(?<msg>.*)$/);
+      if (!match?.groups) return [];
+      return [
+        {
+          level: match.groups.level,
+          component: match.groups.component,
+          msg: match.groups.msg,
+        },
+      ];
+    });
+}
+
 describe('detached startup readiness contract', () => {
   it('leaves setup margin above the broker handshake budget', () => {
     const brokerSession = readFileSync(resolve('crates/broker/src/runtime/session.rs'), 'utf8');
@@ -482,10 +512,7 @@ describe('runUpCommand node-config gating', () => {
       reflexOptions?.log?.('[reflex] history sync tick');
 
       const structuredLog = fsReal.readFileSync(logFile, 'utf-8');
-      const structuredEntries = structuredLog
-        .trim()
-        .split('\n')
-        .map((line) => JSON.parse(line) as { level?: string; component?: string; msg?: string });
+      const structuredEntries = parseStructuredLogEntries(structuredLog);
       expect(structuredEntries).toEqual(
         expect.arrayContaining([
           expect.objectContaining({
