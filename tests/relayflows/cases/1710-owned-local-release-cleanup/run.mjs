@@ -51,7 +51,19 @@ let broker;
 try {
   broker = spawn(
     binaryPath,
-    ['init', '--instance-name', 'relayflow-1710-broker', '--api-port', '0', '--api-bind', '127.0.0.1', '--state-dir', stateDir, '--channels', ''],
+    [
+      'init',
+      '--instance-name',
+      'relayflow-1710-broker',
+      '--api-port',
+      '0',
+      '--api-bind',
+      '127.0.0.1',
+      '--state-dir',
+      stateDir,
+      '--channels',
+      '',
+    ],
     {
       cwd: probeDir,
       stdio: ['ignore', 'pipe', 'pipe'],
@@ -98,16 +110,27 @@ try {
     return { status: response.status, body };
   };
 
-  await waitFor(async () => (await api('/api/status', { timeoutMs: 2_000 })).status === 200, 30_000, 'broker readiness');
+  await waitFor(
+    async () => (await api('/api/status', { timeoutMs: 2_000 })).status === 200,
+    30_000,
+    'broker readiness'
+  );
 
   const ownedGeneration = await spawnWorker(api, OWNED_NAME);
-  await waitFor(async () => (await liveWorkerNames(api)).includes(OWNED_NAME), 20_000, 'owned worker to appear');
+  await waitFor(
+    async () => (await liveWorkerNames(api)).includes(OWNED_NAME),
+    20_000,
+    'owned worker to appear'
+  );
 
   const ownedRelease = await releaseWorker(api, OWNED_NAME, {
     expected_generation: ownedGeneration,
     delete_identity: true,
   });
-  const ownedDeleted = ownedRelease.status === 200 && ownedRelease.body?.process === 'stopped' && ownedRelease.body?.identity === 'deleted';
+  const ownedDeleted =
+    ownedRelease.status === 200 &&
+    ownedRelease.body?.process === 'stopped' &&
+    ownedRelease.body?.identity === 'deleted';
   if (!ownedDeleted) {
     await writeResult({
       arm,
@@ -118,61 +141,73 @@ try {
   }
 
   if (ownedDeleted) {
-    await waitFor(async () => !(await liveWorkerNames(api)).includes(OWNED_NAME), 20_000, 'owned worker to disappear after release');
+    await waitFor(
+      async () => !(await liveWorkerNames(api)).includes(OWNED_NAME),
+      20_000,
+      'owned worker to disappear after release'
+    );
 
-  const repeatRelease = await releaseWorker(api, OWNED_NAME, {
-    expected_generation: ownedGeneration,
-    delete_identity: true,
-  });
-  assert.equal(repeatRelease.status, 200);
-  assert.equal(repeatRelease.body?.process, 'stopped');
-  assert.equal(repeatRelease.body?.identity, 'deleted');
-  assert.equal(relaycast.state.releaseRequests.length, 1);
-  assert.equal(relaycast.state.releaseRequests[0]?.delete_agent, true);
+    const repeatRelease = await releaseWorker(api, OWNED_NAME, {
+      expected_generation: ownedGeneration,
+      delete_identity: true,
+    });
+    assert.equal(repeatRelease.status, 200);
+    assert.equal(repeatRelease.body?.process, 'stopped');
+    assert.equal(repeatRelease.body?.identity, 'deleted');
+    assert.equal(relaycast.state.releaseRequests.length, 1);
+    assert.equal(relaycast.state.releaseRequests[0]?.delete_agent, true);
 
-  const replacementGeneration = await spawnWorker(api, OWNED_NAME);
-  assert.notEqual(replacementGeneration, ownedGeneration);
-  await waitFor(async () => (await liveWorkerNames(api)).includes(OWNED_NAME), 20_000, 'replacement worker to appear');
+    const replacementGeneration = await spawnWorker(api, OWNED_NAME);
+    assert.notEqual(replacementGeneration, ownedGeneration);
+    await waitFor(
+      async () => (await liveWorkerNames(api)).includes(OWNED_NAME),
+      20_000,
+      'replacement worker to appear'
+    );
 
-  const replacementRelease = await releaseWorker(api, OWNED_NAME, {
-    expected_generation: replacementGeneration,
-    delete_identity: true,
-  });
-  assert.equal(replacementRelease.status, 200);
-  assert.equal(replacementRelease.body?.process, 'stopped');
-  assert.equal(replacementRelease.body?.identity, 'deleted');
-  assert.equal(relaycast.state.releaseRequests.length, 2);
-  assert.equal(relaycast.state.releaseRequests[1]?.delete_agent, true);
+    const replacementRelease = await releaseWorker(api, OWNED_NAME, {
+      expected_generation: replacementGeneration,
+      delete_identity: true,
+    });
+    assert.equal(replacementRelease.status, 200);
+    assert.equal(replacementRelease.body?.process, 'stopped');
+    assert.equal(replacementRelease.body?.identity, 'deleted');
+    assert.equal(relaycast.state.releaseRequests.length, 2);
+    assert.equal(relaycast.state.releaseRequests[1]?.delete_agent, true);
 
-  await waitFor(async () => !(await liveWorkerNames(api)).includes(OWNED_NAME), 20_000, 'replacement worker to disappear after release');
+    await waitFor(
+      async () => !(await liveWorkerNames(api)).includes(OWNED_NAME),
+      20_000,
+      'replacement worker to disappear after release'
+    );
 
-  const callerRetained = await releaseWorker(api, CALLER_OWNED_NAME, {
-    reason: 'caller-owned release proof',
-    delete_identity: false,
-  });
-  assert.equal(callerRetained.status, 200);
-  assert.equal(callerRetained.body?.process, 'stopped');
-  assert.equal(callerRetained.body?.identity, 'retained');
-  assert.equal(relaycast.state.releaseRequests.length, 3);
-  // Caller-owned release may omit the deletion flag entirely; the proof only
-  // needs to confirm that it did not request identity deletion.
-  assert.notEqual(relaycast.state.releaseRequests[2]?.delete_agent, true);
+    const callerRetained = await releaseWorker(api, CALLER_OWNED_NAME, {
+      reason: 'caller-owned release proof',
+      delete_identity: false,
+    });
+    assert.equal(callerRetained.status, 200);
+    assert.equal(callerRetained.body?.process, 'stopped');
+    assert.equal(callerRetained.body?.identity, 'retained');
+    assert.equal(relaycast.state.releaseRequests.length, 3);
+    // Caller-owned release may omit the deletion flag entirely; the proof only
+    // needs to confirm that it did not request identity deletion.
+    assert.notEqual(relaycast.state.releaseRequests[2]?.delete_agent, true);
 
-  const callerRefusal = await releaseWorker(api, CALLER_OWNED_NAME, {
-    expected_generation: '00000000-0000-0000-0000-000000000000',
-    delete_identity: true,
-  });
-  assert.equal(callerRefusal.status, 500);
-  assert.match(JSON.stringify(callerRefusal.body), /refusing/i);
-  assert.equal(relaycast.state.releaseRequests.length, 3);
+    const callerRefusal = await releaseWorker(api, CALLER_OWNED_NAME, {
+      expected_generation: '00000000-0000-0000-0000-000000000000',
+      delete_identity: true,
+    });
+    assert.equal(callerRefusal.status, 500);
+    assert.match(JSON.stringify(callerRefusal.body), /refusing/i);
+    assert.equal(relaycast.state.releaseRequests.length, 3);
 
-  await writeResult({
-    arm,
-    outcome: 'fixed',
-    signature: 'owned_release_deletes_exactly_and_repeats_safely',
-    details:
-      'The exact attested broker binary deleted an owned worker identity with separate process and identity fields, repeated the same release idempotently without a second Relaycast deletion, allowed a replacement generation to clean up independently, and retained/refused caller-owned releases through the public HTTP API.',
-  });
+    await writeResult({
+      arm,
+      outcome: 'fixed',
+      signature: 'owned_release_deletes_exactly_and_repeats_safely',
+      details:
+        'The exact attested broker binary deleted an owned worker identity with separate process and identity fields, repeated the same release idempotently without a second Relaycast deletion, allowed a replacement generation to clean up independently, and retained/refused caller-owned releases through the public HTTP API.',
+    });
   }
 } finally {
   if (broker && broker.exitCode === null) {
@@ -341,7 +376,9 @@ async function startFakeRelaycast() {
       socket.destroy();
       return;
     }
-    const accept = createHash('sha1').update(key + '258EAFA5-E914-47DA-95CA-C5AB0DC85B11').digest('base64');
+    const accept = createHash('sha1')
+      .update(key + '258EAFA5-E914-47DA-95CA-C5AB0DC85B11')
+      .digest('base64');
     socket.write(
       'HTTP/1.1 101 Switching Protocols\r\n' +
         'Upgrade: websocket\r\n' +
@@ -406,7 +443,13 @@ async function waitForConnection(stateDir, child) {
       try {
         const connection = JSON.parse(await readFile(path.join(stateDir, 'connection.json'), 'utf8'));
         const url = new URL(connection.url);
-        if (url.protocol !== 'http:' || url.hostname !== '127.0.0.1' || url.pathname !== '/' || url.search !== '' || url.hash !== '') {
+        if (
+          url.protocol !== 'http:' ||
+          url.hostname !== '127.0.0.1' ||
+          url.pathname !== '/' ||
+          url.search !== '' ||
+          url.hash !== ''
+        ) {
           throw new Error(`Broker connection URL is not a plain loopback origin: ${url.origin}`);
         }
         return `http://127.0.0.1:${Number(url.port)}`;
@@ -552,5 +595,8 @@ async function requiredExecutable(name) {
 
 function isWithin(directory, candidate) {
   const relative = path.relative(directory, candidate);
-  return relative === '' || (!relative.startsWith(`..${path.sep}`) && relative !== '..' && !path.isAbsolute(relative));
+  return (
+    relative === '' ||
+    (!relative.startsWith(`..${path.sep}`) && relative !== '..' && !path.isAbsolute(relative))
+  );
 }
