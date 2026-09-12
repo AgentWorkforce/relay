@@ -1,8 +1,9 @@
 use anyhow::{Context, Result};
 use chrono::{DateTime, Utc};
+use futures_util::future::join_all;
 use relaycast::{
-    CreateAgentRequest, RelayCast, RelayCastOptions, RelayError, TakeOverAgentRequest,
-    WorkspaceProvenance,
+    CreateAgentRequest, RelayCast, RelayCastOptions, RelayError, ReleaseAgentRequest,
+    TakeOverAgentRequest, WorkspaceProvenance,
 };
 use reqwest::StatusCode;
 use serde::{Deserialize, Serialize};
@@ -67,6 +68,16 @@ struct EnvWorkspaceKey {
     source: &'static str,
     key: String,
     explicit_join: bool,
+}
+
+#[derive(Clone, Copy)]
+struct StartupRegistrationOptions<'a> {
+    requested_name: Option<&'a str>,
+    strict_name: bool,
+    agent_type: Option<&'a str>,
+    identity_key: Option<&'a str>,
+    waiter_id: Option<&'a str>,
+    startup_deadline: Option<tokio::time::Instant>,
 }
 
 impl CredentialSet {
@@ -366,26 +377,82 @@ impl AuthClient {
         agent_type: Option<&str>,
         identity_key: Option<&str>,
     ) -> Result<AuthSessionSet> {
+        self.startup_session_set_with_identity_and_waiter(
+            requested_name,
+            strict_name,
+            agent_type,
+            identity_key,
+            None,
+        )
+        .await
+    }
+
+    /// Like [`Self::startup_session_set_with_identity`], but lets the caller
+    /// carry one admission waiter across an outer handshake retry. The
+    /// default entry point deliberately keeps generating a waiter per logical
+    /// call for existing library callers; the broker handshake is the caller
+    /// that owns the larger retry scope and supplies the stable value.
+    pub async fn startup_session_set_with_identity_and_waiter(
+        &self,
+        requested_name: Option<&str>,
+        strict_name: bool,
+        agent_type: Option<&str>,
+        identity_key: Option<&str>,
+        waiter_id: Option<&str>,
+    ) -> Result<AuthSessionSet> {
         if let Some((sources, default_hint)) = self.load_workspace_sources_from_env()? {
             let preferred_name = requested_name;
-            let mut memberships = Vec::with_capacity(sources.len());
+            // Validate every source before starting requests so malformed
+            // configuration keeps the old first-error behavior. Once the
+            // inputs are valid, register all memberships concurrently: each
+            // registration owns an independent 40-second workspace-busy
+            // admission budget, while the broker's outer handshake remains
+            // bounded by its unchanged 44-second aggregate ceiling.
+            let membership_count = sources.len();
+            let prepared_sources = sources
+                .into_iter()
+                .map(|source| {
+                    let api_key = normalize_workspace_key(&source.api_key)
+                        .context("RELAY_WORKSPACES_JSON contained an invalid workspace key")?;
+                    Ok::<_, anyhow::Error>((source, api_key))
+                })
+                .collect::<Result<Vec<_>>>()?;
+
+            // `join_all` returns results in input order even when a later
+            // membership completes first. That preserves default selection,
+            // deterministic diagnostics, and the historical credential-set
+            // ordering while avoiding serial admission starvation.
+            let registrations = join_all(prepared_sources.into_iter().enumerate().map(
+                |(membership_index, (source, api_key))| {
+                    let membership_waiter_id =
+                        startup_membership_waiter_id(waiter_id, membership_index, membership_count);
+                    async move {
+                        let registration = self
+                            .register_agent_with_workspace_key(
+                                &api_key,
+                                StartupRegistrationOptions {
+                                    requested_name: preferred_name,
+                                    strict_name,
+                                    agent_type,
+                                    identity_key,
+                                    waiter_id: membership_waiter_id.as_deref(),
+                                    startup_deadline: None,
+                                },
+                            )
+                            .await;
+                        (source, api_key, registration)
+                    }
+                },
+            ))
+            .await;
+
+            let mut memberships = Vec::with_capacity(membership_count);
             let mut auth_rejections = Vec::new();
             let mut workspace_busy_rejection: Option<anyhow::Error> = None;
+            let mut terminal_error: Option<anyhow::Error> = None;
 
-            for source in sources {
-                let Some(api_key) = normalize_workspace_key(&source.api_key) else {
-                    anyhow::bail!("RELAY_WORKSPACES_JSON contained an invalid workspace key");
-                };
-                match self
-                    .register_agent_with_workspace_key(
-                        &api_key,
-                        preferred_name,
-                        strict_name,
-                        agent_type,
-                        identity_key,
-                    )
-                    .await
-                {
+            for (source, api_key, registration) in registrations {
+                match registration {
                     Ok(registration) => {
                         let mut session = self.finish_session(
                             api_key,
@@ -410,10 +477,23 @@ impl AuthClient {
                         );
                     }
                     Err(error) => {
-                        return Err(error)
-                            .context("failed registering agent for configured workspace");
+                        terminal_error.get_or_insert(
+                            error.context("failed registering agent for configured workspace"),
+                        );
                     }
                 }
+            }
+
+            if let Some(error) = terminal_error {
+                self.rollback_registered_memberships(
+                    &memberships,
+                    "rolled back after a sibling multi-workspace registration failed",
+                )
+                .await
+                .context(
+                    "failed to roll back sibling workspace registrations after a hard failure",
+                )?;
+                return Err(error);
             }
 
             if memberships.is_empty() {
@@ -442,6 +522,7 @@ impl AuthClient {
             strict_name,
             agent_type,
             identity_key,
+            waiter_id,
         )
         .await
     }
@@ -469,10 +550,14 @@ impl AuthClient {
                 let registration = self
                     .register_agent_with_workspace_key(
                         &api_key,
-                        Some(agent_name),
-                        false,
-                        None,
-                        agent_identity_key().as_deref(),
+                        StartupRegistrationOptions {
+                            requested_name: Some(agent_name),
+                            strict_name: false,
+                            agent_type: None,
+                            identity_key: agent_identity_key().as_deref(),
+                            waiter_id: None,
+                            startup_deadline: None,
+                        },
                     )
                     .await
                     .context("failed to re-register after rotate-token 404")?;
@@ -529,6 +614,7 @@ impl AuthClient {
         strict_name: bool,
         agent_type: Option<&str>,
         identity_key: Option<&str>,
+        waiter_id: Option<&str>,
     ) -> Result<AuthSessionSet> {
         let env_workspace_key = env_workspace_key()?;
 
@@ -567,10 +653,14 @@ impl AuthClient {
             match self
                 .register_agent_with_workspace_key(
                     &candidate.key,
-                    preferred_name,
-                    strict_name,
-                    agent_type,
-                    identity_key,
+                    StartupRegistrationOptions {
+                        requested_name: preferred_name,
+                        strict_name,
+                        agent_type,
+                        identity_key,
+                        waiter_id,
+                        startup_deadline: None,
+                    },
                 )
                 .await
             {
@@ -636,36 +726,56 @@ impl AuthClient {
         }
 
         if !attempted_fresh_workspace {
-            let ws_name = deterministic_workspace_name();
-            let (workspace_id, api_key) = self.create_workspace(&ws_name).await?;
-            workspace_id_hint = Some(workspace_id);
-            match self
-                .register_agent_with_workspace_key(
-                    &api_key,
-                    preferred_name,
+            return self
+                .startup_fresh_workspace_session_set(
+                    requested_name,
                     strict_name,
                     agent_type,
                     identity_key,
+                    waiter_id,
+                    None,
                 )
-                .await
-            {
-                Ok(registration) => {
-                    let session = self.finish_session(api_key, workspace_id_hint, registration)?;
-                    return Ok(AuthSessionSet {
-                        default_workspace_id: Some(session.credentials.workspace_id.clone()),
-                        memberships: vec![session],
-                    });
-                }
-                Err(error) => {
-                    return Err(error).context("failed registering agent with fresh workspace key");
-                }
-            }
+                .await;
         }
 
         anyhow::bail!(
             "all workspace keys were rejected ({})",
             auth_rejections.join(", ")
         );
+    }
+
+    pub(crate) async fn startup_fresh_workspace_session_set(
+        &self,
+        requested_name: Option<&str>,
+        strict_name: bool,
+        agent_type: Option<&str>,
+        identity_key: Option<&str>,
+        waiter_id: Option<&str>,
+        startup_deadline: Option<tokio::time::Instant>,
+    ) -> Result<AuthSessionSet> {
+        let ws_name = deterministic_workspace_name();
+        let (workspace_id, api_key) = self.create_workspace(&ws_name).await?;
+
+        let registration = self
+            .register_agent_with_workspace_key(
+                &api_key,
+                StartupRegistrationOptions {
+                    requested_name,
+                    strict_name,
+                    agent_type,
+                    identity_key,
+                    waiter_id,
+                    startup_deadline,
+                },
+            )
+            .await
+            .context("failed registering agent with fresh workspace key")?;
+
+        let session = self.finish_session(api_key, Some(workspace_id), registration)?;
+        Ok(AuthSessionSet {
+            default_workspace_id: Some(session.credentials.workspace_id.clone()),
+            memberships: vec![session],
+        })
     }
 
     fn load_workspace_sources_from_env(
@@ -763,11 +873,19 @@ impl AuthClient {
         // own replay is treated as our own committed workspace rather than
         // someone else's, and never silently mints a second one.
         let sends = std::sync::atomic::AtomicUsize::new(0);
-        match retry_transient_relay_error("creating a Relaycast workspace", || {
-            sends.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-            RelayCast::create_workspace(name, self.base_url.as_deref(), WorkspaceProvenance::sdk())
-        })
+        match tokio::time::timeout(
+            RELAYCAST_HTTP_TIMEOUT,
+            retry_transient_relay_error("creating a Relaycast workspace", || {
+                sends.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                RelayCast::create_workspace(
+                    name,
+                    self.base_url.as_deref(),
+                    WorkspaceProvenance::sdk(),
+                )
+            }),
+        )
         .await
+        .context("creating a Relaycast workspace timed out")?
         {
             Ok(result) => Ok((result.workspace_id, result.api_key)),
             Err(error)
@@ -810,6 +928,48 @@ impl AuthClient {
         }
     }
 
+    async fn rollback_registered_memberships(
+        &self,
+        memberships: &[AuthSession],
+        reason: &str,
+    ) -> Result<()> {
+        let mut cleanup_error: Option<anyhow::Error> = None;
+        for session in memberships {
+            let Some(agent_name) = session.credentials.agent_name.as_deref() else {
+                continue;
+            };
+            let relay = build_relay_client(&session.credentials.api_key, self.base_url.as_deref())?;
+            let request = ReleaseAgentRequest {
+                name: agent_name.to_string(),
+                reason: Some(reason.to_string()),
+                delete_agent: Some(true),
+            };
+            if let Err(error) = relay
+                .release_agent(request)
+                .await
+                .map_err(relay_error_to_anyhow)
+            {
+                tracing::warn!(
+                    target = "relay_broker::auth",
+                    agent_name = %agent_name,
+                    error = %error,
+                    "failed to roll back a sibling workspace registration"
+                );
+                if cleanup_error.is_none() {
+                    cleanup_error = Some(error.context(format!(
+                        "failed to roll back workspace registration for {agent_name}"
+                    )));
+                }
+            }
+        }
+
+        if let Some(error) = cleanup_error {
+            Err(error)
+        } else {
+            Ok(())
+        }
+    }
+
     /// `strict_name` is retained purely for API/logging compatibility with
     /// callers (`crates/broker/src/runtime/session.rs` chooses it based on
     /// `RELAY_STRICT_AGENT_NAME`) and no longer selects a different collision
@@ -824,17 +984,15 @@ impl AuthClient {
     async fn register_agent_with_workspace_key(
         &self,
         workspace_key: &str,
-        requested_name: Option<&str>,
-        _strict_name: bool,
-        agent_type: Option<&str>,
-        identity_key: Option<&str>,
+        options: StartupRegistrationOptions<'_>,
     ) -> Result<(String, String, String, Option<String>)> {
         let relay = build_relay_client(workspace_key, self.base_url.as_deref())?;
-        let name = requested_name
+        let name = options
+            .requested_name
             .map(ToOwned::to_owned)
             .unwrap_or_else(|| format!("agent-{}", Uuid::new_v4().simple()));
 
-        admit_agent_registration(&relay, workspace_key, &name, agent_type, identity_key).await
+        admit_agent_registration(&relay, workspace_key, &name, options).await
     }
 
     pub async fn workspace_key_is_live(&self, workspace_key: &str) -> Result<bool> {
@@ -880,6 +1038,25 @@ fn resolve_default_workspace_id(
     } else {
         None
     }
+}
+
+/// Derive a stable admission waiter for one membership of a logical startup
+/// handshake. Keep the legacy single-workspace value unchanged; multi-
+/// workspace handshakes need distinct queue identities so one busy membership
+/// cannot collapse or starve another, while the deterministic index keeps each
+/// value stable across outer handshake retries.
+fn startup_membership_waiter_id(
+    outer_waiter_id: Option<&str>,
+    membership_index: usize,
+    membership_count: usize,
+) -> Option<String> {
+    outer_waiter_id.map(|outer| {
+        if membership_count == 1 {
+            outer.to_string()
+        } else {
+            format!("{outer}:membership-{membership_index}")
+        }
+    })
 }
 
 fn normalize_workspace_key(raw: &str) -> Option<String> {
@@ -931,6 +1108,8 @@ fn is_rate_limited(err: &anyhow::Error) -> bool {
     auth_http_status(err).is_some_and(|status| status == StatusCode::TOO_MANY_REQUESTS)
 }
 
+const WORKSPACE_BUSY_CODE: &str = "workspace_busy";
+
 /// `anyhow::Error`-flavored counterpart to `is_workspace_busy_error`. Uses an
 /// exact, case-sensitive comparison against `WORKSPACE_BUSY_CODE` — no
 /// `trim()`/case normalization — because this classifier gates a replay of
@@ -980,10 +1159,21 @@ const RELAYCAST_HTTP_TIMEOUT: std::time::Duration = std::time::Duration::from_se
 /// 34099838274 lost three jobs to exactly that.
 const TRANSIENT_STARTUP_RETRY_BACKOFFS_MS: [u64; 2] = [200, 400];
 
-/// Relaycast uses this exact code for temporary workspace write-admission
-/// saturation. Generic 429s remain terminal because they may represent quota
-/// or policy failures rather than a safe pre-commit admission signal.
-const WORKSPACE_BUSY_CODE: &str = "workspace_busy";
+/// Relaycast's `workspace_busy` contract is a retry-after cooldown for the
+/// same waiter, not a promise that admission happens within an observed
+/// number of queue turns. Use the broker handshake's finite 40-second
+/// aggregate deadline (the runtime's `HANDSHAKE_TOTAL_TIMEOUT`) and retain a
+/// deliberately generous hard cap as a last-resort guard if a server violates
+/// that contract by returning immediately forever. The cap is a safety limit,
+/// never a prediction of queue depth.
+pub(crate) const WORKSPACE_BUSY_STARTUP_RETRY_DEADLINE: std::time::Duration =
+    std::time::Duration::from_secs(40);
+const WORKSPACE_BUSY_STARTUP_RETRY_SAFETY_CAP: usize = 64;
+
+/// Flat backoff between `workspace_busy` startup retries. Matches the typed
+/// one-second admission cooldown the create-only registration path already
+/// honors for the same server code.
+const WORKSPACE_BUSY_STARTUP_RETRY_BACKOFF: std::time::Duration = std::time::Duration::from_secs(1);
 
 /// Replay only server failures whose typed error code establishes that the
 /// request failed at the storage-admission boundary. Retrying every 5xx by
@@ -1001,10 +1191,7 @@ fn is_transient_server_error(error: &RelayError) -> bool {
             code,
             status: 500 | 502 | 503 | 504,
             ..
-        } if matches!(
-            code.trim(),
-            "database_overloaded" | "workspace_storage_unavailable"
-        )
+        } if matches!(code.as_str(), "database_overloaded" | "workspace_storage_unavailable")
     ) || is_workspace_busy_error(error)
 }
 
@@ -1103,6 +1290,129 @@ where
             }
         }
     }
+}
+
+async fn retry_typed_startup_registration_error<T, F, Fut>(
+    operation: &str,
+    startup_deadline: Option<tokio::time::Instant>,
+    request: F,
+) -> std::result::Result<T, RelayError>
+where
+    F: FnMut() -> Fut,
+    Fut: std::future::Future<Output = std::result::Result<T, RelayError>>,
+{
+    retry_typed_startup_registration_error_with_sleep(
+        operation,
+        startup_deadline,
+        request,
+        tokio::time::sleep,
+    )
+    .await
+}
+
+async fn retry_typed_startup_registration_error_with_sleep<T, F, Fut, S, SFut>(
+    operation: &str,
+    startup_deadline: Option<tokio::time::Instant>,
+    mut request: F,
+    mut sleep: S,
+) -> std::result::Result<T, RelayError>
+where
+    F: FnMut() -> Fut,
+    Fut: std::future::Future<Output = std::result::Result<T, RelayError>>,
+    S: FnMut(std::time::Duration) -> SFut,
+    SFut: std::future::Future<Output = ()>,
+{
+    let mut total_attempts: u32 = 0;
+    let mut retry = 0usize;
+    let started = std::time::Instant::now();
+
+    loop {
+        match request().await {
+            Ok(value) => return Ok(value),
+            Err(error) => {
+                total_attempts = total_attempts.saturating_add(relay_error_attempts(&error));
+
+                if !is_startup_retryable_overload(&error) {
+                    return Err(with_total_attempts(error, total_attempts));
+                }
+
+                let Some(backoff) = startup_retry_backoff(&error, retry, started, startup_deadline)
+                else {
+                    return Err(with_total_attempts(error, total_attempts));
+                };
+
+                tracing::warn!(
+                    target = "relay_broker::auth",
+                    operation,
+                    attempts_so_far = total_attempts,
+                    retry_in_ms = backoff.as_millis(),
+                    error = %error,
+                    "typed workspace overload during startup; retrying"
+                );
+                sleep(backoff).await;
+                retry += 1;
+            }
+        }
+    }
+}
+
+fn is_startup_retryable_overload(error: &RelayError) -> bool {
+    is_transient_server_error(error)
+        || matches!(
+            error,
+            RelayError::Api {
+                status: 429,
+                code,
+                ..
+            } if code == WORKSPACE_BUSY_CODE
+        )
+}
+
+fn startup_retry_backoff(
+    error: &RelayError,
+    retry: usize,
+    started: std::time::Instant,
+    startup_deadline: Option<tokio::time::Instant>,
+) -> Option<std::time::Duration> {
+    match error {
+        RelayError::Api {
+            status: 429, code, ..
+        } if code == WORKSPACE_BUSY_CODE => {
+            if let Some(deadline) = startup_deadline {
+                let remaining = deadline.saturating_duration_since(tokio::time::Instant::now());
+                (retry + 1 < WORKSPACE_BUSY_STARTUP_RETRY_SAFETY_CAP
+                    && remaining > WORKSPACE_BUSY_STARTUP_RETRY_BACKOFF)
+                    .then_some(WORKSPACE_BUSY_STARTUP_RETRY_BACKOFF)
+            } else {
+                let elapsed = started.elapsed();
+                workspace_busy_retry_allowed(
+                    retry + 1,
+                    elapsed,
+                    WORKSPACE_BUSY_STARTUP_RETRY_BACKOFF,
+                    WORKSPACE_BUSY_STARTUP_RETRY_DEADLINE,
+                    WORKSPACE_BUSY_STARTUP_RETRY_SAFETY_CAP,
+                )
+                .then_some(WORKSPACE_BUSY_STARTUP_RETRY_BACKOFF)
+            }
+        }
+        _ => TRANSIENT_STARTUP_RETRY_BACKOFFS_MS
+            .get(retry)
+            .copied()
+            .map(std::time::Duration::from_millis),
+    }
+}
+
+/// `attempt` is the failed attempt that would be followed by the proposed
+/// sleep. Permit another request only when both the explicit deadline and the
+/// independent safety cap leave room for it.
+fn workspace_busy_retry_allowed(
+    attempt: usize,
+    elapsed: std::time::Duration,
+    backoff: std::time::Duration,
+    deadline: std::time::Duration,
+    safety_cap: usize,
+) -> bool {
+    attempt < safety_cap && elapsed.saturating_add(backoff) < deadline
 }
 
 async fn relay_request_with_timeout<T>(
@@ -1257,9 +1567,17 @@ async fn admit_agent_registration(
     // key is still an accepted credential for reclaiming an agent's token.
     workspace_key: &str,
     name: &str,
-    agent_type: Option<&str>,
-    identity_key: Option<&str>,
+    options: StartupRegistrationOptions<'_>,
 ) -> Result<(String, String, String, Option<String>)> {
+    let StartupRegistrationOptions {
+        requested_name: _,
+        strict_name: _,
+        agent_type,
+        identity_key,
+        waiter_id: supplied_waiter_id,
+        startup_deadline,
+    } = options;
+
     let metadata = identity_key.map(|key| {
         let mut map = serde_json::Map::new();
         map.insert(
@@ -1282,9 +1600,46 @@ async fn admit_agent_registration(
     // here instead. A replay that lands after the first request did register
     // falls through to the conflict arm below, which is the identity gate
     // this function already owns.
-    match retry_transient_relay_error("registering the broker agent", || {
-        relay.register_agent(request.clone())
-    })
+    //
+    // `register_agent` also gives callers no way to attach a header at all,
+    // and this startup registration is the client-side counterpart of the
+    // create-only spawn loop's `X-Workspace-Write-Waiter` (see
+    // `register_new_spawn_identity_inner`): the workspace admission queue
+    // needs a stable value across every attempt of *this* logical retry
+    // cycle so a still-queued attempt is recognized as the same waiter
+    // instead of minting a new slot per retry. `RelayCast` has no public
+    // accessor for its inner client, but `as_agent` already builds one
+    // scoped to any bearer credential (the same trick
+    // `register_new_spawn_identity_inner` uses to reach `POST /v1/agents`
+    // with the workspace key rather than an agent token), so it is a safe,
+    // already-public request API to route this raw POST through — it does
+    // not touch the SDK's own idempotency-keyed retry loop and so does not
+    // broaden retry eligibility beyond this function's existing bounded
+    // budget.
+    let waiter_id = supplied_waiter_id
+        .map(str::to_owned)
+        .unwrap_or_else(|| format!("relay-register:{}", Uuid::new_v4()));
+    let waiter_client = relay
+        .as_agent(workspace_key)
+        .map_err(relay_error_to_anyhow)?;
+    let waiter_http = waiter_client.http_client();
+    match retry_typed_startup_registration_error(
+        "registering the broker agent",
+        startup_deadline,
+        || {
+            waiter_http.post::<relaycast::CreateAgentResponse>(
+                "/v1/agents",
+                Some(&request),
+                Some(relaycast::RequestOptions {
+                    headers: Some(vec![(
+                        "X-Workspace-Write-Waiter".to_string(),
+                        waiter_id.clone(),
+                    )]),
+                    idempotency_key: None,
+                }),
+            )
+        },
+    )
     .await
     {
         Ok(result) => Ok((result.id, result.name, result.token, result.workspace_id)),
@@ -1613,16 +1968,20 @@ mod tests {
     use httpmock::MockServer;
     use reqwest::StatusCode;
     use serde_json::{json, Value};
+    use uuid::Uuid;
 
     use super::{
         hash_identity_key, is_agent_token_invalid, is_agent_token_invalid_anyhow,
         is_agent_token_invalid_code, is_transient_server_error, is_workspace_busy_anyhow,
         is_workspace_busy_error, reclaim_legacy_identity, relay_error_to_anyhow,
         relay_request_with_timeout, resolve_relaycast_base_url, retry_transient_relay_error,
-        stable_node_identity_key, AuthClient, AuthHttpError, CredentialCache,
+        retry_typed_startup_registration_error_with_sleep, stable_node_identity_key,
+        workspace_busy_retry_allowed, AuthClient, AuthHttpError, CredentialCache,
         AGENT_TOKEN_INVALID_CODE, DEFAULT_RELAYCAST_BASE_URL, TRANSIENT_STARTUP_RETRY_BACKOFFS_MS,
+        WORKSPACE_BUSY_STARTUP_RETRY_DEADLINE, WORKSPACE_BUSY_STARTUP_RETRY_SAFETY_CAP,
     };
     use relaycast::RelayError;
+    use std::sync::atomic::Ordering;
 
     static RELAY_ENV_MUTEX: Mutex<()> = Mutex::new(());
 
@@ -1633,6 +1992,23 @@ mod tests {
             resolve_relaycast_base_url(Some("http://127.0.0.1:8787")),
             "http://127.0.0.1:8787"
         );
+    }
+
+    #[test]
+    fn startup_membership_waiter_preserves_single_format_and_indexes_multi() {
+        assert_eq!(
+            super::startup_membership_waiter_id(Some("relay-register:outer"), 0, 1),
+            Some("relay-register:outer".to_string())
+        );
+        assert_eq!(
+            super::startup_membership_waiter_id(Some("relay-register:outer"), 0, 2),
+            Some("relay-register:outer:membership-0".to_string())
+        );
+        assert_eq!(
+            super::startup_membership_waiter_id(Some("relay-register:outer"), 1, 2),
+            Some("relay-register:outer:membership-1".to_string())
+        );
+        assert_eq!(super::startup_membership_waiter_id(None, 0, 2), None);
     }
 
     #[tokio::test]
@@ -1987,6 +2363,166 @@ mod tests {
         server.abort();
     }
 
+    /// The startup registration path's `X-Workspace-Write-Waiter` header
+    /// must be identical across every attempt of one `startup_session` call
+    /// (proving one opaque id per logical retry cycle, not one per HTTP
+    /// attempt), a fresh `startup_session` call is a distinct logical retry
+    /// cycle and must get a different value, the header must never carry
+    /// the workspace API key or agent bearer token, and its value must
+    /// follow the exact `relay-register:<uuid>` format.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn startup_registration_waiter_is_stable_per_cycle_and_distinct_across_cycles() {
+        use std::sync::{atomic::AtomicUsize, Arc, Mutex as StdMutex};
+
+        use axum::{
+            extract::State,
+            http::{HeaderMap, StatusCode as AxumStatusCode},
+            routing::post,
+            Json, Router,
+        };
+
+        #[derive(Clone)]
+        struct WaiterCaptureState {
+            attempts: Arc<AtomicUsize>,
+            waiters: Arc<StdMutex<Vec<Option<String>>>>,
+            agent_name: &'static str,
+            agent_id: &'static str,
+            token: &'static str,
+        }
+
+        async fn create_workspace(
+            State(_state): State<WaiterCaptureState>,
+        ) -> (AxumStatusCode, Json<Value>) {
+            (
+                AxumStatusCode::OK,
+                Json(json!({
+                    "ok": true,
+                    "data": {
+                        "workspace_id": "ws_new",
+                        "api_key": "rk_live_new",
+                        "created_at": "2025-01-01T00:00:00Z"
+                    }
+                })),
+            )
+        }
+
+        async fn register_agent(
+            State(state): State<WaiterCaptureState>,
+            headers: HeaderMap,
+        ) -> (AxumStatusCode, Json<Value>) {
+            let waiter = headers
+                .get("x-workspace-write-waiter")
+                .and_then(|value| value.to_str().ok())
+                .map(str::to_string);
+            state.waiters.lock().unwrap().push(waiter);
+            if state
+                .attempts
+                .fetch_add(1, std::sync::atomic::Ordering::SeqCst)
+                == 0
+            {
+                return (
+                    AxumStatusCode::SERVICE_UNAVAILABLE,
+                    Json(json!({
+                        "ok": false,
+                        "error": {
+                            "code": "database_overloaded",
+                            "message": "The database is temporarily overloaded."
+                        }
+                    })),
+                );
+            }
+            (
+                AxumStatusCode::OK,
+                Json(json!({
+                    "ok": true,
+                    "data": {
+                        "id": state.agent_id,
+                        "workspace_id": "ws_new",
+                        "name": state.agent_name,
+                        "token": state.token,
+                        "status": "online",
+                        "created_at": "2025-01-01T00:00:00Z"
+                    }
+                })),
+            )
+        }
+
+        async fn run_one_cycle(
+            agent_name: &'static str,
+            agent_id: &'static str,
+            token: &'static str,
+        ) -> Vec<Option<String>> {
+            let state = WaiterCaptureState {
+                attempts: Arc::new(AtomicUsize::new(0)),
+                waiters: Arc::new(StdMutex::new(Vec::new())),
+                agent_name,
+                agent_id,
+                token,
+            };
+            let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+            let address = listener.local_addr().unwrap();
+            let server_state = state.clone();
+            let server = tokio::spawn(async move {
+                axum::serve(
+                    listener,
+                    Router::new()
+                        .route("/v1/workspaces", post(create_workspace))
+                        .route("/v1/agents", post(register_agent))
+                        .with_state(server_state),
+                )
+                .await
+            });
+
+            let session = AuthClient::new(Some(format!("http://{address}")))
+                .startup_session(Some(agent_name))
+                .await
+                .expect("registration must succeed after one transient retry");
+            assert_eq!(session.token, token);
+            server.abort();
+
+            let waiters = state.waiters.lock().unwrap().clone();
+            waiters
+        }
+
+        let _env_guard = clear_relay_env();
+
+        let first_cycle_waiters = run_one_cycle("lead-one", "a1", "at_live_1").await;
+        assert_eq!(first_cycle_waiters.len(), 2, "one 503 then one success");
+        let first_waiter = first_cycle_waiters[0]
+            .clone()
+            .expect("X-Workspace-Write-Waiter must be present on the first attempt");
+        assert_eq!(
+            first_cycle_waiters[1],
+            Some(first_waiter.clone()),
+            "the waiter id must be identical across every attempt of one logical retry cycle"
+        );
+
+        // Exact format: `relay-register:<uuid>`.
+        let uuid_part = first_waiter
+            .strip_prefix("relay-register:")
+            .expect("waiter id must have the exact `relay-register:` prefix");
+        assert!(
+            Uuid::parse_str(uuid_part).is_ok(),
+            "waiter id suffix must be a valid UUID, got {uuid_part}"
+        );
+
+        // No credential leak: the workspace API key and the freshly minted
+        // agent bearer token must never appear inside the waiter value.
+        assert!(!first_waiter.contains("rk_live_new"));
+        assert!(!first_waiter.contains("at_live_1"));
+
+        // A second, distinct startup call is a distinct logical retry
+        // cycle and must mint a different waiter id.
+        let second_cycle_waiters = run_one_cycle("lead-two", "a2", "at_live_2").await;
+        let second_waiter = second_cycle_waiters[0]
+            .clone()
+            .expect("X-Workspace-Write-Waiter must be present on the second cycle too");
+        assert_ne!(
+            first_waiter, second_waiter,
+            "distinct logical retry cycles must never share a waiter id"
+        );
+    }
+
     /// A retried registration can turn into a 409, and the identity-mismatch
     /// rejection built from it is what an operator reads. It must carry the
     /// conflict's own request id and the real attempt total, not a synthetic
@@ -2297,11 +2833,11 @@ mod tests {
             "429 Too Many Requests",
             "workspace admission is busy",
             "request_id: workspace-busy-test",
-            "attempts: 3",
+            "attempts: 40",
         ] {
             assert!(message.contains(marker), "missing {marker}: {message}");
         }
-        register.assert_hits(3);
+        register.assert_hits(40);
         workspace.assert_hits(0);
         unsafe {
             std::env::remove_var("RELAY_API_KEY");
@@ -2401,16 +2937,404 @@ mod tests {
             "429 Too Many Requests",
             "Workspace write capacity is busy",
             "request_id: multi-workspace-busy-374",
-            "attempts: 3",
+            "attempts: 40",
         ] {
             assert!(message.contains(marker), "missing {marker}: {message}");
         }
-        busy_register.assert_hits(3);
+        busy_register.assert_hits(40);
         auth_register.assert_hits(1);
 
         unsafe {
             std::env::remove_var("RELAY_WORKSPACES_JSON");
         }
+    }
+
+    #[tokio::test]
+    async fn multi_workspace_hard_failure_rolls_back_successful_memberships() {
+        let _env_guard = clear_relay_env();
+        let server = MockServer::start();
+        unsafe {
+            std::env::set_var(
+                "RELAY_WORKSPACES_JSON",
+                r#"[{"workspace_id":"ws_success","api_key":"rk_live_success"},{"workspace_id":"ws_fail","api_key":"rk_live_fail"}]"#,
+            );
+        }
+
+        let success_register = server.mock(|when, then| {
+            when.method(POST)
+                .path("/v1/agents")
+                .header("authorization", "Bearer rk_live_success");
+            then.status(200)
+                .header("content-type", "application/json")
+                .body(
+                    r#"{"ok":true,"data":{"id":"agent-success","workspace_id":"ws_success","name":"lead","token":"at_live_success","status":"online","created_at":"2025-01-01T00:00:00Z"}}"#,
+                );
+        });
+        let failed_register = server.mock(|when, then| {
+            when.method(POST)
+                .path("/v1/agents")
+                .header("authorization", "Bearer rk_live_fail");
+            then.status(500)
+                .header("content-type", "application/json")
+                .body(r#"{"ok":false,"error":{"code":"internal_error","message":"boom"}}"#);
+        });
+        let rollback = server.mock(|when, then| {
+            when.method(POST)
+                .path("/v1/agents/release")
+                .header("authorization", "Bearer rk_live_success");
+            then.status(200).header("content-type", "application/json").body(
+                json!({
+                    "ok": true,
+                    "data": {
+                        "invocation_id": "cleanup-1",
+                        "action_name": "release",
+                        "handler_agent_id": null,
+                        "handler_node_id": "node_1",
+                        "dispatched_node_id": "node_1",
+                        "input": {
+                            "name": "lead",
+                            "reason": "rolled back after a sibling multi-workspace registration failed"
+                        },
+                        "status": "dispatched",
+                        "created_at": "2026-08-15T00:00:00.000Z"
+                    }
+                })
+                .to_string(),
+            );
+        });
+
+        let error = AuthClient::new(Some(server.base_url()))
+            .startup_session_set(Some("lead"))
+            .await
+            .expect_err("a hard membership failure must fail the whole multi-workspace startup");
+        let message = format!("{error:#}");
+        assert!(
+            message.contains("failed registering agent for configured workspace"),
+            "unexpected failure: {message}"
+        );
+        success_register.assert_hits(1);
+        failed_register.assert_hits(1);
+        rollback.assert_hits(1);
+
+        unsafe {
+            std::env::remove_var("RELAY_WORKSPACES_JSON");
+        }
+    }
+
+    /// Multi-workspace admission must not serialize one busy membership in
+    /// front of later memberships. Each membership also gets a distinct queue
+    /// waiter derived from the caller's logical handshake waiter, while the
+    /// membership's own retry attempts retain that value.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn multi_workspace_registration_is_concurrent_and_waiters_are_stable() {
+        use std::collections::HashMap;
+        use std::sync::{
+            atomic::{AtomicUsize, Ordering},
+            Arc, Mutex as StdMutex,
+        };
+
+        use axum::{
+            extract::State,
+            http::{HeaderMap, StatusCode as AxumStatusCode},
+            routing::post,
+            Json, Router,
+        };
+        use tokio::sync::Notify;
+
+        #[derive(Clone)]
+        struct RegistrationState {
+            first_a_attempts: Arc<AtomicUsize>,
+            b_seen: Arc<Notify>,
+            waiters: Arc<StdMutex<HashMap<String, Vec<String>>>>,
+        }
+
+        async fn register_agent(
+            State(state): State<RegistrationState>,
+            headers: HeaderMap,
+        ) -> (AxumStatusCode, Json<Value>) {
+            let authorization = headers
+                .get("authorization")
+                .and_then(|value| value.to_str().ok())
+                .unwrap_or_default()
+                .to_string();
+            let waiter = headers
+                .get("x-workspace-write-waiter")
+                .and_then(|value| value.to_str().ok())
+                .unwrap_or_default()
+                .to_string();
+            state
+                .waiters
+                .lock()
+                .unwrap()
+                .entry(authorization.clone())
+                .or_default()
+                .push(waiter);
+
+            if authorization == "Bearer rk_live_a" {
+                if state.first_a_attempts.fetch_add(1, Ordering::SeqCst) == 0 {
+                    // If registration were still serial, this await would
+                    // never complete because membership B could not start.
+                    state.b_seen.notified().await;
+                    return (
+                        AxumStatusCode::SERVICE_UNAVAILABLE,
+                        Json(json!({
+                            "ok": false,
+                            "error": {
+                                "code": "database_overloaded",
+                                "message": "The database is temporarily overloaded."
+                            }
+                        })),
+                    );
+                }
+                return (
+                    AxumStatusCode::OK,
+                    Json(json!({
+                        "ok": true,
+                        "data": {
+                            "id": "agent-a",
+                            "workspace_id": "ws-a",
+                            "name": "lead",
+                            "token": "at_live_a",
+                            "status": "online",
+                            "created_at": "2025-01-01T00:00:00Z"
+                        }
+                    })),
+                );
+            }
+
+            // notify_one retains a permit if B arrives before A begins
+            // waiting, so scheduler order cannot make the test flaky.
+            state.b_seen.notify_one();
+            (
+                AxumStatusCode::OK,
+                Json(json!({
+                    "ok": true,
+                    "data": {
+                        "id": "agent-b",
+                        "workspace_id": "ws-b",
+                        "name": "lead",
+                        "token": "at_live_b",
+                        "status": "online",
+                        "created_at": "2025-01-01T00:00:00Z"
+                    }
+                })),
+            )
+        }
+
+        let _env_guard = clear_relay_env();
+        unsafe {
+            std::env::set_var(
+                "RELAY_WORKSPACES_JSON",
+                r#"[{"workspace_id":"ws-a","api_key":"rk_live_a"},{"workspace_id":"ws-b","api_key":"rk_live_b"}]"#,
+            );
+            std::env::set_var("RELAY_DEFAULT_WORKSPACE", "ws-b");
+        }
+
+        let state = RegistrationState {
+            first_a_attempts: Arc::new(AtomicUsize::new(0)),
+            b_seen: Arc::new(Notify::new()),
+            waiters: Arc::new(StdMutex::new(HashMap::new())),
+        };
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let server = tokio::spawn({
+            let state = state.clone();
+            async move {
+                axum::serve(
+                    listener,
+                    Router::new()
+                        .route("/v1/agents", post(register_agent))
+                        .with_state(state),
+                )
+                .await
+            }
+        });
+
+        let result = tokio::time::timeout(
+            std::time::Duration::from_secs(3),
+            AuthClient::new(Some(format!("http://{address}")))
+                .startup_session_set_with_identity_and_waiter(
+                    Some("lead"),
+                    false,
+                    None,
+                    None,
+                    Some("relay-register:logical-handshake"),
+                ),
+        )
+        .await
+        .expect("later memberships must not wait behind a busy first membership")
+        .expect("both memberships should register");
+
+        server.abort();
+        assert_eq!(
+            result
+                .memberships
+                .iter()
+                .map(|session| session.credentials.workspace_id.as_str())
+                .collect::<Vec<_>>(),
+            vec!["ws-a", "ws-b"],
+            "concurrent completion must not reorder membership results"
+        );
+        assert_eq!(result.default_workspace_id.as_deref(), Some("ws-b"));
+
+        let waiters = state.waiters.lock().unwrap();
+        let a_waiters = waiters.get("Bearer rk_live_a").unwrap();
+        let b_waiters = waiters.get("Bearer rk_live_b").unwrap();
+        assert_eq!(a_waiters.len(), 2, "A must retry once after its typed 503");
+        assert_eq!(a_waiters[0], a_waiters[1]);
+        assert_eq!(
+            a_waiters[0],
+            "relay-register:logical-handshake:membership-0"
+        );
+        assert_eq!(
+            b_waiters,
+            &["relay-register:logical-handshake:membership-1"]
+        );
+        assert_ne!(a_waiters[0], b_waiters[0]);
+
+        unsafe {
+            std::env::remove_var("RELAY_DEFAULT_WORKSPACE");
+            std::env::remove_var("RELAY_WORKSPACES_JSON");
+        }
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn no_key_startup_times_out_workspace_creation_independently() {
+        use axum::{routing::post, Router};
+
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let server = tokio::spawn(async move {
+            async fn create_workspace() -> axum::Json<Value> {
+                tokio::time::sleep(std::time::Duration::from_secs(31)).await;
+                axum::Json(json!({
+                    "ok": true,
+                    "data": {
+                        "workspace_id": "ws_new",
+                        "api_key": "rk_live_new",
+                        "created_at": "2025-01-01T00:00:00Z"
+                    }
+                }))
+            }
+
+            axum::serve(
+                listener,
+                Router::new().route("/v1/workspaces", post(create_workspace)),
+            )
+            .await
+        });
+
+        let startup = tokio::spawn({
+            let client = AuthClient::new(Some(format!("http://{address}")));
+            async move {
+                client
+                    .startup_fresh_workspace_session_set(
+                        Some("lead"),
+                        false,
+                        None,
+                        None,
+                        None,
+                        Some(tokio::time::Instant::now() + std::time::Duration::from_secs(44)),
+                    )
+                    .await
+            }
+        });
+
+        tokio::time::advance(std::time::Duration::from_secs(31)).await;
+        let error = startup
+            .await
+            .expect("startup task should join")
+            .expect_err("fresh no-key startup must time out the workspace-creation phase");
+        let message = format!("{error:#}");
+        assert!(
+            message.contains("creating a Relaycast workspace timed out"),
+            "unexpected no-key startup failure: {message}"
+        );
+
+        server.abort();
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn fresh_workspace_startup_succeeds_after_slow_creation() {
+        use std::sync::{
+            atomic::{AtomicUsize, Ordering},
+            Arc,
+        };
+
+        tokio::task::yield_now().await;
+        tokio::time::sleep(std::time::Duration::from_millis(9_500)).await;
+        let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(44);
+
+        let attempts = Arc::new(AtomicUsize::new(0));
+        let attempts_clone = attempts.clone();
+        retry_typed_startup_registration_error_with_sleep::<(), _, _, _, _>(
+            "registering the broker agent",
+            Some(deadline),
+            move || {
+                let attempts = attempts_clone.clone();
+                async move {
+                    let attempt = attempts.fetch_add(1, Ordering::SeqCst) + 1;
+                    assert_eq!(attempt, 1);
+                    Ok::<(), RelayError>(())
+                }
+            },
+            |_| async {},
+        )
+        .await
+        .expect("shared deadline should allow slow creation then immediate success");
+
+        assert_eq!(attempts.load(Ordering::SeqCst), 1);
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn fresh_workspace_startup_retries_workspace_busy_with_shared_deadline() {
+        use std::sync::{
+            atomic::{AtomicUsize, Ordering},
+            Arc, Mutex as StdMutex,
+        };
+
+        tokio::task::yield_now().await;
+        tokio::time::sleep(std::time::Duration::from_millis(9_500)).await;
+        let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(44);
+
+        let calls = Arc::new(AtomicUsize::new(0));
+        let slept = Arc::new(StdMutex::new(Vec::new()));
+        let calls_clone = calls.clone();
+        let slept_clone = slept.clone();
+
+        retry_typed_startup_registration_error_with_sleep::<(), _, _, _, _>(
+            "registering the broker agent",
+            Some(deadline),
+            move || {
+                let calls = calls_clone.clone();
+                async move {
+                    let attempt = calls.fetch_add(1, Ordering::SeqCst) + 1;
+                    if attempt == 1 {
+                        Err::<(), _>(RelayError::api(
+                            "workspace_busy",
+                            format!("Workspace write capacity is busy on attempt {attempt}"),
+                            429,
+                        ))
+                    } else {
+                        Ok::<(), _>(())
+                    }
+                }
+            },
+            move |backoff| {
+                let slept = slept_clone.clone();
+                async move {
+                    slept.lock().unwrap().push(backoff);
+                }
+            },
+        )
+        .await
+        .expect("shared deadline should allow retry and succeed");
+
+        assert_eq!(calls.load(Ordering::SeqCst), 2);
+        assert_eq!(
+            slept.lock().unwrap().as_slice(),
+            &[std::time::Duration::from_secs(1)]
+        );
     }
 
     /// Full `startup_session` HTTP-path proof for the outer admission
@@ -2478,7 +3402,11 @@ mod tests {
                 "error for {code:?} should describe the rate limit: {message}"
             );
 
-            register.assert_hits(1);
+            assert_eq!(
+                register.hits(),
+                1,
+                "near-match/unrelated code {code:?} must not be retried"
+            );
             workspace.assert_hits(0);
 
             unsafe {
@@ -2582,16 +3510,14 @@ mod tests {
 
     #[test]
     fn transient_retry_requires_both_a_safe_code_and_server_status() {
-        assert!(is_transient_server_error(&RelayError::api(
-            "database_overloaded",
-            "overloaded",
-            503,
-        )));
-        assert!(is_transient_server_error(&RelayError::api(
-            "workspace_storage_unavailable",
-            "storage unavailable",
-            502,
-        )));
+        for code in ["database_overloaded", "workspace_storage_unavailable"] {
+            for status in [500, 502, 503, 504] {
+                assert!(
+                    is_transient_server_error(&RelayError::api(code, "overloaded", status)),
+                    "exact code {code:?} should be retryable for HTTP {status}"
+                );
+            }
+        }
         assert!(!is_transient_server_error(&RelayError::api(
             "database_overloaded",
             "conflict",
@@ -2602,6 +3528,40 @@ mod tests {
             "server failure",
             500,
         )));
+    }
+
+    /// These are deliberately unkeyed `/v1/agents` POSTs. A near-match typed
+    /// code is not proof of a pre-commit overload, so replaying it could create
+    /// a duplicate agent after a response that arrived post-commit.
+    #[tokio::test]
+    async fn transient_5xx_near_match_codes_are_terminal_without_replay() {
+        for code in [
+            "DATABASE_OVERLOADED",
+            "database_overloaded_extra",
+            "extra_database_overloaded",
+            " database_overloaded",
+            "database_overloaded ",
+            "WORKSPACE_STORAGE_UNAVAILABLE",
+            "workspace_storage_unavailable_extra",
+            "extra_workspace_storage_unavailable",
+            " workspace_storage_unavailable",
+            "workspace_storage_unavailable ",
+        ] {
+            let calls = std::sync::atomic::AtomicUsize::new(0);
+            let error = retry_transient_relay_error("registering an unkeyed agent", || {
+                calls.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                async move { Err::<(), _>(RelayError::api(code, "typed overload near-match", 503)) }
+            })
+            .await
+            .expect_err("a near-match 5xx code must remain terminal");
+
+            assert_eq!(
+                calls.load(std::sync::atomic::Ordering::SeqCst),
+                1,
+                "near-match code {code:?} must not replay an unkeyed POST"
+            );
+            assert!(!is_transient_server_error(&error));
+        }
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -2783,6 +3743,186 @@ mod tests {
         unsafe {
             std::env::remove_var("AGENT_RELAY_WORKSPACE_KEY");
         }
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn explicit_workspace_key_workspace_busy_is_retried_with_stable_waiter() {
+        use std::sync::{
+            atomic::{AtomicUsize, Ordering},
+            Arc, Mutex as StdMutex,
+        };
+
+        use axum::{
+            extract::State, http::StatusCode as AxumStatusCode, routing::post, Json, Router,
+        };
+
+        #[derive(Clone)]
+        struct RetryState {
+            attempts: Arc<AtomicUsize>,
+            waiters: Arc<StdMutex<Vec<Option<String>>>>,
+        }
+
+        async fn register(
+            State(state): State<RetryState>,
+            headers: axum::http::HeaderMap,
+        ) -> (AxumStatusCode, Json<Value>) {
+            let waiter = headers
+                .get("x-workspace-write-waiter")
+                .and_then(|value| value.to_str().ok())
+                .map(str::to_string);
+            state.waiters.lock().unwrap().push(waiter);
+            if state.attempts.fetch_add(1, Ordering::SeqCst) == 0 {
+                return (
+                    AxumStatusCode::TOO_MANY_REQUESTS,
+                    Json(json!({
+                        "ok": false,
+                        "error": {
+                            "code": "workspace_busy",
+                            "message": "Workspace write capacity is busy; retry with backoff"
+                        }
+                    })),
+                );
+            }
+            (
+                AxumStatusCode::OK,
+                Json(json!({
+                    "ok": true,
+                    "data": {
+                        "id": "a3",
+                        "workspace_id": "ws_env_retry",
+                        "name": "lead",
+                        "token": "at_live_3",
+                        "status": "online",
+                        "created_at": "2025-01-01T00:00:00Z"
+                    }
+                })),
+            )
+        }
+
+        let _env_guard = clear_relay_env();
+        unsafe {
+            std::env::set_var("AGENT_RELAY_WORKSPACE_KEY", "rk_live_env_retry");
+        }
+
+        let state = RetryState {
+            attempts: Arc::new(AtomicUsize::new(0)),
+            waiters: Arc::new(StdMutex::new(Vec::new())),
+        };
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let server_state = state.clone();
+        let server = tokio::spawn(async move {
+            axum::serve(
+                listener,
+                Router::new()
+                    .route("/v1/agents", post(register))
+                    .with_state(server_state),
+            )
+            .await
+        });
+
+        let session = AuthClient::new(Some(format!("http://{address}")))
+            .startup_session(Some("lead"))
+            .await
+            .expect("a typed workspace_busy startup overload must be retried");
+
+        let waiters = state.waiters.lock().unwrap().clone();
+        assert_eq!(waiters.len(), 2);
+        assert_eq!(waiters[0], waiters[1]);
+        let waiter = waiters[0].as_deref().expect("waiter header must be set");
+        assert!(
+            waiter.starts_with("relay-register:"),
+            "waiter header must use the stable startup identity format"
+        );
+        assert_eq!(session.token, "at_live_3");
+        assert_eq!(session.credentials.workspace_id, "ws_env_retry");
+        assert_eq!(state.attempts.load(Ordering::SeqCst), 2);
+
+        server.abort();
+        unsafe {
+            std::env::remove_var("AGENT_RELAY_WORKSPACE_KEY");
+        }
+    }
+
+    #[tokio::test]
+    async fn explicit_workspace_key_persistent_workspace_busy_exhausts_after_budget() {
+        use std::sync::{atomic::AtomicUsize, Arc, Mutex as StdMutex};
+
+        let calls = Arc::new(AtomicUsize::new(0));
+        let slept = Arc::new(StdMutex::new(Vec::new()));
+        let calls_clone = calls.clone();
+        let slept_clone = slept.clone();
+
+        let error = retry_typed_startup_registration_error_with_sleep::<(), _, _, _, _>(
+            "registering the broker agent",
+            None,
+            move || {
+                let calls = calls_clone.clone();
+                async move {
+                    let attempt = calls.fetch_add(1, Ordering::SeqCst) + 1;
+                    Err::<(), _>(RelayError::api(
+                        "workspace_busy",
+                        format!("Workspace write capacity is busy on attempt {attempt}"),
+                        429,
+                    ))
+                }
+            },
+            move |backoff| {
+                let slept = slept_clone.clone();
+                async move {
+                    slept.lock().unwrap().push(backoff);
+                }
+            },
+        )
+        .await
+        .expect_err("persistent typed 429s must exhaust the startup retry budget");
+
+        // This deterministic no-clock test reaches the independent safety cap
+        // without sleeping. Production also stops at the finite handshake
+        // deadline, so the cap is not a claim about queue depth.
+        let slept = slept.lock().unwrap().clone();
+        assert_eq!(calls.load(Ordering::SeqCst), 64);
+        assert_eq!(slept, vec![std::time::Duration::from_secs(1); 63]);
+        match error {
+            RelayError::Api {
+                code,
+                status,
+                attempts,
+                ..
+            } => {
+                assert_eq!(code, "workspace_busy");
+                assert_eq!(status, 429);
+                assert_eq!(attempts, 64);
+            }
+            other => panic!("expected terminal typed 429 diagnostics, got {other}"),
+        }
+    }
+
+    #[test]
+    fn workspace_busy_startup_policy_is_deadline_and_cap_bounded() {
+        // A queue that needs more than the old eleven observed turns is still
+        // eligible while the handshake deadline has room.
+        assert!(workspace_busy_retry_allowed(
+            12,
+            std::time::Duration::from_secs(10),
+            std::time::Duration::from_secs(1),
+            WORKSPACE_BUSY_STARTUP_RETRY_DEADLINE,
+            WORKSPACE_BUSY_STARTUP_RETRY_SAFETY_CAP,
+        ));
+        assert!(!workspace_busy_retry_allowed(
+            WORKSPACE_BUSY_STARTUP_RETRY_SAFETY_CAP,
+            std::time::Duration::from_secs(1),
+            std::time::Duration::from_secs(1),
+            WORKSPACE_BUSY_STARTUP_RETRY_DEADLINE,
+            WORKSPACE_BUSY_STARTUP_RETRY_SAFETY_CAP,
+        ));
+        assert!(!workspace_busy_retry_allowed(
+            12,
+            WORKSPACE_BUSY_STARTUP_RETRY_DEADLINE - std::time::Duration::from_secs(1),
+            std::time::Duration::from_secs(1),
+            WORKSPACE_BUSY_STARTUP_RETRY_DEADLINE,
+            WORKSPACE_BUSY_STARTUP_RETRY_SAFETY_CAP,
+        ));
     }
 
     #[tokio::test]

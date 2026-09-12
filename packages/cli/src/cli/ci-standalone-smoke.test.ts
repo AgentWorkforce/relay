@@ -228,9 +228,12 @@ describe('ci-standalone-smoke workspace reuse', () => {
     const smokeSeconds = Number(
       script.match(/AGENT_RELAY_STANDALONE_STARTUP_TIMEOUT_SECONDS:-([0-9]+)}/)?.[1]
     );
-    const brokerSeconds = Number(
-      brokerSession.match(/const HANDSHAKE_TOTAL_TIMEOUT:[^=]+=[\s\n]*Duration::from_secs\(([0-9]+)\);/)?.[1]
+    const brokerTimeoutMatch = brokerSession.match(
+      /const HANDSHAKE_TOTAL_TIMEOUT\s*:\s*Duration\s*=\s*Duration::from_secs\(([0-9]+)\);/
     );
+    expect(brokerTimeoutMatch).not.toBeNull();
+    const brokerSeconds = Number(brokerTimeoutMatch?.[1]);
+    expect(Number.isFinite(brokerSeconds)).toBe(true);
 
     expect(minimumSeconds).toBeGreaterThanOrEqual(brokerSeconds + 10);
     expect(smokeSeconds).toBeGreaterThanOrEqual(minimumSeconds);
@@ -239,13 +242,13 @@ describe('ci-standalone-smoke workspace reuse', () => {
 
   it('rejects unsafe startup-timeout overrides before invoking binaries', () => {
     for (const [override, expectedMessage] of [
-      ['49', 'must be at least 50s'],
+      ['59', 'must be at least 60s'],
       ['050', 'without leading zeros'],
       ['060', 'without leading zeros'],
       ['08', 'without leading zeros'],
       ['241', 'must be no more than 240s'],
       ['99999', 'must be no more than 240s'],
-      ['9223372036854775808', 'between 50s and 240s'],
+      ['9223372036854775808', 'between 60s and 240s'],
     ]) {
       const { cli, broker, invocationLog } = createFakeBinaries();
       const result = spawnSync('bash', [smokeScript, cli, broker], {
@@ -467,7 +470,7 @@ describe('ci-standalone-smoke workspace reuse', () => {
       env: {
         ...process.env,
         AGENT_RELAY_STANDALONE_BROKER_NAME: 'relay-ci-test-c',
-        AGENT_RELAY_STANDALONE_STARTUP_TIMEOUT_SECONDS: '50',
+        AGENT_RELAY_STANDALONE_STARTUP_TIMEOUT_SECONDS: '60',
         FAKE_READY_AFTER_SECOND_DOWN: '1',
         INVOCATION_LOG: invocationLog,
         BASH_ENV: bashEnv,
