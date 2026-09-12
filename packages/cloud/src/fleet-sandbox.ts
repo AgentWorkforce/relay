@@ -367,7 +367,9 @@ function validateRepoRevisions(
       throw new Error(`Cloud fleet sandbox repository revision '${repo}' is not present in repos.`);
     }
     if (!REPOSITORY_REVISION_PATTERN.test(revision)) {
-      throw new Error(`Cloud fleet sandbox revision for '${repo}' must be exactly 40 lowercase hexadecimal characters.`);
+      throw new Error(
+        `Cloud fleet sandbox revision for '${repo}' must be exactly 40 lowercase hexadecimal characters.`
+      );
     }
   }
   return Object.fromEntries(entries);
