@@ -249,12 +249,13 @@ fn format_handshake_timeout_error(
 async fn await_no_key_startup<T, F>(
     startup: F,
     attempt_timeout: Duration,
+    handshake_deadline: tokio::time::Instant,
     handshake_started: Instant,
 ) -> Result<T>
 where
     F: std::future::Future<Output = Result<T>>,
 {
-    match timeout(HANDSHAKE_TOTAL_TIMEOUT, startup).await {
+    match tokio::time::timeout_at(handshake_deadline, startup).await {
         Ok(result) => result.context("failed to initialize relaycast session"),
         Err(_) => anyhow::bail!(format_handshake_timeout_error(
             1,
@@ -327,6 +328,7 @@ pub(crate) async fn connect_relay(opts: RelaySessionOptions<'_>) -> Result<Relay
     let max_attempts = handshake_max_attempts();
     let mut backoff = HANDSHAKE_BACKOFF_BASE;
     let handshake_started = Instant::now();
+    let handshake_deadline = tokio::time::Instant::now() + HANDSHAKE_TOTAL_TIMEOUT;
     // Prove this is the SAME node restarting, not a different one squatting
     // the name: honor an explicit override, else fall back to a value stable
     // across restarts of this node's own persisted state directory. Without
@@ -405,14 +407,16 @@ pub(crate) async fn connect_relay(opts: RelaySessionOptions<'_>) -> Result<Relay
         }
     } else {
         await_no_key_startup(
-            auth.startup_session_set_with_identity_and_waiter(
+            auth.startup_fresh_workspace_session_set(
                 Some(opts.requested_name),
                 opts.strict_name,
                 opts.agent_type,
                 Some(derived_identity_key.as_str()),
                 Some(startup_waiter_id.as_str()),
+                Some(handshake_deadline),
             ),
             attempt_timeout,
+            handshake_deadline,
             handshake_started,
         )
         .await?
@@ -686,6 +690,7 @@ mod tests {
         let error = await_no_key_startup(
             std::future::pending::<Result<()>>(),
             HANDSHAKE_ATTEMPT_TIMEOUT,
+            tokio::time::Instant::now() + HANDSHAKE_TOTAL_TIMEOUT,
             handshake_started,
         )
         .await

@@ -70,6 +70,16 @@ struct EnvWorkspaceKey {
     explicit_join: bool,
 }
 
+#[derive(Clone, Copy)]
+struct StartupRegistrationOptions<'a> {
+    requested_name: Option<&'a str>,
+    strict_name: bool,
+    agent_type: Option<&'a str>,
+    identity_key: Option<&'a str>,
+    waiter_id: Option<&'a str>,
+    startup_deadline: Option<tokio::time::Instant>,
+}
+
 impl CredentialSet {
     pub fn from_json(raw: &str) -> Result<Self> {
         let value: Value = serde_json::from_str(raw).context("invalid credential set JSON")?;
@@ -420,11 +430,14 @@ impl AuthClient {
                         let registration = self
                             .register_agent_with_workspace_key(
                                 &api_key,
-                                preferred_name,
-                                strict_name,
-                                agent_type,
-                                identity_key,
-                                membership_waiter_id.as_deref(),
+                                StartupRegistrationOptions {
+                                    requested_name: preferred_name,
+                                    strict_name,
+                                    agent_type,
+                                    identity_key,
+                                    waiter_id: membership_waiter_id.as_deref(),
+                                    startup_deadline: None,
+                                },
                             )
                             .await;
                         (source, api_key, registration)
@@ -537,11 +550,14 @@ impl AuthClient {
                 let registration = self
                     .register_agent_with_workspace_key(
                         &api_key,
-                        Some(agent_name),
-                        false,
-                        None,
-                        agent_identity_key().as_deref(),
-                        None,
+                        StartupRegistrationOptions {
+                            requested_name: Some(agent_name),
+                            strict_name: false,
+                            agent_type: None,
+                            identity_key: agent_identity_key().as_deref(),
+                            waiter_id: None,
+                            startup_deadline: None,
+                        },
                     )
                     .await
                     .context("failed to re-register after rotate-token 404")?;
@@ -637,11 +653,14 @@ impl AuthClient {
             match self
                 .register_agent_with_workspace_key(
                     &candidate.key,
-                    preferred_name,
-                    strict_name,
-                    agent_type,
-                    identity_key,
-                    waiter_id,
+                    StartupRegistrationOptions {
+                        requested_name: preferred_name,
+                        strict_name,
+                        agent_type,
+                        identity_key,
+                        waiter_id,
+                        startup_deadline: None,
+                    },
                 )
                 .await
             {
@@ -707,37 +726,56 @@ impl AuthClient {
         }
 
         if !attempted_fresh_workspace {
-            let ws_name = deterministic_workspace_name();
-            let (workspace_id, api_key) = self.create_workspace(&ws_name).await?;
-            workspace_id_hint = Some(workspace_id);
-            match self
-                .register_agent_with_workspace_key(
-                    &api_key,
-                    preferred_name,
+            return self
+                .startup_fresh_workspace_session_set(
+                    requested_name,
                     strict_name,
                     agent_type,
                     identity_key,
                     waiter_id,
+                    None,
                 )
-                .await
-            {
-                Ok(registration) => {
-                    let session = self.finish_session(api_key, workspace_id_hint, registration)?;
-                    return Ok(AuthSessionSet {
-                        default_workspace_id: Some(session.credentials.workspace_id.clone()),
-                        memberships: vec![session],
-                    });
-                }
-                Err(error) => {
-                    return Err(error).context("failed registering agent with fresh workspace key");
-                }
-            }
+                .await;
         }
 
         anyhow::bail!(
             "all workspace keys were rejected ({})",
             auth_rejections.join(", ")
         );
+    }
+
+    pub(crate) async fn startup_fresh_workspace_session_set(
+        &self,
+        requested_name: Option<&str>,
+        strict_name: bool,
+        agent_type: Option<&str>,
+        identity_key: Option<&str>,
+        waiter_id: Option<&str>,
+        startup_deadline: Option<tokio::time::Instant>,
+    ) -> Result<AuthSessionSet> {
+        let ws_name = deterministic_workspace_name();
+        let (workspace_id, api_key) = self.create_workspace(&ws_name).await?;
+
+        let registration = self
+            .register_agent_with_workspace_key(
+                &api_key,
+                StartupRegistrationOptions {
+                    requested_name,
+                    strict_name,
+                    agent_type,
+                    identity_key,
+                    waiter_id,
+                    startup_deadline,
+                },
+            )
+            .await
+            .context("failed registering agent with fresh workspace key")?;
+
+        let session = self.finish_session(api_key, Some(workspace_id), registration)?;
+        Ok(AuthSessionSet {
+            default_workspace_id: Some(session.credentials.workspace_id.clone()),
+            memberships: vec![session],
+        })
     }
 
     fn load_workspace_sources_from_env(
@@ -946,26 +984,15 @@ impl AuthClient {
     async fn register_agent_with_workspace_key(
         &self,
         workspace_key: &str,
-        requested_name: Option<&str>,
-        _strict_name: bool,
-        agent_type: Option<&str>,
-        identity_key: Option<&str>,
-        waiter_id: Option<&str>,
+        options: StartupRegistrationOptions<'_>,
     ) -> Result<(String, String, String, Option<String>)> {
         let relay = build_relay_client(workspace_key, self.base_url.as_deref())?;
-        let name = requested_name
+        let name = options
+            .requested_name
             .map(ToOwned::to_owned)
             .unwrap_or_else(|| format!("agent-{}", Uuid::new_v4().simple()));
 
-        admit_agent_registration(
-            &relay,
-            workspace_key,
-            &name,
-            agent_type,
-            identity_key,
-            waiter_id,
-        )
-        .await
+        admit_agent_registration(&relay, workspace_key, &name, options).await
     }
 
     pub async fn workspace_key_is_live(&self, workspace_key: &str) -> Result<bool> {
@@ -1267,17 +1294,25 @@ where
 
 async fn retry_typed_startup_registration_error<T, F, Fut>(
     operation: &str,
+    startup_deadline: Option<tokio::time::Instant>,
     request: F,
 ) -> std::result::Result<T, RelayError>
 where
     F: FnMut() -> Fut,
     Fut: std::future::Future<Output = std::result::Result<T, RelayError>>,
 {
-    retry_typed_startup_registration_error_with_sleep(operation, request, tokio::time::sleep).await
+    retry_typed_startup_registration_error_with_sleep(
+        operation,
+        startup_deadline,
+        request,
+        tokio::time::sleep,
+    )
+    .await
 }
 
 async fn retry_typed_startup_registration_error_with_sleep<T, F, Fut, S, SFut>(
     operation: &str,
+    startup_deadline: Option<tokio::time::Instant>,
     mut request: F,
     mut sleep: S,
 ) -> std::result::Result<T, RelayError>
@@ -1301,7 +1336,8 @@ where
                     return Err(with_total_attempts(error, total_attempts));
                 }
 
-                let Some(backoff) = startup_retry_backoff(&error, retry, started) else {
+                let Some(backoff) = startup_retry_backoff(&error, retry, started, startup_deadline)
+                else {
                     return Err(with_total_attempts(error, total_attempts));
                 };
 
@@ -1336,20 +1372,28 @@ fn startup_retry_backoff(
     error: &RelayError,
     retry: usize,
     started: std::time::Instant,
+    startup_deadline: Option<tokio::time::Instant>,
 ) -> Option<std::time::Duration> {
     match error {
         RelayError::Api {
             status: 429, code, ..
         } if code == WORKSPACE_BUSY_CODE => {
-            let elapsed = started.elapsed();
-            workspace_busy_retry_allowed(
-                retry + 1,
-                elapsed,
-                WORKSPACE_BUSY_STARTUP_RETRY_BACKOFF,
-                WORKSPACE_BUSY_STARTUP_RETRY_DEADLINE,
-                WORKSPACE_BUSY_STARTUP_RETRY_SAFETY_CAP,
-            )
-            .then_some(WORKSPACE_BUSY_STARTUP_RETRY_BACKOFF)
+            if let Some(deadline) = startup_deadline {
+                let remaining = deadline.saturating_duration_since(tokio::time::Instant::now());
+                (retry + 1 < WORKSPACE_BUSY_STARTUP_RETRY_SAFETY_CAP
+                    && remaining > WORKSPACE_BUSY_STARTUP_RETRY_BACKOFF)
+                    .then_some(WORKSPACE_BUSY_STARTUP_RETRY_BACKOFF)
+            } else {
+                let elapsed = started.elapsed();
+                workspace_busy_retry_allowed(
+                    retry + 1,
+                    elapsed,
+                    WORKSPACE_BUSY_STARTUP_RETRY_BACKOFF,
+                    WORKSPACE_BUSY_STARTUP_RETRY_DEADLINE,
+                    WORKSPACE_BUSY_STARTUP_RETRY_SAFETY_CAP,
+                )
+                .then_some(WORKSPACE_BUSY_STARTUP_RETRY_BACKOFF)
+            }
         }
         _ => TRANSIENT_STARTUP_RETRY_BACKOFFS_MS
             .get(retry)
@@ -1523,10 +1567,17 @@ async fn admit_agent_registration(
     // key is still an accepted credential for reclaiming an agent's token.
     workspace_key: &str,
     name: &str,
-    agent_type: Option<&str>,
-    identity_key: Option<&str>,
-    supplied_waiter_id: Option<&str>,
+    options: StartupRegistrationOptions<'_>,
 ) -> Result<(String, String, String, Option<String>)> {
+    let StartupRegistrationOptions {
+        requested_name: _,
+        strict_name: _,
+        agent_type,
+        identity_key,
+        waiter_id: supplied_waiter_id,
+        startup_deadline,
+    } = options;
+
     let metadata = identity_key.map(|key| {
         let mut map = serde_json::Map::new();
         map.insert(
@@ -1572,19 +1623,23 @@ async fn admit_agent_registration(
         .as_agent(workspace_key)
         .map_err(relay_error_to_anyhow)?;
     let waiter_http = waiter_client.http_client();
-    match retry_typed_startup_registration_error("registering the broker agent", || {
-        waiter_http.post::<relaycast::CreateAgentResponse>(
-            "/v1/agents",
-            Some(&request),
-            Some(relaycast::RequestOptions {
-                headers: Some(vec![(
-                    "X-Workspace-Write-Waiter".to_string(),
-                    waiter_id.clone(),
-                )]),
-                idempotency_key: None,
-            }),
-        )
-    })
+    match retry_typed_startup_registration_error(
+        "registering the broker agent",
+        startup_deadline,
+        || {
+            waiter_http.post::<relaycast::CreateAgentResponse>(
+                "/v1/agents",
+                Some(&request),
+                Some(relaycast::RequestOptions {
+                    headers: Some(vec![(
+                        "X-Workspace-Write-Waiter".to_string(),
+                        waiter_id.clone(),
+                    )]),
+                    idempotency_key: None,
+                }),
+            )
+        },
+    )
     .await
     {
         Ok(result) => Ok((result.id, result.name, result.token, result.workspace_id)),
@@ -3147,7 +3202,6 @@ mod tests {
     async fn no_key_startup_times_out_workspace_creation_independently() {
         use axum::{routing::post, Router};
 
-        let _env_guard = clear_relay_env();
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let address = listener.local_addr().unwrap();
         let server = tokio::spawn(async move {
@@ -3174,7 +3228,14 @@ mod tests {
             let client = AuthClient::new(Some(format!("http://{address}")));
             async move {
                 client
-                    .startup_session_set_with_identity(Some("lead"), false, None, None)
+                    .startup_fresh_workspace_session_set(
+                        Some("lead"),
+                        false,
+                        None,
+                        None,
+                        None,
+                        Some(tokio::time::Instant::now() + std::time::Duration::from_secs(44)),
+                    )
                     .await
             }
         });
@@ -3191,6 +3252,89 @@ mod tests {
         );
 
         server.abort();
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn fresh_workspace_startup_succeeds_after_slow_creation() {
+        use std::sync::{
+            atomic::{AtomicUsize, Ordering},
+            Arc,
+        };
+
+        tokio::task::yield_now().await;
+        tokio::time::sleep(std::time::Duration::from_millis(9_500)).await;
+        let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(44);
+
+        let attempts = Arc::new(AtomicUsize::new(0));
+        let attempts_clone = attempts.clone();
+        retry_typed_startup_registration_error_with_sleep::<(), _, _, _, _>(
+            "registering the broker agent",
+            Some(deadline),
+            move || {
+                let attempts = attempts_clone.clone();
+                async move {
+                    let attempt = attempts.fetch_add(1, Ordering::SeqCst) + 1;
+                    assert_eq!(attempt, 1);
+                    Ok::<(), RelayError>(())
+                }
+            },
+            |_| async {},
+        )
+        .await
+        .expect("shared deadline should allow slow creation then immediate success");
+
+        assert_eq!(attempts.load(Ordering::SeqCst), 1);
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn fresh_workspace_startup_retries_workspace_busy_with_shared_deadline() {
+        use std::sync::{
+            atomic::{AtomicUsize, Ordering},
+            Arc, Mutex as StdMutex,
+        };
+
+        tokio::task::yield_now().await;
+        tokio::time::sleep(std::time::Duration::from_millis(9_500)).await;
+        let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(44);
+
+        let calls = Arc::new(AtomicUsize::new(0));
+        let slept = Arc::new(StdMutex::new(Vec::new()));
+        let calls_clone = calls.clone();
+        let slept_clone = slept.clone();
+
+        retry_typed_startup_registration_error_with_sleep::<(), _, _, _, _>(
+            "registering the broker agent",
+            Some(deadline),
+            move || {
+                let calls = calls_clone.clone();
+                async move {
+                    let attempt = calls.fetch_add(1, Ordering::SeqCst) + 1;
+                    if attempt == 1 {
+                        Err::<(), _>(RelayError::api(
+                            "workspace_busy",
+                            format!("Workspace write capacity is busy on attempt {attempt}"),
+                            429,
+                        ))
+                    } else {
+                        Ok::<(), _>(())
+                    }
+                }
+            },
+            move |backoff| {
+                let slept = slept_clone.clone();
+                async move {
+                    slept.lock().unwrap().push(backoff);
+                }
+            },
+        )
+        .await
+        .expect("shared deadline should allow retry and succeed");
+
+        assert_eq!(calls.load(Ordering::SeqCst), 2);
+        assert_eq!(
+            slept.lock().unwrap().as_slice(),
+            &[std::time::Duration::from_secs(1)]
+        );
     }
 
     /// Full `startup_session` HTTP-path proof for the outer admission
@@ -3711,6 +3855,7 @@ mod tests {
 
         let error = retry_typed_startup_registration_error_with_sleep::<(), _, _, _, _>(
             "registering the broker agent",
+            None,
             move || {
                 let calls = calls_clone.clone();
                 async move {
