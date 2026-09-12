@@ -47,11 +47,17 @@ try {
     }
     if (-not $value) { return $null }
     try {
-      if ($value -eq 'S-1-3-0') { return $OwnerSid }
+      $sid = $null
       if ($value -match '^S-\d-(?:\d+-){1,}\d+$') {
-        return ([Security.Principal.SecurityIdentifier]::new($value)).Value
+        $sid = ([Security.Principal.SecurityIdentifier]::new($value)).Value
+      } else {
+        $sid = ([Security.Principal.NTAccount]::new($value)).Translate([Security.Principal.SecurityIdentifier]).Value
       }
-      return ([Security.Principal.NTAccount]::new($value)).Translate([Security.Principal.SecurityIdentifier]).Value
+      # Get-Acl commonly returns a localized NTAccount (for example,
+      # "CREATOR OWNER") rather than the well-known SID directly. Resolve
+      # first, then bind this inherited principal to the validated owner.
+      if ($sid -eq 'S-1-3-0') { return $OwnerSid }
+      return $sid
     } catch {
       return $null
     }
