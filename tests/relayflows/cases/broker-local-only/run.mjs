@@ -199,6 +199,7 @@ try {
     assert.equal(health.relaycastConnected, false);
     const session = (await request('/api/session')).data;
     assert.equal(session.operation_mode, 'local_only');
+    assert.equal(session.mode, 'persist', '/api/session must agree with /api/session/renew');
     assert.equal(session.workspace_key, null);
     assert.equal(session.node_token, null);
     const isolated = await request('/api/spawn', {

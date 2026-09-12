@@ -6478,7 +6478,7 @@ async fn http_spawn_binding_failure_stops_before_launch_and_cleans_owned_identit
 }
 
 #[tokio::test]
-async fn name_only_release_of_retired_owned_worker_deletes_directly_and_is_idempotent() {
+async fn generation_bound_release_of_retired_owned_worker_deletes_directly_and_is_idempotent() {
     use crate::listen_api::ListenApiRequest;
     use httpmock::{Method::POST, MockServer};
     use tokio::sync::oneshot;
@@ -6560,16 +6560,16 @@ async fn name_only_release_of_retired_owned_worker_deletes_directly_and_is_idemp
         .workers
         .completed_owned_releases
         .contains(&(name.clone(), generation)));
-    // A repeated name-only release must use the completed tombstone and must
-    // not route a second mutation through the host or a replacement identity.
+    // A repeated release must use the completed tombstone only when the
+    // caller still names the exact retired generation.
     let (reply, repeated) = oneshot::channel();
     fixture
         .runtime
         .handle_api_request(ListenApiRequest::Release {
             name: name.clone(),
             reason: None,
-            expected_generation: None,
-            delete_identity: false,
+            expected_generation: Some(generation.to_string()),
+            delete_identity: true,
             reply,
         })
         .await;
@@ -6581,7 +6581,7 @@ async fn name_only_release_of_retired_owned_worker_deletes_directly_and_is_idemp
     assert_eq!(repeated["identity"], "deleted");
     release.assert_hits(1);
 
-    // Reusing the same name must not let the stale tombstone suppress the new
+    // Reusing the same name must not let the stale tombstone suppress a new
     // generation's cleanup.
     let replacement_generation = Uuid::new_v4();
     let replacement_http =
@@ -6707,11 +6707,37 @@ async fn caller_owned_release_cannot_be_promoted_to_identity_deletion() {
         then.status(200)
             .json_body(json!({"ok":true,"data":{"status":"completed"}}));
     });
+    let retain_request = server.mock(|when, then| {
+        when.method(POST)
+            .path("/v1/agents/release")
+            .json_body_partial(json!({"name":"caller-owned"}).to_string());
+        then.status(200).json_body(json!({
+            "ok": true,
+            "data": {
+                "invocation_id": "inv_release_2",
+                "action_name": "release",
+                "handler_agent_id": null,
+                "handler_node_id": "node_1",
+                "dispatched_node_id": "node_1",
+                "input": {
+                    "name": "caller-owned",
+                    "reason": "agent explicitly released through broker API (actor: Agent Relay broker broker)"
+                },
+                "status": "completed",
+                "created_at": "2026-08-15T00:00:00.000Z"
+            }
+        }));
+    });
     let registry = make_worker_registry_with_worker("unrelated").await;
     let mut fixture = worker_event_runtime_fixture(registry, HashMap::new());
     fixture.runtime.relaycast_http =
         RelaycastHttpClient::new(Some(server.base_url()), "rk_live_test", "broker", "codex");
     let name = WorkerName::from("caller-owned");
+    fixture
+        .runtime
+        .workers
+        .completed_owned_releases
+        .push_back((name.clone(), Uuid::new_v4()));
     let (reply, result) = oneshot::channel();
     fixture
         .runtime
@@ -6723,16 +6749,25 @@ async fn caller_owned_release_cannot_be_promoted_to_identity_deletion() {
             reply,
         })
         .await;
-    let error = tokio::time::timeout(Duration::from_secs(3), result)
+    let response = tokio::time::timeout(Duration::from_secs(3), result)
         .await
         .expect("caller-owned release should settle")
         .expect("caller-owned release should not lose the response")
-        .unwrap_err();
+        .expect("caller-owned release should retain the response");
     delete_request.assert_hits(0);
-    assert!(
-        error.contains("could not be released") || error.contains("failed to release"),
-        "{error}"
+    retain_request.assert_hits(1);
+    assert_eq!(
+        fixture
+            .runtime
+            .workers
+            .completed_owned_releases
+            .iter()
+            .filter(|(released_name, _)| released_name == &name)
+            .count(),
+        1
     );
+    assert_eq!(response["process"], "stopped");
+    assert_eq!(response["identity"], "retained");
     assert!(!fixture
         .runtime
         .workers
@@ -6743,12 +6778,6 @@ async fn caller_owned_release_cannot_be_promoted_to_identity_deletion() {
         .workers
         .identity_cleanups
         .contains_key(&name));
-    assert!(!fixture
-        .runtime
-        .workers
-        .completed_owned_releases
-        .iter()
-        .any(|(released_name, _)| released_name == &name));
     fixture.runtime.workers.release("unrelated").await.unwrap();
 }
 

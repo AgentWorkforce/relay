@@ -985,7 +985,8 @@ impl BrokerRuntime {
                         (delete_identity, expected_generation)
                     };
                 // Bounded tombstones make an acknowledged cleanup retry safe:
-                // no remote mutation, and never release a replacement worker.
+                // no remote mutation, and only when the caller can still name
+                // the exact owned generation that was already retired.
                 if delete_identity
                     && !workers.has_worker(&name)
                     && expected_generation.as_deref().is_some_and(|expected| {
@@ -995,15 +996,6 @@ impl BrokerRuntime {
                             },
                         )
                     })
-                    || (name_only_release
-                        && !workers.has_worker(&name)
-                        && !workers.identity_cleanups.contains_key(&name)
-                        && !workers.owned_spawn_generations.contains_key(&name)
-                        && fleet_delivery_book.active_agent_id(name.as_str()).is_none()
-                        && workers
-                            .completed_owned_releases
-                            .iter()
-                            .any(|(released_name, _)| released_name == &name))
                 {
                     let _ = reply.send(Ok(json!({"success": true, "name": name, "process": "stopped", "identity": "deleted"})));
                     return;

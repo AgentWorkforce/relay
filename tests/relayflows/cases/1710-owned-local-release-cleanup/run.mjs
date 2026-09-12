@@ -21,8 +21,12 @@ const CALLER_OWNED_NAME = 'relayflow-1710-caller-owned';
 const targetDir = requiredDirectory('RELAY_PR_PROOF_TARGET_DIR');
 const harnessDir = requiredDirectory('RELAY_PR_PROOF_HARNESS_DIR');
 const binaryPath = await requiredExecutable('RELAY_PR_PROOF_BROKER_BINARY');
-const resultPath = requiredValue('RELAY_PR_PROOF_RESULT_PATH');
+const resultPath = path.resolve(requiredValue('RELAY_PR_PROOF_RESULT_PATH'));
 const arm = requiredValue('RELAY_PR_PROOF_ARM');
+
+if (!isWithin(path.resolve(tmpdir()), resultPath)) {
+  throw new Error('RELAY_PR_PROOF_RESULT_PATH must stay under the system temp directory.');
+}
 
 if (arm !== 'base' && arm !== 'head') {
   throw new Error(`RELAY_PR_PROOF_ARM must be base or head, received ${JSON.stringify(arm)}.`);

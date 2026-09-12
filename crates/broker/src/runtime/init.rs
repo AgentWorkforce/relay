@@ -747,7 +747,7 @@ pub(crate) async fn run_init(cmd: InitCommand, telemetry: TelemetryClient) -> Re
 
     let mut runtime = BrokerRuntime {
         degraded,
-        persist: cmd.persist,
+        persist: paths.persist,
         broker_start,
         agent_spawn_count,
         paths,
