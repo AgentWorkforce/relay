@@ -136,7 +136,8 @@ describeWindows('native Windows credential directory ACL validation', () => {
   });
 
   it('rejects an untrusted read grant on the credential directory itself', () => {
-    directory = fs.mkdtempSync(path.join(os.tmpdir(), 'relay-acl-native-unsafe-'));
+    directory = fs.mkdtempSync(path.join(os.homedir(), '.relay-acl-native-unsafe-'));
+    expect(() => assertWindowsCredentialDirectory(directory!)).not.toThrow();
     execFileSync('icacls.exe', [directory, '/grant', '*S-1-1-0:(R)'], {
       stdio: 'ignore',
       windowsHide: true,
@@ -147,7 +148,8 @@ describeWindows('native Windows credential directory ACL validation', () => {
   });
 
   it('rejects an untrusted generic-all grant on the credential directory itself', () => {
-    directory = fs.mkdtempSync(path.join(os.tmpdir(), 'relay-acl-native-generic-unsafe-'));
+    directory = fs.mkdtempSync(path.join(os.homedir(), '.relay-acl-native-generic-unsafe-'));
+    expect(() => assertWindowsCredentialDirectory(directory!)).not.toThrow();
     execFileSync('icacls.exe', [directory, '/grant', '*S-1-1-0:(GA)'], {
       stdio: 'ignore',
       windowsHide: true,
