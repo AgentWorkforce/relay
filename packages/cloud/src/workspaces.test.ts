@@ -121,6 +121,33 @@ describe('resolveWorkspaceByKey', () => {
     });
   });
 
+  it('uses credentials from explicit resolver env instead of ambient process env', async () => {
+    process.env.CLOUD_API_ACCESS_TOKEN = 'ambient-access-token';
+    const env = {
+      ...process.env,
+      CLOUD_API_URL: 'https://cloud.explicit.example.test',
+      CLOUD_API_ACCESS_TOKEN: 'explicit-access-token',
+      CLOUD_API_REFRESH_TOKEN: 'explicit-refresh-token',
+      CLOUD_API_ACCESS_TOKEN_EXPIRES_AT: '2999-01-01T00:00:00.000Z',
+    };
+    const fetchSpy = vi.fn(
+      async () =>
+        new Response(JSON.stringify(resolvedWorkspace), {
+          status: 200,
+          headers: { 'content-type': 'application/json' },
+        })
+    );
+    vi.stubGlobal('fetch', fetchSpy);
+
+    await resolveWorkspaceByKey('rk_live_selected', { env });
+
+    const init = fetchSpy.mock.calls[0]?.[1] as RequestInit;
+    expect(new Headers(init.headers).get('authorization')).toBe('Bearer explicit-access-token');
+    expect(String(fetchSpy.mock.calls[0]?.[0])).toBe(
+      'https://cloud.explicit.example.test/api/v1/workspaces/current/resolve'
+    );
+  });
+
   it.each(['http://cloud.example.test', 'https://user:password@cloud.example.test', 'file:///tmp/cloud'])(
     'rejects unsafe resolver transport before any credential request: %s',
     async (apiUrl) => {

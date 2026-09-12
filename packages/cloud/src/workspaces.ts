@@ -1,4 +1,4 @@
-import { authorizedApiFetch, ensureAuthenticated, readStoredAuth } from './auth.js';
+import { authorizedApiFetch, ensureAuthenticated, ensureCloudSession, readStoredAuth } from './auth.js';
 import { redactCredentialValues } from './redact.js';
 import {
   type ActiveWorkspaceDescriptor,
@@ -368,15 +368,18 @@ export async function resolveWorkspaceByKey(
 ): Promise<ActiveWorkspaceDescriptor> {
   const key = workspaceKey.trim();
   if (!/^rk_live_[A-Za-z0-9_-]{1,512}$/.test(key)) throw new Error('A valid workspace key is required.');
-  const apiUrl = options.apiUrl || defaultApiUrl();
+  const env = options.env ?? process.env;
+  const apiUrl = options.apiUrl || env.CLOUD_API_URL?.trim() || defaultApiUrl();
   assertWorkspaceResolverTransport(apiUrl);
   // Stored sessions keep their own API host; validate it before a refresh can
   // send credentials, even when the requested/default host is secure.
-  const stored = await readStoredAuth();
+  const stored = await readStoredAuth(env);
   if (stored) assertWorkspaceResolverTransport(stored.apiUrl);
-  const auth = await ensureAuthenticated(apiUrl, {
+  const { auth } = await ensureCloudSession({
+    apiUrl,
     interactive: false,
     refreshTimeoutMs: options.refreshTimeoutMs,
+    env,
   });
   assertWorkspaceResolverTransport(auth.apiUrl);
   const endpoint = '/api/v1/workspaces/current/resolve';
@@ -389,7 +392,7 @@ export async function resolveWorkspaceByKey(
       body: JSON.stringify({ workspaceKey: key }),
       signal: AbortSignal.timeout(options.refreshTimeoutMs ?? 30_000),
     },
-    { interactive: false }
+    { interactive: false, env }
   );
   const payload = await readJson(response);
   if (!response.ok) throw buildEndpointError('Project workspace resolve', endpoint, response, payload);

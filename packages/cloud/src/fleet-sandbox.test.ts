@@ -992,6 +992,28 @@ describe('Cloud fleet sandbox client', () => {
     expect(mocks.ensureCloudSession).not.toHaveBeenCalled();
   });
 
+  it('rejects case-insensitive duplicate repositories before Cloud authentication', async () => {
+    await expect(
+      ensureCloudFleetSandbox({
+        workspaceId: 'rw_abc',
+        requiredCapability: 'spawn:codex',
+        repos: ['AgentWorkforce/relay', 'agentworkforce/RELAY'],
+      })
+    ).rejects.toThrow('must not contain duplicates');
+    expect(mocks.ensureCloudSession).not.toHaveBeenCalled();
+  });
+
+  it('rejects checkout basename collisions before Cloud authentication', async () => {
+    await expect(
+      ensureCloudFleetSandbox({
+        workspaceId: 'rw_abc',
+        requiredCapability: 'spawn:codex',
+        repos: ['owner-a/tools', 'owner-b/tools'],
+      })
+    ).rejects.toThrow('unique checkout names');
+    expect(mocks.ensureCloudSession).not.toHaveBeenCalled();
+  });
+
   it('rejects more than sixteen repositories before Cloud authentication', async () => {
     const repos = Array.from({ length: 17 }, (_, index) => `AgentWorkforce/repo-${index}`);
     await expect(
