@@ -6486,8 +6486,22 @@ async fn name_only_release_of_retired_owned_worker_deletes_directly_and_is_idemp
     let server = MockServer::start();
     let release = server.mock(|when, then| {
         when.method(POST).path("/v1/agents/release");
-        then.status(200)
-            .json_body(json!({"ok":true,"data":{"status":"completed"}}));
+        then.status(200).json_body(json!({
+            "ok": true,
+            "data": {
+                "invocation_id": "inv_release_1",
+                "action_name": "release",
+                "handler_agent_id": null,
+                "handler_node_id": "node_1",
+                "dispatched_node_id": "node_1",
+                "input": {
+                    "name": "retired-name-only",
+                    "reason": "agent explicitly released through broker API (actor: Agent Relay broker broker)"
+                },
+                "status": "completed",
+                "created_at": "2026-08-15T00:00:00.000Z"
+            }
+        }));
     });
     let registry = make_worker_registry_with_worker("unrelated").await;
     let mut fixture = worker_event_runtime_fixture(registry, HashMap::new());
@@ -6665,11 +6679,9 @@ async fn name_only_release_of_retired_owned_worker_deletes_directly_and_is_idemp
         loop {
             fixture.runtime.reconcile_identity_cleanups().await;
             if let Ok(response) = rebound_result.try_recv() {
-                let error = response.expect_err("rebound cleanup should not false-success");
-                assert!(
-                    error.contains("could not be released") || error.contains("Invalid API key"),
-                    "{error}"
-                );
+                let response = response.expect("rebound cleanup should succeed");
+                assert_eq!(response["process"], "stopped");
+                assert_eq!(response["identity"], "retained");
                 break;
             }
             tokio::task::yield_now().await;
