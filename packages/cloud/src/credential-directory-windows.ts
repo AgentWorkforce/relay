@@ -24,32 +24,58 @@ try {
     exit 0
   }
 
-  $trusted = [Collections.Generic.HashSet[string]]::new([StringComparer]::OrdinalIgnoreCase)
-  [void]$trusted.Add([Security.Principal.WindowsIdentity]::GetCurrent().Name)
-  [void]$trusted.Add('NT AUTHORITY\SYSTEM')
-  [void]$trusted.Add('BUILTIN\Administrators')
-  [void]$trusted.Add('NT SERVICE\TrustedInstaller')
+  $trustedSids = [Collections.Generic.HashSet[string]]::new([StringComparer]::OrdinalIgnoreCase)
+  [void]$trustedSids.Add([Security.Principal.WindowsIdentity]::GetCurrent().User.Value)
+  [void]$trustedSids.Add('S-1-5-18')
+  [void]$trustedSids.Add('S-1-5-32-544')
+  try {
+    $trustedInstallerSid = ([Security.Principal.NTAccount]::new('NT SERVICE', 'TrustedInstaller')).Translate([Security.Principal.SecurityIdentifier]).Value
+    [void]$trustedSids.Add($trustedInstallerSid)
+  } catch {
+    # TrustedInstaller is optional; SYSTEM and Administrators remain trusted.
+  }
 
-  function Resolve-Principal([object]$Reference) {
+  function Resolve-IdentitySid([object]$Reference, [string]$OwnerSid) {
+    $value = if ($null -eq $Reference) {
+      ''
+    } elseif ($Reference -is [string]) {
+      [string]$Reference
+    } elseif ($null -ne $Reference.PSObject.Properties['Value']) {
+      [string]$Reference.Value
+    } else {
+      [string]$Reference
+    }
+    if (-not $value) { return $null }
     try {
-      $sid = [Security.Principal.SecurityIdentifier]::new([string]$Reference.Value)
-      return $sid.Translate([Security.Principal.NTAccount]).Value
+      if ($value -eq 'S-1-3-0') { return $OwnerSid }
+      if ($value -match '^S-\d-(?:\d+-){1,}\d+$') {
+        return ([Security.Principal.SecurityIdentifier]::new($value)).Value
+      }
+      return ([Security.Principal.NTAccount]::new($value)).Translate([Security.Principal.SecurityIdentifier]).Value
     } catch {
-      return [string]$Reference.Value
+      return $null
     }
   }
 
-  function Is-Trusted([string]$Principal) {
-    return $trusted.Contains($Principal)
+  function Is-Trusted([string]$Sid) {
+    return $null -ne $Sid -and $trustedSids.Contains($Sid)
   }
 
-  function Has-LeafRisk([string]$Rights) {
-    return $Rights -match 'Read|Write|WriteDac|WriteOwner|Delete|DeleteChild|ChangePermissions|TakeOwnership|FullControl|Modify'
-  }
+  $leafRiskMask = [int64][Security.AccessControl.FileSystemRights]::ReadData
+  $leafRiskMask = $leafRiskMask -bor [int64][Security.AccessControl.FileSystemRights]::WriteData
+  $leafRiskMask = $leafRiskMask -bor [int64][Security.AccessControl.FileSystemRights]::AppendData
+  $leafRiskMask = $leafRiskMask -bor [int64][Security.AccessControl.FileSystemRights]::DeleteSubdirectoriesAndFiles
+  $leafRiskMask = $leafRiskMask -bor [int64][Security.AccessControl.FileSystemRights]::Delete
+  $leafRiskMask = $leafRiskMask -bor [int64][Security.AccessControl.FileSystemRights]::ChangePermissions
+  $leafRiskMask = $leafRiskMask -bor [int64][Security.AccessControl.FileSystemRights]::TakeOwnership
 
-  function Has-AncestorReplacementRisk([string]$Rights) {
-    return $Rights -match 'Write|WriteDac|WriteOwner|Delete|DeleteChild|ChangePermissions|TakeOwnership|FullControl|Modify'
-  }
+  # Directory WriteData is intentionally excluded: the credential directory's
+  # existing owner must be protected from replacement, while ordinary parent
+  # directories such as C:\Users may legitimately allow child creation.
+  $ancestorRiskMask = [int64][Security.AccessControl.FileSystemRights]::DeleteSubdirectoriesAndFiles
+  $ancestorRiskMask = $ancestorRiskMask -bor [int64][Security.AccessControl.FileSystemRights]::Delete
+  $ancestorRiskMask = $ancestorRiskMask -bor [int64][Security.AccessControl.FileSystemRights]::ChangePermissions
+  $ancestorRiskMask = $ancestorRiskMask -bor [int64][Security.AccessControl.FileSystemRights]::TakeOwnership
 
   $cursor = $leaf
   while ($null -ne $cursor) {
@@ -59,22 +85,29 @@ try {
     }
 
     $acl = Get-Acl -LiteralPath $cursor.FullName
-    if (-not (Is-Trusted (Resolve-Principal $acl.Owner))) {
+    $ownerSid = Resolve-IdentitySid $acl.Owner ''
+    if (-not (Is-Trusted $ownerSid)) {
       Emit-Failure 'credential-parent-untrusted-owner'
       exit 0
     }
 
-    $isLeaf = $cursor.FullName -eq $leaf.FullName
+    $isLeaf = [StringComparer]::OrdinalIgnoreCase.Equals($cursor.FullName, $leaf.FullName)
     foreach ($entry in $acl.Access) {
       if ($entry.AccessControlType -ne [Security.AccessControl.AccessControlType]::Allow) {
         continue
       }
-      $principal = Resolve-Principal $entry.IdentityReference
-      if (Is-Trusted $principal) {
+      # InheritOnly entries do not apply to this ancestor itself. On the leaf,
+      # however, they govern future credential files and must still be checked.
+      if (-not $isLeaf -and (($entry.PropagationFlags -band [Security.AccessControl.PropagationFlags]::InheritOnly) -ne 0)) {
         continue
       }
-      $rights = [string]$entry.FileSystemRights
-      if (($isLeaf -and (Has-LeafRisk $rights)) -or ((-not $isLeaf) -and (Has-AncestorReplacementRisk $rights))) {
+      $principalSid = Resolve-IdentitySid $entry.IdentityReference $ownerSid
+      if (Is-Trusted $principalSid) {
+        continue
+      }
+      $rightsValue = [int64]$entry.FileSystemRights
+      $riskMask = if ($isLeaf) { $leafRiskMask } else { $ancestorRiskMask }
+      if (($rightsValue -band $riskMask) -ne 0) {
         Emit-Failure 'credential-parent-untrusted-allow'
         exit 0
       }

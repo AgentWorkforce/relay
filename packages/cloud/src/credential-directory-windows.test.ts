@@ -49,6 +49,11 @@ describe('assertWindowsCredentialDirectory', () => {
     const script = String(args[args.length - 1]);
     expect(script).toContain('Get-Acl');
     expect(script).toContain('ReparsePoint');
+    expect(script).toContain('S-1-5-18');
+    expect(script).toContain('ReadData');
+    expect(script).toContain('DeleteSubdirectoriesAndFiles');
+    expect(script).toContain('InheritOnly');
+    expect(script).not.toContain('$acl.Owner.Value');
     expect(script).not.toContain(directory);
     expect(args).not.toContain(path.resolve(directory));
     expect(args).not.toContain('-ExecutionPolicy');
