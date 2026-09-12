@@ -6,7 +6,8 @@ pub(crate) mod workspace;
 pub(crate) mod ws;
 
 pub(crate) use crate::snippets::{
-    configure_agent_relay_mcp_with_result, configure_agent_relay_mcp_with_token,
+    configure_agent_relay_mcp_with_result_and_cursor_lease, configure_agent_relay_mcp_with_token,
+    is_cursor_cli_name,
 };
 pub(crate) use auth::{
     agent_identity_key, identity_key_fingerprint, reclaim_legacy_identity,

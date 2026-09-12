@@ -19,6 +19,7 @@ pub(crate) mod config;
 pub(crate) mod control;
 #[allow(dead_code)]
 pub(crate) mod conversation_log;
+pub(crate) mod cursor_mcp_lease;
 #[allow(dead_code)]
 pub(crate) mod dedup;
 #[allow(dead_code)]

@@ -2749,6 +2749,7 @@ mod tests {
             Vec::new(),
             temp.path().join("worker-logs"),
             Instant::now(),
+            "test-broker",
         );
         let mut child = tokio::process::Command::new("sh")
             .args(["-c", "exit 19"])

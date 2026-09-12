@@ -14,7 +14,9 @@ use tokio::{
     process::Command,
 };
 
-use crate::types::AgentResultMcpConfig;
+use crate::{
+    cursor_mcp_lease::CursorMcpLeaseRegistry, ids::WorkerName, types::AgentResultMcpConfig,
+};
 
 const AGENT_RELAY_MCP_PACKAGE: &str = "agent-relay";
 const AGENT_RELAY_MCP_SUBCOMMAND: &str = "mcp";
@@ -691,6 +693,66 @@ fn agent_relay_mcp_server_config(
     Value::Object(server)
 }
 
+fn cursor_env_placeholder(name: &str) -> Value {
+    Value::String(format!("${{env:{name}}}"))
+}
+
+/// Cursor expands `${env:NAME}` when it launches an MCP server. Keep the
+/// generated project file credential-free while still selecting which optional
+/// variables the worker actually has available in its process environment.
+fn cursor_agent_relay_mcp_server_config(
+    relay_api_key: Option<&str>,
+    relay_base_url: Option<&str>,
+    relay_agent_name: Option<&str>,
+    relay_agent_token: Option<&str>,
+    workspaces_json: Option<&str>,
+    default_workspace: Option<&str>,
+    agent_result: Option<&AgentResultMcpConfig>,
+) -> Value {
+    let command = agent_relay_mcp_command();
+    let mut server = Map::new();
+    server.insert("command".into(), Value::String(command.command));
+    server.insert(
+        "args".into(),
+        Value::Array(command.args.into_iter().map(Value::String).collect()),
+    );
+    let mut env = Map::new();
+    let add_if_present = |env: &mut Map<String, Value>, key: &str, value: Option<&str>| {
+        if value.map(str::trim).is_some_and(|value| !value.is_empty()) {
+            env.insert(key.into(), cursor_env_placeholder(key));
+        }
+    };
+    add_if_present(&mut env, "RELAY_API_KEY", relay_api_key);
+    add_if_present(&mut env, "RELAY_BASE_URL", relay_base_url);
+    add_if_present(&mut env, "RELAY_AGENT_NAME", relay_agent_name);
+    if relay_agent_name
+        .map(str::trim)
+        .is_some_and(|value| !value.is_empty())
+    {
+        env.insert("RELAY_AGENT_TYPE".into(), Value::String("agent".into()));
+        env.insert("RELAY_STRICT_AGENT_NAME".into(), Value::String("1".into()));
+    }
+    if relay_agent_token
+        .map(str::trim)
+        .is_some_and(|value| !value.is_empty())
+    {
+        env.insert(
+            "RELAY_AGENT_TOKEN".into(),
+            cursor_env_placeholder("RELAY_AGENT_TOKEN"),
+        );
+        env.insert("RELAY_SKIP_BOOTSTRAP".into(), Value::String("1".into()));
+    }
+    add_if_present(&mut env, "RELAY_WORKSPACES_JSON", workspaces_json);
+    add_if_present(&mut env, "RELAY_DEFAULT_WORKSPACE", default_workspace);
+    if let Some(config) = agent_result {
+        for (key, _) in config.env_pairs() {
+            env.insert(key.into(), cursor_env_placeholder(key));
+        }
+    }
+    server.insert("env".into(), Value::Object(env));
+    Value::Object(server)
+}
+
 fn apply_agent_result_env(
     env: &mut Map<String, Value>,
     agent_result: Option<&AgentResultMcpConfig>,
@@ -990,8 +1052,9 @@ pub fn ensure_opencode_config_with_result(
 /// for idempotency). For Opencode this writes `opencode.json` on disk.
 ///
 /// # Parameters
-/// Write `.cursor/mcp.json` in the given directory with the Agent Relay MCP server
-/// configured with per-agent credentials (name + token).
+/// Write `.cursor/mcp.json` in the given directory with the Agent Relay MCP
+/// server configured with Cursor environment placeholders. The worker process
+/// supplies the per-agent values; no credential literal is persisted.
 /// Returns `true` if the config was created or updated.
 #[allow(clippy::too_many_arguments)]
 pub fn ensure_cursor_mcp_config(
@@ -1002,52 +1065,66 @@ pub fn ensure_cursor_mcp_config(
     relay_agent_token: Option<&str>,
     workspaces_json: Option<&str>,
     default_workspace: Option<&str>,
-    _agent_result: Option<&AgentResultMcpConfig>,
+    agent_result: Option<&AgentResultMcpConfig>,
 ) -> io::Result<bool> {
-    let cursor_dir = root.join(".cursor");
-    fs::create_dir_all(&cursor_dir)?;
-    let path = cursor_dir.join("mcp.json");
-
-    let mcp_json = agent_relay_mcp_config_json_with_result(
+    // Standalone one-shot callers (for example `mcp-args`) still get a
+    // descriptor-relative write. WorkerRegistry passes its longer-lived lease
+    // through `ensure_cursor_mcp_config_with_lease` instead.
+    let mut leases = CursorMcpLeaseRegistry::new();
+    let worker = WorkerName::new("cursor-config-one-shot");
+    leases.acquire(root, &worker)?;
+    ensure_cursor_mcp_config_with_lease(
+        root,
         relay_api_key,
         relay_base_url,
         relay_agent_name,
         relay_agent_token,
         workspaces_json,
         default_workspace,
-        None,
-    );
-    let mut new_value: Value = serde_json::from_str(&mcp_json).map_err(|e| {
-        io::Error::new(
-            io::ErrorKind::InvalidData,
-            format!("MCP config serialization error: {e}"),
-        )
-    })?;
-    // Cursor does not pass parent process env vars to MCP server subprocesses,
-    // so RELAY_API_KEY must be in the .cursor/mcp.json env block explicitly.
-    // (The shared agent_relay_mcp_server_config omits it because codex strips API keys.)
-    if let Some(key) = relay_api_key.map(str::trim).filter(|s| !s.is_empty()) {
-        if let Some(env_obj) = new_value
-            .pointer_mut("/mcpServers/agent-relay/env")
-            .and_then(Value::as_object_mut)
-        {
-            env_obj.insert("RELAY_API_KEY".into(), Value::String(key.to_string()));
-        } else if let Some(server) = new_value
-            .pointer_mut("/mcpServers/agent-relay")
-            .and_then(Value::as_object_mut)
-        {
-            let mut env_map = Map::new();
-            env_map.insert("RELAY_API_KEY".into(), Value::String(key.to_string()));
-            server.insert("env".into(), Value::Object(env_map));
-        }
-    }
+        agent_result,
+        &leases,
+        &worker,
+    )
+}
 
-    if !path.exists() {
-        write_pretty_json(&path, &new_value)?;
+/// Configure a Cursor file through the descriptors held by the worker's
+/// already-acquired lease. `root` is retained for API context and diagnostics,
+/// but is never reopened or traversed here.
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn ensure_cursor_mcp_config_with_lease(
+    _root: &Path,
+    relay_api_key: Option<&str>,
+    relay_base_url: Option<&str>,
+    relay_agent_name: Option<&str>,
+    relay_agent_token: Option<&str>,
+    workspaces_json: Option<&str>,
+    default_workspace: Option<&str>,
+    agent_result: Option<&AgentResultMcpConfig>,
+    leases: &CursorMcpLeaseRegistry,
+    worker: &WorkerName,
+) -> io::Result<bool> {
+    let new_value = json!({"mcpServers": {"agent-relay":
+        cursor_agent_relay_mcp_server_config(
+            relay_api_key,
+            relay_base_url,
+            relay_agent_name,
+            relay_agent_token,
+            workspaces_json,
+            default_workspace,
+            agent_result,
+        )
+    }});
+
+    let existing_bytes = leases.read_worker_cursor_file(worker)?;
+    if existing_bytes.is_none() {
+        let body = serde_json::to_vec_pretty(&new_value)
+            .map_err(|error| io::Error::other(error.to_string()))?;
+        leases.write_worker_cursor_file(worker, &body)?;
         return Ok(true);
     }
 
-    let existing = fs::read_to_string(&path)?;
+    let existing = String::from_utf8(existing_bytes.expect("checked above"))
+        .map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error))?;
     let mut parsed: Value = serde_json::from_str(&existing).unwrap_or(Value::Object(Map::new()));
 
     let changed = if let (Some(existing_servers), Some(new_servers)) = (
@@ -1071,7 +1148,9 @@ pub fn ensure_cursor_mcp_config(
     };
 
     if changed {
-        write_pretty_json(&path, &parsed)?;
+        let body = serde_json::to_vec_pretty(&parsed)
+            .map_err(|error| io::Error::other(error.to_string()))?;
+        leases.write_worker_cursor_file(worker, &body)?;
     }
     Ok(changed)
 }
@@ -1147,6 +1226,36 @@ pub async fn configure_agent_relay_mcp_with_result(
     workspaces_json: Option<&str>,
     default_workspace: Option<&str>,
     agent_result: Option<&AgentResultMcpConfig>,
+) -> Result<Vec<String>> {
+    configure_agent_relay_mcp_with_result_and_cursor_lease(
+        cli,
+        agent_name,
+        api_key,
+        base_url,
+        existing_args,
+        cwd,
+        agent_token,
+        workspaces_json,
+        default_workspace,
+        agent_result,
+        None,
+    )
+    .await
+}
+
+#[allow(clippy::too_many_arguments)]
+pub(crate) async fn configure_agent_relay_mcp_with_result_and_cursor_lease(
+    cli: &str,
+    agent_name: &str,
+    api_key: Option<&str>,
+    base_url: Option<&str>,
+    existing_args: &[String],
+    cwd: &Path,
+    agent_token: Option<&str>,
+    workspaces_json: Option<&str>,
+    default_workspace: Option<&str>,
+    agent_result: Option<&AgentResultMcpConfig>,
+    cursor_lease: Option<(&CursorMcpLeaseRegistry, &WorkerName)>,
 ) -> Result<Vec<String>> {
     let cli_lower = detect_cli_name(cli).to_lowercase();
     let is_claude = cli_lower == "claude" || cli_lower.starts_with("claude:");
@@ -1327,7 +1436,7 @@ pub async fn configure_agent_relay_mcp_with_result(
             is_gemini,
             workspaces_json,
             default_workspace,
-            None,
+            agent_result,
         )
         .await?;
     } else if is_grok {
@@ -1359,23 +1468,48 @@ pub async fn configure_agent_relay_mcp_with_result(
         args.push("--agent".to_string());
         args.push(AGENT_RELAY_MCP_SERVER.to_string());
     } else if is_cursor {
-        ensure_cursor_mcp_config(
-            cwd,
-            api_key,
-            base_url,
-            Some(agent_name),
-            agent_token,
-            workspaces_json,
-            default_workspace,
-            None,
-        )
-        .with_context(|| {
+        let result = if let Some((leases, worker)) = cursor_lease {
+            ensure_cursor_mcp_config_with_lease(
+                cwd,
+                api_key,
+                base_url,
+                Some(agent_name),
+                agent_token,
+                workspaces_json,
+                default_workspace,
+                agent_result,
+                leases,
+                worker,
+            )
+        } else {
+            ensure_cursor_mcp_config(
+                cwd,
+                api_key,
+                base_url,
+                Some(agent_name),
+                agent_token,
+                workspaces_json,
+                default_workspace,
+                agent_result,
+            )
+        };
+        result.with_context(|| {
             "failed to write .cursor/mcp.json for Agent Relay MCP. \
                  Please configure the Agent Relay MCP server manually in .cursor/mcp.json"
         })?;
     }
 
     Ok(args)
+}
+
+/// True when `cli` resolves to Cursor's headless binary — the same detection
+/// [`configure_agent_relay_mcp_with_result`] uses to decide whether it writes
+/// `.cursor/mcp.json`. Exposed so callers (the worker registry's cursor MCP
+/// lease) can decide whether to acquire/release a lease without duplicating
+/// the CLI-name detection logic.
+pub(crate) fn is_cursor_cli_name(cli: &str) -> bool {
+    let cli_lower = detect_cli_name(cli).to_lowercase();
+    cli_lower == "cursor" || cli_lower == "cursor-agent" || cli_lower == "agent"
 }
 
 fn detect_cli_name(cli: &str) -> String {
@@ -1847,6 +1981,9 @@ fn write_pretty_json(path: &Path, value: &Value) -> io::Result<()> {
 #[cfg(test)]
 mod tests {
     use std::{env, ffi::OsString, fs};
+
+    #[cfg(windows)]
+    use std::path::Path;
 
     #[cfg(unix)]
     use std::os::unix::fs::PermissionsExt;
@@ -2964,20 +3101,23 @@ exit 0
         let path = temp.path().join(".cursor").join("mcp.json");
         assert!(path.exists(), ".cursor/mcp.json must be created");
         let contents = fs::read_to_string(path).expect("read cursor mcp config");
+        assert!(!contents.contains("rk_live_cursor"));
+        assert!(!contents.contains("https://cast.agentrelay.com"));
+        assert!(!contents.contains("CursorAgent"));
         let json: Value = serde_json::from_str(&contents).expect("parse cursor mcp config");
 
         assert_is_agent_relay_mcp_config(&json["mcpServers"]["agent-relay"]);
         assert_eq!(
             json["mcpServers"]["agent-relay"]["env"]["RELAY_API_KEY"].as_str(),
-            Some("rk_live_cursor")
+            Some("${env:RELAY_API_KEY}")
         );
         assert_eq!(
             json["mcpServers"]["agent-relay"]["env"]["RELAY_BASE_URL"].as_str(),
-            Some("https://cast.agentrelay.com")
+            Some("${env:RELAY_BASE_URL}")
         );
         assert_eq!(
             json["mcpServers"]["agent-relay"]["env"]["RELAY_AGENT_NAME"].as_str(),
-            Some("CursorAgent")
+            Some("${env:RELAY_AGENT_NAME}")
         );
         assert_eq!(
             json["mcpServers"]["agent-relay"]["env"]["RELAY_AGENT_TYPE"].as_str(),
@@ -2986,6 +3126,15 @@ exit 0
         assert_eq!(
             json["mcpServers"]["agent-relay"]["env"]["RELAY_STRICT_AGENT_NAME"].as_str(),
             Some("1")
+        );
+        #[cfg(unix)]
+        assert_eq!(
+            fs::metadata(temp.path().join(".cursor").join("mcp.json"))
+                .unwrap()
+                .permissions()
+                .mode()
+                & 0o777,
+            0o600
         );
     }
 
@@ -3014,8 +3163,17 @@ exit 0
         );
         let contents = fs::read_to_string(temp.path().join(".cursor").join("mcp.json"))
             .expect("read cursor mcp config");
+        assert!(!contents.contains("http://127.0.0.1:3889/api/agent-result"));
+        assert!(!contents.contains("arr_test"));
+        assert!(!contents.contains("rk_live_cursor"));
+        assert!(!contents.contains("https://cast.agentrelay.com"));
         let json: Value = serde_json::from_str(&contents).expect("parse cursor mcp config");
-        assert_agent_result_env_absent(&json["mcpServers"]["agent-relay"]["env"]);
+        let env = &json["mcpServers"]["agent-relay"]["env"];
+        assert_eq!(
+            env["AGENT_RELAY_RESULT_URL"].as_str(),
+            Some("${env:AGENT_RELAY_RESULT_URL}")
+        );
+        assert_eq!(env["RELAY_AGENT_TOKEN"].as_str(), None);
     }
 
     #[tokio::test]
@@ -3047,7 +3205,7 @@ exit 0
 
         assert_eq!(
             json["mcpServers"]["agent-relay"]["env"]["RELAY_AGENT_TOKEN"].as_str(),
-            Some("tok_cursor_123")
+            Some("${env:RELAY_AGENT_TOKEN}")
         );
     }
 
