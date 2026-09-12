@@ -369,7 +369,7 @@ export async function resolveWorkspaceByKey(
   const key = workspaceKey.trim();
   if (!/^rk_live_[A-Za-z0-9_-]{1,512}$/.test(key)) throw new Error('A valid workspace key is required.');
   const env = options.env ?? process.env;
-  const apiUrl = options.apiUrl || env.CLOUD_API_URL?.trim() || defaultApiUrl();
+  const apiUrl = options.apiUrl || defaultApiUrl(env);
   assertWorkspaceResolverTransport(apiUrl);
   // Stored sessions keep their own API host; validate it before a refresh can
   // send credentials, even when the requested/default host is secure.

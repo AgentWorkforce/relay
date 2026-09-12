@@ -1,4 +1,5 @@
 import fs from 'node:fs';
+import fsPromises from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import { createServer } from 'node:http';
@@ -8,6 +9,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { readWorkspaceStore, setWorkspaceKey } from './workspace-store.js';
 import { resolveActiveWorkspace, resolveWorkspaceByKey } from './workspaces.js';
+import { AUTH_FILE_PATH } from './types.js';
 
 let dir: string;
 const originalEnv = { ...process.env };
@@ -95,6 +97,32 @@ describe('resolveWorkspaceByKey', () => {
       relayauthWorkspaceId: 'ra_selected',
     },
   };
+
+  it('ignores an ambient API host when an isolated environment omits it', async () => {
+    process.env.CLOUD_API_URL = 'http://ambient.example.test';
+    const originalReadFile = fsPromises.readFile.bind(fsPromises);
+    const readFileSpy = vi.spyOn(fsPromises, 'readFile').mockImplementation(async (...args) => {
+      if (String(args[0]) === AUTH_FILE_PATH) {
+        return JSON.stringify({
+          apiUrl: 'https://stored.example.test',
+          accessToken: 'stored-access-token',
+          refreshToken: 'stored-refresh-token',
+          accessTokenExpiresAt: '2999-01-01T00:00:00.000Z',
+        });
+      }
+      return originalReadFile(...args);
+    });
+    const fetchSpy = vi.fn(async () => new Response(JSON.stringify(resolvedWorkspace), { status: 200 }));
+    vi.stubGlobal('fetch', fetchSpy);
+    try {
+      await resolveWorkspaceByKey('rk_live_selected', { env: {} });
+      expect(String(fetchSpy.mock.calls[0]?.[0])).toBe(
+        'https://stored.example.test/api/v1/workspaces/current/resolve'
+      );
+    } finally {
+      readFileSpy.mockRestore();
+    }
+  });
 
   it('sends the selected key in a POST body and never in the request URL', async () => {
     const fetchSpy = vi.fn(
