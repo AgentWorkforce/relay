@@ -464,10 +464,9 @@ impl AuthClient {
                         );
                     }
                     Err(error) => {
-                        terminal_error = Some(
+                        terminal_error.get_or_insert(
                             error.context("failed registering agent for configured workspace"),
                         );
-                        break;
                     }
                 }
             }

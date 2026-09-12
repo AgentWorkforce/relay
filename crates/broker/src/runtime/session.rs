@@ -386,15 +386,25 @@ pub(crate) async fn connect_relay(opts: RelaySessionOptions<'_>) -> Result<Relay
             }
         }
     } else {
-        auth.startup_session_set_with_identity_and_waiter(
-            Some(opts.requested_name),
-            opts.strict_name,
-            opts.agent_type,
-            Some(derived_identity_key.as_str()),
-            Some(startup_waiter_id.as_str()),
+        match timeout(
+            HANDSHAKE_TOTAL_TIMEOUT,
+            auth.startup_session_set_with_identity_and_waiter(
+                Some(opts.requested_name),
+                opts.strict_name,
+                opts.agent_type,
+                Some(derived_identity_key.as_str()),
+                Some(startup_waiter_id.as_str()),
+            ),
         )
         .await
-        .context("failed to initialize relaycast session")?
+        {
+            Ok(result) => result.context("failed to initialize relaycast session")?,
+            Err(_) => anyhow::bail!(format_handshake_timeout_error(
+                1,
+                attempt_timeout,
+                handshake_started.elapsed()
+            )),
+        }
     };
     log_startup_phase(
         startup_debug,
@@ -657,5 +667,134 @@ mod tests {
             !message.contains("was unreachable"),
             "deadline exhaustion cannot prove that the backend was unreachable"
         );
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn no_key_startup_times_out_when_fallback_workspace_creation_hangs() {
+        use axum::{
+            extract::State, http::StatusCode as AxumStatusCode, routing::post, Json, Router,
+        };
+        use std::sync::{
+            atomic::{AtomicUsize, Ordering},
+            Arc, Mutex, OnceLock,
+        };
+
+        fn env_test_lock() -> &'static Mutex<()> {
+            static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
+            LOCK.get_or_init(|| Mutex::new(()))
+        }
+
+        let _env_guard = env_test_lock().lock().unwrap();
+        for name in [
+            "AGENT_RELAY_WORKSPACE_KEY",
+            "RELAY_API_KEY",
+            "RELAY_DEFAULT_WORKSPACE",
+            "RELAY_WORKSPACE_KEY",
+            "RELAY_WORKSPACES_JSON",
+            "RELAYCAST_BASE_URL",
+            "RELAY_BASE_URL",
+        ] {
+            unsafe {
+                std::env::remove_var(name);
+            }
+        }
+
+        let workspace_attempts = Arc::new(AtomicUsize::new(0));
+
+        async fn create_workspace(
+            State(attempts): State<Arc<AtomicUsize>>,
+        ) -> (AxumStatusCode, Json<serde_json::Value>) {
+            if attempts.fetch_add(1, Ordering::SeqCst) == 0 {
+                return (
+                    AxumStatusCode::CONFLICT,
+                    Json(json!({
+                        "ok": false,
+                        "error": {
+                            "code": "workspace_already_exists",
+                            "message": "Workspace already exists"
+                        }
+                    })),
+                );
+            }
+
+            tokio::time::sleep(Duration::from_secs(45)).await;
+            (
+                AxumStatusCode::OK,
+                Json(json!({
+                    "ok": true,
+                    "data": {
+                        "workspace_id": "ws_new",
+                        "api_key": "rk_live_new",
+                        "created_at": "2025-01-01T00:00:00Z"
+                    }
+                })),
+            )
+        }
+
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let server_state = workspace_attempts.clone();
+        let server = tokio::spawn(async move {
+            axum::serve(
+                listener,
+                Router::new()
+                    .route("/v1/workspaces", post(create_workspace))
+                    .with_state(server_state),
+            )
+            .await
+        });
+
+        unsafe {
+            std::env::set_var("RELAYCAST_BASE_URL", format!("http://{address}"));
+        }
+
+        let temp_dir = tempfile::tempdir().unwrap();
+        let paths = RuntimePaths {
+            persist: false,
+            state: temp_dir.path().join("state.json"),
+            pending: temp_dir.path().join("pending.json"),
+            dead_letters: temp_dir.path().join("dead-letters.json"),
+            dedup: temp_dir.path().join("dedup.json"),
+            _lock: None,
+        };
+
+        let startup = tokio::spawn(async move {
+            connect_relay(RelaySessionOptions {
+                paths: &paths,
+                requested_name: "lead",
+                channels: vec![],
+                strict_name: false,
+                agent_type: None,
+                read_mcp_identity: false,
+                runtime_cwd: temp_dir.path(),
+            })
+            .await
+        });
+
+        tokio::time::advance(Duration::from_secs(45)).await;
+
+        let error = match startup.await.expect("connect_relay task should join") {
+            Ok(_) => panic!("no-key startup unexpectedly succeeded"),
+            Err(error) => error,
+        };
+        let message = format!("{error:#}");
+        assert!(
+            message.contains("received no response before its deadlines"),
+            "unexpected no-key startup failure: {message}"
+        );
+        assert!(
+            message.contains("44000ms aggregate limit"),
+            "the aggregate handshake bound must be preserved: {message}"
+        );
+        assert_eq!(
+            workspace_attempts.load(Ordering::SeqCst),
+            2,
+            "the fallback workspace creation should be attempted before the outer handshake deadline fires"
+        );
+
+        unsafe {
+            std::env::remove_var("RELAYCAST_BASE_URL");
+        }
+        server.abort();
     }
 }
