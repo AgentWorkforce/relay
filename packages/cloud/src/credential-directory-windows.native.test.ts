@@ -35,11 +35,12 @@ function Resolve-Sid([object]$Reference) {
   }
 }
 $request = [Console]::In.ReadToEnd() | ConvertFrom-Json
-$cursor = Get-Item -LiteralPath ([IO.Path]::GetFullPath([string]$request.directory)) -Force
+$cursor = [IO.DirectoryInfo]::new([IO.Path]::GetFullPath([string]$request.directory))
+$null = $cursor.Exists
 $depth = 0
 $rows = @()
 while ($null -ne $cursor) {
-  $acl = Get-Acl -LiteralPath $cursor.FullName
+  $acl = $cursor.GetAccessControl()
   $entries = @($acl.Access | ForEach-Object {
     [pscustomobject]@{
       principalSid = Resolve-Sid $_.IdentityReference
@@ -87,6 +88,7 @@ function reportAclDiagnostic(directoryPath: string): void {
         timeout: 5_000,
         windowsHide: true,
         maxBuffer: 128 * 1024,
+        stdio: ['pipe', 'pipe', 'pipe'],
       }
     );
     const parsed = JSON.parse(output) as AclDiagnosticRow | AclDiagnosticRow[];

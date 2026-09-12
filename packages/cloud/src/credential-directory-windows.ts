@@ -18,8 +18,8 @@ function Emit-Failure([string]$Reason) {
 try {
   $request = [Console]::In.ReadToEnd() | ConvertFrom-Json
   $leafPath = [IO.Path]::GetFullPath([string]$request.directory)
-  $leaf = Get-Item -LiteralPath $leafPath -Force
-  if (-not $leaf.PSIsContainer) {
+  $leaf = [IO.DirectoryInfo]::new($leafPath)
+  if (-not $leaf.Exists) {
     Emit-Failure 'credential-parent-not-directory'
     exit 0
   }
@@ -53,7 +53,7 @@ try {
       } else {
         $sid = ([Security.Principal.NTAccount]::new($value)).Translate([Security.Principal.SecurityIdentifier]).Value
       }
-      # Get-Acl commonly returns a localized NTAccount (for example,
+      # ACL enumeration commonly returns a localized NTAccount (for example,
       # "CREATOR OWNER") rather than the well-known SID directly. Resolve
       # first, then bind this inherited principal to the validated owner.
       if ($sid -eq 'S-1-3-0') { return $OwnerSid }
@@ -97,7 +97,7 @@ try {
       exit 0
     }
 
-    $acl = Get-Acl -LiteralPath $cursor.FullName
+    $acl = $cursor.GetAccessControl()
     $ownerSid = Resolve-IdentitySid $acl.Owner ''
     if (-not (Is-Trusted $ownerSid)) {
       Emit-Failure 'credential-parent-untrusted-owner'
@@ -160,6 +160,7 @@ export function assertWindowsCredentialDirectory(directory: string): void {
         timeout: WINDOWS_ACL_TIMEOUT_MS,
         windowsHide: true,
         maxBuffer: 64 * 1024,
+        stdio: ['pipe', 'pipe', 'pipe'],
       }
     );
   } catch {

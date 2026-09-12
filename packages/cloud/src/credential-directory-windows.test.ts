@@ -46,9 +46,12 @@ describe('assertWindowsCredentialDirectory', () => {
       encoding: 'utf8',
       timeout: expect.any(Number),
       windowsHide: true,
+      stdio: ['pipe', 'pipe', 'pipe'],
     });
     const script = String(args[args.length - 1]);
-    expect(script).toContain('Get-Acl');
+    expect(script).toContain('DirectoryInfo]::new');
+    expect(script).toContain('GetAccessControl');
+    expect(script).not.toContain('Get-Acl');
     expect(script).toContain('ReparsePoint');
     expect(script).toContain('S-1-5-18');
     expect(script).toContain('ReadData');
