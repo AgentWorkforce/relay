@@ -113,6 +113,33 @@ describe('workspace store', () => {
     }
   });
 
+  it.skipIf(process.platform === 'win32')(
+    'rejects a writable ancestor above an otherwise private credential directory',
+    () => {
+      const shared = path.join(dir, 'shared');
+      const privateDirectory = path.join(shared, 'private');
+      fs.mkdirSync(privateDirectory, { recursive: true, mode: 0o700 });
+      fs.chmodSync(shared, 0o777);
+      try {
+        expect(() =>
+          writeRelaycastCredential(
+            'unsafe-ancestor',
+            {
+              workspaceId: 'rw_private',
+              route: 'canonical',
+              baseUrl: 'https://relay.example',
+              apiKey: 'rk_live_private',
+            },
+            { AGENT_RELAY_HOME: privateDirectory }
+          )
+        ).toThrow('unsafe ancestor');
+        expect(fs.existsSync(path.join(privateDirectory, 'relaycast-credentials.json'))).toBe(false);
+      } finally {
+        fs.chmodSync(shared, 0o700);
+      }
+    }
+  );
+
   it('stores route credentials outside the project with a scoped reference', () => {
     const ref = relaycastCredentialRef(
       '/checkout/.agentworkforce/relay',
@@ -138,6 +165,14 @@ describe('workspace store', () => {
       apiKey: 'rk_live_sentinel',
     });
     const source = fs.readFileSync(new URL('./workspace-store.ts', import.meta.url), 'utf8');
+    fs.writeFileSync(path.join(dir, 'package.json'), JSON.stringify({ type: 'module' }));
+    fs.writeFileSync(
+      path.join(dir, 'credential-directory-windows.js'),
+      ts.transpileModule(
+        fs.readFileSync(new URL('./credential-directory-windows.ts', import.meta.url), 'utf8'),
+        { compilerOptions: { target: ts.ScriptTarget.ES2022, module: ts.ModuleKind.ES2022 } }
+      ).outputText
+    );
     const worker = path.join(dir, 'workspace-store-worker.mjs');
     fs.writeFileSync(
       worker,
