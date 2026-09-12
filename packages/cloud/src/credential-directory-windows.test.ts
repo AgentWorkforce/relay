@@ -26,6 +26,7 @@ function withWindowsPlatform(): void {
 
 describe('assertWindowsCredentialDirectory', () => {
   it('does not invoke PowerShell on non-Windows platforms', () => {
+    Object.defineProperty(process, 'platform', { configurable: true, value: 'linux' });
     assertWindowsCredentialDirectory('/tmp/relay-credentials');
     expect(execFileSyncMock).not.toHaveBeenCalled();
   });
