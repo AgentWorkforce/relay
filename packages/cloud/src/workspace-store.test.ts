@@ -172,12 +172,13 @@ describe('workspace store', () => {
       });
       const source = fs.readFileSync(new URL('./workspace-store.ts', import.meta.url), 'utf8');
       fs.writeFileSync(path.join(dir, 'package.json'), JSON.stringify({ type: 'module' }));
+      // The parent write above validates the real directory ACL once. This
+      // fixture isolates the file-lock protocol: otherwise each of the ten
+      // child processes starts PowerShell for every write and the test measures
+      // process-start contention instead of credential-store atomicity.
       fs.writeFileSync(
         path.join(dir, 'credential-directory-windows.js'),
-        ts.transpileModule(
-          fs.readFileSync(new URL('./credential-directory-windows.ts', import.meta.url), 'utf8'),
-          { compilerOptions: { target: ts.ScriptTarget.ES2022, module: ts.ModuleKind.ES2022 } }
-        ).outputText
+        'export function assertWindowsCredentialDirectory() {}\n'
       );
       const worker = path.join(dir, 'workspace-store-worker.mjs');
       fs.writeFileSync(
