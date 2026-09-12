@@ -349,15 +349,8 @@ function assertWorkspaceResolverTransport(apiUrl: string): void {
   } catch {
     throw new Error('Project workspace resolution requires a valid Cloud API URL.');
   }
-  const loopback = ['localhost', '127.0.0.1', '[::1]'].includes(url.hostname);
-  if (
-    url.username ||
-    url.password ||
-    (url.protocol !== 'https:' && !(url.protocol === 'http:' && loopback))
-  ) {
-    throw new Error(
-      'Project workspace resolution requires HTTPS (HTTP is allowed only for a local development server).'
-    );
+  if (url.username || url.password || url.protocol !== 'https:') {
+    throw new Error('Project workspace resolution requires HTTPS.');
   }
 }
 
