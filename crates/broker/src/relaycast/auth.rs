@@ -2,8 +2,8 @@ use anyhow::{Context, Result};
 use chrono::{DateTime, Utc};
 use futures_util::future::join_all;
 use relaycast::{
-    CreateAgentRequest, RelayCast, RelayCastOptions, RelayError, TakeOverAgentRequest,
-    WorkspaceProvenance,
+    CreateAgentRequest, RelayCast, RelayCastOptions, RelayError, ReleaseAgentRequest,
+    TakeOverAgentRequest, WorkspaceProvenance,
 };
 use reqwest::StatusCode;
 use serde::{Deserialize, Serialize};
@@ -436,6 +436,7 @@ impl AuthClient {
             let mut memberships = Vec::with_capacity(membership_count);
             let mut auth_rejections = Vec::new();
             let mut workspace_busy_rejection: Option<anyhow::Error> = None;
+            let mut terminal_error: Option<anyhow::Error> = None;
 
             for (source, api_key, registration) in registrations {
                 match registration {
@@ -463,10 +464,24 @@ impl AuthClient {
                         );
                     }
                     Err(error) => {
-                        return Err(error)
-                            .context("failed registering agent for configured workspace");
+                        terminal_error = Some(
+                            error.context("failed registering agent for configured workspace"),
+                        );
+                        break;
                     }
                 }
+            }
+
+            if let Some(error) = terminal_error {
+                self.rollback_registered_memberships(
+                    &memberships,
+                    "rolled back after a sibling multi-workspace registration failed",
+                )
+                .await
+                .context(
+                    "failed to roll back sibling workspace registrations after a hard failure",
+                )?;
+                return Err(error);
             }
 
             if memberships.is_empty() {
@@ -821,11 +836,19 @@ impl AuthClient {
         // own replay is treated as our own committed workspace rather than
         // someone else's, and never silently mints a second one.
         let sends = std::sync::atomic::AtomicUsize::new(0);
-        match retry_transient_relay_error("creating a Relaycast workspace", || {
-            sends.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-            RelayCast::create_workspace(name, self.base_url.as_deref(), WorkspaceProvenance::sdk())
-        })
+        match tokio::time::timeout(
+            RELAYCAST_HTTP_TIMEOUT,
+            retry_transient_relay_error("creating a Relaycast workspace", || {
+                sends.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                RelayCast::create_workspace(
+                    name,
+                    self.base_url.as_deref(),
+                    WorkspaceProvenance::sdk(),
+                )
+            }),
+        )
         .await
+        .context("creating a Relaycast workspace timed out")?
         {
             Ok(result) => Ok((result.workspace_id, result.api_key)),
             Err(error)
@@ -865,6 +888,48 @@ impl AuthClient {
                 Ok((result.workspace_id, result.api_key))
             }
             Err(error) => Err(relay_error_to_anyhow(error)),
+        }
+    }
+
+    async fn rollback_registered_memberships(
+        &self,
+        memberships: &[AuthSession],
+        reason: &str,
+    ) -> Result<()> {
+        let mut cleanup_error: Option<anyhow::Error> = None;
+        for session in memberships {
+            let Some(agent_name) = session.credentials.agent_name.as_deref() else {
+                continue;
+            };
+            let relay = build_relay_client(&session.credentials.api_key, self.base_url.as_deref())?;
+            let request = ReleaseAgentRequest {
+                name: agent_name.to_string(),
+                reason: Some(reason.to_string()),
+                delete_agent: Some(true),
+            };
+            if let Err(error) = relay
+                .release_agent(request)
+                .await
+                .map_err(relay_error_to_anyhow)
+            {
+                tracing::warn!(
+                    target = "relay_broker::auth",
+                    agent_name = %agent_name,
+                    error = %error,
+                    "failed to roll back a sibling workspace registration"
+                );
+                if cleanup_error.is_none() {
+                    cleanup_error = Some(error.context(format!(
+                        "failed to roll back workspace registration for {agent_name}"
+                    )));
+                }
+            }
+        }
+
+        if let Some(error) = cleanup_error {
+            Err(error)
+        } else {
+            Ok(())
         }
     }
 
@@ -2830,6 +2895,78 @@ mod tests {
         }
     }
 
+    #[tokio::test]
+    async fn multi_workspace_hard_failure_rolls_back_successful_memberships() {
+        let _env_guard = clear_relay_env();
+        let server = MockServer::start();
+        unsafe {
+            std::env::set_var(
+                "RELAY_WORKSPACES_JSON",
+                r#"[{"workspace_id":"ws_success","api_key":"rk_live_success"},{"workspace_id":"ws_fail","api_key":"rk_live_fail"}]"#,
+            );
+        }
+
+        let success_register = server.mock(|when, then| {
+            when.method(POST)
+                .path("/v1/agents")
+                .header("authorization", "Bearer rk_live_success");
+            then.status(200)
+                .header("content-type", "application/json")
+                .body(
+                    r#"{"ok":true,"data":{"id":"agent-success","workspace_id":"ws_success","name":"lead","token":"at_live_success","status":"online","created_at":"2025-01-01T00:00:00Z"}}"#,
+                );
+        });
+        let failed_register = server.mock(|when, then| {
+            when.method(POST)
+                .path("/v1/agents")
+                .header("authorization", "Bearer rk_live_fail");
+            then.status(500)
+                .header("content-type", "application/json")
+                .body(r#"{"ok":false,"error":{"code":"internal_error","message":"boom"}}"#);
+        });
+        let rollback = server.mock(|when, then| {
+            when.method(POST)
+                .path("/v1/agents/release")
+                .header("authorization", "Bearer rk_live_success");
+            then.status(200).header("content-type", "application/json").body(
+                json!({
+                    "ok": true,
+                    "data": {
+                        "invocation_id": "cleanup-1",
+                        "action_name": "release",
+                        "handler_agent_id": null,
+                        "handler_node_id": "node_1",
+                        "dispatched_node_id": "node_1",
+                        "input": {
+                            "name": "lead",
+                            "reason": "rolled back after a sibling multi-workspace registration failed"
+                        },
+                        "status": "dispatched",
+                        "created_at": "2026-08-15T00:00:00.000Z"
+                    }
+                })
+                .to_string(),
+            );
+        });
+
+        let error = AuthClient::new(Some(server.base_url()))
+            .startup_session_set(Some("lead"))
+            .await
+            .expect_err("a hard membership failure must fail the whole multi-workspace startup");
+        let message = format!("{error:#}");
+        assert!(
+            message.contains("failed registering agent for configured workspace"),
+            "unexpected failure: {message}"
+        );
+        success_register.assert_hits(1);
+        failed_register.assert_hits(1);
+        rollback.assert_hits(1);
+
+        unsafe {
+            std::env::remove_var("RELAY_WORKSPACES_JSON");
+        }
+    }
+
     /// Multi-workspace admission must not serialize one busy membership in
     /// front of later memberships. Each membership also gets a distinct queue
     /// waiter derived from the caller's logical handshake waiter, while the
@@ -3005,6 +3142,56 @@ mod tests {
             std::env::remove_var("RELAY_DEFAULT_WORKSPACE");
             std::env::remove_var("RELAY_WORKSPACES_JSON");
         }
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn no_key_startup_times_out_workspace_creation_independently() {
+        use axum::{routing::post, Router};
+
+        let _env_guard = clear_relay_env();
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let server = tokio::spawn(async move {
+            async fn create_workspace() -> axum::Json<Value> {
+                tokio::time::sleep(std::time::Duration::from_secs(31)).await;
+                axum::Json(json!({
+                    "ok": true,
+                    "data": {
+                        "workspace_id": "ws_new",
+                        "api_key": "rk_live_new",
+                        "created_at": "2025-01-01T00:00:00Z"
+                    }
+                }))
+            }
+
+            axum::serve(
+                listener,
+                Router::new().route("/v1/workspaces", post(create_workspace)),
+            )
+            .await
+        });
+
+        let startup = tokio::spawn({
+            let client = AuthClient::new(Some(format!("http://{address}")));
+            async move {
+                client
+                    .startup_session_set_with_identity(Some("lead"), false, None, None)
+                    .await
+            }
+        });
+
+        tokio::time::advance(std::time::Duration::from_secs(31)).await;
+        let error = startup
+            .await
+            .expect("startup task should join")
+            .expect_err("fresh no-key startup must time out the workspace-creation phase");
+        let message = format!("{error:#}");
+        assert!(
+            message.contains("creating a Relaycast workspace timed out"),
+            "unexpected no-key startup failure: {message}"
+        );
+
+        server.abort();
     }
 
     /// Full `startup_session` HTTP-path proof for the outer admission

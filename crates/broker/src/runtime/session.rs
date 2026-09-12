@@ -246,6 +246,21 @@ fn format_handshake_timeout_error(
     )
 }
 
+fn startup_has_preconfigured_workspace_key() -> bool {
+    [
+        "RELAY_WORKSPACES_JSON",
+        "AGENT_RELAY_WORKSPACE_KEY",
+        "RELAY_WORKSPACE_KEY",
+        "RELAY_API_KEY",
+    ]
+    .iter()
+    .any(|name| {
+        std::env::var(name)
+            .ok()
+            .is_some_and(|value| !value.trim().is_empty())
+    })
+}
+
 pub(crate) async fn connect_relay(opts: RelaySessionOptions<'_>) -> Result<RelaySession> {
     let startup_debug = startup_debug_enabled();
     let connect_started = Instant::now();
@@ -308,7 +323,7 @@ pub(crate) async fn connect_relay(opts: RelaySessionOptions<'_>) -> Result<Relay
     // stable across those replays so Relaycast does not allocate a fresh
     // admission slot for each timed-out attempt.
     let startup_waiter_id = format!("relay-register:{}", Uuid::new_v4());
-    let sessions = {
+    let sessions = if startup_has_preconfigured_workspace_key() {
         let mut attempt: u32 = 0;
         loop {
             let Some(current_attempt_timeout) = handshake_attempt_timeout_within_budget(
@@ -370,6 +385,16 @@ pub(crate) async fn connect_relay(opts: RelaySessionOptions<'_>) -> Result<Relay
                 }
             }
         }
+    } else {
+        auth.startup_session_set_with_identity_and_waiter(
+            Some(opts.requested_name),
+            opts.strict_name,
+            opts.agent_type,
+            Some(derived_identity_key.as_str()),
+            Some(startup_waiter_id.as_str()),
+        )
+        .await
+        .context("failed to initialize relaycast session")?
     };
     log_startup_phase(
         startup_debug,
