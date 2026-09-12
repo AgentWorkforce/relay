@@ -1,6 +1,7 @@
 import { execFileSync } from 'node:child_process';
-import { readFileSync } from 'node:fs';
-import { mkdir, readFile, writeFile } from 'node:fs/promises';
+import { constants as fsConstants } from 'node:fs';
+import { access, readFile } from 'node:fs/promises';
+import { mkdir, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 import process from 'node:process';
 import { fileURLToPath } from 'node:url';
@@ -10,6 +11,8 @@ const targetDir = requiredDirectory('RELAY_PR_PROOF_TARGET_DIR');
 const harnessDir = requiredDirectory('RELAY_PR_PROOF_HARNESS_DIR');
 const resultPath = requiredValue('RELAY_PR_PROOF_RESULT_PATH');
 const arm = requiredValue('RELAY_PR_PROOF_ARM');
+const cargoPath = await resolveCargoExecutable();
+const cargoEnv = await sanitizedEnvironment(cargoPath);
 const expectedSha =
   arm === 'base' ? process.env.RELAY_PR_PROOF_BASE_SHA : process.env.RELAY_PR_PROOF_HEAD_SHA;
 
@@ -26,7 +29,7 @@ if (!isWithin(harnessDir, fileURLToPath(import.meta.url))) {
   throw new Error('The RelayFlow runner must execute from the exact-head harness checkout.');
 }
 
-const apiSource = readFileSync(path.join(targetDir, 'crates/broker/src/runtime/api.rs'), 'utf8');
+const apiSource = await readFile(path.join(targetDir, 'crates/broker/src/runtime/api.rs'), 'utf8');
 const headMarker = 'promote that request to the same';
 const headTest = 'name_only_release_of_retired_owned_worker_deletes_directly_and_is_idempotent';
 const callerTest = 'caller_owned_release_cannot_be_promoted_to_identity_deletion';
@@ -112,7 +115,6 @@ async fn ${probeTest}() {
 }
 `;
 
-const cargoEnv = sanitizedEnvironment();
 const originalTests = await readFile(testPath, 'utf8');
 try {
   await writeFile(testPath, `${originalTests}\n${PROBE_TEST}\n`, 'utf8');
@@ -166,7 +168,7 @@ function runCargo(filter, env) {
   try {
     return {
       status: 0,
-      stdout: execFileSync('cargo', ['test', '-p', 'agent-relay-broker', filter, '--lib'], {
+      stdout: execFileSync(cargoPath, ['test', '-p', 'agent-relay-broker', filter, '--lib'], {
         cwd: targetDir,
         env,
         encoding: 'utf8',
@@ -183,10 +185,54 @@ function runCargo(filter, env) {
   }
 }
 
-function sanitizedEnvironment() {
+async function resolveCargoExecutable() {
+  const candidates = [];
+  const envCargo = process.env.RELAY_PR_PROOF_CARGO_BIN?.trim() ?? process.env.CARGO?.trim();
+  if (envCargo) candidates.push(envCargo);
+  const cargoHome = process.env.CARGO_HOME?.trim();
+  if (cargoHome) candidates.push(path.join(cargoHome, 'bin', 'cargo'));
+  const home = process.env.HOME?.trim();
+  if (home) candidates.push(path.join(home, '.cargo', 'bin', 'cargo'));
+  candidates.push('/usr/local/cargo/bin/cargo', '/usr/bin/cargo', '/opt/homebrew/bin/cargo');
+
+  const seen = new Set();
+  for (const candidate of candidates) {
+    const resolved = path.resolve(candidate);
+    if (seen.has(resolved)) continue;
+    seen.add(resolved);
+    try {
+      await access(resolved, fsConstants.X_OK);
+      return resolved;
+    } catch {
+      // Keep searching deterministic fallback locations.
+    }
+  }
+
+  throw new Error(
+    'Unable to resolve a Cargo executable in the Daytona sandbox; this proof requires the exact rustup toolchain to be preinstalled or supplied via RELAY_PR_PROOF_CARGO_BIN.'
+  );
+}
+
+async function sanitizedEnvironment(resolvedCargoPath) {
   const env = { ...process.env, AGENT_RELAY_TELEMETRY_DISABLED: '1' };
   for (const key of Object.keys(env)) {
     if (/(TOKEN|SECRET|PASSWORD|API_KEY|WORKSPACE_KEY)/i.test(key)) delete env[key];
+  }
+  const cargoBinDir = path.dirname(resolvedCargoPath);
+  const cargoHome = path.dirname(cargoBinDir);
+  if (path.basename(cargoHome) === '.cargo') {
+    env.CARGO_HOME ??= cargoHome;
+    const inferredRustupHome = path.join(path.dirname(cargoHome), '.rustup');
+    try {
+      await access(inferredRustupHome, fsConstants.X_OK);
+      env.RUSTUP_HOME ??= inferredRustupHome;
+    } catch {
+      // Some sandboxes ship a plain Cargo install instead of rustup-managed state.
+    }
+  }
+  const currentPath = env.PATH?.trim() ? env.PATH : '/usr/local/bin:/usr/bin:/bin';
+  if (!currentPath.split(path.delimiter).includes(cargoBinDir)) {
+    env.PATH = `${cargoBinDir}${path.delimiter}${currentPath}`;
   }
   return env;
 }
