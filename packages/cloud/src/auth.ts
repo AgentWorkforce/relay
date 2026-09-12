@@ -701,7 +701,7 @@ export async function ensureAuthenticated(
 
 export async function ensureCloudSession(options: CloudSessionOptions = {}): Promise<CloudSession> {
   const env = options.env ?? process.env;
-  const apiUrl = options.apiUrl || env.CLOUD_API_URL?.trim() || defaultApiUrl();
+  const apiUrl = options.apiUrl || defaultApiUrl(env);
   const force = options.force === true;
   const interactive = options.interactive !== false;
   const refreshTimeoutMs = options.refreshTimeoutMs;
