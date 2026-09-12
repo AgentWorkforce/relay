@@ -665,28 +665,29 @@ export class HarnessDriverClient {
     reason?: string,
     expectedGeneration?: string,
     deleteIdentity = false
-  ): Promise<{ name: string }> {
+  ): Promise<{ name: string; process?: string; identity?: string }> {
     if (deleteIdentity && !expectedGeneration)
       throw new Error('Owned identity deletion requires a worker generation');
     const beforeCtx: BeforeAgentReleaseContext = { name, reason, baseUrl: this.baseUrl };
     const t0 = Date.now();
     await this.eventBus.emit('beforeAgentRelease', beforeCtx);
     try {
-      const result = await this.transport.request<{ name: string }>(
-        `/api/spawned/${encodeURIComponent(name)}`,
-        {
-          method: 'DELETE',
-          ...(reason || expectedGeneration
-            ? {
-                body: JSON.stringify({
-                  reason,
-                  expected_generation: expectedGeneration,
-                  ...(deleteIdentity ? { delete_identity: true } : {}),
-                }),
-              }
-            : {}),
-        }
-      );
+      const result = await this.transport.request<{
+        name: string;
+        process?: string;
+        identity?: string;
+      }>(`/api/spawned/${encodeURIComponent(name)}`, {
+        method: 'DELETE',
+        ...(reason || expectedGeneration
+          ? {
+              body: JSON.stringify({
+                reason,
+                expected_generation: expectedGeneration,
+                ...(deleteIdentity ? { delete_identity: true } : {}),
+              }),
+            }
+          : {}),
+      });
       const afterCtx: AfterAgentReleaseContext = {
         ...beforeCtx,
         durationMs: Date.now() - t0,

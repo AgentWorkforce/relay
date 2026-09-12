@@ -3,7 +3,9 @@ use crate::fleet_wire::{
     ActionResult, ActionResultError, ActionResultPayload, AgentDeregister, BrokerToRelaycast,
     FLEET_WIRE_VERSION,
 };
+use serde::{Deserialize, Serialize};
 use std::sync::atomic::{AtomicBool, Ordering};
+use std::{collections::HashMap, path::Path};
 use tokio::{sync::oneshot, task::JoinHandle};
 
 const CLEANUP_RETRY_DELAY: Duration = Duration::from_secs(5);
@@ -17,14 +19,81 @@ pub(super) enum CleanupCompletion {
     Fleet(ActionResult),
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct OwnedCleanupJournalEntry {
+    generation: Uuid,
+    expected_token_hash: String,
+    agent_id: Option<String>,
+}
+
+fn persist_journal(workers: &WorkerRegistry) {
+    let Some(path) = workers.owned_cleanup_journal.as_deref() else {
+        return;
+    };
+    let entries: HashMap<WorkerName, OwnedCleanupJournalEntry> = workers
+        .identity_cleanups
+        .iter()
+        .filter_map(|(name, pending)| {
+            (pending.delete_identity)
+                .then(|| {
+                    pending.expected_token_hash.as_ref().ok().map(|token_hash| {
+                        (
+                            name.clone(),
+                            OwnedCleanupJournalEntry {
+                                generation: pending.generation,
+                                expected_token_hash: token_hash.clone(),
+                                agent_id: pending.agent_id.clone(),
+                            },
+                        )
+                    })
+                })
+                .flatten()
+        })
+        .collect();
+    let body = match serde_json::to_vec_pretty(&entries) {
+        Ok(body) => body,
+        Err(error) => {
+            tracing::warn!(error = %error, "failed to serialize owned cleanup journal");
+            return;
+        }
+    };
+    let Some(parent) = path.parent() else { return };
+    if let Err(error) = std::fs::create_dir_all(parent).and_then(|_| {
+        let mut temporary = tempfile::NamedTempFile::new_in(parent)?;
+        std::io::Write::write_all(&mut temporary, &body)?;
+        temporary
+            .persist(path)
+            .map(|_| ())
+            .map_err(std::io::Error::other)
+    }) {
+        tracing::warn!(path = %path.display(), error = %error, "failed to persist owned cleanup journal");
+    }
+}
+
+fn load_journal(path: &Path) -> Result<HashMap<WorkerName, OwnedCleanupJournalEntry>, String> {
+    match std::fs::read_to_string(path) {
+        Ok(body) => serde_json::from_str(&body).map_err(|error| {
+            format!(
+                "failed parsing owned cleanup journal {}: {error}",
+                path.display()
+            )
+        }),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(HashMap::new()),
+        Err(error) => Err(format!(
+            "failed reading owned cleanup journal {}: {error}",
+            path.display()
+        )),
+    }
+}
+
 /// Name custody remains in the runtime until the remote result is reconciled.
 /// A failed attempt retains its original generation, client and binding for retry.
 pub(crate) struct PendingIdentityCleanup {
     pub(super) generation: Uuid,
     http: RelaycastHttpClient,
     pub(super) delete_identity: bool,
-    agent_id: Option<String>,
-    expected_token_hash: Result<String, String>,
+    pub(super) agent_id: Option<String>,
+    pub(super) expected_token_hash: Result<String, String>,
     deregistered: Arc<AtomicBool>,
     pub(super) attempts: u8,
     task: Option<JoinHandle<Result<(), String>>>,
@@ -109,6 +178,37 @@ pub(super) fn schedule_identity_cleanup(
     delete_identity: bool,
     completion: Option<CleanupCompletion>,
 ) {
+    let expected_token_hash = http
+        .owned_identity_token_hash(name)
+        .map_err(|error| error.to_string());
+    let agent_id = book.active_agent_id(name.as_str()).map(ToString::to_string);
+    schedule_identity_cleanup_with_hash(
+        workers,
+        tx,
+        inventory,
+        http,
+        name,
+        delete_identity,
+        agent_id,
+        expected_token_hash,
+        completion,
+        true,
+    );
+}
+
+#[allow(clippy::too_many_arguments)]
+fn schedule_identity_cleanup_with_hash(
+    workers: &mut WorkerRegistry,
+    tx: &mpsc::Sender<FleetControlCommand>,
+    inventory: &mut HashMap<WorkerName, InventoryAgent>,
+    http: &RelaycastHttpClient,
+    name: &WorkerName,
+    delete_identity: bool,
+    agent_id: Option<String>,
+    expected_token_hash: Result<String, String>,
+    completion: Option<CleanupCompletion>,
+    persist_journal_now: bool,
+) {
     if let Some(pending) = workers.identity_cleanups.get_mut(name) {
         if let Some(completion) = completion {
             pending.completions.push(completion);
@@ -127,10 +227,6 @@ pub(super) fn schedule_identity_cleanup(
             .entry(name.clone())
             .or_insert((generation, http.clone()));
     }
-    let expected_token_hash = http
-        .owned_identity_token_hash(name)
-        .map_err(|error| error.to_string());
-    let agent_id = book.active_agent_id(name.as_str()).map(ToString::to_string);
     let deregistered = Arc::new(AtomicBool::new(false));
     let task = start_attempt(
         tx,
@@ -157,6 +253,46 @@ pub(super) fn schedule_identity_cleanup(
             completions: completion.into_iter().collect(),
         },
     );
+    if persist_journal_now {
+        persist_journal(workers);
+    }
+}
+
+pub(super) fn restore_identity_cleanups(runtime: &mut BrokerRuntime) -> Result<()> {
+    let Some(path) = runtime.workers.owned_cleanup_journal.clone() else {
+        return Ok(());
+    };
+    let entries = match load_journal(&path) {
+        Ok(entries) => entries,
+        Err(error) => {
+            tracing::warn!(
+                path = %path.display(),
+                error = %error,
+                "failed to restore owned cleanup journal; skipping recovery"
+            );
+            return Ok(());
+        }
+    };
+    for (name, entry) in entries {
+        runtime.workers.owned_spawn_generations.insert(
+            name.clone(),
+            (entry.generation, runtime.relaycast_http.clone()),
+        );
+        schedule_identity_cleanup_with_hash(
+            &mut runtime.workers,
+            &runtime.fleet_control_tx,
+            &mut runtime.fleet_inventory,
+            &runtime.relaycast_http,
+            &name,
+            true,
+            entry.agent_id,
+            Ok(entry.expected_token_hash),
+            None,
+            false,
+        );
+    }
+    persist_journal(&runtime.workers);
+    Ok(())
 }
 
 impl BrokerRuntime {
@@ -248,6 +384,7 @@ impl BrokerRuntime {
                 if self.fleet_delivery_book.active_agent_id(name.as_str()) == agent_id.as_deref() {
                     self.fleet_delivery_book.remove_agent(name.as_str());
                 }
+                persist_journal(&self.workers);
             }
             for completion in completions {
                 let cleanup_error = result.as_ref().err().map(|error| format!("owned identity cleanup unconfirmed for {name} generation {generation}; retry retained: {error}"));

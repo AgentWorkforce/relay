@@ -958,8 +958,35 @@ impl BrokerRuntime {
                 delete_identity,
                 reply,
             } => {
+                // The local CLI historically sends a name-only release. If
+                // this broker still has custody of the exact generation's
+                // tokenless identity, promote that request to the same
+                // generation-bound durable cleanup as an explicit release.
+                // Caller-owned token identities are deliberately absent from
+                // this map and therefore remain non-deletable here.
+                let name_only_release = !delete_identity && expected_generation.is_none();
+                let inferred_owned_generation = name_only_release.then(|| {
+                    workers
+                        .owned_spawn_generations
+                        .get(&name)
+                        .and_then(|(generation, _)| {
+                            let worker_matches = workers
+                                .workers
+                                .get(&name)
+                                .is_none_or(|worker| worker.generation == *generation);
+                            worker_matches.then_some(*generation)
+                        })
+                });
+                let inferred_owned_generation = inferred_owned_generation.flatten();
+                let (delete_identity, expected_generation) =
+                    if let Some(generation) = inferred_owned_generation {
+                        (true, Some(generation.to_string()))
+                    } else {
+                        (delete_identity, expected_generation)
+                    };
                 // Bounded tombstones make an acknowledged cleanup retry safe:
-                // no remote mutation, and never release a replacement worker.
+                // no remote mutation, and only when the caller can still name
+                // the exact owned generation that was already retired.
                 if delete_identity
                     && !workers.has_worker(&name)
                     && expected_generation.as_deref().is_some_and(|expected| {
@@ -970,7 +997,7 @@ impl BrokerRuntime {
                         )
                     })
                 {
-                    let _ = reply.send(Ok(json!({"success": true, "name": name})));
+                    let _ = reply.send(Ok(json!({"success": true, "name": name, "process": "stopped", "identity": "deleted"})));
                     return;
                 }
                 if let Some(pending) = workers.identity_cleanups.get_mut(&name) {
@@ -983,7 +1010,7 @@ impl BrokerRuntime {
                             .completions
                             .push(super::identity_cleanup::CleanupCompletion::Api(
                                 reply,
-                                Ok(json!({"success":true,"name":name})),
+                                Ok(json!({"success":true,"name":name,"process":"stopped","identity":"deleted"})),
                             ));
                         pending.attempts = 0;
                         pending.retry_at = Instant::now();
@@ -1159,7 +1186,9 @@ impl BrokerRuntime {
                                 true,
                                 Some(super::identity_cleanup::CleanupCompletion::Api(
                                     reply,
-                                    Ok(json!({"success":true,"name":name})),
+                                    Ok(
+                                        json!({"success":true,"name":name,"process":"stopped","identity":"deleted"}),
+                                    ),
                                 )),
                             );
                             return;
@@ -1176,20 +1205,24 @@ impl BrokerRuntime {
                             (None, Some(error)) => Err(format!(
                                 "worker process was released, but its Relaycast identity could not be released ({error}); the seat may still be held and re-registration may rotate a live token"
                             )),
-                            (None, None) => Ok(json!({ "success": true, "name": name })),
+                            (None, None) => Ok(json!({ "success": true, "name": name, "process": "stopped", "identity": "retained" })),
                         };
                         let _ = reply.send(response);
                     }
                     Err(e) => {
                         let message = e.to_string();
                         if is_unknown_worker_error_message(&message) {
-                            let fleet_deregistration_error = super::fleet::deregister_fleet_agent(
-                                fleet_control_tx,
-                                fleet_delivery_book,
-                                &name,
-                            )
-                            .await
-                            .err();
+                            let fleet_deregistration_error = if delete_identity {
+                                None
+                            } else {
+                                super::fleet::deregister_fleet_agent(
+                                    fleet_control_tx,
+                                    fleet_delivery_book,
+                                    &name,
+                                )
+                                .await
+                                .err()
+                            };
                             if let Some(error) = &fleet_deregistration_error {
                                 tracing::warn!(
                                     worker = %name,
@@ -1199,24 +1232,27 @@ impl BrokerRuntime {
                             }
                             // The local worker is already gone, but that says
                             // nothing about whether its Relaycast identity was
-                            // ever actually released — this branch is reached
-                            // on every retry after a first attempt whose
-                            // relaycast release failed. Retry the release
-                            // itself rather than only forgetting the cached
-                            // token, or a retry can never actually free the
-                            // seat.
-                            let relaycast_release_error = match relaycast_http
-                                .release_agent_identity(&name, reason.as_deref(), false)
-                                .await
-                            {
-                                Ok(()) => None,
-                                Err(error) => {
-                                    tracing::warn!(
-                                        worker = %name,
-                                        error = %error,
-                                        "failed to release already-exited worker identity in relaycast"
-                                    );
-                                    Some(error.to_string())
+                            // ever actually released. Non-owned releases must
+                            // retry the host-routed release itself rather than
+                            // only forgetting the cached token. Owned releases
+                            // go through the generation-bound durable cleanup
+                            // below instead.
+                            let relaycast_release_error = if delete_identity {
+                                None
+                            } else {
+                                match relaycast_http
+                                    .release_agent_identity(&name, reason.as_deref(), false)
+                                    .await
+                                {
+                                    Ok(()) => None,
+                                    Err(error) => {
+                                        tracing::warn!(
+                                            worker = %name,
+                                            error = %error,
+                                            "failed to release already-exited worker identity in relaycast"
+                                        );
+                                        Some(error.to_string())
+                                    }
                                 }
                             };
                             // Idempotent release is still terminal for any stale
@@ -1236,7 +1272,14 @@ impl BrokerRuntime {
                             if paths.persist {
                                 let _ = state.save(&paths.state);
                             }
-                            if fleet_deregistration_error.is_none() {
+                            if delete_identity {
+                                super::fleet::prune_fleet_inventory_entry(
+                                    fleet_control_tx,
+                                    fleet_inventory,
+                                    &name,
+                                )
+                                .await;
+                            } else if fleet_deregistration_error.is_none() {
                                 super::fleet::prune_fleet_agent_state(
                                     fleet_control_tx,
                                     fleet_inventory,
@@ -1269,6 +1312,24 @@ impl BrokerRuntime {
                                 worker = %name,
                                 "ignoring duplicate HTTP API release for already exited worker"
                             );
+                            if delete_identity {
+                                super::identity_cleanup::schedule_identity_cleanup(
+                                    workers,
+                                    fleet_control_tx,
+                                    fleet_delivery_book,
+                                    fleet_inventory,
+                                    relaycast_http,
+                                    &name,
+                                    true,
+                                    Some(super::identity_cleanup::CleanupCompletion::Api(
+                                        reply,
+                                        Ok(
+                                            json!({"success":true,"name":name,"process":"stopped","identity":"deleted"}),
+                                        ),
+                                    )),
+                                );
+                                return;
+                            }
                             let response = match (fleet_deregistration_error, relaycast_release_error)
                             {
                                 (Some(error), _) => Err(format!(
@@ -1277,7 +1338,7 @@ impl BrokerRuntime {
                                 (None, Some(error)) => Err(format!(
                                     "worker was already gone locally, but its Relaycast identity could not be released ({error}); the seat may still be held"
                                 )),
-                                (None, None) => Ok(json!({ "success": true, "name": name })),
+                                (None, None) => Ok(json!({ "success": true, "name": name, "process": "stopped", "identity": "retained" })),
                             };
                             let _ = reply.send(response);
                         } else {
