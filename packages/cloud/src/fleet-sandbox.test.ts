@@ -153,7 +153,7 @@ describe('Cloud fleet sandbox client', () => {
           repository: 'AgentWorkforce/cloud',
           revision,
         },
-        { pollIntervalMs: 0 }
+        { pollIntervalMs: 1 }
       )
     ).resolves.toEqual({
       cloudWorkspaceId: CLOUD_WORKSPACE_ID,
@@ -206,7 +206,7 @@ describe('Cloud fleet sandbox client', () => {
     await expect(
       materializeCloudRelayfileRepository(
         { workspaceId: 'rw_abc', repository: 'AgentWorkforce/cloud', revision },
-        { pollIntervalMs: 0 }
+        { pollIntervalMs: 1 }
       )
     ).rejects.toThrow(/did not prove a live Relayfile working tree/);
   });
@@ -244,7 +244,7 @@ describe('Cloud fleet sandbox client', () => {
     await expect(
       materializeCloudRelayfileRepository(
         { workspaceId: 'rw_abc', repository: 'AgentWorkforce/cloud', revision },
-        { pollIntervalMs: 0 }
+        { pollIntervalMs: 1 }
       )
     ).rejects.toThrow(/did not prove a live Relayfile working tree/);
   });
@@ -1867,6 +1867,7 @@ describe('Cloud fleet sandbox client', () => {
   });
 
   it.each([
+    ['zero poll interval', { pollIntervalMs: 0 }],
     ['fractional poll interval', { pollIntervalMs: 0.5 }],
     ['infinite poll interval', { pollIntervalMs: Number.POSITIVE_INFINITY }],
     ['fractional request timeout', { timeoutMs: 0.5 }],

@@ -774,7 +774,7 @@ export async function materializeCloudRelayfileRepository(
   }
   const pollIntervalMs = normalizeTimerMs(
     options.pollIntervalMs ?? DEFAULT_RELAYFILE_REPOSITORY_POLL_INTERVAL_MS,
-    true,
+    false,
     'Cloud Relayfile repository poll interval'
   );
 
