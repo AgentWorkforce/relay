@@ -52,8 +52,12 @@ jobs:
 
       - name: Install musl tools
         run: |
-          sudo apt-get update
-          sudo apt-get install -y musl-tools util-linux
+          # These toolchains come from Ubuntu; unrelated runner feeds must not
+          # break their index refresh (for example a stale Chrome Packages.gz).
+          test -f /etc/apt/sources.list.d/ubuntu.sources
+          CI_APT_SOURCE_OPTIONS=(-o Dir::Etc::sourcelist=/etc/apt/sources.list.d/ubuntu.sources -o Dir::Etc::sourceparts=-)
+          sudo apt-get "${CI_APT_SOURCE_OPTIONS[@]}" update
+          sudo apt-get "${CI_APT_SOURCE_OPTIONS[@]}" install -y musl-tools util-linux
 
       - name: Build exact static broker
         run: |
