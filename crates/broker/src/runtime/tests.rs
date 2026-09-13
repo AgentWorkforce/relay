@@ -3009,6 +3009,7 @@ async fn initial_delivery_failure_stays_owned_until_dead_lettered() {
 
 #[tokio::test]
 async fn delivery_retry_transient_blip_emits_failed_event_for_present_worker() {
+    let _guard = env_test_lock().lock().expect("env test lock");
     let worker_name = "worker-blip";
     let mut workers = make_worker_registry_with_worker(worker_name).await;
     {

@@ -1980,7 +1980,12 @@ fn write_pretty_json(path: &Path, value: &Value) -> io::Result<()> {
 
 #[cfg(test)]
 mod tests {
-    use std::{env, ffi::OsString, fs};
+    use std::{
+        env,
+        ffi::OsString,
+        fs,
+        sync::{Mutex, OnceLock},
+    };
 
     #[cfg(windows)]
     use std::path::Path;
@@ -1992,6 +1997,11 @@ mod tests {
     use tempfile::tempdir;
 
     use super::ensure_agent_relay_mcp_config;
+
+    fn env_test_lock() -> &'static Mutex<()> {
+        static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
+        LOCK.get_or_init(|| Mutex::new(()))
+    }
 
     fn assert_is_agent_relay_mcp_config(server: &Value) {
         let expected = super::agent_relay_mcp_command();
@@ -4435,6 +4445,7 @@ exit 0
 
     #[tokio::test]
     async fn configure_agent_relay_mcp_public_reads_env_fallback() {
+        let _guard = env_test_lock().lock().expect("env test lock");
         // Set env vars before calling the public wrapper
         std::env::set_var("RELAY_WORKSPACES_JSON", "wj-from-env");
         let temp = tempdir().expect("tempdir");

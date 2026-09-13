@@ -50,6 +50,13 @@ struct LeaseLock {
     root_identity: (u32, u64),
 }
 
+#[cfg(unix)]
+impl Drop for LeaseLock {
+    fn drop(&mut self) {
+        let _ = self._file.unlock();
+    }
+}
+
 enum CursorAcquireError {
     Lock(io::Error),
     Cursor { lock: LeaseLock, error: io::Error },
@@ -1066,8 +1073,60 @@ fn remove_cursor_temp_files(cursor: &fs::File) -> io::Result<()> {
     Ok(())
 }
 
+#[cfg(test)]
+thread_local! {
+    static REMOVE_CURSOR_DIR_HOOK: std::cell::RefCell<Option<Box<dyn FnMut()>>> =
+        std::cell::RefCell::new(None);
+}
+
+#[cfg(test)]
+struct RemoveCursorDirHookGuard;
+
+#[cfg(test)]
+impl Drop for RemoveCursorDirHookGuard {
+    fn drop(&mut self) {
+        REMOVE_CURSOR_DIR_HOOK.with(|slot| {
+            slot.borrow_mut().take();
+        });
+    }
+}
+
+#[cfg(test)]
+fn install_remove_cursor_dir_hook<F>(hook: F) -> RemoveCursorDirHookGuard
+where
+    F: FnMut() + 'static,
+{
+    REMOVE_CURSOR_DIR_HOOK.with(|slot| {
+        let mut slot = slot.borrow_mut();
+        assert!(slot.is_none(), "remove cursor dir hook already installed");
+        *slot = Some(Box::new(hook));
+    });
+    RemoveCursorDirHookGuard
+}
+
+#[cfg(test)]
+fn run_remove_cursor_dir_hook() {
+    REMOVE_CURSOR_DIR_HOOK.with(|slot| {
+        if let Some(hook) = slot.borrow_mut().as_mut() {
+            hook();
+        }
+    });
+}
+
 #[cfg(unix)]
 fn remove_cursor_dir(lock: &LeaseLock, cursor: &fs::File) -> io::Result<()> {
+    remove_cursor_dir_impl(lock, cursor, || {})
+}
+
+#[cfg(unix)]
+fn remove_cursor_dir_impl<F>(
+    lock: &LeaseLock,
+    cursor: &fs::File,
+    mut before_retry: F,
+) -> io::Result<()>
+where
+    F: FnMut(),
+{
     use std::os::unix::io::AsRawFd;
     let name = std::ffi::CString::new(".cursor").expect("literal has no NUL");
     let mut cursor_stat = std::mem::MaybeUninit::<libc::stat>::uninit();
@@ -1111,6 +1170,9 @@ fn remove_cursor_dir(lock: &LeaseLock, cursor: &fs::File) -> io::Result<()> {
         Ok(())
     } else if error.kind() == io::ErrorKind::DirectoryNotEmpty {
         remove_cursor_temp_files(cursor)?;
+        before_retry();
+        #[cfg(test)]
+        run_remove_cursor_dir_hook();
         let mut retry_entry_stat = std::mem::MaybeUninit::<libc::stat>::uninit();
         let result = unsafe {
             libc::fstatat(
@@ -2895,6 +2957,63 @@ mod tests {
         registry.release_worker(&worker).unwrap();
         assert!(!root.join(".cursor").exists());
         assert!(registry.is_empty());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn cursor_cleanup_retains_replacement_dir_after_temp_cleanup_interleaving() {
+        let parent = tempdir().unwrap();
+        let root = parent.path().join("cwd");
+        let moved_cursor = parent.path().join("cursor-original");
+        fs::create_dir(&root).unwrap();
+        let worker = WorkerName::new("cursor-racy-replacement");
+        let mut registry = CursorMcpLeaseRegistry::new();
+        registry.acquire(&root, &worker).unwrap();
+        registry
+            .write_worker_cursor_file(&worker, b"generated in pinned dir")
+            .unwrap();
+
+        let original_cursor = root.join(".cursor");
+        let temp_name = ".mcp.json.0123456789abcdef0123456789abcdef.tmp";
+        fs::write(original_cursor.join(temp_name), b"broker temp").unwrap();
+
+        let guard = install_remove_cursor_dir_hook({
+            let original_cursor = original_cursor.clone();
+            let moved_cursor = moved_cursor.clone();
+            move || {
+                fs::rename(&original_cursor, &moved_cursor).unwrap();
+                fs::create_dir(&original_cursor).unwrap();
+                fs::write(original_cursor.join("sentinel.txt"), b"replacement kept").unwrap();
+            }
+        });
+
+        let error = registry.release_worker(&worker).unwrap_err();
+        assert_eq!(error.kind(), io::ErrorKind::WouldBlock);
+        assert!(
+            registry.has_pending_cleanup(&worker),
+            "failed cleanup must remain retryable"
+        );
+        assert_eq!(
+            fs::read(root.join(".cursor/sentinel.txt")).unwrap(),
+            b"replacement kept"
+        );
+        assert!(
+            !root.join(".cursor/mcp.json").exists(),
+            "replacement directory must not be touched"
+        );
+        assert!(
+            !moved_cursor.join("mcp.json").exists(),
+            "original generated file must still be cleaned up"
+        );
+
+        drop(guard);
+        fs::remove_file(root.join(".cursor/sentinel.txt")).unwrap();
+        fs::remove_dir(root.join(".cursor")).unwrap();
+        fs::rename(&moved_cursor, root.join(".cursor")).unwrap();
+
+        registry.release_worker(&worker).unwrap();
+        assert!(registry.is_empty());
+        assert!(!root.join(".cursor").exists());
     }
 
     #[cfg(unix)]
