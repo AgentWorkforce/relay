@@ -642,8 +642,11 @@ export class BrokerTransport {
       this.reconnectTimer = null;
     }
     if (this.ws) {
-      this.ws.close();
+      const socket = this.ws;
       this.ws = null;
+      // This socket only observes events. Explicit disposal must not keep the
+      // process alive waiting for a peer that never answers the Close frame.
+      socket.terminate();
     }
     this._connected = false;
   }

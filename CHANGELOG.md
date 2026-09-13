@@ -13,6 +13,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- Harness driver event observers disconnect promptly even when the broker does not complete the WebSocket Close handshake.
+
 - Compiled `agent-relay mcp` starts one stdio server, preventing duplicate tool execution and duplicate message sends.
 
 - Agent release waits for confirmed node deregistration and clears the completed registration reservation, allowing the same name to resume while preserving its retained identity; explicit release retries recover after automatic cleanup retries are exhausted.

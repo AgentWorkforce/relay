@@ -44,6 +44,10 @@ class FakeWebSocket {
   close(): void {
     this.closed = true;
   }
+
+  terminate(): void {
+    this.closed = true;
+  }
 }
 
 vi.mock('ws', () => ({ default: FakeWebSocket }));
@@ -201,6 +205,20 @@ describe('BrokerTransport events WS — message decoding', () => {
 });
 
 describe('BrokerTransport events WS — reconnect backoff', () => {
+  it('cancels a pending reconnect on explicit disconnect', () => {
+    vi.useFakeTimers();
+    const transport = new BrokerTransport({ baseUrl: 'http://x' });
+    transport.connect();
+    socketAt(0).emit('close');
+    expect(vi.getTimerCount()).toBe(1);
+
+    transport.disconnect();
+    expect(vi.getTimerCount()).toBe(0);
+    vi.advanceTimersByTime(60_000);
+    expect(FakeWebSocket.instances).toHaveLength(1);
+    expect(transport.connected).toBe(false);
+  });
+
   it('backs off exponentially up to a cap, and resets after a successful connect', () => {
     vi.useFakeTimers();
     const transport = new BrokerTransport({ baseUrl: 'http://x' });
