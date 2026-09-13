@@ -531,6 +531,7 @@ impl AuthClient {
             agent_type,
             identity_key,
             waiter_id,
+            startup_deadline,
         )
         .await
     }
@@ -624,6 +625,7 @@ impl AuthClient {
         agent_type: Option<&str>,
         identity_key: Option<&str>,
         waiter_id: Option<&str>,
+        startup_deadline: Option<tokio::time::Instant>,
     ) -> Result<AuthSessionSet> {
         let env_workspace_key = env_workspace_key()?;
 
@@ -668,7 +670,7 @@ impl AuthClient {
                         agent_type,
                         identity_key,
                         waiter_id,
-                        startup_deadline: None,
+                        startup_deadline,
                     },
                 )
                 .await
@@ -787,7 +789,8 @@ impl AuthClient {
                     ),
                 )
                 .await
-                .context("failed registering agent with fresh workspace key timed out")??;
+                .context("failed registering agent with fresh workspace key timed out")?
+                .context("failed registering agent with fresh workspace key")?;
                 registration
             }
             None => self

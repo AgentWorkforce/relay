@@ -138,7 +138,9 @@ try {
   const unsafeError = typeof unsafe.body?.error === 'string' ? unsafe.body.error : '';
   const spawnedResponse = await api('GET', '/api/spawned');
   const spawnedList =
-    spawnedResponse.status === 200 && Array.isArray(spawnedResponse.body?.agents)
+    spawnedResponse.status === 200 &&
+    spawnedResponse.body?.success !== false &&
+    Array.isArray(spawnedResponse.body?.agents)
       ? spawnedResponse.body.agents
       : null;
   const unsafeNoWorker =
@@ -151,7 +153,9 @@ try {
   const safeTaskExitCleaned = await waitFor(async () => {
     const agentsResponse = await api('GET', '/api/spawned');
     const agents =
-      agentsResponse.status === 200 && Array.isArray(agentsResponse.body?.agents)
+      agentsResponse.status === 200 &&
+      agentsResponse.body?.success !== false &&
+      Array.isArray(agentsResponse.body?.agents)
         ? agentsResponse.body.agents
         : null;
     return Array.isArray(agents) && agents.every((agent) => agent?.name !== SAFE_AGENT);
