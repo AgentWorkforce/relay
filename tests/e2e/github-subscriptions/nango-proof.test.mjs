@@ -97,3 +97,65 @@ test('receipt projection removes URL credentials and handles HTTP header casing'
   assert.equal(receipts[0].githubEvent, 'pull_request');
   assert(!JSON.stringify(receipts).includes('private-'));
 });
+
+test('bounds independent history reads while exhausting every detail cursor in inventory order', async () => {
+  const inventory = Array.from({ length: 9 }, (_, i) => ({ ...operation, id: `operation-${i}` }));
+  let active = 0,
+    peak = 0,
+    calls = 0;
+  const result = await captureNangoForwards(
+    async (name, args) => {
+      if (name === 'logs_list_operations')
+        return { operations: [...inventory, inventory[0]], pagination: { cursor: null } };
+      active++;
+      peak = Math.max(peak, active);
+      calls++;
+      await new Promise((resolve) => setImmediate(resolve));
+      active--;
+      const op = inventory.find((row) => row.id === args.operationId);
+      return {
+        operation: op,
+        messages: args.messages.cursor ? [{ ...message, id: op.id + '-message' }] : [],
+        pagination: { cursor: args.messages.cursor ? null : 'detail-next' },
+      };
+    },
+    expected,
+    {}
+  );
+  assert.equal(peak, 4);
+  assert.equal(active, 0);
+  assert.equal(calls, 18);
+  assert.equal(result.inspectedOperations, 9);
+  assert.equal(result.exhausted, true);
+  assert.deepEqual(
+    result.receipts.map((row) => row.nangoOperationId),
+    inventory.map((row) => row.id)
+  );
+});
+
+test('a failed history settles concurrent reads and cannot produce partial successful evidence', async () => {
+  let completed = 0;
+  await assert.rejects(
+    captureNangoForwards(
+      async (name, args) => {
+        if (name === 'logs_list_operations')
+          return {
+            operations: [0, 1, 2, 3].map((i) => ({ ...operation, id: String(i) })),
+            pagination: { cursor: null },
+          };
+        if (args.operationId === '0') throw new Error('history unavailable');
+        await new Promise((resolve) => setImmediate(resolve));
+        completed++;
+        return {
+          operation: { ...operation, id: args.operationId },
+          messages: [message],
+          pagination: { cursor: null },
+        };
+      },
+      expected,
+      {}
+    ),
+    /history unavailable/
+  );
+  assert.equal(completed, 3);
+});

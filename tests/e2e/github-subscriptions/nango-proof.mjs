@@ -102,9 +102,12 @@ export async function captureNangoForwards(call, expected, period) {
       // Forward operations have no top-level connection ID. Match their request bodies below.
     });
     if (!Array.isArray(data.operations)) throw new Error('Invalid Nango operation inventory');
-    for (const operation of data.operations) {
-      if (operations.has(operation.id)) continue;
+    const fresh = data.operations.filter((operation) => {
+      if (operations.has(operation.id)) return false;
       operations.add(operation.id);
+      return true;
+    });
+    const inspect = async (operation) => {
       const messages = [],
         messageCursors = new Set();
       let messageCursor;
@@ -122,7 +125,16 @@ export async function captureNangoForwards(call, expected, period) {
           throw new Error('Incomplete Nango message pagination');
         messageCursors.add(messageCursor);
       }
-      receipts.push(...nangoForwardReceipts(operation, messages, expected));
+      return nangoForwardReceipts(operation, messages, expected);
+    };
+    // Independent operation histories can be read together. Keep pagination
+    // sequential within each history and settle the entire bounded batch before
+    // reporting an error; partial scans must never claim exhaustion.
+    for (let offset = 0; offset < fresh.length; offset += 4) {
+      const batch = await Promise.allSettled(fresh.slice(offset, offset + 4).map(inspect));
+      const failure = batch.find((result) => result.status === 'rejected');
+      if (failure) throw failure.reason;
+      for (const result of batch) receipts.push(...result.value);
     }
     cursor = data.pagination.cursor;
     if (cursor === null) return { receipts, inspectedOperations: operations.size, exhausted: true };
