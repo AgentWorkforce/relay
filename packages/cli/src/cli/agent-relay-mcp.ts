@@ -23,6 +23,7 @@ import {
   safeRelayErrorMessage,
 } from '@agent-relay/sdk';
 import { z } from 'zod';
+import { isBundledBunEntrypointPath } from './lib/agent-relay-mcp-command.js';
 import { declaredWorkforceMetadata } from './lib/registration-metadata.js';
 import {
   DEFAULT_AGENT_REGISTRATION_TIMEOUT_MS,
@@ -484,6 +485,10 @@ export function normalizeBaseUrl(baseUrl?: string): string | undefined {
 function isEntrypoint(): boolean {
   const invocationPath = process.argv[1];
   if (!invocationPath) return false;
+  // Bun compile gives imported modules the CLI bundle's URL. The CLI mcp
+  // command owns startup there; treating this module as the entrypoint would
+  // attach a second stdio server and execute every tool call twice.
+  if (isBundledBunEntrypointPath(invocationPath)) return false;
   try {
     return fs.realpathSync(invocationPath) === fs.realpathSync(fileURLToPath(import.meta.url));
   } catch {

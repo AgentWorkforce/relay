@@ -13,6 +13,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- Compiled `agent-relay mcp` starts one stdio server, preventing duplicate tool execution and duplicate message sends.
+
 - Agent release waits for confirmed node deregistration and clears the completed registration reservation, allowing the same name to resume while preserving its retained identity; explicit release retries recover after automatic cleanup retries are exhausted.
 
 - Fleet action completion, delivery acknowledgements, and inventory retries stay bounded under control-queue pressure; broker shutdown retains unconfirmed action outcomes for reconciliation.
