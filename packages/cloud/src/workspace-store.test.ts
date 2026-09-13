@@ -331,9 +331,10 @@ describe('workspace store', () => {
     'uses the same credential reference across Windows path casing aliases',
     () => {
       const projectDataDir = path.join(dir, 'ProjectCase', '.agentworkforce', 'relay');
-      fs.mkdirSync(projectDataDir, { recursive: true });
+      const caseAliasDataDir = path.join(dir, 'PROJECTCASE', '.agentworkforce', 'relay');
+      expect(fs.existsSync(projectDataDir)).toBe(false);
       expect(relaycastCredentialRef(projectDataDir, 'rw_case', 'canonical', 'https://relay.example')).toBe(
-        relaycastCredentialRef(projectDataDir.toUpperCase(), 'rw_case', 'canonical', 'https://relay.example')
+        relaycastCredentialRef(caseAliasDataDir, 'rw_case', 'canonical', 'https://relay.example')
       );
     }
   );
