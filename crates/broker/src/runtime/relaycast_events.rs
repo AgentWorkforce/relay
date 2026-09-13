@@ -300,29 +300,46 @@ pub(super) async fn bind_http_registered_agent_to_node(
         session_ref: None,
         priority: None,
     };
-    match relay.bind_agent_to_node(node_name, request).await {
-        Ok(_) => {
-            tracing::info!(
-                worker = %agent_name,
-                node = %node_name,
-                "bound HTTP-registered agent to node (via_node) after agent.register fallback"
-            );
-            None
-        }
-        Err(error) => {
-            let message = format!(
-                "agent '{agent_name}' was HTTP-registered but binding it to node '{node_name}' \
-                 failed ({error}); node-only delivery will NOT reach this agent until it is bound"
-            );
-            tracing::error!(
-                worker = %agent_name,
-                node = %node_name,
-                error = %error,
-                "failed to bind HTTP-registered agent to node; delivery will not work for this agent"
-            );
-            Some(message)
+    let mut last_error = None;
+    for attempt in 0..3 {
+        match relay.bind_agent_to_node(node_name, request.clone()).await {
+            Ok(_) => {
+                tracing::info!(
+                    worker = %agent_name,
+                    node = %node_name,
+                    "bound HTTP-registered agent to node (via_node) after agent.register fallback"
+                );
+                return None;
+            }
+            Err(error) if error.to_string().contains("not_found") && attempt < 2 => {
+                tracing::warn!(
+                    worker = %agent_name,
+                    node = %node_name,
+                    attempt = attempt + 1,
+                    error = %error,
+                    "node binding not found yet; retrying before admitting failure"
+                );
+                last_error = Some(error);
+                tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+            }
+            Err(error) => {
+                last_error = Some(error);
+                break;
+            }
         }
     }
+    let error = last_error.expect("bind_http_registered_agent_to_node must capture a failure");
+    let message = format!(
+        "agent '{agent_name}' was HTTP-registered but binding it to node '{node_name}' \
+         failed ({error}); node-only delivery will NOT reach this agent until it is bound"
+    );
+    tracing::error!(
+        worker = %agent_name,
+        node = %node_name,
+        error = %error,
+        "failed to bind HTTP-registered agent to node; delivery will not work for this agent"
+    );
+    Some(message)
 }
 
 /// Outcome of a local release request, so callers can report a faithful
@@ -981,6 +998,11 @@ mod tests {
     use super::*;
     use crate::terminal_control::TerminalToCloud;
     use ::relaycast::WsEvent;
+    use axum::{http::StatusCode, response::IntoResponse, routing::post, Json, Router};
+    use std::sync::{
+        atomic::{AtomicUsize, Ordering},
+        Arc,
+    };
 
     #[cfg(unix)]
     #[tokio::test]
@@ -1186,6 +1208,76 @@ mod tests {
             )),
             "healthy idle view must not receive a close"
         );
+    }
+
+    #[tokio::test]
+    async fn http_registered_agent_binding_retries_not_found_before_succeeding() {
+        let attempts = Arc::new(AtomicUsize::new(0));
+        let app = Router::new().route(
+            "/v1/nodes/test-node/agents",
+            post({
+                let attempts = attempts.clone();
+                move || {
+                    let attempts = attempts.clone();
+                    async move {
+                        match attempts.fetch_add(1, Ordering::SeqCst) {
+                            0 => (
+                                StatusCode::NOT_FOUND,
+                                Json(serde_json::json!({
+                                    "ok": false,
+                                    "error": {"code": "not_found", "message": "node not ready"}
+                                })),
+                            )
+                                .into_response(),
+                            _ => (
+                                StatusCode::OK,
+                                Json(serde_json::json!({
+                                    "ok": true,
+                                    "data": {
+                                        "id": "binding-id",
+                                        "agent_id": "agent-binding-worker",
+                                        "agent_name": "binding-worker",
+                                        "node_id": "node-id",
+                                        "node_name": "test-node",
+                                        "node_kind": "local",
+                                        "node_role": "broker",
+                                        "status": "active",
+                                        "session_ref": null,
+                                        "priority": 0,
+                                        "created_at": "2026-09-11T12:00:00Z",
+                                        "updated_at": null
+                                    }
+                                })),
+                            )
+                                .into_response(),
+                        }
+                    }
+                }
+            }),
+        );
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("test server should bind");
+        let addr = listener.local_addr().expect("test server address");
+        let server = tokio::spawn(async move {
+            axum::serve(listener, app)
+                .await
+                .expect("test server should run");
+        });
+        let relaycast_http = RelaycastHttpClient::new(
+            Some(format!("http://{addr}")),
+            "rk_live_test",
+            "broker",
+            "codex",
+        );
+
+        let warning =
+            bind_http_registered_agent_to_node(&relaycast_http, "test-node", "binding-worker")
+                .await;
+
+        assert!(warning.is_none(), "{warning:?}");
+        assert_eq!(attempts.load(Ordering::SeqCst), 2);
+        server.abort();
     }
 
     #[cfg(unix)]
