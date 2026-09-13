@@ -188,8 +188,10 @@ export function resolveSandboxRepository(
 
 function isGeneratedRelayMetadata(entry: string): boolean {
   const normalized = entry.replaceAll('\\', '/');
-  if (!normalized.startsWith('.agentworkforce/relay/')) return false;
-  const relative = normalized.slice('.agentworkforce/relay/'.length);
+  const marker = '.agentworkforce/relay/';
+  const markerIndex = normalized.lastIndexOf(marker);
+  if (markerIndex !== 0 && (markerIndex < 1 || normalized[markerIndex - 1] !== '/')) return false;
+  const relative = normalized.slice(markerIndex + marker.length);
   return (
     relative === 'workspace-key.json' ||
     relative === 'connection.json' ||

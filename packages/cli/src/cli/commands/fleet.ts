@@ -372,6 +372,7 @@ export function registerFleetCommands(
 
       let sandbox: EnsureCloudFleetSandboxResult | undefined;
       let sandboxRepository: SandboxRepositorySelection | undefined;
+      let attachProjectRoot: string | undefined;
       let workspaceRelay: ReturnType<FleetCommandDependencies['sdk']['createWorkspaceRelay']> | undefined;
       let relaycastClientOptions = clientOptions;
       let legacyWorkspaceClientOptions = clientOptions;
@@ -401,6 +402,9 @@ export function registerFleetCommands(
             : sandboxRepository && pathContains(sandboxRepository.projectRoot, coreProjectRoot)
               ? coreProjectRoot
               : (sandboxRepository?.projectRoot ?? coreProjectRoot);
+        if (path.resolve(workspaceProjectRoot) !== path.resolve(coreProjectRoot)) {
+          attachProjectRoot = workspaceProjectRoot;
+        }
         const sandboxClientOptions = {
           ...clientOptions,
           projectRoot: workspaceProjectRoot,
@@ -761,7 +765,7 @@ export function registerFleetCommands(
             ...(sandbox
               ? {
                   sandbox: printableSandbox,
-                  attachCommand: `agent-relay node agent attach ${shellQuote(name)} --mode drive`,
+                  attachCommand: sandboxAttachCommand(name, attachProjectRoot),
                 }
               : {}),
             invocation: spawnInvocationWithMergedPlacement(invocation as unknown as Record<string, unknown>),
@@ -941,6 +945,11 @@ function optionalTextList(value: unknown, label: string): string[] | undefined {
 /** Quote untrusted names in the copy-pasteable attach command printed on success. */
 function shellQuote(value: string): string {
   return `'${value.replace(/'/g, `'\\''`)}'`;
+}
+
+function sandboxAttachCommand(name: string, projectRoot: string | undefined): string {
+  const attach = `agent-relay node agent attach ${shellQuote(name)} --mode drive`;
+  return projectRoot ? `cd ${shellQuote(projectRoot)} && ${attach}` : attach;
 }
 
 /**

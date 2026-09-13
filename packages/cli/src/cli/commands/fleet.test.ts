@@ -1060,7 +1060,7 @@ describe('fleet command support', () => {
       workerCwd: '/srv/agent-workforce/cloud/packages/web',
     };
     const resolveSandboxRepository = vi.fn(() => repositorySelection);
-    const findProjectRoot = vi.fn(() => '/local/cloud/packages/web');
+    const findProjectRoot = vi.fn(() => "/local/cloud/packages/web team's");
     const selectionOptions: Record<string, unknown>[] = [];
     const persistWorkspaceRelaycastTarget = vi.fn(() => true);
     const placement = {
@@ -1145,7 +1145,7 @@ describe('fleet command support', () => {
 
     expect(resolveSandboxRepository).toHaveBeenCalledWith(process.cwd(), 'packages/web');
     expect(findProjectRoot).toHaveBeenCalledWith(path.resolve(process.cwd(), 'packages/web'));
-    expect(selectionOptions[0]).toMatchObject({ projectRoot: '/local/cloud/packages/web' });
+    expect(selectionOptions[0]).toMatchObject({ projectRoot: "/local/cloud/packages/web team's" });
     const ensureInput = ensureCloudFleetSandbox.mock.calls[0]?.[0] as Record<string, unknown>;
     expect(ensureInput).toMatchObject({
       repos: ['AgentWorkforce/cloud'],
@@ -1163,7 +1163,7 @@ describe('fleet command support', () => {
     );
     expect(persistWorkspaceRelaycastTarget).toHaveBeenCalled();
     expect(JSON.parse(logs[0]!).attachCommand).toBe(
-      "agent-relay node agent attach 'cloud-worker' --mode drive"
+      "cd '/local/cloud/packages/web team'\\''s' && agent-relay node agent attach 'cloud-worker' --mode drive"
     );
   });
 

@@ -169,6 +169,47 @@ describe('resolveSandboxRepository', () => {
     ).toMatch(/^[a-f0-9]{40}$/);
   });
 
+  it('permits generated Relay metadata for a nested project pin only', () => {
+    const run = gitMock();
+    for (const file of [
+      'workspace-key.json',
+      'connection.json',
+      'runtime.json',
+      'broker-cloud.lock',
+    ]) {
+      run.mockImplementation((command: string, args: readonly string[]) => {
+        if (args.includes('status')) return `?? packages/web/.agentworkforce/relay/${file}\0`;
+        return gitMock()(command, args);
+      });
+      expect(
+        resolveSandboxRepository('/checkout', undefined, { cwd: () => '/checkout', execFileSync: run as never })
+          ?.revision
+      ).toMatch(/^[a-f0-9]{40}$/);
+    }
+
+    for (const file of [
+      'packages/web/.agentworkforce/relay/config.json',
+      'packages/web/prefix.agentworkforce/relay/workspace-key.json',
+      'packages/web/.agentworkforce/relay/nested/workspace-key.json',
+    ]) {
+      run.mockImplementation((command: string, args: readonly string[]) => {
+        if (args.includes('status')) return `?? ${file}\0`;
+        return gitMock()(command, args);
+      });
+      expect(() =>
+        resolveSandboxRepository('/checkout', undefined, { cwd: () => '/checkout', execFileSync: run as never })
+      ).toThrow(/clean checkout/);
+    }
+
+    run.mockImplementation((command: string, args: readonly string[]) => {
+      if (args.includes('status')) return ' M packages/web/.agentworkforce/relay/runtime.json\0';
+      return gitMock()(command, args);
+    });
+    expect(() =>
+      resolveSandboxRepository('/checkout', undefined, { cwd: () => '/checkout', execFileSync: run as never })
+    ).toThrow(/clean checkout/);
+  });
+
   it('maps a symlinked nested invocation to the actual Git root and relative directory', () => {
     const realpath = (value: string) => (value === '/linked/packages/cli' ? '/checkout/packages/cli' : value);
     expect(
