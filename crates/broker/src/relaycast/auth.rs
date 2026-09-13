@@ -573,7 +573,7 @@ impl AuthClient {
                     strict_name,
                     agent_type,
                     identity_key,
-                    false,
+                    candidate.source == "fresh",
                 )
                 .await
             {
@@ -1016,7 +1016,7 @@ fn is_transient_server_error(error: &RelayError) -> bool {
             ..
         } if matches!(
             code.trim(),
-            "database_overloaded" | "workspace_storage_unavailable" | "internal_error"
+            "database_overloaded" | "workspace_storage_unavailable"
         )
     ) || is_workspace_busy_error(error)
 }

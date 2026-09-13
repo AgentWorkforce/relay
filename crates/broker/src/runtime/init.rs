@@ -633,10 +633,7 @@ pub(crate) async fn run_init(cmd: InitCommand, telemetry: TelemetryClient) -> Re
         .join("worker-logs");
     let mut workers =
         WorkerRegistry::new(worker_event_tx, worker_env, worker_logs_dir, broker_start);
-    workers.owned_cleanup_journal = paths
-        .state
-        .parent()
-        .map(|parent| parent.join("owned-cleanups.json"));
+    workers.owned_cleanup_journal = Some(paths.state.with_extension("owned-cleanups.json"));
 
     // Load crash insights from previous session
     let crash_insights_path = paths.state.parent().unwrap().join("crash-insights.json");
