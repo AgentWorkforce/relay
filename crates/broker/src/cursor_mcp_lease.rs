@@ -969,6 +969,104 @@ fn remove_cursor_target(cursor: &fs::File) -> io::Result<bool> {
 }
 
 #[cfg(unix)]
+fn is_broker_temp_cursor_file(name: &std::ffi::OsStr) -> bool {
+    use std::os::unix::ffi::OsStrExt;
+    let bytes = name.as_bytes();
+    const PREFIX: &[u8] = b".mcp.json.";
+    const SUFFIX: &[u8] = b".tmp";
+    if !bytes.starts_with(PREFIX) || !bytes.ends_with(SUFFIX) {
+        return false;
+    }
+    let middle = &bytes[PREFIX.len()..bytes.len() - SUFFIX.len()];
+    middle.len() == 32 && middle.iter().all(|byte| byte.is_ascii_hexdigit())
+}
+
+#[cfg(unix)]
+fn remove_cursor_temp_files(cursor: &fs::File) -> io::Result<()> {
+    use std::os::unix::ffi::OsStrExt;
+    use std::os::unix::io::AsRawFd;
+
+    unsafe fn errno_location() -> *mut libc::c_int {
+        #[cfg(any(target_os = "linux", target_os = "android"))]
+        {
+            libc::__errno_location()
+        }
+        #[cfg(any(
+            target_os = "macos",
+            target_os = "ios",
+            target_os = "freebsd",
+            target_os = "dragonfly",
+            target_os = "netbsd",
+            target_os = "openbsd"
+        ))]
+        {
+            libc::__error()
+        }
+    }
+
+    struct Dir(*mut libc::DIR);
+
+    impl Drop for Dir {
+        fn drop(&mut self) {
+            if !self.0.is_null() {
+                unsafe {
+                    libc::closedir(self.0);
+                }
+            }
+        }
+    }
+
+    let dir_fd = unsafe { libc::dup(cursor.as_raw_fd()) };
+    if dir_fd < 0 {
+        return Err(io::Error::last_os_error());
+    }
+    let dir = unsafe { libc::fdopendir(dir_fd) };
+    if dir.is_null() {
+        let error = io::Error::last_os_error();
+        unsafe {
+            libc::close(dir_fd);
+        }
+        return Err(error);
+    }
+    let dir = Dir(dir);
+    let mut removed_any = false;
+    loop {
+        unsafe {
+            *errno_location() = 0;
+        }
+        let entry = unsafe { libc::readdir(dir.0) };
+        if entry.is_null() {
+            let error = io::Error::last_os_error();
+            if error.raw_os_error() == Some(0) {
+                break;
+            }
+            return Err(error);
+        }
+        let entry = unsafe { &*entry };
+        let name = unsafe { std::ffi::CStr::from_ptr(entry.d_name.as_ptr()) };
+        let name = name.to_bytes();
+        let name = std::ffi::OsStr::from_bytes(name);
+        if !is_broker_temp_cursor_file(name) {
+            continue;
+        }
+        let temp_name = std::ffi::CString::new(name.as_bytes()).expect("temp file name has no NUL");
+        let result = unsafe { libc::unlinkat(cursor.as_raw_fd(), temp_name.as_ptr(), 0) };
+        if result != 0 {
+            let error = io::Error::last_os_error();
+            if error.kind() != io::ErrorKind::NotFound {
+                return Err(error);
+            }
+        } else {
+            removed_any = true;
+        }
+    }
+    if removed_any {
+        cursor.sync_all()?;
+    }
+    Ok(())
+}
+
+#[cfg(unix)]
 fn remove_cursor_dir(lock: &LeaseLock, cursor: &fs::File) -> io::Result<()> {
     use std::os::unix::io::AsRawFd;
     let name = std::ffi::CString::new(".cursor").expect("literal has no NUL");
@@ -1009,7 +1107,10 @@ fn remove_cursor_dir(lock: &LeaseLock, cursor: &fs::File) -> io::Result<()> {
         return Ok(());
     }
     let error = io::Error::last_os_error();
-    if error.kind() == io::ErrorKind::NotFound || error.kind() == io::ErrorKind::DirectoryNotEmpty {
+    if error.kind() == io::ErrorKind::NotFound {
+        Ok(())
+    } else if error.kind() == io::ErrorKind::DirectoryNotEmpty {
+        remove_cursor_temp_files(cursor)?;
         Ok(())
     } else {
         Err(error)
@@ -1748,6 +1849,7 @@ impl CursorMcpLeaseRegistry {
             let _ = (generated_identity, replaced_existing);
             #[cfg(windows)]
             {
+                let pre_existing = state.pre_existing.clone();
                 *state.generated_identity.lock().map_err(|_| {
                     io::Error::other("Cursor MCP generated identity lock poisoned")
                 })? = generated_identity;
@@ -1761,7 +1863,27 @@ impl CursorMcpLeaseRegistry {
                     // user's original file path so the lease can be retried.
                     if !replaced_existing {
                         let _ = fs::remove_file(path);
+                    } else if let Err(restore_error) = Self::restore(
+                        path,
+                        &pre_existing,
+                        &state.lock,
+                        state.cursor_dir.as_ref(),
+                        Some(state.cursor_identity),
+                        generated_identity,
+                    ) {
+                        *state.generated_identity.lock().map_err(|_| {
+                            io::Error::other("Cursor MCP generated identity lock poisoned")
+                        })? = None;
+                        return Err(io::Error::new(
+                        restore_error.kind(),
+                        format!(
+                            "restore existing credential file after journal persistence failure: {restore_error}; original error: {error}"
+                        ),
+                    ));
                     }
+                    *state.generated_identity.lock().map_err(|_| {
+                        io::Error::other("Cursor MCP generated identity lock poisoned")
+                    })? = None;
                     return Err(error);
                 }
             }
@@ -2402,11 +2524,26 @@ mod tests {
         let path = registry.acquire(dir.path(), &worker).unwrap();
         registry.write_worker_cursor_file(&worker, b"{} ").unwrap();
         fs::write(path.parent().unwrap().join("notes.txt"), b"keep").unwrap();
+        fs::write(
+            path.parent()
+                .unwrap()
+                .join(".mcp.json.0123456789abcdef0123456789abcdef.tmp"),
+            b"secret",
+        )
+        .unwrap();
 
         registry.release_worker(&worker).unwrap();
 
         assert!(!path.exists());
         assert!(path.parent().unwrap().exists());
+        assert!(
+            !path
+                .parent()
+                .unwrap()
+                .join(".mcp.json.0123456789abcdef0123456789abcdef.tmp")
+                .exists(),
+            "broker-owned temp files must be removed during cleanup"
+        );
         assert!(path.parent().unwrap().join("notes.txt").exists());
         assert!(registry.is_empty());
     }
@@ -3227,7 +3364,7 @@ mod tests {
 
     #[cfg(windows)]
     #[test]
-    fn existing_credential_file_is_retained_on_journal_persist_failure() {
+    fn existing_credential_file_is_restored_on_journal_persist_failure() {
         let dir = tempdir().unwrap();
         let journal = dir.path().join("journal.json");
         let cursor_dir = dir.path().join(".cursor");
@@ -3253,8 +3390,8 @@ mod tests {
             .write_worker_cursor_file(&worker, b"updated placeholders")
             .unwrap_err();
         assert_eq!(error.kind(), io::ErrorKind::WouldBlock);
-        assert!(path.exists(), "existing credential file must be retained");
-        assert_eq!(fs::read(&path).unwrap(), b"updated placeholders");
+        assert!(path.exists(), "existing credential file must be restored");
+        assert_eq!(fs::read(&path).unwrap(), b"original placeholders");
     }
 
     #[cfg(unix)]

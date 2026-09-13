@@ -185,12 +185,12 @@ try {
             arm,
             outcome: 'bug',
             signature: 'cursor_mcp_absent_state_never_materializes',
-            details: `The base broker never reached the cleanup flow because Cursor worker admission failed first: ${JSON.stringify(spawnResponse.body).slice(0, 500)}`,
+            details: `The base broker never reached the cleanup flow because Cursor worker admission failed first (HTTP ${spawnResponse.status}).`,
           })}\n`
         );
         break cleanup_and_finish;
       }
-      throw new Error(`spawn failed: ${JSON.stringify(spawnResponse.body).slice(0, 500)}`);
+      throw new Error(`spawn failed with HTTP ${spawnResponse.status}`);
     }
 
     const generated =
