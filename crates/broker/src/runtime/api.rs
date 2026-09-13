@@ -994,14 +994,19 @@ impl BrokerRuntime {
                     .rev()
                     .find(|(released_name, _)| released_name == &name)
                     .map(|(_, generation)| *generation);
+                let completed_tombstone_matches_expected =
+                    expected_generation.as_deref().is_some_and(|expected| {
+                        workers.completed_owned_releases.iter().any(
+                            |(released_name, generation)| {
+                                released_name == &name && generation.to_string() == expected
+                            },
+                        )
+                    });
                 // Bounded tombstones make an acknowledged cleanup retry safe:
                 // no remote mutation, and never release a replacement worker.
                 let acknowledged_cleanup = delete_identity
                     && !workers.has_worker(&name)
-                    && expected_generation.as_deref().is_some_and(|expected| {
-                        completed_tombstone_generation
-                            .is_some_and(|generation| generation.to_string() == expected)
-                    })
+                    && completed_tombstone_matches_expected
                     || (name_only_release && !workers.has_worker(&name))
                         && match current_owned_generation {
                             Some(generation) => completed_tombstone_generation
