@@ -119,19 +119,22 @@ jobs:
             done
 
             # Even when `npm view` succeeds, the tarball may still 404 from
-            # the CDN edge that npm install hits. Probe the tarball URL of
-            # the matching broker directly.
+            # the CDN edge that npm install hits. Probe every package's
+            # tarball URL directly — the v12.0.0 publish passed a broker-only
+            # probe and then 404'd on the harness driver's own tarball.
             if [ "${#missing[@]}" -eq 0 ]; then
-              TARBALL_URL=$(npm view "${EXPECTED_BROKER}@$VERSION" dist.tarball 2>/dev/null || true)
-              if [ -z "$TARBALL_URL" ]; then
-                missing+=("${EXPECTED_BROKER}@$VERSION (no tarball url)")
-              else
+              for pkg in "${PACKAGES[@]}"; do
+                TARBALL_URL=$(npm view "$pkg" dist.tarball 2>/dev/null || true)
+                if [ -z "$TARBALL_URL" ]; then
+                  missing+=("$pkg (no tarball url)")
+                  continue
+                fi
                 STATUS=$(curl -sS -o /dev/null -w "%{http_code}" -I \
                   --connect-timeout 5 --max-time 15 "$TARBALL_URL" || echo "000")
                 if [ "$STATUS" != "200" ]; then
-                  missing+=("${EXPECTED_BROKER}@$VERSION (tarball HTTP $STATUS)")
+                  missing+=("$pkg (tarball HTTP $STATUS)")
                 fi
-              fi
+              done
             fi
 
             if [ "${#missing[@]}" -eq 0 ]; then
@@ -157,7 +160,21 @@ jobs:
           cd "$SCRATCH"
           npm init -y --silent >/dev/null
           echo "Installing ${{ steps.spec.outputs.spec }}"
-          npm install --no-audit --no-fund "${{ steps.spec.outputs.spec }}"
+          # A probe from this runner can hit a warm CDN edge while npm's
+          # fetch hits a cold one, so retry the install on transient 404s.
+          for i in 1 2 3 4 5; do
+            if npm install --no-audit --no-fund "${{ steps.spec.outputs.spec }}"; then
+              break
+            fi
+            if [ "$i" -eq 5 ]; then
+              echo "FAIL: npm install did not succeed after $i attempts"
+              exit 1
+            fi
+            WAIT=$((15 * i))
+            echo "install attempt $i failed, clearing npm cache and retrying in ${WAIT}s"
+            npm cache clean --force >/dev/null 2>&1 || true
+            sleep "$WAIT"
+          done
           echo ""
           echo "=== installed @agent-relay/ packages ==="
           ls node_modules/@agent-relay/
