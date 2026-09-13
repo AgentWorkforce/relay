@@ -199,6 +199,32 @@ describe('resolveWorkspaceByKey', () => {
     expect(fetchSpy).not.toHaveBeenCalled();
   });
 
+  it('rejects an insecure refresh-selected host before retrying the selected key', async () => {
+    const fetchSpy = vi.fn(async (input: string | URL) => {
+      const url = String(input);
+      if (url.endsWith('/api/v1/auth/token/refresh')) {
+        return new Response(
+          JSON.stringify({
+            accessToken: 'rotated-access-token',
+            refreshToken: 'rotated-refresh-token',
+            accessTokenExpiresAt: '2999-01-01T00:00:00.000Z',
+            apiUrl: 'http://unsafe.example.test',
+          }),
+          { status: 200, headers: { 'content-type': 'application/json' } }
+        );
+      }
+      return new Response('{}', { status: 401 });
+    });
+    vi.stubGlobal('fetch', fetchSpy);
+
+    await expect(resolveWorkspaceByKey('rk_live_selected')).rejects.toThrow('requires HTTPS');
+
+    expect(fetchSpy.mock.calls.map((call) => String(call[0]))).toEqual([
+      'https://cloud.example.test/api/v1/workspaces/current/resolve',
+      'https://cloud.example.test/api/v1/auth/token/refresh',
+    ]);
+  });
+
   it('accepts the canonical Cloud relaycastApiKey echo without a legacy key alias', async () => {
     vi.stubGlobal(
       'fetch',

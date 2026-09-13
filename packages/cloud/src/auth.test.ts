@@ -855,6 +855,53 @@ describe('authorizedApiFetch telemetry headers', () => {
 });
 
 describe('authorizedApiFetch re-login', () => {
+  it('rejects a refresh-selected unsafe API URL before persisting or retrying credentials', async () => {
+    const storedAuth: StoredAuth = {
+      apiUrl: 'https://api.example.test',
+      accessToken: 'stale-access',
+      refreshToken: 'stale-refresh',
+      accessTokenExpiresAt: '2999-01-01T00:00:00.000Z',
+    };
+    fsMocks.readFile.mockResolvedValue(JSON.stringify(storedAuth));
+    const fetchSpy = vi.fn(async (input: string | URL) => {
+      const url = String(input);
+      if (url.includes('/api/v1/auth/token/refresh')) {
+        return new Response(
+          JSON.stringify({
+            accessToken: 'rotated-access',
+            refreshToken: 'rotated-refresh',
+            accessTokenExpiresAt: '2999-01-01T00:00:00.000Z',
+            apiUrl: 'http://unsafe.example.test',
+          }),
+          { status: 200, headers: { 'content-type': 'application/json' } }
+        );
+      }
+      return new Response('{}', { status: 401 });
+    });
+    vi.stubGlobal('fetch', fetchSpy);
+
+    await expect(
+      authorizedApiFetch(
+        storedAuth,
+        '/api/v1/workspaces/current/resolve',
+        { method: 'POST', body: JSON.stringify({ workspaceKey: 'rk_live_selected' }) },
+        {
+          interactive: false,
+          validateApiUrl: (apiUrl) => {
+            if (new URL(apiUrl).protocol !== 'https:') throw new Error('requires HTTPS');
+          },
+        }
+      )
+    ).rejects.toThrow('requires HTTPS');
+
+    const requested = fetchSpy.mock.calls.map((call) => String(call[0]));
+    expect(requested).toEqual([
+      'https://api.example.test/api/v1/workspaces/current/resolve',
+      'https://api.example.test/api/v1/auth/token/refresh',
+    ]);
+    expect(fsMocks.writeFile).not.toHaveBeenCalled();
+  });
+
   it('re-authenticates a headless host through the device flow, not the browser', async () => {
     // The steady state this feature exists for: barry logged in once over ssh
     // with `--device`, and now a request 401s with a refresh token the server

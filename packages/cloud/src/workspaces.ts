@@ -385,7 +385,11 @@ export async function resolveWorkspaceByKey(
       body: JSON.stringify({ workspaceKey: key }),
       signal: AbortSignal.timeout(options.refreshTimeoutMs ?? 30_000),
     },
-    { interactive: false, env }
+    {
+      interactive: false,
+      env,
+      validateApiUrl: assertWorkspaceResolverTransport,
+    }
   );
   const payload = await readJson(response);
   if (!response.ok) throw buildEndpointError('Project workspace resolve', endpoint, response, payload);

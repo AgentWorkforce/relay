@@ -65,6 +65,32 @@ describe('project workspace key resolution', () => {
     }
   });
 
+  it.skipIf(process.platform === 'win32')(
+    'recovers a route credential after switching from a symlink alias to the canonical project path',
+    () => {
+      const aliasRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'relay-project-workspace-alias-'));
+      const alias = path.join(aliasRoot, 'checkout');
+      fs.symlinkSync(root, alias, 'dir');
+      try {
+        writeProjectWorkspaceKey(path.join(alias, '.agentworkforce/relay'), 'rk_canonical', {
+          workspaceId: 'rw_alias',
+          relaycastRoute: 'agent37-isolated',
+          relaycastBaseUrl: 'https://agent37-cast.agentrelay.com',
+          relaycastApiKey: 'rk_live_alias',
+          env: { AGENT_RELAY_HOME: home },
+        });
+
+        expect(readProjectWorkspaceSession(dataDir, fs, { AGENT_RELAY_HOME: home })).toMatchObject({
+          workspaceKey: 'rk_canonical',
+          workspaceId: 'rw_alias',
+          relaycastApiKey: 'rk_live_alias',
+        });
+      } finally {
+        fs.rmSync(aliasRoot, { recursive: true, force: true });
+      }
+    }
+  );
+
   it('preserves a route credential through metadata updates in the selected credential home', () => {
     writeProjectWorkspaceKey(dataDir, 'rk_canonical', {
       workspaceId: 'rw_abc',

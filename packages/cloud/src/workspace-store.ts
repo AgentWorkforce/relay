@@ -50,8 +50,34 @@ export function relaycastCredentialRef(
     // closed at read/transport time.
   }
   return createHash('sha256')
-    .update(`${path.resolve(projectDataDir)}\0${workspaceId}\0${route}\0${endpoint}`)
+    .update(`${canonicalProjectDataDir(projectDataDir)}\0${workspaceId}\0${route}\0${endpoint}`)
     .digest('hex');
+}
+
+function canonicalProjectDataDir(projectDataDir: string): string {
+  const resolved = path.resolve(projectDataDir);
+  let current = resolved;
+  const missingSegments: string[] = [];
+
+  while (true) {
+    try {
+      const canonical = path.join(fs.realpathSync.native(current), ...missingSegments);
+      // Default Windows filesystems are case-insensitive. A stable case fold
+      // lets the same checkout resolve credentials across casing aliases while
+      // realpath above preserves the filesystem identity for existing paths.
+      return process.platform === 'win32' ? canonical.toLowerCase() : canonical;
+    } catch (error) {
+      if (!isNodeError(error) || (error.code !== 'ENOENT' && error.code !== 'ENOTDIR')) {
+        return process.platform === 'win32' ? resolved.toLowerCase() : resolved;
+      }
+      const parent = path.dirname(current);
+      if (parent === current) {
+        return process.platform === 'win32' ? resolved.toLowerCase() : resolved;
+      }
+      missingSegments.unshift(path.basename(current));
+      current = parent;
+    }
+  }
 }
 
 export function readRelaycastCredential(

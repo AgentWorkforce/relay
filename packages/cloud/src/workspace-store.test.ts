@@ -307,6 +307,37 @@ describe('workspace store', () => {
     );
   });
 
+  it.skipIf(process.platform === 'win32')(
+    'uses the same credential reference through a symlinked project alias',
+    () => {
+      const checkout = fs.mkdtempSync(path.join(os.tmpdir(), 'relay-project-target-'));
+      const aliasRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'relay-project-alias-'));
+      const alias = path.join(aliasRoot, 'checkout');
+      fs.symlinkSync(checkout, alias, 'dir');
+      try {
+        const canonicalDataDir = path.join(checkout, '.agentworkforce', 'relay');
+        const aliasedDataDir = path.join(alias, '.agentworkforce', 'relay');
+        expect(
+          relaycastCredentialRef(canonicalDataDir, 'rw_alias', 'canonical', 'https://relay.example')
+        ).toBe(relaycastCredentialRef(aliasedDataDir, 'rw_alias', 'canonical', 'https://relay.example'));
+      } finally {
+        fs.rmSync(aliasRoot, { recursive: true, force: true });
+        fs.rmSync(checkout, { recursive: true, force: true });
+      }
+    }
+  );
+
+  it.runIf(process.platform === 'win32')(
+    'uses the same credential reference across Windows path casing aliases',
+    () => {
+      const projectDataDir = path.join(dir, 'ProjectCase', '.agentworkforce', 'relay');
+      fs.mkdirSync(projectDataDir, { recursive: true });
+      expect(relaycastCredentialRef(projectDataDir, 'rw_case', 'canonical', 'https://relay.example')).toBe(
+        relaycastCredentialRef(projectDataDir.toUpperCase(), 'rw_case', 'canonical', 'https://relay.example')
+      );
+    }
+  );
+
   it('rejects reserved object-property workspace names', () => {
     expect(() => setWorkspaceKey('__proto__', 'rk_bad')).toThrow(/Invalid workspace name/);
     expect(({} as Record<string, unknown>).polluted).toBeUndefined();

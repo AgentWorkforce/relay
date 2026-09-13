@@ -563,10 +563,17 @@ async function beginBrowserLogin(apiUrl: string): Promise<StoredAuth> {
 
 export async function refreshStoredAuth(
   auth: StoredAuth,
-  options: { force?: boolean; refreshTimeoutMs?: number; signal?: AbortSignal } = {}
+  options: {
+    force?: boolean;
+    refreshTimeoutMs?: number;
+    signal?: AbortSignal;
+    validateApiUrl?: (apiUrl: string) => void;
+  } = {}
 ): Promise<StoredAuth> {
   if (isEnvBackedAuth(auth)) {
-    return markEnvBackedAuth(await requestStoredAuthRefresh(auth, options));
+    const nextAuth = await requestStoredAuthRefresh(auth, options);
+    options.validateApiUrl?.(nextAuth.apiUrl);
+    return markEnvBackedAuth(nextAuth);
   }
 
   return withStoredAuthLock(async () => {
@@ -578,6 +585,10 @@ export async function refreshStoredAuth(
     }
 
     const nextAuth = await requestStoredAuthRefresh(refreshSource, options);
+    // Some credentialed callers impose a stricter transport contract than the
+    // general Cloud client. Validate a refresh-selected host before persisting
+    // the rotated credentials or allowing a retry to send them there.
+    options.validateApiUrl?.(nextAuth.apiUrl);
     await writeStoredAuth(nextAuth);
     return nextAuth;
   }, options);
@@ -816,9 +827,12 @@ export async function authorizedApiFetch(
      */
     device?: boolean;
     env?: NodeJS.ProcessEnv;
+    /** Validate every host before a bearer-authenticated request uses it. */
+    validateApiUrl?: (apiUrl: string) => void;
   } = {}
 ): Promise<{ response: Response; auth: StoredAuth }> {
   let activeAuth = auth;
+  options.validateApiUrl?.(activeAuth.apiUrl);
   let response = await apiFetch(activeAuth.apiUrl, activeAuth.accessToken, requestPath, init);
 
   if (response.status !== 401) {
@@ -831,6 +845,7 @@ export async function authorizedApiFetch(
       force: true,
       refreshTimeoutMs: options.refreshTimeoutMs,
       signal: init.signal ?? undefined,
+      validateApiUrl: options.validateApiUrl,
     });
     activeAuth = refreshableAuth;
   } catch (error) {
@@ -860,6 +875,7 @@ export async function authorizedApiFetch(
     });
   }
 
+  options.validateApiUrl?.(activeAuth.apiUrl);
   response = await apiFetch(activeAuth.apiUrl, activeAuth.accessToken, requestPath, init);
   return { response, auth: activeAuth };
 }
