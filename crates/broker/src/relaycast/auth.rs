@@ -383,6 +383,7 @@ impl AuthClient {
                         strict_name,
                         agent_type,
                         identity_key,
+                        false,
                     )
                     .await
                 {
@@ -473,6 +474,7 @@ impl AuthClient {
                         false,
                         None,
                         agent_identity_key().as_deref(),
+                        false,
                     )
                     .await
                     .context("failed to re-register after rotate-token 404")?;
@@ -571,6 +573,7 @@ impl AuthClient {
                     strict_name,
                     agent_type,
                     identity_key,
+                    false,
                 )
                 .await
             {
@@ -646,6 +649,7 @@ impl AuthClient {
                     strict_name,
                     agent_type,
                     identity_key,
+                    true,
                 )
                 .await
             {
@@ -828,13 +832,22 @@ impl AuthClient {
         _strict_name: bool,
         agent_type: Option<&str>,
         identity_key: Option<&str>,
+        allow_fresh_workspace_retry: bool,
     ) -> Result<(String, String, String, Option<String>)> {
         let relay = build_relay_client(workspace_key, self.base_url.as_deref())?;
         let name = requested_name
             .map(ToOwned::to_owned)
             .unwrap_or_else(|| format!("agent-{}", Uuid::new_v4().simple()));
 
-        admit_agent_registration(&relay, workspace_key, &name, agent_type, identity_key).await
+        admit_agent_registration(
+            &relay,
+            workspace_key,
+            &name,
+            agent_type,
+            identity_key,
+            allow_fresh_workspace_retry,
+        )
+        .await
     }
 
     pub async fn workspace_key_is_live(&self, workspace_key: &str) -> Result<bool> {
@@ -1003,7 +1016,21 @@ fn is_transient_server_error(error: &RelayError) -> bool {
             ..
         } if matches!(
             code.trim(),
-            "database_overloaded" | "workspace_storage_unavailable"
+            "database_overloaded" | "workspace_storage_unavailable" | "internal_error"
+        )
+    ) || is_workspace_busy_error(error)
+}
+
+fn is_fresh_workspace_registration_retryable(error: &RelayError) -> bool {
+    matches!(
+        error,
+        RelayError::Api {
+            code,
+            status: 500 | 502 | 503 | 504,
+            ..
+        } if matches!(
+            code.trim(),
+            "database_overloaded" | "workspace_storage_unavailable" | "internal_error"
         )
     ) || is_workspace_busy_error(error)
 }
@@ -1097,6 +1124,47 @@ where
                     retry_in_ms = backoff_ms,
                     error = %error,
                     "transient Relaycast failure during startup; retrying"
+                );
+                tokio::time::sleep(std::time::Duration::from_millis(backoff_ms)).await;
+                retry += 1;
+            }
+        }
+    }
+}
+
+async fn retry_fresh_workspace_registration<T, F, Fut>(
+    operation: &str,
+    mut request: F,
+) -> std::result::Result<T, RelayError>
+where
+    F: FnMut() -> Fut,
+    Fut: std::future::Future<Output = std::result::Result<T, RelayError>>,
+{
+    let mut total_attempts: u32 = 0;
+    let mut retry = 0usize;
+
+    loop {
+        match request().await {
+            Ok(value) => return Ok(value),
+            Err(error) => {
+                total_attempts = total_attempts.saturating_add(relay_error_attempts(&error));
+
+                if !is_fresh_workspace_registration_retryable(&error) {
+                    return Err(with_total_attempts(error, total_attempts));
+                }
+
+                let Some(backoff_ms) = TRANSIENT_STARTUP_RETRY_BACKOFFS_MS.get(retry).copied()
+                else {
+                    return Err(with_total_attempts(error, total_attempts));
+                };
+
+                tracing::warn!(
+                    target = "relay_broker::auth",
+                    operation,
+                    attempts_so_far = total_attempts,
+                    retry_in_ms = backoff_ms,
+                    error = %error,
+                    "transient Relaycast failure during fresh-workspace startup; retrying"
                 );
                 tokio::time::sleep(std::time::Duration::from_millis(backoff_ms)).await;
                 retry += 1;
@@ -1259,6 +1327,7 @@ async fn admit_agent_registration(
     name: &str,
     agent_type: Option<&str>,
     identity_key: Option<&str>,
+    allow_fresh_workspace_retry: bool,
 ) -> Result<(String, String, String, Option<String>)> {
     let metadata = identity_key.map(|key| {
         let mut map = serde_json::Map::new();
@@ -1282,11 +1351,20 @@ async fn admit_agent_registration(
     // here instead. A replay that lands after the first request did register
     // falls through to the conflict arm below, which is the identity gate
     // this function already owns.
-    match retry_transient_relay_error("registering the broker agent", || {
-        relay.register_agent(request.clone())
-    })
-    .await
-    {
+    let registration = if allow_fresh_workspace_retry {
+        retry_fresh_workspace_registration(
+            "registering the broker agent with a fresh workspace key",
+            || relay.register_agent(request.clone()),
+        )
+        .await
+    } else {
+        retry_transient_relay_error("registering the broker agent", || {
+            relay.register_agent(request.clone())
+        })
+        .await
+    };
+
+    match registration {
         Ok(result) => Ok((result.id, result.name, result.token, result.workspace_id)),
         Err(RelayError::Api {
             code,
@@ -1872,6 +1950,99 @@ mod tests {
 
         workspace.assert_hits(1);
         register.assert_hits(1);
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn fresh_workspace_registration_retries_internal_error_before_succeeding() {
+        use std::sync::{
+            atomic::{AtomicUsize, Ordering},
+            Arc,
+        };
+
+        use axum::{
+            extract::State, http::StatusCode as AxumStatusCode, routing::post, Json, Router,
+        };
+
+        #[derive(Clone)]
+        struct FlakyState {
+            register_attempts: Arc<AtomicUsize>,
+        }
+
+        async fn create_workspace() -> (AxumStatusCode, Json<Value>) {
+            (
+                AxumStatusCode::OK,
+                Json(json!({
+                    "ok": true,
+                    "data": {
+                        "workspace_id": "ws_new",
+                        "api_key": "rk_live_new",
+                        "created_at": "2025-01-01T00:00:00Z"
+                    }
+                })),
+            )
+        }
+
+        async fn register_agent(State(state): State<FlakyState>) -> (AxumStatusCode, Json<Value>) {
+            if state.register_attempts.fetch_add(1, Ordering::SeqCst) == 0 {
+                return (
+                    AxumStatusCode::INTERNAL_SERVER_ERROR,
+                    Json(json!({
+                        "ok": false,
+                        "error": {
+                            "code": "internal_error",
+                            "message": "Relaycast hit an unexpected internal failure"
+                        }
+                    })),
+                );
+            }
+
+            (
+                AxumStatusCode::OK,
+                Json(json!({
+                    "ok": true,
+                    "data": {
+                        "id": "a1",
+                        "workspace_id": "ws_new",
+                        "name": "lead",
+                        "token": "at_live_1",
+                        "status": "online",
+                        "created_at": "2025-01-01T00:00:00Z"
+                    }
+                })),
+            )
+        }
+
+        let _env_guard = clear_relay_env();
+        let state = FlakyState {
+            register_attempts: Arc::new(AtomicUsize::new(0)),
+        };
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let server_state = state.clone();
+        let server = tokio::spawn(async move {
+            axum::serve(
+                listener,
+                Router::new()
+                    .route("/v1/workspaces", post(create_workspace))
+                    .route("/v1/agents", post(register_agent))
+                    .with_state(server_state),
+            )
+            .await
+        });
+
+        let session = AuthClient::new(Some(format!("http://{address}")))
+            .startup_session(Some("lead"))
+            .await
+            .expect("fresh workspace registration should retry an internal error");
+
+        assert_eq!(session.token, "at_live_1");
+        assert_eq!(session.credentials.api_key, "rk_live_new");
+        assert_eq!(session.credentials.workspace_id, "ws_new");
+        assert_eq!(session.credentials.agent_id, "a1");
+        assert_eq!(session.credentials.agent_name.as_deref(), Some("lead"));
+        assert_eq!(state.register_attempts.load(Ordering::SeqCst), 2);
+
+        server.abort();
     }
 
     /// A transient Relaycast 5xx during startup must not kill the broker.
@@ -2591,6 +2762,11 @@ mod tests {
             "workspace_storage_unavailable",
             "storage unavailable",
             502,
+        )));
+        assert!(is_transient_server_error(&RelayError::api(
+            "internal_error",
+            "server failure",
+            500,
         )));
         assert!(!is_transient_server_error(&RelayError::api(
             "database_overloaded",
