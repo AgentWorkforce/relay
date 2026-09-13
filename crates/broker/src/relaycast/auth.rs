@@ -754,10 +754,33 @@ impl AuthClient {
         startup_deadline: Option<tokio::time::Instant>,
     ) -> Result<AuthSessionSet> {
         let ws_name = deterministic_workspace_name();
-        let (workspace_id, api_key) = self.create_workspace(&ws_name).await?;
+        let (workspace_id, api_key) = if let Some(deadline) = startup_deadline {
+            tokio::time::timeout_at(deadline, self.create_workspace(&ws_name))
+                .await
+                .context("creating a Relaycast workspace timed out")??
+        } else {
+            self.create_workspace(&ws_name).await?
+        };
 
-        let registration = self
-            .register_agent_with_workspace_key(
+        let registration = if let Some(deadline) = startup_deadline {
+            tokio::time::timeout_at(
+                deadline,
+                self.register_agent_with_workspace_key(
+                    &api_key,
+                    StartupRegistrationOptions {
+                        requested_name,
+                        strict_name,
+                        agent_type,
+                        identity_key,
+                        waiter_id,
+                        startup_deadline,
+                    },
+                ),
+            )
+            .await
+            .context("failed registering agent with fresh workspace key timed out")??
+        } else {
+            self.register_agent_with_workspace_key(
                 &api_key,
                 StartupRegistrationOptions {
                     requested_name,
@@ -769,7 +792,8 @@ impl AuthClient {
                 },
             )
             .await
-            .context("failed registering agent with fresh workspace key")?;
+            .context("failed registering agent with fresh workspace key")?
+        };
 
         let session = self.finish_session(api_key, Some(workspace_id), registration)?;
         Ok(AuthSessionSet {
@@ -1175,6 +1199,11 @@ const WORKSPACE_BUSY_STARTUP_RETRY_SAFETY_CAP: usize = 64;
 /// honors for the same server code.
 const WORKSPACE_BUSY_STARTUP_RETRY_BACKOFF: std::time::Duration = std::time::Duration::from_secs(1);
 
+/// Reserve enough of the outer handshake budget that a retry can still finish
+/// and report typed `workspace_busy` exhaustion instead of being cut off by
+/// the broker-wide timeout.
+const WORKSPACE_BUSY_STARTUP_RETRY_RESERVE: std::time::Duration = std::time::Duration::from_secs(4);
+
 /// Replay only server failures whose typed error code establishes that the
 /// request failed at the storage-admission boundary. Retrying every 5xx by
 /// status is unsafe for these unkeyed POSTs: an application-level 503 or a 500
@@ -1381,7 +1410,9 @@ fn startup_retry_backoff(
             if let Some(deadline) = startup_deadline {
                 let remaining = deadline.saturating_duration_since(tokio::time::Instant::now());
                 (retry + 1 < WORKSPACE_BUSY_STARTUP_RETRY_SAFETY_CAP
-                    && remaining > WORKSPACE_BUSY_STARTUP_RETRY_BACKOFF)
+                    && remaining
+                        >= WORKSPACE_BUSY_STARTUP_RETRY_BACKOFF
+                            + WORKSPACE_BUSY_STARTUP_RETRY_RESERVE)
                     .then_some(WORKSPACE_BUSY_STARTUP_RETRY_BACKOFF)
             } else {
                 let elapsed = started.elapsed();
