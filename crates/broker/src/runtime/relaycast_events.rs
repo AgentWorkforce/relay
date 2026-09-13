@@ -311,7 +311,11 @@ pub(super) async fn bind_http_registered_agent_to_node(
                 );
                 return None;
             }
-            Err(error) if error.to_string().contains("not_found") && attempt < 2 => {
+            Err(error)
+                if error.status() == Some(404)
+                    && error.code() == Some("not_found")
+                    && attempt < 19 =>
+            {
                 tracing::warn!(
                     worker = %agent_name,
                     node = %node_name,
@@ -320,7 +324,7 @@ pub(super) async fn bind_http_registered_agent_to_node(
                     "node binding not found yet; retrying before admitting failure"
                 );
                 last_error = Some(error);
-                tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+                tokio::time::sleep(std::time::Duration::from_millis(250)).await;
             }
             Err(error) => {
                 last_error = Some(error);
@@ -1277,6 +1281,55 @@ mod tests {
 
         assert!(warning.is_none(), "{warning:?}");
         assert_eq!(attempts.load(Ordering::SeqCst), 2);
+        server.abort();
+    }
+
+    #[tokio::test]
+    async fn http_registered_agent_binding_does_not_retry_agent_not_found() {
+        let attempts = Arc::new(AtomicUsize::new(0));
+        let app = Router::new().route(
+            "/v1/nodes/test-node/agents",
+            post({
+                let attempts = attempts.clone();
+                move || {
+                    let attempts = attempts.clone();
+                    async move {
+                        attempts.fetch_add(1, Ordering::SeqCst);
+                        (
+                            StatusCode::NOT_FOUND,
+                            Json(serde_json::json!({
+                                "ok": false,
+                                "error": {"code": "agent_not_found", "message": "worker missing"}
+                            })),
+                        )
+                            .into_response()
+                    }
+                }
+            }),
+        );
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("test server should bind");
+        let addr = listener.local_addr().expect("test server address");
+        let server = tokio::spawn(async move {
+            axum::serve(listener, app)
+                .await
+                .expect("test server should run");
+        });
+        let relaycast_http = RelaycastHttpClient::new(
+            Some(format!("http://{addr}")),
+            "rk_live_test",
+            "broker",
+            "codex",
+        );
+
+        let warning =
+            bind_http_registered_agent_to_node(&relaycast_http, "test-node", "binding-worker")
+                .await;
+
+        let warning = warning.expect("permanent agent_not_found must still fail");
+        assert!(warning.contains("agent_not_found"), "{warning}");
+        assert_eq!(attempts.load(Ordering::SeqCst), 1);
         server.abort();
     }
 
