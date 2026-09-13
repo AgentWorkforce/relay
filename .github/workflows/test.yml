@@ -55,6 +55,37 @@ jobs:
       - name: Run tests
         run: npm test
 
+  windows-credential-acl:
+    name: Windows credential ACL validation
+    needs: changes
+    if: needs.changes.outputs.node_changed == 'true'
+    runs-on: windows-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: '22.14.0'
+          cache: 'npm'
+
+      - name: Install dependencies without lifecycle scripts
+        run: npm ci --ignore-scripts
+
+      - name: Run Windows credential ACL tests
+        run: >-
+          npx vitest run
+          packages/cloud/src/credential-directory-windows.test.ts
+          packages/cloud/src/credential-directory-windows.native.test.ts
+          --pool=forks --maxWorkers=1
+
+      - name: Verify concurrent Windows credential writes
+        run: >-
+          npx vitest run packages/cloud/src/workspace-store.test.ts
+          --testNamePattern="preserves concurrent credential writes"
+          --pool=forks --maxWorkers=1
+
   coverage:
     name: Coverage (upload)
     needs: changes

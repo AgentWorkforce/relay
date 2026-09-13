@@ -75,7 +75,12 @@ export {
   type ConnectProviderResult,
 } from './connect.js';
 
-export { createWorkspace, issueWorkspaceToken, resolveActiveWorkspace } from './workspaces.js';
+export {
+  createWorkspace,
+  issueWorkspaceToken,
+  resolveActiveWorkspace,
+  resolveWorkspaceByKey,
+} from './workspaces.js';
 export { redactCredentialValues } from './redact.js';
 export {
   ensureCloudFleetSandbox,
@@ -148,6 +153,11 @@ export {
   validateWorkspaceName,
   workspaceStorePath,
   writeWorkspaceStore,
+  readRelaycastCredential,
+  relaycastCredentialRef,
+  relaycastCredentialStorePath,
+  writeRelaycastCredential,
+  type RelaycastCredential,
   type WorkspaceStore,
 } from './workspace-store.js';
 

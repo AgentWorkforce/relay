@@ -1,10 +1,12 @@
 import { randomUUID } from 'node:crypto';
+import path from 'node:path';
 
 import { InvalidArgumentError, type Command } from 'commander';
 import {
   CloudFleetSandboxProvisionError,
   deleteCloudFleetSandbox,
   ensureCloudFleetSandbox,
+  resolveWorkspaceByKey,
   type CloudFleetSandboxProviderId,
   type EnsureCloudFleetSandboxResult,
 } from '@agent-relay/cloud';
@@ -31,6 +33,7 @@ import { isAvailableFleetNode } from '../lib/fleet-live-agents.js';
 import { declaredWorkforceMetadata } from '../lib/registration-metadata.js';
 import { redactSecrets } from '../lib/redact.js';
 import { attributableReleaseReason } from '../lib/release-reason.js';
+import { resolveSandboxRepository, type SandboxRepositorySelection } from '../lib/sandbox-repo.js';
 import { spawnPlacementReceipt } from '../lib/spawn-lifecycle.js';
 import {
   resolveAgentToken,
@@ -59,6 +62,38 @@ const CLOUD_SANDBOX_ID_PATTERN =
 
 function spawnInvocationWithPlacement(invocation: Record<string, unknown>): Record<string, unknown> {
   return { ...invocation, placement: spawnPlacementReceipt(invocation) };
+}
+
+function assertSandboxRepositoryRevision(
+  sandbox: EnsureCloudFleetSandboxResult,
+  selection: SandboxRepositorySelection | undefined
+): void {
+  if (!selection) return;
+  const expected = { [selection.repository]: selection.revision };
+  if (sandbox.outcome === 'provisioning_timeout') {
+    throw new Error(
+      `Sandbox node '${sandbox.nodeName}' did not become ready within ${sandbox.waitedMs}ms; the repository revision was not verified.`
+    );
+  }
+  const actual = sandbox.repoRevisions?.[selection.repository];
+  if (actual !== selection.revision || Object.keys(sandbox.repoRevisions ?? {}).length !== 1) {
+    throw new Error(
+      `Cloud did not echo the requested repository revision for ${selection.repository}; update Cloud before retrying this sandbox launch.`
+    );
+  }
+  // Keep the shape check explicit at the CLI boundary too: injected/test
+  // implementations and older Cloud clients must not bypass the attestation.
+  if (JSON.stringify(sandbox.repoRevisions) !== JSON.stringify(expected)) {
+    throw new Error(`Cloud returned an unexpected repository revision for ${selection.repository}.`);
+  }
+}
+
+function pathContains(parent: string, child: string): boolean {
+  const relative = path.relative(path.resolve(parent), path.resolve(child));
+  return (
+    relative === '' ||
+    (relative !== '..' && !relative.startsWith(`..${path.sep}`) && !path.isAbsolute(relative))
+  );
 }
 
 // The targeted spawn path (relay.messaging.placement.spawn) returns an
@@ -110,6 +145,8 @@ export interface FleetCommandDependencies {
   sdk: SdkCommandDeps;
   createFleetWorkspaceClient: (options: SdkClientOptions) => RelayWorkspaceThinClient;
   resolveWorkspaceSelection: typeof resolveWorkspaceSelection;
+  resolveSandboxRepository: typeof resolveSandboxRepository;
+  resolveWorkspaceByKey: typeof resolveWorkspaceByKey;
   persistWorkspaceRelaycastTarget: typeof persistWorkspaceRelaycastTarget;
   ensureCloudFleetSandbox: typeof ensureCloudFleetSandbox;
   deleteCloudFleetSandbox: typeof deleteCloudFleetSandbox;
@@ -130,6 +167,8 @@ function withFleetDefaults(overrides: Partial<FleetCommandDependencies> = {}): F
       return createWorkspaceClient({ workspaceKey, baseUrl });
     },
     resolveWorkspaceSelection,
+    resolveSandboxRepository,
+    resolveWorkspaceByKey,
     persistWorkspaceRelaycastTarget,
     ensureCloudFleetSandbox,
     deleteCloudFleetSandbox,
@@ -262,6 +301,10 @@ export function registerFleetCommands(
       const useSandbox = options.sandbox === true;
       const sandboxName = optionalText(options.sandboxName, 'Sandbox name');
       const sandboxIdOption = optionalText(options.sandboxId, 'Sandbox ID');
+      // An explicit sandbox identity is a retained/replayable resource. Never
+      // delete it as collateral when a later verification or dispatch step
+      // fails; only clean up sandboxes whose identity this invocation minted.
+      const shouldCleanupSandbox = sandboxIdOption === undefined;
       const explicitWorkspaceId = optionalText(options.workspaceId, 'Workspace ID');
       if (sandboxIdOption !== undefined && !CLOUD_SANDBOX_ID_PATTERN.test(sandboxIdOption)) {
         throw new Error('--sandbox-id must match lowercase sbx_<UUID> using an RFC 4122 UUID.');
@@ -324,27 +367,65 @@ export function registerFleetCommands(
       }
 
       let sandbox: EnsureCloudFleetSandboxResult | undefined;
+      let sandboxRepository: SandboxRepositorySelection | undefined;
       let workspaceRelay: ReturnType<FleetCommandDependencies['sdk']['createWorkspaceRelay']> | undefined;
       let relaycastClientOptions = clientOptions;
       let legacyWorkspaceClientOptions = clientOptions;
       if (useSandbox) {
+        const coreProjectRoot = deps.core.getProjectPaths().projectRoot;
+        const hasExplicitProjectOverride = Boolean(
+          deps.core.env?.AGENT_RELAY_PROJECT?.trim() || process.env.AGENT_RELAY_PROJECT?.trim()
+        );
+        // AGENT_RELAY_PROJECT selects the workspace namespace, while repository
+        // inference must remain anchored to the actual checkout from which the
+        // command was invoked. This also lets --cwd point at a sibling checkout.
+        const repositoryRootHint = hasExplicitProjectOverride ? process.cwd() : coreProjectRoot;
+        sandboxRepository = deps.resolveSandboxRepository(
+          repositoryRootHint,
+          optionalText(options.cwd, 'Worker cwd')
+        );
+        if (sandboxRepository) workerCwd = sandboxRepository.workerCwd;
+        const workspaceProjectRoot = hasExplicitProjectOverride
+          ? coreProjectRoot
+          : sandboxRepository && pathContains(sandboxRepository.projectRoot, coreProjectRoot)
+            ? coreProjectRoot
+            : (sandboxRepository?.projectRoot ?? coreProjectRoot);
+        const sandboxClientOptions = {
+          ...clientOptions,
+          projectRoot: workspaceProjectRoot,
+        };
+        relaycastClientOptions = sandboxClientOptions;
         // Cloud must be the first network authority for a sandbox invocation.
         // A canonical Relaycast info call would both leak the workspace key and
         // make it impossible to prove that Cloud's isolated target is the one
         // subsequently used for registration and dispatch.
-        const workspaceSelection = deps.resolveWorkspaceSelection(clientOptions);
+        const workspaceSelection = deps.resolveWorkspaceSelection({
+          ...sandboxClientOptions,
+        });
         legacyWorkspaceClientOptions = {
-          ...clientOptions,
+          ...sandboxClientOptions,
           ...(sandboxProvider === 'agent37' ? {} : { ignorePersistedRelaycastTarget: true }),
         };
         let relayWorkspaceId = explicitWorkspaceId ?? workspaceSelection?.workspaceId?.trim();
+        // Older/rebound project pins contain only the canonical key. Resolve
+        // that exact selection with Cloud using a POST body, never a key URL
+        // or an ambient active workspace. Successful target persistence below
+        // records the identity for the next invocation.
+        if (
+          !relayWorkspaceId &&
+          workspaceSelection?.key &&
+          (sandboxProvider === undefined || sandboxProvider === 'agent37')
+        ) {
+          const resolved = await deps.resolveWorkspaceByKey(workspaceSelection.key);
+          relayWorkspaceId = resolved.cloudWorkspaceId;
+        }
         // Legacy providers remain backward compatible: they may resolve the
         // workspace from canonical Relaycast. Agent37 may not, because even a
         // read there mutates rate-limit/presence accounting on the shared
         // service and defeats the zero-shared-traffic canary proof.
         if (!relayWorkspaceId && sandboxProvider === undefined) {
           throw new Error(
-            'Sandbox provisioning without --sandbox-provider requires a persisted Relay workspace identity; run `relay workspace pin` or pass --workspace-id.'
+            'Sandbox provisioning without --sandbox-provider requires a persisted Relay workspace identity; run `relay workspace rebind <name>` or pass --workspace-id.'
           );
         }
         if (!relayWorkspaceId && sandboxProvider !== undefined && sandboxProvider !== 'agent37') {
@@ -355,7 +436,7 @@ export function registerFleetCommands(
         if (!relayWorkspaceId) {
           throw new Error(
             sandboxProvider === 'agent37'
-              ? 'Agent37 sandbox provisioning requires a persisted Relay workspace identity; run `relay workspace pin` or pass --workspace-id.'
+              ? 'Agent37 sandbox provisioning requires a persisted Relay workspace identity; run `relay workspace rebind <name>` or pass --workspace-id.'
               : 'The current Relay workspace did not report an ID for Cloud provisioning.'
           );
         }
@@ -401,9 +482,15 @@ export function registerFleetCommands(
             workloadProfile,
             waitTimeoutMs: 90_000,
             ...(effectiveSandboxName === undefined ? {} : { name: effectiveSandboxName }),
+            ...(sandboxRepository ? { repos: [sandboxRepository.repository] } : {}),
+            ...(sandboxRepository
+              ? { repoRevisions: { [sandboxRepository.repository]: sandboxRepository.revision } }
+              : {}),
           });
+          assertSandboxRepositoryRevision(sandbox, sandboxRepository);
         } catch (error) {
           if (
+            shouldCleanupSandbox &&
             error instanceof CloudFleetSandboxProvisionError &&
             error.confirmedProvisioned &&
             error.cloudWorkspaceId &&
@@ -431,6 +518,7 @@ export function registerFleetCommands(
               } so a sandbox is not left running.`
             );
           } else if (
+            shouldCleanupSandbox &&
             error instanceof CloudFleetSandboxProvisionError &&
             error.cloudWorkspaceId &&
             error.sandboxId
@@ -444,6 +532,21 @@ export function registerFleetCommands(
               .catch((cleanupError) => {
                 deps.warn(
                   `Provisioning failed after Cloud created sandbox '${error.sandboxId}', and automatic cleanup failed: ${
+                    cleanupError instanceof Error ? cleanupError.message : String(cleanupError)
+                  }`
+                );
+              });
+          }
+          if (shouldCleanupSandbox && sandbox && sandbox.outcome !== 'reused') {
+            await deps
+              .deleteCloudFleetSandbox({
+                cloudWorkspaceId: sandbox.cloudWorkspaceId,
+                sandboxId: sandbox.sandboxId,
+                ...(sandbox.providerId === undefined ? {} : { providerId: sandbox.providerId }),
+              })
+              .catch((cleanupError) => {
+                deps.warn(
+                  `Sandbox repository verification failed and cleanup also failed: ${
                     cleanupError instanceof Error ? cleanupError.message : String(cleanupError)
                   }`
                 );
@@ -474,7 +577,7 @@ export function registerFleetCommands(
               );
             }
             relaycastClientOptions = {
-              ...clientOptions,
+              ...relaycastClientOptions,
               workspaceKey: target.relaycastApiKey,
               baseUrl: target.baseUrl,
             };
@@ -496,7 +599,7 @@ export function registerFleetCommands(
               );
             }
           } catch (error) {
-            if (sandbox.outcome === 'provisioned') {
+            if (shouldCleanupSandbox && sandbox.outcome === 'provisioned') {
               await deps
                 .deleteCloudFleetSandbox({
                   cloudWorkspaceId: sandbox.cloudWorkspaceId,
@@ -521,19 +624,21 @@ export function registerFleetCommands(
           relaycastClientOptions = legacyWorkspaceClientOptions;
         }
         if (sandbox.outcome === 'provisioning_timeout') {
-          await deps
-            .deleteCloudFleetSandbox({
-              cloudWorkspaceId: sandbox.cloudWorkspaceId,
-              sandboxId: sandbox.sandboxId,
-              ...(sandbox.providerId === undefined ? {} : { providerId: sandbox.providerId }),
-            })
-            .catch((error) => {
-              deps.warn(
-                `The timed-out sandbox could not be cleaned up automatically: ${
-                  error instanceof Error ? error.message : String(error)
-                }`
-              );
-            });
+          if (shouldCleanupSandbox) {
+            await deps
+              .deleteCloudFleetSandbox({
+                cloudWorkspaceId: sandbox.cloudWorkspaceId,
+                sandboxId: sandbox.sandboxId,
+                ...(sandbox.providerId === undefined ? {} : { providerId: sandbox.providerId }),
+              })
+              .catch((error) => {
+                deps.warn(
+                  `The timed-out sandbox could not be cleaned up automatically: ${
+                    error instanceof Error ? error.message : String(error)
+                  }`
+                );
+              });
+          }
           throw new Error(
             `Sandbox node '${sandbox.nodeName}' did not become ready within ${sandbox.waitedMs}ms.`
           );
@@ -542,7 +647,7 @@ export function registerFleetCommands(
           mountSandboxRelayfile &&
           (sandbox.outcome !== 'provisioned' || sandbox.relayfileMounted !== true)
         ) {
-          if (sandbox.outcome === 'provisioned') {
+          if (shouldCleanupSandbox && sandbox.outcome === 'provisioned') {
             await deps
               .deleteCloudFleetSandbox({
                 cloudWorkspaceId: sandbox.cloudWorkspaceId,
@@ -619,7 +724,13 @@ export function registerFleetCommands(
             input: {
               name,
               cli,
-              task,
+              task:
+                sandbox &&
+                sandboxRepository &&
+                mountSandboxRelayfile &&
+                (sandbox.outcome === 'provisioned' || sandbox.outcome === 'reused')
+                  ? `${task}\n\nAgent Relay sandbox context: Relayfile records are available at ${sandbox.outcome === 'provisioned' ? (sandbox.relayfileMountPath ?? '/workspace') : '/workspace'}. The source checkout is separate; use ${workerCwd ?? 'the worker checkout'} for repository files and the mount for Relayfile records.`
+                  : task,
               ...(channel ? { channels: [channel] } : {}),
               ...(model ? { model } : {}),
               ...(workerCwd ? { worker_cwd: workerCwd } : {}),
@@ -642,19 +753,14 @@ export function registerFleetCommands(
             ...(sandbox
               ? {
                   sandbox: printableSandbox,
-                  attachCommand:
-                    `agent-relay node agent attach ${shellQuote(name)} ` +
-                    `--node ${shellQuote(targetNode)} --mode drive` +
-                    ((sandbox.outcome === 'provisioned' || sandbox.outcome === 'reused') &&
-                    sandbox.relaycastTarget
-                      ? ` --base-url ${shellQuote(sandbox.relaycastTarget.baseUrl)}`
-                      : ''),
+                  attachCommand: `agent-relay node agent attach ${shellQuote(name)} --mode drive`,
                 }
               : {}),
             invocation: spawnInvocationWithMergedPlacement(invocation as unknown as Record<string, unknown>),
           });
         } catch (error) {
           if (
+            shouldCleanupSandbox &&
             sandbox?.outcome === 'provisioned' &&
             !(error instanceof RelayPlacementError && error.state === 'unconfirmed_may_be_running')
           ) {

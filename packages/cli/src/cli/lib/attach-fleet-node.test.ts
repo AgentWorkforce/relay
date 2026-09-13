@@ -1195,6 +1195,7 @@ describe('startFleetNodeAttachProxy workspace-key precedence', () => {
     cleanup.push(remote.close);
     const ticket = capturingTicketFetch(remote.url);
     const projectRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'relay-attach-project-'));
+    const env = { AGENT_RELAY_HOME: path.join(projectRoot, 'credentials') };
     const priorProject = process.env.AGENT_RELAY_PROJECT;
     process.env.AGENT_RELAY_PROJECT = projectRoot;
     writeProjectWorkspaceKey(path.join(projectRoot, '.agentworkforce/relay'), 'rk_live_canonical', {
@@ -1202,6 +1203,7 @@ describe('startFleetNodeAttachProxy workspace-key precedence', () => {
       relaycastRoute: 'agent37-isolated',
       relaycastBaseUrl: 'https://agent37-cast.agentrelay.com',
       relaycastApiKey: 'rk_live_isolated',
+      env,
     });
 
     try {
@@ -1211,7 +1213,7 @@ describe('startFleetNodeAttachProxy workspace-key precedence', () => {
         mode: 'view',
         baseUrl: 'https://agent37-cast.agentrelay.com/',
         workspaceKey: 'rk_live_canonical',
-        env: {},
+        env,
         fetch: ticket.fetch,
       });
       cleanup.push(proxy.close);
@@ -1232,6 +1234,7 @@ describe('startFleetNodeAttachProxy workspace-key precedence', () => {
     cleanup.push(remote.close);
     const ticket = capturingTicketFetch(remote.url);
     const projectRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'relay-attach-project-'));
+    const env = { AGENT_RELAY_HOME: path.join(projectRoot, 'credentials') };
     const priorProject = process.env.AGENT_RELAY_PROJECT;
     process.env.AGENT_RELAY_PROJECT = projectRoot;
     writeProjectWorkspaceKey(path.join(projectRoot, '.agentworkforce/relay'), 'rk_live_canonical', {
@@ -1239,6 +1242,7 @@ describe('startFleetNodeAttachProxy workspace-key precedence', () => {
       relaycastRoute: 'agent37-isolated',
       relaycastBaseUrl: 'https://agent37-cast.agentrelay.com',
       relaycastApiKey: 'rk_live_isolated',
+      env,
     });
 
     try {
@@ -1247,7 +1251,7 @@ describe('startFleetNodeAttachProxy workspace-key precedence', () => {
         node: 'other-node',
         mode: 'view',
         workspaceKey: 'rk_live_other',
-        env: {},
+        env,
         fetch: ticket.fetch,
       });
       cleanup.push(proxy.close);

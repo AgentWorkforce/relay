@@ -25,6 +25,7 @@ import {
 import { resolvedSpawnRuntime, spawnAgentWithClient } from '../lib/client-factory.js';
 import { describeError } from '../lib/describe-error.js';
 import { defaultExit } from '../lib/exit.js';
+import { resolveFleetAttachTarget, type FleetAttachResolution } from '../lib/fleet-attach-target.js';
 import { redeemJoinTicket } from '../lib/join-ticket.js';
 import { describeClearedEnrollment, persistWorkspaceSession } from '../lib/workspace-session.js';
 
@@ -191,6 +192,7 @@ export interface LocalAgentDependencies {
     node: string,
     options: FleetNodeAttachCliOptions
   ) => Promise<number>;
+  resolveFleetAttachTarget: (name: string) => Promise<FleetAttachResolution>;
   cwd: () => string;
   readConnectionFile: (stateDir: string) => unknown;
   getDefaultStateDir: () => string;
@@ -217,6 +219,7 @@ function withDefaults(overrides: Partial<LocalAgentDependencies> = {}): LocalAge
     attach: runAttach,
     attachRemote: attachRemoteNode,
     attachNode: attachFleetNode,
+    resolveFleetAttachTarget,
     log: (...args: unknown[]) => console.log(...args),
     error: (...args: unknown[]) => console.error(...args),
     exit: defaultExit,
@@ -618,7 +621,27 @@ async function withDeliveryModeClient<T>(
   sessionMode: AttachMode,
   run: (client: ReturnType<typeof createBrokerClient>) => Promise<T>
 ): Promise<T | undefined> {
-  const node = typeof opts.node === 'string' && opts.node.trim() ? opts.node.trim() : undefined;
+  let node = typeof opts.node === 'string' && opts.node.trim() ? opts.node.trim() : undefined;
+  if (!node && opts.workspaceKey !== undefined) {
+    deps.error(
+      'Error: --workspace-key requires an explicit --node. To target the local broker instead, use --broker-url / --api-key or read connection.json from --state-dir.'
+    );
+    deps.exit(1);
+    return undefined;
+  }
+  let targetBaseUrl: string | undefined;
+  if (!node && opts.brokerUrl === undefined && opts.apiKey === undefined && opts.stateDir === undefined) {
+    const fleetTarget = await deps.resolveFleetAttachTarget(name);
+    if (fleetTarget.error) {
+      deps.error(`Error: ${fleetTarget.error}`);
+      deps.exit(1);
+      return undefined;
+    }
+    if (fleetTarget.target) {
+      node = fleetTarget.target.node;
+      targetBaseUrl = fleetTarget.target.baseUrl;
+    }
+  }
   if (!node) {
     let captured: T | undefined;
     await runLocalBroker(deps, brokerOptionsFromOpts(opts), async (client) => {
@@ -650,6 +673,7 @@ async function withDeliveryModeClient<T>(
       mode: sessionMode,
       env: deps.env,
       fetch: deps.fetch,
+      ...(targetBaseUrl ? { baseUrl: targetBaseUrl } : {}),
       ...(workspaceKey ? { workspaceKey } : {}),
     });
     return await run(
@@ -967,6 +991,33 @@ export function registerLocalAgentCommands(
         });
         if (code !== 0) deps.exit(code);
         return;
+      }
+      // A sandbox worker has no local broker. Resolve a unique live fleet
+      // placement before falling back to the local connection contract so a
+      // flag-free attach follows the worker automatically.
+      if (options.brokerUrl === undefined && options.apiKey === undefined && options.stateDir === undefined) {
+        const fleetTarget = await deps.resolveFleetAttachTarget(name);
+        if (fleetTarget.error) {
+          deps.error(`Error: ${fleetTarget.error}`);
+          deps.exit(1);
+          return;
+        }
+        if (fleetTarget.target) {
+          try {
+            const code = await deps.attachNode(name, mode, fleetTarget.target.node, {
+              baseUrl: fleetTarget.target.baseUrl,
+              json: options.json as boolean | undefined,
+              reasoning: options.reasoning as boolean | undefined,
+              diagnostics: options.diagnostics as boolean | undefined,
+            });
+            if (code !== 0) deps.exit(code);
+          } catch (error) {
+            const message = describeError(error);
+            deps.error(message.startsWith('Error:') ? message : `Error: ${message}`);
+            deps.exit(1);
+          }
+          return;
+        }
       }
       const code = await deps.attach(name, mode, {
         brokerUrl: options.brokerUrl as string | undefined,

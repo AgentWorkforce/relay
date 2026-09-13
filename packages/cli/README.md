@@ -219,6 +219,9 @@ agent-relay fleet spawn codex \
   --name e2b-worker \
   --task "Review the current workspace and wait for follow-up."
 
+# A uniquely placed sandbox worker can be attached without node or route flags.
+agent-relay node agent attach e2b-worker --mode drive
+
 agent-relay message dm send api-worker "Detailed task instructions"
 # wait is the default: it queues for the recipient's next safe idle boundary and
 # can remain unread while that recipient is busy. steer requests immediate
@@ -238,8 +241,9 @@ absent, it creates and removes a short-lived launcher identity automatically.
 Automatic placement and release need only the workspace key.
 
 The sandbox path provisions a fresh hosted instance and makes the Relayfile
-mount mandatory by default, so the spawned worker starts in `/workspace` and
-sees the same synced Relayfile workspace. Use `--sandbox-provider daytona` or
+mount mandatory by default. Outside Git, the worker starts in `/workspace`;
+inside Git it starts in the corresponding repository checkout described below.
+Both paths see the same synced Relayfile workspace. Use `--sandbox-provider daytona` or
 `--sandbox-provider e2b` to require an operator-enabled provider; omit the flag
 to let Cloud's sandbox router choose. Pass `--no-sandbox-relayfile` only when a
 deliberately bare sandbox is desired. If provisioning times out or the spawn
@@ -252,6 +256,72 @@ its matching deterministic `--sandbox-name` or let Relay derive it. If
 provisioning ends with an unknown outcome, rerun the command with the warning's
 `--sandbox-id` to replay the same Cloud identity instead of adopting another
 fleet node.
+
+When the invocation runs inside a GitHub checkout, sandbox provisioning also
+attests the checkout's exact `HEAD` and clones it under
+`/srv/agent-workforce/<repo>`. The checkout must have no tracked changes or
+untracked source files, and the exact commit must be reachable from an origin
+remote. Relay's generated `.agentworkforce/relay/workspace-key.json`,
+`connection.json`, and `runtime.json` metadata are permitted. Dirty checkouts and
+commits known to be ahead of their origin upstream fail locally. For detached
+or otherwise unverified commits, Cloud must fetch and verify the exact SHA
+before dispatch; an unreachable commit produces a push-and-retry error. The temporary isolated
+Relaycast credential stays in the machine store under
+`~/.agentworkforce/relay`; the project file stores only a non-secret reference.
+
+`node agent attach <name>` automatically routes to the unique live fleet node
+advertising that worker. If more than one live node advertises the name, the
+command refuses to guess; pass `--node <node>` explicitly. Supplying
+`--broker-url`, `--api-key`, or `--state-dir` keeps attach local and bypasses
+automatic Fleet routing. `node agent message flush|hold|auto <name>` uses the
+same unique-node lookup when no local broker flags are supplied. Fleet list and
+release commands reuse the persisted project route; if that remote session is
+unavailable, the command reports the routing failure instead of selecting a
+same-named local worker.
+
+From a clean repository already pinned to a Relay workspace, the ordinary path is:
+
+```bash
+agent-relay fleet spawn codex \
+  --name cloud-zero-config \
+  --task "Inspect this repository and report its current commit" \
+  --sandbox
+agent-relay node agent attach cloud-zero-config --mode drive
+agent-relay fleet agent list
+agent-relay fleet release cloud-zero-config
+```
+
+Invoking spawn from `packages/web` places the worker in that same relative
+directory in the remote checkout. Private repositories use the pinned
+workspace's connected GitHub access; a repository-access error means that
+connection must be granted access to the repository. No GitHub token or
+workspace key needs to be copied into the task or checkout.
+
+The Git checkout and Relayfile mirror are separate trees. Workspace `.skills`
+are exposed through the agent CLIs' usual skill directories, and the worker's
+task context identifies the mirror for other workspace records. Never move
+`.git` into that mirror or clone a second repository there.
+
+Detaching leaves the worker running. Only one drive session can own a worker
+at a time; detach the current driver before driving it in another shell, or
+use `--mode view` to observe. Releasing a worker does not delete its sandbox.
+To resume its retained sandbox, repeat spawn with the reported
+`--sandbox-id <id>`; the retained checkout must still have the same clean HEAD.
+A failed resume preserves retained work. Delete an unused sandbox in Cloud
+Fleet to stop future provider usage; monthly accounting reservations remain
+until their normal reset.
+
+If the workspace is not pinned yet, use `agent-relay workspace rebind <name>`
+with an existing stored workspace. A missing or mismatched stored route
+credential requires rerunning sandbox provisioning for that workspace.
+`--base-url`, `--workspace-id`, `--node`, provider selection, and `--cwd` remain
+advanced overrides. Outside Git, the existing mount-based sandbox behavior is
+preserved.
+
+Pins created before workspace IDs were recorded are resolved automatically
+through Cloud at spawn time. The key travels in an authenticated POST body,
+never a URL. Nested packages share the repository pin; an existing subproject
+pin or `AGENT_RELAY_PROJECT` remains an explicit workspace override.
 
 Large workspaces should select only the live subtree an agent needs. Pass one
 or more explicit directory roots after `--sandbox-relayfile-path`; Cloud

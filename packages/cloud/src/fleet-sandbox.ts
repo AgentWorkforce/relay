@@ -108,6 +108,8 @@ export type EnsureCloudFleetSandboxInput = {
    * PR #3212 implements the ensure-side; this helper just plumbs it through.
    */
   repos?: readonly string[];
+  /** Exact lowercase HEAD attestation expected for each requested repository. */
+  repoRevisions?: Readonly<Record<string, string>>;
 };
 
 export type CloudFleetSandboxWorkloadProfile =
@@ -137,6 +139,8 @@ type CloudFleetSandboxReadyBase = {
   relayfileMounted: boolean;
   relayfileMountPath?: string;
   providerId?: CloudFleetSandboxProviderId;
+  /** Repository HEADs verified by Cloud for this sandbox. */
+  repoRevisions?: Readonly<Record<string, string>>;
 };
 
 /** Daytona responses always carry the independently attested provider UUID. */
@@ -160,6 +164,8 @@ export type CloudFleetSandboxReused = {
   providerId?: CloudFleetSandboxProviderId;
   /** Closed server-owned Relaycast contract when Cloud returned one. Required for Agent37. */
   relaycastTarget?: CloudFleetRelaycastTarget;
+  /** Repository HEADs verified by Cloud for this sandbox. */
+  repoRevisions?: Readonly<Record<string, string>>;
 };
 
 type CloudFleetSandboxProvisioningTimeoutBase = {
@@ -342,6 +348,103 @@ function requiredString(payload: JsonRecord, key: string, context: string): stri
   return value;
 }
 
+const REPOSITORY_KEY_PATTERN = /^[A-Za-z0-9][A-Za-z0-9_.-]*\/[A-Za-z0-9][A-Za-z0-9_.-]*$/;
+const REPOSITORY_REVISION_PATTERN = /^[0-9a-f]{40}$/;
+
+function validateRequestedRepos(repos: readonly string[] | undefined): void {
+  if (repos === undefined || repos.length === 0) return;
+  if (repos.length > 16) {
+    throw new Error('Cloud fleet sandbox requests may include at most 16 repositories.');
+  }
+  const seen = new Set<string>();
+  const seenCheckoutNames = new Set<string>();
+  for (const repo of repos) {
+    const normalizedRepo = repo.toLowerCase();
+    if (seen.has(normalizedRepo)) {
+      throw new Error('Cloud fleet sandbox repositories must not contain duplicates.');
+    }
+    seen.add(normalizedRepo);
+    const slash = repo.lastIndexOf('/');
+    const checkoutName = (slash === -1 ? repo : repo.slice(slash + 1)).toLowerCase();
+    if (seenCheckoutNames.has(checkoutName)) {
+      throw new Error('Cloud fleet sandbox repositories must have unique checkout names.');
+    }
+    seenCheckoutNames.add(checkoutName);
+  }
+}
+
+function validateRepoRevisions(
+  repos: readonly string[] | undefined,
+  repoRevisions: Readonly<Record<string, string>> | undefined
+): Record<string, string> | undefined {
+  if (repoRevisions === undefined) return undefined;
+  const entries = Object.entries(repoRevisions);
+  const allowedRepos = new Set(repos ?? []);
+  if (
+    entries.length === 0 ||
+    entries.length > 16 ||
+    repos === undefined ||
+    repos.length > 16 ||
+    repos.length !== allowedRepos.size ||
+    entries.length !== allowedRepos.size
+  ) {
+    throw new Error(
+      'Cloud fleet sandbox revisions must cover every requested repository exactly once (maximum 16).'
+    );
+  }
+  for (const [repo, revision] of entries) {
+    if (!REPOSITORY_KEY_PATTERN.test(repo) || repo.includes('..')) {
+      throw new Error(`Cloud fleet sandbox repository key '${repo}' must use owner/name form.`);
+    }
+    if (!allowedRepos.has(repo)) {
+      throw new Error(`Cloud fleet sandbox repository revision '${repo}' is not present in repos.`);
+    }
+    if (!REPOSITORY_REVISION_PATTERN.test(revision)) {
+      throw new Error(
+        `Cloud fleet sandbox revision for '${repo}' must be exactly 40 lowercase hexadecimal characters.`
+      );
+    }
+  }
+  return Object.fromEntries(entries);
+}
+
+function readRepoRevisions(payload: JsonRecord): Record<string, string> | undefined {
+  const value = payload.repoRevisions;
+  if (value === undefined) return undefined;
+  if (!isObject(value)) throw new Error('Cloud fleet sandbox response has invalid repoRevisions.');
+  const revisions: Record<string, string> = {};
+  for (const [repo, revision] of Object.entries(value)) {
+    if (
+      !REPOSITORY_KEY_PATTERN.test(repo) ||
+      repo.includes('..') ||
+      typeof revision !== 'string' ||
+      !REPOSITORY_REVISION_PATTERN.test(revision)
+    ) {
+      throw new Error('Cloud fleet sandbox response has invalid repoRevisions.');
+    }
+    revisions[repo] = revision;
+  }
+  return revisions;
+}
+
+function assertRepoRevisions(
+  payload: JsonRecord,
+  expected: Readonly<Record<string, string>> | undefined
+): Record<string, string> | undefined {
+  const actual = readRepoRevisions(payload);
+  if (expected === undefined) return actual;
+  if (
+    actual === undefined ||
+    Object.keys(actual).length !== Object.keys(expected).length ||
+    Object.entries(expected).some(([repo, revision]) => actual[repo] !== revision)
+  ) {
+    throw new Error(
+      'Cloud did not echo the requested repository revisions; update Cloud before using --sandbox with a pinned checkout.'
+    );
+  }
+  return actual;
+}
+
 function validateSandboxIdentity(input: EnsureCloudFleetSandboxInput): {
   sandboxId?: string;
   name?: string;
@@ -476,7 +579,8 @@ function normalizeEnsureResult(
   cloudWorkspaceId: string,
   expectedSandboxId?: string,
   expectedNodeName?: string,
-  requestedProviderId?: CloudFleetSandboxProviderId
+  requestedProviderId?: CloudFleetSandboxProviderId,
+  expectedRepoRevisions?: Readonly<Record<string, string>>
 ): EnsureCloudFleetSandboxResult {
   if (!isObject(payload)) throw new Error('Cloud fleet sandbox response was not valid JSON.');
   // A caller-declared identity is the cleanup authority. Validate it before
@@ -508,6 +612,7 @@ function normalizeEnsureResult(
     const sandboxId = requiredString(payload, 'sandboxId', 'Cloud fleet sandbox');
     const providerSandboxId = normalizeProviderSandboxId(payload, providerId);
     const relayWorkspaceId = requiredString(payload, 'relayWorkspaceId', 'Cloud fleet sandbox');
+    const repoRevisions = assertRepoRevisions(payload, expectedRepoRevisions);
     const relaycastTarget =
       payload.relaycastTarget === undefined ? undefined : normalizeRelaycastTarget(payload.relaycastTarget);
     if (relaycastTarget !== undefined && relaycastTarget.workspaceId !== relayWorkspaceId) {
@@ -525,6 +630,7 @@ function normalizeEnsureResult(
       ...(relaycastTarget === undefined ? {} : { relaycastTarget }),
       relayfileMounted: payload.relayfileMounted,
       ...(providerId === undefined ? {} : { providerId }),
+      ...(repoRevisions === undefined ? {} : { repoRevisions }),
       ...(readString(payload, 'relayfileMountPath')
         ? { relayfileMountPath: readString(payload, 'relayfileMountPath') }
         : {}),
@@ -535,6 +641,7 @@ function normalizeEnsureResult(
     const relaycastTarget =
       payload.relaycastTarget === undefined ? undefined : normalizeRelaycastTarget(payload.relaycastTarget);
     assertProviderRelaycastTarget(providerId, relaycastTarget);
+    const repoRevisions = assertRepoRevisions(payload, expectedRepoRevisions);
     return {
       outcome,
       cloudWorkspaceId,
@@ -545,6 +652,7 @@ function normalizeEnsureResult(
       maxAgents: readNumber(payload, 'maxAgents') ?? null,
       ...(providerId === undefined ? {} : { providerId }),
       ...(relaycastTarget === undefined ? {} : { relaycastTarget }),
+      ...(repoRevisions === undefined ? {} : { repoRevisions }),
     };
   }
 
@@ -586,6 +694,8 @@ export async function ensureCloudFleetSandbox(
   if (input.relayfilePaths !== undefined && input.relayfilePaths.length === 0) {
     throw new Error('At least one Relayfile subtree path is required when relayfilePaths is provided.');
   }
+  validateRequestedRepos(input.repos);
+  const repoRevisions = validateRepoRevisions(input.repos, input.repoRevisions);
 
   const session = await ensureCloudSession({
     apiUrl: options.apiUrl || defaultApiUrl(),
@@ -615,6 +725,7 @@ export async function ensureCloudFleetSandbox(
           ...(input.workloadProfile !== undefined ? { workloadProfile: input.workloadProfile } : {}),
           ...(input.waitTimeoutMs !== undefined ? { waitTimeoutMs: input.waitTimeoutMs } : {}),
           ...(input.repos !== undefined && input.repos.length > 0 ? { repos: [...input.repos] } : {}),
+          ...(repoRevisions === undefined ? {} : { repoRevisions }),
         }),
       },
       { interactive: false }
@@ -688,7 +799,8 @@ export async function ensureCloudFleetSandbox(
       resolved.cloudWorkspaceId,
       sandboxIdentity.sandboxId,
       sandboxIdentity.name,
-      input.providerId
+      input.providerId,
+      repoRevisions
     );
   } catch (error) {
     const confirmedProvisioned = confirmsProvisionedSandboxIdentity(

@@ -5,7 +5,15 @@ All notable changes to Agent Relay will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
+## [Unreleased - Minor]
+
+### Added
+
+- `fleet spawn --sandbox` attests a clean, pushed GitHub checkout at its exact
+  commit before dispatch and maps nested local directories to the sandbox clone.
+- `node agent attach <name>` automatically routes to a unique live Fleet node;
+  ambiguous placements require `--node`.
+- `fleet spawn --sandbox` keeps temporary routing credentials out of project files.
 
 ## [12.1.0] - 2026-09-12
 

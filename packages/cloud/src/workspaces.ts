@@ -1,4 +1,4 @@
-import { authorizedApiFetch, ensureAuthenticated } from './auth.js';
+import { authorizedApiFetch, ensureAuthenticated, ensureCloudSession, readStoredAuth } from './auth.js';
 import { redactCredentialValues } from './redact.js';
 import {
   type ActiveWorkspaceDescriptor,
@@ -340,6 +340,62 @@ export async function issueWorkspaceToken(
   throw (
     lastUnsupported ?? new Error('Workspace token issuance is not supported by the configured cloud API.')
   );
+}
+
+function assertWorkspaceResolverTransport(apiUrl: string): void {
+  let url: URL;
+  try {
+    url = new URL(apiUrl);
+  } catch {
+    throw new Error('Project workspace resolution requires a valid Cloud API URL.');
+  }
+  if (url.username || url.password || url.protocol !== 'https:') {
+    throw new Error('Project workspace resolution requires HTTPS.');
+  }
+}
+
+/** Resolve a selected project pin without exposing its key in URLs or changing the active workspace. */
+export async function resolveWorkspaceByKey(
+  workspaceKey: string,
+  options: ResolveActiveWorkspaceOptions = {}
+): Promise<ActiveWorkspaceDescriptor> {
+  const key = workspaceKey.trim();
+  if (!/^rk_live_[A-Za-z0-9_-]{1,512}$/.test(key)) throw new Error('A valid workspace key is required.');
+  const env = options.env ?? process.env;
+  const apiUrl = options.apiUrl || defaultApiUrl(env);
+  assertWorkspaceResolverTransport(apiUrl);
+  // Stored sessions keep their own API host; validate it before a refresh can
+  // send credentials, even when the requested/default host is secure.
+  const stored = await readStoredAuth(env);
+  if (stored) assertWorkspaceResolverTransport(stored.apiUrl);
+  const { auth } = await ensureCloudSession({
+    apiUrl,
+    interactive: false,
+    refreshTimeoutMs: options.refreshTimeoutMs,
+    env,
+  });
+  assertWorkspaceResolverTransport(auth.apiUrl);
+  const endpoint = '/api/v1/workspaces/current/resolve';
+  const { response } = await authorizedApiFetch(
+    auth,
+    endpoint,
+    {
+      method: 'POST',
+      redirect: 'error',
+      body: JSON.stringify({ workspaceKey: key }),
+      signal: AbortSignal.timeout(options.refreshTimeoutMs ?? 30_000),
+    },
+    { interactive: false, env }
+  );
+  const payload = await readJson(response);
+  if (!response.ok) throw buildEndpointError('Project workspace resolve', endpoint, response, payload);
+  // Unlike the legacy active-workspace resolver, this endpoint is an
+  // attestation for a specific project pin. A response that omits the echoed
+  // key must fail closed rather than being filled in from the request.
+  const resolved = normalizeActiveWorkspaceDescriptor(payload, '', auth.apiUrl);
+  if (resolved.key !== key)
+    throw new Error('Cloud resolved a different workspace credential than the selected project pin.');
+  return resolved;
 }
 
 export async function resolveActiveWorkspace(

@@ -857,6 +857,10 @@ describe('Cloud fleet sandbox client', () => {
             relayWorkspaceId: 'rw_abc',
             relaycastTarget: RELAYCAST_TARGET,
             relayfileMounted: true,
+            repoRevisions: {
+              'AgentWorkforce/factory': '0123456789abcdef0123456789abcdef01234567',
+              'AgentWorkforce/relay': '89abcdef0123456789abcdef0123456789abcdef',
+            },
           },
           { status: 201 }
         ),
@@ -868,6 +872,10 @@ describe('Cloud fleet sandbox client', () => {
       requiredCapability: 'spawn:codex',
       forceProvision: true,
       repos: ['AgentWorkforce/factory', 'AgentWorkforce/relay'],
+      repoRevisions: {
+        'AgentWorkforce/factory': '0123456789abcdef0123456789abcdef01234567',
+        'AgentWorkforce/relay': '89abcdef0123456789abcdef0123456789abcdef',
+      },
     });
 
     const ensureCall = mocks.authorizedApiFetch.mock.calls[1];
@@ -876,7 +884,50 @@ describe('Cloud fleet sandbox client', () => {
       requiredCapability: 'spawn:codex',
       forceProvision: true,
       repos: ['AgentWorkforce/factory', 'AgentWorkforce/relay'],
+      repoRevisions: {
+        'AgentWorkforce/factory': '0123456789abcdef0123456789abcdef01234567',
+        'AgentWorkforce/relay': '89abcdef0123456789abcdef0123456789abcdef',
+      },
     });
+  });
+
+  it.each([
+    ['missing', undefined],
+    ['mismatched', { 'AgentWorkforce/cloud': 'fedcba9876543210fedcba9876543210fedcba98' }],
+  ] as const)('rejects a %s echoed repository revision', async (_label, echoed) => {
+    const revision = '0123456789abcdef0123456789abcdef01234567';
+    mocks.authorizedApiFetch
+      .mockResolvedValueOnce({
+        response: Response.json({ cloudWorkspaceId: CLOUD_WORKSPACE_ID }),
+        auth,
+      })
+      .mockResolvedValueOnce({
+        response: Response.json(
+          {
+            outcome: 'provisioned',
+            nodeId: 'node-1',
+            nodeName: SANDBOX_NAME,
+            sandboxId: SANDBOX_ID,
+            providerSandboxId: 'provider-sandbox-1',
+            relayWorkspaceId: 'rw_abc',
+            relaycastTarget: RELAYCAST_TARGET,
+            relayfileMounted: true,
+            ...(echoed === undefined ? {} : { repoRevisions: echoed }),
+          },
+          { status: 201 }
+        ),
+        auth,
+      });
+
+    await expect(
+      ensureCloudFleetSandbox({
+        workspaceId: 'rw_abc',
+        requiredCapability: 'spawn:codex',
+        repos: ['AgentWorkforce/cloud'],
+        repoRevisions: { 'AgentWorkforce/cloud': revision },
+        forceProvision: true,
+      })
+    ).rejects.toThrow(/did not echo the requested repository revisions/);
   });
 
   it('forwards bounded Relayfile mount paths into the ensure request body', async () => {
@@ -916,6 +967,63 @@ describe('Cloud fleet sandbox client', () => {
       forceProvision: true,
       relayfilePaths: ['/live-review/run-123/**'],
     });
+  });
+
+  it('rejects incomplete revision maps before Cloud authentication', async () => {
+    await expect(
+      ensureCloudFleetSandbox({
+        workspaceId: 'rw_abc',
+        requiredCapability: 'spawn:codex',
+        repos: ['AgentWorkforce/cloud', 'AgentWorkforce/relay'],
+        repoRevisions: { 'AgentWorkforce/cloud': '0123456789abcdef0123456789abcdef01234567' },
+      })
+    ).rejects.toThrow('cover every requested repository');
+    expect(mocks.ensureCloudSession).not.toHaveBeenCalled();
+  });
+
+  it('rejects duplicate repositories before Cloud authentication', async () => {
+    await expect(
+      ensureCloudFleetSandbox({
+        workspaceId: 'rw_abc',
+        requiredCapability: 'spawn:codex',
+        repos: ['AgentWorkforce/relay', 'AgentWorkforce/relay'],
+      })
+    ).rejects.toThrow('must not contain duplicates');
+    expect(mocks.ensureCloudSession).not.toHaveBeenCalled();
+  });
+
+  it('rejects case-insensitive duplicate repositories before Cloud authentication', async () => {
+    await expect(
+      ensureCloudFleetSandbox({
+        workspaceId: 'rw_abc',
+        requiredCapability: 'spawn:codex',
+        repos: ['AgentWorkforce/relay', 'agentworkforce/RELAY'],
+      })
+    ).rejects.toThrow('must not contain duplicates');
+    expect(mocks.ensureCloudSession).not.toHaveBeenCalled();
+  });
+
+  it('rejects checkout basename collisions before Cloud authentication', async () => {
+    await expect(
+      ensureCloudFleetSandbox({
+        workspaceId: 'rw_abc',
+        requiredCapability: 'spawn:codex',
+        repos: ['owner-a/tools', 'owner-b/tools'],
+      })
+    ).rejects.toThrow('unique checkout names');
+    expect(mocks.ensureCloudSession).not.toHaveBeenCalled();
+  });
+
+  it('rejects more than sixteen repositories before Cloud authentication', async () => {
+    const repos = Array.from({ length: 17 }, (_, index) => `AgentWorkforce/repo-${index}`);
+    await expect(
+      ensureCloudFleetSandbox({
+        workspaceId: 'rw_abc',
+        requiredCapability: 'spawn:codex',
+        repos,
+      })
+    ).rejects.toThrow('at most 16 repositories');
+    expect(mocks.ensureCloudSession).not.toHaveBeenCalled();
   });
 
   it('rejects an explicitly empty Relayfile path list before provisioning', async () => {

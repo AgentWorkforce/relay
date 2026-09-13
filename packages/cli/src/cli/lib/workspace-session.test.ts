@@ -2,7 +2,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 
-import { afterEach, describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import { promoteWorkspaceKeyEnvAlias } from './workspace-env.js';
 import {
@@ -203,6 +203,48 @@ describe('workspace session persistence', () => {
     });
   });
 
+  it('uses the injected default credential home when AGENT_RELAY_HOME is omitted', () => {
+    const root = tempRoot();
+    const projectDataDir = path.join(root, 'project', '.agentworkforce', 'relay');
+    const defaultHome = path.join(root, 'default-home');
+    const ambientHome = path.join(root, 'ambient-home');
+    const originalHome = process.env.AGENT_RELAY_HOME;
+    process.env.AGENT_RELAY_HOME = ambientHome;
+    const homeSpy = vi.spyOn(os, 'homedir').mockReturnValue(defaultHome);
+    const env = { ...process.env };
+    delete env.AGENT_RELAY_HOME;
+
+    try {
+      persistWorkspaceSession({
+        workspaceKey: 'rk_live_default_home',
+        workspaceId: 'rw_default_home',
+        relaycastRoute: 'agent37-isolated',
+        relaycastBaseUrl: 'https://agent37-cast.agentrelay.com',
+        relaycastApiKey: 'rk_live_default_home_route',
+        projectDataDir,
+        env,
+      });
+
+      expect(readProjectWorkspaceSession(projectDataDir, undefined, env)).toMatchObject({
+        relaycastApiKey: 'rk_live_default_home_route',
+      });
+      expect(
+        readProjectWorkspaceSession(projectDataDir, undefined, { AGENT_RELAY_HOME: ambientHome })
+      ).toMatchObject({
+        workspaceKey: 'rk_live_default_home',
+      });
+      expect(
+        readProjectWorkspaceSession(projectDataDir, undefined, { AGENT_RELAY_HOME: ambientHome })
+          ?.relaycastApiKey
+      ).toBeUndefined();
+      expect(process.env.AGENT_RELAY_HOME).toBe(ambientHome);
+    } finally {
+      homeSpy.mockRestore();
+      if (originalHome === undefined) delete process.env.AGENT_RELAY_HOME;
+      else process.env.AGENT_RELAY_HOME = originalHome;
+    }
+  });
+
   it('replaces a stale route credential when re-persisting an explicit route', () => {
     const root = tempRoot();
     const projectDataDir = path.join(root, 'project', '.agentworkforce', 'relay');
@@ -212,6 +254,7 @@ describe('workspace session persistence', () => {
       relaycastRoute: 'canonical',
       relaycastBaseUrl: 'https://cast.agentrelay.com',
       relaycastApiKey: 'rk_live_stale_canonical',
+      env,
     });
 
     persistWorkspaceSession({
@@ -224,12 +267,13 @@ describe('workspace session persistence', () => {
       env,
     });
 
-    expect(readProjectWorkspaceSession(projectDataDir)).toEqual({
+    expect(readProjectWorkspaceSession(projectDataDir, undefined, env)).toMatchObject({
       workspaceKey: 'rk_live_redeemed',
       workspaceId: 'rw_redeemed',
       relaycastRoute: 'agent37-isolated',
       relaycastBaseUrl: 'https://agent37-cast.agentrelay.com',
       relaycastApiKey: 'rk_live_redeemed',
+      relaycastApiKeyRef: expect.any(String),
     });
   });
 
