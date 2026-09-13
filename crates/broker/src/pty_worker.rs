@@ -42,8 +42,8 @@ use crate::util::terminal::{detect_claude_trust_prompt, detect_codex_trust_promp
 use crate::util::utf8_stream::Utf8StreamDecoder;
 use crate::worker::detection::ActivityDetector;
 use crate::wrap::{
-    injection_submit_followup_delay, warn_on_auto_response_write, PtyAutoState,
-    AUTO_SUGGESTION_BLOCK_TIMEOUT,
+    bracketed_paste_harness, injection_submit_followup_delay, warn_on_auto_response_write,
+    PtyAutoState, AUTO_SUGGESTION_BLOCK_TIMEOUT, BRACKETED_PASTE_SUBMIT_DELAY,
 };
 use base64::Engine;
 
@@ -108,6 +108,40 @@ enum InjectionStage {
     /// (emit `delivery_injected`, queue echo verification). Finalization runs
     /// in the injection-ack arm, not the deadline arm.
     Finalize,
+}
+
+/// Ordered PTY writes for the Body stage, per harness. OpenCode gets its body
+/// wrapped in a bracketed paste (so an `@` mention token is inserted literally
+/// instead of opening the completion popup) followed by a distinct Enter;
+/// Claude/Codex keep the delayed-follow-up Enter; every other harness keeps the
+/// single body+Enter write.
+#[derive(Debug, PartialEq, Eq)]
+enum BodyWritePlan {
+    BracketedPasteThenEnter { body: Vec<u8>, enter: Vec<u8> },
+    PacedFollowup { body: Vec<u8>, enter: Vec<u8> },
+    BodyWithEnter(Vec<u8>),
+}
+
+fn body_write_plan(cli: &str, injection: &str) -> BodyWritePlan {
+    if bracketed_paste_harness(cli) {
+        let mut body = Vec::with_capacity(injection.len() + 12);
+        body.extend_from_slice(b"\x1b[200~");
+        body.extend_from_slice(injection.as_bytes());
+        body.extend_from_slice(b"\x1b[201~");
+        BodyWritePlan::BracketedPasteThenEnter {
+            body,
+            enter: b"\r".to_vec(),
+        }
+    } else if injection_submit_followup_delay(cli).is_some() {
+        BodyWritePlan::PacedFollowup {
+            body: injection.as_bytes().to_vec(),
+            enter: b"\r".to_vec(),
+        }
+    } else {
+        let mut bytes = injection.as_bytes().to_vec();
+        bytes.extend_from_slice(b"\r");
+        BodyWritePlan::BodyWithEnter(bytes)
+    }
 }
 
 /// A single injection being written across paced stages. Holds the delivery
@@ -1651,19 +1685,25 @@ pub(crate) async fn run_pty_worker(cmd: PtyCommand) -> Result<()> {
                         // Finalization (emit `delivery_injected`, queue echo
                         // verification) still waits for this ack in the
                         // injection-ack arm.
-                        let mut bytes = injection.clone().into_bytes();
-                        let write = if let Some(delay) =
-                            injection_submit_followup_delay(&resolved_cli)
-                        {
-                            pty.submit_write_paced_with_followup_and_output_boundary(
-                                bytes,
-                                inject_rate,
-                                delay,
-                                b"\r".to_vec(),
-                            )
-                        } else {
-                            bytes.extend_from_slice(b"\r");
-                            pty.submit_write_paced_with_output_boundary(bytes, inject_rate)
+                        let write = match body_write_plan(&resolved_cli, &injection) {
+                            BodyWritePlan::BracketedPasteThenEnter { body, enter } => pty
+                                .submit_write_paced_with_followup_and_output_boundary(
+                                    body,
+                                    inject_rate,
+                                    BRACKETED_PASTE_SUBMIT_DELAY,
+                                    enter,
+                                ),
+                            BodyWritePlan::PacedFollowup { body, enter } => pty
+                                .submit_write_paced_with_followup_and_output_boundary(
+                                    body,
+                                    inject_rate,
+                                    injection_submit_followup_delay(&resolved_cli)
+                                        .unwrap_or(BRACKETED_PASTE_SUBMIT_DELAY),
+                                    enter,
+                                ),
+                            BodyWritePlan::BodyWithEnter(bytes) => {
+                                pty.submit_write_paced_with_output_boundary(bytes, inject_rate)
+                            }
                         };
                         match write {
                             Ok((ack_rx, output_boundary)) => {
@@ -2626,6 +2666,52 @@ mod tests {
             injection_ack_outcome(InjectionStage::Finalize, false),
             InjectionAckOutcome::Requeue
         );
+    }
+
+    #[test]
+    fn opencode_body_is_bracketed_paste_then_real_enter() {
+        // The exact bytes written for OpenCode: the whole body wrapped in a
+        // bracketed paste, then a distinct Enter. The `@` token cannot open the
+        // completion popup because it arrives as pasted literal text.
+        let body = "GHSUB_EVENT_NONCE=abc @ghsub-final-5950f81c30-receiver3";
+        let plan = body_write_plan("opencode", body);
+        match plan {
+            BodyWritePlan::BracketedPasteThenEnter { body: bytes, enter } => {
+                let expected = format!("\x1b[200~{body}\x1b[201~").into_bytes();
+                assert_eq!(bytes, expected, "opencode body must be bracketed-pasted");
+                assert_eq!(enter, b"\r".to_vec(), "a real Enter must follow");
+            }
+            other => panic!("opencode must use bracketed paste, got {other:?}"),
+        }
+        // A wrapper/basename must still be scoped to OpenCode.
+        assert!(bracketed_paste_harness("/usr/local/bin/opencode"));
+        assert!(bracketed_paste_harness("company-opencode"));
+        assert!(!bracketed_paste_harness("claude"));
+        assert!(!bracketed_paste_harness("codex"));
+    }
+
+    #[test]
+    fn claude_and_codex_keep_the_paced_followup_enter() {
+        // Claude/Codex behavior is unchanged: raw body, then a delayed Enter.
+        for cli in ["claude", "codex", "company-claude"] {
+            match body_write_plan(cli, "hello @world") {
+                BodyWritePlan::PacedFollowup { body, enter } => {
+                    assert_eq!(body, b"hello @world");
+                    assert_eq!(enter, b"\r".to_vec());
+                }
+                other => panic!("{cli} must keep paced followup, got {other:?}"),
+            }
+        }
+    }
+
+    #[test]
+    fn generic_cli_keeps_the_single_body_plus_enter_write() {
+        match body_write_plan("gemini", "hello @world") {
+            BodyWritePlan::BodyWithEnter(bytes) => {
+                assert_eq!(bytes, b"hello @world\r".to_vec());
+            }
+            other => panic!("gemini must keep body+enter, got {other:?}"),
+        }
     }
 
     #[test]

@@ -58,6 +58,9 @@ pub(crate) const AUTO_SUGGESTION_BLOCK_TIMEOUT: Duration = Duration::from_secs(1
 const MCP_APPROVAL_TIMEOUT: Duration = Duration::from_secs(5);
 const GEMINI_ACTION_COOLDOWN: Duration = Duration::from_secs(2);
 const PASTE_INJECTION_SUBMIT_DELAY: Duration = Duration::from_millis(250);
+/// Distinct Enter delay after an OpenCode bracketed-paste body, so the paste
+/// boundary settles before the submit key is written.
+pub(crate) const BRACKETED_PASTE_SUBMIT_DELAY: Duration = Duration::from_millis(250);
 /// Pause between moving the trust-menu highlight and confirming it.
 const CLAUDE_TRUST_NAV_SETTLE: Duration = Duration::from_millis(150);
 /// Gap between successive trust-menu arrow keys, so a multi-row move repaints
@@ -88,6 +91,23 @@ fn paste_submit_harness(cli: &str) -> bool {
 
 pub(crate) fn injection_submit_followup_delay(cli: &str) -> Option<Duration> {
     paste_submit_harness(cli).then_some(PASTE_INJECTION_SUBMIT_DELAY)
+}
+
+/// OpenCode's TUI (OpenTUI) enables bracketed paste and treats a pasted block as
+/// literal input. Relay message bodies contain `@handle` mention tokens that
+/// otherwise open the file/agent completion popup mid-body, so a trailing Enter
+/// does not submit. Wrap the body in bracketed paste (`ESC[200~ … ESC[201~`) and
+/// follow it with a real Enter so the completion never intercepts submission.
+/// Scoped to OpenCode; Claude/Codex and every other harness are unchanged (a
+/// second ESC before the body cannot help: the popup is triggered by the `@`
+/// inside the body).
+pub(crate) fn bracketed_paste_harness(cli: &str) -> bool {
+    let basename = cli
+        .rsplit(['/', '\\'])
+        .next()
+        .filter(|part| !part.is_empty())
+        .unwrap_or(cli);
+    basename.to_ascii_lowercase().contains("opencode")
 }
 
 /// Warn (without retrying) when a one-shot auto-response keystroke can't be
