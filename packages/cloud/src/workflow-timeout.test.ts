@@ -278,7 +278,7 @@ describe('workflow launch timeout inference', () => {
     const source = `const wf = workflow('real');
       function run(${parameters}) { wf.timeout(600_000); }
       wf.timeout(900_000);`;
-    expect(() => inferWorkflowLaunchTimeoutMs(source, 'ts')).toThrow(/multiple distinct/);
+    expect(inferWorkflowLaunchTimeoutMs(source, 'ts')).toBeUndefined();
   });
 
   it('does not treat identifiers inside TypeScript parameter types as runtime shadows', () => {
@@ -289,7 +289,7 @@ describe('workflow launch timeout inference', () => {
       '}',
       'wf.timeout(900_000);',
     ].join('\n');
-    expect(() => inferWorkflowLaunchTimeoutMs(source, 'ts')).toThrow(/multiple distinct/);
+    expect(inferWorkflowLaunchTimeoutMs(source, 'ts')).toBeUndefined();
   });
 
   it('skips object types nested in typed function return annotations', () => {
@@ -437,7 +437,7 @@ describe('workflow launch timeout inference', () => {
       '  wf.timeout(600_000);',
       '}',
     ].join('\n');
-    expect(() => inferWorkflowLaunchTimeoutMs(source, 'ts')).toThrow(/multiple distinct/);
+    expect(inferWorkflowLaunchTimeoutMs(source, 'ts')).toBeUndefined();
   });
 
   it('hoists var builder bindings to the surrounding function scope', () => {
@@ -610,6 +610,54 @@ describe('workflow launch timeout inference', () => {
     expect(inferWorkflowLaunchTimeoutMs(source, 'ts')).toBeUndefined();
   });
 
+  it.each([
+    "wf = other()\nwf.timeout(600_000)\nwf = workflow('later')",
+    "wf = workflow('first')\nwf = other()\nwf.timeout(600_000)\nwf = workflow('later')",
+    "wf = workflow('first')\nwf.timeout(600_000)\nwf = other()",
+  ])('omits inference for mixed Python builder assignments: %s', (source) => {
+    expect(inferWorkflowLaunchTimeoutMs(source, 'py')).toBeUndefined();
+    expect(resolveWorkflowLaunchTimeoutMs(source, 'py', 900_000)).toBe(900_000);
+  });
+
+  it('does not let ambiguous Python assignments mask an unrelated proven workflow', () => {
+    const source = `workflow('real').timeout(900_000)
+wf = other()
+wf.timeout(600_000)
+wf = workflow('later')`;
+    expect(inferWorkflowLaunchTimeoutMs(source, 'py')).toBe(900_000);
+  });
+
+  it.each([
+    '[wf.timeout(600_000) for wf in unrelated]',
+    '(wf.timeout(600_000) for wf in unrelated)',
+    '{wf.timeout(600_000) for wf in unrelated}',
+    '{key: wf.timeout(600_000) for key, wf in unrelated}',
+    '[wf.timeout(600_000) async for wf in unrelated]',
+    '[wf.timeout(600_000) for group in groups for wf in group]',
+    '[invoke(wf.timeout(600_000)) for wf in unrelated]',
+    "[workflow('fake').timeout(600_000) for workflow in unrelated]",
+  ])('omits unproven Python comprehension timeout scopes: %s', (expression) => {
+    const source = `wf = workflow('real')\nvalues = ${expression}`;
+    expect(inferWorkflowLaunchTimeoutMs(source, 'py')).toBeUndefined();
+    expect(resolveWorkflowLaunchTimeoutMs(source, 'py', 900_000)).toBe(900_000);
+  });
+
+  it('retains proven Python timeouts outside timeout-free comprehensions and for loops', () => {
+    const source = `wf = workflow('real')
+values = [item for item in items]
+for item in values:
+  wf.timeout(900_000)
+label = 'for wf in workflow.timeout(600_000)'`;
+    expect(inferWorkflowLaunchTimeoutMs(source, 'py')).toBe(900_000);
+  });
+
+  it('omits distinct Python literals while preserving explicit override validation', () => {
+    const source = "workflow('a').timeout(600_000)\nworkflow('b').timeout(900_000)";
+    expect(inferWorkflowLaunchTimeoutMs(source, 'py')).toBeUndefined();
+    expect(resolveWorkflowLaunchTimeoutMs(source, 'py', 900_000)).toBe(900_000);
+    expect(() => resolveWorkflowLaunchTimeoutMs(source, 'py', 1)).toThrow(/must be at least/);
+  });
+
   it('keeps malformed Python timeout candidates linear in their whitespace suffixes', () => {
     const source = ('.timeout(' + '\t'.repeat(2_000)).repeat(2_000);
     const startedAt = performance.now();
@@ -665,9 +713,9 @@ def inline(workflow):${padding}workflow('fake').timeout(300_000)
     expect(large / small).toBeLessThan(8);
   }, 15_000);
 
-  it('requires an explicit override when distinct builder timeouts are present', () => {
+  it('omits optional inference when distinct builder timeouts are present', () => {
     const source = "workflow('a').timeout(600_000); workflow('b').timeout(900_000);";
-    expect(() => inferWorkflowLaunchTimeoutMs(source, 'ts')).toThrow(/multiple distinct/);
+    expect(inferWorkflowLaunchTimeoutMs(source, 'ts')).toBeUndefined();
     expect(resolveWorkflowLaunchTimeoutMs(source, 'ts', 1_200_000)).toBe(1_200_000);
   });
 

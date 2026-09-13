@@ -748,6 +748,47 @@ function pythonDelimiterDepth(source: string): Uint32Array {
   return depths;
 }
 
+function hasPythonComprehensionTimeout(masked: MaskedWorkflowSource): boolean {
+  const { source, nextNonWhitespace } = masked;
+  if (!/\bfor\b/.test(source)) return false;
+  const containers: Array<{ comprehension: boolean; timeout: boolean }> = [];
+  for (let cursor = 0; cursor < source.length; cursor += 1) {
+    const character = source[cursor];
+    if (character === '(' || character === '[' || character === '{') {
+      containers.push({ comprehension: false, timeout: false });
+      continue;
+    }
+    if (character === ')' || character === ']' || character === '}') {
+      const container = containers.pop();
+      if (container?.comprehension && container.timeout) return true;
+      if (container?.timeout && containers.length > 0) containers[containers.length - 1].timeout = true;
+      continue;
+    }
+    const container = containers[containers.length - 1];
+    if (container === undefined) continue;
+    if (
+      source.startsWith('for', cursor) &&
+      !isIdentifierPart(source[cursor - 1]) &&
+      !isIdentifierPart(source[cursor + 3])
+    ) {
+      container.comprehension = true;
+    }
+    if (
+      source.startsWith('.timeout', cursor) &&
+      source[nextNonWhitespace[cursor + '.timeout'.length]] === '('
+    ) {
+      container.timeout = true;
+    }
+  }
+  // An unfinished comprehension is no stronger evidence than a complete one.
+  let nestedTimeout = false;
+  for (let index = containers.length - 1; index >= 0; index -= 1) {
+    nestedTimeout ||= containers[index].timeout;
+    if (containers[index].comprehension && nestedTimeout) return true;
+  }
+  return false;
+}
+
 function resolveExpressionScopeEnds(
   source: string,
   scopes: ExpressionScope[],
@@ -1276,6 +1317,10 @@ export function inferWorkflowLaunchTimeoutMs(
 
   const masked = maskNonCode(workflow, fileType);
   const source = masked.source;
+  // Comprehension targets have an expression-local scope, including before
+  // their `for` clause. Until those bindings can be proven, optional inference
+  // must not borrow an enclosing workflow builder for their timeout calls.
+  if (fileType === 'py' && hasPythonComprehensionTimeout(masked)) return undefined;
   const { functionScopes, functionBindings, varScopes } = collectFunctionScopes(masked, fileType);
   const bindings = new Map<number, Map<string, WorkflowBinding>>();
   const declarationPattern =
@@ -1307,7 +1352,11 @@ export function inferWorkflowLaunchTimeoutMs(
       bindings.set(bindingScope, scopeBindings);
     }
     const builder = workflowInitializerAt(source, declaration.index + declaration[0].length, fileType);
-    scopeBindings.set(declarationName, { builder });
+    const previousBinding = scopeBindings.get(declarationName);
+    // A file-wide binding map cannot order reassigned Python values at every
+    // call site. Mixed assignments therefore never prove a builder, even if
+    // the final assignment happens to construct one.
+    scopeBindings.set(declarationName, { builder: builder && previousBinding?.builder !== false });
   }
 
   for (const [scopeId, names] of functionBindings) {
@@ -1364,11 +1413,9 @@ export function inferWorkflowLaunchTimeoutMs(
   // an explicit launchTimeoutMs override when they know the runtime value.
   if (hasUnresolvedBuilderTimeout) return undefined;
   if (values.size === 0) return undefined;
-  if (values.size > 1) {
-    throw new Error(
-      'Workflow declares multiple distinct literal .timeout() values; pass launchTimeoutMs explicitly'
-    );
-  }
+  // Inference is optional metadata. Ambiguity must preserve legacy submission
+  // behavior; only an explicit override is subject to strict validation.
+  if (values.size > 1) return undefined;
   const inferred = values.values().next().value;
   return inferred === undefined ? undefined : Math.max(DEFAULT_WORKFLOW_LAUNCH_TIMEOUT_MS, inferred);
 }

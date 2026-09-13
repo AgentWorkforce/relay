@@ -141,6 +141,18 @@ describe('relayflow version request contract', () => {
     expect(bodies).toEqual([JSON.stringify({ workflow, fileType: 'ts' })]);
   });
 
+  it.each(['ts', 'py'] as const)(
+    'submits ambiguous %s script budgets without optional metadata',
+    async (fileType) => {
+      const bodies = captureRunBodies();
+      const workflow = "workflow('one').timeout(600_000)\nworkflow('two').timeout(900_000)";
+
+      await runWorkflow(workflow, { fileType, syncCode: false });
+
+      expect(bodies).toEqual([JSON.stringify({ workflow, fileType })]);
+    }
+  );
+
   it('uses the explicit launch timeout when script configuration is dynamic', async () => {
     const bodies = captureRunBodies();
     const workflow = "const result = await workflow('proof').timeout(timeoutMs).run();";
@@ -919,8 +931,10 @@ describe('workflow schedules', () => {
     expect(scheduleBodyBytes[0]).not.toContain('relayflowVersion');
   });
 
-  it('preserves the omitted schedule request when a literal script timeout exceeds the metadata limit', async () => {
-    const workflow = "const result = await workflow('verify').timeout(3_600_000).run();";
+  it.each([
+    "const result = await workflow('verify').timeout(3_600_000).run();",
+    "workflow('one').timeout(600_000); workflow('two').timeout(900_000);",
+  ])('preserves omitted schedule metadata for unresolvable literals: %s', async (workflow) => {
     const workflowPath = path.join(tmpRoot, 'workflow.ts');
     await writeFile(workflowPath, workflow);
     const scheduleBodyBytes: string[] = [];
