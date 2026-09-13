@@ -173,7 +173,9 @@ describe('fleet command support', () => {
         createWorkspace: vi.fn() as never,
         log: vi.fn() as never,
         error: vi.fn(),
-        exit: vi.fn() as never,
+        exit: vi.fn((code) => {
+          throw new Error(`CLI exit ${code}`);
+        }) as never,
       },
       log: () => undefined,
       warn: () => undefined,
@@ -1187,6 +1189,74 @@ describe('fleet command support', () => {
     expect(spawnInput.task).toContain(revision);
     expect(spawnInput.task).toContain('/workspace/github/repos/AgentWorkforce/cloud/.relayfile/clone.json');
     expect(spawnInput.task).not.toContain('/local/cloud');
+  });
+
+  it('rejects an explicit workspace mismatch before live repository materialization', async () => {
+    const revision = '0123456789abcdef0123456789abcdef01234567';
+    const materializeCloudRelayfileRepository = vi.fn();
+    const ensureCloudFleetSandbox = vi.fn();
+    const program = new Command();
+    program.exitOverride();
+    registerFleetCommands(program, {
+      resolveSandboxRepository: vi.fn(() => ({
+        repository: 'AgentWorkforce/cloud',
+        repositoryName: 'cloud',
+        revision,
+        projectRoot: '/local/cloud',
+        repositoryRelativeCwd: '',
+        workerCwd: '/srv/agent-workforce/cloud',
+      })),
+      materializeCloudRelayfileRepository,
+      ensureCloudFleetSandbox,
+      sdk: {
+        createAgentRelay: vi.fn() as never,
+        createWorkspaceRelay: vi.fn() as never,
+        createWorkspace: vi.fn() as never,
+        log: vi.fn(),
+        error: vi.fn((message) => {
+          throw new Error(String(message));
+        }),
+        exit: vi.fn((code) => {
+          throw new Error(`CLI exit ${code}`);
+        }) as never,
+      },
+      resolveWorkspaceSelection: () => ({
+        key: 'rk_live_test',
+        source: 'project',
+        origin: '/local/cloud/.agentworkforce/relay/workspace-key.json',
+        workspaceId: 'rw_captured',
+      }),
+      persistWorkspaceRelaycastTarget: vi.fn(() => true),
+      deleteCloudFleetSandbox: vi.fn(async () => undefined),
+      createFleetWorkspaceClient: vi.fn() as never,
+      log: () => undefined,
+      warn: () => undefined,
+      error: () => undefined,
+    });
+
+    await expect(
+      program.parseAsync(
+        [
+          'fleet',
+          'spawn',
+          'codex',
+          '--sandbox',
+          '--sandbox-provider',
+          'agent37',
+          '--workspace-id',
+          'rw_explicit',
+          '--name',
+          'cloud-live',
+          '--task',
+          'Inspect this repository',
+          '--workspace-key',
+          'rk_live_test',
+        ],
+        { from: 'user' }
+      )
+    ).rejects.toThrow('--workspace-id does not match the captured workspace identity');
+    expect(materializeCloudRelayfileRepository).not.toHaveBeenCalled();
+    expect(ensureCloudFleetSandbox).not.toHaveBeenCalled();
   });
 
   it('--checkout infers the Git root and forwards only the public revision attestation', async () => {

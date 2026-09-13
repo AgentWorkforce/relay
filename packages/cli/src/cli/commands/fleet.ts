@@ -528,6 +528,13 @@ export function registerFleetCommands(
               : 'The current Relay workspace did not report an ID for Cloud provisioning.'
           );
         }
+        if (
+          explicitWorkspaceId !== undefined &&
+          workspaceSelection?.workspaceId !== undefined &&
+          explicitWorkspaceId !== workspaceSelection.workspaceId.trim()
+        ) {
+          throw new Error('--workspace-id does not match the captured workspace identity.');
+        }
         if (!checkoutRepository && mountSandboxRelayfile && sandboxRepository) {
           liveRepository = await deps.materializeCloudRelayfileRepository({
             workspaceId: relayWorkspaceId,
@@ -557,13 +564,6 @@ export function registerFleetCommands(
           sandboxProvider === undefined || sandboxProvider === 'agent37'
             ? 'long-running-agent'
             : 'standard-long-running-agent';
-        if (
-          explicitWorkspaceId !== undefined &&
-          workspaceSelection?.workspaceId !== undefined &&
-          explicitWorkspaceId !== workspaceSelection.workspaceId.trim()
-        ) {
-          throw new Error('--workspace-id does not match the captured workspace identity.');
-        }
         try {
           sandbox = await deps.ensureCloudFleetSandbox({
             workspaceId: relayWorkspaceId,

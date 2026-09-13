@@ -27,6 +27,7 @@ const DEFAULT_ENSURE_TIMEOUT_MS = 480_000;
 const DEFAULT_DELETE_TIMEOUT_MS = 30_000;
 const DEFAULT_RELAYFILE_REPOSITORY_MATERIALIZE_TIMEOUT_MS = 20 * 60_000;
 const DEFAULT_RELAYFILE_REPOSITORY_POLL_INTERVAL_MS = 2_000;
+const MAX_TIMER_MS = 2_147_483_647;
 
 export type CloudFleetSandboxRequestOptions = {
   apiUrl?: string;
@@ -327,12 +328,22 @@ function assertProviderRelaycastTarget(
 }
 
 function boundedSignal(options: CloudFleetSandboxRequestOptions, defaultTimeoutMs: number): AbortSignal {
-  const timeoutMs = options.timeoutMs ?? defaultTimeoutMs;
-  if (!Number.isFinite(timeoutMs) || timeoutMs <= 0) {
-    throw new Error('Cloud fleet sandbox request timeout must be a positive number of milliseconds.');
-  }
+  const timeoutMs = normalizeTimerMs(
+    options.timeoutMs ?? defaultTimeoutMs,
+    false,
+    'Cloud fleet request timeout'
+  );
   const timeoutSignal = AbortSignal.timeout(timeoutMs);
   return options.signal ? AbortSignal.any([options.signal, timeoutSignal]) : timeoutSignal;
+}
+
+function normalizeTimerMs(value: number, allowZero: boolean, label: string): number {
+  if (!Number.isSafeInteger(value) || value < 0 || (!allowZero && value === 0) || value > MAX_TIMER_MS) {
+    throw new Error(
+      `${label} must be an integer between ${allowZero ? 0 : 1} and ${MAX_TIMER_MS} milliseconds.`
+    );
+  }
+  return value;
 }
 
 async function readJson(response: Response): Promise<unknown> {
@@ -761,12 +772,11 @@ export async function materializeCloudRelayfileRepository(
   if (!REPOSITORY_REVISION_PATTERN.test(revision)) {
     throw new Error('Cloud Relayfile repository revision must be exactly 40 hexadecimal characters.');
   }
-  const pollIntervalMs = options.pollIntervalMs ?? DEFAULT_RELAYFILE_REPOSITORY_POLL_INTERVAL_MS;
-  if (!Number.isFinite(pollIntervalMs) || pollIntervalMs < 0) {
-    throw new Error(
-      'Cloud Relayfile repository poll interval must be a non-negative number of milliseconds.'
-    );
-  }
+  const pollIntervalMs = normalizeTimerMs(
+    options.pollIntervalMs ?? DEFAULT_RELAYFILE_REPOSITORY_POLL_INTERVAL_MS,
+    true,
+    'Cloud Relayfile repository poll interval'
+  );
 
   const session = await ensureCloudSession({
     apiUrl: options.apiUrl || defaultApiUrl(),
@@ -852,6 +862,7 @@ export async function materializeCloudRelayfileRepository(
         filesWritten < 0 ||
         !isObject(materialization) ||
         readString(materialization, 'mode') !== 'relayfile_export' ||
+        readNumber(materialization, 'filesExpected') !== filesWritten ||
         readString(materialization, 'headSha')?.toLowerCase() !== revision ||
         readString(materialization, 'contentRoot') !== expectedPaths.contentRoot ||
         readString(materialization, 'sentinelPath') !== expectedPaths.sentinelPath

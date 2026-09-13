@@ -211,6 +211,44 @@ describe('Cloud fleet sandbox client', () => {
     ).rejects.toThrow(/did not prove a live Relayfile working tree/);
   });
 
+  it('rejects a clone whose materialization file count disagrees with the job', async () => {
+    const revision = '0123456789abcdef0123456789abcdef01234567';
+    mocks.authorizedApiFetch
+      .mockResolvedValueOnce({ response: Response.json({ cloudWorkspaceId: CLOUD_WORKSPACE_ID }), auth })
+      .mockResolvedValueOnce({
+        response: Response.json({ ok: true, jobId: 'clone-job-count', status: 'queued' }, { status: 202 }),
+        auth,
+      })
+      .mockResolvedValueOnce({
+        response: Response.json({
+          ok: true,
+          job: {
+            owner: 'AgentWorkforce',
+            repo: 'cloud',
+            ref: revision,
+            status: 'completed',
+            headSha: revision,
+            filesWritten: 4,
+            materialization: {
+              mode: 'relayfile_export',
+              headSha: revision,
+              filesExpected: 3,
+              contentRoot: '/github/repos/AgentWorkforce/cloud/contents',
+              sentinelPath: '/github/repos/AgentWorkforce/cloud/.relayfile/clone.json',
+            },
+          },
+        }),
+        auth,
+      });
+
+    await expect(
+      materializeCloudRelayfileRepository(
+        { workspaceId: 'rw_abc', repository: 'AgentWorkforce/cloud', revision },
+        { pollIntervalMs: 0 }
+      )
+    ).rejects.toThrow(/did not prove a live Relayfile working tree/);
+  });
+
   it('rejects a provisioned response with an untrusted server-owned Relaycast route', async () => {
     mocks.authorizedApiFetch
       .mockResolvedValueOnce({
@@ -1826,6 +1864,25 @@ describe('Cloud fleet sandbox client', () => {
     expect(signals).toHaveLength(2);
     expect(signals[0]).not.toBe(signals[1]);
     expect(signals[1]?.aborted).toBe(false);
+  });
+
+  it.each([
+    ['fractional poll interval', { pollIntervalMs: 0.5 }],
+    ['infinite poll interval', { pollIntervalMs: Number.POSITIVE_INFINITY }],
+    ['fractional request timeout', { timeoutMs: 0.5 }],
+    ['oversized request timeout', { timeoutMs: 2_147_483_648 }],
+  ])('rejects invalid timer values before making a request (%s)', async (_label, options) => {
+    await expect(
+      materializeCloudRelayfileRepository(
+        {
+          workspaceId: 'rw_abc',
+          repository: 'AgentWorkforce/cloud',
+          revision: '0123456789abcdef0123456789abcdef01234567',
+        },
+        options
+      )
+    ).rejects.toThrow(/milliseconds/);
+    expect(mocks.authorizedApiFetch).not.toHaveBeenCalled();
   });
 
   it('keeps the default provisioning budget beyond the mounted server deadline', async () => {
