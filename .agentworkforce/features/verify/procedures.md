@@ -329,18 +329,20 @@ The CLI persists the daemon PID and log path in its isolated local worker state,
 
 ## fleet-management
 
-**Features:** `fleet-nodes`, `fleet-config`, `fleet-enable`, `fleet-disable`, `fleet-inherit`, `fleet-status`.
+**Features:** `fleet-nodes`, `fleet-status`.
 
 **Prerequisites:** disposable workspace; `fleet-status` additionally benefits from a local broker.
 
 ```bash
 relay fleet nodes | jq -e '.nodes'
-BEFORE="$(relay fleet config)"
-relay fleet enable; relay fleet config | jq -e 'type == "object"'
-relay fleet disable; relay fleet inherit; relay fleet status | jq -e '.broker'
+relay fleet status | jq -e '.broker'
 ```
 
-Snapshot and restore configuration or discard the workspace. For full two-node dispatch/enrollment coverage, run `npm run test:e2e` with `tests/e2e/fleet/README.md` prerequisites.
+Fleet node delivery is always on. The retired `fleet config`, `fleet enable`,
+`fleet disable`, and `fleet inherit` invocations remain hidden migration shims
+that fail locally with guidance; they do not call a workspace rollout API.
+
+For full two-node dispatch/enrollment coverage, run `npm run test:e2e` with `tests/e2e/fleet/README.md` prerequisites.
 
 ## workspace-management
 

@@ -22,7 +22,6 @@ import type {
   RelayTrigger,
   RelayTriggerInput,
   RelayWebhookSubscription,
-  RelayWorkspaceFleetNodesConfig,
 } from './types.js';
 
 // --- primitive record readers -------------------------------------------------
@@ -192,15 +191,6 @@ export function toRelayTrigger(raw: unknown): RelayTrigger {
     mention: readMention(trigger.mention),
     actionName: readStr(trigger, 'actionName', 'action_name') ?? '',
     enabled: readBoolean(trigger, 'enabled') ?? true,
-  };
-}
-
-export function toRelayWorkspaceFleetNodesConfig(raw: unknown): RelayWorkspaceFleetNodesConfig {
-  const record = asRecord(raw);
-  return {
-    enabled: readBoolean(record, 'enabled') ?? false,
-    defaultEnabled: readBoolean(record, 'defaultEnabled', 'default_enabled') ?? false,
-    override: readBoolean(record, 'override') ?? null,
   };
 }
 

@@ -40,12 +40,8 @@ const expectedLeafCommands = [
   'reflex off',
   'reflex status',
   'session replay',
-  // fleet (serve is a hidden error stub, filtered out below)
+  // fleet (deprecated/removed controls are hidden error stubs, filtered out below)
   'fleet agent list',
-  'fleet config',
-  'fleet disable',
-  'fleet enable',
-  'fleet inherit',
   'fleet nodes',
   'fleet release',
   'fleet spawn',
@@ -300,6 +296,17 @@ describe('bootstrap CLI', () => {
 
     expect(serve).toBeDefined();
     expect(isHidden(serve as Command)).toBe(true);
+  });
+
+  it('keeps removed Fleet rollout commands as hidden migration stubs', () => {
+    const program = createProgram();
+    const fleet = program.commands.find((command) => command.name() === 'fleet');
+    for (const name of ['config', 'enable', 'disable', 'inherit']) {
+      const command = fleet?.commands.find((candidate) => candidate.name() === name);
+      expect(command, `missing legacy Fleet command stub: ${name}`).toBeDefined();
+      expect(isHidden(command as Command)).toBe(true);
+    }
+    expect(program.helpInformation()).not.toMatch(/fleet (config|enable|disable|inherit)/);
   });
 
   it("warns once when the deprecated 'local' alias is used", () => {

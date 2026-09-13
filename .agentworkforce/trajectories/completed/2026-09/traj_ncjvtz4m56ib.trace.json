@@ -1,0 +1,423 @@
+{
+  "version": "1.0.0",
+  "id": "70415843-f672-4bc9-a300-957609c99b7f",
+  "timestamp": "2026-09-09T03:54:49.958Z",
+  "trajectory": "traj_ncjvtz4m56ib",
+  "files": [
+    {
+      "path": ".agentworkforce/agents/relay-feature-guardian/manifest-contract.test.ts",
+      "conversations": [
+        {
+          "contributor": {
+            "type": "ai"
+          },
+          "ranges": [
+            {
+              "start_line": 139,
+              "end_line": 144,
+              "revision": "1957505b0fd2a4f666b99e25b14357b80df9644e"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "path": ".agentworkforce/features/manifest.yaml",
+      "conversations": [
+        {
+          "contributor": {
+            "type": "ai"
+          },
+          "ranges": [
+            {
+              "start_line": 700,
+              "end_line": 706,
+              "revision": "1957505b0fd2a4f666b99e25b14357b80df9644e"
+            },
+            {
+              "start_line": 724,
+              "end_line": 729,
+              "revision": "1957505b0fd2a4f666b99e25b14357b80df9644e"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "path": ".agentworkforce/features/verify/procedures.md",
+      "conversations": [
+        {
+          "contributor": {
+            "type": "ai"
+          },
+          "ranges": [
+            {
+              "start_line": 329,
+              "end_line": 348,
+              "revision": "1957505b0fd2a4f666b99e25b14357b80df9644e"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "path": ".agentworkforce/trajectories/active/traj_ncjvtz4m56ib/trajectory.json",
+      "conversations": [
+        {
+          "contributor": {
+            "type": "ai"
+          },
+          "ranges": [
+            {
+              "start_line": 1,
+              "end_line": 58,
+              "revision": "1957505b0fd2a4f666b99e25b14357b80df9644e"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "path": "CHANGELOG.md",
+      "conversations": [
+        {
+          "contributor": {
+            "type": "ai"
+          },
+          "ranges": [
+            {
+              "start_line": 5,
+              "end_line": 15,
+              "revision": "1957505b0fd2a4f666b99e25b14357b80df9644e"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "path": "packages/cli/src/cli/bootstrap.test.ts",
+      "conversations": [
+        {
+          "contributor": {
+            "type": "ai"
+          },
+          "ranges": [
+            {
+              "start_line": 40,
+              "end_line": 47,
+              "revision": "1957505b0fd2a4f666b99e25b14357b80df9644e"
+            },
+            {
+              "start_line": 298,
+              "end_line": 314,
+              "revision": "1957505b0fd2a4f666b99e25b14357b80df9644e"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "path": "packages/cli/src/cli/commands/fleet.test.ts",
+      "conversations": [
+        {
+          "contributor": {
+            "type": "ai"
+          },
+          "ranges": [
+            {
+              "start_line": 56,
+              "end_line": 110,
+              "revision": "1957505b0fd2a4f666b99e25b14357b80df9644e"
+            },
+            {
+              "start_line": 117,
+              "end_line": 124,
+              "revision": "1957505b0fd2a4f666b99e25b14357b80df9644e"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "path": "packages/cli/src/cli/commands/fleet.ts",
+      "conversations": [
+        {
+          "contributor": {
+            "type": "ai"
+          },
+          "ranges": [
+            {
+              "start_line": 46,
+              "end_line": 56,
+              "revision": "1957505b0fd2a4f666b99e25b14357b80df9644e"
+            },
+            {
+              "start_line": 106,
+              "end_line": 127,
+              "revision": "1957505b0fd2a4f666b99e25b14357b80df9644e"
+            },
+            {
+              "start_line": 500,
+              "end_line": 505,
+              "revision": "1957505b0fd2a4f666b99e25b14357b80df9644e"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "path": "packages/sdk/src/__tests__/facade.test.ts",
+      "conversations": [
+        {
+          "contributor": {
+            "type": "ai"
+          },
+          "ranges": [
+            {
+              "start_line": 34,
+              "end_line": 39,
+              "revision": "1957505b0fd2a4f666b99e25b14357b80df9644e"
+            },
+            {
+              "start_line": 75,
+              "end_line": 80,
+              "revision": "1957505b0fd2a4f666b99e25b14357b80df9644e"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "path": "packages/sdk/src/__tests__/messaging.test.ts",
+      "conversations": [
+        {
+          "contributor": {
+            "type": "ai"
+          },
+          "ranges": [
+            {
+              "start_line": 158,
+              "end_line": 163,
+              "revision": "1957505b0fd2a4f666b99e25b14357b80df9644e"
+            },
+            {
+              "start_line": 457,
+              "end_line": 462,
+              "revision": "1957505b0fd2a4f666b99e25b14357b80df9644e"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "path": "packages/sdk/src/__tests__/observer-source.test.ts",
+      "conversations": [
+        {
+          "contributor": {
+            "type": "ai"
+          },
+          "ranges": [
+            {
+              "start_line": 490,
+              "end_line": 496,
+              "revision": "1957505b0fd2a4f666b99e25b14357b80df9644e"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "path": "packages/sdk/src/facade.ts",
+      "conversations": [
+        {
+          "contributor": {
+            "type": "ai"
+          },
+          "ranges": [
+            {
+              "start_line": 13,
+              "end_line": 18,
+              "revision": "1957505b0fd2a4f666b99e25b14357b80df9644e"
+            },
+            {
+              "start_line": 203,
+              "end_line": 208,
+              "revision": "1957505b0fd2a4f666b99e25b14357b80df9644e"
+            },
+            {
+              "start_line": 365,
+              "end_line": 370,
+              "revision": "1957505b0fd2a4f666b99e25b14357b80df9644e"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "path": "packages/sdk/src/messaging/relaycast-client.ts",
+      "conversations": [
+        {
+          "contributor": {
+            "type": "ai"
+          },
+          "ranges": [
+            {
+              "start_line": 84,
+              "end_line": 89,
+              "revision": "1957505b0fd2a4f666b99e25b14357b80df9644e"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "path": "packages/sdk/src/messaging/relaycast-translate.ts",
+      "conversations": [
+        {
+          "contributor": {
+            "type": "ai"
+          },
+          "ranges": [
+            {
+              "start_line": 22,
+              "end_line": 27,
+              "revision": "1957505b0fd2a4f666b99e25b14357b80df9644e"
+            },
+            {
+              "start_line": 194,
+              "end_line": 199,
+              "revision": "1957505b0fd2a4f666b99e25b14357b80df9644e"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "path": "packages/sdk/src/messaging/relaycast.ts",
+      "conversations": [
+        {
+          "contributor": {
+            "type": "ai"
+          },
+          "ranges": [
+            {
+              "start_line": 28,
+              "end_line": 33,
+              "revision": "1957505b0fd2a4f666b99e25b14357b80df9644e"
+            },
+            {
+              "start_line": 77,
+              "end_line": 82,
+              "revision": "1957505b0fd2a4f666b99e25b14357b80df9644e"
+            },
+            {
+              "start_line": 971,
+              "end_line": 976,
+              "revision": "1957505b0fd2a4f666b99e25b14357b80df9644e"
+            },
+            {
+              "start_line": 1184,
+              "end_line": 1189,
+              "revision": "1957505b0fd2a4f666b99e25b14357b80df9644e"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "path": "packages/sdk/src/messaging/types.ts",
+      "conversations": [
+        {
+          "contributor": {
+            "type": "ai"
+          },
+          "ranges": [
+            {
+              "start_line": 691,
+              "end_line": 696,
+              "revision": "1957505b0fd2a4f666b99e25b14357b80df9644e"
+            },
+            {
+              "start_line": 1043,
+              "end_line": 1048,
+              "revision": "1957505b0fd2a4f666b99e25b14357b80df9644e"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "path": "tests/e2e/fleet/harness.ts",
+      "conversations": [
+        {
+          "contributor": {
+            "type": "ai"
+          },
+          "ranges": [
+            {
+              "start_line": 32,
+              "end_line": 40,
+              "revision": "1957505b0fd2a4f666b99e25b14357b80df9644e"
+            },
+            {
+              "start_line": 43,
+              "end_line": 49,
+              "revision": "1957505b0fd2a4f666b99e25b14357b80df9644e"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "path": "tests/relayflows/cases/1400-fleet-rollout-contract/case.json",
+      "conversations": [
+        {
+          "contributor": {
+            "type": "ai"
+          },
+          "ranges": [
+            {
+              "start_line": 1,
+              "end_line": 21,
+              "revision": "1957505b0fd2a4f666b99e25b14357b80df9644e"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "path": "tests/relayflows/cases/1400-fleet-rollout-contract/run.mjs",
+      "conversations": [
+        {
+          "contributor": {
+            "type": "ai"
+          },
+          "ranges": [
+            {
+              "start_line": 1,
+              "end_line": 71,
+              "revision": "1957505b0fd2a4f666b99e25b14357b80df9644e"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "path": "workflows/verify-features.ts",
+      "conversations": [
+        {
+          "contributor": {
+            "type": "ai"
+          },
+          "ranges": [
+            {
+              "start_line": 975,
+              "end_line": 984,
+              "revision": "1957505b0fd2a4f666b99e25b14357b80df9644e"
+            }
+          ]
+        }
+      ]
+    }
+  ]
+}

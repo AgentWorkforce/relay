@@ -700,7 +700,7 @@ categories:
 
   fleet:
     name: Fleet Management
-    description: Distributed fleet node configuration for the workspace
+    description: Distributed fleet node inspection and agent placement
     criticality: standard
     features:
       - id: fleet-nodes
@@ -721,34 +721,6 @@ categories:
         name: Release Fleet Agent
         cli: relay fleet release <name> [--reason <reason>] [--delete-agent]
         description: Release a spawned fleet agent, optionally deleting the agent identity
-        location: packages/cli/src/cli/commands/fleet.ts
-        verify_tier: 5
-
-      - id: fleet-config
-        name: Fleet Config
-        cli: relay fleet config
-        description: Show the workspace fleet-node configuration
-        location: packages/cli/src/cli/commands/fleet.ts
-        verify_tier: 5
-
-      - id: fleet-enable
-        name: Enable Fleet
-        cli: relay fleet enable
-        description: Enable fleet nodes for the workspace (modifies cloud state)
-        location: packages/cli/src/cli/commands/fleet.ts
-        verify_tier: 5
-
-      - id: fleet-disable
-        name: Disable Fleet
-        cli: relay fleet disable
-        description: Disable fleet nodes for the workspace (modifies cloud state)
-        location: packages/cli/src/cli/commands/fleet.ts
-        verify_tier: 5
-
-      - id: fleet-inherit
-        name: Inherit Fleet Config
-        cli: relay fleet inherit
-        description: Use deployment defaults for fleet node configuration (modifies cloud state)
         location: packages/cli/src/cli/commands/fleet.ts
         verify_tier: 5
 

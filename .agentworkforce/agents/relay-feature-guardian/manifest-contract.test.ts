@@ -139,10 +139,6 @@ describe('feature manifest contract', () => {
       'relay fleet nodes',
       'relay fleet spawn',
       'relay fleet release',
-      'relay fleet config',
-      'relay fleet enable',
-      'relay fleet disable',
-      'relay fleet inherit',
       'relay fleet status',
     ];
 

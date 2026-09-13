@@ -1,0 +1,21 @@
+{
+  "version": 1,
+  "id": "1400-fleet-rollout-contract",
+  "kind": "bugfix",
+  "title": "Retire the removed workspace Fleet rollout contract",
+  "runner": {
+    "command": ["node", "tests/relayflows/cases/1400-fleet-rollout-contract/run.mjs"]
+  },
+  "requirements": [],
+  "timeoutSeconds": 600,
+  "expected": {
+    "base": {
+      "outcome": "bug",
+      "signature": "obsolete_fleet_rollout_controls_advertised"
+    },
+    "head": {
+      "outcome": "fixed",
+      "signature": "fleet_rollout_contract_removed_with_migration_shims"
+    }
+  }
+}

@@ -204,6 +204,7 @@ export interface RelayWorkspace {
   release(input: RelayReleaseAgentInput): Promise<RelayAgentReleaseResult>;
   reconnect(input: { apiToken: string }): Promise<RelayAgentClient>;
   info(): Promise<RelayWorkspaceInfo>;
+  /** @deprecated Fleet node delivery is always on; these methods are read-only compatibility shims. */
   fleetNodes: {
     get(): Promise<RelayWorkspaceFleetNodesConfig>;
     set(enabled: boolean): Promise<RelayWorkspaceFleetNodesConfig>;

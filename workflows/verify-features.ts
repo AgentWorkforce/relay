@@ -975,10 +975,10 @@ skip_check "cloud connect" "requires interactive browser auth"
 skip_check "cloud enroll"  "requires interactive browser auth"
 
 gated_check cloud "fleet nodes"   "relay fleet nodes"   "."
-gated_check cloud "fleet config"  "relay fleet config"  "."
-gated_check cloud "fleet inherit" "relay fleet inherit --help" "Usage"
-skip_check "fleet enable"  "mutates workspace cloud state"
-skip_check "fleet disable" "mutates workspace cloud state"
+# Fleet rollout controls were removed when Relaycast made node delivery
+# unconditional. The hidden legacy shims are covered by the cleanroom CLI
+# tests; this scheduled workflow must not call the retired remote API.
+skip_check "fleet rollout controls" "removed; Fleet node delivery is always on"
 
 # fleet spawn/release were undocumented in the manifest until this change and
 # are still unverified: spawning burns provider credits on a remote node.
