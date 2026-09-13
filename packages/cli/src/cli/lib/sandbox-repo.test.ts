@@ -171,19 +171,16 @@ describe('resolveSandboxRepository', () => {
 
   it('permits generated Relay metadata for a nested project pin only', () => {
     const run = gitMock();
-    for (const file of [
-      'workspace-key.json',
-      'connection.json',
-      'runtime.json',
-      'broker-cloud.lock',
-    ]) {
+    for (const file of ['workspace-key.json', 'connection.json', 'runtime.json', 'broker-cloud.lock']) {
       run.mockImplementation((command: string, args: readonly string[]) => {
         if (args.includes('status')) return `?? packages/web/.agentworkforce/relay/${file}\0`;
         return gitMock()(command, args);
       });
       expect(
-        resolveSandboxRepository('/checkout', undefined, { cwd: () => '/checkout', execFileSync: run as never })
-          ?.revision
+        resolveSandboxRepository('/checkout', undefined, {
+          cwd: () => '/checkout',
+          execFileSync: run as never,
+        })?.revision
       ).toMatch(/^[a-f0-9]{40}$/);
     }
 
@@ -197,7 +194,10 @@ describe('resolveSandboxRepository', () => {
         return gitMock()(command, args);
       });
       expect(() =>
-        resolveSandboxRepository('/checkout', undefined, { cwd: () => '/checkout', execFileSync: run as never })
+        resolveSandboxRepository('/checkout', undefined, {
+          cwd: () => '/checkout',
+          execFileSync: run as never,
+        })
       ).toThrow(/clean checkout/);
     }
 
