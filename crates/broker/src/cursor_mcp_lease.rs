@@ -1111,6 +1111,31 @@ fn remove_cursor_dir(lock: &LeaseLock, cursor: &fs::File) -> io::Result<()> {
         Ok(())
     } else if error.kind() == io::ErrorKind::DirectoryNotEmpty {
         remove_cursor_temp_files(cursor)?;
+        let mut retry_entry_stat = std::mem::MaybeUninit::<libc::stat>::uninit();
+        let result = unsafe {
+            libc::fstatat(
+                lock.root_fd(),
+                name.as_ptr(),
+                retry_entry_stat.as_mut_ptr(),
+                libc::AT_SYMLINK_NOFOLLOW,
+            )
+        };
+        if result != 0 {
+            let error = io::Error::last_os_error();
+            if error.kind() != io::ErrorKind::NotFound {
+                return Err(error);
+            }
+            return Ok(());
+        }
+        let retry_entry_stat = unsafe { retry_entry_stat.assume_init() };
+        if cursor_stat.st_dev != retry_entry_stat.st_dev
+            || cursor_stat.st_ino != retry_entry_stat.st_ino
+        {
+            return Err(io::Error::new(
+                io::ErrorKind::WouldBlock,
+                "refusing to remove a replacement .cursor directory",
+            ));
+        }
         let result = unsafe { libc::unlinkat(lock.root_fd(), name.as_ptr(), libc::AT_REMOVEDIR) };
         if result == 0 {
             lock._file.sync_all()?;
