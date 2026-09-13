@@ -47,6 +47,7 @@ nix = { version = "0.30", features = ["signal", "process", "term", "fs"] }
 libc = "0.2"
 
 [dev-dependencies]
+tokio = { version = "1.44", features = ["test-util"] }
 httpmock = "0.7"
 tempfile = "3.19"
 tower = { version = "0.5", features = ["util"] }

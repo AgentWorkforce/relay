@@ -341,6 +341,7 @@ pub(crate) async fn run_init(cmd: InitCommand, telemetry: TelemetryClient) -> Re
         broker_version: broker_version.clone(),
         token_path: crate::node_control::default_node_token_path(&node_id),
     });
+    let fleet_responses = Arc::new(crate::fleet_responses::FleetResponses::default());
     let (fleet_control_tx, fleet_control_rx) = mpsc::channel::<FleetControlCommand>(256);
     let (fleet_event_tx, fleet_event_rx) = mpsc::channel::<FleetControlEvent>(256);
     // The terminal queue is deliberately bounded. A wedged remote attach must
@@ -357,6 +358,7 @@ pub(crate) async fn run_init(cmd: InitCommand, telemetry: TelemetryClient) -> Re
     if !local_only {
         tokio::spawn(crate::node_control::run_node_control_client(
             crate::node_control::FleetControlConfig {
+                responses: fleet_responses.clone(),
                 ws_url: fleet_ws_url,
                 node_token,
                 node_id,
@@ -758,6 +760,9 @@ pub(crate) async fn run_init(cmd: InitCommand, telemetry: TelemetryClient) -> Re
         pty_observability: HashMap::new(),
         api_rx,
         api_open: true,
+        pending_spawns: Default::default(),
+        fleet_responses: fleet_responses.clone(),
+        held_fleet_invoke: None,
         ws_inbound_rx,
         relaycast_open: true,
         fleet_control_tx,
@@ -777,7 +782,7 @@ pub(crate) async fn run_init(cmd: InitCommand, telemetry: TelemetryClient) -> Re
         // updates keep reporting it (they overwrite load.max_agents from this
         // field); 0 means unlimited, matching the register manifest.
         fleet_max_agents: node_max_agents().unwrap_or(0),
-        fleet_inventory: HashMap::new(),
+        fleet_inventory: super::fleet_inventory::FleetInventory::new(),
         fleet_inventory_reconcile_retry_after: HashMap::new(),
         sdk_out_tx,
         worker_event_rx,

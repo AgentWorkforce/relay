@@ -3,6 +3,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 type LoadOptions = {
   connectThrows?: boolean;
   forceEntrypoint?: boolean;
+  invocationPath?: string;
   persistedWorkspaceKey?: string;
   workspaceSpawnResult?: Record<string, unknown>;
 };
@@ -37,7 +38,7 @@ async function loadAgentRelayMcpModule(options: LoadOptions = {}) {
 
   const originalArgv = process.argv;
   if (options.forceEntrypoint) {
-    process.argv = ['node', '/entry'];
+    process.argv = ['node', options.invocationPath ?? '/entry'];
     const realpathSync = vi.fn(() => '/entry');
     vi.doMock('node:fs', () => ({
       default: { realpathSync },
@@ -1939,6 +1940,22 @@ describe('startAgentRelayMcpStdio', () => {
       })
     );
   });
+
+  it.each(['/$bunfs/root/index.js', 'C:/~BUN/root/index.js'])(
+    'leaves startup to the CLI for compiled entrypoint %s',
+    async (invocationPath) => {
+      const { mod, mocks } = await loadAgentRelayMcpModule({ forceEntrypoint: true, invocationPath });
+      expect(mocks.serverInstances).toHaveLength(0);
+      await mod.startAgentRelayMcpStdio({
+        workspaceKey: 'rk_live_workspace',
+        agentName: 'WorkerA',
+        agentToken: 'at_live_existing',
+        skipBootstrap: true,
+      });
+      expect(mocks.serverInstances).toHaveLength(1);
+      expect(mocks.serverInstances[0].connect).toHaveBeenCalledTimes(1);
+    }
+  );
 
   it('reports entrypoint startup failures to stderr and exits', async () => {
     const stderrWrite = vi.spyOn(process.stderr, 'write').mockImplementation(() => true);

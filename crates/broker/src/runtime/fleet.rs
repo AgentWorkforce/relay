@@ -6,7 +6,7 @@ use crate::{
         DeliveryMode, RelaycastToBroker, FLEET_WIRE_VERSION,
     },
     listen_api::{DeliveryRouteError, ListenApiRequest, SetInboundDeliveryModeOk},
-    node_control::{delivery_ack, handler_unavailable_result, DeliveryDecision, ReceiptAckability},
+    node_control::{handler_unavailable_result, DeliveryDecision, ReceiptAckability},
     terminal_control::{
         TerminalControlCommand, TerminalControlEvent, TerminalFromCloud, TerminalMode,
         TerminalToCloud, TERMINAL_CLOSE_RESERVE,
@@ -15,6 +15,7 @@ use crate::{
 };
 use base64::{engine::general_purpose::STANDARD as BASE64, Engine as _};
 
+#[cfg(test)]
 const FLEET_AGENT_REGISTER_TIMEOUT: Duration = Duration::from_secs(30);
 const VERIFIED_SPAWN_READY_TIMEOUT: Duration = Duration::from_secs(90);
 const TERMINAL_INPUT_MAX_BYTES: usize = 64 * 1024;
@@ -919,13 +920,8 @@ impl BrokerRuntime {
                 return;
             }
         };
-        let _ = self
-            .fleet_control_tx
-            .send(FleetControlCommand::Send(delivery_ack(
-                deliver.agent,
-                up_to_seq,
-            )))
-            .await;
+        self.fleet_delivery_book
+            .publish_ack(&self.fleet_control_tx, &deliver.agent, up_to_seq);
     }
 
     /// Surface a node `deliver` frame by branching on its payload `type`:
@@ -1234,7 +1230,26 @@ impl BrokerRuntime {
         }
     }
 
-    async fn handle_fleet_action_invoke(&mut self, invoke: ActionInvoke) {
+    pub(super) async fn handle_fleet_action_invoke(&mut self, invoke: ActionInvoke) {
+        use crate::fleet_responses::Admission;
+        match self.fleet_responses.reserve(&invoke.invocation_id) {
+            Admission::Accepted => {}
+            Admission::Rejected => {
+                self.reply_action_error(&invoke.invocation_id, "fleet_response_capacity_exhausted")
+                    .await;
+                return;
+            }
+            Admission::Full => {
+                assert!(self.held_fleet_invoke.is_none());
+                self.held_fleet_invoke = Some(invoke);
+                return;
+            }
+            Admission::Duplicate => return,
+            Admission::Invalid => {
+                tracing::error!("refused invalid fleet invocation ID before admission");
+                return;
+            }
+        }
         // The broker is the node's capacity executor. The engine only dispatches
         // the capacity it owns — `spawn:<harness>` and `release` — to this
         // connection; the broker runs them directly against its PTY runtime.
@@ -1268,6 +1283,17 @@ impl BrokerRuntime {
     /// to this node). Replies with `action.result { output }` on success or
     /// `{ error }` on failure.
     async fn handle_fleet_action_spawn(&mut self, invoke: ActionInvoke) {
+        self.dispatch_fleet_spawn(invoke).await;
+    }
+
+    pub(super) async fn finish_fleet_action_spawn(
+        &mut self,
+        invoke: ActionInvoke,
+        resumed: Option<Arc<crate::spawn_registration::SpawnRegistration>>,
+    ) {
+        let _admission_guard = resumed
+            .clone()
+            .map(crate::spawn_registration::AdmissionGuard);
         let Some(name) = action_invoke_agent_name(&invoke) else {
             self.reply_action_error(&invoke.invocation_id, "spawn_missing_agent_name")
                 .await;
@@ -1276,6 +1302,8 @@ impl BrokerRuntime {
         if self.workers.workers.contains_key(&name)
             || self.pending_verified_spawns.contains_key(&name)
             || self.workers.identity_cleanups.contains_key(&name)
+            || (self.workers.spawn_registrations.blocked(&name)
+                && !super::pending_spawn::owns_resume(&self.workers, &name, resumed.as_ref()))
         {
             self.reply_action_error(&invoke.invocation_id, "spawn_agent_name_in_use")
                 .await;
@@ -1368,6 +1396,7 @@ impl BrokerRuntime {
             session_ref,
             &self.hosted_agent_event_tx,
             &mut self.pty_observability,
+            resumed,
         )
         .await;
 
@@ -1474,6 +1503,50 @@ impl BrokerRuntime {
                 .await;
             return;
         };
+        if let Some(pending) = self.workers.identity_cleanups.get_mut(&name) {
+            // An explicit release may restart exhausted retained cleanup. Keep
+            // its captured identity and confirmed progress; incidental cleanup
+            // scheduling must never reset the automatic retry budget.
+            let same_registration = self
+                .workers
+                .spawn_registrations
+                .entries
+                .get(&name)
+                .is_some_and(|entry| !entry.retired() && entry.generation() == pending.generation);
+            let replacement = self
+                .workers
+                .workers
+                .get(&name)
+                .is_some_and(|worker| worker.generation != pending.generation)
+                || self
+                    .workers
+                    .owned_spawn_generations
+                    .get(&name)
+                    .is_some_and(|(generation, _)| *generation != pending.generation);
+            if pending.delete_identity || !same_registration || replacement {
+                self.reply_action_error(
+                    &invoke.invocation_id,
+                    "release_cleanup_generation_or_policy_conflict",
+                )
+                .await;
+                return;
+            }
+            pending
+                .completions
+                .push(super::identity_cleanup::CleanupCompletion::Fleet(
+                    ActionResult {
+                        v: FLEET_WIRE_VERSION,
+                        id: None,
+                        invocation_id: invoke.invocation_id.clone(),
+                        result: ActionResultPayload::Output(ActionResultOutput {
+                            output: json!({ "released": true, "name": name.as_str() }),
+                        }),
+                    },
+                ));
+            pending.attempts = 0;
+            pending.retry_at = Instant::now();
+            return;
+        }
         let workspace_id = self
             .default_workspace_id
             .clone()
@@ -1506,8 +1579,14 @@ impl BrokerRuntime {
 
         self.pty_observability.remove(&name);
 
+        let registered_release = self
+            .workers
+            .spawn_registrations
+            .entries
+            .get(&name)
+            .is_some_and(|entry| !entry.retired());
         let mut deregistration_failed = false;
-        if outcome == super::relaycast_events::ReleaseOutcome::Released {
+        if outcome == super::relaycast_events::ReleaseOutcome::Released && !registered_release {
             match deregister_fleet_agent(&self.fleet_control_tx, &self.fleet_delivery_book, &name)
                 .await
             {
@@ -1541,6 +1620,29 @@ impl BrokerRuntime {
         }
         self.publish_fleet_load(true).await;
         match outcome {
+            super::relaycast_events::ReleaseOutcome::Released if registered_release => {
+                // Keep the original identity, but do not acknowledge release or
+                // allow name reuse until this generation's binding is detached.
+                super::identity_cleanup::schedule_identity_cleanup(
+                    &mut self.workers,
+                    &self.fleet_control_tx,
+                    &self.fleet_delivery_book,
+                    &mut self.fleet_inventory,
+                    &workspace_state.http_client,
+                    &name,
+                    false,
+                    Some(super::identity_cleanup::CleanupCompletion::Fleet(
+                        ActionResult {
+                            v: FLEET_WIRE_VERSION,
+                            id: None,
+                            invocation_id: invoke.invocation_id.clone(),
+                            result: ActionResultPayload::Output(ActionResultOutput {
+                                output: json!({ "released": true, "name": name.as_str() }),
+                            }),
+                        },
+                    )),
+                );
+            }
             super::relaycast_events::ReleaseOutcome::Released if deregistration_failed => {
                 self.reply_action_error(&invoke.invocation_id, "release_deregistration_failed")
                     .await;
@@ -1569,7 +1671,7 @@ impl BrokerRuntime {
         .await;
     }
 
-    async fn reply_action_error(&self, invocation_id: &str, error: &str) {
+    pub(super) async fn reply_action_error(&self, invocation_id: &str, error: &str) {
         self.send_fleet_action_result(ActionResult {
             v: FLEET_WIRE_VERSION,
             id: None,
@@ -1582,12 +1684,7 @@ impl BrokerRuntime {
     }
 
     async fn send_fleet_action_result(&self, result: ActionResult) {
-        let _ = self
-            .fleet_control_tx
-            .send(FleetControlCommand::Send(BrokerToRelaycast::ActionResult(
-                result,
-            )))
-            .await;
+        self.fleet_responses.complete(result);
     }
 
     async fn publish_fleet_load(&self, heartbeat_now: bool) {
@@ -1900,21 +1997,7 @@ pub(super) async fn flush_pending_relay_messages(
                 ));
                 break;
             };
-            if let Err(error) = fleet_control_tx
-                .send(FleetControlCommand::Send(delivery_ack(
-                    receipt.agent.to_string(),
-                    up_to_seq,
-                )))
-                .await
-            {
-                tracing::warn!(
-                    target = "relay_broker::fleet",
-                    agent = %receipt.agent,
-                    up_to_seq,
-                    error = %error,
-                    "failed to enqueue delivery ACK after manual flush"
-                );
-            }
+            fleet_delivery_book.publish_ack(fleet_control_tx, receipt.agent.as_str(), up_to_seq);
         }
 
         let removed = delivery_states
@@ -1984,6 +2067,7 @@ pub(super) fn spawn_declared_metadata_publish(
 /// `via_node`-bound to the broker. The returned token is injected into the
 /// worker as `RELAY_AGENT_TOKEN` (which also sets `RELAY_SKIP_BOOTSTRAP`), so
 /// the worker MCP never re-registers over HTTP.
+#[cfg(test)]
 pub(super) async fn register_node_agent_token(
     fleet_control_tx: &mpsc::Sender<FleetControlCommand>,
     fleet_delivery_book: &mut FleetDeliveryBook,
@@ -2020,6 +2104,88 @@ pub(super) async fn register_node_agent_token(
         fleet_delivery_book.seed_cursor(token.name.clone(), token.agent_id.clone(), up_to_seq);
     }
     Ok(token)
+}
+
+/// Fresh registration shared by API, node action, and workspace-control spawn.
+/// Retain identity custody before a reply can wake a caller; no HTTP fallback.
+#[allow(clippy::too_many_arguments)]
+pub(super) async fn register_owned_node_agent_token(
+    workers: &mut WorkerRegistry,
+    http: &RelaycastHttpClient,
+    tx: &mpsc::Sender<FleetControlCommand>,
+    book: &mut FleetDeliveryBook,
+    name: &WorkerName,
+    channels: &[ChannelName],
+    invocation_id: Option<String>,
+    session_ref: Option<String>,
+    resumed: Option<Arc<crate::spawn_registration::SpawnRegistration>>,
+) -> Result<
+    (
+        crate::node_control::AgentRegistrationToken,
+        Arc<crate::spawn_registration::SpawnRegistration>,
+    ),
+    String,
+> {
+    let custody = if let Some(custody) = resumed {
+        if !super::pending_spawn::owns_resume(workers, name, Some(&custody)) {
+            return Err("invalid spawn continuation custody".into());
+        }
+        custody
+    } else {
+        begin_owned_node_registration(
+            workers,
+            http,
+            tx,
+            name,
+            channels,
+            invocation_id,
+            session_ref,
+            None,
+        )?
+    };
+    let token = custody.wait().await?;
+    book.bind_authoritative_identity(token.name.clone(), token.agent_id.clone());
+    if let Some(cursor) = token.delivery_ack_seq {
+        book.seed_cursor(token.name.clone(), token.agent_id.clone(), cursor);
+    }
+    Ok((token, custody))
+}
+
+#[allow(clippy::too_many_arguments)]
+pub(super) fn begin_owned_node_registration(
+    workers: &mut WorkerRegistry,
+    http: &RelaycastHttpClient,
+    tx: &mpsc::Sender<FleetControlCommand>,
+    name: &WorkerName,
+    channels: &[ChannelName],
+    invocation_id: Option<String>,
+    session_ref: Option<String>,
+    caller_eligible: Option<Arc<dyn Fn() -> bool + Send + Sync>>,
+) -> Result<Arc<crate::spawn_registration::SpawnRegistration>, String> {
+    let custody = workers
+        .spawn_registrations
+        .reserve(name.clone(), http.clone())?;
+    custody.set_caller_eligibility(caller_eligible);
+    let request = AgentRegister {
+        v: FLEET_WIRE_VERSION,
+        id: Some(custody.request_id()),
+        name: name.to_string(),
+        auto_join_general: (!channels.iter().any(|channel| channel.as_str() == "general"))
+            .then_some(false),
+        invocation_id,
+        session_ref: session_ref.clone(),
+        resumable: session_ref.as_ref().map(|_| true),
+    };
+    if tx
+        .try_send(FleetControlCommand::RegisterFreshAgent {
+            request,
+            custody: custody.clone(),
+        })
+        .is_err()
+    {
+        custody.reject_unsent("fleet_control_unavailable");
+    }
+    Ok(custody)
 }
 
 pub(super) async fn publish_fleet_load_snapshot(
@@ -2090,7 +2256,7 @@ pub(super) async fn deregister_fleet_agent(
 pub(super) async fn deregister_fleet_agent_confirmed(
     fleet_control_tx: &mpsc::Sender<FleetControlCommand>,
     fleet_delivery_book: &FleetDeliveryBook,
-    fleet_inventory: &mut HashMap<WorkerName, InventoryAgent>,
+    fleet_inventory: &mut super::fleet_inventory::FleetInventory,
     name: &WorkerName,
 ) -> Result<bool, String> {
     let Some(agent_id) = fleet_delivery_book.active_agent_id(name.as_str()) else {
@@ -2099,7 +2265,17 @@ pub(super) async fn deregister_fleet_agent_confirmed(
     // Remove the reconnect snapshot first, on the same FIFO control channel.
     // Otherwise a periodic inventory sync could rebind the identity between
     // the deregistration acknowledgement and the subsequent release request.
-    prune_fleet_inventory_entry(fleet_control_tx, fleet_inventory, name).await;
+    if fleet_inventory.contains_key(name) {
+        let snapshot = fleet_inventory
+            .iter()
+            .filter(|(candidate, _)| *candidate != name)
+            .map(|(_, agent)| agent.clone())
+            .collect();
+        fleet_inventory
+            .try_publish_snapshot(fleet_control_tx, snapshot)
+            .map_err(|_| "fleet inventory removal backpressure".to_string())?;
+        fleet_inventory.remove(name);
+    }
     let (reply, received) = tokio::sync::oneshot::channel();
     fleet_control_tx
         .try_send(FleetControlCommand::DeregisterAgent {
@@ -2120,15 +2296,10 @@ pub(super) async fn deregister_fleet_agent_confirmed(
 
 pub(super) async fn publish_fleet_inventory_snapshot(
     fleet_control_tx: &mpsc::Sender<FleetControlCommand>,
-    fleet_inventory: &HashMap<WorkerName, InventoryAgent>,
+    fleet_inventory: &super::fleet_inventory::FleetInventory,
 ) {
-    if let Err(error) = fleet_control_tx
-        .send(FleetControlCommand::UpdateInventory(
-            fleet_inventory.values().cloned().collect(),
-        ))
-        .await
-    {
-        tracing::warn!(error = %error, "fleet inventory channel closed; reconnect inventory update was not delivered");
+    if let Err(error) = fleet_inventory.try_publish(fleet_control_tx) {
+        tracing::warn!(error = %error, "fleet inventory publication deferred; desired snapshot retained for retry");
     }
 }
 
@@ -2142,7 +2313,7 @@ pub(super) async fn publish_fleet_inventory_snapshot(
 /// book is delivery-local and is never sent to the engine.
 pub(super) async fn record_fleet_inventory_agent(
     fleet_control_tx: &mpsc::Sender<FleetControlCommand>,
-    fleet_inventory: &mut HashMap<WorkerName, InventoryAgent>,
+    fleet_inventory: &mut super::fleet_inventory::FleetInventory,
     token: &crate::node_control::AgentRegistrationToken,
     invocation_id: Option<String>,
     session_ref: Option<String>,
@@ -2186,7 +2357,7 @@ pub(super) async fn reconcile_fleet_inventory_with_live_workers(
     fleet_control_tx: &mpsc::Sender<FleetControlCommand>,
     relaycast_http: &RelaycastHttpClient,
     fleet_delivery_book: &mut FleetDeliveryBook,
-    fleet_inventory: &mut HashMap<WorkerName, InventoryAgent>,
+    fleet_inventory: &mut super::fleet_inventory::FleetInventory,
     retry_after: &mut HashMap<WorkerName, FleetInventoryRetry>,
     live_workers: Vec<LiveFleetInventoryCandidate>,
     now: Instant,
@@ -2350,7 +2521,7 @@ fn registration_token_for_resolved_agent(
 
 pub(super) async fn refresh_fleet_inventory_session_ref(
     fleet_control_tx: &mpsc::Sender<FleetControlCommand>,
-    fleet_inventory: &mut HashMap<WorkerName, InventoryAgent>,
+    fleet_inventory: &mut super::fleet_inventory::FleetInventory,
     name: &WorkerName,
     session_ref: &str,
 ) -> bool {
@@ -2372,7 +2543,7 @@ pub(super) async fn refresh_fleet_inventory_session_ref(
 
 pub(super) async fn prune_fleet_inventory_entry(
     fleet_control_tx: &mpsc::Sender<FleetControlCommand>,
-    fleet_inventory: &mut HashMap<WorkerName, InventoryAgent>,
+    fleet_inventory: &mut super::fleet_inventory::FleetInventory,
     name: &WorkerName,
 ) {
     if fleet_inventory.remove(name).is_some() {
@@ -2382,7 +2553,7 @@ pub(super) async fn prune_fleet_inventory_entry(
 
 pub(super) async fn prune_fleet_agent_state(
     fleet_control_tx: &mpsc::Sender<FleetControlCommand>,
-    fleet_inventory: &mut HashMap<WorkerName, InventoryAgent>,
+    fleet_inventory: &mut super::fleet_inventory::FleetInventory,
     fleet_delivery_book: &mut FleetDeliveryBook,
     name: &WorkerName,
 ) {
@@ -2550,7 +2721,7 @@ fn fleet_dashboard_relay_inbound_event(
 /// Resolve the worker name a node `action.invoke` targets: prefer the frame's
 /// `agent_name`, then the input's `name`/`agent`/`agent_name`/`agent_id`
 /// fields. Returns `None` when no non-empty identity is present.
-fn action_invoke_agent_name(invoke: &ActionInvoke) -> Option<WorkerName> {
+pub(super) fn action_invoke_agent_name(invoke: &ActionInvoke) -> Option<WorkerName> {
     invoke
         .agent_name
         .as_deref()
@@ -2572,7 +2743,7 @@ fn action_invoke_agent_name(invoke: &ActionInvoke) -> Option<WorkerName> {
 /// Read the first non-empty string at any of the given top-level keys of an
 /// `action.invoke` input object (also checks under a nested `agent` object,
 /// mirroring the firehose payload shape).
-fn action_invoke_string(input: &Value, keys: &[&str]) -> Option<String> {
+pub(super) fn action_invoke_string(input: &Value, keys: &[&str]) -> Option<String> {
     for key in keys {
         if let Some(value) = input.get(key).and_then(Value::as_str).and_then(non_empty) {
             return Some(value.to_string());
@@ -3469,7 +3640,7 @@ mod tests {
         let (tx, mut rx) = mpsc::channel::<FleetControlCommand>(4);
         let mut book = FleetDeliveryBook::default();
         book.bind_authoritative_identity("agent-a", "agent-a-id");
-        let mut inventory = HashMap::from([(
+        let mut inventory = super::super::fleet_inventory::FleetInventory::from([(
             WorkerName::from("agent-a"),
             InventoryAgent {
                 agent_id: "agent-a-id".to_string(),
@@ -3511,7 +3682,7 @@ mod tests {
             deregister_fleet_agent_confirmed(
                 &tx,
                 &book,
-                &mut HashMap::new(),
+                &mut super::super::fleet_inventory::FleetInventory::new(),
                 &WorkerName::from("agent-a"),
             )
             .await
@@ -3721,7 +3892,7 @@ mod tests {
     #[tokio::test]
     async fn prune_fleet_inventory_entry_publishes_without_removed_agent() {
         let (tx, mut rx) = mpsc::channel(4);
-        let mut inventory = HashMap::from([
+        let mut inventory = super::super::fleet_inventory::FleetInventory::from([
             (
                 WorkerName::from("agent-a"),
                 InventoryAgent {
@@ -3756,7 +3927,7 @@ mod tests {
     #[tokio::test]
     async fn successful_node_registration_is_added_to_reconnect_inventory() {
         let (tx, mut rx) = mpsc::channel::<FleetControlCommand>(2);
-        let mut inventory = HashMap::from([(
+        let mut inventory = super::super::fleet_inventory::FleetInventory::from([(
             WorkerName::from("already-running"),
             InventoryAgent {
                 agent_id: "agent-existing-id".to_string(),
@@ -3837,7 +4008,7 @@ mod tests {
         let relaycast_http =
             RelaycastHttpClient::new(Some(server.base_url()), "rk_live_test", "broker", "claude");
         let (tx, mut rx) = mpsc::channel(2);
-        let mut inventory = HashMap::new();
+        let mut inventory = super::super::fleet_inventory::FleetInventory::new();
         let mut delivery_book = FleetDeliveryBook::default();
         let mut retry_after = HashMap::new();
 
@@ -3900,7 +4071,7 @@ mod tests {
         let relaycast_http =
             RelaycastHttpClient::new(Some(server.base_url()), "rk_live_test", "broker", "claude");
         let (tx, mut rx) = mpsc::channel(2);
-        let mut inventory = HashMap::new();
+        let mut inventory = super::super::fleet_inventory::FleetInventory::new();
         let mut delivery_book = FleetDeliveryBook::default();
         let mut retry_after = HashMap::new();
 
@@ -3947,7 +4118,7 @@ mod tests {
         let relaycast_http =
             RelaycastHttpClient::new(Some(server.base_url()), "rk_live_test", "broker", "claude");
         let (tx, mut rx) = mpsc::channel(1);
-        let mut inventory = HashMap::new();
+        let mut inventory = super::super::fleet_inventory::FleetInventory::new();
         let mut delivery_book = FleetDeliveryBook::default();
         delivery_book.bind_authoritative_identity("live-worker", "agent-live-id");
         let mut retry_after = HashMap::new();
@@ -4017,7 +4188,7 @@ mod tests {
         let relaycast_http =
             RelaycastHttpClient::new(Some(server.base_url()), "rk_live_test", "broker", "claude");
         let (tx, mut rx) = mpsc::channel(4);
-        let mut inventory = HashMap::new();
+        let mut inventory = super::super::fleet_inventory::FleetInventory::new();
         let mut delivery_book = FleetDeliveryBook::default();
         let mut retry_after = HashMap::new();
         let live_workers = || {
@@ -4080,7 +4251,7 @@ mod tests {
         let relaycast_http =
             RelaycastHttpClient::new(Some(server.base_url()), "rk_live_test", "broker", "claude");
         let (tx, _rx) = mpsc::channel(1);
-        let mut inventory = HashMap::new();
+        let mut inventory = super::super::fleet_inventory::FleetInventory::new();
         let mut delivery_book = FleetDeliveryBook::default();
         let mut retry_after = HashMap::new();
         let live_workers = |generation| vec![live_fleet_worker("missing-worker", None, generation)];
@@ -4191,7 +4362,7 @@ mod tests {
         let relaycast_http =
             RelaycastHttpClient::new(Some(server.base_url()), "rk_live_test", "broker", "claude");
         let (tx, _rx) = mpsc::channel(1);
-        let mut inventory = HashMap::new();
+        let mut inventory = super::super::fleet_inventory::FleetInventory::new();
         let mut delivery_book = FleetDeliveryBook::default();
         let mut retry_after = HashMap::new();
         let now = Instant::now();
@@ -4225,7 +4396,7 @@ mod tests {
         tx.send(FleetControlCommand::HeartbeatNow)
             .await
             .expect("prefill fleet control queue");
-        let inventory = HashMap::from([(
+        let inventory = super::super::fleet_inventory::FleetInventory::from([(
             WorkerName::from("worker-a"),
             InventoryAgent {
                 agent_id: "agent-a-id".to_string(),
@@ -4234,21 +4405,18 @@ mod tests {
                 session_ref: None,
             },
         )]);
-        let publish = tokio::spawn({
-            let tx = tx.clone();
-            async move { publish_fleet_inventory_snapshot(&tx, &inventory).await }
-        });
-
-        tokio::task::yield_now().await;
-        assert!(
-            !publish.is_finished(),
-            "inventory publication must wait while the queue is full"
-        );
+        tokio::time::timeout(
+            Duration::from_millis(100),
+            publish_fleet_inventory_snapshot(&tx, &inventory),
+        )
+        .await
+        .expect("full queue cannot borrow the actor indefinitely");
         assert!(matches!(
             rx.recv().await,
             Some(FleetControlCommand::HeartbeatNow)
         ));
-        publish.await.expect("inventory publisher should complete");
+        assert_eq!(inventory.len(), 1, "desired snapshot retained for retry");
+        publish_fleet_inventory_snapshot(&tx, &inventory).await;
         match rx.recv().await {
             Some(FleetControlCommand::UpdateInventory(agents)) => {
                 assert_eq!(agents.len(), 1);
@@ -4319,7 +4487,7 @@ mod tests {
     async fn refresh_fleet_inventory_session_ref_publishes_immediate_sync() {
         let (tx, mut rx) = mpsc::channel(4);
         let name = WorkerName::from("agent-a");
-        let mut inventory = HashMap::from([(
+        let mut inventory = super::super::fleet_inventory::FleetInventory::from([(
             name.clone(),
             InventoryAgent {
                 agent_id: "agt-a".to_string(),

@@ -36,10 +36,9 @@ use crate::{
         ProtocolEnvelope, RelayDelivery, ResolvedHarnessConfig, PROTOCOL_VERSION,
     },
     relaycast::{
-        agent_identity_key, format_worker_preregistration_error, identity_key_fingerprint,
-        reclaim_legacy_identity, registration_retry_after_secs, stable_node_identity_key,
-        AuthClient, MultiWorkspaceSession, RegRetryOutcome, RelaycastHttpClient,
-        WorkspaceInboundMessage, WorkspaceMembershipSummary, WsControl,
+        agent_identity_key, identity_key_fingerprint, reclaim_legacy_identity,
+        registration_retry_after_secs, stable_node_identity_key, AuthClient, MultiWorkspaceSession,
+        RelaycastHttpClient, WorkspaceInboundMessage, WorkspaceMembershipSummary, WsControl,
     },
     replay_buffer::{ReplayBuffer, DEFAULT_REPLAY_CAPACITY},
     telemetry::{ActionSource, TelemetryClient, TelemetryEvent},
@@ -76,6 +75,7 @@ mod degraded;
 mod delivery;
 mod event_loop;
 mod fleet;
+mod fleet_inventory;
 mod headless;
 mod identity_cleanup;
 mod identity_recovery;
@@ -84,6 +84,7 @@ mod io;
 mod maintenance;
 mod messages;
 mod paths;
+mod pending_spawn;
 mod relaycast_events;
 mod session;
 mod spawn_spec;

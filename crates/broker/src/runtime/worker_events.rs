@@ -3,7 +3,6 @@ use super::fleet::{
     refresh_fleet_inventory_session_ref, try_send_terminal, verified_spawn_ready_result,
 };
 use super::*;
-use crate::node_control::delivery_ack;
 use crate::terminal_control::{TerminalControlCommand, TerminalToCloud};
 use crate::worker::AgentWorkState;
 
@@ -620,6 +619,7 @@ impl BrokerRuntime {
         let pending_verified_spawns = &mut self.pending_verified_spawns;
         let delivery_retry_interval = self.delivery_retry_interval;
         let fleet_control_tx = &self.fleet_control_tx;
+        let fleet_responses = &self.fleet_responses;
         let fleet_delivery_book = &mut self.fleet_delivery_book;
         let fleet_inventory = &mut self.fleet_inventory;
         let delivery_states = &self.delivery_states;
@@ -738,11 +738,11 @@ impl BrokerRuntime {
                                 // sequence can never cumulatively ACK a lower
                                 // delivery that has not landed (relay#1543).
                                 if let Some((agent, up_to_seq)) = resolved_fleet_ack {
-                                    let _ = fleet_control_tx
-                                        .send(FleetControlCommand::Send(delivery_ack(
-                                            agent, up_to_seq,
-                                        )))
-                                        .await;
+                                    fleet_delivery_book.publish_ack(
+                                        fleet_control_tx,
+                                        &agent,
+                                        up_to_seq,
+                                    );
                                 }
 
                                 pending
@@ -1390,13 +1390,10 @@ impl BrokerRuntime {
                             .then(|| pending_verified_spawns.remove(&name))
                             .flatten();
                         if let Some(pending) = pending {
-                            let _ = fleet_control_tx
-                                .send(FleetControlCommand::Send(
-                                    crate::fleet_wire::BrokerToRelaycast::ActionResult(
-                                        verified_spawn_ready_result(pending.invocation_id, &name),
-                                    ),
-                                ))
-                                .await;
+                            fleet_responses.complete(verified_spawn_ready_result(
+                                pending.invocation_id,
+                                &name,
+                            ));
                         }
                         let interactive_hold_replayed = is_pty_worker
                             && delivery_states

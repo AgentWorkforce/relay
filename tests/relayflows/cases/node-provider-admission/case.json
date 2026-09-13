@@ -1,0 +1,13 @@
+{
+  "version": 1,
+  "id": "node-provider-admission",
+  "kind": "bugfix",
+  "title": "Fresh API and fleet agents belong to the authenticated broker provider",
+  "requirements": ["broker-linux-x64"],
+  "runner": { "command": ["node", "tests/relayflows/cases/node-provider-admission/run.mjs"] },
+  "timeoutSeconds": 240,
+  "expected": {
+    "base": { "outcome": "bug", "signature": "http_identity_admitted_on_default_provider" },
+    "head": { "outcome": "fixed", "signature": "node_identity_provider_origin_and_delivery_proven" }
+  }
+}
