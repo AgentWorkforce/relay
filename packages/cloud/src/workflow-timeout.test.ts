@@ -228,6 +228,59 @@ describe('workflow launch timeout inference', () => {
     expect(inferWorkflowLaunchTimeoutMs(source, 'ts')).toBe(900_000);
   });
 
+  it.each([
+    '{ other, workflow }',
+    '{ other: workflow }',
+    '[other, workflow]',
+    '{ nested: [other, { value: workflow }] }',
+    '{ other, ...workflow }',
+    '[other, ...workflow]',
+    '{ other: workflow = fallback }',
+    '{ [key]: workflow }',
+    '{ "key": workflow }',
+    '{ other: workflow }: { other: unknown }',
+  ])('tracks every destructured parameter binding: %s', (parameters) => {
+    for (const body of [
+      `function run(${parameters}) { workflow('fake').timeout(600_000); }`,
+      `const run = (${parameters}) => { workflow('fake').timeout(600_000); };`,
+      `const run = (${parameters}) => workflow('fake').timeout(600_000);`,
+      `const run = { method(${parameters}) { workflow('fake').timeout(600_000); } };`,
+    ]) {
+      const source = `workflow('real').timeout(900_000);\n${body}`;
+      expect(inferWorkflowLaunchTimeoutMs(source, 'ts')).toBe(900_000);
+    }
+  });
+
+  it.each(['public', 'private', 'protected', 'readonly', 'public readonly', 'private readonly'])(
+    'tracks TypeScript constructor parameter properties: %s',
+    (modifier) => {
+      const source = `workflow('real').timeout(900_000);
+        class Runner {
+          constructor(${modifier} workflow: unknown) { workflow('fake').timeout(600_000); }
+        }`;
+      expect(inferWorkflowLaunchTimeoutMs(source, 'ts')).toBe(900_000);
+    }
+  );
+
+  it('tracks destructured parameters that shadow an existing builder', () => {
+    const source = `const wf = workflow('real').timeout(900_000);
+      function run({ other: wf }) { wf.timeout(600_000); }`;
+    expect(inferWorkflowLaunchTimeoutMs(source, 'ts')).toBe(900_000);
+  });
+
+  it.each([
+    '{ wf: other }',
+    '{ other = wf }',
+    '{ [wf]: other }',
+    'other: Map<string, { wf: string }>',
+    'other = { wf }',
+  ])('does not turn property keys, types or default expressions into bindings: %s', (parameters) => {
+    const source = `const wf = workflow('real');
+      function run(${parameters}) { wf.timeout(600_000); }
+      wf.timeout(900_000);`;
+    expect(() => inferWorkflowLaunchTimeoutMs(source, 'ts')).toThrow(/multiple distinct/);
+  });
+
   it('does not treat identifiers inside TypeScript parameter types as runtime shadows', () => {
     const source = [
       "const wf = workflow('real');",
@@ -562,6 +615,26 @@ describe('workflow launch timeout inference', () => {
     const startedAt = performance.now();
     expect(inferWorkflowLaunchTimeoutMs(source, 'py')).toBeUndefined();
     expect(performance.now() - startedAt).toBeLessThan(2_000);
+  });
+
+  it('preserves TypeScript ASI and lexical scopes across long horizontal whitespace', () => {
+    const padding = ' \t'.repeat(2_000);
+    const source = `workflow('real').timeout(900_000);
+      function run({ other: workflow }) {${padding}workflow('fake').timeout(600_000); }
+      while (ready) { break${padding}
+        ${padding}/workflow('regex').timeout(300_000)/.test(input);
+      }`;
+    expect(inferWorkflowLaunchTimeoutMs(source, 'ts')).toBe(900_000);
+  });
+
+  it('preserves Python parameter scope across long indentation and inline suites', () => {
+    const padding = ' '.repeat(4_000);
+    const source = `workflow('real').timeout(900_000)
+def run(workflow):
+${padding}workflow('fake').timeout(600_000)
+def inline(workflow):${padding}workflow('fake').timeout(300_000)
+`;
+    expect(inferWorkflowLaunchTimeoutMs(source, 'py')).toBe(900_000);
   });
 
   it('keeps repeated single-parameter block arrows near-linear', () => {

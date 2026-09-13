@@ -101,6 +101,7 @@ function maskNonCode(source: string, fileType: Extract<WorkflowFileType, 'ts' | 
   const scopeParents = new Map<number, number>([[0, -1]]);
   const scopeStack = [0];
   let nextScopeId = 1;
+  const horizontalWhitespace = /[ \t]+/y;
 
   const flushIdentifier = () => {
     if (currentIdentifier) {
@@ -292,6 +293,20 @@ function maskNonCode(source: string, fileType: Extract<WorkflowFileType, 'ts' | 
       continue;
     }
 
+    if (character === ' ' || character === '\t') {
+      // Horizontal whitespace cannot change lexical state. Preserve its exact
+      // bytes and scope in bulk instead of dispatching every tab/space through
+      // the covered character scanner on large or malformed submissions.
+      flushIdentifier();
+      horizontalWhitespace.lastIndex = index;
+      const whitespace = horizontalWhitespace.exec(source)!;
+      const end = horizontalWhitespace.lastIndex;
+      output += whitespace[0];
+      scopeAt.fill(scopeStack[scopeStack.length - 1], index, end);
+      index = end;
+      continue;
+    }
+
     if (fileType === 'ts' && character === '\\') {
       const escapeLength = unicodeIdentifierEscapeLength(source, index);
       if (escapeLength > 0) {
@@ -369,10 +384,14 @@ function maskNonCode(source: string, fileType: Extract<WorkflowFileType, 'ts' | 
   }
 
   const nextNonWhitespace = new Uint32Array(output.length + 1);
-  nextNonWhitespace[output.length] = output.length;
-  for (let cursor = output.length - 1; cursor >= 0; cursor -= 1) {
-    nextNonWhitespace[cursor] = /\s/.test(output[cursor]) ? nextNonWhitespace[cursor + 1] : cursor;
+  const nonWhitespace = /\S/g;
+  let rangeStart = 0;
+  let token: RegExpExecArray | null;
+  while ((token = nonWhitespace.exec(output)) !== null) {
+    nextNonWhitespace.fill(token.index, rangeStart, token.index + 1);
+    rangeStart = token.index + 1;
   }
+  nextNonWhitespace.fill(output.length, rangeStart);
 
   return {
     source: output,
@@ -613,25 +632,108 @@ function addFunctionBinding(
     names = new Set();
     functionBindings.set(scopeId, names);
   }
-  let segmentStart = 0;
-  let delimiterDepth = 0;
-  const recordSegment = (end: number): void => {
-    const declaration = parameters
-      .slice(segmentStart, end)
-      .match(/^\s*(?:\.\.\.\s*)?(?:[{[]\s*)?([A-Za-z_$][A-Za-z0-9_$]*)/);
-    if (declaration !== null) names.add(declaration[1]);
+  // Read binding patterns, not all identifiers in a parameter. Property keys,
+  // type annotations and default expressions do not introduce local names.
+  // An explicit stack keeps deeply nested destructuring linear and avoids
+  // recursion limits on untrusted workflow source.
+  type Pattern = { kind: 'parameters' | 'object' | 'array'; phase: 'binding' | 'key' | 'suffix' };
+  const patterns: Pattern[] = [{ kind: 'parameters', phase: 'binding' }];
+  const modifiers = new Set(['public', 'private', 'protected', 'readonly', 'override']);
+  const identifier = /[A-Za-z_$][A-Za-z0-9_$]*/y;
+  let cursor = 0;
+
+  const skipExpression = (typeAnnotation = false): void => {
+    let depth = 0;
+    let angleDepth = 0;
+    while (cursor < parameters.length) {
+      const character = parameters[cursor];
+      if (depth === 0 && angleDepth === 0 && (character === ',' || character === '}' || character === ']')) {
+        return;
+      }
+      if (character === '(' || character === '[' || character === '{') depth += 1;
+      else if (character === ')' || character === ']' || character === '}') depth = Math.max(0, depth - 1);
+      else if (typeAnnotation && character === '<') angleDepth += 1;
+      else if (typeAnnotation && character === '>' && parameters[cursor - 1] !== '=') {
+        angleDepth = Math.max(0, angleDepth - 1);
+      } else if (depth === 0 && angleDepth === 0 && character === '=' && parameters[cursor + 1] !== '>') {
+        typeAnnotation = false;
+      }
+      cursor += 1;
+    }
   };
-  for (let cursor = 0; cursor < parameters.length; cursor += 1) {
+
+  while (cursor < parameters.length && patterns.length > 0) {
+    cursor = nextNonWhitespace(parameters, cursor);
+    const pattern = patterns[patterns.length - 1];
     const character = parameters[cursor];
-    if (character === '(' || character === '[' || character === '{') delimiterDepth += 1;
-    else if (character === ')' || character === ']' || character === '}') {
-      delimiterDepth = Math.max(0, delimiterDepth - 1);
-    } else if (character === ',' && delimiterDepth === 0) {
-      recordSegment(cursor);
-      segmentStart = cursor + 1;
+    if (character === ',' || character === '}' || character === ']') {
+      if (character === ',') pattern.phase = pattern.kind === 'object' ? 'key' : 'binding';
+      else patterns.pop();
+      cursor += 1;
+      continue;
+    }
+    if (pattern.phase === 'suffix') {
+      skipExpression(
+        character === ':' ||
+          (character === '?' && parameters[nextNonWhitespace(parameters, cursor + 1)] === ':')
+      );
+      continue;
+    }
+    if (parameters.startsWith('...', cursor)) {
+      cursor += 3;
+      pattern.phase = 'binding';
+      continue;
+    }
+    if (pattern.phase === 'key' && character === '[') {
+      // Computed property expressions are not bindings. Skip their balanced
+      // brackets, then process the property value following the colon.
+      let depth = 1;
+      cursor += 1;
+      while (cursor < parameters.length && depth > 0) {
+        if (parameters[cursor] === '[') depth += 1;
+        else if (parameters[cursor] === ']') depth -= 1;
+        cursor += 1;
+      }
+      continue;
+    }
+    if (pattern.phase === 'key' && character === ':') {
+      pattern.phase = 'binding';
+      cursor += 1;
+      continue;
+    }
+    if (pattern.phase === 'binding' && (character === '{' || character === '[')) {
+      pattern.phase = 'suffix';
+      patterns.push({
+        kind: character === '{' ? 'object' : 'array',
+        phase: character === '{' ? 'key' : 'binding',
+      });
+      cursor += 1;
+      continue;
+    }
+    identifier.lastIndex = cursor;
+    const match = identifier.exec(parameters);
+    if (match === null) {
+      // Quoted property keys have already been masked. Numeric keys can be
+      // skipped until their colon without inventing a binding.
+      cursor += 1;
+      continue;
+    }
+    cursor = nextNonWhitespace(parameters, identifier.lastIndex);
+    if (
+      pattern.kind === 'parameters' &&
+      modifiers.has(match[0]) &&
+      /[A-Za-z_$]/.test(parameters[cursor] ?? '')
+    ) {
+      continue;
+    }
+    if (pattern.phase === 'key' && parameters[cursor] === ':') {
+      pattern.phase = 'binding';
+      cursor += 1;
+    } else {
+      names.add(match[0]);
+      pattern.phase = 'suffix';
     }
   }
-  recordSegment(parameters.length);
 }
 
 function pythonDelimiterDepth(source: string): Uint32Array {
@@ -898,8 +1000,8 @@ function collectPythonFunctionScopes(masked: MaskedWorkflowSource): {
   const functionBindings = new Map<number, Set<string>>();
   const lines: Array<{ start: number; end: number; indent: number }> = [];
   let lineStart = 0;
-  for (let cursor = 0; cursor <= source.length; cursor += 1) {
-    if (cursor !== source.length && source[cursor] !== '\n') continue;
+  for (const line of source.split('\n')) {
+    const cursor = lineStart + line.length;
     let indent = 0;
     while (lineStart + indent < cursor) {
       const character = source[lineStart + indent];
@@ -963,7 +1065,7 @@ function collectPythonFunctionScopes(masked: MaskedWorkflowSource): {
     pending.length = 0;
 
     const scopeId = stack[stack.length - 1]?.scopeId ?? 0;
-    for (let cursor = line.start; cursor < line.end; cursor += 1) scopeAt[cursor] = scopeId;
+    scopeAt.fill(scopeId, line.start, line.end);
 
     while (declarationIndex < declarations.length && declarations[declarationIndex].colon <= line.end) {
       const definition = declarations[declarationIndex++];
@@ -974,9 +1076,7 @@ function collectPythonFunctionScopes(masked: MaskedWorkflowSource): {
         scopeParents.set(functionScope, scopeId);
         functionScopes.add(functionScope);
         addFunctionBinding(functionBindings, functionScope, definition.parameters);
-        for (let cursor = inlineBodyStart; cursor < line.end; cursor += 1) {
-          scopeAt[cursor] = functionScope;
-        }
+        scopeAt.fill(functionScope, inlineBodyStart, line.end);
       } else {
         pending.push({
           indent: definition.indent,
