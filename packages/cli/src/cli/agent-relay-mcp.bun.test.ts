@@ -1,10 +1,72 @@
-import { spawn, execFileSync } from 'node:child_process';
+import { spawn, execFileSync, type ChildProcess } from 'node:child_process';
 import { createServer } from 'node:http';
 import { mkdtempSync, rmSync } from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
+
+// Observe close/error immediately after spawn, before any await: exit may
+// already have happened when the test reaches finally, and failed spawn does
+// not emit exit at all. Only this owned ChildProcess is ever signalled.
+function observeChild(child: ChildProcess) {
+  let failure: Error | undefined;
+  let didClose = false;
+  child.on('error', (error) => {
+    failure = error;
+  });
+  child.stdin?.on('error', (error) => {
+    failure ??= error;
+  });
+  const closed = new Promise<void>((resolve) =>
+    child.once('close', () => {
+      didClose = true;
+      resolve();
+    })
+  );
+  return {
+    closed,
+    error: () => failure,
+    async retire() {
+      if (didClose) return;
+      child.stdin?.end();
+      const signal = (name: NodeJS.Signals) => {
+        if (!didClose && child.pid && child.exitCode === null && child.signalCode === null) child.kill(name);
+      };
+      const term = setTimeout(() => signal('SIGTERM'), 1000);
+      const kill = setTimeout(() => signal('SIGKILL'), 2000);
+      try {
+        await closed;
+      } finally {
+        clearTimeout(term);
+        clearTimeout(kill);
+      }
+    },
+  };
+}
+
+describe('compiled MCP fixture cleanup', () => {
+  it('finishes cleanup when the owned child already exited', async () => {
+    const child = spawn(process.execPath, ['-e', 'process.exit(0)'], { stdio: 'pipe' });
+    const lifecycle = observeChild(child);
+    await lifecycle.closed;
+    await lifecycle.retire();
+    expect(child.exitCode).toBe(0);
+    expect(child.killed).toBe(false);
+  }, 3000);
+
+  it('finishes failed-spawn cleanup without waiting for an exit event', async () => {
+    const child = spawn(path.join(os.tmpdir(), 'relay-mcp-no-such-directory', 'missing'), [], {
+      stdio: 'pipe',
+    });
+    const lifecycle = observeChild(child);
+    await lifecycle.closed;
+    await lifecycle.retire();
+    expect(lifecycle.error()).toMatchObject({ code: 'ENOENT' });
+    expect(child.pid).toBeUndefined();
+    expect(child.killed).toBe(false);
+  }, 3000);
+});
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 let bunAvailable = false;
@@ -124,6 +186,7 @@ describe.skipIf(!bunAvailable)('compiled CLI MCP single dispatch', () => {
         },
         stdio: ['pipe', 'pipe', 'pipe'],
       });
+      const lifecycle = observeChild(child);
       child.stderr.resume();
       let buffer = '';
       child.stdout.on('data', (chunk) => {
@@ -142,7 +205,12 @@ describe.skipIf(!bunAvailable)('compiled CLI MCP single dispatch', () => {
       const until = async (predicate: () => boolean) => {
         const deadline = Date.now() + 10000;
         while (!predicate()) {
-          if (child.exitCode !== null || Date.now() > deadline)
+          if (
+            lifecycle.error() ||
+            child.exitCode !== null ||
+            child.signalCode !== null ||
+            Date.now() > deadline
+          )
             throw new Error('MCP response timeout or early exit');
           await new Promise((resolve) => setTimeout(resolve, 20));
         }
@@ -182,11 +250,7 @@ describe.skipIf(!bunAvailable)('compiled CLI MCP single dispatch', () => {
           mode === '201' ? [201] : [mode === 'accepted-503' ? 503 : 'disconnect', 200]
         );
       } finally {
-        const exited = new Promise<void>((resolve) => child.once('exit', () => resolve()));
-        child.stdin.end();
-        const timer = setTimeout(() => child.kill('SIGTERM'), 1000);
-        await exited;
-        clearTimeout(timer);
+        await lifecycle.retire();
         server.closeAllConnections();
         await new Promise<void>((resolve) => server.close(() => resolve()));
       }
