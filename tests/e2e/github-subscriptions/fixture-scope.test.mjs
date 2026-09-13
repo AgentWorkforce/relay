@@ -184,3 +184,17 @@ test('binds captured merge identity to the acknowledged merge SHA', async () => 
   stimulus.expected.record.merge_commit_sha = 'c'.repeat(40);
   assert.equal(validFixtureExpected(stimulus), false);
 });
+
+test('comment parent association must come from the acknowledged GitHub response', async () => {
+  const { fixtureExpected } = await import('./fixture-scope.mjs');
+  const stimulus = { repo: 'AgentWorkforce/relay', pr: 123, kind: 'comment' };
+  const record = {
+    id: 456,
+    user: { login: 'owner' },
+    issue_url: 'https://api.github.com/repos/AgentWorkforce/relay/issues/123',
+  };
+  assert.doesNotThrow(() => fixtureExpected(stimulus, record, 'test'));
+  for (const issue_url of [undefined, '', 'https://api.github.com/repos/AgentWorkforce/relay/issues/124']) {
+    assert.throws(() => fixtureExpected(stimulus, { ...record, issue_url }, 'test'), /parent/);
+  }
+});

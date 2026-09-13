@@ -79,14 +79,14 @@ const gh = (endpoint, method = 'GET', body) => {
   });
   return result.trim() ? JSON.parse(result) : null;
 };
-const cast = async (endpoint) => {
+const cast = async (endpoint, signal) => {
   if (!process.env.RELAY_WORKSPACE_KEY) throw new Error('RELAY_WORKSPACE_KEY is required');
   const res = await fetch(new URL(endpoint, config.castUrl), {
     headers: {
       authorization: `Bearer ${process.env.RELAY_WORKSPACE_KEY}`,
       'user-agent': 'agent-relay/11.10.4',
     },
-    signal: AbortSignal.timeout(20000),
+    signal: signal ? AbortSignal.any([signal, AbortSignal.timeout(20000)]) : AbortSignal.timeout(20000),
   });
   if (!res.ok) throw new Error(`Relaycast ${endpoint}: HTTP ${res.status}`);
   return (await res.json()).data;
@@ -299,7 +299,7 @@ async function subscriptions(remove = false) {
           throw new Error(
             `Binding changed outside this run: ${owned.pathGlob}; reconcile ownership before cleanup`
           );
-        invoke(['unsubscribe', '--provider', 'github', '--resource', owned.pathGlob]);
+        invoke(['unsubscribe', 'github', '--resource', owned.pathGlob]);
         const remaining = await cp.listBindings();
         if (remaining.some((b) => b.provider === 'github' && b.pathGlob === owned.pathGlob))
           throw new Error('Owned binding survived unsubscribe');
@@ -436,12 +436,13 @@ async function collect() {
   let channels = [...new Set([...Object.values(config.actors), ...(config.negativeChannels ?? [])])];
   const seen = new Set(readLines('messages.jsonl').map((m) => m.id));
   let stop = false;
-  process.once('SIGINT', () => {
+  const cancellation = new AbortController();
+  const stopCollection = () => {
     stop = true;
-  });
-  process.once('SIGTERM', () => {
-    stop = true;
-  });
+    cancellation.abort();
+  };
+  process.once('SIGINT', stopCollection);
+  process.once('SIGTERM', stopCollection);
   const end = Date.now() + (config.collectionSeconds ?? 1800) * 1000;
   client.onEvent((event) => {
     if (!actorNames.has(event.name)) return;
@@ -488,7 +489,8 @@ async function collect() {
           (before, limit) =>
             cast(
               `/v1/channels/${encodeURIComponent(channel)}/messages?limit=${limit}` +
-                (before ? `&before=${encodeURIComponent(before)}` : '')
+                (before ? `&before=${encodeURIComponent(before)}` : ''),
+              cancellation.signal
             ),
           seen,
           Date.parse(manifest.createdAt)
@@ -509,7 +511,11 @@ async function collect() {
       );
       await pause(2000);
     }
+  } catch (error) {
+    if (!(stop && error?.name === 'AbortError')) throw error;
   } finally {
+    process.removeListener('SIGINT', stopCollection);
+    process.removeListener('SIGTERM', stopCollection);
     client.disconnect();
   }
 }

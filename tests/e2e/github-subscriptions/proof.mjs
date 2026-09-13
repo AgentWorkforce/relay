@@ -104,8 +104,25 @@ function matchesFixture(stimulus, message) {
     (metadata.path ?? metadata.relayfile?.path) === expected.path &&
     expected.record &&
     Object.keys(expected.record).length > 0 &&
-    matchesRecord(metadata.record ?? metadata.relayfile?.record ?? metadata.payload, expected.record)
+    matchesFixtureRecord(stimulus, metadata.record ?? metadata.relayfile?.record ?? metadata.payload)
   );
+}
+
+function matchesFixtureRecord(stimulus, actual) {
+  const expected = stimulus.expected.record;
+  if (matchesRecord(actual, expected)) return true;
+  // Issue comments are delivered as the normalized Relayfile record. The raw
+  // GitHub response still pins the author and issue_url independently. Its
+  // parent must match the exact adapter-generated path above, including the
+  // issue number, title slug and comment ID; never use a substring fallback.
+  if (stimulus.kind !== 'comment' || !validFixtureExpected(stimulus)) return false;
+  if (!actual || typeof actual !== 'object' || actual.user !== undefined) return false;
+  if (actual.author?.login !== expected.user.login) return false;
+  if (actual.issue_url !== undefined && actual.issue_url !== expected.issue_url) return false;
+  const recordFields = Object.fromEntries(
+    Object.entries(expected).filter(([key]) => key !== 'user' && key !== 'issue_url')
+  );
+  return matchesRecord(actual, recordFields);
 }
 
 /** Require independent links in the chain; neither our report nor an echoed nonce is an action. */

@@ -20,6 +20,8 @@ export function fixtureExpected(stimulus, record, runId) {
     case 'comment':
       canonicalPath = githubIssueCommentPath(owner, repo, stimulus.pr, id, fixtureTitle(runId));
       expected.issue_url = `https://api.github.com/repos/${stimulus.repo}/issues/${stimulus.pr}`;
+      if (record.issue_url !== expected.issue_url)
+        throw new Error('Comment parent does not match the acknowledged GitHub response');
       break;
     case 'review':
       canonicalPath = githubReviewPath(owner, repo, id);

@@ -298,6 +298,7 @@ test('strict fixture assertion rejects incomplete external schemas and mismatche
       {
         id: '456',
         user: { login: 'owner' },
+        issue_url: 'https://api.github.com/repos/AgentWorkforce/relay/issues/123',
         submitted_at: '2026-09-11T12:00:00Z',
         pull_request_review_id: '789',
         merge_commit_sha: 'b'.repeat(40),
@@ -351,4 +352,63 @@ test('history collector stops within a page at the first known boundary', async 
     records.map((m) => m.id),
     ['4', '3']
   );
+});
+
+test('normalized issue comments retain exact provider, parent, author and action checks', async () => {
+  const { fixtureExpected } = await import('./fixture-scope.mjs');
+  const f = fixture();
+  Object.assign(f.stimulus, { accepted: true, repo: 'AgentWorkforce/relay', pr: 123, providerId: '456' });
+  f.strictFixture = true;
+  f.stimulus.expected = fixtureExpected(
+    f.stimulus,
+    {
+      id: 456,
+      issue_url: 'https://api.github.com/repos/AgentWorkforce/relay/issues/123',
+      user: { login: 'owner' },
+    },
+    'normalized-comment'
+  );
+  Object.assign(f.messages[0].metadata, {
+    path: f.stimulus.expected.path,
+    record: { id: 456, body: `GHSUB_EVENT_NONCE=${f.stimulus.nonce}`, author: { login: 'owner' } },
+  });
+  assert.equal(correlate(f).pass, true);
+  const mutations = [
+    (x) => {
+      x.messages[0].metadata.record.id = 457;
+    },
+    (x) => {
+      x.messages[0].metadata.record.id = Number.MAX_SAFE_INTEGER + 1;
+    },
+    (x) => {
+      x.messages[0].metadata.record.author.login = 'other';
+    },
+    (x) => {
+      delete x.messages[0].metadata.record.author;
+    },
+    (x) => {
+      x.messages[0].metadata.record.user = { login: 'other' };
+    },
+    (x) => {
+      x.messages[0].metadata.record.issue_url =
+        'https://api.github.com/repos/AgentWorkforce/relay/issues/124';
+    },
+    (x) => {
+      x.messages[0].metadata.path = x.messages[0].metadata.path.replace('/issues/123__', '/issues/1234__');
+    },
+    (x) => {
+      x.stimulus.expected.record.issue_url = 'https://api.github.com/repos/AgentWorkforce/relay/issues/124';
+    },
+    (x) => {
+      x.messages[0].agent_id = 'untrusted';
+    },
+    (x) => {
+      x.messages.push({ ...x.messages[1], id: 'duplicate-action' });
+    },
+  ];
+  for (const mutate of mutations) {
+    const adverse = structuredClone(f);
+    mutate(adverse);
+    assert.equal(correlate(adverse).pass, false, mutate.toString());
+  }
 });
