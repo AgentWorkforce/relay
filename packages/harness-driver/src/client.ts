@@ -676,21 +676,18 @@ export class HarnessDriverClient {
         name: string;
         process?: string;
         identity?: string;
-      }>(
-        `/api/spawned/${encodeURIComponent(name)}`,
-        {
-          method: 'DELETE',
-          ...(reason || expectedGeneration
-            ? {
-                body: JSON.stringify({
-                  reason,
-                  expected_generation: expectedGeneration,
-                  ...(deleteIdentity ? { delete_identity: true } : {}),
-                }),
-              }
-            : {}),
-        }
-      );
+      }>(`/api/spawned/${encodeURIComponent(name)}`, {
+        method: 'DELETE',
+        ...(reason || expectedGeneration
+          ? {
+              body: JSON.stringify({
+                reason,
+                expected_generation: expectedGeneration,
+                ...(deleteIdentity ? { delete_identity: true } : {}),
+              }),
+            }
+          : {}),
+      });
       const afterCtx: AfterAgentReleaseContext = {
         ...beforeCtx,
         durationMs: Date.now() - t0,
