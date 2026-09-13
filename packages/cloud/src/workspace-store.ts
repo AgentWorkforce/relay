@@ -93,6 +93,7 @@ export function writeRelaycastCredential(
 const RELAYCAST_CREDENTIAL_LOCK_TIMEOUT_MS = 10_000;
 const RELAYCAST_CREDENTIAL_LOCK_STALE_MS = 30_000;
 const RELAYCAST_CREDENTIAL_LOCK_RETRY_MS = 10;
+const RELAYCAST_CREDENTIAL_REPLACE_TIMEOUT_MS = 2_000;
 const RELAYCAST_CREDENTIAL_LOCK_WAIT = new Int32Array(new SharedArrayBuffer(4));
 const RELAYCAST_CREDENTIAL_LOCK_OWNER_VERSION = 1;
 
@@ -294,7 +295,7 @@ function writeRelaycastCredentialAtomically(
     fs.closeSync(descriptor);
     descriptor = undefined;
     fs.chmodSync(temporary, 0o600);
-    fs.renameSync(temporary, file);
+    replaceRelaycastCredentialFile(temporary, file);
     fs.chmodSync(file, 0o600);
   } catch (error) {
     if (descriptor !== undefined) fs.closeSync(descriptor);
@@ -304,6 +305,28 @@ function writeRelaycastCredentialAtomically(
       if (!(isNodeError(cleanupError) && cleanupError.code === 'ENOENT')) throw cleanupError;
     }
     throw error;
+  }
+}
+
+function replaceRelaycastCredentialFile(temporary: string, file: string): void {
+  const startedAt = Date.now();
+  while (true) {
+    try {
+      fs.renameSync(temporary, file);
+      return;
+    } catch (error) {
+      const retryableWindowsSharingViolation =
+        process.platform === 'win32' &&
+        isNodeError(error) &&
+        (error.code === 'EACCES' || error.code === 'EBUSY' || error.code === 'EPERM');
+      if (
+        !retryableWindowsSharingViolation ||
+        Date.now() - startedAt >= RELAYCAST_CREDENTIAL_REPLACE_TIMEOUT_MS
+      ) {
+        throw error;
+      }
+      Atomics.wait(RELAYCAST_CREDENTIAL_LOCK_WAIT, 0, 0, RELAYCAST_CREDENTIAL_LOCK_RETRY_MS);
+    }
   }
 }
 
