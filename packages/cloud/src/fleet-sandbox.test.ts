@@ -132,11 +132,11 @@ describe('Cloud fleet sandbox client', () => {
             ref: revision,
             status: 'completed',
             headSha: revision,
-            filesWritten: 4312,
+            filesWritten: 0,
             materialization: {
               mode: 'relayfile_export',
               headSha: revision,
-              filesExpected: 4312,
+              filesExpected: 0,
               contentRoot: '/github/repos/AgentWorkforce/cloud/contents',
               sentinelPath: '/github/repos/AgentWorkforce/cloud/.relayfile/clone.json',
               exportParams: { format: 'tar', decode: 'github-working-tree', gzip: false },
@@ -159,7 +159,7 @@ describe('Cloud fleet sandbox client', () => {
       cloudWorkspaceId: CLOUD_WORKSPACE_ID,
       repository: 'AgentWorkforce/cloud',
       revision,
-      filesWritten: 4312,
+      filesWritten: 0,
       contentRoot: '/github/repos/AgentWorkforce/cloud/contents',
       sentinelPath: '/github/repos/AgentWorkforce/cloud/.relayfile/clone.json',
     });

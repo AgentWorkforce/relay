@@ -829,7 +829,9 @@ export async function materializeCloudRelayfileRepository(
       const detail = readString(job, 'lastError');
       throw new Error(
         redactCredentialValues(
-          `Cloud could not materialize ${owner}/${repo} into Relayfile${detail ? `: ${detail}` : '.'}`
+          `Cloud could not materialize ${owner}/${repo} at ${revision} into Relayfile${
+            detail ? `: ${detail}.` : '.'
+          } Verify that this exact commit is pushed to GitHub and that the pinned workspace's GitHub connection can read the repository, then retry.`
         )
       );
     }
@@ -846,7 +848,8 @@ export async function materializeCloudRelayfileRepository(
         jobRef?.toLowerCase() !== revision ||
         headSha !== revision ||
         filesWritten === undefined ||
-        filesWritten <= 0 ||
+        !Number.isSafeInteger(filesWritten) ||
+        filesWritten < 0 ||
         !isObject(materialization) ||
         readString(materialization, 'mode') !== 'relayfile_export' ||
         readString(materialization, 'headSha')?.toLowerCase() !== revision ||
