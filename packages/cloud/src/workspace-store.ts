@@ -160,6 +160,9 @@ function withRelaycastCredentialLock<T>(file: string, fn: () => T): T {
   }
   assertCredentialAncestors(directory);
   while (true) {
+    if (Date.now() - startedAt >= RELAYCAST_CREDENTIAL_LOCK_TIMEOUT_MS) {
+      throw new Error('Timed out waiting for the Relaycast credential store lock.');
+    }
     try {
       fs.mkdirSync(lock, { mode: 0o700 });
       try {
@@ -211,9 +214,6 @@ function withRelaycastCredentialLock<T>(file: string, fn: () => T): T {
     } catch (error) {
       if (isNodeError(error) && error.code === 'ENOENT') continue;
       throw error;
-    }
-    if (Date.now() - startedAt >= RELAYCAST_CREDENTIAL_LOCK_TIMEOUT_MS) {
-      throw new Error('Timed out waiting for the Relaycast credential store lock.');
     }
     Atomics.wait(RELAYCAST_CREDENTIAL_LOCK_WAIT, 0, 0, RELAYCAST_CREDENTIAL_LOCK_RETRY_MS);
   }
