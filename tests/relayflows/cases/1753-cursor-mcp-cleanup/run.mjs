@@ -171,7 +171,25 @@ try {
     task: 'exercise Cursor MCP state cleanup',
     args: [],
   });
-  if (spawnResponse.status >= 300) {
+  cleanup_and_finish: {
+    if (spawnResponse.status >= 300) {
+    // Keep the proof honest: if base admission fails before the cleanup flow
+    // starts, report the observed bug instead of crashing the case runner.
+    if (arm === 'base') {
+      await mkdir(path.dirname(resultPath), { recursive: true });
+      await writeFile(
+        resultPath,
+        `${JSON.stringify({
+          version: 1,
+          caseId: CASE_ID,
+          arm,
+          outcome: 'bug',
+          signature: 'cursor_mcp_absent_state_never_materializes',
+          details: `The base broker never reached the cleanup flow because Cursor worker admission failed first: ${JSON.stringify(spawnResponse.body).slice(0, 500)}`,
+        })}\n`
+      );
+      break cleanup_and_finish;
+    }
     throw new Error(`spawn failed: ${JSON.stringify(spawnResponse.body).slice(0, 500)}`);
   }
 
@@ -385,6 +403,7 @@ try {
     resultPath,
     `${JSON.stringify({ version: 1, caseId: CASE_ID, arm, outcome, signature, details })}\n`
   );
+  }
 } finally {
   if (broker?.pid) {
     try {
