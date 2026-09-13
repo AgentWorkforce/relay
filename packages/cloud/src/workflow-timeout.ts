@@ -1317,6 +1317,18 @@ export function inferWorkflowLaunchTimeoutMs(
 
   const masked = maskNonCode(workflow, fileType);
   const source = masked.source;
+  // Control-flow headers can bind or reassign names with lifetimes that this
+  // static scanner does not model (including destructured and async targets).
+  // Conservatively leave the optional metadata out instead of borrowing an
+  // enclosing builder or letting a loop-local binding hide an outer factory.
+  // Test masked code so comments and strings cannot disable valid inference.
+  if (
+    fileType === 'ts'
+      ? /\bfor\s*(?:await\s*)?\(/.test(source)
+      : /^[ \t]*(?:(?:async[ \t]+)?(?:for|with)|except)\b/m.test(source)
+  ) {
+    return undefined;
+  }
   // Comprehension targets have an expression-local scope, including before
   // their `for` clause. Until those bindings can be proven, optional inference
   // must not borrow an enclosing workflow builder for their timeout calls.

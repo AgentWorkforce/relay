@@ -642,11 +642,50 @@ wf = workflow('later')`;
     expect(resolveWorkflowLaunchTimeoutMs(source, 'py', 900_000)).toBe(900_000);
   });
 
-  it('retains proven Python timeouts outside timeout-free comprehensions and for loops', () => {
+  it.each([
+    'for wf in items:',
+    'async for wf in items:',
+    'for key, wf in items:',
+    'for (key, wf) in items:',
+    'with manager() as wf:',
+    'async with manager() as wf:',
+    'with (manager() as wf):',
+    'except Exception as wf:',
+    'except* Exception as wf:',
+  ])('omits inference for unmodeled Python control-flow bindings: %s', (header) => {
+    const source = `wf = workflow('real')\n${header}\n  wf.timeout(600_000)`;
+    expect(inferWorkflowLaunchTimeoutMs(source, 'py')).toBeUndefined();
+    expect(resolveWorkflowLaunchTimeoutMs(source, 'py', 900_000)).toBe(900_000);
+  });
+
+  it.each([
+    'for (const workflow of items) { workflow("fake").timeout(600_000); }',
+    'for (const {workflow} of items) { workflow("fake").timeout(600_000); }',
+    'for (const [workflow] of items) workflow("fake").timeout(600_000);',
+    'for await (const {workflow} of items) workflow("fake").timeout(600_000);',
+    'for (let workflow = other; ready; advance()) workflow("fake").timeout(600_000);',
+    'let wf = workflow("real"); for (wf of items) wf.timeout(600_000);',
+    'for (const workflow of items) {} workflow("real").timeout(900_000);',
+    'for (const item of items) {} workflow("real").timeout(900_000);',
+  ])('omits inference for unmodeled TypeScript loop scopes: %s', (source) => {
+    expect(inferWorkflowLaunchTimeoutMs(source, 'ts')).toBeUndefined();
+    expect(resolveWorkflowLaunchTimeoutMs(source, 'ts', 900_000)).toBe(900_000);
+  });
+
+  it('omits Python statement loops even when their target appears unrelated', () => {
+    const source = `wf = workflow('real')\nfor item in values:\n  wf.timeout(900_000)`;
+    expect(inferWorkflowLaunchTimeoutMs(source, 'py')).toBeUndefined();
+  });
+
+  it('ignores masked TypeScript loop text when inferring a proven timeout', () => {
+    const source = `// for (const workflow of items)\nconst text = 'for await (wf of items)';\nworkflow('real').timeout(900_000);`;
+    expect(inferWorkflowLaunchTimeoutMs(source, 'ts')).toBe(900_000);
+  });
+
+  it('retains proven Python timeouts outside timeout-free comprehensions', () => {
     const source = `wf = workflow('real')
 values = [item for item in items]
-for item in values:
-  wf.timeout(900_000)
+wf.timeout(900_000)
 label = 'for wf in workflow.timeout(600_000)'`;
     expect(inferWorkflowLaunchTimeoutMs(source, 'py')).toBe(900_000);
   });
