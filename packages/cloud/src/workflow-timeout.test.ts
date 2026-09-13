@@ -690,6 +690,31 @@ label = 'for wf in workflow.timeout(600_000)'`;
     expect(inferWorkflowLaunchTimeoutMs(source, 'py')).toBe(900_000);
   });
 
+  it.each([
+    '[item\n  for item in items]',
+    '(item\n  for item in items)',
+    '{item\n  for item in items}',
+    '{key: item\n  for key, item in items}',
+    '[item\n  async for item in items]',
+  ])('preserves inference around wrapped timeout-free Python comprehensions: %s', (expression) => {
+    const body = `values = ${expression}\nwf.timeout(900_000)`;
+    const source = `wf = workflow('real')\n${
+      expression.includes('async for') ? `async def run():\n${body.replace(/^/gm, '  ')}` : body
+    }`;
+    expect(inferWorkflowLaunchTimeoutMs(source, 'py')).toBe(900_000);
+    expect(resolveWorkflowLaunchTimeoutMs(source, 'py', 750_000)).toBe(750_000);
+  });
+
+  it.each([
+    "wf = workflow('real'); for wf in items: wf.timeout(600_000)",
+    "wf = workflow('real')\nif ready: with manager() as wf: wf.timeout(600_000)",
+  ])('conservatively omits malformed inline Python compound headers: %s', (source) => {
+    // Python rejects these compound statements in a simple-statement suite.
+    // The static scanner still must not derive metadata from their bindings.
+    expect(inferWorkflowLaunchTimeoutMs(source, 'py')).toBeUndefined();
+    expect(resolveWorkflowLaunchTimeoutMs(source, 'py', 750_000)).toBe(750_000);
+  });
+
   it('omits distinct Python literals while preserving explicit override validation', () => {
     const source = "workflow('a').timeout(600_000)\nworkflow('b').timeout(900_000)";
     expect(inferWorkflowLaunchTimeoutMs(source, 'py')).toBeUndefined();

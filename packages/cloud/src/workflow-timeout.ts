@@ -748,6 +748,18 @@ function pythonDelimiterDepth(source: string): Uint32Array {
   return depths;
 }
 
+function hasPythonStatementBindings(source: string): boolean {
+  const headers = /\b(?:for|with|except)\b/g;
+  let header = headers.exec(source);
+  if (header === null) return false;
+  const depths = pythonDelimiterDepth(source);
+  do {
+    if (depths[header.index] === 0) return true;
+    header = headers.exec(source);
+  } while (header !== null);
+  return false;
+}
+
 function hasPythonComprehensionTimeout(masked: MaskedWorkflowSource): boolean {
   const { source, nextNonWhitespace } = masked;
   if (!/\bfor\b/.test(source)) return false;
@@ -1322,11 +1334,7 @@ export function inferWorkflowLaunchTimeoutMs(
   // Conservatively leave the optional metadata out instead of borrowing an
   // enclosing builder or letting a loop-local binding hide an outer factory.
   // Test masked code so comments and strings cannot disable valid inference.
-  if (
-    fileType === 'ts'
-      ? /\bfor\s*(?:await\s*)?\(/.test(source)
-      : /^[ \t]*(?:(?:async[ \t]+)?(?:for|with)|except)\b/m.test(source)
-  ) {
+  if (fileType === 'ts' ? /\bfor\s*(?:await\s*)?\(/.test(source) : hasPythonStatementBindings(source)) {
     return undefined;
   }
   // Comprehension targets have an expression-local scope, including before
