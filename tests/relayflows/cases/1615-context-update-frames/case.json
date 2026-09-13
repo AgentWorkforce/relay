@@ -1,0 +1,21 @@
+{
+  "version": 1,
+  "id": "1615-context-update-frames",
+  "kind": "bugfix",
+  "title": "Accept Relaycast context.update node frames instead of rejecting them",
+  "requirements": ["broker-linux-x64"],
+  "runner": {
+    "command": ["node", "tests/relayflows/cases/1615-context-update-frames/run.mjs"]
+  },
+  "timeoutSeconds": 600,
+  "expected": {
+    "base": {
+      "outcome": "bug",
+      "signature": "context_update_rejected_as_invalid_frame"
+    },
+    "head": {
+      "outcome": "fixed",
+      "signature": "context_update_accepted_and_routed"
+    }
+  }
+}

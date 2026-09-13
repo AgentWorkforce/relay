@@ -1,0 +1,83 @@
+{
+  "id": "traj_h0xx33q5a1ga",
+  "version": 1,
+  "task": {
+    "title": "Accept Relaycast context.update node frames in the broker (relay#1615)",
+    "source": {
+      "system": "plain",
+      "id": "1615"
+    }
+  },
+  "status": "completed",
+  "startedAt": "2026-09-02T04:39:35.333Z",
+  "completedAt": "2026-09-02T04:42:32.494Z",
+  "agents": [
+    {
+      "name": "default",
+      "role": "lead",
+      "joinedAt": "2026-09-02T04:39:43.528Z"
+    }
+  ],
+  "chapters": [
+    {
+      "id": "chap_lhxpvnoz5nzx",
+      "title": "Work",
+      "agentName": "default",
+      "startedAt": "2026-09-02T04:39:43.528Z",
+      "endedAt": "2026-09-02T04:42:32.494Z",
+      "events": [
+        {
+          "ts": 1788323983530,
+          "type": "decision",
+          "content": "Reused BrokerEvent::MessageDeliveryFailed for Relaycast delivery.failed/deferred instead of a new event kind: Reused BrokerEvent::MessageDeliveryFailed for Relaycast delivery.failed/deferred instead of a new event kind",
+          "raw": {
+            "question": "Reused BrokerEvent::MessageDeliveryFailed for Relaycast delivery.failed/deferred instead of a new event kind",
+            "chosen": "Reused BrokerEvent::MessageDeliveryFailed for Relaycast delivery.failed/deferred instead of a new event kind",
+            "alternatives": [],
+            "reasoning": "SDK/dashboard consumers already render message_delivery_failed; a new kind would need client changes to be visible, defeating the point of surfacing the failure to the sending agent"
+          },
+          "significance": "high"
+        },
+        {
+          "ts": 1788323985386,
+          "type": "decision",
+          "content": "Reused RelaycastHttpClient::forget_agent_registration for agent.identity_taken_over: Reused RelaycastHttpClient::forget_agent_registration for agent.identity_taken_over",
+          "raw": {
+            "question": "Reused RelaycastHttpClient::forget_agent_registration for agent.identity_taken_over",
+            "chosen": "Reused RelaycastHttpClient::forget_agent_registration for agent.identity_taken_over",
+            "alternatives": [],
+            "reasoning": "That cache is the state the takeover/registration paths in relaycast/ws.rs already consult; a parallel stale flag would drift"
+          },
+          "significance": "high"
+        }
+      ]
+    }
+  ],
+  "retrospective": {
+    "summary": "Broker parses Relaycast context.update node frames via a new ServerToNode::ContextUpdate variant, surfaces Relaycast delivery problems to the sending worker as message_delivery_failed, and drops the cached Relaycast registration on agent.identity_taken_over. (Review follow-up on the same PR narrowed the surfaced event to delivery.failed only: delivery.deferred is non-terminal \u2014 it stays queued for a later available_at retry \u2014 so it is now log-only.) Verified with `cargo fmt --all --check` (clean), `cargo clippy -p agent-relay-broker --all-targets` (no warnings), and `cargo test -p agent-relay-broker`: 1047 passed / 0 failed / 4 ignored in the lib unit suite, plus 12 continuity, 1 fleet_wire_fixtures and 3 journal_lock_cli integration tests, and 0 doc-tests. RelayFlow case 1615-context-update-frames was run on both compiled arms \u2014 base (origin/main) yields outcome bug / context_update_rejected_as_invalid_frame, head yields outcome fixed / context_update_accepted_and_routed.",
+    "approach": "Mirror the engine's canonical context.update schema in fleet_wire (forward-compatible, no deny_unknown_fields), route the parsed frame through the existing fleet-control channel, and prove base/head behaviour with a dependency-free fake Relaycast in a RelayFlow case.",
+    "confidence": 0.85
+  },
+  "commits": [
+    "c919d2eeff0bf606a215141822571ca1fdbba5d3",
+    "e22a7a712025bd2b325d607bff54f5a00c01cc06"
+  ],
+  "filesChanged": [
+    "CHANGELOG.md",
+    "crates/broker/src/fleet_wire.rs",
+    "crates/broker/src/node_control.rs",
+    "crates/broker/src/relaycast/ws.rs",
+    "crates/broker/src/runtime/fleet.rs",
+    "crates/broker/src/runtime/tests.rs",
+    "crates/broker/tests/fixtures/fleet-wire/context.update.json",
+    "crates/broker/tests/fleet_wire_fixtures.rs",
+    "tests/relayflows/cases/1615-context-update-frames/case.json",
+    "tests/relayflows/cases/1615-context-update-frames/run.mjs"
+  ],
+  "projectId": "AgentWorkforce/relay",
+  "tags": [],
+  "_trace": {
+    "startRef": "6d5199ff103cb5f4ff6adf0a3fa32a788646a9bc",
+    "endRef": "e22a7a712025bd2b325d607bff54f5a00c01cc06"
+  }
+}
