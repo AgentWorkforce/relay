@@ -373,6 +373,7 @@ export async function resolveWorkspaceByKey(
     interactive: false,
     refreshTimeoutMs: options.refreshTimeoutMs,
     env,
+    validateApiUrl: assertWorkspaceResolverTransport,
   });
   assertWorkspaceResolverTransport(auth.apiUrl);
   const endpoint = '/api/v1/workspaces/current/resolve';

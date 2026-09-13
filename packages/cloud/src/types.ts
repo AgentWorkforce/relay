@@ -43,6 +43,8 @@ export type CloudSessionOptions = {
   device?: boolean;
   refreshTimeoutMs?: number;
   env?: NodeJS.ProcessEnv;
+  /** Optional caller policy applied before refreshed credentials use a selected API host. */
+  validateApiUrl?: (apiUrl: string) => void;
 };
 
 export type WhoAmIResponse = {

@@ -2,6 +2,7 @@ import { randomUUID } from 'node:crypto';
 import path from 'node:path';
 
 import { InvalidArgumentError, type Command } from 'commander';
+import { findProjectRoot } from '@agent-relay/config';
 import {
   CloudFleetSandboxProvisionError,
   deleteCloudFleetSandbox,
@@ -146,6 +147,7 @@ export interface FleetCommandDependencies {
   createFleetWorkspaceClient: (options: SdkClientOptions) => RelayWorkspaceThinClient;
   resolveWorkspaceSelection: typeof resolveWorkspaceSelection;
   resolveSandboxRepository: typeof resolveSandboxRepository;
+  findProjectRoot: typeof findProjectRoot;
   resolveWorkspaceByKey: typeof resolveWorkspaceByKey;
   persistWorkspaceRelaycastTarget: typeof persistWorkspaceRelaycastTarget;
   ensureCloudFleetSandbox: typeof ensureCloudFleetSandbox;
@@ -168,6 +170,7 @@ function withFleetDefaults(overrides: Partial<FleetCommandDependencies> = {}): F
     },
     resolveWorkspaceSelection,
     resolveSandboxRepository,
+    findProjectRoot,
     resolveWorkspaceByKey,
     persistWorkspaceRelaycastTarget,
     ensureCloudFleetSandbox,
@@ -349,7 +352,8 @@ export function registerFleetCommands(
       }
       const channel = optionalText(options.channel, 'Channel');
       const model = optionalText(options.model, 'Model');
-      let workerCwd = optionalText(options.cwd, 'Worker cwd');
+      const requestedCwd = optionalText(options.cwd, 'Worker cwd');
+      let workerCwd = requestedCwd;
       const organization = optionalText(options.organization, 'Organization');
       const project = optionalText(options.project, 'Project');
       const workstream = optionalText(options.workstream, 'Workstream');
@@ -380,16 +384,23 @@ export function registerFleetCommands(
         // inference must remain anchored to the actual checkout from which the
         // command was invoked. This also lets --cwd point at a sibling checkout.
         const repositoryRootHint = hasExplicitProjectOverride ? process.cwd() : coreProjectRoot;
-        sandboxRepository = deps.resolveSandboxRepository(
-          repositoryRootHint,
-          optionalText(options.cwd, 'Worker cwd')
-        );
+        sandboxRepository = deps.resolveSandboxRepository(repositoryRootHint, requestedCwd);
         if (sandboxRepository) workerCwd = sandboxRepository.workerCwd;
+        const localRequestedCwd =
+          requestedCwd && !/^\/(?:srv\/agent-workforce|workspace)(?:\/|$)/.test(requestedCwd)
+            ? path.resolve(process.cwd(), requestedCwd)
+            : undefined;
+        // `--cwd` selects both the local checkout subdirectory and its Relay
+        // project namespace. Resolve an intentional nested pin before mapping
+        // that local path to the remote checkout; only placement-safe Git
+        // identity crosses the Cloud boundary.
         const workspaceProjectRoot = hasExplicitProjectOverride
           ? coreProjectRoot
-          : sandboxRepository && pathContains(sandboxRepository.projectRoot, coreProjectRoot)
-            ? coreProjectRoot
-            : (sandboxRepository?.projectRoot ?? coreProjectRoot);
+          : localRequestedCwd
+            ? deps.findProjectRoot(localRequestedCwd)
+            : sandboxRepository && pathContains(sandboxRepository.projectRoot, coreProjectRoot)
+              ? coreProjectRoot
+              : (sandboxRepository?.projectRoot ?? coreProjectRoot);
         const sandboxClientOptions = {
           ...clientOptions,
           projectRoot: workspaceProjectRoot,

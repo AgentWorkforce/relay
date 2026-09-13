@@ -738,12 +738,21 @@ export async function ensureCloudSession(options: CloudSessionOptions = {}): Pro
   }
 
   if (!shouldRefreshStoredAuth(stored)) {
-    return createCloudSession(stored, { refreshTimeoutMs });
+    return createCloudSession(stored, {
+      refreshTimeoutMs,
+      validateApiUrl: options.validateApiUrl,
+    });
   }
 
   try {
-    const auth = await refreshStoredAuth(stored, { refreshTimeoutMs });
-    return createCloudSession(auth, { refreshTimeoutMs });
+    const auth = await refreshStoredAuth(stored, {
+      refreshTimeoutMs,
+      validateApiUrl: options.validateApiUrl,
+    });
+    return createCloudSession(auth, {
+      refreshTimeoutMs,
+      validateApiUrl: options.validateApiUrl,
+    });
   } catch (error) {
     if (isEnvBackedAuth(stored)) {
       throw toEnvAuthRefreshError(error);
@@ -754,11 +763,20 @@ export async function ensureCloudSession(options: CloudSessionOptions = {}): Pro
     }
 
     const auth = await loginInteractive(stored.apiUrl, { device: options.device, env });
-    return createCloudSession(auth, { refreshTimeoutMs });
+    return createCloudSession(auth, {
+      refreshTimeoutMs,
+      validateApiUrl: options.validateApiUrl,
+    });
   }
 }
 
-function createCloudSession(auth: StoredAuth, options: { refreshTimeoutMs?: number } = {}): CloudSession {
+function createCloudSession(
+  auth: StoredAuth,
+  options: {
+    refreshTimeoutMs?: number;
+    validateApiUrl?: (apiUrl: string) => void;
+  } = {}
+): CloudSession {
   const clientOptions: CloudApiClientOptions = {
     ...auth,
     refreshTimeoutMs: options.refreshTimeoutMs,
@@ -771,6 +789,7 @@ function createCloudSession(auth: StoredAuth, options: { refreshTimeoutMs?: numb
           force: refreshOptions.force,
           refreshTimeoutMs: options.refreshTimeoutMs,
           signal: refreshOptions.signal,
+          validateApiUrl: options.validateApiUrl,
         })
       );
   }
