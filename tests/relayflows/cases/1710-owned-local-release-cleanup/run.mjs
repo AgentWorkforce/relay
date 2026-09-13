@@ -140,7 +140,8 @@ try {
       arm,
       outcome: 'bug',
       signature: 'release_outcome_not_machine_readable',
-      details: `The broker completed an owned release request, but the public response did not surface separate machine-readable process and identity outcomes: ${JSON.stringify(ownedRelease.body)}`,
+      details:
+        'The broker completed an owned release request, but the public response did not surface separate machine-readable process and identity outcomes.',
     });
   }
 

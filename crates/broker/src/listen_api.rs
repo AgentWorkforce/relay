@@ -3900,12 +3900,13 @@ mod auth_tests {
     fn test_router(
         broker_api_key: Option<&str>,
     ) -> (axum::Router, mpsc::Receiver<ListenApiRequest>) {
-        test_router_with_mode(broker_api_key, false)
+        test_router_with_mode(broker_api_key, false, false)
     }
 
     fn test_router_with_mode(
         broker_api_key: Option<&str>,
         local_only: bool,
+        persist: bool,
     ) -> (axum::Router, mpsc::Receiver<ListenApiRequest>) {
         let (tx, rx) = mpsc::channel(8);
         let (events_tx, _events_rx) = broadcast::channel(8);
@@ -3924,7 +3925,7 @@ mod auth_tests {
                     node_id: "node_test".to_string(),
                     node_name: "test-node".to_string(),
                     node_token: std::sync::Arc::new(std::sync::RwLock::new(None)),
-                    persist: false,
+                    persist,
                 },
                 broker_api_key.map(ToString::to_string),
             ),
@@ -3941,7 +3942,7 @@ mod auth_tests {
 
     #[tokio::test]
     async fn local_only_health_stays_degraded_without_a_runtime_status_reply() {
-        let (router, rx) = test_router_with_mode(Some("test"), true);
+        let (router, rx) = test_router_with_mode(Some("test"), true, false);
         drop(rx);
         let response = router
             .oneshot(
@@ -3957,6 +3958,26 @@ mod auth_tests {
         assert_eq!(body["status"], "degraded");
         assert_eq!(body["mode"], "local_only");
         assert_eq!(body["relaycastConnected"], false);
+    }
+
+    #[tokio::test]
+    async fn session_route_reports_persist_mode_when_enabled() {
+        let (router, _rx) = test_router_with_mode(Some("secret"), false, true);
+        let response = router
+            .oneshot(
+                Request::builder()
+                    .uri("/api/session")
+                    .method("GET")
+                    .header("x-api-key", "secret")
+                    .body(Body::empty())
+                    .expect("request should build"),
+            )
+            .await
+            .expect("request should succeed");
+
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = response_json(response).await;
+        assert_eq!(body["mode"], "persist");
     }
 
     #[tokio::test]
