@@ -11,5 +11,7 @@ export {
   RelayPlacementError,
   RelaycastMessagingClient,
   type RelaycastMessagingOptions,
+  type RelaySpawnDispatchState,
+  type RelaySpawnPlacementState,
 } from './relaycast.js';
 export * from './thin-client.js';

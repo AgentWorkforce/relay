@@ -9,7 +9,12 @@ import {
   type EnsureCloudFleetSandboxResult,
 } from '@agent-relay/cloud';
 import { HarnessDriverClient } from '@agent-relay/harness-driver';
-import { createWorkspaceClient, type RelayWorkspaceThinClient, type RelayNode } from '@agent-relay/sdk';
+import {
+  createWorkspaceClient,
+  RelayPlacementError,
+  type RelayWorkspaceThinClient,
+  type RelayNode,
+} from '@agent-relay/sdk';
 
 import { withDefaults, type CoreDependencies } from './core.js';
 import {
@@ -26,6 +31,7 @@ import { isAvailableFleetNode } from '../lib/fleet-live-agents.js';
 import { declaredWorkforceMetadata } from '../lib/registration-metadata.js';
 import { redactSecrets } from '../lib/redact.js';
 import { attributableReleaseReason } from '../lib/release-reason.js';
+import { spawnPlacementReceipt } from '../lib/spawn-lifecycle.js';
 import {
   resolveAgentToken,
   resolveWorkspaceSelection,
@@ -50,6 +56,54 @@ const SERVE_REPLACEMENT_MESSAGE =
 const FLEET_CLIS = new Set(['claude', 'codex', 'gemini', 'aider', 'goose', 'grok', 'opencode']);
 const CLOUD_SANDBOX_ID_PATTERN =
   /^sbx_[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
+
+function spawnInvocationWithPlacement(invocation: Record<string, unknown>): Record<string, unknown> {
+  return { ...invocation, placement: spawnPlacementReceipt(invocation) };
+}
+
+// The targeted spawn path (relay.messaging.placement.spawn) returns an
+// invocation whose `placement` is the SDK's own evidence object
+// (`state: 'accepted' | 'ready'`, `confirmed`). `spawnPlacementReceipt`
+// derives a *different* lifecycle receipt from top-level invocation fields
+// (`state: SpawnLifecycleState`, `dispatchState`, ...) — replacing the SDK
+// placement with it would silently downgrade a confirmed `accepted` result
+// to `unconfirmed_may_be_running` under `--no-confirm`. Preserve the SDK
+// placement and only augment it with the normalized `dispatchState` and
+// `invocationId`.
+function spawnInvocationWithMergedPlacement(invocation: Record<string, unknown>): Record<string, unknown> {
+  const receipt = spawnPlacementReceipt(invocation);
+  const sdkPlacement =
+    invocation.placement !== null && typeof invocation.placement === 'object'
+      ? (invocation.placement as Record<string, unknown>)
+      : undefined;
+  const invocationId = typeof receipt.invocationId === 'string' ? receipt.invocationId : undefined;
+  return {
+    ...invocation,
+    placement: {
+      ...(sdkPlacement ?? {}),
+      dispatchState: receipt.dispatchState,
+      ...(invocationId ? { invocationId } : {}),
+    },
+  };
+}
+
+function throwForTerminalSpawnFailure(invocation: Record<string, unknown>): void {
+  const placement = spawnPlacementReceipt(invocation);
+  if (placement.state !== 'failed') return;
+  const invocationId = typeof placement.invocationId === 'string' ? placement.invocationId : undefined;
+  const message =
+    typeof invocation.error === 'string' && invocation.error.trim()
+      ? invocation.error
+      : 'Fleet spawn invocation reported a terminal failure.';
+  throw new RelayPlacementError('spawn_failed', message, {
+    capability: typeof invocation.capability === 'string' ? invocation.capability : 'spawn',
+    attempts: 1,
+    ...(invocationId ? { invocationId } : {}),
+    state: 'failed',
+    dispatchState: placement.dispatchState as 'dispatched' | 'not_dispatched' | 'unknown',
+    receipt: invocation,
+  });
+}
 
 export interface FleetCommandDependencies {
   core: CoreDependencies;
@@ -597,10 +651,13 @@ export function registerFleetCommands(
                       : ''),
                 }
               : {}),
-            invocation,
+            invocation: spawnInvocationWithMergedPlacement(invocation as unknown as Record<string, unknown>),
           });
         } catch (error) {
-          if (sandbox?.outcome === 'provisioned') {
+          if (
+            sandbox?.outcome === 'provisioned' &&
+            !(error instanceof RelayPlacementError && error.state === 'unconfirmed_may_be_running')
+          ) {
             await deps
               .deleteCloudFleetSandbox({
                 cloudWorkspaceId: sandbox.cloudWorkspaceId,
@@ -657,7 +714,8 @@ export function registerFleetCommands(
             }
           : {}),
       });
-      printJson(deps.sdk, { invocation });
+      throwForTerminalSpawnFailure(invocation);
+      printJson(deps.sdk, { invocation: spawnInvocationWithPlacement(invocation) });
     });
   });
 
@@ -998,7 +1056,11 @@ async function runFleetAgentList(
     ) {
       const syntheticNodeName =
         localNodeName ?? (process.env.AGENT_RELAY_BROKER_NAME?.trim() || undefined) ?? '(local broker)';
-      const syntheticNode: RelayNode = {
+      // Keep the authoritative roster metadata when the node was filtered from
+      // the default visible set. This preserves a known offline/degraded
+      // control-plane state while still showing node-local workers.
+      const knownLocalNode = nodes.find((node) => node.name === syntheticNodeName);
+      const syntheticNode: RelayNode = knownLocalNode ?? {
         name: syntheticNodeName,
         status: 'unknown',
         capabilities: [],

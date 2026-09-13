@@ -44,6 +44,7 @@ import {
 } from './project-workspace-key.js';
 
 type UpOptions = {
+  localOnly?: boolean;
   spawn?: boolean;
   background?: boolean;
   /** Internal marker set only on the detached child re-exec. */
@@ -96,6 +97,7 @@ const NODE_TOKEN_WAIT_MS = 15_000;
 export type WorkspaceBindingSource = WorkspaceSelection['source'] | 'created' | 'multi-workspace';
 
 export interface BrokerConnection {
+  operation_mode?: 'normal' | 'local_only';
   url: string;
   port: number;
   api_key: string;
@@ -1598,6 +1600,13 @@ export async function runUpCommand(options: UpOptions, deps: CoreDependencies): 
     deps.exit(1);
     return;
   }
+  const localOnly = options.localOnly || deps.env.AGENT_RELAY_LOCAL_ONLY === '1';
+  if (localOnly) {
+    deps.env.AGENT_RELAY_LOCAL_ONLY = '1';
+    deps.warn(
+      'DEGRADED — LOCAL ONLY: fleet routing, worker presence, remote delivery and remote attachment are disabled.'
+    );
+  }
   ensureBundledAgentRelayMcpCommand(deps);
 
   const paths = deps.getProjectPaths();
@@ -1745,7 +1754,7 @@ export async function runUpCommand(options: UpOptions, deps: CoreDependencies): 
       deps.exit(1);
       return;
     }
-    const enrolledNodeToken = deps.env.RELAY_NODE_TOKEN?.trim();
+    const enrolledNodeToken = localOnly ? undefined : deps.env.RELAY_NODE_TOKEN?.trim();
     const enrolledNodeId = enrolledNodeToken ? deps.env.RELAY_NODE_ID?.trim() : undefined;
     let enrollmentFailureReason: string | undefined;
     if (enrolledNodeToken && !enrolledNodeId) {
@@ -1900,7 +1909,7 @@ export async function runUpCommand(options: UpOptions, deps: CoreDependencies): 
 
     // Resolved BEFORE the broker starts so an explicit bad --config fails
     // fast instead of tearing down a broker that just came up.
-    const nodePlan = await resolveNodeDefinitionForUp(paths, options, deps);
+    const nodePlan = localOnly ? undefined : await resolveNodeDefinitionForUp(paths, options, deps);
     const teamsConfig = deps.loadTeamsConfig(paths.projectRoot);
 
     // The broker advertises spawn:<harness> capacity for this set. A pre-set
@@ -1976,7 +1985,11 @@ export async function runUpCommand(options: UpOptions, deps: CoreDependencies): 
     const joinedWorkspaceId = relay.workspaceId ?? 'unknown';
     // The multi-workspace session always joins a configured membership; it
     // never mints a new workspace the way an unresolved single key does.
-    if (workspaceSelection || joinsMultiWorkspaceSession) {
+    if (localOnly) {
+      deps.log(
+        'Workspace: local only; configured credentials are used only for delivery-record reconciliation'
+      );
+    } else if (workspaceSelection || joinsMultiWorkspaceSession) {
       deps.log(`Workspace: joined ${joinedWorkspaceId}`);
     } else {
       deps.log(`Workspace: created new workspace ${joinedWorkspaceId}`);
@@ -2010,7 +2023,9 @@ export async function runUpCommand(options: UpOptions, deps: CoreDependencies): 
     }
 
     vlog(deps, options.verbose, 'Starting node capability providers (if any)...');
-    nodeProviders = await startNodeCapabilityProviders(paths, relay, options, deps, nodePlan);
+    nodeProviders = localOnly
+      ? undefined
+      : await startNodeCapabilityProviders(paths, relay, options, deps, nodePlan);
     // When Reflex is enabled, periodically sync + push local session history to
     // relayhistory-cloud in-process via the ai-hist-native addon (no subprocess).
     // No-op when disabled or the addon isn't available.
@@ -2023,11 +2038,9 @@ export async function runUpCommand(options: UpOptions, deps: CoreDependencies): 
       // Node delivery can't connect until the broker mints its node token, which
       // now happens in the background after `Broker started.`. Budget for that
       // mint window plus the connect so a slow mint doesn't abort auto-spawn.
-      const delivery = await waitForNodeDelivery(
-        relay,
-        deps,
-        NODE_TOKEN_WAIT_MS + NODE_DELIVERY_READY_TIMEOUT_MS
-      );
+      const delivery = localOnly
+        ? { ready: true, status: null }
+        : await waitForNodeDelivery(relay, deps, NODE_TOKEN_WAIT_MS + NODE_DELIVERY_READY_TIMEOUT_MS);
       if (!delivery.ready) {
         deps.error('Refusing to auto-spawn agents because broker node delivery is not connected.');
         deps.error(`Node delivery: ${formatNodeDeliveryStatus(delivery.status)}`);
@@ -2253,8 +2266,21 @@ export async function runStatusCommand(
     return;
   }
 
-  deps.log('Status: RUNNING');
-  deps.log('Mode: broker (stdio)');
+  const statusDetails =
+    readiness.statusDetails ?? (waitMs > 0 ? null : await readBrokerStatusDetails(readiness.conn));
+  const localOnly =
+    statusDetails?.status.mode === 'local_only' || readiness.conn.operation_mode === 'local_only';
+  deps.log(localOnly ? 'Status: DEGRADED (LOCAL ONLY)' : 'Status: RUNNING');
+  deps.log(localOnly ? 'Mode: local only' : 'Mode: broker (stdio)');
+  if (localOnly) {
+    deps.warn('Cross-machine routing, worker presence, remote delivery and remote attachment: DISABLED');
+    const reconciliation = statusDetails?.status.degraded?.reconciliation;
+    if (reconciliation) {
+      deps.log(
+        `Reconciliation: ${reconciliation.connected ? 'connected (audit only)' : reconciliation.configured ? 'disconnected' : 'not configured'}; pending records: ${reconciliation.pending_records}`
+      );
+    }
+  }
   deps.log(`PID: ${readiness.conn.pid}`);
   deps.log(`Project: ${paths.projectRoot}`);
   const source = workspaceBindingSource(readiness.conn.workspace_source);
@@ -2264,9 +2290,7 @@ export async function runStatusCommand(
       : 'Workspace source: unknown (startup provenance was not recorded)'
   );
 
-  // Query the running broker for additional status info
-  const statusDetails =
-    readiness.statusDetails ?? (waitMs > 0 ? null : await readBrokerStatusDetails(readiness.conn));
+  // Additional runtime details use the same bounded snapshot as the mode above.
   if (!statusDetails || statusDetails.session === null) {
     deps.warn('Broker API details unavailable (request failed or exceeded the 2s limit).');
   }

@@ -5,28 +5,38 @@ All notable changes to Agent Relay will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased - Major]
+## [Unreleased]
+
+## [12.1.0] - 2026-09-12
+
+### Added
+
+- `agent-relay node up --local-only` runs local agents during Relaycast outages, visibly reports degraded capabilities, and retains local delivery records for reconciliation after reconnect.
 
 ### Fixed
 
 - Local release of broker-owned workers now performs generation-bound direct identity cleanup with durable retries when the worker host is unavailable.
+- HTTP agent spawn rejects failed Relaycast node binding, cleans up the newly registered identity, and publishes declared metadata for successful spawns using either new or supplied tokens.
 
 - `agent-relay node up` retries the narrowly transient Relaycast `workspace_busy` admission response while keeping unrelated rate limits terminal and preserving bounded startup diagnostics.
 - `fleet spawn --sandbox` dispatches with only its temporary launcher token after Cloud target selection, avoiding the SDK's dual-credential rejection while keeping workspace-key authority limited to launcher registration and release.
 
+- SDK fleet spawn placement receipts preserve invocation correlation and distinguish accepted, ready, unconfirmed, and terminal-failed outcomes.
+
+- CLI and MCP fleet spawns require explicit launch/readiness proof, preserve dispatch evidence, and surface terminal failures with correlated receipts.
+
+- `fleet agent list` reports control-plane reachability separately from hosted-worker liveness in JSON and pretty output, including offline local nodes.
+
 - `fleet spawn --sandbox` uses the provider-neutral durable profile for explicit Daytona and E2B sandboxes, so their measured resource envelopes are routable while Agent37 retains its heavy profile.
 
+- Normal broker restarts preserve unmatched local audit backlogs without blocking fleet recovery.
 - Cloud Daytona Fleet provisioning now requires and returns the exact provider sandbox UUID alongside the stable Cloud sandbox ID, enabling ID-bound inspection and cleanup after interrupted launches.
 
 - Node startup recovery and shutdown require a persisted process and runtime-lock identity for the selected state directory, preserving unrelated agents.
 
-### Breaking Changes
+### Changed
 
-- `up` and `node up` refuse startup outside macOS and Linux because broker ownership cannot be verified on other platforms. Legacy brokers without a verifiable identity no longer support automatic shutdown or recovery.
-
-### Migration Guidance
-
-- Run nodes on macOS or Linux (including WSL) with `ps` and `lsof` available. Manually verify and stop legacy brokers before removing their retained state and restarting to create a verifiable identity.
+- `up` and `node up` refuse startup outside macOS and Linux (including WSL, with `ps` and `lsof` available) because broker ownership cannot be verified elsewhere. Brokers started by earlier versions have no verifiable identity and are not shut down or recovered automatically; stop them manually and restart once to create one.
 
 ## [12.0.0] - 2026-09-10
 

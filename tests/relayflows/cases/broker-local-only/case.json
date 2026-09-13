@@ -1,0 +1,13 @@
+{
+  "version": 1,
+  "id": "broker-local-only",
+  "kind": "feature",
+  "title": "Local agents remain available during Relaycast outages with visible degradation and durable reconciliation",
+  "requirements": ["broker-linux-x64"],
+  "runner": { "command": ["node", "tests/relayflows/cases/broker-local-only/run.mjs"] },
+  "timeoutSeconds": 900,
+  "expected": {
+    "base": { "outcome": "absent", "signature": "relaycast_outage_blocks_local_runtime" },
+    "head": { "outcome": "fixed", "signature": "visible_local_runtime_and_reconciled_delivery" }
+  }
+}

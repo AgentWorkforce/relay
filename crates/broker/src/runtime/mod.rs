@@ -72,6 +72,7 @@ mod api;
 mod app_server;
 mod connection;
 mod dead_letter;
+mod degraded;
 mod delivery;
 mod event_loop;
 mod fleet;

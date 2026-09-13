@@ -190,6 +190,7 @@ pub(crate) fn commit_resize_ownership(
 }
 
 pub(crate) struct BrokerRuntime {
+    pub(super) degraded: Option<super::degraded::DegradedState>,
     pub(super) persist: bool,
     pub(super) broker_start: Instant,
     pub(super) agent_spawn_count: u32,

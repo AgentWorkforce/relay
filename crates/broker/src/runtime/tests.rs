@@ -615,6 +615,7 @@ fn worker_event_runtime_fixture(
         tokio::signal::windows::ctrl_shutdown().expect("install test Ctrl+Shutdown listener");
 
     let runtime = BrokerRuntime {
+        degraded: None,
         persist: false,
         broker_start: Instant::now(),
         agent_spawn_count: 0,
@@ -6448,6 +6449,251 @@ async fn name_only_release_of_retired_owned_worker_deletes_directly_and_is_idemp
 }
 
 #[tokio::test]
+async fn name_only_release_cleans_replacement_when_tombstone_is_stale() {
+    use crate::listen_api::ListenApiRequest;
+    use httpmock::{Method::POST, MockServer};
+    use tokio::sync::oneshot;
+
+    let server = MockServer::start();
+    let release = server.mock(|when, then| {
+        when.method(POST).path("/v1/agents/release");
+        then.status(200)
+            .json_body(json!({"ok":true,"data":{"status":"completed"}}));
+    });
+    let registry = make_worker_registry_with_worker("unrelated").await;
+    let mut fixture = worker_event_runtime_fixture(registry, HashMap::new());
+    let name = WorkerName::from("retired-name-only");
+    let stale_generation = Uuid::new_v4();
+    let replacement_generation = Uuid::new_v4();
+    let http = RelaycastHttpClient::new(Some(server.base_url()), "rk_live_test", "broker", "codex");
+    http.seed_agent_token(&name, "replacement-owned-token");
+    fixture
+        .runtime
+        .workers
+        .completed_owned_releases
+        .push_back((name.clone(), stale_generation));
+    fixture
+        .runtime
+        .workers
+        .owned_spawn_generations
+        .insert(name.clone(), (replacement_generation, http));
+    fixture
+        .runtime
+        .fleet_delivery_book
+        .bind_authoritative_identity(name.to_string(), "replacement-owned-id");
+
+    let (reply, mut result) = oneshot::channel();
+    fixture
+        .runtime
+        .handle_api_request(ListenApiRequest::Release {
+            name: name.clone(),
+            reason: None,
+            expected_generation: None,
+            delete_identity: false,
+            reply,
+        })
+        .await;
+
+    let deregister = tokio::time::timeout(Duration::from_secs(2), async {
+        loop {
+            if let FleetControlCommand::DeregisterAgent { reply, .. } =
+                fixture.fleet_control_rx.recv().await.unwrap()
+            {
+                break reply;
+            }
+        }
+    })
+    .await
+    .expect("replacement cleanup should request fleet deregistration");
+    deregister.send(Ok(())).unwrap();
+
+    tokio::time::timeout(Duration::from_secs(2), async {
+        loop {
+            fixture.runtime.reconcile_identity_cleanups().await;
+            if let Ok(response) = result.try_recv() {
+                let response = response.expect("replacement cleanup should succeed");
+                assert_eq!(response["process"], "stopped");
+                assert_eq!(response["identity"], "deleted");
+                break;
+            }
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .expect("replacement cleanup should settle");
+    release.assert_hits(1);
+    assert_eq!(
+        fixture.runtime.workers.completed_owned_releases.back(),
+        Some(&(name.clone(), replacement_generation))
+    );
+    assert!(fixture
+        .runtime
+        .workers
+        .completed_owned_releases
+        .contains(&(name.clone(), stale_generation)));
+    assert!(!fixture
+        .runtime
+        .workers
+        .owned_spawn_generations
+        .contains_key(&name));
+
+    let (reply, repeated) = oneshot::channel();
+    fixture
+        .runtime
+        .handle_api_request(ListenApiRequest::Release {
+            name: name.clone(),
+            reason: None,
+            expected_generation: None,
+            delete_identity: false,
+            reply,
+        })
+        .await;
+    let repeated = tokio::time::timeout(Duration::from_secs(2), repeated)
+        .await
+        .expect("replacement tombstone retry should settle")
+        .unwrap()
+        .expect("replacement tombstone retry should be idempotent");
+    assert_eq!(repeated["identity"], "deleted");
+    release.assert_hits(1);
+    fixture.runtime.workers.release("unrelated").await.unwrap();
+}
+
+#[tokio::test]
+async fn http_spawn_binding_failure_stops_before_launch_and_cleans_owned_identity() {
+    use crate::listen_api::ListenApiRequest;
+    use httpmock::{
+        Method::{GET, PATCH, POST},
+        MockServer,
+    };
+    use tokio::sync::oneshot;
+
+    let server = MockServer::start();
+    let create = server.mock(|when, then| {
+        when.method(POST).path("/v1/agents");
+        then.status(201).json_body(json!({"ok":true,"data":{
+            "id":"owned-binding-id","workspace_id":"ws_demo","name":"binding-refused",
+            "status":"active","created_at":"2026-09-11T12:00:00Z","token":"at_live_binding_fixture"
+        }}));
+    });
+    let bind = server.mock(|when, then| {
+        when.method(POST).path("/v1/nodes/test-node/agents");
+        then.status(503).json_body(json!({"ok":false,"error":{
+            "code":"workspace_busy","message":"binding admission busy"
+        }}));
+    });
+    let metadata = server.mock(|when, then| {
+        when.method(PATCH).path("/v1/agents/binding-refused");
+        then.status(200).json_body(json!({"ok":true,"data":{}}));
+    });
+    let scope = server.mock(|when, then| {
+        when.method(GET).path("/v1/agents/binding-refused");
+        then.status(200)
+            .json_body(json!({"ok":true,"data":{"channels":[]}}));
+    });
+    let cleanup = server.mock(|when, then| {
+        when.method(POST).path("/v1/agents/release");
+        then.status(200)
+            .json_body(json!({"ok":true,"data":{"status":"completed"}}));
+    });
+    let registry = make_worker_registry_with_worker("unrelated-binding-worker").await;
+    let mut fixture = worker_event_runtime_fixture(registry, HashMap::new());
+    fixture.runtime.relaycast_http =
+        RelaycastHttpClient::new(Some(server.base_url()), "rk_live_test", "broker", "codex");
+    let name = WorkerName::from("binding-refused");
+    let (reply, mut result) = oneshot::channel();
+    fixture
+        .runtime
+        .handle_api_request(ListenApiRequest::Spawn {
+            name: name.clone(),
+            cli: "missing-binding-fixture-cli".into(),
+            transport: None,
+            model: None,
+            args: vec![],
+            task: None,
+            registration_metadata: crate::fleet_wire::AgentRegistrationMetadata {
+                organization: Some("original-spawn".into()),
+                project: Some("must-not-leak-to-retry".into()),
+                ..Default::default()
+            },
+            channels: Some(vec![]),
+            cwd: None,
+            team: None,
+            shadow_of: None,
+            shadow_mode: None,
+            continue_from: None,
+            idle_threshold_secs: None,
+            exit_after_task: false,
+            skip_relay_prompt: true,
+            restart_policy: Box::new(None),
+            harness_config: None,
+            agent_token: None,
+            agent_result_schema: None,
+            replay_buffer: crate::replay_buffer::ReplayBuffer::new(16),
+            reply,
+        })
+        .await;
+    let response = tokio::time::timeout(Duration::from_secs(3), async {
+        loop {
+            fixture.runtime.reconcile_identity_cleanups().await;
+            if let Ok(response) = result.try_recv() {
+                break response;
+            }
+            tokio::task::yield_now().await;
+        }
+    })
+    .await;
+    let unrelated_survived = fixture
+        .runtime
+        .workers
+        .has_worker("unrelated-binding-worker");
+    fixture
+        .runtime
+        .workers
+        .release("unrelated-binding-worker")
+        .await
+        .unwrap();
+    let error = response
+        .expect("binding failure cleanup must settle")
+        .unwrap_err();
+    assert!(
+        error.contains("binding") && error.contains("workspace_busy"),
+        "{error}"
+    );
+    create.assert_hits(1);
+    bind.assert_hits(1);
+    // Let any incorrectly detached request run before the name can be reused.
+    tokio::time::sleep(Duration::from_millis(100)).await;
+    metadata.assert_hits(0);
+    scope.assert_hits(0);
+    cleanup.assert_hits(1);
+    assert!(unrelated_survived);
+    assert!(!fixture.runtime.workers.has_worker(&name));
+    assert!(!fixture
+        .runtime
+        .workers
+        .identity_cleanups
+        .contains_key(&name));
+    assert!(!fixture
+        .runtime
+        .workers
+        .owned_spawn_generations
+        .contains_key(&name));
+}
+
+#[tokio::test]
+async fn corrupt_owned_cleanup_journal_does_not_block_startup() {
+    let registry = make_worker_registry_with_worker("unrelated").await;
+    let mut fixture = worker_event_runtime_fixture(registry, HashMap::new());
+    let journal = fixture._temp_dir.path().join("owned-cleanups.json");
+    std::fs::write(&journal, "{ this is not valid json").unwrap();
+    fixture.runtime.workers.owned_cleanup_journal = Some(journal);
+
+    super::identity_cleanup::restore_identity_cleanups(&mut fixture.runtime).unwrap();
+    assert!(fixture.runtime.workers.identity_cleanups.is_empty());
+    fixture.runtime.workers.release("unrelated").await.unwrap();
+}
+
+#[tokio::test]
 async fn caller_owned_release_cannot_be_promoted_to_identity_deletion() {
     use crate::listen_api::ListenApiRequest;
     use tokio::sync::oneshot;
@@ -6535,4 +6781,271 @@ async fn owned_cleanup_journal_restores_generation_and_retries_without_plaintext
     let persisted = std::fs::read_to_string(journal).unwrap();
     assert!(!persisted.contains("restart-owned"));
     fixture.runtime.workers.release("unrelated").await.unwrap();
+}
+
+#[tokio::test]
+async fn local_only_queued_work_survives_restart_and_replays_when_recipient_reconnects() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("pending.json");
+    let id = DeliveryId::new("del_local_reconnect");
+    let mut pending = HashMap::from([(
+        id.clone(),
+        pending_delivery("local-worker", id.as_str(), "local_reconnect"),
+    )]);
+    pending.get_mut(&id).unwrap().attempts = 0;
+    pending.get_mut(&id).unwrap().delivery.workspace_id = Some(WorkspaceId::new("local"));
+    pending.get_mut(&id).unwrap().delivery.workspace_alias = None;
+    super::save_pending_deliveries(&path, &pending).unwrap();
+    pending = load_pending_deliveries(&path);
+    let (tx, _rx) = mpsc::channel(8);
+    let mut absent = WorkerRegistry::new(tx, vec![], dir.path().join("logs"), Instant::now());
+    assert!(matches!(
+        retry_pending_delivery(&id, &mut absent, &mut pending, Duration::from_secs(1))
+            .await
+            .unwrap(),
+        DeliveryAttemptOutcome::Noop
+    ));
+    assert_eq!(pending[&id].attempts, 0);
+    assert!(pending[&id]
+        .last_error
+        .as_deref()
+        .unwrap()
+        .contains("reconnect"));
+    let mut reconnected = make_worker_registry_with_worker("local-worker").await;
+    assert!(matches!(
+        retry_pending_delivery(&id, &mut reconnected, &mut pending, Duration::from_secs(1))
+            .await
+            .unwrap(),
+        DeliveryAttemptOutcome::Attempted { .. }
+    ));
+    assert_eq!(pending[&id].attempts, 1);
+    assert_eq!(pending[&id].delivery.event_id.as_str(), "local_reconnect");
+    cleanup_worker_registry(reconnected).await;
+}
+
+#[tokio::test]
+async fn local_only_exhausted_delivery_survives_absence_and_replays_after_restart() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("pending.json");
+    let id = DeliveryId::new("del_local_exhausted");
+    let mut entry = pending_delivery("local-worker", id.as_str(), "local_exhausted");
+    entry.attempts = MAX_DELIVERY_RETRIES;
+    entry.failed_attempts = MAX_DELIVERY_RETRIES;
+    let expected_delivery = entry.delivery.clone();
+    let mut pending = HashMap::from([(id.clone(), entry)]);
+    // Exercise the live exhausted queue first: loading a snapshot resets the
+    // failure budget and would hide an exhaustion check before absence handling.
+    let (tx, _rx) = mpsc::channel(8);
+    let mut absent = WorkerRegistry::new(tx, vec![], dir.path().join("logs"), Instant::now());
+    for _ in 0..2 {
+        assert!(matches!(
+            retry_pending_delivery(&id, &mut absent, &mut pending, Duration::from_secs(1))
+                .await
+                .unwrap(),
+            DeliveryAttemptOutcome::Noop
+        ));
+        assert_eq!(pending[&id].delivery, expected_delivery);
+        assert_eq!(pending[&id].attempts, MAX_DELIVERY_RETRIES);
+        super::save_pending_deliveries(&path, &pending).unwrap();
+        pending = load_pending_deliveries(&path);
+    }
+    let mut reconnected = make_worker_registry_with_worker("local-worker").await;
+    let outcome =
+        retry_pending_delivery(&id, &mut reconnected, &mut pending, Duration::from_secs(1))
+            .await
+            .unwrap();
+    cleanup_worker_registry(reconnected).await;
+    assert!(matches!(outcome, DeliveryAttemptOutcome::Attempted { .. }));
+    assert_eq!(pending[&id].delivery, expected_delivery);
+    assert_eq!(pending[&id].attempts, MAX_DELIVERY_RETRIES + 1);
+    assert_eq!(pending[&id].failed_attempts, 0);
+}
+
+#[tokio::test]
+async fn local_only_restored_exhausted_delivery_replays_to_already_registered_worker() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("pending.json");
+    let id = DeliveryId::new("del_local_present_on_restart");
+    let mut entry = pending_delivery("local-worker", id.as_str(), "local_present_on_restart");
+    entry.attempts = MAX_DELIVERY_RETRIES;
+    entry.failed_attempts = MAX_DELIVERY_RETRIES;
+    let expected_delivery = entry.delivery.clone();
+    super::save_pending_deliveries(&path, &HashMap::from([(id.clone(), entry)])).unwrap();
+    let mut pending = load_pending_deliveries(&path);
+    let mut workers = make_worker_registry_with_worker("local-worker").await;
+    let outcome = retry_pending_delivery(&id, &mut workers, &mut pending, Duration::from_secs(1))
+        .await
+        .unwrap();
+    cleanup_worker_registry(workers).await;
+    assert!(matches!(outcome, DeliveryAttemptOutcome::Attempted { .. }));
+    assert_eq!(pending[&id].delivery, expected_delivery);
+    assert_eq!(pending[&id].attempts, MAX_DELIVERY_RETRIES + 1);
+    assert_eq!(pending[&id].failed_attempts, 0);
+}
+
+#[tokio::test]
+async fn http_spawn_supplied_token_publishes_declared_metadata() {
+    assert_http_spawn_metadata_publication(true, true).await;
+}
+
+#[tokio::test]
+async fn http_spawn_new_identity_publishes_declared_metadata() {
+    assert_http_spawn_metadata_publication(false, true).await;
+}
+
+#[tokio::test]
+async fn http_spawn_failed_launch_does_not_publish_declared_metadata() {
+    assert_http_spawn_metadata_publication(true, false).await;
+}
+
+async fn assert_http_spawn_metadata_publication(supplied_token: bool, valid_cwd: bool) {
+    use crate::listen_api::ListenApiRequest;
+    use httpmock::{
+        Method::{GET, PATCH, POST},
+        MockServer,
+    };
+    use tokio::sync::oneshot;
+
+    let server = MockServer::start();
+    let name = WorkerName::from("metadata-worker");
+    let token = "at_live_metadata_fixture";
+    let identity = json!({"id":"metadata-id","workspace_id":"ws_demo",
+        "name":name,"status":"active","created_at":"2026-09-11T12:00:00Z"});
+    let create = server.mock(|when, then| {
+        when.method(POST).path("/v1/agents");
+        let mut data = identity.clone();
+        data["token"] = json!(token);
+        then.status(201).json_body(json!({"ok":true,"data":data}));
+    });
+    let bind = server.mock(|when, then| {
+        when.method(POST).path("/v1/nodes/test-node/agents");
+        then.status(200).json_body(json!({"ok":true,"data":{
+            "id":"binding-id", "agent_id":"metadata-id", "agent_name":"metadata-worker",
+            "node_id":"node-id", "node_name":"test-node", "node_kind":"local", "node_role":"broker",
+            "status":"active", "session_ref":null, "priority":0,
+            "created_at":"2026-09-11T12:00:00Z", "updated_at":null
+        }}));
+    });
+    let lookup = server.mock(|when, then| {
+        when.method(GET)
+            .path("/v1/agent")
+            .header("authorization", format!("Bearer {token}"));
+        then.status(200)
+            .json_body(json!({"ok":true,"data":identity}));
+    });
+    server.mock(|when, then| {
+        when.method(GET).path("/v1/agents/metadata-worker");
+        then.status(200)
+            .json_body(json!({"ok":true,"data":{"channels":[]}}));
+    });
+    let metadata = server.mock(|when, then| {
+        when.method(PATCH)
+            .path("/v1/agents/metadata-worker")
+            .json_body(json!({"metadata":{
+                "organization":"demo-org", "project":"demo-project",
+                "workstream":"subscriptions", "role":"reviewer", "objective":"prove delivery"
+            }}));
+        then.status(200)
+            .json_body(json!({"ok":true,"data":identity}));
+    });
+    let unexpected_cleanup = server.mock(|when, then| {
+        when.method(POST).path("/v1/agents/release");
+        then.status(500);
+    });
+    let dir = tempfile::tempdir().unwrap();
+    let (events, _event_rx) = mpsc::channel(16);
+    let registry = WorkerRegistry::new(events, vec![], dir.path().join("logs"), Instant::now());
+    let mut fixture = worker_event_runtime_fixture(registry, HashMap::new());
+    fixture.runtime.relaycast_http =
+        RelaycastHttpClient::new(Some(server.base_url()), "rk_live_test", "broker", "codex");
+    let (reply, result) = oneshot::channel();
+    fixture
+        .runtime
+        .handle_api_request(ListenApiRequest::Spawn {
+            name: name.clone(),
+            cli: "cat".into(),
+            transport: None,
+            model: None,
+            args: vec![],
+            task: None,
+            registration_metadata: crate::fleet_wire::AgentRegistrationMetadata {
+                organization: Some("demo-org".into()),
+                project: Some("demo-project".into()),
+                workstream: Some("subscriptions".into()),
+                role: Some("reviewer".into()),
+                objective: Some("prove delivery".into()),
+            },
+            channels: Some(vec![]),
+            cwd: Some(
+                if valid_cwd {
+                    dir.path().to_path_buf()
+                } else {
+                    dir.path().join("missing")
+                }
+                .to_string_lossy()
+                .into_owned(),
+            ),
+            team: None,
+            shadow_of: None,
+            shadow_mode: None,
+            continue_from: None,
+            idle_threshold_secs: None,
+            exit_after_task: false,
+            skip_relay_prompt: true,
+            restart_policy: Box::new(None),
+            harness_config: Some(crate::protocol::ResolvedHarnessConfig::Native(
+                crate::protocol::NativeHarnessConfig {
+                    command: "cat".into(),
+                    args: vec![],
+                    cwd: None,
+                    env: None,
+                    session_id: "metadata-session".into(),
+                    metadata: None,
+                },
+            )),
+            agent_token: supplied_token.then(|| token.to_string()),
+            agent_result_schema: None,
+            replay_buffer: crate::replay_buffer::ReplayBuffer::new(16),
+            reply,
+        })
+        .await;
+    let response = tokio::time::timeout(Duration::from_secs(3), result).await;
+    // A fixture or admission regression must fail promptly rather than hang CI.
+    // Stop the owned harness before assertions, including on a regression failure.
+    fixture.runtime.workers.shutdown_all().await.unwrap();
+    let response = response.expect("spawn reply must settle").unwrap();
+    if valid_cwd {
+        assert_eq!(response.unwrap()["success"], true);
+        let published = tokio::time::timeout(Duration::from_secs(2), async {
+            while metadata.hits() == 0 {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await;
+        assert!(
+            published.is_ok(),
+            "successful spawn did not publish declared metadata"
+        );
+        metadata.assert_hits(1);
+    } else {
+        assert!(response.unwrap_err().contains("cwd"));
+        tokio::time::sleep(Duration::from_millis(100)).await;
+        metadata.assert_hits(0);
+    }
+    create.assert_hits(usize::from(!supplied_token));
+    bind.assert_hits(usize::from(!supplied_token));
+    lookup.assert_hits(1);
+    unexpected_cleanup.assert_hits(0);
+    assert!(!fixture
+        .runtime
+        .workers
+        .identity_cleanups
+        .contains_key(&name));
+    if supplied_token {
+        assert!(!fixture
+            .runtime
+            .workers
+            .owned_spawn_generations
+            .contains_key(&name));
+    }
 }

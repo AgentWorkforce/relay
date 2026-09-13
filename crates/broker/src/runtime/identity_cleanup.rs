@@ -50,22 +50,7 @@ fn persist_journal(workers: &WorkerRegistry) {
                 .flatten()
         })
         .collect();
-    let body = match serde_json::to_vec_pretty(&entries) {
-        Ok(body) => body,
-        Err(error) => {
-            tracing::warn!(error = %error, "failed to serialize owned cleanup journal");
-            return;
-        }
-    };
-    let Some(parent) = path.parent() else { return };
-    if let Err(error) = std::fs::create_dir_all(parent).and_then(|_| {
-        let mut temporary = tempfile::NamedTempFile::new_in(parent)?;
-        std::io::Write::write_all(&mut temporary, &body)?;
-        temporary
-            .persist(path)
-            .map(|_| ())
-            .map_err(std::io::Error::other)
-    }) {
+    if let Err(error) = crate::util::fs::write_json_atomic(path, &entries) {
         tracing::warn!(path = %path.display(), error = %error, "failed to persist owned cleanup journal");
     }
 }
@@ -258,7 +243,14 @@ pub(super) fn restore_identity_cleanups(runtime: &mut BrokerRuntime) -> Result<(
     let Some(path) = runtime.workers.owned_cleanup_journal.clone() else {
         return Ok(());
     };
-    for (name, entry) in load_journal(&path).map_err(|error| anyhow::anyhow!(error))? {
+    let entries = match load_journal(&path) {
+        Ok(entries) => entries,
+        Err(error) => {
+            tracing::warn!(path = %path.display(), error = %error, "failed to restore owned cleanup journal");
+            return Ok(());
+        }
+    };
+    for (name, entry) in entries {
         runtime.workers.owned_spawn_generations.insert(
             name.clone(),
             (entry.generation, runtime.relaycast_http.clone()),

@@ -555,6 +555,7 @@ export interface RelayActionInvocationAck {
   handlerNodeId?: string | null;
   dispatchedNodeId?: string | null;
   input?: Record<string, unknown>;
+  output?: Record<string, unknown> | null;
   status?: string;
   createdAt?: string;
 }
@@ -672,6 +673,8 @@ export interface RelaySpawnPlacementAck extends RelayActionInvocationAck {
     repo?: string;
     attempts: number;
     queued: boolean;
+    /** Evidence state for this placement receipt. */
+    state: 'accepted' | 'ready';
     /**
      * `true` only when the node reported a terminal success for this
      * invocation. `false` means the dispatch was accepted but not confirmed —

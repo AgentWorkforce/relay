@@ -174,6 +174,20 @@ impl RecipientReachability {
 }
 
 impl RelaycastHttpClient {
+    /// A client with no transport or credentials. Local-only runtime paths cannot
+    /// accidentally publish presence, register workers, or route remote messages.
+    pub fn local_only(agent_name: impl Into<String>) -> Self {
+        Self {
+            base_url: None,
+            api_key: String::new(),
+            relay: Arc::new(None),
+            registration: Arc::new(None),
+            takeover_locks: Arc::new(StdMutex::new(HashMap::new())),
+            agent_name: agent_name.into(),
+            default_cli: String::new(),
+        }
+    }
+
     pub fn new(
         base_url: Option<String>,
         api_key: impl Into<String>,
@@ -1963,7 +1977,7 @@ mod tests {
         let result = retry_agent_registration_with_budget(
             "worker-a",
             Duration::from_millis(10),
-            || std::future::pending::<Result<String, AgentRegistrationError>>(),
+            std::future::pending::<Result<String, AgentRegistrationError>>,
             |_| std::future::ready(()),
         )
         .await;

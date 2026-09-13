@@ -220,6 +220,7 @@ export function normalizeActionInvocationAck(raw: unknown): RelayActionInvocatio
       ? { dispatchedNodeId: readStr(record, 'dispatchedNodeId', 'dispatched_node_id') }
       : {}),
     ...(readRecord(record, 'input') ? { input: readRecord(record, 'input') } : {}),
+    ...(readRecord(record, 'output') ? { output: readRecord(record, 'output') } : {}),
     ...(readStr(record, 'status') ? { status: readStr(record, 'status') } : {}),
     ...(readStr(record, 'createdAt', 'created_at')
       ? { createdAt: readStr(record, 'createdAt', 'created_at') }
