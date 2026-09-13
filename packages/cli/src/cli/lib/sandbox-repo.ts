@@ -231,7 +231,10 @@ function parseRepository(remote: string): string | undefined {
   let name: string | undefined;
   const scp = value.match(/^([^@/]+)@([^:]+):([^/]+)\/([^/]+?)(?:\.git)?$/);
   if (scp) {
-    if (scp[2].toLowerCase() !== 'github.com') return undefined;
+    // SCP-style GitHub remotes have no URL parser boundary, so reject any
+    // username other than GitHub's literal SSH user. A token or other secret
+    // must never be accepted as part of the local remote identity.
+    if (scp[1] !== 'git' || scp[2].toLowerCase() !== 'github.com') return undefined;
     owner = scp[3];
     name = scp[4];
   } else {

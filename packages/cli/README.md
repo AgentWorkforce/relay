@@ -263,6 +263,12 @@ provisioning ends with an unknown outcome, rerun the command with the warning's
 `--sandbox-id` to replay the same Cloud identity instead of adopting another
 fleet node.
 
+The live source profile includes tracked dotfiles, lockfiles, generated and
+binary files, large files within Relayfile's import limit, symlinks, and
+executable permissions. Relayfile never places `.git` in this tree. If a
+repository entry cannot be represented safely, spawn fails with the entry and
+corrective action instead of reporting a partial working tree.
+
 Both live and checkout modes require a clean working tree whose exact `HEAD` is
 reachable from a configured GitHub remote. This prevents a remote worker from
 silently starting at a different revision. Commit and push local work before
@@ -338,17 +344,23 @@ use `--mode view` to observe. Releasing a worker does not delete its sandbox.
 To resume its retained sandbox, repeat spawn with the reported
 `--sandbox-id <id>`; when using `--checkout`, the retained clone must still have
 the same clean HEAD.
-A failed resume preserves retained work. Delete an unused sandbox in Cloud
-Fleet to stop future provider usage; monthly accounting reservations remain
-until their normal reset.
+A failed resume preserves retained work. For a live Relayfile sandbox, reusing
+`--sandbox-id` intentionally re-materializes the exact clean, pushed `HEAD` from
+the current checkout before the provider resumes, so a new commit becomes the
+source tree for that retained sandbox. With `--checkout`, the retained static
+clone remains pinned to its original revision and the current checkout must
+still resolve to that same clean, pushed `HEAD`. Delete an unused sandbox in
+Cloud Fleet to stop future provider usage; monthly accounting reservations
+remain until their normal reset.
 
 If the workspace is not pinned yet, use `agent-relay workspace rebind <name>`
 with an existing stored workspace. A missing or mismatched stored route
 credential requires rerunning sandbox provisioning for that workspace.
-`--base-url`, `--workspace-id`, `--node`, provider selection, `--cwd`, and the
-static `--checkout` mode remain advanced overrides. Outside Git, plain
-`--sandbox` preserves the existing full-workspace Relayfile mount at
-`/workspace`.
+`--base-url`, `--workspace-id`, `--node`, provider selection, and the static
+`--checkout` mode remain advanced overrides. For `--cwd`, local repo-relative
+paths are accepted to infer the sandbox repository; absolute remote paths are
+advanced overrides. Outside Git, plain `--sandbox` preserves the existing
+full-workspace Relayfile mount at `/workspace`.
 
 Pins created before workspace IDs were recorded are resolved automatically
 through Cloud at spawn time. The key travels in an authenticated POST body,

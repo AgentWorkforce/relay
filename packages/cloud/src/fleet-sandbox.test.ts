@@ -133,8 +133,10 @@ describe('Cloud fleet sandbox client', () => {
             status: 'completed',
             headSha: revision,
             filesWritten: 0,
+            sourceProfile: 'complete-v1',
             materialization: {
               mode: 'relayfile_export',
+              sourceProfile: 'complete-v1',
               headSha: revision,
               filesExpected: 0,
               contentRoot: '/github/repos/AgentWorkforce/cloud/contents',
@@ -160,6 +162,7 @@ describe('Cloud fleet sandbox client', () => {
       repository: 'AgentWorkforce/cloud',
       revision,
       filesWritten: 0,
+      sourceProfile: 'complete-v1',
       contentRoot: '/github/repos/AgentWorkforce/cloud/contents',
       sentinelPath: '/github/repos/AgentWorkforce/cloud/.relayfile/clone.json',
     });
@@ -172,6 +175,7 @@ describe('Cloud fleet sandbox client', () => {
       repo: 'cloud',
       ref: revision,
       mode: 'full',
+      sourceProfile: 'complete-v1',
     });
     expect(JSON.stringify(requestCall)).not.toContain('githubToken');
   });
@@ -229,8 +233,10 @@ describe('Cloud fleet sandbox client', () => {
             status: 'completed',
             headSha: revision,
             filesWritten: 4,
+            sourceProfile: 'complete-v1',
             materialization: {
               mode: 'relayfile_export',
+              sourceProfile: 'complete-v1',
               headSha: revision,
               filesExpected: 3,
               contentRoot: '/github/repos/AgentWorkforce/cloud/contents',

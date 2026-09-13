@@ -328,7 +328,10 @@ export function registerFleetCommands(
       .option('--channel <name>', 'Channel for the worker to join')
       .option('--persona <persona>', 'Worker persona (automatic placement)')
       .option('--model <model>', 'Model powering the worker')
-      .option('--cwd <path>', 'Absolute working directory for the spawned worker')
+      .option(
+        '--cwd <path>',
+        'Worker directory: a local repo-relative path is accepted for sandbox repository inference; absolute remote paths are advanced overrides'
+      )
       .option('--organization <organization>', 'Declared organization for workforce reporting')
       .option('--project <project>', 'Declared project for workforce reporting')
       .option('--workstream <workstream>', 'Declared workstream for workforce reporting')

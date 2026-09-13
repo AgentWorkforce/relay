@@ -28,6 +28,7 @@ const DEFAULT_DELETE_TIMEOUT_MS = 30_000;
 const DEFAULT_RELAYFILE_REPOSITORY_MATERIALIZE_TIMEOUT_MS = 20 * 60_000;
 const DEFAULT_RELAYFILE_REPOSITORY_POLL_INTERVAL_MS = 2_000;
 const MAX_TIMER_MS = 2_147_483_647;
+const LIVE_RELAYFILE_SOURCE_PROFILE = 'complete-v1' as const;
 
 export type CloudFleetSandboxRequestOptions = {
   apiUrl?: string;
@@ -49,6 +50,7 @@ export type CloudRelayfileRepositoryMaterialization = {
   repository: string;
   revision: string;
   filesWritten: number;
+  sourceProfile: typeof LIVE_RELAYFILE_SOURCE_PROFILE;
   contentRoot: string;
   sentinelPath: string;
 };
@@ -799,6 +801,7 @@ export async function materializeCloudRelayfileRepository(
         repo,
         ref: revision,
         mode: 'full',
+        sourceProfile: LIVE_RELAYFILE_SOURCE_PROFILE,
       }),
     },
     { interactive: false }
@@ -851,6 +854,7 @@ export async function materializeCloudRelayfileRepository(
       const jobRef = readString(job, 'ref');
       const headSha = readString(job, 'headSha')?.toLowerCase();
       const filesWritten = readNumber(job, 'filesWritten');
+      const sourceProfile = readString(job, 'sourceProfile');
       const materialization = job.materialization;
       if (
         jobOwner !== owner ||
@@ -860,8 +864,10 @@ export async function materializeCloudRelayfileRepository(
         filesWritten === undefined ||
         !Number.isSafeInteger(filesWritten) ||
         filesWritten < 0 ||
+        sourceProfile !== LIVE_RELAYFILE_SOURCE_PROFILE ||
         !isObject(materialization) ||
         readString(materialization, 'mode') !== 'relayfile_export' ||
+        readString(materialization, 'sourceProfile') !== LIVE_RELAYFILE_SOURCE_PROFILE ||
         readNumber(materialization, 'filesExpected') !== filesWritten ||
         readString(materialization, 'headSha')?.toLowerCase() !== revision ||
         readString(materialization, 'contentRoot') !== expectedPaths.contentRoot ||
@@ -876,6 +882,7 @@ export async function materializeCloudRelayfileRepository(
         repository: `${owner}/${repo}`,
         revision,
         filesWritten,
+        sourceProfile: LIVE_RELAYFILE_SOURCE_PROFILE,
         ...expectedPaths,
       };
     }

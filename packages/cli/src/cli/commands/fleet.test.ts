@@ -1074,6 +1074,7 @@ describe('fleet command support', () => {
         repository: 'AgentWorkforce/cloud',
         revision,
         filesWritten: 4312,
+        sourceProfile: 'complete-v1' as const,
         contentRoot: '/github/repos/AgentWorkforce/cloud/contents',
         sentinelPath: '/github/repos/AgentWorkforce/cloud/.relayfile/clone.json',
       };

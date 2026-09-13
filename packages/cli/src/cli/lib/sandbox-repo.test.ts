@@ -86,6 +86,17 @@ describe('resolveSandboxRepository', () => {
     );
   });
 
+  it('rejects credentials embedded in an SCP-style GitHub remote', () => {
+    const run = gitMock();
+    run.mockImplementation((_command: string, args: readonly string[]) => {
+      if (args.includes('get-url')) return 'token@github.com:AgentWorkforce/relay.git\n';
+      return (gitMock() as never)(_command, args);
+    });
+    expect(() => resolveSandboxRepository('/checkout', undefined, { execFileSync: run as never })).toThrow(
+      /GitHub owner\/name/
+    );
+  });
+
   it('rejects a branch whose exact HEAD is ahead of its upstream', () => {
     const ahead = gitMock();
     ahead.mockImplementation((_command: string, args: readonly string[]) => {
