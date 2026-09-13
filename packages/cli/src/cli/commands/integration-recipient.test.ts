@@ -217,4 +217,193 @@ describe('subscription recipient launch', () => {
       'https://cast.agentrelay.com/v1/agents/fresh/subscription-channel'
     );
   });
+
+  describe('subscription-channel typed 429 retry', () => {
+    beforeEach(() => {
+      vi.spyOn(console, 'error').mockImplementation(() => undefined);
+      vi.useFakeTimers();
+    });
+    afterEach(() => {
+      vi.useRealTimers();
+    });
+    const ok = () =>
+      new Response(
+        JSON.stringify({ data: { name: 'agent-events-id', members: [{ agent_name: 'fresh' }] } }),
+        { status: 200 }
+      );
+    const busy = (retryAfter?: string) =>
+      new Response(JSON.stringify({ error: { code: 'workspace_busy' } }), {
+        status: 429,
+        headers: retryAfter === undefined ? {} : { 'retry-after': retryAfter },
+      });
+
+    it('retries a typed 429 with Retry-After and verifies the exact membership on the fixed request', async () => {
+      const fetcher = vi.fn().mockResolvedValueOnce(busy('2')).mockResolvedValueOnce(ok());
+      vi.stubGlobal('fetch', fetcher);
+      const pending = resolveSubscriptionAgentChannel('fresh', input.options);
+      await vi.advanceTimersByTimeAsync(2_000);
+      await expect(pending).resolves.toBe('agent-events-id');
+      expect(fetcher).toHaveBeenCalledTimes(2);
+      const [[firstUrl, firstInit], [secondUrl, secondInit]] = fetcher.mock.calls;
+      expect(firstUrl.toString()).toBe('https://cast.agentrelay.com/v1/agents/fresh/subscription-channel');
+      expect(secondUrl.toString()).toBe(firstUrl.toString());
+      expect(secondInit.headers.authorization).toBe(firstInit.headers.authorization);
+      expect(firstInit.headers.authorization).toBe('Bearer rk_live_explicit');
+      expect(firstInit.method).toBe('POST');
+    });
+
+    it.each([undefined, 'soon'])(
+      'retries with the bounded fallback when Retry-After is %s',
+      async (retryAfter) => {
+        const fetcher = vi
+          .fn()
+          .mockResolvedValueOnce(busy(retryAfter as string | undefined))
+          .mockResolvedValueOnce(ok());
+        vi.stubGlobal('fetch', fetcher);
+        const pending = resolveSubscriptionAgentChannel('fresh', input.options);
+        await vi.advanceTimersByTimeAsync(2_000);
+        await expect(pending).resolves.toBe('agent-events-id');
+        expect(fetcher).toHaveBeenCalledTimes(2);
+      }
+    );
+
+    it('accepts an HTTP-date Retry-After', async () => {
+      const retryAt = new Date(Date.now() + 1_500).toUTCString();
+      const fetcher = vi.fn().mockResolvedValueOnce(busy(retryAt)).mockResolvedValueOnce(ok());
+      vi.stubGlobal('fetch', fetcher);
+      const pending = resolveSubscriptionAgentChannel('fresh', input.options);
+      await vi.advanceTimersByTimeAsync(2_000);
+      await expect(pending).resolves.toBe('agent-events-id');
+      expect(fetcher).toHaveBeenCalledTimes(2);
+    });
+
+    it('bounds exhaustion at max attempts and banks the last 429/Retry-After evidence', async () => {
+      const fetcher = vi.fn(async () => busy('1'));
+      vi.stubGlobal('fetch', fetcher);
+      const pending = resolveSubscriptionAgentChannel('fresh', input.options).catch((error) => error);
+      await vi.advanceTimersByTimeAsync(10_000);
+      const failure = await pending;
+      expect(failure).toBeInstanceOf(Error);
+      expect(failure.message).toContain('HTTP 429 workspace_busy');
+      expect(failure.message).toContain('Retry-After');
+      expect(fetcher).toHaveBeenCalledTimes(3);
+    });
+
+    it('does not retry a typed 429 whose Retry-After exceeds the retry budget', async () => {
+      const fetcher = vi.fn(async () => busy('60'));
+      vi.stubGlobal('fetch', fetcher);
+      const failure = await resolveSubscriptionAgentChannel('fresh', input.options).catch((error) => error);
+      expect(failure.message).toContain('HTTP 429 workspace_busy');
+      expect(failure.message).toContain('Retry-After');
+      expect(fetcher).toHaveBeenCalledTimes(1);
+    });
+
+    it.each([401, 403, 503])('does not retry HTTP %s', async (status) => {
+      const fetcher = vi.fn(
+        async () =>
+          new Response(JSON.stringify({ error: { code: 'unauthorized' } }), { status: Number(status) })
+      );
+      vi.stubGlobal('fetch', fetcher);
+      await expect(resolveSubscriptionAgentChannel('fresh', input.options)).rejects.toThrow(`HTTP ${status}`);
+      expect(fetcher).toHaveBeenCalledTimes(1);
+    });
+
+    it('does not retry an unknown 429 code', async () => {
+      const fetcher = vi.fn(
+        async () => new Response(JSON.stringify({ error: { code: 'rate_limited' } }), { status: 429 })
+      );
+      vi.stubGlobal('fetch', fetcher);
+      await expect(resolveSubscriptionAgentChannel('fresh', input.options)).rejects.toThrow(
+        'HTTP 429 rate_limited'
+      );
+      expect(fetcher).toHaveBeenCalledTimes(1);
+    });
+
+    it('does not retry a network failure', async () => {
+      const fetcher = vi.fn(async () => {
+        throw new TypeError('network down');
+      });
+      vi.stubGlobal('fetch', fetcher);
+      await expect(resolveSubscriptionAgentChannel('fresh', input.options)).rejects.toThrow('network down');
+      expect(fetcher).toHaveBeenCalledTimes(1);
+    });
+
+    it('still rejects invalid membership after a retry', async () => {
+      const fetcher = vi
+        .fn()
+        .mockResolvedValueOnce(busy('1'))
+        .mockResolvedValueOnce(
+          new Response(
+            JSON.stringify({
+              data: { name: 'agent-events-id', members: [{ agent_name: 'fresh' }, { agent_name: 'other' }] },
+            }),
+            { status: 200 }
+          )
+        );
+      vi.stubGlobal('fetch', fetcher);
+      const pending = resolveSubscriptionAgentChannel('fresh', input.options).catch((error) => error);
+      await vi.advanceTimersByTimeAsync(1_000);
+      const failure = await pending;
+      expect(failure.message).toContain('membership did not verify');
+      expect(fetcher).toHaveBeenCalledTimes(2);
+    });
+
+    it('clamps the per-attempt timeout to the remaining budget', async () => {
+      const timeoutSpy = vi.spyOn(AbortSignal, 'timeout');
+      const fetcher = vi
+        .fn()
+        .mockImplementationOnce(async () => {
+          // A slow first attempt consumes 20s of the 30s budget.
+          vi.setSystemTime(Date.now() + 20_000);
+          return busy('0');
+        })
+        .mockResolvedValueOnce(ok());
+      vi.stubGlobal('fetch', fetcher);
+      const pending = resolveSubscriptionAgentChannel('fresh', input.options);
+      await vi.advanceTimersByTimeAsync(0);
+      await expect(pending).resolves.toBe('agent-events-id');
+      expect(fetcher).toHaveBeenCalledTimes(2);
+      const timeouts = timeoutSpy.mock.calls.map((call) => call[0]);
+      expect(timeouts[0]).toBe(15_000);
+      expect(timeouts[1]).toBe(10_000); // min(15s, 30s - 20s)
+      expect(timeouts[1]).toBeLessThanOrEqual(15_000);
+    });
+
+    it('does not start another attempt once a slow 429 has spent the budget, and preserves the prior 429 evidence', async () => {
+      const fetcher = vi.fn().mockImplementationOnce(async () => {
+        vi.setSystemTime(Date.now() + 30_000);
+        return busy('1');
+      });
+      vi.stubGlobal('fetch', fetcher);
+      const failure = await resolveSubscriptionAgentChannel('fresh', input.options).catch((error) => error);
+      expect(failure.message).toContain('HTTP 429 workspace_busy');
+      expect(failure.message).toContain('Retry-After');
+      expect(failure.message).toContain('budget');
+      expect(fetcher).toHaveBeenCalledTimes(1);
+    });
+
+    it('does not fetch after the deadline when a retry sleep wakes late', async () => {
+      const fetcher = vi.fn().mockResolvedValueOnce(busy('1'));
+      vi.stubGlobal('fetch', fetcher);
+      const pending = resolveSubscriptionAgentChannel('fresh', input.options).catch((error) => error);
+      await Promise.resolve(); // attempt 1 resolves and schedules the 1s sleep
+      vi.setSystemTime(Date.now() + 31_000); // the wake-up lands past the deadline
+      await vi.advanceTimersByTimeAsync(1_000);
+      const failure = await pending;
+      expect(failure).toBeInstanceOf(Error);
+      expect(failure.message).toContain('HTTP 429 workspace_busy');
+      expect(fetcher).toHaveBeenCalledTimes(1);
+    });
+
+    it('does not follow or retry a 3xx response', async () => {
+      const fetcher = vi.fn(
+        async () =>
+          new Response('', { status: 307, headers: { location: 'https://cast.agentrelay.com/unexpected' } })
+      );
+      vi.stubGlobal('fetch', fetcher);
+      await expect(resolveSubscriptionAgentChannel('fresh', input.options)).rejects.toThrow('HTTP 307');
+      expect(fetcher).toHaveBeenCalledTimes(1);
+      expect(fetcher.mock.calls[0][1].redirect).toBe('manual');
+    });
+  });
 });
