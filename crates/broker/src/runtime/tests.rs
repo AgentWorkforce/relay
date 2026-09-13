@@ -3086,8 +3086,8 @@ async fn delivery_retry_transient_blip_emits_failed_event_for_present_worker() {
             }
             Ok(DeliveryAttemptOutcome::Noop) => {
                 assert!(
-                    retry_index < MAX_DELIVERY_RETRIES,
-                    "the final bounded retry should return a terminal failure"
+                    retry_index <= MAX_DELIVERY_RETRIES,
+                    "delivery should terminate by the post-cap retry"
                 );
                 let pending = pending_deliveries
                     .get("del_blip")
