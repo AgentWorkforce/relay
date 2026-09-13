@@ -60,6 +60,7 @@ describe('subscription recipient launch', () => {
     expect(client.spawnCli).toHaveBeenCalledWith(
       expect.objectContaining({
         name: 'fresh',
+        transport: 'pty',
         channels: [],
         args: ['--disallowedTools', 'mcp__agent-relay__check_inbox'],
         task: expect.stringContaining(input.resource),
@@ -70,6 +71,12 @@ describe('subscription recipient launch', () => {
     launched.close();
     expect(handle.release).toHaveBeenCalledOnce();
     expect(client.disconnect).toHaveBeenCalledOnce();
+  });
+  it('spawns the recipient over pty so the confirmed local PID contract holds', async () => {
+    const launched = await launchSubscriptionRecipient(input);
+    expect(client.spawnCli).toHaveBeenCalledWith(expect.objectContaining({ transport: 'pty' }));
+    await launched.rollback();
+    launched.close();
   });
   it('rejects echoed empty channels when the live identity joined general', async () => {
     vi.stubGlobal(

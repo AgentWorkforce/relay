@@ -84,6 +84,7 @@ export async function launchSubscriptionRecipient(input: RecipientLaunchInput): 
     owned = await client.spawnCli({
       name: input.name,
       cli: input.cli,
+      transport: 'pty',
       channels: [],
       ...(input.args ? { args: input.args } : {}),
       ...(workerCwd ? { cwd: workerCwd } : {}),
