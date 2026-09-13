@@ -264,6 +264,10 @@ export function registerFleetCommands(
         'Provision a fresh Cloud sandbox node, mount this Relayfile workspace, and spawn there'
       )
       .option(
+        '--checkout',
+        'Materialize the current Git checkout at its exact pushed HEAD (static; requires --sandbox)'
+      )
+      .option(
         '--sandbox-name <name>',
         'Explicit sandbox node name (custom unless --sandbox-id requires matching fleet-sandbox-<UUID>)'
       )
@@ -302,6 +306,7 @@ export function registerFleetCommands(
       const task = requiredText(options.task, 'Task');
       let targetNode = optionalText(options.targetNode, 'Target node') ?? optionalText(options.node, 'Node');
       const useSandbox = options.sandbox === true;
+      const checkoutRepository = options.checkout === true;
       const sandboxName = optionalText(options.sandboxName, 'Sandbox name');
       const sandboxIdOption = optionalText(options.sandboxId, 'Sandbox ID');
       // An explicit sandbox identity is a retained/replayable resource. Never
@@ -331,6 +336,9 @@ export function registerFleetCommands(
       }
       if (!useSandbox && sandboxName) {
         throw new Error('--sandbox-name requires --sandbox.');
+      }
+      if (!useSandbox && checkoutRepository) {
+        throw new Error('--checkout requires --sandbox.');
       }
       if (!useSandbox && sandboxIdOption) {
         throw new Error('--sandbox-id requires --sandbox.');
@@ -381,20 +389,27 @@ export function registerFleetCommands(
         const hasExplicitProjectOverride = Boolean(
           deps.core.env?.AGENT_RELAY_PROJECT?.trim() || process.env.AGENT_RELAY_PROJECT?.trim()
         );
-        // AGENT_RELAY_PROJECT selects the workspace namespace, while repository
-        // inference must remain anchored to the actual checkout from which the
-        // command was invoked. This also lets --cwd point at a sibling checkout.
-        const repositoryRootHint = hasExplicitProjectOverride ? process.cwd() : coreProjectRoot;
-        sandboxRepository = deps.resolveSandboxRepository(repositoryRootHint, requestedCwd);
-        if (sandboxRepository) workerCwd = sandboxRepository.workerCwd;
+        if (checkoutRepository) {
+          // AGENT_RELAY_PROJECT selects the workspace namespace, while static
+          // checkout inference remains anchored to the actual Git tree. This
+          // also lets --cwd point at a sibling checkout when explicitly asked.
+          const repositoryRootHint = hasExplicitProjectOverride ? process.cwd() : coreProjectRoot;
+          sandboxRepository = deps.resolveSandboxRepository(repositoryRootHint, requestedCwd);
+          if (!sandboxRepository) {
+            throw new Error('--checkout requires a GitHub checkout with a clean, pushed commit.');
+          }
+          workerCwd = sandboxRepository.workerCwd;
+        }
         const localRequestedCwd =
-          requestedCwd && !/^\/(?:srv\/agent-workforce|workspace)(?:\/|$)/.test(requestedCwd)
+          checkoutRepository &&
+          requestedCwd &&
+          !/^\/(?:srv\/agent-workforce|workspace)(?:\/|$)/.test(requestedCwd)
             ? path.resolve(process.cwd(), requestedCwd)
             : undefined;
-        // `--cwd` selects both the local checkout subdirectory and its Relay
-        // project namespace. Resolve an intentional nested pin before mapping
-        // that local path to the remote checkout; only placement-safe Git
-        // identity crosses the Cloud boundary.
+        // With --checkout, `--cwd` selects both the local checkout subdirectory
+        // and its Relay project namespace. Resolve an intentional nested pin
+        // before mapping that path to the static remote checkout; only
+        // placement-safe Git identity crosses the Cloud boundary.
         const workspaceProjectRoot = hasExplicitProjectOverride
           ? coreProjectRoot
           : localRequestedCwd

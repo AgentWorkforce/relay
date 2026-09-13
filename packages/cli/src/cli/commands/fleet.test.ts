@@ -936,11 +936,14 @@ describe('fleet command support', () => {
       relayfileMountPath: '/workspace',
     }));
     const deleteCloudFleetSandbox = vi.fn(async () => undefined);
+    const resolveSandboxRepository = vi.fn(() => {
+      throw new Error('default live-mount mode must not inspect Git');
+    });
     const logs: string[] = [];
     const program = new Command();
     program.exitOverride();
     registerFleetCommands(program, {
-      resolveSandboxRepository: () => undefined,
+      resolveSandboxRepository,
       sdk: {
         createAgentRelay: createAgentRelay as never,
         createWorkspaceRelay: createWorkspaceRelay as never,
@@ -1001,6 +1004,7 @@ describe('fleet command support', () => {
       waitTimeoutMs: 90_000,
       name: REPLAY_SANDBOX_NAME,
     });
+    expect(resolveSandboxRepository).not.toHaveBeenCalled();
     expect(ensureInput?.name).toBe(`fleet-sandbox-${ensureInput?.sandboxId?.slice('sbx_'.length)}`);
     expect(register).toHaveBeenCalledWith(
       expect.objectContaining({
@@ -1020,6 +1024,7 @@ describe('fleet command support', () => {
         confirm: true,
         input: expect.objectContaining({
           name: 'sandbox-worker',
+          task: 'Wait for VERIFY',
           worker_cwd: '/workspace',
         }),
       })
@@ -1050,7 +1055,7 @@ describe('fleet command support', () => {
     });
   });
 
-  it('infers the Git root for sandbox repos and forwards only the public revision attestation', async () => {
+  it('--checkout infers the Git root and forwards only the public revision attestation', async () => {
     const revision = '0123456789abcdef0123456789abcdef01234567';
     const repositorySelection = {
       repository: 'AgentWorkforce/cloud',
@@ -1127,6 +1132,7 @@ describe('fleet command support', () => {
         'spawn',
         'codex',
         '--sandbox',
+        '--checkout',
         '--sandbox-provider',
         'agent37',
         '--workspace-id',
@@ -1167,7 +1173,7 @@ describe('fleet command support', () => {
     );
   });
 
-  it('keeps cross-repo --cwd inference on the actual checkout while using the explicit project workspace', async () => {
+  it('--checkout keeps cross-repo --cwd inference on the actual checkout while using the explicit project workspace', async () => {
     vi.stubEnv('AGENT_RELAY_PROJECT', '/workspace-project');
     const revision = '0123456789abcdef0123456789abcdef01234567';
     const resolveSandboxRepository = vi.fn(() => ({
@@ -1231,6 +1237,7 @@ describe('fleet command support', () => {
         'spawn',
         'codex',
         '--sandbox',
+        '--checkout',
         '--sandbox-provider',
         'e2b',
         '--no-sandbox-relayfile',
@@ -1379,7 +1386,7 @@ describe('fleet command support', () => {
     ['missing', undefined],
     ['mismatched', { 'AgentWorkforce/cloud': 'fedcba9876543210fedcba9876543210fedcba98' }],
   ] as const)(
-    'rejects a %s Cloud repository attestation and cleans up a fresh sandbox',
+    '--checkout rejects a %s Cloud repository attestation and cleans up a fresh sandbox',
     async (_label, actual) => {
       const revision = '0123456789abcdef0123456789abcdef01234567';
       const resolveSandboxRepository = vi.fn(() => ({
@@ -1440,6 +1447,7 @@ describe('fleet command support', () => {
             'spawn',
             'codex',
             '--sandbox',
+            '--checkout',
             '--sandbox-provider',
             'agent37',
             '--workspace-id',
@@ -1463,7 +1471,7 @@ describe('fleet command support', () => {
     }
   );
 
-  it('fails before Cloud when local repository inference is unavailable', async () => {
+  it('--checkout fails before Cloud when local repository inference is unavailable', async () => {
     const ensureCloudFleetSandbox = vi.fn();
     const program = new Command();
     program.exitOverride();
@@ -1496,6 +1504,7 @@ describe('fleet command support', () => {
           'spawn',
           'codex',
           '--sandbox',
+          '--checkout',
           '--name',
           'cloud-worker',
           '--task',
@@ -1506,6 +1515,43 @@ describe('fleet command support', () => {
         { from: 'user' }
       )
     ).rejects.toThrow('__exit__');
+    expect(ensureCloudFleetSandbox).not.toHaveBeenCalled();
+  });
+
+  it('requires --sandbox when static checkout mode is requested', async () => {
+    const ensureCloudFleetSandbox = vi.fn();
+    const resolveSandboxRepository = vi.fn();
+    const errors: string[] = [];
+    const program = new Command();
+    program.exitOverride();
+    registerFleetCommands(program, {
+      resolveSandboxRepository,
+      sdk: {
+        createAgentRelay: vi.fn() as never,
+        createWorkspaceRelay: vi.fn() as never,
+        createWorkspace: vi.fn() as never,
+        log: vi.fn(),
+        error: (message: unknown) => errors.push(String(message)),
+        exit: (() => {
+          throw new Error('__exit__');
+        }) as never,
+      },
+      ensureCloudFleetSandbox: ensureCloudFleetSandbox as never,
+      deleteCloudFleetSandbox: vi.fn(async () => undefined),
+      createFleetWorkspaceClient: vi.fn() as never,
+      log: () => undefined,
+      warn: () => undefined,
+      error: () => undefined,
+    });
+
+    await expect(
+      program.parseAsync(
+        ['fleet', 'spawn', 'codex', '--checkout', '--name', 'cloud-worker', '--task', 'Work'],
+        { from: 'user' }
+      )
+    ).rejects.toThrow('__exit__');
+    expect(errors.join('\n')).toContain('--checkout requires --sandbox');
+    expect(resolveSandboxRepository).not.toHaveBeenCalled();
     expect(ensureCloudFleetSandbox).not.toHaveBeenCalled();
   });
 

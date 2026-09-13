@@ -2,7 +2,7 @@
   "version": 1,
   "id": "1763-zero-config-sandbox",
   "kind": "feature",
-  "title": "Forward exact repository identity for zero-config sandbox provisioning",
+  "title": "Opt into exact static repository checkout for sandbox provisioning",
   "runner": {
     "command": ["node", "tests/relayflows/cases/1763-zero-config-sandbox/run.mjs"]
   },

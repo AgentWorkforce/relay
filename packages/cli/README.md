@@ -241,9 +241,10 @@ absent, it creates and removes a short-lived launcher identity automatically.
 Automatic placement and release need only the workspace key.
 
 The sandbox path provisions a fresh hosted instance and makes the Relayfile
-mount mandatory by default. Outside Git, the worker starts in `/workspace`;
-inside Git it starts in the corresponding repository checkout described below.
-Both paths see the same synced Relayfile workspace. Use `--sandbox-provider daytona` or
+mount mandatory by default. The worker starts in the live `/workspace` mirror,
+including when the command runs inside a Git checkout. Use `--checkout` when a
+task needs a static Git checkout at the caller's exact pushed commit; that mode
+keeps the live Relayfile mirror available separately. Use `--sandbox-provider daytona` or
 `--sandbox-provider e2b` to require an operator-enabled provider; omit the flag
 to let Cloud's sandbox router choose. Pass `--no-sandbox-relayfile` only when a
 deliberately bare sandbox is desired. If provisioning times out or the spawn
@@ -257,8 +258,8 @@ provisioning ends with an unknown outcome, rerun the command with the warning's
 `--sandbox-id` to replay the same Cloud identity instead of adopting another
 fleet node.
 
-When the invocation runs inside a GitHub checkout, sandbox provisioning also
-attests the checkout's exact `HEAD` and clones it under
+With `--checkout`, sandbox provisioning attests the current GitHub checkout's
+exact `HEAD` and clones it under
 `/srv/agent-workforce/<repo>`. The checkout must have no tracked changes or
 untracked source files, and the exact commit must be reachable from an origin
 remote. Relay's generated `.agentworkforce/relay/workspace-key.json`,
@@ -280,20 +281,30 @@ release commands reuse the persisted project route; if that remote session is
 unavailable, the command reports the routing failure instead of selecting a
 same-named local worker.
 
-From a clean repository already pinned to a Relay workspace, the ordinary path is:
+From a project already pinned to a Relay workspace, the ordinary live path is:
 
 ```bash
 agent-relay fleet spawn codex \
   --name cloud-zero-config \
-  --task "Inspect this repository and report its current commit" \
+  --task "Inspect the current Relayfile workspace and report its available skills" \
   --sandbox
 agent-relay node agent attach cloud-zero-config --mode drive
 agent-relay fleet agent list
 agent-relay fleet release cloud-zero-config
 ```
 
-Invoking spawn from `packages/web` places the worker in that same relative
-directory in the remote checkout. Private repositories use the pinned
+For a static source task, opt in explicitly:
+
+```bash
+agent-relay fleet spawn codex \
+  --name cloud-checkout \
+  --task "Inspect this repository and report its current commit" \
+  --sandbox \
+  --checkout
+```
+
+In checkout mode, invoking spawn from `packages/web` places the worker in that
+same relative directory in the remote clone. Private repositories use the pinned
 workspace's connected GitHub access; a repository-access error means that
 connection must be granted access to the repository. No GitHub token or
 workspace key needs to be copied into the task or checkout.
@@ -307,7 +318,8 @@ Detaching leaves the worker running. Only one drive session can own a worker
 at a time; detach the current driver before driving it in another shell, or
 use `--mode view` to observe. Releasing a worker does not delete its sandbox.
 To resume its retained sandbox, repeat spawn with the reported
-`--sandbox-id <id>`; the retained checkout must still have the same clean HEAD.
+`--sandbox-id <id>`; when using `--checkout`, the retained clone must still have
+the same clean HEAD.
 A failed resume preserves retained work. Delete an unused sandbox in Cloud
 Fleet to stop future provider usage; monthly accounting reservations remain
 until their normal reset.
@@ -315,9 +327,9 @@ until their normal reset.
 If the workspace is not pinned yet, use `agent-relay workspace rebind <name>`
 with an existing stored workspace. A missing or mismatched stored route
 credential requires rerunning sandbox provisioning for that workspace.
-`--base-url`, `--workspace-id`, `--node`, provider selection, and `--cwd` remain
-advanced overrides. Outside Git, the existing mount-based sandbox behavior is
-preserved.
+`--base-url`, `--workspace-id`, `--node`, provider selection, `--cwd`, and the
+static `--checkout` mode remain advanced overrides. Plain `--sandbox` uses the
+mount-based live workspace inside and outside Git.
 
 Pins created before workspace IDs were recorded are resolved automatically
 through Cloud at spawn time. The key travels in an authenticated POST body,

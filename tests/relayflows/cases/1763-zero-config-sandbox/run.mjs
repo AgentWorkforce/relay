@@ -63,7 +63,8 @@ test('fleet sandbox CLI forwards exact repo revision and uses returned provider 
     persistWorkspaceRelaycastTarget: () => true,
     log: () => undefined, warn: (...args) => warnings.push(args.join(' ')), error: () => undefined,
   });
-  await expect(program.parseAsync(['fleet', 'spawn', 'codex', '--name', 'proof-worker', '--task', 'proof', '--sandbox', '--no-confirm'], { from: 'user' })).rejects.toThrow('CLI exit 1');
+  const checkoutArgs = ${JSON.stringify(arm)} === 'head' ? ['--checkout'] : [];
+  await expect(program.parseAsync(['fleet', 'spawn', 'codex', '--name', 'proof-worker', '--task', 'proof', '--sandbox', ...checkoutArgs, '--no-confirm'], { from: 'user' })).rejects.toThrow('CLI exit 1');
   const body = requests[1]?.body ?? {};
   await writeFile(output, JSON.stringify({ requestCount: requests.length, requestRepos: body.repos ?? null, requestRepoRevisions: body.repoRevisions ?? null, resultRepoRevisions: body.repoRevisions ?? null, workloadProfile: body.workloadProfile ?? null, cleanupProviderIds: deletes.map((x) => x.providerId ?? null), launcherReleases: releases.length, warnings }, null, 2));
   if (${JSON.stringify(arm)} === 'head') { expect(body.repos).toEqual(['AgentWorkforce/relay']); expect(body.repoRevisions).toEqual({ 'AgentWorkforce/relay': revision }); expect(body.workloadProfile).toBe('long-running-agent'); expect(releases).toHaveLength(1); expect(deletes).toHaveLength(1); expect(deletes[0].providerId).toBe('agent37'); }
@@ -107,7 +108,7 @@ try {
   await mkdir(path.dirname(resultPath), { recursive: true });
   await writeFile(
     resultPath,
-    `${JSON.stringify({ version: 1, caseId: CASE_ID, arm, outcome, signature: outcome === 'fixed' ? 'sandbox_repository_revision_contract_forwarded' : 'sandbox_repository_revision_contract_absent', details: outcome === 'fixed' ? 'The real fleet spawn command inferred the repository, forwarded its exact revision to Cloud, and retained the returned provider attribution through the CLI path.' : 'The base fleet spawn command omitted the exact repository revision contract.' })}\n`
+    `${JSON.stringify({ version: 1, caseId: CASE_ID, arm, outcome, signature: outcome === 'fixed' ? 'sandbox_repository_revision_contract_forwarded' : 'sandbox_repository_revision_contract_absent', details: outcome === 'fixed' ? 'The real fleet spawn --checkout command inferred the repository, forwarded its exact revision to Cloud, and retained the returned provider attribution through the CLI path.' : 'The base fleet spawn command omitted the opt-in checkout and exact repository revision contract.' })}\n`
   );
 } finally {
   await rm(probePath, { force: true });
