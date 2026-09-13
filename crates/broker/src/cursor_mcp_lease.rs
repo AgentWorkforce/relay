@@ -1111,7 +1111,19 @@ fn remove_cursor_dir(lock: &LeaseLock, cursor: &fs::File) -> io::Result<()> {
         Ok(())
     } else if error.kind() == io::ErrorKind::DirectoryNotEmpty {
         remove_cursor_temp_files(cursor)?;
-        Ok(())
+        let result = unsafe { libc::unlinkat(lock.root_fd(), name.as_ptr(), libc::AT_REMOVEDIR) };
+        if result == 0 {
+            lock._file.sync_all()?;
+            return Ok(());
+        }
+        let error = io::Error::last_os_error();
+        if error.kind() == io::ErrorKind::NotFound
+            || error.kind() == io::ErrorKind::DirectoryNotEmpty
+        {
+            Ok(())
+        } else {
+            Err(error)
+        }
     } else {
         Err(error)
     }
@@ -1871,9 +1883,6 @@ impl CursorMcpLeaseRegistry {
                         Some(state.cursor_identity),
                         generated_identity,
                     ) {
-                        *state.generated_identity.lock().map_err(|_| {
-                            io::Error::other("Cursor MCP generated identity lock poisoned")
-                        })? = None;
                         return Err(io::Error::new(
                         restore_error.kind(),
                         format!(
@@ -1881,9 +1890,6 @@ impl CursorMcpLeaseRegistry {
                         ),
                     ));
                     }
-                    *state.generated_identity.lock().map_err(|_| {
-                        io::Error::other("Cursor MCP generated identity lock poisoned")
-                    })? = None;
                     return Err(error);
                 }
             }
@@ -2010,6 +2016,9 @@ impl CursorMcpLeaseRegistry {
                     target.sync_all()?;
                     cursor.sync_all()?;
                 }
+            }
+            if let Some(cursor) = cursor {
+                remove_cursor_temp_files(cursor)?;
             }
             Ok(())
         }
@@ -2546,6 +2555,62 @@ mod tests {
         );
         assert!(path.parent().unwrap().join("notes.txt").exists());
         assert!(registry.is_empty());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn clean_cwd_release_removes_created_cursor_dir_after_temp_cleanup() {
+        let dir = tempdir().unwrap();
+        let worker = WorkerName::new("w1");
+        let mut registry = CursorMcpLeaseRegistry::new();
+        let path = registry.acquire(dir.path(), &worker).unwrap();
+        registry.write_worker_cursor_file(&worker, b"{} ").unwrap();
+        let temp = path
+            .parent()
+            .unwrap()
+            .join(".mcp.json.0123456789abcdef0123456789abcdef.tmp");
+        fs::write(&temp, b"secret").unwrap();
+
+        registry.release_worker(&worker).unwrap();
+
+        assert!(!path.exists());
+        assert!(
+            !path.parent().unwrap().exists(),
+            "broker-created .cursor directory should be removed after temp cleanup"
+        );
+        assert!(!temp.exists());
+        assert!(registry.is_empty());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn restore_scans_pre_existing_cursor_for_broker_temp_files() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = tempdir().unwrap();
+        let cursor_dir = dir.path().join(".cursor");
+        fs::create_dir_all(&cursor_dir).unwrap();
+        let path = cursor_dir.join("mcp.json");
+        let temp = cursor_dir.join(".mcp.json.0123456789abcdef0123456789abcdef.tmp");
+        let original = br#"{ "mcpServers": { "filesystem": {} } }"#;
+        fs::write(&path, original).unwrap();
+        fs::set_permissions(&path, fs::Permissions::from_mode(0o640)).unwrap();
+        fs::write(&temp, b"secret").unwrap();
+        let mut registry = CursorMcpLeaseRegistry::new();
+        let worker = WorkerName::new("w1");
+        registry.acquire(dir.path(), &worker).unwrap();
+        registry
+            .write_worker_cursor_file(&worker, b"generated")
+            .unwrap();
+        registry.release_worker(&worker).unwrap();
+        assert_eq!(read(&path), original);
+        assert_eq!(
+            fs::metadata(&path).unwrap().permissions().mode() & 0o777,
+            0o640
+        );
+        assert!(
+            !temp.exists(),
+            "broker temp files in a pre-existing .cursor must be removed on restore"
+        );
     }
 
     #[cfg(unix)]
@@ -3391,6 +3456,10 @@ mod tests {
             .unwrap_err();
         assert_eq!(error.kind(), io::ErrorKind::WouldBlock);
         assert!(path.exists(), "existing credential file must be restored");
+        assert_eq!(fs::read(&path).unwrap(), b"original placeholders");
+        drop(_held_lock);
+        registry.release_worker(&worker).unwrap();
+        assert!(registry.is_empty());
         assert_eq!(fs::read(&path).unwrap(), b"original placeholders");
     }
 
