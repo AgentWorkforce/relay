@@ -744,7 +744,7 @@ impl AuthClient {
                     agent_type,
                     identity_key,
                     waiter_id,
-                    None,
+                    startup_deadline,
                 )
                 .await;
         }
