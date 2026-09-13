@@ -1,6 +1,6 @@
 {
   "name": "@agent-relay/session",
-  "version": "12.0.0",
+  "version": "12.1.0",
   "description": "Cross-harness session continuity and attribution for Agent Relay",
   "type": "module",
   "main": "dist/index.js",
