@@ -141,7 +141,8 @@ try {
     spawnedResponse.status === 200 && Array.isArray(spawnedResponse.body?.agents)
       ? spawnedResponse.body.agents
       : null;
-  const unsafeNoWorker = Array.isArray(spawnedList) && spawnedList.every((agent) => agent?.name !== UNSAFE_AGENT);
+  const unsafeNoWorker =
+    Array.isArray(spawnedList) && spawnedList.every((agent) => agent?.name !== UNSAFE_AGENT);
   const safeNoWorker = Array.isArray(spawnedList) && spawnedList.every((agent) => agent?.name !== SAFE_AGENT);
   const safeWarning = typeof safe.body?.warning === 'string' ? safe.body.warning : '';
   const safeWorkerPid = Array.isArray(spawnedList)
