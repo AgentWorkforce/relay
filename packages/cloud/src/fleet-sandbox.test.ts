@@ -16,6 +16,7 @@ import {
   CloudFleetSandboxProvisionError,
   deleteCloudFleetSandbox,
   ensureCloudFleetSandbox,
+  materializeCloudRelayfileRepository,
   normalizeRelaycastTarget,
 } from './fleet-sandbox.js';
 
@@ -97,6 +98,117 @@ describe('Cloud fleet sandbox client', () => {
         apiKey: RELAYCAST_TARGET.relaycastApiKey,
       })
     ).toThrow(/API key/);
+  });
+
+  it('waits for an exact Relayfile repository working tree without receiving GitHub credentials', async () => {
+    const revision = '0123456789abcdef0123456789abcdef01234567';
+    mocks.authorizedApiFetch
+      .mockResolvedValueOnce({
+        response: Response.json({ cloudWorkspaceId: CLOUD_WORKSPACE_ID }),
+        auth: refreshedAuth,
+      })
+      .mockResolvedValueOnce({
+        response: Response.json({ ok: true, jobId: 'clone-job-1', status: 'queued' }, { status: 202 }),
+        auth: refreshedAuth,
+      })
+      .mockResolvedValueOnce({
+        response: Response.json({
+          ok: true,
+          job: {
+            owner: 'AgentWorkforce',
+            repo: 'cloud',
+            ref: revision,
+            status: 'running',
+          },
+        }),
+        auth: refreshedAuth,
+      })
+      .mockResolvedValueOnce({
+        response: Response.json({
+          ok: true,
+          job: {
+            owner: 'AgentWorkforce',
+            repo: 'cloud',
+            ref: revision,
+            status: 'completed',
+            headSha: revision,
+            filesWritten: 4312,
+            materialization: {
+              mode: 'relayfile_export',
+              headSha: revision,
+              filesExpected: 4312,
+              contentRoot: '/github/repos/AgentWorkforce/cloud/contents',
+              sentinelPath: '/github/repos/AgentWorkforce/cloud/.relayfile/clone.json',
+              exportParams: { format: 'tar', decode: 'github-working-tree', gzip: false },
+            },
+          },
+        }),
+        auth: refreshedAuth,
+      });
+
+    await expect(
+      materializeCloudRelayfileRepository(
+        {
+          workspaceId: 'rw_abc',
+          repository: 'AgentWorkforce/cloud',
+          revision,
+        },
+        { pollIntervalMs: 0 }
+      )
+    ).resolves.toEqual({
+      cloudWorkspaceId: CLOUD_WORKSPACE_ID,
+      repository: 'AgentWorkforce/cloud',
+      revision,
+      filesWritten: 4312,
+      contentRoot: '/github/repos/AgentWorkforce/cloud/contents',
+      sentinelPath: '/github/repos/AgentWorkforce/cloud/.relayfile/clone.json',
+    });
+
+    const requestCall = mocks.authorizedApiFetch.mock.calls[1];
+    expect(requestCall?.[1]).toBe('/api/v1/github/clone/request');
+    expect(JSON.parse(String(requestCall?.[2]?.body))).toEqual({
+      workspaceId: CLOUD_WORKSPACE_ID,
+      owner: 'AgentWorkforce',
+      repo: 'cloud',
+      ref: revision,
+      mode: 'full',
+    });
+    expect(JSON.stringify(requestCall)).not.toContain('githubToken');
+  });
+
+  it('rejects a completed clone that did not produce the requested live Relayfile revision', async () => {
+    const revision = '0123456789abcdef0123456789abcdef01234567';
+    mocks.authorizedApiFetch
+      .mockResolvedValueOnce({
+        response: Response.json({ cloudWorkspaceId: CLOUD_WORKSPACE_ID }),
+        auth,
+      })
+      .mockResolvedValueOnce({
+        response: Response.json({ ok: true, jobId: 'clone-job-2', status: 'queued' }, { status: 202 }),
+        auth,
+      })
+      .mockResolvedValueOnce({
+        response: Response.json({
+          ok: true,
+          job: {
+            owner: 'AgentWorkforce',
+            repo: 'cloud',
+            ref: revision,
+            status: 'completed',
+            headSha: 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa',
+            filesWritten: 12,
+            materialization: { mode: 'local_archive' },
+          },
+        }),
+        auth,
+      });
+
+    await expect(
+      materializeCloudRelayfileRepository(
+        { workspaceId: 'rw_abc', repository: 'AgentWorkforce/cloud', revision },
+        { pollIntervalMs: 0 }
+      )
+    ).rejects.toThrow(/did not prove a live Relayfile working tree/);
   });
 
   it('rejects a provisioned response with an untrusted server-owned Relaycast route', async () => {

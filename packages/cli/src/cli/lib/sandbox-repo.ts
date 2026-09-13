@@ -10,6 +10,8 @@ export interface SandboxRepositorySelection {
   repositoryName: string;
   revision: string;
   projectRoot: string;
+  /** Caller location beneath projectRoot, using portable `/` separators. */
+  repositoryRelativeCwd: string;
   workerCwd: string;
 }
 
@@ -165,6 +167,28 @@ export function resolveSandboxRepository(
         `Sandbox commit ${revision} is not pushed to ${upstream}. Push the exact commit before retrying.`
       );
     }
+  } else {
+    let containingRemoteBranches: string;
+    try {
+      containingRemoteBranches = run(
+        'git',
+        ['-C', root, 'branch', '--remotes', '--contains', 'HEAD', '--format=%(refname:short)'],
+        {
+          encoding: 'utf8',
+          stdio: ['ignore', 'pipe', 'ignore'],
+          timeout: 10_000,
+        }
+      );
+    } catch {
+      throw new Error(
+        `Cannot verify that sandbox commit ${revision} is pushed to origin. Fetch or push the exact commit before retrying.`
+      );
+    }
+    if (!containingRemoteBranches.split(/\r?\n/).some((branch) => branch.trim().startsWith('origin/'))) {
+      throw new Error(
+        `Sandbox commit ${revision} is not present in an origin remote-tracking branch. Push the exact commit before retrying.`
+      );
+    }
   }
 
   const relative = path.relative(canonicalRoot, localCwd);
@@ -182,6 +206,7 @@ export function resolveSandboxRepository(
     repositoryName,
     revision,
     projectRoot: canonicalRoot,
+    repositoryRelativeCwd: relativePosix,
     workerCwd: remoteCwd ?? (relativePosix ? `${remoteRoot}/${relativePosix}` : remoteRoot),
   };
 }

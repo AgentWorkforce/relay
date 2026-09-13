@@ -25,11 +25,35 @@ const DEFAULT_RESOLUTION_TIMEOUT_MS = 120_000;
 // identity (which prevents the CLI from cleaning it up safely).
 const DEFAULT_ENSURE_TIMEOUT_MS = 480_000;
 const DEFAULT_DELETE_TIMEOUT_MS = 30_000;
+const DEFAULT_RELAYFILE_REPOSITORY_MATERIALIZE_TIMEOUT_MS = 20 * 60_000;
+const DEFAULT_RELAYFILE_REPOSITORY_POLL_INTERVAL_MS = 2_000;
 
 export type CloudFleetSandboxRequestOptions = {
   apiUrl?: string;
   signal?: AbortSignal;
   timeoutMs?: number;
+};
+
+export type MaterializeCloudRelayfileRepositoryInput = {
+  /** Cloud UUID or unified rw_* workspace id. */
+  workspaceId: string;
+  /** Canonical GitHub owner/name identity. */
+  repository: string;
+  /** Exact reachable commit to seed into Relayfile. */
+  revision: string;
+};
+
+export type CloudRelayfileRepositoryMaterialization = {
+  cloudWorkspaceId: string;
+  repository: string;
+  revision: string;
+  filesWritten: number;
+  contentRoot: string;
+  sentinelPath: string;
+};
+
+export type CloudRelayfileRepositoryMaterializeOptions = CloudFleetSandboxRequestOptions & {
+  pollIntervalMs?: number;
 };
 
 export type CloudFleetSandboxProviderId =
@@ -408,6 +432,44 @@ function validateRepoRevisions(
   return Object.fromEntries(entries);
 }
 
+function parseRepositoryIdentity(repository: string): { owner: string; repo: string } {
+  const normalized = repository.trim();
+  if (!REPOSITORY_KEY_PATTERN.test(normalized) || normalized.includes('..')) {
+    throw new Error('Cloud Relayfile repository must use GitHub owner/name form.');
+  }
+  const [owner, repo] = normalized.split('/');
+  return { owner: owner!, repo: repo! };
+}
+
+function expectedRelayfileRepositoryPaths(
+  owner: string,
+  repo: string
+): {
+  contentRoot: string;
+  sentinelPath: string;
+} {
+  const root = `/github/repos/${encodeURIComponent(owner)}/${encodeURIComponent(repo)}`;
+  return {
+    contentRoot: `${root}/contents`,
+    sentinelPath: `${root}/.relayfile/clone.json`,
+  };
+}
+
+function waitForDelay(ms: number, signal: AbortSignal): Promise<void> {
+  if (signal.aborted) return Promise.reject(signal.reason);
+  return new Promise((resolve, reject) => {
+    const onAbort = () => {
+      clearTimeout(timer);
+      reject(signal.reason);
+    };
+    const timer = setTimeout(() => {
+      signal.removeEventListener('abort', onAbort);
+      resolve();
+    }, ms);
+    signal.addEventListener('abort', onAbort, { once: true });
+  });
+}
+
 function readRepoRevisions(payload: JsonRecord): Record<string, string> | undefined {
   const value = payload.repoRevisions;
   if (value === undefined) return undefined;
@@ -679,6 +741,135 @@ function normalizeEnsureResult(
   }
 
   throw new Error('Cloud fleet sandbox response has an unknown outcome.');
+}
+
+/**
+ * Materialize one exact GitHub revision into the selected workspace's live
+ * Relayfile tree and wait until the decoded working-tree mount can consume it.
+ *
+ * Cloud owns GitHub credential selection. The CLI sends only owner/name and
+ * the exact pushed SHA; provider credentials never cross this boundary.
+ */
+export async function materializeCloudRelayfileRepository(
+  input: MaterializeCloudRelayfileRepositoryInput,
+  options: CloudRelayfileRepositoryMaterializeOptions = {}
+): Promise<CloudRelayfileRepositoryMaterialization> {
+  const workspaceId = input.workspaceId.trim();
+  if (!workspaceId) throw new Error('A workspace ID is required to materialize a Relayfile repository.');
+  const { owner, repo } = parseRepositoryIdentity(input.repository);
+  const revision = input.revision.trim().toLowerCase();
+  if (!REPOSITORY_REVISION_PATTERN.test(revision)) {
+    throw new Error('Cloud Relayfile repository revision must be exactly 40 hexadecimal characters.');
+  }
+  const pollIntervalMs = options.pollIntervalMs ?? DEFAULT_RELAYFILE_REPOSITORY_POLL_INTERVAL_MS;
+  if (!Number.isFinite(pollIntervalMs) || pollIntervalMs < 0) {
+    throw new Error(
+      'Cloud Relayfile repository poll interval must be a non-negative number of milliseconds.'
+    );
+  }
+
+  const session = await ensureCloudSession({
+    apiUrl: options.apiUrl || defaultApiUrl(),
+    interactive: false,
+  });
+  const resolutionSignal = boundedSignal(options, DEFAULT_RESOLUTION_TIMEOUT_MS);
+  const resolved = await resolveCloudWorkspaceId(workspaceId, session.auth, resolutionSignal);
+  const signal = boundedSignal(options, DEFAULT_RELAYFILE_REPOSITORY_MATERIALIZE_TIMEOUT_MS);
+  let activeAuth = resolved.auth;
+
+  const requestResult = await authorizedApiFetch(
+    activeAuth,
+    '/api/v1/github/clone/request',
+    {
+      method: 'POST',
+      signal,
+      body: JSON.stringify({
+        workspaceId: resolved.cloudWorkspaceId,
+        owner,
+        repo,
+        ref: revision,
+        mode: 'full',
+      }),
+    },
+    { interactive: false }
+  );
+  activeAuth = requestResult.auth;
+  const requestPayload = await readJson(requestResult.response);
+  if (!requestResult.response.ok) {
+    throw endpointError('materialize the repository into Relayfile', requestResult.response, requestPayload);
+  }
+  if (!isObject(requestPayload)) {
+    throw new Error('Cloud Relayfile repository materializer returned an invalid response.');
+  }
+  const jobId = requiredString(requestPayload, 'jobId', 'Cloud Relayfile repository materializer');
+  const expectedPaths = expectedRelayfileRepositoryPaths(owner, repo);
+
+  for (;;) {
+    const statusResult = await authorizedApiFetch(
+      activeAuth,
+      `/api/v1/github/clone/status/${encodeURIComponent(jobId)}`,
+      { method: 'GET', signal },
+      { interactive: false }
+    );
+    activeAuth = statusResult.auth;
+    const statusPayload = await readJson(statusResult.response);
+    if (!statusResult.response.ok) {
+      throw endpointError(
+        'read Relayfile repository materialization status',
+        statusResult.response,
+        statusPayload
+      );
+    }
+    if (!isObject(statusPayload) || !isObject(statusPayload.job)) {
+      throw new Error('Cloud Relayfile repository materialization status was invalid.');
+    }
+    const job = statusPayload.job;
+    const status = readString(job, 'status');
+    if (status === 'failed') {
+      const detail = readString(job, 'lastError');
+      throw new Error(
+        redactCredentialValues(
+          `Cloud could not materialize ${owner}/${repo} into Relayfile${detail ? `: ${detail}` : '.'}`
+        )
+      );
+    }
+    if (status === 'completed') {
+      const jobOwner = readString(job, 'owner');
+      const jobRepo = readString(job, 'repo');
+      const jobRef = readString(job, 'ref');
+      const headSha = readString(job, 'headSha')?.toLowerCase();
+      const filesWritten = readNumber(job, 'filesWritten');
+      const materialization = job.materialization;
+      if (
+        jobOwner !== owner ||
+        jobRepo !== repo ||
+        jobRef?.toLowerCase() !== revision ||
+        headSha !== revision ||
+        filesWritten === undefined ||
+        filesWritten <= 0 ||
+        !isObject(materialization) ||
+        readString(materialization, 'mode') !== 'relayfile_export' ||
+        readString(materialization, 'headSha')?.toLowerCase() !== revision ||
+        readString(materialization, 'contentRoot') !== expectedPaths.contentRoot ||
+        readString(materialization, 'sentinelPath') !== expectedPaths.sentinelPath
+      ) {
+        throw new Error(
+          `Cloud did not prove a live Relayfile working tree for ${owner}/${repo} at ${revision}.`
+        );
+      }
+      return {
+        cloudWorkspaceId: resolved.cloudWorkspaceId,
+        repository: `${owner}/${repo}`,
+        revision,
+        filesWritten,
+        ...expectedPaths,
+      };
+    }
+    if (status !== 'queued' && status !== 'running' && status !== 'retrying') {
+      throw new Error('Cloud Relayfile repository materialization reported an unknown status.');
+    }
+    await waitForDelay(pollIntervalMs, signal);
+  }
 }
 
 /** Resolve a Relay workspace in Cloud, provision/reuse a node, and wait for readiness. */

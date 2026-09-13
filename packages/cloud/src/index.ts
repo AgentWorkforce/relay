@@ -84,6 +84,7 @@ export {
 export { redactCredentialValues } from './redact.js';
 export {
   ensureCloudFleetSandbox,
+  materializeCloudRelayfileRepository,
   deleteCloudFleetSandbox,
   CloudFleetSandboxProvisionError,
   normalizeRelaycastTarget,
@@ -91,6 +92,9 @@ export {
   AGENT37_RELAYCAST_ORIGIN,
   type EnsureCloudFleetSandboxInput,
   type EnsureCloudFleetSandboxResult,
+  type MaterializeCloudRelayfileRepositoryInput,
+  type CloudRelayfileRepositoryMaterialization,
+  type CloudRelayfileRepositoryMaterializeOptions,
   type CloudFleetSandboxReady,
   type CloudFleetSandboxReused,
   type CloudFleetSandboxProvisioningTimeout,

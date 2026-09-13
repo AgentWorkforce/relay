@@ -241,10 +241,15 @@ absent, it creates and removes a short-lived launcher identity automatically.
 Automatic placement and release need only the workspace key.
 
 The sandbox path provisions a fresh hosted instance and makes the Relayfile
-mount mandatory by default. The worker starts in the live `/workspace` mirror,
-including when the command runs inside a Git checkout. Use `--checkout` when a
-task needs a static Git checkout at the caller's exact pushed commit; that mode
-keeps the live Relayfile mirror available separately. Use `--sandbox-provider daytona` or
+mount mandatory by default. Inside a GitHub checkout, Relay infers the Git root,
+repository identity, exact `HEAD`, and caller-relative directory. Cloud uses the
+pinned workspace's connected GitHub credential to seed that revision into
+Relayfile, and the worker starts in the decoded source tree under
+`/workspace/github/repos/<owner>/<repo>/contents`. The long-running Relayfile
+daemon keeps the mounted source tree synchronized with the workspace while
+GitHub push events update the workspace's repository source. Use `--checkout`
+when a task needs a separate static Git clone; that mode keeps the live
+Relayfile mirror available separately. Use `--sandbox-provider daytona` or
 `--sandbox-provider e2b` to require an operator-enabled provider; omit the flag
 to let Cloud's sandbox router choose. Pass `--no-sandbox-relayfile` only when a
 deliberately bare sandbox is desired. If provisioning times out or the spawn
@@ -258,15 +263,20 @@ provisioning ends with an unknown outcome, rerun the command with the warning's
 `--sandbox-id` to replay the same Cloud identity instead of adopting another
 fleet node.
 
-With `--checkout`, sandbox provisioning attests the current GitHub checkout's
-exact `HEAD` and clones it under
+Both live and checkout modes require a clean working tree whose exact `HEAD` is
+reachable from a configured GitHub remote. This prevents a remote worker from
+silently starting at a different revision. Commit and push local work before
+retrying when Relay reports dirty files or an unreachable commit.
+
+With `--checkout`, sandbox provisioning also clones the attested `HEAD` under
 `/srv/agent-workforce/<repo>`. The checkout must have no tracked changes or
 untracked source files, and the exact commit must be reachable from an origin
 remote. Relay's generated `.agentworkforce/relay/workspace-key.json`,
 `connection.json`, and `runtime.json` metadata are permitted. Dirty checkouts and
-commits known to be ahead of their origin upstream fail locally. For detached
-or otherwise unverified commits, Cloud must fetch and verify the exact SHA
-before dispatch; an unreachable commit produces a push-and-retry error. The temporary isolated
+commits known to be ahead of their origin upstream fail locally. Detached commits
+must appear in an origin remote-tracking branch, and Cloud independently fetches
+and verifies the exact SHA before dispatch. An unreachable commit produces a
+push-and-retry error. The temporary isolated
 Relaycast credential stays in the machine store under
 `~/.agentworkforce/relay`; the project file stores only a non-secret reference.
 
@@ -281,19 +291,26 @@ release commands reuse the persisted project route; if that remote session is
 unavailable, the command reports the routing failure instead of selecting a
 same-named local worker.
 
-From a project already pinned to a Relay workspace, the ordinary live path is:
+From a clean repository already pinned to a Relay workspace, the ordinary live
+path is:
 
 ```bash
 agent-relay fleet spawn codex \
   --name cloud-zero-config \
-  --task "Inspect the current Relayfile workspace and report its available skills" \
+  --task "Inspect this repository and report its current commit" \
   --sandbox
 agent-relay node agent attach cloud-zero-config --mode drive
 agent-relay fleet agent list
 agent-relay fleet release cloud-zero-config
 ```
 
-For a static source task, opt in explicitly:
+Invoking the live command from `packages/web` starts the worker at
+`/workspace/github/repos/<owner>/<repo>/contents/packages/web`. The repository
+source metadata is available beside `contents` under `.relayfile`, `.skills`
+is mounted from the same workspace, and no `.git` directory is written into the
+Relayfile mirror.
+
+For a static Git checkout, opt in explicitly:
 
 ```bash
 agent-relay fleet spawn codex \
@@ -304,15 +321,16 @@ agent-relay fleet spawn codex \
 ```
 
 In checkout mode, invoking spawn from `packages/web` places the worker in that
-same relative directory in the remote clone. Private repositories use the pinned
-workspace's connected GitHub access; a repository-access error means that
-connection must be granted access to the repository. No GitHub token or
-workspace key needs to be copied into the task or checkout.
+same relative directory in the remote clone. In both modes, private repositories
+use the pinned workspace's connected GitHub access; a repository-access error
+means that connection must be granted access to the repository. No GitHub token
+or workspace key needs to be copied into the task, mount, or checkout.
 
-The Git checkout and Relayfile mirror are separate trees. Workspace `.skills`
-are exposed through the agent CLIs' usual skill directories, and the worker's
-task context identifies the mirror for other workspace records. Never move
-`.git` into that mirror or clone a second repository there.
+With `--checkout`, the Git checkout and Relayfile mirror are separate trees. In
+the ordinary live mode, source files are decoded from Relayfile records without
+placing `.git` in the mirror. Workspace `.skills` are exposed through the agent
+CLIs' usual skill directories, and the worker's task context identifies the
+mirror and exact source revision.
 
 Detaching leaves the worker running. Only one drive session can own a worker
 at a time; detach the current driver before driving it in another shell, or
@@ -328,18 +346,20 @@ If the workspace is not pinned yet, use `agent-relay workspace rebind <name>`
 with an existing stored workspace. A missing or mismatched stored route
 credential requires rerunning sandbox provisioning for that workspace.
 `--base-url`, `--workspace-id`, `--node`, provider selection, `--cwd`, and the
-static `--checkout` mode remain advanced overrides. Plain `--sandbox` uses the
-mount-based live workspace inside and outside Git.
+static `--checkout` mode remain advanced overrides. Outside Git, plain
+`--sandbox` preserves the existing full-workspace Relayfile mount at
+`/workspace`.
 
 Pins created before workspace IDs were recorded are resolved automatically
 through Cloud at spawn time. The key travels in an authenticated POST body,
 never a URL. Nested packages share the repository pin; an existing subproject
 pin or `AGENT_RELAY_PROJECT` remains an explicit workspace override.
 
-Large workspaces should select only the live subtree an agent needs. Pass one
-or more explicit directory roots after `--sandbox-relayfile-path`; Cloud
-validates the `/path/**` form and materializes those roots before the agent
-starts:
+Large workspaces can add only the other live subtrees an agent needs. Pass one
+or more explicit directory roots after `--sandbox-relayfile-path`; the inferred
+repository, its source metadata, and `.skills` remain mounted automatically.
+Cloud validates the `/path/**` form and materializes those roots before the
+agent starts:
 
 ```bash
 agent-relay fleet spawn claude \

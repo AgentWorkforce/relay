@@ -10,6 +10,7 @@ function gitMock(): ReturnType<typeof vi.fn> {
   return vi.fn((_command: string, args: readonly string[]) => {
     if (args.includes('--show-toplevel')) return '/checkout\n';
     if (args.includes('get-url')) return 'git@github.com:AgentWorkforce/relay.git\n';
+    if (args.includes('--remotes')) return 'origin/main\n';
     if (args.includes('HEAD')) return '0123456789abcdef0123456789abcdef01234567\n';
     if (args.includes('status')) return '';
     if (args.includes('@{u}')) return 'origin/main\n';
@@ -28,6 +29,7 @@ describe('resolveSandboxRepository', () => {
       repositoryName: 'relay',
       revision: '0123456789abcdef0123456789abcdef01234567',
       projectRoot: '/checkout',
+      repositoryRelativeCwd: 'packages/cli',
       workerCwd: '/srv/agent-workforce/relay/packages/cli',
     });
   });
@@ -126,7 +128,7 @@ describe('resolveSandboxRepository', () => {
     }
   });
 
-  it('accepts SSH URL origins and does not require an upstream for detached HEAD', () => {
+  it('accepts SSH URL origins and verifies a detached HEAD against an origin-tracking branch', () => {
     const run = gitMock();
     run.mockImplementation((command: string, args: readonly string[]) => {
       if (args.includes('get-url')) return 'ssh://git@github.com/AgentWorkforce/relay.git\n';
@@ -137,6 +139,21 @@ describe('resolveSandboxRepository', () => {
       resolveSandboxRepository('/checkout', undefined, { cwd: () => '/checkout', execFileSync: run as never })
         ?.repository
     ).toBe('AgentWorkforce/relay');
+  });
+
+  it('rejects a detached HEAD that is not present in an origin-tracking branch', () => {
+    const run = gitMock();
+    run.mockImplementation((command: string, args: readonly string[]) => {
+      if (args.includes('@{u}')) throw new Error('detached');
+      if (args.includes('--remotes')) return '';
+      return gitMock()(command, args);
+    });
+    expect(() =>
+      resolveSandboxRepository('/checkout', undefined, {
+        cwd: () => '/checkout',
+        execFileSync: run as never,
+      })
+    ).toThrow(/not present in an origin remote-tracking branch/);
   });
 
   it('honors a selected Relay project when the shell is outside Git', () => {
@@ -271,6 +288,7 @@ describe('resolveSandboxRepository', () => {
         repositoryName: 'cloud',
         revision,
         projectRoot: checkout,
+        repositoryRelativeCwd: 'packages/web',
         workerCwd: '/srv/agent-workforce/cloud/packages/web',
       });
       mkdirSync(path.join(checkout, '.agentworkforce', 'relay'), { recursive: true });

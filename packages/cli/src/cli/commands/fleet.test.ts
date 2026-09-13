@@ -936,9 +936,7 @@ describe('fleet command support', () => {
       relayfileMountPath: '/workspace',
     }));
     const deleteCloudFleetSandbox = vi.fn(async () => undefined);
-    const resolveSandboxRepository = vi.fn(() => {
-      throw new Error('default live-mount mode must not inspect Git');
-    });
+    const resolveSandboxRepository = vi.fn(() => undefined);
     const logs: string[] = [];
     const program = new Command();
     program.exitOverride();
@@ -1004,7 +1002,7 @@ describe('fleet command support', () => {
       waitTimeoutMs: 90_000,
       name: REPLAY_SANDBOX_NAME,
     });
-    expect(resolveSandboxRepository).not.toHaveBeenCalled();
+    expect(resolveSandboxRepository).toHaveBeenCalled();
     expect(ensureInput?.name).toBe(`fleet-sandbox-${ensureInput?.sandboxId?.slice('sbx_'.length)}`);
     expect(register).toHaveBeenCalledWith(
       expect.objectContaining({
@@ -1055,6 +1053,142 @@ describe('fleet command support', () => {
     });
   });
 
+  it('plain --sandbox materializes the inferred repository through Relayfile and starts in its live relative cwd', async () => {
+    vi.stubEnv('RELAY_AGENT_TOKEN', undefined);
+    const revision = '0123456789abcdef0123456789abcdef01234567';
+    const repositorySelection = {
+      repository: 'AgentWorkforce/cloud',
+      repositoryName: 'cloud',
+      revision,
+      projectRoot: '/local/cloud',
+      repositoryRelativeCwd: 'packages/web',
+      workerCwd: '/srv/agent-workforce/cloud/packages/web',
+    };
+    const events: string[] = [];
+    const materializeCloudRelayfileRepository = vi.fn(async () => {
+      events.push('materialize');
+      return {
+        cloudWorkspaceId: 'cloud-workspace',
+        repository: 'AgentWorkforce/cloud',
+        revision,
+        filesWritten: 4312,
+        contentRoot: '/github/repos/AgentWorkforce/cloud/contents',
+        sentinelPath: '/github/repos/AgentWorkforce/cloud/.relayfile/clone.json',
+      };
+    });
+    const ensureCloudFleetSandbox = vi.fn(async () => {
+      events.push('ensure');
+      return {
+        outcome: 'provisioned' as const,
+        providerId: 'agent37' as const,
+        cloudWorkspaceId: 'cloud-workspace',
+        nodeId: 'node-live',
+        nodeName: 'live-node',
+        sandboxId: 'sandbox-live',
+        providerSandboxId: 'provider-live',
+        relayWorkspaceId: 'rw_abc',
+        relaycastTarget: AGENT37_RELAYCAST_TARGET,
+        relayfileMounted: true,
+        relayfileMountPath: '/workspace',
+      };
+    });
+    const placement = {
+      spawn: vi.fn(async () => {
+        events.push('spawn');
+        return { invocationId: 'inv_live', node: { name: 'live-node' } };
+      }),
+    };
+    const createWorkspaceRelay = vi.fn(() => ({
+      workspace: {
+        info: vi.fn(async () => ({ id: 'rw_abc' })),
+        register: vi.fn(async () => ({ token: 'at_live_launcher' })),
+        release: vi.fn(async () => ({ released: true, deleted: true })),
+      },
+    }));
+    const program = new Command();
+    program.exitOverride();
+    registerFleetCommands(program, {
+      resolveSandboxRepository: vi.fn(() => repositorySelection),
+      materializeCloudRelayfileRepository,
+      ensureCloudFleetSandbox,
+      sdk: {
+        createAgentRelay: vi.fn(() => ({ messaging: { placement } })) as never,
+        createWorkspaceRelay: createWorkspaceRelay as never,
+        createWorkspace: vi.fn() as never,
+        log: vi.fn(),
+        error: vi.fn(),
+        exit: vi.fn() as never,
+      },
+      resolveWorkspaceSelection: () => ({
+        key: 'rk_live_test',
+        source: 'project',
+        origin: '/local/cloud/.agentworkforce/relay/workspace-key.json',
+        workspaceId: 'rw_abc',
+      }),
+      persistWorkspaceRelaycastTarget: () => true,
+      deleteCloudFleetSandbox: vi.fn(async () => undefined),
+      createFleetWorkspaceClient: vi.fn() as never,
+      log: () => undefined,
+      warn: () => undefined,
+      error: () => undefined,
+    });
+
+    await program.parseAsync(
+      [
+        'fleet',
+        'spawn',
+        'codex',
+        '--sandbox',
+        '--sandbox-provider',
+        'agent37',
+        '--sandbox-relayfile-path',
+        '/memory/**',
+        '--name',
+        'cloud-live',
+        '--task',
+        'Inspect this repository',
+        '--workspace-key',
+        'rk_live_test',
+      ],
+      { from: 'user' }
+    );
+
+    expect(events).toEqual(['materialize', 'ensure', 'spawn']);
+    expect(materializeCloudRelayfileRepository).toHaveBeenCalledWith({
+      workspaceId: 'rw_abc',
+      repository: 'AgentWorkforce/cloud',
+      revision,
+    });
+    expect(ensureCloudFleetSandbox).toHaveBeenCalledWith(
+      expect.objectContaining({
+        mountRelayfile: true,
+        relayfilePaths: [
+          '/github/repos/AgentWorkforce/cloud/contents/**',
+          '/github/repos/AgentWorkforce/cloud/.relayfile/**',
+          '/.skills/**',
+          '/memory/**',
+        ],
+      })
+    );
+    const ensureInput = ensureCloudFleetSandbox.mock.calls[0]?.[0] as Record<string, unknown>;
+    expect(ensureInput.repos).toBeUndefined();
+    expect(ensureInput.repoRevisions).toBeUndefined();
+    expect(placement.spawn).toHaveBeenCalledWith(
+      expect.objectContaining({
+        input: expect.objectContaining({
+          task: expect.stringContaining(
+            'Inspect this repository\n\nAgent Relay sandbox context: AgentWorkforce/cloud is mounted as a live Relayfile working tree'
+          ),
+          worker_cwd: '/workspace/github/repos/AgentWorkforce/cloud/contents/packages/web',
+        }),
+      })
+    );
+    const spawnInput = placement.spawn.mock.calls[0]?.[0]?.input as { task?: string };
+    expect(spawnInput.task).toContain(revision);
+    expect(spawnInput.task).toContain('/workspace/github/repos/AgentWorkforce/cloud/.relayfile/clone.json');
+    expect(spawnInput.task).not.toContain('/local/cloud');
+  });
+
   it('--checkout infers the Git root and forwards only the public revision attestation', async () => {
     const revision = '0123456789abcdef0123456789abcdef01234567';
     const repositorySelection = {
@@ -1062,6 +1196,7 @@ describe('fleet command support', () => {
       repositoryName: 'cloud',
       revision,
       projectRoot: '/local/cloud',
+      repositoryRelativeCwd: 'packages/web',
       workerCwd: '/srv/agent-workforce/cloud/packages/web',
     };
     const resolveSandboxRepository = vi.fn(() => repositorySelection);
@@ -1181,6 +1316,7 @@ describe('fleet command support', () => {
       repositoryName: 'legacyprovider',
       revision,
       projectRoot: '/actual/legacyprovider',
+      repositoryRelativeCwd: 'packages/web',
       workerCwd: '/srv/agent-workforce/legacyprovider/packages/web',
     }));
     const placement = {
@@ -1394,6 +1530,7 @@ describe('fleet command support', () => {
         repositoryName: 'cloud',
         revision,
         projectRoot: '/local/cloud',
+        repositoryRelativeCwd: 'packages/web',
         workerCwd: '/srv/agent-workforce/cloud/packages/web',
       }));
       const deleteCloudFleetSandbox = vi.fn(async () => undefined);

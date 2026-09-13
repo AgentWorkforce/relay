@@ -38,7 +38,7 @@ vi.mock('@agent-relay/harness-driver', async (importOriginal) => ({ ...(await im
 import { registerFleetCommands } from '../../cli/src/cli/commands/fleet.js';
 const revision = '${revision}';
 const auth = { accessToken: 'probe', refreshToken: 'probe', accessTokenExpiresAt: '2099-01-01T00:00:00Z', apiUrl: 'https://relayflow.invalid' };
-test('fleet sandbox CLI forwards exact repo revision and uses returned provider identity for cleanup', async () => {
+test('fleet sandbox CLI materializes exact source through a scoped live Relayfile mount', async () => {
   const output = process.env.RELAY_PR1763_OBSERVATION_PATH;
   if (!output) throw new Error('Missing observation path.');
   const requests = [];
@@ -49,26 +49,27 @@ test('fleet sandbox CLI forwards exact repo revision and uses returned provider 
     if (requests.length === 1) return { response: Response.json({ cloudWorkspaceId: '50587328-441d-4acb-b8f3-dbe1b3c5de99' }), auth };
     return { response: Response.json({ outcome: 'provisioned', cloudWorkspaceId: '50587328-441d-4acb-b8f3-dbe1b3c5de99', nodeId: 'node-proof', nodeName: body?.name ?? 'sandbox-proof', sandboxId: body?.sandboxId ?? 'sbx_123e4567-e89b-42d3-a456-426614174000', relayWorkspaceId: 'rw-proof', relayfileMounted: true, providerId: 'agent37', relaycastTarget: { route: 'agent37-isolated', baseUrl: 'https://agent37-cast.agentrelay.com', workspaceId: 'rw-proof', relaycastApiKey: 'rk_live_probe' }, repoRevisions: body?.repoRevisions ?? undefined }, { status: 201 }), auth };
   });
-  const logs = [], warnings = [], deletes = [], releases = [];
+  const logs = [], warnings = [], deletes = [], releases = [], materializations = [], spawnInputs = [];
   const program = new Command(); program.exitOverride();
   registerFleetCommands(program, {
     core: { getProjectPaths: () => ({ projectRoot: process.cwd() }), env: {} },
     resolveWorkspaceSelection: () => ({ workspaceId: 'rw-proof', key: 'probe-key', source: 'project' }),
     sdk: {
-      createAgentRelay: vi.fn(() => ({ messaging: { placement: { spawn: vi.fn(async () => { throw new Error('synthetic dispatch failure'); }) } } })),
+      createAgentRelay: vi.fn(() => ({ messaging: { placement: { spawn: vi.fn(async (input) => { spawnInputs.push(input); throw new Error('synthetic dispatch failure'); }) } } })),
       createWorkspaceRelay: vi.fn(() => ({ workspace: { info: vi.fn(async () => ({ id: 'rw-proof' })), register: vi.fn(async () => ({ token: 'launcher' })), release: vi.fn(async (input) => { releases.push(input); return { deleted: true }; }) } })),
       createWorkspace: vi.fn(), log: (value) => logs.push(String(value)), error: vi.fn(), exit: vi.fn((code) => { throw new Error('CLI exit ' + code); }),
     },
+    resolveSandboxRepository: vi.fn(() => ({ repository: 'AgentWorkforce/relay', repositoryName: 'relay', revision, projectRoot: process.cwd(), repositoryRelativeCwd: 'packages/cli', workerCwd: '/srv/agent-workforce/relay/packages/cli' })),
+    materializeCloudRelayfileRepository: vi.fn(async (input) => { materializations.push(input); return { cloudWorkspaceId: '50587328-441d-4acb-b8f3-dbe1b3c5de99', repository: input.repository, revision: input.revision, filesWritten: 1234, contentRoot: '/github/repos/AgentWorkforce/relay/contents', sentinelPath: '/github/repos/AgentWorkforce/relay/.relayfile/clone.json' }; }),
     deleteCloudFleetSandbox: vi.fn(async (input) => { deletes.push(input); }),
     persistWorkspaceRelaycastTarget: () => true,
     log: () => undefined, warn: (...args) => warnings.push(args.join(' ')), error: () => undefined,
   });
-  const checkoutArgs = ${JSON.stringify(arm)} === 'head' ? ['--checkout'] : [];
-  await expect(program.parseAsync(['fleet', 'spawn', 'codex', '--name', 'proof-worker', '--task', 'proof', '--sandbox', ...checkoutArgs, '--no-confirm'], { from: 'user' })).rejects.toThrow('CLI exit 1');
+  await expect(program.parseAsync(['fleet', 'spawn', 'codex', '--name', 'proof-worker', '--task', 'proof', '--sandbox', '--no-confirm'], { from: 'user' })).rejects.toThrow('CLI exit 1');
   const body = requests[1]?.body ?? {};
-  await writeFile(output, JSON.stringify({ requestCount: requests.length, requestRepos: body.repos ?? null, requestRepoRevisions: body.repoRevisions ?? null, resultRepoRevisions: body.repoRevisions ?? null, workloadProfile: body.workloadProfile ?? null, cleanupProviderIds: deletes.map((x) => x.providerId ?? null), launcherReleases: releases.length, warnings }, null, 2));
-  if (${JSON.stringify(arm)} === 'head') { expect(body.repos).toEqual(['AgentWorkforce/relay']); expect(body.repoRevisions).toEqual({ 'AgentWorkforce/relay': revision }); expect(body.workloadProfile).toBe('long-running-agent'); expect(releases).toHaveLength(1); expect(deletes).toHaveLength(1); expect(deletes[0].providerId).toBe('agent37'); }
-  else { expect(body.repoRevisions ?? null).toBe(null); expect(body.workloadProfile).toBe('long-running-agent'); }
+  await writeFile(output, JSON.stringify({ requestCount: requests.length, materializations, requestRepos: body.repos ?? null, requestRepoRevisions: body.repoRevisions ?? null, relayfilePaths: body.relayfilePaths ?? null, workloadProfile: body.workloadProfile ?? null, workerCwd: spawnInputs[0]?.input?.worker_cwd ?? null, task: spawnInputs[0]?.input?.task ?? null, cleanupProviderIds: deletes.map((x) => x.providerId ?? null), launcherReleases: releases.length, warnings }, null, 2));
+  if (${JSON.stringify(arm)} === 'head') { expect(materializations).toEqual([{ workspaceId: 'rw-proof', repository: 'AgentWorkforce/relay', revision }]); expect(body.repos ?? null).toBe(null); expect(body.repoRevisions ?? null).toBe(null); expect(body.relayfilePaths).toEqual(['/github/repos/AgentWorkforce/relay/contents/**', '/github/repos/AgentWorkforce/relay/.relayfile/**', '/.skills/**']); expect(spawnInputs[0]?.input?.worker_cwd).toBe('/workspace/github/repos/AgentWorkforce/relay/contents/packages/cli'); expect(spawnInputs[0]?.input?.task).toContain(revision); expect(body.workloadProfile).toBe('long-running-agent'); expect(releases).toHaveLength(1); expect(deletes).toHaveLength(1); expect(deletes[0].providerId).toBe('agent37'); }
+  else { expect(materializations).toHaveLength(0); expect(body.workloadProfile).toBe('long-running-agent'); }
 });
 `;
 try {
@@ -100,15 +101,25 @@ try {
   );
   const observation = JSON.parse(await readFile(observationPath, 'utf8'));
   const forwarded =
-    JSON.stringify(observation.requestRepoRevisions) === JSON.stringify({ 'AgentWorkforce/relay': revision });
-  const absent = observation.requestRepoRevisions === null;
+    observation.materializations?.length === 1 &&
+    observation.requestRepos === null &&
+    observation.requestRepoRevisions === null &&
+    JSON.stringify(observation.relayfilePaths) ===
+      JSON.stringify([
+        '/github/repos/AgentWorkforce/relay/contents/**',
+        '/github/repos/AgentWorkforce/relay/.relayfile/**',
+        '/.skills/**',
+      ]) &&
+    observation.workerCwd === '/workspace/github/repos/AgentWorkforce/relay/contents/packages/cli' &&
+    observation.task?.includes(revision);
+  const absent = observation.materializations?.length === 0;
   const outcome = arm === 'head' && forwarded ? 'fixed' : arm === 'base' && absent ? 'absent' : null;
   if (!outcome)
     throw new Error(`Unexpected repository revision observation: ${JSON.stringify(observation)}.`);
   await mkdir(path.dirname(resultPath), { recursive: true });
   await writeFile(
     resultPath,
-    `${JSON.stringify({ version: 1, caseId: CASE_ID, arm, outcome, signature: outcome === 'fixed' ? 'sandbox_repository_revision_contract_forwarded' : 'sandbox_repository_revision_contract_absent', details: outcome === 'fixed' ? 'The real fleet spawn --checkout command inferred the repository, forwarded its exact revision to Cloud, and retained the returned provider attribution through the CLI path.' : 'The base fleet spawn command omitted the opt-in checkout and exact repository revision contract.' })}\n`
+    `${JSON.stringify({ version: 1, caseId: CASE_ID, arm, outcome, signature: outcome === 'fixed' ? 'live_relayfile_repository_contract_forwarded' : 'live_relayfile_repository_contract_absent', details: outcome === 'fixed' ? 'The real plain fleet spawn --sandbox command inferred the repository, materialized its exact revision through Relayfile, mounted source metadata and skills, mapped the caller-relative cwd, and sent no static clone request.' : 'The base plain fleet spawn command did not materialize or mount the inferred repository as a live decoded Relayfile working tree.' })}\n`
   );
 } finally {
   await rm(probePath, { force: true });

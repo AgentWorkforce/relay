@@ -9,10 +9,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
-- `fleet spawn --sandbox --checkout` attests a clean, pushed GitHub checkout at
-  its exact commit before dispatch and maps nested local directories to the
-  static sandbox clone. Plain `--sandbox` keeps the live Relayfile mirror as the
-  worker's default filesystem.
+- From a pinned GitHub repository, plain `fleet spawn --sandbox` securely seeds
+  its exact clean, pushed `HEAD` through the workspace's connected GitHub
+  credential, mounts the decoded source tree and `.skills` through Relayfile,
+  maps the caller's relative directory, and keeps the working tree synchronized
+  by the Relayfile daemon. `--checkout` opts into a separate static Git clone.
 - `node agent attach <name>` automatically routes to a unique live Fleet node;
   ambiguous placements require `--node`.
 - `fleet spawn --sandbox` keeps temporary routing credentials out of project files.
