@@ -1009,7 +1009,7 @@ fn remove_cursor_dir(lock: &LeaseLock, cursor: &fs::File) -> io::Result<()> {
         return Ok(());
     }
     let error = io::Error::last_os_error();
-    if error.kind() == io::ErrorKind::NotFound {
+    if error.kind() == io::ErrorKind::NotFound || error.kind() == io::ErrorKind::DirectoryNotEmpty {
         Ok(())
     } else {
         Err(error)
@@ -1027,7 +1027,7 @@ pub(crate) fn write_credential_file(path: &Path, contents: &[u8]) -> io::Result<
 fn write_credential_file_with_identity(
     path: &Path,
     contents: &[u8],
-) -> io::Result<Option<(u32, u64)>> {
+) -> io::Result<(Option<(u32, u64)>, bool)> {
     let parent = path.parent().ok_or_else(|| {
         io::Error::new(io::ErrorKind::InvalidInput, "credential path has no parent")
     })?;
@@ -1056,7 +1056,7 @@ fn write_credential_file_with_identity(
         file.set_len(0)?;
         file.write_all(contents)?;
         file.sync_all()?;
-        return Ok(Some(windows_handle_identity(&file)?));
+        return Ok((Some(windows_handle_identity(&file)?), true));
     }
     let file_name = path
         .file_name()
@@ -1130,7 +1130,7 @@ fn write_credential_file_with_identity(
         );
         #[cfg(not(windows))]
         let identity = None;
-        Ok(identity)
+        Ok((identity, false))
     })();
     if result.is_err() {
         let _ = fs::remove_file(&temporary);
@@ -1742,7 +1742,10 @@ impl CursorMcpLeaseRegistry {
                     )
                 },
             )?;
-            let generated_identity = write_credential_file_with_identity(path, contents)?;
+            let (generated_identity, replaced_existing) =
+                write_credential_file_with_identity(path, contents)?;
+            #[cfg(not(windows))]
+            let _ = (generated_identity, replaced_existing);
             #[cfg(windows)]
             {
                 *state.generated_identity.lock().map_err(|_| {
@@ -1753,9 +1756,12 @@ impl CursorMcpLeaseRegistry {
                 // between identity capture and journal write would orphan the
                 // credential file with no recoverable identity for cleanup.
                 if let Err(error) = self.persist_journal() {
-                    // Journal persistence failed — remove the credential file to
-                    // avoid leaving a secret on disk with no recoverable identity.
-                    let _ = fs::remove_file(path);
+                    // Only remove newly generated files. If we updated an
+                    // existing config in place, leaving it intact preserves the
+                    // user's original file path so the lease can be retried.
+                    if !replaced_existing {
+                        let _ = fs::remove_file(path);
+                    }
                     return Err(error);
                 }
             }
@@ -2353,6 +2359,11 @@ impl CursorMcpLeaseRegistry {
     pub(crate) fn is_empty(&self) -> bool {
         self.leases.is_empty() && self.path_by_worker.is_empty()
     }
+
+    #[cfg(test)]
+    pub(crate) fn journal_path(&self) -> Option<&Path> {
+        self.journal_path.as_deref()
+    }
 }
 
 #[cfg(test)]
@@ -2379,6 +2390,24 @@ mod tests {
             !dir.path().join(".cursor-mcp-lease.lock").exists(),
             "one-shot registry must not leave a lock in the worker cwd"
         );
+        assert!(registry.is_empty());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn clean_cwd_release_ignores_extra_cursor_files() {
+        let dir = tempdir().unwrap();
+        let worker = WorkerName::new("w1");
+        let mut registry = CursorMcpLeaseRegistry::new();
+        let path = registry.acquire(dir.path(), &worker).unwrap();
+        registry.write_worker_cursor_file(&worker, b"{} ").unwrap();
+        fs::write(path.parent().unwrap().join("notes.txt"), b"keep").unwrap();
+
+        registry.release_worker(&worker).unwrap();
+
+        assert!(!path.exists());
+        assert!(path.parent().unwrap().exists());
+        assert!(path.parent().unwrap().join("notes.txt").exists());
         assert!(registry.is_empty());
     }
 
@@ -3194,6 +3223,38 @@ mod tests {
             !path.exists(),
             "credential file must be removed when journal persistence fails"
         );
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn existing_credential_file_is_retained_on_journal_persist_failure() {
+        let dir = tempdir().unwrap();
+        let journal = dir.path().join("journal.json");
+        let cursor_dir = dir.path().join(".cursor");
+        fs::create_dir_all(&cursor_dir).unwrap();
+        let path = cursor_dir.join("mcp.json");
+        fs::write(&path, b"original placeholders").unwrap();
+
+        let mut registry = CursorMcpLeaseRegistry::with_journal(journal.clone());
+        let worker = WorkerName::new("w1");
+        registry.acquire(dir.path(), &worker).unwrap();
+
+        let lock_path = journal.with_file_name(".cursor-mcp-leases.lock");
+        let _held_lock = fs::OpenOptions::new()
+            .read(true)
+            .write(true)
+            .create(true)
+            .truncate(false)
+            .open(&lock_path)
+            .unwrap();
+        _held_lock.try_lock().unwrap();
+
+        let error = registry
+            .write_worker_cursor_file(&worker, b"updated placeholders")
+            .unwrap_err();
+        assert_eq!(error.kind(), io::ErrorKind::WouldBlock);
+        assert!(path.exists(), "existing credential file must be retained");
+        assert_eq!(fs::read(&path).unwrap(), b"updated placeholders");
     }
 
     #[cfg(unix)]

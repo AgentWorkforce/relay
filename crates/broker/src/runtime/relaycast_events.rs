@@ -301,7 +301,7 @@ pub(super) async fn bind_http_registered_agent_to_node(
         priority: None,
     };
     let mut last_error = None;
-    for attempt in 0..3 {
+    for attempt in 0..20 {
         match relay.bind_agent_to_node(node_name, request.clone()).await {
             Ok(_) => {
                 tracing::info!(

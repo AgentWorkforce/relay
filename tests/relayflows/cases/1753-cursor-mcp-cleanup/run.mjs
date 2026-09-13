@@ -154,7 +154,7 @@ try {
           `broker exited before API readiness with code ${broker.exitCode}: ${redactDiagnostic(brokerStderr)}`
         );
       }
-      return api('GET', '/api/status')
+      return api('GET', '/api/status', undefined, 2_000)
         .then((response) => response.status < 500)
         .catch(() => false);
     },
@@ -173,236 +173,236 @@ try {
   });
   cleanup_and_finish: {
     if (spawnResponse.status >= 300) {
-    // Keep the proof honest: if base admission fails before the cleanup flow
-    // starts, report the observed bug instead of crashing the case runner.
-    if (arm === 'base') {
-      await mkdir(path.dirname(resultPath), { recursive: true });
-      await writeFile(
-        resultPath,
-        `${JSON.stringify({
-          version: 1,
-          caseId: CASE_ID,
-          arm,
-          outcome: 'bug',
-          signature: 'cursor_mcp_absent_state_never_materializes',
-          details: `The base broker never reached the cleanup flow because Cursor worker admission failed first: ${JSON.stringify(spawnResponse.body).slice(0, 500)}`,
-        })}\n`
-      );
-      break cleanup_and_finish;
+      // Keep the proof honest: if base admission fails before the cleanup flow
+      // starts, report the observed bug instead of crashing the case runner.
+      if (arm === 'base') {
+        await mkdir(path.dirname(resultPath), { recursive: true });
+        await writeFile(
+          resultPath,
+          `${JSON.stringify({
+            version: 1,
+            caseId: CASE_ID,
+            arm,
+            outcome: 'bug',
+            signature: 'cursor_mcp_absent_state_never_materializes',
+            details: `The base broker never reached the cleanup flow because Cursor worker admission failed first: ${JSON.stringify(spawnResponse.body).slice(0, 500)}`,
+          })}\n`
+        );
+        break cleanup_and_finish;
+      }
+      throw new Error(`spawn failed: ${JSON.stringify(spawnResponse.body).slice(0, 500)}`);
     }
-    throw new Error(`spawn failed: ${JSON.stringify(spawnResponse.body).slice(0, 500)}`);
-  }
 
-  const generated =
-    arm === 'head'
-      ? await waitFor(
+    const generated =
+      arm === 'head'
+        ? await waitFor(
+            async () => {
+              const contents = await readFile(cursorPath, 'utf8').catch(() => null);
+              if (!contents) return null;
+              const expected = contents.includes('${env:RELAY_API_KEY}');
+              return expected ? contents : null;
+            },
+            60_000,
+            'Cursor MCP file to be generated'
+          )
+        : await readFile(cursorPath, 'utf8').catch(() => null);
+
+    const generatedText = generated ?? '';
+    const leakedCredential = [relaycast.workspaceKey, relaycast.nodeToken].some((secret) =>
+      generatedText.includes(secret)
+    );
+
+    const beforeCrash = generated;
+    broker.kill('SIGKILL');
+    await waitForProcessExit(broker, 10_000, 'broker crash');
+    const journalAfterCrash =
+      arm === 'head'
+        ? await waitFor(
+            () => readFile(journalPath, 'utf8').catch(() => null),
+            5_000,
+            'Cursor MCP journal after crash'
+          )
+        : await readFile(journalPath, 'utf8').catch(() => null);
+
+    const oldBrokerUrl = brokerUrl;
+    broker = spawn(
+      binaryPath,
+      ['init', '--api-port', '0', '--api-bind', '127.0.0.1', '--state-dir', stateDir],
+      {
+        cwd: workDir,
+        env: brokerEnv,
+        stdio: ['ignore', 'pipe', 'pipe'],
+      }
+    );
+    broker.stderr.on('data', (chunk) => {
+      brokerStderr += chunk.toString('utf8').slice(-4096);
+    });
+    brokerUrl = await waitFor(
+      async () => {
+        if (broker.exitCode !== null) {
+          throw new Error(
+            `broker restarted but exited with code ${broker.exitCode}: ${redactDiagnostic(brokerStderr)}`
+          );
+        }
+        const connectionText = await readFile(connectionPath, 'utf8').catch(() => null);
+        if (!connectionText) return null;
+        let connection;
+        try {
+          connection = JSON.parse(connectionText);
+        } catch {
+          return null;
+        }
+        return connection.url === oldBrokerUrl ? null : connection.url;
+      },
+      30_000,
+      'broker restart'
+    );
+
+    const restartedApi = brokerClient(brokerUrl, brokerEnv.RELAY_BROKER_API_KEY);
+    await waitFor(
+      () => {
+        if (broker.exitCode !== null) {
+          throw new Error(
+            `restarted broker exited before API readiness with code ${broker.exitCode}: ${redactDiagnostic(brokerStderr)}`
+          );
+        }
+        return restartedApi('GET', '/api/status', undefined, 2_000)
+          .then((response) => response.status < 500)
+          .catch(() => false);
+      },
+      30_000,
+      'restarted broker api'
+    );
+
+    const releaseResponse = await restartedApi('DELETE', `/api/spawned/${workerName}`);
+    if (releaseResponse.status >= 300) {
+      throw new Error(`release failed: ${JSON.stringify(releaseResponse.body).slice(0, 500)}`);
+    }
+
+    const afterRelease = await readFile(cursorPath, 'utf8').catch(() => null);
+    const journalAfter = await readFile(journalPath, 'utf8').catch(() => null);
+    let absentCleanup = true;
+    let absentFileTimedOut = false;
+    if (arm === 'head' || arm === 'base') {
+      // Exercise the clean-cwd branch separately: there is no pre-existing file
+      // to restore, so successful cleanup must remove the generated config and
+      // release its journal entry completely.
+      try {
+        await rm(cursorPath, { force: true });
+        const absentWorkerName = `${workerName}-absent`;
+        const absentSpawnResponse = await restartedApi('POST', '/api/spawn', {
+          name: absentWorkerName,
+          cli: 'cursor',
+          transport: 'pty',
+          cwd,
+          task: 'exercise Cursor MCP cleanup from an absent file',
+          args: [],
+        });
+        if (absentSpawnResponse.status >= 300) {
+          throw new Error(
+            `absent-file spawn failed: ${JSON.stringify(absentSpawnResponse.body).slice(0, 500)}`
+          );
+        }
+        const absentGenerated = await waitFor(
           async () => {
             const contents = await readFile(cursorPath, 'utf8').catch(() => null);
             if (!contents) return null;
-            const expected = contents.includes('${env:RELAY_API_KEY}');
+            const expected =
+              arm === 'base'
+                ? [relaycast.workspaceKey, relaycast.nodeToken].some((secret) => contents.includes(secret))
+                : contents.includes('${env:RELAY_API_KEY}');
             return expected ? contents : null;
           },
           60_000,
-          'Cursor MCP file to be generated'
-        )
-      : await readFile(cursorPath, 'utf8').catch(() => null);
-
-  const generatedText = generated ?? '';
-  const leakedCredential = [relaycast.workspaceKey, relaycast.nodeToken].some((secret) =>
-    generatedText.includes(secret)
-  );
-
-  const beforeCrash = generated;
-  broker.kill('SIGKILL');
-  await waitForProcessExit(broker, 10_000, 'broker crash');
-  const journalAfterCrash =
-    arm === 'head'
-      ? await waitFor(
-          () => readFile(journalPath, 'utf8').catch(() => null),
-          5_000,
-          'Cursor MCP journal after crash'
-        )
-      : await readFile(journalPath, 'utf8').catch(() => null);
-
-  const oldBrokerUrl = brokerUrl;
-  broker = spawn(
-    binaryPath,
-    ['init', '--api-port', '0', '--api-bind', '127.0.0.1', '--state-dir', stateDir],
-    {
-      cwd: workDir,
-      env: brokerEnv,
-      stdio: ['ignore', 'pipe', 'pipe'],
-    }
-  );
-  broker.stderr.on('data', (chunk) => {
-    brokerStderr += chunk.toString('utf8').slice(-4096);
-  });
-  brokerUrl = await waitFor(
-    async () => {
-      if (broker.exitCode !== null) {
-        throw new Error(
-          `broker restarted but exited with code ${broker.exitCode}: ${redactDiagnostic(brokerStderr)}`
+          'Cursor MCP file to be generated from absent state'
         );
-      }
-      const connectionText = await readFile(connectionPath, 'utf8').catch(() => null);
-      if (!connectionText) return null;
-      let connection;
-      try {
-        connection = JSON.parse(connectionText);
-      } catch {
-        return null;
-      }
-      return connection.url === oldBrokerUrl ? null : connection.url;
-    },
-    30_000,
-    'broker restart'
-  );
-
-  const restartedApi = brokerClient(brokerUrl, brokerEnv.RELAY_BROKER_API_KEY);
-  await waitFor(
-    () => {
-      if (broker.exitCode !== null) {
-        throw new Error(
-          `restarted broker exited before API readiness with code ${broker.exitCode}: ${redactDiagnostic(brokerStderr)}`
-        );
-      }
-      return restartedApi('GET', '/api/status')
-        .then((response) => response.status < 500)
-        .catch(() => false);
-    },
-    30_000,
-    'restarted broker api'
-  );
-
-  const releaseResponse = await restartedApi('DELETE', `/api/spawned/${workerName}`);
-  if (releaseResponse.status >= 300) {
-    throw new Error(`release failed: ${JSON.stringify(releaseResponse.body).slice(0, 500)}`);
-  }
-
-  const afterRelease = await readFile(cursorPath, 'utf8').catch(() => null);
-  const journalAfter = await readFile(journalPath, 'utf8').catch(() => null);
-  let absentCleanup = true;
-  let absentFileTimedOut = false;
-  if (arm === 'head' || arm === 'base') {
-    // Exercise the clean-cwd branch separately: there is no pre-existing file
-    // to restore, so successful cleanup must remove the generated config and
-    // release its journal entry completely.
-    try {
-      await rm(cursorPath, { force: true });
-      const absentWorkerName = `${workerName}-absent`;
-      const absentSpawnResponse = await restartedApi('POST', '/api/spawn', {
-        name: absentWorkerName,
-        cli: 'cursor',
-        transport: 'pty',
-        cwd,
-        task: 'exercise Cursor MCP cleanup from an absent file',
-        args: [],
-      });
-      if (absentSpawnResponse.status >= 300) {
-        throw new Error(
-          `absent-file spawn failed: ${JSON.stringify(absentSpawnResponse.body).slice(0, 500)}`
-        );
-      }
-      const absentGenerated = await waitFor(
-        async () => {
-          const contents = await readFile(cursorPath, 'utf8').catch(() => null);
-          if (!contents) return null;
-          const expected =
-            arm === 'base'
-              ? [relaycast.workspaceKey, relaycast.nodeToken].some((secret) => contents.includes(secret))
-              : contents.includes('${env:RELAY_API_KEY}');
-          return expected ? contents : null;
-        },
-        60_000,
-        'Cursor MCP file to be generated from absent state'
-      );
-      if (
-        arm === 'head' &&
-        [relaycast.workspaceKey, relaycast.nodeToken].some((secret) => absentGenerated.includes(secret))
-      ) {
-        throw new Error('head absent-file phase leaked a relay credential');
-      }
-      const absentReleaseResponse = await restartedApi('DELETE', `/api/spawned/${absentWorkerName}`);
-      if (absentReleaseResponse.status >= 300) {
-        throw new Error(
-          `absent-file release failed: ${JSON.stringify(absentReleaseResponse.body).slice(0, 500)}`
-        );
-      }
-      const absentAfterRelease = await readFile(cursorPath, 'utf8').catch(() => null);
-      const absentJournalAfter = await readFile(journalPath, 'utf8').catch(() => null);
-      absentCleanup = !absentAfterRelease && !absentJournalAfter;
-      if (arm === 'head' && !absentCleanup) {
-        throw new Error(
-          `Absent-file cleanup left state: ${JSON.stringify({ file: Boolean(absentAfterRelease), journal: Boolean(absentJournalAfter) })}`
-        );
-      }
-    } catch (error) {
-      if (
-        arm === 'base' &&
-        String(error).includes('Timed out waiting for Cursor MCP file to be generated from absent state')
-      ) {
-        absentFileTimedOut = true;
-        absentCleanup = false;
-      } else {
-        throw error;
+        if (
+          arm === 'head' &&
+          [relaycast.workspaceKey, relaycast.nodeToken].some((secret) => absentGenerated.includes(secret))
+        ) {
+          throw new Error('head absent-file phase leaked a relay credential');
+        }
+        const absentReleaseResponse = await restartedApi('DELETE', `/api/spawned/${absentWorkerName}`);
+        if (absentReleaseResponse.status >= 300) {
+          throw new Error(
+            `absent-file release failed: ${JSON.stringify(absentReleaseResponse.body).slice(0, 500)}`
+          );
+        }
+        const absentAfterRelease = await readFile(cursorPath, 'utf8').catch(() => null);
+        const absentJournalAfter = await readFile(journalPath, 'utf8').catch(() => null);
+        absentCleanup = !absentAfterRelease && !absentJournalAfter;
+        if (arm === 'head' && !absentCleanup) {
+          throw new Error(
+            `Absent-file cleanup left state: ${JSON.stringify({ file: Boolean(absentAfterRelease), journal: Boolean(absentJournalAfter) })}`
+          );
+        }
+      } catch (error) {
+        if (
+          arm === 'base' &&
+          String(error).includes('Timed out waiting for Cursor MCP file to be generated from absent state')
+        ) {
+          absentFileTimedOut = true;
+          absentCleanup = false;
+        } else {
+          throw error;
+        }
       }
     }
-  }
-  await waitFor(
-    async () =>
-      (await relaycast.credentialRejected(relaycast.workspaceKey)) &&
-      (await relaycast.credentialRejected(relaycast.nodeToken)),
-    10_000,
-    'revoked relaycast credentials'
-  );
-
-  let outcome;
-  let signature;
-  let details;
-  if (arm === 'base' && absentFileTimedOut) {
-    outcome = 'bug';
-    signature = 'cursor_mcp_absent_state_never_materializes';
-    details =
-      'The merge-base broker successfully completed the primary crash/restart/release cycle but never regenerated the Cursor MCP file from an absent state within the deterministic proof window.';
-  } else if (arm === 'base' && !generated) {
-    outcome = 'bug';
-    signature = 'cursor_mcp_credentials_leak_and_no_recovery';
-    details =
-      'The base broker never materialized a recoverable Cursor MCP file before the crash/restart/release cycle, so there was no durable journal to restore from.';
-  } else if (
-    arm === 'base' &&
-    leakedCredential &&
-    afterRelease === beforeCrash &&
-    !journalAfter &&
-    !journalAfterCrash
-  ) {
-    outcome = 'bug';
-    signature = absentCleanup
-      ? 'cursor_mcp_credentials_leak_and_no_recovery'
-      : 'cursor_mcp_credentials_leak_and_legacy_absent_file_leak';
-    details = `The base broker wrote raw credentials into Cursor MCP state and left that generated state behind after a crash/restart/release cycle without a recovery journal.${absentCleanup ? ' Its separate absent-file cleanup completed.' : ' Its legacy absent-file cleanup also left generated state behind.'}`;
-  } else if (
-    arm === 'head' &&
-    !leakedCredential &&
-    afterRelease === original.toString('utf8') &&
-    journalAfterCrash &&
-    !journalAfter
-  ) {
-    outcome = 'fixed';
-    signature = 'cursor_mcp_state_restores_or_removes_cleanly';
-    details =
-      'The head broker used environment placeholders, restored the original Cursor MCP file on release after restart, and removed the retained lease state.';
-  } else {
-    throw new Error(
-      `Unexpected Cursor MCP cleanup observation: ${JSON.stringify({ arm, leakedCredential, restored: afterRelease === original.toString('utf8'), journalAfterCrash: Boolean(journalAfterCrash), journalAfterRelease: Boolean(journalAfter), absentCleanup })}`
+    await waitFor(
+      async () =>
+        (await relaycast.credentialRejected(relaycast.workspaceKey)) &&
+        (await relaycast.credentialRejected(relaycast.nodeToken)),
+      10_000,
+      'revoked relaycast credentials'
     );
-  }
 
-  await mkdir(path.dirname(resultPath), { recursive: true });
-  await writeFile(
-    resultPath,
-    `${JSON.stringify({ version: 1, caseId: CASE_ID, arm, outcome, signature, details })}\n`
-  );
+    let outcome;
+    let signature;
+    let details;
+    if (arm === 'base' && absentFileTimedOut) {
+      outcome = 'bug';
+      signature = 'cursor_mcp_absent_state_never_materializes';
+      details =
+        'The merge-base broker successfully completed the primary crash/restart/release cycle but never regenerated the Cursor MCP file from an absent state within the deterministic proof window.';
+    } else if (arm === 'base' && !generated) {
+      outcome = 'bug';
+      signature = 'cursor_mcp_credentials_leak_and_no_recovery';
+      details =
+        'The base broker never materialized a recoverable Cursor MCP file before the crash/restart/release cycle, so there was no durable journal to restore from.';
+    } else if (
+      arm === 'base' &&
+      leakedCredential &&
+      afterRelease === beforeCrash &&
+      !journalAfter &&
+      !journalAfterCrash
+    ) {
+      outcome = 'bug';
+      signature = absentCleanup
+        ? 'cursor_mcp_credentials_leak_and_no_recovery'
+        : 'cursor_mcp_credentials_leak_and_legacy_absent_file_leak';
+      details = `The base broker wrote raw credentials into Cursor MCP state and left that generated state behind after a crash/restart/release cycle without a recovery journal.${absentCleanup ? ' Its separate absent-file cleanup completed.' : ' Its legacy absent-file cleanup also left generated state behind.'}`;
+    } else if (
+      arm === 'head' &&
+      !leakedCredential &&
+      afterRelease === original.toString('utf8') &&
+      journalAfterCrash &&
+      !journalAfter
+    ) {
+      outcome = 'fixed';
+      signature = 'cursor_mcp_state_restores_or_removes_cleanly';
+      details =
+        'The head broker used environment placeholders, restored the original Cursor MCP file on release after restart, and removed the retained lease state.';
+    } else {
+      throw new Error(
+        `Unexpected Cursor MCP cleanup observation: ${JSON.stringify({ arm, leakedCredential, restored: afterRelease === original.toString('utf8'), journalAfterCrash: Boolean(journalAfterCrash), journalAfterRelease: Boolean(journalAfter), absentCleanup })}`
+      );
+    }
+
+    await mkdir(path.dirname(resultPath), { recursive: true });
+    await writeFile(
+      resultPath,
+      `${JSON.stringify({ version: 1, caseId: CASE_ID, arm, outcome, signature, details })}\n`
+    );
   }
 } finally {
   if (broker?.pid) {
@@ -473,7 +473,7 @@ async function waitForProcessExit(child, timeoutMs, label) {
 }
 
 function brokerClient(baseUrl, apiKey) {
-  return async (method, url, body) => {
+  return async (method, url, body, timeoutMs = 15_000) => {
     const headers = {
       ...(body ? { 'content-type': 'application/json' } : {}),
       'x-api-key': apiKey,
@@ -482,6 +482,7 @@ function brokerClient(baseUrl, apiKey) {
       method,
       headers,
       body: body ? JSON.stringify(body) : undefined,
+      signal: AbortSignal.timeout(timeoutMs),
     });
     const text = await response.text();
     let parsedBody = null;
@@ -661,6 +662,7 @@ async function startRelaycastStub() {
     credentialRejected: async (token) => {
       const response = await fetch(new URL('/v1/credential-check', `http://127.0.0.1:${address.port}`), {
         headers: { authorization: `Bearer ${token}` },
+        signal: AbortSignal.timeout(2_000),
       });
       return response.status === 403;
     },

@@ -21,6 +21,7 @@ use crate::{
 use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
+use sha2::{Digest, Sha256};
 use tokio::{
     io::{AsyncBufReadExt, AsyncWriteExt, BufReader},
     process::{Child, ChildStdin, Command},
@@ -367,15 +368,8 @@ impl WorkerRegistry {
         let safe_name = if broker_name.is_empty() {
             String::new()
         } else {
-            let sanitized: String = broker_name
-                .chars()
-                .filter(|c| c.is_alphanumeric() || *c == '-' || *c == '_')
-                .collect();
-            if sanitized.is_empty() {
-                String::new()
-            } else {
-                format!("-{sanitized}")
-            }
+            let digest = format!("{:x}", Sha256::digest(broker_name.as_bytes()));
+            format!("-{}", &digest[..16])
         };
         let cursor_mcp_journal =
             worker_logs_dir.join(format!(".cursor-mcp-leases{safe_name}.json"));
@@ -2714,6 +2708,38 @@ mod tests {
             Instant::now(),
             "test-broker",
         )
+    }
+
+    #[test]
+    fn cursor_journal_path_uses_full_broker_name() {
+        let first = make_registry(Vec::new());
+        let second = WorkerRegistry::new(
+            {
+                let (tx, _rx) = mpsc::channel::<WorkerEvent>(16);
+                tx
+            },
+            Vec::new(),
+            PathBuf::from("/tmp/worker-tests"),
+            Instant::now(),
+            "test_broker",
+        );
+
+        let first_journal = first
+            .cursor_mcp_leases
+            .journal_path()
+            .expect("journal path");
+        let second_journal = second
+            .cursor_mcp_leases
+            .journal_path()
+            .expect("journal path");
+
+        assert_ne!(first_journal, second_journal);
+        assert!(first_journal
+            .to_string_lossy()
+            .contains(".cursor-mcp-leases-"));
+        assert!(second_journal
+            .to_string_lossy()
+            .contains(".cursor-mcp-leases-"));
     }
 
     #[cfg(unix)]
