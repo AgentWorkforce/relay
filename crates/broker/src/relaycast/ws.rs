@@ -387,11 +387,6 @@ impl RelaycastHttpClient {
                     agent_name: trimmed_name.to_string(),
                     detail: "SDK relay client not initialized".to_string(),
                 })?;
-        if let Some(registration) = self.registration.as_ref().as_ref() {
-            if let Some(token) = registration.cached_agent_token(trimmed_name) {
-                return Ok(token);
-            }
-        }
         let body = serde_json::json!({
             "name": trimmed_name,
             "type": "agent",

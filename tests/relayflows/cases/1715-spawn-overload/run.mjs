@@ -136,14 +136,24 @@ try {
   });
 
   const unsafeError = typeof unsafe.body?.error === 'string' ? unsafe.body.error : '';
-  const spawnedList = (await api('GET', '/api/spawned')).body?.agents ?? [];
-  const unsafeNoWorker = spawnedList.every((agent) => agent?.name !== UNSAFE_AGENT);
-  const safeNoWorker = spawnedList.every((agent) => agent?.name !== SAFE_AGENT);
+  const spawnedResponse = await api('GET', '/api/spawned');
+  const spawnedList =
+    spawnedResponse.status === 200 && Array.isArray(spawnedResponse.body?.agents)
+      ? spawnedResponse.body.agents
+      : null;
+  const unsafeNoWorker = Array.isArray(spawnedList) && spawnedList.every((agent) => agent?.name !== UNSAFE_AGENT);
+  const safeNoWorker = Array.isArray(spawnedList) && spawnedList.every((agent) => agent?.name !== SAFE_AGENT);
   const safeWarning = typeof safe.body?.warning === 'string' ? safe.body.warning : '';
-  const safeWorkerPid = spawnedList.find((agent) => agent?.name === SAFE_AGENT)?.workerPid;
+  const safeWorkerPid = Array.isArray(spawnedList)
+    ? spawnedList.find((agent) => agent?.name === SAFE_AGENT)?.workerPid
+    : undefined;
   const safeTaskExitCleaned = await waitFor(async () => {
-    const agents = (await api('GET', '/api/spawned')).body?.agents ?? [];
-    return agents.every((agent) => agent?.name !== SAFE_AGENT);
+    const agentsResponse = await api('GET', '/api/spawned');
+    const agents =
+      agentsResponse.status === 200 && Array.isArray(agentsResponse.body?.agents)
+        ? agentsResponse.body.agents
+        : null;
+    return Array.isArray(agents) && agents.every((agent) => agent?.name !== SAFE_AGENT);
   }, 'safe task-exit cleanup');
   const registrationTimestamps = [...relay.workerRegistrationTimestamps];
   const retryScheduleBounded = retryScheduleIsBounded(registrationTimestamps, arm);

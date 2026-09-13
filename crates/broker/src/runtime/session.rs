@@ -365,6 +365,7 @@ pub(crate) async fn connect_relay(opts: RelaySessionOptions<'_>) -> Result<Relay
                     opts.agent_type,
                     Some(derived_identity_key.as_str()),
                     Some(startup_waiter_id.as_str()),
+                    Some(handshake_deadline),
                 ),
             )
             .await

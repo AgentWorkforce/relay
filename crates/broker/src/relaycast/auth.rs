@@ -53,6 +53,7 @@ pub struct AuthSessionSet {
 pub struct AuthSession {
     pub credentials: CredentialCache,
     pub token: String,
+    pub created_new: bool,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -383,6 +384,7 @@ impl AuthClient {
             agent_type,
             identity_key,
             None,
+            None,
         )
         .await
     }
@@ -399,6 +401,7 @@ impl AuthClient {
         agent_type: Option<&str>,
         identity_key: Option<&str>,
         waiter_id: Option<&str>,
+        startup_deadline: Option<tokio::time::Instant>,
     ) -> Result<AuthSessionSet> {
         if let Some((sources, default_hint)) = self.load_workspace_sources_from_env()? {
             let preferred_name = requested_name;
@@ -436,7 +439,7 @@ impl AuthClient {
                                     agent_type,
                                     identity_key,
                                     waiter_id: membership_waiter_id.as_deref(),
-                                    startup_deadline: None,
+                                    startup_deadline,
                                 },
                             )
                             .await;
@@ -485,14 +488,19 @@ impl AuthClient {
             }
 
             if let Some(error) = terminal_error {
-                self.rollback_registered_memberships(
-                    &memberships,
-                    "rolled back after a sibling multi-workspace registration failed",
-                )
-                .await
-                .context(
-                    "failed to roll back sibling workspace registrations after a hard failure",
-                )?;
+                if let Err(rollback_error) = self
+                    .rollback_registered_memberships(
+                        &memberships,
+                        "rolled back after a sibling multi-workspace registration failed",
+                    )
+                    .await
+                {
+                    tracing::warn!(
+                        target = "relay_broker::auth",
+                        error = %rollback_error,
+                        "failed to roll back sibling workspace registrations after a hard failure"
+                    );
+                }
                 return Err(error);
             }
 
@@ -605,6 +613,7 @@ impl AuthClient {
         Ok(AuthSession {
             credentials: creds,
             token,
+            created_new: false,
         })
     }
 
@@ -754,18 +763,35 @@ impl AuthClient {
         startup_deadline: Option<tokio::time::Instant>,
     ) -> Result<AuthSessionSet> {
         let ws_name = deterministic_workspace_name();
-        let (workspace_id, api_key) = if let Some(deadline) = startup_deadline {
-            tokio::time::timeout_at(deadline, self.create_workspace(&ws_name))
+        let (workspace_id, api_key) = match startup_deadline {
+            Some(deadline) => tokio::time::timeout_at(deadline, self.create_workspace(&ws_name))
                 .await
-                .context("creating a Relaycast workspace timed out")??
-        } else {
-            self.create_workspace(&ws_name).await?
+                .context("creating a Relaycast workspace timed out")??,
+            None => self.create_workspace(&ws_name).await?,
         };
 
-        let registration = if let Some(deadline) = startup_deadline {
-            tokio::time::timeout_at(
-                deadline,
-                self.register_agent_with_workspace_key(
+        let registration = match startup_deadline {
+            Some(deadline) => {
+                let registration = tokio::time::timeout_at(
+                    deadline,
+                    self.register_agent_with_workspace_key(
+                        &api_key,
+                        StartupRegistrationOptions {
+                            requested_name,
+                            strict_name,
+                            agent_type,
+                            identity_key,
+                            waiter_id,
+                            startup_deadline,
+                        },
+                    ),
+                )
+                .await
+                .context("failed registering agent with fresh workspace key timed out")??;
+                registration
+            }
+            None => self
+                .register_agent_with_workspace_key(
                     &api_key,
                     StartupRegistrationOptions {
                         requested_name,
@@ -775,24 +801,9 @@ impl AuthClient {
                         waiter_id,
                         startup_deadline,
                     },
-                ),
-            )
-            .await
-            .context("failed registering agent with fresh workspace key timed out")??
-        } else {
-            self.register_agent_with_workspace_key(
-                &api_key,
-                StartupRegistrationOptions {
-                    requested_name,
-                    strict_name,
-                    agent_type,
-                    identity_key,
-                    waiter_id,
-                    startup_deadline,
-                },
-            )
-            .await
-            .context("failed registering agent with fresh workspace key")?
+                )
+                .await
+                .context("failed registering agent with fresh workspace key")?,
         };
 
         let session = self.finish_session(api_key, Some(workspace_id), registration)?;
@@ -865,9 +876,9 @@ impl AuthClient {
         &self,
         workspace_key: String,
         workspace_id_hint: Option<String>,
-        registration: (String, String, String, Option<String>),
+        registration: (String, String, String, Option<String>, bool),
     ) -> Result<AuthSession> {
-        let (agent_id, agent_name, token, workspace_id_from_register) = registration;
+        let (agent_id, agent_name, token, workspace_id_from_register, created_new) = registration;
         let workspace_id = workspace_id_from_register
             .or(workspace_id_hint)
             .unwrap_or_else(|| "ws_unknown".to_string());
@@ -885,6 +896,7 @@ impl AuthClient {
         Ok(AuthSession {
             credentials: creds,
             token,
+            created_new,
         })
     }
 
@@ -936,16 +948,19 @@ impl AuthClient {
                     fallback_name = %fallback_name,
                     "workspace already exists; retrying with a fresh fallback name"
                 );
-                let result =
+                let result = tokio::time::timeout(
+                    RELAYCAST_HTTP_TIMEOUT,
                     retry_transient_relay_error("creating a fallback Relaycast workspace", || {
                         RelayCast::create_workspace(
                             &fallback_name,
                             self.base_url.as_deref(),
                             WorkspaceProvenance::sdk(),
                         )
-                    })
-                    .await
-                    .map_err(relay_error_to_anyhow)?;
+                    }),
+                )
+                .await
+                .context("creating a fallback Relaycast workspace timed out")?
+                .map_err(relay_error_to_anyhow)?;
                 Ok((result.workspace_id, result.api_key))
             }
             Err(error) => Err(relay_error_to_anyhow(error)),
@@ -959,6 +974,9 @@ impl AuthClient {
     ) -> Result<()> {
         let mut cleanup_error: Option<anyhow::Error> = None;
         for session in memberships {
+            if !session.created_new {
+                continue;
+            }
             let Some(agent_name) = session.credentials.agent_name.as_deref() else {
                 continue;
             };
@@ -1009,7 +1027,7 @@ impl AuthClient {
         &self,
         workspace_key: &str,
         options: StartupRegistrationOptions<'_>,
-    ) -> Result<(String, String, String, Option<String>)> {
+    ) -> Result<(String, String, String, Option<String>, bool)> {
         let relay = build_relay_client(workspace_key, self.base_url.as_deref())?;
         let name = options
             .requested_name
@@ -1599,7 +1617,7 @@ async fn admit_agent_registration(
     workspace_key: &str,
     name: &str,
     options: StartupRegistrationOptions<'_>,
-) -> Result<(String, String, String, Option<String>)> {
+) -> Result<(String, String, String, Option<String>, bool)> {
     let StartupRegistrationOptions {
         requested_name: _,
         strict_name: _,
@@ -1673,7 +1691,13 @@ async fn admit_agent_registration(
     )
     .await
     {
-        Ok(result) => Ok((result.id, result.name, result.token, result.workspace_id)),
+        Ok(result) => Ok((
+            result.id,
+            result.name,
+            result.token,
+            result.workspace_id,
+            true,
+        )),
         Err(RelayError::Api {
             code,
             status,
@@ -1779,6 +1803,7 @@ async fn admit_agent_registration(
                 existing.name,
                 token_response,
                 existing.workspace_id,
+                false,
             ))
         }
         Err(RelayError::Api {
@@ -3190,6 +3215,7 @@ mod tests {
                     None,
                     None,
                     Some("relay-register:logical-handshake"),
+                    None,
                 ),
         )
         .await
