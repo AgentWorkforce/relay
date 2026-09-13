@@ -37,6 +37,23 @@ fn set_model_write_timeout(timeout_ms: Option<u64>) -> Duration {
         .unwrap_or(DEFAULT_SET_MODEL_TIMEOUT)
 }
 
+/// Only explicitly local, one-shot headless workers may continue without a
+/// Relaycast identity. Interactive and PTY workers need that identity for
+/// delivery and must fail closed when registration is unavailable.
+pub(crate) fn can_spawn_without_preregistration(
+    spec: &AgentSpec,
+    exit_after_task: bool,
+    skip_relay_prompt: bool,
+) -> bool {
+    matches!(spec.runtime, AgentRuntime::Headless)
+        && matches!(
+            spec.harness_config.as_ref(),
+            None | Some(ResolvedHarnessConfig::Native(_))
+        )
+        && exit_after_task
+        && skip_relay_prompt
+}
+
 /// Resolve the named recipient whose presence accompanies an HTTP send.
 /// Normalize at this boundary so direct runtime requests cannot publish to a
 /// trimmed target while observing a whitespace-padded agent name.
@@ -363,7 +380,7 @@ impl BrokerRuntime {
                     let _ = reply.send(Err(format!("agent '{name}' already exists")));
                     return;
                 }
-                let owns_identity = !local_only && agent_token.is_none();
+                let mut owns_identity = !local_only && agent_token.is_none();
                 let effective_channels = channels.unwrap_or_else(default_spawn_channels);
                 let effective_channels = match super::relaycast_events::relaycast_spawn_channels(
                     &json!({"channels": effective_channels}),
@@ -495,10 +512,25 @@ impl BrokerRuntime {
                         }
                         Err(RegRetryOutcome::RetryableExhausted(error)) => {
                             let message = format_worker_preregistration_error(&name, &error);
-                            // Do not launch a tokenless process that could create
-                            // an identity later without broker cleanup ownership.
-                            let _ = reply.send(Err(message));
-                            return;
+                            if !can_spawn_without_preregistration(
+                                &spec,
+                                exit_after_task,
+                                skip_relay_prompt,
+                            ) {
+                                let _ = reply.send(Err(message));
+                                return;
+                            }
+                            tracing::warn!(
+                                worker = %name,
+                                error = %error,
+                                "continuing spawn without pre-registration after retries exhausted"
+                            );
+                            // No Relaycast identity was created, so this local
+                            // fallback must never claim cleanup ownership of a
+                            // cached or incumbent identity under the same name.
+                            owns_identity = false;
+                            preregistration_warning = Some(message);
+                            None
                         }
                         Err(RegRetryOutcome::Fatal(error)) => {
                             let _ =
