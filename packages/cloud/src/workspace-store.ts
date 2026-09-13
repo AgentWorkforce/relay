@@ -183,7 +183,7 @@ function withRelaycastCredentialLock<T>(file: string, fn: () => T): T {
       }
       break;
     } catch (error) {
-      if (!(isNodeError(error) && error.code === 'EEXIST')) throw error;
+      if (!isRelaycastCredentialLockContention(error)) throw error;
     }
     try {
       if (
@@ -243,6 +243,19 @@ function withRelaycastCredentialLock<T>(file: string, fn: () => T): T {
       }
     }
   }
+}
+
+function isRelaycastCredentialLockContention(error: unknown): boolean {
+  if (!isNodeError(error)) return false;
+  if (error.code === 'EEXIST') return true;
+  // On Windows a competing process can surface directory create/remove races
+  // as sharing violations instead of EEXIST. The credential directory was
+  // already ownership/ACL validated above, so retry these codes within the
+  // same bounded lock timeout and still fail closed if they persist.
+  return (
+    process.platform === 'win32' &&
+    (error.code === 'EACCES' || error.code === 'EBUSY' || error.code === 'EPERM')
+  );
 }
 
 function inspectRelaycastCredentialLock(lock: string): {
