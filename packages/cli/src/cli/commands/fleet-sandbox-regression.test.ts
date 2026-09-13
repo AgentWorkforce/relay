@@ -119,8 +119,8 @@ describe('fleet sandbox command regressions', () => {
     const spawn = fleet?.commands.find((command) => command.name() === 'spawn');
     const cwd = spawn?.options.find((option) => option.long === '--cwd');
 
-    expect(cwd?.description).toMatch(/local repo-relative path/);
-    expect(cwd?.description).toMatch(/absolute remote paths.*advanced overrides/);
+    expect(cwd?.description).toMatch(/With --sandbox, a local repo-relative path/);
+    expect(cwd?.description).toMatch(/without --sandbox, use an absolute remote path/);
   });
 
   it('keeps the full /workspace Relayfile mount outside Git without materializing a repository', async () => {

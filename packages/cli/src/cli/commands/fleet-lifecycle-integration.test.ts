@@ -247,13 +247,10 @@ describe('fleet CLI lifecycle routing', () => {
     expect(nodesList).toHaveBeenCalled();
     expect(release).toHaveBeenCalledWith(expect.objectContaining({ name: workerName, deleteAgent: false }));
     expect(transportCalls.length).toBeGreaterThanOrEqual(4);
-    expect(transportCalls).toEqual(
-      expect.arrayContaining([
-        { workspaceKey: TARGET.relaycastApiKey, baseUrl: TARGET.baseUrl },
-        { workspaceKey: TARGET.relaycastApiKey, baseUrl: TARGET.baseUrl },
-        { workspaceKey: TARGET.relaycastApiKey, baseUrl: TARGET.baseUrl },
-      ])
-    );
-    expect(transportCalls.every((call) => call.baseUrl === TARGET.baseUrl)).toBe(true);
+    expect(
+      transportCalls.every(
+        (call) => call.workspaceKey === TARGET.relaycastApiKey && call.baseUrl === TARGET.baseUrl
+      )
+    ).toBe(true);
   });
 });

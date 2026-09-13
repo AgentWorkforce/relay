@@ -330,7 +330,7 @@ export function registerFleetCommands(
       .option('--model <model>', 'Model powering the worker')
       .option(
         '--cwd <path>',
-        'Worker directory: a local repo-relative path is accepted for sandbox repository inference; absolute remote paths are advanced overrides'
+        'Working directory. With --sandbox, a local repo-relative path resolves to the materialized source tree; without --sandbox, use an absolute remote path (relative paths are forwarded verbatim)'
       )
       .option('--organization <organization>', 'Declared organization for workforce reporting')
       .option('--project <project>', 'Declared project for workforce reporting')

@@ -340,12 +340,12 @@ function boundedSignal(options: CloudFleetSandboxRequestOptions, defaultTimeoutM
 }
 
 function normalizeTimerMs(value: number, allowZero: boolean, label: string): number {
-  if (!Number.isSafeInteger(value) || value < 0 || (!allowZero && value === 0) || value > MAX_TIMER_MS) {
+  if (!Number.isFinite(value) || value < 0 || (!allowZero && value === 0)) {
     throw new Error(
-      `${label} must be an integer between ${allowZero ? 0 : 1} and ${MAX_TIMER_MS} milliseconds.`
+      `${label} must be a finite ${allowZero ? 'non-negative' : 'positive'} number of milliseconds.`
     );
   }
-  return value;
+  return value === 0 ? 0 : Math.min(MAX_TIMER_MS, Math.max(1, Math.floor(value)));
 }
 
 async function readJson(response: Response): Promise<unknown> {

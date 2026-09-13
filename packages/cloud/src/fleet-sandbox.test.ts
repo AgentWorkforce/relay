@@ -1874,10 +1874,8 @@ describe('Cloud fleet sandbox client', () => {
 
   it.each([
     ['zero poll interval', { pollIntervalMs: 0 }],
-    ['fractional poll interval', { pollIntervalMs: 0.5 }],
     ['infinite poll interval', { pollIntervalMs: Number.POSITIVE_INFINITY }],
-    ['fractional request timeout', { timeoutMs: 0.5 }],
-    ['oversized request timeout', { timeoutMs: 2_147_483_648 }],
+    ['negative request timeout', { timeoutMs: -1 }],
   ])('rejects invalid timer values before making a request (%s)', async (_label, options) => {
     await expect(
       materializeCloudRelayfileRepository(
@@ -1890,6 +1888,90 @@ describe('Cloud fleet sandbox client', () => {
       )
     ).rejects.toThrow(/milliseconds/);
     expect(mocks.authorizedApiFetch).not.toHaveBeenCalled();
+  });
+
+  it('floors a positive fractional materialization poll interval', async () => {
+    const revision = '0123456789abcdef0123456789abcdef01234567';
+    mocks.authorizedApiFetch
+      .mockResolvedValueOnce({ response: Response.json({ cloudWorkspaceId: CLOUD_WORKSPACE_ID }), auth })
+      .mockResolvedValueOnce({
+        response: Response.json({ ok: true, jobId: 'clone-job-fraction', status: 'queued' }, { status: 202 }),
+        auth,
+      })
+      .mockResolvedValueOnce({
+        response: Response.json({
+          ok: true,
+          job: {
+            owner: 'AgentWorkforce',
+            repo: 'cloud',
+            ref: revision,
+            status: 'running',
+          },
+        }),
+        auth,
+      })
+      .mockResolvedValueOnce({
+        response: Response.json({
+          ok: true,
+          job: {
+            owner: 'AgentWorkforce',
+            repo: 'cloud',
+            ref: revision,
+            status: 'completed',
+            headSha: revision,
+            filesWritten: 0,
+            sourceProfile: 'complete-v1',
+            materialization: {
+              mode: 'relayfile_export',
+              sourceProfile: 'complete-v1',
+              headSha: revision,
+              filesExpected: 0,
+              contentRoot: '/github/repos/AgentWorkforce/cloud/contents',
+              sentinelPath: '/github/repos/AgentWorkforce/cloud/.relayfile/clone.json',
+            },
+          },
+        }),
+        auth,
+      });
+    const delaySpy = vi.spyOn(globalThis, 'setTimeout');
+
+    await materializeCloudRelayfileRepository(
+      { workspaceId: 'rw_abc', repository: 'AgentWorkforce/cloud', revision },
+      { pollIntervalMs: 0.5 }
+    );
+
+    expect(delaySpy).toHaveBeenCalledWith(expect.any(Function), 1);
+  });
+
+  it('clamps oversized request timeouts to the maximum timer duration', async () => {
+    const timeoutSpy = vi.spyOn(AbortSignal, 'timeout');
+    mocks.authorizedApiFetch
+      .mockResolvedValueOnce({ response: Response.json({ cloudWorkspaceId: CLOUD_WORKSPACE_ID }), auth })
+      .mockResolvedValueOnce({
+        response: Response.json(
+          {
+            outcome: 'provisioned',
+            nodeId: 'node-1',
+            nodeName: 'daytona-codex',
+            sandboxId: 'sandbox-1',
+            providerSandboxId: DAYTONA_PROVIDER_SANDBOX_ID,
+            relayWorkspaceId: 'rw_abc',
+            relaycastTarget: CANONICAL_RELAYCAST_TARGET,
+            relayfileMounted: true,
+            providerId: 'daytona',
+          },
+          { status: 201 }
+        ),
+        auth,
+      });
+
+    await ensureCloudFleetSandbox(
+      { workspaceId: 'rw_abc', requiredCapability: 'spawn:codex' },
+      { timeoutMs: 2_147_483_648 }
+    );
+
+    expect(timeoutSpy).toHaveBeenNthCalledWith(1, 2_147_483_647);
+    expect(timeoutSpy).toHaveBeenNthCalledWith(2, 2_147_483_647);
   });
 
   it('keeps the default provisioning budget beyond the mounted server deadline', async () => {
