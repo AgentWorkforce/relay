@@ -725,11 +725,8 @@ export function registerFleetCommands(
               name,
               cli,
               task:
-                sandbox &&
-                sandboxRepository &&
-                mountSandboxRelayfile &&
-                (sandbox.outcome === 'provisioned' || sandbox.outcome === 'reused')
-                  ? `${task}\n\nAgent Relay sandbox context: Relayfile records are available at ${sandbox.outcome === 'provisioned' ? (sandbox.relayfileMountPath ?? '/workspace') : '/workspace'}. The source checkout is separate; use ${workerCwd ?? 'the worker checkout'} for repository files and the mount for Relayfile records.`
+                sandbox && sandboxRepository && mountSandboxRelayfile && sandbox.outcome === 'provisioned'
+                  ? `${task}\n\nAgent Relay sandbox context: Relayfile records are available at ${sandbox.relayfileMountPath ?? '/workspace'}. The source checkout is separate; use ${workerCwd ?? 'the worker checkout'} for repository files and the mount for Relayfile records.`
                   : task,
               ...(channel ? { channels: [channel] } : {}),
               ...(model ? { model } : {}),
