@@ -531,6 +531,19 @@ function brokerOptionsFromOpts(opts: Record<string, unknown>): LocalAgentMessage
   };
 }
 
+function hasLocalBrokerSelection(
+  deps: Pick<LocalAgentDependencies, 'env'>,
+  opts: Record<string, unknown>
+): boolean {
+  return Boolean(
+    opts.brokerUrl !== undefined ||
+    opts.apiKey !== undefined ||
+    opts.stateDir !== undefined ||
+    deps.env.RELAY_BROKER_URL?.trim() ||
+    deps.env.RELAY_BROKER_API_KEY?.trim()
+  );
+}
+
 function parseRuntimeOption(deps: LocalAgentDependencies, value: unknown): HarnessRuntime | undefined {
   const runtime = (value ?? 'auto') as string;
   if (runtime === 'auto' || runtime === 'native' || runtime === 'pty') return runtime;
@@ -630,7 +643,7 @@ async function withDeliveryModeClient<T>(
     return undefined;
   }
   let targetBaseUrl: string | undefined;
-  if (!node && opts.brokerUrl === undefined && opts.apiKey === undefined && opts.stateDir === undefined) {
+  if (!node && !hasLocalBrokerSelection(deps, opts)) {
     const fleetTarget = await deps.resolveFleetAttachTarget(name);
     if (fleetTarget.error) {
       deps.error(`Error: ${fleetTarget.error}`);
@@ -995,7 +1008,7 @@ export function registerLocalAgentCommands(
       // A sandbox worker has no local broker. Resolve a unique live fleet
       // placement before falling back to the local connection contract so a
       // flag-free attach follows the worker automatically.
-      if (options.brokerUrl === undefined && options.apiKey === undefined && options.stateDir === undefined) {
+      if (!hasLocalBrokerSelection(deps, options)) {
         const fleetTarget = await deps.resolveFleetAttachTarget(name);
         if (fleetTarget.error) {
           deps.error(`Error: ${fleetTarget.error}`);

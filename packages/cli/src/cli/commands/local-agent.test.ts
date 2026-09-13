@@ -82,6 +82,29 @@ describe('local agent subtree', () => {
     expect(attach).toHaveBeenCalledWith('lead', 'view', expect.anything());
   });
 
+  it.each([
+    ['RELAY_BROKER_URL', 'http://127.0.0.1:7777'],
+    ['RELAY_BROKER_API_KEY', 'local-broker-key'],
+  ])('attach honors the local broker selected by %s before persisted Fleet routing', async (name, value) => {
+    const resolveFleetAttachTarget = vi.fn(async () => ({
+      target: {
+        node: 'persisted-remote-node',
+        baseUrl: 'https://isolated.example.test',
+        agent: 'lead',
+      },
+    }));
+    const { program, attach, attachNode } = harness({
+      env: { [name]: value },
+      resolveFleetAttachTarget,
+    });
+
+    await program.parseAsync(['local', 'agent', 'attach', 'lead'], { from: 'user' });
+
+    expect(resolveFleetAttachTarget).not.toHaveBeenCalled();
+    expect(attachNode).not.toHaveBeenCalled();
+    expect(attach).toHaveBeenCalledWith('lead', 'view', expect.anything());
+  });
+
   it('forwards native harness output flags to the attach runner', async () => {
     const { program, attach } = harness();
     await program.parseAsync(['local', 'agent', 'attach', 'lead', '--json', '--reasoning', '--diagnostics'], {
@@ -933,6 +956,35 @@ describe('local agent subtree', () => {
     expect(client.flushPending).toHaveBeenCalledWith('claude');
     expect(log).toHaveBeenCalledWith(JSON.stringify({ name: 'claude', flushed: 2 }, null, 2));
   });
+
+  it.each([
+    ['RELAY_BROKER_URL', 'http://127.0.0.1:7777'],
+    ['RELAY_BROKER_API_KEY', 'local-broker-key'],
+  ])(
+    'message flush honors the local broker selected by %s before persisted Fleet routing',
+    async (name, value) => {
+      const client = { flushPending: vi.fn(async () => ({ flushed: 1 })) };
+      const connectLocal = vi.fn(async () => client as never);
+      const resolveFleetAttachTarget = vi.fn(async () => ({
+        target: {
+          node: 'persisted-remote-node',
+          baseUrl: 'https://isolated.example.test',
+          agent: 'claude',
+        },
+      }));
+      const { program } = harness({
+        env: { [name]: value },
+        connectLocal,
+        resolveFleetAttachTarget,
+      });
+
+      await program.parseAsync(['local', 'agent', 'message', 'flush', 'claude'], { from: 'user' });
+
+      expect(resolveFleetAttachTarget).not.toHaveBeenCalled();
+      expect(connectLocal).toHaveBeenCalled();
+      expect(client.flushPending).toHaveBeenCalledWith('claude');
+    }
+  );
 
   it.each(['flush', 'hold', 'auto'])(
     'message %s rejects an explicit workspace key without a node',

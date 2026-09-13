@@ -272,9 +272,10 @@ Relaycast credential stays in the machine store under
 `node agent attach <name>` automatically routes to the unique live fleet node
 advertising that worker. If more than one live node advertises the name, the
 command refuses to guess; pass `--node <node>` explicitly. Supplying
-`--broker-url`, `--api-key`, or `--state-dir` keeps attach local and bypasses
+`--broker-url`, `--api-key`, or `--state-dir`, or setting a nonblank
+`RELAY_BROKER_URL` or `RELAY_BROKER_API_KEY`, keeps attach local and bypasses
 automatic Fleet routing. `node agent message flush|hold|auto <name>` uses the
-same unique-node lookup when no local broker flags are supplied. Fleet list and
+same unique-node lookup when no local broker selection is supplied. Fleet list and
 release commands reuse the persisted project route; if that remote session is
 unavailable, the command reports the routing failure instead of selecting a
 same-named local worker.
