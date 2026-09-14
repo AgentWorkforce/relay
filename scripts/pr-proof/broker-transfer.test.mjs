@@ -60,6 +60,31 @@ function fixture() {
 }
 
 describe('bounded run-scoped broker transfer', () => {
+  for (const origin of ['http://cloud.example', 'http://192.168.1.1', 'http://127.0.0.1.example']) {
+    it(`refuses bearer transfer to ${origin} before any request`, async () => {
+      const f = fixture();
+      const transfer = createBrokerTransfer(f.input, f.artifacts, {
+        ...f.options,
+        env: { ...f.env, CLOUD_API_URL: origin },
+      });
+      await assert.rejects(transfer.start('run-fixture'), /require HTTPS/);
+      assert.equal(f.calls.length, 0);
+    });
+  }
+  for (const origin of ['http://127.0.0.1:1234', 'http://127.9.8.7:1234', 'http://[::1]:1234']) {
+    it(`permits literal loopback fixture ${origin}`, async () => {
+      const f = fixture();
+      const env = { ...f.env, CLOUD_API_URL: origin };
+      const transfer = createBrokerTransfer(f.input, f.artifacts, { ...f.options, env });
+      await transfer.start('run-fixture');
+      assert.deepEqual(
+        (await downloadBrokerArtifact(f.input, 'base', { ...f.options, env })).contents,
+        f.bytes
+      );
+      await transfer.cleanup();
+    });
+  }
+
   it('uploads once, publishes readiness last, reconstructs each part once, and tombstones on cleanup', async () => {
     const f = fixture();
     const first = f.transfer.start('run-fixture');
@@ -206,13 +231,17 @@ import path from 'node:path';
 import { main as runCloud } from './run-cloud.mjs';
 
 describe('trusted dispatcher transfer integration', () => {
-  for (const failUpload of [false, true]) {
-    it(`uses prepared identity and cleans after ${failUpload ? 'upload failure and cancellation' : 'terminal success'}`, async () => {
+  for (const scenario of ['completed', 'upload-failure', 'failed', 'cancelled', 'error', 'failed-revoked']) {
+    const failUpload = scenario === 'upload-failure';
+    const revoked = scenario === 'failed-revoked';
+    const terminalStatus = revoked ? 'failed' : failUpload ? 'completed' : scenario;
+    it(`preserves cleanup authority for ${scenario}`, async () => {
       const f = fixture();
       const directory = await mkdtemp(path.join(tmpdir(), 'broker-transfer-dispatch-'));
       const originalDirectory = process.cwd();
       const originalEnvironment = { ...process.env };
       const originalFetch = globalThis.fetch;
+      let cleanupAttempts = 0;
       try {
         const caseId = 'fixture-broker-transfer';
         const input = {
@@ -254,7 +283,7 @@ describe('trusted dispatcher transfer integration', () => {
         const cli = path.join(directory, 'fake-cli.mjs');
         await writeFile(
           cli,
-          `#!/usr/bin/env node\nimport {appendFileSync} from 'node:fs';\nconst command=process.argv[3];appendFileSync(${JSON.stringify(commands)},JSON.stringify(process.argv.slice(2))+'\\n');\nif(command==='run'){console.error('AGENT_RELAY_CLOUD_PREPARED_RUN_ID=run-fixture');console.log(JSON.stringify({runId:'run-fixture'}));}\nelse if(command==='status')console.log(JSON.stringify({status:'completed'}));\nelse if(command==='logs')console.log('fixture log');\nelse if(command==='cancel')console.log('{}');\nelse process.exitCode=2;`,
+          `#!/usr/bin/env node\nimport {appendFileSync} from 'node:fs';\nconst command=process.argv[3];appendFileSync(${JSON.stringify(commands)},JSON.stringify(process.argv.slice(2))+'\\n');\nif(command==='run'){console.error('AGENT_RELAY_CLOUD_PREPARED_RUN_ID=run-fixture');console.log(JSON.stringify({runId:'run-fixture'}));}\nelse if(command==='status')console.log(JSON.stringify({status:${JSON.stringify(terminalStatus)}}));\nelse if(command==='logs')console.log('fixture log');\nelse if(command==='cancel')console.log('{}');\nelse process.exitCode=2;`,
           { mode: 0o700 }
         );
         process.chdir(directory);
@@ -266,6 +295,10 @@ describe('trusted dispatcher transfer integration', () => {
         for (const key of ['PR_PROOF_INPUT_PATH', 'GITHUB_OUTPUT', 'GITHUB_STEP_SUMMARY'])
           delete process.env[key];
         globalThis.fetch = async (url, init) => {
+          if (init.method === 'PUT' && init.body === '') {
+            cleanupAttempts++;
+            if (revoked) return new Response('', { status: 403 });
+          }
           if (failUpload && init.headers['if-none-match'] === '*') return new Response('', { status: 503 });
           if (init.method === 'PUT' && init.body === '' && failUpload) {
             assert.doesNotMatch(await readFile(commands, 'utf8'), /"cancel"/);
@@ -273,6 +306,7 @@ describe('trusted dispatcher transfer integration', () => {
           const response = await f.options.fetchImpl(url, init);
           if (
             !failUpload &&
+            scenario === 'completed' &&
             init.headers['if-none-match'] === '*' &&
             String(url).includes('/head/') &&
             String(url).endsWith('/manifest.json')
@@ -283,6 +317,9 @@ describe('trusted dispatcher transfer integration', () => {
           return response;
         };
         if (failUpload) await assert.rejects(runCloud(), /Broker chunk upload refused/);
+        else if (revoked) await assert.rejects(runCloud(), /Broker transfer cleanup incomplete/);
+        else if (scenario !== 'completed')
+          await assert.rejects(runCloud(), /Cloud RelayFlow finished with status/);
         else await runCloud();
         const invocations = (await readFile(commands, 'utf8'))
           .trim()
@@ -290,7 +327,9 @@ describe('trusted dispatcher transfer integration', () => {
           .map((line) => JSON.parse(line));
         assert.equal(invocations.filter((args) => args[1] === 'run').length, 1);
         assert.equal(invocations.filter((args) => args[1] === 'cancel').length, failUpload ? 1 : 0);
-        assert.ok([...f.objects.values()].every((body) => body === ''));
+        assert.ok(cleanupAttempts > 0 || scenario === 'completed');
+        if (revoked) assert.ok([...f.objects.values()].some((body) => body !== ''));
+        else assert.ok([...f.objects.values()].every((body) => body === ''));
         if (!failUpload)
           assert.doesNotMatch(
             await readFile(path.join(directory, 'cloud.log'), 'utf8'),

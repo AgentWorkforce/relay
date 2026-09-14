@@ -41,3 +41,6 @@ This prerequisite must be admitted to the trusted base before rerunning another
 PR's `pull_request_target` proof. A change on that PR's head cannot repair the
 base dispatcher. Resolve and attest both exact binaries again after admission.
 Local mocked transfer checks do not establish a successful Cloud proof.
+
+Bearer transport requires HTTPS except literal loopback IP addresses for local
+tests. Hostnames that merely resemble loopback addresses are refused.

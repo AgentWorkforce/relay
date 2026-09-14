@@ -832,7 +832,7 @@ export async function main() {
     process.removeListener('SIGINT', signalHandler);
     process.removeListener('SIGTERM', signalHandler);
     try {
-      if (terminal)
+      if (proofSucceeded)
         brokerTransfer?.release(); // each completed arm consumed its transfer
       else await brokerTransfer?.cleanup();
     } finally {

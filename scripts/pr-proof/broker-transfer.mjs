@@ -1,5 +1,6 @@
 /** Run-scoped broker transfer. No artifact bytes or credentials enter code sync. */
 import { createHash } from 'node:crypto';
+import { isIP } from 'node:net';
 import { readFile } from 'node:fs/promises';
 import { setTimeout as delay } from 'node:timers/promises';
 import { validateProofInput } from './contract.mjs';
@@ -52,6 +53,11 @@ function urlFor(env, input, arm, runId, object) {
     base.hash
   ) {
     throw new Error('Invalid broker storage origin');
+  }
+  const loopback =
+    base.hostname === '[::1]' || (isIP(base.hostname) === 4 && base.hostname.startsWith('127.'));
+  if (base.protocol !== 'https:' && !loopback) {
+    throw new Error('Broker transfer credentials require HTTPS outside literal loopback addresses');
   }
   const key = `pr-proof/${input.handoffNonce}/brokers/${arm}/${artifact.sourceSha}/${artifact.sha256}/${object}`;
   return new URL(
