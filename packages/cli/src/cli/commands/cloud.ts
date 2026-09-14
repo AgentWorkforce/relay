@@ -110,8 +110,11 @@ function withDefaults(overrides: Partial<CloudDependencies> = {}): CloudDependen
 }
 
 function parsePositiveInteger(value: string): number {
-  const parsed = Number.parseInt(value, 10);
-  if (!Number.isInteger(parsed) || parsed <= 0) {
+  if (!/^\d+$/.test(value)) {
+    throw new InvalidArgumentError('Expected a positive integer.');
+  }
+  const parsed = Number(value);
+  if (!Number.isSafeInteger(parsed) || parsed <= 0) {
     throw new InvalidArgumentError('Expected a positive integer.');
   }
   return parsed;
@@ -1063,6 +1066,11 @@ export function registerCloudCommands(program: Command, overrides: Partial<Cloud
     .option('--api-url <url>', 'Cloud API base URL')
     .option('--file-type <type>', 'Workflow type: yaml, ts, or py', parseWorkflowFileType)
     .option('--relayflow-version <version>', 'Relayflow engine generation: v1 or v2', parseRelayflowVersion)
+    .option(
+      '--launch-timeout-ms <milliseconds>',
+      'Bounded Cloud sandbox/bootstrap timeout (inferred from a literal script .timeout() when omitted)',
+      parsePositiveInteger
+    )
     .option('--sync-code', 'Upload the current working directory before running')
     .option('--no-sync-code', 'Skip uploading the current working directory')
     .option('--resume <runId>', 'Resume a previously failed cloud workflow run from where it left off')
@@ -1079,6 +1087,7 @@ export function registerCloudCommands(program: Command, overrides: Partial<Cloud
           apiUrl?: string;
           fileType?: WorkflowFileType;
           relayflowVersion?: RelayflowVersion;
+          launchTimeoutMs?: number;
           syncCode?: boolean;
           resume?: string;
           startFrom?: string;
@@ -1133,6 +1142,11 @@ export function registerCloudCommands(program: Command, overrides: Partial<Cloud
       'Relayflow engine generation for scheduled runs: v1 (v2 is not supported)',
       parseScheduleRelayflowVersion
     )
+    .option(
+      '--launch-timeout-ms <milliseconds>',
+      'Bounded Cloud sandbox/bootstrap timeout (inferred from a literal script .timeout() when omitted)',
+      parsePositiveInteger
+    )
     .option('--cron <expression>', 'Cron expression, for example "0 * * * *"')
     .option('--at <isoTimestamp>', 'One-time ISO timestamp, for example 2026-05-10T09:00:00Z')
     .option('--timezone <timezone>', 'IANA timezone for cron schedules', 'UTC')
@@ -1152,6 +1166,7 @@ export function registerCloudCommands(program: Command, overrides: Partial<Cloud
           apiUrl?: string;
           fileType?: WorkflowFileType;
           relayflowVersion?: 'v1';
+          launchTimeoutMs?: number;
           cron?: string;
           at?: string;
           timezone?: string;
