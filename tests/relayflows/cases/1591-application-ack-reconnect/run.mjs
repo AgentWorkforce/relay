@@ -19,12 +19,17 @@ const targetDir = path.resolve(required('RELAY_PR_PROOF_TARGET_DIR'));
 const harnessDir = path.resolve(required('RELAY_PR_PROOF_HARNESS_DIR'));
 const expectedSha = required(arm === 'base' ? 'RELAY_PR_PROOF_BASE_SHA' : 'RELAY_PR_PROOF_HEAD_SHA');
 const headSha = required('RELAY_PR_PROOF_HEAD_SHA');
-const shaAt = (directory) => execFileSync('git', ['-C', directory, 'rev-parse', 'HEAD'], { encoding: 'utf8' }).trim();
-if (shaAt(targetDir) !== expectedSha || shaAt(harnessDir) !== headSha) throw new Error('Exact target/harness SHA mismatch');
-if (fileURLToPath(import.meta.url) !== path.join(harnessDir, 'tests/relayflows/cases', CASE_ID, 'run.mjs')) throw new Error('Runner must come from exact-head harness');
+const shaAt = (directory) =>
+  execFileSync('git', ['-C', directory, 'rev-parse', 'HEAD'], { encoding: 'utf8' }).trim();
+if (shaAt(targetDir) !== expectedSha || shaAt(harnessDir) !== headSha)
+  throw new Error('Exact target/harness SHA mismatch');
+if (fileURLToPath(import.meta.url) !== path.join(harnessDir, 'tests/relayflows/cases', CASE_ID, 'run.mjs'))
+  throw new Error('Runner must come from exact-head harness');
 const binary = path.resolve(required('RELAY_PR_PROOF_BROKER_BINARY'));
 await access(binary, constants.R_OK | constants.X_OK);
-const binarySha256 = createHash('sha256').update(await readFile(binary)).digest('hex');
+const binarySha256 = createHash('sha256')
+  .update(await readFile(binary))
+  .digest('hex');
 const resultPath = path.resolve(required('RELAY_PR_PROOF_RESULT_PATH'));
 const scratch = await mkdtemp(path.join(tmpdir(), 'relayflow-inventory-ack-'));
 const stateDir = path.join(scratch, 'state');
@@ -46,12 +51,21 @@ const server = http.createServer(async (request, response) => {
     const body = chunks.length ? JSON.parse(Buffer.concat(chunks)) : {};
     const pathname = new URL(request.url, 'http://proof.invalid').pathname;
     if (request.method === 'POST' && pathname === '/v1/agents') {
-      sendJson(response, { id: 'agent_proof_broker', workspace_id: 'ws_proof', name: body.name,
-        token: 'at_proof', status: 'active', created_at: '2026-09-14T00:00:00Z' });
+      sendJson(response, {
+        id: 'agent_proof_broker',
+        workspace_id: 'ws_proof',
+        name: body.name,
+        token: 'at_proof',
+        status: 'active',
+        created_at: '2026-09-14T00:00:00Z',
+      });
     } else {
       sendJson(response, {});
     }
-  } catch (error) { fixtureError = error; response.destroy(); }
+  } catch (error) {
+    fixtureError = error;
+    response.destroy();
+  }
 });
 server.on('connection', (socket) => {
   sockets.add(socket);
@@ -60,49 +74,96 @@ server.on('connection', (socket) => {
 });
 server.on('upgrade', (request, socket, initialData) => {
   const key = request.headers['sec-websocket-key'];
-  if (typeof key !== 'string') { socket.destroy(); return; }
-  const accept = createHash('sha1').update(key + '258EAFA5-E914-47DA-95CA-C5AB0DC85B11').digest('base64');
-  socket.write(`HTTP/1.1 101 Switching Protocols\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Accept: ${accept}\r\n\r\n`);
+  if (typeof key !== 'string') {
+    socket.destroy();
+    return;
+  }
+  const accept = createHash('sha1')
+    .update(key + '258EAFA5-E914-47DA-95CA-C5AB0DC85B11')
+    .digest('base64');
+  socket.write(
+    `HTTP/1.1 101 Switching Protocols\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Accept: ${accept}\r\n\r\n`
+  );
   const isNode = new URL(request.url, 'http://proof.invalid').pathname === '/v1/node/ws';
-  const connection = { connectedMs: performance.now() - started, pongs: 0, inventory: 0, acknowledgements: 0, heartbeats: 0 };
+  const connection = {
+    connectedMs: performance.now() - started,
+    pongs: 0,
+    inventory: 0,
+    acknowledgements: 0,
+    heartbeats: 0,
+  };
   if (isNode) connections.push(connection);
-  attachFrameReader(socket, (frame) => {
-    try {
-      if (frame.opcode === 0x9) {
-        sendFrame(socket, 0xa, frame.payload);
-        if (isNode) connection.pongs++;
-        return;
-      }
-      if (frame.opcode !== 0x1 || !isNode) return;
-      const message = JSON.parse(frame.payload);
-      if (message.type === 'node.heartbeat') connection.heartbeats++;
-      if (message.type === 'node.register') {
-        sendText(socket, { v: 1, type: 'reply', id: message.id ?? 'legacy-register', ok: true, data: {} });
-      }
-      if (message.type === 'inventory.sync') {
-        connection.inventory++;
-        // Accept the initial inventory, then stall only the first session's
-        // application. Its transport continues answering every ping. A new
-        // session is healthy so an unnecessary reconnect loop is observable.
-        if (connection !== connections[0] || connection.inventory === 1) {
-          sendText(socket, { v: 1, type: 'reply', id: message.id ?? 'legacy-inventory', ok: true, data: { reconciled: 0 } });
-          connection.acknowledgements++;
+  attachFrameReader(
+    socket,
+    (frame) => {
+      try {
+        if (frame.opcode === 0x9) {
+          sendFrame(socket, 0xa, frame.payload);
+          if (isNode) connection.pongs++;
+          return;
         }
+        if (frame.opcode !== 0x1 || !isNode) return;
+        const message = JSON.parse(frame.payload);
+        if (message.type === 'node.heartbeat') connection.heartbeats++;
+        if (message.type === 'node.register') {
+          sendText(socket, { v: 1, type: 'reply', id: message.id ?? 'legacy-register', ok: true, data: {} });
+        }
+        if (message.type === 'inventory.sync') {
+          connection.inventory++;
+          // Accept the initial inventory, then stall only the first session's
+          // application. Its transport continues answering every ping. A new
+          // session is healthy so an unnecessary reconnect loop is observable.
+          if (connection !== connections[0] || connection.inventory === 1) {
+            sendText(socket, {
+              v: 1,
+              type: 'reply',
+              id: message.id ?? 'legacy-inventory',
+              ok: true,
+              data: { reconciled: 0 },
+            });
+            connection.acknowledgements++;
+          }
+        }
+      } catch (error) {
+        fixtureError = error;
       }
-    } catch (error) { fixtureError = error; }
-  }, initialData);
+    },
+    initialData
+  );
 });
 try {
   await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
-  broker = spawn(binary, ['init', '--instance-name', 'relayflow-inventory-ack', '--workspace-key', 'rk_proof',
-    '--state-dir', stateDir, '--api-port', '0', '--channels', ''], {
-    cwd: scratch,
-    env: { ...process.env, RELAYCAST_BASE_URL: `http://127.0.0.1:${server.address().port}`,
-      RELAY_NODE_ID: 'node_proof_inventory_ack', RELAY_NODE_TOKEN: 'nt_proof',
-      RELAY_BROKER_API_KEY: 'br_proof', AGENT_RELAY_NO_DEBUG_FILES: '1' },
-    stdio: ['ignore', 'ignore', 'pipe'],
+  broker = spawn(
+    binary,
+    [
+      'init',
+      '--instance-name',
+      'relayflow-inventory-ack',
+      '--workspace-key',
+      'rk_proof',
+      '--state-dir',
+      stateDir,
+      '--api-port',
+      '0',
+      '--channels',
+      '',
+    ],
+    {
+      cwd: scratch,
+      env: {
+        ...process.env,
+        RELAYCAST_BASE_URL: `http://127.0.0.1:${server.address().port}`,
+        RELAY_NODE_ID: 'node_proof_inventory_ack',
+        RELAY_NODE_TOKEN: 'nt_proof',
+        RELAY_BROKER_API_KEY: 'br_proof',
+        AGENT_RELAY_NO_DEBUG_FILES: '1',
+      },
+      stdio: ['ignore', 'ignore', 'pipe'],
+    }
+  );
+  broker.stderr.on('data', (chunk) => {
+    stderr = `${stderr}${chunk}`.slice(-8000);
   });
-  broker.stderr.on('data', (chunk) => { stderr = `${stderr}${chunk}`.slice(-8000); });
   // Uses production 60s inventory cadence and 120s application deadline. No
   // source rewriting or Cargo is permitted in the protected artifact runner.
   const deadline = performance.now() + 150_000;
@@ -112,7 +173,13 @@ try {
     await new Promise((resolve) => setTimeout(resolve, 250));
   }
   const first = connections[0];
-  if (!first || first.inventory < 2 || first.pongs < 6 || first.acknowledgements !== 1 || first.heartbeats < 6) {
+  if (
+    !first ||
+    first.inventory < 2 ||
+    first.pongs < 6 ||
+    first.acknowledgements !== 1 ||
+    first.heartbeats < 6
+  ) {
     throw new Error(`Application/transport fixture controls missing: ${JSON.stringify(connections)}`);
   }
   const reconnected = connections.length === 2;
@@ -124,16 +191,30 @@ try {
     }
   }
   await mkdir(path.dirname(resultPath), { recursive: true });
-  await writeFile(resultPath, `${JSON.stringify({ version: 1, caseId: CASE_ID, arm,
-    outcome: reconnected ? 'fixed' : 'bug',
-    signature: reconnected ? 'application_ack_stall_reconnects' : 'application_ack_stall_not_detected',
-    details: 'Exact broker artifact against loopback HTTP/WebSocket fixture; initial inventory accepted, later inventory acknowledgements withheld while pongs continue for 150 seconds.',
-    evidence: { targetSha: expectedSha, harnessSha: headSha, binarySha256, connections },
-  }, null, 2)}\n`);
+  await writeFile(
+    resultPath,
+    `${JSON.stringify(
+      {
+        version: 1,
+        caseId: CASE_ID,
+        arm,
+        outcome: reconnected ? 'fixed' : 'bug',
+        signature: reconnected ? 'application_ack_stall_reconnects' : 'application_ack_stall_not_detected',
+        details:
+          'Exact broker artifact against loopback HTTP/WebSocket fixture; initial inventory accepted, later inventory acknowledgements withheld while pongs continue for 150 seconds.',
+        evidence: { targetSha: expectedSha, harnessSha: headSha, binarySha256, connections },
+      },
+      null,
+      2
+    )}\n`
+  );
 } finally {
   if (broker && broker.exitCode === null) {
     broker.kill('SIGTERM');
-    await Promise.race([new Promise((resolve) => broker.once('exit', resolve)), new Promise((resolve) => setTimeout(resolve, 5000))]);
+    await Promise.race([
+      new Promise((resolve) => broker.once('exit', resolve)),
+      new Promise((resolve) => setTimeout(resolve, 5000)),
+    ]);
     if (broker.exitCode === null) broker.kill('SIGKILL');
   }
   for (const socket of sockets) socket.destroy();
