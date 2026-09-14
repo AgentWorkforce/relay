@@ -159,6 +159,12 @@ server.on('upgrade', (request, socket) => {
   socket.on('close', () => {
     session.closed = true;
   });
+  // Upgraded HTTP sockets can remain writable after peer FIN; read EOF is
+  // the actual client-disconnect signal, independent of our writable half.
+  socket.on('end', () => {
+    session.closed = true;
+    socket.end();
+  });
   socket.on(
     'data',
     createFrameReader((text) => {
