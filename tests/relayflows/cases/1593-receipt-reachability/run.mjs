@@ -1,9 +1,11 @@
 import assert from 'node:assert/strict';
 import { execFileSync } from 'node:child_process';
 import { mkdir, readFile, writeFile } from 'node:fs/promises';
-import { stripTypeScriptTypes } from 'node:module';
+import * as nodeModule from 'node:module';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
+
+import { ensureTypeStrippingRuntime } from './node-runtime.mjs';
 
 const caseId = '1593-receipt-reachability';
 const required = (name) => {
@@ -25,13 +27,20 @@ assert.equal(
   path.join(harnessDir, 'tests', 'relayflows', 'cases', caseId, 'run.mjs')
 );
 
+const replacementExitCode = ensureTypeStrippingRuntime({
+  moduleApi: nodeModule,
+  scriptPath: fileURLToPath(import.meta.url),
+});
+if (replacementExitCode !== undefined) process.exit(replacementExitCode);
+
 // Evaluate the target checkout's actual dependency-free receipt implementation.
-// Type stripping changes no runtime logic and needs no package installation.
+// Type stripping changes no runtime logic. Node 22 before 22.13 uses the pinned
+// runtime bootstrap above; a runtime already exposing the API needs no install.
 const source = await readFile(
   path.join(targetDir, 'packages/cli/src/cli/lib/message-delivery-receipts.ts'),
   'utf8'
 );
-const code = stripTypeScriptTypes(source, { mode: 'strip' });
+const code = nodeModule.stripTypeScriptTypes(source, { mode: 'strip' });
 const { directMessageReceipt, compactDirectMessageReceipt, directMessageDeliveryFailure } = await import(
   `data:text/javascript;base64,${Buffer.from(code).toString('base64')}`
 );
