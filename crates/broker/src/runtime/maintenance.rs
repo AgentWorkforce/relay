@@ -4,6 +4,7 @@ use crate::terminal_control::TerminalToCloud;
 
 impl BrokerRuntime {
     pub(super) async fn handle_maintenance_tick(&mut self) {
+        self.maintain_tasks().await;
         self.reconcile_identity_cleanups().await;
         let paths = &self.paths;
         let state = &mut self.state;

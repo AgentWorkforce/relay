@@ -80,6 +80,8 @@ pub struct FleetCapability {
         skip_serializing_if = "Option::is_none"
     )]
     pub queue: Option<bool>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub execution_mode: Option<String>,
     #[serde(
         default,
         deserialize_with = "deserialize_optional_presence",
@@ -375,6 +377,7 @@ pub struct ActionResult {
     pub id: Option<String>,
     pub invocation_id: String,
     pub result: ActionResultPayload,
+    pub task: Option<TaskResultFields>,
 }
 
 impl Serialize for ActionResult {
@@ -420,6 +423,14 @@ struct ActionResultWire {
         skip_serializing_if = "Option::is_none"
     )]
     pub error: Option<String>,
+    #[serde(default, rename = "final", skip_serializing_if = "Option::is_none")]
+    pub final_result: Option<bool>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub execution_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub worker_generation: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub accounting: Option<BTreeMap<String, serde_json::Number>>,
 }
 
 fn deserialize_optional_presence<'de, D, T>(deserializer: D) -> Result<Option<T>, D::Error>
@@ -483,6 +494,13 @@ impl From<&ActionResult> for ActionResultWire {
                 v: value.v,
                 id: value.id.clone(),
                 invocation_id: value.invocation_id.clone(),
+                final_result: value.task.as_ref().map(|task| task.final_result),
+                execution_id: value.task.as_ref().map(|task| task.execution_id.clone()),
+                worker_generation: value
+                    .task
+                    .as_ref()
+                    .map(|task| task.worker_generation.clone()),
+                accounting: value.task.as_ref().and_then(|task| task.accounting.clone()),
                 output: Some(output.output.clone()),
                 error: None,
             },
@@ -490,6 +508,13 @@ impl From<&ActionResult> for ActionResultWire {
                 v: value.v,
                 id: value.id.clone(),
                 invocation_id: value.invocation_id.clone(),
+                final_result: value.task.as_ref().map(|task| task.final_result),
+                execution_id: value.task.as_ref().map(|task| task.execution_id.clone()),
+                worker_generation: value
+                    .task
+                    .as_ref()
+                    .map(|task| task.worker_generation.clone()),
+                accounting: value.task.as_ref().and_then(|task| task.accounting.clone()),
                 output: None,
                 error: Some(error.error.clone()),
             },
@@ -509,11 +534,44 @@ impl TryFrom<ActionResultWire> for ActionResult {
             }
         };
 
+        let task = if value.final_result.is_some()
+            || value.execution_id.is_some()
+            || value.worker_generation.is_some()
+            || value.accounting.is_some()
+        {
+            if value.id.as_ref().is_none_or(|id| id.is_empty()) {
+                return Err("task result requires a request id".into());
+            }
+            let execution_id = value
+                .execution_id
+                .filter(|id| !id.is_empty())
+                .ok_or("task result requires execution_id")?;
+            let worker_generation = value
+                .worker_generation
+                .filter(|id| !id.is_empty() && id.len() <= 512)
+                .ok_or("task result requires worker_generation")?;
+            if value.accounting.as_ref().is_some_and(|values| {
+                values
+                    .values()
+                    .any(|n| n.as_f64().is_none_or(|n| !n.is_finite() || n < 0.0))
+            }) {
+                return Err("task accounting must be finite and nonnegative".into());
+            }
+            Some(TaskResultFields {
+                final_result: value.final_result.ok_or("task result requires final")?,
+                execution_id,
+                worker_generation,
+                accounting: value.accounting,
+            })
+        } else {
+            None
+        };
         Ok(Self {
             v: value.v,
             id: value.id,
             invocation_id: value.invocation_id,
             result,
+            task,
         })
     }
 }
@@ -605,6 +663,8 @@ pub struct ActionInvoke {
         skip_serializing_if = "Option::is_none"
     )]
     pub agent_name: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub task_execution: Option<Box<TaskExecution>>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -720,6 +780,36 @@ where
     }
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct TaskExecution {
+    pub execution_id: String,
+    pub run_id: String,
+    pub step_id: String,
+    pub dispatch_id: String,
+    pub deadline: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ActionAccept {
+    pub v: FleetWireVersion,
+    pub id: String,
+    pub invocation_id: String,
+    pub execution_id: String,
+    pub worker_generation: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct TaskResultFields {
+    #[serde(rename = "final")]
+    pub final_result: bool,
+    pub execution_id: String,
+    pub worker_generation: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub accounting: Option<BTreeMap<String, serde_json::Number>>,
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "type")]
 pub enum NodeToServer {
@@ -737,6 +827,8 @@ pub enum NodeToServer {
     DeliveryAck(DeliveryAck),
     #[serde(rename = "action.result")]
     ActionResult(ActionResult),
+    #[serde(rename = "action.accept")]
+    ActionAccept(ActionAccept),
     #[serde(rename = "inventory.sync")]
     InventorySync(InventorySync),
 }
@@ -863,6 +955,7 @@ mod tests {
     #[test]
     fn action_result_allows_error_payloads() {
         let msg = BrokerToRelaycast::ActionResult(ActionResult {
+            task: None,
             v: FLEET_WIRE_VERSION,
             id: None,
             invocation_id: "inv_2".to_string(),
@@ -993,6 +1086,7 @@ mod tests {
             name: "builder-1".to_string(),
             node_id: "node_1".to_string(),
             capabilities: vec![FleetCapability {
+                execution_mode: None,
                 name: "spawn:codex".to_string(),
                 kind: Some("capacity".to_string()),
                 global: None,
