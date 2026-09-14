@@ -1,8 +1,7 @@
 import { execFileSync, spawn } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import http from 'node:http';
-import { access, mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
-import { constants } from 'node:fs';
+import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -26,7 +25,6 @@ if (shaAt(targetDir) !== expectedSha || shaAt(harnessDir) !== headSha)
 if (fileURLToPath(import.meta.url) !== path.join(harnessDir, 'tests/relayflows/cases', CASE_ID, 'run.mjs'))
   throw new Error('Runner must come from exact-head harness');
 const binary = path.resolve(required('RELAY_PR_PROOF_BROKER_BINARY'));
-await access(binary, constants.R_OK | constants.X_OK);
 const binarySha256 = createHash('sha256')
   .update(await readFile(binary))
   .digest('hex');
@@ -161,6 +159,9 @@ try {
       stdio: ['ignore', 'ignore', 'pipe'],
     }
   );
+  broker.once('error', (error) => {
+    fixtureError = error;
+  });
   broker.stderr.on('data', (chunk) => {
     stderr = `${stderr}${chunk}`.slice(-8000);
   });
