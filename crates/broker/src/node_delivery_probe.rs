@@ -55,7 +55,7 @@ const RECENT_CAPACITY: usize = 32;
 /// engine could otherwise turn this map into an unbounded allocation.
 const UNPARSED_TYPE_CAPACITY: usize = 16;
 
-/// Cap on a retained serde error string.
+#[cfg(test)]
 const ERROR_EXCERPT_LIMIT: usize = 300;
 
 /// Cap on per-agent rows. A broker hosts tens of agents; this bounds the map
@@ -349,13 +349,14 @@ impl NodeDeliveryProbe {
     /// Called when a text frame failed to deserialize into `ServerToNode`.
     /// `raw` is inspected only to recover the `type` discriminator; it is
     /// never retained.
-    pub(crate) fn record_parse_failure(&self, error: &str, raw: &str) {
+    pub(crate) fn record_parse_failure(&self, _error: &str, raw: &str) {
         self.counters.parse_failures.fetch_add(1, Ordering::Relaxed);
         let frame_type = serde_json::from_str::<Value>(raw)
             .ok()
             .and_then(|value| value.get("type").and_then(Value::as_str).map(bounded));
-        let mut error = error.to_string();
-        truncate_on_char_boundary(&mut error, ERROR_EXCERPT_LIMIT);
+        // Serde errors can quote invalid peer values, including a message body.
+        // Retain a local category only; frame type and length carry safe context.
+        let error = "invalid node-control frame".to_string();
         let Ok(mut retained) = self.retained.lock() else {
             return;
         };
@@ -906,8 +907,20 @@ mod tests {
         // Truncated on a boundary, and still bounded in BYTES — taking N chars
         // instead would admit up to 4x the limit.
         assert!(recorded.len() <= ERROR_EXCERPT_LIMIT);
-        assert!(long_error.starts_with(recorded));
+        assert_eq!(recorded, "invalid node-control frame");
+        assert!(!recorded.contains("é"));
         assert_eq!(snapshot["socket"]["parse_failures"], 1);
+    }
+
+    #[test]
+    fn parse_failure_does_not_echo_invalid_peer_values_from_serde() {
+        let raw = r#"{"type":"deliver","v":1,"seq":"PRIVATE_BODY_IN_INVALID_VALUE"}"#;
+        let error = serde_json::from_str::<RelaycastToBroker>(raw).unwrap_err();
+        let probe = NodeDeliveryProbe::new();
+        probe.record_parse_failure(&error.to_string(), raw);
+        let report = probe.snapshot_with_token(true).to_string();
+        assert!(!report.contains("PRIVATE_BODY_IN_INVALID_VALUE"));
+        assert!(report.contains("invalid node-control frame"));
     }
 
     #[test]
