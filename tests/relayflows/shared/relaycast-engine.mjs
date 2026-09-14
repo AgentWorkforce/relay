@@ -23,7 +23,7 @@ import path from 'node:path';
 import { promisify } from 'node:util';
 
 const execFile = promisify(execFileCb);
-export const ENGINE_VERSION = '8.2.2';
+export const ENGINE_VERSION = '8.10.1';
 const SERVE_BIN = 'node_modules/@relaycast/engine/dist/bin/serve.js';
 
 /**

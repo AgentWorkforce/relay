@@ -136,7 +136,17 @@ try {
 
   broker = spawn(
     binaryPath,
-    ['init', '--api-port', '0', '--api-bind', '127.0.0.1', '--state-dir', stateDir],
+    [
+      'init',
+      '--instance-name',
+      'relayflow-1678-node',
+      '--api-port',
+      '0',
+      '--api-bind',
+      '127.0.0.1',
+      '--state-dir',
+      stateDir,
+    ],
     {
       cwd: workDir,
       env: {
@@ -151,6 +161,7 @@ try {
         RELAY_NODE_ID: nodeId,
         RELAY_BROKER_API_KEY: BROKER_API_KEY,
         RELAY_SKIP_TELEMETRY: '1',
+        AGENT_RELAY_NODE_HARNESSES: 'cat',
         // RUST_LOG is deliberately absent — see the file header.
       },
       stdio: ['ignore', 'pipe', 'pipe'],
@@ -186,7 +197,25 @@ try {
   await waitFor(() => api('GET', '/api/status').then(() => true), 'the broker API to answer');
 
   // A live worker, registered with the real engine and idle.
-  await api('POST', '/api/spawn', { name: AGENT, cli: 'cat', transport: 'pty' });
+  const sender = await eng('POST', '/v1/agents', { name: 'proof-sender', type: 'agent' }, wsAuth);
+  const senderToken = sender.body?.data?.token;
+  if (!senderToken) throw new Error('Local proof sender registration failed.');
+  // Node action spawn creates the recipient on the broker provider. HTTP
+  // create+bind defaults to another provider and cannot prove this path.
+  await eng(
+    'POST',
+    '/v1/actions/spawn/invoke',
+    {
+      input: {
+        name: AGENT,
+        cli: 'cat',
+        capability: 'spawn:cat',
+        node: 'relayflow-1678-node',
+        target_node: 'relayflow-1678-node',
+      },
+    },
+    { authorization: `Bearer ${senderToken}` }
+  );
   await waitFor(async () => {
     const row = await eng('GET', '/v1/agents', undefined, wsAuth);
     const list = row.body?.data?.agents ?? row.body?.data ?? [];
@@ -241,11 +270,6 @@ try {
       );
     }
 
-    const sender = await eng('POST', '/v1/agents', { name: 'proof-sender', type: 'agent' }, wsAuth);
-    const senderToken = sender.body?.data?.token;
-    if (!senderToken) {
-      throw new Error(`sender create failed: ${JSON.stringify(sender.body).slice(0, 300)}`);
-    }
     await eng(
       'POST',
       '/v1/dm',
