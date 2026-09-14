@@ -1909,6 +1909,72 @@ impl Drop for ProbeSessionGuard<'_> {
     }
 }
 
+/// An authenticated socket is not yet the authoritative broker provider. The
+/// engine can reject node.register while leaving the socket open; sending
+/// inventory or heartbeats then updates a fallback provider and masks the loss.
+/// Only this request's successful reply opens the application delivery path.
+async fn register_node_session<S, R>(
+    sink: &mut S,
+    stream: &mut R,
+    registration: &mut NodeRegister,
+    config: &FleetControlConfig,
+) -> bool
+where
+    S: Sink<Message> + Unpin,
+    S::Error: std::error::Error + Send + Sync + 'static,
+    R: futures_util::Stream<Item = Result<Message, tokio_tungstenite::tungstenite::Error>> + Unpin,
+{
+    let id = format!("node_register_{}", Uuid::new_v4().simple());
+    registration.id = Some(id.clone());
+    // Bound both the write and the response, including peers which keep sending
+    // pongs or unrelated replies. Tests may use their shorter transport budget.
+    let deadline = config
+        .read_idle_timeout
+        .unwrap_or(Duration::from_secs(10))
+        .min(Duration::from_secs(10));
+    let accepted = tokio::time::timeout(deadline, async {
+        if send_wire(sink, &BrokerToRelaycast::NodeRegister(registration.clone())).await.is_err() {
+            return false;
+        }
+        while let Some(Ok(message)) = stream.next().await {
+            match message {
+                Message::Text(text) => {
+                    if let Some(probe) = config.probe.as_ref() { probe.record_text_frame(); }
+                    match serde_json::from_str::<RelaycastToBroker>(&text) {
+                        Ok(frame) => {
+                            if let Some(probe) = config.probe.as_ref() { probe.record_frame(&frame); }
+                            match frame {
+                                RelaycastToBroker::Reply(reply) if reply.id == id => return reply.ok,
+                                RelaycastToBroker::Error(error) => {
+                                    tracing::error!(code = %error.code, "node registration rejected; reconnecting without advertising delivery readiness");
+                                    return false;
+                                }
+                                // The engine replies before replaying deliveries. Never
+                                // acknowledge or inject a frame on an unaccepted provider.
+                                RelaycastToBroker::Deliver(_) | RelaycastToBroker::ActionInvoke(_) => return false,
+                                _ => {},
+                            }
+                        }
+                        Err(error) => {
+                            if let Some(probe) = config.probe.as_ref() { probe.record_parse_failure(&error.to_string(), &text); }
+                        }
+                    }
+                }
+                Message::Ping(payload) => {
+                    if sink.send(Message::Pong(payload)).await.is_err() { return false; }
+                }
+                Message::Close(_) => return false,
+                _ => {},
+            }
+        }
+        false
+    }).await.unwrap_or(false);
+    if !accepted {
+        tracing::warn!("node registration was not accepted within its deadline; delivery unavailable, reconnecting");
+    }
+    accepted
+}
+
 async fn run_connected_once(
     config: &FleetControlConfig,
     command_rx: &mut mpsc::Receiver<FleetControlCommand>,
@@ -1981,21 +2047,16 @@ async fn run_connected_once(
     };
     // Socket-owned connectivity: armed here, released by Drop on every exit.
     let _probe_session = ProbeSessionGuard::enter(config.probe.as_ref());
-    let _ = event_tx.send(FleetControlEvent::Connected).await;
     let (mut sink, mut stream) = ws.split();
     let mut pending_agent_registrations: HashMap<String, PendingAgentRegistration> = HashMap::new();
     let mut pending_deregistrations: HashMap<String, oneshot::Sender<Result<(), String>>> =
         HashMap::new();
 
-    if send_wire(
-        &mut sink,
-        &BrokerToRelaycast::NodeRegister(node_register.clone()),
-    )
-    .await
-    .is_err()
-    {
+    if !register_node_session(&mut sink, &mut stream, &mut node_register, config).await {
         return ControlRunResult::Disconnected;
     }
+    *registration = Some(node_register.clone());
+    let _ = event_tx.send(FleetControlEvent::Connected).await;
     if !send_inventory_sync(&mut sink, inventory, &mut pending_agent_registrations).await {
         return ControlRunResult::Disconnected;
     }
@@ -2032,11 +2093,15 @@ async fn run_connected_once(
                         load.handlers_live = true;
                         let mut next = build_node_register(&manifest, &config.node_id, &config.node_name, &config.broker_version, resume_cursor);
                         next.provider = Some(provider.clone());
-                        node_register = next.clone();
-                        *registration = Some(next.clone());
-                        if send_wire(&mut sink, &BrokerToRelaycast::NodeRegister(next)).await.is_err() {
-                            return ControlRunResult::Disconnected;
+                        // Reopen the provider session for a new manifest. Running
+                        // the registration gate inside this active socket would
+                        // consume replies belonging to in-flight agent requests.
+                        *registration = Some(next);
+                        drain_agent_registrations(&mut pending_agent_registrations, "node_control_reconfiguring");
+                        for (_, pending) in pending_deregistrations.drain() {
+                            let _ = pending.send(Err("node_control_reconfiguring".to_string()));
                         }
+                        return ControlRunResult::Disconnected;
                     }
                     Some(FleetControlCommand::UpdateInventory(next)) => {
                         *inventory = next;
@@ -4241,6 +4306,7 @@ mod tests {
         let server = tokio::spawn(async move {
             let (stream, _) = listener.accept().await.unwrap();
             let mut ws = accept_async(stream).await.unwrap();
+            let _ = next_node_to_server(&mut ws).await;
             while ws.next().await.is_some() {}
         });
 
@@ -4609,7 +4675,7 @@ mod tests {
         );
         let driver = async {
             // Both frames counted -> the client has drained the read side.
-            wait_for_probe(&probe, |snapshot| snapshot["socket"]["text_frames"] == 2).await;
+            wait_for_probe(&probe, |snapshot| snapshot["socket"]["text_frames"] == 3).await;
             command_tx
                 .send(FleetControlCommand::Shutdown)
                 .await
@@ -4624,10 +4690,10 @@ mod tests {
         server.abort();
 
         let snapshot = probe.snapshot_with_token(true);
-        // BOTH frames are counted as arrived, including the one that could not
-        // be parsed. If the count moved after the parse, this would read 1.
+        // Registration reply plus BOTH test frames count as arrived, including
+        // the unparseable one. Counting after parse would incorrectly read 2.
         assert_eq!(
-            snapshot["socket"]["text_frames"], 2,
+            snapshot["socket"]["text_frames"], 3,
             "an unparseable frame must still count as having arrived: {snapshot}"
         );
         assert_eq!(snapshot["socket"]["parse_failures"], 1);
@@ -5079,11 +5145,21 @@ mod tests {
     async fn next_node_to_server<S>(ws: &mut S) -> BrokerToRelaycast
     where
         S: futures_util::Stream<Item = Result<Message, tokio_tungstenite::tungstenite::Error>>
+            + Sink<Message, Error = tokio_tungstenite::tungstenite::Error>
             + Unpin,
     {
         loop {
             if let Message::Text(text) = ws.next().await.unwrap().unwrap() {
-                return serde_json::from_str(&text).unwrap();
+                let frame = serde_json::from_str(&text).unwrap();
+                if let BrokerToRelaycast::NodeRegister(register) = &frame {
+                    ws.send(Message::Text(
+                        json!({"v":1,"type":"reply","id":register.id,"ok":true,"data":{}})
+                            .to_string(),
+                    ))
+                    .await
+                    .unwrap();
+                }
+                return frame;
             }
         }
     }
@@ -5091,6 +5167,7 @@ mod tests {
     async fn next_non_heartbeat_node_to_server<S>(ws: &mut S) -> BrokerToRelaycast
     where
         S: futures_util::Stream<Item = Result<Message, tokio_tungstenite::tungstenite::Error>>
+            + Sink<Message, Error = tokio_tungstenite::tungstenite::Error>
             + Unpin,
     {
         loop {
@@ -5336,3 +5413,6 @@ mod tests {
         ));
     }
 }
+
+#[cfg(test)]
+mod registration_tests;

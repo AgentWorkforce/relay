@@ -11,6 +11,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - Broker `GET /api/node-delivery` exposes frame arrival, routing decisions, pending handoff, and acknowledgement counters without requiring logs or a restart.
 
+### Fixed
+
+- Broker node connections now require an accepted registration before reporting readiness or publishing inventory and heartbeats; rejected and unanswered registrations reconnect with bounded backoff.
+
 ## [12.1.0] - 2026-09-12
 
 ### Added
