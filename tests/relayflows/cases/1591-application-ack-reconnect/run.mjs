@@ -6,6 +6,8 @@ import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
+import { BROKER_NAME, BROKER_TYPE, BROKER_IDENTITY, brokerHttpResponse } from './http-fixture.mjs';
+
 const CASE_ID = '1591-application-ack-reconnect';
 const required = (name) => {
   const value = process.env[name];
@@ -38,28 +40,15 @@ const started = performance.now();
 let broker;
 let stderr = '';
 let fixtureError;
-const sendJson = (response, data) => {
-  response.writeHead(200, { 'content-type': 'application/json' });
-  response.end(JSON.stringify({ ok: true, data }));
-};
 const server = http.createServer(async (request, response) => {
   try {
     const chunks = [];
     for await (const chunk of request) chunks.push(chunk);
     const body = chunks.length ? JSON.parse(Buffer.concat(chunks)) : {};
     const pathname = new URL(request.url, 'http://proof.invalid').pathname;
-    if (request.method === 'POST' && pathname === '/v1/agents') {
-      sendJson(response, {
-        id: 'agent_proof_broker',
-        workspace_id: 'ws_proof',
-        name: body.name,
-        token: 'at_proof',
-        status: 'active',
-        created_at: '2026-09-14T00:00:00Z',
-      });
-    } else {
-      sendJson(response, {});
-    }
+    const result = brokerHttpResponse(request.method, pathname, body);
+    response.writeHead(result.status, { 'content-type': 'application/json' });
+    response.end(JSON.stringify(result.body));
   } catch (error) {
     fixtureError = error;
     response.destroy();
@@ -136,7 +125,7 @@ try {
     [
       'init',
       '--instance-name',
-      'relayflow-inventory-ack',
+      BROKER_NAME,
       '--workspace-key',
       'rk_proof',
       '--state-dir',
@@ -151,6 +140,8 @@ try {
       env: {
         ...process.env,
         RELAYCAST_BASE_URL: `http://127.0.0.1:${server.address().port}`,
+        RELAY_AGENT_TYPE: BROKER_TYPE,
+        RELAY_AGENT_IDENTITY_KEY: BROKER_IDENTITY,
         RELAY_NODE_ID: 'node_proof_inventory_ack',
         RELAY_NODE_TOKEN: 'nt_proof',
         RELAY_BROKER_API_KEY: 'br_proof',
