@@ -68,7 +68,9 @@ describe('direct message delivery receipts', () => {
         mode: 'wait',
         requestedRecipient: 'chief-khaliq',
         resolvedRecipient: 'chief-khaliq',
-        recipientMatched: true,
+        directoryMatched: true,
+        recipientMatched: null,
+        deliveryConfirmed: false,
         readConfirmed: false,
       },
     });
@@ -110,6 +112,8 @@ describe('direct message delivery receipts', () => {
         requestedRecipient: 'chief-khaliq',
         resolvedRecipient: 'chief',
         recipientMatched: false,
+        directoryMatched: false,
+        deliveryConfirmed: false,
       },
     });
     expect(receipt.delivery.note).toContain('Recipient mismatch');
@@ -184,9 +188,11 @@ describe('compact direct message receipts', () => {
         mode: 'wait',
         requestedRecipient: 'chief',
         resolvedRecipient: 'chief',
-        recipientMatched: true,
+        directoryMatched: true,
+        recipientMatched: null,
+        deliveryConfirmed: false,
         readConfirmed: false,
-        note: "Queued for injection at the recipient's next safe idle boundary. It can remain unread while the recipient is busy. This receipt does not confirm delivery or reading; call get_message_readers with the message id.",
+        note: 'Enqueued; routing and injection are unconfirmed. Mode wait requests the next safe idle boundary. Check get_message_readers with this ID before resending; retries may duplicate delivery.',
       },
     });
   });

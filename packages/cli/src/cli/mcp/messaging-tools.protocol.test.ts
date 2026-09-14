@@ -21,7 +21,7 @@ describe('messaging delivery receipts over MCP', () => {
     registerMessagingTools(
       server,
       () => ({ dm, readers }) as never,
-      async () => [{ name: 'chief' }, { name: 'chief-khaliq' }]
+      async () => [{ name: 'chief' }, { name: 'chief-khaliq', status: 'offline' }]
     );
 
     const client = new Client({ name: 'messaging-client-test', version: '1.0.0' });
@@ -43,9 +43,14 @@ describe('messaging delivery receipts over MCP', () => {
           mode: 'wait',
           requestedRecipient: 'chief-khaliq',
           resolvedRecipient: 'chief-khaliq',
+          directoryMatched: true,
+          recipientMatched: null,
+          deliveryConfirmed: false,
           readConfirmed: false,
         },
       });
+      expect(sent.isError).not.toBe(true);
+      expect(dm).toHaveBeenCalledTimes(1);
 
       const unresolved = await client.callTool({
         name: 'send_dm',
@@ -59,6 +64,8 @@ describe('messaging delivery receipts over MCP', () => {
           requestedRecipient: 'missing-agent',
           resolvedRecipient: null,
           recipientMatched: null,
+          directoryMatched: null,
+          deliveryConfirmed: false,
           readConfirmed: false,
         },
       });
@@ -125,6 +132,26 @@ describe('messaging delivery receipts over MCP', () => {
         conversationId: 'dm_1',
         delivery: { status: 'queued_unconfirmed', resolvedRecipient: 'chief' },
       });
+    } finally {
+      await client.close();
+      await server.close();
+    }
+  });
+
+  it('preserves a rejected send as an error even when the directory matched', async () => {
+    const dm = vi.fn(async () => { throw new Error('agent_not_found: recipient no longer exists'); });
+    const server = new McpServer({ name: 'messaging-rejected-test', version: '1.0.0' });
+    registerMessagingTools(server, () => ({ dm }) as never, async () => [{ name: 'released-agent' }]);
+    const client = new Client({ name: 'messaging-rejected-client', version: '1.0.0' });
+    const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
+    try {
+      await server.connect(serverTransport);
+      await client.connect(clientTransport);
+      const result = await client.callTool({ name: 'send_dm', arguments: { to: 'released-agent', text: 'hello' } });
+      expect(result.isError).toBe(true);
+      expect(JSON.stringify(result.content)).toContain('agent_not_found');
+      expect(result.structuredContent).toBeUndefined();
+      expect(dm).toHaveBeenCalledTimes(1);
     } finally {
       await client.close();
       await server.close();

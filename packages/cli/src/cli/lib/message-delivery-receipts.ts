@@ -7,7 +7,9 @@ export type DirectMessageDeliveryReceipt = Record<string, unknown> & {
     mode: DirectMessageMode;
     requestedRecipient: string;
     resolvedRecipient: string | null;
+    directoryMatched: boolean | null;
     recipientMatched: boolean | null;
+    deliveryConfirmed: false;
     readConfirmed: false;
     note: string;
   };
@@ -48,20 +50,23 @@ export function directMessageReceipt(
   const message = asRecord(value);
   const messageWithoutUntrustedTarget = { ...message };
   delete messageWithoutUntrustedTarget.target;
-  const recipientMatched = resolvedRecipient ? resolvedRecipient === requestedRecipient : null;
+  const directoryMatched = resolvedRecipient ? resolvedRecipient === requestedRecipient : null;
+  // Directory equality proves the address exists, not that its current node,
+  // provider socket, or agent session can receive the queued message.
+  const recipientMatched = directoryMatched === false ? false : null;
   const status =
-    recipientMatched === null
+    directoryMatched === null
       ? 'recipient_unresolved'
-      : recipientMatched
+      : directoryMatched
         ? 'queued_unconfirmed'
         : 'recipient_mismatch';
   const note =
-    recipientMatched === null
+    directoryMatched === null
       ? `Recipient resolution was unavailable for ${requestedRecipient}; enqueue is not reported as successful delivery.`
-      : recipientMatched
+      : directoryMatched
         ? mode === 'steer'
-          ? 'Queued as an immediate injection request that may interrupt active work. This receipt does not confirm delivery or reading; call get_message_readers with the message id.'
-          : "Queued for injection at the recipient's next safe idle boundary. It can remain unread while the recipient is busy. This receipt does not confirm delivery or reading; call get_message_readers with the message id."
+          ? 'Enqueued; routing and injection are unconfirmed. Mode steer requests immediate injection. Check get_message_readers with this ID before resending; retries may duplicate delivery.'
+          : 'Enqueued; routing and injection are unconfirmed. Mode wait requests the next safe idle boundary. Check get_message_readers with this ID before resending; retries may duplicate delivery.'
         : `Recipient mismatch: requested ${requestedRecipient}, but the directory resolved ${resolvedRecipient}.`;
 
   return {
@@ -72,7 +77,9 @@ export function directMessageReceipt(
       mode,
       requestedRecipient,
       resolvedRecipient: resolvedRecipient ?? null,
+      directoryMatched,
       recipientMatched,
+      deliveryConfirmed: false,
       readConfirmed: false,
       note,
     },
