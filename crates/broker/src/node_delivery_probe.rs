@@ -903,8 +903,7 @@ mod tests {
         let recorded = snapshot["last_parse_failure"]["error"]
             .as_str()
             .expect("the failure must still be recorded");
-        // Truncated on a boundary, and still bounded in BYTES — taking N chars
-        // instead would admit up to 4x the limit.
+        // Peer error strings are replaced with a fixed local category.
         assert!(recorded.len() <= ERROR_EXCERPT_LIMIT);
         assert_eq!(recorded, "invalid node-control frame");
         assert!(!recorded.contains("é"));
@@ -915,6 +914,10 @@ mod tests {
     fn parse_failure_does_not_echo_invalid_peer_values_from_serde() {
         let raw = r#"{"type":"deliver","v":1,"seq":"PRIVATE_BODY_IN_INVALID_VALUE"}"#;
         let error = serde_json::from_str::<RelaycastToBroker>(raw).unwrap_err();
+        assert!(
+            error.to_string().contains("PRIVATE_BODY_IN_INVALID_VALUE"),
+            "test must exercise a serde error that echoes a peer value"
+        );
         let probe = NodeDeliveryProbe::new();
         probe.record_parse_failure(&error.to_string(), raw);
         let report = probe.snapshot_with_token(true).to_string();
@@ -978,8 +981,7 @@ mod tests {
         // The frame DID arrive — so this is not an upstream problem...
         assert_eq!(deaf_row["delivers_seen"], 1);
         assert_eq!(deaf_row["decisions"]["identity_reject"], 1);
-        // ...but it was never queued_for_injection, and the per-route last-confirmed
-        // delivery relay#1593 asked for is null, separating deaf from quiet.
+        // ...but it was never accepted into the pending injection path.
         assert_eq!(deaf_row["dispositions"]["queued_for_injection"], 0);
         assert_eq!(deaf_row["last_queued_for_injection_at_ms"], Value::Null);
         assert!(deaf_row["last_deliver_at_ms"].is_u64());
