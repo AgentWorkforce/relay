@@ -52,6 +52,23 @@ describe('exact agent-name resolution', () => {
 });
 
 describe('direct message delivery receipts', () => {
+  it.each([
+    { requested: '', status: 'queued_unconfirmed', directoryMatched: true },
+    { requested: 'worker', status: 'recipient_mismatch', directoryMatched: false },
+  ])('preserves an empty resolved name for $status', ({ requested, status, directoryMatched }) => {
+    const resolved = resolveExactAgentName([{ name: '' }], '');
+    expect(resolved).toBe('');
+    const receipt = directMessageReceipt({ id: 'empty-name' }, requested, 'wait', resolved);
+    expect(receipt.target).toEqual({ kind: 'agent', agentName: '' });
+    expect(receipt.delivery).toMatchObject({
+      status,
+      resolvedRecipient: '',
+      directoryMatched,
+      recipientMatched: directoryMatched ? null : false,
+      deliveryConfirmed: false,
+    });
+  });
+
   it('labels default wait-mode sends as queued and preserves the exact requested recipient', () => {
     const receipt = directMessageReceipt(
       { id: 'msg_wait', text: 'status', agentName: 'sender' },

@@ -50,7 +50,7 @@ export function directMessageReceipt(
   const message = asRecord(value);
   const messageWithoutUntrustedTarget = { ...message };
   delete messageWithoutUntrustedTarget.target;
-  const directoryMatched = resolvedRecipient ? resolvedRecipient === requestedRecipient : null;
+  const directoryMatched = resolvedRecipient === undefined ? null : resolvedRecipient === requestedRecipient;
   // Directory equality proves the address exists, not that its current node,
   // provider socket, or agent session can receive the queued message.
   const recipientMatched = directoryMatched === false ? false : null;
@@ -71,7 +71,9 @@ export function directMessageReceipt(
 
   return {
     ...messageWithoutUntrustedTarget,
-    ...(resolvedRecipient ? { target: { kind: 'agent' as const, agentName: resolvedRecipient } } : {}),
+    ...(resolvedRecipient !== undefined
+      ? { target: { kind: 'agent' as const, agentName: resolvedRecipient } }
+      : {}),
     delivery: {
       status,
       mode,
