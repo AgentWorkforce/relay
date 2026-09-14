@@ -139,15 +139,24 @@ describe('messaging delivery receipts over MCP', () => {
   });
 
   it('preserves a rejected send as an error even when the directory matched', async () => {
-    const dm = vi.fn(async () => { throw new Error('agent_not_found: recipient no longer exists'); });
+    const dm = vi.fn(async () => {
+      throw new Error('agent_not_found: recipient no longer exists');
+    });
     const server = new McpServer({ name: 'messaging-rejected-test', version: '1.0.0' });
-    registerMessagingTools(server, () => ({ dm }) as never, async () => [{ name: 'released-agent' }]);
+    registerMessagingTools(
+      server,
+      () => ({ dm }) as never,
+      async () => [{ name: 'released-agent' }]
+    );
     const client = new Client({ name: 'messaging-rejected-client', version: '1.0.0' });
     const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
     try {
       await server.connect(serverTransport);
       await client.connect(clientTransport);
-      const result = await client.callTool({ name: 'send_dm', arguments: { to: 'released-agent', text: 'hello' } });
+      const result = await client.callTool({
+        name: 'send_dm',
+        arguments: { to: 'released-agent', text: 'hello' },
+      });
       expect(result.isError).toBe(true);
       expect(JSON.stringify(result.content)).toContain('agent_not_found');
       expect(result.structuredContent).toBeUndefined();

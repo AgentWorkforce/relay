@@ -22,8 +22,14 @@ const directMessageResult = z.looseObject({
     mode: z.enum(['wait', 'steer']),
     requestedRecipient: z.string(),
     resolvedRecipient: z.string().nullable(),
-    directoryMatched: z.boolean().nullable().describe('Exact directory name match; does not prove reachability'),
-    recipientMatched: z.boolean().nullable().describe('False for a name mismatch; null while recipient delivery is unconfirmed'),
+    directoryMatched: z
+      .boolean()
+      .nullable()
+      .describe('Exact directory name match; does not prove reachability'),
+    recipientMatched: z
+      .boolean()
+      .nullable()
+      .describe('False for a name mismatch; null while recipient delivery is unconfirmed'),
     deliveryConfirmed: z.literal(false),
     readConfirmed: z.literal(false),
     note: z.string(),
