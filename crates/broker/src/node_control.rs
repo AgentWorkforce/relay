@@ -1603,8 +1603,8 @@ pub(crate) async fn run_node_control_client(
     let mut reconnect_delay = INITIAL_RECONNECT_DELAY;
     // Bound re-minting so a persistently-rejecting engine can't spin a tight
     // mint loop. This counter increments on every consecutive `/v1/node/ws` 401
-    // and only resets once a connection actually establishes (the `Disconnected`
-    // arm below) — NOT on a successful re-mint. So repeated 401s accumulate
+    // and only resets once a correlated inventory acknowledgement proves the
+    // application processed this connection — NOT on a successful re-mint. So repeated 401s accumulate
     // toward [`MAX_UNAUTHORIZED_BEFORE_GIVING_UP`] even when each mint succeeds,
     // and each retry honors the backoff sleep at the bottom of the loop.
     let mut consecutive_unauthorized: u32 = 0;
@@ -1750,8 +1750,8 @@ pub(crate) async fn run_node_control_client(
                         // the next connect attempt so a server that 401s every
                         // freshly minted token can't be hammered. The counter is
                         // intentionally NOT reset here; it only resets once a
-                        // connection actually establishes (the `Disconnected` arm
-                        // above), so repeated 401s still accumulate toward the cap
+                        // correlated inventory reply establishes application readiness
+                        // (the `Disconnected` arm above), so repeated 401s still accumulate toward the cap
                         // even when each mint succeeds.
                         config.node_token = Some(fresh);
                         // Mirror the fresh token to the HTTP session so a provider
@@ -2264,9 +2264,6 @@ where
                     return true;
                 }
 
-                if !reply.ok && application_liveness.reject(&reply.id) {
-                    return false;
-                }
                 match application_liveness.acknowledge(&reply.id) {
                     Some(became_ready) => {
                         if became_ready {
@@ -3591,7 +3588,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn rejected_inventory_reply_does_not_make_application_ready() {
+    async fn malformed_inventory_reply_does_not_make_application_ready() {
         let mut liveness = ApplicationLiveness::new(Duration::from_secs(1));
         liveness.track_inventory_sync("inventory-rejected".to_string());
         let (events, _receiver) = mpsc::channel(1);
@@ -3604,7 +3601,10 @@ mod tests {
             "node-test",
             &mut futures_util::sink::drain(),
         ).await;
-        assert!(!healthy, "a rejected inventory must replace the connection");
+        assert!(
+            healthy,
+            "malformed frames are ignored until the liveness deadline"
+        );
         assert!(
             !liveness.ready,
             "a rejection is not an application acknowledgement"
