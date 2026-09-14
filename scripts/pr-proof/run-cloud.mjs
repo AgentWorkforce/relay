@@ -5,6 +5,7 @@ import path from 'node:path';
 import { setTimeout as delay } from 'node:timers/promises';
 import { pathToFileURL } from 'node:url';
 
+import { prepareBrokerTransfer } from './broker-transfer.mjs';
 import { runBoundedProcess } from './process-runner.mjs';
 
 const TERMINAL_SUCCESS = new Set(['completed', 'succeeded', 'success']);
@@ -593,8 +594,14 @@ export async function main() {
     label: 'PR_PROOF_CLOUD_COMMAND_TIMEOUT_MS',
   });
   const auth = createCliApiKeyEnvironment(process.env);
+  const brokerTransfer = await prepareBrokerTransfer(
+    process.env.PR_PROOF_INPUT_PATH ?? '.relayflow/pr-proof-input.json',
+    { env: auth.cliEnv }
+  );
+  let transferPromise;
   let runId = null;
   let terminal = false;
+  let proofSucceeded = false;
   let cancelPromise = null;
   let shuttingDown = false;
   let activeCommandController = null;
@@ -608,6 +615,12 @@ export async function main() {
         throw new Error(`Cloud prepare/run ID mismatch: ${runId} != ${preparedRunId}`);
       }
       runId = preparedRunId;
+      transferPromise ??= brokerTransfer?.start(runId);
+      transferPromise?.catch((error) => {
+        // The existing bounded launch finishes before cancellation/cleanup.
+        // Keep the original upload failure even if CLI output arrives later.
+        launchProgressError ??= error;
+      });
     } catch (error) {
       launchProgressError ??= error;
     }
@@ -667,6 +680,7 @@ export async function main() {
     shuttingDown = true;
     activeCommandController?.abort();
     void (async () => {
+      await brokerTransfer?.cleanup().catch(() => console.warn('Broker transfer cleanup incomplete'));
       await cancelRemote(signal).catch((error) =>
         console.warn(sanitizeCloudCommandOutput(error.message, auth.diagnosticSecretValues))
       );
@@ -687,6 +701,8 @@ export async function main() {
       onStderr: (text) => captureLaunchProgressError(() => launchProgress.write(text)),
     });
     captureLaunchProgressError(() => launchProgress.end());
+    if (brokerTransfer && !transferPromise) throw new Error('Broker transfer requires prepared run identity');
+    await transferPromise;
     if (launchProgressError) throw launchProgressError;
     if (launch.aborted) throw new Error('Cloud workflow submission was interrupted');
     if (launch.timedOut) {
@@ -801,6 +817,7 @@ export async function main() {
     if (!TERMINAL_SUCCESS.has(terminalStatus)) {
       throw new Error(`Cloud RelayFlow finished with status ${terminalStatus}`);
     }
+    proofSucceeded = true;
     if (process.env.GITHUB_STEP_SUMMARY) {
       await appendFile(
         process.env.GITHUB_STEP_SUMMARY,
@@ -814,10 +831,16 @@ export async function main() {
     activeCommandController?.abort();
     process.removeListener('SIGINT', signalHandler);
     process.removeListener('SIGTERM', signalHandler);
-    if (runId && !terminal)
-      await cancelRemote('dispatcher exiting').catch((error) =>
-        console.warn(sanitizeCloudCommandOutput(error.message, auth.diagnosticSecretValues))
-      );
+    try {
+      if (terminal)
+        brokerTransfer?.release(); // each completed arm consumed its transfer
+      else await brokerTransfer?.cleanup();
+    } finally {
+      if (runId && !terminal)
+        await cancelRemote('dispatcher exiting').catch((error) =>
+          console.warn(sanitizeCloudCommandOutput(error.message, auth.diagnosticSecretValues))
+        );
+    }
   }
 }
 
