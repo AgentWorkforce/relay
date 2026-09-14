@@ -38,6 +38,7 @@ async fn registration_gate_case(response: &str) {
     let accepted = response == "accept" || response == "reconfigure";
     let reconfigure = response == "reconfigure";
     let server_command_tx = command_tx.clone();
+    let (forwarded_tx, mut forwarded_rx) = oneshot::channel();
     let response = response.to_owned();
     let server = tokio::spawn(async move {
         let (tcp, _) = listener.accept().await.unwrap();
@@ -56,9 +57,14 @@ async fn registration_gate_case(response: &str) {
             ))
             .await
             .unwrap();
-            assert!(tokio::time::timeout(Duration::from_millis(30), ws.next())
+            // A pong proves the client processed the preceding unrelated reply.
+            // No dependent text frame may precede this transport-only barrier.
+            ws.send(Message::Ping(b"registration-barrier".to_vec()))
                 .await
-                .is_err());
+                .unwrap();
+            assert!(
+                matches!(ws.next().await, Some(Ok(Message::Pong(payload))) if payload == b"registration-barrier")
+            );
             ws.send(Message::Text(
                 json!({"v":1,"type":"reply","ok":true,"id":id,"data":{}}).to_string(),
             ))
@@ -135,8 +141,21 @@ async fn registration_gate_case(response: &str) {
             for name in ["old-worker", "fresh-worker"] {
                 ws.send(Message::Text(json!({"v":1,"type":"deliver","agent":name,"agent_id":format!("{name}-id"),"delivery_id":format!("delivery-{name}"),"msg_id":format!("message-{name}"),"seq":1,"mode":"wait","payload":{"type":"dm.received","text":"local probe"}}).to_string())).await.unwrap();
             }
-            ws.close(None).await.unwrap();
-            return;
+            // Keep the peer polling (and answering pings) until the runtime
+            // has forwarded both events. Closing immediately after send races
+            // the client's heartbeat write against draining buffered deliveries.
+            loop {
+                tokio::select! {
+                    result = &mut forwarded_rx => {
+                        result.expect("paired runtime observations completed");
+                        ws.close(None).await.unwrap();
+                        return;
+                    }
+                    message = ws.next() => {
+                        assert!(matches!(message, Some(Ok(_))), "accepted client disconnected before forwarding paired events: {message:?}");
+                    }
+                }
+            }
         }
         if response != "timeout" {
             let reply = match response.as_str() {
@@ -166,56 +185,72 @@ async fn registration_gate_case(response: &str) {
             }
         }
     });
-    let result = tokio::time::timeout(
-        Duration::from_secs(2),
-        run_connected_once(
-            &FleetControlConfig {
-                ws_url,
-                node_token: Some("nt_test".into()),
-                node_id: "node-test".into(),
-                node_name: "test-node".into(),
-                broker_version: "test".into(),
-                token_minter: None,
-                session_token: None,
-                read_idle_timeout: Some(Duration::from_millis(150)),
-                probe: None,
-            },
-            &mut command_rx,
-            &event_tx,
-            &mut registration,
-            &mut inventory,
-            &mut load,
-            Duration::from_millis(50),
-        ),
-    )
-    .await
-    .expect("registration rejection/timeout must terminate the session");
-    assert_eq!(result, ControlRunResult::Disconnected);
-    if accepted {
-        assert!(matches!(
-            event_rx.try_recv(),
-            Ok(FleetControlEvent::Connected)
-        ));
-        for expected in if reconfigure {
-            vec![]
+    let config = FleetControlConfig {
+        ws_url,
+        node_token: Some("nt_test".into()),
+        node_id: "node-test".into(),
+        node_name: "test-node".into(),
+        broker_version: "test".into(),
+        token_minter: None,
+        session_token: None,
+        // Only the rejection/timeout arms test the short registration deadline.
+        // Positive delivery completion is event-coordinated and bounded below.
+        read_idle_timeout: if accepted {
+            None
         } else {
-            vec!["old-worker", "fresh-worker"]
-        } {
-            let Ok(FleetControlEvent::Message(RelaycastToBroker::Deliver(deliver))) =
-                event_rx.try_recv()
-            else {
-                panic!("accepted provider must forward the paired deliveries")
-            };
-            assert_eq!(deliver.agent, expected);
-            assert_eq!(deliver.msg_id, format!("message-{expected}"));
+            Some(Duration::from_millis(150))
+        },
+        probe: None,
+    };
+    let observe = async {
+        if accepted {
+            let connected = event_rx.recv().await;
+            assert!(
+                matches!(connected, Some(FleetControlEvent::Connected)),
+                "accepted registration must connect: {connected:?}"
+            );
+            if !reconfigure {
+                for expected in ["old-worker", "fresh-worker"] {
+                    let event = event_rx.recv().await;
+                    let Some(FleetControlEvent::Message(RelaycastToBroker::Deliver(deliver))) =
+                        event
+                    else {
+                        panic!("accepted provider must forward {expected}; observed {event:?}");
+                    };
+                    assert_eq!(deliver.agent, expected);
+                    assert_eq!(deliver.msg_id, format!("message-{expected}"));
+                }
+                forwarded_tx
+                    .send(())
+                    .expect("accepted peer remains open until observations complete");
+            }
         }
-        assert!(event_rx.try_recv().is_err(), "no duplicate deliveries");
-    } else {
-        assert!(
-            !matches!(event_rx.try_recv(), Ok(FleetControlEvent::Connected)),
-            "transport acceptance must not report an unregistered provider connected"
-        );
-    }
+    };
+    let (result, ()) = tokio::time::timeout(Duration::from_secs(10), async {
+        tokio::join!(
+            run_connected_once(
+                &config,
+                &mut command_rx,
+                &event_tx,
+                &mut registration,
+                &mut inventory,
+                &mut load,
+                if accepted {
+                    Duration::from_secs(60)
+                } else {
+                    Duration::from_millis(50)
+                },
+            ),
+            observe,
+        )
+    })
+    .await
+    .expect("registration case must terminate after its bounded protocol exchange");
+    assert_eq!(result, ControlRunResult::Disconnected);
+    assert!(
+        event_rx.try_recv().is_err(),
+        "no unexpected or duplicate runtime events"
+    );
     server
         .await
         .expect("the rejected socket emitted no dependent frames");
