@@ -219,7 +219,9 @@ try {
     }
   );
   let spawnFailed = false;
-  broker.once('error', () => { spawnFailed = true; });
+  broker.once('error', () => {
+    spawnFailed = true;
+  });
   // Drain output without retaining peer bodies, credentials or other runtime data.
   broker.stdout.resume();
   broker.stderr.resume();
