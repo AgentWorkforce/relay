@@ -890,7 +890,7 @@ impl BrokerRuntime {
                     // `insert_and_attempt_delivery`), so there is nothing left
                     // to record here — see relay#1543.
                     self.node_delivery_probe
-                        .record_disposition(&deliver, DeliverDisposition::Injected);
+                        .record_disposition(&deliver, DeliverDisposition::QueuedForInjection);
                     self.fleet_delivery_book.commit_received(&deliver);
                     return;
                 }

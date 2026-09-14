@@ -293,7 +293,7 @@ export interface BrokerStatus {
 
 /** Where a `deliver` frame ended up once the broker had acted on it. */
 export type NodeDeliveryDisposition =
-  | 'injected'
+  | 'queued_for_injection'
   | 'surfaced_and_acked'
   | 'held_for_manual_flush'
   | 'surface_failed'
@@ -319,7 +319,7 @@ export interface NodeDeliveryRecord {
   decision: 'deliver' | 'duplicate' | 'stale' | 'gap' | 'identity_reject';
   /** Where the frame ended up. `null` while still in flight. */
   disposition:
-    | 'injected'
+    | 'queued_for_injection'
     | 'surfaced_and_acked'
     | 'held_for_manual_flush'
     | 'surface_failed'
@@ -334,7 +334,7 @@ export interface NodeDeliveryRecord {
  * `recent_delivers` so a single deaf agent stays diagnosable on a busy broker.
  *
  * `delivers_seen` not advancing means the frame never reached this broker;
- * advancing while `dispositions.injected` does not means the delivery book
+ * advancing while `dispositions.queued_for_injection` does not means the delivery book
  * discarded it, and `decisions` says which way.
  */
 export interface NodeDeliveryAgentRow {
@@ -345,7 +345,7 @@ export interface NodeDeliveryAgentRow {
   dispositions: Record<NodeDeliveryDisposition, number>;
   last_deliver_at_ms: number | null;
   /** Last confirmed delivery to this agent — a deaf agent from a quiet one. */
-  last_injected_at_ms: number | null;
+  last_queued_for_injection_at_ms: number | null;
 }
 
 /**

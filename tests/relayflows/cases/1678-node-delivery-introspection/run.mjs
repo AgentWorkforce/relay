@@ -50,7 +50,7 @@ const ENGINE_READY_TIMEOUT_MS = 60_000;
  */
 const DECISIONS = ['deliver', 'duplicate', 'stale', 'gap', 'identity_reject'];
 const DISPOSITIONS = [
-  'injected',
+  'queued_for_injection',
   'surfaced_and_acked',
   'held_for_manual_flush',
   'surface_failed',

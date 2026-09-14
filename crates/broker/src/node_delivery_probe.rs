@@ -82,12 +82,12 @@ fn now_ms() -> u64 {
 
 /// What `handle_fleet_deliver` ultimately did with a frame. Recorded separately
 /// from the [`DeliveryDecision`] because a decision of `Deliver` still has
-/// several possible ends — injected, held for a manual flush, or failed at the
+/// several possible ends — queued_for_injection, held for a manual flush, or failed at the
 /// PTY boundary — and "where did it stop" is the whole question this answers.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum DeliverDisposition {
-    /// Crossed the PTY injection boundary; ack withheld pending worker echo.
-    Injected,
+    /// Accepted into pending injection; neither PTY write nor consumption confirmed.
+    QueuedForInjection,
     /// Surfaced with nothing to verify (ambient receipt/reaction); acked now.
     SurfacedAndAcked,
     /// Received into the volatile FIFO, owned by Relaycast until a flush.
@@ -107,7 +107,7 @@ pub(crate) enum DeliverDisposition {
 impl DeliverDisposition {
     fn as_str(self) -> &'static str {
         match self {
-            Self::Injected => "injected",
+            Self::QueuedForInjection => "queued_for_injection",
             Self::SurfacedAndAcked => "surfaced_and_acked",
             Self::HeldForManualFlush => "held_for_manual_flush",
             Self::SurfaceFailed => "surface_failed",
@@ -200,10 +200,10 @@ pub(crate) struct AgentCursorView {
 ///
 /// These rows persist per agent, so the diagnosis is a single read:
 /// `delivers_seen` not advancing for the agent means the frame never reached
-/// this broker (look upstream); advancing while `injected` does not means the
+/// this broker (look upstream); advancing while `queued_for_injection` does not means the
 /// delivery book discarded it, and the decision counts say which way.
-/// `last_injected_at_ms` is the per-route last-confirmed-delivery asked for in
-/// relay#1593 — it separates a deaf agent from a merely quiet one.
+/// `last_queued_for_injection_at_ms` records the pending handoff only. Use worker
+/// confirmation/ACK counters and recipient session evidence for actual delivery.
 #[derive(Debug, Default, Clone)]
 struct AgentStats {
     agent_id: String,
@@ -213,7 +213,7 @@ struct AgentStats {
     decision_stale: u64,
     decision_gap: u64,
     decision_identity_reject: u64,
-    injected: u64,
+    queued_for_injection: u64,
     surfaced_and_acked: u64,
     held_for_manual_flush: u64,
     surface_failed: u64,
@@ -221,7 +221,7 @@ struct AgentStats {
     rejected_identity: u64,
     rejected_sequence_gap: u64,
     last_deliver_at_ms: u64,
-    last_injected_at_ms: u64,
+    last_queued_for_injection_at_ms: u64,
     /// Strictly increasing rank of the last time this row was touched. See
     /// [`agent_row`] — eviction orders on this, not on the millisecond clock.
     last_touch_order: u64,
@@ -241,7 +241,7 @@ impl AgentStats {
                 "identity_reject": self.decision_identity_reject,
             },
             "dispositions": {
-                "injected": self.injected,
+                "queued_for_injection": self.queued_for_injection,
                 "surfaced_and_acked": self.surfaced_and_acked,
                 "held_for_manual_flush": self.held_for_manual_flush,
                 "surface_failed": self.surface_failed,
@@ -250,7 +250,7 @@ impl AgentStats {
                 "rejected_sequence_gap": self.rejected_sequence_gap,
             },
             "last_deliver_at_ms": non_zero(self.last_deliver_at_ms),
-            "last_injected_at_ms": non_zero(self.last_injected_at_ms),
+            "last_queued_for_injection_at_ms": non_zero(self.last_queued_for_injection_at_ms),
         })
     }
 }
@@ -269,7 +269,7 @@ struct Counters {
     decision_stale: AtomicU64,
     decision_gap: AtomicU64,
     decision_identity_reject: AtomicU64,
-    injected: AtomicU64,
+    queued_for_injection: AtomicU64,
     surfaced_and_acked: AtomicU64,
     held_for_manual_flush: AtomicU64,
     surface_failed: AtomicU64,
@@ -455,7 +455,7 @@ impl NodeDeliveryProbe {
     /// decision and outcome together rather than having to infer the join.
     pub(crate) fn record_disposition(&self, deliver: &Deliver, disposition: DeliverDisposition) {
         let counter = match disposition {
-            DeliverDisposition::Injected => &self.counters.injected,
+            DeliverDisposition::QueuedForInjection => &self.counters.queued_for_injection,
             DeliverDisposition::SurfacedAndAcked => &self.counters.surfaced_and_acked,
             DeliverDisposition::HeldForManualFlush => &self.counters.held_for_manual_flush,
             DeliverDisposition::SurfaceFailed => &self.counters.surface_failed,
@@ -479,11 +479,10 @@ impl NodeDeliveryProbe {
         }
         if let Some(stats) = agent_row(&mut retained.agents, &bounded(&deliver.agent), touch) {
             match disposition {
-                DeliverDisposition::Injected => {
-                    stats.injected += 1;
-                    // The per-route "last confirmed delivery" relay#1593 asked
-                    // for: it separates a deaf agent from a merely quiet one.
-                    stats.last_injected_at_ms = now_ms();
+                DeliverDisposition::QueuedForInjection => {
+                    stats.queued_for_injection += 1;
+                    // This is queue acceptance, not worker confirmation.
+                    stats.last_queued_for_injection_at_ms = now_ms();
                 }
                 DeliverDisposition::SurfacedAndAcked => stats.surfaced_and_acked += 1,
                 DeliverDisposition::HeldForManualFlush => stats.held_for_manual_flush += 1,
@@ -614,7 +613,7 @@ impl NodeDeliveryProbe {
                 "identity_reject": load(&c.decision_identity_reject),
             },
             "dispositions": {
-                "injected": load(&c.injected),
+                "queued_for_injection": load(&c.queued_for_injection),
                 "surfaced_and_acked": load(&c.surfaced_and_acked),
                 "held_for_manual_flush": load(&c.held_for_manual_flush),
                 "surface_failed": load(&c.surface_failed),
@@ -814,7 +813,7 @@ mod tests {
         let second = deliver("worker", "ag_1", "del_2", 2);
         probe.record_decision(&first, &DeliveryDecision::Deliver { up_to_seq: 1 });
         probe.record_decision(&second, &DeliveryDecision::IdentityReject);
-        probe.record_disposition(&first, DeliverDisposition::Injected);
+        probe.record_disposition(&first, DeliverDisposition::QueuedForInjection);
         probe.record_disposition(&second, DeliverDisposition::RejectedIdentity);
 
         let snapshot = probe.snapshot_with_token(true);
@@ -822,13 +821,13 @@ mod tests {
         assert_eq!(recent.len(), 2);
         assert_eq!(recent[0]["delivery_id"], "del_1");
         assert_eq!(recent[0]["decision"], "deliver");
-        assert_eq!(recent[0]["disposition"], "injected");
+        assert_eq!(recent[0]["disposition"], "queued_for_injection");
         assert_eq!(recent[1]["delivery_id"], "del_2");
         assert_eq!(recent[1]["decision"], "identity_reject");
         assert_eq!(recent[1]["disposition"], "rejected_identity");
         assert_eq!(snapshot["decisions"]["deliver"], 1);
         assert_eq!(snapshot["decisions"]["identity_reject"], 1);
-        assert_eq!(snapshot["dispositions"]["injected"], 1);
+        assert_eq!(snapshot["dispositions"]["queued_for_injection"], 1);
         assert_eq!(snapshot["dispositions"]["rejected_identity"], 1);
     }
 
@@ -949,10 +948,10 @@ mod tests {
     fn per_agent_rows_localize_a_single_deaf_agent() {
         let probe = NodeDeliveryProbe::new();
 
-        // A healthy agent: frame arrives and is injected.
+        // A healthy agent: frame arrives and is queued_for_injection.
         let healthy = deliver("healthy-agent", "ag_ok", "del_ok", 1);
         probe.record_decision(&healthy, &DeliveryDecision::Deliver { up_to_seq: 1 });
-        probe.record_disposition(&healthy, DeliverDisposition::Injected);
+        probe.record_disposition(&healthy, DeliverDisposition::QueuedForInjection);
 
         // A deaf agent: the frame reaches the broker but the delivery book
         // rejects it on identity, so it never enters the pending queue —
@@ -972,17 +971,17 @@ mod tests {
 
         let healthy_row = row("healthy-agent");
         assert_eq!(healthy_row["delivers_seen"], 1);
-        assert_eq!(healthy_row["dispositions"]["injected"], 1);
-        assert!(healthy_row["last_injected_at_ms"].is_u64());
+        assert_eq!(healthy_row["dispositions"]["queued_for_injection"], 1);
+        assert!(healthy_row["last_queued_for_injection_at_ms"].is_u64());
 
         let deaf_row = row("deaf-agent");
         // The frame DID arrive — so this is not an upstream problem...
         assert_eq!(deaf_row["delivers_seen"], 1);
         assert_eq!(deaf_row["decisions"]["identity_reject"], 1);
-        // ...but it was never injected, and the per-route last-confirmed
+        // ...but it was never queued_for_injection, and the per-route last-confirmed
         // delivery relay#1593 asked for is null, separating deaf from quiet.
-        assert_eq!(deaf_row["dispositions"]["injected"], 0);
-        assert_eq!(deaf_row["last_injected_at_ms"], Value::Null);
+        assert_eq!(deaf_row["dispositions"]["queued_for_injection"], 0);
+        assert_eq!(deaf_row["last_queued_for_injection_at_ms"], Value::Null);
         assert!(deaf_row["last_deliver_at_ms"].is_u64());
     }
 
@@ -1015,7 +1014,7 @@ mod tests {
         assert_eq!(row["dispositions"]["rejected_identity"], 0);
         // Arrived, never delivered: the pair that localizes the failure.
         assert_eq!(row["delivers_seen"], 1);
-        assert_eq!(row["last_injected_at_ms"], Value::Null);
+        assert_eq!(row["last_queued_for_injection_at_ms"], Value::Null);
     }
 
     #[test]
@@ -1086,7 +1085,7 @@ mod tests {
         frame.payload = json!({ "type": oversized });
 
         probe.record_decision(&frame, &DeliveryDecision::Deliver { up_to_seq: 1 });
-        probe.record_disposition(&frame, DeliverDisposition::Injected);
+        probe.record_disposition(&frame, DeliverDisposition::QueuedForInjection);
         probe.record_parse_failure("boom", &json!({ "type": oversized }).to_string());
 
         let snapshot = probe.snapshot_with_token(true);
@@ -1100,7 +1099,7 @@ mod tests {
             );
         }
         assert_eq!(
-            row["disposition"], "injected",
+            row["disposition"], "queued_for_injection",
             "bounding the retained delivery_id must not break the join that \
              stamps the disposition onto its frame"
         );
@@ -1112,7 +1111,7 @@ mod tests {
             agent.len()
         );
         assert_eq!(
-            snapshot["agents"][0]["dispositions"]["injected"], 1,
+            snapshot["agents"][0]["dispositions"]["queued_for_injection"], 1,
             "bounding the agent name on both writers must keep them on one row"
         );
 

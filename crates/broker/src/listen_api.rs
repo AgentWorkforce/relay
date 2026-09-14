@@ -4040,7 +4040,7 @@ mod auth_tests {
             &deliver,
             &crate::node_control::DeliveryDecision::Deliver { up_to_seq: 7 },
         );
-        probe.record_disposition(&deliver, DeliverDisposition::Injected);
+        probe.record_disposition(&deliver, DeliverDisposition::QueuedForInjection);
 
         let response = router
             .oneshot(
@@ -4060,7 +4060,10 @@ mod auth_tests {
         assert_eq!(body["recent_delivers"][0]["agent"], "worker-a");
         assert_eq!(body["recent_delivers"][0]["seq"], 7);
         assert_eq!(body["recent_delivers"][0]["decision"], "deliver");
-        assert_eq!(body["recent_delivers"][0]["disposition"], "injected");
+        assert_eq!(
+            body["recent_delivers"][0]["disposition"],
+            "queued_for_injection"
+        );
 
         // Nothing was asked of the runtime.
         assert!(
