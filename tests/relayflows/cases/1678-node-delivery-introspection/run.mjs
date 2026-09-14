@@ -194,7 +194,10 @@ try {
     return `http://127.0.0.1:${port}`;
   }, 'the broker connection file to publish its bound API port');
   const api = brokerClient(brokerUrl);
-  await waitFor(() => api('GET', '/api/status').then(() => true), 'the broker API to answer');
+  await waitFor(
+    async () => (await api('GET', '/api/status')).node_connected === true,
+    'the node control connection to establish'
+  );
 
   // A live worker, registered with the real engine and idle.
   const sender = await eng('POST', '/v1/agents', { name: 'proof-sender', type: 'agent' }, wsAuth);
@@ -202,7 +205,7 @@ try {
   if (!senderToken) throw new Error('Local proof sender registration failed.');
   // Node action spawn creates the recipient on the broker provider. HTTP
   // create+bind defaults to another provider and cannot prove this path.
-  await eng(
+  const spawned = await eng(
     'POST',
     '/v1/actions/spawn/invoke',
     {
@@ -216,6 +219,7 @@ try {
     },
     { authorization: `Bearer ${senderToken}` }
   );
+  if (spawned.status < 200 || spawned.status >= 300) throw new Error('Local node action spawn was rejected.');
   await waitFor(async () => {
     const row = await eng('GET', '/v1/agents', undefined, wsAuth);
     const list = row.body?.data?.agents ?? row.body?.data ?? [];
