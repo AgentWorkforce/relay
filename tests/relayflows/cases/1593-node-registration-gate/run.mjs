@@ -4,8 +4,7 @@ import assert from 'node:assert/strict';
 import crypto from 'node:crypto';
 import http from 'node:http';
 import { execFileSync, spawn } from 'node:child_process';
-import { mkdtemp, mkdir, writeFile, rm, access } from 'node:fs/promises';
-import { constants } from 'node:fs';
+import { mkdtemp, mkdir, writeFile, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -28,7 +27,6 @@ assert.equal(
 assert.equal(gitSha(harness), required('RELAY_PR_PROOF_HEAD_SHA'));
 const relative = path.relative(harness, fileURLToPath(import.meta.url));
 assert.ok(relative && !relative.startsWith('..') && !path.isAbsolute(relative));
-await access(binary, constants.R_OK | constants.X_OK);
 const root = await mkdtemp(path.join(tmpdir(), 'relayflow-registration-'));
 const state = path.join(root, 'state');
 await mkdir(state);
@@ -220,12 +218,15 @@ try {
       },
     }
   );
+  let spawnFailed = false;
+  broker.once('error', () => { spawnFailed = true; });
   // Drain output without retaining peer bodies, credentials or other runtime data.
   broker.stdout.resume();
   broker.stderr.resume();
   let outcome, signature;
   const deadline = Date.now() + 120000;
   while (Date.now() < deadline) {
+    if (spawnFailed) throw Error('Broker artifact could not be started.');
     if (broker.exitCode !== null) throw Error(`Broker exited before evidence: ${broker.exitCode}`);
     const first = sessions[0];
     if (first?.registration && (first.inventory || first.heartbeat || first.other)) {
