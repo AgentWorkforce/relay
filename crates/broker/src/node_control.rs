@@ -91,6 +91,11 @@ pub(crate) struct FleetControlConfig {
     /// treated as dead. `None` uses [`READ_IDLE_TIMEOUT`]; tests override it so
     /// the blackhole case can be covered without a 48-second wait.
     pub(crate) read_idle_timeout: Option<Duration>,
+    /// Introspection sink for the inbound path. Frames are counted here
+    /// before deserialization, so a `deliver` the broker cannot parse is
+    /// still recorded as having arrived. `None` in tests that do not
+    /// assert on the probe.
+    pub(crate) probe: Option<std::sync::Arc<crate::node_delivery_probe::NodeDeliveryProbe>>,
 }
 
 /// Mints node tokens via `POST /v1/nodes` and maintains the workspace-scoped
@@ -693,8 +698,26 @@ struct ActiveAgentBinding {
     authoritative: bool,
 }
 
+/// Bookkeeping flag that never participates in equality.
+///
+/// The book derives `PartialEq` and tests assert things like "identity
+/// rejection must not mutate state" by comparing a book against a snapshot.
+/// Whether a cursor publish is still pending is not part of the book's
+/// identity, so it must not make those assertions pass or fail.
+#[derive(Debug, Default, Clone, Eq)]
+pub(crate) struct CursorDirtyFlag(bool);
+
+impl PartialEq for CursorDirtyFlag {
+    fn eq(&self, _: &Self) -> bool {
+        true
+    }
+}
+
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
 pub(crate) struct FleetDeliveryBook {
+    /// Set by every mutator, cleared by the runtime once it has republished
+    /// the cursor snapshot. See [`FleetDeliveryBook::take_cursor_dirty`].
+    dirty: CursorDirtyFlag,
     agents: HashMap<String, AgentDeliveryCursor>,
     active_agent_bindings_by_name: HashMap<String, ActiveAgentBinding>,
     active_agent_names_by_id: HashMap<String, String>,
@@ -706,6 +729,7 @@ impl FleetDeliveryBook {
     const RETIRED_AGENT_ID_CAPACITY: usize = 512;
 
     fn forget_retired_identity(&mut self, agent_id: &str) {
+        self.mark_cursors_dirty();
         if self.retired_agent_names_by_id.remove(agent_id).is_some() {
             self.retired_agent_id_order
                 .retain(|retired_id| retired_id != agent_id);
@@ -713,6 +737,7 @@ impl FleetDeliveryBook {
     }
 
     fn retire_identity(&mut self, agent_id: String, agent_name: String) {
+        self.mark_cursors_dirty();
         self.forget_retired_identity(&agent_id);
         while self.retired_agent_id_order.len() >= Self::RETIRED_AGENT_ID_CAPACITY {
             if let Some(evicted) = self.retired_agent_id_order.pop_front() {
@@ -736,6 +761,7 @@ impl FleetDeliveryBook {
     }
 
     fn bind_identity(&mut self, agent: &str, agent_id: &str, authoritative: bool) -> bool {
+        self.mark_cursors_dirty();
         if !authoritative && self.nonauthoritative_binding_conflicts(agent, agent_id) {
             return false;
         }
@@ -794,6 +820,7 @@ impl FleetDeliveryBook {
         agent: impl Into<String>,
         agent_id: impl Into<String>,
     ) {
+        self.mark_cursors_dirty();
         let agent = agent.into();
         let agent_id = agent_id.into();
         self.bind_identity(&agent, &agent_id, true);
@@ -822,6 +849,7 @@ impl FleetDeliveryBook {
         agent_id: impl Into<String>,
         up_to_seq: u64,
     ) {
+        self.mark_cursors_dirty();
         let agent = agent.into();
         let agent_id = agent_id.into();
         debug_assert!(self
@@ -855,6 +883,7 @@ impl FleetDeliveryBook {
         deliveries: &[&Deliver],
         ack_floor: Option<u64>,
     ) {
+        self.mark_cursors_dirty();
         let mut sequenced = deliveries
             .iter()
             .copied()
@@ -1009,7 +1038,55 @@ impl FleetDeliveryBook {
         }
     }
 
+    /// Export the per-identity cursors for introspection.
+    ///
+    /// Until this existed the delivery book was entirely opaque at runtime:
+    /// nothing in the broker could say what sequence an agent was acked to, so
+    /// a silent agent could not be told apart from one whose cursor had been
+    /// retired underneath it. Ordered by name to keep the endpoint's output
+    /// stable between reads.
+    /// Mark the cursor snapshot stale. Called by every mutator; the runtime
+    /// drains this once per event-loop turn.
+    fn mark_cursors_dirty(&mut self) {
+        self.dirty.0 = true;
+    }
+
+    /// Consume the pending-publish flag.
+    ///
+    /// Mirrors the `take_dirty()` used by the persisted stores so cursor
+    /// publication happens in exactly one place in the event loop rather than
+    /// at each mutation site. Publishing only from the deliver path left the
+    /// endpoint reporting obsolete acknowledgements and retired agents
+    /// whenever a worker confirmation, manual flush, registration, identity
+    /// rebind, or release moved the book without a later frame arriving.
+    pub(crate) fn take_cursor_dirty(&mut self) -> bool {
+        std::mem::take(&mut self.dirty.0)
+    }
+
+    pub(crate) fn cursor_views(&self) -> Vec<crate::node_delivery_probe::AgentCursorView> {
+        let mut views: Vec<_> = self
+            .agents
+            .iter()
+            .map(
+                |(agent_id, cursor)| crate::node_delivery_probe::AgentCursorView {
+                    agent_id: agent_id.clone(),
+                    agent_name: cursor.agent_name.clone(),
+                    acked_up_to_seq: cursor.acked_up_to_seq,
+                    received_up_to_seq: cursor.received_up_to_seq,
+                    has_sequenced_position: cursor.has_sequenced_position,
+                },
+            )
+            .collect();
+        views.sort_by(|a, b| {
+            a.agent_name
+                .cmp(&b.agent_name)
+                .then_with(|| a.agent_id.cmp(&b.agent_id))
+        });
+        views
+    }
+
     pub(crate) fn commit_received(&mut self, deliver: &Deliver) -> u64 {
+        self.mark_cursors_dirty();
         if !self.bind_identity(&deliver.agent, &deliver.agent_id, false) {
             return self.active_up_to_seq(&deliver.agent);
         }
@@ -1050,6 +1127,7 @@ impl FleetDeliveryBook {
         &mut self,
         receipt: &RelaycastDeliveryReceipt,
     ) -> Option<u64> {
+        self.mark_cursors_dirty();
         let cursor = self.agents.get_mut(receipt.agent_id.as_str())?;
         cursor.agent_name = receipt.agent.to_string();
         if receipt.seq == 0 {
@@ -1071,6 +1149,7 @@ impl FleetDeliveryBook {
     /// out-of-order confirmation stays held on this agent's cursor until every
     /// lower received sequence has also confirmed.
     pub(crate) fn commit_confirmed_delivery(&mut self, deliver: &Deliver) -> Option<u64> {
+        self.mark_cursors_dirty();
         self.commit_received(deliver);
         let cursor = self.agents.get_mut(deliver.agent_id.as_str())?;
         if deliver.seq == 0 {
@@ -1171,6 +1250,7 @@ impl FleetDeliveryBook {
     }
 
     pub(crate) fn commit_delivered(&mut self, deliver: &Deliver) -> u64 {
+        self.mark_cursors_dirty();
         self.commit_received(deliver);
         let receipt = RelaycastDeliveryReceipt {
             agent: deliver.agent.clone().into(),
@@ -1204,6 +1284,7 @@ impl FleetDeliveryBook {
     }
 
     pub(crate) fn remove_agent(&mut self, agent: &str) {
+        self.mark_cursors_dirty();
         if let Some(binding) = self.active_agent_bindings_by_name.remove(agent) {
             self.active_agent_names_by_id.remove(&binding.agent_id);
             self.agents.remove(&binding.agent_id);
@@ -1888,6 +1969,40 @@ impl ApplicationLiveness {
     }
 }
 
+/// Records a node-control session's connect on creation and its matching
+/// disconnect on drop.
+///
+/// `run_connected_once` has twenty-odd `return ControlRunResult::*` paths —
+/// send failures, read failures, idle timeout, shutdown, unauthorized. Asking
+/// each of them to remember a `record_disconnected` guarantees one eventually
+/// will not. More importantly this state must be owned by the socket task, not
+/// the runtime: reporting it from `handle_fleet_control_event` means a wedged
+/// event loop never processes `Disconnected`, so the endpoint keeps claiming
+/// `connected: true` for a dead socket — the exact failure it exists to
+/// diagnose. Drop runs on every exit path, including a panic unwind.
+struct ProbeSessionGuard<'a> {
+    probe: Option<&'a std::sync::Arc<crate::node_delivery_probe::NodeDeliveryProbe>>,
+}
+
+impl<'a> ProbeSessionGuard<'a> {
+    fn enter(
+        probe: Option<&'a std::sync::Arc<crate::node_delivery_probe::NodeDeliveryProbe>>,
+    ) -> Self {
+        if let Some(probe) = probe {
+            probe.record_connected();
+        }
+        Self { probe }
+    }
+}
+
+impl Drop for ProbeSessionGuard<'_> {
+    fn drop(&mut self) {
+        if let Some(probe) = self.probe {
+            probe.record_disconnected();
+        }
+    }
+}
+
 async fn run_connected_once(
     config: &FleetControlConfig,
     command_rx: &mut mpsc::Receiver<FleetControlCommand>,
@@ -1977,6 +2092,8 @@ async fn run_connected_once(
         node_id = %config.node_id,
         "node-control transition: transport connected; awaiting application acknowledgement"
     );
+    // Socket-owned connectivity: armed here, released by Drop on every exit.
+    let _probe_session = ProbeSessionGuard::enter(config.probe.as_ref());
     let _ = event_tx.send(FleetControlEvent::Connected).await;
     let (mut sink, mut stream) = ws.split();
     let mut pending_agent_registrations: HashMap<String, PendingAgentRegistration> = HashMap::new();
@@ -2076,7 +2193,21 @@ async fn run_connected_once(
                         }
                     }
                     Some(FleetControlCommand::Send(message)) => {
-                        if send_wire(&mut sink, &message).await.is_err() {
+                        // A `delivery_ack` is the engine's only evidence that a
+                        // frame was consumed. The runtime records the *decision*
+                        // to ack before handing it here and cannot wait for the
+                        // wire, so the probe learns the outcome at the one place
+                        // that knows it. See `NodeDeliveryProbe::record_ack_sent`.
+                        let is_ack = matches!(message, BrokerToRelaycast::DeliveryAck(_));
+                        let sent = send_wire(&mut sink, &message).await;
+                        if let (true, Some(probe)) = (is_ack, config.probe.as_ref()) {
+                            if sent.is_ok() {
+                                probe.record_ack_sent();
+                            } else {
+                                probe.record_ack_send_failed();
+                            }
+                        }
+                        if sent.is_err() {
                             return ControlRunResult::Disconnected { application_ready: application_liveness.ready };
                         }
                     }
@@ -2197,6 +2328,7 @@ async fn run_connected_once(
                     &mut application_liveness,
                     &config.node_id,
                     &mut sink,
+                    config.probe.as_ref(),
                 )
                 .await
                 {
@@ -2246,80 +2378,109 @@ async fn handle_server_message<S>(
     application_liveness: &mut ApplicationLiveness,
     node_id: &str,
     sink: &mut S,
+    probe: Option<&std::sync::Arc<crate::node_delivery_probe::NodeDeliveryProbe>>,
 ) -> bool
 where
     S: Sink<Message> + Unpin,
     S::Error: std::error::Error + Send + Sync + 'static,
 {
     match message {
-        Message::Text(text) => match serde_json::from_str::<RelaycastToBroker>(&text) {
-            Ok(RelaycastToBroker::Reply(reply)) => {
-                if let Some(pending) = pending_deregistrations.remove(&reply.id) {
-                    let result = if reply.ok {
-                        Ok(())
-                    } else {
-                        Err("agent_deregister_rejected".to_string())
-                    };
-                    let _ = pending.send(result);
-                    return true;
-                }
+        Message::Text(text) => {
+            // Counted before `from_str`, deliberately. `ServerToNode` is
+            // `#[serde(tag = "type")]`, so a `deliver` carrying a field this
+            // build cannot parse fails as a whole and is dropped at the `Err`
+            // arm below. Counting only successfully-parsed frames would report
+            // "no deliver frames arrived" for a broker that is in fact
+            // receiving deliveries and throwing them away.
+            if let Some(probe) = probe {
+                probe.record_text_frame();
+            }
+            match serde_json::from_str::<RelaycastToBroker>(&text) {
+                Ok(frame) => {
+                    if let Some(probe) = probe {
+                        probe.record_frame(&frame);
+                    }
+                    match frame {
+                        RelaycastToBroker::Reply(reply) => {
+                            if let Some(pending) = pending_deregistrations.remove(&reply.id) {
+                                let result = if reply.ok {
+                                    Ok(())
+                                } else {
+                                    Err("agent_deregister_rejected".to_string())
+                                };
+                                let _ = pending.send(result);
+                                return true;
+                            }
 
-                match application_liveness.acknowledge(&reply.id) {
-                    Some(became_ready) => {
-                        if became_ready {
-                            tracing::info!(
-                            target = "relay_broker::fleet",
-                            node_id,
-                            "node-control transition: application acknowledgement received; control link ready"
-                        );
+                            match application_liveness.acknowledge(&reply.id) {
+                                Some(became_ready) => {
+                                    if became_ready {
+                                        tracing::info!(
+                                            target = "relay_broker::fleet",
+                                            node_id,
+                                            "node-control transition: application acknowledgement received; control link ready"
+                                        );
+                                    }
+                                    true
+                                }
+                                None => {
+                                    complete_agent_registration(reply, pending_agent_registrations, sink)
+                                        .await
+                                }
+                            }
                         }
-                        true
+                        RelaycastToBroker::Error(error) => {
+                            if let Some(pending) = pending_deregistrations.remove(&error.id) {
+                                let _ =
+                                    pending.send(Err(format!("{}: {}", error.code, error.message)));
+                                return true;
+                            }
+                            if error.code == "invalid_message" {
+                                fail_unsupported_channel_isolation(
+                                    &error.message,
+                                    pending_agent_registrations,
+                                );
+                            }
+                            // Surface every engine rejection at error level. A node.register or
+                            // heartbeat rejection (e.g. node_name_conflict) matches no pending
+                            // agent registration below, so without this it vanishes silently —
+                            // leaving the node half-registered with dead heartbeats and no signal.
+                            tracing::error!(
+                                target = "relay_broker::fleet",
+                                code = %error.code,
+                                message = %error.message,
+                                id = %error.id,
+                                "engine rejected a node control frame"
+                            );
+                            let rejected_liveness_probe = application_liveness.reject(&error.id);
+                            fail_agent_registration(
+                                &error.id,
+                                format!("{}: {}", error.code, error.message),
+                                pending_agent_registrations,
+                            );
+                            // A reply proves the application is responsive, but rejecting
+                            // the authoritative inventory probe means the control session
+                            // is not healthy enough to advertise; replace it immediately.
+                            !rejected_liveness_probe
+                        }
+                        other => event_tx
+                            .send(FleetControlEvent::Message(other))
+                            .await
+                            .is_ok(),
                     }
-                    None => {
-                        complete_agent_registration(reply, pending_agent_registrations, sink).await
+                }
+                Err(error) => {
+                    // This arm is where an unparseable `deliver` dies. With
+                    // `RUST_LOG` unset the warning below goes nowhere, which is
+                    // why the probe records the failure as state instead.
+                    if let Some(probe) = probe {
+                        probe.record_parse_failure(&error.to_string(), &text);
                     }
+                    tracing::warn!(target = "relay_broker::fleet", error = %error, "invalid fleet node ws frame");
+                    true
                 }
             }
-            Ok(RelaycastToBroker::Error(error)) => {
-                if let Some(pending) = pending_deregistrations.remove(&error.id) {
-                    let _ = pending.send(Err(format!("{}: {}", error.code, error.message)));
-                    return true;
-                }
-
-                // Surface every engine rejection at error level. A node.register or
-                // heartbeat rejection (e.g. node_name_conflict) matches no pending
-                // agent registration below, so without this it vanishes silently —
-                // leaving the node half-registered with dead heartbeats and no signal.
-                tracing::error!(
-                    target = "relay_broker::fleet",
-                    code = %error.code,
-                    message = %error.message,
-                    id = %error.id,
-                    "engine rejected a node control frame"
-                );
-                if error.code == "invalid_message" {
-                    fail_unsupported_channel_isolation(&error.message, pending_agent_registrations);
-                }
-                let rejected_liveness_probe = application_liveness.reject(&error.id);
-                fail_agent_registration(
-                    &error.id,
-                    format!("{}: {}", error.code, error.message),
-                    pending_agent_registrations,
-                );
-                // A reply proves the application is responsive, but rejecting
-                // the authoritative inventory probe means the control session
-                // is not healthy enough to advertise; replace it immediately.
-                !rejected_liveness_probe
-            }
-            Ok(other) => event_tx
-                .send(FleetControlEvent::Message(other))
-                .await
-                .is_ok(),
-            Err(error) => {
-                tracing::warn!(target = "relay_broker::fleet", error = %error, "invalid fleet node ws frame");
-                true
-            }
-        },
+        }
         Message::Ping(_) => true,
         Message::Close(_) => false,
         _ => true,
@@ -3550,7 +3711,8 @@ mod tests {
                     &mut deregistrations,
                     &mut ApplicationLiveness::new(Duration::from_secs(1)),
                     "node-test",
-                    &mut sink
+                    &mut sink,
+                    None,
                 )
                 .await
             );
@@ -3600,6 +3762,7 @@ mod tests {
             &mut liveness,
             "node-test",
             &mut futures_util::sink::drain(),
+            None,
         ).await;
         assert!(
             healthy,
@@ -3827,6 +3990,7 @@ mod tests {
                 token_minter: None,
                 session_token: None,
                 read_idle_timeout: None,
+                probe: None,
             },
             command_rx,
             event_tx,
@@ -3952,6 +4116,7 @@ mod tests {
                 token_minter: None,
                 session_token: None,
                 read_idle_timeout: None,
+                probe: None,
             },
             command_rx,
             event_tx,
@@ -4120,6 +4285,7 @@ mod tests {
                 }),
                 session_token: Some(session_token.clone()),
                 read_idle_timeout: None,
+                probe: None,
             },
             command_rx,
             event_tx,
@@ -4183,6 +4349,7 @@ mod tests {
                 token_minter: None,
                 session_token: None,
                 read_idle_timeout: None,
+                probe: None,
             },
             command_rx,
             event_tx,
@@ -4280,6 +4447,472 @@ mod tests {
         let _ = command_tx.send(FleetControlCommand::Shutdown).await;
     }
 
+    /// Poll the probe until `ready` holds, so tests observe state transitions
+    /// without sleeping on a machine whose load they do not control.
+    async fn wait_for_probe(
+        probe: &std::sync::Arc<crate::node_delivery_probe::NodeDeliveryProbe>,
+        ready: impl Fn(&serde_json::Value) -> bool,
+    ) {
+        for _ in 0..1_000 {
+            if ready(&probe.snapshot_with_token(true)) {
+                return;
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+        panic!(
+            "probe never reached the expected state: {}",
+            probe.snapshot_with_token(true)
+        );
+    }
+
+    /// relay#1680 review (coderabbitai, fleet.rs:857) MUST-FIRE.
+    ///
+    /// The runtime stamps `surfaced_and_acked` / `acked_without_surfacing` when
+    /// it DECIDES to acknowledge, then hands the ack to this task over a
+    /// channel. It cannot await the wire, so the disposition alone reports an
+    /// ack the engine may never have received. This task is the only place that
+    /// knows, so `acks.sent` must be recorded here — and only for acks, or the
+    /// tally would be satisfied by unrelated traffic and could not report the
+    /// negative.
+    #[tokio::test]
+    async fn the_socket_task_records_which_acks_reached_the_wire() {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let ws_url = format!("ws://{}/v1/node/ws", listener.local_addr().unwrap());
+        let (command_tx, mut command_rx) = mpsc::channel(4);
+        let (event_tx, _event_rx) = mpsc::channel(8);
+        let mut registration = Some(build_node_register(
+            &test_manifest(),
+            "node-test",
+            "host-test",
+            "broker/test",
+            None,
+        ));
+        let mut inventory = Vec::new();
+        let mut load = FleetLoadSnapshot {
+            active_agents: 0,
+            max_agents: 4,
+            handlers_live: true,
+            active_agent_names: Vec::new(),
+        };
+        let probe = std::sync::Arc::new(crate::node_delivery_probe::NodeDeliveryProbe::new());
+
+        // Drain whatever the client writes and never close from this side, so
+        // the session ends on the `Shutdown` the driver sends.
+        let server = tokio::spawn(async move {
+            let (stream, _) = listener.accept().await.unwrap();
+            let mut ws = accept_async(stream).await.unwrap();
+            while ws.next().await.is_some() {}
+        });
+
+        let config = FleetControlConfig {
+            ws_url,
+            node_token: Some("nt_test".to_string()),
+            node_id: "node-test".to_string(),
+            node_name: "host-test".to_string(),
+            broker_version: "broker/test".to_string(),
+            token_minter: None,
+            session_token: None,
+            read_idle_timeout: None,
+            probe: Some(probe.clone()),
+        };
+        let session = run_connected_once(
+            &config,
+            &mut command_rx,
+            &event_tx,
+            &mut registration,
+            &mut inventory,
+            &mut load,
+            Duration::from_secs(3_600),
+        );
+        let driver = async {
+            wait_for_probe(&probe, |snapshot| snapshot["socket"]["connects"] == 1).await;
+            command_tx
+                .send(FleetControlCommand::Send(delivery_ack("agent-a", 7)))
+                .await
+                .expect("ack should be accepted");
+            wait_for_probe(&probe, |snapshot| snapshot["acks"]["sent"] == 1).await;
+
+            // Traffic that is not an ack must not move the ack tally, or
+            // `acks.sent` could not distinguish "the engine was told" from
+            // "the socket was busy".
+            command_tx
+                .send(FleetControlCommand::Send(BrokerToRelaycast::ActionResult(
+                    ActionResult {
+                        v: FLEET_WIRE_VERSION,
+                        id: None,
+                        invocation_id: "inv-not-an-ack".to_string(),
+                        result: ActionResultPayload::Output(ActionResultOutput {
+                            output: json!({"ok": true}),
+                        }),
+                    },
+                )))
+                .await
+                .expect("action result should be accepted");
+            command_tx
+                .send(FleetControlCommand::Shutdown)
+                .await
+                .expect("shutdown should be accepted");
+        };
+        let (result, ()) = tokio::time::timeout(Duration::from_secs(10), async {
+            tokio::join!(session, driver)
+        })
+        .await
+        .expect("mock node-control session should finish");
+        assert_eq!(result, ControlRunResult::Shutdown);
+        server.abort();
+
+        let snapshot = probe.snapshot_with_token(true);
+        assert_eq!(
+            snapshot["acks"]["sent"], 1,
+            "the ack reached the wire, so the probe must be able to say so"
+        );
+        assert_eq!(
+            snapshot["acks"]["send_failed"], 0,
+            "the write succeeded; nothing should be tallied as failed"
+        );
+        assert!(
+            snapshot["acks"]["last_sent_at_ms"].is_u64(),
+            "an ack on the wire must stamp a last-sent time"
+        );
+    }
+
+    /// relay#1680 review (P2), raised independently by three reviewers.
+    ///
+    /// Connectivity must be owned by the socket task, not by the runtime. When
+    /// it was recorded from `handle_fleet_control_event`, a wedged event loop
+    /// never processed `Disconnected`, so the endpoint kept reporting
+    /// `connected: true` for a dead socket — the exact failure it exists to
+    /// diagnose. The receiver is DROPPED here to stand in for a runtime that
+    /// will never consume another event; the probe must still track the
+    /// session, and must show disconnected once the session ends.
+    #[tokio::test]
+    async fn socket_owns_connectivity_when_the_runtime_never_consumes_events() {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let ws_url = format!("ws://{}/v1/node/ws", listener.local_addr().unwrap());
+        let (command_tx, mut command_rx) = mpsc::channel(4);
+        // A runtime that is gone/wedged: nothing will ever read these.
+        let (event_tx, event_rx) = mpsc::channel(1);
+        drop(event_rx);
+        let mut registration = Some(build_node_register(
+            &test_manifest(),
+            "node-test",
+            "host-test",
+            "broker/test",
+            None,
+        ));
+        let mut inventory = Vec::new();
+        let mut load = FleetLoadSnapshot {
+            active_agents: 0,
+            max_agents: 4,
+            handlers_live: true,
+            active_agent_names: Vec::new(),
+        };
+        let probe = std::sync::Arc::new(crate::node_delivery_probe::NodeDeliveryProbe::new());
+        let observed = probe.clone();
+
+        // The server holds the connection open and never closes it. Letting the
+        // peer close would race the client's own timer branches: a periodic
+        // write to an already-closed socket returns `Disconnected` before the
+        // read branch has drained anything. The test ends the session itself,
+        // via `Shutdown`, so the exit path is chosen rather than raced.
+        let server = tokio::spawn(async move {
+            let (stream, _) = listener.accept().await.unwrap();
+            let mut ws = accept_async(stream).await.unwrap();
+            // The session is established; the guard must have armed by now.
+            let _ = next_node_to_server(&mut ws).await;
+            assert_eq!(
+                observed.snapshot_with_token(true)["connected"],
+                serde_json::json!(true),
+                "connect must be recorded by the socket task, not the runtime"
+            );
+            // Park until the client hangs up, without closing from this side.
+            while ws.next().await.is_some() {}
+        });
+
+        let config = FleetControlConfig {
+            ws_url,
+            node_token: Some("nt_test".to_string()),
+            node_id: "node-test".to_string(),
+            node_name: "host-test".to_string(),
+            broker_version: "broker/test".to_string(),
+            token_minter: None,
+            session_token: None,
+            read_idle_timeout: None,
+            probe: Some(probe.clone()),
+        };
+        let session = run_connected_once(
+            &config,
+            &mut command_rx,
+            &event_tx,
+            &mut registration,
+            &mut inventory,
+            &mut load,
+            // Far beyond the test's lifetime: the periodic refresh must never
+            // fire here, or it becomes another way to exit the session.
+            Duration::from_secs(3_600),
+        );
+        let driver = async {
+            wait_for_probe(&probe, |snapshot| snapshot["socket"]["connects"] == 1).await;
+            command_tx
+                .send(FleetControlCommand::Shutdown)
+                .await
+                .expect("shutdown should be accepted");
+        };
+        let (result, ()) = tokio::time::timeout(Duration::from_secs(10), async {
+            tokio::join!(session, driver)
+        })
+        .await
+        .expect("mock node-control session should finish");
+        // Exiting via Shutdown rather than a peer close also proves the guard
+        // releases on a non-`Disconnected` return.
+        assert_eq!(result, ControlRunResult::Shutdown);
+        server.abort();
+
+        let snapshot = probe.snapshot_with_token(true);
+        // Exactly one connect, exactly one matching disconnect, released by the
+        // guard's Drop on whichever return path fired.
+        assert_eq!(snapshot["socket"]["connects"], 1);
+        assert_eq!(snapshot["socket"]["disconnects"], 1);
+        assert_eq!(
+            snapshot["connected"],
+            serde_json::json!(false),
+            "a closed socket must not keep reading as connected"
+        );
+    }
+
+    /// relay#1680 review (P2). Publishing cursors only from the deliver path
+    /// left the endpoint serving an obsolete ACK indefinitely: the deferred
+    /// (echo-confirmed) and manual-flush ACKs advance `acked_up_to_seq` well
+    /// after the frame was handled. Every mutator must mark the snapshot
+    /// stale so the event loop republishes it.
+    #[test]
+    fn every_delivery_book_mutation_marks_the_cursor_snapshot_stale() {
+        fn deliver_frame(agent: &str, agent_id: &str, seq: u64) -> Deliver {
+            Deliver {
+                v: crate::fleet_wire::FleetWireVersion,
+                agent: agent.to_string(),
+                agent_id: agent_id.to_string(),
+                delivery_id: format!("del_{seq}"),
+                msg_id: format!("msg_{seq}"),
+                seq,
+                mode: DeliveryMode::Wait,
+                payload: serde_json::json!({ "type": "dm.received" }),
+            }
+        }
+
+        // Each case: (name, mutation). All must leave the flag set.
+        type Mutation = (&'static str, Box<dyn Fn(&mut FleetDeliveryBook)>);
+        let cases: Vec<Mutation> = vec![
+            (
+                "commit_received",
+                Box::new(|book: &mut FleetDeliveryBook| {
+                    book.commit_received(&deliver_frame("a", "ag_a", 1));
+                }),
+            ),
+            (
+                "commit_delivered",
+                Box::new(|book: &mut FleetDeliveryBook| {
+                    book.commit_delivered(&deliver_frame("a", "ag_a", 2));
+                }),
+            ),
+            (
+                // relay#1680: the deferred-ACK path that previously never
+                // republished, so a confirmed delivery left a stale cursor.
+                "commit_confirmed_delivery",
+                Box::new(|book: &mut FleetDeliveryBook| {
+                    book.commit_confirmed_delivery(&deliver_frame("a", "ag_a", 3));
+                }),
+            ),
+            (
+                "commit_acked_receipt",
+                Box::new(|book: &mut FleetDeliveryBook| {
+                    book.commit_acked_receipt(&RelaycastDeliveryReceipt {
+                        agent: crate::ids::WorkerName::from("a"),
+                        agent_id: crate::ids::AgentId::from("ag_a"),
+                        delivery_id: crate::ids::DeliveryId::from("del_9"),
+                        msg_id: crate::ids::EventId::from("msg_9"),
+                        seq: 9,
+                    });
+                }),
+            ),
+            (
+                "bind_authoritative_identity",
+                Box::new(|book: &mut FleetDeliveryBook| {
+                    book.bind_authoritative_identity("a", "ag_a");
+                }),
+            ),
+            (
+                // `seed_cursor` asserts the name is already bound, so bind
+                // first and re-clear the flag to isolate the seed itself.
+                "seed_cursor",
+                Box::new(|book: &mut FleetDeliveryBook| {
+                    book.bind_authoritative_identity("a", "ag_a");
+                    book.take_cursor_dirty();
+                    book.seed_cursor("a", "ag_a", 4);
+                }),
+            ),
+            (
+                "restore_pending_agent",
+                Box::new(|book: &mut FleetDeliveryBook| {
+                    let frame = deliver_frame("a", "ag_a", 5);
+                    book.restore_pending_agent(&[&frame], Some(4));
+                }),
+            ),
+            (
+                "remove_agent",
+                Box::new(|book: &mut FleetDeliveryBook| {
+                    book.remove_agent("a");
+                }),
+            ),
+        ];
+
+        for (name, mutate) in cases {
+            let mut book = FleetDeliveryBook::default();
+            // Clear whatever setup left behind, then mutate.
+            book.take_cursor_dirty();
+            mutate(&mut book);
+            assert!(
+                book.take_cursor_dirty(),
+                "{name} must mark the cursor snapshot stale so the event loop republishes it"
+            );
+            // Draining is one-shot: a second take must report clean.
+            assert!(!book.take_cursor_dirty(), "{name} left the flag set twice");
+        }
+    }
+
+    /// The instrument's headline claim: a `deliver` frame the broker cannot
+    /// deserialize is still reported as having ARRIVED. That property lives in
+    /// the ORDER of two statements in `handle_server_message` — count, then
+    /// parse — so it cannot be locked by calling the probe's methods directly.
+    /// This drives a real node-control session and asserts it at the call site.
+    #[tokio::test]
+    async fn probe_counts_an_unparseable_deliver_as_arrived() {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let ws_url = format!("ws://{}/v1/node/ws", listener.local_addr().unwrap());
+        let (command_tx, mut command_rx) = mpsc::channel(4);
+        let (event_tx, mut event_rx) = mpsc::channel(8);
+        let mut registration = Some(build_node_register(
+            &test_manifest(),
+            "node-test",
+            "host-test",
+            "broker/test",
+            None,
+        ));
+        let mut inventory = Vec::new();
+        let mut load = FleetLoadSnapshot {
+            active_agents: 0,
+            max_agents: 4,
+            handlers_live: true,
+            active_agent_names: Vec::new(),
+        };
+        let probe = std::sync::Arc::new(crate::node_delivery_probe::NodeDeliveryProbe::new());
+
+        let server = tokio::spawn(async move {
+            let (stream, _) = listener.accept().await.unwrap();
+            let mut ws = accept_async(stream).await.unwrap();
+            assert!(matches!(
+                next_node_to_server(&mut ws).await,
+                BrokerToRelaycast::NodeRegister(_)
+            ));
+
+            // A frame whose `type` this build does not know. `ServerToNode` is
+            // `#[serde(tag = "type")]`, so this fails `from_str` as a whole.
+            ws.send(Message::Text(
+                r#"{"type":"deliver.v2","agent":"worker-a","seq":9}"#.into(),
+            ))
+            .await
+            .unwrap();
+
+            // And one the broker does understand, so the test distinguishes
+            // "counted everything" from "counted nothing but the failure".
+            ws.send(Message::Text(
+                serde_json::to_string(&RelaycastToBroker::Deliver(Deliver {
+                    v: crate::fleet_wire::FleetWireVersion,
+                    agent: "worker-a".to_string(),
+                    agent_id: "ag_1".to_string(),
+                    delivery_id: "del_1".to_string(),
+                    msg_id: "msg_1".to_string(),
+                    seq: 1,
+                    mode: DeliveryMode::Wait,
+                    payload: serde_json::json!({ "type": "dm.received" }),
+                }))
+                .unwrap(),
+            ))
+            .await
+            .unwrap();
+
+            // Park without closing: a peer close races the client's timer
+            // branches, which can exit the session before the frames above are
+            // drained. The test ends it deterministically via `Shutdown`.
+            while ws.next().await.is_some() {}
+        });
+
+        let config = FleetControlConfig {
+            ws_url,
+            node_token: Some("nt_test".to_string()),
+            node_id: "node-test".to_string(),
+            node_name: "host-test".to_string(),
+            broker_version: "broker/test".to_string(),
+            token_minter: None,
+            session_token: None,
+            read_idle_timeout: None,
+            probe: Some(probe.clone()),
+        };
+        let session = run_connected_once(
+            &config,
+            &mut command_rx,
+            &event_tx,
+            &mut registration,
+            &mut inventory,
+            &mut load,
+            Duration::from_secs(3_600),
+        );
+        let driver = async {
+            // Both frames counted -> the client has drained the read side.
+            wait_for_probe(&probe, |snapshot| snapshot["socket"]["text_frames"] == 2).await;
+            command_tx
+                .send(FleetControlCommand::Shutdown)
+                .await
+                .expect("shutdown should be accepted");
+        };
+        let (result, ()) = tokio::time::timeout(Duration::from_secs(10), async {
+            tokio::join!(session, driver)
+        })
+        .await
+        .expect("mock node-control session should finish");
+        assert_eq!(result, ControlRunResult::Shutdown);
+        server.abort();
+
+        let snapshot = probe.snapshot_with_token(true);
+        // BOTH frames are counted as arrived, including the one that could not
+        // be parsed. If the count moved after the parse, this would read 1.
+        assert_eq!(
+            snapshot["socket"]["text_frames"], 2,
+            "an unparseable frame must still count as having arrived: {snapshot}"
+        );
+        assert_eq!(snapshot["socket"]["parse_failures"], 1);
+        assert_eq!(snapshot["unparsed_frame_types"]["deliver.v2"], 1);
+        // Only the parseable one reaches the deliver counter and the runtime.
+        assert_eq!(snapshot["frames"]["deliver"], 1);
+        // The session also emits `Connected`, so drain rather than assuming the
+        // deliver is first in the queue.
+        let mut forwarded = Vec::new();
+        while let Ok(event) = event_rx.try_recv() {
+            forwarded.push(event);
+        }
+        assert_eq!(
+            forwarded
+                .iter()
+                .filter(|event| matches!(
+                    event,
+                    FleetControlEvent::Message(RelaycastToBroker::Deliver(_))
+                ))
+                .count(),
+            1,
+            "exactly the parseable deliver should reach the runtime: {forwarded:?}"
+        );
+    }
+
     #[tokio::test]
     async fn connected_node_refreshes_idle_agent_inventory_before_presence_expires() {
         let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
@@ -4350,6 +4983,7 @@ mod tests {
                     token_minter: None,
                     session_token: None,
                     read_idle_timeout: None,
+                    probe: None,
                 },
                 &mut command_rx,
                 &event_tx,
@@ -4433,6 +5067,7 @@ mod tests {
                     token_minter: None,
                     session_token: None,
                     read_idle_timeout: None,
+                    probe: None,
                 },
                 &mut command_rx,
                 &event_tx,
@@ -4749,6 +5384,7 @@ mod tests {
                 // Short window so the blackhole is covered in well under a
                 // second; production uses READ_IDLE_TIMEOUT (48s).
                 read_idle_timeout: Some(Duration::from_millis(400)),
+                probe: None,
             },
             command_rx,
             event_tx,
@@ -4826,6 +5462,7 @@ mod tests {
                 // control arm under identical time pressure rather than a
                 // separate, looser test.
                 read_idle_timeout: Some(Duration::from_millis(400)),
+                probe: None,
             },
             command_rx,
             event_tx,
@@ -4906,6 +5543,7 @@ mod tests {
                 token_minter: None,
                 session_token: None,
                 read_idle_timeout: None,
+                probe: None,
             },
             command_rx,
             event_tx,
