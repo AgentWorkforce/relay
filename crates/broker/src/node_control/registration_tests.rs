@@ -246,7 +246,15 @@ async fn registration_gate_case(response: &str) {
     })
     .await
     .expect("registration case must terminate after its bounded protocol exchange");
-    assert_eq!(result, ControlRunResult::Disconnected);
+    // Only a correlated `inventory.sync` reply proves application liveness,
+    // and this fixture never sends one (accepted or not) — it exercises the
+    // registration gate, not the inventory-ack liveness deadline.
+    assert_eq!(
+        result,
+        ControlRunResult::Disconnected {
+            application_ready: false,
+        }
+    );
     assert!(
         event_rx.try_recv().is_err(),
         "no unexpected or duplicate runtime events"
