@@ -185,6 +185,8 @@ impl BrokerRuntime {
             return;
         }
         if record.expired() {
+            self.fail_task(&request.invocation, "task_deadline_exceeded")
+                .await;
             return;
         }
         if record.launch_claimed {

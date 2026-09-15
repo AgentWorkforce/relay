@@ -7171,6 +7171,40 @@ async fn durable_task_expired_unaccepted_receipt_never_launches_worker() {
 }
 
 #[tokio::test]
+async fn durable_task_expired_running_receipt_queues_terminal_deadline_failure() {
+    use crate::fleet_wire::BrokerToRelaycast;
+    let mut fixture = durable_task_fixture();
+    let mut invoke = super::task_store::fixture_invoke();
+    invoke.task_execution.as_mut().unwrap().deadline = (chrono::Utc::now()
+        - chrono::Duration::minutes(1))
+    .to_rfc3339_opts(chrono::SecondsFormat::Millis, true);
+    fixture.runtime.handle_task_invoke(invoke).await;
+    let BrokerToRelaycast::ActionAccept(accept) = next_task_frame(&mut fixture).await else {
+        panic!("accept")
+    };
+
+    deliver_task_receipt(&mut fixture, &accept.id, "running").await;
+    let record = &fixture.runtime.task_provider.store.records["inv-task"];
+    assert!(!record.launch_claimed);
+    assert_eq!(
+        record.final_result.as_ref().unwrap().error.as_deref(),
+        Some("task_deadline_exceeded")
+    );
+    let BrokerToRelaycast::ActionAccept(reconcile) = next_task_frame(&mut fixture).await else {
+        panic!("reconcile")
+    };
+    deliver_task_receipt(&mut fixture, &reconcile.id, "running").await;
+    let BrokerToRelaycast::ActionResult(result) = next_task_frame(&mut fixture).await else {
+        panic!("result")
+    };
+    let crate::fleet_wire::ActionResultPayload::Error(error) = result.result else {
+        panic!("deadline failure")
+    };
+    assert_eq!(error.error, "task_deadline_exceeded");
+    assert!(result.task.as_ref().unwrap().final_result);
+}
+
+#[tokio::test]
 async fn durable_task_old_attempt_receipt_cannot_start_new_generation() {
     use crate::fleet_wire::BrokerToRelaycast;
     let mut fixture = durable_task_fixture();

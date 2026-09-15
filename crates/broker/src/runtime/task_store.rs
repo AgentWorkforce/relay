@@ -136,8 +136,15 @@ impl TaskStore {
             );
             validate_invoke(&record.invoke)?;
         }
-        if compact_terminal_records(&mut records, chrono::Utc::now()) {
-            persist_records(&path, &records)?;
+        let mut compacted = records.clone();
+        if compact_terminal_records(&mut compacted, chrono::Utc::now()) {
+            match persist_records(&path, &compacted) {
+                Ok(()) => records = compacted,
+                Err(error) => tracing::warn!(
+                    error = %error,
+                    "terminal task retention could not be persisted during startup"
+                ),
+            }
         }
         Ok(Self {
             path: Some(path),
@@ -610,6 +617,43 @@ mod tests {
         let persisted: BTreeMap<String, TaskRecord> =
             serde_json::from_slice(&std::fs::read(path).unwrap()).unwrap();
         assert!(persisted.is_empty());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn task_store_open_keeps_valid_ledger_when_startup_compaction_cannot_persist() {
+        use std::os::unix::fs::PermissionsExt;
+
+        if unsafe { nix::libc::getuid() } == 0 {
+            eprintln!("skipping unwritable ledger test while running as root");
+            return;
+        }
+        let directory = tempfile::tempdir().unwrap();
+        let ledger_dir = directory.path().join("ledger");
+        std::fs::create_dir(&ledger_dir).unwrap();
+        let path = ledger_dir.join("tasks.json");
+        let mut store = TaskStore::open(path.clone()).unwrap();
+        let mut record = store
+            .prepare(invoke_with_deadline(
+                "inv-old",
+                chrono::Utc::now() - chrono::Duration::hours(25),
+            ))
+            .unwrap();
+        record.receipt = Some(fixture_receipt(&record, "completed"));
+        let records = BTreeMap::from([(record.invoke.invocation_id.clone(), record)]);
+        persist_records(&path, &records).unwrap();
+        let persisted = std::fs::read(&path).unwrap();
+
+        std::fs::set_permissions(&ledger_dir, std::fs::Permissions::from_mode(0o500)).unwrap();
+        let reopened = TaskStore::open(path.clone());
+        std::fs::set_permissions(&ledger_dir, std::fs::Permissions::from_mode(0o700)).unwrap();
+
+        let mut reopened = reopened.expect("opportunistic compaction must not block startup");
+        assert!(reopened.enabled());
+        assert!(reopened.records.contains_key("inv-old"));
+        assert_eq!(std::fs::read(&path).unwrap(), persisted);
+        reopened.compact().unwrap();
+        assert!(reopened.records.is_empty());
     }
 
     #[test]
