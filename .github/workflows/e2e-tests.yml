@@ -34,6 +34,20 @@ env:
   AGENT_RELAY_TELEMETRY_DISABLED: 1
 
 jobs:
+  windows-broker-check:
+    name: Windows broker Cursor lease check
+    runs-on: windows-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: dtolnay/rust-toolchain@6bed0761d98439e5a578e2877258200ad565ba87 # stable
+      - uses: Swatinem/rust-cache@49a0bdc70d2e1b713ca9e2869b211fcce03d3c1c # v2
+        with:
+          key: windows-broker-cursor-lease
+          cache-bin: false
+      - name: Compile and run Cursor MCP lease tests
+        run: cargo test -p agent-relay-broker cursor_mcp_lease --lib
+
   e2e-test:
     name: E2E Integration Test
     runs-on: ${{ matrix.os }}
@@ -48,10 +62,10 @@ jobs:
 
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
 
       - name: Setup Node.js ${{ matrix.node-version }}
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
         with:
           node-version: ${{ matrix.node-version }}
           cache: 'npm'
@@ -73,7 +87,7 @@ jobs:
 
       - name: Cache Claude CLI
         id: cache-claude
-        uses: actions/cache@v4
+        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
         with:
           path: ~/.npm-global
           key: claude-cli-${{ runner.os }}-${{ hashFiles('.github/workflows/e2e-tests.yml') }}

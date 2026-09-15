@@ -631,7 +631,13 @@ pub(crate) async fn run_init(cmd: InitCommand, telemetry: TelemetryClient) -> Re
         .expect("state path should always have a parent")
         .join("team")
         .join("worker-logs");
-    let workers = WorkerRegistry::new(worker_event_tx, worker_env, worker_logs_dir, broker_start);
+    let workers = WorkerRegistry::new(
+        worker_event_tx,
+        worker_env,
+        worker_logs_dir,
+        broker_start,
+        &resolved_name,
+    );
 
     // Load crash insights from previous session
     let crash_insights_path = paths.state.parent().unwrap().join("crash-insights.json");
