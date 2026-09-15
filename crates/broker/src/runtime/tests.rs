@@ -372,6 +372,8 @@ async fn owned_cleanup_waits_off_actor_and_retains_custody_until_confirmed() {
     });
     let registry = make_worker_registry_with_worker("unrelated").await;
     let mut fixture = worker_event_runtime_fixture(registry, HashMap::new());
+    let cleanup_journal = fixture._temp_dir.path().join("owned-cleanups.json");
+    fixture.runtime.workers.owned_cleanup_journal = Some(cleanup_journal.clone());
     let name = WorkerName::from("retired");
     let generation = Uuid::new_v4();
     let http = RelaycastHttpClient::new(Some(server.base_url()), "rk_live_test", "broker", "codex");
@@ -525,6 +527,11 @@ async fn owned_cleanup_waits_off_actor_and_retains_custody_until_confirmed() {
             reply,
         })
         .await;
+    let journal =
+        std::fs::read_to_string(&cleanup_journal).expect("cleanup journal should persist");
+    assert!(journal.contains(&generation.to_string()));
+    assert!(journal.contains("bec092bff160b23541205064ab9f4485d6c2089760b1bb4e5f5ce19f0274aad3"));
+    assert!(!journal.contains("owned-token"));
     fixture.runtime.reconcile_identity_cleanups().await;
     loop {
         if let FleetControlCommand::DeregisterAgent { request, reply } =
@@ -6350,6 +6357,332 @@ async fn owned_cleanup_retries_delete_without_repeating_acknowledged_deregistrat
 }
 
 #[tokio::test]
+async fn name_only_release_of_retired_owned_worker_deletes_directly_and_is_idempotent() {
+    use crate::listen_api::ListenApiRequest;
+    use httpmock::{Method::POST, MockServer};
+    use tokio::sync::oneshot;
+
+    let server = MockServer::start();
+    let release = server.mock(|when, then| {
+        when.method(POST).path("/v1/agents/release");
+        then.status(200)
+            .json_body(json!({"ok":true,"data":{"status":"completed"}}));
+    });
+    let registry = make_worker_registry_with_worker("unrelated").await;
+    let mut fixture = worker_event_runtime_fixture(registry, HashMap::new());
+    let name = WorkerName::from("retired-name-only");
+    let generation = Uuid::new_v4();
+    let http = RelaycastHttpClient::new(Some(server.base_url()), "rk_live_test", "broker", "codex");
+    http.seed_agent_token(&name, "owned-token");
+    fixture
+        .runtime
+        .workers
+        .owned_spawn_generations
+        .insert(name.clone(), (generation, http));
+    fixture
+        .runtime
+        .fleet_delivery_book
+        .bind_authoritative_identity(name.to_string(), "retired-name-only-id");
+
+    let (reply, mut result) = oneshot::channel();
+    fixture
+        .runtime
+        .handle_api_request(ListenApiRequest::Release {
+            name: name.clone(),
+            reason: None,
+            expected_generation: None,
+            delete_identity: false,
+            reply,
+        })
+        .await;
+    let deregister = loop {
+        if let FleetControlCommand::DeregisterAgent { reply, .. } =
+            fixture.fleet_control_rx.recv().await.unwrap()
+        {
+            break reply;
+        }
+    };
+    deregister.send(Ok(())).unwrap();
+    tokio::time::timeout(Duration::from_secs(2), async {
+        loop {
+            fixture.runtime.reconcile_identity_cleanups().await;
+            if let Ok(response) = result.try_recv() {
+                let response = response.expect("owned cleanup should succeed");
+                assert_eq!(response["process"], "stopped");
+                assert_eq!(response["identity"], "deleted");
+                break;
+            }
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .expect("name-only owned cleanup should complete");
+    release.assert_hits(1);
+    assert!(fixture
+        .runtime
+        .workers
+        .completed_owned_releases
+        .contains(&(name.clone(), generation)));
+
+    // A repeated name-only release must use the completed tombstone and must
+    // not route a second mutation through the host or a replacement identity.
+    let (reply, repeated) = oneshot::channel();
+    fixture
+        .runtime
+        .handle_api_request(ListenApiRequest::Release {
+            name: name.clone(),
+            reason: None,
+            expected_generation: None,
+            delete_identity: false,
+            reply,
+        })
+        .await;
+    let repeated = repeated
+        .await
+        .unwrap()
+        .expect("repeat should be idempotent");
+    assert_eq!(repeated["process"], "stopped");
+    assert_eq!(repeated["identity"], "deleted");
+    release.assert_hits(1);
+    assert!(fixture.fleet_control_rx.try_recv().is_err());
+    fixture.runtime.workers.release("unrelated").await.unwrap();
+}
+
+#[tokio::test]
+async fn completed_owned_release_history_keeps_prior_generation_idempotent_after_replacement_cleanup(
+) {
+    use crate::listen_api::ListenApiRequest;
+    use httpmock::{Method::POST, MockServer};
+    use tokio::sync::oneshot;
+
+    let server = MockServer::start();
+    let release = server.mock(|when, then| {
+        when.method(POST).path("/v1/agents/release");
+        then.status(200)
+            .json_body(json!({"ok":true,"data":{"status":"completed"}}));
+    });
+    let name = WorkerName::from("retired-name-only");
+    let stale_generation = Uuid::new_v4();
+    let registry = make_worker_registry_with_worker(name.as_str()).await;
+    let mut fixture = worker_event_runtime_fixture(registry, HashMap::new());
+    let replacement_generation = fixture.runtime.workers.workers[&name].generation;
+    let http = RelaycastHttpClient::new(Some(server.base_url()), "rk_live_test", "broker", "codex");
+    http.seed_agent_token(&name, "replacement-owned-token");
+    fixture
+        .runtime
+        .workers
+        .completed_owned_releases
+        .push_back((name.clone(), stale_generation));
+    fixture
+        .runtime
+        .workers
+        .owned_spawn_generations
+        .insert(name.clone(), (replacement_generation, http));
+    fixture
+        .runtime
+        .fleet_delivery_book
+        .bind_authoritative_identity(name.to_string(), "replacement-owned-id");
+
+    let (reply, result) = oneshot::channel();
+    fixture
+        .runtime
+        .handle_api_request(ListenApiRequest::Release {
+            name: name.clone(),
+            reason: None,
+            expected_generation: Some(stale_generation.to_string()),
+            delete_identity: true,
+            reply,
+        })
+        .await;
+    let error = result
+        .await
+        .unwrap()
+        .expect_err("stale retry must not clean a live replacement");
+    assert!(
+        error.contains("generation changed") || error.contains("refusing"),
+        "{error}"
+    );
+    release.assert_hits(0);
+
+    let (reply, mut result) = oneshot::channel();
+    fixture
+        .runtime
+        .handle_api_request(ListenApiRequest::Release {
+            name: name.clone(),
+            reason: None,
+            expected_generation: Some(replacement_generation.to_string()),
+            delete_identity: true,
+            reply,
+        })
+        .await;
+
+    let deregister = loop {
+        if let FleetControlCommand::DeregisterAgent { reply, .. } =
+            fixture.fleet_control_rx.recv().await.unwrap()
+        {
+            break reply;
+        }
+    };
+    deregister.send(Ok(())).unwrap();
+
+    tokio::time::timeout(Duration::from_secs(2), async {
+        loop {
+            fixture.runtime.reconcile_identity_cleanups().await;
+            if let Ok(response) = result.try_recv() {
+                let response = response.expect("replacement cleanup should succeed");
+                assert_eq!(response["process"], "stopped");
+                assert_eq!(response["identity"], "deleted");
+                break;
+            }
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .expect("replacement cleanup should settle");
+    release.assert_hits(1);
+    assert!(fixture
+        .runtime
+        .workers
+        .completed_owned_releases
+        .contains(&(name.clone(), stale_generation)));
+    assert_eq!(
+        fixture.runtime.workers.completed_owned_releases.back(),
+        Some(&(name.clone(), replacement_generation))
+    );
+    assert!(fixture.runtime.workers.owned_spawn_generations.is_empty());
+
+    let (reply, result) = oneshot::channel();
+    fixture
+        .runtime
+        .handle_api_request(ListenApiRequest::Release {
+            name: name.clone(),
+            reason: None,
+            expected_generation: Some(stale_generation.to_string()),
+            delete_identity: true,
+            reply,
+        })
+        .await;
+    let response = result
+        .await
+        .unwrap()
+        .expect("stale retry should be idempotent after replacement cleanup");
+    assert_eq!(response["process"], "stopped");
+    assert_eq!(response["identity"], "deleted");
+    release.assert_hits(1);
+    assert!(fixture.fleet_control_rx.try_recv().is_err());
+}
+
+#[tokio::test]
+async fn completed_owned_release_history_is_bounded_and_evictions_drop_old_generations() {
+    use crate::listen_api::ListenApiRequest;
+    use httpmock::{Method::POST, MockServer};
+    use tokio::sync::oneshot;
+
+    let server = MockServer::start();
+    let release = server.mock(|when, then| {
+        when.method(POST).path("/v1/agents/release");
+        then.status(200)
+            .json_body(json!({"ok":true,"data":{"status":"completed"}}));
+    });
+    let registry = make_worker_registry_with_worker("unrelated").await;
+    let mut fixture = worker_event_runtime_fixture(registry, HashMap::new());
+    let evicted_name = WorkerName::from("evicted-owned");
+    let evicted_generation = Uuid::new_v4();
+    fixture
+        .runtime
+        .workers
+        .completed_owned_releases
+        .push_back((evicted_name.clone(), evicted_generation));
+    for index in 0..1023 {
+        fixture
+            .runtime
+            .workers
+            .completed_owned_releases
+            .push_back((WorkerName::from(format!("filler-{index}")), Uuid::new_v4()));
+    }
+    assert_eq!(fixture.runtime.workers.completed_owned_releases.len(), 1024);
+
+    let cleanup_name = WorkerName::from("cleanup-owned");
+    let cleanup_generation = Uuid::new_v4();
+    let cleanup_http =
+        RelaycastHttpClient::new(Some(server.base_url()), "rk_live_test", "broker", "codex");
+    cleanup_http.seed_agent_token(&cleanup_name, "cleanup-owned-token");
+    fixture
+        .runtime
+        .workers
+        .owned_spawn_generations
+        .insert(cleanup_name.clone(), (cleanup_generation, cleanup_http));
+    fixture
+        .runtime
+        .fleet_delivery_book
+        .bind_authoritative_identity(cleanup_name.to_string(), "cleanup-owned-id");
+
+    let (reply, mut result) = oneshot::channel();
+    fixture
+        .runtime
+        .handle_api_request(ListenApiRequest::Release {
+            name: cleanup_name.clone(),
+            reason: None,
+            expected_generation: Some(cleanup_generation.to_string()),
+            delete_identity: true,
+            reply,
+        })
+        .await;
+    let deregister = loop {
+        if let FleetControlCommand::DeregisterAgent { reply, .. } =
+            fixture.fleet_control_rx.recv().await.unwrap()
+        {
+            break reply;
+        }
+    };
+    deregister.send(Ok(())).unwrap();
+
+    tokio::time::timeout(Duration::from_secs(2), async {
+        loop {
+            fixture.runtime.reconcile_identity_cleanups().await;
+            if let Ok(response) = result.try_recv() {
+                let response = response.expect("cleanup should succeed");
+                assert_eq!(response["process"], "stopped");
+                assert_eq!(response["identity"], "deleted");
+                break;
+            }
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .expect("cleanup should settle");
+    release.assert_hits(1);
+    assert_eq!(fixture.runtime.workers.completed_owned_releases.len(), 1024);
+    assert_ne!(
+        fixture.runtime.workers.completed_owned_releases.front(),
+        Some(&(evicted_name.clone(), evicted_generation))
+    );
+
+    let (reply, result) = oneshot::channel();
+    fixture
+        .runtime
+        .handle_api_request(ListenApiRequest::Release {
+            name: evicted_name.clone(),
+            reason: None,
+            expected_generation: Some(evicted_generation.to_string()),
+            delete_identity: true,
+            reply,
+        })
+        .await;
+    let error = result
+        .await
+        .unwrap()
+        .expect_err("evicted generations must no longer be acknowledged");
+    assert!(
+        error.contains("generation changed") || error.contains("refusing"),
+        "{error}"
+    );
+    release.assert_hits(1);
+    assert!(fixture.fleet_control_rx.try_recv().is_err());
+    fixture.runtime.workers.release("unrelated").await.unwrap();
+}
+
+#[tokio::test]
 async fn http_spawn_binding_failure_stops_before_launch_and_cleans_owned_identity() {
     use crate::listen_api::ListenApiRequest;
     use httpmock::{
@@ -6357,6 +6690,7 @@ async fn http_spawn_binding_failure_stops_before_launch_and_cleans_owned_identit
         MockServer,
     };
     use tokio::sync::oneshot;
+
     let server = MockServer::start();
     let create = server.mock(|when, then| {
         when.method(POST).path("/v1/agents");
@@ -6468,6 +6802,109 @@ async fn http_spawn_binding_failure_stops_before_launch_and_cleans_owned_identit
         .workers
         .owned_spawn_generations
         .contains_key(&name));
+}
+
+#[tokio::test]
+async fn corrupt_owned_cleanup_journal_does_not_block_startup() {
+    let registry = make_worker_registry_with_worker("unrelated").await;
+    let mut fixture = worker_event_runtime_fixture(registry, HashMap::new());
+    let journal = fixture._temp_dir.path().join("owned-cleanups.json");
+    std::fs::write(&journal, "{ this is not valid json").unwrap();
+    fixture.runtime.workers.owned_cleanup_journal = Some(journal);
+
+    super::identity_cleanup::restore_identity_cleanups(&mut fixture.runtime).unwrap();
+    assert!(fixture.runtime.workers.identity_cleanups.is_empty());
+    fixture.runtime.workers.release("unrelated").await.unwrap();
+}
+
+#[tokio::test]
+async fn caller_owned_release_cannot_be_promoted_to_identity_deletion() {
+    use crate::listen_api::ListenApiRequest;
+    use tokio::sync::oneshot;
+
+    let registry = make_worker_registry_with_worker("unrelated").await;
+    let mut fixture = worker_event_runtime_fixture(registry, HashMap::new());
+    let name = WorkerName::from("caller-owned");
+    let generation = Uuid::new_v4();
+    let (reply, result) = oneshot::channel();
+    fixture
+        .runtime
+        .handle_api_request(ListenApiRequest::Release {
+            name: name.clone(),
+            reason: None,
+            expected_generation: Some(generation.to_string()),
+            delete_identity: true,
+            reply,
+        })
+        .await;
+    let error = result.await.unwrap().unwrap_err();
+    assert!(error.contains("refusing"));
+    assert!(!fixture
+        .runtime
+        .workers
+        .owned_spawn_generations
+        .contains_key(&name));
+    assert!(!fixture
+        .runtime
+        .workers
+        .identity_cleanups
+        .contains_key(&name));
+    fixture.runtime.workers.release("unrelated").await.unwrap();
+}
+
+#[tokio::test]
+async fn owned_cleanup_journal_restores_generation_and_retries_without_plaintext_token() {
+    use httpmock::{Method::POST, MockServer};
+
+    let server = MockServer::start();
+    let release = server.mock(|when, then| {
+        when.method(POST)
+            .path("/v1/agents/release")
+            .json_body_partial(json!({
+                "delete_agent": true,
+                "expected_token_hash": "bec092bff160b23541205064ab9f4485d6c2089760b1bb4e5f5ce19f0274aad3"
+            }).to_string());
+        then.status(200)
+            .json_body(json!({"ok":true,"data":{"status":"completed"}}));
+    });
+    let registry = make_worker_registry_with_worker("unrelated").await;
+    let mut fixture = worker_event_runtime_fixture(registry, HashMap::new());
+    let name = WorkerName::from("restart-owned");
+    let generation = Uuid::new_v4();
+    let journal = fixture._temp_dir.path().join("owned-cleanups.json");
+    std::fs::write(
+        &journal,
+        serde_json::to_vec(&json!({
+            name.to_string(): {
+                "generation": generation,
+                "expected_token_hash": "bec092bff160b23541205064ab9f4485d6c2089760b1bb4e5f5ce19f0274aad3",
+                "agent_id": null
+            }
+        }))
+        .unwrap(),
+    )
+    .unwrap();
+    fixture.runtime.workers.owned_cleanup_journal = Some(journal.clone());
+    fixture.runtime.relaycast_http =
+        RelaycastHttpClient::new(Some(server.base_url()), "rk_live_test", "broker", "codex");
+    super::identity_cleanup::restore_identity_cleanups(&mut fixture.runtime).unwrap();
+    assert_eq!(
+        fixture.runtime.workers.owned_spawn_generations[&name].0,
+        generation
+    );
+    while fixture
+        .runtime
+        .workers
+        .identity_cleanups
+        .contains_key(&name)
+    {
+        fixture.runtime.reconcile_identity_cleanups().await;
+        tokio::task::yield_now().await;
+    }
+    release.assert_hits(1);
+    let persisted = std::fs::read_to_string(journal).unwrap();
+    assert!(!persisted.contains("restart-owned"));
+    fixture.runtime.workers.release("unrelated").await.unwrap();
 }
 
 #[tokio::test]
