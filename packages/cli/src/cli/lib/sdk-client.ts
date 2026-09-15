@@ -15,6 +15,8 @@ export interface SdkClientOptions {
   token?: string;
   baseUrl?: string;
   env?: NodeJS.ProcessEnv;
+  /** Explicit project root for nested invocations such as packages/web. */
+  projectRoot?: string;
   /** Use the canonical gateway instead of a persisted server-selected route. */
   ignorePersistedRelaycastTarget?: boolean;
 }
@@ -40,9 +42,12 @@ export type WorkspaceTransport = {
 
 /** Resolve the selected key and any previously persisted Relay workspace identity. */
 export function resolveWorkspaceSelection(options: SdkClientOptions = {}): WorkspaceSelection | undefined {
+  const explicitProject = trimOrUndefined(env(options).AGENT_RELAY_PROJECT);
+  const projectRoot = explicitProject ? path.resolve(explicitProject) : options.projectRoot;
   return resolveCloudWorkspaceSelection({
     workspaceKey: options.workspaceKey,
     env: env(options),
+    ...(projectRoot ? { projectRoot } : {}),
   });
 }
 
@@ -77,6 +82,7 @@ function selectionForTransport(options: SdkClientOptions): WorkspaceSelection | 
     relaycastRoute: _relaycastRoute,
     relaycastBaseUrl: _relaycastBaseUrl,
     relaycastApiKey: _relaycastApiKey,
+    relaycastApiKeyRef: _relaycastApiKeyRef,
     ...canonicalSelection
   } = selection;
   return canonicalSelection;
@@ -125,8 +131,18 @@ export function resolveWorkspaceTransport(options: SdkClientOptions = {}): Works
     );
   }
   const baseUrl = resolveBaseUrlForSelection(selection, options);
+  // Project-session loading already validates the reference against the
+  // project/workspace/route/base tuple. Never re-read a ref here: doing so
+  // would let a tampered ref bypass that binding and pair an unrelated key
+  // with this route.
+  const routeCredential = trimOrUndefined(selection.relaycastApiKey);
+  if (selection.relaycastRoute === 'agent37-isolated' && !routeCredential) {
+    throw new Error(
+      'The persisted isolated Relaycast credential is unavailable or mismatched; rerun the sandbox command to mint a fresh route.'
+    );
+  }
   return {
-    workspaceKey: trimOrUndefined(selection.relaycastApiKey) ?? selection.key,
+    workspaceKey: routeCredential ?? selection.key,
     ...(baseUrl ? { baseUrl } : {}),
     source: selection.source,
   };

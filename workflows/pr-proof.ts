@@ -31,15 +31,20 @@ const result = await workflow('relay-pr-proof')
   // persist terminal step state and retain its sandbox for diagnostics before
   // the GitHub runner issues an external cancellation.
   .timeout(2_700_000)
+  // Each arm's agent only runs one trusted command and reports its output; the
+  // deterministic gates decide the verdict. So the agent CLI is interchangeable
+  // and does not weaken the proof. Claude runs the arms because the Cloud Codex
+  // credential can be usage-exhausted, and an exhausted agent fails every PR's
+  // proof before its arm ever runs.
   .agent('base-prover', {
-    cli: 'codex',
+    cli: 'claude',
     preset: 'worker',
     role: 'Run the trusted PR proof base-arm command exactly once without editing repository files.',
     interactive: false,
     retries: 0,
   })
   .agent('head-verifier', {
-    cli: 'codex',
+    cli: 'claude',
     preset: 'worker',
     role: 'Run the trusted PR proof head-arm command exactly once without editing repository files.',
     interactive: false,

@@ -75,10 +75,16 @@ export {
   type ConnectProviderResult,
 } from './connect.js';
 
-export { createWorkspace, issueWorkspaceToken, resolveActiveWorkspace } from './workspaces.js';
+export {
+  createWorkspace,
+  issueWorkspaceToken,
+  resolveActiveWorkspace,
+  resolveWorkspaceByKey,
+} from './workspaces.js';
 export { redactCredentialValues } from './redact.js';
 export {
   ensureCloudFleetSandbox,
+  materializeCloudRelayfileRepository,
   deleteCloudFleetSandbox,
   CloudFleetSandboxProvisionError,
   normalizeRelaycastTarget,
@@ -86,6 +92,9 @@ export {
   AGENT37_RELAYCAST_ORIGIN,
   type EnsureCloudFleetSandboxInput,
   type EnsureCloudFleetSandboxResult,
+  type MaterializeCloudRelayfileRepositoryInput,
+  type CloudRelayfileRepositoryMaterialization,
+  type CloudRelayfileRepositoryMaterializeOptions,
   type CloudFleetSandboxReady,
   type CloudFleetSandboxReused,
   type CloudFleetSandboxProvisioningTimeout,
@@ -148,6 +157,11 @@ export {
   validateWorkspaceName,
   workspaceStorePath,
   writeWorkspaceStore,
+  readRelaycastCredential,
+  relaycastCredentialRef,
+  relaycastCredentialStorePath,
+  writeRelaycastCredential,
+  type RelaycastCredential,
   type WorkspaceStore,
 } from './workspace-store.js';
 

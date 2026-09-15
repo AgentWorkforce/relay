@@ -25,11 +25,38 @@ const DEFAULT_RESOLUTION_TIMEOUT_MS = 120_000;
 // identity (which prevents the CLI from cleaning it up safely).
 const DEFAULT_ENSURE_TIMEOUT_MS = 480_000;
 const DEFAULT_DELETE_TIMEOUT_MS = 30_000;
+const DEFAULT_RELAYFILE_REPOSITORY_MATERIALIZE_TIMEOUT_MS = 20 * 60_000;
+const DEFAULT_RELAYFILE_REPOSITORY_POLL_INTERVAL_MS = 2_000;
+const MAX_TIMER_MS = 2_147_483_647;
+const LIVE_RELAYFILE_SOURCE_PROFILE = 'complete-v1' as const;
 
 export type CloudFleetSandboxRequestOptions = {
   apiUrl?: string;
   signal?: AbortSignal;
   timeoutMs?: number;
+};
+
+export type MaterializeCloudRelayfileRepositoryInput = {
+  /** Cloud UUID or unified rw_* workspace id. */
+  workspaceId: string;
+  /** Canonical GitHub owner/name identity. */
+  repository: string;
+  /** Exact reachable commit to seed into Relayfile. */
+  revision: string;
+};
+
+export type CloudRelayfileRepositoryMaterialization = {
+  cloudWorkspaceId: string;
+  repository: string;
+  revision: string;
+  filesWritten: number;
+  sourceProfile: typeof LIVE_RELAYFILE_SOURCE_PROFILE;
+  contentRoot: string;
+  sentinelPath: string;
+};
+
+export type CloudRelayfileRepositoryMaterializeOptions = CloudFleetSandboxRequestOptions & {
+  pollIntervalMs?: number;
 };
 
 export type CloudFleetSandboxProviderId =
@@ -108,6 +135,8 @@ export type EnsureCloudFleetSandboxInput = {
    * PR #3212 implements the ensure-side; this helper just plumbs it through.
    */
   repos?: readonly string[];
+  /** Exact lowercase HEAD attestation expected for each requested repository. */
+  repoRevisions?: Readonly<Record<string, string>>;
 };
 
 export type CloudFleetSandboxWorkloadProfile =
@@ -137,6 +166,8 @@ type CloudFleetSandboxReadyBase = {
   relayfileMounted: boolean;
   relayfileMountPath?: string;
   providerId?: CloudFleetSandboxProviderId;
+  /** Repository HEADs verified by Cloud for this sandbox. */
+  repoRevisions?: Readonly<Record<string, string>>;
 };
 
 /** Daytona responses always carry the independently attested provider UUID. */
@@ -160,6 +191,8 @@ export type CloudFleetSandboxReused = {
   providerId?: CloudFleetSandboxProviderId;
   /** Closed server-owned Relaycast contract when Cloud returned one. Required for Agent37. */
   relaycastTarget?: CloudFleetRelaycastTarget;
+  /** Repository HEADs verified by Cloud for this sandbox. */
+  repoRevisions?: Readonly<Record<string, string>>;
 };
 
 type CloudFleetSandboxProvisioningTimeoutBase = {
@@ -297,12 +330,22 @@ function assertProviderRelaycastTarget(
 }
 
 function boundedSignal(options: CloudFleetSandboxRequestOptions, defaultTimeoutMs: number): AbortSignal {
-  const timeoutMs = options.timeoutMs ?? defaultTimeoutMs;
-  if (!Number.isFinite(timeoutMs) || timeoutMs <= 0) {
-    throw new Error('Cloud fleet sandbox request timeout must be a positive number of milliseconds.');
-  }
+  const timeoutMs = normalizeTimerMs(
+    options.timeoutMs ?? defaultTimeoutMs,
+    false,
+    'Cloud fleet request timeout'
+  );
   const timeoutSignal = AbortSignal.timeout(timeoutMs);
   return options.signal ? AbortSignal.any([options.signal, timeoutSignal]) : timeoutSignal;
+}
+
+function normalizeTimerMs(value: number, allowZero: boolean, label: string): number {
+  if (!Number.isFinite(value) || value < 0 || (!allowZero && value === 0)) {
+    throw new Error(
+      `${label} must be a finite ${allowZero ? 'non-negative' : 'positive'} number of milliseconds.`
+    );
+  }
+  return value === 0 ? 0 : Math.min(MAX_TIMER_MS, Math.max(1, Math.floor(value)));
 }
 
 async function readJson(response: Response): Promise<unknown> {
@@ -340,6 +383,141 @@ function requiredString(payload: JsonRecord, key: string, context: string): stri
   const value = readString(payload, key);
   if (!value) throw new Error(`${context} response is missing ${key}.`);
   return value;
+}
+
+const REPOSITORY_KEY_PATTERN = /^[A-Za-z0-9][A-Za-z0-9_.-]*\/[A-Za-z0-9][A-Za-z0-9_.-]*$/;
+const REPOSITORY_REVISION_PATTERN = /^[0-9a-f]{40}$/;
+
+function validateRequestedRepos(repos: readonly string[] | undefined): void {
+  if (repos === undefined || repos.length === 0) return;
+  if (repos.length > 16) {
+    throw new Error('Cloud fleet sandbox requests may include at most 16 repositories.');
+  }
+  const seen = new Set<string>();
+  const seenCheckoutNames = new Set<string>();
+  for (const repo of repos) {
+    const normalizedRepo = repo.toLowerCase();
+    if (seen.has(normalizedRepo)) {
+      throw new Error('Cloud fleet sandbox repositories must not contain duplicates.');
+    }
+    seen.add(normalizedRepo);
+    const slash = repo.lastIndexOf('/');
+    const checkoutName = (slash === -1 ? repo : repo.slice(slash + 1)).toLowerCase();
+    if (seenCheckoutNames.has(checkoutName)) {
+      throw new Error('Cloud fleet sandbox repositories must have unique checkout names.');
+    }
+    seenCheckoutNames.add(checkoutName);
+  }
+}
+
+function validateRepoRevisions(
+  repos: readonly string[] | undefined,
+  repoRevisions: Readonly<Record<string, string>> | undefined
+): Record<string, string> | undefined {
+  if (repoRevisions === undefined) return undefined;
+  const entries = Object.entries(repoRevisions);
+  const allowedRepos = new Set(repos ?? []);
+  if (
+    entries.length === 0 ||
+    entries.length > 16 ||
+    repos === undefined ||
+    repos.length > 16 ||
+    repos.length !== allowedRepos.size ||
+    entries.length !== allowedRepos.size
+  ) {
+    throw new Error(
+      'Cloud fleet sandbox revisions must cover every requested repository exactly once (maximum 16).'
+    );
+  }
+  for (const [repo, revision] of entries) {
+    if (!REPOSITORY_KEY_PATTERN.test(repo) || repo.includes('..')) {
+      throw new Error(`Cloud fleet sandbox repository key '${repo}' must use owner/name form.`);
+    }
+    if (!allowedRepos.has(repo)) {
+      throw new Error(`Cloud fleet sandbox repository revision '${repo}' is not present in repos.`);
+    }
+    if (!REPOSITORY_REVISION_PATTERN.test(revision)) {
+      throw new Error(
+        `Cloud fleet sandbox revision for '${repo}' must be exactly 40 lowercase hexadecimal characters.`
+      );
+    }
+  }
+  return Object.fromEntries(entries);
+}
+
+function parseRepositoryIdentity(repository: string): { owner: string; repo: string } {
+  const normalized = repository.trim();
+  if (!REPOSITORY_KEY_PATTERN.test(normalized) || normalized.includes('..')) {
+    throw new Error('Cloud Relayfile repository must use GitHub owner/name form.');
+  }
+  const [owner, repo] = normalized.split('/');
+  return { owner: owner!, repo: repo! };
+}
+
+function expectedRelayfileRepositoryPaths(
+  owner: string,
+  repo: string
+): {
+  contentRoot: string;
+  sentinelPath: string;
+} {
+  const root = `/github/repos/${encodeURIComponent(owner)}/${encodeURIComponent(repo)}`;
+  return {
+    contentRoot: `${root}/contents`,
+    sentinelPath: `${root}/.relayfile/clone.json`,
+  };
+}
+
+function waitForDelay(ms: number, signal: AbortSignal): Promise<void> {
+  if (signal.aborted) return Promise.reject(signal.reason);
+  return new Promise((resolve, reject) => {
+    const onAbort = () => {
+      clearTimeout(timer);
+      reject(signal.reason);
+    };
+    const timer = setTimeout(() => {
+      signal.removeEventListener('abort', onAbort);
+      resolve();
+    }, ms);
+    signal.addEventListener('abort', onAbort, { once: true });
+  });
+}
+
+function readRepoRevisions(payload: JsonRecord): Record<string, string> | undefined {
+  const value = payload.repoRevisions;
+  if (value === undefined) return undefined;
+  if (!isObject(value)) throw new Error('Cloud fleet sandbox response has invalid repoRevisions.');
+  const revisions: Record<string, string> = {};
+  for (const [repo, revision] of Object.entries(value)) {
+    if (
+      !REPOSITORY_KEY_PATTERN.test(repo) ||
+      repo.includes('..') ||
+      typeof revision !== 'string' ||
+      !REPOSITORY_REVISION_PATTERN.test(revision)
+    ) {
+      throw new Error('Cloud fleet sandbox response has invalid repoRevisions.');
+    }
+    revisions[repo] = revision;
+  }
+  return revisions;
+}
+
+function assertRepoRevisions(
+  payload: JsonRecord,
+  expected: Readonly<Record<string, string>> | undefined
+): Record<string, string> | undefined {
+  const actual = readRepoRevisions(payload);
+  if (expected === undefined) return actual;
+  if (
+    actual === undefined ||
+    Object.keys(actual).length !== Object.keys(expected).length ||
+    Object.entries(expected).some(([repo, revision]) => actual[repo] !== revision)
+  ) {
+    throw new Error(
+      'Cloud did not echo the requested repository revisions; update Cloud before using --sandbox with a pinned checkout.'
+    );
+  }
+  return actual;
 }
 
 function validateSandboxIdentity(input: EnsureCloudFleetSandboxInput): {
@@ -476,7 +654,8 @@ function normalizeEnsureResult(
   cloudWorkspaceId: string,
   expectedSandboxId?: string,
   expectedNodeName?: string,
-  requestedProviderId?: CloudFleetSandboxProviderId
+  requestedProviderId?: CloudFleetSandboxProviderId,
+  expectedRepoRevisions?: Readonly<Record<string, string>>
 ): EnsureCloudFleetSandboxResult {
   if (!isObject(payload)) throw new Error('Cloud fleet sandbox response was not valid JSON.');
   // A caller-declared identity is the cleanup authority. Validate it before
@@ -508,6 +687,7 @@ function normalizeEnsureResult(
     const sandboxId = requiredString(payload, 'sandboxId', 'Cloud fleet sandbox');
     const providerSandboxId = normalizeProviderSandboxId(payload, providerId);
     const relayWorkspaceId = requiredString(payload, 'relayWorkspaceId', 'Cloud fleet sandbox');
+    const repoRevisions = assertRepoRevisions(payload, expectedRepoRevisions);
     const relaycastTarget =
       payload.relaycastTarget === undefined ? undefined : normalizeRelaycastTarget(payload.relaycastTarget);
     if (relaycastTarget !== undefined && relaycastTarget.workspaceId !== relayWorkspaceId) {
@@ -525,6 +705,7 @@ function normalizeEnsureResult(
       ...(relaycastTarget === undefined ? {} : { relaycastTarget }),
       relayfileMounted: payload.relayfileMounted,
       ...(providerId === undefined ? {} : { providerId }),
+      ...(repoRevisions === undefined ? {} : { repoRevisions }),
       ...(readString(payload, 'relayfileMountPath')
         ? { relayfileMountPath: readString(payload, 'relayfileMountPath') }
         : {}),
@@ -535,6 +716,7 @@ function normalizeEnsureResult(
     const relaycastTarget =
       payload.relaycastTarget === undefined ? undefined : normalizeRelaycastTarget(payload.relaycastTarget);
     assertProviderRelaycastTarget(providerId, relaycastTarget);
+    const repoRevisions = assertRepoRevisions(payload, expectedRepoRevisions);
     return {
       outcome,
       cloudWorkspaceId,
@@ -545,6 +727,7 @@ function normalizeEnsureResult(
       maxAgents: readNumber(payload, 'maxAgents') ?? null,
       ...(providerId === undefined ? {} : { providerId }),
       ...(relaycastTarget === undefined ? {} : { relaycastTarget }),
+      ...(repoRevisions === undefined ? {} : { repoRevisions }),
     };
   }
 
@@ -573,6 +756,143 @@ function normalizeEnsureResult(
   throw new Error('Cloud fleet sandbox response has an unknown outcome.');
 }
 
+/**
+ * Materialize one exact GitHub revision into the selected workspace's live
+ * Relayfile tree and wait until the decoded working-tree mount can consume it.
+ *
+ * Cloud owns GitHub credential selection. The CLI sends only owner/name and
+ * the exact pushed SHA; provider credentials never cross this boundary.
+ */
+export async function materializeCloudRelayfileRepository(
+  input: MaterializeCloudRelayfileRepositoryInput,
+  options: CloudRelayfileRepositoryMaterializeOptions = {}
+): Promise<CloudRelayfileRepositoryMaterialization> {
+  const workspaceId = input.workspaceId.trim();
+  if (!workspaceId) throw new Error('A workspace ID is required to materialize a Relayfile repository.');
+  const { owner, repo } = parseRepositoryIdentity(input.repository);
+  const revision = input.revision.trim().toLowerCase();
+  if (!REPOSITORY_REVISION_PATTERN.test(revision)) {
+    throw new Error('Cloud Relayfile repository revision must be exactly 40 hexadecimal characters.');
+  }
+  const pollIntervalMs = normalizeTimerMs(
+    options.pollIntervalMs ?? DEFAULT_RELAYFILE_REPOSITORY_POLL_INTERVAL_MS,
+    false,
+    'Cloud Relayfile repository poll interval'
+  );
+
+  const session = await ensureCloudSession({
+    apiUrl: options.apiUrl || defaultApiUrl(),
+    interactive: false,
+  });
+  const resolutionSignal = boundedSignal(options, DEFAULT_RESOLUTION_TIMEOUT_MS);
+  const resolved = await resolveCloudWorkspaceId(workspaceId, session.auth, resolutionSignal);
+  const signal = boundedSignal(options, DEFAULT_RELAYFILE_REPOSITORY_MATERIALIZE_TIMEOUT_MS);
+  let activeAuth = resolved.auth;
+
+  const requestResult = await authorizedApiFetch(
+    activeAuth,
+    '/api/v1/github/clone/request',
+    {
+      method: 'POST',
+      signal,
+      body: JSON.stringify({
+        workspaceId: resolved.cloudWorkspaceId,
+        owner,
+        repo,
+        ref: revision,
+        mode: 'full',
+        sourceProfile: LIVE_RELAYFILE_SOURCE_PROFILE,
+      }),
+    },
+    { interactive: false }
+  );
+  activeAuth = requestResult.auth;
+  const requestPayload = await readJson(requestResult.response);
+  if (!requestResult.response.ok) {
+    throw endpointError('materialize the repository into Relayfile', requestResult.response, requestPayload);
+  }
+  if (!isObject(requestPayload)) {
+    throw new Error('Cloud Relayfile repository materializer returned an invalid response.');
+  }
+  const jobId = requiredString(requestPayload, 'jobId', 'Cloud Relayfile repository materializer');
+  const expectedPaths = expectedRelayfileRepositoryPaths(owner, repo);
+
+  for (;;) {
+    const statusResult = await authorizedApiFetch(
+      activeAuth,
+      `/api/v1/github/clone/status/${encodeURIComponent(jobId)}`,
+      { method: 'GET', signal },
+      { interactive: false }
+    );
+    activeAuth = statusResult.auth;
+    const statusPayload = await readJson(statusResult.response);
+    if (!statusResult.response.ok) {
+      throw endpointError(
+        'read Relayfile repository materialization status',
+        statusResult.response,
+        statusPayload
+      );
+    }
+    if (!isObject(statusPayload) || !isObject(statusPayload.job)) {
+      throw new Error('Cloud Relayfile repository materialization status was invalid.');
+    }
+    const job = statusPayload.job;
+    const status = readString(job, 'status');
+    if (status === 'failed') {
+      const detail = readString(job, 'lastError');
+      throw new Error(
+        redactCredentialValues(
+          `Cloud could not materialize ${owner}/${repo} at ${revision} into Relayfile${
+            detail ? `: ${detail}.` : '.'
+          } Verify that this exact commit is pushed to GitHub and that the pinned workspace's GitHub connection can read the repository, then retry.`
+        )
+      );
+    }
+    if (status === 'completed') {
+      const jobOwner = readString(job, 'owner');
+      const jobRepo = readString(job, 'repo');
+      const jobRef = readString(job, 'ref');
+      const headSha = readString(job, 'headSha')?.toLowerCase();
+      const filesWritten = readNumber(job, 'filesWritten');
+      const sourceProfile = readString(job, 'sourceProfile');
+      const materialization = job.materialization;
+      if (
+        jobOwner !== owner ||
+        jobRepo !== repo ||
+        jobRef?.toLowerCase() !== revision ||
+        headSha !== revision ||
+        filesWritten === undefined ||
+        !Number.isSafeInteger(filesWritten) ||
+        filesWritten < 0 ||
+        sourceProfile !== LIVE_RELAYFILE_SOURCE_PROFILE ||
+        !isObject(materialization) ||
+        readString(materialization, 'mode') !== 'relayfile_export' ||
+        readString(materialization, 'sourceProfile') !== LIVE_RELAYFILE_SOURCE_PROFILE ||
+        readNumber(materialization, 'filesExpected') !== filesWritten ||
+        readString(materialization, 'headSha')?.toLowerCase() !== revision ||
+        readString(materialization, 'contentRoot') !== expectedPaths.contentRoot ||
+        readString(materialization, 'sentinelPath') !== expectedPaths.sentinelPath
+      ) {
+        throw new Error(
+          `Cloud did not prove a live Relayfile working tree for ${owner}/${repo} at ${revision}.`
+        );
+      }
+      return {
+        cloudWorkspaceId: resolved.cloudWorkspaceId,
+        repository: `${owner}/${repo}`,
+        revision,
+        filesWritten,
+        sourceProfile: LIVE_RELAYFILE_SOURCE_PROFILE,
+        ...expectedPaths,
+      };
+    }
+    if (status !== 'queued' && status !== 'running' && status !== 'retrying') {
+      throw new Error('Cloud Relayfile repository materialization reported an unknown status.');
+    }
+    await waitForDelay(pollIntervalMs, signal);
+  }
+}
+
 /** Resolve a Relay workspace in Cloud, provision/reuse a node, and wait for readiness. */
 export async function ensureCloudFleetSandbox(
   input: EnsureCloudFleetSandboxInput,
@@ -586,6 +906,8 @@ export async function ensureCloudFleetSandbox(
   if (input.relayfilePaths !== undefined && input.relayfilePaths.length === 0) {
     throw new Error('At least one Relayfile subtree path is required when relayfilePaths is provided.');
   }
+  validateRequestedRepos(input.repos);
+  const repoRevisions = validateRepoRevisions(input.repos, input.repoRevisions);
 
   const session = await ensureCloudSession({
     apiUrl: options.apiUrl || defaultApiUrl(),
@@ -615,6 +937,7 @@ export async function ensureCloudFleetSandbox(
           ...(input.workloadProfile !== undefined ? { workloadProfile: input.workloadProfile } : {}),
           ...(input.waitTimeoutMs !== undefined ? { waitTimeoutMs: input.waitTimeoutMs } : {}),
           ...(input.repos !== undefined && input.repos.length > 0 ? { repos: [...input.repos] } : {}),
+          ...(repoRevisions === undefined ? {} : { repoRevisions }),
         }),
       },
       { interactive: false }
@@ -688,7 +1011,8 @@ export async function ensureCloudFleetSandbox(
       resolved.cloudWorkspaceId,
       sandboxIdentity.sandboxId,
       sandboxIdentity.name,
-      input.providerId
+      input.providerId,
+      repoRevisions
     );
   } catch (error) {
     const confirmedProvisioned = confirmsProvisionedSandboxIdentity(

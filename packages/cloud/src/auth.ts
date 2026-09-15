@@ -563,10 +563,17 @@ async function beginBrowserLogin(apiUrl: string): Promise<StoredAuth> {
 
 export async function refreshStoredAuth(
   auth: StoredAuth,
-  options: { force?: boolean; refreshTimeoutMs?: number; signal?: AbortSignal } = {}
+  options: {
+    force?: boolean;
+    refreshTimeoutMs?: number;
+    signal?: AbortSignal;
+    validateApiUrl?: (apiUrl: string) => void;
+  } = {}
 ): Promise<StoredAuth> {
   if (isEnvBackedAuth(auth)) {
-    return markEnvBackedAuth(await requestStoredAuthRefresh(auth, options));
+    const nextAuth = await requestStoredAuthRefresh(auth, options);
+    options.validateApiUrl?.(nextAuth.apiUrl);
+    return markEnvBackedAuth(nextAuth);
   }
 
   return withStoredAuthLock(async () => {
@@ -578,6 +585,10 @@ export async function refreshStoredAuth(
     }
 
     const nextAuth = await requestStoredAuthRefresh(refreshSource, options);
+    // Some credentialed callers impose a stricter transport contract than the
+    // general Cloud client. Validate a refresh-selected host before persisting
+    // the rotated credentials or allowing a retry to send them there.
+    options.validateApiUrl?.(nextAuth.apiUrl);
     await writeStoredAuth(nextAuth);
     return nextAuth;
   }, options);
@@ -701,7 +712,7 @@ export async function ensureAuthenticated(
 
 export async function ensureCloudSession(options: CloudSessionOptions = {}): Promise<CloudSession> {
   const env = options.env ?? process.env;
-  const apiUrl = options.apiUrl || env.CLOUD_API_URL?.trim() || defaultApiUrl();
+  const apiUrl = options.apiUrl || defaultApiUrl(env);
   const force = options.force === true;
   const interactive = options.interactive !== false;
   const refreshTimeoutMs = options.refreshTimeoutMs;
@@ -727,12 +738,21 @@ export async function ensureCloudSession(options: CloudSessionOptions = {}): Pro
   }
 
   if (!shouldRefreshStoredAuth(stored)) {
-    return createCloudSession(stored, { refreshTimeoutMs });
+    return createCloudSession(stored, {
+      refreshTimeoutMs,
+      validateApiUrl: options.validateApiUrl,
+    });
   }
 
   try {
-    const auth = await refreshStoredAuth(stored, { refreshTimeoutMs });
-    return createCloudSession(auth, { refreshTimeoutMs });
+    const auth = await refreshStoredAuth(stored, {
+      refreshTimeoutMs,
+      validateApiUrl: options.validateApiUrl,
+    });
+    return createCloudSession(auth, {
+      refreshTimeoutMs,
+      validateApiUrl: options.validateApiUrl,
+    });
   } catch (error) {
     if (isEnvBackedAuth(stored)) {
       throw toEnvAuthRefreshError(error);
@@ -743,11 +763,20 @@ export async function ensureCloudSession(options: CloudSessionOptions = {}): Pro
     }
 
     const auth = await loginInteractive(stored.apiUrl, { device: options.device, env });
-    return createCloudSession(auth, { refreshTimeoutMs });
+    return createCloudSession(auth, {
+      refreshTimeoutMs,
+      validateApiUrl: options.validateApiUrl,
+    });
   }
 }
 
-function createCloudSession(auth: StoredAuth, options: { refreshTimeoutMs?: number } = {}): CloudSession {
+function createCloudSession(
+  auth: StoredAuth,
+  options: {
+    refreshTimeoutMs?: number;
+    validateApiUrl?: (apiUrl: string) => void;
+  } = {}
+): CloudSession {
   const clientOptions: CloudApiClientOptions = {
     ...auth,
     refreshTimeoutMs: options.refreshTimeoutMs,
@@ -760,6 +789,7 @@ function createCloudSession(auth: StoredAuth, options: { refreshTimeoutMs?: numb
           force: refreshOptions.force,
           refreshTimeoutMs: options.refreshTimeoutMs,
           signal: refreshOptions.signal,
+          validateApiUrl: options.validateApiUrl,
         })
       );
   }
@@ -816,9 +846,12 @@ export async function authorizedApiFetch(
      */
     device?: boolean;
     env?: NodeJS.ProcessEnv;
+    /** Validate every host before a bearer-authenticated request uses it. */
+    validateApiUrl?: (apiUrl: string) => void;
   } = {}
 ): Promise<{ response: Response; auth: StoredAuth }> {
   let activeAuth = auth;
+  options.validateApiUrl?.(activeAuth.apiUrl);
   let response = await apiFetch(activeAuth.apiUrl, activeAuth.accessToken, requestPath, init);
 
   if (response.status !== 401) {
@@ -831,6 +864,7 @@ export async function authorizedApiFetch(
       force: true,
       refreshTimeoutMs: options.refreshTimeoutMs,
       signal: init.signal ?? undefined,
+      validateApiUrl: options.validateApiUrl,
     });
     activeAuth = refreshableAuth;
   } catch (error) {
@@ -860,6 +894,7 @@ export async function authorizedApiFetch(
     });
   }
 
+  options.validateApiUrl?.(activeAuth.apiUrl);
   response = await apiFetch(activeAuth.apiUrl, activeAuth.accessToken, requestPath, init);
   return { response, auth: activeAuth };
 }
