@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [12.2.2] - 2026-09-15
+
+### Changed
+
+- Stop double-publishing cloud, wait longer for the registry, tag what was built
+
 ## [12.2.1] - 2026-09-15
 
 ### Fixed
