@@ -19,6 +19,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- Broker node connections now require an accepted registration before reporting readiness or publishing inventory and heartbeats; rejected and unanswered registrations reconnect with bounded backoff.
 - Direct-message CLI and MCP receipts separate directory name matches from unconfirmed recipient delivery, preserving the queued message ID without reporting reachability from a roster match.
 
 ## [12.1.0] - 2026-09-12
