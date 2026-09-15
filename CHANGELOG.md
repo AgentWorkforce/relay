@@ -5,7 +5,23 @@ All notable changes to Agent Relay will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
+## [Unreleased - Minor]
+
+### Added
+
+- `fleet spawn` without placement options starts locally in the caller's exact
+  directory; `--auto-place` explicitly requests automatic fleet placement.
+- Plain `fleet spawn --sandbox` starts from a clean, pushed GitHub `HEAD`, mounts
+  its decoded source tree and `.skills` through Relayfile, maps the caller's
+  relative directory, and keeps the tree synchronized as GitHub changes flow
+  through the connected workspace integration.
+- `fleet spawn --sandbox` preserves tracked files, symlinks, and executable modes
+  in the mounted source tree.
+- `fleet spawn --sandbox --checkout` opts into a separate static Git clone at
+  the exact pushed `HEAD` when a task needs Git metadata or checkout semantics.
+- `node agent attach <name>` automatically routes to a unique live Fleet node;
+  ambiguous placements require `--node`.
+- `fleet spawn --sandbox` keeps temporary routing credentials out of project files.
 
 ## [12.1.1] - 2026-09-15
 

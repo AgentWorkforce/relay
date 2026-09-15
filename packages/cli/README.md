@@ -185,7 +185,7 @@ when available and otherwise tells you to retry without `--background`; a child
 that already exited is no longer misreported as an unkillable half-started
 broker.
 
-## Remote fleet agents
+## Local and remote fleet agents
 
 The `fleet` command group lists and controls agents across all live nodes in
 the active project workspace:
@@ -208,8 +208,11 @@ agent-relay fleet spawn codex \
   --node sf-mini \
   --session-ref <actual-codex-thread-id>
 
-# Omit --node for automatic eligible-node placement.
+# No placement options: use the local broker and this exact working directory.
 agent-relay fleet spawn codex --name api-worker --task "Review the current diff."
+
+# Opt into automatic eligible-node placement.
+agent-relay fleet spawn codex --name api-worker --task "Review the current diff." --auto-place
 
 # Provision a fresh E2B node, require the current Relayfile workspace to mount
 # at /workspace, wait for readiness, then spawn Codex there.
@@ -218,6 +221,9 @@ agent-relay fleet spawn codex \
   --sandbox-provider e2b \
   --name e2b-worker \
   --task "Review the current workspace and wait for follow-up."
+
+# A uniquely placed sandbox worker can be attached without node or route flags.
+agent-relay node agent attach e2b-worker --mode drive
 
 agent-relay message dm send api-worker "Detailed task instructions"
 # wait is the default: it queues for the recipient's next safe idle boundary and
@@ -235,11 +241,29 @@ set `RELAY_AGENT_TOKEN` to the token returned by
 `agent-relay agent register <lead-name>`. `fleet spawn --sandbox` needs a Cloud
 login (`agent-relay cloud login`) but does not need an agent token: when one is
 absent, it creates and removes a short-lived launcher identity automatically.
+
+Without placement options, `fleet spawn` connects to the local project's broker
+and passes the caller's exact directory, including a nested package, to the
+worker. Start the local broker with `agent-relay node up` if it is not running;
+a local connection failure never falls back to remote placement. `--cwd` selects
+a different local directory on this path. Model and channel options stay local.
+`--auto-place`, `--node`, and `--sandbox` select remote placement explicitly.
+Legacy invocations with an explicit `--workspace-key`/`--wk`, `--token`,
+`--base-url`, or `--persona` retain automatic fleet placement when no node or
+sandbox is selected. Ambient credentials and persisted Cloud routing do not
+change the local default. Workforce reporting metadata requires remote placement.
 Automatic placement and release need only the workspace key.
 
 The sandbox path provisions a fresh hosted instance and makes the Relayfile
-mount mandatory by default, so the spawned worker starts in `/workspace` and
-sees the same synced Relayfile workspace. Use `--sandbox-provider daytona` or
+mount mandatory by default. Inside a GitHub checkout, Relay infers the Git root,
+repository identity, exact `HEAD`, and caller-relative directory. Cloud uses the
+pinned workspace's connected GitHub credential to seed that revision into
+Relayfile, and the worker starts in the decoded source tree under
+`/workspace/github/repos/<owner>/<repo>/contents`. The long-running Relayfile
+daemon keeps the mounted source tree synchronized with the workspace while
+GitHub push events update the workspace's repository source. Use `--checkout`
+when a task needs a separate static Git clone; that mode keeps the live
+Relayfile mirror available separately. Use `--sandbox-provider daytona` or
 `--sandbox-provider e2b` to require an operator-enabled provider; omit the flag
 to let Cloud's sandbox router choose. Pass `--no-sandbox-relayfile` only when a
 deliberately bare sandbox is desired. If provisioning times out or the spawn
@@ -253,10 +277,115 @@ provisioning ends with an unknown outcome, rerun the command with the warning's
 `--sandbox-id` to replay the same Cloud identity instead of adopting another
 fleet node.
 
-Large workspaces should select only the live subtree an agent needs. Pass one
-or more explicit directory roots after `--sandbox-relayfile-path`; Cloud
-validates the `/path/**` form and materializes those roots before the agent
-starts:
+The live source profile includes tracked dotfiles, lockfiles, generated and
+binary files, large files within Relayfile's import limit, symlinks, and
+executable permissions. Relayfile never places `.git` in this tree. If a
+repository entry cannot be represented safely, spawn fails with the entry and
+corrective action instead of reporting a partial working tree.
+
+Both live and checkout modes require a clean working tree whose exact `HEAD` is
+reachable from a configured GitHub remote. This prevents a remote worker from
+silently starting at a different revision. Commit and push local work before
+retrying when Relay reports dirty files or an unreachable commit.
+
+With `--checkout`, sandbox provisioning also clones the attested `HEAD` under
+`/srv/agent-workforce/<repo>`. The checkout must have no tracked changes or
+untracked source files, and the exact commit must be reachable from an origin
+remote. Relay's generated `.agentworkforce/relay/workspace-key.json`,
+`connection.json`, and `runtime.json` metadata are permitted. Dirty checkouts and
+commits known to be ahead of their origin upstream fail locally. Detached commits
+must appear in an origin remote-tracking branch, and Cloud independently fetches
+and verifies the exact SHA before dispatch. An unreachable commit produces a
+push-and-retry error. The temporary isolated
+Relaycast credential stays in the machine store under
+`~/.agentworkforce/relay`; the project file stores only a non-secret reference.
+
+`node agent attach <name>` automatically routes to the unique live fleet node
+advertising that worker. If more than one live node advertises the name, the
+command refuses to guess; pass `--node <node>` explicitly. Supplying
+`--broker-url`, `--api-key`, or `--state-dir`, or setting a nonblank
+`RELAY_BROKER_URL` or `RELAY_BROKER_API_KEY`, keeps attach local and bypasses
+automatic Fleet routing. `node agent message flush|hold|auto <name>` uses the
+same unique-node lookup when no local broker selection is supplied. Fleet list and
+release commands reuse the persisted project route; if that remote session is
+unavailable, the command reports the routing failure instead of selecting a
+same-named local worker.
+
+From a clean repository already pinned to a Relay workspace, the ordinary live
+path is:
+
+```bash
+agent-relay fleet spawn codex \
+  --name cloud-zero-config \
+  --task "Inspect this repository and report its current commit" \
+  --sandbox
+agent-relay node agent attach cloud-zero-config --mode drive
+agent-relay fleet agent list
+agent-relay fleet release cloud-zero-config
+```
+
+Invoking the live command from `packages/web` starts the worker at
+`/workspace/github/repos/<owner>/<repo>/contents/packages/web`. The repository
+source metadata is available beside `contents` under `.relayfile`, `.skills`
+is mounted from the same workspace, and no `.git` directory is written into the
+Relayfile mirror.
+
+For a static Git checkout, opt in explicitly:
+
+```bash
+agent-relay fleet spawn codex \
+  --name cloud-checkout \
+  --task "Inspect this repository and report its current commit" \
+  --sandbox \
+  --checkout
+```
+
+In checkout mode, invoking spawn from `packages/web` places the worker in that
+same relative directory in the remote clone. In both modes, private repositories
+use the pinned workspace's connected GitHub access; a repository-access error
+means that connection must be granted access to the repository. No GitHub token
+or workspace key needs to be copied into the task, mount, or checkout.
+
+With `--checkout`, the Git checkout and Relayfile mirror are separate trees. In
+the ordinary live mode, source files are decoded from Relayfile records without
+placing `.git` in the mirror. Workspace `.skills` are exposed through the agent
+CLIs' usual skill directories, and the worker's task context identifies the
+mirror and exact source revision.
+
+Detaching leaves the worker running. Only one drive session can own a worker
+at a time; detach the current driver before driving it in another shell, or
+use `--mode view` to observe. Releasing a worker does not delete its sandbox.
+To resume its retained sandbox, repeat spawn with the reported
+`--sandbox-id <id>`; when using `--checkout`, the retained clone must still have
+the same clean HEAD.
+A failed resume preserves retained work. For a live Relayfile sandbox, reusing
+`--sandbox-id` intentionally re-materializes the exact clean, pushed `HEAD` from
+the current checkout before the provider resumes, so a new commit becomes the
+source tree for that retained sandbox. With `--checkout`, the retained static
+clone remains pinned to its original revision and the current checkout must
+still resolve to that same clean, pushed `HEAD`. Delete an unused sandbox in
+Cloud Fleet to stop future provider usage; monthly accounting reservations
+remain until their normal reset.
+
+If the workspace is not pinned yet, use `agent-relay workspace rebind <name>`
+with an existing stored workspace. A missing or mismatched stored route
+credential requires rerunning sandbox provisioning for that workspace.
+`--base-url`, `--workspace-id`, `--node`, provider selection, and the static
+`--checkout` mode remain advanced overrides. For `--cwd`, local repo-relative
+paths are accepted to infer the sandbox repository; absolute remote paths are
+advanced overrides. Outside Git, plain `--sandbox` preserves the existing
+full-workspace Relayfile mount at `/workspace`.
+
+Pins created before workspace IDs were recorded are resolved automatically
+through Cloud at spawn time. The key travels in an authenticated POST body,
+never a URL. Nested packages share the repository pin; an existing subproject
+pin or `AGENT_RELAY_PROJECT` remains an explicit workspace override.
+
+Large workspaces can add only the other live subtrees an agent needs. Pass one
+or more explicit directory roots after `--sandbox-relayfile-path`; the inferred
+repository, its source metadata, and `.skills` remain mounted automatically.
+Cloud validates the `/path/**` form and materializes those roots before the
+agent starts:
 
 ```bash
 agent-relay fleet spawn claude \

@@ -16,6 +16,7 @@ import {
   CloudFleetSandboxProvisionError,
   deleteCloudFleetSandbox,
   ensureCloudFleetSandbox,
+  materializeCloudRelayfileRepository,
   normalizeRelaycastTarget,
 } from './fleet-sandbox.js';
 
@@ -97,6 +98,161 @@ describe('Cloud fleet sandbox client', () => {
         apiKey: RELAYCAST_TARGET.relaycastApiKey,
       })
     ).toThrow(/API key/);
+  });
+
+  it('waits for an exact Relayfile repository working tree without receiving GitHub credentials', async () => {
+    const revision = '0123456789abcdef0123456789abcdef01234567';
+    mocks.authorizedApiFetch
+      .mockResolvedValueOnce({
+        response: Response.json({ cloudWorkspaceId: CLOUD_WORKSPACE_ID }),
+        auth: refreshedAuth,
+      })
+      .mockResolvedValueOnce({
+        response: Response.json({ ok: true, jobId: 'clone-job-1', status: 'queued' }, { status: 202 }),
+        auth: refreshedAuth,
+      })
+      .mockResolvedValueOnce({
+        response: Response.json({
+          ok: true,
+          job: {
+            owner: 'AgentWorkforce',
+            repo: 'cloud',
+            ref: revision,
+            status: 'running',
+          },
+        }),
+        auth: refreshedAuth,
+      })
+      .mockResolvedValueOnce({
+        response: Response.json({
+          ok: true,
+          job: {
+            owner: 'AgentWorkforce',
+            repo: 'cloud',
+            ref: revision,
+            status: 'completed',
+            headSha: revision,
+            filesWritten: 0,
+            sourceProfile: 'complete-v1',
+            materialization: {
+              mode: 'relayfile_export',
+              sourceProfile: 'complete-v1',
+              headSha: revision,
+              filesExpected: 0,
+              contentRoot: '/github/repos/AgentWorkforce/cloud/contents',
+              sentinelPath: '/github/repos/AgentWorkforce/cloud/.relayfile/clone.json',
+              exportParams: { format: 'tar', decode: 'github-working-tree', gzip: false },
+            },
+          },
+        }),
+        auth: refreshedAuth,
+      });
+
+    await expect(
+      materializeCloudRelayfileRepository(
+        {
+          workspaceId: 'rw_abc',
+          repository: 'AgentWorkforce/cloud',
+          revision,
+        },
+        { pollIntervalMs: 1 }
+      )
+    ).resolves.toEqual({
+      cloudWorkspaceId: CLOUD_WORKSPACE_ID,
+      repository: 'AgentWorkforce/cloud',
+      revision,
+      filesWritten: 0,
+      sourceProfile: 'complete-v1',
+      contentRoot: '/github/repos/AgentWorkforce/cloud/contents',
+      sentinelPath: '/github/repos/AgentWorkforce/cloud/.relayfile/clone.json',
+    });
+
+    const requestCall = mocks.authorizedApiFetch.mock.calls[1];
+    expect(requestCall?.[1]).toBe('/api/v1/github/clone/request');
+    expect(JSON.parse(String(requestCall?.[2]?.body))).toEqual({
+      workspaceId: CLOUD_WORKSPACE_ID,
+      owner: 'AgentWorkforce',
+      repo: 'cloud',
+      ref: revision,
+      mode: 'full',
+      sourceProfile: 'complete-v1',
+    });
+    expect(JSON.stringify(requestCall)).not.toContain('githubToken');
+  });
+
+  it('rejects a completed clone that did not produce the requested live Relayfile revision', async () => {
+    const revision = '0123456789abcdef0123456789abcdef01234567';
+    mocks.authorizedApiFetch
+      .mockResolvedValueOnce({
+        response: Response.json({ cloudWorkspaceId: CLOUD_WORKSPACE_ID }),
+        auth,
+      })
+      .mockResolvedValueOnce({
+        response: Response.json({ ok: true, jobId: 'clone-job-2', status: 'queued' }, { status: 202 }),
+        auth,
+      })
+      .mockResolvedValueOnce({
+        response: Response.json({
+          ok: true,
+          job: {
+            owner: 'AgentWorkforce',
+            repo: 'cloud',
+            ref: revision,
+            status: 'completed',
+            headSha: 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa',
+            filesWritten: 12,
+            materialization: { mode: 'local_archive' },
+          },
+        }),
+        auth,
+      });
+
+    await expect(
+      materializeCloudRelayfileRepository(
+        { workspaceId: 'rw_abc', repository: 'AgentWorkforce/cloud', revision },
+        { pollIntervalMs: 1 }
+      )
+    ).rejects.toThrow(/did not prove a live Relayfile working tree/);
+  });
+
+  it('rejects a clone whose materialization file count disagrees with the job', async () => {
+    const revision = '0123456789abcdef0123456789abcdef01234567';
+    mocks.authorizedApiFetch
+      .mockResolvedValueOnce({ response: Response.json({ cloudWorkspaceId: CLOUD_WORKSPACE_ID }), auth })
+      .mockResolvedValueOnce({
+        response: Response.json({ ok: true, jobId: 'clone-job-count', status: 'queued' }, { status: 202 }),
+        auth,
+      })
+      .mockResolvedValueOnce({
+        response: Response.json({
+          ok: true,
+          job: {
+            owner: 'AgentWorkforce',
+            repo: 'cloud',
+            ref: revision,
+            status: 'completed',
+            headSha: revision,
+            filesWritten: 4,
+            sourceProfile: 'complete-v1',
+            materialization: {
+              mode: 'relayfile_export',
+              sourceProfile: 'complete-v1',
+              headSha: revision,
+              filesExpected: 3,
+              contentRoot: '/github/repos/AgentWorkforce/cloud/contents',
+              sentinelPath: '/github/repos/AgentWorkforce/cloud/.relayfile/clone.json',
+            },
+          },
+        }),
+        auth,
+      });
+
+    await expect(
+      materializeCloudRelayfileRepository(
+        { workspaceId: 'rw_abc', repository: 'AgentWorkforce/cloud', revision },
+        { pollIntervalMs: 1 }
+      )
+    ).rejects.toThrow(/did not prove a live Relayfile working tree/);
   });
 
   it('rejects a provisioned response with an untrusted server-owned Relaycast route', async () => {
@@ -857,6 +1013,10 @@ describe('Cloud fleet sandbox client', () => {
             relayWorkspaceId: 'rw_abc',
             relaycastTarget: RELAYCAST_TARGET,
             relayfileMounted: true,
+            repoRevisions: {
+              'AgentWorkforce/factory': '0123456789abcdef0123456789abcdef01234567',
+              'AgentWorkforce/relay': '89abcdef0123456789abcdef0123456789abcdef',
+            },
           },
           { status: 201 }
         ),
@@ -868,6 +1028,10 @@ describe('Cloud fleet sandbox client', () => {
       requiredCapability: 'spawn:codex',
       forceProvision: true,
       repos: ['AgentWorkforce/factory', 'AgentWorkforce/relay'],
+      repoRevisions: {
+        'AgentWorkforce/factory': '0123456789abcdef0123456789abcdef01234567',
+        'AgentWorkforce/relay': '89abcdef0123456789abcdef0123456789abcdef',
+      },
     });
 
     const ensureCall = mocks.authorizedApiFetch.mock.calls[1];
@@ -876,7 +1040,50 @@ describe('Cloud fleet sandbox client', () => {
       requiredCapability: 'spawn:codex',
       forceProvision: true,
       repos: ['AgentWorkforce/factory', 'AgentWorkforce/relay'],
+      repoRevisions: {
+        'AgentWorkforce/factory': '0123456789abcdef0123456789abcdef01234567',
+        'AgentWorkforce/relay': '89abcdef0123456789abcdef0123456789abcdef',
+      },
     });
+  });
+
+  it.each([
+    ['missing', undefined],
+    ['mismatched', { 'AgentWorkforce/cloud': 'fedcba9876543210fedcba9876543210fedcba98' }],
+  ] as const)('rejects a %s echoed repository revision', async (_label, echoed) => {
+    const revision = '0123456789abcdef0123456789abcdef01234567';
+    mocks.authorizedApiFetch
+      .mockResolvedValueOnce({
+        response: Response.json({ cloudWorkspaceId: CLOUD_WORKSPACE_ID }),
+        auth,
+      })
+      .mockResolvedValueOnce({
+        response: Response.json(
+          {
+            outcome: 'provisioned',
+            nodeId: 'node-1',
+            nodeName: SANDBOX_NAME,
+            sandboxId: SANDBOX_ID,
+            providerSandboxId: 'provider-sandbox-1',
+            relayWorkspaceId: 'rw_abc',
+            relaycastTarget: RELAYCAST_TARGET,
+            relayfileMounted: true,
+            ...(echoed === undefined ? {} : { repoRevisions: echoed }),
+          },
+          { status: 201 }
+        ),
+        auth,
+      });
+
+    await expect(
+      ensureCloudFleetSandbox({
+        workspaceId: 'rw_abc',
+        requiredCapability: 'spawn:codex',
+        repos: ['AgentWorkforce/cloud'],
+        repoRevisions: { 'AgentWorkforce/cloud': revision },
+        forceProvision: true,
+      })
+    ).rejects.toThrow(/did not echo the requested repository revisions/);
   });
 
   it('forwards bounded Relayfile mount paths into the ensure request body', async () => {
@@ -916,6 +1123,63 @@ describe('Cloud fleet sandbox client', () => {
       forceProvision: true,
       relayfilePaths: ['/live-review/run-123/**'],
     });
+  });
+
+  it('rejects incomplete revision maps before Cloud authentication', async () => {
+    await expect(
+      ensureCloudFleetSandbox({
+        workspaceId: 'rw_abc',
+        requiredCapability: 'spawn:codex',
+        repos: ['AgentWorkforce/cloud', 'AgentWorkforce/relay'],
+        repoRevisions: { 'AgentWorkforce/cloud': '0123456789abcdef0123456789abcdef01234567' },
+      })
+    ).rejects.toThrow('cover every requested repository');
+    expect(mocks.ensureCloudSession).not.toHaveBeenCalled();
+  });
+
+  it('rejects duplicate repositories before Cloud authentication', async () => {
+    await expect(
+      ensureCloudFleetSandbox({
+        workspaceId: 'rw_abc',
+        requiredCapability: 'spawn:codex',
+        repos: ['AgentWorkforce/relay', 'AgentWorkforce/relay'],
+      })
+    ).rejects.toThrow('must not contain duplicates');
+    expect(mocks.ensureCloudSession).not.toHaveBeenCalled();
+  });
+
+  it('rejects case-insensitive duplicate repositories before Cloud authentication', async () => {
+    await expect(
+      ensureCloudFleetSandbox({
+        workspaceId: 'rw_abc',
+        requiredCapability: 'spawn:codex',
+        repos: ['AgentWorkforce/relay', 'agentworkforce/RELAY'],
+      })
+    ).rejects.toThrow('must not contain duplicates');
+    expect(mocks.ensureCloudSession).not.toHaveBeenCalled();
+  });
+
+  it('rejects checkout basename collisions before Cloud authentication', async () => {
+    await expect(
+      ensureCloudFleetSandbox({
+        workspaceId: 'rw_abc',
+        requiredCapability: 'spawn:codex',
+        repos: ['owner-a/tools', 'owner-b/tools'],
+      })
+    ).rejects.toThrow('unique checkout names');
+    expect(mocks.ensureCloudSession).not.toHaveBeenCalled();
+  });
+
+  it('rejects more than sixteen repositories before Cloud authentication', async () => {
+    const repos = Array.from({ length: 17 }, (_, index) => `AgentWorkforce/repo-${index}`);
+    await expect(
+      ensureCloudFleetSandbox({
+        workspaceId: 'rw_abc',
+        requiredCapability: 'spawn:codex',
+        repos,
+      })
+    ).rejects.toThrow('at most 16 repositories');
+    expect(mocks.ensureCloudSession).not.toHaveBeenCalled();
   });
 
   it('rejects an explicitly empty Relayfile path list before provisioning', async () => {
@@ -1606,6 +1870,108 @@ describe('Cloud fleet sandbox client', () => {
     expect(signals).toHaveLength(2);
     expect(signals[0]).not.toBe(signals[1]);
     expect(signals[1]?.aborted).toBe(false);
+  });
+
+  it.each([
+    ['zero poll interval', { pollIntervalMs: 0 }],
+    ['infinite poll interval', { pollIntervalMs: Number.POSITIVE_INFINITY }],
+    ['negative request timeout', { timeoutMs: -1 }],
+  ])('rejects invalid timer values before making a request (%s)', async (_label, options) => {
+    await expect(
+      materializeCloudRelayfileRepository(
+        {
+          workspaceId: 'rw_abc',
+          repository: 'AgentWorkforce/cloud',
+          revision: '0123456789abcdef0123456789abcdef01234567',
+        },
+        options
+      )
+    ).rejects.toThrow(/milliseconds/);
+    expect(mocks.authorizedApiFetch).not.toHaveBeenCalled();
+  });
+
+  it('floors a positive fractional materialization poll interval', async () => {
+    const revision = '0123456789abcdef0123456789abcdef01234567';
+    mocks.authorizedApiFetch
+      .mockResolvedValueOnce({ response: Response.json({ cloudWorkspaceId: CLOUD_WORKSPACE_ID }), auth })
+      .mockResolvedValueOnce({
+        response: Response.json({ ok: true, jobId: 'clone-job-fraction', status: 'queued' }, { status: 202 }),
+        auth,
+      })
+      .mockResolvedValueOnce({
+        response: Response.json({
+          ok: true,
+          job: {
+            owner: 'AgentWorkforce',
+            repo: 'cloud',
+            ref: revision,
+            status: 'running',
+          },
+        }),
+        auth,
+      })
+      .mockResolvedValueOnce({
+        response: Response.json({
+          ok: true,
+          job: {
+            owner: 'AgentWorkforce',
+            repo: 'cloud',
+            ref: revision,
+            status: 'completed',
+            headSha: revision,
+            filesWritten: 0,
+            sourceProfile: 'complete-v1',
+            materialization: {
+              mode: 'relayfile_export',
+              sourceProfile: 'complete-v1',
+              headSha: revision,
+              filesExpected: 0,
+              contentRoot: '/github/repos/AgentWorkforce/cloud/contents',
+              sentinelPath: '/github/repos/AgentWorkforce/cloud/.relayfile/clone.json',
+            },
+          },
+        }),
+        auth,
+      });
+    const delaySpy = vi.spyOn(globalThis, 'setTimeout');
+
+    await materializeCloudRelayfileRepository(
+      { workspaceId: 'rw_abc', repository: 'AgentWorkforce/cloud', revision },
+      { pollIntervalMs: 0.5 }
+    );
+
+    expect(delaySpy).toHaveBeenCalledWith(expect.any(Function), 1);
+  });
+
+  it('clamps oversized request timeouts to the maximum timer duration', async () => {
+    const timeoutSpy = vi.spyOn(AbortSignal, 'timeout');
+    mocks.authorizedApiFetch
+      .mockResolvedValueOnce({ response: Response.json({ cloudWorkspaceId: CLOUD_WORKSPACE_ID }), auth })
+      .mockResolvedValueOnce({
+        response: Response.json(
+          {
+            outcome: 'provisioned',
+            nodeId: 'node-1',
+            nodeName: 'daytona-codex',
+            sandboxId: 'sandbox-1',
+            providerSandboxId: DAYTONA_PROVIDER_SANDBOX_ID,
+            relayWorkspaceId: 'rw_abc',
+            relaycastTarget: CANONICAL_RELAYCAST_TARGET,
+            relayfileMounted: true,
+            providerId: 'daytona',
+          },
+          { status: 201 }
+        ),
+        auth,
+      });
+
+    await ensureCloudFleetSandbox(
+      { workspaceId: 'rw_abc', requiredCapability: 'spawn:codex' },
+      { timeoutMs: 2_147_483_648 }
+    );
+
+    expect(timeoutSpy).toHaveBeenNthCalledWith(1, 2_147_483_647);
+    expect(timeoutSpy).toHaveBeenNthCalledWith(2, 2_147_483_647);
   });
 
   it('keeps the default provisioning budget beyond the mounted server deadline', async () => {
