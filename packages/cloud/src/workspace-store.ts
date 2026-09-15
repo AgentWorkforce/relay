@@ -169,7 +169,6 @@ function withRelaycastCredentialLock<T>(file: string, fn: () => T): T {
   const lock = `${file}.lock`;
   const ownerToken = randomUUID();
   const ownerPath = path.join(lock, ownerToken);
-  const startedAt = Date.now();
   fs.mkdirSync(directory, { recursive: true, mode: 0o700 });
   // The parent is the credential boundary: other users must not be able to
   // replace lock entries between inspection and cleanup.
@@ -185,6 +184,8 @@ function withRelaycastCredentialLock<T>(file: string, fn: () => T): T {
     );
   }
   assertCredentialAncestors(directory);
+  // ACL validation has its own deadline; reserve this budget for lock contention.
+  const startedAt = Date.now();
   while (true) {
     if (Date.now() - startedAt >= RELAYCAST_CREDENTIAL_LOCK_TIMEOUT_MS) {
       throw new Error('Timed out waiting for the Relaycast credential store lock.');

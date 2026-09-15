@@ -2,7 +2,8 @@
 // covered by the unchanged native Windows CI tests; this does not emulate ACLs.
 import assert from 'node:assert/strict';
 import childProcess from 'node:child_process';
-import { mkdir, readFile, writeFile } from 'node:fs/promises';
+import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
+import os from 'node:os';
 import { stripTypeScriptTypes, syncBuiltinESMExports } from 'node:module';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -23,6 +24,7 @@ const source = await readFile(
   'utf8'
 );
 const code = stripTypeScriptTypes(source, { mode: 'strip' });
+const fixture = await mkdtemp(path.join(os.tmpdir(), 'relay-acl-case-'));
 const originalPlatform = process.platform;
 const originalSystemRoot = process.env.SystemRoot;
 let scenario;
@@ -42,7 +44,7 @@ try {
     // private result models cold native startup; no timer mocks or timeout bypass.
     const response =
       scenario === 'unsafe' ? { ok: false, reason: 'credential-parent-untrusted-allow' } : { ok: true };
-    const delay = scenario === 'slow-private' ? 6500 : scenario === 'hung' ? 20_000 : 0;
+    const delay = scenario === 'slow-private' ? 11_000 : scenario === 'hung' ? 20_000 : 0;
     const child = `process.stdin.resume(); process.stdin.on('end', () => setTimeout(() => process.stdout.write(${JSON.stringify(JSON.stringify(response))}), ${delay}));`;
     try {
       return realExec(process.execPath, ['-e', child], options);
@@ -52,9 +54,8 @@ try {
     }
   };
   syncBuiltinESMExports();
-  const { assertWindowsCredentialDirectory } = await import(
-    `data:text/javascript;base64,${Buffer.from(code).toString('base64')}`
-  );
+  const helperUrl = `data:text/javascript;base64,${Buffer.from(code).toString('base64')}`;
+  const { assertWindowsCredentialDirectory } = await import(helperUrl);
   function probe(kind) {
     scenario = kind;
     observation = { calls: 0, nativeTimeout: false, accepted: false };
@@ -80,7 +81,41 @@ try {
     true,
     'an unresponsive native probe must fail closed at a finite deadline'
   );
-  console.log(JSON.stringify({ caseId: CASE_ID, arm, slow, unsafe, hung }));
+  // Exercise the complete credential write too: a valid slow ACL result must
+  // not consume the separate lock-contention budget before the first attempt.
+  const storeSource = await readFile(path.join(target, 'packages/cloud/src/workspace-store.ts'), 'utf8');
+  const importSpecifier = "'./credential-directory-windows.js'";
+  assert.equal(storeSource.split(importSpecifier).length, 2);
+  const storeCode = stripTypeScriptTypes(storeSource.replace(importSpecifier, JSON.stringify(helperUrl)), {
+    mode: 'strip',
+  });
+  const store = await import(`data:text/javascript;base64,${Buffer.from(storeCode).toString('base64')}`);
+  scenario = 'slow-private';
+  observation = { calls: 0, nativeTimeout: false, accepted: false };
+  try {
+    store.writeRelaycastCredential(
+      'latency-fixture',
+      {
+        workspaceId: 'rw_latency_fixture',
+        route: 'canonical',
+        baseUrl: 'https://relay.example',
+        apiKey: 'test-credential',
+      },
+      { AGENT_RELAY_HOME: fixture }
+    );
+    observation.accepted = true;
+  } catch (error) {
+    assert.match(String(error), /Windows Relaycast credential storage requires a private directory/);
+  }
+  const write = observation;
+  assert.equal(write.calls, 1);
+  assert.equal(write.accepted, arm === 'head');
+  assert.equal(write.nativeTimeout, arm === 'base');
+  assert.equal(
+    store.readRelaycastCredential('latency-fixture', { AGENT_RELAY_HOME: fixture })?.workspaceId,
+    arm === 'head' ? 'rw_latency_fixture' : undefined
+  );
+  console.log(JSON.stringify({ caseId: CASE_ID, arm, slow, unsafe, hung, write }));
   const outcome =
     slow.accepted && !slow.nativeTimeout ? 'fixed' : !slow.accepted && slow.nativeTimeout ? 'bug' : null;
   assert.equal(outcome, arm === 'base' ? 'bug' : 'fixed');
@@ -94,7 +129,7 @@ try {
       outcome,
       signature:
         outcome === 'fixed' ? 'private_acl_cold_start_validated' : 'private_acl_cold_start_times_out',
-      details: `Actual runtime helper with real delayed child boundary: private=${slow.accepted}, unsafe denied, hung timed out; actual Windows ACL rules separately verified by native CI.`,
+      details: `Actual runtime helper with real delayed child boundary: private=${slow.accepted}, unsafe denied, hung timed out; full credential write=${write.accepted}; actual Windows ACL rules separately verified by native CI.`,
     }) + '\n'
   );
 } finally {
@@ -103,6 +138,7 @@ try {
   else process.env.SystemRoot = originalSystemRoot;
   childProcess.execFileSync = realExec;
   syncBuiltinESMExports();
+  await rm(fixture, { recursive: true, force: true });
 }
 function required(key) {
   const value = process.env[key];
