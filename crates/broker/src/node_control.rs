@@ -2007,12 +2007,24 @@ impl Drop for ProbeSessionGuard<'_> {
 /// engine can reject node.register while leaving the socket open; sending
 /// inventory or heartbeats then updates a fallback provider and masks the loss.
 /// Only this request's successful reply opens the application delivery path.
+///
+/// Also races `command_rx` so a `Shutdown` (or a closed command channel) can
+/// interrupt the wait. Without this, a `Shutdown` sent while a connection is
+/// mid-registration is stranded: the main command loop below only starts once
+/// registration resolves, so on a peer that never replies the caller would
+/// retry this gate forever and never observe the request to stop. Every other
+/// command received during the wait is queued in the returned `Vec` rather
+/// than applied here, so the caller can replay it through the exact same path
+/// the main loop uses once this gate opens — preserving the ordering an
+/// `UpdateInventory`/`RegisterAgent`/etc. would have had if it had simply
+/// arrived a moment later, after the registration reply.
 async fn register_node_session<S, R>(
     sink: &mut S,
     stream: &mut R,
     registration: &mut NodeRegister,
     config: &FleetControlConfig,
-) -> bool
+    command_rx: &mut mpsc::Receiver<FleetControlCommand>,
+) -> (Option<bool>, Vec<FleetControlCommand>)
 where
     S: Sink<Message> + Unpin,
     S::Error: std::error::Error + Send + Sync + 'static,
@@ -2026,47 +2038,218 @@ where
         .read_idle_timeout
         .unwrap_or(Duration::from_secs(10))
         .min(Duration::from_secs(10));
-    let accepted = tokio::time::timeout(deadline, async {
+    let mut deferred_commands: Vec<FleetControlCommand> = Vec::new();
+    let outcome = tokio::time::timeout(deadline, async {
         if send_wire(sink, &BrokerToRelaycast::NodeRegister(registration.clone())).await.is_err() {
-            return false;
+            return Some(false);
         }
-        while let Some(Ok(message)) = stream.next().await {
-            match message {
-                Message::Text(text) => {
-                    if let Some(probe) = config.probe.as_ref() { probe.record_text_frame(); }
-                    match serde_json::from_str::<RelaycastToBroker>(&text) {
-                        Ok(frame) => {
-                            if let Some(probe) = config.probe.as_ref() { probe.record_frame(&frame); }
-                            match frame {
-                                RelaycastToBroker::Reply(reply) if reply.id == id => return reply.ok,
-                                RelaycastToBroker::Error(error) => {
-                                    tracing::error!(code = %error.code, "node registration rejected; reconnecting without advertising delivery readiness");
-                                    return false;
+        loop {
+            tokio::select! {
+                message = stream.next() => {
+                    let Some(Ok(message)) = message else { return Some(false); };
+                    match message {
+                        Message::Text(text) => {
+                            if let Some(probe) = config.probe.as_ref() { probe.record_text_frame(); }
+                            match serde_json::from_str::<RelaycastToBroker>(&text) {
+                                Ok(frame) => {
+                                    if let Some(probe) = config.probe.as_ref() { probe.record_frame(&frame); }
+                                    match frame {
+                                        RelaycastToBroker::Reply(reply) if reply.id == id => return Some(reply.ok),
+                                        RelaycastToBroker::Error(error) => {
+                                            tracing::error!(code = %error.code, "node registration rejected; reconnecting without advertising delivery readiness");
+                                            return Some(false);
+                                        }
+                                        // The engine replies before replaying deliveries. Never
+                                        // acknowledge or inject a frame on an unaccepted provider.
+                                        RelaycastToBroker::Deliver(_) | RelaycastToBroker::ActionInvoke(_) => return Some(false),
+                                        _ => {},
+                                    }
                                 }
-                                // The engine replies before replaying deliveries. Never
-                                // acknowledge or inject a frame on an unaccepted provider.
-                                RelaycastToBroker::Deliver(_) | RelaycastToBroker::ActionInvoke(_) => return false,
-                                _ => {},
+                                Err(error) => {
+                                    if let Some(probe) = config.probe.as_ref() { probe.record_parse_failure(&error.to_string(), &text); }
+                                }
                             }
                         }
-                        Err(error) => {
-                            if let Some(probe) = config.probe.as_ref() { probe.record_parse_failure(&error.to_string(), &text); }
+                        Message::Ping(payload) => {
+                            if sink.send(Message::Pong(payload)).await.is_err() { return Some(false); }
                         }
+                        Message::Close(_) => return Some(false),
+                        _ => {},
                     }
                 }
-                Message::Ping(payload) => {
-                    if sink.send(Message::Pong(payload)).await.is_err() { return false; }
+                command = command_rx.recv() => {
+                    match command {
+                        Some(FleetControlCommand::Shutdown) | None => return None,
+                        Some(other) => deferred_commands.push(other),
+                    }
                 }
-                Message::Close(_) => return false,
-                _ => {},
             }
         }
-        false
-    }).await.unwrap_or(false);
-    if !accepted {
+    }).await;
+    let accepted = match outcome {
+        Ok(result) => result,
+        Err(_) => Some(false),
+    };
+    if accepted == Some(false) {
         tracing::warn!("node registration was not accepted within its deadline; delivery unavailable, reconnecting");
     }
-    accepted
+    (accepted, deferred_commands)
+}
+
+/// Handles one `FleetControlCommand` on an already-registered session — shared
+/// by the main command loop in `run_connected_once` and the replay of commands
+/// deferred while `register_node_session` was still waiting on the wire, so
+/// both paths apply a command identically. `ControlFlow::Break` carries the
+/// `ControlRunResult` the caller should return immediately (a disconnect or
+/// shutdown); `ControlFlow::Continue` means the session stays up.
+#[allow(clippy::too_many_arguments)]
+async fn handle_connected_command<S>(
+    command: Option<FleetControlCommand>,
+    sink: &mut S,
+    config: &FleetControlConfig,
+    provider: &FleetProviderIdentity,
+    node_register: &NodeRegister,
+    registration: &mut Option<NodeRegister>,
+    load: &mut FleetLoadSnapshot,
+    inventory: &mut Vec<InventoryAgent>,
+    pending_agent_registrations: &mut HashMap<String, PendingAgentRegistration>,
+    pending_deregistrations: &mut HashMap<String, oneshot::Sender<Result<(), String>>>,
+    application_liveness: &mut ApplicationLiveness,
+) -> std::ops::ControlFlow<ControlRunResult>
+where
+    S: Sink<Message> + Unpin,
+    S::Error: std::error::Error + Send + Sync + 'static,
+{
+    use std::ops::ControlFlow::{Break, Continue};
+    match command {
+        Some(FleetControlCommand::RegisterNode {
+            manifest,
+            resume_cursor,
+        }) => {
+            load.max_agents = manifest.max_agents.unwrap_or(load.max_agents);
+            load.handlers_live = true;
+            let mut next = build_node_register(
+                &manifest,
+                &config.node_id,
+                &config.node_name,
+                &config.broker_version,
+                resume_cursor,
+            );
+            next.provider = Some(provider.clone());
+            // Reopen the provider session for a new manifest. Running
+            // the registration gate inside this active socket would
+            // consume replies belonging to in-flight agent requests.
+            *registration = Some(next);
+            drain_agent_registrations(pending_agent_registrations, "node_control_reconfiguring");
+            for (_, pending) in pending_deregistrations.drain() {
+                let _ = pending.send(Err("node_control_reconfiguring".to_string()));
+            }
+            Break(ControlRunResult::Disconnected {
+                application_ready: application_liveness.ready,
+            })
+        }
+        Some(FleetControlCommand::UpdateInventory(next)) => {
+            *inventory = next;
+            if !send_inventory_sync(
+                sink,
+                inventory,
+                pending_agent_registrations,
+                application_liveness,
+            )
+            .await
+            {
+                return Break(ControlRunResult::Disconnected {
+                    application_ready: application_liveness.ready,
+                });
+            }
+            Continue(())
+        }
+        Some(FleetControlCommand::UpdateLoad(next)) => {
+            *load = next;
+            Continue(())
+        }
+        Some(FleetControlCommand::HeartbeatNow) => {
+            if send_wire(
+                sink,
+                &BrokerToRelaycast::NodeHeartbeat(load.heartbeat(node_register)),
+            )
+            .await
+            .is_err()
+            {
+                return Break(ControlRunResult::Disconnected {
+                    application_ready: application_liveness.ready,
+                });
+            }
+            Continue(())
+        }
+        Some(FleetControlCommand::Send(message)) => {
+            // A `delivery_ack` is the engine's only evidence that a
+            // frame was consumed. The runtime records the *decision*
+            // to ack before handing it here and cannot wait for the
+            // wire, so the probe learns the outcome at the one place
+            // that knows it. See `NodeDeliveryProbe::record_ack_sent`.
+            let is_ack = matches!(message, BrokerToRelaycast::DeliveryAck(_));
+            let sent = send_wire(sink, &message).await;
+            if let (true, Some(probe)) = (is_ack, config.probe.as_ref()) {
+                if sent.is_ok() {
+                    probe.record_ack_sent();
+                } else {
+                    probe.record_ack_send_failed();
+                }
+            }
+            if sent.is_err() {
+                return Break(ControlRunResult::Disconnected {
+                    application_ready: application_liveness.ready,
+                });
+            }
+            Continue(())
+        }
+        Some(FleetControlCommand::DeregisterAgent { mut request, reply }) => {
+            let request_id = format!("agent_deregister_{}", Uuid::new_v4().simple());
+            request.id = Some(request_id.clone());
+            pending_deregistrations.retain(|_, pending| !pending.is_closed());
+            pending_deregistrations.insert(request_id, reply);
+            if send_wire(sink, &BrokerToRelaycast::AgentDeregister(request))
+                .await
+                .is_err()
+            {
+                return Break(ControlRunResult::Disconnected {
+                    application_ready: application_liveness.ready,
+                });
+            }
+            Continue(())
+        }
+        Some(FleetControlCommand::RegisterAgent { mut request, reply }) => {
+            let request_id = request
+                .id
+                .clone()
+                .unwrap_or_else(|| format!("agent_register_{}", Uuid::new_v4().simple()));
+            request.id = Some(request_id.clone());
+            pending_agent_registrations.insert(
+                request_id,
+                PendingAgentRegistration {
+                    isolates_channels: request.auto_join_general == Some(false),
+                    name: request.name.clone(),
+                    reply,
+                    created_at: Instant::now(),
+                },
+            );
+            if send_wire(sink, &BrokerToRelaycast::AgentRegister(request))
+                .await
+                .is_err()
+            {
+                drain_agent_registrations(pending_agent_registrations, "node_control_disconnected");
+                return Break(ControlRunResult::Disconnected {
+                    application_ready: application_liveness.ready,
+                });
+            }
+            Continue(())
+        }
+        Some(FleetControlCommand::Shutdown) | None => {
+            drain_agent_registrations(pending_agent_registrations, "node_control_shutdown");
+            Break(ControlRunResult::Shutdown)
+        }
+    }
 }
 
 async fn run_connected_once(
@@ -2174,11 +2357,23 @@ async fn run_connected_once(
         .max(read_idle_timeout);
     let mut application_liveness = ApplicationLiveness::new(application_liveness_timeout);
 
-    if !register_node_session(&mut sink, &mut stream, &mut node_register, config).await {
-        return ControlRunResult::Disconnected {
-            application_ready: false,
-        };
-    }
+    let deferred_commands = match register_node_session(
+        &mut sink,
+        &mut stream,
+        &mut node_register,
+        config,
+        command_rx,
+    )
+    .await
+    {
+        (None, _) => return ControlRunResult::Shutdown,
+        (Some(false), _) => {
+            return ControlRunResult::Disconnected {
+                application_ready: false,
+            };
+        }
+        (Some(true), deferred_commands) => deferred_commands,
+    };
     *registration = Some(node_register.clone());
     let _ = event_tx.send(FleetControlEvent::Connected).await;
     if !send_inventory_sync(
@@ -2217,97 +2412,53 @@ async fn run_connected_once(
     inventory_refresh.tick().await;
     let mut last_inbound = Instant::now();
 
+    // Commands that arrived while `register_node_session` was still waiting on
+    // the wire are replayed here, in the order received, through the exact
+    // same handling the main loop below uses — so an `UpdateInventory` that
+    // raced the registration reply still triggers its own `inventory.sync`
+    // push (rather than silently folding into the one already sent) and a
+    // `RegisterAgent`/`DeregisterAgent` still gets a wire round trip instead
+    // of the early rejection `register_node_session` gives commands it can't
+    // service pre-connection.
+    for deferred in deferred_commands {
+        if let std::ops::ControlFlow::Break(result) = handle_connected_command(
+            Some(deferred),
+            &mut sink,
+            config,
+            &provider,
+            &node_register,
+            registration,
+            load,
+            inventory,
+            &mut pending_agent_registrations,
+            &mut pending_deregistrations,
+            &mut application_liveness,
+        )
+        .await
+        {
+            return result;
+        }
+    }
+
     loop {
         tokio::select! {
             command = command_rx.recv() => {
-                match command {
-                    Some(FleetControlCommand::RegisterNode { manifest, resume_cursor }) => {
-                        load.max_agents = manifest.max_agents.unwrap_or(load.max_agents);
-                        load.handlers_live = true;
-                        let mut next = build_node_register(&manifest, &config.node_id, &config.node_name, &config.broker_version, resume_cursor);
-                        next.provider = Some(provider.clone());
-                        // Reopen the provider session for a new manifest. Running
-                        // the registration gate inside this active socket would
-                        // consume replies belonging to in-flight agent requests.
-                        *registration = Some(next);
-                        drain_agent_registrations(&mut pending_agent_registrations, "node_control_reconfiguring");
-                        for (_, pending) in pending_deregistrations.drain() {
-                            let _ = pending.send(Err("node_control_reconfiguring".to_string()));
-                        }
-                        return ControlRunResult::Disconnected { application_ready: application_liveness.ready };
-                    }
-                    Some(FleetControlCommand::UpdateInventory(next)) => {
-                        *inventory = next;
-                        if !send_inventory_sync(
-                            &mut sink,
-                            inventory,
-                            &mut pending_agent_registrations,
-                            &mut application_liveness,
-                        )
-                        .await
-                        {
-                            return ControlRunResult::Disconnected { application_ready: application_liveness.ready };
-                        }
-                    }
-                    Some(FleetControlCommand::UpdateLoad(next)) => {
-                        *load = next;
-                    }
-                    Some(FleetControlCommand::HeartbeatNow) => {
-                        if send_wire(&mut sink, &BrokerToRelaycast::NodeHeartbeat(load.heartbeat(&node_register))).await.is_err() {
-                            return ControlRunResult::Disconnected { application_ready: application_liveness.ready };
-                        }
-                    }
-                    Some(FleetControlCommand::Send(message)) => {
-                        // A `delivery_ack` is the engine's only evidence that a
-                        // frame was consumed. The runtime records the *decision*
-                        // to ack before handing it here and cannot wait for the
-                        // wire, so the probe learns the outcome at the one place
-                        // that knows it. See `NodeDeliveryProbe::record_ack_sent`.
-                        let is_ack = matches!(message, BrokerToRelaycast::DeliveryAck(_));
-                        let sent = send_wire(&mut sink, &message).await;
-                        if let (true, Some(probe)) = (is_ack, config.probe.as_ref()) {
-                            if sent.is_ok() {
-                                probe.record_ack_sent();
-                            } else {
-                                probe.record_ack_send_failed();
-                            }
-                        }
-                        if sent.is_err() {
-                            return ControlRunResult::Disconnected { application_ready: application_liveness.ready };
-                        }
-                    }
-                    Some(FleetControlCommand::DeregisterAgent { mut request, reply }) => {
-                        let request_id = format!("agent_deregister_{}", Uuid::new_v4().simple());
-                        request.id = Some(request_id.clone());
-                        pending_deregistrations.retain(|_, pending| !pending.is_closed());
-                        pending_deregistrations.insert(request_id, reply);
-                        if send_wire(&mut sink, &BrokerToRelaycast::AgentDeregister(request)).await.is_err() {
-                            return ControlRunResult::Disconnected { application_ready: application_liveness.ready };
-                        }
-                    }
-                    Some(FleetControlCommand::RegisterAgent { mut request, reply }) => {
-                        let request_id = request.id.clone().unwrap_or_else(|| {
-                            format!("agent_register_{}", Uuid::new_v4().simple())
-                        });
-                        request.id = Some(request_id.clone());
-                        pending_agent_registrations.insert(
-                            request_id,
-                            PendingAgentRegistration {
-                                isolates_channels: request.auto_join_general == Some(false),
-                                name: request.name.clone(),
-                                reply,
-                                created_at: Instant::now(),
-                            },
-                        );
-                        if send_wire(&mut sink, &BrokerToRelaycast::AgentRegister(request)).await.is_err() {
-                            drain_agent_registrations(&mut pending_agent_registrations, "node_control_disconnected");
-                            return ControlRunResult::Disconnected { application_ready: application_liveness.ready };
-                        }
-                    }
-                    Some(FleetControlCommand::Shutdown) | None => {
-                        drain_agent_registrations(&mut pending_agent_registrations, "node_control_shutdown");
-                        return ControlRunResult::Shutdown;
-                    }
+                if let std::ops::ControlFlow::Break(result) = handle_connected_command(
+                    command,
+                    &mut sink,
+                    config,
+                    &provider,
+                    &node_register,
+                    registration,
+                    load,
+                    inventory,
+                    &mut pending_agent_registrations,
+                    &mut pending_deregistrations,
+                    &mut application_liveness,
+                )
+                .await
+                {
+                    return result;
                 }
             }
             _ = heartbeat.tick() => {
