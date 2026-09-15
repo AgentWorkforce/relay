@@ -185,7 +185,7 @@ when available and otherwise tells you to retry without `--background`; a child
 that already exited is no longer misreported as an unkillable half-started
 broker.
 
-## Remote fleet agents
+## Local and remote fleet agents
 
 The `fleet` command group lists and controls agents across all live nodes in
 the active project workspace:
@@ -208,8 +208,11 @@ agent-relay fleet spawn codex \
   --node sf-mini \
   --session-ref <actual-codex-thread-id>
 
-# Omit --node for automatic eligible-node placement.
+# No placement options: use the local broker and this exact working directory.
 agent-relay fleet spawn codex --name api-worker --task "Review the current diff."
+
+# Opt into automatic eligible-node placement.
+agent-relay fleet spawn codex --name api-worker --task "Review the current diff." --auto-place
 
 # Provision a fresh E2B node, require the current Relayfile workspace to mount
 # at /workspace, wait for readiness, then spawn Codex there.
@@ -238,6 +241,17 @@ set `RELAY_AGENT_TOKEN` to the token returned by
 `agent-relay agent register <lead-name>`. `fleet spawn --sandbox` needs a Cloud
 login (`agent-relay cloud login`) but does not need an agent token: when one is
 absent, it creates and removes a short-lived launcher identity automatically.
+
+Without placement options, `fleet spawn` connects to the local project's broker
+and passes the caller's exact directory, including a nested package, to the
+worker. Start the local broker with `agent-relay node up` if it is not running;
+a local connection failure never falls back to remote placement. `--cwd` selects
+a different local directory on this path. Model and channel options stay local.
+`--auto-place`, `--node`, and `--sandbox` select remote placement explicitly.
+Legacy invocations with an explicit `--workspace-key`/`--wk`, `--token`,
+`--base-url`, or `--persona` retain automatic fleet placement when no node or
+sandbox is selected. Ambient credentials and persisted Cloud routing do not
+change the local default. Workforce reporting metadata requires remote placement.
 Automatic placement and release need only the workspace key.
 
 The sandbox path provisions a fresh hosted instance and makes the Relayfile

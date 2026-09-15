@@ -1,7 +1,8 @@
 import type { Command } from 'commander';
 
 import { AGENT37_RELAYCAST_ORIGIN } from '@agent-relay/cloud';
-import { HarnessDriverClient } from '@agent-relay/harness-driver';
+import { findProjectRoot } from '@agent-relay/config';
+import type { HarnessDriverClient } from '@agent-relay/harness-driver';
 import type { InboundDeliveryMode, ListAgent, PendingRelayMessage } from '@agent-relay/harness-driver';
 import type { HarnessRuntime } from '@agent-relay/harnesses';
 import { stripAnsiFast } from '@agent-relay/utils';
@@ -23,6 +24,7 @@ import {
   type BrokerConnectionOptions,
 } from '../lib/broker-connection.js';
 import { resolvedSpawnRuntime, spawnAgentWithClient } from '../lib/client-factory.js';
+import { connectProjectBrokerClient } from '../lib/project-broker-client.js';
 import { describeError } from '../lib/describe-error.js';
 import { defaultExit } from '../lib/exit.js';
 import { resolveFleetAttachTarget, type FleetAttachResolution } from '../lib/fleet-attach-target.js';
@@ -208,7 +210,7 @@ export interface LocalAgentDependencies {
 
 function withDefaults(overrides: Partial<LocalAgentDependencies> = {}): LocalAgentDependencies {
   const deps = {
-    connect: async (cwd: string) => HarnessDriverClient.connect({ cwd }),
+    connect: async (cwd: string) => connectProjectBrokerClient(findProjectRoot(cwd)),
     cwd: () => process.cwd(),
     readConnectionFile: readConnectionFileFromDisk,
     getDefaultStateDir: defaultStateDir,
@@ -787,7 +789,7 @@ export function registerLocalAgentCommands(
           channels: (opts.channels as string[] | undefined) ?? ['general'],
           task: resolved.task,
           model: resolved.model,
-          cwd: opts.cwd as string | undefined,
+          cwd: (opts.cwd as string | undefined) ?? deps.cwd(),
           spawnMode,
           exitAfterTask: opts.exitAfterTask as boolean | undefined,
           runtime: runtime.requested,
@@ -846,7 +848,7 @@ export function registerLocalAgentCommands(
           channels: (options.channels as string[] | undefined) ?? ['general'],
           task: resolved.task,
           model: resolved.model,
-          cwd: options.cwd as string | undefined,
+          cwd: (options.cwd as string | undefined) ?? deps.cwd(),
           spawnMode,
           exitAfterTask: options.exitAfterTask as boolean | undefined,
           runtime: runtime.requested,

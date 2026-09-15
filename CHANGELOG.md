@@ -9,6 +9,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- `fleet spawn` without placement options starts locally in the caller's exact
+  directory; `--auto-place` explicitly requests automatic fleet placement.
 - Plain `fleet spawn --sandbox` starts from a clean, pushed GitHub `HEAD`, mounts
   its decoded source tree and `.skills` through Relayfile, maps the caller's
   relative directory, and keeps the tree synchronized as GitHub changes flow

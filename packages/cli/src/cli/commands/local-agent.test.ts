@@ -1,3 +1,7 @@
+import fs from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
+
 import { Command } from 'commander';
 import { describe, expect, it, vi } from 'vitest';
 
@@ -897,7 +901,10 @@ describe('local agent subtree', () => {
 
     await program.parseAsync(['local', 'agent', 'list'], { from: 'user' });
 
-    expect(harnessConnectMock).toHaveBeenCalledWith({ cwd: '/tmp/project' });
+    expect(harnessConnectMock).toHaveBeenCalledWith({
+      cwd: '/tmp/project',
+      connectionPath: '/tmp/project/.agentworkforce/relay/connection.json',
+    });
     expect(client.listAgents).toHaveBeenCalled();
     expect(log).toHaveBeenCalledWith('[]');
     expect(client.disconnect).toHaveBeenCalled();
@@ -913,6 +920,41 @@ describe('local agent subtree', () => {
       expect.objectContaining({ name: 'Worker', cli: 'claude', cwd: '/home/user/my-project' })
     );
   });
+
+  it('ignores stale state directories and connects to the enclosing checkout broker while spawning in a nested package', async () => {
+    vi.stubEnv('AGENT_RELAY_STATE_DIR', '/tmp/unrelated-checkout/relay');
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'relay-local-nested-'));
+    const nested = path.join(root, 'packages', 'web');
+    fs.mkdirSync(path.join(root, '.git'));
+    fs.mkdirSync(nested, { recursive: true });
+    const client = { spawnPty: vi.fn(async () => undefined), disconnect: vi.fn() };
+    harnessConnectMock.mockReturnValueOnce(client);
+    const program = new Command();
+    program.exitOverride();
+    registerLocalAgentCommands(program.command('local'), { cwd: () => nested, log: vi.fn() });
+    try {
+      await program.parseAsync(['local', 'agent', 'spawn', 'codex'], { from: 'user' });
+      expect(harnessConnectMock).toHaveBeenLastCalledWith({
+        cwd: root,
+        connectionPath: path.join(root, '.agentworkforce/relay/connection.json'),
+      });
+      expect(client.spawnPty).toHaveBeenCalledWith(expect.objectContaining({ cwd: nested }));
+      expect(client.disconnect).toHaveBeenCalledOnce();
+    } finally {
+      fs.rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it.each(['spawn', 'new'])(
+    '%s passes the caller directory rather than the broker startup directory',
+    async (command) => {
+      const { program, client } = harness({ cwd: () => '/tmp/project/packages/web' });
+      await program.parseAsync(['local', 'agent', command, 'codex', '--name', 'Nested'], { from: 'user' });
+      expect(client.spawnPty).toHaveBeenCalledWith(
+        expect.objectContaining({ name: 'Nested', cli: 'codex', cwd: '/tmp/project/packages/web' })
+      );
+    }
+  );
 
   it('release calls client.release', async () => {
     const { program, client } = harness();

@@ -32,6 +32,8 @@ import {
   type RosterAgent,
 } from './fleet-agent.js';
 import { readBrokerConnection } from '../lib/broker-lifecycle.js';
+import { spawnAgentWithClient } from '../lib/client-factory.js';
+import { connectProjectBrokerClient } from '../lib/project-broker-client.js';
 import { isAvailableFleetNode } from '../lib/fleet-live-agents.js';
 import { declaredWorkforceMetadata } from '../lib/registration-metadata.js';
 import { redactSecrets } from '../lib/redact.js';
@@ -188,6 +190,8 @@ function throwForTerminalSpawnFailure(invocation: Record<string, unknown>): void
 export interface FleetCommandDependencies {
   core: CoreDependencies;
   sdk: SdkCommandDeps;
+  cwd: () => string;
+  connectLocalBroker: (cwd: string) => Promise<HarnessDriverClient>;
   createFleetWorkspaceClient: (options: SdkClientOptions) => RelayWorkspaceThinClient;
   resolveWorkspaceSelection: typeof resolveWorkspaceSelection;
   resolveSandboxRepository: typeof resolveSandboxRepository;
@@ -209,6 +213,8 @@ function withFleetDefaults(overrides: Partial<FleetCommandDependencies> = {}): F
   return {
     core,
     sdk,
+    cwd: () => process.cwd(),
+    connectLocalBroker: async (cwd) => connectProjectBrokerClient(cwd),
     createFleetWorkspaceClient: (options) => {
       const { workspaceKey, baseUrl } = resolveWorkspaceTransport(options);
       return createWorkspaceClient({ workspaceKey, baseUrl });
@@ -299,10 +305,11 @@ export function registerFleetCommands(
   addSdkOptions(
     group
       .command('spawn')
-      .description('Spawn an agent on a fleet node')
+      .description('Spawn locally by default, or select a fleet node or Cloud sandbox explicitly')
       .argument('<cli>', 'AI CLI to launch', parseFleetCli)
       .requiredOption('--name <name>', 'Worker agent name')
       .requiredOption('--task <text>', 'Initial task instructions')
+      .option('--auto-place', 'Request automatic eligible-node placement in the Relay workspace')
       .option('--node <name>', 'Target a specific fleet node')
       .option('--target-node <name>', 'Alias for --node')
       .option(
@@ -330,7 +337,7 @@ export function registerFleetCommands(
       .option('--model <model>', 'Model powering the worker')
       .option(
         '--cwd <path>',
-        'Working directory. With --sandbox, a local repo-relative path resolves to the materialized source tree; without --sandbox, use an absolute remote path (relative paths are forwarded verbatim)'
+        'Working directory: defaults to the caller directory for local spawn; maps a local repo-relative path with --sandbox; otherwise selects a path on the remote node'
       )
       .option('--organization <organization>', 'Declared organization for workforce reporting')
       .option('--project <project>', 'Declared project for workforce reporting')
@@ -349,12 +356,23 @@ export function registerFleetCommands(
       )
   ).action(async (cli: string, options: Record<string, unknown>) => {
     await runSdk(deps.sdk, async () => {
-      warnIfInferredFromProjectSession(options, deps.warn);
       const clientOptions = sdkOptionsFromOpts(options);
       const name = requiredText(options.name, 'Worker name');
       const task = requiredText(options.task, 'Task');
       let targetNode = optionalText(options.targetNode, 'Target node') ?? optionalText(options.node, 'Node');
       const useSandbox = options.sandbox === true;
+      // Explicit hosted credentials/transport and personas retain their legacy
+      // automatic-placement contract. Ambient credentials and a persisted
+      // Cloud target must never turn a flag-free local spawn into a remote one.
+      const automaticPlacement =
+        options.autoPlace === true ||
+        ['workspaceKey', 'token', 'baseUrl', 'persona'].some((key) => options[key] !== undefined);
+      if (options.autoPlace === true && (useSandbox || targetNode)) {
+        throw new Error('--auto-place cannot be combined with --sandbox, --node, or --target-node.');
+      }
+      if (useSandbox || targetNode || automaticPlacement) {
+        warnIfInferredFromProjectSession(options, deps.warn);
+      }
       const checkoutRepository = options.checkout === true;
       const sandboxName = optionalText(options.sandboxName, 'Sandbox name');
       const sandboxIdOption = optionalText(options.sandboxId, 'Sandbox ID');
@@ -935,6 +953,30 @@ export function registerFleetCommands(
         throw new Error('--session-ref requires --node or --target-node.');
       }
       const persona = optionalText(options.persona, 'Persona');
+      if (!automaticPlacement) {
+        if (organization || project || workstream || role || objective) {
+          throw new Error('Workforce metadata requires --auto-place, --node, or --sandbox.');
+        }
+        const callerCwd = deps.cwd();
+        const localCwd = path.resolve(callerCwd, requestedCwd ?? '.');
+        const local = await deps.connectLocalBroker(deps.findProjectRoot(callerCwd));
+        try {
+          await spawnAgentWithClient(local, {
+            name,
+            cli,
+            task,
+            channels: [channel ?? 'general'],
+            ...(model ? { model } : {}),
+            // A broker can be shared by nested packages. Never inherit its
+            // startup directory when the caller requested a local checkout.
+            cwd: localCwd,
+          });
+          printJson(deps.sdk, { local: { name, cli, cwd: localCwd } });
+        } finally {
+          local.disconnect();
+        }
+        return;
+      }
       const workspace = deps.createFleetWorkspaceClient(clientOptions);
       const invocation = await workspace.agents.spawn({
         name,

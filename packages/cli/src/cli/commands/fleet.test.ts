@@ -4,6 +4,7 @@ import path from 'node:path';
 
 import { Command } from 'commander';
 import { CloudFleetSandboxProvisionError } from '@agent-relay/cloud';
+import { HarnessDriverClient } from '@agent-relay/harness-driver';
 import { defineNode, invokeNodeHandler, spawn as fleetSpawn } from '@agent-relay/fleet';
 import { RelayPlacementError } from '@agent-relay/sdk';
 import { afterEach, describe, expect, it, vi } from 'vitest';
@@ -22,6 +23,7 @@ vi.mock('../lib/broker-lifecycle.js', () => ({
 vi.mock('@agent-relay/harness-driver', async (importOriginal) => ({
   ...(await importOriginal<typeof import('@agent-relay/harness-driver')>()),
   HarnessDriverClient: class {
+    static connect = vi.fn();
     async getSession() {
       return {
         workspace_key: 'rk_live_secret',
@@ -3336,7 +3338,140 @@ describe('fleet command support', () => {
     expect(String(errors.join('\n'))).toContain('--confirm-timeout');
   });
 
-  it('fleet spawn uses workspace-scoped automatic placement when no node is named', async () => {
+  describe('local default spawn', () => {
+    function setup(useDefaultConnector = false) {
+      const cwd = path.resolve(os.tmpdir(), 'relay-local-fixture', 'packages', 'web');
+      const projectRoot = path.resolve(cwd, '../..');
+      const local = { spawnPty: vi.fn(async () => undefined), disconnect: vi.fn() };
+      const connectLocalBroker = vi.fn(async () => local);
+      const remoteSpawn = vi.fn(async () => ({ invocation_id: 'inv_explicit_auto', status: 'accepted' }));
+      const createFleetWorkspaceClient = vi.fn(() => ({ agents: { spawn: remoteSpawn } }));
+      const ensureCloudFleetSandbox = vi.fn();
+      const createWorkspaceRelay = vi.fn();
+      const logs: string[] = [];
+      const errors: string[] = [];
+      const program = new Command();
+      program.exitOverride();
+      registerFleetCommands(program, {
+        cwd: () => cwd,
+        findProjectRoot: (directory) => {
+          expect(directory).toBe(cwd);
+          return projectRoot;
+        },
+        ...(useDefaultConnector ? {} : { connectLocalBroker: connectLocalBroker as never }),
+        createFleetWorkspaceClient: createFleetWorkspaceClient as never,
+        ensureCloudFleetSandbox,
+        sdk: {
+          createAgentRelay: vi.fn() as never,
+          createWorkspaceRelay: createWorkspaceRelay as never,
+          createWorkspace: vi.fn() as never,
+          log: (message: unknown) => logs.push(String(message)),
+          error: (message: unknown) => errors.push(String(message)),
+          exit: vi.fn(() => {
+            throw new Error('__exit__');
+          }) as never,
+        },
+        warn: vi.fn(),
+      });
+      const parse = (extra: string[] = []) =>
+        program.parseAsync(
+          ['fleet', 'spawn', 'codex', '--name', 'local-worker', '--task', 'Inspect the checkout', ...extra],
+          { from: 'user' }
+        );
+      return {
+        cwd,
+        projectRoot,
+        local,
+        connectLocalBroker,
+        createFleetWorkspaceClient,
+        remoteSpawn,
+        ensureCloudFleetSandbox,
+        createWorkspaceRelay,
+        logs,
+        errors,
+        parse,
+      };
+    }
+
+    it('uses the caller nested directory and local broker despite ambient hosted credentials', async () => {
+      vi.stubEnv('RELAY_WORKSPACE_KEY', 'rk_live_ambient_test');
+      vi.stubEnv('RELAY_AGENT_TOKEN', 'at_live_ambient_test');
+      vi.stubEnv('RELAY_BASE_URL', 'https://agent37-cast.agentrelay.com');
+      const fixture = setup();
+      await fixture.parse();
+      expect(fixture.connectLocalBroker).toHaveBeenCalledWith(fixture.projectRoot);
+      expect(fixture.local.spawnPty).toHaveBeenCalledWith({
+        name: 'local-worker',
+        cli: 'codex',
+        task: 'Inspect the checkout',
+        channels: ['general'],
+        cwd: fixture.cwd,
+      });
+      expect(fixture.local.disconnect).toHaveBeenCalledOnce();
+      expect(fixture.createFleetWorkspaceClient).not.toHaveBeenCalled();
+      expect(fixture.createWorkspaceRelay).not.toHaveBeenCalled();
+      expect(fixture.ensureCloudFleetSandbox).not.toHaveBeenCalled();
+      expect(JSON.parse(fixture.logs[0]!)).toEqual({
+        local: { name: 'local-worker', cli: 'codex', cwd: fixture.cwd },
+      });
+    });
+
+    it('ignores another checkout state directory when selecting the default local broker', async () => {
+      vi.stubEnv('AGENT_RELAY_STATE_DIR', '/tmp/unrelated-checkout/relay');
+      const fixture = setup(true);
+      vi.mocked(HarnessDriverClient.connect).mockReturnValueOnce(fixture.local as never);
+      await fixture.parse();
+      expect(HarnessDriverClient.connect).toHaveBeenLastCalledWith({
+        cwd: fixture.projectRoot,
+        connectionPath: path.join(fixture.projectRoot, '.agentworkforce/relay/connection.json'),
+      });
+      expect(fixture.local.spawnPty).toHaveBeenCalledWith(expect.objectContaining({ cwd: fixture.cwd }));
+      expect(fixture.createFleetWorkspaceClient).not.toHaveBeenCalled();
+    });
+
+    it('keeps model and channel options local and resolves cwd relative to the caller', async () => {
+      const fixture = setup();
+      await fixture.parse(['--cwd', '../core', '--model', 'gpt-5', '--channel', 'review']);
+      expect(fixture.local.spawnPty).toHaveBeenCalledWith({
+        name: 'local-worker',
+        cli: 'codex',
+        task: 'Inspect the checkout',
+        channels: ['review'],
+        model: 'gpt-5',
+        cwd: path.resolve(fixture.cwd, '../core'),
+      });
+      expect(fixture.createFleetWorkspaceClient).not.toHaveBeenCalled();
+    });
+
+    it('never falls back to remote placement after a local connection or spawn failure', async () => {
+      const unavailable = setup();
+      unavailable.connectLocalBroker.mockRejectedValue(new Error('Local broker is unavailable'));
+      await expect(unavailable.parse()).rejects.toThrow('__exit__');
+      expect(unavailable.createFleetWorkspaceClient).not.toHaveBeenCalled();
+      expect(unavailable.ensureCloudFleetSandbox).not.toHaveBeenCalled();
+      const failedSpawn = setup();
+      failedSpawn.local.spawnPty.mockRejectedValue(new Error('Local harness failed'));
+      await expect(failedSpawn.parse()).rejects.toThrow('__exit__');
+      expect(failedSpawn.local.disconnect).toHaveBeenCalledOnce();
+      expect(failedSpawn.createFleetWorkspaceClient).not.toHaveBeenCalled();
+    });
+
+    it('requires explicit automatic placement and rejects conflicting placement options', async () => {
+      const automatic = setup();
+      await automatic.parse(['--auto-place']);
+      expect(automatic.remoteSpawn).toHaveBeenCalledOnce();
+      expect(automatic.connectLocalBroker).not.toHaveBeenCalled();
+      for (const selection of [['--sandbox'], ['--node', 'sf-mini']]) {
+        const conflict = setup();
+        await expect(conflict.parse(['--auto-place', ...selection])).rejects.toThrow('__exit__');
+        expect(conflict.errors.join('\n')).toContain('--auto-place cannot be combined');
+        expect(conflict.ensureCloudFleetSandbox).not.toHaveBeenCalled();
+        expect(conflict.connectLocalBroker).not.toHaveBeenCalled();
+      }
+    });
+  });
+
+  it('fleet spawn preserves explicitly selected workspace automatic placement when no node is named', async () => {
     const spawn = vi.fn(async () => ({ invocation_id: 'inv_auto', status: 'accepted' }));
     const createFleetWorkspaceClient = vi.fn(() => ({ agents: { spawn } }));
     const logs: string[] = [];
