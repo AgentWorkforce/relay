@@ -104,6 +104,9 @@ async function start() {
       env: {
         PATH: process.env.PATH,
         TMPDIR: directory,
+        // This proof only consumes captured process output. Avoid the default
+        // rolling file under a runner-owned home directory.
+        AGENT_RELAY_BROKER_LOG: 'stderr',
         RELAYCAST_BASE_URL: engine.baseUrl,
         RELAY_BASE_URL: engine.baseUrl,
         RELAY_BROKER_API_KEY: 'br_fixture_task_proof',
