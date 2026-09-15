@@ -957,26 +957,13 @@ impl BrokerRuntime {
         // acknowledge" — not "the engine was told". The probe therefore tallies
         // the handoff here and the wire write in the socket task, so a reader
         // can tell an ack the engine received from one that died in between.
-        match self
-            .fleet_control_tx
-            .send(FleetControlCommand::Send(delivery_ack(
-                deliver.agent.clone(),
-                up_to_seq,
-            )))
-            .await
-        {
-            Ok(()) => self.node_delivery_probe.record_ack_enqueued(),
-            Err(_) => {
-                self.node_delivery_probe.record_ack_enqueue_failed();
-                tracing::warn!(
-                    target = "relay_broker::fleet",
-                    agent = %deliver.agent,
-                    delivery_id = %deliver.delivery_id,
-                    up_to_seq,
-                    "node control is gone; delivery ack was never queued"
-                );
-            }
-        }
+        enqueue_delivery_ack(
+            &self.fleet_control_tx,
+            &self.node_delivery_probe,
+            deliver.agent.clone(),
+            up_to_seq,
+        )
+        .await;
     }
 
     /// Republish the delivery book's cursors into the shared probe when the
@@ -1708,6 +1695,34 @@ fn fleet_spawn_outcome(
     }
 }
 
+/// Count every runtime-to-control acknowledgement handoff at the same boundary,
+/// including deferred worker confirmations and explicit manual flushes.
+pub(super) async fn enqueue_delivery_ack(
+    control_tx: &mpsc::Sender<FleetControlCommand>,
+    probe: &crate::node_delivery_probe::NodeDeliveryProbe,
+    agent: String,
+    up_to_seq: u64,
+) {
+    match control_tx
+        .send(FleetControlCommand::Send(delivery_ack(
+            agent.clone(),
+            up_to_seq,
+        )))
+        .await
+    {
+        Ok(()) => probe.record_ack_enqueued(),
+        Err(_) => {
+            probe.record_ack_enqueue_failed();
+            tracing::warn!(
+                target = "relay_broker::fleet",
+                agent,
+                up_to_seq,
+                "node control is gone; delivery ack was never queued"
+            );
+        }
+    }
+}
+
 /// Resolve a fleet (engine-facing) `delivery_ack` withheld pending
 /// confirmation of a specific PTY injection (relay#1310: the ack must not
 /// fire before the worker confirms the write landed). Called with the
@@ -1857,6 +1872,7 @@ pub(super) async fn flush_pending_relay_messages(
     workers: &mut WorkerRegistry,
     fleet_delivery_book: &mut FleetDeliveryBook,
     fleet_control_tx: &mpsc::Sender<FleetControlCommand>,
+    node_delivery_probe: &crate::node_delivery_probe::NodeDeliveryProbe,
     sdk_out_tx: &mpsc::Sender<ProtocolEnvelope<Value>>,
     dead_letters: &mut DeadLetterStore,
     obligation_store: &mut crate::obligation::ObligationStore,
@@ -1969,21 +1985,13 @@ pub(super) async fn flush_pending_relay_messages(
                 ));
                 break;
             };
-            if let Err(error) = fleet_control_tx
-                .send(FleetControlCommand::Send(delivery_ack(
-                    receipt.agent.to_string(),
-                    up_to_seq,
-                )))
-                .await
-            {
-                tracing::warn!(
-                    target = "relay_broker::fleet",
-                    agent = %receipt.agent,
-                    up_to_seq,
-                    error = %error,
-                    "failed to enqueue delivery ACK after manual flush"
-                );
-            }
+            enqueue_delivery_ack(
+                fleet_control_tx,
+                node_delivery_probe,
+                receipt.agent.to_string(),
+                up_to_seq,
+            )
+            .await;
         }
 
         let removed = delivery_states

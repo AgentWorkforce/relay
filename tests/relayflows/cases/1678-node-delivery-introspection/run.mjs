@@ -274,12 +274,15 @@ try {
       );
     }
 
-    await eng(
+    const dmResponse = await eng(
       'POST',
       '/v1/dm',
       { to: AGENT, text: 'deliver frame probe' },
       { authorization: `Bearer ${senderToken}` }
     );
+    if (dmResponse.status < 200 || dmResponse.status >= 300) {
+      throw new Error(`Engine rejected probe DM with HTTP ${dmResponse.status}.`);
+    }
 
     const after = await waitFor(async () => {
       const current = await probe();

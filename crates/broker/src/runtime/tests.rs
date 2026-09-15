@@ -963,6 +963,15 @@ async fn inbound_queue_rejects_overflow_without_evicting_held_message() {
 
 #[tokio::test]
 async fn manual_flush_injects_and_acks_multiple_sequences_in_fifo_order() {
+    manual_flush_ack_diagnostics(false).await;
+}
+
+#[tokio::test]
+async fn manual_flush_records_closed_control_ack_enqueue_failures() {
+    manual_flush_ack_diagnostics(true).await;
+}
+
+async fn manual_flush_ack_diagnostics(closed: bool) {
     let worker_name = WorkerName::from("worker-a");
     let mut workers = make_worker_registry_with_worker(&worker_name).await;
     let first = fleet_deliver(1);
@@ -978,6 +987,11 @@ async fn manual_flush_injects_and_acks_multiple_sequences_in_fifo_order() {
     delivery_book.commit_received(&second);
     let (fleet_control_tx, mut fleet_control_rx) = mpsc::channel(4);
 
+    if closed {
+        fleet_control_rx.close();
+    }
+    let probe = crate::node_delivery_probe::NodeDeliveryProbe::new();
+
     let (sdk_out_tx, mut sdk_out_rx) = mpsc::channel(16);
     let _ = &mut sdk_out_rx;
     let mut dead_letters = DeadLetterStore::new(Vec::new());
@@ -987,6 +1001,7 @@ async fn manual_flush_injects_and_acks_multiple_sequences_in_fifo_order() {
         &mut workers,
         &mut delivery_book,
         &fleet_control_tx,
+        &probe,
         &sdk_out_tx,
         &mut dead_letters,
         &mut obligation_store,
@@ -1001,7 +1016,7 @@ async fn manual_flush_injects_and_acks_multiple_sequences_in_fifo_order() {
     assert!(delivery_states[&worker_name].pending.is_empty());
     assert_eq!(delivery_book.received_up_to_seq("agent-worker-a"), 2);
     assert_eq!(delivery_book.acked_up_to_seq("agent-worker-a"), 2);
-    for expected_seq in [1, 2] {
+    for expected_seq in if closed { vec![] } else { vec![1, 2] } {
         match fleet_control_rx.recv().await {
             Some(FleetControlCommand::Send(BrokerToRelaycast::DeliveryAck(ack))) => {
                 assert_eq!(ack.agent, worker_name);
@@ -1012,6 +1027,13 @@ async fn manual_flush_injects_and_acks_multiple_sequences_in_fifo_order() {
     }
     assert!(fleet_control_rx.try_recv().is_err());
 
+    let snapshot = probe.snapshot_with_token(true);
+    assert_eq!(snapshot["acks"]["enqueued"], if closed { 0 } else { 2 });
+    assert_eq!(
+        snapshot["acks"]["enqueue_failed"],
+        if closed { 2 } else { 0 }
+    );
+    assert_eq!(snapshot["acks"]["sent"], 0);
     cleanup_worker_registry(workers).await;
 }
 
@@ -1060,6 +1082,7 @@ async fn manual_flush_dead_letters_messages_whose_identity_was_rebound() {
         &mut workers,
         &mut delivery_book,
         &fleet_control_tx,
+        &crate::node_delivery_probe::NodeDeliveryProbe::new(),
         &sdk_out_tx,
         &mut dead_letters,
         &mut obligation_store,
@@ -1149,6 +1172,7 @@ async fn manual_flush_dead_letter_events_do_not_serialize_backpressure_timeouts(
             &mut workers,
             &mut delivery_book,
             &fleet_control_tx,
+            &crate::node_delivery_probe::NodeDeliveryProbe::new(),
             &sdk_out_tx,
             &mut dead_letters,
             &mut obligation_store,
@@ -1202,6 +1226,7 @@ async fn manual_flush_dead_letters_messages_left_behind_by_a_reseeded_cursor() {
         &mut workers,
         &mut delivery_book,
         &fleet_control_tx,
+        &crate::node_delivery_probe::NodeDeliveryProbe::new(),
         &sdk_out_tx,
         &mut dead_letters,
         &mut obligation_store,
@@ -1296,6 +1321,7 @@ async fn manual_flush_cancels_the_obligation_of_a_dead_lettered_parked_message()
         &mut workers,
         &mut delivery_book,
         &fleet_control_tx,
+        &crate::node_delivery_probe::NodeDeliveryProbe::new(),
         &sdk_out_tx,
         &mut dead_letters,
         &mut obligation_store,
@@ -1351,6 +1377,7 @@ async fn manual_flush_orphans_a_receipt_whose_identity_now_answers_to_another_na
         &mut workers,
         &mut delivery_book,
         &fleet_control_tx,
+        &crate::node_delivery_probe::NodeDeliveryProbe::new(),
         &sdk_out_tx,
         &mut dead_letters,
         &mut obligation_store,
@@ -1406,6 +1433,7 @@ async fn manual_flush_still_stops_on_a_genuine_sequence_gap() {
         &mut workers,
         &mut delivery_book,
         &fleet_control_tx,
+        &crate::node_delivery_probe::NodeDeliveryProbe::new(),
         &sdk_out_tx,
         &mut dead_letters,
         &mut obligation_store,
@@ -1458,6 +1486,7 @@ async fn manual_flush_failure_retains_failed_message_and_suffix_without_ack() {
         &mut workers,
         &mut delivery_book,
         &fleet_control_tx,
+        &crate::node_delivery_probe::NodeDeliveryProbe::new(),
         &sdk_out_tx,
         &mut dead_letters,
         &mut obligation_store,
@@ -2608,10 +2637,22 @@ async fn every_terminal_disposition_drops_its_withheld_fleet_ack() {
 // fleet-control receiver rather than on an extracted helper's return value.
 #[tokio::test]
 async fn successful_injection_still_resolves_its_withheld_fleet_ack() {
+    worker_confirmation_ack_diagnostics(false).await;
+}
+
+#[tokio::test]
+async fn worker_confirmation_records_closed_control_ack_enqueue_failure() {
+    worker_confirmation_ack_diagnostics(true).await;
+}
+
+async fn worker_confirmation_ack_diagnostics(closed: bool) {
     let worker_name = "worker-a";
     let registry = make_worker_registry_with_worker(worker_name).await;
     let generation = registry.workers[worker_name].generation;
     let mut fixture = worker_event_runtime_fixture(registry, HashMap::new());
+    if closed {
+        fixture.fleet_control_rx.close();
+    }
     let deliver = fleet_deliver(1);
     let msg = held_fleet_message(&deliver);
 
@@ -2649,13 +2690,15 @@ async fn successful_injection_still_resolves_its_withheld_fleet_ack() {
         ))
         .await;
 
-    match tokio::time::timeout(Duration::from_secs(1), fixture.fleet_control_rx.recv()).await {
-        Ok(Some(FleetControlCommand::Send(BrokerToRelaycast::DeliveryAck(ack)))) => {
-            assert_eq!(ack.agent, deliver.agent);
-            assert_eq!(ack.up_to_seq, deliver.seq);
-        }
-        other => {
-            panic!("expected worker confirmation to emit the withheld fleet ack, got {other:?}")
+    if !closed {
+        match tokio::time::timeout(Duration::from_secs(1), fixture.fleet_control_rx.recv()).await {
+            Ok(Some(FleetControlCommand::Send(BrokerToRelaycast::DeliveryAck(ack)))) => {
+                assert_eq!(ack.agent, deliver.agent);
+                assert_eq!(ack.up_to_seq, deliver.seq);
+            }
+            other => {
+                panic!("expected worker confirmation to emit the withheld fleet ack, got {other:?}")
+            }
         }
     }
     assert!(fixture.fleet_control_rx.try_recv().is_err());
@@ -2664,6 +2707,28 @@ async fn successful_injection_still_resolves_its_withheld_fleet_ack() {
         .pending_deliveries
         .contains_key(&delivery_id));
 
+    // Replayed confirmation cannot enqueue or count the same ACK twice.
+    fixture
+        .runtime
+        .handle_worker_event(delivery_lifecycle_worker_event(
+            worker_name,
+            generation,
+            "delivery_ack",
+            delivery_id.as_str(),
+            deliver.msg_id.as_str(),
+        ))
+        .await;
+    let snapshot = fixture
+        .runtime
+        .node_delivery_probe
+        .snapshot_with_token(true);
+    assert_eq!(snapshot["acks"]["enqueued"], if closed { 0 } else { 1 });
+    assert_eq!(
+        snapshot["acks"]["enqueue_failed"],
+        if closed { 1 } else { 0 }
+    );
+    assert_eq!(snapshot["acks"]["sent"], 0);
+    assert!(fixture.fleet_control_rx.try_recv().is_err());
     cleanup_worker_registry(fixture.runtime.workers).await;
 }
 
