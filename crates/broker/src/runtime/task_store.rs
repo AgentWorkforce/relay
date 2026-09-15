@@ -135,6 +135,16 @@ impl TaskStore {
                 "task ledger identity mismatch"
             );
             validate_invoke(&record.invoke)?;
+            if let Some(receipt) = &record.receipt {
+                validate_receipt(record, receipt)?;
+                anyhow::ensure!(
+                    matches!(
+                        receipt.get("status").and_then(Value::as_str),
+                        Some("completed" | "failed")
+                    ),
+                    "nonterminal persisted task receipt"
+                );
+            }
         }
         let mut compacted = records.clone();
         if compact_terminal_records(&mut compacted, chrono::Utc::now()) {
@@ -185,6 +195,7 @@ impl TaskStore {
         validate_invoke(&invoke)?;
         if let Some(existing) = self.records.get(&invoke.invocation_id) {
             if existing.invoke == invoke {
+                anyhow::ensure!(existing.rejection.is_none(), "task invocation was rejected");
                 return Ok(existing.clone());
             }
             let mut prior = existing.invoke.clone();
@@ -564,6 +575,43 @@ mod tests {
             assert!(store.finish("inv-task", receipt).is_err());
         }
         assert!(store.records["inv-task"].receipt.is_none());
+    }
+    #[test]
+    fn task_store_open_rejects_malformed_or_nonterminal_persisted_receipts() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("tasks.json");
+        let mut store = TaskStore::open(path.clone()).unwrap();
+        let original = store.prepare(fixture_invoke()).unwrap();
+
+        for receipt in [
+            json!({"status":"completed"}),
+            fixture_receipt(&original, "running"),
+        ] {
+            let mut record = original.clone();
+            record.receipt = Some(receipt);
+            persist_records(
+                &path,
+                &BTreeMap::from([(record.invoke.invocation_id.clone(), record)]),
+            )
+            .unwrap();
+            assert!(TaskStore::open(path.clone()).is_err());
+        }
+    }
+    #[test]
+    fn task_store_rejected_identical_invoke_stays_rejected() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("tasks.json");
+        let mut store = TaskStore::open(path).unwrap();
+        let record = store.prepare(fixture_invoke()).unwrap();
+        store
+            .reject("inv-task", "task_not_found".to_owned())
+            .unwrap();
+
+        assert!(store.prepare(record.invoke).is_err());
+        assert_eq!(
+            store.records["inv-task"].rejection.as_deref(),
+            Some("task_not_found")
+        );
     }
     #[test]
     fn task_store_failed_disk_write_never_claims_launch_and_requires_reopen() {

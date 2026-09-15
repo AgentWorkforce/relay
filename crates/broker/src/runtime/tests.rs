@@ -7040,6 +7040,124 @@ async fn durable_task_duplicate_invoke_and_launch_failure_are_generation_fenced(
 }
 
 #[tokio::test]
+async fn durable_task_terminal_rejection_stops_worker_and_replay_stays_refused() {
+    use crate::fleet_wire::{ActionResultPayload, BrokerToRelaycast};
+    let mut fixture = durable_task_fixture();
+    let invoke = super::task_store::fixture_invoke();
+    fixture.runtime.handle_task_invoke(invoke.clone()).await;
+    let BrokerToRelaycast::ActionAccept(accept) = next_task_frame(&mut fixture).await else {
+        panic!("accept")
+    };
+    let record = fixture.runtime.task_provider.store.records["inv-task"].clone();
+    fixture
+        .runtime
+        .task_provider
+        .store
+        .claim_launch("inv-task")
+        .unwrap();
+
+    let mut workers = make_worker_registry_with_worker(record.name.as_str()).await;
+    workers.workers.get_mut(&record.name).unwrap().generation = record.generation;
+    let restart_policy = crate::supervisor::RestartPolicy {
+        cooldown_ms: 0,
+        ..crate::supervisor::RestartPolicy::default()
+    };
+    let mut spec = workers.workers[&record.name].spec.clone();
+    spec.restart_policy = Some(restart_policy.clone());
+    workers.supervisor.register(
+        record.name.as_str(),
+        crate::supervisor::SupervisedAgent {
+            spec,
+            parent: None,
+            initial_task: None,
+            skip_relay_prompt: false,
+            agent_result: None,
+        },
+        restart_policy,
+    );
+    fixture.runtime.workers = workers;
+
+    fixture
+        .runtime
+        .handle_task_error(crate::fleet_wire::Error {
+            v: FLEET_WIRE_VERSION,
+            id: accept.id,
+            ok: false,
+            code: "task_not_found".to_owned(),
+            message: "task no longer exists".to_owned(),
+        })
+        .await;
+    assert!(!fixture.runtime.workers.is_worker_live(&record.name));
+    assert!(!fixture
+        .runtime
+        .workers
+        .supervisor
+        .is_supervised(&record.name));
+    assert_eq!(
+        fixture.runtime.task_provider.store.records["inv-task"]
+            .rejection
+            .as_deref(),
+        Some("task_not_found")
+    );
+
+    fixture.runtime.handle_task_invoke(invoke).await;
+    let BrokerToRelaycast::ActionResult(result) = next_task_frame(&mut fixture).await else {
+        panic!("rejected replay must receive a terminal action result")
+    };
+    let ActionResultPayload::Error(error) = result.result else {
+        panic!("rejected replay must fail")
+    };
+    assert_eq!(error.error, "handler_unavailable");
+}
+
+#[tokio::test]
+async fn durable_task_maintenance_stops_claimed_worker_at_deadline() {
+    let mut fixture = durable_task_fixture();
+    let record = fixture
+        .runtime
+        .task_provider
+        .store
+        .prepare(super::task_store::fixture_invoke())
+        .unwrap();
+    fixture
+        .runtime
+        .task_provider
+        .store
+        .claim_launch("inv-task")
+        .unwrap();
+    let mut workers = make_worker_registry_with_worker(record.name.as_str()).await;
+    workers.workers.get_mut(&record.name).unwrap().generation = record.generation;
+    fixture.runtime.workers = workers;
+    fixture
+        .runtime
+        .task_provider
+        .store
+        .records
+        .get_mut("inv-task")
+        .unwrap()
+        .invoke
+        .task_execution
+        .as_mut()
+        .unwrap()
+        .deadline = (chrono::Utc::now() - chrono::Duration::seconds(1))
+        .to_rfc3339_opts(chrono::SecondsFormat::Millis, true);
+    fixture.runtime.node_delivery_connected = false;
+
+    fixture.runtime.maintain_tasks().await;
+
+    assert!(!fixture.runtime.workers.is_worker_live(&record.name));
+    assert_eq!(
+        fixture.runtime.task_provider.store.records["inv-task"]
+            .final_result
+            .as_ref()
+            .unwrap()
+            .error
+            .as_deref(),
+        Some("task_deadline_exceeded")
+    );
+}
+
+#[tokio::test]
 async fn durable_task_refusals_return_terminal_action_errors() {
     use crate::fleet_wire::{ActionResultPayload, BrokerToRelaycast};
     let mut fixture = durable_task_fixture();

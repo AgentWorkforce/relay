@@ -780,8 +780,10 @@ where
     }
 }
 
+// Nested inside the inbound ActionInvoke frame, so this must retain the same
+// forward-compatibility rule: a future engine field cannot make the broker
+// drop the entire invocation before acknowledging it.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
 pub struct TaskExecution {
     pub execution_id: String,
     pub run_id: String,
@@ -1423,5 +1425,30 @@ mod tests {
         assert_eq!(value["payload"]["metadata"]["channel"], "general");
         let decoded: RelaycastToBroker = serde_json::from_value(value).unwrap();
         assert_eq!(decoded, msg);
+    }
+
+    #[test]
+    fn action_invoke_accepts_future_nested_task_execution_fields() {
+        let invoke: RelaycastToBroker = serde_json::from_value(json!({
+            "type": "action.invoke",
+            "v": 1,
+            "invocation_id": "inv_task_1",
+            "action": "task.run",
+            "input": {},
+            "task_execution": {
+                "execution_id": "inv_task_1/1",
+                "run_id": "run_1",
+                "step_id": "step_1",
+                "dispatch_id": "dispatch_1",
+                "deadline": "2026-09-15T12:00:00.000Z",
+                "future_engine_field": { "value": 1 }
+            }
+        }))
+        .expect("inbound task execution metadata must be forward compatible");
+
+        let RelaycastToBroker::ActionInvoke(invoke) = invoke else {
+            panic!("action invoke")
+        };
+        assert_eq!(invoke.task_execution.unwrap().execution_id, "inv_task_1/1");
     }
 }

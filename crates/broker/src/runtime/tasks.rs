@@ -297,12 +297,17 @@ impl BrokerRuntime {
             Some((callback, record.generation)),
         )
         .await;
+        // Spawning may register restart state before returning an error or
+        // before a just-started child exits. Task generations are never
+        // eligible for ordinary supervisor restart, on either outcome.
+        self.workers.supervisor.unregister(&record.name);
         if outcome.is_err() || !self.workers.is_worker_live(&record.name) {
+            let _ = self
+                .workers
+                .stop_task_generation(record.name.as_str(), record.generation)
+                .await;
             self.fail_task(&record.invoke.invocation_id, "worker_spawn_failed")
                 .await;
-        } else {
-            // A task generation cannot be restarted by the ordinary supervisor.
-            self.workers.supervisor.unregister(&record.name);
         }
         self.publish_fleet_load(true).await;
     }
@@ -349,15 +354,31 @@ impl BrokerRuntime {
         if let Some(callback) = request.interim_reply {
             let _ = callback.send(Err(AgentResultRouteError::Retryable));
         }
-        if matches!(
+        let terminal_rejection = matches!(
             error.code.as_str(),
             "stale_task_execution" | "task_not_found" | "task_result_conflict"
-        ) && self
+        );
+        let rejected_record = self
             .task_provider
             .store
-            .reject(&request.invocation, error.code)
-            .is_ok()
-        {
+            .records
+            .get(&request.invocation)
+            .cloned();
+        if terminal_rejection {
+            if let Err(error) = self
+                .task_provider
+                .store
+                .reject(&request.invocation, error.code)
+            {
+                tracing::warn!(error = %error, "task rejection could not be persisted");
+            }
+            if let Some(record) = rejected_record {
+                self.workers.supervisor.unregister(&record.name);
+                let _ = self
+                    .workers
+                    .stop_task_generation(record.name.as_str(), record.generation)
+                    .await;
+            }
             if let Some(callbacks) = self.task_provider.callbacks.remove(&request.invocation) {
                 for (_, callback) in callbacks {
                     let _ = callback.send(Err(AgentResultRouteError::Conflict));
@@ -499,6 +520,34 @@ impl BrokerRuntime {
             if let Err(error) = self.task_provider.store.compact() {
                 tracing::warn!(error = %error, "terminal task retention could not be persisted");
             }
+        }
+        let expired_claimed: Vec<(String, WorkerName, Uuid)> = self
+            .task_provider
+            .store
+            .records
+            .values()
+            .filter(|record| {
+                record.launch_claimed
+                    && record.final_result.is_none()
+                    && record.receipt.is_none()
+                    && record.rejection.is_none()
+                    && record.expired()
+            })
+            .map(|record| {
+                (
+                    record.invoke.invocation_id.clone(),
+                    record.name.clone(),
+                    record.generation,
+                )
+            })
+            .collect();
+        for (invocation, name, generation) in expired_claimed {
+            self.workers.supervisor.unregister(&name);
+            let _ = self
+                .workers
+                .stop_task_generation(name.as_str(), generation)
+                .await;
+            self.fail_task(&invocation, "task_deadline_exceeded").await;
         }
         let now = Instant::now();
         let expired: Vec<String> = self
