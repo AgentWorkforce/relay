@@ -8,6 +8,7 @@ use std::collections::BTreeMap;
 
 pub(super) const TASK_ACTION: &str = "task.run";
 pub(super) const TASK_REQUEST_PREFIX: &str = "task_receipt_";
+const TASK_TERMINAL_RETENTION_GRACE_SECS: i64 = 24 * 60 * 60;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -123,7 +124,7 @@ pub(super) struct TaskStore {
 
 impl TaskStore {
     pub fn open(path: PathBuf) -> Result<Self> {
-        let records: BTreeMap<String, TaskRecord> = match std::fs::read(&path) {
+        let mut records: BTreeMap<String, TaskRecord> = match std::fs::read(&path) {
             Ok(bytes) => serde_json::from_slice(&bytes).context("invalid durable task ledger")?,
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => BTreeMap::new(),
             Err(error) => return Err(error.into()),
@@ -134,6 +135,9 @@ impl TaskStore {
                 "task ledger identity mismatch"
             );
             validate_invoke(&record.invoke)?;
+        }
+        if compact_terminal_records(&mut records, chrono::Utc::now()) {
+            persist_records(&path, &records)?;
         }
         Ok(Self {
             path: Some(path),
@@ -149,20 +153,20 @@ impl TaskStore {
             !self.poisoned,
             "task ledger requires reopen after a failed durable write"
         );
+        let mut next = self.records.clone();
+        next.insert(record.invoke.invocation_id.clone(), record);
+        self.replace(next)
+    }
+    fn replace(&mut self, next: BTreeMap<String, TaskRecord>) -> Result<()> {
+        anyhow::ensure!(
+            !self.poisoned,
+            "task ledger requires reopen after a failed durable write"
+        );
         let path = self
             .path
             .as_ref()
             .context("durable task provider is disabled")?;
-        let mut next = self.records.clone();
-        next.insert(record.invoke.invocation_id.clone(), record);
-        let persisted = (|| -> Result<()> {
-            crate::util::fs::write_json_atomic(path, &next)?;
-            // Task receipts require the rename itself to be durable, not best effort.
-            #[cfg(unix)]
-            std::fs::File::open(path.parent().context("task ledger has no parent")?)?.sync_all()?;
-            Ok(())
-        })();
-        if let Err(error) = persisted {
+        if let Err(error) = persist_records(path, &next) {
             self.poisoned = true;
             return Err(error);
         }
@@ -282,9 +286,54 @@ impl TaskStore {
             return Ok(record);
         }
         record.receipt = Some(receipt);
-        self.put(record.clone())?;
+        let mut next = self.records.clone();
+        next.insert(record.invoke.invocation_id.clone(), record.clone());
+        compact_terminal_records(&mut next, chrono::Utc::now());
+        self.replace(next)?;
         Ok(record)
     }
+
+    pub fn compact(&mut self) -> Result<()> {
+        let now = chrono::Utc::now();
+        if self
+            .records
+            .values()
+            .any(|record| terminal_record_expired(record, now))
+        {
+            let mut next = self.records.clone();
+            compact_terminal_records(&mut next, now);
+            self.replace(next)?;
+        }
+        Ok(())
+    }
+}
+
+fn compact_terminal_records(
+    records: &mut BTreeMap<String, TaskRecord>,
+    now: chrono::DateTime<chrono::Utc>,
+) -> bool {
+    let before = records.len();
+    records.retain(|_, record| !terminal_record_expired(record, now));
+    records.len() != before
+}
+
+fn terminal_record_expired(record: &TaskRecord, now: chrono::DateTime<chrono::Utc>) -> bool {
+    record.receipt.is_some()
+        && chrono::DateTime::parse_from_rfc3339(&record.execution().deadline).is_ok_and(
+            |deadline| {
+                deadline.with_timezone(&chrono::Utc)
+                    + chrono::Duration::seconds(TASK_TERMINAL_RETENTION_GRACE_SECS)
+                    <= now
+            },
+        )
+}
+
+fn persist_records(path: &Path, records: &BTreeMap<String, TaskRecord>) -> Result<()> {
+    crate::util::fs::write_json_atomic(path, records)?;
+    // Task receipts require the rename itself to be durable, not best effort.
+    #[cfg(unix)]
+    std::fs::File::open(path.parent().context("task ledger has no parent")?)?.sync_all()?;
+    Ok(())
 }
 
 pub(super) fn validate_invoke(invoke: &ActionInvoke) -> Result<()> {
@@ -398,6 +447,14 @@ mod tests {
             error: None,
             accounting: None,
         }
+    }
+    fn invoke_with_deadline(id: &str, deadline: chrono::DateTime<chrono::Utc>) -> ActionInvoke {
+        let mut invoke = fixture_invoke();
+        invoke.invocation_id = id.to_owned();
+        let execution = invoke.task_execution.as_mut().unwrap();
+        execution.execution_id = format!("{id}/1");
+        execution.deadline = deadline.to_rfc3339_opts(chrono::SecondsFormat::Millis, true);
+        invoke
     }
     #[test]
     fn task_store_prepared_and_claimed_launch_survive_reopen_without_a_second_claim() {
@@ -531,5 +588,61 @@ mod tests {
         }
         std::fs::write(&path, "not json").unwrap();
         assert!(TaskStore::open(path).is_err());
+    }
+
+    #[test]
+    fn task_store_open_durably_prunes_terminal_receipts_past_the_grace_period() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("tasks.json");
+        let mut store = TaskStore::open(path.clone()).unwrap();
+        let mut record = store
+            .prepare(invoke_with_deadline(
+                "inv-old",
+                chrono::Utc::now() - chrono::Duration::hours(25),
+            ))
+            .unwrap();
+        record.receipt = Some(fixture_receipt(&record, "completed"));
+        let records = BTreeMap::from([(record.invoke.invocation_id.clone(), record)]);
+        persist_records(&path, &records).unwrap();
+
+        let reopened = TaskStore::open(path.clone()).unwrap();
+        assert!(reopened.records.is_empty());
+        let persisted: BTreeMap<String, TaskRecord> =
+            serde_json::from_slice(&std::fs::read(path).unwrap()).unwrap();
+        assert!(persisted.is_empty());
+    }
+
+    #[test]
+    fn task_store_finish_keeps_grace_replays_and_compacts_older_terminals() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("tasks.json");
+        let mut store = TaskStore::open(path.clone()).unwrap();
+        let recent = store
+            .prepare(invoke_with_deadline(
+                "inv-recent",
+                chrono::Utc::now() - chrono::Duration::hours(23),
+            ))
+            .unwrap();
+        store
+            .finish("inv-recent", fixture_receipt(&recent, "completed"))
+            .unwrap();
+        assert!(store.records.contains_key("inv-recent"));
+
+        let old = store
+            .prepare(invoke_with_deadline(
+                "inv-old",
+                chrono::Utc::now() - chrono::Duration::hours(25),
+            ))
+            .unwrap();
+        let finished = store
+            .finish("inv-old", fixture_receipt(&old, "completed"))
+            .unwrap();
+        assert!(finished.receipt.is_some());
+        assert!(!store.records.contains_key("inv-old"));
+        assert!(store.records.contains_key("inv-recent"));
+
+        let reopened = TaskStore::open(path).unwrap();
+        assert_eq!(reopened.records.len(), 1);
+        assert!(reopened.records.contains_key("inv-recent"));
     }
 }

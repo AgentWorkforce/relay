@@ -7040,6 +7040,39 @@ async fn durable_task_duplicate_invoke_and_launch_failure_are_generation_fenced(
 }
 
 #[tokio::test]
+async fn durable_task_refusals_return_terminal_action_errors() {
+    use crate::fleet_wire::{ActionResultPayload, BrokerToRelaycast};
+    let mut fixture = durable_task_fixture();
+    let invoke = super::task_store::fixture_invoke();
+    fixture.runtime.handle_task_invoke(invoke.clone()).await;
+    assert!(matches!(
+        next_task_frame(&mut fixture).await,
+        BrokerToRelaycast::ActionAccept(_)
+    ));
+
+    let mut conflicting = invoke.clone();
+    conflicting.input["task"] = json!("different");
+    fixture.runtime.handle_task_invoke(conflicting).await;
+    let BrokerToRelaycast::ActionResult(conflict) = next_task_frame(&mut fixture).await else {
+        panic!("conflicting invoke must receive a result")
+    };
+    let ActionResultPayload::Error(error) = conflict.result else {
+        panic!("conflicting invoke must fail")
+    };
+    assert_eq!(error.error, "handler_unavailable");
+
+    fixture.runtime.task_provider.store = Default::default();
+    fixture.runtime.handle_task_invoke(invoke).await;
+    let BrokerToRelaycast::ActionResult(disabled) = next_task_frame(&mut fixture).await else {
+        panic!("disabled provider invoke must receive a result")
+    };
+    let ActionResultPayload::Error(error) = disabled.result else {
+        panic!("disabled provider invoke must fail")
+    };
+    assert_eq!(error.error, "handler_unavailable");
+}
+
+#[tokio::test]
 async fn durable_task_disk_failure_after_engine_commit_withholds_callback_ack() {
     use crate::fleet_wire::BrokerToRelaycast;
     let mut fixture = durable_task_fixture();
@@ -7103,7 +7136,9 @@ async fn durable_task_expired_unaccepted_receipt_never_launches_worker() {
     use crate::fleet_wire::BrokerToRelaycast;
     let mut fixture = durable_task_fixture();
     let mut invoke = super::task_store::fixture_invoke();
-    invoke.task_execution.as_mut().unwrap().deadline = "2000-01-01T00:00:00.000Z".into();
+    invoke.task_execution.as_mut().unwrap().deadline = (chrono::Utc::now()
+        - chrono::Duration::minutes(1))
+    .to_rfc3339_opts(chrono::SecondsFormat::Millis, true);
     fixture.runtime.handle_task_invoke(invoke).await;
     let BrokerToRelaycast::ActionAccept(accept) = next_task_frame(&mut fixture).await else {
         panic!("accept")

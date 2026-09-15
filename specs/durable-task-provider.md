@@ -87,7 +87,10 @@ Unix. A failed durable write disables further task writes and launches until the
 storage problem is repaired and the broker restarted. A corrupt ledger refuses
 startup. Keep the ledger with the broker's state: deleting it loses the evidence
 needed to prevent duplicate launches. Terminal records are retained for replay;
-this initial implementation does not prune them automatically.
+the broker prunes them durably 24 hours after their execution deadline on
+startup, after terminal completion, and during maintenance. This grace period
+keeps late callbacks and equivalent receipt replays idempotent without allowing
+the in-memory and on-disk ledger to grow without bound.
 
 ## Compatibility and rollout
 

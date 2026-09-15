@@ -1581,7 +1581,7 @@ impl BrokerRuntime {
         .await;
     }
 
-    async fn reply_action_error(&self, invocation_id: &str, error: &str) {
+    pub(super) async fn reply_action_error(&self, invocation_id: &str, error: &str) {
         self.send_fleet_action_result(ActionResult {
             task: None,
             v: FLEET_WIRE_VERSION,

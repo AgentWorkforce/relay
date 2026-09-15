@@ -62,22 +62,10 @@ export async function engineFixture() {
         buffer = Buffer.concat([buffer, chunk]);
         try {
           while (buffer.length >= 2) {
-            const opcode = buffer[0] & 15;
-            assert(buffer[0] & 128, 'Fixture expects unfragmented broker frames');
-            assert(buffer[1] & 128, 'Client websocket frame must be masked');
-            let length = buffer[1] & 127;
-            let offset = 2;
-            if (length === 126) {
-              if (buffer.length < 4) return;
-              length = buffer.readUInt16BE(2);
-              offset = 4;
-            }
-            assert(length !== 127, 'Unexpected oversized broker frame');
-            if (buffer.length < offset + 4 + length) return;
-            const mask = buffer.subarray(offset, offset + 4);
-            const data = Buffer.from(buffer.subarray(offset + 4, offset + 4 + length));
-            for (let i = 0; i < length; i++) data[i] ^= mask[i % 4];
-            buffer = buffer.subarray(offset + 4 + length);
+            const frame = readClientFrame(buffer);
+            if (!frame) return;
+            buffer = frame.rest;
+            const { opcode, data } = frame;
             if (opcode === 1) frames.push(JSON.parse(data.toString()));
             else if (opcode === 9) writeFrame(socket, data, 10);
             else if (opcode === 8) socket.end();
@@ -109,6 +97,27 @@ export async function engineFixture() {
       await new Promise((resolve) => server.close(resolve));
     },
   };
+}
+
+export function readClientFrame(buffer) {
+  if (buffer.length < 2) return undefined;
+  const opcode = buffer[0] & 15;
+  assert(buffer[0] & 128, 'Fixture expects unfragmented broker frames');
+  assert(buffer[1] & 128, 'Client websocket frame must be masked');
+  const indicator = buffer[1] & 127;
+  assert(indicator !== 127, 'Unexpected oversized broker frame');
+  let length = indicator;
+  let offset = 2;
+  if (indicator === 126) {
+    if (buffer.length < 4) return undefined;
+    length = buffer.readUInt16BE(2);
+    offset = 4;
+  }
+  if (buffer.length < offset + 4 + length) return undefined;
+  const mask = buffer.subarray(offset, offset + 4);
+  const data = Buffer.from(buffer.subarray(offset + 4, offset + 4 + length));
+  for (let i = 0; i < length; i++) data[i] ^= mask[i % 4];
+  return { opcode, data, rest: buffer.subarray(offset + 4 + length) };
 }
 
 function writeFrame(socket, payload, opcode = 1) {

@@ -32,12 +32,17 @@ pub(super) struct TaskProvider {
 
 impl BrokerRuntime {
     pub(super) async fn handle_task_invoke(&mut self, invoke: ActionInvoke) {
+        let invocation_id = invoke.invocation_id.clone();
         match self.task_provider.store.prepare(invoke) {
             Ok(record) => {
                 self.send_task_request(&record, TaskRequestKind::Accept, None, None)
                     .await
             }
-            Err(error) => tracing::warn!(error = %error, "task invocation refused before launch"),
+            Err(error) => {
+                tracing::warn!(error = %error, "task invocation refused before launch");
+                self.reply_action_error(&invocation_id, "handler_unavailable")
+                    .await;
+            }
         }
     }
 
@@ -488,6 +493,11 @@ impl BrokerRuntime {
     }
 
     pub(super) async fn maintain_tasks(&mut self) {
+        if self.task_provider.store.enabled() {
+            if let Err(error) = self.task_provider.store.compact() {
+                tracing::warn!(error = %error, "terminal task retention could not be persisted");
+            }
+        }
         let now = Instant::now();
         let expired: Vec<String> = self
             .task_provider
