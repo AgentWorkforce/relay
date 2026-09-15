@@ -1229,12 +1229,15 @@ impl RelaycastHttpClient {
             })?;
         let mut seen = BTreeSet::new();
         let mut failures = Vec::new();
-        for channel in channels {
+        // One `workspace_busy` budget for the whole spawn, not per channel: the
+        // spawn holds the broker event loop, so the total stall stays bounded by
+        // the backoff table however many channels the worker joins.
+        let mut busy_retries = WORKER_CHANNEL_BUSY_RETRY_BACKOFFS.iter();
+        for (index, channel) in channels.iter().enumerate() {
             let name = channel.as_str();
             if !seen.insert(name.to_ascii_lowercase()) {
                 continue;
             }
-            let mut busy_retries = WORKER_CHANNEL_BUSY_RETRY_BACKOFFS.iter();
             let joined = loop {
                 match agent_client
                     .ensure_joined_channel(relaycast::CreateChannelRequest {
@@ -1310,7 +1313,25 @@ impl RelaycastHttpClient {
                         error = %error,
                         "failed to ensure worker channel membership"
                     );
+                    let saturated = super::auth::is_workspace_busy_error(&error);
                     failures.push(format!("{name}: {error}"));
+                    if saturated {
+                        // The shared busy budget is spent and the workspace is
+                        // still saturated: the spawn fails regardless, so do not
+                        // keep the event loop walking the remaining channels.
+                        let skipped = channels[index + 1..]
+                            .iter()
+                            .map(|channel| channel.as_str())
+                            .filter(|rest| seen.insert(rest.to_ascii_lowercase()))
+                            .collect::<Vec<_>>();
+                        if !skipped.is_empty() {
+                            failures.push(format!(
+                                "skipped after workspace_busy: {}",
+                                skipped.join(", ")
+                            ));
+                        }
+                        break;
+                    }
                 }
             }
         }
@@ -2695,13 +2716,21 @@ mod tests {
                 result.expect("a transient workspace_busy join must be retried to success");
                 join.assert_hits(1);
             } else {
+                // Default spawns join several channels; the busy budget is shared
+                // across them and a spent budget stops the walk.
+                let channels = [ChannelName::from("proof"), ChannelName::from("engineering")];
                 let error = client
                     .ensure_agent_channels("worker", None, &channels)
                     .await
                     .unwrap_err()
                     .to_string();
                 assert!(error.contains("workspace_busy"), "{error}");
-                // One initial attempt plus the bounded retry budget; never unbounded.
+                assert!(
+                    error.contains("skipped after workspace_busy: engineering"),
+                    "{error}"
+                );
+                // One initial attempt plus the bounded retry budget for the whole
+                // spawn; never per channel, never unbounded.
                 busy.assert_hits(1 + super::WORKER_CHANNEL_BUSY_RETRY_BACKOFFS.len());
                 join.assert_hits(0);
             }
