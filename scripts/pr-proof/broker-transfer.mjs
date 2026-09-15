@@ -149,10 +149,6 @@ export function createBrokerTransfer(input, artifacts, options = {}) {
   let cleaned = false;
   const env = options.env ?? process.env;
   const uploadAbort = new AbortController();
-  const request = client(env, 'CLOUD_API_KEY', {
-    ...options,
-    signal: AbortSignal.any([uploadAbort.signal, options.signal ?? new AbortController().signal]),
-  });
   const objectNames = (item) => [
     'manifest.json',
     ...Array.from({ length: Math.ceil(item.bytes.length / PART_BYTES) }, (_, index) => `part-${index}.json`),
@@ -168,6 +164,13 @@ export function createBrokerTransfer(input, artifacts, options = {}) {
       if (cleaned) throw new Error('Broker upload already cleaned');
       ownedRunId = runId;
       pending ??= (async () => {
+        // The aggregate transfer lifetime starts with the first upload, not at
+        // preparation: the prepared run ID may arrive well after this transfer
+        // was created, and that launch delay must not consume the budget.
+        const request = client(env, 'CLOUD_API_KEY', {
+          ...options,
+          signal: AbortSignal.any([uploadAbort.signal, options.signal ?? new AbortController().signal]),
+        });
         for (const item of artifacts) {
           const identity = binding(input, item.arm, runId, item.bytes.length);
           for (let index = 0; index < identity.count; index++) {
@@ -256,6 +259,8 @@ export async function downloadBrokerArtifact(input, arm, options = {}) {
     await delay(250, undefined, { signal: options.signal });
   }
   const identity = binding(input, arm, runId, manifest?.totalBytes);
+  let result;
+  let failure;
   try {
     if (!equal(manifest, identity)) throw new Error('Broker manifest binding mismatch');
     const chunks = [];
@@ -281,27 +286,33 @@ export async function downloadBrokerArtifact(input, arm, options = {}) {
     const contents = Buffer.concat(chunks);
     if (contents.length !== identity.totalBytes || sha256(contents) !== identity.sha256)
       throw new Error('Broker final build hash mismatch');
-    return { artifact: input.runtimeArtifacts.broker[arm], contents };
-  } finally {
-    // Consume the transfer before the arm returns. Run completion/cancellation
-    // may revoke its token, so cleanup cannot be deferred to the dispatcher.
-    const cleanupRequest = client(env, 'CLOUD_API_ACCESS_TOKEN', {
-      ...options,
-      signal: undefined,
-      timeoutMs: 60_000,
-    });
-    let failed = false;
-    for (const object of [
-      'manifest.json',
-      ...Array.from({ length: identity.count }, (_, index) => `part-${index}.json`),
-    ]) {
-      try {
-        const response = await cleanupRequest(urlFor(env, input, arm, runId, object), '');
-        if (!response.ok) failed = true;
-      } catch {
-        failed = true;
-      }
-    }
-    if (failed) throw new Error('Broker transfer consumption cleanup incomplete');
+    result = { artifact: input.runtimeArtifacts.broker[arm], contents };
+  } catch (error) {
+    failure = error;
   }
+  // Consume the transfer before the arm returns. Run completion/cancellation
+  // may revoke its token, so cleanup cannot be deferred to the dispatcher.
+  const cleanupRequest = client(env, 'CLOUD_API_ACCESS_TOKEN', {
+    ...options,
+    signal: undefined,
+    timeoutMs: 60_000,
+  });
+  let failed = false;
+  for (const object of [
+    'manifest.json',
+    ...Array.from({ length: identity.count }, (_, index) => `part-${index}.json`),
+  ]) {
+    try {
+      const response = await cleanupRequest(urlFor(env, input, arm, runId, object), '');
+      if (!response.ok) failed = true;
+    } catch {
+      failed = true;
+    }
+  }
+  // A download or integrity failure is the diagnostic that matters; a cleanup
+  // failure must not replace it. Refused cleanup after a good download still
+  // withholds the bytes.
+  if (failure) throw failure;
+  if (failed) throw new Error('Broker transfer consumption cleanup incomplete');
+  return result;
 }

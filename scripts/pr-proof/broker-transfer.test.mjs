@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict';
 import { createHash } from 'node:crypto';
 import { describe, it } from 'node:test';
+import { setTimeout as delay } from 'node:timers/promises';
 import {
   createBrokerTransfer,
   downloadBrokerArtifact,
@@ -26,6 +27,8 @@ function fixture() {
   const objects = new Map();
   const calls = [];
   const fetchImpl = async (url, init) => {
+    // Real fetch rejects on an already-aborted signal; the lifetime tests rely on it.
+    init.signal?.throwIfAborted();
     const key = new URL(url).pathname;
     calls.push({ key, init });
     assert.equal(init.redirect, 'error');
@@ -196,6 +199,50 @@ describe('bounded run-scoped broker transfer', () => {
       assert.ok([...f.objects.values()].every((body) => body === ''));
     }
   });
+  it('starts the upload lifetime at start(), not at preparation, and still bounds the upload', async () => {
+    const f = fixture();
+    const delayed = createBrokerTransfer(f.input, f.artifacts, { ...f.options, timeoutMs: 30 });
+    await delay(80); // a slow prepare must not consume the transfer budget
+    await delayed.start('run-fixture');
+    assert.ok([...f.objects.keys()].some((key) => key.endsWith('manifest.json')));
+    await delayed.cleanup();
+
+    const g = fixture();
+    const bounded = createBrokerTransfer(g.input, g.artifacts, {
+      ...g.options,
+      timeoutMs: 40,
+      fetchImpl: async (url, init) => {
+        await delay(30);
+        return g.options.fetchImpl(url, init);
+      },
+    });
+    await assert.rejects(bounded.start('run-fixture'), /Broker storage request failed/);
+    assert.ok([...g.objects.keys()].every((key) => !key.endsWith('manifest.json')));
+    await bounded.cleanup();
+  });
+  it('keeps the download failure when consumption cleanup also fails', async () => {
+    const f = fixture();
+    await f.transfer.start('run-fixture');
+    const key = [...f.objects.keys()].find((key) => key.includes('/base/') && key.endsWith('part-0.json'));
+    const part = JSON.parse(f.objects.get(key));
+    part.runId = 'other-run';
+    f.objects.set(key, JSON.stringify(part));
+    let cleanupAttempts = 0;
+    await assert.rejects(
+      downloadBrokerArtifact(f.input, 'base', {
+        env: f.env,
+        fetchImpl: async (url, init) => {
+          if (init.method === 'PUT') {
+            cleanupAttempts++;
+            return new Response('', { status: 403 });
+          }
+          return f.options.fetchImpl(url, init);
+        },
+      }),
+      /Broker part binding mismatch/
+    );
+    assert.equal(cleanupAttempts, 3); // manifest + both parts were still attempted
+  });
   it('does not return executable bytes when consumption cleanup is refused', async () => {
     const f = fixture();
     await f.transfer.start('run-fixture');
@@ -231,18 +278,31 @@ import path from 'node:path';
 import { main as runCloud } from './run-cloud.mjs';
 
 describe('trusted dispatcher transfer integration', () => {
-  for (const scenario of ['completed', 'upload-failure', 'failed', 'cancelled', 'error', 'failed-revoked']) {
+  for (const scenario of [
+    'completed',
+    'upload-failure',
+    'submission-timeout',
+    'failed',
+    'cancelled',
+    'error',
+    'failed-revoked',
+  ]) {
     const failUpload = scenario === 'upload-failure';
+    const hangSubmission = scenario === 'submission-timeout';
     const revoked = scenario === 'failed-revoked';
-    const terminalStatus = revoked ? 'failed' : failUpload ? 'completed' : scenario;
+    const cancels = failUpload || hangSubmission;
+    const terminalStatus = revoked ? 'failed' : failUpload || hangSubmission ? 'completed' : scenario;
     it(`preserves cleanup authority for ${scenario}`, async () => {
       const f = fixture();
       const directory = await mkdtemp(path.join(tmpdir(), 'broker-transfer-dispatch-'));
       const originalDirectory = process.cwd();
       const originalEnvironment = { ...process.env };
       const originalFetch = globalThis.fetch;
+      const originalWarn = console.warn;
+      const warnings = [];
       let cleanupAttempts = 0;
       try {
+        console.warn = (...args) => warnings.push(args.join(' '));
         const caseId = 'fixture-broker-transfer';
         const input = {
           ...f.input,
@@ -283,13 +343,14 @@ describe('trusted dispatcher transfer integration', () => {
         const cli = path.join(directory, 'fake-cli.mjs');
         await writeFile(
           cli,
-          `#!/usr/bin/env node\nimport {appendFileSync} from 'node:fs';\nconst command=process.argv[3];appendFileSync(${JSON.stringify(commands)},JSON.stringify(process.argv.slice(2))+'\\n');\nif(command==='run'){console.error('AGENT_RELAY_CLOUD_PREPARED_RUN_ID=run-fixture');console.log(JSON.stringify({runId:'run-fixture'}));}\nelse if(command==='status')console.log(JSON.stringify({status:${JSON.stringify(terminalStatus)}}));\nelse if(command==='logs')console.log('fixture log');\nelse if(command==='cancel')console.log('{}');\nelse process.exitCode=2;`,
+          `#!/usr/bin/env node\nimport {appendFileSync} from 'node:fs';\nconst command=process.argv[3];appendFileSync(${JSON.stringify(commands)},JSON.stringify(process.argv.slice(2))+'\\n');\nif(command==='run'){console.error('AGENT_RELAY_CLOUD_PREPARED_RUN_ID=run-fixture');if(${hangSubmission})setTimeout(()=>{},60_000);else console.log(JSON.stringify({runId:'run-fixture'}));}\nelse if(command==='status')console.log(JSON.stringify({status:${JSON.stringify(terminalStatus)}}));\nelse if(command==='logs')console.log('fixture log');\nelse if(command==='cancel')console.log('{}');\nelse process.exitCode=2;`,
           { mode: 0o700 }
         );
         process.chdir(directory);
         Object.assign(process.env, f.env, {
           PR_PROOF_AGENT_RELAY_BIN: cli,
           PR_PROOF_POLL_MS: '1000',
+          PR_PROOF_CLOUD_COMMAND_TIMEOUT_MS: '1000',
           PR_PROOF_CLOUD_LOG_PATH: path.join(directory, 'cloud.log'),
         });
         for (const key of ['PR_PROOF_INPUT_PATH', 'GITHUB_OUTPUT', 'GITHUB_STEP_SUMMARY'])
@@ -300,7 +361,8 @@ describe('trusted dispatcher transfer integration', () => {
             if (revoked) return new Response('', { status: 403 });
           }
           if (failUpload && init.headers['if-none-match'] === '*') return new Response('', { status: 503 });
-          if (init.method === 'PUT' && init.body === '' && failUpload) {
+          if (init.method === 'PUT' && init.body === '' && cancels) {
+            // Tombstones must land before cancellation revokes the write grant.
             assert.doesNotMatch(await readFile(commands, 'utf8'), /"cancel"/);
           }
           const response = await f.options.fetchImpl(url, init);
@@ -317,25 +379,32 @@ describe('trusted dispatcher transfer integration', () => {
           return response;
         };
         if (failUpload) await assert.rejects(runCloud(), /Broker chunk upload refused/);
-        else if (revoked) await assert.rejects(runCloud(), /Broker transfer cleanup incomplete/);
+        else if (hangSubmission)
+          await assert.rejects(runCloud(), /submission command timed out and its prepared run was cancelled/);
         else if (scenario !== 'completed')
           await assert.rejects(runCloud(), /Cloud RelayFlow finished with status/);
         else await runCloud();
+        // A revoked grant is reported, but never hides the dispatcher's own failure.
+        assert.equal(
+          warnings.some((line) => /Broker transfer cleanup incomplete/.test(line)),
+          revoked
+        );
         const invocations = (await readFile(commands, 'utf8'))
           .trim()
           .split('\n')
           .map((line) => JSON.parse(line));
         assert.equal(invocations.filter((args) => args[1] === 'run').length, 1);
-        assert.equal(invocations.filter((args) => args[1] === 'cancel').length, failUpload ? 1 : 0);
+        assert.equal(invocations.filter((args) => args[1] === 'cancel').length, cancels ? 1 : 0);
         assert.ok(cleanupAttempts > 0 || scenario === 'completed');
         if (revoked) assert.ok([...f.objects.values()].some((body) => body !== ''));
         else assert.ok([...f.objects.values()].every((body) => body === ''));
-        if (!failUpload)
+        if (!cancels)
           assert.doesNotMatch(
             await readFile(path.join(directory, 'cloud.log'), 'utf8'),
             /ci-fixture|sandbox-fixture/
           );
       } finally {
+        console.warn = originalWarn;
         globalThis.fetch = originalFetch;
         process.chdir(originalDirectory);
         for (const key of Object.keys(process.env))

@@ -606,6 +606,7 @@ export async function main() {
   let shuttingDown = false;
   let activeCommandController = null;
   let launchProgressError = null;
+  let dispatchFailure = null;
   let lastStatusOutput = '';
   let statusPollFailures = 0;
 
@@ -675,12 +676,26 @@ export async function main() {
     await cancelPromise;
   };
 
+  // Tombstone this nonce's objects while the prepared-run write grant is live.
+  // Cancellation may revoke that grant, so every path that cancels the remote
+  // run must clean up first. The dispatcher's original failure is the useful
+  // diagnostic; a cleanup failure is reported and returned, never thrown here.
+  const cleanupTransfer = async () => {
+    try {
+      await brokerTransfer?.cleanup();
+      return null;
+    } catch (error) {
+      console.warn(sanitizeCloudCommandOutput(error.message, auth.diagnosticSecretValues));
+      return error;
+    }
+  };
+
   const signalHandler = (signal) => {
     if (shuttingDown) return;
     shuttingDown = true;
     activeCommandController?.abort();
     void (async () => {
-      await brokerTransfer?.cleanup().catch(() => console.warn('Broker transfer cleanup incomplete'));
+      await cleanupTransfer();
       await cancelRemote(signal).catch((error) =>
         console.warn(sanitizeCloudCommandOutput(error.message, auth.diagnosticSecretValues))
       );
@@ -706,6 +721,7 @@ export async function main() {
     if (launchProgressError) throw launchProgressError;
     if (launch.aborted) throw new Error('Cloud workflow submission was interrupted');
     if (launch.timedOut) {
+      await cleanupTransfer();
       await cancelRemote('submission command timed out');
       throw new Error(
         'Cloud workflow submission command timed out and its prepared run was cancelled; it is not retried'
@@ -782,6 +798,7 @@ export async function main() {
         statusPollFailures,
         diagnosticSecretValues: auth.diagnosticSecretValues,
       });
+      await cleanupTransfer();
       await cancelRemote('deadline exceeded');
       terminal = true;
       throw new Error(`Cloud RelayFlow exceeded ${timeoutMs}ms`);
@@ -827,14 +844,20 @@ export async function main() {
         )}\`\n- Cloud status: **${terminalStatus}**\n`
       );
     }
+  } catch (error) {
+    dispatchFailure = error;
+    throw error;
   } finally {
     activeCommandController?.abort();
     process.removeListener('SIGINT', signalHandler);
     process.removeListener('SIGTERM', signalHandler);
     try {
-      if (proofSucceeded)
+      if (proofSucceeded) {
         brokerTransfer?.release(); // each completed arm consumed its transfer
-      else await brokerTransfer?.cleanup();
+      } else {
+        const cleanupError = await cleanupTransfer();
+        if (cleanupError && !dispatchFailure) throw cleanupError;
+      }
     } finally {
       if (runId && !terminal)
         await cancelRemote('dispatcher exiting').catch((error) =>

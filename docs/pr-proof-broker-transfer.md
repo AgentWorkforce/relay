@@ -13,7 +13,8 @@ acknowledgments fail the proof without replaying writes or creating a new run.
 
 The isolated arm waits at most 60 seconds for the manifest, reads each part
 once with bounded response sizes, and verifies the final raw build hash.
-Requests time out after 15 seconds with a 120-second transfer lifetime.
+Requests time out after 15 seconds with a 120-second transfer lifetime that
+starts with the first upload or download request, not at preparation.
 Missing, duplicated, misbound, oversized, or corrupt parts fail closed. Only
 verified bytes enter the existing private mode-0500 executable, isolation,
 and post-execution attestation checks. Broker requirements and red/green
@@ -27,15 +28,16 @@ case processes receive neither credentials nor transfer authorization headers.
 Each arm consumes and tombstones its manifest/parts immediately after bounded
 assembly while its sandbox token is live. Only then may the verified bytes
 reach the private executable. Private executable cleanup remains in the arm's
-`finally` block. On submission failure/interruption, CI tombstones its nonce's
-objects before cancellation revokes the prepared-run write grant. Successful
-proof releases only local buffers because both arms already consumed storage.
-Cleanup failures fail the dispatcher. Cloud has no general object-delete or
-prepared-grant-revocation route; this change does not invent one or revoke
-shared CI credentials. Existing cancellation revokes run API sessions.
-Forced runner termination or independent remote token revocation can prevent
-cleanup; remaining objects contain public binaries, remain run-scoped, and
-follow platform storage lifecycle and token expiry.
+`finally` block. On submission failure, timeout, or interruption, CI
+tombstones its nonce's objects before cancellation revokes the prepared-run
+write grant. Successful proof releases only local buffers because both arms
+already consumed storage. Cleanup failures are reported without replacing
+the original download or dispatcher failure. Cloud has no general
+object-delete or prepared-grant-revocation route; this change does not invent
+one or revoke shared CI credentials. Existing cancellation revokes run API
+sessions. Forced runner termination or independent remote token revocation
+can prevent cleanup; remaining objects contain public binaries, remain
+run-scoped, and follow platform storage lifecycle and token expiry.
 
 This prerequisite must be admitted to the trusted base before rerunning another
 PR's `pull_request_target` proof. A change on that PR's head cannot repair the
