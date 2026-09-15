@@ -2424,8 +2424,12 @@ where
                                     true
                                 }
                                 None => {
-                                    complete_agent_registration(reply, pending_agent_registrations, sink)
-                                        .await
+                                    complete_agent_registration(
+                                        reply,
+                                        pending_agent_registrations,
+                                        sink,
+                                    )
+                                    .await
                                 }
                             }
                         }
