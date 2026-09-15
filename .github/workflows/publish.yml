@@ -931,10 +931,14 @@ jobs:
       max-parallel: 10
       matrix:
         package:
-          # All publishable npm packages - published in parallel
+          # All publishable npm packages - published in parallel. cloud and
+          # config are deliberately absent: publish-sdk-internal-deps (a
+          # dependency of this job) already publishes them. Listing cloud here
+          # too made the v12.1.1 release publish it twice seconds apart; the
+          # "already exists" guard lost the race to registry propagation and
+          # npm rejected the duplicate with E409 "previously staged".
           - policy
           - utils
-          - cloud
           - sdk
           - brand
           - harness-driver
@@ -1127,8 +1131,8 @@ jobs:
       max-parallel: 6
       matrix:
         package:
-          - cloud
-          - config
+          # cloud and config are published by publish-sdk-internal-deps, which
+          # this job depends on; listing them again races that publish.
           - sdk
           - session
           - utils
