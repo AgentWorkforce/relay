@@ -110,7 +110,10 @@ jobs:
             "${EXPECTED_BROKER}@$VERSION"
           )
 
-          for i in 1 2 3 4 5 6 7; do
+          # Up to ~11 minutes: exponential backoff capped at 60s. The v12.2.1
+          # publish succeeded, but win32 verification gave up after the old
+          # ~4 minute window while the registry was still surfacing packages.
+          for i in $(seq 1 15); do
             missing=()
             for pkg in "${PACKAGES[@]}"; do
               if ! npm view "$pkg" version >/dev/null 2>&1; then
@@ -143,6 +146,9 @@ jobs:
             fi
 
             WAIT=$((2 ** i))
+            if [ "$WAIT" -gt 60 ]; then
+              WAIT=60
+            fi
             echo "attempt $i: registry missing ${missing[*]}, sleeping ${WAIT}s"
             sleep "$WAIT"
           done
