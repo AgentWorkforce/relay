@@ -23,6 +23,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   ambiguous placements require `--node`.
 - `fleet spawn --sandbox` keeps temporary routing credentials out of project files.
 
+### Fixed
+
+- Windows credential storage allows bounded cold PowerShell startup time while retaining strict ACL validation.
+
 ## [12.1.1] - 2026-09-15
 
 ### Changed
