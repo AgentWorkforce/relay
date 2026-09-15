@@ -210,7 +210,7 @@ try {
   const incumbent = await request('/v1/agents', 'POST', { name: 'incumbent-fixture' });
   const incumbentChannel = await request('/v1/agents/incumbent-fixture/subscription-channel', 'POST');
   const incumbentError = await failSubscribe('incumbent-fixture', work);
-  assert.match(incumbentError, /already exists|name.*held|already registered/i);
+  assert.match(incumbentError, /already exists|name.*held|already registered|agent_already_exists/i);
   assert.equal((await request('/v1/agents/incumbent-fixture')).id, incumbent.id);
   assert(
     (await request(`/v1/channels/${incumbentChannel.name}`)).members.some(
@@ -320,8 +320,19 @@ try {
     pass: true,
   });
 
+  const awaitAbsent = async (name, timeoutMs = 10000) => {
+    const d = Date.now() + timeoutMs;
+    for (;;) {
+      const inEngine = (await request('/v1/agents')).some((a) => a.name === name);
+      const inBroker = (await client.listAgents()).some((a) => a.name === name);
+      if (!inEngine && !inBroker) return true;
+      if (Date.now() >= d) return false;
+      await new Promise((r) => setTimeout(r, 200));
+    }
+  };
   for (const fixture of [
     { name: 'fleet-invalid-cwd', command: '/bin/cat', args: [], cwd: path.join(work, 'missing-fleet-cwd') },
+    { name: 'fleet-unavailable-command', command: path.join(work, 'missing-harness'), args: [], cwd: work },
     { name: 'fleet-immediate-exit', command: '/bin/false', args: [], cwd: work },
     { name: 'fleet-delayed-exit', command: '/bin/sh', args: ['-c', 'sleep 2; exit 7'], cwd: work },
     {
@@ -333,36 +344,64 @@ try {
     },
   ]) {
     for (let attempt = 0; attempt < 2; attempt++) {
-      const invocation = await request('/v1/actions/spawn/invoke', 'POST', {
-        input: {
-          name: fixture.name,
-          cli: 'claude',
-          task: '',
-          channels: fixture.channels ?? [],
-          worker_cwd: fixture.cwd,
-          verify_ready: true,
-          harnessConfig: {
-            runtime: 'native',
-            command: fixture.command,
-            args: fixture.args,
-            sessionId: `${fixture.name}-${attempt}`,
-          },
-        },
-      });
+      const expectedFailure = fixture.name === 'fleet-membership-failure' ? /reserved_channel_name/ : null;
       let result;
-      const deadline = Date.now() + 30_000;
-      while (Date.now() < deadline) {
-        result = await request(`/v1/actions/spawn/invocations/${invocation.invocation_id}`);
-        if (['completed', 'failed'].includes(result.status)) break;
-        await new Promise((resolve) => setTimeout(resolve, 200));
+      let nameInUseRetries = 0;
+      for (;;) {
+        // Bounded wait for BOTH engine identity absence and broker reservation
+        // cleanup of any prior attempt before (re)using the owned name.
+        assert(await awaitAbsent(fixture.name), `${fixture.name}: owned name not absent before spawn`);
+        const invocation = await request('/v1/actions/spawn/invoke', 'POST', {
+          input: {
+            name: fixture.name,
+            cli: 'claude',
+            task: '',
+            channels: fixture.channels ?? [],
+            worker_cwd: fixture.cwd,
+            verify_ready: true,
+            harnessConfig: {
+              runtime: 'native',
+              command: fixture.command,
+              args: fixture.args,
+              sessionId: `${fixture.name}-${attempt}-${nameInUseRetries}`,
+            },
+          },
+        });
+        const deadline = Date.now() + 30_000;
+        while (Date.now() < deadline) {
+          result = await request(`/v1/actions/spawn/invocations/${invocation.invocation_id}`);
+          if (['completed', 'failed'].includes(result.status)) break;
+          await new Promise((resolve) => setTimeout(resolve, 200));
+        }
+        // A retry rejected only for name custody has no identity side effect;
+        // record it and retry until the intended failure class is observed.
+        if (
+          result.status === 'failed' &&
+          /agent_name_in_use/.test(result.error ?? '') &&
+          nameInUseRetries < 6
+        ) {
+          nameInUseRetries += 1;
+          report.checks.push({
+            name: `${fixture.name} attempt ${attempt + 1}: name-in-use retry ${nameInUseRetries} (no identity side effect)`,
+            pass: true,
+            error: result.error,
+          });
+          await new Promise((resolve) => setTimeout(resolve, 2000));
+          continue;
+        }
+        break;
       }
       assert.equal(result.status, 'failed', JSON.stringify({ fixture: fixture.name, result }));
       assert(result.error, 'terminal failure must be actionable');
+      if (expectedFailure)
+        assert(
+          expectedFailure.test(result.error) && !/agent_name_in_use/.test(result.error),
+          `membership case did not exercise reserved-channel failure: ${result.error}`
+        );
       assert(
-        !(await request('/v1/agents')).some((agent) => agent.name === fixture.name),
-        `failed fleet spawn retained identity ${fixture.name}: ${result.error}`
+        await awaitAbsent(fixture.name),
+        `failed fleet spawn retained identity ${fixture.name} after bounded wait: ${result.error}`
       );
-      assert(!(await client.listAgents()).some((agent) => agent.name === fixture.name));
       assert.deepEqual(await request('/v1/webhooks'), before);
       assert.deepEqual(await request('/v1/subscriptions'), []);
       report.checks.push({
