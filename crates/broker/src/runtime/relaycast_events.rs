@@ -814,6 +814,10 @@ pub(super) async fn spawn_worker_from_request(
                     error = %error,
                     "worker channel membership reconciliation failed for Relaycast spawn"
                 );
+                // Mirror the other spawn-failure paths on stderr: supervisors that
+                // only capture stderr otherwise see "received spawn request" and
+                // then nothing.
+                eprintln!("[agent-relay] failed to spawn '{name}': {error:#}");
                 if owns_identity {
                     super::identity_cleanup::schedule_identity_cleanup(
                         workers,
