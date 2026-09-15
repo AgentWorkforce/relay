@@ -2366,8 +2366,12 @@ async fn run_connected_once(
     )
     .await
     {
-        (None, _) => return ControlRunResult::Shutdown,
-        (Some(false), _) => {
+        (None, deferred_commands) => {
+            fail_deferred_commands(deferred_commands, "node_control_shutdown", inventory, load);
+            return ControlRunResult::Shutdown;
+        }
+        (Some(false), deferred_commands) => {
+            fail_deferred_commands(deferred_commands, "node_not_registered", inventory, load);
             return ControlRunResult::Disconnected {
                 application_ready: false,
             };
@@ -2420,7 +2424,8 @@ async fn run_connected_once(
     // `RegisterAgent`/`DeregisterAgent` still gets a wire round trip instead
     // of the early rejection `register_node_session` gives commands it can't
     // service pre-connection.
-    for deferred in deferred_commands {
+    let mut deferred_commands = deferred_commands.into_iter();
+    for deferred in deferred_commands.by_ref() {
         if let std::ops::ControlFlow::Break(result) = handle_connected_command(
             Some(deferred),
             &mut sink,
@@ -2436,6 +2441,17 @@ async fn run_connected_once(
         )
         .await
         {
+            // The command that broke out already got its outcome (a wire
+            // failure, or a Shutdown handled like any other command here);
+            // anything still queued behind it in this replay never got a
+            // turn and must not be silently dropped, the same as a rejected
+            // registration's leftovers above.
+            let reason = if matches!(result, ControlRunResult::Shutdown) {
+                "node_control_shutdown"
+            } else {
+                "node_control_disconnected"
+            };
+            fail_deferred_commands(deferred_commands.collect(), reason, inventory, load);
             return result;
         }
     }
@@ -2629,7 +2645,17 @@ where
                                 return true;
                             }
 
-                            match application_liveness.acknowledge(&reply.id) {
+                            // A correlated reply proves the transport is alive, but only
+                            // `ok: true` proves the application processed it. Crediting a
+                            // rejection as an acknowledgement would let a relaycast that
+                            // keeps refusing inventory.sync still read as "ready" — the
+                            // exact failure mode this liveness check exists to catch.
+                            let liveness_outcome = if reply.ok {
+                                application_liveness.acknowledge(&reply.id)
+                            } else {
+                                application_liveness.reject(&reply.id).then_some(false)
+                            };
+                            match liveness_outcome {
                                 Some(became_ready) => {
                                     if became_ready {
                                         tracing::info!(
@@ -2868,6 +2894,41 @@ fn drain_agent_registrations(
 ) {
     for (_, pending) in pending_agent_registrations.drain() {
         let _ = pending.reply.send(Err(reason.to_string()));
+    }
+}
+
+/// Finalizes commands `register_node_session` deferred but that this
+/// connection attempt cannot service — either the wire gate rejected/timed
+/// out, or a `Shutdown` cut the wait short. Silently dropping these would
+/// strand `RegisterAgent`/`DeregisterAgent` callers until their own reply
+/// timeout and lose an `UpdateInventory`/`UpdateLoad` update entirely, since
+/// (unlike a command still sitting in `command_rx`) they were already taken
+/// out of the channel. `RegisterNode`/`Send`/`HeartbeatNow` are dropped, the
+/// same as `handle_disconnected_command` does before the first connection.
+fn fail_deferred_commands(
+    commands: Vec<FleetControlCommand>,
+    reason: &str,
+    inventory: &mut Vec<InventoryAgent>,
+    load: &mut FleetLoadSnapshot,
+) {
+    for command in commands {
+        match command {
+            FleetControlCommand::RegisterAgent { reply, .. } => {
+                let _ = reply.send(Err(reason.to_string()));
+            }
+            FleetControlCommand::DeregisterAgent { reply, .. } => {
+                let _ = reply.send(Err(reason.to_string()));
+            }
+            // Preserved for the next connection attempt rather than lost:
+            // these only update local state, so there is no wire round trip
+            // to retry, just a value to carry forward.
+            FleetControlCommand::UpdateInventory(next) => *inventory = next,
+            FleetControlCommand::UpdateLoad(next) => *load = next,
+            FleetControlCommand::RegisterNode { .. }
+            | FleetControlCommand::Send(_)
+            | FleetControlCommand::HeartbeatNow => {}
+            FleetControlCommand::Shutdown => {}
+        }
     }
 }
 
