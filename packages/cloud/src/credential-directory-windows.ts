@@ -1,7 +1,9 @@
 import { execFileSync } from 'node:child_process';
 import path from 'node:path';
 
-const WINDOWS_ACL_TIMEOUT_MS = 5_000;
+// A cold Windows PowerShell process can exceed five seconds before ACL evaluation.
+// Keep a finite deadline and fail closed if the complete native probe cannot finish.
+const WINDOWS_ACL_TIMEOUT_MS = 15_000;
 
 /**
  * This script is deliberately static. The directory is supplied as JSON on
