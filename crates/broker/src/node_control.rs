@@ -2435,6 +2435,7 @@ where
     true
 }
 
+#[allow(clippy::too_many_arguments)]
 async fn handle_server_message<S>(
     message: Message,
     event_tx: &mpsc::Sender<FleetControlEvent>,
