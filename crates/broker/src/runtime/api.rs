@@ -278,6 +278,23 @@ impl BrokerRuntime {
         } else {
             req
         };
+        if let ListenApiRequest::SubmitAgentResult { token, .. } = &req {
+            if self.task_provider.store.by_token(token).is_some() {
+                if let ListenApiRequest::SubmitAgentResult {
+                    token,
+                    name,
+                    data,
+                    final_result,
+                    metadata,
+                    reply,
+                } = req
+                {
+                    self.handle_task_callback(token, name, data, final_result, metadata, reply)
+                        .await;
+                    return;
+                }
+            }
+        }
         let local_only = self.degraded.is_some();
         let paths = &self.paths;
         let state = &mut self.state;

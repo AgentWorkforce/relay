@@ -13,15 +13,19 @@ const NODE_TO_SERVER_TYPES: &[&str] = &[
     "agent.deregister",
     "delivery.ack",
     "action.result",
+    "action.accept",
     "inventory.sync",
 ];
 
 const SERVER_TO_NODE_TYPES: &[&str] = &["deliver", "action.invoke", "ping", "reply", "error"];
 
 const EXPECTED_FIXTURE_FILES: &[&str] = &[
+    "action.accept.json",
     "action.invoke.json",
+    "action.invoke.task.json",
     "action.result.error.json",
     "action.result.output.json",
+    "action.result.task.json",
     "agent.deregister.json",
     "agent.register.json",
     "deliver.json",
@@ -121,4 +125,24 @@ fn fleet_wire_fixtures_round_trip_semantically() {
         seen_types, expected_types,
         "fixture coverage mismatch in {FIXTURE_DIR}"
     );
+}
+
+#[test]
+fn task_wire_requires_fences_and_final_flag_without_changing_short_results() {
+    let path = Path::new(FIXTURE_DIR).join("action.result.task.json");
+    let fixture: Value = serde_json::from_str(&fs::read_to_string(path).unwrap()).unwrap();
+    for field in ["id", "execution_id", "worker_generation", "final"] {
+        let mut invalid = fixture.clone();
+        invalid.as_object_mut().unwrap().remove(field);
+        assert!(
+            serde_json::from_value::<NodeToServer>(invalid).is_err(),
+            "{field} must be required"
+        );
+    }
+    let mut interim = fixture.clone();
+    interim["final"] = Value::Bool(false);
+    assert!(serde_json::from_value::<NodeToServer>(interim).is_ok());
+    let mut invalid = fixture;
+    invalid["accounting"]["tokens"] = serde_json::json!(-1);
+    assert!(serde_json::from_value::<NodeToServer>(invalid).is_err());
 }

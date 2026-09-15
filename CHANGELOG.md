@@ -22,6 +22,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `node agent attach <name>` automatically routes to a unique live Fleet node;
   ambiguous placements require `--node`.
 - `fleet spawn --sandbox` keeps temporary routing credentials out of project files.
+- Opt-in persistent broker task providers preserve final results across reconnects and acknowledge callbacks only after durable Relaycast receipts.
 
 ## [12.1.1] - 2026-09-15
 

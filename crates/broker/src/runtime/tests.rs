@@ -425,6 +425,7 @@ async fn owned_cleanup_waits_off_actor_and_retains_custody_until_confirmed() {
         .runtime
         .handle_fleet_control_event(crate::node_control::FleetControlEvent::Message(
             crate::fleet_wire::RelaycastToBroker::ActionInvoke(crate::fleet_wire::ActionInvoke {
+                task_execution: None,
                 v: FLEET_WIRE_VERSION,
                 invocation_id: "replacement-attempt".into(),
                 action: "spawn".into(),
@@ -662,6 +663,7 @@ fn worker_event_runtime_fixture(
         resize_owners: HashMap::new(),
         delivery_states: HashMap::new(),
         agent_result_tokens: HashMap::new(),
+        task_provider: super::tasks::TaskProvider::default(),
         recent_thread_messages: std::collections::VecDeque::new(),
         shutdown: false,
         lease_duration: None,
@@ -6735,4 +6737,670 @@ async fn assert_http_spawn_metadata_publication(supplied_token: bool, valid_cwd:
             .owned_spawn_generations
             .contains_key(&name));
     }
+}
+
+fn durable_task_fixture() -> WorkerEventRuntimeFixture {
+    let (tx, _rx) = mpsc::channel(16);
+    let workers = WorkerRegistry::new(tx, Vec::new(), std::env::temp_dir(), Instant::now());
+    let mut fixture = worker_event_runtime_fixture(workers, HashMap::new());
+    fixture.runtime.task_provider.store =
+        super::task_store::TaskStore::open(fixture._temp_dir.path().join("tasks.json")).unwrap();
+    fixture
+}
+
+async fn next_task_frame(
+    fixture: &mut WorkerEventRuntimeFixture,
+) -> crate::fleet_wire::BrokerToRelaycast {
+    loop {
+        if let FleetControlCommand::Send(message) =
+            tokio::time::timeout(Duration::from_secs(2), fixture.fleet_control_rx.recv())
+                .await
+                .expect("task frame timeout")
+                .unwrap()
+        {
+            return message;
+        }
+    }
+}
+
+async fn deliver_task_receipt(
+    fixture: &mut WorkerEventRuntimeFixture,
+    request: &str,
+    status: &str,
+) {
+    let record = fixture.runtime.task_provider.store.records["inv-task"].clone();
+    fixture
+        .runtime
+        .handle_fleet_control_event(crate::node_control::FleetControlEvent::Message(
+            crate::fleet_wire::RelaycastToBroker::Reply(crate::fleet_wire::Reply {
+                v: crate::fleet_wire::FLEET_WIRE_VERSION,
+                id: request.to_owned(),
+                ok: true,
+                data: super::task_store::fixture_receipt(&record, status),
+            }),
+        ))
+        .await;
+}
+
+#[tokio::test]
+async fn durable_task_callback_waits_for_engine_final_receipt_and_retries_after_lost_ack() {
+    use crate::fleet_wire::BrokerToRelaycast;
+    let mut fixture = durable_task_fixture();
+    let record = fixture
+        .runtime
+        .task_provider
+        .store
+        .prepare(super::task_store::fixture_invoke())
+        .unwrap();
+    fixture
+        .runtime
+        .task_provider
+        .store
+        .claim_launch("inv-task")
+        .unwrap();
+    let (reply, mut receiver) = tokio::sync::oneshot::channel();
+    fixture
+        .runtime
+        .handle_api_request(crate::listen_api::ListenApiRequest::SubmitAgentResult {
+            token: record.callback_token.clone(),
+            name: Some(record.name.clone()),
+            data: json!({"answer":42}),
+            final_result: true,
+            metadata: Some(json!({"accounting":{"tokens":17}})),
+            reply,
+        })
+        .await;
+    assert!(matches!(
+        receiver.try_recv(),
+        Err(tokio::sync::oneshot::error::TryRecvError::Empty)
+    ));
+    let BrokerToRelaycast::ActionAccept(accept) = next_task_frame(&mut fixture).await else {
+        panic!("expected accept reconciliation")
+    };
+    deliver_task_receipt(&mut fixture, &accept.id, "running").await;
+    let BrokerToRelaycast::ActionResult(result) = next_task_frame(&mut fixture).await else {
+        panic!("expected fenced final")
+    };
+    assert!(result.task.as_ref().unwrap().final_result);
+    assert_eq!(
+        result.task.as_ref().unwrap().worker_generation,
+        record.generation.to_string()
+    );
+    assert!(matches!(
+        receiver.try_recv(),
+        Err(tokio::sync::oneshot::error::TryRecvError::Empty)
+    ));
+    // Simulate lost result ACK: a new accept reconciles the same terminal record.
+    fixture.runtime.task_provider.pending.clear();
+    fixture.runtime.task_provider.last_retry = None;
+    fixture.runtime.maintain_tasks().await;
+    let BrokerToRelaycast::ActionAccept(reconcile) = next_task_frame(&mut fixture).await else {
+        panic!("expected reconcile")
+    };
+    deliver_task_receipt(&mut fixture, &reconcile.id, "completed").await;
+    let response = receiver.await.unwrap().unwrap();
+    assert_eq!(response["receipt"]["output"], json!({"answer":42}));
+    assert_eq!(
+        response["receipt"]["task_execution"]["accounting"],
+        json!({"tokens":17.0})
+    );
+    // Callback retry after HTTP response loss uses the saved receipt, no new worker or send.
+    let (reply, receiver) = tokio::sync::oneshot::channel();
+    fixture
+        .runtime
+        .handle_api_request(crate::listen_api::ListenApiRequest::SubmitAgentResult {
+            token: record.callback_token,
+            name: None,
+            data: json!({"answer":42}),
+            final_result: true,
+            metadata: Some(json!({"accounting":{"tokens":17}})),
+            reply,
+        })
+        .await;
+    assert!(receiver.await.unwrap().is_ok());
+    assert!(fixture.runtime.workers.workers.is_empty());
+    assert!(fixture.fleet_control_rx.try_recv().is_err());
+}
+
+#[tokio::test]
+async fn durable_task_interim_and_stale_generation_never_complete_callback_as_final() {
+    use crate::fleet_wire::BrokerToRelaycast;
+    let mut fixture = durable_task_fixture();
+    let record = fixture
+        .runtime
+        .task_provider
+        .store
+        .prepare(super::task_store::fixture_invoke())
+        .unwrap();
+    fixture
+        .runtime
+        .task_provider
+        .store
+        .claim_launch("inv-task")
+        .unwrap();
+    let (reply, mut receiver) = tokio::sync::oneshot::channel();
+    fixture
+        .runtime
+        .handle_api_request(crate::listen_api::ListenApiRequest::SubmitAgentResult {
+            token: record.callback_token,
+            name: None,
+            data: json!({"ready":true}),
+            final_result: false,
+            metadata: None,
+            reply,
+        })
+        .await;
+    let BrokerToRelaycast::ActionResult(result) = next_task_frame(&mut fixture).await else {
+        panic!("interim")
+    };
+    assert!(!result.task.as_ref().unwrap().final_result);
+    assert!(receiver.try_recv().is_err());
+    deliver_task_receipt(&mut fixture, result.id.as_deref().unwrap(), "running").await;
+    assert_eq!(receiver.await.unwrap().unwrap()["final"], false);
+    assert!(fixture.runtime.task_provider.store.records["inv-task"]
+        .final_result
+        .is_none());
+    assert!(fixture.runtime.task_provider.store.records["inv-task"]
+        .receipt
+        .is_none());
+}
+
+#[tokio::test]
+async fn durable_task_restart_of_claimed_launch_reports_loss_without_respawn() {
+    use crate::fleet_wire::BrokerToRelaycast;
+    let mut fixture = durable_task_fixture();
+    let record = fixture
+        .runtime
+        .task_provider
+        .store
+        .prepare(super::task_store::fixture_invoke())
+        .unwrap();
+    fixture
+        .runtime
+        .task_provider
+        .store
+        .claim_launch("inv-task")
+        .unwrap();
+    fixture.runtime.task_provider.store =
+        super::task_store::TaskStore::open(fixture._temp_dir.path().join("tasks.json")).unwrap();
+    fixture.runtime.handle_task_invoke(record.invoke).await;
+    let BrokerToRelaycast::ActionAccept(accept) = next_task_frame(&mut fixture).await else {
+        panic!("accept")
+    };
+    deliver_task_receipt(&mut fixture, &accept.id, "running").await;
+    assert_eq!(
+        fixture.runtime.task_provider.store.records["inv-task"]
+            .final_result
+            .as_ref()
+            .unwrap()
+            .error
+            .as_deref(),
+        Some("worker_execution_lost")
+    );
+    assert!(fixture.runtime.workers.workers.is_empty());
+    let BrokerToRelaycast::ActionAccept(accept) = next_task_frame(&mut fixture).await else {
+        panic!("failure reconciliation")
+    };
+    deliver_task_receipt(&mut fixture, &accept.id, "running").await;
+    let BrokerToRelaycast::ActionResult(result) = next_task_frame(&mut fixture).await else {
+        panic!("failure")
+    };
+    assert!(matches!(
+        result.result,
+        crate::fleet_wire::ActionResultPayload::Error(_)
+    ));
+    deliver_task_receipt(&mut fixture, result.id.as_deref().unwrap(), "failed").await;
+    assert_eq!(
+        fixture.runtime.task_provider.store.records["inv-task"]
+            .receipt
+            .as_ref()
+            .unwrap()["status"],
+        "failed"
+    );
+}
+
+#[tokio::test]
+async fn durable_task_receipt_timeout_is_retryable_and_terminal_outbox_survives_disconnect() {
+    let mut fixture = durable_task_fixture();
+    let record = fixture
+        .runtime
+        .task_provider
+        .store
+        .prepare(super::task_store::fixture_invoke())
+        .unwrap();
+    fixture
+        .runtime
+        .task_provider
+        .store
+        .claim_launch("inv-task")
+        .unwrap();
+    fixture.runtime.node_delivery_connected = false;
+    let (reply, mut receiver) = tokio::sync::oneshot::channel();
+    fixture
+        .runtime
+        .handle_api_request(crate::listen_api::ListenApiRequest::SubmitAgentResult {
+            token: record.callback_token,
+            name: None,
+            data: json!(42),
+            final_result: true,
+            metadata: None,
+            reply,
+        })
+        .await;
+    assert!(receiver.try_recv().is_err());
+    fixture
+        .runtime
+        .task_provider
+        .callbacks
+        .get_mut("inv-task")
+        .unwrap()[0]
+        .0 = Instant::now() - Duration::from_secs(6);
+    fixture.runtime.maintain_tasks().await;
+    assert_eq!(
+        receiver.await.unwrap(),
+        Err(crate::listen_api::AgentResultRouteError::Retryable)
+    );
+    assert!(fixture.runtime.task_provider.store.records["inv-task"]
+        .final_result
+        .is_some());
+    assert!(fixture.runtime.task_provider.store.records["inv-task"]
+        .receipt
+        .is_none());
+}
+
+#[tokio::test]
+async fn durable_task_duplicate_invoke_and_launch_failure_are_generation_fenced() {
+    use crate::fleet_wire::BrokerToRelaycast;
+    let mut fixture = durable_task_fixture();
+    let invoke = super::task_store::fixture_invoke();
+    fixture.runtime.handle_task_invoke(invoke.clone()).await;
+    fixture.runtime.handle_task_invoke(invoke).await;
+    let BrokerToRelaycast::ActionAccept(accept) = next_task_frame(&mut fixture).await else {
+        panic!("accept")
+    };
+    assert!(fixture.fleet_control_rx.try_recv().is_err());
+    // Missing CLI fails only after acceptance, through the explicit final-error path.
+    deliver_task_receipt(&mut fixture, &accept.id, "running").await;
+    let record = &fixture.runtime.task_provider.store.records["inv-task"];
+    assert!(record.launch_claimed);
+    assert_eq!(
+        record.final_result.as_ref().unwrap().error.as_deref(),
+        Some("task_missing_cli")
+    );
+    assert!(fixture.runtime.workers.workers.is_empty());
+    // A repeated accepted receipt never attempts launch again.
+    let BrokerToRelaycast::ActionAccept(accept) = next_task_frame(&mut fixture).await else {
+        panic!("reconcile")
+    };
+    deliver_task_receipt(&mut fixture, &accept.id, "running").await;
+    assert!(matches!(
+        next_task_frame(&mut fixture).await,
+        BrokerToRelaycast::ActionResult(_)
+    ));
+}
+
+#[tokio::test]
+async fn durable_task_terminal_rejection_stops_worker_and_replay_stays_refused() {
+    use crate::fleet_wire::{ActionResultPayload, BrokerToRelaycast};
+    let mut fixture = durable_task_fixture();
+    let invoke = super::task_store::fixture_invoke();
+    fixture.runtime.handle_task_invoke(invoke.clone()).await;
+    let BrokerToRelaycast::ActionAccept(accept) = next_task_frame(&mut fixture).await else {
+        panic!("accept")
+    };
+    let record = fixture.runtime.task_provider.store.records["inv-task"].clone();
+    fixture
+        .runtime
+        .task_provider
+        .store
+        .claim_launch("inv-task")
+        .unwrap();
+
+    let mut workers = make_worker_registry_with_worker(record.name.as_str()).await;
+    workers.workers.get_mut(&record.name).unwrap().generation = record.generation;
+    let restart_policy = crate::supervisor::RestartPolicy {
+        cooldown_ms: 0,
+        ..crate::supervisor::RestartPolicy::default()
+    };
+    let mut spec = workers.workers[&record.name].spec.clone();
+    spec.restart_policy = Some(restart_policy.clone());
+    workers.supervisor.register(
+        record.name.as_str(),
+        crate::supervisor::SupervisedAgent {
+            spec,
+            parent: None,
+            initial_task: None,
+            skip_relay_prompt: false,
+            agent_result: None,
+        },
+        restart_policy,
+    );
+    fixture.runtime.workers = workers;
+
+    fixture
+        .runtime
+        .handle_task_error(crate::fleet_wire::Error {
+            v: FLEET_WIRE_VERSION,
+            id: accept.id,
+            ok: false,
+            code: "task_not_found".to_owned(),
+            message: "task no longer exists".to_owned(),
+        })
+        .await;
+    assert!(!fixture.runtime.workers.is_worker_live(&record.name));
+    assert!(!fixture
+        .runtime
+        .workers
+        .supervisor
+        .is_supervised(&record.name));
+    assert_eq!(
+        fixture.runtime.task_provider.store.records["inv-task"]
+            .rejection
+            .as_deref(),
+        Some("task_not_found")
+    );
+
+    fixture.runtime.handle_task_invoke(invoke).await;
+    let BrokerToRelaycast::ActionResult(result) = next_task_frame(&mut fixture).await else {
+        panic!("rejected replay must receive a terminal action result")
+    };
+    let ActionResultPayload::Error(error) = result.result else {
+        panic!("rejected replay must fail")
+    };
+    assert_eq!(error.error, "handler_unavailable");
+}
+
+#[tokio::test]
+async fn durable_task_maintenance_stops_claimed_worker_at_deadline() {
+    let mut fixture = durable_task_fixture();
+    let record = fixture
+        .runtime
+        .task_provider
+        .store
+        .prepare(super::task_store::fixture_invoke())
+        .unwrap();
+    fixture
+        .runtime
+        .task_provider
+        .store
+        .claim_launch("inv-task")
+        .unwrap();
+    let mut workers = make_worker_registry_with_worker(record.name.as_str()).await;
+    workers.workers.get_mut(&record.name).unwrap().generation = record.generation;
+    fixture.runtime.workers = workers;
+    fixture
+        .runtime
+        .task_provider
+        .store
+        .records
+        .get_mut("inv-task")
+        .unwrap()
+        .invoke
+        .task_execution
+        .as_mut()
+        .unwrap()
+        .deadline = (chrono::Utc::now() - chrono::Duration::seconds(1))
+        .to_rfc3339_opts(chrono::SecondsFormat::Millis, true);
+    fixture.runtime.node_delivery_connected = false;
+
+    fixture.runtime.maintain_tasks().await;
+
+    assert!(!fixture.runtime.workers.is_worker_live(&record.name));
+    assert_eq!(
+        fixture.runtime.task_provider.store.records["inv-task"]
+            .final_result
+            .as_ref()
+            .unwrap()
+            .error
+            .as_deref(),
+        Some("task_deadline_exceeded")
+    );
+}
+
+#[tokio::test]
+async fn durable_task_refusals_return_terminal_action_errors() {
+    use crate::fleet_wire::{ActionResultPayload, BrokerToRelaycast};
+    let mut fixture = durable_task_fixture();
+    let invoke = super::task_store::fixture_invoke();
+    fixture.runtime.handle_task_invoke(invoke.clone()).await;
+    assert!(matches!(
+        next_task_frame(&mut fixture).await,
+        BrokerToRelaycast::ActionAccept(_)
+    ));
+
+    let mut conflicting = invoke.clone();
+    conflicting.input["task"] = json!("different");
+    fixture.runtime.handle_task_invoke(conflicting).await;
+    let BrokerToRelaycast::ActionResult(conflict) = next_task_frame(&mut fixture).await else {
+        panic!("conflicting invoke must receive a result")
+    };
+    let ActionResultPayload::Error(error) = conflict.result else {
+        panic!("conflicting invoke must fail")
+    };
+    assert_eq!(error.error, "handler_unavailable");
+
+    fixture.runtime.task_provider.store = Default::default();
+    fixture.runtime.handle_task_invoke(invoke).await;
+    let BrokerToRelaycast::ActionResult(disabled) = next_task_frame(&mut fixture).await else {
+        panic!("disabled provider invoke must receive a result")
+    };
+    let ActionResultPayload::Error(error) = disabled.result else {
+        panic!("disabled provider invoke must fail")
+    };
+    assert_eq!(error.error, "handler_unavailable");
+}
+
+#[tokio::test]
+async fn durable_task_disk_failure_after_engine_commit_withholds_callback_ack() {
+    use crate::fleet_wire::BrokerToRelaycast;
+    let mut fixture = durable_task_fixture();
+    let record = fixture
+        .runtime
+        .task_provider
+        .store
+        .prepare(super::task_store::fixture_invoke())
+        .unwrap();
+    fixture
+        .runtime
+        .task_provider
+        .store
+        .claim_launch("inv-task")
+        .unwrap();
+    let (reply, mut receiver) = tokio::sync::oneshot::channel();
+    fixture
+        .runtime
+        .handle_api_request(crate::listen_api::ListenApiRequest::SubmitAgentResult {
+            token: record.callback_token,
+            name: None,
+            data: json!(42),
+            final_result: true,
+            metadata: None,
+            reply,
+        })
+        .await;
+    let BrokerToRelaycast::ActionAccept(accept) = next_task_frame(&mut fixture).await else {
+        panic!("accept")
+    };
+    deliver_task_receipt(&mut fixture, &accept.id, "running").await;
+    let BrokerToRelaycast::ActionResult(result) = next_task_frame(&mut fixture).await else {
+        panic!("result")
+    };
+    let path = fixture._temp_dir.path().join("tasks.json");
+    let persisted = std::fs::read(&path).unwrap();
+    std::fs::remove_file(&path).unwrap();
+    std::fs::create_dir(&path).unwrap();
+    deliver_task_receipt(&mut fixture, result.id.as_deref().unwrap(), "completed").await;
+    assert!(receiver.try_recv().is_err());
+    assert!(!fixture.runtime.task_provider.store.enabled());
+    assert!(fixture.runtime.task_provider.store.records["inv-task"]
+        .receipt
+        .is_none());
+    // Reopen a recovered durable outbox and reconcile the already committed result.
+    std::fs::remove_dir(&path).unwrap();
+    std::fs::write(&path, persisted).unwrap();
+    fixture.runtime.task_provider.store = super::task_store::TaskStore::open(path).unwrap();
+    fixture.runtime.task_provider.last_retry = None;
+    fixture.runtime.maintain_tasks().await;
+    let BrokerToRelaycast::ActionAccept(accept) = next_task_frame(&mut fixture).await else {
+        panic!("reconcile")
+    };
+    deliver_task_receipt(&mut fixture, &accept.id, "completed").await;
+    assert!(receiver.await.unwrap().is_ok());
+    assert!(fixture.runtime.workers.workers.is_empty());
+}
+
+#[tokio::test]
+async fn durable_task_expired_unaccepted_receipt_never_launches_worker() {
+    use crate::fleet_wire::BrokerToRelaycast;
+    let mut fixture = durable_task_fixture();
+    let mut invoke = super::task_store::fixture_invoke();
+    invoke.task_execution.as_mut().unwrap().deadline = (chrono::Utc::now()
+        - chrono::Duration::minutes(1))
+    .to_rfc3339_opts(chrono::SecondsFormat::Millis, true);
+    fixture.runtime.handle_task_invoke(invoke).await;
+    let BrokerToRelaycast::ActionAccept(accept) = next_task_frame(&mut fixture).await else {
+        panic!("accept")
+    };
+    let record = fixture.runtime.task_provider.store.records["inv-task"].clone();
+    let mut receipt = super::task_store::fixture_receipt(&record, "failed");
+    receipt["error"] = json!("task_deadline_exceeded");
+    receipt["task_execution"]
+        .as_object_mut()
+        .unwrap()
+        .remove("worker_generation");
+    fixture
+        .runtime
+        .handle_task_reply(crate::fleet_wire::Reply {
+            v: FLEET_WIRE_VERSION,
+            id: accept.id,
+            ok: true,
+            data: receipt,
+        })
+        .await;
+    assert!(fixture.runtime.workers.workers.is_empty());
+    assert!(!fixture.runtime.task_provider.store.records["inv-task"].launch_claimed);
+    assert_eq!(
+        fixture.runtime.task_provider.store.records["inv-task"]
+            .receipt
+            .as_ref()
+            .unwrap()["error"],
+        "task_deadline_exceeded"
+    );
+}
+
+#[tokio::test]
+async fn durable_task_expired_running_receipt_queues_terminal_deadline_failure() {
+    use crate::fleet_wire::BrokerToRelaycast;
+    let mut fixture = durable_task_fixture();
+    let mut invoke = super::task_store::fixture_invoke();
+    invoke.task_execution.as_mut().unwrap().deadline = (chrono::Utc::now()
+        - chrono::Duration::minutes(1))
+    .to_rfc3339_opts(chrono::SecondsFormat::Millis, true);
+    fixture.runtime.handle_task_invoke(invoke).await;
+    let BrokerToRelaycast::ActionAccept(accept) = next_task_frame(&mut fixture).await else {
+        panic!("accept")
+    };
+
+    deliver_task_receipt(&mut fixture, &accept.id, "running").await;
+    let record = &fixture.runtime.task_provider.store.records["inv-task"];
+    assert!(!record.launch_claimed);
+    assert_eq!(
+        record.final_result.as_ref().unwrap().error.as_deref(),
+        Some("task_deadline_exceeded")
+    );
+    let BrokerToRelaycast::ActionAccept(reconcile) = next_task_frame(&mut fixture).await else {
+        panic!("reconcile")
+    };
+    deliver_task_receipt(&mut fixture, &reconcile.id, "running").await;
+    let BrokerToRelaycast::ActionResult(result) = next_task_frame(&mut fixture).await else {
+        panic!("result")
+    };
+    let crate::fleet_wire::ActionResultPayload::Error(error) = result.result else {
+        panic!("deadline failure")
+    };
+    assert_eq!(error.error, "task_deadline_exceeded");
+    assert!(result.task.as_ref().unwrap().final_result);
+}
+
+#[tokio::test]
+async fn durable_task_old_attempt_receipt_cannot_start_new_generation() {
+    use crate::fleet_wire::BrokerToRelaycast;
+    let mut fixture = durable_task_fixture();
+    let invoke = super::task_store::fixture_invoke();
+    fixture.runtime.handle_task_invoke(invoke.clone()).await;
+    let original = fixture.runtime.task_provider.store.records["inv-task"].clone();
+    let BrokerToRelaycast::ActionAccept(old) = next_task_frame(&mut fixture).await else {
+        panic!("accept")
+    };
+    let mut next = invoke;
+    next.task_execution.as_mut().unwrap().execution_id = "inv-task/2".into();
+    fixture.runtime.handle_task_invoke(next).await;
+    fixture
+        .runtime
+        .handle_task_reply(crate::fleet_wire::Reply {
+            v: FLEET_WIRE_VERSION,
+            id: old.id,
+            ok: true,
+            data: super::task_store::fixture_receipt(&original, "running"),
+        })
+        .await;
+    assert!(!fixture.runtime.task_provider.store.records["inv-task"].launch_claimed);
+    assert_ne!(
+        fixture.runtime.task_provider.store.records["inv-task"].generation,
+        original.generation
+    );
+    assert!(fixture
+        .runtime
+        .task_provider
+        .store
+        .by_token(&original.callback_token)
+        .is_none());
+    assert!(fixture.runtime.workers.workers.is_empty());
+}
+
+#[tokio::test]
+async fn durable_task_numeric_output_and_accounting_reconcile_javascript_json() {
+    use crate::fleet_wire::BrokerToRelaycast;
+    let mut fixture = durable_task_fixture();
+    let record = fixture
+        .runtime
+        .task_provider
+        .store
+        .prepare(super::task_store::fixture_invoke())
+        .unwrap();
+    fixture
+        .runtime
+        .task_provider
+        .store
+        .claim_launch("inv-task")
+        .unwrap();
+    let (reply, receiver) = tokio::sync::oneshot::channel();
+    fixture
+        .runtime
+        .handle_api_request(crate::listen_api::ListenApiRequest::SubmitAgentResult {
+            token: record.callback_token,
+            name: None,
+            data: json!({"answer":42.0}),
+            final_result: true,
+            metadata: Some(json!({"accounting":{"tokens":17.0}})),
+            reply,
+        })
+        .await;
+    let BrokerToRelaycast::ActionAccept(accept) = next_task_frame(&mut fixture).await else {
+        panic!("accept")
+    };
+    let record = fixture.runtime.task_provider.store.records["inv-task"].clone();
+    let mut receipt = super::task_store::fixture_receipt(&record, "completed");
+    receipt["output"] = json!({"answer":42});
+    receipt["task_execution"]["accounting"] = json!({"tokens":17});
+    fixture
+        .runtime
+        .handle_task_reply(crate::fleet_wire::Reply {
+            v: FLEET_WIRE_VERSION,
+            id: accept.id,
+            ok: true,
+            data: receipt,
+        })
+        .await;
+    assert!(receiver.await.unwrap().is_ok());
 }

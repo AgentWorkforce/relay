@@ -280,12 +280,16 @@ impl std::error::Error for DeliveryRouteError {}
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum AgentResultRouteError {
     InvalidToken,
+    Retryable,
+    Conflict,
 }
 
 impl std::fmt::Display for AgentResultRouteError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             AgentResultRouteError::InvalidToken => write!(f, "invalid_result_token"),
+            AgentResultRouteError::Retryable => write!(f, "task_receipt_pending"),
+            AgentResultRouteError::Conflict => write!(f, "task_result_conflict"),
         }
     }
 }
@@ -1387,6 +1391,16 @@ async fn listen_api_agent_result(
 
     match reply_rx.await {
         Ok(Ok(value)) => (axum::http::StatusCode::OK, axum::Json(value)),
+        Ok(Err(AgentResultRouteError::Retryable)) => (
+            axum::http::StatusCode::SERVICE_UNAVAILABLE,
+            axum::Json(
+                json!({ "success": false, "error": "task_receipt_pending", "retryable": true }),
+            ),
+        ),
+        Ok(Err(AgentResultRouteError::Conflict)) => (
+            axum::http::StatusCode::CONFLICT,
+            axum::Json(json!({ "success": false, "error": "task_result_conflict" })),
+        ),
         Ok(Err(AgentResultRouteError::InvalidToken)) => (
             axum::http::StatusCode::UNAUTHORIZED,
             axum::Json(json!({ "success": false, "error": "invalid_result_token" })),
