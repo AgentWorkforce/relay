@@ -1,6 +1,5 @@
 #!/usr/bin/env node
 import { execFileSync } from 'node:child_process';
-import { randomBytes } from 'node:crypto';
 import { emitStimulus } from './emission.mjs';
 import { appendFileSync, existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import path from 'node:path';
@@ -93,7 +92,6 @@ const cast = async (endpoint, signal) => {
   return (await res.json()).data;
 };
 const pause = (ms) => new Promise((r) => setTimeout(r, ms));
-const fixtureName = (repo) => repo.split('/')[1];
 const readLines = (name) =>
   existsSync(path.join(out, name))
     ? readFileSync(path.join(out, name), 'utf8')

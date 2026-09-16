@@ -7,3 +7,5 @@ Reject exhausted admission collisions and require intended startup failures; use
 Hermetic proof regressions run locally. Isolated Engine/broker rehearsal and real provider acceptance are separate evidence classes. No provider action, push, merge or deploy in this worker stage.
 
 The installed trail command refused a new trajectory because the inherited branch already contains active traj_jdx9303jp3ky; that historical trajectory was left unchanged.
+
+Followup: isolate local node/state and explicit CLI broker connection; preflight a real owned exit-one executable; bank actual broker close and returned worker PIDs, bound cleanup wait and retain failed workdirs. Remove unused emitter imports. Hermetic suite: 96/96 pass, no skips. Matching released Relay 12.2.2 + Engine 8.10.1 local rehearsal remains failed: HTTP-created provider-default worker conflicts with broker-provider inventory, causing reconnect before guarded cleanup ACK. The proof retains this runtime blocker; no assertion relaxation or full E2E claim.

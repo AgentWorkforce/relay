@@ -30,3 +30,17 @@ export async function observeFleetStartupFailure(name, attempt, onRetry) {
     return result;
   }
 }
+
+export async function awaitBrokerClose(close, timeoutMs = 10000) {
+  let timer;
+  try {
+    return await Promise.race([
+      close,
+      new Promise((_, reject) => {
+        timer = setTimeout(() => reject(new Error('Owned broker close was not observed')), timeoutMs);
+      }),
+    ]);
+  } finally {
+    clearTimeout(timer);
+  }
+}

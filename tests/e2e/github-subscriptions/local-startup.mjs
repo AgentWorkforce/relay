@@ -1,12 +1,14 @@
 #!/usr/bin/env node
 import { releaseOwnedWorker } from './proof.mjs';
-import { observeFleetStartupFailure } from './startup-failure.mjs';
+import { observeFleetStartupFailure, awaitBrokerClose } from './startup-failure.mjs';
 // Real local HTTP/WebSocket/broker/process wiring; deliberately NOT a real AI/GitHub action proof.
 import assert from 'node:assert/strict';
 import { once } from 'node:events';
+import { spawnSync } from 'node:child_process';
+import { createHash } from 'node:crypto';
 import { Command } from 'commander';
 import { registerIntegrationCommands } from '../../../packages/cli/dist/cli/commands/integration.js';
-import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdtempSync, rmSync, writeFileSync, readFileSync, appendFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -15,16 +17,33 @@ import { launchSubscriptionRecipient } from '../../../packages/cli/dist/cli/comm
 
 const engineDir = process.env.RELAYCAST_ENGINE_DIR;
 const binaryPath = process.env.BROKER_BINARY_PATH;
-assert(engineDir && binaryPath, 'Set RELAYCAST_ENGINE_DIR and BROKER_BINARY_PATH to the candidate builds');
-const { startServer } = await import(path.join(engineDir, 'packages/engine/dist/entrypoints/node.js'));
+const engineEntry =
+  process.env.RELAYCAST_ENGINE_ENTRYPOINT ??
+  (engineDir && path.join(engineDir, 'packages/engine/dist/entrypoints/node.js'));
+assert(
+  engineEntry && binaryPath,
+  'Set RELAYCAST_ENGINE_ENTRYPOINT (or RELAYCAST_ENGINE_DIR) and BROKER_BINARY_PATH'
+);
+const { startServer } = await import(engineEntry);
 const repo = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../../..');
 const work = mkdtempSync(path.join(tmpdir(), 'ghsub-local-startup-'));
 const exitOne = path.join(work, 'exit-one');
 writeFileSync(exitOne, '#!/bin/sh\nexit 1\n', { mode: 0o700 });
+const exitQualification = spawnSync(exitOne, [], { env: { PATH: '/usr/bin:/bin' }, encoding: 'utf8' });
+assert.equal(exitQualification.error, undefined);
+assert.equal(exitQualification.status, 1);
+assert.equal(exitQualification.signal, null);
 const report = {
   at: new Date().toISOString(),
   environment: 'isolated local SQLite + real broker + shell process fixtures',
   checks: [],
+  executableFixture: {
+    command: exitOne,
+    sha256: createHash('sha256').update(readFileSync(exitOne)).digest('hex'),
+    preflightPid: exitQualification.pid,
+    preflightExit: exitQualification.status,
+  },
+  processes: [],
 };
 const server = startServer({
   port: 0,
@@ -34,7 +53,19 @@ const server = startServer({
 });
 if (!server.server.listening) await once(server.server, 'listening');
 const baseUrl = `http://127.0.0.1:${server.server.address().port}`;
-let key, client, actionToken;
+let key, client, actionToken, brokerClose;
+const trackProcess = (worker) => {
+  assert(Number.isInteger(worker.pid) && worker.pid > 0, 'real worker PID required');
+  const observed = spawnSync('/bin/ps', ['-p', String(worker.pid), '-o', 'lstart='], { encoding: 'utf8' });
+  assert.equal(observed.status, 0, 'worker must exist when custody is banked');
+  assert(observed.stdout.trim(), 'worker birth observation required');
+  report.processes.push({
+    name: worker.name,
+    pid: worker.pid,
+    generation: worker.generation,
+    observedBirth: observed.stdout.trim(),
+  });
+};
 const request = async (route, method = 'GET', body) => {
   const response = await fetch(baseUrl + route, {
     method,
@@ -50,6 +81,16 @@ const request = async (route, method = 'GET', body) => {
 };
 try {
   key = (await request('/v1/workspaces', 'POST', { name: 'isolated-ghsub-startup' })).api_key;
+  // Mint only in this in-memory local Engine. Explicit identity/token bypass
+  // shared machine seed and token reads; an external sandbox fences remint writes.
+  const localNode = await request('/v1/nodes', 'POST', {
+    name: 'isolated-ghsub-startup',
+    kind: 'ws',
+    role: 'broker',
+    capabilities: ['spawn'],
+    max_agents: 0,
+  });
+  assert(localNode.id && localNode.token, 'local node identity required');
   const isolatedEnv = Object.fromEntries(
     Object.keys(process.env)
       .filter((k) => k.startsWith('RELAY_') || k.startsWith('AGENT_RELAY_'))
@@ -57,10 +98,13 @@ try {
   );
   client = await HarnessDriverClient.spawn({
     binaryPath,
+    ...(process.env.BROKER_STDERR_OUTPUT
+      ? { onStderr: (line) => appendFileSync(process.env.BROKER_STDERR_OUTPUT, line + '\n', { mode: 0o600 }) }
+      : {}),
     cwd: work,
     workspaceKey: key,
     brokerName: 'isolated-ghsub-startup',
-    binaryArgs: { persist: true, apiPort: 0 },
+    binaryArgs: { persist: true, apiPort: 0, stateDir: path.join(work, 'broker-state') },
     channels: [],
     env: {
       ...isolatedEnv,
@@ -68,11 +112,18 @@ try {
       RELAY_AGENT_NAME: 'isolated-ghsub-startup',
       RELAY_BASE_URL: baseUrl,
       RELAYCAST_BASE_URL: baseUrl,
+      RELAY_NODE_ID: localNode.id,
+      RELAY_NODE_TOKEN: localNode.token,
+      RELAY_NODE_NAME: localNode.name,
     },
     startupTimeoutMs: 30000,
   });
+  trackProcess({ name: 'broker', pid: client.brokerPid });
+  // This is the owned ChildProcess, not a roster disappearance inference.
+  brokerClose = once(client.child, 'close');
   client.connectEvents();
   process.chdir(work);
+  process.env.AGENT_RELAY_STATE_DIR = path.join(work, 'broker-state');
   const before = await request('/v1/webhooks');
   const bindingMutations = [];
   // Only the provider control port is a fixture; use the real command, SDK, engine and broker.
@@ -122,7 +173,9 @@ try {
         '--to',
         `@${name}`,
         '--spawn',
-        exitOne,
+        JSON.stringify(exitOne),
+        '--broker-connection',
+        path.join(work, 'broker-state', 'connection.json'),
         '--cwd',
         cwd,
         '--base-url',
@@ -179,6 +232,7 @@ try {
       sessionId: 'delayed-pre-ready',
     },
   });
+  trackProcess(delayed);
   const delayedReady = await delayed.waitForReady(15_000);
   assert.equal(delayedReady.reason, 'exited');
   await assert.rejects(
@@ -195,6 +249,7 @@ try {
     cwd: work,
     harnessConfig: { runtime: 'native', command: '/bin/cat', args: [], sessionId: 'delayed-pre-ready-retry' },
   });
+  trackProcess(retry);
   assert.notEqual(retry.generation, delayed.generation);
   await assert.rejects(
     delayed.release('stale retry cleanup', { deleteIdentity: true }),
@@ -243,6 +298,7 @@ try {
     cwd: work,
     harnessConfig: { runtime: 'native', command: '/bin/cat', args: [], sessionId: 'empty-channels-process' },
   });
+  trackProcess(isolated);
   assert.deepEqual(isolated.channels, [], 'broker must confirm effective empty channels');
   assert.deepEqual(
     (await request(`/v1/agents/${isolated.name}`)).channels,
@@ -268,6 +324,7 @@ try {
       sessionId: 'local-membership-process',
     },
   });
+  trackProcess(worker);
   assert(worker.generation && worker.pid);
   assert.deepEqual(worker.channels, ['proof-one', 'proof-two']);
   assert.equal(
@@ -316,6 +373,7 @@ try {
     ['fleet-one', 'fleet-two']
   );
   const pluralWorker = (await client.listAgents()).find((agent) => agent.name === 'fleet-plural');
+  trackProcess(pluralWorker);
   assert(pluralWorker?.generation);
   await client.release('fleet-plural', 'owned fleet plural fixture cleanup', pluralWorker.generation, true);
   report.checks.push({
@@ -412,8 +470,37 @@ try {
       report.cleanupError = error.message;
       process.exitCode = 1;
     });
+  if (brokerClose) {
+    try {
+      const [code, signal] = await awaitBrokerClose(brokerClose);
+      report.brokerClose = { code, signal };
+    } catch (error) {
+      report.pass = false;
+      report.cleanupError = error.message;
+      process.exitCode = 1;
+    }
+  }
   await server.stop();
-  rmSync(work, { recursive: true, force: true });
+  for (const processRecord of report.processes) {
+    try {
+      process.kill(processRecord.pid, 0);
+      processRecord.absentAfterShutdown = false;
+      report.pass = false;
+      report.cleanupError = 'Owned process remains after shutdown';
+      process.exitCode = 1;
+    } catch (error) {
+      processRecord.absentAfterShutdown = error.code === 'ESRCH';
+      if (!processRecord.absentAfterShutdown) {
+        report.pass = false;
+        process.exitCode = 1;
+      }
+    }
+  }
+  if (report.pass && report.processes.every((entry) => entry.absentAfterShutdown)) {
+    rmSync(work, { recursive: true, force: true });
+  } else {
+    report.retainedWorkDir = work;
+  }
   const text = JSON.stringify(report, null, 2) + '\n';
   if (process.env.PROOF_OUTPUT) writeFileSync(process.env.PROOF_OUTPUT, text);
   console.log(text);

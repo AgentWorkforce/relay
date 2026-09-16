@@ -1,3 +1,6 @@
+import { spawn } from 'node:child_process';
+import { once } from 'node:events';
+import { awaitBrokerClose } from './startup-failure.mjs';
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { assertFleetStartupFailure, observeFleetStartupFailure } from './startup-failure.mjs';
@@ -51,3 +54,14 @@ for (const [name, error] of Object.entries(cases)) {
     );
   });
 }
+
+test('broker close waits are bounded and preserve the real child exit tuple', async () => {
+  const child = spawn(process.execPath, ['-e', 'setTimeout(() => process.exit(7), 200)'], {
+    env: {},
+    stdio: 'ignore',
+  });
+  const close = once(child, 'close');
+  await assert.rejects(awaitBrokerClose(close, 10), /close was not observed/);
+  assert.deepEqual(await awaitBrokerClose(close, 5000), [7, null]);
+  assert.throws(() => process.kill(child.pid, 0), { code: 'ESRCH' });
+});
