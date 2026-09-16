@@ -412,3 +412,65 @@ test('normalized issue comments retain exact provider, parent, author and action
     assert.equal(correlate(adverse).pass, false, mutate.toString());
   }
 });
+
+test('ingest lower bound accepts exact intent time and rejects even one millisecond before it', () => {
+  const f = fixture();
+  f.messages[0].created_at = f.stimulus.createdAt;
+  assert.equal(correlate(f).pass, true);
+  f.messages[0].created_at = new Date(Date.parse(f.stimulus.createdAt) - 1).toISOString();
+  assert.equal(correlate(f).pass, false);
+});
+
+test('strict thread correlation distinguishes explicit null association from absent, malformed, changed and replies', async () => {
+  const { fixtureExpected } = await import('./fixture-scope.mjs');
+  for (const association of [null, '9007199254740993']) {
+    const f = fixture();
+    Object.assign(f.stimulus, {
+      kind: 'thread',
+      accepted: true,
+      repo: 'owner/repo',
+      pr: 1,
+      providerId: '42',
+      headSha: 'a'.repeat(40),
+      file: 'owned.txt',
+      line: 2,
+      side: 'RIGHT',
+    });
+    f.strictFixture = true;
+    f.stimulus.expected = fixtureExpected(
+      f.stimulus,
+      { id: '42', user: { login: 'owner' }, pull_request_review_id: association },
+      'test'
+    );
+    Object.assign(f.messages[0].metadata, {
+      path: f.stimulus.expected.path,
+      record: structuredClone(f.stimulus.expected.record),
+      provider_event_type: 'pull_request_review_comment.created',
+    });
+    assert.equal(correlate(f).pass, true);
+    for (const mutate of [
+      (r) => {
+        delete r.pull_request_review_id;
+      },
+      (r) => {
+        r.pull_request_review_id = undefined;
+      },
+      (r) => {
+        r.pull_request_review_id = 'null';
+      },
+      (r) => {
+        r.pull_request_review_id = '9007199254740995';
+      },
+      (r) => {
+        r.pull_request_review_id = 9007199254740992;
+      },
+      (r) => {
+        r.in_reply_to_id = '44';
+      },
+    ]) {
+      const bad = structuredClone(f);
+      mutate(bad.messages[0].metadata.record);
+      assert.equal(correlate(bad).pass, false);
+    }
+  }
+});

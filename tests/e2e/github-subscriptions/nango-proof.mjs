@@ -18,20 +18,34 @@ export async function nangoLogsCall(name, args, key, request = fetch) {
   });
   if (!response.ok) throw new Error(`Nango log read failed: HTTP ${response.status}`);
   const text = await response.text();
-  const body = text.trimStart().startsWith('{')
-    ? JSON.parse(text)
-    : JSON.parse(
-        text
-          .split('\n')
-          .filter((line) => line.startsWith('data: '))
-          .at(-1)
-          ?.slice(6) ?? '{}'
-      );
+  const parse = (value, part) => {
+    try {
+      return JSON.parse(value);
+    } catch {
+      // SyntaxError messages can contain provider content. Do not retain a cause.
+      throw new Error(`Nango log response contains invalid JSON (${part})`);
+    }
+  };
+  const envelope = text.trimStart().startsWith('{')
+    ? text
+    : text
+        .split('\n')
+        .filter((line) => line.startsWith('data: '))
+        .at(-1)
+        ?.slice(6);
+  const body = parse(envelope, 'envelope');
+  const object = (value) => value !== null && typeof value === 'object' && !Array.isArray(value);
+  if (!object(body)) throw new Error('Invalid Nango log envelope');
   if (body.error || body.result?.isError) throw new Error('Nango log tool returned an error');
-  const data =
-    body.result?.structuredContent ??
-    JSON.parse(body.result?.content?.find((b) => b.type === 'text')?.text ?? 'null');
-  if (!data || !data.pagination || !Object.hasOwn(data.pagination, 'cursor'))
+  if (!object(body.result)) throw new Error('Invalid Nango log result');
+  let data = body.result.structuredContent;
+  if (data == null) {
+    if (!Array.isArray(body.result.content)) throw new Error('Invalid Nango log content');
+    const block = body.result.content.find((entry) => object(entry) && entry.type === 'text');
+    if (typeof block?.text !== 'string') throw new Error('Invalid Nango log text content');
+    data = parse(block.text, 'tool content');
+  }
+  if (!object(data) || !object(data.pagination) || !Object.hasOwn(data.pagination, 'cursor'))
     throw new Error('Nango log response lacks pagination evidence');
   return data;
 }
@@ -103,6 +117,8 @@ export async function captureNangoForwards(call, expected, period) {
     });
     if (!Array.isArray(data.operations)) throw new Error('Invalid Nango operation inventory');
     const fresh = data.operations.filter((operation) => {
+      if (!operation || typeof operation.id !== 'string' || !/^[A-Za-z0-9_-]{1,128}$/.test(operation.id))
+        throw new Error('Invalid Nango operation identity');
       if (operations.has(operation.id)) return false;
       operations.add(operation.id);
       return true;
@@ -131,9 +147,21 @@ export async function captureNangoForwards(call, expected, period) {
     // sequential within each history and settle the entire bounded batch before
     // reporting an error; partial scans must never claim exhaustion.
     for (let offset = 0; offset < fresh.length; offset += 4) {
-      const batch = await Promise.allSettled(fresh.slice(offset, offset + 4).map(inspect));
-      const failure = batch.find((result) => result.status === 'rejected');
-      if (failure) throw failure.reason;
+      const batchOperations = fresh.slice(offset, offset + 4);
+      const batch = await Promise.allSettled(batchOperations.map(inspect));
+      const failures = batch.flatMap((result, index) => {
+        if (result.status !== 'rejected') return [];
+        // Operation identity is evidence; an arbitrary rejection's body is not.
+        const operationId = batchOperations[index].id;
+        const error = new Error(`Nango history read failed for operation ${operationId}`);
+        error.operationId = operationId;
+        return [error];
+      });
+      if (failures.length)
+        throw new AggregateError(
+          failures,
+          `Nango operation histories failed (${failures.length}/${batch.length}): ${failures.map((e) => e.operationId).join(', ')}`
+        );
       for (const result of batch) receipts.push(...result.value);
     }
     cursor = data.pagination.cursor;

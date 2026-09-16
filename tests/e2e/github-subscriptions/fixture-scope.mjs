@@ -1,3 +1,4 @@
+import { isDeepStrictEqual } from 'node:util';
 import {
   githubIssuePath,
   githubIssueCommentPath,
@@ -37,7 +38,8 @@ export function fixtureExpected(stimulus, record, runId) {
       expected.path = stimulus.file;
       expected.line = stimulus.line;
       expected.side = stimulus.side;
-      expected.pull_request_review_id = providerId(record.pull_request_review_id);
+      if (record.in_reply_to_id != null) throw new Error('Expected a new review thread root');
+      expected.pull_request_review_id = reviewAssociationId(record);
       break;
     case 'merge':
       canonicalPath = githubPullRequestPath(owner, repo, stimulus.pr, fixtureTitle(runId));
@@ -61,9 +63,11 @@ export function fixtureExpected(stimulus, record, runId) {
       throw new Error('Unknown provider event kind');
   }
   if (stimulus.kind !== 'ci') expected.user = { login: record.user?.login };
-  function complete(value) {
+  function complete(value, key) {
+    // GitHub's create-review-comment schema requires this key but permits null.
+    if (stimulus.kind === 'thread' && key === 'pull_request_review_id' && value === null) return true;
     if (value === undefined || value === null || value === '' || value === 'undefined') return false;
-    return typeof value !== 'object' || Object.values(value).every(complete);
+    return typeof value !== 'object' || Object.entries(value).every(([key, child]) => complete(child, key));
   }
   if (!complete(expected)) throw new Error('Incomplete provider fixture identity');
   validateFields(stimulus, expected);
@@ -74,6 +78,12 @@ function providerId(value) {
   if ((typeof value === 'string' && /^[1-9]\d*$/.test(value)) || (Number.isSafeInteger(value) && value > 0))
     return String(value);
   throw new Error('Incomplete or non-lossless provider association ID');
+}
+
+function reviewAssociationId(record) {
+  if (!Object.hasOwn(record, 'pull_request_review_id'))
+    throw new Error('Missing provider review association');
+  return record.pull_request_review_id === null ? null : providerId(record.pull_request_review_id);
 }
 
 function validateFields(stimulus, record) {
@@ -109,7 +119,7 @@ function validateFields(stimulus, record) {
       require(record.commit_id === stimulus.headSha && text(stimulus.file) && record.path === stimulus.file);
       require(Number.isSafeInteger(stimulus.line) && stimulus.line > 0 && record.line === stimulus.line);
       require(['LEFT', 'RIGHT'].includes(stimulus.side) && record.side === stimulus.side);
-      providerId(record.pull_request_review_id);
+      reviewAssociationId(record);
       break;
     case 'merge':
       require(
@@ -143,7 +153,7 @@ export function validFixtureExpected(stimulus) {
     if (providerId(stimulus.providerId) !== providerId(expected.record.id)) return false;
     validateFields(stimulus, expected.record);
     const canonical = fixtureExpected(stimulus, expected.record, expected.runId);
-    return expected.path === canonical.path;
+    return expected.path === canonical.path && isDeepStrictEqual(expected.record, canonical.record);
   } catch {
     return false;
   }

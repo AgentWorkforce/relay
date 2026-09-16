@@ -1,5 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
+import { createHash } from 'node:crypto';
 import { nangoForwardReceipts, captureNangoForwards, nangoLogsCall } from './nango-proof.mjs';
 const expected = {
   destination: 'https://example.com/nango',
@@ -41,6 +42,13 @@ test('matches real forwarded request body when the operation omits connection id
   const receipts = nangoForwardReceipts(operation, [message], expected);
   assert.equal(receipts.length, 1);
   assert.equal(receipts[0].githubDeliveryId, 'guid');
+  assert.equal(receipts[0].nangoOperationId, operation.id);
+  assert.equal(receipts[0].nangoMessageId, message.id);
+  assert.equal(receipts[0].nonceDigest, createHash('sha256').update(expected.nonce).digest('hex'));
+  assert.equal(
+    receipts[0].payloadSha256,
+    createHash('sha256').update(JSON.stringify(message.request.body.payload)).digest('hex')
+  );
   const encoded = JSON.stringify(receipts);
   for (const secret of ['private-signature', 'private-title', expected.nonce])
     assert(!encoded.includes(secret));
@@ -155,7 +163,123 @@ test('a failed history settles concurrent reads and cannot produce partial succe
       expected,
       {}
     ),
-    /history unavailable/
+    /Nango operation histories failed \(1\/4\): 0/
   );
   assert.equal(completed, 3);
+});
+
+test('malformed success envelopes and tool content never expose upstream bytes', async () => {
+  for (const text of [
+    '<html>PRIVATE_UPSTREAM_SECRET</html>',
+    '{"PRIVATE_UPSTREAM_SECRET":',
+    'event: message\ndata: {"PRIVATE_UPSTREAM_SECRET":',
+    JSON.stringify({ result: { content: [{ type: 'text', text: '{"PRIVATE_UPSTREAM_SECRET":' }] } }),
+  ]) {
+    await assert.rejects(
+      nangoLogsCall('logs_list_operations', {}, 'test-key', async () => new Response(text)),
+      (error) => {
+        assert.equal(error.constructor, Error);
+        assert.match(error.message, /^Nango log response contains invalid JSON/);
+        assert(!error.stack.includes('PRIVATE_UPSTREAM_SECRET'));
+        assert.equal(error.cause, undefined);
+        return true;
+      }
+    );
+  }
+  const data = { operations: [], pagination: { cursor: null } };
+  for (const result of [
+    { structuredContent: data },
+    { content: [{ type: 'text', text: JSON.stringify(data) }] },
+  ]) {
+    for (const body of [
+      JSON.stringify({ result }),
+      `event: message\ndata: ${JSON.stringify({ result })}\n\n`,
+    ])
+      assert.deepEqual(
+        await nangoLogsCall('logs_list_operations', {}, 'test-key', async () => new Response(body)),
+        data
+      );
+  }
+});
+
+test('all failed operation identities survive batch settlement without raw rejection content', async () => {
+  let completed = 0;
+  await assert.rejects(
+    captureNangoForwards(
+      async (name, args) => {
+        if (name === 'logs_list_operations')
+          return {
+            operations: [0, 1, 2, 3].map((i) => ({ ...operation, id: `op-${i}` })),
+            pagination: { cursor: null },
+          };
+        await new Promise((resolve) => setImmediate(resolve));
+        completed++;
+        if (['op-0', 'op-2'].includes(args.operationId)) throw new Error('PRIVATE_UPSTREAM_SECRET');
+        return {
+          operation: { ...operation, id: args.operationId },
+          messages: [],
+          pagination: { cursor: null },
+        };
+      },
+      expected,
+      {}
+    ),
+    (error) => {
+      assert(error instanceof AggregateError);
+      assert.match(error.message, /\(2\/4\): op-0, op-2/);
+      assert.deepEqual(
+        error.errors.map((e) => e.operationId),
+        ['op-0', 'op-2']
+      );
+      assert(![error, ...error.errors].some((e) => e.stack.includes('PRIVATE_UPSTREAM_SECRET') || e.cause));
+      return true;
+    }
+  );
+  assert.equal(completed, 4);
+});
+
+test('invalid envelope/result/content shapes produce only bounded diagnostics', async () => {
+  for (const result of [
+    null,
+    [],
+    'PRIVATE_UPSTREAM_SECRET',
+    { content: {} },
+    { content: 'PRIVATE_UPSTREAM_SECRET' },
+    { content: [null, { type: 'text', text: { secret: 'PRIVATE_UPSTREAM_SECRET' } }] },
+    { structuredContent: [] },
+  ]) {
+    await assert.rejects(
+      nangoLogsCall(
+        'logs_list_operations',
+        {},
+        'test-key',
+        async () => new Response(JSON.stringify({ result }))
+      ),
+      (error) => {
+        assert.equal(error.constructor, Error);
+        assert(!error.stack.includes('PRIVATE_UPSTREAM_SECRET'));
+        assert.equal(error.cause, undefined);
+        return true;
+      }
+    );
+  }
+});
+
+test('invalid operation IDs cannot enter requests or failure diagnostics', async () => {
+  for (const id of [null, {}, '', 'private\nbody', 'x'.repeat(129)]) {
+    let details = 0;
+    await assert.rejects(
+      captureNangoForwards(
+        async (name) => {
+          if (name === 'logs_list_operations')
+            return { operations: [{ ...operation, id }], pagination: { cursor: null } };
+          details++;
+        },
+        expected,
+        {}
+      ),
+      /^Error: Invalid Nango operation identity$/
+    );
+    assert.equal(details, 0);
+  }
 });

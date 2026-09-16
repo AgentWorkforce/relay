@@ -156,7 +156,7 @@ test('rejects malformed captured review dates and lossy review associations', as
     pull_request_review_id: '9007199254740993',
   };
   assert.doesNotThrow(() => fixtureExpected({ ...stimulus, kind: 'thread' }, record, 'test'));
-  for (const id of [null, undefined, 'null', 'undefined', 9007199254740992, 0, -1])
+  for (const id of [undefined, 'null', 'undefined', 9007199254740992, 0, -1])
     assert.throws(() =>
       fixtureExpected({ ...stimulus, kind: 'thread' }, { ...record, pull_request_review_id: id }, 'test')
     );
@@ -196,5 +196,52 @@ test('comment parent association must come from the acknowledged GitHub response
   assert.doesNotThrow(() => fixtureExpected(stimulus, record, 'test'));
   for (const issue_url of [undefined, '', 'https://api.github.com/repos/AgentWorkforce/relay/issues/124']) {
     assert.throws(() => fixtureExpected(stimulus, { ...record, issue_url }, 'test'), /parent/);
+  }
+});
+
+test('strict external fixture record must equal the complete canonical tuple', async () => {
+  const { fixtureExpected, validFixtureExpected } = await import('./fixture-scope.mjs');
+  const stimulus = {
+    kind: 'thread',
+    repo: 'owner/repo',
+    pr: 1,
+    providerId: '42',
+    headSha: 'a'.repeat(40),
+    file: 'owned.txt',
+    line: 2,
+    side: 'RIGHT',
+  };
+  for (const association of [null, '9007199254740993']) {
+    stimulus.expected = fixtureExpected(
+      stimulus,
+      { id: '42', user: { login: 'owner' }, pull_request_review_id: association },
+      'test'
+    );
+    assert.equal(validFixtureExpected(stimulus), true);
+    const clean = structuredClone(stimulus);
+    for (const mutate of [
+      (s) => {
+        s.expected.record.extra = 'untrusted';
+      },
+      (s) => {
+        s.expected.record.user.extra = 'untrusted';
+      },
+      (s) => {
+        s.expected.record.id = 42;
+      },
+      (s) => {
+        delete s.expected.record.pull_request_review_id;
+      },
+      (s) => {
+        s.expected.record.line = 3;
+      },
+      (s) => {
+        s.expected.path += '/other';
+      },
+    ]) {
+      const bad = structuredClone(clean);
+      mutate(bad);
+      assert.equal(validFixtureExpected(bad), false);
+    }
   }
 });
