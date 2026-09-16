@@ -435,7 +435,7 @@ try {
               verify_ready: true,
               harnessConfig: {
                 runtime: 'native',
-                command: fixture.command,
+                command: quoteCommandArgument(fixture.command),
                 args: fixture.args,
                 sessionId: `${fixture.name}-${attempt}-${nameInUseRetries}`,
               },
