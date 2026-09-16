@@ -44,3 +44,23 @@ export async function awaitBrokerClose(close, timeoutMs = 10000) {
     clearTimeout(timer);
   }
 }
+
+export function quoteCommandArgument(value) {
+  return "'" + value.replaceAll("'", "'\\''") + "'";
+}
+
+// Emit categories only. Arbitrary broker lines may contain credentials or URLs.
+export function brokerDiagnostic(line) {
+  for (const [needle, event] of [
+    ['run_init begin', 'startup_begin'],
+    ['API listener bound', 'api_listener_bound'],
+    ['connect_relay completed', 'relay_connected'],
+    ['process exited during startup', 'worker_startup_exit'],
+    ['engine rejected a node control frame', 'node_control_rejection'],
+    ['fleet node ws read failed', 'node_control_read_failed'],
+    ['application acknowledgement deadline exceeded', 'node_control_ack_timeout'],
+  ]) {
+    if (line.includes(needle)) return { event };
+  }
+  return null;
+}

@@ -1,4 +1,4 @@
-import { spawn } from 'node:child_process';
+import { spawn, spawnSync } from 'node:child_process';
 import { once } from 'node:events';
 import { awaitBrokerClose } from './startup-failure.mjs';
 import { test } from 'node:test';
@@ -64,4 +64,32 @@ test('broker close waits are bounded and preserve the real child exit tuple', as
   await assert.rejects(awaitBrokerClose(close, 10), /close was not observed/);
   assert.deepEqual(await awaitBrokerClose(close, 5000), [7, null]);
   assert.throws(() => process.kill(child.pid, 0), { code: 'ESRCH' });
+});
+
+import { parse as parseShell } from 'shell-quote';
+import { quoteCommandArgument, brokerDiagnostic } from './startup-failure.mjs';
+test('quoted executable paths preserve exact argv through shell-compatible parsing', () => {
+  for (const value of [
+    '/owned/space path/exit-one',
+    "/owned/single'quote/exit-one",
+    '/owned/$VARIABLE/exit-one',
+    '/owned/`uname`/exit-one',
+    '/owned/$(uname)/exit-one',
+  ]) {
+    const quoted = quoteCommandArgument(value);
+    assert.deepEqual(parseShell(quoted), [value]);
+    const child = spawnSync('/bin/sh', ['-c', 'printf %s ' + quoted], { env: {}, encoding: 'utf8' });
+    assert.equal(child.status, 0);
+    assert.equal(child.stdout, value);
+    assert.equal(child.stderr, '');
+  }
+});
+test('broker diagnostics emit only fixed categories and discard all arbitrary data', () => {
+  const secret = 'rk_secret at_secret nt_secret br_secret https://user:password@example.test/?token=secret';
+  assert.equal(brokerDiagnostic(secret), null);
+  assert.deepEqual(brokerDiagnostic('run_init begin ' + secret), { event: 'startup_begin' });
+  assert.deepEqual(brokerDiagnostic('engine rejected a node control frame ' + secret), {
+    event: 'node_control_rejection',
+  });
+  assert(!JSON.stringify(brokerDiagnostic('run_init begin ' + secret)).includes('secret'));
 });

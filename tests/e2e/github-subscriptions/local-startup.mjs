@@ -1,6 +1,11 @@
 #!/usr/bin/env node
 import { releaseOwnedWorker } from './proof.mjs';
-import { observeFleetStartupFailure, awaitBrokerClose } from './startup-failure.mjs';
+import {
+  observeFleetStartupFailure,
+  awaitBrokerClose,
+  quoteCommandArgument,
+  brokerDiagnostic,
+} from './startup-failure.mjs';
 // Real local HTTP/WebSocket/broker/process wiring; deliberately NOT a real AI/GitHub action proof.
 import assert from 'node:assert/strict';
 import { once } from 'node:events';
@@ -87,7 +92,8 @@ try {
     name: 'isolated-ghsub-startup',
     kind: 'ws',
     role: 'broker',
-    capabilities: ['spawn'],
+    // The broker's node.register owns capability advertisement.
+    capabilities: [],
     max_agents: 0,
   });
   assert(localNode.id && localNode.token, 'local node identity required');
@@ -99,7 +105,15 @@ try {
   client = await HarnessDriverClient.spawn({
     binaryPath,
     ...(process.env.BROKER_STDERR_OUTPUT
-      ? { onStderr: (line) => appendFileSync(process.env.BROKER_STDERR_OUTPUT, line + '\n', { mode: 0o600 }) }
+      ? {
+          onStderr: (line) => {
+            const diagnostic = brokerDiagnostic(line);
+            if (diagnostic)
+              appendFileSync(process.env.BROKER_STDERR_OUTPUT, JSON.stringify(diagnostic) + '\n', {
+                mode: 0o600,
+              });
+          },
+        }
       : {}),
     cwd: work,
     workspaceKey: key,
@@ -173,7 +187,7 @@ try {
         '--to',
         `@${name}`,
         '--spawn',
-        JSON.stringify(exitOne),
+        quoteCommandArgument(exitOne),
         '--broker-connection',
         path.join(work, 'broker-state', 'connection.json'),
         '--cwd',
