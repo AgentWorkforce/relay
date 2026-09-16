@@ -9,30 +9,30 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
-- `fleet spawn` without placement options starts locally in the caller's exact
-  directory; `--auto-place` explicitly requests automatic fleet placement.
-- Plain `fleet spawn --sandbox` starts from a clean, pushed GitHub `HEAD`, mounts
-  its decoded source tree and `.skills` through Relayfile, maps the caller's
-  relative directory, and keeps the tree synchronized as GitHub changes flow
-  through the connected workspace integration.
-- `fleet spawn --sandbox` preserves tracked files, symlinks, and executable modes
-  in the mounted source tree.
-- `fleet spawn --sandbox --checkout` opts into a separate static Git clone at
-  the exact pushed `HEAD` when a task needs Git metadata or checkout semantics.
-- `node agent attach <name>` automatically routes to a unique live Fleet node;
-  ambiguous placements require `--node`.
-- `fleet spawn --sandbox` keeps temporary routing credentials out of project files.
 - Opt-in persistent broker task providers preserve final results across reconnects and acknowledge callbacks only after durable Relaycast receipts.
 
-## [12.1.1] - 2026-09-15
+## [12.2.2] - 2026-09-15
 
 ### Changed
 
-- Run the proof arms with Claude instead of Codex
+- Stop double-publishing cloud, wait longer for the registry, tag what was built
+
+## [12.2.1] - 2026-09-15
 
 ### Fixed
 
-- Transfer proof brokers through bounded run storage
+- Broker node connections recover when inventory acknowledgements stop even while WebSocket pongs continue, with bounded retries during outages.
+
+## [12.2.0] - 2026-09-15
+
+### Added
+
+- Broker `GET /api/node-delivery` exposes frame arrival, routing decisions, pending handoff, and acknowledgement counters without requiring logs or a restart.
+
+### Fixed
+
+- Broker node connections now require an accepted registration before reporting readiness or publishing inventory and heartbeats; rejected and unanswered registrations reconnect with bounded backoff.
+- Direct-message CLI and MCP receipts separate directory name matches from unconfirmed recipient delivery, preserving the queued message ID without reporting reachability from a roster match.
 
 ## [12.1.0] - 2026-09-12
 

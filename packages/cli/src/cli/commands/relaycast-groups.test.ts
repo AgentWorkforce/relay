@@ -176,8 +176,8 @@ describe('SDK-backed CLI groups', () => {
     expect(relay.messages.send).toHaveBeenCalledWith({ channel: 'ops', text: 'hello' });
   });
 
-  // MUST-NOT-FIRE: an independently resolved live recipient remains a normal
-  // successful CLI command, without the loud failure guard.
+  // A directory match remains a successful enqueue without claiming the
+  // recipient's transport or session can receive it.
   it('message dm send exits cleanly when the workspace roster resolves the recipient', async () => {
     const { program, relay, workspaceRelay, log, error, exit } = harness(registerMessageCommands);
     await program.parseAsync(['message', 'dm', 'send', 'lead', 'hi'], { from: 'user' });
@@ -186,6 +186,9 @@ describe('SDK-backed CLI groups', () => {
     expect(relay.messages.direct).toHaveBeenCalledWith({ to: 'lead', text: 'hi' });
     expect(log).toHaveBeenCalledWith(expect.stringContaining('"status": "queued_unconfirmed"'));
     expect(log).toHaveBeenCalledWith(expect.stringContaining('"resolvedRecipient": "lead"'));
+    expect(log).toHaveBeenCalledWith(expect.stringContaining('"directoryMatched": true'));
+    expect(log).toHaveBeenCalledWith(expect.stringContaining('"recipientMatched": null'));
+    expect(log).toHaveBeenCalledWith(expect.stringContaining('"deliveryConfirmed": false'));
     expect(error).not.toHaveBeenCalled();
     expect(exit).not.toHaveBeenCalled();
   });

@@ -4,7 +4,9 @@ import os from 'node:os';
 import path from 'node:path';
 import ts from 'typescript';
 
-import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+
+import * as windowsCredentialDirectory from './credential-directory-windows.js';
 
 import {
   type RelaycastCredential,
@@ -143,6 +145,71 @@ describe('workspace store', () => {
       }
     }
   );
+
+  it('starts the credential lock budget after slow Windows ACL validation', () => {
+    const platform = process.platform;
+    let now = Date.now();
+    const clock = vi.spyOn(Date, 'now').mockImplementation(() => now);
+    const acl = vi
+      .spyOn(windowsCredentialDirectory, 'assertWindowsCredentialDirectory')
+      .mockImplementation(() => {
+        now += 11_000;
+      });
+    Object.defineProperty(process, 'platform', { configurable: true, value: 'win32' });
+    try {
+      writeRelaycastCredential('slow-private-acl', {
+        workspaceId: 'rw_slow_private',
+        route: 'canonical',
+        baseUrl: 'https://relay.example',
+        apiKey: 'test-credential',
+      });
+      expect(acl).toHaveBeenCalledOnce();
+      expect(readRelaycastCredential('slow-private-acl')?.workspaceId).toBe('rw_slow_private');
+      expect(fs.existsSync(`${relaycastCredentialStorePath()}.lock`)).toBe(false);
+    } finally {
+      Object.defineProperty(process, 'platform', { configurable: true, value: platform });
+      acl.mockRestore();
+      clock.mockRestore();
+    }
+  });
+
+  it('still bounds lock contention after slow Windows ACL validation', () => {
+    const platform = process.platform;
+    const lock = `${relaycastCredentialStorePath()}.lock`;
+    const ownerPath = path.join(lock, 'live-owner');
+    fs.mkdirSync(lock, { mode: 0o700 });
+    const owner = JSON.stringify({ version: 1, pid: process.pid, token: 'live-owner' });
+    fs.writeFileSync(ownerPath, owner, { mode: 0o600 });
+    let now = Date.now();
+    const clock = vi.spyOn(Date, 'now').mockImplementation(() => {
+      const result = now;
+      now += 1_000;
+      return result;
+    });
+    const acl = vi
+      .spyOn(windowsCredentialDirectory, 'assertWindowsCredentialDirectory')
+      .mockImplementation(() => {
+        now += 11_000;
+      });
+    Object.defineProperty(process, 'platform', { configurable: true, value: 'win32' });
+    try {
+      expect(() =>
+        writeRelaycastCredential('contended-after-acl', {
+          workspaceId: 'rw_contended',
+          route: 'canonical',
+          baseUrl: 'https://relay.example',
+          apiKey: 'test-credential',
+        })
+      ).toThrow('Timed out waiting for the Relaycast credential store lock.');
+      expect(acl).toHaveBeenCalledOnce();
+      expect(fs.readFileSync(ownerPath, 'utf8')).toBe(owner);
+      expect(fs.existsSync(relaycastCredentialStorePath())).toBe(false);
+    } finally {
+      Object.defineProperty(process, 'platform', { configurable: true, value: platform });
+      acl.mockRestore();
+      clock.mockRestore();
+    }
+  });
 
   it('stores route credentials outside the project with a scoped reference', () => {
     const ref = relaycastCredentialRef(
