@@ -34,7 +34,11 @@ const repo = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../../.
 const work = mkdtempSync(path.join(tmpdir(), 'ghsub-local-startup-'));
 const exitOne = path.join(work, 'exit-one');
 writeFileSync(exitOne, '#!/bin/sh\nexit 1\n', { mode: 0o700 });
-const exitQualification = spawnSync(exitOne, [], { env: { PATH: '/usr/bin:/bin' }, encoding: 'utf8' });
+const exitQualification = spawnSync('./exit-one', [], {
+  cwd: work,
+  env: { PATH: '/usr/bin:/bin' },
+  encoding: 'utf8',
+});
 assert.equal(exitQualification.error, undefined);
 assert.equal(exitQualification.status, 1);
 assert.equal(exitQualification.signal, null);
@@ -45,6 +49,8 @@ const report = {
   executableFixture: {
     command: exitOne,
     sha256: createHash('sha256').update(readFileSync(exitOne)).digest('hex'),
+    preflightCommand: './exit-one',
+    preflightCwd: work,
     preflightPid: exitQualification.pid,
     preflightExit: exitQualification.status,
   },
@@ -407,8 +413,8 @@ try {
   };
   for (const fixture of [
     { name: 'fleet-invalid-cwd', command: '/bin/cat', args: [], cwd: path.join(work, 'missing-fleet-cwd') },
-    { name: 'fleet-unavailable-command', command: path.join(work, 'missing-harness'), args: [], cwd: work },
-    { name: 'fleet-immediate-exit', command: exitOne, args: [], cwd: work },
+    { name: 'fleet-unavailable-command', command: './missing-harness', args: [], cwd: work },
+    { name: 'fleet-immediate-exit', command: './exit-one', args: [], cwd: work },
     { name: 'fleet-delayed-exit', command: '/bin/sh', args: ['-c', 'sleep 2; exit 7'], cwd: work },
     {
       name: 'fleet-membership-failure',
@@ -435,7 +441,7 @@ try {
               verify_ready: true,
               harnessConfig: {
                 runtime: 'native',
-                command: quoteCommandArgument(fixture.command),
+                command: fixture.command,
                 args: fixture.args,
                 sessionId: `${fixture.name}-${attempt}-${nameInUseRetries}`,
               },
