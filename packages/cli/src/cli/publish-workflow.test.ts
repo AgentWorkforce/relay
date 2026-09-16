@@ -17,7 +17,7 @@ type PublishWorkflow = {
   jobs: Record<string, WorkflowJob>;
 };
 
-const repoRoot = fileURLToPath(new URL('../../', import.meta.url));
+const repoRoot = fileURLToPath(new URL('../../../../', import.meta.url));
 
 function repoPath(path: string): string {
   return resolve(repoRoot, path);

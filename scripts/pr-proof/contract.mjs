@@ -104,6 +104,13 @@ const NON_RUNTIME_PATH_PATTERNS = Object.freeze([
   /^scripts\/pr-proof\//,
   /^scripts\/evals\//,
   /^tests\//,
+  // Not just the top-level tests/ tree: a package-local unit test
+  // (packages/*/src/**/*.test.ts) is test corpus too. Every published
+  // tarball pins an explicit `files` array that excludes it, so it never
+  // reaches a shipped artifact regardless of where it lives. A runtime fix
+  // that lands alongside a test still demands a proof from its OWN file —
+  // this only exempts a change confined entirely to test files.
+  /\.test\.tsx?$/,
   /^[^/]*\.md$/,
   // Top-level repo metadata that cannot reach a shipped artifact.
   //
