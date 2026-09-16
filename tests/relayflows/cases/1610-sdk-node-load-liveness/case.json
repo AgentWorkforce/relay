@@ -1,0 +1,12 @@
+{
+  "version": 1,
+  "id": "1610-sdk-node-load-liveness",
+  "kind": "bugfix",
+  "title": "Do not report stale active-agent load for offline nodes",
+  "runner": { "command": ["node", "tests/relayflows/cases/1610-sdk-node-load-liveness/run.mjs"] },
+  "timeoutSeconds": 900,
+  "expected": {
+    "base": { "outcome": "bug", "signature": "offline_node_load_reported_as_measurement" },
+    "head": { "outcome": "fixed", "signature": "offline_node_load_omitted" }
+  }
+}
