@@ -931,12 +931,11 @@ jobs:
       max-parallel: 10
       matrix:
         package:
-          # All publishable npm packages - published in parallel. cloud and
-          # config are deliberately absent: publish-sdk-internal-deps (a
-          # dependency of this job) already publishes them. Listing cloud here
-          # too made the v12.1.1 release publish it twice seconds apart; the
-          # "already exists" guard lost the race to registry propagation and
-          # npm rejected the duplicate with E409 "previously staged".
+          # All publishable npm packages - published in parallel.
+          # cloud and config are published by publish-sdk-internal-deps (a
+          # `needs` of this job); listing them here too publishes the same
+          # version twice, and a lagging registry lets the second attempt past
+          # the exists-check into an E409 that fails the release.
           - policy
           - utils
           - sdk
@@ -2069,6 +2068,7 @@ jobs:
           git add package.json package-lock.json packages/*/package.json packages/sdk-py/pyproject.toml CHANGELOG.md
           # Stage optional paths that may not exist (trajectories already committed in prior step)
           git add .trajectories/ 2>/dev/null || true
+          TAG_TARGET=""
           if ! git diff --staged --quiet; then
             if [ "$IS_PRERELEASE" = "true" ]; then
               git commit -m "chore(prerelease): v${NEW_VERSION}"
@@ -2076,13 +2076,19 @@ jobs:
               git push origin HEAD:staging
             else
               git commit -m "chore(release): v${NEW_VERSION}"
+              # Tag the commit whose tree is exactly what this run built and
+              # published. If main advanced during the pipeline, the rebased
+              # copy pushed below also carries those newer commits, which the
+              # published artifacts do not contain.
+              TAG_TARGET=$(git rev-parse HEAD)
               # Rebase on latest main in case it advanced during the pipeline
               git pull --rebase origin main
               git push origin HEAD:main
             fi
           fi
 
-          git tag -a "v${NEW_VERSION}" -m "Release v${NEW_VERSION}"
+          TAG_TARGET="${TAG_TARGET:-$(git rev-parse HEAD)}"
+          git tag -a "v${NEW_VERSION}" -m "Release v${NEW_VERSION}" "$TAG_TARGET"
           git push origin "v${NEW_VERSION}"
 
       - name: Create GitHub Release (stable)

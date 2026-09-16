@@ -18,6 +18,23 @@ use sha2::{Digest, Sha256};
 
 use crate::{fleet_wire::AgentRegistrationMetadata, protocol::MessageInjectionMode};
 
+/// Replays of a worker channel join rejected with Relaycast's exact
+/// `workspace_busy` write-admission code (served with `Retry-After: 2`). One
+/// entry per retry; the budget stays short because a spawn holds the broker
+/// event loop while it reconciles membership.
+#[cfg(not(test))]
+const WORKER_CHANNEL_BUSY_RETRY_BACKOFFS: [Duration; 3] = [
+    Duration::from_secs(1),
+    Duration::from_secs(2),
+    Duration::from_secs(4),
+];
+#[cfg(test)]
+const WORKER_CHANNEL_BUSY_RETRY_BACKOFFS: [Duration; 3] = [
+    Duration::from_millis(5),
+    Duration::from_millis(5),
+    Duration::from_millis(5),
+];
+
 #[derive(Debug, Clone)]
 pub enum WsControl {
     Shutdown,
@@ -1212,19 +1229,47 @@ impl RelaycastHttpClient {
             })?;
         let mut seen = BTreeSet::new();
         let mut failures = Vec::new();
-        for channel in channels {
+        // One `workspace_busy` budget for the whole spawn, not per channel: the
+        // spawn holds the broker event loop, so the total stall stays bounded by
+        // the backoff table however many channels the worker joins.
+        let mut busy_retries = WORKER_CHANNEL_BUSY_RETRY_BACKOFFS.iter();
+        for (index, channel) in channels.iter().enumerate() {
             let name = channel.as_str();
             if !seen.insert(name.to_ascii_lowercase()) {
                 continue;
             }
-            match agent_client
-                .ensure_joined_channel(relaycast::CreateChannelRequest {
-                    name: name.to_string(),
-                    topic: None,
-                    metadata: None,
-                })
-                .await
-            {
+            let joined = loop {
+                match agent_client
+                    .ensure_joined_channel(relaycast::CreateChannelRequest {
+                        name: name.to_string(),
+                        topic: None,
+                        metadata: None,
+                    })
+                    .await
+                {
+                    // `workspace_busy` is Relaycast's pre-handler write-admission
+                    // rejection (the request never reached the engine), and
+                    // create/join are idempotent (409 = already done), so a
+                    // bounded replay is safe. Without it a saturated workspace
+                    // fails every fleet spawn on its first channel join.
+                    Err(error) if super::auth::is_workspace_busy_error(&error) => {
+                        match busy_retries.next() {
+                            Some(delay) => {
+                                tracing::warn!(
+                                    worker = %agent_name,
+                                    channel = %name,
+                                    delay_ms = delay.as_millis() as u64,
+                                    "worker channel join hit workspace_busy; retrying"
+                                );
+                                tokio::time::sleep(*delay).await;
+                            }
+                            None => break Err(error),
+                        }
+                    }
+                    other => break other,
+                }
+            };
+            match joined {
                 Ok(outcome) => {
                     let mut verification_error = None;
                     for attempt in 0..3 {
@@ -1268,7 +1313,25 @@ impl RelaycastHttpClient {
                         error = %error,
                         "failed to ensure worker channel membership"
                     );
+                    let saturated = super::auth::is_workspace_busy_error(&error);
                     failures.push(format!("{name}: {error}"));
+                    if saturated {
+                        // The shared busy budget is spent and the workspace is
+                        // still saturated: the spawn fails regardless, so do not
+                        // keep the event loop walking the remaining channels.
+                        let skipped = channels[index + 1..]
+                            .iter()
+                            .map(|channel| channel.as_str())
+                            .filter(|rest| seen.insert(rest.to_ascii_lowercase()))
+                            .collect::<Vec<_>>();
+                        if !skipped.is_empty() {
+                            failures.push(format!(
+                                "skipped after workspace_busy: {}",
+                                skipped.join(", ")
+                            ));
+                        }
+                        break;
+                    }
                 }
             }
         }
@@ -2603,6 +2666,73 @@ mod tests {
                     .to_string()
                     .contains("absent"));
                 first.assert_hits(3);
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn worker_channel_join_retries_workspace_busy_then_gives_up_boundedly() {
+        let busy_body = json!({"ok":false,"error":{"code":"workspace_busy","message":"Workspace write capacity is busy; retry with backoff"}});
+        for recover in [true, false] {
+            let server = MockServer::start();
+            let mut busy = server.mock(|when, then| {
+                when.method(POST).path("/v1/channels");
+                then.status(429)
+                    .header("retry-after", "2")
+                    .json_body(busy_body.clone());
+            });
+            let join = server.mock(|when, then| {
+                when.method(POST).path("/v1/channels/proof/join");
+                then.status(409).json_body(
+                    json!({"ok":false,"error":{"code":"already_member","message":"joined"}}),
+                );
+            });
+            server.mock(|when, then| {
+                when.method(GET).path("/v1/channels/proof/members");
+                then.status(200).json_body(json!({"ok":true,"data":[{"agent_id":"worker-id","agent_name":"worker","role":"member","joined_at":"2026-09-15T00:00:00Z"}]}));
+            });
+            let client = seeded_http_client(&server.base_url());
+            client.seed_agent_token("worker", "owned-token");
+            let channels = [ChannelName::from("proof")];
+            if recover {
+                let repair = async {
+                    while busy.hits() < 2 {
+                        tokio::time::sleep(Duration::from_millis(1)).await;
+                    }
+                    busy.delete();
+                    server.mock(|when, then| {
+                        when.method(POST).path("/v1/channels");
+                        then.status(409).json_body(json!({"ok":false,"error":{"code":"channel_already_exists","message":"exists"}}));
+                    });
+                };
+                let (result, ()) = tokio::time::timeout(Duration::from_secs(10), async {
+                    tokio::join!(
+                        client.ensure_agent_channels("worker", None, &channels),
+                        repair
+                    )
+                })
+                .await
+                .unwrap();
+                result.expect("a transient workspace_busy join must be retried to success");
+                join.assert_hits(1);
+            } else {
+                // Default spawns join several channels; the busy budget is shared
+                // across them and a spent budget stops the walk.
+                let channels = [ChannelName::from("proof"), ChannelName::from("engineering")];
+                let error = client
+                    .ensure_agent_channels("worker", None, &channels)
+                    .await
+                    .unwrap_err()
+                    .to_string();
+                assert!(error.contains("workspace_busy"), "{error}");
+                assert!(
+                    error.contains("skipped after workspace_busy: engineering"),
+                    "{error}"
+                );
+                // One initial attempt plus the bounded retry budget for the whole
+                // spawn; never per channel, never unbounded.
+                busy.assert_hits(1 + super::WORKER_CHANNEL_BUSY_RETRY_BACKOFFS.len());
+                join.assert_hits(0);
             }
         }
     }

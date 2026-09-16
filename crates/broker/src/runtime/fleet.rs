@@ -7,6 +7,7 @@ use crate::{
     },
     listen_api::{DeliveryRouteError, ListenApiRequest, SetInboundDeliveryModeOk},
     node_control::{delivery_ack, handler_unavailable_result, DeliveryDecision, ReceiptAckability},
+    node_delivery_probe::DeliverDisposition,
     terminal_control::{
         TerminalControlCommand, TerminalControlEvent, TerminalFromCloud, TerminalMode,
         TerminalToCloud, TERMINAL_CLOSE_RESERVE,
@@ -860,9 +861,16 @@ impl BrokerRuntime {
 
     async fn handle_fleet_deliver(&mut self, deliver: Deliver) {
         let decision = self.fleet_delivery_book.observe(&deliver);
+        // Record the book's verdict before acting on it, so a frame that is
+        // about to be dropped without an ack is still visible over
+        // `GET /api/node-delivery`. See `crate::node_delivery_probe`.
+        self.node_delivery_probe
+            .record_decision(&deliver, &decision);
         let up_to_seq = match plan_fleet_delivery(decision) {
             FleetDeliveryPlan::Surface => match self.surface_fleet_deliver(&deliver).await {
                 Ok(FleetDeliverySurfaceOutcome::Acknowledge) => {
+                    self.node_delivery_probe
+                        .record_disposition(&deliver, DeliverDisposition::SurfacedAndAcked);
                     self.fleet_delivery_book.commit_delivered(&deliver)
                 }
                 Ok(FleetDeliverySurfaceOutcome::AcknowledgeAfterEcho) => {
@@ -881,14 +889,20 @@ impl BrokerRuntime {
                     // `try_inject_pending_relay_message` /
                     // `insert_and_attempt_delivery`), so there is nothing left
                     // to record here — see relay#1543.
+                    self.node_delivery_probe
+                        .record_disposition(&deliver, DeliverDisposition::QueuedForInjection);
                     self.fleet_delivery_book.commit_received(&deliver);
                     return;
                 }
                 Ok(FleetDeliverySurfaceOutcome::HoldForManualFlush) => {
+                    self.node_delivery_probe
+                        .record_disposition(&deliver, DeliverDisposition::HeldForManualFlush);
                     self.fleet_delivery_book.commit_received(&deliver);
                     return;
                 }
                 Err(error) => {
+                    self.node_delivery_probe
+                        .record_disposition(&deliver, DeliverDisposition::SurfaceFailed);
                     tracing::warn!(
                         target = "relay_broker::fleet",
                         agent = %deliver.agent,
@@ -900,12 +914,30 @@ impl BrokerRuntime {
                     return;
                 }
             },
-            FleetDeliveryPlan::Acknowledge(up_to_seq) => up_to_seq,
+            FleetDeliveryPlan::Acknowledge(up_to_seq) => {
+                self.node_delivery_probe
+                    .record_disposition(&deliver, DeliverDisposition::AckedWithoutSurfacing);
+                up_to_seq
+            }
             FleetDeliveryPlan::RejectWithoutAck => {
-                let reason = match decision {
-                    DeliveryDecision::Gap { .. } => "sequence gap; frame not placeable",
-                    _ => "conflicting agent identity",
+                // `Gap` and `IdentityReject` share this arm but are different
+                // diagnoses, so the endpoint must not collapse them: a gap
+                // means the book could not place a frame the agent never saw,
+                // an identity reject means the frame was addressed to a
+                // retired incarnation. Keep the disposition aligned with the
+                // reason logged below.
+                let (reason, disposition) = match decision {
+                    DeliveryDecision::Gap { .. } => (
+                        "sequence gap; frame not placeable",
+                        DeliverDisposition::RejectedSequenceGap,
+                    ),
+                    _ => (
+                        "conflicting agent identity",
+                        DeliverDisposition::RejectedIdentity,
+                    ),
                 };
+                self.node_delivery_probe
+                    .record_disposition(&deliver, disposition);
                 tracing::warn!(
                     target = "relay_broker::fleet",
                     agent = %deliver.agent,
@@ -919,13 +951,37 @@ impl BrokerRuntime {
                 return;
             }
         };
-        let _ = self
-            .fleet_control_tx
-            .send(FleetControlCommand::Send(delivery_ack(
-                deliver.agent,
-                up_to_seq,
-            )))
-            .await;
+        // The ack is handed to the node-control task, which owns the socket.
+        // This loop must not await the wire, so `surfaced_and_acked` /
+        // `acked_without_surfacing` above can only mean "the broker decided to
+        // acknowledge" — not "the engine was told". The probe therefore tallies
+        // the handoff here and the wire write in the socket task, so a reader
+        // can tell an ack the engine received from one that died in between.
+        enqueue_delivery_ack(
+            &self.fleet_control_tx,
+            &self.node_delivery_probe,
+            deliver.agent.clone(),
+            up_to_seq,
+        )
+        .await;
+    }
+
+    /// Republish the delivery book's cursors into the shared probe when the
+    /// book moved, so `GET /api/node-delivery` can report them without posting
+    /// a request to this event loop. A stale `cursors_published_at_ms` next to
+    /// a climbing frame counter is itself the signal that this loop has wedged.
+    ///
+    /// Driven by the book's dirty flag from one place in the event loop —
+    /// alongside `flush_persisted_stores` — rather than from the deliver path.
+    /// Publishing only on delivery meant a worker confirmation, manual flush,
+    /// registration, identity rebind, or release could advance the book and
+    /// leave the endpoint serving the previous acknowledgement indefinitely,
+    /// until some later frame happened to arrive.
+    pub(super) fn publish_fleet_delivery_cursors_if_dirty(&mut self) {
+        if self.fleet_delivery_book.take_cursor_dirty() {
+            self.node_delivery_probe
+                .publish_cursors(self.fleet_delivery_book.cursor_views());
+        }
     }
 
     /// Surface a node `deliver` frame by branching on its payload `type`:
@@ -1639,6 +1695,34 @@ fn fleet_spawn_outcome(
     }
 }
 
+/// Count every runtime-to-control acknowledgement handoff at the same boundary,
+/// including deferred worker confirmations and explicit manual flushes.
+pub(super) async fn enqueue_delivery_ack(
+    control_tx: &mpsc::Sender<FleetControlCommand>,
+    probe: &crate::node_delivery_probe::NodeDeliveryProbe,
+    agent: String,
+    up_to_seq: u64,
+) {
+    match control_tx
+        .send(FleetControlCommand::Send(delivery_ack(
+            agent.clone(),
+            up_to_seq,
+        )))
+        .await
+    {
+        Ok(()) => probe.record_ack_enqueued(),
+        Err(_) => {
+            probe.record_ack_enqueue_failed();
+            tracing::warn!(
+                target = "relay_broker::fleet",
+                agent,
+                up_to_seq,
+                "node control is gone; delivery ack was never queued"
+            );
+        }
+    }
+}
+
 /// Resolve a fleet (engine-facing) `delivery_ack` withheld pending
 /// confirmation of a specific PTY injection (relay#1310: the ack must not
 /// fire before the worker confirms the write landed). Called with the
@@ -1788,6 +1872,7 @@ pub(super) async fn flush_pending_relay_messages(
     workers: &mut WorkerRegistry,
     fleet_delivery_book: &mut FleetDeliveryBook,
     fleet_control_tx: &mpsc::Sender<FleetControlCommand>,
+    node_delivery_probe: &crate::node_delivery_probe::NodeDeliveryProbe,
     sdk_out_tx: &mpsc::Sender<ProtocolEnvelope<Value>>,
     dead_letters: &mut DeadLetterStore,
     obligation_store: &mut crate::obligation::ObligationStore,
@@ -1900,21 +1985,13 @@ pub(super) async fn flush_pending_relay_messages(
                 ));
                 break;
             };
-            if let Err(error) = fleet_control_tx
-                .send(FleetControlCommand::Send(delivery_ack(
-                    receipt.agent.to_string(),
-                    up_to_seq,
-                )))
-                .await
-            {
-                tracing::warn!(
-                    target = "relay_broker::fleet",
-                    agent = %receipt.agent,
-                    up_to_seq,
-                    error = %error,
-                    "failed to enqueue delivery ACK after manual flush"
-                );
-            }
+            enqueue_delivery_ack(
+                fleet_control_tx,
+                node_delivery_probe,
+                receipt.agent.to_string(),
+                up_to_seq,
+            )
+            .await;
         }
 
         let removed = delivery_states

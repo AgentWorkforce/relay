@@ -1,3 +1,7 @@
+import fs from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
+
 import { Command } from 'commander';
 import { describe, expect, it, vi } from 'vitest';
 
@@ -79,6 +83,29 @@ describe('local agent subtree', () => {
   it('attach defaults to view mode', async () => {
     const { program, attach } = harness();
     await program.parseAsync(['local', 'agent', 'attach', 'lead'], { from: 'user' });
+    expect(attach).toHaveBeenCalledWith('lead', 'view', expect.anything());
+  });
+
+  it.each([
+    ['RELAY_BROKER_URL', 'http://127.0.0.1:7777'],
+    ['RELAY_BROKER_API_KEY', 'local-broker-key'],
+  ])('attach honors the local broker selected by %s before persisted Fleet routing', async (name, value) => {
+    const resolveFleetAttachTarget = vi.fn(async () => ({
+      target: {
+        node: 'persisted-remote-node',
+        baseUrl: 'https://isolated.example.test',
+        agent: 'lead',
+      },
+    }));
+    const { program, attach, attachNode } = harness({
+      env: { [name]: value },
+      resolveFleetAttachTarget,
+    });
+
+    await program.parseAsync(['local', 'agent', 'attach', 'lead'], { from: 'user' });
+
+    expect(resolveFleetAttachTarget).not.toHaveBeenCalled();
+    expect(attachNode).not.toHaveBeenCalled();
     expect(attach).toHaveBeenCalledWith('lead', 'view', expect.anything());
   });
 
@@ -874,7 +901,10 @@ describe('local agent subtree', () => {
 
     await program.parseAsync(['local', 'agent', 'list'], { from: 'user' });
 
-    expect(harnessConnectMock).toHaveBeenCalledWith({ cwd: '/tmp/project' });
+    expect(harnessConnectMock).toHaveBeenCalledWith({
+      cwd: '/tmp/project',
+      connectionPath: '/tmp/project/.agentworkforce/relay/connection.json',
+    });
     expect(client.listAgents).toHaveBeenCalled();
     expect(log).toHaveBeenCalledWith('[]');
     expect(client.disconnect).toHaveBeenCalled();
@@ -890,6 +920,41 @@ describe('local agent subtree', () => {
       expect.objectContaining({ name: 'Worker', cli: 'claude', cwd: '/home/user/my-project' })
     );
   });
+
+  it('ignores stale state directories and connects to the enclosing checkout broker while spawning in a nested package', async () => {
+    vi.stubEnv('AGENT_RELAY_STATE_DIR', '/tmp/unrelated-checkout/relay');
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'relay-local-nested-'));
+    const nested = path.join(root, 'packages', 'web');
+    fs.mkdirSync(path.join(root, '.git'));
+    fs.mkdirSync(nested, { recursive: true });
+    const client = { spawnPty: vi.fn(async () => undefined), disconnect: vi.fn() };
+    harnessConnectMock.mockReturnValueOnce(client);
+    const program = new Command();
+    program.exitOverride();
+    registerLocalAgentCommands(program.command('local'), { cwd: () => nested, log: vi.fn() });
+    try {
+      await program.parseAsync(['local', 'agent', 'spawn', 'codex'], { from: 'user' });
+      expect(harnessConnectMock).toHaveBeenLastCalledWith({
+        cwd: root,
+        connectionPath: path.join(root, '.agentworkforce/relay/connection.json'),
+      });
+      expect(client.spawnPty).toHaveBeenCalledWith(expect.objectContaining({ cwd: nested }));
+      expect(client.disconnect).toHaveBeenCalledOnce();
+    } finally {
+      fs.rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it.each(['spawn', 'new'])(
+    '%s passes the caller directory rather than the broker startup directory',
+    async (command) => {
+      const { program, client } = harness({ cwd: () => '/tmp/project/packages/web' });
+      await program.parseAsync(['local', 'agent', command, 'codex', '--name', 'Nested'], { from: 'user' });
+      expect(client.spawnPty).toHaveBeenCalledWith(
+        expect.objectContaining({ name: 'Nested', cli: 'codex', cwd: '/tmp/project/packages/web' })
+      );
+    }
+  );
 
   it('release calls client.release', async () => {
     const { program, client } = harness();
@@ -933,6 +998,53 @@ describe('local agent subtree', () => {
     expect(client.flushPending).toHaveBeenCalledWith('claude');
     expect(log).toHaveBeenCalledWith(JSON.stringify({ name: 'claude', flushed: 2 }, null, 2));
   });
+
+  it.each([
+    ['RELAY_BROKER_URL', 'http://127.0.0.1:7777'],
+    ['RELAY_BROKER_API_KEY', 'local-broker-key'],
+  ])(
+    'message flush honors the local broker selected by %s before persisted Fleet routing',
+    async (name, value) => {
+      const client = { flushPending: vi.fn(async () => ({ flushed: 1 })) };
+      const connectLocal = vi.fn(async () => client as never);
+      const resolveFleetAttachTarget = vi.fn(async () => ({
+        target: {
+          node: 'persisted-remote-node',
+          baseUrl: 'https://isolated.example.test',
+          agent: 'claude',
+        },
+      }));
+      const { program } = harness({
+        env: { [name]: value },
+        connectLocal,
+        resolveFleetAttachTarget,
+      });
+
+      await program.parseAsync(['local', 'agent', 'message', 'flush', 'claude'], { from: 'user' });
+
+      expect(resolveFleetAttachTarget).not.toHaveBeenCalled();
+      expect(connectLocal).toHaveBeenCalled();
+      expect(client.flushPending).toHaveBeenCalledWith('claude');
+    }
+  );
+
+  it.each(['flush', 'hold', 'auto'])(
+    'message %s rejects an explicit workspace key without a node',
+    async (mode) => {
+      const connectLocal = vi.fn();
+      const { program, error } = harness({ connectLocal });
+      await program.parseAsync(
+        ['local', 'agent', 'message', mode, 'worker', '--workspace-key', 'rk_live_other'],
+        { from: 'user' }
+      );
+      expect(error).toHaveBeenCalledWith(
+        expect.stringContaining(
+          'To target the local broker instead, use --broker-url / --api-key or read connection.json from --state-dir'
+        )
+      );
+      expect(connectLocal).not.toHaveBeenCalled();
+    }
+  );
 
   it('message hold and auto switch local broker delivery mode', async () => {
     const client = {
