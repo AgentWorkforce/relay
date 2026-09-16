@@ -12,4 +12,9 @@ describe('toRelayNode fleet liveness', () => {
     const node = toRelayNode({ status: 'online', live: true, active_agents: 0 });
     expect(node.activeAgents).toBe(0);
   });
+
+  it('omits active-agent load when liveness is unconfirmed', () => {
+    const node = toRelayNode({ status: 'online', active_agents: 4 });
+    expect(node.activeAgents).toBeUndefined();
+  });
 });

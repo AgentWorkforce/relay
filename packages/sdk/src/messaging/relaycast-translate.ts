@@ -146,7 +146,7 @@ export function toRelayNode(raw: unknown): RelayNode {
   // Relaycast may retain a stale numeric load after a provider goes offline.
   // Preserve zero as a real measurement only while liveness is authoritative.
   const activeAgents =
-    live === false || status === 'offline' ? undefined : readNumber(node, 'activeAgents', 'active_agents');
+    live !== true || status === 'offline' ? undefined : readNumber(node, 'activeAgents', 'active_agents');
   return {
     id: readStr(node, 'id', 'node_id'),
     nodeId: readStr(node, 'nodeId', 'node_id'),
