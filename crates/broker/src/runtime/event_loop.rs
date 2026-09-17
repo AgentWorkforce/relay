@@ -215,6 +215,10 @@ pub(crate) struct BrokerRuntime {
     pub(super) fleet_node_name: String,
     pub(super) node_delivery_token_present: bool,
     pub(super) node_delivery_connected: bool,
+    /// `RUST_LOG`-independent introspection for the node-control inbound path,
+    /// shared with the node-control client task and the HTTP API. See
+    /// [`crate::node_delivery_probe`].
+    pub(super) node_delivery_probe: std::sync::Arc<crate::node_delivery_probe::NodeDeliveryProbe>,
     pub(super) fleet_event_rx: mpsc::Receiver<FleetControlEvent>,
     pub(super) fleet_control_open: bool,
     /// Independent outbound terminal lane. It never shares the node-control
@@ -267,6 +271,7 @@ pub(crate) struct BrokerRuntime {
     pub(super) resize_owners: HashMap<WorkerName, ResizeOwner>,
     pub(super) delivery_states: HashMap<WorkerName, InboundDeliveryState>,
     pub(super) agent_result_tokens: HashMap<String, WorkerName>,
+    pub(super) task_provider: super::tasks::TaskProvider,
     pub(super) recent_thread_messages: VecDeque<Value>,
     pub(super) shutdown: bool,
     pub(super) lease_duration: Option<Duration>,
@@ -391,6 +396,7 @@ impl BrokerRuntime {
             }
 
             self.flush_persisted_stores();
+            self.publish_fleet_delivery_cursors_if_dirty();
         }
 
         self.shutdown_runtime().await

@@ -89,7 +89,7 @@ export function persistWorkspaceSession(
   const name = options.name === undefined ? undefined : validateWorkspaceSessionName(options.name);
 
   const projectDataDir = options.projectDataDir ?? getProjectPaths(options.projectRoot).dataDir;
-  const existing = readProjectWorkspaceSession(projectDataDir);
+  const existing = readProjectWorkspaceSession(projectDataDir, undefined, options.env);
   // Re-selecting the same workspace must keep the enrolled node: dropping it
   // there manufactured the pin `node up` now warns about, where the next start
   // ignores the enrollment store entirely.
@@ -114,6 +114,7 @@ export function persistWorkspaceSession(
       ...(options.relaycastRoute ? { relaycastRoute: options.relaycastRoute } : {}),
       ...(options.relaycastBaseUrl ? { relaycastBaseUrl: options.relaycastBaseUrl } : {}),
       ...(options.relaycastApiKey ? { relaycastApiKey: options.relaycastApiKey } : {}),
+      env: options.env,
     });
   } else {
     writeProjectWorkspaceKey(projectDataDir, workspaceKey, {
@@ -121,6 +122,7 @@ export function persistWorkspaceSession(
       ...(options.relaycastRoute ? { relaycastRoute: options.relaycastRoute } : {}),
       ...(options.relaycastBaseUrl ? { relaycastBaseUrl: options.relaycastBaseUrl } : {}),
       ...(options.relaycastApiKey ? { relaycastApiKey: options.relaycastApiKey } : {}),
+      env: options.env,
     });
   }
 
@@ -145,5 +147,5 @@ export function pinProjectWorkspaceSession(options: PinProjectWorkspaceSessionOp
     throw new Error('Workspace key is required.');
   }
   const projectDataDir = options.projectDataDir ?? getProjectPaths(options.projectRoot).dataDir;
-  writeProjectWorkspaceKey(projectDataDir, workspaceKey);
+  writeProjectWorkspaceKey(projectDataDir, workspaceKey, { env: options.env });
 }

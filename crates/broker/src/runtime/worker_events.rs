@@ -3,7 +3,6 @@ use super::fleet::{
     refresh_fleet_inventory_session_ref, try_send_terminal, verified_spawn_ready_result,
 };
 use super::*;
-use crate::node_control::delivery_ack;
 use crate::terminal_control::{TerminalControlCommand, TerminalToCloud};
 use crate::worker::AgentWorkState;
 
@@ -738,11 +737,13 @@ impl BrokerRuntime {
                                 // sequence can never cumulatively ACK a lower
                                 // delivery that has not landed (relay#1543).
                                 if let Some((agent, up_to_seq)) = resolved_fleet_ack {
-                                    let _ = fleet_control_tx
-                                        .send(FleetControlCommand::Send(delivery_ack(
-                                            agent, up_to_seq,
-                                        )))
-                                        .await;
+                                    super::fleet::enqueue_delivery_ack(
+                                        fleet_control_tx,
+                                        &self.node_delivery_probe,
+                                        agent,
+                                        up_to_seq,
+                                    )
+                                    .await;
                                 }
 
                                 pending

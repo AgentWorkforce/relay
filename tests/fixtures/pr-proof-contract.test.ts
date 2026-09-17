@@ -2224,6 +2224,35 @@ describe('classification reads the diff, not the title', () => {
   });
 
   /**
+   * Package-local unit tests are test corpus too, not just the top-level
+   * tests/ tree: published tarballs pin an explicit `files` array that
+   * excludes them, so they never reach a shipped artifact regardless of
+   * where they live under packages/.
+   */
+  it('exempts a package-local *.test.ts(x) file under packages/', () => {
+    expect(runtimeSurfaceChanged(['packages/cli/src/cli/publish-workflow.test.ts'])).toBe(false);
+    expect(runtimeSurfaceChanged(['packages/sdk/src/__tests__/widget.test.tsx'])).toBe(false);
+  });
+
+  it('still treats the runtime file next to an edited test as runtime', () => {
+    // The test-file exemption must not blanket-cover a PR that also edits
+    // real runtime code alongside its test.
+    expect(
+      runtimeSurfaceChanged([
+        'packages/cli/src/cli/commands/local-agent.ts',
+        'packages/cli/src/cli/commands/local-agent.test.ts',
+      ])
+    ).toBe(true);
+  });
+
+  it('does not let a *.test.ts suffix exempt a runtime script outside packages/', () => {
+    // An unanchored `\.test\.tsx?$` pattern would also match this path,
+    // contradicting "scripts/ is NOT exempt wholesale" and this allowlist's
+    // fail-closed treatment of an unseen scripts/ subtree.
+    expect(runtimeSurfaceChanged(['scripts/some-new-tool/main.test.ts'])).toBe(true);
+  });
+
+  /**
    * The defect this closes, direction 1: a `fix(` PR that only edits a
    * scheduled workflow was told its change type "cannot be non-functional",
    * so it had to fabricate a runtime proof it could not honestly build.

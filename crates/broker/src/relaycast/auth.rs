@@ -1250,7 +1250,7 @@ fn is_transient_server_error(error: &RelayError) -> bool {
 /// `workspace_busy` contract, not a whitespace-padded, differently-cased, or
 /// otherwise near-match string. See `is_workspace_busy_anyhow` for the
 /// rationale.
-fn is_workspace_busy_error(error: &RelayError) -> bool {
+pub(crate) fn is_workspace_busy_error(error: &RelayError) -> bool {
     matches!(
         error,
         RelayError::Api {

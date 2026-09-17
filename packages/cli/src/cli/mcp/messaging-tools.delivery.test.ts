@@ -52,6 +52,23 @@ describe('exact agent-name resolution', () => {
 });
 
 describe('direct message delivery receipts', () => {
+  it.each([
+    { requested: '', status: 'queued_unconfirmed', directoryMatched: true },
+    { requested: 'worker', status: 'recipient_mismatch', directoryMatched: false },
+  ])('preserves an empty resolved name for $status', ({ requested, status, directoryMatched }) => {
+    const resolved = resolveExactAgentName([{ name: '' }], '');
+    expect(resolved).toBe('');
+    const receipt = directMessageReceipt({ id: 'empty-name' }, requested, 'wait', resolved);
+    expect(receipt.target).toEqual({ kind: 'agent', agentName: '' });
+    expect(receipt.delivery).toMatchObject({
+      status,
+      resolvedRecipient: '',
+      directoryMatched,
+      recipientMatched: directoryMatched ? null : false,
+      deliveryConfirmed: false,
+    });
+  });
+
   it('labels default wait-mode sends as queued and preserves the exact requested recipient', () => {
     const receipt = directMessageReceipt(
       { id: 'msg_wait', text: 'status', agentName: 'sender' },
@@ -68,7 +85,9 @@ describe('direct message delivery receipts', () => {
         mode: 'wait',
         requestedRecipient: 'chief-khaliq',
         resolvedRecipient: 'chief-khaliq',
-        recipientMatched: true,
+        directoryMatched: true,
+        recipientMatched: null,
+        deliveryConfirmed: false,
         readConfirmed: false,
       },
     });
@@ -110,6 +129,8 @@ describe('direct message delivery receipts', () => {
         requestedRecipient: 'chief-khaliq',
         resolvedRecipient: 'chief',
         recipientMatched: false,
+        directoryMatched: false,
+        deliveryConfirmed: false,
       },
     });
     expect(receipt.delivery.note).toContain('Recipient mismatch');
@@ -184,9 +205,11 @@ describe('compact direct message receipts', () => {
         mode: 'wait',
         requestedRecipient: 'chief',
         resolvedRecipient: 'chief',
-        recipientMatched: true,
+        directoryMatched: true,
+        recipientMatched: null,
+        deliveryConfirmed: false,
         readConfirmed: false,
-        note: "Queued for injection at the recipient's next safe idle boundary. It can remain unread while the recipient is busy. This receipt does not confirm delivery or reading; call get_message_readers with the message id.",
+        note: 'Enqueued; routing and injection are unconfirmed. Mode wait requests the next safe idle boundary. Check get_message_readers with this ID before resending; retries may duplicate delivery.',
       },
     });
   });
