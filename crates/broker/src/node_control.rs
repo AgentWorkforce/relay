@@ -519,6 +519,7 @@ impl FleetLoadSnapshot {
         active_agent_names.sort();
         active_agent_names.dedup();
         capabilities.push(FleetCapability {
+            execution_mode: None,
             name: LIVE_AGENT_CAPABILITY_NAME.to_string(),
             kind: Some("capacity".to_string()),
             global: None,
@@ -1306,6 +1307,7 @@ impl FleetDeliveryBook {
 
 pub(crate) fn handler_unavailable_result(invocation_id: &str) -> ActionResult {
     ActionResult {
+        task: None,
         v: FLEET_WIRE_VERSION,
         id: None,
         invocation_id: invocation_id.to_string(),
@@ -1327,9 +1329,10 @@ pub(crate) fn build_node_register(
         .iter()
         .filter(|capability| capability.name != crate::fleet_wire::DELIVERY_CURSOR_CAPABILITY)
         .map(|capability| FleetCapability {
+            execution_mode: (capability.name == "task.run").then(|| "task".to_owned()),
             name: capability.name.clone(),
             kind: capability.kind.clone(),
-            global: None,
+            global: (capability.name == "task.run").then_some(true),
             queue: None,
             metadata: capability.metadata.as_ref().map(|metadata| {
                 metadata
@@ -1340,6 +1343,7 @@ pub(crate) fn build_node_register(
         })
         .collect::<Vec<_>>();
     capabilities.push(FleetCapability {
+        execution_mode: None,
         name: crate::fleet_wire::DELIVERY_CURSOR_CAPABILITY.to_string(),
         kind: Some("capacity".to_string()),
         global: None,
@@ -2635,6 +2639,14 @@ where
                     }
                     match frame {
                         RelaycastToBroker::Reply(reply) => {
+                            if reply.id.starts_with(crate::runtime::task_request_prefix()) {
+                                return event_tx
+                                    .send(FleetControlEvent::Message(RelaycastToBroker::Reply(
+                                        reply,
+                                    )))
+                                    .await
+                                    .is_ok();
+                            }
                             if let Some(pending) = pending_deregistrations.remove(&reply.id) {
                                 let result = if reply.ok {
                                     Ok(())
@@ -2677,6 +2689,14 @@ where
                             }
                         }
                         RelaycastToBroker::Error(error) => {
+                            if error.id.starts_with(crate::runtime::task_request_prefix()) {
+                                return event_tx
+                                    .send(FleetControlEvent::Message(RelaycastToBroker::Error(
+                                        error,
+                                    )))
+                                    .await
+                                    .is_ok();
+                            }
                             if let Some(pending) = pending_deregistrations.remove(&error.id) {
                                 let _ =
                                     pending.send(Err(format!("{}: {}", error.code, error.message)));
@@ -4218,6 +4238,7 @@ mod tests {
         assert_eq!(
             register.capabilities.last(),
             Some(&FleetCapability {
+                execution_mode: None,
                 name: crate::fleet_wire::DELIVERY_CURSOR_CAPABILITY.to_string(),
                 kind: Some("capacity".to_string()),
                 global: None,
@@ -4319,6 +4340,7 @@ mod tests {
 
             ws.send(Message::Text(
                 serde_json::to_string(&RelaycastToBroker::ActionInvoke(ActionInvoke {
+                    task_execution: None,
                     v: FLEET_WIRE_VERSION,
                     invocation_id: "inv-1".to_string(),
                     action: "run:test".to_string(),
@@ -4361,6 +4383,7 @@ mod tests {
         command_tx
             .send(FleetControlCommand::Send(BrokerToRelaycast::ActionResult(
                 ActionResult {
+                    task: None,
                     v: FLEET_WIRE_VERSION,
                     id: None,
                     invocation_id: "inv-1".to_string(),
@@ -4827,6 +4850,7 @@ mod tests {
                         result: ActionResultPayload::Output(ActionResultOutput {
                             output: json!({"ok": true}),
                         }),
+                        task: None,
                     },
                 )))
                 .await
@@ -6194,6 +6218,42 @@ mod tests {
         assert!(should_attempt_remint(
             consecutive_unauthorized.saturating_add(1)
         ));
+    }
+    #[tokio::test]
+    async fn task_receipts_are_forwarded_without_consuming_agent_registration_waiters() {
+        let (tx, mut rx) = mpsc::channel(4);
+        let mut registrations = HashMap::new();
+        let mut deregistrations = HashMap::new();
+        let mut liveness = ApplicationLiveness::new(Duration::from_secs(1));
+        let mut sink = futures_util::sink::drain();
+        for raw in [
+            serde_json::json!({"v":1,"type":"reply","id":"task_receipt_a","ok":true,"data":{"status":"running"}}),
+            serde_json::json!({"v":1,"type":"error","id":"task_receipt_b","ok":false,"code":"stale_task_execution","message":"stale"}),
+        ] {
+            assert!(
+                handle_server_message(
+                    Message::Text(raw.to_string()),
+                    &tx,
+                    &mut registrations,
+                    &mut deregistrations,
+                    &mut liveness,
+                    "node-test",
+                    &mut sink,
+                    None,
+                )
+                .await
+            );
+            let event = rx.recv().await.unwrap();
+            match event {
+                FleetControlEvent::Message(RelaycastToBroker::Reply(reply)) => {
+                    assert_eq!(reply.id, "task_receipt_a")
+                }
+                FleetControlEvent::Message(RelaycastToBroker::Error(error)) => {
+                    assert_eq!(error.id, "task_receipt_b")
+                }
+                other => panic!("unexpected event {other:?}"),
+            }
+        }
     }
 }
 

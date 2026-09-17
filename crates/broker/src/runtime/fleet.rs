@@ -158,6 +158,7 @@ pub(super) fn verified_spawn_ready_result(
     name: &WorkerName,
 ) -> ActionResult {
     ActionResult {
+        task: None,
         v: FLEET_WIRE_VERSION,
         id: None,
         invocation_id,
@@ -169,6 +170,7 @@ pub(super) fn verified_spawn_ready_result(
 
 pub(super) fn verified_spawn_failed_result(invocation_id: String, error: &str) -> ActionResult {
     ActionResult {
+        task: None,
         v: FLEET_WIRE_VERSION,
         id: None,
         invocation_id,
@@ -853,9 +855,13 @@ impl BrokerRuntime {
             FleetControlEvent::Message(RelaycastToBroker::ActionInvoke(invoke)) => {
                 self.handle_fleet_action_invoke(invoke).await;
             }
-            FleetControlEvent::Message(RelaycastToBroker::Ping(_))
-            | FleetControlEvent::Message(RelaycastToBroker::Reply(_))
-            | FleetControlEvent::Message(RelaycastToBroker::Error(_)) => {}
+            FleetControlEvent::Message(RelaycastToBroker::Reply(reply)) => {
+                self.handle_task_reply(reply).await
+            }
+            FleetControlEvent::Message(RelaycastToBroker::Error(error)) => {
+                self.handle_task_error(error).await
+            }
+            FleetControlEvent::Message(RelaycastToBroker::Ping(_)) => {}
         }
     }
 
@@ -1296,6 +1302,10 @@ impl BrokerRuntime {
         // connection; the broker runs them directly against its PTY runtime.
         // Capability action handlers live in their own providers and are
         // dispatched to those sockets by the engine, never here.
+        if invoke.action == super::task_store::TASK_ACTION {
+            self.handle_task_invoke(invoke).await;
+            return;
+        }
         let action = invoke.action.as_str();
         if action == "spawn" || action.starts_with("spawn:") {
             self.handle_fleet_action_spawn(invoke).await;
@@ -1424,6 +1434,7 @@ impl BrokerRuntime {
             session_ref,
             &self.hosted_agent_event_tx,
             &mut self.pty_observability,
+            None,
         )
         .await;
 
@@ -1617,6 +1628,7 @@ impl BrokerRuntime {
 
     async fn reply_action_output(&self, invocation_id: &str, output: Value) {
         self.send_fleet_action_result(ActionResult {
+            task: None,
             v: FLEET_WIRE_VERSION,
             id: None,
             invocation_id: invocation_id.to_string(),
@@ -1625,8 +1637,9 @@ impl BrokerRuntime {
         .await;
     }
 
-    async fn reply_action_error(&self, invocation_id: &str, error: &str) {
+    pub(super) async fn reply_action_error(&self, invocation_id: &str, error: &str) {
         self.send_fleet_action_result(ActionResult {
+            task: None,
             v: FLEET_WIRE_VERSION,
             id: None,
             invocation_id: invocation_id.to_string(),
@@ -1646,7 +1659,7 @@ impl BrokerRuntime {
             .await;
     }
 
-    async fn publish_fleet_load(&self, heartbeat_now: bool) {
+    pub(super) async fn publish_fleet_load(&self, heartbeat_now: bool) {
         let active_agents = u32::try_from(self.workers.workers.len()).unwrap_or(u32::MAX);
         let active_agent_names = self
             .workers
@@ -1832,6 +1845,7 @@ fn fleet_spawn_action_result(
         }),
     };
     ActionResult {
+        task: None,
         v: FLEET_WIRE_VERSION,
         id: None,
         invocation_id: invocation_id.to_string(),
@@ -3265,6 +3279,7 @@ mod tests {
         agent_id: Option<&str>,
     ) -> ActionInvoke {
         ActionInvoke {
+            task_execution: None,
             v: FLEET_WIRE_VERSION,
             invocation_id: "inv-1".to_string(),
             action: "spawn".to_string(),

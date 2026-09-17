@@ -307,7 +307,29 @@ pub(crate) async fn run_init(cmd: InitCommand, telemetry: TelemetryClient) -> Re
     } else {
         resolve_cached_node_token(&node_id, &node_workspace_id, node_base_url.as_deref())
     };
-    let node_manifest = bootstrap_node_manifest(&node_name, &node_id, &broker_version);
+    let task_enabled = std::env::var("AGENT_RELAY_TASK_PROVIDER").as_deref() == Ok("1");
+    anyhow::ensure!(
+        !task_enabled || (paths.persist && !local_only),
+        "task provider requires persistent hosted broker mode"
+    );
+    let task_provider = if task_enabled {
+        super::tasks::TaskProvider {
+            store: super::task_store::TaskStore::open(paths.state.with_extension("tasks.json"))?,
+            ..Default::default()
+        }
+    } else {
+        super::tasks::TaskProvider::default()
+    };
+    let mut node_manifest = bootstrap_node_manifest(&node_name, &node_id, &broker_version);
+    if task_enabled {
+        node_manifest
+            .capabilities
+            .push(crate::protocol::NodeCapabilityManifest {
+                name: super::task_store::TASK_ACTION.to_owned(),
+                kind: Some("action".to_owned()),
+                metadata: None,
+            });
+    }
     // Retain the node name for the runtime: the HTTP `bind_agent_to_node`
     // fallback (used when node-control `agent.register` is unavailable) binds
     // spawned agents to this node so they become `via_node` and node delivery
@@ -804,6 +826,7 @@ pub(crate) async fn run_init(cmd: InitCommand, telemetry: TelemetryClient) -> Re
         resize_owners: HashMap::new(),
         delivery_states,
         agent_result_tokens,
+        task_provider,
         recent_thread_messages,
         shutdown,
         lease_duration,

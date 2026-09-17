@@ -514,6 +514,7 @@ pub(super) async fn spawn_worker_from_request(
     session_ref: Option<String>,
     hosted_agent_event_tx: &mpsc::Sender<HostedAgentEvent>,
     pty_observability: &mut HashMap<WorkerName, PtyObservabilityState>,
+    task_binding: Option<(AgentResultMcpConfig, Uuid)>,
 ) -> Result<()> {
     if workers.identity_cleanups.contains_key(&name) {
         anyhow::bail!("worker name has pending owned cleanup; complete it before reuse");
@@ -839,15 +840,16 @@ pub(super) async fn spawn_worker_from_request(
         };
 
     match workers
-        .spawn(
+        .spawn_with_generation(
             spec,
             Some("Relaycast".to_string()),
             None,
             worker_relay_key.clone(),
             false,
             Some(workspace_id.clone()),
-            None,
+            task_binding.as_ref().map(|(config, _)| config.clone()),
             commit_attestation,
+            task_binding.as_ref().map(|(_, generation)| *generation),
         )
         .await
     {
@@ -1280,6 +1282,7 @@ mod tests {
             None,
             &hosted_agent_event_tx,
             &mut pty_observability,
+            None,
         )
         .await
         .expect_err("a sidecar that exits during the stability window must fail the spawn");

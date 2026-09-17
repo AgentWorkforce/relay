@@ -271,6 +271,7 @@ pub(crate) struct BrokerRuntime {
     pub(super) resize_owners: HashMap<WorkerName, ResizeOwner>,
     pub(super) delivery_states: HashMap<WorkerName, InboundDeliveryState>,
     pub(super) agent_result_tokens: HashMap<String, WorkerName>,
+    pub(super) task_provider: super::tasks::TaskProvider,
     pub(super) recent_thread_messages: VecDeque<Value>,
     pub(super) shutdown: bool,
     pub(super) lease_duration: Option<Duration>,
