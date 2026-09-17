@@ -110,7 +110,13 @@ const NON_RUNTIME_PATH_PATTERNS = Object.freeze([
   // reaches a shipped artifact regardless of where it lives. A runtime fix
   // that lands alongside a test still demands a proof from its OWN file —
   // this only exempts a change confined entirely to test files.
-  /\.test\.tsx?$/,
+  //
+  // Anchored to packages/<name>/... specifically, NOT a bare `\.test\.tsx?$`
+  // suffix match: an unanchored pattern would also exempt something like
+  // scripts/some-new-tool/main.test.ts, contradicting "scripts/ is NOT exempt
+  // wholesale" above and this list's fail-closed treatment of unknown
+  // scripts/ subtrees.
+  /^packages\/[^/]+\/.+\.test\.tsx?$/,
   /^[^/]*\.md$/,
   // Top-level repo metadata that cannot reach a shipped artifact.
   //
