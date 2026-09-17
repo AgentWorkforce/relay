@@ -289,7 +289,7 @@ async fn write_initial_codex(
             before = pty.consumed_offset();
             ack = pty
                 .submit_write_paced(
-                    body[start..chunk_end(body, start)].as_bytes().to_vec(),
+                    body.as_bytes()[start..chunk_end(body, start)].to_vec(),
                     pace,
                 )
                 .map_err(std::io::Error::other)?;
@@ -1828,7 +1828,7 @@ pub(crate) async fn run_pty_worker(cmd: PtyCommand) -> Result<()> {
                             let before = pty.consumed_offset();
                             let end = chunk_end(&injection, 0);
                             let (first_ack, boundary) = match pty.submit_write_paced_with_output_boundary(
-                                injection[..end].as_bytes().to_vec(), inject_rate) {
+                                injection.as_bytes()[..end].to_vec(), inject_rate) {
                                 Ok(write) => write,
                                 Err(error) => {
                                     // Admission failed before any body was queued, so
