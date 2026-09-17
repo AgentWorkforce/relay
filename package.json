@@ -8,9 +8,9 @@
     "packages/*"
   ],
   "scripts": {
-    "typecheck": "npm run build:session && npm run build:config && npm run build:cloud && npm run build:utils && npm run build:policy && npm run build:sdk && npm run build:harness-driver && npm run build:harnesses && npm run build:fleet && cd packages/cli && npx tsc --noEmit",
+    "typecheck": "npm run build:session && npm run build:config && npm run build:cloud && npm run build:utils && npm run build:policy && npm run build:sdk && npm run build:harness-driver && npm run build:harnesses && npm run build:fleet && npm run build:cli-surface && cd packages/cli && npx tsc --noEmit",
     "build": "npm run clean && npm run build:rust && npm run build:core",
-    "build:core": "npm run build:session && npm run build:config && npm run build:cloud && npm run build:utils && npm run build:policy && npm run build:sdk && npm run build:harness-driver && npm run build:harnesses && npm run build:integration-prompts && npm run build:evals && npm run build:fleet && npm run build:cli",
+    "build:core": "npm run build:session && npm run build:config && npm run build:cloud && npm run build:utils && npm run build:policy && npm run build:sdk && npm run build:harness-driver && npm run build:harnesses && npm run build:integration-prompts && npm run build:evals && npm run build:fleet && npm run build:cli-surface && npm run build:cli",
     "build:packages": "npm run build:core",
     "build:packages:watch": "echo 'Package watch build was removed with the simplified core surface. Use package-specific watch commands instead.'",
     "build:cli": "npm --prefix packages/cli run build",
@@ -32,10 +32,10 @@
     "watch:start:claude": "npm run watch:start:cli-tools -- --tool=claude",
     "predev": "npm run clean && npm run build:packages && cd packages/cli && npx tsc && cd ../.. && chmod +x packages/cli/dist/cli/index.js",
     "dev": "node packages/cli/dist/cli/index.js up",
-    "dev:local": "npm run build && (cd packages/cli && npm link) && echo '✓ agent-relay linked globally'",
-    "dev:unlink": "(cd packages/cli && npm unlink -g agent-relay) && echo '✓ agent-relay unlinked'",
-    "dev:rebuild": "npm run build && echo '✓ Rebuilt (linked version updated)'",
-    "build:rust": "if command -v ~/.cargo/bin/cargo >/dev/null 2>&1; then ~/.cargo/bin/cargo build --release --bin agent-relay-broker && echo '✓ broker binary (agent-relay-broker) built at target/release/agent-relay-broker'; else echo '⚠ Rust not installed, skipping local broker build; installs use platform optional dependencies'; fi",
+    "dev:local": "npm run build && (cd packages/cli && npm link) && echo '\u2713 agent-relay linked globally'",
+    "dev:unlink": "(cd packages/cli && npm unlink -g agent-relay) && echo '\u2713 agent-relay unlinked'",
+    "dev:rebuild": "npm run build && echo '\u2713 Rebuilt (linked version updated)'",
+    "build:rust": "if command -v ~/.cargo/bin/cargo >/dev/null 2>&1; then ~/.cargo/bin/cargo build --release --bin agent-relay-broker && echo '\u2713 broker binary (agent-relay-broker) built at target/release/agent-relay-broker'; else echo '\u26a0 Rust not installed, skipping local broker build; installs use platform optional dependencies'; fi",
     "start": "node packages/cli/dist/cli/index.js",
     "pretest": "npm run build",
     "test": "vitest run",
@@ -110,7 +110,8 @@
     "verify:fleet-daytona:dry-run": "DRY_RUN=1 relayflows run workflows/verify-fleet-daytona.ts",
     "test:e2e": "vitest run --config vitest.e2e.config.ts",
     "smoke:prod": "node tests/e2e/prod-smoke/prod-smoke.mjs",
-    "test:subscriptions:proof": "node --test tests/e2e/github-subscriptions/*.test.mjs"
+    "test:subscriptions:proof": "node --test tests/e2e/github-subscriptions/*.test.mjs",
+    "build:cli-surface": "npm --prefix packages/cli-surface run build"
   },
   "author": "AgentWorkforce <hello@agentrelay.com>",
   "license": "Apache-2.0",

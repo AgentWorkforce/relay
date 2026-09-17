@@ -292,6 +292,15 @@ describe('mountRelayCliSurface', () => {
     expect(run).toHaveBeenCalledWith(['ls'], io);
   });
 
+  it('renders the group in parent help without the argv placeholder', () => {
+    // Commander would otherwise derive the term from the catch-all argument
+    // and show `file [args...]`, leaking a mount detail into user-facing help.
+    const program = programWith(async () => makeSurface(), makeIo());
+    const help = program.helpInformation();
+    expect(help).toMatch(/^\s+file\s{2,}relayfile commands/m);
+    expect(help).not.toContain('[args...]');
+  });
+
   it('hides the alias but not the canonical group from help', () => {
     const program = programWith(async () => makeSurface(), makeIo());
     const help = program.helpInformation();
