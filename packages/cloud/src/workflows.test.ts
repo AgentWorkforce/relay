@@ -527,9 +527,9 @@ describe('runWorkflow code sync', () => {
     await writeFile(workflowPath, ['version: "0.1.0"', 'name: empty'].join('\n'));
     mockPrepareAndRun([]);
 
-    await expect(
-      runWorkflow(workflowPath, { syncCode: false, relayflowVersion: 'v2' })
-    ).rejects.toThrow('missing required field "steps"');
+    await expect(runWorkflow(workflowPath, { syncCode: false, relayflowVersion: 'v2' })).rejects.toThrow(
+      'missing required field "steps"'
+    );
   });
 
   // The loosening must be scoped to v2. A v2-shaped document submitted on v1
