@@ -9,7 +9,7 @@
 
 import type { Command } from 'commander';
 
-import type { RelayCliSurface } from '@agent-relay/cli-surface';
+import { composeSurfaces, type RelayCliSurface } from '@agent-relay/cli-surface';
 
 import { describeError } from '../lib/describe-error.js';
 import { defaultExit } from '../lib/exit.js';
@@ -30,6 +30,14 @@ export interface ProductSurfaceDefinition {
   specifier: string;
   /** Additional group names reaching the same surface, hidden from help. */
   hiddenAliases?: readonly string[];
+  /**
+   * Options handed to the product's `createRelayCliSurface`.
+   *
+   * `sessions` uses this to pass a Relayhistory cloud client, which makes the
+   * product's `cloud …` commands appear. Resolved lazily alongside the import,
+   * so building a client costs nothing until the group is used.
+   */
+  createOptions?: () => unknown | Promise<unknown>;
   /**
    * Optionally widen the product surface before mounting.
    *
@@ -65,8 +73,45 @@ export const PRODUCT_SURFACES: readonly ProductSurfaceDefinition[] = [
     as: 'sessions',
     description: 'Relay session history — search, replay, and export past sessions',
     specifier: 'ai-hist/relay-cli',
+    // `agent-relay session replay` predates this group and still works; it is
+    // hidden so help shows one name for one thing.
+    hiddenAliases: ['session'],
+    createOptions: createSessionsSurfaceOptions,
+    extend: composeSessionReplay,
   },
 ];
+
+/**
+ * Build the Relayhistory cloud client that unlocks `sessions cloud …`.
+ *
+ * Returns no client when Relayhistory is not configured: ai-hist then drops
+ * those commands from its declared tree, so help never advertises something
+ * that cannot run.
+ */
+async function createSessionsSurfaceOptions(): Promise<{ cloud?: unknown }> {
+  const { readStoredRelayhistoryAuth, resolveRelayhistoryConfig } = await import('./session.js');
+  const { baseUrl, token } = resolveRelayhistoryConfig(readStoredRelayhistoryAuth());
+  if (!baseUrl || !token) return {};
+
+  try {
+    const { createRelayhistoryCloudClient } = await import('@relayhistory/cloud-client');
+    return { cloud: createRelayhistoryCloudClient({ baseUrl, token }) };
+  } catch {
+    // The cloud client is optional: without it the local half still mounts,
+    // which is strictly better than failing the whole group.
+    return {};
+  }
+}
+
+/** Compose Relay's own `replay` into the session history tree. */
+async function composeSessionReplay(base: RelayCliSurface): Promise<RelayCliSurface> {
+  const { createSessionReplaySurface } = await import('./session.js');
+  return composeSurfaces({
+    id: base.id,
+    version: base.version,
+    parts: [base, createSessionReplaySurface(base.version)],
+  });
+}
 
 /**
  * Explain an import failure in terms the operator can act on.
@@ -121,7 +166,8 @@ export async function loadProductSurface(
     );
   }
 
-  const base = module.createRelayCliSurface();
+  const options = definition.createOptions ? await definition.createOptions() : undefined;
+  const base = module.createRelayCliSurface(options);
   return definition.extend ? await definition.extend(base) : base;
 }
 

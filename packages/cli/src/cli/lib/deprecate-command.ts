@@ -16,8 +16,14 @@ import { Help, type Command } from 'commander';
 
 /** Where a deprecated command's callers should go instead. */
 export interface DeprecationNotice {
-  /** Replacement invocation, e.g. `agent-relay flows run`. */
-  replacement: string;
+  /**
+   * Replacement invocation, e.g. `agent-relay flows run`.
+   *
+   * Omit when nothing replaces the command yet. Several v1 relayflows commands
+   * (schedule, logs, cancel) have no v2 equivalent, and inventing a pointer to
+   * a command that does not exist is worse than admitting the gap.
+   */
+  replacement?: string;
   /** Version the deprecation took effect. */
   since: string;
   /**
@@ -28,6 +34,14 @@ export interface DeprecationNotice {
    * worse than no pointer.
    */
   note?: string;
+  /**
+   * Keep the command listed in `--help` (default: hide it).
+   *
+   * Hiding is right for a command with a replacement. A command that is still
+   * the only way to do its job must stay discoverable even while deprecated,
+   * or we strand the people relying on it.
+   */
+  keepVisible?: boolean;
 }
 
 /** Injectable warning sink; defaults to the real stderr. */
@@ -45,9 +59,17 @@ export interface DeprecationDependencies {
 export function formatDeprecationWarning(invocation: string, notice: DeprecationNotice): string {
   const lines = [
     `warning: \`${invocation}\` is deprecated since ${notice.since} and will be removed in a future release.`,
-    `         Use \`${notice.replacement}\` instead.`,
   ];
-  if (notice.note) lines.push(`         ${notice.note}`);
+  if (notice.replacement) {
+    lines.push(`         Use \`${notice.replacement}\` instead.`);
+    if (notice.note) lines.push(`         ${notice.note}`);
+  } else {
+    // A specific note about why there is no replacement beats the generic
+    // line; printing both just says the same thing twice.
+    lines.push(
+      `         ${notice.note ?? 'No replacement is available yet; it remains supported until one ships.'}`
+    );
+  }
   return `${lines.join('\n')}\n`;
 }
 
@@ -75,13 +97,17 @@ export function deprecateCommand(
 
   // Keep the text accurate for anyone who reaches help another way (`--help`
   // on the command itself still prints its own description).
-  command.description(`${command.description()} (deprecated — use \`${notice.replacement}\`)`);
+  command.description(
+    notice.replacement
+      ? `${command.description()} (deprecated — use \`${notice.replacement}\`)`
+      : `${command.description()} (deprecated)`
+  );
 
   command.hook('preAction', () => {
     warn(formatDeprecationWarning(invocationPath(command), notice));
   });
 
-  hideFromParentHelp(parent, command.name());
+  if (!notice.keepVisible) hideFromParentHelp(parent, command.name());
 }
 
 /** Build the full invocation path for a command, e.g. `agent-relay cloud run`. */

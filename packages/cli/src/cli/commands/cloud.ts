@@ -637,6 +637,8 @@ function renderScheduleList(schedules: WorkflowSchedule[], log: (...args: unknow
   }
 }
 
+import { applyV1FlowsDeprecations } from './cloud-v1-deprecations.js';
+
 // ── Command registration ─────────────────────────────────────────────────────
 
 export function registerCloudCommands(program: Command, overrides: Partial<CloudDependencies> = {}): void {
@@ -1392,4 +1394,7 @@ export function registerCloudCommands(program: Command, overrides: Partial<Cloud
       deps.log(`Run: ${result.runId ?? runId}`);
       deps.log(`Status: ${result.status ?? 'unknown'}`);
     });
+
+  // Applied last so every command it targets is registered.
+  applyV1FlowsDeprecations(cloudCommand);
 }

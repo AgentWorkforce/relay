@@ -53,7 +53,49 @@ describe('formatDeprecationWarning', () => {
   });
 });
 
+describe('formatDeprecationWarning without a replacement', () => {
+  it('admits the gap instead of inventing a pointer', () => {
+    // v1 `cloud schedule` has no v2 equivalent; naming a command that does not
+    // exist would send people to a dead end.
+    const warning = formatDeprecationWarning('agent-relay cloud schedule', { since: '12.3.0' });
+    expect(warning).toContain('No replacement is available yet');
+    expect(warning).toContain('remains supported until one ships');
+    expect(warning).not.toContain('undefined');
+  });
+
+  it('prefers a specific note over the generic no-replacement line', () => {
+    // Printing both says the same thing twice.
+    const warning = formatDeprecationWarning('agent-relay cloud schedule', {
+      since: '12.3.0',
+      note: 'Relayflows v2 has no hosted scheduling yet.',
+    });
+    expect(warning).toContain('Relayflows v2 has no hosted scheduling yet.');
+    expect(warning).not.toContain('No replacement is available yet');
+  });
+});
+
 describe('deprecateCommand', () => {
+  it('keeps a replacement-less command visible in help', () => {
+    // Hiding the only way to do a job strands the people relying on it.
+    const { cloud } = programWithCloud();
+    deprecateCommand(
+      cloud.commands.find((c) => c.name() === 'schedule')!,
+      { since: '12.3.0', keepVisible: true },
+      { warn: () => {} }
+    );
+
+    expect(cloud.helpInformation()).toMatch(/^\s+schedule\b/m);
+  });
+
+  it('marks a replacement-less command without naming one', () => {
+    const { cloud } = programWithCloud();
+    const schedule = cloud.commands.find((c) => c.name() === 'schedule')!;
+    deprecateCommand(schedule, { since: '12.3.0', keepVisible: true }, { warn: () => {} });
+
+    expect(schedule.description()).toBe('Schedule a repeatable workflow run (deprecated)');
+    expect(schedule.description()).not.toContain('undefined');
+  });
+
   it('still runs the original action', async () => {
     const { program, cloud, ran } = programWithCloud();
     deprecateCommand(cloud.commands.find((c) => c.name() === 'run')!, NOTICE, { warn: () => {} });

@@ -39,7 +39,6 @@ import { registerStatusCommand } from './commands/status.js';
 import { registerLocalAgentCommands } from './commands/local-agent.js';
 import { registerLocalWorkflowCommands } from './commands/local-workflow.js';
 import { registerCloudCommands } from './commands/cloud.js';
-import { registerReflexCommands } from './commands/reflex.js';
 import { registerWorkspaceCommands } from './commands/workspace.js';
 import { registerObserverCommands } from './commands/observer.js';
 import { registerAgentCommands } from './commands/agent.js';
@@ -49,7 +48,6 @@ import { registerIntegrationCommands } from './commands/integration.js';
 import { registerCapabilitiesCommands } from './commands/capabilities.js';
 import { registerFleetCommands } from './commands/fleet.js';
 import { registerSkillsCommands } from './commands/skills.js';
-import { registerSessionCommands } from './commands/session.js';
 import { registerProductSurfaceCommands } from './commands/product-surfaces.js';
 
 dotenvConfig({ quiet: true });
@@ -419,7 +417,6 @@ export function createProgram(options: { name?: string } = {}): Command {
   registerStatusCommand(program);
   registerSetupCommands(program);
   registerCloudCommands(program);
-  registerReflexCommands(program);
   registerWorkspaceCommands(program);
   registerObserverCommands(program);
   registerAgentCommands(program);
@@ -428,8 +425,6 @@ export function createProgram(options: { name?: string } = {}): Command {
   registerIntegrationCommands(program);
   registerCapabilitiesCommands(program);
   registerSkillsCommands(program);
-  registerSessionCommands(program);
-
   // The other Relay products, mounted from their own SDKs: `file` (relayfile),
   // `flows` (relayflows), `sessions` (relayhistory). Each product ships its own
   // command tree; nothing about those commands is reimplemented here. Loading

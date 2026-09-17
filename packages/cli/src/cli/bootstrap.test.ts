@@ -35,16 +35,12 @@ const expectedLeafCommands = [
   'uninstall',
   'telemetry',
   'mcp',
-  // reflex
-  'reflex on',
-  'reflex off',
-  'reflex status',
-  'session replay',
   // Mounted product surfaces. They are commander leaves on purpose: each
   // product's real command tree lives in its own SDK spec and is rendered by
   // the surface mounter, so commander only ever sees the group.
   'file',
   'flows',
+  // `session` (singular) is the hidden alias of `sessions`, so it is absent here.
   'sessions',
   // fleet (serve is a hidden error stub, filtered out below)
   'fleet agent list',
@@ -225,7 +221,6 @@ describe('bootstrap CLI', () => {
         'integration',
         'capabilities',
         'fleet',
-        'reflex',
         'session',
         'status',
         'observer',
