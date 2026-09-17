@@ -4298,6 +4298,9 @@ async fn api_spawn_retries_overload_and_only_safe_mode_falls_back() {
             node_name: "test-node".to_string(),
             node_token: std::sync::Arc::new(std::sync::RwLock::new(None)),
             persist: false,
+            node_delivery_probe: std::sync::Arc::new(
+                crate::node_delivery_probe::NodeDeliveryProbe::new(),
+            ),
         },
         None,
     );
