@@ -190,6 +190,45 @@ const CODEX_STARTUP_SETTLE: Duration = Duration::from_secs(1);
 const INITIAL_CHUNK_BYTES: usize = 768;
 const INITIAL_SUBMIT_RETRY: Duration = Duration::from_secs(10);
 const INITIAL_SUBMIT_RETRIES: usize = 2;
+// Generous per-chunk budget (CODEX_STARTUP_SETTLE plus write/schedule
+// margin): a FIXED STARTUP_READY_TIMEOUT does not scale with chunk count, so
+// any body needing more chunks than that fixed budget allows was previously
+// guaranteed to time out with the composer left partially filled -- not an
+// edge case, but every task above roughly 45 KiB (relay#1782 review).
+const INITIAL_CHUNK_BUDGET: Duration = Duration::from_secs(2);
+// Recovery-phase budget: up to INITIAL_SUBMIT_RETRIES extra submits, each
+// spaced INITIAL_SUBMIT_RETRY apart, plus the initial wait before the first
+// retry.
+const INITIAL_RECOVERY_BUDGET: Duration =
+    Duration::from_secs(INITIAL_SUBMIT_RETRY.as_secs() * (INITIAL_SUBMIT_RETRIES as u64 + 1));
+// Stays well under WORKER_READY_DEADLINE (90s, worker.rs) even though this
+// function does not start at spawn time -- leaves margin for whatever
+// already elapsed getting here, and for the reap sweep's own granularity.
+const INITIAL_CODEX_MAX_DEADLINE: Duration = Duration::from_secs(75);
+
+/// Scales the injection deadline with chunk count instead of using a fixed
+/// budget that only fits small bodies. Never shrinks below the original
+/// fixed `STARTUP_READY_TIMEOUT` so existing small-task behavior is
+/// unchanged.
+fn initial_codex_deadline(chunk_count: usize) -> Duration {
+    let scaled = INITIAL_CHUNK_BUDGET.saturating_mul(chunk_count.max(1) as u32)
+        + INITIAL_RECOVERY_BUDGET
+        + Duration::from_secs(5);
+    scaled.clamp(STARTUP_READY_TIMEOUT, INITIAL_CODEX_MAX_DEADLINE)
+}
+
+/// The largest body `write_initial_codex` can attempt to deliver and still
+/// have every chunk's nominal budget fit inside `INITIAL_CODEX_MAX_DEADLINE`.
+/// A body past this point cannot succeed even when every chunk renders
+/// immediately, so it must be rejected before any byte is written rather
+/// than guaranteed to fail partway through (relay#1782 review).
+fn initial_codex_max_body_bytes() -> usize {
+    let usable = INITIAL_CODEX_MAX_DEADLINE
+        .saturating_sub(INITIAL_RECOVERY_BUDGET)
+        .saturating_sub(Duration::from_secs(5));
+    let max_chunks = (usable.as_secs() / INITIAL_CHUNK_BUDGET.as_secs()).max(1) as usize;
+    max_chunks.saturating_mul(INITIAL_CHUNK_BYTES)
+}
 
 type InjectionWriteFuture<'a> = Pin<
     Box<
@@ -216,21 +255,46 @@ fn compact_render(text: &str) -> String {
 
 // Only the current composer, never transcript/history. A scrolling composer
 // keeps its prompt on the first visible row; the cursor bounds its last row.
+//
+// Recognizes both composer prompts `codex_composer_ready` accepts (native `›`
+// and legacy `codex>`) — matching only `›` left every legacy-prompt worker's
+// chunk gate permanently closed after startup released its initial task
+// (relay#1782 review).
 fn pending_codex_composer(snapshot: &Snapshot) -> Option<String> {
     let plain = snapshot.to_plain();
-    if detect_codex_trust_prompt(&plain) || plain.to_ascii_lowercase().contains("esc to interrupt")
-    {
+    if detect_codex_trust_prompt(&plain) {
         return None;
     }
     let lines: Vec<_> = plain.lines().collect();
     let end = snapshot.cursor.0.checked_sub(1)? as usize;
-    let start = lines
+    let start = lines.iter().take(end + 1).rposition(|line| {
+        line.starts_with("› ") || *line == "›" || line.starts_with("codex> ") || *line == "codex>"
+    })?;
+    // A "Working ... esc to interrupt" indicator replaces the idle prompt
+    // line while Codex is actively responding, so it never shares a row with
+    // one of the prompts matched above — checking only the lines BEFORE the
+    // composer (not the composer's own content, which may itself legitimately
+    // contain that phrase as part of an injected task) still catches a
+    // genuine busy state without being fooled by our own pending text
+    // (relay#1782 review).
+    if lines[..start]
         .iter()
-        .take(end + 1)
-        .rposition(|line| line.starts_with("› ") || *line == "›")?;
-    let content = lines.get(start..=end)?.join("\n");
-    if content.contains("› Ask Codex") || compact_render(content.trim_start_matches('›')).is_empty()
+        .rev()
+        .take(4)
+        .any(|line| line.to_ascii_lowercase().contains("esc to interrupt"))
     {
+        return None;
+    }
+    let content = lines.get(start..=end)?.join("\n");
+    let stripped = content
+        .strip_prefix("codex>")
+        .or_else(|| content.strip_prefix('›'))
+        .unwrap_or(content.as_str());
+    // Anchored rather than `content.contains(...)`: the placeholder hint only
+    // ever appears immediately after the prompt glyph on an empty composer,
+    // so this can't be fooled by a pending task whose text happens to mention
+    // "Ask Codex" elsewhere in its body (relay#1782 review).
+    if stripped.trim_start() == "Ask Codex to do anything" || compact_render(stripped).is_empty() {
         return None;
     }
     Some(content)
@@ -329,7 +393,15 @@ async fn write_initial_codex(
                         retries,
                         "initial Codex submit recovery exhausted; composer remains pending"
                     );
-                    return Ok(());
+                    // Was `Ok(())`: silently claimed success, so the caller
+                    // emitted delivery_injected and queued echo verification
+                    // for a task that was never actually submitted (relay#1782
+                    // review). An error routes through the existing
+                    // was_chunked && !confirmed path instead: delivery_failed,
+                    // retry record removed, id retained, no replay.
+                    return Err(std::io::Error::other(
+                        "initial Codex submit recovery exhausted; body will not be replayed",
+                    ));
                 }
                 tracing::warn!(
                     retry = retries + 1,
@@ -344,9 +416,13 @@ async fn write_initial_codex(
             }
         }
     };
-    // Includes write acknowledgments, all gates, and recovery; below the 90s
-    // worker deadline even if a drainer or an arbitrarily large brief stalls.
-    tokio::time::timeout(STARTUP_READY_TIMEOUT, work)
+    // Includes write acknowledgments, all gates, and recovery; scales with
+    // chunk count (a fixed budget guaranteed a partial-write timeout for any
+    // body needing more chunks than it could fit — relay#1782 review) and
+    // stays below the 90s worker deadline even for the largest body
+    // `initial_codex_max_body_bytes` still accepts.
+    let chunk_count = body.len().div_ceil(INITIAL_CHUNK_BYTES).max(1);
+    tokio::time::timeout(initial_codex_deadline(chunk_count), work)
         .await
         .map_err(|_| {
             std::io::Error::other(
@@ -1825,6 +1901,32 @@ pub(crate) async fn run_pty_worker(cmd: PtyCommand) -> Result<()> {
                             mcp_reminder_throttle.note_sent(Instant::now());
                         }
                         if initial_codex_delivery(&resolved_cli, &inj.pending.delivery) {
+                            // Reject before any byte is written rather than after
+                            // guaranteeing a partial-write timeout: a body needing
+                            // more chunks than initial_codex_deadline's cap can
+                            // afford cannot reach Enter no matter how fast every
+                            // chunk renders (relay#1782 review). Reuses the
+                            // existing was_chunked && !confirmed path below --
+                            // delivery_failed, retry record removed, id retained
+                            // to reject a duplicate, body never replayed.
+                            let max_bytes = initial_codex_max_body_bytes();
+                            if injection.len() > max_bytes {
+                                tracing::warn!(
+                                    delivery_id = %inj.pending.delivery.delivery_id,
+                                    body_bytes = injection.len(),
+                                    max_bytes,
+                                    "initial Codex task exceeds chunked delivery's deadline-bounded size limit; rejecting before writing any byte"
+                                );
+                                inj.stage = InjectionStage::Finalize;
+                                initial_injection_cancel = Some(Arc::new(AtomicBool::new(false)));
+                                injection_ack = Some(Box::pin(async move {
+                                    Ok(Err(std::io::Error::other(
+                                        "initial Codex task exceeds the maximum size chunked delivery can complete within its deadline; body will not be written",
+                                    )))
+                                }));
+                                active_injection = Some(inj);
+                                continue;
+                            }
                             let before = pty.consumed_offset();
                             let end = chunk_end(&injection, 0);
                             let (first_ack, boundary) = match pty.submit_write_paced_with_output_boundary(
@@ -2423,15 +2525,28 @@ mod tests {
         let result =
             write_initial_codex(&pty, &body, Duration::ZERO, ack, before, &cancelled).await;
         let actual = std::fs::read(&log).unwrap();
+        // Writer sends at most one initial submit plus INITIAL_SUBMIT_RETRIES
+        // recovery submits.
+        let max_writer_submits = 1 + INITIAL_SUBMIT_RETRIES;
         if cancel {
             assert!(result.is_err());
             assert_eq!(actual, body[..768].as_bytes());
-        } else {
+        } else if submits <= max_writer_submits {
             result.unwrap();
             assert!(started.elapsed() >= CODEX_STARTUP_SETTLE * 3);
             assert_eq!(
                 actual,
-                format!("{body}{}", "\r".repeat(submits.min(3))).as_bytes()
+                format!("{body}{}", "\r".repeat(submits.min(max_writer_submits))).as_bytes()
+            );
+        } else {
+            // The child needs more Enters than the bounded retry budget ever
+            // sends, so the composer is still genuinely pending when recovery
+            // gives up. Must report failure, not silently claim success for a
+            // task that was never actually submitted (relay#1782 review).
+            assert!(result.is_err());
+            assert_eq!(
+                actual,
+                format!("{body}{}", "\r".repeat(max_writer_submits)).as_bytes()
             );
         }
         pty.shutdown().unwrap();
@@ -2500,6 +2615,94 @@ mod tests {
             .to_string()
             .contains("render gate timed out"));
         assert_eq!(std::fs::read(log).unwrap(), body[..768].as_bytes());
+    }
+
+    // codex_composer_ready (startup) already accepted both native `›` and
+    // legacy `codex>` prompts, but pending_codex_composer's chunk/submit gate
+    // matched only `›` — a legacy-prompt worker had its initial task released
+    // at startup, then every render gate stayed closed until timeout
+    // (relay#1782 review). Single chunk (body under INITIAL_CHUNK_BYTES) is
+    // enough to exercise the composer match; the chunking/retry mechanics
+    // themselves are already covered by the `›`-prompt fixtures above.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn initial_native_pty_recognizes_legacy_codex_prompt() {
+        let dir = tempfile::tempdir().unwrap();
+        let log = dir.path().join("input");
+        let body = "a".repeat(500);
+        let script = format!(
+            r#"
+            stty raw -echo
+            printf '\033[2J\033[Hcodex> Ask Codex to do anything'
+            dd bs=1 count={len} of='{log}' 2>/dev/null
+            printf '\033[2J\033[Hcodex> '
+            cat '{log}'
+            dd bs=1 count=1 >> '{log}' 2>/dev/null
+            printf '\033[2J\033[Hcodex> Ask Codex to do anything'
+            sleep 5
+        "#,
+            len = body.len(),
+            log = log.display()
+        );
+        let (pty, mut rx) = PtySession::spawn("/bin/sh", &["-c".into(), script], 24, 1000).unwrap();
+        let drain = tokio::spawn(async move { while rx.recv().await.is_some() {} });
+        for _ in 0..100 {
+            if pty.screen_text().contains("Ask Codex") {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+        assert!(pty.screen_text().contains("Ask Codex"));
+        let before = pty.consumed_offset();
+        let ack = pty.submit_write(body.as_bytes().to_vec()).unwrap();
+        let result = write_initial_codex(
+            &pty,
+            &body,
+            Duration::ZERO,
+            ack,
+            before,
+            &AtomicBool::new(false),
+        )
+        .await;
+        let actual = std::fs::read(&log).unwrap();
+        pty.shutdown().unwrap();
+        drain.abort();
+        result.unwrap();
+        assert_eq!(actual, format!("{body}\r").as_bytes());
+    }
+
+    #[test]
+    fn initial_codex_deadline_scales_with_chunk_count_and_clamps() {
+        // A small chunk count's scaled budget falls below the original fixed
+        // timeout, so it never shrinks below that floor.
+        assert_eq!(initial_codex_deadline(1), STARTUP_READY_TIMEOUT);
+        assert_eq!(initial_codex_deadline(5), STARTUP_READY_TIMEOUT);
+        // A count whose scaled budget lands strictly between the floor and
+        // the cap is honored exactly (2s/chunk + 30s recovery + 5s overhead),
+        // not just clamped to one edge.
+        assert_eq!(initial_codex_deadline(15), Duration::from_secs(65));
+        // ...but never exceeds the cap that stays under WORKER_READY_DEADLINE
+        // (90s, worker.rs), however many chunks are requested.
+        assert_eq!(initial_codex_deadline(10_000), INITIAL_CODEX_MAX_DEADLINE);
+        assert!(INITIAL_CODEX_MAX_DEADLINE < Duration::from_secs(90));
+    }
+
+    #[test]
+    fn initial_codex_max_body_bytes_fits_its_own_deadline_at_the_cap() {
+        let max_bytes = initial_codex_max_body_bytes();
+        // The whole point: a body at the accepted limit must fit inside the
+        // capped deadline's chunk budget alone, before the fixed recovery
+        // and overhead margins are even added back in (relay#1782 review).
+        let chunks_at_limit = max_bytes.div_ceil(INITIAL_CHUNK_BYTES).max(1);
+        let chunk_only_budget = INITIAL_CHUNK_BUDGET.saturating_mul(chunks_at_limit as u32);
+        assert!(chunk_only_budget < INITIAL_CODEX_MAX_DEADLINE);
+        // One chunk past the limit no longer fits once recovery and overhead
+        // are included -- confirming the limit isn't trivially loose.
+        let one_more_chunk = chunks_at_limit + 1;
+        let over_budget = INITIAL_CHUNK_BUDGET.saturating_mul(one_more_chunk as u32)
+            + INITIAL_RECOVERY_BUDGET
+            + Duration::from_secs(5);
+        assert!(over_budget > INITIAL_CODEX_MAX_DEADLINE);
     }
 
     #[tokio::test]
