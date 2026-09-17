@@ -132,7 +132,8 @@ describe('local agent subtree', () => {
     const resolveFleetAttachTarget = vi.fn(async () => ({
       target: { node: 'persisted-remote-node', baseUrl: 'https://isolated.example.test', agent: 'lead' },
     }));
-    const { program, attach, attachNode } = harness({ resolveFleetAttachTarget });
+    const fetchMock = vi.fn(async () => new Response(null, { status: 200 }));
+    const { program, attach, attachNode } = harness({ resolveFleetAttachTarget, fetch: fetchMock });
     const originalCwd = process.cwd();
     process.chdir(root);
     try {
@@ -142,6 +143,7 @@ describe('local agent subtree', () => {
       fs.rmSync(root, { recursive: true, force: true });
     }
 
+    expect(fetchMock).toHaveBeenCalledWith('http://127.0.0.1:9999/health', expect.anything());
     expect(resolveFleetAttachTarget).not.toHaveBeenCalled();
     expect(attachNode).not.toHaveBeenCalled();
     expect(attach).toHaveBeenCalledWith('lead', 'view', expect.anything());
@@ -1065,6 +1067,88 @@ describe('local agent subtree', () => {
       expect(client.flushPending).toHaveBeenCalledWith('claude');
     }
   );
+
+  it.each([
+    ['flush', (client: { flushPending: ReturnType<typeof vi.fn> }) => client.flushPending],
+    [
+      'hold',
+      (client: { setInboundDeliveryMode: ReturnType<typeof vi.fn> }) => client.setInboundDeliveryMode,
+    ],
+    [
+      'auto',
+      (client: { setInboundDeliveryMode: ReturnType<typeof vi.fn> }) => client.setInboundDeliveryMode,
+    ],
+  ] as const)(
+    'message %s honors a local broker discovered via connection.json before persisted Fleet routing',
+    async (mode, pickMethod) => {
+      const root = fs.mkdtempSync(path.join(os.tmpdir(), 'relay-local-message-conn-'));
+      fs.mkdirSync(path.join(root, '.git'));
+      const stateDir = path.join(root, '.agentworkforce/relay');
+      fs.mkdirSync(stateDir, { recursive: true });
+      fs.writeFileSync(
+        path.join(stateDir, 'connection.json'),
+        JSON.stringify({ url: 'http://127.0.0.1:9999' })
+      );
+      const client = {
+        flushPending: vi.fn(async () => ({ flushed: 1 })),
+        setInboundDeliveryMode: vi.fn(async (_name: string, m: string) => ({ mode: m, flushed: 0 })),
+      };
+      const connectLocal = vi.fn(async () => client as never);
+      const fetchMock = vi.fn(async () => new Response(null, { status: 200 }));
+      const resolveFleetAttachTarget = vi.fn(async () => ({
+        target: { node: 'persisted-remote-node', agent: 'claude' },
+      }));
+      const { program } = harness({ connectLocal, resolveFleetAttachTarget, fetch: fetchMock });
+      const originalCwd = process.cwd();
+      process.chdir(root);
+      try {
+        await program.parseAsync(['local', 'agent', 'message', mode, 'claude'], { from: 'user' });
+      } finally {
+        process.chdir(originalCwd);
+        fs.rmSync(root, { recursive: true, force: true });
+      }
+
+      expect(fetchMock).toHaveBeenCalledWith('http://127.0.0.1:9999/health', expect.anything());
+      expect(resolveFleetAttachTarget).not.toHaveBeenCalled();
+      expect(connectLocal).toHaveBeenCalled();
+      expect(pickMethod(client)).toHaveBeenCalledWith('claude', ...(mode === 'flush' ? [] : [expect.any(String)]));
+    }
+  );
+
+  // The liveness probe exists so a broker crash that leaves a stale
+  // connection.json behind cannot mask a real Fleet placement — see Devin's
+  // review on the PR that added connection.json auto-discovery here.
+  it('attach falls through to Fleet routing when connection.json points at an unreachable broker', async () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'relay-local-attach-stale-'));
+    fs.mkdirSync(path.join(root, '.git'));
+    const stateDir = path.join(root, '.agentworkforce/relay');
+    fs.mkdirSync(stateDir, { recursive: true });
+    fs.writeFileSync(path.join(stateDir, 'connection.json'), JSON.stringify({ url: 'http://127.0.0.1:9999' }));
+    const fetchMock = vi.fn(async () => {
+      throw new Error('ECONNREFUSED');
+    });
+    const resolveFleetAttachTarget = vi.fn(async () => ({
+      target: { node: 'persisted-remote-node', baseUrl: 'https://isolated.example.test', agent: 'lead' },
+    }));
+    const { program, attach, attachNode } = harness({ resolveFleetAttachTarget, fetch: fetchMock });
+    const originalCwd = process.cwd();
+    process.chdir(root);
+    try {
+      await program.parseAsync(['local', 'agent', 'attach', 'lead'], { from: 'user' });
+    } finally {
+      process.chdir(originalCwd);
+      fs.rmSync(root, { recursive: true, force: true });
+    }
+
+    expect(resolveFleetAttachTarget).toHaveBeenCalled();
+    expect(attachNode).toHaveBeenCalledWith(
+      'lead',
+      'view',
+      'persisted-remote-node',
+      expect.objectContaining({ baseUrl: 'https://isolated.example.test' })
+    );
+    expect(attach).not.toHaveBeenCalled();
+  });
 
   it.each(['flush', 'hold', 'auto'])(
     'message %s rejects an explicit workspace key without a node',

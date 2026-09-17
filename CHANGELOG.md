@@ -13,7 +13,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
-- `node agent attach` and `message flush|hold|auto` no longer hard-error with "has no live Fleet placement on the persisted remote session" for a flag-free attach to a local PTY worker when the project also has persisted Relaycast workspace credentials — a real local broker (auto-discovered via `connection.json`) is now checked before falling through to fleet routing, not just explicit `--broker-url`/`--api-key`/`--state-dir`/env overrides.
+- `node agent attach` and `message flush|hold|auto` no longer hard-error with "has no live Fleet placement on the persisted remote session" for a flag-free attach to a local PTY worker when the project also has persisted Relaycast workspace credentials — a live local broker discovered via `connection.json` is used instead.
 
 ## [12.2.2] - 2026-09-15
 

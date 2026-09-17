@@ -533,6 +533,9 @@ function brokerOptionsFromOpts(opts: Record<string, unknown>): LocalAgentMessage
   };
 }
 
+/** Bounded liveness probe so a stale `connection.json` cannot mask a real Fleet placement. */
+const LOCAL_BROKER_LIVENESS_TIMEOUT_MS = 750;
+
 /**
  * Whether a flag-free `attach`/`message flush|hold|auto` should skip fleet
  * auto-routing and go straight to the local broker.
@@ -552,11 +555,22 @@ function brokerOptionsFromOpts(opts: Record<string, unknown>): LocalAgentMessage
  * falling back to the local connection contract otherwise. Actually
  * resolving that local contract (not just checking for explicit flags) is
  * what makes the fallback real instead of aspirational.
+ *
+ * An explicit `--broker-url` / `--api-key` / `--state-dir` / env override is
+ * trusted at face value, same as every other command in this file — the
+ * caller named that broker on purpose, so no probe gates it. Only the
+ * *auto-discovered* `connection.json` path is probed: after a broker crash
+ * that left a stale file behind, treating it as "live" would route a
+ * flag-free command to a dead local port instead of the Fleet placement that
+ * might actually have the agent — a worse failure than the one this
+ * function was written to fix. Bounded to
+ * `LOCAL_BROKER_LIVENESS_TIMEOUT_MS` so a hung port cannot stall every
+ * flag-free attach/message command.
  */
-function hasLocalBrokerSelection(
-  deps: Pick<LocalAgentDependencies, 'env'>,
+async function hasLocalBrokerSelection(
+  deps: Pick<LocalAgentDependencies, 'env' | 'readConnectionFile' | 'getDefaultStateDir' | 'fetch'>,
   opts: Record<string, unknown>
-): boolean {
+): Promise<boolean> {
   if (
     opts.brokerUrl !== undefined ||
     opts.apiKey !== undefined ||
@@ -566,13 +580,24 @@ function hasLocalBrokerSelection(
   ) {
     return true;
   }
-  return (
-    resolveBrokerConnection(brokerOptionsFromOpts(opts), {
-      readConnectionFile: readConnectionFileFromDisk,
-      getDefaultStateDir: defaultStateDir,
-      env: deps.env,
-    }) !== null
-  );
+  const connection = resolveBrokerConnection(brokerOptionsFromOpts(opts), {
+    readConnectionFile: deps.readConnectionFile,
+    getDefaultStateDir: deps.getDefaultStateDir,
+    env: deps.env,
+  });
+  if (!connection) return false;
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), LOCAL_BROKER_LIVENESS_TIMEOUT_MS);
+  try {
+    const response = await deps.fetch(`${connection.url}/health`, { signal: controller.signal });
+    return response.ok;
+  } catch {
+    // Unreachable, timed out, or refused: the file is stale. Let the caller
+    // fall through to Fleet routing rather than claiming a dead local broker.
+    return false;
+  } finally {
+    clearTimeout(timeout);
+  }
 }
 
 function parseRuntimeOption(deps: LocalAgentDependencies, value: unknown): HarnessRuntime | undefined {
@@ -674,7 +699,7 @@ async function withDeliveryModeClient<T>(
     return undefined;
   }
   let targetBaseUrl: string | undefined;
-  if (!node && !hasLocalBrokerSelection(deps, opts)) {
+  if (!node && !(await hasLocalBrokerSelection(deps, opts))) {
     const fleetTarget = await deps.resolveFleetAttachTarget(name);
     if (fleetTarget.error) {
       deps.error(`Error: ${fleetTarget.error}`);
@@ -1039,7 +1064,7 @@ export function registerLocalAgentCommands(
       // A sandbox worker has no local broker. Resolve a unique live fleet
       // placement before falling back to the local connection contract so a
       // flag-free attach follows the worker automatically.
-      if (!hasLocalBrokerSelection(deps, options)) {
+      if (!(await hasLocalBrokerSelection(deps, options))) {
         const fleetTarget = await deps.resolveFleetAttachTarget(name);
         if (fleetTarget.error) {
           deps.error(`Error: ${fleetTarget.error}`);
