@@ -72,8 +72,7 @@ import {
 } from '@agent-relay/cloud';
 import { track } from '../telemetry/index.js';
 
-import { registerCloudCommands, type CloudDependencies } from './cloud.js';
-import { CLOUD_SYNC_PATCH_EXCLUDES } from '@relayflows/sdk';
+import { buildCloudSyncPatchExcludeArgs, registerCloudCommands, type CloudDependencies } from './cloud.js';
 import { createDefaultAssignmentRunner } from './cloud-worker.js';
 
 beforeEach(() => {
@@ -899,17 +898,14 @@ describe('registerCloudCommands', () => {
   });
 
   it('sync excludes volatile workflow bookkeeping files when applying patches', () => {
-    // The list lives in `@relayflows/sdk` now, so `flows sync` and
-    // `agent-relay cloud sync` cannot drift on what they refuse to write. This
-    // asserts the contents we depend on, not a relay-local copy.
-    expect([...CLOUD_SYNC_PATCH_EXCLUDES]).toEqual([
-      '.agent-bin/**',
-      '.relayfile.acl',
-      '.relayfile-mount-state.json',
-      '.relayfile-mount-state.json.tmp-*',
-      '.trajectories/**',
-      '.workflow-context/**',
-    ]);
+    const args = buildCloudSyncPatchExcludeArgs();
+
+    expect(args).toContain('--exclude=".agent-bin/**"');
+    expect(args).toContain('--exclude=".relayfile.acl"');
+    expect(args).toContain('--exclude=".relayfile-mount-state.json"');
+    expect(args).toContain('--exclude=".relayfile-mount-state.json.tmp-*"');
+    expect(args).toContain('--exclude=".trajectories/**"');
+    expect(args).toContain('--exclude=".workflow-context/**"');
   });
 
   it('registers cloud cancel subcommand', () => {
