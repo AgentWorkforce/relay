@@ -1336,9 +1336,14 @@ export function registerCloudCommands(program: Command, overrides: Partial<Cloud
       // exclusion list (agent bookkeeping the sandbox commits into the synced
       // tree — trajectories, mount state, agent binaries) and it passes the
       // same `--exclude` arguments to `git apply --check` and to the apply, so
-      // the check answers the question the apply will. Only the download stays
-      // here, because it rides Relay's Cloud session; the flows cloud client
-      // wants a scoped FLOWS_CLOUD_TOKEN and refuses a Relay credential.
+      // the check answers the question the apply will.
+      //
+      // Only the download stays here, and not for want of credentials: the
+      // flows cloud client reads the same `agent-relay cloud login` store and
+      // would authenticate fine. It reads only the access token, though, and
+      // fails an expired one with "run `agent-relay cloud login`", whereas this
+      // path refreshes through `ensureAuthenticated`. Delegating the transport
+      // would trade a silent refresh for a re-login prompt.
       try {
         // Imported lazily: this module is on the CLI's startup path, and a
         // top-level import would pull the whole flows SDK (and its native
