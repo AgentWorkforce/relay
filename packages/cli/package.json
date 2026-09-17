@@ -43,6 +43,7 @@
     "pack:validate": "npm pack --dry-run"
   },
   "dependencies": {
+    "@agent-relay/cli-surface": "12.2.3",
     "@agent-relay/cloud": "12.2.3",
     "@agent-relay/config": "12.2.3",
     "@agent-relay/fleet": "12.2.3",
