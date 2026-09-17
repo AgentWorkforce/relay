@@ -125,7 +125,10 @@ describe('local agent subtree', () => {
     fs.mkdirSync(path.join(root, '.git'));
     const stateDir = path.join(root, '.agentworkforce/relay');
     fs.mkdirSync(stateDir, { recursive: true });
-    fs.writeFileSync(path.join(stateDir, 'connection.json'), JSON.stringify({ url: 'http://127.0.0.1:9999' }));
+    fs.writeFileSync(
+      path.join(stateDir, 'connection.json'),
+      JSON.stringify({ url: 'http://127.0.0.1:9999' })
+    );
     const resolveFleetAttachTarget = vi.fn(async () => ({
       target: { node: 'persisted-remote-node', baseUrl: 'https://isolated.example.test', agent: 'lead' },
     }));
