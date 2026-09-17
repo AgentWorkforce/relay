@@ -182,15 +182,11 @@ try {
   const observation = JSON.parse(await readFile(probeObservationPath, 'utf8'));
   console.log('Product surface proof observation:', JSON.stringify(observation));
 
-  const groupsPresent = EXPECTED_GROUPS.filter((group) =>
-    observation.registeredGroups?.includes(group)
-  );
+  const groupsPresent = EXPECTED_GROUPS.filter((group) => observation.registeredGroups?.includes(group));
 
   // Base: none of the groups exist and the mount module is not importable.
   const baseObserved =
-    groupsPresent.length === 0 &&
-    observation.mountAvailable === false &&
-    observation.forwardedArgv === null;
+    groupsPresent.length === 0 && observation.mountAvailable === false && observation.forwardedArgv === null;
 
   // Head: every group is registered, argv arrives untouched, help is rendered
   // under the agent-relay name, and an unknown command exits 2.
@@ -198,8 +194,7 @@ try {
     groupsPresent.length === EXPECTED_GROUPS.length &&
     observation.mountAvailable === true &&
     Array.isArray(observation.forwardedArgv) &&
-    observation.forwardedArgv.join(' ') ===
-      'probe-command --flag-the-host-never-heard-of v' &&
+    observation.forwardedArgv.join(' ') === 'probe-command --flag-the-host-never-heard-of v' &&
     observation.helpUsageLine === 'Usage: agent-relay file [options]' &&
     observation.unknownCommandExitCode === 2;
 
