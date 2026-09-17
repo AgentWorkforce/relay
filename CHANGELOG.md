@@ -16,6 +16,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Changed
 
 - `agent-relay session` is now a hidden alias of `agent-relay sessions`; `session replay` keeps working unchanged.
+- `agent-relay cloud sync` applies patches through `@relayflows/sdk`, so it and `agent-relay flows sync` cannot drift on which agent bookkeeping paths they refuse to write. It now reports the skipped paths instead of silently dropping them.
 
 ### Deprecated
 

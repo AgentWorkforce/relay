@@ -45,19 +45,6 @@ import { registerCloudRoomCommands } from './cloud-room.js';
 import { registerCloudIntegrationCommands } from './cloud-integration.js';
 import { registerCloudWorkerCommands } from './cloud-worker.js';
 
-const CLOUD_SYNC_PATCH_EXCLUDES = [
-  '.agent-bin/**',
-  '.relayfile.acl',
-  '.relayfile-mount-state.json',
-  '.relayfile-mount-state.json.tmp-*',
-  '.trajectories/**',
-  '.workflow-context/**',
-] as const;
-
-export function buildCloudSyncPatchExcludeArgs(): string {
-  return CLOUD_SYNC_PATCH_EXCLUDES.map((pattern) => `--exclude=${JSON.stringify(pattern)}`).join(' ');
-}
-
 // ── Types ────────────────────────────────────────────────────────────────────
 
 type ExitFn = (code: number) => never;
@@ -1345,31 +1332,37 @@ export function registerCloudCommands(program: Command, overrides: Partial<Cloud
         return;
       }
 
-      const { execSync } = await import('node:child_process');
-      const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'cloud-sync-'));
-      const tmpPatch = path.join(tmpDir, 'changes.patch');
-      fs.writeFileSync(tmpPatch, result.patch, { mode: 0o600 });
-
+      // Applying is `@relayflows/sdk`'s `applyCloudPatch`: it owns the
+      // exclusion list (agent bookkeeping the sandbox commits into the synced
+      // tree — trajectories, mount state, agent binaries) and it passes the
+      // same `--exclude` arguments to `git apply --check` and to the apply, so
+      // the check answers the question the apply will. Only the download stays
+      // here, because it rides Relay's Cloud session; the flows cloud client
+      // wants a scoped FLOWS_CLOUD_TOKEN and refuses a Relay credential.
       try {
-        const excludeArgs = buildCloudSyncPatchExcludeArgs();
-        const stat = execSync(`git apply ${excludeArgs} --stat "${tmpPatch}"`, {
-          cwd: targetDir,
-          encoding: 'utf-8',
-          stdio: ['pipe', 'pipe', 'pipe'],
-        });
-        if (stat.trim()) {
+        // Imported lazily: this module is on the CLI's startup path, and a
+        // top-level import would pull the whole flows SDK (and its native
+        // dependencies) into every `agent-relay` invocation.
+        const { applyCloudPatch } = await import('@relayflows/sdk');
+        const applied = applyCloudPatch(targetDir, result.patch);
+        if (applied.files.length > 0) {
           deps.log('\nFiles changed by agent:');
-          deps.log(stat);
+          for (const file of applied.files) deps.log(`  ${file}`);
         }
-
-        execSync(`git apply ${excludeArgs} "${tmpPatch}"`, {
-          cwd: targetDir,
-          encoding: 'utf-8',
-          stdio: ['pipe', 'pipe', 'pipe'],
-        });
+        if (applied.excluded.length > 0) {
+          deps.log(
+            `\nSkipped ${applied.excluded.length} agent bookkeeping path${applied.excluded.length === 1 ? '' : 's'}:`
+          );
+          for (const file of applied.excluded) deps.log(`  ${file}`);
+        }
         deps.log('Patch applied successfully.');
       } catch (err: unknown) {
         const message = err instanceof Error ? err.message : String(err);
+        // Keep the patch: a conflict is usually resolved by hand, and
+        // re-downloading needs the run to still be around.
+        const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'cloud-sync-'));
+        const tmpPatch = path.join(tmpDir, 'changes.patch');
+        fs.writeFileSync(tmpPatch, result.patch, { mode: 0o600 });
         deps.error(`Failed to apply patch: ${message}`);
         deps.error(`Patch saved to: ${tmpPatch}`);
         deps.exit(1);
