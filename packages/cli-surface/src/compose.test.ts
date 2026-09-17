@@ -35,12 +35,7 @@ describe('composeSurfaces', () => {
       parts: [part('local', ['list', 'show']), part('cloud', ['recall', 'export'])],
     });
 
-    expect(composed.commands.map((command) => command.name)).toEqual([
-      'list',
-      'show',
-      'recall',
-      'export',
-    ]);
+    expect(composed.commands.map((command) => command.name)).toEqual(['list', 'show', 'recall', 'export']);
   });
 
   it('routes each command to the part that declared it, with argv intact', async () => {
@@ -63,7 +58,13 @@ describe('composeSurfaces', () => {
     const composed = composeSurfaces({
       id: 'relayhistory',
       version: '0.17.0',
-      parts: [part('local', ['list'], vi.fn(async () => 7))],
+      parts: [
+        part(
+          'local',
+          ['list'],
+          vi.fn(async () => 7)
+        ),
+      ],
     });
 
     await expect(composed.run(['list'], makeIo())).resolves.toBe(7);

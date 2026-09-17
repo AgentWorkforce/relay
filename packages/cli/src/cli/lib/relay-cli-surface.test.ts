@@ -33,7 +33,11 @@ const COMMANDS: RelayCliCommandSpec[] = [
       { name: 'list', description: 'List integrations', aliases: ['ls'] },
     ],
   },
-  { name: 'legacy-run', description: 'Run a v1 workflow', deprecated: { replacement: 'agent-relay flows run', since: '12.3.0' } },
+  {
+    name: 'legacy-run',
+    description: 'Run a v1 workflow',
+    deprecated: { replacement: 'agent-relay flows run', since: '12.3.0' },
+  },
   { name: 'internal-debug', description: 'Dump internal state', hidden: true },
 ];
 
@@ -179,7 +183,12 @@ describe('runSurface', () => {
   it('renders help for the deepest matched command on --help', async () => {
     const io = makeIo();
     const run = vi.fn(async () => 0);
-    await runSurface(makeSurface({ run }), 'agent-relay file', ['integration', 'connect', '--help'], makeDeps(io));
+    await runSurface(
+      makeSurface({ run }),
+      'agent-relay file',
+      ['integration', 'connect', '--help'],
+      makeDeps(io)
+    );
     expect(io.out).toContain('Usage: agent-relay file integration connect <provider>');
     expect(run).not.toHaveBeenCalled();
   });
@@ -205,7 +214,12 @@ describe('runSurface', () => {
 
   it('runs a hidden command even though help omits it', async () => {
     const run = vi.fn(async () => 0);
-    const code = await runSurface(makeSurface({ run }), 'agent-relay file', ['internal-debug'], makeDeps(makeIo()));
+    const code = await runSurface(
+      makeSurface({ run }),
+      'agent-relay file',
+      ['internal-debug'],
+      makeDeps(makeIo())
+    );
     expect(code).toBe(0);
     expect(run).toHaveBeenCalled();
   });

@@ -47,9 +47,7 @@ describe('findSurfaceViolations', () => {
   });
 
   it('rejects an empty description', () => {
-    const violations = findSurfaceViolations(
-      surface({ commands: [{ name: 'ls', description: '   ' }] })
-    );
+    const violations = findSurfaceViolations(surface({ commands: [{ name: 'ls', description: '   ' }] }));
     expect(violations[0]!.path).toBe('commands.ls.description');
   });
 
@@ -94,7 +92,9 @@ describe('findSurfaceViolations', () => {
   it('rejects a malformed flag string', () => {
     const violations = findSurfaceViolations(
       surface({
-        commands: [{ name: 'ls', description: 'List files', options: [{ flags: 'json', description: 'JSON' }] }],
+        commands: [
+          { name: 'ls', description: 'List files', options: [{ flags: 'json', description: 'JSON' }] },
+        ],
       })
     );
     expect(violations[0]!.message).toContain('is not a commander flag string');

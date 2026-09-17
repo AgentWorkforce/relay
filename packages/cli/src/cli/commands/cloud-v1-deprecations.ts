@@ -70,10 +70,7 @@ export function applyV1FlowsDeprecations(
  * omitted flag leaves the choice to Cloud and says nothing about the caller's
  * intent.
  */
-function deprecateV1RunSelector(
-  cloudCommand: Command,
-  overrides: Partial<DeprecationDependencies>
-): void {
+function deprecateV1RunSelector(cloudCommand: Command, overrides: Partial<DeprecationDependencies>): void {
   const warn = overrides.warn ?? ((message: string) => process.stderr.write(message));
   const run = cloudCommand.commands.find((candidate) => candidate.name() === 'run');
   if (!run) {
@@ -132,6 +129,4 @@ export function applyV1LocalWorkflowDeprecations(
 }
 
 /** Names this module deprecates, exported so tests can assert the scope. */
-export const V1_DEPRECATED_COMMAND_NAMES: readonly string[] = V1_ONLY_COMMANDS.map(
-  (command) => command.name
-);
+export const V1_DEPRECATED_COMMAND_NAMES: readonly string[] = V1_ONLY_COMMANDS.map((command) => command.name);

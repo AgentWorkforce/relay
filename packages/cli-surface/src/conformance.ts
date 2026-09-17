@@ -1,8 +1,4 @@
-import {
-  RELAY_CLI_CONTRACT_VERSION,
-  type RelayCliCommandSpec,
-  type RelayCliSurface,
-} from './types.js';
+import { RELAY_CLI_CONTRACT_VERSION, type RelayCliCommandSpec, type RelayCliSurface } from './types.js';
 
 /** Exit code a surface returns when it cannot route the given argv. */
 export const RELAY_CLI_EXIT_UNKNOWN_COMMAND = 2;

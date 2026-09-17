@@ -8,15 +8,9 @@ import {
 } from './cloud-v1-deprecations.js';
 
 /** A stand-in for the real `cloud` group with the commands this module targets. */
-function cloudGroup(names: readonly string[] = [
-  'run',
-  'schedule',
-  'schedules',
-  'status',
-  'logs',
-  'sync',
-  'cancel',
-]): { program: Command; cloud: Command } {
+function cloudGroup(
+  names: readonly string[] = ['run', 'schedule', 'schedules', 'status', 'logs', 'sync', 'cancel']
+): { program: Command; cloud: Command } {
   const program = new Command('agent-relay');
   program.exitOverride();
   const cloud = program.command('cloud').description('Cloud commands');
@@ -76,9 +70,7 @@ describe('applyV1FlowsDeprecations', () => {
       await program.parseAsync(['cloud', name], { from: 'user' });
 
       expect(warn).not.toHaveBeenCalled();
-      expect(cloud.commands.find((c) => c.name() === name)!.description()).not.toContain(
-        'deprecated'
-      );
+      expect(cloud.commands.find((c) => c.name() === name)!.description()).not.toContain('deprecated');
     }
   );
 
@@ -115,9 +107,7 @@ describe('applyV1FlowsDeprecations', () => {
     const { cloud } = cloudGroup();
     applyV1FlowsDeprecations(cloud, { warn: () => {} });
 
-    expect(cloud.commands.find((c) => c.name() === 'run')!.description()).not.toContain(
-      'deprecated'
-    );
+    expect(cloud.commands.find((c) => c.name() === 'run')!.description()).not.toContain('deprecated');
     expect(cloud.helpInformation()).toMatch(/^\s+run\b/m);
   });
 
@@ -150,7 +140,11 @@ function workflowGroup(names: readonly string[] = ['run', 'logs', 'sync']): {
   const node = program.command('node').description('Node');
   const workflow = node.command('workflow').description('Workflows');
   for (const name of names) {
-    workflow.command(name).description(`${name} description`).argument('[arg]').action(() => {});
+    workflow
+      .command(name)
+      .description(`${name} description`)
+      .argument('[arg]')
+      .action(() => {});
   }
   return { program, workflow };
 }
@@ -202,9 +196,18 @@ describe('applyV1LocalWorkflowDeprecations', () => {
     program.exitOverride();
     const node = program.command('node').description('Node');
     const workflow = node.command('workflow').description('Workflows');
-    workflow.command('run').description('Run').action(() => ran.push('run'));
-    workflow.command('logs').description('Logs').action(() => ran.push('logs'));
-    workflow.command('sync').description('Sync').action(() => ran.push('sync'));
+    workflow
+      .command('run')
+      .description('Run')
+      .action(() => ran.push('run'));
+    workflow
+      .command('logs')
+      .description('Logs')
+      .action(() => ran.push('logs'));
+    workflow
+      .command('sync')
+      .description('Sync')
+      .action(() => ran.push('sync'));
     applyV1LocalWorkflowDeprecations(workflow, { warn: () => {} });
 
     await program.parseAsync(['node', 'workflow', 'run'], { from: 'user' });

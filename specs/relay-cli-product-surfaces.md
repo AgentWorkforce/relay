@@ -6,11 +6,11 @@ Status: active build spec. Owner: relay resident lead.
 
 `agent-relay` becomes the single entrypoint for every Relay product:
 
-| CLI group               | Backing package(s)                                  | Repo                              |
-| ----------------------- | --------------------------------------------------- | --------------------------------- |
-| `agent-relay file`      | `@relayfile/sdk`                                     | `../relayfile`                    |
-| `agent-relay flows`     | `@relayflows/sdk`                                    | `../flows`                        |
-| `agent-relay sessions`  | `ai-hist` (sdk-ts) + `@relayhistory/cloud-client`    | `../relayhistory`, `../relayhistory-cloud` |
+| CLI group              | Backing package(s)                                | Repo                                       |
+| ---------------------- | ------------------------------------------------- | ------------------------------------------ |
+| `agent-relay file`     | `@relayfile/sdk`                                  | `../relayfile`                             |
+| `agent-relay flows`    | `@relayflows/sdk`                                 | `../flows`                                 |
+| `agent-relay sessions` | `ai-hist` (sdk-ts) + `@relayhistory/cloud-client` | `../relayhistory`, `../relayhistory-cloud` |
 
 **No command implementation may be copied into `relay`.** The relay CLI owns exactly one
 generic mounter; each product repo owns its own command tree. If relay finds itself
@@ -94,16 +94,18 @@ export function createRelayCliSurface(options?: unknown): RelayCliSurface;
 ## Per-repo work
 
 ### `../relayfile` — export `@relayfile/sdk/relay-cli`
+
 - The real CLI is the Go binary (`relayfile-cli`). Binary resolution currently lives in
   `packages/cli/scripts/run.js`. **Move** that resolution into the SDK
   (`packages/sdk/typescript/src/relay-cli/`), and make `packages/cli/scripts/run.js`
   call it, so binary lookup exists once.
 - `commands` is generated from the Go binary's own command tree (a `relayfile
-  __command-spec --json` subcommand in `cmd/relayfile-cli`, checked in as a snapshot
+__command-spec --json` subcommand in `cmd/relayfile-cli`, checked in as a snapshot
   fixture so spec generation never requires the binary at build time).
 - `run` spawns the resolved binary with inherited stdio bridged to `io`, returns its code.
 
 ### `../flows` — export `@relayflows/sdk/relay-cli`
+
 - `packages/sdk/src/cli.ts` already exposes `runCli(argv): Promise<number>`. Wrap it:
   add `packages/sdk/src/relay-cli.ts` exporting `createRelayCliSurface()` that delegates
   to `runCli` and declares `commands`.
@@ -112,11 +114,13 @@ export function createRelayCliSurface(options?: unknown): RelayCliSurface;
 - `packages/relayflows/bin/flows.js` keeps working unchanged (same `runCli`).
 
 ### `../relayhistory` — export `ai-hist/relay-cli`
+
 - `sdk-ts/src/cli.ts` has a private `main()`. Extract `runCli(argv, io): Promise<number>`
   and have `main()` call it, then add `sdk-ts/src/relay-cli.ts` with the surface.
 - Add the `./relay-cli` subpath export to `sdk-ts/package.json`.
 
 ### `../relayhistory-cloud` — new `@relayhistory/cloud-client`
+
 - Today the repo is a server only; there is no client SDK to reuse.
 - Add `packages/cloud-client` — a typed client over the existing routes
   (`recall`, `export`, `entries`, `turns`, `digest`, `coverage`, `sync`), generated from
@@ -126,6 +130,7 @@ export function createRelayCliSurface(options?: unknown): RelayCliSurface;
   gets local + cloud in one tree with no third mount.
 
 ### `relay` (this repo) — mount + deprecate
+
 - New `packages/cli-surface` (the contract types above, zero deps).
 - New `packages/cli/src/cli/lib/relay-cli-surface.ts`: the **single** generic mounter
   that turns a `RelayCliSurface` into a commander subtree. Used by all three groups.
@@ -140,6 +145,7 @@ export function createRelayCliSurface(options?: unknown): RelayCliSurface;
 ## Integration & release
 
 Publishing is chief-gated. Until green-light:
+
 - Each repo lands its change on a feature branch.
 - Relay tests against `npm pack` tarballs of the product branches (a script pins them
   under `file:` overrides) so E2E is real, not mocked.

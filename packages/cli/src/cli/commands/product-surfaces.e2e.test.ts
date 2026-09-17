@@ -30,8 +30,7 @@ import { registerProductSurfaceCommands, type ProductSurfaceDefinition } from '.
 vi.setConfig({ testTimeout: 60_000, hookTimeout: 60_000 });
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
-const WORKSPACES_ROOT =
-  process.env['RELAY_PRODUCT_SURFACES_ROOT'] ?? path.resolve(HERE, '../../../../../..');
+const WORKSPACES_ROOT = process.env['RELAY_PRODUCT_SURFACES_ROOT'] ?? path.resolve(HERE, '../../../../../..');
 
 /** Where each mounted group's built surface lives in its sibling repo. */
 const BUILT_SURFACES: Record<string, string> = {

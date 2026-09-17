@@ -1,11 +1,7 @@
 import { Command } from 'commander';
 import { describe, expect, it, vi } from 'vitest';
 
-import {
-  deprecateCommand,
-  formatDeprecationWarning,
-  hiddenCommandNames,
-} from './deprecate-command.js';
+import { deprecateCommand, formatDeprecationWarning, hiddenCommandNames } from './deprecate-command.js';
 
 const NOTICE = { replacement: 'agent-relay flows run', since: '12.3.0' };
 
@@ -145,9 +141,7 @@ describe('deprecateCommand', () => {
     const run = cloud.commands.find((c) => c.name() === 'run')!;
     deprecateCommand(run, NOTICE, { warn: () => {} });
 
-    expect(run.description()).toBe(
-      'Submit a workflow run (deprecated — use `agent-relay flows run`)'
-    );
+    expect(run.description()).toBe('Submit a workflow run (deprecated — use `agent-relay flows run`)');
   });
 
   it('does not warn when a non-deprecated sibling runs', async () => {
@@ -161,8 +155,6 @@ describe('deprecateCommand', () => {
   });
 
   it('refuses to deprecate a detached command', () => {
-    expect(() => deprecateCommand(new Command('orphan'), NOTICE)).toThrow(
-      /not attached to a parent command/
-    );
+    expect(() => deprecateCommand(new Command('orphan'), NOTICE)).toThrow(/not attached to a parent command/);
   });
 });

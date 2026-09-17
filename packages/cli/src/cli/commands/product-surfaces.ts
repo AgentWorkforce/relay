@@ -122,7 +122,10 @@ async function composeSessionReplay(base: RelayCliSurface): Promise<RelayCliSurf
  */
 function describeLoadFailure(definition: ProductSurfaceDefinition, error: unknown): string {
   const code = (error as { code?: string } | undefined)?.code;
-  const packageName = definition.specifier.split('/').slice(0, definition.specifier.startsWith('@') ? 2 : 1).join('/');
+  const packageName = definition.specifier
+    .split('/')
+    .slice(0, definition.specifier.startsWith('@') ? 2 : 1)
+    .join('/');
 
   if (code === 'ERR_MODULE_NOT_FOUND' || code === 'MODULE_NOT_FOUND') {
     return (

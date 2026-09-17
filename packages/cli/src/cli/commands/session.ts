@@ -214,7 +214,7 @@ export function createSessionReplaySurface(
         return 2;
       }
       if (!rawId) {
-        io.stderr('error: missing required argument \'id\'\n');
+        io.stderr("error: missing required argument 'id'\n");
         return 2;
       }
 

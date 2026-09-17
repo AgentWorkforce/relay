@@ -144,8 +144,7 @@ function hideFromParentHelp(parent: Command, name: string): void {
   // the filter would drop its handling of the built-in help command.
   const base = new Help();
   parent.configureHelp({
-    visibleCommands: (cmd: Command) =>
-      base.visibleCommands(cmd).filter((child) => !hidden.has(child.name())),
+    visibleCommands: (cmd: Command) => base.visibleCommands(cmd).filter((child) => !hidden.has(child.name())),
   });
 }
 

@@ -22,11 +22,7 @@
 
 import { Help, type Command } from 'commander';
 
-import type {
-  RelayCliCommandSpec,
-  RelayCliIo,
-  RelayCliSurface,
-} from '@agent-relay/cli-surface';
+import type { RelayCliCommandSpec, RelayCliIo, RelayCliSurface } from '@agent-relay/cli-surface';
 
 import { describeError } from './describe-error.js';
 import { defaultExit } from './exit.js';
@@ -101,9 +97,7 @@ export function resolveSpecPath(
     const token = argv[index]!;
     // Stop at the first flag: everything after it belongs to the product.
     if (token.startsWith('-')) return { command, path, rest: argv.slice(index) };
-    const match = level.find(
-      (candidate) => candidate.name === token || candidate.aliases?.includes(token)
-    );
+    const match = level.find((candidate) => candidate.name === token || candidate.aliases?.includes(token));
     if (!match) return { command, path, rest: argv.slice(index) };
     command = match;
     path.push(match.name);
@@ -187,10 +181,7 @@ export function renderSurfaceHelp(
       ...renderColumns(
         children.map(
           (child) =>
-            [
-              child.name,
-              child.deprecated ? `${child.description} (deprecated)` : child.description,
-            ] as const
+            [child.name, child.deprecated ? `${child.description} (deprecated)` : child.description] as const
         )
       )
     );
@@ -334,7 +325,6 @@ function renderGroupTermsWithoutArgv(program: Command): void {
 
   const base = new Help();
   program.configureHelp({
-    subcommandTerm: (cmd: Command) =>
-      groups.has(cmd.name()) ? cmd.name() : base.subcommandTerm(cmd),
+    subcommandTerm: (cmd: Command) => (groups.has(cmd.name()) ? cmd.name() : base.subcommandTerm(cmd)),
   });
 }
