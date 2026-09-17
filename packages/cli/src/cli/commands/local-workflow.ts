@@ -9,6 +9,7 @@ import { Command, InvalidArgumentError } from 'commander';
 import { defaultExit } from '../lib/exit.js';
 import { errorClassName } from '../lib/telemetry-helpers.js';
 import { track } from '../telemetry/index.js';
+import { applyV1LocalWorkflowDeprecations } from './cloud-v1-deprecations.js';
 
 type ExitFn = (code: number) => never;
 
@@ -570,4 +571,7 @@ export function registerLocalWorkflowCommands(
       }
       deps.log(result.message);
     });
+
+  // Applied last so every command it targets is registered.
+  applyV1LocalWorkflowDeprecations(program);
 }

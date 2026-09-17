@@ -92,6 +92,45 @@ function deprecateV1RunSelector(
   });
 }
 
+/**
+ * Deprecate the local relayflows v1 workflow runner.
+ *
+ * `agent-relay node workflow run|logs|sync` executes through `@relayflows/cli`
+ * 1.0.1 — the v1 engine — and relayflows v2 covers all three. Unlike the cloud
+ * group there is no dual-engine ambiguity here, so these are hidden as well as
+ * warned: the replacements are real and the v1 runner should stop being
+ * discovered by new users.
+ *
+ * @param workflowCommand - The registered `node workflow` group.
+ * @param overrides - Test seam for the warning sink.
+ * @throws When an expected command is missing, so a rename cannot silently
+ *   drop the notice.
+ */
+export function applyV1LocalWorkflowDeprecations(
+  workflowCommand: Command,
+  overrides: Partial<DeprecationDependencies> = {}
+): void {
+  const replacements: Record<string, { replacement: string; note?: string }> = {
+    run: { replacement: 'agent-relay flows run' },
+    logs: {
+      replacement: 'agent-relay flows replay',
+      note: 'v2 replays a finished run from its local journal rather than tailing a log file.',
+    },
+    sync: { replacement: 'agent-relay flows sync' },
+  };
+
+  for (const [name, notice] of Object.entries(replacements)) {
+    const command = workflowCommand.commands.find((candidate) => candidate.name() === name);
+    if (!command) {
+      throw new Error(
+        `cannot deprecate \`${workflowCommand.name()} ${name}\`: the command is not registered. ` +
+          'Update cloud-v1-deprecations.ts if it was renamed or removed.'
+      );
+    }
+    deprecateCommand(command, { since: DEPRECATED_SINCE, ...notice }, overrides);
+  }
+}
+
 /** Names this module deprecates, exported so tests can assert the scope. */
 export const V1_DEPRECATED_COMMAND_NAMES: readonly string[] = V1_ONLY_COMMANDS.map(
   (command) => command.name

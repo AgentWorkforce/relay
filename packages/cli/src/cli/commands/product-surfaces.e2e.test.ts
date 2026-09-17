@@ -17,12 +17,17 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 import { Command } from 'commander';
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 
 import { assertSurfaceConforms, walkCommands } from '@agent-relay/cli-surface';
 import type { RelayCliIo, RelayCliSurface } from '@agent-relay/cli-surface';
 
 import { registerProductSurfaceCommands, type ProductSurfaceDefinition } from './product-surfaces.js';
+
+// Loading three real product SDKs — one of which resolves a Go binary — costs
+// far more than a unit test, and more again when the full suite runs them in
+// parallel. The default 5s timeout fails these for being slow, not wrong.
+vi.setConfig({ testTimeout: 60_000, hookTimeout: 60_000 });
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 const WORKSPACES_ROOT =

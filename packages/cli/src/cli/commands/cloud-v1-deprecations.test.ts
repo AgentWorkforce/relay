@@ -4,6 +4,7 @@ import { describe, expect, it, vi } from 'vitest';
 import {
   V1_DEPRECATED_COMMAND_NAMES,
   applyV1FlowsDeprecations,
+  applyV1LocalWorkflowDeprecations,
 } from './cloud-v1-deprecations.js';
 
 /** A stand-in for the real `cloud` group with the commands this module targets. */
@@ -135,6 +136,87 @@ describe('applyV1FlowsDeprecations', () => {
 
     expect(() => applyV1FlowsDeprecations(cloud, { warn: () => {} })).toThrow(
       /cannot deprecate the v1 selector/
+    );
+  });
+});
+
+/** A stand-in for the `node workflow` group. */
+function workflowGroup(names: readonly string[] = ['run', 'logs', 'sync']): {
+  program: Command;
+  workflow: Command;
+} {
+  const program = new Command('agent-relay');
+  program.exitOverride();
+  const node = program.command('node').description('Node');
+  const workflow = node.command('workflow').description('Workflows');
+  for (const name of names) {
+    workflow.command(name).description(`${name} description`).argument('[arg]').action(() => {});
+  }
+  return { program, workflow };
+}
+
+describe('applyV1LocalWorkflowDeprecations', () => {
+  it.each([
+    ['run', 'agent-relay flows run'],
+    ['logs', 'agent-relay flows replay'],
+    ['sync', 'agent-relay flows sync'],
+  ])('points `%s` at its v2 replacement', async (name, replacement) => {
+    const { program, workflow } = workflowGroup();
+    const warn = vi.fn();
+    applyV1LocalWorkflowDeprecations(workflow, { warn });
+
+    await program.parseAsync(['node', 'workflow', name], { from: 'user' });
+
+    expect(warn).toHaveBeenCalledTimes(1);
+    expect(warn.mock.calls[0]![0]).toContain(`\`agent-relay node workflow ${name}\` is deprecated`);
+    expect(warn.mock.calls[0]![0]).toContain(replacement);
+  });
+
+  it('says when the replacement is not a drop-in', async () => {
+    // `flows replay` reads a journal; it does not tail a log file. Pointing at
+    // it without saying so would set the wrong expectation.
+    const { program, workflow } = workflowGroup();
+    const warn = vi.fn();
+    applyV1LocalWorkflowDeprecations(workflow, { warn });
+
+    await program.parseAsync(['node', 'workflow', 'logs'], { from: 'user' });
+
+    expect(warn.mock.calls[0]![0]).toContain(
+      'v2 replays a finished run from its local journal rather than tailing a log file.'
+    );
+  });
+
+  it('hides all three from help, since the replacements are real', () => {
+    const { workflow } = workflowGroup();
+    applyV1LocalWorkflowDeprecations(workflow, { warn: () => {} });
+
+    const help = workflow.helpInformation();
+    for (const name of ['run', 'logs', 'sync']) {
+      expect(help).not.toMatch(new RegExp(`^\\s+${name}\\b`, 'm'));
+    }
+  });
+
+  it('keeps them runnable', async () => {
+    const ran: string[] = [];
+    const program = new Command('agent-relay');
+    program.exitOverride();
+    const node = program.command('node').description('Node');
+    const workflow = node.command('workflow').description('Workflows');
+    workflow.command('run').description('Run').action(() => ran.push('run'));
+    workflow.command('logs').description('Logs').action(() => ran.push('logs'));
+    workflow.command('sync').description('Sync').action(() => ran.push('sync'));
+    applyV1LocalWorkflowDeprecations(workflow, { warn: () => {} });
+
+    await program.parseAsync(['node', 'workflow', 'run'], { from: 'user' });
+
+    expect(ran).toEqual(['run']);
+  });
+
+  it('fails loudly if a targeted command was renamed away', () => {
+    const { workflow } = workflowGroup(['run']);
+
+    expect(() => applyV1LocalWorkflowDeprecations(workflow, { warn: () => {} })).toThrow(
+      /cannot deprecate `workflow logs`/
     );
   });
 });

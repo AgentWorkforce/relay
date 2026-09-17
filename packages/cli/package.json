@@ -54,9 +54,11 @@
     "@agent-relay/utils": "12.2.3",
     "@modelcontextprotocol/sdk": "^1.23.0",
     "@relayfile/client": "^0.10.27",
+    "@relayfile/sdk": "^0.10.63",
     "@relayflows/cli": "1.0.1",
-    "@relayhistory/cloud-client": "^0.1.0",
+    "@relayflows/sdk": "^2.0.16",
     "@xterm/headless": "^6.0.0",
+    "ai-hist": "^0.18.0",
     "commander": "^12.1.0",
     "dotenv": "^17.2.3",
     "jiti": "^2.6.1",
@@ -65,6 +67,7 @@
     "zod": "^4.4.3"
   },
   "optionalDependencies": {
+    "@relayhistory/cloud-client": "^0.1.0",
     "ai-hist-native": "^0.4.1"
   },
   "devDependencies": {

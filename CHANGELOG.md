@@ -21,6 +21,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - `agent-relay cloud schedule` and `agent-relay cloud schedules` warn as relayflows v1. Both stay listed and supported: relayflows v2 has no hosted scheduling yet.
 - `--relayflow-version v1` on `agent-relay cloud run` warns; use `agent-relay flows run --cloud` for the v2 engine.
+- `agent-relay node workflow run|logs|sync` run on the relayflows v1 engine and are hidden from help; use `agent-relay flows run|replay|sync`.
 
 ### Removed
 
@@ -38,6 +39,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - Scripts calling `agent-relay reflex on|off|status` must be updated; there is no replacement command. Edit the Reflex state file directly if you need to change the flag.
 - Scripts calling `agent-relay cloud run --relayflow-version v1` should move to `agent-relay flows run --cloud`.
+- Scripts calling `agent-relay node workflow run|logs|sync` should move to `agent-relay flows run|replay|sync`. `flows replay` reads a run's local journal rather than tailing a log file.
 
 ## [12.2.3] - 2026-09-18
 

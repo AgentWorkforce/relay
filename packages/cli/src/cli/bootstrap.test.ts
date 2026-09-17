@@ -25,9 +25,8 @@ const expectedLeafCommands = [
   'node agent message flush',
   'node agent message hold',
   'node agent message auto',
-  'node workflow run',
-  'node workflow logs',
-  'node workflow sync',
+  // `node workflow run|logs|sync` run on relayflows v1 and are deprecated in
+  // favour of `agent-relay flows`; they still work but no longer appear here.
   // top-level composite status + maintenance + telemetry + mcp
   'status',
   'version',
@@ -151,7 +150,14 @@ const expectedLeafCommands = [
 ];
 
 function isHidden(command: Command): boolean {
-  return (command as unknown as { _hidden?: boolean })._hidden === true;
+  if ((command as unknown as { _hidden?: boolean })._hidden === true) return true;
+  // Deprecated commands are hidden through the parent's `visibleCommands` help
+  // override rather than commander's private `_hidden` flag, so ask the parent
+  // what it would actually print. Without this the inventory would claim a
+  // command is on the visible surface while `--help` omits it.
+  const parent = command.parent;
+  if (!parent) return false;
+  return !parent.createHelp().visibleCommands(parent).includes(command);
 }
 
 function collectLeafCommandPaths(program: Command): string[] {
