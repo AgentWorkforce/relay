@@ -533,16 +533,45 @@ function brokerOptionsFromOpts(opts: Record<string, unknown>): LocalAgentMessage
   };
 }
 
+/**
+ * Whether a flag-free `attach`/`message flush|hold|auto` should skip fleet
+ * auto-routing and go straight to the local broker.
+ *
+ * Originally checked only explicit `--broker-url` / `--api-key` / `--state-dir`
+ * / env overrides — never whether `connection.json` itself auto-discovers. A
+ * project with *both* a local broker and persisted Relaycast workspace
+ * credentials (the common case: those credentials are needed for ordinary
+ * local messaging, not just fleet routing) would skip straight past a
+ * perfectly usable local broker into `resolveFleetAttachTarget`, which then
+ * hard-errored with "has no live Fleet placement on the persisted remote
+ * session" for every plain local PTY worker — the fleet lookup finding zero
+ * matches is the *expected* case for a local-only agent, not a failure.
+ *
+ * The comment on this function's callers already states the intended
+ * design — fleet lookup exists for "a sandbox worker has no local broker",
+ * falling back to the local connection contract otherwise. Actually
+ * resolving that local contract (not just checking for explicit flags) is
+ * what makes the fallback real instead of aspirational.
+ */
 function hasLocalBrokerSelection(
   deps: Pick<LocalAgentDependencies, 'env'>,
   opts: Record<string, unknown>
 ): boolean {
-  return Boolean(
+  if (
     opts.brokerUrl !== undefined ||
     opts.apiKey !== undefined ||
     opts.stateDir !== undefined ||
     deps.env.RELAY_BROKER_URL?.trim() ||
     deps.env.RELAY_BROKER_API_KEY?.trim()
+  ) {
+    return true;
+  }
+  return (
+    resolveBrokerConnection(brokerOptionsFromOpts(opts), {
+      readConnectionFile: readConnectionFileFromDisk,
+      getDefaultStateDir: defaultStateDir,
+      env: deps.env,
+    }) !== null
   );
 }
 

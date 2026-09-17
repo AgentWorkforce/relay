@@ -109,6 +109,41 @@ describe('local agent subtree', () => {
     expect(attach).toHaveBeenCalledWith('lead', 'view', expect.anything());
   });
 
+  // A project with real Relaycast workspace credentials persisted (needed for
+  // ordinary local messaging, not just fleet routing) and a real local broker
+  // both true at once is the common case, not the exception — a flag-free
+  // `attach` here must never hard-error just because no fleet node happens to
+  // advertise the agent. Previously `hasLocalBrokerSelection` checked only
+  // explicit flags/env, so this exact case fell through to
+  // `resolveFleetAttachTarget`, which treated "persisted Relaycast session
+  // exists" as reason to error instead of falling back to the local broker
+  // that was sitting right there — surfacing as "Agent 'X' has no live Fleet
+  // placement on the persisted remote session" for every plain local PTY
+  // worker.
+  it('attach honors a local broker discovered via connection.json before persisted Fleet routing', async () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'relay-local-attach-conn-'));
+    fs.mkdirSync(path.join(root, '.git'));
+    const stateDir = path.join(root, '.agentworkforce/relay');
+    fs.mkdirSync(stateDir, { recursive: true });
+    fs.writeFileSync(path.join(stateDir, 'connection.json'), JSON.stringify({ url: 'http://127.0.0.1:9999' }));
+    const resolveFleetAttachTarget = vi.fn(async () => ({
+      target: { node: 'persisted-remote-node', baseUrl: 'https://isolated.example.test', agent: 'lead' },
+    }));
+    const { program, attach, attachNode } = harness({ resolveFleetAttachTarget });
+    const originalCwd = process.cwd();
+    process.chdir(root);
+    try {
+      await program.parseAsync(['local', 'agent', 'attach', 'lead'], { from: 'user' });
+    } finally {
+      process.chdir(originalCwd);
+      fs.rmSync(root, { recursive: true, force: true });
+    }
+
+    expect(resolveFleetAttachTarget).not.toHaveBeenCalled();
+    expect(attachNode).not.toHaveBeenCalled();
+    expect(attach).toHaveBeenCalledWith('lead', 'view', expect.anything());
+  });
+
   it('forwards native harness output flags to the attach runner', async () => {
     const { program, attach } = harness();
     await program.parseAsync(['local', 'agent', 'attach', 'lead', '--json', '--reasoning', '--diagnostics'], {
