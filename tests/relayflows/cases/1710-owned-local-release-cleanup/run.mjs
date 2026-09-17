@@ -1,203 +1,258 @@
-import { execFileSync } from 'node:child_process';
-import { readFileSync } from 'node:fs';
-import { mkdir, readFile, writeFile } from 'node:fs/promises';
+import assert from 'node:assert/strict';
+import { execFileSync, spawn } from 'node:child_process';
+import { access, mkdtemp, mkdir, rm, writeFile } from 'node:fs/promises';
+import http from 'node:http';
+import { tmpdir } from 'node:os';
 import path from 'node:path';
-import process from 'node:process';
 import { fileURLToPath } from 'node:url';
 
 const CASE_ID = '1710-owned-local-release-cleanup';
-const targetDir = requiredDirectory('RELAY_PR_PROOF_TARGET_DIR');
-const harnessDir = requiredDirectory('RELAY_PR_PROOF_HARNESS_DIR');
-const resultPath = requiredValue('RELAY_PR_PROOF_RESULT_PATH');
-const arm = requiredValue('RELAY_PR_PROOF_ARM');
-const expectedSha =
-  arm === 'base' ? process.env.RELAY_PR_PROOF_BASE_SHA : process.env.RELAY_PR_PROOF_HEAD_SHA;
-
-if (!['base', 'head'].includes(arm) || !expectedSha) {
-  throw new Error('Invalid RelayFlow arm identity.');
-}
-const targetSha = execFileSync('git', ['-C', targetDir, 'rev-parse', 'HEAD'], {
-  encoding: 'utf8',
-}).trim();
-if (targetSha !== expectedSha) {
-  throw new Error(`Target checkout ${targetSha} does not match exact arm SHA ${expectedSha}.`);
-}
-if (!isWithin(harnessDir, fileURLToPath(import.meta.url))) {
-  throw new Error('The RelayFlow runner must execute from the exact-head harness checkout.');
-}
-
-const apiSource = readFileSync(path.join(targetDir, 'crates/broker/src/runtime/api.rs'), 'utf8');
-const headMarker = 'promote that request to the same';
-const headTest = 'name_only_release_of_retired_owned_worker_deletes_directly_and_is_idempotent';
-const callerTest = 'caller_owned_release_cannot_be_promoted_to_identity_deletion';
-const probeTest = 'relayflow_1710_probe_name_only_release';
-const testPath = path.join(targetDir, 'crates/broker/src/runtime/tests.rs');
-const PROBE_TEST = String.raw`
-#[tokio::test]
-async fn ${probeTest}() {
-    use crate::listen_api::ListenApiRequest;
-    use httpmock::{Method::POST, MockServer};
-    use tokio::sync::oneshot;
-
-    let server = MockServer::start();
-    let release = server.mock(|when, then| {
-        when.method(POST)
-            .path("/v1/agents/release")
-            .json_body_partial(json!({"delete_agent":true,"expected_token_hash":"bec092bff160b23541205064ab9f4485d6c2089760b1bb4e5f5ce19f0274aad3"}).to_string());
-        then.status(200)
-            .json_body(json!({"ok":true,"data":{"status":"completed"}}));
+const NAME = 'owned-retired-probe';
+const GENERATION = '11111111-1111-4111-8111-111111111111';
+const STALE_GENERATION = '22222222-2222-4222-8222-222222222222';
+const TOKEN_HASH = 'bec092bff160b23541205064ab9f4485d6c2089760b1bb4e5f5ce19f0274aad3';
+const API_KEY = 'br_owned_cleanup_probe';
+const required = (key) => {
+  if (!process.env[key]) throw new Error(`Missing ${key}`);
+  return process.env[key];
+};
+const targetDir = required('RELAY_PR_PROOF_TARGET_DIR');
+const harnessDir = required('RELAY_PR_PROOF_HARNESS_DIR');
+const binary = required('RELAY_PR_PROOF_BROKER_BINARY');
+const resultPath = required('RELAY_PR_PROOF_RESULT_PATH');
+const arm = required('RELAY_PR_PROOF_ARM');
+assert(['base', 'head'].includes(arm));
+assert.equal(
+  execFileSync('git', ['-C', targetDir, 'rev-parse', 'HEAD'], { encoding: 'utf8' }).trim(),
+  required(arm === 'base' ? 'RELAY_PR_PROOF_BASE_SHA' : 'RELAY_PR_PROOF_HEAD_SHA')
+);
+const relative = path.relative(path.resolve(harnessDir), fileURLToPath(import.meta.url));
+assert(relative && !relative.startsWith('..') && !path.isAbsolute(relative));
+await access(binary, 1);
+const probe = await mkdtemp(path.join(tmpdir(), 'relayflow-owned-cleanup-'));
+let broker,
+  stderr = '',
+  stdout = '';
+let allowDelete = false;
+const pendingDeletes = [];
+const sockets = new Set();
+const observations = { guarded: [], routed: [], deleted: 0 };
+const server = http.createServer(async (request, response) => {
+  const chunks = [];
+  for await (const chunk of request) chunks.push(chunk);
+  const body = chunks.length ? JSON.parse(Buffer.concat(chunks)) : {};
+  const pathname = new URL(request.url, 'http://fixture.invalid').pathname;
+  const send = (status, data, ok = true) => {
+    response.writeHead(status, { 'content-type': 'application/json' });
+    response.end(JSON.stringify(ok ? { ok, data } : { ok, error: data }));
+  };
+  if (request.method === 'POST' && pathname === '/v1/agents') {
+    send(201, {
+      id: `id_${body.name}`,
+      name: body.name,
+      workspace_id: 'ws_owned_cleanup_probe',
+      token: `at_fixture_${body.name}`,
+      status: 'online',
+      created_at: '2026-01-01T00:00:00Z',
     });
-    let registry = make_worker_registry_with_worker("relayflow-1710-unrelated").await;
-    let mut fixture = worker_event_runtime_fixture(registry, HashMap::new());
-    fixture.runtime.relaycast_http = RelaycastHttpClient::new(
-        None,
-        "rk_live_relayflow",
-        "broker",
-        "codex",
-    );
-    let name = WorkerName::from("relayflow-1710-retired");
-    let generation = Uuid::new_v4();
-    let http = RelaycastHttpClient::new(Some(server.base_url()), "rk_live_relayflow", "broker", "codex");
-    http.seed_agent_token(&name, "owned-token");
-    fixture.runtime.workers.owned_spawn_generations.insert(name.clone(), (generation, http));
-    fixture.runtime.fleet_delivery_book.bind_authoritative_identity(name.to_string(), "relayflow-1710-id");
-
-    let (reply, mut result) = oneshot::channel();
-    fixture.runtime.handle_api_request(ListenApiRequest::Release {
-        name: name.clone(), reason: None, expected_generation: None, delete_identity: false, reply,
-    }).await;
-    let deregister = loop {
-        match fixture.fleet_control_rx.recv().await.unwrap() {
-            FleetControlCommand::DeregisterAgent { reply, .. } => break Some(reply),
-            FleetControlCommand::Send(BrokerToRelaycast::AgentDeregister(_)) => break None,
-            _ => {}
-        }
-    };
-    if let Some(deregister) = deregister { deregister.send(Ok(())).unwrap(); }
-    tokio::time::timeout(Duration::from_secs(2), async {
-        loop {
-            fixture.runtime.reconcile_identity_cleanups().await;
-            if let Ok(response) = result.try_recv() {
-                let response = response.expect("owned cleanup should succeed");
-                assert_eq!(response["process"], "stopped");
-                assert_eq!(response["identity"], "deleted");
-                break;
-            }
-            tokio::task::yield_now().await;
-        }
-    }).await.expect("owned cleanup should complete");
-    release.assert_hits(1);
-
-    let (reply, repeated) = oneshot::channel();
-    fixture.runtime.handle_api_request(ListenApiRequest::Release {
-        name: name.clone(), reason: None, expected_generation: None, delete_identity: false, reply,
-    }).await;
-    let repeated = repeated.await.unwrap().expect("repeat should be idempotent");
-    assert_eq!(repeated["process"], "stopped");
-    assert_eq!(repeated["identity"], "deleted");
-    release.assert_hits(1);
-    assert!(fixture.fleet_control_rx.try_recv().is_err());
-    fixture.runtime.workers.release("relayflow-1710-unrelated").await.unwrap();
-}
-`;
-
-const cargoEnv = sanitizedEnvironment();
-const originalTests = await readFile(testPath, 'utf8');
+  } else if (request.method === 'POST' && pathname === '/v1/agents/release') {
+    if (body.delete_agent === true && body.expected_token_hash === TOKEN_HASH && body.name === NAME) {
+      observations.guarded.push(body);
+      const complete = () => {
+        observations.deleted++;
+        send(200, { status: 'completed' });
+      };
+      if (allowDelete) complete();
+      else pendingDeletes.push(complete);
+    } else {
+      observations.routed.push(body);
+      send(503, { code: 'node_unavailable', message: 'owned worker host is unavailable' }, false);
+    }
+  } else send(404, { code: 'not_found', message: 'unsupported fixture route' }, false);
+});
+server.on('connection', (socket) => {
+  sockets.add(socket);
+  socket.once('close', () => sockets.delete(socket));
+});
 try {
-  await writeFile(testPath, `${originalTests}\n${PROBE_TEST}\n`, 'utf8');
-  const probe = runCargo(probeTest, cargoEnv);
-  const probePassed = probe.status === 0 && probe.stdout.includes(`test runtime::tests::${probeTest} ... ok`);
-  if (arm === 'base') {
-    if (probePassed || probe.status === 0) {
-      throw new Error(`Base unexpectedly passed the owned name-only release probe: ${probe.stdout}`);
+  await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
+  const baseUrl = `http://127.0.0.1:${server.address().port}`;
+  const state = path.join(probe, 'state');
+  await mkdir(state);
+  // An already-exited owned worker with a pending durable cleanup. No live
+  // host node exists. Both exact binaries receive the same persisted input.
+  await writeFile(
+    path.join(state, 'owned-cleanups.json'),
+    JSON.stringify({
+      [NAME]: { generation: GENERATION, expected_token_hash: TOKEN_HASH, agent_id: null },
+    })
+  );
+  // Explicit environment: no credentials, loader overrides, or live service
+  // configuration from the proof worker may reach the tested executable.
+  const env = {
+    PATH: process.env.PATH ?? '/usr/bin:/bin',
+    HOME: probe,
+    TMPDIR: probe,
+    NO_COLOR: '1',
+  };
+  broker = spawn(
+    binary,
+    [
+      'init',
+      '--instance-name',
+      'owned-cleanup-probe-node',
+      '--workspace-key',
+      'rk_owned_cleanup_probe',
+      '--state-dir',
+      state,
+      '--api-port',
+      '0',
+      '--channels',
+      '',
+    ],
+    {
+      cwd: probe,
+      env: {
+        ...env,
+        RELAYCAST_BASE_URL: baseUrl,
+        RELAY_BROKER_API_KEY: API_KEY,
+        RELAY_NODE_ID: 'node_owned_cleanup_probe',
+        RELAY_NODE_TOKEN: 'nt_owned_cleanup_probe',
+        AGENT_RELAY_NO_DEBUG_FILES: '1',
+        AGENT_RELAY_TELEMETRY_DISABLED: '1',
+      },
+      stdio: ['ignore', 'pipe', 'pipe'],
     }
-    await writeResult({
-      outcome: 'bug',
-      signature: 'release_outcome_not_machine_readable',
-      details:
-        'The injected executable probe drove the base broker release actor with a retired broker-owned generation and exact local Relaycast mock; process and identity outcomes were not separately machine-readable.',
+  );
+  broker.stdout.on('data', (chunk) => {
+    stdout = (stdout + chunk).slice(-12000);
+  });
+  broker.stderr.on('data', (chunk) => {
+    stderr = (stderr + chunk).slice(-12000);
+  });
+  let apiPort;
+  for (let i = 0; i < 200; i++) {
+    if (broker.exitCode !== null) throw new Error(`Broker exited: ${stderr}`);
+    const announced = stdout.match(/API listening on http:\/\/127\.0\.0\.1:([1-9]\d{0,4})(?:\s|$)/);
+    if (announced) {
+      const parsed = Number(announced[1]);
+      assert(Number.isInteger(parsed) && parsed <= 65535, 'Invalid loopback API port');
+      apiPort = parsed;
+      break;
+    }
+    await new Promise((resolve) => setTimeout(resolve, 100));
+  }
+  assert(apiPort, `No broker loopback API announcement: ${stderr}`);
+  const api = async (route, options = {}) => {
+    const response = await fetch(`http://127.0.0.1:${apiPort}${route}`, {
+      ...options,
+      headers: { 'content-type': 'application/json', 'x-api-key': API_KEY },
+      signal: AbortSignal.timeout(45000),
+      redirect: 'error',
     });
+    const raw = await response.text();
+    let body;
+    try {
+      body = JSON.parse(raw);
+    } catch {
+      body = { raw };
+    }
+    return { status: response.status, body };
+  };
+  let apiReady = false;
+  for (let i = 0; i < 200; i++) {
+    if (broker.exitCode !== null) throw new Error(`Broker exited before readiness: ${stderr}`);
+    if ((await api('/api/session')).status === 200) {
+      apiReady = true;
+      break;
+    }
+    await new Promise((resolve) => setTimeout(resolve, 100));
+  }
+  assert(apiReady, `Broker API did not become ready: ${stderr}`);
+  const release = (name, body = {}) =>
+    api(`/api/spawned/${name}`, {
+      method: 'DELETE',
+      body: JSON.stringify(body),
+    });
+  // Explicit stale/caller-owned deletes must fail without touching identities.
+  const stale = await release(NAME, { expected_generation: STALE_GENERATION, delete_identity: true });
+  assert(stale.status >= 400, 'Stale generation was accepted');
+  const caller = await release('caller-owned-probe', { delete_identity: true });
+  assert(caller.status >= 400, 'Unowned identity deletion was accepted');
+  assert.equal(observations.deleted, 0);
+  assert.equal(observations.routed.length, 0);
+
+  let releaseSettled = false;
+  const releasing = release(NAME).then((result) => {
+    releaseSettled = true;
+    return result;
+  });
+  if (pendingDeletes.length) {
+    await new Promise((resolve) => setTimeout(resolve, 200));
+    assert.equal(releaseSettled, false, 'Release acknowledged before guarded cleanup completed');
+  }
+  // Let the name-only request join the pending operation before acknowledging
+  // its exact-token deletion. The API response itself is the completion gate.
+  allowDelete = true;
+  for (const complete of pendingDeletes.splice(0)) complete();
+  const result = await releasing;
+  let outcome, signature, details;
+  if (result.status === 200 && result.body.process === 'stopped' && result.body.identity === 'deleted') {
+    assert.equal(observations.deleted, 1, 'Expected one exact-token deletion');
+    assert.equal(observations.guarded.length, 1);
+    assert.equal(observations.routed.length, 0, 'Owned release routed through unavailable host');
+    const repeated = await release(NAME);
+    assert.equal(repeated.status, 200);
+    assert.equal(repeated.body.process, 'stopped');
+    assert.equal(repeated.body.identity, 'deleted');
+    assert.equal(observations.deleted, 1, 'Repeat deleted the identity again');
+    assert.equal(observations.guarded.length, 1);
+    assert.equal(observations.routed.length, 0);
+    outcome = 'fixed';
+    signature = 'owned_release_deletes_exactly_and_repeats_safely';
+    details =
+      'Exact compiled broker restored retired-generation custody, rejected stale and unowned deletes, completed one token-hash guarded deletion without a host node, and returned an idempotent name-only retry.';
   } else {
-    if (!apiSource.includes(headMarker) || !probePassed) {
-      throw new Error(`Head did not pass the generation-bound probe: ${probe.stdout}\n${probe.stderr}`);
-    }
-    for (const [filter, description] of [
-      [headTest, 'direct delete and repeat idempotence'],
-      ['owned_cleanup_waits_off_actor_and_retains_custody_until_confirmed', 'replacement custody'],
-      [callerTest, 'caller-owned deletion refusal'],
-      [
-        'owned_cleanup_journal_restores_generation_and_retries_without_plaintext_token',
-        'restart journal recovery',
-      ],
-    ]) {
-      const result = runCargo(filter, cargoEnv);
-      if (result.status !== 0 || !result.stdout.includes(`test runtime::tests::${filter} ... ok`)) {
-        throw new Error(`RelayFlow test did not execute ${description}: ${result.stdout}\n${result.stderr}`);
-      }
-    }
-    await writeResult({
-      outcome: 'fixed',
-      signature: 'owned_release_deletes_exactly_and_repeats_safely',
-      details:
-        'Deterministic broker integration drove the real release actor with a loopback Relaycast mock: the same executable probe failed on base and passed on head, while committed tests proved token-hash deletion, repeat idempotence, replacement custody, and caller-owned refusal.',
-    });
+    // Only the known host-routing failure proves red. Startup, missing binaries,
+    // timeouts, malformed responses, or unrelated API errors fail the runner.
+    assert.equal(observations.deleted, 0);
+    assert.equal(observations.guarded.length, 0);
+    assert.equal(observations.routed.length, 1);
+    assert.equal(observations.routed[0].name, NAME);
+    assert.notEqual(observations.routed[0].delete_agent, true);
+    assert.equal(observations.routed[0].expected_token_hash, undefined);
+    assert(result.status >= 400);
+    assert.match(JSON.stringify(result.body), /owned worker host is unavailable/);
+    outcome = 'bug';
+    signature = 'owned_release_routes_to_unavailable_host';
+    details =
+      'Exact compiled broker sent an unguarded host-routed release for the retired worker and returned the fixture node_unavailable failure; no identity was deleted.';
   }
-} finally {
-  await writeFile(testPath, originalTests, 'utf8');
-}
-
-function runCargo(filter, env) {
-  try {
-    return {
-      status: 0,
-      stdout: execFileSync('cargo', ['test', '-p', 'agent-relay-broker', filter, '--lib'], {
-        cwd: targetDir,
-        env,
-        encoding: 'utf8',
-        stdio: ['ignore', 'pipe', 'pipe'],
-      }),
-      stderr: '',
-    };
-  } catch (error) {
-    return {
-      status: error.status ?? 1,
-      stdout: error.stdout?.toString() ?? '',
-      stderr: error.stderr?.toString() ?? error.message,
-    };
-  }
-}
-
-function sanitizedEnvironment() {
-  const env = { ...process.env, AGENT_RELAY_TELEMETRY_DISABLED: '1' };
-  for (const key of Object.keys(env)) {
-    if (/(TOKEN|SECRET|PASSWORD|API_KEY|WORKSPACE_KEY)/i.test(key)) delete env[key];
-  }
-  return env;
-}
-
-async function writeResult({ outcome, signature, details }) {
   await mkdir(path.dirname(resultPath), { recursive: true });
   await writeFile(
     resultPath,
-    `${JSON.stringify({ version: 1, caseId: CASE_ID, arm, outcome, signature, details })}\n`,
-    'utf8'
+    JSON.stringify({
+      version: 1,
+      caseId: CASE_ID,
+      arm,
+      outcome,
+      signature,
+      details,
+    }) + '\n'
   );
+} finally {
+  await stopProcess(broker);
+  for (const socket of sockets) socket.destroy();
+  await new Promise((resolve) => server.close(resolve));
+  await rm(probe, { recursive: true, force: true });
 }
 
-function requiredValue(name) {
-  const value = process.env[name]?.trim();
-  if (!value) throw new Error(`Missing required environment variable ${name}.`);
-  return value;
-}
-
-function requiredDirectory(name) {
-  return path.resolve(requiredValue(name));
-}
-
-function isWithin(directory, candidate) {
-  const relative = path.relative(directory, candidate);
-  return (
-    relative === '' ||
-    (!relative.startsWith(`..${path.sep}`) && relative !== '..' && !path.isAbsolute(relative))
-  );
+/** Stop only a child this case started and wait until it has exited. */
+async function stopProcess(child) {
+  if (!child || child.exitCode !== null || child.signalCode !== null) return;
+  const exited = new Promise((resolve) => child.once('exit', resolve));
+  child.kill('SIGTERM');
+  const timer = setTimeout(() => child.kill('SIGKILL'), 2000);
+  await exited;
+  clearTimeout(timer);
 }

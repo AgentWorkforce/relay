@@ -6,12 +6,12 @@
   "runner": {
     "command": ["node", "tests/relayflows/cases/1710-owned-local-release-cleanup/run.mjs"]
   },
-  "requirements": [],
+  "requirements": ["broker-linux-x64"],
   "timeoutSeconds": 900,
   "expected": {
     "base": {
       "outcome": "bug",
-      "signature": "release_outcome_not_machine_readable"
+      "signature": "owned_release_routes_to_unavailable_host"
     },
     "head": {
       "outcome": "fixed",
