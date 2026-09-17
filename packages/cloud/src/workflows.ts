@@ -85,11 +85,22 @@ function validateScheduleRelayflowVersion(value: unknown): asserts value is 'v1'
   }
 }
 
-function validateYamlWorkflow(content: string): void {
+function validateYamlWorkflow(content: string, relayflowVersion: RelayflowVersion | undefined): void {
   const hasField = (field: string) => new RegExp(`^${field}\\s*:`, 'm').test(content);
 
   if (!hasField('version')) {
     throw new Error('missing required field "version"');
+  }
+  if (relayflowVersion === 'v2') {
+    // The v2 kernel spec is a flat `steps` list; `swarm`, `agents` and
+    // `workflows` are v1 shapes that its parser rejects as unknown fields.
+    // Requiring them here made `--relayflow-version v2` unusable for YAML:
+    // every v2 spec failed this check before a request was ever sent, so the
+    // flag only ever worked for documents that were v1 in all but name.
+    if (!hasField('steps')) {
+      throw new Error('missing required field "steps"');
+    }
+    return;
   }
   if (!hasField('swarm')) {
     throw new Error('missing required field "swarm"');
@@ -255,7 +266,7 @@ export async function runWorkflow(
     await validateTypeScriptWorkflow(input.workflow);
   } else if (input.fileType === 'yaml') {
     console.error('Validating workflow...');
-    validateYamlWorkflow(input.workflow);
+    validateYamlWorkflow(input.workflow, options.relayflowVersion);
   }
 
   const syncCode = options.syncCode ?? shouldSyncCodeByDefault(workflowArg, options.fileType);
@@ -467,7 +478,7 @@ export async function scheduleWorkflow(
     await validateTypeScriptWorkflow(input.workflow);
   } else if (input.fileType === 'yaml') {
     console.error('Validating workflow...');
-    validateYamlWorkflow(input.workflow);
+    validateYamlWorkflow(input.workflow, options.relayflowVersion);
   }
 
   const requestBody: Record<string, unknown> = {
