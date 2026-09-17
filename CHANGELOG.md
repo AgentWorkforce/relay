@@ -11,6 +11,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - Opt-in persistent broker task providers preserve final results across reconnects and acknowledge callbacks only after durable Relaycast receipts.
 
+### Fixed
+
+- `node agent attach` and `message flush|hold|auto` no longer hard-error with "has no live Fleet placement on the persisted remote session" for a flag-free attach to a local PTY worker when the project also has persisted Relaycast workspace credentials — a live local broker discovered via `connection.json` is used instead.
+
 ## [12.2.2] - 2026-09-15
 
 ### Changed
