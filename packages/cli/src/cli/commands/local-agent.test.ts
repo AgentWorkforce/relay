@@ -1070,14 +1070,8 @@ describe('local agent subtree', () => {
 
   it.each([
     ['flush', (client: { flushPending: ReturnType<typeof vi.fn> }) => client.flushPending],
-    [
-      'hold',
-      (client: { setInboundDeliveryMode: ReturnType<typeof vi.fn> }) => client.setInboundDeliveryMode,
-    ],
-    [
-      'auto',
-      (client: { setInboundDeliveryMode: ReturnType<typeof vi.fn> }) => client.setInboundDeliveryMode,
-    ],
+    ['hold', (client: { setInboundDeliveryMode: ReturnType<typeof vi.fn> }) => client.setInboundDeliveryMode],
+    ['auto', (client: { setInboundDeliveryMode: ReturnType<typeof vi.fn> }) => client.setInboundDeliveryMode],
   ] as const)(
     'message %s honors a local broker discovered via connection.json before persisted Fleet routing',
     async (mode, pickMethod) => {
@@ -1111,7 +1105,10 @@ describe('local agent subtree', () => {
       expect(fetchMock).toHaveBeenCalledWith('http://127.0.0.1:9999/health', expect.anything());
       expect(resolveFleetAttachTarget).not.toHaveBeenCalled();
       expect(connectLocal).toHaveBeenCalled();
-      expect(pickMethod(client)).toHaveBeenCalledWith('claude', ...(mode === 'flush' ? [] : [expect.any(String)]));
+      expect(pickMethod(client)).toHaveBeenCalledWith(
+        'claude',
+        ...(mode === 'flush' ? [] : [expect.any(String)])
+      );
     }
   );
 
@@ -1123,7 +1120,10 @@ describe('local agent subtree', () => {
     fs.mkdirSync(path.join(root, '.git'));
     const stateDir = path.join(root, '.agentworkforce/relay');
     fs.mkdirSync(stateDir, { recursive: true });
-    fs.writeFileSync(path.join(stateDir, 'connection.json'), JSON.stringify({ url: 'http://127.0.0.1:9999' }));
+    fs.writeFileSync(
+      path.join(stateDir, 'connection.json'),
+      JSON.stringify({ url: 'http://127.0.0.1:9999' })
+    );
     const fetchMock = vi.fn(async () => {
       throw new Error('ECONNREFUSED');
     });
