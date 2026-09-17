@@ -331,6 +331,19 @@ impl BrokerRuntime {
             },
         ) {
             Ok(record) => {
+                // Once a record carries a final_result, `maintain_tasks`'s
+                // expired-claimed sweep skips it (it only chases records that
+                // are still outcome-less), so this is the only remaining
+                // chance to stop a worker that is still live -- e.g. an
+                // accept-reply deadline expiring while the engine reports
+                // `running`. `stop_task_generation` is a no-op if the worker
+                // was never spawned or already stopped, so this is safe for
+                // every fail_task call site.
+                self.workers.supervisor.unregister(&record.name);
+                let _ = self
+                    .workers
+                    .stop_task_generation(record.name.as_str(), record.generation)
+                    .await;
                 self.send_task_request(&record, TaskRequestKind::Accept, None, None)
                     .await
             }

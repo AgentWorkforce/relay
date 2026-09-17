@@ -336,7 +336,11 @@ fn compact_terminal_records(
 }
 
 fn terminal_record_expired(record: &TaskRecord, now: chrono::DateTime<chrono::Utc>) -> bool {
-    record.receipt.is_some()
+    // A rejected invocation (stale_task_execution, task_not_found,
+    // task_result_conflict) is terminal too, but `reject` only sets
+    // `rejection`, never `receipt` -- a receipt-only check here would let
+    // rejected records accumulate in the ledger forever.
+    (record.receipt.is_some() || record.rejection.is_some())
         && chrono::DateTime::parse_from_rfc3339(&record.execution().deadline).is_ok_and(
             |deadline| {
                 deadline.with_timezone(&chrono::Utc)
@@ -657,6 +661,33 @@ mod tests {
             ))
             .unwrap();
         record.receipt = Some(fixture_receipt(&record, "completed"));
+        let records = BTreeMap::from([(record.invoke.invocation_id.clone(), record)]);
+        persist_records(&path, &records).unwrap();
+
+        let reopened = TaskStore::open(path.clone()).unwrap();
+        assert!(reopened.records.is_empty());
+        let persisted: BTreeMap<String, TaskRecord> =
+            serde_json::from_slice(&std::fs::read(path).unwrap()).unwrap();
+        assert!(persisted.is_empty());
+    }
+
+    #[test]
+    fn task_store_open_durably_prunes_rejected_records_past_the_grace_period() {
+        // `reject` only ever sets `rejection`, never `receipt` -- a
+        // receipt-only expiry check would let rejected invocations
+        // (stale_task_execution, task_not_found, task_result_conflict)
+        // accumulate in the ledger forever.
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("tasks.json");
+        let mut store = TaskStore::open(path.clone()).unwrap();
+        let mut record = store
+            .prepare(invoke_with_deadline(
+                "inv-old",
+                chrono::Utc::now() - chrono::Duration::hours(25),
+            ))
+            .unwrap();
+        record.rejection = Some("stale_task_execution".to_owned());
+        assert!(record.receipt.is_none());
         let records = BTreeMap::from([(record.invoke.invocation_id.clone(), record)]);
         persist_records(&path, &records).unwrap();
 

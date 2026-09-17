@@ -7518,6 +7518,53 @@ async fn durable_task_expired_running_receipt_queues_terminal_deadline_failure()
 }
 
 #[tokio::test]
+async fn durable_task_reply_deadline_stops_a_live_worker() {
+    // Once `fail_task` sets `final_result`, `maintain_tasks`'s expired-claimed
+    // sweep skips the record (it only chases records still outcome-less) --
+    // this reply-path deadline check is the only remaining chance to stop a
+    // worker that is still live when the accept-reply deadline expires while
+    // the engine reports "running".
+    use crate::fleet_wire::BrokerToRelaycast;
+    let mut fixture = durable_task_fixture();
+    let invoke = super::task_store::fixture_invoke();
+    fixture.runtime.handle_task_invoke(invoke).await;
+    let BrokerToRelaycast::ActionAccept(accept) = next_task_frame(&mut fixture).await else {
+        panic!("accept")
+    };
+    let record = fixture.runtime.task_provider.store.records["inv-task"].clone();
+    let mut workers = make_worker_registry_with_worker(record.name.as_str()).await;
+    workers.workers.get_mut(&record.name).unwrap().generation = record.generation;
+    fixture.runtime.workers = workers;
+    assert!(fixture.runtime.workers.is_worker_live(&record.name));
+    fixture
+        .runtime
+        .task_provider
+        .store
+        .records
+        .get_mut("inv-task")
+        .unwrap()
+        .invoke
+        .task_execution
+        .as_mut()
+        .unwrap()
+        .deadline = (chrono::Utc::now() - chrono::Duration::seconds(1))
+        .to_rfc3339_opts(chrono::SecondsFormat::Millis, true);
+
+    deliver_task_receipt(&mut fixture, &accept.id, "running").await;
+
+    assert!(!fixture.runtime.workers.is_worker_live(&record.name));
+    assert_eq!(
+        fixture.runtime.task_provider.store.records["inv-task"]
+            .final_result
+            .as_ref()
+            .unwrap()
+            .error
+            .as_deref(),
+        Some("task_deadline_exceeded")
+    );
+}
+
+#[tokio::test]
 async fn durable_task_old_attempt_receipt_cannot_start_new_generation() {
     use crate::fleet_wire::BrokerToRelaycast;
     let mut fixture = durable_task_fixture();
