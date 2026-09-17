@@ -62,6 +62,10 @@ function makeSurface(overrides: Partial<RelayCliSurface> = {}): RelayCliSurface 
   };
 }
 
+const defaultExitStub = ((code: number) => {
+  throw new Error(`exit:${code}`);
+}) as (code: number) => never;
+
 function makeDeps(io: RelayCliIo): RelayCliSurfaceDependencies {
   return {
     io,
@@ -204,6 +208,31 @@ describe('runSurface', () => {
     const code = await runSurface(makeSurface({ run }), 'agent-relay file', ['internal-debug'], makeDeps(makeIo()));
     expect(code).toBe(0);
     expect(run).toHaveBeenCalled();
+  });
+
+  it('passes binary stdout through to the host untouched', async () => {
+    // `relayfile export --format tar --output -` streams a tarball to stdout.
+    // A string-only sink would round-trip these bytes through UTF-8 and corrupt
+    // them, so the mount has to hand a Uint8Array over unmodified.
+    const chunks: (string | Uint8Array)[] = [];
+    const io = {
+      stdout: (chunk: string | Uint8Array) => chunks.push(chunk),
+      stderr: () => {},
+    };
+    // 0xff / 0xfe are not valid UTF-8; decoding would replace them with U+FFFD.
+    const payload = new Uint8Array([0x1f, 0x8b, 0x08, 0x00, 0xff, 0xfe, 0x00, 0x42]);
+    const surface = makeSurface({
+      run: async (_argv, sink) => {
+        sink.stdout(payload);
+        return 0;
+      },
+    });
+
+    await runSurface(surface, 'agent-relay file', ['ls'], { io, exit: defaultExitStub });
+
+    expect(chunks).toHaveLength(1);
+    expect(chunks[0]).toBeInstanceOf(Uint8Array);
+    expect(Array.from(chunks[0] as Uint8Array)).toEqual(Array.from(payload));
   });
 
   it('converts a thrown product error into exit 1 and a readable line', async () => {

@@ -21,10 +21,19 @@ export const RELAY_CLI_CONTRACT_VERSION: RelayCliContractVersion = 1;
  * Output sink supplied by the host. A surface writes here instead of touching
  * `process.stdout` / `process.stderr` so the host can capture, prefix, or
  * redirect product output.
+ *
+ * Chunks may be bytes as well as text. Some product commands stream binary to
+ * stdout — `relayfile export --format tar --output -` is the motivating case —
+ * and a string-only sink silently corrupts them, because the bytes round-trip
+ * through UTF-8 decoding. Passing a `Uint8Array` through untouched is the only
+ * way those commands survive being mounted.
+ *
+ * A product that only ever emits text can keep passing strings; nothing about
+ * the simple case changes.
  */
 export interface RelayCliIo {
-  stdout(chunk: string): void;
-  stderr(chunk: string): void;
+  stdout(chunk: string | Uint8Array): void;
+  stderr(chunk: string | Uint8Array): void;
 }
 
 /** A positional argument in a product command. */
