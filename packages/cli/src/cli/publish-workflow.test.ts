@@ -42,9 +42,16 @@ describe('package=main publish dependency chain', () => {
         return name;
       })
       .sort();
+    // cloud and config are published earlier by publish-sdk-internal-deps,
+    // a `needs` of publish-main-runtime-deps; listing them again in that
+    // matrix would race the registry into a duplicate-publish E409, so this
+    // chain's coverage spans both jobs.
+    const sdkInternalDepsPackages =
+      workflow.jobs['publish-sdk-internal-deps']?.strategy?.matrix?.package ?? [];
     const parallelRuntimePackages =
       workflow.jobs['publish-main-runtime-deps']?.strategy?.matrix?.package ?? [];
     const publishedByMainChain = [
+      ...sdkInternalDepsPackages.map((name) => `@agent-relay/${name}`),
       ...parallelRuntimePackages.map((name) => `@agent-relay/${name}`),
       '@agent-relay/harnesses',
       '@agent-relay/fleet',

@@ -515,13 +515,13 @@ describe('RelaycastMessagingClient', () => {
       name: 'builder-2',
       status: 'offline',
       live: false,
-      activeAgents: 0,
       handlersLive: false,
       maxAgents: 4,
       load: 0,
       lastHeartbeatAt: '2026-06-16T09:55:00.000Z',
       createdAt: '2026-06-16T08:00:00.000Z',
     });
+    expect(nodes[1].activeAgents).toBeUndefined();
     expect(nodes[2]).toMatchObject({
       name: 'builder-3',
       status: 'unknown',
@@ -549,13 +549,14 @@ describe('RelaycastMessagingClient', () => {
     expect(toRelayNode({ name: 'builder-6', tags: ['factory'] }).repoKeys).toBeUndefined();
     expect(toRelayNode({ name: 'builder-unbounded', max_agents: 0, load: null }).load).toBeUndefined();
 
-    await expect(client.nodes.get('builder-2')).resolves.toMatchObject({
+    const offlineNode = await client.nodes.get('builder-2');
+    expect(offlineNode).toMatchObject({
       name: 'builder-2',
       status: 'offline',
       live: false,
-      activeAgents: 0,
       load: 0,
     });
+    expect(offlineNode.activeAgents).toBeUndefined();
   });
 
   it('delegates write operations through an agent client and normalizes responses', async () => {

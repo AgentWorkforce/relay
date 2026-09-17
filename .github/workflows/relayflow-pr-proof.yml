@@ -112,9 +112,8 @@ jobs:
         if: steps.prepare.outputs.required == 'true'
         run: |
           git add -f -- .relayflow/pr-proof-input.json
-          if [[ "${{ steps.prepare.outputs.broker_artifacts_required }}" == "true" ]]; then
-            git add -f -- .relayflow/pr-proof-binaries
-          fi
+          # Exact binaries go through authenticated run storage, never Relayfile seed.
+          test -z "$(git ls-files -- .relayflow/pr-proof-binaries)"
 
       - name: Install the released Agent Relay CLI
         if: steps.prepare.outputs.required == 'true'

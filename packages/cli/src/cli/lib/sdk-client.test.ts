@@ -83,6 +83,28 @@ describe('sdk client option resolution', () => {
     expect(resolveWorkspaceKey({ env: { AGENT_RELAY_HOME: dir } })).toBe('rk_project_broker');
   });
 
+  it('honors an explicit AGENT_RELAY_PROJECT override when resolving a workspace selection', () => {
+    const overrideRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'relay-sdk-override-project-'));
+    try {
+      writeProjectWorkspaceKey(path.join(overrideRoot, '.agentworkforce/relay'), 'rk_override');
+      expect(
+        resolveWorkspaceSelection({
+          projectRoot,
+          env: {
+            AGENT_RELAY_HOME: dir,
+            AGENT_RELAY_PROJECT: overrideRoot,
+          },
+        })
+      ).toMatchObject({
+        key: 'rk_override',
+        source: 'project',
+        origin: path.join(overrideRoot, '.agentworkforce/relay/workspace-key.json'),
+      });
+    } finally {
+      fs.rmSync(overrideRoot, { recursive: true, force: true });
+    }
+  });
+
   it('lets an explicit flag and env override the CWD broker workspace key', () => {
     writeProjectWorkspaceKey(projectDataDir(), 'rk_project_broker');
 
@@ -206,6 +228,7 @@ describe('sdk client option resolution', () => {
       relaycastRoute: 'agent37-isolated',
       relaycastBaseUrl: 'https://agent37-cast.agentrelay.com',
       relaycastApiKey: 'rk_live_agent37',
+      relaycastApiKeyRef: expect.stringMatching(/^[0-9a-f]{64}$/),
     });
 
     const replayOptions = {
@@ -222,6 +245,38 @@ describe('sdk client option resolution', () => {
     });
     expect(resolveWorkspaceKey(replayOptions)).toBe('rk_live_agent37');
     expect(resolveBaseUrl(replayOptions)).toBe('https://agent37-cast.agentrelay.com');
+  });
+
+  it('persists a selected route credential under the selected credential home without mutating process.env', () => {
+    const selectedHome = fs.mkdtempSync(path.join(os.tmpdir(), 'relay-sdk-selected-home-'));
+    const processHome = process.env.AGENT_RELAY_HOME;
+    try {
+      writeProjectWorkspaceKey(projectDataDir(), 'rk_live_selected');
+      const selectedEnv = { AGENT_RELAY_HOME: selectedHome };
+      const selection = resolveWorkspaceSelection({ env: selectedEnv });
+      expect(selection).toMatchObject({ credentialHome: selectedHome });
+
+      expect(
+        persistWorkspaceRelaycastTarget(selection, {
+          route: 'agent37-isolated',
+          baseUrl: 'https://agent37-cast.agentrelay.com',
+          workspaceId: 'rw_selected',
+          relaycastApiKey: 'rk_live_selected_agent37',
+        })
+      ).toBe(true);
+
+      expect(process.env.AGENT_RELAY_HOME).toBe(processHome);
+      expect(readProjectWorkspaceSession(projectDataDir(), undefined, selectedEnv)).toMatchObject({
+        relaycastApiKey: 'rk_live_selected_agent37',
+      });
+      expect(
+        readProjectWorkspaceSession(projectDataDir(), undefined, {
+          AGENT_RELAY_HOME: `${selectedHome}-other`,
+        })?.relaycastApiKey
+      ).toBeUndefined();
+    } finally {
+      fs.rmSync(selectedHome, { recursive: true, force: true });
+    }
   });
 
   it.each(['flag', 'env'] as const)(
@@ -254,6 +309,7 @@ describe('sdk client option resolution', () => {
         relaycastRoute: 'agent37-isolated',
         relaycastBaseUrl: 'https://agent37-cast.agentrelay.com',
         relaycastApiKey: 'rk_live_fresh_agent37',
+        relaycastApiKeyRef: expect.stringMatching(/^[0-9a-f]{64}$/),
       });
     }
   );
@@ -282,6 +338,7 @@ describe('sdk client option resolution', () => {
       relaycastRoute: 'agent37-isolated',
       relaycastBaseUrl: 'https://agent37-cast.agentrelay.com',
       relaycastApiKey: 'rk_live_store_agent37',
+      relaycastApiKeyRef: expect.stringMatching(/^[0-9a-f]{64}$/),
     });
   });
 
@@ -354,7 +411,7 @@ describe('sdk client option resolution', () => {
     expect(readProjectWorkspaceSession(projectDataDir())?.relaycastApiKey).toBe('rk_live_newer_route');
   });
 
-  it('keeps legacy persisted targets usable when no separate Relaycast key exists', () => {
+  it('fails closed when an isolated target has no external Relaycast credential', () => {
     writeProjectWorkspaceKey(projectDataDir(), 'rk_live_legacy_agent37', {
       workspaceId: 'rw_abc',
       relaycastRoute: 'agent37-isolated',
@@ -362,19 +419,55 @@ describe('sdk client option resolution', () => {
     });
 
     const options = { env: { AGENT_RELAY_HOME: dir } };
-    expect(resolveWorkspaceKey(options)).toBe('rk_live_legacy_agent37');
-    expect(resolveBaseUrl(options)).toBe('https://agent37-cast.agentrelay.com');
+    expect(() => resolveWorkspaceTransport(options)).toThrow(/credential is unavailable or mismatched/);
   });
 
-  it('rejects a separate Relaycast key without a complete persisted route', () => {
+  it('fails closed when the persisted route credential reference is tampered', () => {
+    writeProjectWorkspaceKey(projectDataDir(), 'rk_live_canonical', {
+      workspaceId: 'rw_abc',
+      relaycastRoute: 'agent37-isolated',
+      relaycastBaseUrl: 'https://agent37-cast.agentrelay.com',
+      relaycastApiKey: 'rk_live_agent37',
+    });
+    const file = path.join(projectDataDir(), 'workspace-key.json');
+    const parsed = JSON.parse(fs.readFileSync(file, 'utf8')) as Record<string, unknown>;
+    parsed.relaycastApiKeyRef = 'wrong-scope';
+    fs.writeFileSync(file, `${JSON.stringify(parsed)}\n`);
+
+    expect(() => resolveWorkspaceTransport({ env: { AGENT_RELAY_HOME: dir } })).toThrow(
+      /credential is unavailable or mismatched/
+    );
+  });
+
+  it('fails closed when the persisted credential workspace binding is tampered', () => {
+    writeProjectWorkspaceKey(projectDataDir(), 'rk_live_canonical', {
+      workspaceId: 'rw_abc',
+      relaycastRoute: 'agent37-isolated',
+      relaycastBaseUrl: 'https://agent37-cast.agentrelay.com',
+      relaycastApiKey: 'rk_live_agent37',
+    });
+    const file = path.join(projectDataDir(), 'workspace-key.json');
+    const parsed = JSON.parse(fs.readFileSync(file, 'utf8')) as Record<string, unknown>;
+    parsed.workspaceId = 'rw_other';
+    fs.writeFileSync(file, `${JSON.stringify(parsed)}\n`);
+
+    expect(() => resolveWorkspaceTransport({ env: { AGENT_RELAY_HOME: dir } })).toThrow(
+      /credential is unavailable or mismatched/
+    );
+  });
+
+  it('drops a raw Relaycast key without a complete persisted route', () => {
     writeProjectWorkspaceKey(projectDataDir(), 'rk_live_canonical', {
       workspaceId: 'rw_abc',
       relaycastApiKey: 'rk_live_agent37',
     });
 
     const options = { env: { AGENT_RELAY_HOME: dir } };
-    expect(() => resolveWorkspaceKey(options)).toThrow(/persisted Relaycast workspace route is incomplete/);
-    expect(() => resolveBaseUrl(options)).toThrow(/persisted Relaycast workspace route is incomplete/);
+    expect(readProjectWorkspaceSession(projectDataDir())).toEqual({
+      workspaceKey: 'rk_live_canonical',
+      workspaceId: 'rw_abc',
+    });
+    expect(resolveWorkspaceKey(options)).toBe('rk_live_canonical');
   });
 
   it('rejects a persisted route that is not the exact server-owned origin', () => {

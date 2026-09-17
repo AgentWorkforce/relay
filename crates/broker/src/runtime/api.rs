@@ -278,6 +278,23 @@ impl BrokerRuntime {
         } else {
             req
         };
+        if let ListenApiRequest::SubmitAgentResult { token, .. } = &req {
+            if self.task_provider.store.by_token(token).is_some() {
+                if let ListenApiRequest::SubmitAgentResult {
+                    token,
+                    name,
+                    data,
+                    final_result,
+                    metadata,
+                    reply,
+                } = req
+                {
+                    self.handle_task_callback(token, name, data, final_result, metadata, reply)
+                        .await;
+                    return;
+                }
+            }
+        }
         let local_only = self.degraded.is_some();
         let paths = &self.paths;
         let state = &mut self.state;
@@ -2619,6 +2636,7 @@ impl BrokerRuntime {
                             workers,
                             fleet_delivery_book,
                             fleet_control_tx,
+                            &self.node_delivery_probe,
                             sdk_out_tx,
                             dead_letters,
                             obligation_store,
@@ -2753,6 +2771,7 @@ impl BrokerRuntime {
                         workers,
                         fleet_delivery_book,
                         fleet_control_tx,
+                        &self.node_delivery_probe,
                         sdk_out_tx,
                         dead_letters,
                         obligation_store,

@@ -586,6 +586,33 @@ impl WorkerRegistry {
         agent_result: Option<AgentResultMcpConfig>,
         commit_attestation: Option<CommitAttestation>,
     ) -> Result<AgentSpec> {
+        self.spawn_with_generation(
+            spec,
+            parent,
+            idle_threshold_secs,
+            worker_relay_api_key,
+            skip_relay_prompt,
+            workspace_id,
+            agent_result,
+            commit_attestation,
+            None,
+        )
+        .await
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) async fn spawn_with_generation(
+        &mut self,
+        spec: AgentSpec,
+        parent: Option<String>,
+        idle_threshold_secs: Option<u64>,
+        worker_relay_api_key: Option<String>,
+        skip_relay_prompt: bool,
+        workspace_id: Option<crate::ids::WorkspaceId>,
+        agent_result: Option<AgentResultMcpConfig>,
+        commit_attestation: Option<CommitAttestation>,
+        task_generation: Option<Uuid>,
+    ) -> Result<AgentSpec> {
         let mut spec = spec;
         if self.identity_cleanups.contains_key(&spec.name) {
             anyhow::bail!("agent '{}' has pending owned cleanup", spec.name);
@@ -1291,7 +1318,7 @@ impl WorkerRegistry {
         let log_file = self.worker_log_path(&spec.name);
         let startup_log_file = log_file.clone();
 
-        let generation = Uuid::new_v4();
+        let generation = task_generation.unwrap_or_else(Uuid::new_v4);
         spawn_worker_reader(
             self.event_tx.clone(),
             spec.name.clone(),
@@ -1507,6 +1534,25 @@ impl WorkerRegistry {
         );
         self.send_to_worker(name, "deliver_relay", None, serde_json::to_value(delivery)?)
             .await
+    }
+
+    /// Stop a terminal task without touching a replacement worker or bypassing
+    /// the normal reap/owned-identity cleanup path.
+    pub(crate) async fn stop_task_generation(
+        &mut self,
+        name: &str,
+        generation: Uuid,
+    ) -> Result<bool> {
+        let Some(handle) = self.workers.get_mut(name) else {
+            return Ok(false);
+        };
+        if handle.generation != generation {
+            return Ok(false);
+        }
+        self.supervisor.unregister(name);
+        handle.exit_reason = Some("task_terminal_failure".to_owned());
+        terminate_child(&mut handle.child, ORPHAN_REAP_TIMEOUT).await?;
+        Ok(true)
     }
 
     pub(crate) async fn release(&mut self, name: &str) -> Result<()> {
@@ -3935,5 +3981,65 @@ sleep 30
 
         assert_eq!(fallback, None);
         assert_eq!(args, vec!["--model=gpt-5.5".to_string()]);
+    }
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
+    #[tokio::test]
+    async fn task_spawn_uses_preclaimed_generation_and_injects_result_callback() {
+        let directory = tempfile::tempdir().unwrap();
+        let (tx, mut rx) = mpsc::channel(16);
+        let mut registry = WorkerRegistry::new(
+            tx,
+            Vec::new(),
+            directory.path().join("logs"),
+            Instant::now(),
+        );
+        let generation = Uuid::new_v4();
+        let mut spec = sleeping_native_worker(
+            "fenced-task",
+            Some(directory.path().to_string_lossy().into_owned()),
+        );
+        if let Some(ResolvedHarnessConfig::Native(config)) = &mut spec.harness_config {
+            config.args = vec!["-c".into(), r#"printf '%s' "$AGENT_RELAY_RESULT_TOKEN" > callback-token; printf '{"type":"worker_ready"}\n'; sleep 30"#.into()];
+        }
+        registry
+            .spawn_with_generation(
+                spec,
+                None,
+                None,
+                None,
+                true,
+                None,
+                Some(AgentResultMcpConfig {
+                    callback_url: "http://127.0.0.1:1/api/agent-result".into(),
+                    token: "fixture-task-callback".into(),
+                    schema: None,
+                }),
+                None,
+                Some(generation),
+            )
+            .await
+            .unwrap();
+        assert_eq!(registry.workers["fenced-task"].generation, generation);
+        assert_eq!(
+            std::fs::read_to_string(directory.path().join("callback-token")).unwrap(),
+            "fixture-task-callback"
+        );
+        let event = tokio::time::timeout(Duration::from_secs(2), rx.recv())
+            .await
+            .unwrap()
+            .unwrap();
+        assert!(!registry
+            .stop_task_generation("fenced-task", Uuid::new_v4())
+            .await
+            .unwrap());
+        assert!(registry.is_worker_live("fenced-task"));
+        assert!(registry
+            .stop_task_generation("fenced-task", generation)
+            .await
+            .unwrap());
+        registry.release("fenced-task").await.unwrap();
+        assert!(
+            matches!(event, WorkerEvent::Message { generation: observed, .. } if observed == generation)
+        );
     }
 }

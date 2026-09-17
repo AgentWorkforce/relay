@@ -307,7 +307,29 @@ pub(crate) async fn run_init(cmd: InitCommand, telemetry: TelemetryClient) -> Re
     } else {
         resolve_cached_node_token(&node_id, &node_workspace_id, node_base_url.as_deref())
     };
-    let node_manifest = bootstrap_node_manifest(&node_name, &node_id, &broker_version);
+    let task_enabled = std::env::var("AGENT_RELAY_TASK_PROVIDER").as_deref() == Ok("1");
+    anyhow::ensure!(
+        !task_enabled || (paths.persist && !local_only),
+        "task provider requires persistent hosted broker mode"
+    );
+    let task_provider = if task_enabled {
+        super::tasks::TaskProvider {
+            store: super::task_store::TaskStore::open(paths.state.with_extension("tasks.json"))?,
+            ..Default::default()
+        }
+    } else {
+        super::tasks::TaskProvider::default()
+    };
+    let mut node_manifest = bootstrap_node_manifest(&node_name, &node_id, &broker_version);
+    if task_enabled {
+        node_manifest
+            .capabilities
+            .push(crate::protocol::NodeCapabilityManifest {
+                name: super::task_store::TASK_ACTION.to_owned(),
+                kind: Some("action".to_owned()),
+                metadata: None,
+            });
+    }
     // Retain the node name for the runtime: the HTTP `bind_agent_to_node`
     // fallback (used when node-control `agent.register` is unavailable) binds
     // spawned agents to this node so they become `via_node` and node delivery
@@ -354,6 +376,9 @@ pub(crate) async fn run_init(cmd: InitCommand, telemetry: TelemetryClient) -> Re
     let (terminal_event_tx, terminal_event_rx) =
         mpsc::channel::<crate::terminal_control::TerminalControlEvent>(1024);
     let node_delivery_token_present = node_token.is_some();
+    // Shared by node-control, runtime, and the independent diagnostic API.
+    let node_delivery_probe =
+        std::sync::Arc::new(crate::node_delivery_probe::NodeDeliveryProbe::new());
     if !local_only {
         tokio::spawn(crate::node_control::run_node_control_client(
             crate::node_control::FleetControlConfig {
@@ -365,6 +390,7 @@ pub(crate) async fn run_init(cmd: InitCommand, telemetry: TelemetryClient) -> Re
                 token_minter,
                 session_token: Some(session_node_token.clone()),
                 read_idle_timeout: None,
+                probe: Some(node_delivery_probe.clone()),
             },
             fleet_control_rx,
             fleet_event_tx,
@@ -471,6 +497,7 @@ pub(crate) async fn run_init(cmd: InitCommand, telemetry: TelemetryClient) -> Re
         node_name: session_node_name,
         node_token: session_node_token,
         persist: paths.persist,
+        node_delivery_probe: node_delivery_probe.clone(),
     });
     {
         let mut ready = relay_ready_state.write().await;
@@ -768,6 +795,7 @@ pub(crate) async fn run_init(cmd: InitCommand, telemetry: TelemetryClient) -> Re
         fleet_control_tx,
         fleet_node_name,
         node_delivery_token_present,
+        node_delivery_probe,
         node_delivery_connected: false,
         fleet_event_rx,
         fleet_control_open: true,
@@ -803,6 +831,7 @@ pub(crate) async fn run_init(cmd: InitCommand, telemetry: TelemetryClient) -> Re
         resize_owners: HashMap::new(),
         delivery_states,
         agent_result_tokens,
+        task_provider,
         recent_thread_messages,
         shutdown,
         lease_duration,
