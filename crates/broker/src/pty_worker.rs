@@ -271,18 +271,28 @@ fn pending_codex_composer(snapshot: &Snapshot) -> Option<String> {
         line.starts_with("› ") || *line == "›" || line.starts_with("codex> ") || *line == "codex>"
     })?;
     // A "Working ... esc to interrupt" indicator replaces the idle prompt
-    // line while Codex is actively responding, so it never shares a row with
-    // one of the prompts matched above — checking only the lines BEFORE the
-    // composer (not the composer's own content, which may itself legitimately
-    // contain that phrase as part of an injected task) still catches a
-    // genuine busy state without being fooled by our own pending text
-    // (relay#1782 review).
-    if lines[..start]
+    // line while Codex is actively responding. It can show up either just
+    // above a stale idle prompt still lingering on screen, or BELOW the
+    // matched prompt row — between it and the cursor — when Codex hasn't
+    // redrawn a fresh composer yet (e.g. a historical `›`/`codex>` line is
+    // still the most recent prompt-shaped row, with transcript output and
+    // the busy indicator rendered underneath it). Checking only the rows
+    // before the composer misses that second case and lets recovery read
+    // leftover transcript text as still-pending composer content, sending
+    // extra Enters at Codex mid-turn (relay#1782 review, round 2). Skip only
+    // the composer's own row (`start`), since that's the one place
+    // legitimately pending injected text could itself contain the phrase.
+    let busy_above = lines[..start]
         .iter()
         .rev()
         .take(4)
-        .any(|line| line.to_ascii_lowercase().contains("esc to interrupt"))
-    {
+        .any(|line| line.to_ascii_lowercase().contains("esc to interrupt"));
+    let busy_below = lines
+        .get(start + 1..=end)
+        .into_iter()
+        .flatten()
+        .any(|line| line.to_ascii_lowercase().contains("esc to interrupt"));
+    if busy_above || busy_below {
         return None;
     }
     let content = lines.get(start..=end)?.join("\n");
@@ -2669,6 +2679,41 @@ mod tests {
         drain.abort();
         result.unwrap();
         assert_eq!(actual, format!("{body}\r").as_bytes());
+    }
+
+    // A historical `›` prompt can still be the most recent prompt-shaped row
+    // on screen while Codex is mid-turn: it hasn't redrawn a fresh composer,
+    // so the busy indicator renders BELOW that stale prompt (transcript
+    // output, then "Working ... esc to interrupt"), not above it. Before this
+    // fix, pending_codex_composer only checked the few lines above the
+    // matched prompt and read that whole span — stale prompt, transcript,
+    // and busy line together — as still-pending composer text (relay#1782
+    // review, round 2).
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn initial_native_pty_treats_busy_indicator_after_stale_prompt_as_busy() {
+        let script = r#"
+            stty raw -echo
+            printf '\033[2J\033[H› previous task\nrunning a long tool call\nWorking (esc to interrupt)\n'
+            sleep 5
+        "#
+        .to_string();
+        let (pty, mut rx) = PtySession::spawn("/bin/sh", &["-c".into(), script], 24, 80).unwrap();
+        let drain = tokio::spawn(async move { while rx.recv().await.is_some() {} });
+        for _ in 0..100 {
+            if pty.screen_text().contains("esc to interrupt") {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+        assert!(pty.screen_text().contains("esc to interrupt"));
+        let snapshot = Snapshot::capture(&pty);
+        pty.shutdown().unwrap();
+        drain.abort();
+        assert!(
+            pending_codex_composer(&snapshot).is_none(),
+            "a busy indicator rendered below a stale prompt line must still read as busy"
+        );
     }
 
     #[test]
