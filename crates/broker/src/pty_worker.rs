@@ -2,7 +2,10 @@ use std::{
     collections::{HashSet, VecDeque},
     future::Future,
     pin::Pin,
-    sync::OnceLock,
+    sync::{
+        atomic::{AtomicBool, Ordering},
+        Arc, OnceLock,
+    },
     time::{Duration, Instant},
 };
 
@@ -181,6 +184,176 @@ const STARTUP_READY_TIMEOUT: Duration = Duration::from_secs(60);
 const STARTUP_BUFFER_MAX: usize = 12_000;
 const STARTUP_BUFFER_KEEP: usize = 8_000;
 const CODEX_STARTUP_SETTLE: Duration = Duration::from_secs(1);
+
+// Native Codex 0.154 probes stall above 1024 bytes. Leave real margin;
+// other harnesses retain their atomic paste/submit path (including paste summaries).
+const INITIAL_CHUNK_BYTES: usize = 768;
+const INITIAL_SUBMIT_RETRY: Duration = Duration::from_secs(10);
+const INITIAL_SUBMIT_RETRIES: usize = 2;
+
+type InjectionWriteFuture<'a> = Pin<
+    Box<
+        dyn Future<Output = Result<std::io::Result<()>, tokio::sync::oneshot::error::RecvError>>
+            + 'a,
+    >,
+>;
+
+fn chunk_end(body: &str, start: usize) -> usize {
+    floor_char_boundary(body, (start + INITIAL_CHUNK_BYTES).min(body.len()))
+}
+
+fn initial_codex_delivery(cli: &str, delivery: &RelayDelivery) -> bool {
+    matches!(
+        cli_basename(cli).to_ascii_lowercase().as_str(),
+        "codex" | "codex.exe"
+    ) && delivery.from == "broker"
+        && delivery.event_id.starts_with("init_")
+}
+
+fn compact_render(text: &str) -> String {
+    text.chars().filter(|c| !c.is_whitespace()).collect()
+}
+
+// Only the current composer, never transcript/history. A scrolling composer
+// keeps its prompt on the first visible row; the cursor bounds its last row.
+fn pending_codex_composer(snapshot: &Snapshot) -> Option<String> {
+    let plain = snapshot.to_plain();
+    if detect_codex_trust_prompt(&plain) || plain.to_ascii_lowercase().contains("esc to interrupt")
+    {
+        return None;
+    }
+    let lines: Vec<_> = plain.lines().collect();
+    let end = snapshot.cursor.0.checked_sub(1)? as usize;
+    let start = lines
+        .iter()
+        .take(end + 1)
+        .rposition(|line| line.starts_with("› ") || *line == "›")?;
+    let content = lines.get(start..=end)?.join("\n");
+    if content.contains("› Ask Codex") || compact_render(content.trim_start_matches('›')).is_empty()
+    {
+        return None;
+    }
+    Some(content)
+}
+
+// Render matching is pacing evidence, NOT exact-byte verification: terminal
+// wrapping and whitespace collapse make that impossible (relay#1781 round 4).
+// Require fresh output after each write so a repeated chunk in a stale grid
+// cannot by itself open the gate. Never resend body bytes after partial failure.
+async fn write_initial_codex(
+    pty: &PtySession,
+    body: &str,
+    pace: Duration,
+    first_ack: tokio::sync::oneshot::Receiver<std::io::Result<()>>,
+    first_offset: u64,
+    cancelled: &AtomicBool,
+) -> std::io::Result<()> {
+    let work = async {
+        let mut start = 0;
+        let mut ack = first_ack;
+        let mut before = first_offset;
+        loop {
+            ack.await.map_err(std::io::Error::other)??;
+            let end = chunk_end(body, start);
+            let expected = compact_render(&body[start..end]);
+            let mut offset = before;
+            let mut quiet_since = Instant::now();
+            let gate_started = Instant::now();
+            loop {
+                tokio::time::sleep(Duration::from_millis(50)).await;
+                if cancelled.load(Ordering::Relaxed) {
+                    return Err(std::io::Error::other("initial injection interrupted by interactive input; body will not be replayed"));
+                }
+                let (shot, current) = Snapshot::capture_with_offset(pty);
+                if current != offset {
+                    offset = current;
+                    quiet_since = Instant::now();
+                }
+                if current > before
+                    && quiet_since.elapsed() >= CODEX_STARTUP_SETTLE
+                    && pending_codex_composer(&shot)
+                        .is_some_and(|text| compact_render(&text).contains(&expected))
+                {
+                    break;
+                }
+                if gate_started.elapsed() >= STARTUP_READY_WARNING {
+                    return Err(std::io::Error::other(
+                        "initial chunk render gate timed out; no later body or Enter sent",
+                    ));
+                }
+            }
+            if end == body.len() {
+                break;
+            }
+            start = end;
+            before = pty.consumed_offset();
+            ack = pty
+                .submit_write_paced(
+                    body[start..chunk_end(body, start)].as_bytes().to_vec(),
+                    pace,
+                )
+                .map_err(std::io::Error::other)?;
+        }
+        pty.submit_write(b"\r".to_vec())
+            .map_err(std::io::Error::other)?
+            .await
+            .map_err(std::io::Error::other)??;
+        let mut last_submit = Instant::now();
+        let mut retries = 0;
+        let mut offset = pty.consumed_offset();
+        let mut quiet_since = Instant::now();
+        loop {
+            tokio::time::sleep(Duration::from_millis(50)).await;
+            // Once progress or a cleared composer is observed, permanently stop
+            // recovery. worker_ready itself predates initial-task injection.
+            if cancelled.load(Ordering::Relaxed) {
+                return Ok(());
+            }
+            let (shot, current) = Snapshot::capture_with_offset(pty);
+            if current != offset {
+                offset = current;
+                quiet_since = Instant::now();
+            }
+            let Some(composer) = pending_codex_composer(&shot) else {
+                return Ok(());
+            };
+            let tail_start = floor_char_boundary(body, body.len().saturating_sub(128));
+            if !compact_render(&composer).contains(&compact_render(&body[tail_start..])) {
+                return Ok(());
+            }
+            if last_submit.elapsed() >= INITIAL_SUBMIT_RETRY
+                && quiet_since.elapsed() >= CODEX_STARTUP_SETTLE
+            {
+                if retries == INITIAL_SUBMIT_RETRIES {
+                    tracing::warn!(
+                        retries,
+                        "initial Codex submit recovery exhausted; composer remains pending"
+                    );
+                    return Ok(());
+                }
+                tracing::warn!(
+                    retry = retries + 1,
+                    "initial Codex composer still pending; retrying submit only"
+                );
+                pty.submit_write(b"\r".to_vec())
+                    .map_err(std::io::Error::other)?
+                    .await
+                    .map_err(std::io::Error::other)??;
+                retries += 1;
+                last_submit = Instant::now();
+            }
+        }
+    };
+    // Includes write acknowledgments, all gates, and recovery; below the 90s
+    // worker deadline even if a drainer or an arbitrarily large brief stalls.
+    tokio::time::timeout(STARTUP_READY_TIMEOUT, work)
+        .await
+        .map_err(|_| {
+            std::io::Error::other(
+                "initial Codex injection deadline exceeded; body will not be replayed",
+            )
+        })?
+}
 
 #[derive(Default)]
 struct StartupReadinessState {
@@ -627,7 +800,8 @@ pub(crate) async fn run_pty_worker(cmd: PtyCommand) -> Result<()> {
     // a wedged drainer can never advance the paced sequence — no false
     // `delivery_injected`, no bogus echo baseline. On a failed ack the delivery
     // is requeued at the front of `pending_worker_injections`.
-    let mut injection_ack: Option<tokio::sync::oneshot::Receiver<std::io::Result<()>>> = None;
+    let mut injection_ack: Option<InjectionWriteFuture<'_>> = None;
+    let mut initial_injection_cancel: Option<Arc<AtomicBool>> = None;
     // In-flight `write_pty` PTY writes awaiting the drainer's confirmation. Each
     // entry resolves to `(request_id, byte_len, ack_result)` once the PTY write
     // (or its failure) is confirmed, at which point the loop sends a
@@ -928,6 +1102,7 @@ pub(crate) async fn run_pty_worker(cmd: PtyCommand) -> Result<()> {
                                 // child process sees the keystrokes.
                                 match frame.payload.get("data").and_then(Value::as_str) {
                                     Some(data) => {
+                                        if let Some(cancel) = &initial_injection_cancel { cancel.store(true, Ordering::Relaxed); }
                                         // Non-blocking submission: never parks the
                                         // select loop even if the drainer is wedged
                                         // behind a child that stopped reading stdin.
@@ -1013,6 +1188,9 @@ pub(crate) async fn run_pty_worker(cmd: PtyCommand) -> Result<()> {
                                         hold,
                                         "interactive hold updated"
                                     );
+                                }
+                                if hold {
+                                    if let Some(cancel) = &initial_injection_cancel { cancel.store(true, Ordering::Relaxed); }
                                 }
                                 pty_auto.interactive_hold = hold;
                                 // A hold boundary invalidates any outstanding
@@ -1210,7 +1388,9 @@ pub(crate) async fn run_pty_worker(cmd: PtyCommand) -> Result<()> {
                         // Clear startup interstitials before evaluating the
                         // prompt. The gate below still explicitly rejects the
                         // trust screen until Codex redraws its real composer.
-                        pty_auto.handle_codex_trust(&text, &pty).await;
+                        if initial_injection_cancel.is_none() {
+                            pty_auto.handle_codex_trust(&text, &pty).await;
+                        }
                         let startup_ready = startup_gate_ready(
                             &resolved_cli,
                             &startup_output,
@@ -1290,6 +1470,9 @@ pub(crate) async fn run_pty_worker(cmd: PtyCommand) -> Result<()> {
                         pty_auto.reset_idle_on_output();
                         pty_auto.update_editor_buffer(&text);
                         pty_auto.reset_auto_enter_on_output(&text);
+                        // Chunk gates release the FIFO between writes. Do not let
+                        // an auto-responder splice keys into the initial composer.
+                        if initial_injection_cancel.is_none() {
                         pty_auto.handle_mcp_approval(&text, &pty).await;
                         pty_auto.handle_bypass_permissions(&text, &pty).await;
                         pty_auto.handle_codex_model_prompt(&text, &pty).await;
@@ -1298,6 +1481,7 @@ pub(crate) async fn run_pty_worker(cmd: PtyCommand) -> Result<()> {
                         pty_auto.handle_gemini_untrusted_banner(&text, &pty).await;
                         pty_auto.handle_gemini_trust(&text, &pty).await;
                         pty_auto.handle_claude_trust(&text, &pty).await;
+                        }
 
                         // Detect KIND: continuity commands in PTY output.
                         // Only scan when no echo verifications are pending to avoid false-positives
@@ -1640,6 +1824,33 @@ pub(crate) async fn run_pty_worker(cmd: PtyCommand) -> Result<()> {
                         if include_mcp_reminder {
                             mcp_reminder_throttle.note_sent(Instant::now());
                         }
+                        if initial_codex_delivery(&resolved_cli, &inj.pending.delivery) {
+                            let before = pty.consumed_offset();
+                            let end = chunk_end(&injection, 0);
+                            let (first_ack, boundary) = match pty.submit_write_paced_with_output_boundary(
+                                injection[..end].as_bytes().to_vec(), inject_rate) {
+                                Ok(write) => write,
+                                Err(error) => {
+                                    // Admission failed before any body was queued, so
+                                    // the existing retry policy is still safe here.
+                                    tracing::warn!(%error, "initial chunk enqueue failed; re-queuing delivery");
+                                    restore_hold_exemption(&inj, &mut hold_exempt_injections, &mut hold_exempt_event_ids);
+                                    pending_worker_injections.push_front(inj.pending);
+                                    continue;
+                                }
+                            };
+                            inj.output_boundary = Some(boundary);
+                            inj.injection_text = Some(injection.clone());
+                            inj.stage = InjectionStage::Finalize;
+                            let cancel = Arc::new(AtomicBool::new(false));
+                            initial_injection_cancel = Some(cancel.clone());
+                            let pty_ref = &pty;
+                            injection_ack = Some(Box::pin(async move {
+                                Ok(write_initial_codex(pty_ref, &injection, inject_rate, first_ack, before, &cancel).await)
+                            }));
+                            active_injection = Some(inj);
+                            continue;
+                        }
                         // Submit the body and mandatory Enter as one FIFO
                         // command and hold the ack. Claude Code and Codex need Enter as
                         // a distinct PTY write after its multiline paste
@@ -1670,7 +1881,7 @@ pub(crate) async fn run_pty_worker(cmd: PtyCommand) -> Result<()> {
                                 inj.injection_text = Some(injection);
                                 inj.output_boundary = Some(output_boundary);
                                 inj.stage = InjectionStage::Finalize;
-                                injection_ack = Some(ack_rx);
+                                injection_ack = Some(Box::pin(ack_rx));
                                 active_injection = Some(inj);
                             }
                             Err(e) => {
@@ -1722,8 +1933,25 @@ pub(crate) async fn run_pty_worker(cmd: PtyCommand) -> Result<()> {
                     .await
             }, if injection_ack.is_some() => {
                 injection_ack = None;
+                let was_chunked = initial_injection_cancel.take().is_some();
                 if let Some(mut inj) = active_injection.take() {
                     let confirmed = matches!(ack, Ok(Ok(())));
+                    if was_chunked && !confirmed {
+                        tracing::warn!(delivery_id = %inj.pending.delivery.delivery_id, error = ?ack,
+                            "initial injection incomplete; refusing to replay partially written body");
+                        // Retain the id to reject a retry already in transit;
+                        // delivery_failed also removes the broker retry record.
+                        let _ = send_frame(&out_tx, "delivery_failed", None, json!({
+                            "delivery_id": inj.pending.delivery.delivery_id,
+                            "event_id": inj.pending.delivery.event_id,
+                            "reason": "initial_injection_incomplete; body will not be replayed"
+                        })).await;
+                        let _ = send_frame(&out_tx, "worker_error", inj.pending.request_id, json!({
+                            "code": "initial_injection_incomplete", "retryable": false,
+                            "message": "Initial task delivery interrupted or timed out; inspect the composer before retrying"
+                        })).await;
+                        continue;
+                    }
                     match injection_ack_outcome(inj.stage, confirmed) {
                         InjectionAckOutcome::Finalize => {
                             // Body+Enter confirmed on the child: only now is
@@ -1949,7 +2177,7 @@ pub(crate) async fn run_pty_worker(cmd: PtyCommand) -> Result<()> {
 
             // --- Auto-enter for stuck agents ---
             _ = auto_enter_interval.tick() => {
-                pty_auto.try_auto_enter(&pty);
+                if active_injection.is_none() { pty_auto.try_auto_enter(&pty); }
 
                 // Idle detection: emit agent_idle once when silence exceeds threshold.
                 // Granularity depends on auto_enter_interval tick rate (2s).
@@ -2118,6 +2346,218 @@ pub(crate) async fn run_pty_worker(cmd: PtyCommand) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn initial_chunks_preserve_utf8_and_whitespace() {
+        let body = format!("{}é🙂\n\t  {}", "x".repeat(767), "界".repeat(600));
+        let mut chunks = Vec::new();
+        let mut start = 0;
+        while start < body.len() {
+            let end = chunk_end(&body, start);
+            assert!(end > start && end - start <= INITIAL_CHUNK_BYTES);
+            chunks.push(&body[start..end]);
+            start = end;
+        }
+        assert_eq!(chunks.concat(), body);
+        assert_eq!(chunks[0].len(), 767);
+    }
+
+    #[test]
+    fn chunking_is_only_for_broker_codex_initial_tasks() {
+        let mut delivery = test_pending_injection("init_123").delivery;
+        delivery.from = "broker".into();
+        assert!(initial_codex_delivery("/bin/codex", &delivery));
+        for cli in ["claude", "gemini", "opencode", "droid", "agent"] {
+            assert!(!initial_codex_delivery(cli, &delivery));
+        }
+        delivery.from = "peer".into();
+        assert!(!initial_codex_delivery("codex", &delivery));
+        delivery.from = "broker".into();
+        delivery.event_id = "regular_message".into();
+        assert!(!initial_codex_delivery("codex", &delivery));
+    }
+
+    // Real PTY regression: the child records every byte and redraws one chunk
+    // at a time. It can deliberately swallow Enter to exercise the recovery
+    // path without depending on an installed vendor CLI or network service.
+    #[cfg(unix)]
+    async fn initial_pty_fixture(submits: usize, cancel: bool) {
+        let dir = tempfile::tempdir().unwrap();
+        let log = dir.path().join("input");
+        let chunk = dir.path().join("chunk");
+        let body = format!("{}{}{}", "a".repeat(768), "b".repeat(768), "c".repeat(768));
+        let script = format!(
+            r#"
+            stty raw -echo
+            printf '\033[2J\033[H› Ask Codex to do anything'
+            for n in 1 2 3; do
+                dd bs=1 count=768 of='{chunk}' 2>/dev/null
+                cat '{chunk}' >> '{log}'
+                printf '\033[2J\033[H› '
+                cat '{chunk}'
+            done
+            n=0
+            while [ "$n" -lt {submits} ]; do
+                n=$((n + 1))
+                dd bs=1 count=1 >> '{log}' 2>/dev/null
+            done
+            printf '\033[2J\033[H› Ask Codex to do anything'
+            sleep 5
+        "#,
+            chunk = chunk.display(),
+            log = log.display()
+        );
+        let (pty, mut rx) = PtySession::spawn("/bin/sh", &["-c".into(), script], 24, 1000).unwrap();
+        let drain = tokio::spawn(async move { while rx.recv().await.is_some() {} });
+        for _ in 0..100 {
+            if pty.screen_text().contains("Ask Codex") {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+        assert!(pty.screen_text().contains("Ask Codex"));
+        let before = pty.consumed_offset();
+        let ack = pty.submit_write(body[..768].as_bytes().to_vec()).unwrap();
+        let cancelled = AtomicBool::new(cancel);
+        let started = Instant::now();
+        let result =
+            write_initial_codex(&pty, &body, Duration::ZERO, ack, before, &cancelled).await;
+        let actual = std::fs::read(&log).unwrap();
+        if cancel {
+            assert!(result.is_err());
+            assert_eq!(actual, body[..768].as_bytes());
+        } else {
+            result.unwrap();
+            assert!(started.elapsed() >= CODEX_STARTUP_SETTLE * 3);
+            assert_eq!(
+                actual,
+                format!("{body}{}", "\r".repeat(submits.min(3))).as_bytes()
+            );
+        }
+        pty.shutdown().unwrap();
+        drain.abort();
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn initial_native_pty_chunks_submit_once_and_stop_on_progress() {
+        initial_pty_fixture(1, false).await;
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn initial_native_pty_recovery_is_bounded_and_never_retypes_body() {
+        // The child waits for four Enters; the writer must stop after three.
+        initial_pty_fixture(4, false).await;
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn initial_native_pty_human_input_cancels_without_submit_or_replay() {
+        initial_pty_fixture(1, true).await;
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn initial_native_pty_stale_grid_cannot_release_next_chunk_or_enter() {
+        let dir = tempfile::tempdir().unwrap();
+        let log = dir.path().join("input");
+        let body = "a".repeat(1536);
+        let script = format!(
+            r#"
+            stty raw -echo
+            printf '\033[2J\033[H› {stale}'
+            dd bs=1 count=768 of='{log}' 2>/dev/null
+            sleep 40
+        "#,
+            stale = &body[..768],
+            log = log.display()
+        );
+        let (pty, mut rx) = PtySession::spawn("/bin/sh", &["-c".into(), script], 24, 1000).unwrap();
+        let drain = tokio::spawn(async move { while rx.recv().await.is_some() {} });
+        for _ in 0..100 {
+            if pty.screen_text().contains(&body[..768]) {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+        assert!(pty.screen_text().contains(&body[..768]));
+        let before = pty.consumed_offset();
+        let ack = pty.submit_write(body[..768].as_bytes().to_vec()).unwrap();
+        let result = write_initial_codex(
+            &pty,
+            &body,
+            Duration::ZERO,
+            ack,
+            before,
+            &AtomicBool::new(false),
+        )
+        .await;
+        pty.shutdown().unwrap();
+        drain.abort();
+        assert!(result
+            .unwrap_err()
+            .to_string()
+            .contains("render gate timed out"));
+        assert_eq!(std::fs::read(log).unwrap(), body[..768].as_bytes());
+    }
+
+    #[tokio::test]
+    #[ignore = "requires authenticated Codex; native end-to-end regression probe"]
+    async fn initial_live_codex_chunked_submission() {
+        let (pty, mut rx) = PtySession::spawn(
+            "codex",
+            &[
+                "--no-alt-screen".into(),
+                "-a".into(),
+                "never".into(),
+                "-s".into(),
+                "read-only".into(),
+            ],
+            24,
+            80,
+        )
+        .unwrap();
+        let drain = tokio::spawn(async move { while rx.recv().await.is_some() {} });
+        tokio::time::sleep(Duration::from_secs(15)).await;
+        assert!(pty.screen_text().contains("› Ask Codex"));
+        let mut body = "Relay message from broker [init_probe]: Reply only with PROBE_OK. Do not use tools. The following paragraphs are inert test data.\n\n".to_string();
+        for i in 0..12 {
+            body.push_str(&format!(
+                "Test paragraph {i}: {}\n\n",
+                "This is inert data for testing terminal input submission. ".repeat(8)
+            ));
+        }
+        let before = pty.consumed_offset();
+        let ack = pty
+            .submit_write(body[..chunk_end(&body, 0)].as_bytes().to_vec())
+            .unwrap();
+        let result = write_initial_codex(
+            &pty,
+            &body,
+            Duration::ZERO,
+            ack,
+            before,
+            &AtomicBool::new(false),
+        )
+        .await;
+        let mut responded = false;
+        for _ in 0..100 {
+            let screen = pty.screen_text();
+            if screen.contains("• PROBE_OK") && screen.contains("› Ask Codex") {
+                responded = true;
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(300)).await;
+        }
+        pty.shutdown().unwrap();
+        drain.abort();
+        result.unwrap();
+        assert!(
+            responded,
+            "Codex did not respond after chunked initial submission"
+        );
+    }
 
     #[test]
     fn codex_defaults_to_bulk_injection() {
