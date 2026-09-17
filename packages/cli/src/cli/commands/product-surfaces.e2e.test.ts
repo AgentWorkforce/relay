@@ -13,6 +13,7 @@
  */
 
 import fs from 'node:fs';
+import { createRequire } from 'node:module';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
@@ -32,16 +33,41 @@ vi.setConfig({ testTimeout: 60_000, hookTimeout: 60_000 });
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 const WORKSPACES_ROOT = process.env['RELAY_PRODUCT_SURFACES_ROOT'] ?? path.resolve(HERE, '../../../../../..');
 
-/** Where each mounted group's built surface lives in its sibling repo. */
-const BUILT_SURFACES: Record<string, string> = {
-  file: 'relayfile/packages/sdk/typescript/dist/relay-cli/index.js',
-  flows: 'flows/packages/sdk/dist/relay-cli.js',
-  sessions: 'relayhistory/sdk-ts/dist/relay-cli.js',
+const requireFrom = createRequire(import.meta.url);
+
+/**
+ * How to reach each mounted group's surface.
+ *
+ * The installed package is tried first, so once the product SDKs are published
+ * this exercises the real dependency on every CI machine with no build-artifact
+ * plumbing. The sibling checkout is the local-development fallback, for working
+ * against a product branch before it ships.
+ */
+const BUILT_SURFACES: Record<string, { specifier: string; sibling: string }> = {
+  file: {
+    specifier: '@relayfile/sdk/relay-cli',
+    sibling: 'relayfile/packages/sdk/typescript/dist/relay-cli/index.js',
+  },
+  flows: {
+    specifier: '@relayflows/sdk/relay-cli',
+    sibling: 'flows/packages/sdk/dist/relay-cli.js',
+  },
+  sessions: {
+    specifier: 'ai-hist/relay-cli',
+    sibling: 'relayhistory/sdk-ts/dist/relay-cli.js',
+  },
 };
 
 function builtSurfacePath(group: string): string | undefined {
-  const candidate = path.join(WORKSPACES_ROOT, BUILT_SURFACES[group]!);
-  return fs.existsSync(candidate) ? candidate : undefined;
+  const entry = BUILT_SURFACES[group]!;
+  try {
+    // Resolves once the published SDK exposes the subpath. A published version
+    // predating it throws ERR_PACKAGE_PATH_NOT_EXPORTED and falls through.
+    return requireFrom.resolve(entry.specifier);
+  } catch {
+    const candidate = path.join(WORKSPACES_ROOT, entry.sibling);
+    return fs.existsSync(candidate) ? candidate : undefined;
+  }
 }
 
 function makeIo(): RelayCliIo & { out: string; err: string } {

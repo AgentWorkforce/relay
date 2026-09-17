@@ -423,6 +423,11 @@ RELAY_AGENT_TOKEN="$TOKEN_A" relay integration webhook delete "$HOOK_ID"
 which package to upgrade, and that message is the expected result rather than a
 failure.
 
+The shared fixture runs under `set -Eeuo pipefail`, so every expected-nonzero
+command below is run inside an `if`. Written as a bare command, the first
+expected exit 2 would abort the procedure before its assertion ran, and the
+check would look like a pass.
+
 ```bash
 # Each group renders its product's real tree, named for agent-relay.
 for g in file flows sessions; do
@@ -431,13 +436,31 @@ for g in file flows sessions; do
 done
 
 # Help must not leak the product's own program name.
-relay file --help | grep -Eq '^Usage: (relayfile|flows|ai-hist)\b' && exit 1
+if relay file --help | grep -Eq '^Usage: (relayfile|flows|ai-hist)\b'; then exit 1; fi
 
 # An unknown command is exit 2 and lists real commands.
-relay sessions definitely-not-a-command; [ $? -eq 2 ] || exit 1
+if relay sessions definitely-not-a-command >/dev/null 2>&1; then
+  exit 1
+else
+  [ "$?" -eq 2 ] || exit 1
+fi
 
 # The hidden alias still routes; a malformed id is a usage error, not a crash.
-relay session replay not-a-uuid; [ $? -eq 2 ] || exit 1
+if relay session replay not-a-uuid >/dev/null 2>&1; then
+  exit 1
+else
+  [ "$?" -eq 2 ] || exit 1
+fi
+
+# Before the product releases land, each group must name the package to
+# upgrade rather than failing opaquely.
+for g in file flows sessions; do
+  if out=$(relay "$g" --help 2>&1); then
+    continue  # the SDK is installed; the tree assertions above already ran
+  else
+    printf '%s' "$out" | grep -Eq 'is too old|is not installed' || exit 1
+  fi
+done
 ```
 
 Assert a real command executes through the mount, not just help — e.g.

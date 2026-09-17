@@ -206,3 +206,64 @@ describe('registerProductSurfaceCommands', () => {
     expect(io.err).not.toContain('ERR_MODULE_NOT_FOUND');
   });
 });
+
+describe('process stderr redaction', () => {
+  /** Drive a mounted surface with the real default io (no overrides). */
+  async function runWithRealIo(emit: (io: RelayCliIo) => void): Promise<string> {
+    const written: string[] = [];
+    const spy = vi.spyOn(process.stderr, 'write').mockImplementation(((chunk: unknown) => {
+      written.push(typeof chunk === 'string' ? chunk : `<bytes:${(chunk as Uint8Array).length}>`);
+      return true;
+    }) as never);
+    const stdout = vi.spyOn(process.stdout, 'write').mockImplementation((() => true) as never);
+    const program = new Command('agent-relay');
+    program.exitOverride();
+    program.enablePositionalOptions();
+    registerProductSurfaceCommands(
+      program,
+      {
+        importModule: async () => ({
+          createRelayCliSurface: () =>
+            fakeSurface({
+              run: async (_argv, io) => {
+                emit(io);
+                return 0;
+              },
+            }),
+        }),
+        // io intentionally NOT overridden: this exercises the real sink.
+        exit: ((code: number) => {
+          throw new Error(`exit:${code}`);
+        }) as (code: number) => never,
+      },
+      [DEFINITION]
+    );
+    try {
+      await program.parseAsync(['file', 'ls'], { from: 'user' });
+    } finally {
+      spy.mockRestore();
+      stdout.mockRestore();
+    }
+    return written.join('');
+  }
+
+  it('masks a credential a mounted product echoes to stderr', async () => {
+    // A product that echoes argv back — "unknown flag --api-key=rk_live_…" —
+    // would otherwise leak the secret, because it writes through the injected
+    // sink and so bypasses commander's own redaction.
+    const output = await runWithRealIo((io) => {
+      io.stderr('error: unknown option --api-key=rk_live_0123456789abcdef\n');
+    });
+
+    expect(output).not.toContain('rk_live_0123456789abcdef');
+    expect(output).toContain('rk_live_…cdef');
+  });
+
+  it('passes binary stderr chunks through without attempting to mask them', async () => {
+    const output = await runWithRealIo((io) => {
+      io.stderr(new Uint8Array([0xff, 0xfe, 0x00]));
+    });
+
+    expect(output).toBe('<bytes:3>');
+  });
+});

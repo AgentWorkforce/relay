@@ -936,6 +936,9 @@ jobs:
           # `needs` of this job); listing them here too publishes the same
           # version twice, and a lagging registry lets the second attempt past
           # the exists-check into an E409 that fails the release.
+          # cli-surface has no dependencies of its own, but the CLI pins it at
+          # an exact version, so it must land before publish-main.
+          - cli-surface
           - policy
           - utils
           - sdk
@@ -1132,6 +1135,7 @@ jobs:
         package:
           # cloud and config are published by publish-sdk-internal-deps, which
           # this job depends on; listing them again races that publish.
+          - cli-surface
           - sdk
           - session
           - utils

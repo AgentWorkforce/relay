@@ -9,9 +9,11 @@
 
 import type { Command } from 'commander';
 
-import { composeSurfaces, type RelayCliSurface } from '@agent-relay/cli-surface';
+import { composeSurfaces, type RelayCliIo, type RelayCliSurface } from '@agent-relay/cli-surface';
 
 import { describeError } from '../lib/describe-error.js';
+import { redactCredentialValues } from '@agent-relay/cloud/redact';
+
 import { defaultExit } from '../lib/exit.js';
 import { mountRelayCliSurface, type RelayCliSurfaceDependencies } from '../lib/relay-cli-surface.js';
 
@@ -57,6 +59,25 @@ export interface ProductSurfaceDependencies extends RelayCliSurfaceDependencies 
   importModule: (specifier: string) => Promise<unknown>;
 }
 
+/**
+ * The real process streams, with credentials masked on stderr.
+ *
+ * Commander's own parse errors are already redacted, but a mounted product
+ * writes through the injected sink, so its diagnostics would bypass that and
+ * echo a credential a user put in argv. Only stderr is masked: stdout is the
+ * data the caller asked for, it can be binary (`file export --format tar
+ * --output -`), and rewriting it would corrupt the payload.
+ */
+function processIo(): RelayCliIo {
+  return {
+    stdout: (chunk) => process.stdout.write(chunk),
+    // Bytes pass through untouched — there is nothing to mask in a binary
+    // chunk, and decoding one to scan it would corrupt what gets written.
+    stderr: (chunk) =>
+      process.stderr.write(typeof chunk === 'string' ? redactCredentialValues(chunk) : chunk),
+  };
+}
+
 /** The product groups `agent-relay` mounts. */
 export const PRODUCT_SURFACES: readonly ProductSurfaceDefinition[] = [
   {
@@ -81,6 +102,22 @@ export const PRODUCT_SURFACES: readonly ProductSurfaceDefinition[] = [
   },
 ];
 
+/** The only part of the optional Relayhistory cloud client this module uses. */
+interface RelayhistoryCloudClientModule {
+  createRelayhistoryCloudClient: (options: { baseUrl: string; token: string }) => unknown;
+}
+
+/**
+ * Specifier for the optional cloud client.
+ *
+ * Indirected through a variable on purpose. `@relayhistory/cloud-client` is an
+ * `optionalDependency`, but TypeScript still resolves a literal specifier
+ * inside `await import(...)` and fails the build with TS2307 wherever the
+ * package is absent — which is every CI runner until it is published. The
+ * try/catch already covers its runtime absence; this covers compile time.
+ */
+const RELAYHISTORY_CLOUD_CLIENT = '@relayhistory/cloud-client';
+
 /**
  * Build the Relayhistory cloud client that unlocks `sessions cloud …`.
  *
@@ -94,8 +131,8 @@ async function createSessionsSurfaceOptions(): Promise<{ cloud?: unknown }> {
   if (!baseUrl || !token) return {};
 
   try {
-    const { createRelayhistoryCloudClient } = await import('@relayhistory/cloud-client');
-    return { cloud: createRelayhistoryCloudClient({ baseUrl, token }) };
+    const module = (await import(RELAYHISTORY_CLOUD_CLIENT)) as RelayhistoryCloudClientModule;
+    return { cloud: module.createRelayhistoryCloudClient({ baseUrl, token }) };
   } catch {
     // The cloud client is optional: without it the local half still mounts,
     // which is strictly better than failing the whole group.
@@ -188,10 +225,7 @@ export function registerProductSurfaceCommands(
 ): void {
   const deps: ProductSurfaceDependencies = {
     importModule: overrides.importModule ?? ((specifier: string) => import(specifier)),
-    io: overrides.io ?? {
-      stdout: (chunk) => process.stdout.write(chunk),
-      stderr: (chunk) => process.stderr.write(chunk),
-    },
+    io: overrides.io ?? processIo(),
     exit: overrides.exit ?? defaultExit,
   };
 
