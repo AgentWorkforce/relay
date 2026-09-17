@@ -253,6 +253,16 @@ fn compact_render(text: &str) -> String {
     text.chars().filter(|c| !c.is_whitespace()).collect()
 }
 
+// Codex's actual busy status line always pairs "working" with the
+// "esc to interrupt" hint on the same row (e.g. "Working (12s • esc to
+// interrupt)"). Requiring both, rather than the hint phrase alone, keeps
+// this from matching ordinary task text that happens to mention "esc to
+// interrupt" without being the real indicator (relay#1782 review, round 3).
+fn is_codex_busy_status_line(line: &str) -> bool {
+    let lower = line.to_ascii_lowercase();
+    lower.contains("working") && lower.contains("esc to interrupt")
+}
+
 // Only the current composer, never transcript/history. A scrolling composer
 // keeps its prompt on the first visible row; the cursor bounds its last row.
 //
@@ -270,7 +280,7 @@ fn pending_codex_composer(snapshot: &Snapshot) -> Option<String> {
     let start = lines.iter().take(end + 1).rposition(|line| {
         line.starts_with("› ") || *line == "›" || line.starts_with("codex> ") || *line == "codex>"
     })?;
-    // A "Working ... esc to interrupt" indicator replaces the idle prompt
+    // A "Working (... esc to interrupt)" indicator replaces the idle prompt
     // line while Codex is actively responding. It can show up either just
     // above a stale idle prompt still lingering on screen, or BELOW the
     // matched prompt row — between it and the cursor — when Codex hasn't
@@ -279,19 +289,26 @@ fn pending_codex_composer(snapshot: &Snapshot) -> Option<String> {
     // the busy indicator rendered underneath it). Checking only the rows
     // before the composer misses that second case and lets recovery read
     // leftover transcript text as still-pending composer content, sending
-    // extra Enters at Codex mid-turn (relay#1782 review, round 2). Skip only
-    // the composer's own row (`start`), since that's the one place
-    // legitimately pending injected text could itself contain the phrase.
+    // extra Enters at Codex mid-turn (relay#1782 review, round 2).
     let busy_above = lines[..start]
         .iter()
         .rev()
         .take(4)
-        .any(|line| line.to_ascii_lowercase().contains("esc to interrupt"));
+        .any(|line| is_codex_busy_status_line(line));
+    // Rows between the composer's own row and the cursor are ambiguous: for
+    // a genuinely idle composer they can be the pending task's own wrapped
+    // continuation lines (formatted initial injections routinely wrap, and
+    // may legitimately mention "esc to interrupt" as plain task text — this
+    // very fix is an example). A bare substring match on those rows would
+    // read that wrapped body as a busy indicator and block the render gate
+    // forever (relay#1782 review, round 3). Require the actual indicator's
+    // shape — "working" co-occurring with "esc to interrupt" on one row —
+    // rather than the phrase alone, so ordinary task text can't trip it.
     let busy_below = lines
         .get(start + 1..=end)
         .into_iter()
         .flatten()
-        .any(|line| line.to_ascii_lowercase().contains("esc to interrupt"));
+        .any(|line| is_codex_busy_status_line(line));
     if busy_above || busy_below {
         return None;
     }
@@ -2713,6 +2730,41 @@ mod tests {
         assert!(
             pending_codex_composer(&snapshot).is_none(),
             "a busy indicator rendered below a stale prompt line must still read as busy"
+        );
+    }
+
+    // Formatted initial injections routinely span more than one screen row
+    // (wrapping, or literal newlines from a multi-line task), and may
+    // legitimately mention "esc to interrupt" as plain task prose on one of
+    // those rows — this very fix is an example. A bare substring match on
+    // rows after the composer's own row would misread that pending, still
+    // idle composer as busy and permanently block the render gate (relay#1782
+    // review, round 3). Only a real indicator — "working" co-occurring with
+    // "esc to interrupt" on the same row — may do that.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn initial_native_pty_does_not_treat_wrapped_composer_text_as_busy() {
+        let script = r#"
+            stty raw -echo
+            printf '\033[2J\033[H› Investigate handling in the composer\nrender loop; watch for esc to interrupt weirdness'
+            sleep 5
+        "#
+        .to_string();
+        let (pty, mut rx) = PtySession::spawn("/bin/sh", &["-c".into(), script], 24, 80).unwrap();
+        let drain = tokio::spawn(async move { while rx.recv().await.is_some() {} });
+        for _ in 0..100 {
+            if pty.screen_text().contains("esc to interrupt") {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+        assert!(pty.screen_text().contains("esc to interrupt"));
+        let snapshot = Snapshot::capture(&pty);
+        pty.shutdown().unwrap();
+        drain.abort();
+        assert!(
+            pending_codex_composer(&snapshot).is_some(),
+            "wrapped composer text mentioning the phrase without a real busy indicator must still read as pending"
         );
     }
 
