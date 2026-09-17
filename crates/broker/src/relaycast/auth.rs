@@ -629,29 +629,25 @@ impl AuthClient {
     ) -> Result<AuthSessionSet> {
         let env_workspace_key = env_workspace_key()?;
 
-        let mut workspace_id_hint: Option<String> = None;
-
         let mut candidates: Vec<EnvWorkspaceKey> = Vec::new();
         if let Some(key) = env_workspace_key {
             candidates.push(key);
         }
 
-        let mut attempted_fresh_workspace = false;
         if candidates.is_empty() {
-            let ws_name = deterministic_workspace_name();
-            let (workspace_id, api_key) = self.create_workspace(&ws_name).await?;
-            workspace_id_hint = Some(workspace_id);
-            candidates.push(EnvWorkspaceKey {
-                source: "fresh",
-                key: api_key,
-                explicit_join: false,
-            });
-            attempted_fresh_workspace = true;
+            return self
+                .startup_fresh_workspace_session_set(
+                    requested_name,
+                    strict_name,
+                    agent_type,
+                    identity_key,
+                    waiter_id,
+                    startup_deadline,
+                )
+                .await;
         }
 
         let preferred_name = requested_name;
-        let mut auth_rejections = Vec::new();
-
         for candidate in &candidates {
             tracing::info!(
                 target = "relay_broker::auth",
@@ -682,11 +678,7 @@ impl AuthClient {
                         returned_name = %registration.1,
                         "registration succeeded"
                     );
-                    let session = self.finish_session(
-                        candidate.key.clone(),
-                        workspace_id_hint.clone(),
-                        registration,
-                    )?;
+                    let session = self.finish_session(candidate.key.clone(), None, registration)?;
                     return Ok(AuthSessionSet {
                         default_workspace_id: Some(session.credentials.workspace_id.clone()),
                         memberships: vec![session],
@@ -707,7 +699,6 @@ impl AuthClient {
                             candidate.source
                         ));
                     }
-                    auth_rejections.push(format!("{} key rejected", candidate.source));
                 }
                 Err(error) if is_rate_limited(&error) => {
                     // Only the exact `workspace_busy` code (handled above by
@@ -736,23 +727,15 @@ impl AuthClient {
             }
         }
 
-        if !attempted_fresh_workspace {
-            return self
-                .startup_fresh_workspace_session_set(
-                    requested_name,
-                    strict_name,
-                    agent_type,
-                    identity_key,
-                    waiter_id,
-                    startup_deadline,
-                )
-                .await;
-        }
-
-        anyhow::bail!(
-            "all workspace keys were rejected ({})",
-            auth_rejections.join(", ")
-        );
+        self.startup_fresh_workspace_session_set(
+            requested_name,
+            strict_name,
+            agent_type,
+            identity_key,
+            waiter_id,
+            startup_deadline,
+        )
+        .await
     }
 
     pub(crate) async fn startup_fresh_workspace_session_set(
@@ -2883,7 +2866,14 @@ mod tests {
             then.status(500);
         });
         let error = AuthClient::new(Some(server.base_url()))
-            .startup_session(Some("lead"))
+            .startup_session_set_with_identity_and_waiter(
+                Some("lead"),
+                false,
+                None,
+                None,
+                None,
+                Some(tokio::time::Instant::now() + std::time::Duration::from_secs(7)),
+            )
             .await
             .expect_err("persistent workspace_busy must remain terminal");
         let message = format!("{error:#}");
@@ -2892,11 +2882,11 @@ mod tests {
             "429 Too Many Requests",
             "workspace admission is busy",
             "request_id: workspace-busy-test",
-            "attempts: 40",
+            "attempts: 3",
         ] {
             assert!(message.contains(marker), "missing {marker}: {message}");
         }
-        register.assert_hits(40);
+        register.assert_hits(3);
         workspace.assert_hits(0);
         unsafe {
             std::env::remove_var("RELAY_API_KEY");
@@ -2987,7 +2977,14 @@ mod tests {
         });
 
         let error = AuthClient::new(Some(server.base_url()))
-            .startup_session_set(Some("lead"))
+            .startup_session_set_with_identity_and_waiter(
+                Some("lead"),
+                false,
+                None,
+                None,
+                None,
+                Some(tokio::time::Instant::now() + std::time::Duration::from_secs(7)),
+            )
             .await
             .expect_err("a busy membership must remain diagnosable when all fail");
         let message = format!("{error:#}");
@@ -2996,11 +2993,11 @@ mod tests {
             "429 Too Many Requests",
             "Workspace write capacity is busy",
             "request_id: multi-workspace-busy-374",
-            "attempts: 40",
+            "attempts: 3",
         ] {
             assert!(message.contains(marker), "missing {marker}: {message}");
         }
-        busy_register.assert_hits(40);
+        busy_register.assert_hits(3);
         auth_register.assert_hits(1);
 
         unsafe {
@@ -3288,19 +3285,19 @@ mod tests {
             let client = AuthClient::new(Some(format!("http://{address}")));
             async move {
                 client
-                    .startup_fresh_workspace_session_set(
+                    .startup_session_set_with_identity_and_waiter(
                         Some("lead"),
                         false,
                         None,
                         None,
                         None,
-                        Some(tokio::time::Instant::now() + std::time::Duration::from_secs(44)),
+                        Some(tokio::time::Instant::now() + std::time::Duration::from_secs(5)),
                     )
                     .await
             }
         });
 
-        tokio::time::advance(std::time::Duration::from_secs(31)).await;
+        tokio::time::advance(std::time::Duration::from_secs(5)).await;
         let error = startup
             .await
             .expect("startup task should join")
