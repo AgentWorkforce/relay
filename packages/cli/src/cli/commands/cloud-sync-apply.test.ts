@@ -26,9 +26,7 @@ vi.mock('@agent-relay/cloud', async (importOriginal) => ({
 }));
 
 const { registerCloudCommands } = await import('./cloud.js');
-type CloudDependencies = Parameters<typeof registerCloudCommands>[1] extends
-  | Partial<infer D>
-  | undefined
+type CloudDependencies = Parameters<typeof registerCloudCommands>[1] extends Partial<infer D> | undefined
   ? D
   : never;
 
