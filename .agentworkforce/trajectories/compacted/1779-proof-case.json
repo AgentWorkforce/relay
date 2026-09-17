@@ -1,0 +1,37 @@
+{
+  "id": "compact_a46srlxl8t98",
+  "version": 1,
+  "type": "compacted",
+  "compactedAt": "2026-09-17T18:32:56.605Z",
+  "sourceTrajectories": [
+    "traj_awvva33gwzrb"
+  ],
+  "dateRange": {
+    "start": "2026-09-17T18:29:09.834Z",
+    "end": "2026-09-17T18:32:21.258Z"
+  },
+  "summary": {
+    "totalDecisions": 1,
+    "totalEvents": 1,
+    "uniqueAgents": [
+      "default"
+    ]
+  },
+  "decisionGroups": [
+    {
+      "category": "testing",
+      "decisions": [
+        {
+          "question": "Exercise production Commander dispatch with injected Fleet and health boundaries",
+          "chosen": "Exercise production Commander dispatch with injected Fleet and health boundaries",
+          "reasoning": "Proves both call sites without changing runtime or existing tests; historical base is b1a3777e0, because the follow-up PR base already contains the fix.",
+          "fromTrajectory": "traj_awvva33gwzrb"
+        }
+      ]
+    }
+  ],
+  "keyLearnings": [],
+  "keyFindings": [],
+  "filesAffected": [],
+  "commits": []
+}
