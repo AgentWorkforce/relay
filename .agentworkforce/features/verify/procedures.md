@@ -412,18 +412,38 @@ RELAY_AGENT_TOKEN="$TOKEN_A" relay integration webhook delete "$HOOK_ID"
 
 `webhook create` and `create-inbound` are aliases over the same `POST /v1/webhooks`, whose request is `{ channel, name? }` — there is no outbound registration surface, so a capture receiver is only reachable through `webhook trigger`, not by registering `CAPTURE_URL` as a destination. The capture assertion requires the exact parsed payload `{"audit":true}` and a nonempty header whose lowercased name contains `signature`; it runs before deletion. For the inbound path proper, create the channel and hook, POST `$HOOK_URL` with `$HOOK_TOKEN` and the documented payload, assert the message lands in the channel, then delete the hook. Create/list/get/delete a unique subscription. For Relayfile, `subscribe --no-input`, assert `subscribe --list`, cause provider event and Relay reply, `unsubscribe` with same provider/resource, assert absent. Localhost cannot receive hosted webhooks.
 
-## reflex-history
+## product-cli-surfaces
 
-**Features:** `reflex-on`, `reflex-off`, `reflex-status`.
+**Features:** `product-surface-file`, `product-surface-flows`,
+`product-surface-sessions`, `product-surface-session-alias`.
 
-**Prerequisites:** isolated home; `on` is interactive and can use Cloud login.
+**Prerequisites:** the product SDKs must be installed and expose their
+`relay-cli` subpath. Until those releases ship, link local builds with
+`scripts/link-product-surfaces.sh`; without them each group correctly reports
+which package to upgrade, and that message is the expected result rather than a
+failure.
 
 ```bash
-echo y | relay reflex on; relay reflex status | grep -Eiq 'on'
-relay reflex off; relay reflex status | grep -Eiq 'off'
+# Each group renders its product's real tree, named for agent-relay.
+for g in file flows sessions; do
+  relay "$g" --help | grep -q "^Usage: agent-relay $g" || exit 1
+  relay "$g" --help | grep -q '^Commands:' || exit 1
+done
+
+# Help must not leak the product's own program name.
+relay file --help | grep -Eq '^Usage: (relayfile|flows|ai-hist)\b' && exit 1
+
+# An unknown command is exit 2 and lists real commands.
+relay sessions definitely-not-a-command; [ $? -eq 2 ] || exit 1
+
+# The hidden alias still routes; a malformed id is a usage error, not a crash.
+relay session replay not-a-uuid; [ $? -eq 2 ] || exit 1
 ```
 
-Run only against a disposable home/configuration and assert cleanup leaves Reflex off.
+Assert a real command executes through the mount, not just help — e.g.
+`relay sessions stats` against a populated local history store. Automation
+limitation: `relay file` needs the relayfile Go binary present, so a machine
+without it can verify help and routing but not execution.
 
 ## mcp-stdio
 
