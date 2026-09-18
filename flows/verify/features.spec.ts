@@ -27,15 +27,17 @@
  *   2. Nothing aggregated the per-tier results into a run verdict. `verdict`
  *      plus `enforce-verdict` now do, and `main()` sets a non-zero process exit
  *      so a scheduler sees red.
- *   3. `main()` discarded the runner result entirely. It now reads verdict.json
- *      and fails closed when that file is missing.
+ *   3. `main()` discarded the runner result entirely. `run-features.ts` now
+ *      reads verdict.json and fails closed when that file is missing.
  *
- * A fourth defect was subtler. `applyReliabilityDefaults` in @relayflows/core
- * force-enables `strategy: "retry"` with a repair agent for any workflow that
- * declares agents, so a failing verification gate got handed to an agent that
- * edited the working tree until the gate passed. A verification workflow whose
- * assertions can be rewritten to make them pass measures nothing. `onError`
- * is set to "continue" below specifically to opt out of that path.
+ * A fourth defect was subtler. `applyReliabilityDefaults` in the v1
+ * `@relayflows/core` engine force-enabled `strategy: "retry"` with a repair
+ * agent for any workflow declaring agents, so a failing verification gate got
+ * handed to an agent that edited the working tree until the gate passed. A
+ * verification flow whose assertions can be rewritten to make them pass
+ * measures nothing. v1 opted out with `onError('continue')`; relayflows v2 has
+ * no repair agents at all, so the property now holds by construction and the
+ * `.onError()` call below is accepted and ignored by the spec builder.
  *
  * ## Honest accounting
  *
@@ -299,8 +301,8 @@ finish_tier() {
  * environment. Pinning makes a missing CLOUD_API_* pair throw
  * `auth_token_missing` instead of silently taking a different path.
  *
- * The primitive is a hard dependency of @relayflows/core, which this workflow
- * already imports, so it resolves wherever the workflow itself does.
+ * The primitive ships as `@relayflows/slack-primitive`, which this generator
+ * imports directly, so it resolves wherever the generator itself does.
  */
 const SLACK_POST_FN = String.raw`
 SLACK_POST_EXECUTABLE="${SLACK_POST_TOOL}"
@@ -1615,12 +1617,12 @@ exit 0
 
   // ── Phase 12: verdict ────────────────────────────────────────────────────
   //
-  // The authoritative aggregation. It exits 0 even on FAIL, on purpose:
-  // findReadySteps() in @relayflows/core only schedules a step whose
-  // dependencies are "completed" or "skipped", so a failing gate here would
-  // permanently block the Slack, issue, and PR steps below — the escalation
-  // path would silently never run. Enforcement is `enforce-verdict` plus the
-  // process exit code in main().
+  // The authoritative aggregation. It exits 0 even on FAIL, on purpose: a
+  // dependent step runs only once its dependencies complete, so a failing gate
+  // here would permanently block the Slack, issue, and PR steps below — the
+  // escalation path would silently never run. That was true of v1's
+  // findReadySteps() and is true of the v2 kernel's DAG scheduling too.
+  // Enforcement is `enforce-verdict` plus the exit code in run-features.ts.
 
   wf.step('verdict', {
     type: 'deterministic',
