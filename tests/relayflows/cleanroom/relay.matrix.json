@@ -501,8 +501,7 @@
         "cloud-integrations",
         "cloud-rooms",
         "cloud-workers",
-        "integration",
-        "reflex"
+        "integration"
       ],
       "issueMatch": [
         "workflow",
@@ -512,7 +511,6 @@
         "integration",
         "webhook",
         "subscription",
-        "reflex",
         "daemon",
         "sandbox"
       ],
@@ -537,7 +535,6 @@
             "packages/cli/src/cli/commands/cloud-integration.test.ts",
             "packages/cli/src/cli/commands/integration-webhook-create.test.ts",
             "packages/cli/src/cli/commands/integration-subscribe.test.ts",
-            "packages/cli/src/cli/commands/reflex.test.ts",
             "packages/cloud/src/workflows.test.ts",
             "packages/cloud/src/worker.test.ts",
             "packages/cloud/src/fleet-sandbox.test.ts"
@@ -550,8 +547,7 @@
             "cloud-integrations",
             "cloud-rooms",
             "cloud-workers",
-            "integration",
-            "reflex"
+            "integration"
           ]
         },
         {

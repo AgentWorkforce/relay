@@ -1,0 +1,21 @@
+{
+  "version": 1,
+  "id": "1783-product-cli-surfaces",
+  "kind": "feature",
+  "title": "Mount relayfile, relayflows, and relayhistory as agent-relay command groups",
+  "runner": {
+    "command": ["node", "tests/relayflows/cases/1783-product-cli-surfaces/run.mjs"]
+  },
+  "requirements": [],
+  "timeoutSeconds": 900,
+  "expected": {
+    "base": {
+      "outcome": "absent",
+      "signature": "product_groups_absent"
+    },
+    "head": {
+      "outcome": "fixed",
+      "signature": "product_groups_mounted_and_argv_forwarded"
+    }
+  }
+}

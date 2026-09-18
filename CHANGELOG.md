@@ -5,7 +5,41 @@ All notable changes to Agent Relay will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
+## [Unreleased - Major]
+
+### Added
+
+- `agent-relay file`, `agent-relay flows`, and `agent-relay sessions` expose the relayfile, relayflows, and relayhistory CLIs from their own SDKs, so every Relay product is reachable from one binary.
+- `agent-relay sessions cloud list|events|search|thread|turns|digest|coverage` read Relayhistory cloud history once `@relayhistory/cloud-client` is installed alongside the CLI and Relayhistory credentials are configured.
+- `@agent-relay/cli-surface`: the contract a product SDK implements to be mounted as an `agent-relay` command group.
+
+### Changed
+
+- `agent-relay session` is now a hidden alias of `agent-relay sessions`; `session replay` keeps working unchanged.
+
+### Deprecated
+
+- `agent-relay cloud schedule` and `agent-relay cloud schedules` warn as relayflows v1. Both stay listed and supported: relayflows v2 has no hosted scheduling yet.
+- `--relayflow-version v1` on `agent-relay cloud run` warns; use `agent-relay flows run --cloud` for the v2 engine.
+- `agent-relay node workflow run|logs|sync` run on the relayflows v1 engine and are hidden from help; use `agent-relay flows run|replay|sync`.
+
+### Removed
+
+- `agent-relay reflex` (`on`, `off`, `status`).
+
+### Fixed
+
+- `ai-hist`'s `--acquisition-timeout-ms` is accepted instead of always failing as an unknown option, and `ai-hist` no longer publishes its compiled tests.
+
+### Breaking Changes
+
+- The `agent-relay reflex` command group is removed. Reflex history capture still runs from its stored enabled flag, but the CLI no longer toggles it.
+
+### Migration Guidance
+
+- Scripts calling `agent-relay reflex on|off|status` must be updated; there is no replacement command. Edit the Reflex state file directly if you need to change the flag.
+- Scripts calling `agent-relay cloud run --relayflow-version v1` should move to `agent-relay flows run --cloud`.
+- Scripts calling `agent-relay node workflow run|logs|sync` should move to `agent-relay flows run|replay|sync`. `flows replay` reads a run's local journal rather than tailing a log file.
 
 ## [12.2.3] - 2026-09-18
 
