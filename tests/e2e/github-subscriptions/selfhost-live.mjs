@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import { once } from 'node:events';
 import http from 'node:http';
-import { spawn, spawnSync, execFile, execFileSync } from 'node:child_process';
+import { spawn, execFile, execFileSync } from 'node:child_process';
 import { randomBytes, createHash, createHmac, timingSafeEqual } from 'node:crypto';
 import {
   readFileSync,
@@ -12,6 +12,8 @@ import {
   rmSync,
   realpathSync,
   existsSync,
+  accessSync,
+  constants,
 } from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -108,8 +110,14 @@ const cloudflared =
   );
 const commandExists = (tool) => {
   if (tool.includes('/')) return existsSync(tool);
-  const r = spawnSync('sh', ['-c', 'command -v "$1"', 'sh', tool], { encoding: 'utf8' });
-  return r.status === 0 && r.stdout.trim().length > 0;
+  return (process.env.PATH ?? '').split(path.delimiter).some((dir) => {
+    try {
+      accessSync(path.join(dir, tool), constants.X_OK);
+      return true;
+    } catch {
+      return false;
+    }
+  });
 };
 for (const tool of ['gh', 'git', 'python3', 'shasum', process.env.GHSUB_CODEX_BINARY ?? 'codex']) {
   assert(commandExists(tool), `Missing required tool on PATH: ${tool}`);
