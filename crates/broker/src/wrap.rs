@@ -1770,76 +1770,83 @@ pub(crate) async fn run_wrap(
                                     // starts with a valid token (avoiding "Not registered"
                                     // errors when non-claude CLIs like codex try to use
                                     // relay tools before calling register() themselves).
-                                    let child_token = match retry_agent_registration(
+                                    match retry_agent_registration(
                                         &workspace_child_http,
                                         &params.name,
                                         Some(&params.cli),
                                     ).await {
-                                        Ok(token) => Some(token),
+                                        Ok(child_token) => {
+                                            match spawner
+                                                .spawn_wrap_with_token(
+                                                    &params.name,
+                                                    &params.cli,
+                                                    &params.args,
+                                                    &env_vars,
+                                                    Some(&action_ref.invoked_by),
+                                                    Some(&child_token),
+                                                )
+                                                .await
+                                            {
+                                                Ok(pid) => {
+                                                    agent_spawn_count += 1;
+                                                    telemetry.track(TelemetryEvent::AgentSpawn {
+                                                        cli: params.cli.clone(),
+                                                        // The wrap path handles child spawns requested by a
+                                                        // running agent through the broker action channel —
+                                                        // always agent-originated here.
+                                                        runtime: "pty".to_string(),
+                                                        spawn_source: ActionSource::Agent,
+                                                        has_task: false,
+                                                        is_shadow: false,
+                                                    });
+                                                    tracing::info!(
+                                                        child = %params.name,
+                                                        cli = %params.cli,
+                                                        pid = pid,
+                                                        invoked_by = %action_ref.invoked_by,
+                                                        "spawned child agent"
+                                                    );
+                                                    eprintln!(
+                                                        "\r\n[agent-relay] spawned child '{}' (pid {})\r",
+                                                        params.name, pid
+                                                    );
+                                                }
+                                                Err(error) => {
+                                                    tracing::error!(
+                                                        child = %params.name,
+                                                        error = %error,
+                                                        "failed to spawn child agent"
+                                                    );
+                                                    eprintln!(
+                                                        "\r\n[agent-relay] failed to spawn '{}': {}\r",
+                                                        params.name, error
+                                                    );
+                                                    completion_error = Some(format!(
+                                                        "failed to spawn '{}': {error}",
+                                                        params.name
+                                                    ));
+                                                }
+                                            }
+                                        }
                                         Err(RegRetryOutcome::RetryableExhausted(e)) => {
                                             tracing::warn!(
                                                 child = %params.name,
                                                 error = %e,
-                                                "pre-registration failed after retries, spawning without token"
+                                                "pre-registration failed after retries; refusing tokenless spawn"
                                             );
-                                            None
+                                            completion_error = Some(format!(
+                                                "pre-registration failed for '{}': {e}",
+                                                params.name
+                                            ));
                                         }
                                         Err(RegRetryOutcome::Fatal(e)) => {
                                             tracing::warn!(
                                                 child = %params.name,
                                                 error = %e,
-                                                "pre-registration fatal error, spawning without token"
-                                            );
-                                            None
-                                        }
-                                    };
-                                    match spawner
-                                        .spawn_wrap_with_token(
-                                            &params.name,
-                                            &params.cli,
-                                            &params.args,
-                                            &env_vars,
-                                            Some(&action_ref.invoked_by),
-                                            child_token.as_deref(),
-                                        )
-                                        .await
-                                    {
-                                        Ok(pid) => {
-                                            agent_spawn_count += 1;
-                                            telemetry.track(TelemetryEvent::AgentSpawn {
-                                                cli: params.cli.clone(),
-                                                runtime: "pty".to_string(),
-                                                // The wrap path handles child spawns requested by a
-                                                // running agent through the broker action channel —
-                                                // always agent-originated here.
-                                                spawn_source: ActionSource::Agent,
-                                                has_task: false,
-                                                is_shadow: false,
-                                            });
-                                            tracing::info!(
-                                                child = %params.name,
-                                                cli = %params.cli,
-                                                pid = pid,
-                                                invoked_by = %action_ref.invoked_by,
-                                                "spawned child agent"
-                                            );
-                                            eprintln!(
-                                                "\r\n[agent-relay] spawned child '{}' (pid {})\r",
-                                                params.name, pid
-                                            );
-                                        }
-                                        Err(error) => {
-                                            tracing::error!(
-                                                child = %params.name,
-                                                error = %error,
-                                                "failed to spawn child agent"
-                                            );
-                                            eprintln!(
-                                                "\r\n[agent-relay] failed to spawn '{}': {}\r",
-                                                params.name, error
+                                                "pre-registration fatal error; refusing tokenless spawn"
                                             );
                                             completion_error = Some(format!(
-                                                "failed to spawn '{}': {error}",
+                                                "pre-registration failed for '{}': {e}",
                                                 params.name
                                             ));
                                         }
