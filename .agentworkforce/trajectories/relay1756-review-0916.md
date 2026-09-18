@@ -44,3 +44,25 @@ post-idle control writes, same actor/PID across an actual node WebSocket
 reconnect; Claude 2.1.270, tool calls audited. Synthetic signed ingress only —
 still no real-GitHub or chief gate claimed. selfhost-live remains blocked here:
 no cloudflared binary, no cloud env/workspace credentials on this host.
+
+2026-09-18 self-hosted live run (head 5c2e27219): `selfhost-live.mjs` PASSED —
+20/20 checks, run `ghsub-selfhost-e6a8fedbd7`, evidence
+`/tmp/ghsub-live-evidence/report.json`. Real signed GitHub hooks on disposable
+PR fixtures (cloud#3808, relay#1790, software-garden#528) delivered through a
+cloudflared tunnel into candidate Cloud ingestion (eb27afa4), admitted by
+hosted production Relayfile, delivered through local Relaycast engine
+(683e4dcb) + #1759 broker (d4d51f62, sha 1bee6e9a…), and acknowledged by a real
+Codex worker — exact `printf | shasum -a 256` digest ACKs, no polling. Checks:
+management-API-blocked preflight, real redelivery → 409 duplicate_envelope,
+3 successive idle actions, 600.6s no-input idle with zero control writes,
+10 unique burst digests, WS reconnect with same actor/PID, nonmember zero
+deliveries, no stale prejoin action. 38 admissions observed (10×202, 4×409,
+23×429 retried, 1×500 retried). Environment fixes this round: cloudflared
+binary discovery + required-tool preflight (commits 472a9c3bb, 5c2e27219), a
+`shasum` shim for the pinned digest command, and the live
+RELAYFILE_INTERNAL_HMAC_SECRET recovered from SST state into a 600-mode temp
+file (never logged). Cleanup verified: hooks, fixtures, worker, and all 3
+run-owned subscriptions removed (two needed manual retry after socket hang
+up/429); remaining subscription inventory matches the pre-run set. Still not
+proven: production deploys, the deployed Nango forward path, and gate-9
+actual-chief acceptance.
