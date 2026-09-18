@@ -508,8 +508,13 @@ try {
   });
   proxy.listen(0, '127.0.0.1');
   await once(proxy, 'listening');
+  const cloudflared =
+    process.env.GHSUB_CLOUDFLARED_BINARY ??
+    ['/opt/homebrew/bin/cloudflared', '/usr/local/bin/cloudflared', 'cloudflared'].find((candidate) =>
+      candidate === 'cloudflared' ? true : existsSync(candidate)
+    );
   tunnel = spawn(
-    '/opt/homebrew/bin/cloudflared',
+    cloudflared,
     ['tunnel', '--url', 'http://127.0.0.1:' + proxy.address().port, '--no-autoupdate', '--protocol', 'http2'],
     { stdio: ['ignore', 'pipe', 'pipe'] }
   );
