@@ -23,7 +23,9 @@ The proxy retains broker transport fields alongside socketPath/finished/close, a
 - SDK suite: 182 passed; fleet suite: 43 passed.
 - Cloud suite: 450 passed, 4 skipped after removing inherited Cloud authentication variables.
 - Existing and new attach tests: 42 passed, using actual local WebSocket and UNIX socket servers.
-- CLI regression and built Cloud/SDK entry-resolution checks passed; full CLI results pending final verification.
+- CLI suite via `npx vitest run packages/cli/ --maxWorkers=2`: 1,652 passed, 29 skipped. `npm --prefix packages/cli test` is unavailable because that package has no test script. Tests ran without inherited Cloud/Relay credentials and with local Git file transport enabled for the temporary-repository fixture.
+- Built Cloud/SDK entry-resolution regression: passed.
+- New proof runner executed locally against base `c978302` and implementation `b6c3bb1`: base `absent`, head `fixed`. Both generated probes and compiled CLI-help checks passed. This was not a hosted Cloud or live Daytona run.
 
 ## RelayFlow Proof
 
