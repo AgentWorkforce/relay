@@ -1918,48 +1918,60 @@ describe('pull request snapshot consistency', () => {
 });
 
 describe('trusted dispatcher source contract', () => {
-  it('never checks out PR head code on the credential-bearing GitHub runner', async () => {
-    const source = await readFile('.github/workflows/relayflow-pr-proof.yml', 'utf8');
-    expect(source).toContain('pull_request_target:');
-    expect(source).toContain('ref: ${{ github.event.pull_request.base.sha || github.sha }}');
-    expect(source).toContain('persist-credentials: false');
-    expect(source).toContain('git add -f -- .relayflow/pr-proof-input.json');
-    expect(source).toContain('statuses: write');
-    expect(source).toContain('report-status.mjs start');
-    expect(source).toContain('report-status.mjs finish');
-    expect(source).toContain('concurrency:');
-    expect(source).toContain('cancel-in-progress: true');
-    expect(source).toContain("if: always() && steps.status.outputs.head_sha != ''");
-    expect(source).not.toContain('always() && !cancelled()');
-    expect(source).toContain('--expected-head-sha "${{ steps.status.outputs.head_sha }}"');
-    expect(source).toContain('actions/checkout@11d5960a326750d5838078e36cf38b85af677262');
-    expect(source).toContain('actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020');
-    expect(source).toContain('actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02');
-    expect(source).toContain('actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093');
-    expect(source).toContain('resolve-broker-artifacts.mjs');
-    expect(source).toContain('stage-broker-artifacts.mjs');
-    expect(source).toContain('actions: read');
-    expect(source).not.toContain('github.event.pull_request.head.sha }}');
+  /**
+   * The v1 dispatcher was a `pull_request_target` job whose security rested on
+   * never checking out PR head code on a credential-bearing runner. A deployed
+   * v2 flow has no runner and no checkout, so the equivalent boundary moved:
+   * the listener's event envelope is attacker-influenced data, and the flow
+   * must reduce it to a pull request NUMBER before anything trusts it. Every
+   * SHA, title, and body in the proof contract then comes from the GitHub API
+   * via `prepare.mjs`, exactly as the dispatcher resolved them.
+   */
+  it('never lets listener-supplied pull request data reach the proof contract', async () => {
+    const normalizer = await readFile('scripts/pr-proof/event-from-input.mjs', 'utf8');
+    // The only thing extracted from the envelope, and the only thing written.
+    expect(normalizer).toContain('pullRequestNumber');
+    expect(normalizer).toContain('{ inputs: { pr_number: number } }');
+    expect(normalizer).toContain('Number.isInteger(value) && value > 0');
+    // A non-pull_request event must refuse rather than guess a number out of it.
+    expect(normalizer).toContain('This flow proves pull requests; the listener delivered a');
+    // base64 keeps attacker-controlled text out of the lowered shell command.
+    expect(normalizer).toContain('BASE64 = /^[A-Za-z0-9+/]*={0,2}$/');
+    expect(normalizer).not.toContain('headSha');
+    expect(normalizer).not.toContain('baseSha');
   });
 
-  it('fits broker resolution, Cloud execution, and setup inside the dispatcher deadline', async () => {
-    const dispatcher = await readFile('.github/workflows/relayflow-pr-proof.yml', 'utf8');
+  it('gives the flow the classification, staging, and status work the dispatcher did', async () => {
+    const source = await readFile('flows/ci/pr-proof.flow.ts', 'utf8');
+    expect(source).toContain('event-from-input.mjs --input-base64 ${encodeInput(input)}');
+    expect(source).not.toContain('JSON.stringify(input)}');
+    expect(source).toContain('prepare.mjs --event ${EVENT_PATH}');
+    expect(source).toContain('resolve-broker-artifacts.mjs');
+    expect(source).toContain('stage-broker-artifacts.mjs');
+    // Broker binaries come from authenticated Actions run storage, never the
+    // workspace seed; `gh run download` replaces actions/download-artifact.
+    expect(source).toContain('gh run download');
+    expect(source).toContain('--source cloud');
+  });
+
+  it('fits broker resolution and the proof itself inside the flow budget', async () => {
+    const source = await readFile('flows/ci/pr-proof.flow.ts', 'utf8');
     const resolver = await readFile('scripts/pr-proof/resolve-broker-artifacts.mjs', 'utf8');
-    const dispatcherMinutes = Number(dispatcher.match(/timeout-minutes: (\d+)/)?.[1]);
-    const cloudTimeoutMs = Number(dispatcher.match(/PR_PROOF_CLOUD_TIMEOUT_MS: '(\d+)'/)?.[1]);
+    const budgetMinutes = Number(source.match(/wallclock: '(\d+)m'/)?.[1]);
     const brokerProducerMinutes = Number(resolver.match(/BROKER_PRODUCER_TIMEOUT_MS = (\d+) \* 60_000/)?.[1]);
     const brokerQueueMinutes = Number(resolver.match(/BROKER_QUEUE_HEADROOM_MS = (\d+) \* 60_000/)?.[1]);
     const pollIntervalMs = Number(
       resolver.match(/RESOLVE_POLL_INTERVAL_MS = ([\d_]+)/)?.[1]?.replaceAll('_', '')
     );
     const pollSlackAttempts = Number(resolver.match(/RESOLVE_POLL_SLACK_ATTEMPTS = (\d+)/)?.[1]);
-    const setupHeadroomMs = 5 * 60_000;
+    // Broker resolution now runs inside the flow rather than in the job around
+    // it, so the budget must cover the resolver's worst case on top of the
+    // proof's own 45 minutes. Under-budgeting fails a PR whose broker artifact
+    // is still building by the clock instead of judging it on evidence.
+    const proofMs = 45 * 60_000;
     expect(resolver).toContain('const [base, head] = await Promise.all([');
-    expect(dispatcherMinutes * 60_000).toBeGreaterThanOrEqual(
-      (brokerProducerMinutes + brokerQueueMinutes) * 60_000 +
-        pollSlackAttempts * pollIntervalMs +
-        cloudTimeoutMs +
-        setupHeadroomMs
+    expect(budgetMinutes * 60_000).toBeGreaterThanOrEqual(
+      (brokerProducerMinutes + brokerQueueMinutes) * 60_000 + pollSlackAttempts * pollIntervalMs + proofMs
     );
   });
 
@@ -2093,17 +2105,30 @@ describe('trusted dispatcher source contract', () => {
   });
 
   it('gates head execution on deterministic base evidence', async () => {
-    const source = await readFile('workflows/pr-proof.ts', 'utf8');
-    expect(source).toContain(".onError('fail-fast')");
-    expect(source).toContain(".step('gate-base'");
-    expect(source).toContain("dependsOn: ['gate-base']");
-    expect(source).toContain(".step('gate-red-green'");
+    const source = await readFile('flows/ci/pr-proof.flow.ts', 'utf8');
+    // Ordering is the gate: the head arm must not be reachable until the base
+    // arm's evidence has passed a deterministic check. In v1 that was
+    // `dependsOn: ['gate-base']`; in an awaited body it is source order, so
+    // assert the four positions directly rather than trusting the read.
+    const baseArm = source.indexOf("f\n      .agent('base-prover'");
+    const baseGate = source.indexOf('--arm base');
+    const headArm = source.indexOf("f\n      .agent('head-verifier'");
+    const redGreen = source.indexOf('--arm both');
+    expect(baseArm).toBeGreaterThan(-1);
+    expect(baseGate).toBeGreaterThan(baseArm);
+    expect(headArm).toBeGreaterThan(baseGate);
+    expect(redGreen).toBeGreaterThan(headArm);
     expect(source).toContain('PR_PROOF_ARM_COMPLETE arm=base');
     expect(source).toContain('PR_PROOF_ARM_COMPLETE arm=head');
     expect(source).toContain('--source cloud');
-    expect(source).toContain("result.status !== 'completed'");
-    expect(source).toContain('.timeout(2_700_000)');
-    expect(source).not.toContain('.timeout(3_600_000)');
+    // v1 said this with `.onError('fail-fast')` and `retries: 0`. v2 has no
+    // repair agents and no step retries, so no agent can edit the harness or
+    // the artifacts after a gate rejects them. Assert on the body rather than
+    // the file: the header comment names both v1 knobs to explain their
+    // absence, and must not be read as reintroducing them.
+    const body = source.slice(source.indexOf('export default flow'));
+    expect(body).not.toContain('retries');
+    expect(body).not.toContain('onError');
   });
 
   it('records the per-step Cloud sandbox id instead of the orchestrator id', async () => {

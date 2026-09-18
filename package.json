@@ -101,6 +101,8 @@
     "evals": "npm run evals:compile && node scripts/evals/run-relay-evals.mjs",
     "evals:list": "npm run evals:compile && node scripts/evals/run-relay-evals.mjs --list",
     "evals:offline": "npm run evals:compile && node scripts/evals/run-relay-evals.mjs --mode offline",
+    "flows:check": "tsc -p flows/tsconfig.json && flows check flows/ci/pr-proof.flow.ts",
+    "flows:deploy:pr-proof": "flows deploy flows/ci/pr-proof.flow.ts --repo AgentWorkforce/relay --on github:events=pull_request --agents claude --approver \"$RELAY_PR_PROOF_APPROVER\"",
     "verify:cleanroom:validate": "node scripts/verify-features/cleanroom.mjs validate --profile full",
     "verify:cleanroom:dry-run": "DRY_RUN=1 VERIFY_CLEANROOM_PROFILE=smoke relayflows run workflows/verify-cleanroom.ts",
     "diagnose:orchestration": "relayflows run workflows/diagnose-relay-orchestration-reliability.ts",

@@ -5,7 +5,15 @@ All notable changes to Agent Relay will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
+## [Unreleased - Patch]
+
+### Changed
+
+- The PR proof now runs as the relayflows v2 flow `relay.ci.pr-proof` (`flows/ci/pr-proof.flow.ts`), deployed as a hosted GitHub listener with `flows deploy --on github:events=pull_request`, and journals the classification and broker staging the GitHub dispatcher used to do.
+
+### Removed
+
+- `.github/workflows/relayflow-pr-proof.yml` and the relayflows v1 `workflows/pr-proof.ts`. Repoint branch protection at the deployed listener; the PR-proof required status check no longer comes from GitHub Actions.
 
 ## [12.2.4] - 2026-09-18
 
