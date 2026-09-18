@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import { once } from 'node:events';
 import http from 'node:http';
-import { spawn, execFile, execFileSync } from 'node:child_process';
+import { spawn, spawnSync, execFile, execFileSync } from 'node:child_process';
 import { randomBytes, createHash, createHmac, timingSafeEqual } from 'node:crypto';
 import {
   readFileSync,
@@ -101,6 +101,21 @@ const runId = 'ghsub-selfhost-' + randomBytes(5).toString('hex');
 const work = mkdtempSync(path.join(output, 'work-'));
 const name = 'ghsub-live-' + randomBytes(4).toString('hex');
 const binary = process.env.GHSUB_BROKER_BINARY ?? root + '/target/release/agent-relay-broker';
+const cloudflared =
+  process.env.GHSUB_CLOUDFLARED_BINARY ??
+  ['/opt/homebrew/bin/cloudflared', '/usr/local/bin/cloudflared', 'cloudflared'].find((candidate) =>
+    candidate === 'cloudflared' ? true : existsSync(candidate)
+  );
+const commandExists = (tool) => {
+  if (tool.includes('/')) return existsSync(tool);
+  const r = spawnSync('sh', ['-c', 'command -v "$1"', 'sh', tool], { encoding: 'utf8' });
+  return r.status === 0 && r.stdout.trim().length > 0;
+};
+for (const tool of ['gh', 'git', 'python3', 'shasum', process.env.GHSUB_CODEX_BINARY ?? 'codex']) {
+  assert(commandExists(tool), `Missing required tool on PATH: ${tool}`);
+}
+assert(existsSync(binary), `Missing candidate broker binary: ${binary}`);
+assert(commandExists(cloudflared), 'Missing cloudflared binary');
 const report = {
   runId,
   at: new Date().toISOString(),
@@ -508,11 +523,6 @@ try {
   });
   proxy.listen(0, '127.0.0.1');
   await once(proxy, 'listening');
-  const cloudflared =
-    process.env.GHSUB_CLOUDFLARED_BINARY ??
-    ['/opt/homebrew/bin/cloudflared', '/usr/local/bin/cloudflared', 'cloudflared'].find((candidate) =>
-      candidate === 'cloudflared' ? true : existsSync(candidate)
-    );
   tunnel = spawn(
     cloudflared,
     ['tunnel', '--url', 'http://127.0.0.1:' + proxy.address().port, '--no-autoupdate', '--protocol', 'http2'],
