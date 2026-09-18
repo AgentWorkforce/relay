@@ -32,12 +32,22 @@
  *
  * ## Credentials
  *
- * The SDK spawns wrappers with a closed environment allowlist
- * (`wrapper-runtime.ts`: PATH, HOME, TMPDIR, SHELL, LANG, USER, …), so
- * `OPENCODE_API_KEY` deliberately does not cross. Run `opencode auth login`
- * once so the credential lives in `~/.local/share/opencode/auth.json`, which
- * is reachable through the allowlisted HOME. An ambient-only key is reported
- * as unauthenticated rather than silently used.
+ * A credential stored under HOME — what `opencode auth login` writes to
+ * `~/.local/share/opencode/auth.json` — works on every path, because HOME is
+ * allowlisted. Nothing to do if OpenCode is already logged in.
+ *
+ * An environment-variable-only credential does not, and fails asymmetrically:
+ *
+ *   - `flows check` probes through `runProbe` (`cli/check.ts`), which passes
+ *     the FULL `process.env`, so `OPENCODE_API_KEY` is visible and the harness
+ *     reports as authenticated.
+ *   - execution goes through `runWrapperSession` (`worker-cli.ts`), which
+ *     passes `wrapperEnvironment(process.env)` — a closed allowlist (PATH,
+ *     HOME, TMPDIR, SHELL, LANG, USER, …) that strips it.
+ *
+ * So an env-only key passes preflight and then fails at run. `authStatus`
+ * below deliberately reads the credential STORE rather than trusting the
+ * environment, so the probe answers the question execution will actually ask.
  */
 
 import { spawn } from 'node:child_process';
@@ -83,9 +93,9 @@ async function authStatus() {
   }
   if (/\b0 credentials\b/.test(credentials.stdout)) {
     process.stderr.write(
-      'opencode has no stored credentials. Relayflows spawns wrappers with a closed environment ' +
-        'allowlist, so OPENCODE_API_KEY does not cross; run `opencode auth login` so the credential ' +
-        'is stored under HOME.\n'
+      'opencode has no stored credentials. Relayflows strips OPENCODE_API_KEY from the wrapper ' +
+        'environment at execution, so an env-only key would pass this probe and then fail at run; ' +
+        'run `opencode auth login` so the credential is stored under HOME.\n'
     );
     return 1;
   }
