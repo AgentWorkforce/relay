@@ -119,6 +119,8 @@ export type EnsureCloudFleetSandboxInput = {
    * must use the explicit `/path/**` subtree form accepted by Cloud.
    */
   relayfilePaths?: readonly string[];
+  /** Read-only Relayfile subtrees in explicit `/path/**` form. Cloud owns chmod enforcement. */
+  readonlyPaths?: readonly string[];
   forceProvision?: boolean;
   /** Constrain provisioning to a provider that Cloud has enabled for routing. */
   providerId?: CloudFleetSandboxProviderId;
@@ -906,6 +908,24 @@ export async function ensureCloudFleetSandbox(
   if (input.relayfilePaths !== undefined && input.relayfilePaths.length === 0) {
     throw new Error('At least one Relayfile subtree path is required when relayfilePaths is provided.');
   }
+  if (input.readonlyPaths !== undefined) {
+    if (
+      input.readonlyPaths.length === 0 ||
+      input.readonlyPaths.some(
+        (path) =>
+          !/^\/(?:[^/*?\\\x00-\x1f]+\/)+\*\*$/.test(path) ||
+          path
+            .slice(1, -3)
+            .split('/')
+            .some((segment) => segment === '.' || segment === '..')
+      )
+    ) {
+      throw new Error(
+        'readonlyPaths must contain at least one explicit /path/** subtree without traversal or wildcards.'
+      );
+    }
+    if (input.mountRelayfile === false) throw new Error('readonlyPaths requires mounting Relayfile.');
+  }
   validateRequestedRepos(input.repos);
   const repoRevisions = validateRepoRevisions(input.repos, input.repoRevisions);
 
@@ -932,6 +952,7 @@ export async function ensureCloudFleetSandbox(
           ...(input.maxAgents !== undefined ? { maxAgents: input.maxAgents } : {}),
           ...(input.mountRelayfile !== undefined ? { mountRelayfile: input.mountRelayfile } : {}),
           ...(input.relayfilePaths === undefined ? {} : { relayfilePaths: [...input.relayfilePaths] }),
+          ...(input.readonlyPaths === undefined ? {} : { readonlyPaths: [...input.readonlyPaths] }),
           ...(input.forceProvision !== undefined ? { forceProvision: input.forceProvision } : {}),
           ...(input.providerId !== undefined ? { providerId: input.providerId } : {}),
           ...(input.workloadProfile !== undefined ? { workloadProfile: input.workloadProfile } : {}),

@@ -6,13 +6,13 @@ import { findProjectRoot } from '@agent-relay/config';
 import {
   CloudFleetSandboxProvisionError,
   deleteCloudFleetSandbox,
-  ensureCloudFleetSandbox,
   materializeCloudRelayfileRepository,
   resolveWorkspaceByKey,
   type CloudFleetSandboxProviderId,
   type CloudRelayfileRepositoryMaterialization,
   type EnsureCloudFleetSandboxResult,
 } from '@agent-relay/cloud';
+import { ensureCloudFleetSandbox } from '@agent-relay/sdk/fleet';
 import { HarnessDriverClient } from '@agent-relay/harness-driver';
 import {
   createWorkspaceClient,
@@ -331,6 +331,10 @@ export function registerFleetCommands(
         '--sandbox-relayfile-path <path...>',
         'Mount only these Relayfile subtrees (each path must end in /**)'
       )
+      .option(
+        '--sandbox-readonly-path <path...>',
+        'Read-only Relayfile subtrees (/path/**); requires Cloud enforcement'
+      )
       .option('--no-sandbox-relayfile', 'Provision the sandbox without mounting Relayfile')
       .option('--channel <name>', 'Channel for the worker to join')
       .option('--persona <persona>', 'Worker persona (automatic placement)')
@@ -397,6 +401,12 @@ export function registerFleetCommands(
         throw new Error('--sandbox-provider must be daytona, e2b, or agent37.');
       }
       const mountSandboxRelayfile = options.sandboxRelayfile !== false;
+      const sandboxReadonlyPaths = optionalTextList(options.sandboxReadonlyPath, 'Sandbox read-only path');
+      if (sandboxReadonlyPaths && (!useSandbox || !mountSandboxRelayfile)) {
+        throw new Error(
+          '--sandbox-readonly-path requires --sandbox and cannot be combined with --no-sandbox-relayfile.'
+        );
+      }
       const sandboxRelayfilePaths = optionalTextList(options.sandboxRelayfilePath, 'Sandbox Relayfile path');
       if (useSandbox && targetNode) {
         throw new Error('--sandbox cannot be combined with --node or --target-node.');
@@ -591,6 +601,7 @@ export function registerFleetCommands(
             requiredCapability: `spawn:${cli}`,
             maxAgents: 1,
             mountRelayfile: mountSandboxRelayfile,
+            ...(sandboxReadonlyPaths === undefined ? {} : { readonlyPaths: sandboxReadonlyPaths }),
             ...(liveRepository
               ? { relayfilePaths: liveRelayfileMountPaths(liveRepository, sandboxRelayfilePaths) }
               : sandboxRelayfilePaths === undefined

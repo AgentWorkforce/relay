@@ -983,6 +983,8 @@ describe('fleet command support', () => {
         REPLAY_SANDBOX_NAME,
         '--sandbox-relayfile-path',
         '/live-review/run-123/**',
+        '--sandbox-readonly-path',
+        '/live-review/run-123/reference/**',
         '--name',
         'sandbox-worker',
         '--task',
@@ -999,6 +1001,7 @@ describe('fleet command support', () => {
       maxAgents: 1,
       mountRelayfile: true,
       relayfilePaths: ['/live-review/run-123/**'],
+      readonlyPaths: ['/live-review/run-123/reference/**'],
       sandboxId: REPLAY_SANDBOX_ID,
       forceProvision: true,
       providerId: 'agent37',
@@ -3961,4 +3964,39 @@ describe('fleet command support', () => {
     expect(errors.join('\n')).toMatch(/relay node up/);
     expect(errors.join('\n')).toMatch(/relay cloud enroll/);
   });
+});
+
+describe('sandbox read-only path guards', () => {
+  it.each([[], ['--sandbox', '--no-sandbox-relayfile']])(
+    'rejects unavailable mounts (%j)',
+    async (...flags) => {
+      const ensureCloudFleetSandbox = vi.fn();
+      const error = vi.fn();
+      const program = new Command();
+      program.exitOverride();
+      registerFleetCommands(program, {
+        ensureCloudFleetSandbox,
+        sdk: { error, exit: vi.fn() as never },
+      });
+      await program.parseAsync(
+        [
+          'fleet',
+          'spawn',
+          'claude',
+          ...flags,
+          '--sandbox-readonly-path',
+          '/reference/**',
+          '--name',
+          'worker',
+          '--task',
+          'review',
+        ],
+        { from: 'user' }
+      );
+      expect(error).toHaveBeenCalledWith(
+        expect.stringContaining('--sandbox-readonly-path requires --sandbox')
+      );
+      expect(ensureCloudFleetSandbox).not.toHaveBeenCalled();
+    }
+  );
 });

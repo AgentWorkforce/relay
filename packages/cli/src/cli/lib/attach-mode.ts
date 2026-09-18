@@ -1,1 +1,1 @@
-export type AttachMode = 'drive' | 'view' | 'passthrough';
+export type { AttachMode } from '@agent-relay/cloud/attach';

@@ -1,0 +1,20 @@
+{
+  "version": 1,
+  "id": "sandbox-readonly-paths",
+  "kind": "feature",
+  "title": "Forward read-only Relayfile subtree requests to Cloud",
+  "runner": {
+    "command": ["node", "tests/relayflows/cases/sandbox-readonly-paths/run.mjs"]
+  },
+  "timeoutSeconds": 900,
+  "expected": {
+    "base": {
+      "outcome": "absent",
+      "signature": "sandbox_readonly_paths_not_forwarded"
+    },
+    "head": {
+      "outcome": "fixed",
+      "signature": "sandbox_readonly_paths_forwarded"
+    }
+  }
+}

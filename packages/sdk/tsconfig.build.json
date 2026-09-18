@@ -28,7 +28,9 @@
     "src/messaging/**/*.ts",
     "src/delivery/**/*.ts",
     "src/actions/**/*.ts",
-    "src/session/**/*.ts"
+    "src/session/**/*.ts",
+    "src/attach.ts",
+    "src/fleet.ts"
   ],
   "exclude": ["src/__tests__/**"]
 }

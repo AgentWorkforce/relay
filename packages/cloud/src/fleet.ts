@@ -382,3 +382,13 @@ export function resolveActiveFleetNodeEnrollment(
     `Multiple fleet node enrollments match; pass baseUrl and workspaceId to disambiguate. Candidates: ${candidates}.`
   );
 }
+
+/** Fleet sandbox provisioning primitives. */
+export {
+  ensureCloudFleetSandbox,
+  deleteCloudFleetSandbox,
+  CloudFleetSandboxProvisionError,
+  type EnsureCloudFleetSandboxInput,
+  type EnsureCloudFleetSandboxResult,
+  type CloudFleetSandboxRequestOptions,
+} from './fleet-sandbox.js';

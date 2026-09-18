@@ -5,7 +5,13 @@ All notable changes to Agent Relay will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
+## [Unreleased - Minor]
+
+### Added
+
+- `@agent-relay/cloud/attach` and `@agent-relay/sdk/attach` expose fleet terminal attachment with a private local stdio socket and completion promise.
+- `@agent-relay/cloud/fleet` and `@agent-relay/sdk/fleet` expose existing sandbox ensure and deletion primitives.
+- Fleet sandbox ensure and `fleet spawn --sandbox-readonly-path` forward explicit read-only Relayfile subtree requests to Cloud for server-side enforcement.
 
 ## [12.2.4] - 2026-09-18
 
