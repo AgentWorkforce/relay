@@ -37,7 +37,10 @@ export function standaloneControlsAfter(text, after) {
   const cutoff = Date.parse(after);
   if (!Number.isFinite(cutoff)) throw new Error('A recorded first idle boundary is required');
   const controls = [];
-  for (const line of text.split('\n')) {
+  for (const raw of text.split('\n')) {
+    // Broker worker logs may carry ANSI styling; the field syntax lives in the
+    // plain text underneath it.
+    const line = raw.replace(/\x1b\[[0-9;?]*[ -/]*[@-~]|\x1b\][^\x07\x1b]*(?:\x07|\x1b\\)|\x1b[@-_]/g, '');
     const marker = line.indexOf('writing terminal control input');
     if (marker < 0) continue;
     const timestamp = line.slice(0, marker).match(/\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d+Z/)?.[0];

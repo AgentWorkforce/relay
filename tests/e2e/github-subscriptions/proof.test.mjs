@@ -29,6 +29,22 @@ test('no-poke audit catches background Enter after idle and excludes initial sub
   );
 });
 
+test('no-poke audit parses ANSI-styled broker log fields', () => {
+  const styled =
+    '\x1b[2m2026-09-08T20:28:35.404753Z\x1b[0m \x1b[34mDEBUG\x1b[0m \x1b[2mrelay_pty::startup_input\x1b[0m\x1b[2m:\x1b[0m writing terminal control input \x1b[3mcontrol\x1b[0m\x1b[2m=\x1b[0m[27, 91, 66]';
+  assert.deepEqual(standaloneControlsAfter(styled, '2026-09-08T20:28:29Z'), [
+    { at: '2026-09-08T20:28:35.404753Z', control: '27, 91, 66' },
+  ]);
+  assert.throws(
+    () =>
+      standaloneControlsAfter(
+        '\x1b[2m2026-09-08T20:28:35.404753Z\x1b[0m DEBUG writing terminal control input unknown format',
+        '2026-09-08T20:28:29Z'
+      ),
+    /Unrecognized/
+  );
+});
+
 test('history collector crosses full pages and rejects a stalled cursor', async () => {
   const message = (id) => ({ id, created_at: '2026-09-08T12:00:00Z' });
   const pages = [
