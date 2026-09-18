@@ -260,12 +260,12 @@ Journal-backed flows for the `flows` CLI (`@relayflows/sdk` 2.x). Every v1
 `@relayflows/core` `WorkflowBuilder` flow has been migrated; `workflows/` is
 gone.
 
-| Source | Flow name | Entry point |
-| --- | --- | --- |
-| `flows/ci/pr-proof.flow.ts` | `relay.ci.pr-proof` | `flows deploy` (hosted listener) |
-| `flows/verify/fleet-daytona.spec.ts` | `relay.verify.fleet-daytona` | `npm run verify:fleet-daytona` |
-| `flows/verify/cleanroom.spec.ts` | `relay.verify.cleanroom` | `npm run verify:cleanroom` |
-| `flows/verify/features.spec.ts` | `relay.verify.features` | `npm run verify:features` |
+| Source                                 | Flow name                      | Entry point                      |
+| -------------------------------------- | ------------------------------ | -------------------------------- |
+| `flows/ci/pr-proof.flow.ts`            | `relay.ci.pr-proof`            | `flows deploy` (hosted listener) |
+| `flows/verify/fleet-daytona.spec.ts`   | `relay.verify.fleet-daytona`   | `npm run verify:fleet-daytona`   |
+| `flows/verify/cleanroom.spec.ts`       | `relay.verify.cleanroom`       | `npm run verify:cleanroom`       |
+| `flows/verify/features.spec.ts`        | `relay.verify.features`        | `npm run verify:features`        |
 | `flows/diagnose/orchestration.spec.ts` | `relay.diagnose.orchestration` | `npm run diagnose:orchestration` |
 | `flows/audit/feature-manifest.spec.ts` | `relay.audit.feature-manifest` | `npm run audit:feature-manifest` |
 
@@ -331,22 +331,22 @@ crosses and the credential must be on disk under HOME.
 
 ## What v1 features do not survive the port
 
-| v1 feature | v2 status |
-| --- | --- |
-| `.timeout(ms)` | `budget.maxWallclockMs` on a spec; `{ budget: { wallclock } }` header in TS |
-| `retries: n` | `maxIterations: n + 1` on a spec step; no TypeScript knob |
-| `timeoutMs` on an agent step | No equivalent — bounded only by the flow budget and worker lease |
-| `failOnError: false` | `<command> || true`; a later explicit gate decides |
-| `verification: file_exists` | The `artifact_exists` named gate |
-| `verification: exit_code` on an agent | A `subprocess_gate` stating the check it implied |
-| `permissions` | Spec steps only, and coarser: no read/write split, deny list, or exec allowlist |
-| `.onError(...)` | Default and only behaviour: a failed step fails the run |
-| `.maxConcurrency(n)` | Nothing; the kernel schedules the DAG |
-| `.pattern('dag'\|'pipeline')` | Nothing; `dependsOn` is the only ordering |
-| `.channel(...)` (relaycast) | No equivalent |
-| `.idleNudge(...)` | No equivalent |
-| `preset` / `role` / `interactive` | No equivalent |
-| `repoReads` | No equivalent |
+| v1 feature                            | v2 status                                                                       |
+| ------------------------------------- | ------------------------------------------------------------------------------- | --- | ------------------------------------ |
+| `.timeout(ms)`                        | `budget.maxWallclockMs` on a spec; `{ budget: { wallclock } }` header in TS     |
+| `retries: n`                          | `maxIterations: n + 1` on a spec step; no TypeScript knob                       |
+| `timeoutMs` on an agent step          | No equivalent — bounded only by the flow budget and worker lease                |
+| `failOnError: false`                  | `<command>                                                                      |     | true`; a later explicit gate decides |
+| `verification: file_exists`           | The `artifact_exists` named gate                                                |
+| `verification: exit_code` on an agent | A `subprocess_gate` stating the check it implied                                |
+| `permissions`                         | Spec steps only, and coarser: no read/write split, deny list, or exec allowlist |
+| `.onError(...)`                       | Default and only behaviour: a failed step fails the run                         |
+| `.maxConcurrency(n)`                  | Nothing; the kernel schedules the DAG                                           |
+| `.pattern('dag'\|'pipeline')`         | Nothing; `dependsOn` is the only ordering                                       |
+| `.channel(...)` (relaycast)           | No equivalent                                                                   |
+| `.idleNudge(...)`                     | No equivalent                                                                   |
+| `preset` / `role` / `interactive`     | No equivalent                                                                   |
+| `repoReads`                           | No equivalent                                                                   |
 
 Because `permissions` lost its read/write split and deny list, the runners' own
 seals and write-once provenance captures — not the sandbox policy — remain what
@@ -397,8 +397,8 @@ Publishing (npm, crates, GitHub releases) is gated on chief green-light.
   delete chief's orgchart env-unset workaround when fixed), #1383
   (non-Error rejections render as `[object Object]`).
 - Also pending: 64 dependabot alerts on main (1 critical); skills repo
-  relay-team/relay-pipeline/relay-fanout SKILL.mds still instruct printing
-  raw observer URLs — unsatisfiable once #1380 lands.
+relay-team/relay-pipeline/relay-fanout SKILL.mds still instruct printing
+raw observer URLs — unsatisfiable once #1380 lands.
 <!-- PRPM_MANIFEST_START -->
 
 <skills_system priority="1">
@@ -406,15 +406,17 @@ Publishing (npm, crates, GitHub releases) is gated on chief green-light.
 When users ask you to perform tasks, check if any of the available skills below can help complete the task more effectively. Skills provide specialized capabilities and domain knowledge.
 
 How to use skills (loaded into main context):
+
 - Use the <path> from the skill entry below
 - Invoke: Bash("cat <path>")
 - The skill content will load into your current context
 - Example: Bash("cat .openskills/backend-architect/SKILL.md")
 
 Usage notes:
+
 - Skills share your context window
 - Do not invoke a skill that is already loaded in your context
-</usage>
+  </usage>
 
 <available_skills>
 

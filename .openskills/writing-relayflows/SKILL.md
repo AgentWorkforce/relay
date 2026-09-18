@@ -9,7 +9,7 @@ description: Use when authoring a Relayflows flow (@relayflows/surface / @relayf
 
 Relayflows turns a coding-agent task into steps a journal can inspect, verify, and resume. A flow is data (YAML/JSON) or code (TypeScript) that compiles to the same journal-backed kernel spec. Every effect is journaled before it's treated as real — a journal write that fails fails the step, with no silent fallback.
 
-**Name collision warning.** This repo also has skills for an older, unrelated engine that is *also* casually called "Relayflow" (singular) — `@relayflows/core`'s `WorkflowBuilder`, a chained builder (`workflow('name').pattern('dag').agent(...).step(...).run()`). That's `writing-agent-relay-workflows` and `migrating-persona-to-relayflow`'s territory. This skill is the **v2** engine: `@relayflows/surface`'s `flow()` function and the YAML/JSON dialect compiled by `@relayflows/sdk`. If you see `.pattern(`, `.agent(` as a chained builder call, or `ctx.workflow.run()`, you're in the other engine — stop and use one of those skills instead.
+**Name collision warning.** This repo also has skills for an older, unrelated engine that is _also_ casually called "Relayflow" (singular) — `@relayflows/core`'s `WorkflowBuilder`, a chained builder (`workflow('name').pattern('dag').agent(...).step(...).run()`). That's `writing-agent-relay-workflows` and `migrating-persona-to-relayflow`'s territory. This skill is the **v2** engine: `@relayflows/surface`'s `flow()` function and the YAML/JSON dialect compiled by `@relayflows/sdk`. If you see `.pattern(`, `.agent(` as a chained builder call, or `ctx.workflow.run()`, you're in the other engine — stop and use one of those skills instead.
 
 ## When to use this skill
 
@@ -94,7 +94,10 @@ export interface AgentOptions {
 export interface Ctx {
   run(command: string): Step<string>;
   llm(strings: TemplateStringsArray, ...values: unknown[]): Step<string>;
-  llm(prompt: string, options: { output: Record<string, unknown>; cli?: string; model?: string }): Step<unknown>;
+  llm(
+    prompt: string,
+    options: { output: Record<string, unknown>; cli?: string; model?: string }
+  ): Step<unknown>;
   agent(name: string, options: AgentOptions): Step<AgentResult>;
   human(question: string, options: { to: string }): Promise<boolean>;
   dispatch<T>(flow: string, input: unknown): Promise<T>;
@@ -119,7 +122,7 @@ interface DeterministicStepSpec {
   command: string;
   dependsOn?: string[];
   timeoutMs?: number;
-  verification?: VerificationSpec;   // omit for implicit exit_code
+  verification?: VerificationSpec; // omit for implicit exit_code
 }
 
 interface LlmStepSpec {
@@ -138,19 +141,23 @@ interface AgentStepSpec {
   instruction: string;
   dependsOn?: string[];
   verification?: OutputVerificationSpec;
-  agent?: string;      // selects a named FlowSpec.agents entry
+  agent?: string; // selects a named FlowSpec.agents entry
   cli?: string;
   model?: string;
   surfaces?: { workspace?: { surface: string }[]; streams?: { stream: string }[]; external?: string[] };
-  recoveryMode?: 'reset' | 'inspect' | 'manual';   // default 'reset'
-  permissions?: { fileGlobs?: string[]; networkAllowlist?: string[]; accessPreset?: 'readonly' | 'readwrite' };
+  recoveryMode?: 'reset' | 'inspect' | 'manual'; // default 'reset'
+  permissions?: {
+    fileGlobs?: string[];
+    networkAllowlist?: string[];
+    accessPreset?: 'readonly' | 'readwrite';
+  };
 }
 
 interface FlowSpec {
-  version: string;      // required, e.g. '0.1.0' — not optional
+  version: string; // required, e.g. '0.1.0' — not optional
   name?: string;
-  cli?: string;                          // flow-level CLI default
-  agents?: Record<string, { cli: string; model: string }>;  // both fields required
+  cli?: string; // flow-level CLI default
+  agents?: Record<string, { cli: string; model: string }>; // both fields required
   steps: StepSpec[];
   budget?: { maxTokensIn?: number; maxTokensOut?: number; maxDollars?: string };
 }
@@ -196,6 +203,7 @@ No resolution found at any level → `REFUSED [cli_unresolved]`, before anything
 $ flows check hello.flow.yaml   # agent step, no cli anywhere
 REFUSED [cli_unresolved] Step "greeter" has no CLI at step, flow, or project level. No flows.json was found from "..." to the filesystem root.
 ```
+
 (exit 2 — see **Verified against**)
 
 `model` has **no** flow or project default — only step or named-agent. Omitting it just runs whatever model the resolved CLI defaults to.
@@ -216,6 +224,7 @@ Nearest-wins project config, walking from the flow file's directory to the files
 $ flows check hello.flow.yaml   # model set on the step, but not in flows.json's models[]
 REFUSED [model_unknown] Step "greeter" declares model "claude-sonnet-4-6" for CLI "claude", but it is not listed in project model registry "..."; add the exact model only after verifying that project is allowed to use it.
 ```
+
 (Verified for real — see **Verified against**.)
 
 ## Human approval and dispatch (TypeScript resident verbs)
@@ -226,13 +235,13 @@ import { flow } from '@relayflows/surface';
 export default flow('ship-feature', async (f) => {
   const plan = await f.agent('planner', {
     task: 'Research and plan: add OAuth2 support',
-    workspace: 'acme/api: readonly',   // compiles to relayauth path scopes
+    workspace: 'acme/api: readonly', // compiles to relayauth path scopes
   });
 
   const ok = await f.human(`Ship this?\n${plan.summary}`, { to: 'khaliq' });
   if (!ok) return f.done('canceled');
 
-  const pr = await f.dispatch('garden/implement', plan);   // hands off to a child flow
+  const pr = await f.dispatch('garden/implement', plan); // hands off to a child flow
   f.done('success');
 });
 ```
@@ -258,7 +267,7 @@ A `.flow.ts` run via `flows run` requires `--input <inline-json-or-file>` even w
 
 ### Exit codes and refusal shapes
 
-Every refusal before a journal write is exit **2**, printed as `REFUSED [<kind>] <message>`. The `<kind>` differs by *how* the flow was checked, not just *what* was wrong — don't assume one canonical string for "no CLI":
+Every refusal before a journal write is exit **2**, printed as `REFUSED [<kind>] <message>`. The `<kind>` differs by _how_ the flow was checked, not just _what_ was wrong — don't assume one canonical string for "no CLI":
 
 - `flows check` on a YAML/JSON spec, or the declarative-compiler path in general → `preflight.ts`'s own kind directly: `cli_unresolved`, `model_unknown`, `cli_missing`, `cli_unauthenticated`, `no_executor`, etc. (`packages/sdk/src/failure-kinds.ts`, `PREFLIGHT_FAILURE_KINDS`).
 - `flows run` on a **TypeScript** `.flow.ts` whose authored `f.agent`/`f.llm` call can't resolve a CLI at runtime → the executor's internal `agent_cli_unresolved` gets wrapped and printed as `REFUSED [invalid_spec] <message>` (`packages/sdk/src/cli/direct-run.ts:97-119`). The internal `agent_cli_unresolved` string is never itself the printed kind a user sees.
@@ -283,20 +292,20 @@ Both are real, both are exit 2 — just from different code paths, so don't be s
 
 ## Quick reference
 
-| Verb / field | Language | Notes |
-|---|---|---|
-| `f.run(command)` / `type: deterministic` | both | shell command, implicit `exit_code` gate |
-| `f.llm(...)` / `type: llm` | both | bare model call, no workspace |
-| `f.agent(name, opts)` / `type: agent` | both | harnessed coding agent, returns `{summary, artifacts}` |
-| `f.human(question, {to})` | TS only | durable approval; YAML has no equivalent yet |
-| `f.dispatch(flow, input)` | TS only | hand off to a named child flow |
-| `f.done(reason)` / — | TS / kernel | one of `success \| step_failed \| canceled \| budget_exceeded` |
-| `options.cli` / `step.cli` | both | per-call/step CLI override (TS: flows#310) |
-| `options.model` / `step.model` | both | per-call/step model; no flow/project default |
-| `agent: <name>` + `agents: {...}` | YAML/JSON only | named cli/model pair, reused by selector |
-| `flows check <file>` | CLI | pure validate + preflight, no daemon |
-| `flows run <file> [--input ...]` | CLI | actually executes; `.flow.ts` needs `--input` |
-| `flows resume <run-id>` | CLI | resume a parked/crashed run |
+| Verb / field                             | Language       | Notes                                                          |
+| ---------------------------------------- | -------------- | -------------------------------------------------------------- |
+| `f.run(command)` / `type: deterministic` | both           | shell command, implicit `exit_code` gate                       |
+| `f.llm(...)` / `type: llm`               | both           | bare model call, no workspace                                  |
+| `f.agent(name, opts)` / `type: agent`    | both           | harnessed coding agent, returns `{summary, artifacts}`         |
+| `f.human(question, {to})`                | TS only        | durable approval; YAML has no equivalent yet                   |
+| `f.dispatch(flow, input)`                | TS only        | hand off to a named child flow                                 |
+| `f.done(reason)` / —                     | TS / kernel    | one of `success \| step_failed \| canceled \| budget_exceeded` |
+| `options.cli` / `step.cli`               | both           | per-call/step CLI override (TS: flows#310)                     |
+| `options.model` / `step.model`           | both           | per-call/step model; no flow/project default                   |
+| `agent: <name>` + `agents: {...}`        | YAML/JSON only | named cli/model pair, reused by selector                       |
+| `flows check <file>`                     | CLI            | pure validate + preflight, no daemon                           |
+| `flows run <file> [--input ...]`         | CLI            | actually executes; `.flow.ts` needs `--input`                  |
+| `flows resume <run-id>`                  | CLI            | resume a parked/crashed run                                    |
 
 ## Verified against
 
