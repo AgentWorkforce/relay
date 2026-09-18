@@ -13,7 +13,7 @@ import { spawnSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import { Command } from 'commander';
 import { registerIntegrationCommands } from '../../../packages/cli/dist/cli/commands/integration.js';
-import { mkdtempSync, rmSync, writeFileSync, readFileSync, appendFileSync } from 'node:fs';
+import { mkdtempSync, rmSync, writeFileSync, readFileSync, appendFileSync, existsSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -33,7 +33,8 @@ const { startServer } = await import(engineEntry);
 const repo = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../../..');
 const work = mkdtempSync(path.join(tmpdir(), 'ghsub-local-startup-'));
 const exitOne = path.join(work, 'exit-one');
-writeFileSync(exitOne, '#!/bin/sh\nexit 1\n', { mode: 0o700 });
+const exitOneMarker = path.join(work, 'exit-one-ran');
+writeFileSync(exitOne, '#!/bin/sh\ntouch exit-one-ran\nexit 1\n', { mode: 0o700 });
 const exitQualification = spawnSync('./exit-one', [], {
   cwd: work,
   env: { PATH: '/usr/bin:/bin' },
@@ -42,6 +43,7 @@ const exitQualification = spawnSync('./exit-one', [], {
 assert.equal(exitQualification.error, undefined);
 assert.equal(exitQualification.status, 1);
 assert.equal(exitQualification.signal, null);
+rmSync(exitOneMarker, { force: true });
 const report = {
   at: new Date().toISOString(),
   environment: 'isolated local SQLite + real broker + shell process fixtures',
@@ -223,11 +225,26 @@ try {
     pass: true,
   });
   const earlyError = await failSubscribe('early-exit', work);
-  // The process can exit before the spawn response or during waitForReady.
-  assert.match(
-    earlyError,
-    /^(?:agent 'early-exit' process exited during startup \(exit status: 1\); see worker log .+|Recipient early-exit failed startup: exited \(\{"reason":"exited","code":1,"signal":null\}\))$/
-  );
+  // The process can exit before the spawn response or during waitForReady. A
+  // PTY recipient's wrapper owns the child, so the broker cannot always report
+  // its exit status; any status that is reported must be the fixture's own.
+  if (
+    !/agent 'early-exit' process exited during startup \(exit status: 1\); see worker log .+/.test(earlyError)
+  ) {
+    const earlyExit = /^Recipient early-exit failed startup: exited \((\{.*\})\)$/.exec(earlyError)?.[1];
+    assert(earlyExit, `unexpected early-exit error: ${earlyError}`);
+    const parsed = JSON.parse(earlyExit);
+    assert.equal(parsed.reason, 'exited');
+    assert(
+      parsed.code === undefined || parsed.code === null || parsed.code === 1,
+      `unexpected early-exit status: ${earlyExit}`
+    );
+    assert(
+      parsed.signal === undefined || parsed.signal === null,
+      `unexpected early-exit signal: ${earlyExit}`
+    );
+  }
+  assert(existsSync(exitOneMarker), 'the owned exit-one fixture did not execute');
   const earlyIdentity = (await request('/v1/agents')).find((a) => a.name === 'early-exit');
   assert(
     !earlyIdentity || earlyIdentity.status === 'released',
