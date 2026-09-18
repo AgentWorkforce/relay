@@ -41,7 +41,7 @@ The easiest way to get started is to use [Agent Relay Cloud](https://agentrelay.
 You don't need a credit card and you can explore all the pieces without setting up any infrastructure.
 
 ### Self Hosting
-Agent Relay has self hosting options for each primitive. We're happy to help you set up the whole system on your environment, just reach out to our team selfhost@agentrelay.com and we'll walk you through it.
+Agent Relay has self hosting options for each primitive. We're happy to help you set up the whole system on your environment, just reach out to our team hi(at)agentrelay.com and we'll walk you through it.
 
 ## License
 
