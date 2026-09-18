@@ -40,6 +40,18 @@ The easiest way to get started is to use [Agent Relay Cloud](https://agentrelay.
 
 You don't need a credit card and you can explore all the pieces without setting up any infrastructure.
 
+Kick the tires yourself by installing the CLI:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/AgentWorkforce/relay/main/install.sh | bash
+```
+
+Or install with npm:
+
+```bash
+npm install -g agent-relay
+```
+
 ### Self Hosting
 Agent Relay has self hosting options for each primitive. We're happy to help you set up the whole system on your environment, just reach out to our team hi(at)agentrelay.com and we'll walk you through it.
 
