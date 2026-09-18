@@ -31,18 +31,9 @@ if (!isWithin(harnessDir, runnerPath)) {
   throw new Error('The RelayFlow runner must execute from the exact-head harness checkout.');
 }
 
-const probePath = path.join(
-  targetDir,
-  'packages/cloud/src/.relayflow-sandbox-readonly-paths.test.ts'
-);
-const probeObservationPath = path.join(
-  targetDir,
-  '.relayflow-sandbox-readonly-paths-observation.json'
-);
-const probeConfigPath = path.join(
-  targetDir,
-  '.relayflow-sandbox-readonly-paths.vitest.config.mjs'
-);
+const probePath = path.join(targetDir, 'packages/cloud/src/.relayflow-sandbox-readonly-paths.test.ts');
+const probeObservationPath = path.join(targetDir, '.relayflow-sandbox-readonly-paths-observation.json');
+const probeConfigPath = path.join(targetDir, '.relayflow-sandbox-readonly-paths.vitest.config.mjs');
 
 const probeSource = String.raw`import { afterEach, expect, test, vi } from 'vitest';
 import { writeFile } from 'node:fs/promises';
