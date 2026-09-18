@@ -3259,6 +3259,7 @@ mod tests {
     async fn no_key_startup_times_out_workspace_creation_independently() {
         use axum::{routing::post, Router};
 
+        let _env_guard = clear_relay_env();
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let address = listener.local_addr().unwrap();
         let server = tokio::spawn(async move {
