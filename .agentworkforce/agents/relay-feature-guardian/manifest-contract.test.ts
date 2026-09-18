@@ -84,9 +84,6 @@ describe('feature manifest contract', () => {
       'relay cloud worker start',
       'relay cloud worker status',
       'relay cloud worker logs',
-      'relay reflex on',
-      'relay reflex off',
-      'relay reflex status',
       'relay workspace active',
       'relay workspace create',
       'relay workspace list',
@@ -144,6 +141,11 @@ describe('feature manifest contract', () => {
       'relay fleet disable',
       'relay fleet inherit',
       'relay fleet status',
+      // Mounted product surfaces. Each product's real tree lives in its own SDK
+      // spec, so the manifest documents the group and the surface owns the rest.
+      'relay file',
+      'relay flows',
+      'relay sessions',
     ];
 
     for (const command of expected) {
