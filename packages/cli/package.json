@@ -67,7 +67,6 @@
     "zod": "^4.4.3"
   },
   "optionalDependencies": {
-    "@relayhistory/cloud-client": "^0.1.0",
     "ai-hist-native": "^0.4.1"
   },
   "devDependencies": {

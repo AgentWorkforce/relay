@@ -10,7 +10,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Added
 
 - `agent-relay file`, `agent-relay flows`, and `agent-relay sessions` expose the relayfile, relayflows, and relayhistory CLIs from their own SDKs, so every Relay product is reachable from one binary.
-- `agent-relay sessions cloud list|events|search|thread|turns|digest|coverage` read Relayhistory cloud history when Relayhistory credentials are configured.
+- `agent-relay sessions cloud list|events|search|thread|turns|digest|coverage` read Relayhistory cloud history once `@relayhistory/cloud-client` is installed alongside the CLI and Relayhistory credentials are configured.
 - `@agent-relay/cli-surface`: the contract a product SDK implements to be mounted as an `agent-relay` command group.
 
 ### Changed
