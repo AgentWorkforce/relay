@@ -259,6 +259,7 @@ pub enum ListenApiRequest {
 /// so they don't need a variant here.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum DeliveryRouteError {
+    CapabilityDisabled,
     /// No worker with that name is currently registered with the broker.
     WorkerNotFound(WorkerName),
 }
@@ -266,6 +267,7 @@ pub enum DeliveryRouteError {
 impl std::fmt::Display for DeliveryRouteError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
+            DeliveryRouteError::CapabilityDisabled => write!(f, "DEGRADED: manual flush is unavailable in local-only mode; local deliveries use the durable automatic queue"),
             DeliveryRouteError::WorkerNotFound(name) => {
                 write!(f, "agent_not_found: no worker named '{name}'")
             }
@@ -278,12 +280,16 @@ impl std::error::Error for DeliveryRouteError {}
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum AgentResultRouteError {
     InvalidToken,
+    Retryable,
+    Conflict,
 }
 
 impl std::fmt::Display for AgentResultRouteError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             AgentResultRouteError::InvalidToken => write!(f, "invalid_result_token"),
+            AgentResultRouteError::Retryable => write!(f, "task_receipt_pending"),
+            AgentResultRouteError::Conflict => write!(f, "task_result_conflict"),
         }
     }
 }
@@ -363,6 +369,7 @@ impl SnapshotFormat {
 
 #[derive(Clone)]
 struct ListenApiState {
+    local_only: bool,
     tx: mpsc::Sender<ListenApiRequest>,
     events_tx: broadcast::Sender<String>,
     broker_api_key: Option<String>,
@@ -388,6 +395,10 @@ struct ListenApiState {
     node_token: std::sync::Arc<std::sync::RwLock<Option<String>>>,
     /// Whether the broker is in persist mode
     persist: bool,
+    /// Node-control inbound introspection. Held directly (rather than reached
+    /// through `tx`) so `GET /api/node-delivery` answers even when the runtime
+    /// event loop is wedged — the case the endpoint exists to diagnose.
+    node_delivery_probe: std::sync::Arc<crate::node_delivery_probe::NodeDeliveryProbe>,
     /// When the broker started
     started_at: std::time::Instant,
     input_serializers: PtyInputSerializers,
@@ -412,6 +423,7 @@ impl ListenReplayQuery {
 // ---------------------------------------------------------------------------
 
 pub struct ListenApiConfig {
+    pub local_only: bool,
     pub tx: mpsc::Sender<ListenApiRequest>,
     pub events_tx: broadcast::Sender<String>,
     pub replay_buffer: ReplayBuffer,
@@ -423,6 +435,9 @@ pub struct ListenApiConfig {
     pub node_name: String,
     pub node_token: std::sync::Arc<std::sync::RwLock<Option<String>>>,
     pub persist: bool,
+    /// Node-control inbound introspection, read directly by
+    /// `GET /api/node-delivery`. See [`crate::node_delivery_probe`].
+    pub node_delivery_probe: std::sync::Arc<crate::node_delivery_probe::NodeDeliveryProbe>,
 }
 
 pub fn listen_api_router(config: ListenApiConfig) -> axum::Router {
@@ -436,13 +451,14 @@ fn configured_broker_api_key() -> Option<String> {
         .filter(|value| !value.is_empty())
 }
 
-fn listen_api_router_with_auth(
+pub(crate) fn listen_api_router_with_auth(
     config: ListenApiConfig,
     broker_api_key: Option<String>,
 ) -> axum::Router {
     use axum::{middleware, routing, Router};
 
     let state = ListenApiState {
+        local_only: config.local_only,
         tx: config.tx,
         events_tx: config.events_tx,
         broker_api_key: broker_api_key
@@ -464,6 +480,7 @@ fn listen_api_router_with_auth(
         node_name: config.node_name,
         node_token: config.node_token,
         persist: config.persist,
+        node_delivery_probe: config.node_delivery_probe,
         started_at: std::time::Instant::now(),
         input_serializers: Arc::new(tokio::sync::Mutex::new(HashMap::new())),
     };
@@ -536,6 +553,7 @@ fn listen_api_router_with_auth(
             "/api/crash-insights",
             routing::get(listen_api_crash_insights),
         )
+        .route("/api/node-delivery", routing::get(listen_api_node_delivery))
         .route("/api/dead-letters", routing::get(listen_api_dead_letters))
         .route(
             "/api/dead-letters/redeliver",
@@ -611,7 +629,13 @@ pub(crate) fn listen_api_health_payload(
 async fn listen_api_health(
     axum::extract::State(state): axum::extract::State<ListenApiState>,
 ) -> axum::Json<Value> {
+    let local_only = state.local_only;
     let mut payload = listen_api_health_payload(state.default_workspace_id, state.memberships);
+    if local_only {
+        payload["status"] = json!("degraded");
+        payload["mode"] = json!("local_only");
+        payload["relaycastConnected"] = json!(false);
+    }
     if let Some(status) = fetch_status_for_health(&state.tx).await {
         merge_status_into_health_payload(&mut payload, &status);
     }
@@ -633,6 +657,12 @@ fn merge_status_into_health_payload(payload: &mut Value, status: &Value) {
     let Some(object) = payload.as_object_mut() else {
         return;
     };
+    if status.get("mode").and_then(Value::as_str) == Some("local_only") {
+        object.insert("status".into(), json!("degraded"));
+        object.insert("mode".into(), json!("local_only"));
+        object.insert("relaycastConnected".into(), json!(false));
+        object.insert("degraded".into(), status["degraded"].clone());
+    }
     if let Some(agent_count) = status.get("agent_count").and_then(Value::as_u64) {
         object.insert("agentCount".to_string(), json!(agent_count));
     }
@@ -681,6 +711,8 @@ async fn listen_api_session(
         "broker_version": state.broker_version,
         "spawn_capabilities": {"explicit_empty_channels": true, "create_only_identity": true},
         "protocol_version": 2,
+        "operation_mode": if state.local_only { "local_only" } else { "normal" },
+        "degraded": state.local_only,
         "workspace_key": state.workspace_key,
         "relay_base_url": state.relay_base_url,
         "default_workspace_id": state.default_workspace_id,
@@ -1368,6 +1400,16 @@ async fn listen_api_agent_result(
 
     match reply_rx.await {
         Ok(Ok(value)) => (axum::http::StatusCode::OK, axum::Json(value)),
+        Ok(Err(AgentResultRouteError::Retryable)) => (
+            axum::http::StatusCode::SERVICE_UNAVAILABLE,
+            axum::Json(
+                json!({ "success": false, "error": "task_receipt_pending", "retryable": true }),
+            ),
+        ),
+        Ok(Err(AgentResultRouteError::Conflict)) => (
+            axum::http::StatusCode::CONFLICT,
+            axum::Json(json!({ "success": false, "error": "task_result_conflict" })),
+        ),
         Ok(Err(AgentResultRouteError::InvalidToken)) => (
             axum::http::StatusCode::UNAUTHORIZED,
             axum::Json(json!({ "success": false, "error": "invalid_result_token" })),
@@ -2610,6 +2652,11 @@ fn delivery_route_error_to_response(
     err: &DeliveryRouteError,
 ) -> (axum::http::StatusCode, axum::Json<Value>) {
     match err {
+        DeliveryRouteError::CapabilityDisabled => api_error(
+            axum::http::StatusCode::CONFLICT,
+            "capability_disabled",
+            err.to_string(),
+        ),
         DeliveryRouteError::WorkerNotFound(_) => api_error(
             axum::http::StatusCode::NOT_FOUND,
             "agent_not_found",
@@ -2729,6 +2776,30 @@ async fn listen_api_crash_insights(
         Err(_) => internal_error(),
         Ok(Err(err)) => api_error(axum::http::StatusCode::INTERNAL_SERVER_ERROR, "error", err),
     }
+}
+
+/// `GET /api/node-delivery` — introspection for the node-control inbound path.
+///
+/// Deliberately answered straight from the shared probe rather than by posting
+/// a [`ListenApiRequest`] to the runtime. Every other route here round-trips
+/// through the event loop, but a wedged event loop is one of the conditions
+/// that makes an agent go silent, and a diagnostic that hangs in exactly the
+/// case it was built for is worthless. When the loop is stuck, the frame
+/// counters keep climbing while `cursors_published_at_ms` stops advancing.
+async fn listen_api_node_delivery(
+    axum::extract::State(state): axum::extract::State<ListenApiState>,
+) -> (axum::http::StatusCode, axum::Json<Value>) {
+    let token_present = state
+        .node_token
+        .read()
+        .map(|token| token.is_some())
+        .unwrap_or(false);
+    // `connected` is reported by the probe's own connect/disconnect counters
+    // rather than the runtime's flag, for the same no-round-trip reason.
+    (
+        axum::http::StatusCode::OK,
+        axum::Json(state.node_delivery_probe.snapshot_with_token(token_present)),
+    )
 }
 
 async fn listen_api_dead_letters(
@@ -3876,12 +3947,44 @@ mod auth_tests {
     fn test_router(
         broker_api_key: Option<&str>,
     ) -> (axum::Router, mpsc::Receiver<ListenApiRequest>) {
+        test_router_with_mode(broker_api_key, false)
+    }
+
+    fn test_router_with_mode(
+        broker_api_key: Option<&str>,
+        local_only: bool,
+    ) -> (axum::Router, mpsc::Receiver<ListenApiRequest>) {
+        let (router, rx, _) = test_router_with_probe_mode(broker_api_key, local_only);
+        (router, rx)
+    }
+
+    fn test_router_with_probe(
+        broker_api_key: Option<&str>,
+    ) -> (
+        axum::Router,
+        mpsc::Receiver<ListenApiRequest>,
+        std::sync::Arc<crate::node_delivery_probe::NodeDeliveryProbe>,
+    ) {
+        test_router_with_probe_mode(broker_api_key, false)
+    }
+
+    fn test_router_with_probe_mode(
+        broker_api_key: Option<&str>,
+        local_only: bool,
+    ) -> (
+        axum::Router,
+        mpsc::Receiver<ListenApiRequest>,
+        std::sync::Arc<crate::node_delivery_probe::NodeDeliveryProbe>,
+    ) {
         let (tx, rx) = mpsc::channel(8);
         let (events_tx, _events_rx) = broadcast::channel(8);
         let replay_buffer = ReplayBuffer::new(DEFAULT_REPLAY_CAPACITY);
+        let node_delivery_probe =
+            std::sync::Arc::new(crate::node_delivery_probe::NodeDeliveryProbe::new());
         (
             listen_api_router_with_auth(
                 ListenApiConfig {
+                    local_only,
                     tx,
                     events_tx,
                     replay_buffer,
@@ -3893,11 +3996,94 @@ mod auth_tests {
                     node_name: "test-node".to_string(),
                     node_token: std::sync::Arc::new(std::sync::RwLock::new(None)),
                     persist: false,
+                    node_delivery_probe: node_delivery_probe.clone(),
                 },
                 broker_api_key.map(ToString::to_string),
             ),
             rx,
+            node_delivery_probe,
         )
+    }
+
+    /// The report names every agent on the broker and their delivery cursors.
+    /// That is operational detail, not public data, so the route must sit
+    /// behind the same API-key gate as the rest of `/api/*` — only `/health`
+    /// and `/api/agent-result` are unauthenticated.
+    #[tokio::test]
+    async fn node_delivery_route_requires_the_api_key_when_auth_is_enabled() {
+        let (router, _rx, _probe) = test_router_with_probe(Some("secret"));
+        let response = router
+            .oneshot(
+                Request::builder()
+                    .uri("/api/node-delivery")
+                    .body(Body::empty())
+                    .expect("request should build"),
+            )
+            .await
+            .expect("router should answer");
+        assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+    }
+
+    /// The endpoint must report what the probe recorded, and — critically —
+    /// must do so WITHOUT posting a request to the runtime. A wedged runtime
+    /// event loop is one of the conditions that makes an agent go deaf, so a
+    /// diagnostic that round-trips through it would hang in exactly the case
+    /// it exists to diagnose. `rx` is left undrained here on purpose: it
+    /// stands in for a runtime that is not answering.
+    #[tokio::test]
+    async fn node_delivery_route_answers_without_the_runtime() {
+        use crate::node_delivery_probe::DeliverDisposition;
+
+        let (router, mut rx, probe) = test_router_with_probe(None);
+        probe.record_connected();
+        probe.record_text_frame();
+        let deliver = crate::fleet_wire::Deliver {
+            v: crate::fleet_wire::FleetWireVersion,
+            agent: "worker-a".to_string(),
+            agent_id: "ag_1".to_string(),
+            delivery_id: "del_1".to_string(),
+            msg_id: "msg_1".to_string(),
+            seq: 7,
+            mode: crate::fleet_wire::DeliveryMode::Wait,
+            payload: json!({ "type": "dm.received" }),
+        };
+        probe.record_frame(&crate::fleet_wire::RelaycastToBroker::Deliver(
+            deliver.clone(),
+        ));
+        probe.record_decision(
+            &deliver,
+            &crate::node_control::DeliveryDecision::Deliver { up_to_seq: 7 },
+        );
+        probe.record_disposition(&deliver, DeliverDisposition::QueuedForInjection);
+
+        let response = router
+            .oneshot(
+                Request::builder()
+                    .uri("/api/node-delivery")
+                    .body(Body::empty())
+                    .expect("request should build"),
+            )
+            .await
+            .expect("router should answer");
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = response_json(response).await;
+
+        assert_eq!(body["connected"], true);
+        assert_eq!(body["frames"]["deliver"], 1);
+        assert_eq!(body["socket"]["text_frames"], 1);
+        assert_eq!(body["recent_delivers"][0]["agent"], "worker-a");
+        assert_eq!(body["recent_delivers"][0]["seq"], 7);
+        assert_eq!(body["recent_delivers"][0]["decision"], "deliver");
+        assert_eq!(
+            body["recent_delivers"][0]["disposition"],
+            "queued_for_injection"
+        );
+
+        // Nothing was asked of the runtime.
+        assert!(
+            rx.try_recv().is_err(),
+            "the introspection route must not depend on the runtime event loop"
+        );
     }
 
     async fn response_json(response: axum::response::Response) -> Value {
@@ -3905,6 +4091,26 @@ mod auth_tests {
             .await
             .expect("response body should be readable");
         serde_json::from_slice(&body).expect("response body should be json")
+    }
+
+    #[tokio::test]
+    async fn local_only_health_stays_degraded_without_a_runtime_status_reply() {
+        let (router, rx) = test_router_with_mode(Some("test"), true);
+        drop(rx);
+        let response = router
+            .oneshot(
+                Request::builder()
+                    .uri("/health")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = response_json(response).await;
+        assert_eq!(body["status"], "degraded");
+        assert_eq!(body["mode"], "local_only");
+        assert_eq!(body["relaycastConnected"], false);
     }
 
     #[tokio::test]

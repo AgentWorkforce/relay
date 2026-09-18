@@ -259,6 +259,7 @@ pub(crate) struct WorkerRegistry {
         HashMap<WorkerName, (Uuid, crate::relaycast::RelaycastHttpClient)>,
     pub(crate) identity_cleanups: HashMap<WorkerName, crate::runtime::PendingIdentityCleanup>,
     pub(crate) completed_owned_releases: VecDeque<(WorkerName, Uuid)>,
+    pub(crate) owned_cleanup_journal: Option<PathBuf>,
     pub(crate) supervisor: Supervisor,
     pub(crate) metrics: MetricsCollector,
 }
@@ -367,6 +368,7 @@ impl WorkerRegistry {
             owned_spawn_generations: HashMap::new(),
             completed_owned_releases: VecDeque::new(),
             identity_cleanups: HashMap::new(),
+            owned_cleanup_journal: None,
             supervisor: Supervisor::new(),
             metrics: MetricsCollector::new(broker_start),
         }
@@ -456,7 +458,7 @@ impl WorkerRegistry {
         // save tokens. We honor that even when `agent_result` is configured —
         // `AGENT_RELAY_RESULT_*` env vars are still set on the worker process
         // below, so a separately-configured Agent Relay MCP can pick them up.
-        if skip_relay_prompt {
+        if skip_relay_prompt || self.env_value("AGENT_RELAY_LOCAL_ONLY") == Some("1") {
             return Ok(Vec::new());
         }
         configure_agent_relay_mcp_with_result(
@@ -583,6 +585,33 @@ impl WorkerRegistry {
         workspace_id: Option<crate::ids::WorkspaceId>,
         agent_result: Option<AgentResultMcpConfig>,
         commit_attestation: Option<CommitAttestation>,
+    ) -> Result<AgentSpec> {
+        self.spawn_with_generation(
+            spec,
+            parent,
+            idle_threshold_secs,
+            worker_relay_api_key,
+            skip_relay_prompt,
+            workspace_id,
+            agent_result,
+            commit_attestation,
+            None,
+        )
+        .await
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) async fn spawn_with_generation(
+        &mut self,
+        spec: AgentSpec,
+        parent: Option<String>,
+        idle_threshold_secs: Option<u64>,
+        worker_relay_api_key: Option<String>,
+        skip_relay_prompt: bool,
+        workspace_id: Option<crate::ids::WorkspaceId>,
+        agent_result: Option<AgentResultMcpConfig>,
+        commit_attestation: Option<CommitAttestation>,
+        task_generation: Option<Uuid>,
     ) -> Result<AgentSpec> {
         let mut spec = spec;
         if self.identity_cleanups.contains_key(&spec.name) {
@@ -1253,8 +1282,27 @@ impl WorkerRegistry {
             command.env("RELAY_AGENT_TYPE", "agent");
             command.env("RELAY_STRICT_AGENT_NAME", "1");
         }
-        // Remove CLAUDECODE from child env to prevent nested Claude Code instances
-        // from interfering with the parent's session management
+        // Local-only workers must not bootstrap a separate Relaycast session.
+        if self.env_value("AGENT_RELAY_LOCAL_ONLY") == Some("1") {
+            for key in [
+                "AGENT_RELAY_ORIGIN_ACTOR",
+                "RELAY_AGENT_NAME",
+                "RELAY_AGENT_TYPE",
+                "RELAY_STRICT_AGENT_NAME",
+                "AGENT_RELAY_WORKSPACE_KEY",
+                "RELAY_WORKSPACE_KEY",
+                "RELAY_API_KEY",
+                "RELAY_AGENT_TOKEN",
+                "RELAY_NODE_TOKEN",
+                "RELAY_WORKSPACES_JSON",
+                "RELAY_DEFAULT_WORKSPACE",
+                "RELAY_WORKSPACE_ID",
+            ] {
+                command.env_remove(key);
+            }
+            command.env("AGENT_RELAY_LOCAL_ONLY", "1");
+        }
+        // Prevent nested Claude Code instances from sharing the parent session.
         command.env_remove("CLAUDECODE");
         if let Some(cwd) = spec.cwd.as_ref() {
             command.current_dir(cwd);
@@ -1270,7 +1318,7 @@ impl WorkerRegistry {
         let log_file = self.worker_log_path(&spec.name);
         let startup_log_file = log_file.clone();
 
-        let generation = Uuid::new_v4();
+        let generation = task_generation.unwrap_or_else(Uuid::new_v4);
         spawn_worker_reader(
             self.event_tx.clone(),
             spec.name.clone(),
@@ -1486,6 +1534,25 @@ impl WorkerRegistry {
         );
         self.send_to_worker(name, "deliver_relay", None, serde_json::to_value(delivery)?)
             .await
+    }
+
+    /// Stop a terminal task without touching a replacement worker or bypassing
+    /// the normal reap/owned-identity cleanup path.
+    pub(crate) async fn stop_task_generation(
+        &mut self,
+        name: &str,
+        generation: Uuid,
+    ) -> Result<bool> {
+        let Some(handle) = self.workers.get_mut(name) else {
+            return Ok(false);
+        };
+        if handle.generation != generation {
+            return Ok(false);
+        }
+        self.supervisor.unregister(name);
+        handle.exit_reason = Some("task_terminal_failure".to_owned());
+        terminate_child(&mut handle.child, ORPHAN_REAP_TIMEOUT).await?;
+        Ok(true)
     }
 
     pub(crate) async fn release(&mut self, name: &str) -> Result<()> {
@@ -3914,5 +3981,65 @@ sleep 30
 
         assert_eq!(fallback, None);
         assert_eq!(args, vec!["--model=gpt-5.5".to_string()]);
+    }
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
+    #[tokio::test]
+    async fn task_spawn_uses_preclaimed_generation_and_injects_result_callback() {
+        let directory = tempfile::tempdir().unwrap();
+        let (tx, mut rx) = mpsc::channel(16);
+        let mut registry = WorkerRegistry::new(
+            tx,
+            Vec::new(),
+            directory.path().join("logs"),
+            Instant::now(),
+        );
+        let generation = Uuid::new_v4();
+        let mut spec = sleeping_native_worker(
+            "fenced-task",
+            Some(directory.path().to_string_lossy().into_owned()),
+        );
+        if let Some(ResolvedHarnessConfig::Native(config)) = &mut spec.harness_config {
+            config.args = vec!["-c".into(), r#"printf '%s' "$AGENT_RELAY_RESULT_TOKEN" > callback-token; printf '{"type":"worker_ready"}\n'; sleep 30"#.into()];
+        }
+        registry
+            .spawn_with_generation(
+                spec,
+                None,
+                None,
+                None,
+                true,
+                None,
+                Some(AgentResultMcpConfig {
+                    callback_url: "http://127.0.0.1:1/api/agent-result".into(),
+                    token: "fixture-task-callback".into(),
+                    schema: None,
+                }),
+                None,
+                Some(generation),
+            )
+            .await
+            .unwrap();
+        assert_eq!(registry.workers["fenced-task"].generation, generation);
+        assert_eq!(
+            std::fs::read_to_string(directory.path().join("callback-token")).unwrap(),
+            "fixture-task-callback"
+        );
+        let event = tokio::time::timeout(Duration::from_secs(2), rx.recv())
+            .await
+            .unwrap()
+            .unwrap();
+        assert!(!registry
+            .stop_task_generation("fenced-task", Uuid::new_v4())
+            .await
+            .unwrap());
+        assert!(registry.is_worker_live("fenced-task"));
+        assert!(registry
+            .stop_task_generation("fenced-task", generation)
+            .await
+            .unwrap());
+        registry.release("fenced-task").await.unwrap();
+        assert!(
+            matches!(event, WorkerEvent::Message { generation: observed, .. } if observed == generation)
+        );
     }
 }

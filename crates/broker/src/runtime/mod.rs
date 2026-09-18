@@ -72,6 +72,7 @@ mod api;
 mod app_server;
 mod connection;
 mod dead_letter;
+mod degraded;
 mod delivery;
 mod event_loop;
 mod fleet;
@@ -87,6 +88,8 @@ mod relaycast_events;
 mod session;
 mod spawn_spec;
 mod system;
+mod task_store;
+mod tasks;
 #[cfg(test)]
 mod tests;
 mod util;
@@ -114,3 +117,7 @@ pub(crate) use session::*;
 pub(crate) use spawn_spec::*;
 pub(crate) use system::*;
 pub(crate) use util::*;
+
+pub(crate) fn task_request_prefix() -> &'static str {
+    task_store::TASK_REQUEST_PREFIX
+}

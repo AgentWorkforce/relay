@@ -1,0 +1,13 @@
+{
+  "version": 1,
+  "id": "1766-durable-task-receipt",
+  "kind": "feature",
+  "title": "Broker waits for task acceptance and reconciles a fenced final failure after restart",
+  "requirements": ["broker-linux-x64"],
+  "runner": { "command": ["node", "tests/relayflows/cases/1766-durable-task-receipt/run.mjs"] },
+  "timeoutSeconds": 180,
+  "expected": {
+    "base": { "outcome": "absent", "signature": "task_action_handler_unavailable" },
+    "head": { "outcome": "fixed", "signature": "fenced_task_failure_receipt_survives_restart" }
+  }
+}

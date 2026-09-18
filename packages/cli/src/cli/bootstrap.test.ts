@@ -25,9 +25,8 @@ const expectedLeafCommands = [
   'node agent message flush',
   'node agent message hold',
   'node agent message auto',
-  'node workflow run',
-  'node workflow logs',
-  'node workflow sync',
+  // `node workflow run|logs|sync` run on relayflows v1 and are deprecated in
+  // favour of `agent-relay flows`; they still work but no longer appear here.
   // top-level composite status + maintenance + telemetry + mcp
   'status',
   'version',
@@ -35,11 +34,13 @@ const expectedLeafCommands = [
   'uninstall',
   'telemetry',
   'mcp',
-  // reflex
-  'reflex on',
-  'reflex off',
-  'reflex status',
-  'session replay',
+  // Mounted product surfaces. They are commander leaves on purpose: each
+  // product's real command tree lives in its own SDK spec and is rendered by
+  // the surface mounter, so commander only ever sees the group.
+  'file',
+  'flows',
+  // `session` (singular) is the hidden alias of `sessions`, so it is absent here.
+  'sessions',
   // fleet (serve is a hidden error stub, filtered out below)
   'fleet agent list',
   'fleet config',
@@ -149,7 +150,14 @@ const expectedLeafCommands = [
 ];
 
 function isHidden(command: Command): boolean {
-  return (command as unknown as { _hidden?: boolean })._hidden === true;
+  if ((command as unknown as { _hidden?: boolean })._hidden === true) return true;
+  // Deprecated commands are hidden through the parent's `visibleCommands` help
+  // override rather than commander's private `_hidden` flag, so ask the parent
+  // what it would actually print. Without this the inventory would claim a
+  // command is on the visible surface while `--help` omits it.
+  const parent = command.parent;
+  if (!parent) return false;
+  return !parent.createHelp().visibleCommands(parent).includes(command);
 }
 
 function collectLeafCommandPaths(program: Command): string[] {
@@ -219,7 +227,6 @@ describe('bootstrap CLI', () => {
         'integration',
         'capabilities',
         'fleet',
-        'reflex',
         'session',
         'status',
         'observer',

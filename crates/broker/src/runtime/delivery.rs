@@ -258,13 +258,20 @@ pub(crate) fn load_pending_deliveries(path: &Path) -> HashMap<DeliveryId, Pendin
         .into_iter()
         .map(|p| {
             let id = p.delivery.delivery_id.clone();
+            // A restarted local recipient gets a fresh transport budget even
+            // if it registers before maintenance first retries this snapshot.
+            let failed_attempts = if p.delivery.event_id.as_str().starts_with("local_") {
+                0
+            } else {
+                p.failed_attempts
+            };
             (
                 id,
                 PendingDelivery {
                     worker_name: p.worker_name,
                     delivery: p.delivery,
                     attempts: p.attempts,
-                    failed_attempts: p.failed_attempts,
+                    failed_attempts,
                     next_retry_at: Instant::now(), // retry immediately on restart
                     queued_at_ms: if p.queued_at_ms == 0 {
                         unix_timestamp_millis()
@@ -337,6 +344,9 @@ pub(crate) fn synthetic_delivery_read_ack_reason(event_id: &EventId) -> Option<&
     let event_id = event_id.as_str().trim();
     if event_id.is_empty() {
         return Some("blank_event_id");
+    }
+    if event_id.starts_with("local_") {
+        return Some("local_only_synthetic_event_id");
     }
     if event_id.starts_with("http_") {
         return Some("http_api_synthetic_event_id");
@@ -934,6 +944,20 @@ pub(crate) async fn retry_pending_delivery(
         Some(pending) => pending.clone(),
         None => return Ok(DeliveryAttemptOutcome::Noop),
     };
+
+    // A local queue can outlive its broker and worker. Check absence before
+    // retry exhaustion, and give a respawned recipient a fresh handoff budget.
+    // Explicit release still moves its pending deliveries to dead letters.
+    if pending.delivery.event_id.as_str().starts_with("local_")
+        && !workers.has_worker(&pending.worker_name)
+    {
+        if let Some(current) = pending_deliveries.get_mut(delivery_id) {
+            current.failed_attempts = 0;
+            current.next_retry_at = Instant::now() + retry_interval;
+            current.last_error = Some("waiting for local recipient to reconnect".into());
+        }
+        return Ok(DeliveryAttemptOutcome::Noop);
+    }
 
     if pending.failed_attempts >= MAX_DELIVERY_RETRIES {
         let removed = pending_deliveries.remove(delivery_id).unwrap_or(pending);

@@ -11,7 +11,7 @@ type ExitFn = (code: number) => never;
 export interface StatusDependencies {
   getProjectRoot: () => string;
   getBrokerConnection: () => { url: string; apiKey?: string } | null;
-  probe: (url: string) => Promise<boolean>;
+  probe: (url: string) => Promise<boolean | 'degraded'>;
   getCloudAuth: () => Promise<{ apiUrl: string } | null>;
   log: (...args: unknown[]) => void;
   error: (...args: unknown[]) => void;
@@ -28,7 +28,9 @@ function withDefaults(overrides: Partial<StatusDependencies> = {}): StatusDepend
     probe: async (url: string) => {
       try {
         const res = await fetch(new URL('/health', url));
-        return res.ok;
+        if (!res.ok) return false;
+        const health = (await res.json()) as { status?: string };
+        return health.status === 'degraded' ? 'degraded' : true;
       } catch {
         return false;
       }
@@ -59,8 +61,9 @@ export function registerStatusCommand(program: Command, overrides: Partial<Statu
       deps.log(`Workspace:    ${deps.getProjectRoot()}`);
 
       const conn = deps.getBrokerConnection();
-      if (conn && (await deps.probe(conn.url))) {
-        deps.log(`Local broker: running (${conn.url})`);
+      const state = conn ? await deps.probe(conn.url) : false;
+      if (conn && state) {
+        deps.log(`Local broker: ${state === 'degraded' ? 'DEGRADED (LOCAL ONLY)' : 'running'} (${conn.url})`);
       } else {
         deps.log('Local broker: stopped');
       }

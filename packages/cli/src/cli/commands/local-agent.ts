@@ -1,7 +1,8 @@
 import type { Command } from 'commander';
 
 import { AGENT37_RELAYCAST_ORIGIN } from '@agent-relay/cloud';
-import { HarnessDriverClient } from '@agent-relay/harness-driver';
+import { findProjectRoot } from '@agent-relay/config';
+import type { HarnessDriverClient } from '@agent-relay/harness-driver';
 import type { InboundDeliveryMode, ListAgent, PendingRelayMessage } from '@agent-relay/harness-driver';
 import type { HarnessRuntime } from '@agent-relay/harnesses';
 import { stripAnsiFast } from '@agent-relay/utils';
@@ -23,8 +24,10 @@ import {
   type BrokerConnectionOptions,
 } from '../lib/broker-connection.js';
 import { resolvedSpawnRuntime, spawnAgentWithClient } from '../lib/client-factory.js';
+import { connectProjectBrokerClient } from '../lib/project-broker-client.js';
 import { describeError } from '../lib/describe-error.js';
 import { defaultExit } from '../lib/exit.js';
+import { resolveFleetAttachTarget, type FleetAttachResolution } from '../lib/fleet-attach-target.js';
 import { redeemJoinTicket } from '../lib/join-ticket.js';
 import { describeClearedEnrollment, persistWorkspaceSession } from '../lib/workspace-session.js';
 
@@ -191,6 +194,7 @@ export interface LocalAgentDependencies {
     node: string,
     options: FleetNodeAttachCliOptions
   ) => Promise<number>;
+  resolveFleetAttachTarget: (name: string) => Promise<FleetAttachResolution>;
   cwd: () => string;
   readConnectionFile: (stateDir: string) => unknown;
   getDefaultStateDir: () => string;
@@ -206,7 +210,7 @@ export interface LocalAgentDependencies {
 
 function withDefaults(overrides: Partial<LocalAgentDependencies> = {}): LocalAgentDependencies {
   const deps = {
-    connect: async (cwd: string) => HarnessDriverClient.connect({ cwd }),
+    connect: async (cwd: string) => connectProjectBrokerClient(findProjectRoot(cwd)),
     cwd: () => process.cwd(),
     readConnectionFile: readConnectionFileFromDisk,
     getDefaultStateDir: defaultStateDir,
@@ -217,6 +221,7 @@ function withDefaults(overrides: Partial<LocalAgentDependencies> = {}): LocalAge
     attach: runAttach,
     attachRemote: attachRemoteNode,
     attachNode: attachFleetNode,
+    resolveFleetAttachTarget,
     log: (...args: unknown[]) => console.log(...args),
     error: (...args: unknown[]) => console.error(...args),
     exit: defaultExit,
@@ -528,6 +533,73 @@ function brokerOptionsFromOpts(opts: Record<string, unknown>): LocalAgentMessage
   };
 }
 
+/** Bounded liveness probe so a stale `connection.json` cannot mask a real Fleet placement. */
+const LOCAL_BROKER_LIVENESS_TIMEOUT_MS = 750;
+
+/**
+ * Whether a flag-free `attach`/`message flush|hold|auto` should skip fleet
+ * auto-routing and go straight to the local broker.
+ *
+ * Originally checked only explicit `--broker-url` / `--api-key` / `--state-dir`
+ * / env overrides — never whether `connection.json` itself auto-discovers. A
+ * project with *both* a local broker and persisted Relaycast workspace
+ * credentials (the common case: those credentials are needed for ordinary
+ * local messaging, not just fleet routing) would skip straight past a
+ * perfectly usable local broker into `resolveFleetAttachTarget`, which then
+ * hard-errored with "has no live Fleet placement on the persisted remote
+ * session" for every plain local PTY worker — the fleet lookup finding zero
+ * matches is the *expected* case for a local-only agent, not a failure.
+ *
+ * The comment on this function's callers already states the intended
+ * design — fleet lookup exists for "a sandbox worker has no local broker",
+ * falling back to the local connection contract otherwise. Actually
+ * resolving that local contract (not just checking for explicit flags) is
+ * what makes the fallback real instead of aspirational.
+ *
+ * An explicit `--broker-url` / `--api-key` / `--state-dir` / env override is
+ * trusted at face value, same as every other command in this file — the
+ * caller named that broker on purpose, so no probe gates it. Only the
+ * *auto-discovered* `connection.json` path is probed: after a broker crash
+ * that left a stale file behind, treating it as "live" would route a
+ * flag-free command to a dead local port instead of the Fleet placement that
+ * might actually have the agent — a worse failure than the one this
+ * function was written to fix. Bounded to
+ * `LOCAL_BROKER_LIVENESS_TIMEOUT_MS` so a hung port cannot stall every
+ * flag-free attach/message command.
+ */
+async function hasLocalBrokerSelection(
+  deps: Pick<LocalAgentDependencies, 'env' | 'readConnectionFile' | 'getDefaultStateDir' | 'fetch'>,
+  opts: Record<string, unknown>
+): Promise<boolean> {
+  if (
+    opts.brokerUrl !== undefined ||
+    opts.apiKey !== undefined ||
+    opts.stateDir !== undefined ||
+    deps.env.RELAY_BROKER_URL?.trim() ||
+    deps.env.RELAY_BROKER_API_KEY?.trim()
+  ) {
+    return true;
+  }
+  const connection = resolveBrokerConnection(brokerOptionsFromOpts(opts), {
+    readConnectionFile: deps.readConnectionFile,
+    getDefaultStateDir: deps.getDefaultStateDir,
+    env: deps.env,
+  });
+  if (!connection) return false;
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), LOCAL_BROKER_LIVENESS_TIMEOUT_MS);
+  try {
+    const response = await deps.fetch(`${connection.url}/health`, { signal: controller.signal });
+    return response.ok;
+  } catch {
+    // Unreachable, timed out, or refused: the file is stale. Let the caller
+    // fall through to Fleet routing rather than claiming a dead local broker.
+    return false;
+  } finally {
+    clearTimeout(timeout);
+  }
+}
+
 function parseRuntimeOption(deps: LocalAgentDependencies, value: unknown): HarnessRuntime | undefined {
   const runtime = (value ?? 'auto') as string;
   if (runtime === 'auto' || runtime === 'native' || runtime === 'pty') return runtime;
@@ -618,7 +690,27 @@ async function withDeliveryModeClient<T>(
   sessionMode: AttachMode,
   run: (client: ReturnType<typeof createBrokerClient>) => Promise<T>
 ): Promise<T | undefined> {
-  const node = typeof opts.node === 'string' && opts.node.trim() ? opts.node.trim() : undefined;
+  let node = typeof opts.node === 'string' && opts.node.trim() ? opts.node.trim() : undefined;
+  if (!node && opts.workspaceKey !== undefined) {
+    deps.error(
+      'Error: --workspace-key requires an explicit --node. To target the local broker instead, use --broker-url / --api-key or read connection.json from --state-dir.'
+    );
+    deps.exit(1);
+    return undefined;
+  }
+  let targetBaseUrl: string | undefined;
+  if (!node && !(await hasLocalBrokerSelection(deps, opts))) {
+    const fleetTarget = await deps.resolveFleetAttachTarget(name);
+    if (fleetTarget.error) {
+      deps.error(`Error: ${fleetTarget.error}`);
+      deps.exit(1);
+      return undefined;
+    }
+    if (fleetTarget.target) {
+      node = fleetTarget.target.node;
+      targetBaseUrl = fleetTarget.target.baseUrl;
+    }
+  }
   if (!node) {
     let captured: T | undefined;
     await runLocalBroker(deps, brokerOptionsFromOpts(opts), async (client) => {
@@ -650,6 +742,7 @@ async function withDeliveryModeClient<T>(
       mode: sessionMode,
       env: deps.env,
       fetch: deps.fetch,
+      ...(targetBaseUrl ? { baseUrl: targetBaseUrl } : {}),
       ...(workspaceKey ? { workspaceKey } : {}),
     });
     return await run(
@@ -750,7 +843,7 @@ export function registerLocalAgentCommands(
           channels: (opts.channels as string[] | undefined) ?? ['general'],
           task: resolved.task,
           model: resolved.model,
-          cwd: opts.cwd as string | undefined,
+          cwd: (opts.cwd as string | undefined) ?? deps.cwd(),
           spawnMode,
           exitAfterTask: opts.exitAfterTask as boolean | undefined,
           runtime: runtime.requested,
@@ -809,7 +902,7 @@ export function registerLocalAgentCommands(
           channels: (options.channels as string[] | undefined) ?? ['general'],
           task: resolved.task,
           model: resolved.model,
-          cwd: options.cwd as string | undefined,
+          cwd: (options.cwd as string | undefined) ?? deps.cwd(),
           spawnMode,
           exitAfterTask: options.exitAfterTask as boolean | undefined,
           runtime: runtime.requested,
@@ -967,6 +1060,33 @@ export function registerLocalAgentCommands(
         });
         if (code !== 0) deps.exit(code);
         return;
+      }
+      // A sandbox worker has no local broker. Resolve a unique live fleet
+      // placement before falling back to the local connection contract so a
+      // flag-free attach follows the worker automatically.
+      if (!(await hasLocalBrokerSelection(deps, options))) {
+        const fleetTarget = await deps.resolveFleetAttachTarget(name);
+        if (fleetTarget.error) {
+          deps.error(`Error: ${fleetTarget.error}`);
+          deps.exit(1);
+          return;
+        }
+        if (fleetTarget.target) {
+          try {
+            const code = await deps.attachNode(name, mode, fleetTarget.target.node, {
+              baseUrl: fleetTarget.target.baseUrl,
+              json: options.json as boolean | undefined,
+              reasoning: options.reasoning as boolean | undefined,
+              diagnostics: options.diagnostics as boolean | undefined,
+            });
+            if (code !== 0) deps.exit(code);
+          } catch (error) {
+            const message = describeError(error);
+            deps.error(message.startsWith('Error:') ? message : `Error: ${message}`);
+            deps.exit(1);
+          }
+          return;
+        }
       }
       const code = await deps.attach(name, mode, {
         brokerUrl: options.brokerUrl as string | undefined,

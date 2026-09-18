@@ -43,6 +43,8 @@ export type CloudSessionOptions = {
   device?: boolean;
   refreshTimeoutMs?: number;
   env?: NodeJS.ProcessEnv;
+  /** Optional caller policy applied before refreshed credentials use a selected API host. */
+  validateApiUrl?: (apiUrl: string) => void;
 };
 
 export type WhoAmIResponse = {
@@ -281,8 +283,8 @@ export const REFRESH_TOKEN_WINDOW_MS = 24 * 60 * 60 * 1000;
 export const DEFAULT_REFRESH_TIMEOUT_MS = 10_000;
 export const AUTH_FILE_PATH = path.join(os.homedir(), '.agentworkforce/relay', 'cloud-auth.json');
 
-export function defaultApiUrl(): string {
-  return process.env.CLOUD_API_URL?.trim() || 'https://agentrelay.com/cloud';
+export function defaultApiUrl(env: NodeJS.ProcessEnv = process.env): string {
+  return env.CLOUD_API_URL?.trim() || 'https://agentrelay.com/cloud';
 }
 
 export function isSupportedProvider(provider: string): boolean {

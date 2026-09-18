@@ -39,7 +39,7 @@ verification:
     workspace: workspace-management
     skills: skills-installation
     integration: integrations-and-webhooks
-    reflex: reflex-history
+    product-surfaces: product-cli-surfaces
     mcp: mcp-stdio
     harnesses: harnesses
     sdk: typescript-sdk
@@ -921,31 +921,43 @@ categories:
         location: packages/cli/src/cli/commands/integration.ts
         verify_tier: 5
 
-  reflex:
-    name: Reflex
-    description: Reflex history sync - syncs relay activity history for agent context
-    criticality: standard
+  product-surfaces:
+    name: Product CLI Surfaces
+    description: >-
+      Other Relay products mounted as agent-relay command groups from their own
+      SDKs (relayfile, relayflows, relayhistory). Commands live in the product
+      repos; this repo owns only the generic mount.
+    criticality: hot
     features:
-      - id: reflex-on
-        name: Reflex On
-        cli: relay reflex on
-        description: Enable reflex history sync so agents receive relay activity context
-        location: packages/cli/src/cli/commands/reflex.ts
-        verify_tier: 6
-
-      - id: reflex-off
-        name: Reflex Off
-        cli: relay reflex off
-        description: Disable reflex history sync
-        location: packages/cli/src/cli/commands/reflex.ts
+      - id: product-surface-file
+        name: agent-relay file
+        cli: relay file --help
+        description: relayfile commands mounted from @relayfile/sdk/relay-cli
+        location: packages/cli/src/cli/commands/product-surfaces.ts
         verify_tier: 1
 
-      - id: reflex-status
-        name: Reflex Status
-        cli: relay reflex status
-        description: Show whether reflex history sync is enabled
-        location: packages/cli/src/cli/commands/reflex.ts
+      - id: product-surface-flows
+        name: agent-relay flows
+        cli: relay flows --help
+        description: relayflows commands mounted from @relayflows/sdk/relay-cli
+        location: packages/cli/src/cli/commands/product-surfaces.ts
         verify_tier: 1
+
+      - id: product-surface-sessions
+        name: agent-relay sessions
+        cli: relay sessions --help
+        description: >-
+          Session history mounted from ai-hist/relay-cli, composed with the
+          Relayhistory cloud client and this repo's session replay
+        location: packages/cli/src/cli/commands/product-surfaces.ts
+        verify_tier: 1
+
+      - id: product-surface-session-alias
+        name: agent-relay session (alias)
+        cli: relay session replay <id>
+        description: Hidden alias of `sessions`, kept so existing scripts keep working
+        location: packages/cli/src/cli/commands/session.ts
+        verify_tier: 3
 
   mcp:
     name: MCP Server Mode

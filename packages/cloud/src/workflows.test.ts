@@ -52,6 +52,18 @@ const INLINE_WORKFLOW = [
   'workflows: []',
 ].join('\n');
 
+// The v2 kernel spec of the same thing: a flat `steps` list, no swarm roster.
+// These selector tests assert the request body, but the document still has to
+// match the generation being requested or validation refuses it before send.
+const INLINE_V2_WORKFLOW = [
+  'version: "0.1.0"',
+  'name: selector-contract',
+  'steps:',
+  '  - id: noop',
+  '    type: deterministic',
+  '    command: "true"',
+].join('\n');
+
 describe('relayflow version request contract', () => {
   beforeEach(() => {
     ensureAuthenticatedMock.mockResolvedValue({ accessToken: 'token' });
@@ -88,11 +100,12 @@ describe('relayflow version request contract', () => {
 
   it.each(['v1', 'v2'] as const)('sends an explicit %s run selector', async (relayflowVersion) => {
     const bodies = captureRunBodies();
+    const workflow = relayflowVersion === 'v2' ? INLINE_V2_WORKFLOW : INLINE_WORKFLOW;
 
-    await runWorkflow(INLINE_WORKFLOW, { syncCode: false, relayflowVersion });
+    await runWorkflow(workflow, { syncCode: false, relayflowVersion });
 
     expect(JSON.parse(bodies[0])).toEqual({
-      workflow: INLINE_WORKFLOW,
+      workflow,
       fileType: 'yaml',
       relayflowVersion,
     });
@@ -101,7 +114,7 @@ describe('relayflow version request contract', () => {
   it('keeps the explicit selector alongside all existing resume selectors', async () => {
     const bodies = captureRunBodies();
 
-    await runWorkflow(INLINE_WORKFLOW, {
+    await runWorkflow(INLINE_V2_WORKFLOW, {
       syncCode: false,
       relayflowVersion: 'v2',
       resume: 'run-resume',
@@ -110,7 +123,7 @@ describe('relayflow version request contract', () => {
     });
 
     expect(JSON.parse(bodies[0])).toEqual({
-      workflow: INLINE_WORKFLOW,
+      workflow: INLINE_V2_WORKFLOW,
       fileType: 'yaml',
       relayflowVersion: 'v2',
       resume: 'run-resume',
@@ -486,18 +499,49 @@ describe('runWorkflow code sync', () => {
     });
   }
 
+  // A real v2 spec on disk: `steps`, and none of v1's swarm roster. Before
+  // the validator branched on the requested generation this threw
+  // `missing required field "swarm"` before any request was sent.
+  const V2_WORKFLOW = [
+    'version: "0.1.0"',
+    'name: drive-cloud-v2',
+    'steps:',
+    '  - id: sync',
+    '    type: deterministic',
+    '    command: echo SYNCED',
+  ].join('\n');
+
   it('sends an explicit relayflow engine generation with a run', async () => {
     const workflowPath = path.join(tmpRoot, 'workflow.yaml');
-    await writeFile(
-      workflowPath,
-      ['version: "1.0"', 'swarm:', '  pattern: dag', 'agents: []', 'workflows: []'].join('\n')
-    );
+    await writeFile(workflowPath, V2_WORKFLOW);
     const runBodies: unknown[] = [];
     mockPrepareAndRun(runBodies);
 
     await runWorkflow(workflowPath, { syncCode: false, relayflowVersion: 'v2' });
 
     expect(runBodies[0]).toMatchObject({ relayflowVersion: 'v2' });
+  });
+
+  it('rejects a v2 spec with no steps', async () => {
+    const workflowPath = path.join(tmpRoot, 'workflow.yaml');
+    await writeFile(workflowPath, ['version: "0.1.0"', 'name: empty'].join('\n'));
+    mockPrepareAndRun([]);
+
+    await expect(runWorkflow(workflowPath, { syncCode: false, relayflowVersion: 'v2' })).rejects.toThrow(
+      'missing required field "steps"'
+    );
+  });
+
+  // The loosening must be scoped to v2. A v2-shaped document submitted on v1
+  // would reach the v1 engine, which cannot run it.
+  it('still requires the v1 shape when no version is requested', async () => {
+    const workflowPath = path.join(tmpRoot, 'workflow.yaml');
+    await writeFile(workflowPath, V2_WORKFLOW);
+    mockPrepareAndRun([]);
+
+    await expect(runWorkflow(workflowPath, { syncCode: false })).rejects.toThrow(
+      'missing required field "swarm"'
+    );
   });
 
   it('uploads one tarball per declared path and sends paths[]', async () => {

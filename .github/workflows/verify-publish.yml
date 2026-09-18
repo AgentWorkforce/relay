@@ -72,12 +72,21 @@ jobs:
           echo "spec=$SPEC" >> $GITHUB_OUTPUT
           echo "Testing: $SPEC"
 
-      - name: Wait for package metadata
+      - name: Wait for package metadata and tarball
         if: inputs.version != 'latest'
         run: |
-          scripts/post-publish-verify/retry-command.sh \
-            "Wait for npm metadata for agent-relay@${{ inputs.version }}" \
-            npm view agent-relay@${{ inputs.version }} version
+          VERSION="${{ inputs.version }}"
+          scripts/post-publish-verify/wait-for-package-tarballs.sh \
+            "${{ steps.pkg.outputs.spec }}" \
+            "@agent-relay/cloud@$VERSION" \
+            "@agent-relay/config@$VERSION" \
+            "@agent-relay/fleet@$VERSION" \
+            "@agent-relay/harness-driver@$VERSION" \
+            "@agent-relay/harnesses@$VERSION" \
+            "@agent-relay/sdk@$VERSION" \
+            "@agent-relay/session@$VERSION" \
+            "@agent-relay/utils@$VERSION" \
+            "@agent-relay/broker-linux-x64@$VERSION"
 
       # Test 1: Global npm install
       - name: 'Test: Global npm install'
@@ -298,12 +307,21 @@ jobs:
           echo "spec=$SPEC" >> $GITHUB_OUTPUT
           echo "Testing: $SPEC"
 
-      - name: Wait for package metadata
+      - name: Wait for package metadata and tarball
         if: inputs.version != 'latest'
         run: |
-          scripts/post-publish-verify/retry-command.sh \
-            "Wait for npm metadata for agent-relay@${{ inputs.version }}" \
-            npm view agent-relay@${{ inputs.version }} version
+          VERSION="${{ inputs.version }}"
+          scripts/post-publish-verify/wait-for-package-tarballs.sh \
+            "${{ steps.pkg.outputs.spec }}" \
+            "@agent-relay/cloud@$VERSION" \
+            "@agent-relay/config@$VERSION" \
+            "@agent-relay/fleet@$VERSION" \
+            "@agent-relay/harness-driver@$VERSION" \
+            "@agent-relay/harnesses@$VERSION" \
+            "@agent-relay/sdk@$VERSION" \
+            "@agent-relay/session@$VERSION" \
+            "@agent-relay/utils@$VERSION" \
+            "@agent-relay/broker-darwin-arm64@$VERSION"
 
       - name: 'Test: npm install'
         run: |
@@ -390,12 +408,21 @@ jobs:
         with:
           node-version: '22.14.0'
 
-      - name: Wait for package metadata
+      - name: Wait for package metadata and tarball
         if: inputs.version != 'latest'
         run: |
-          scripts/post-publish-verify/retry-command.sh \
-            "Wait for npm metadata for agent-relay@${{ inputs.version }}" \
-            npm view agent-relay@${{ inputs.version }} version
+          VERSION="${{ inputs.version }}"
+          scripts/post-publish-verify/wait-for-package-tarballs.sh \
+            "agent-relay@$VERSION" \
+            "@agent-relay/cloud@$VERSION" \
+            "@agent-relay/config@$VERSION" \
+            "@agent-relay/fleet@$VERSION" \
+            "@agent-relay/harness-driver@$VERSION" \
+            "@agent-relay/harnesses@$VERSION" \
+            "@agent-relay/sdk@$VERSION" \
+            "@agent-relay/session@$VERSION" \
+            "@agent-relay/utils@$VERSION" \
+            "@agent-relay/broker-linux-x64@$VERSION"
 
       - name: Build verification image
         run: |

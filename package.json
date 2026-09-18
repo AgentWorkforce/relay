@@ -1,6 +1,6 @@
 {
   "name": "@agent-relay/monorepo",
-  "version": "12.0.0",
+  "version": "12.2.4",
   "private": true,
   "description": "Agent Relay monorepo",
   "type": "module",
@@ -8,9 +8,9 @@
     "packages/*"
   ],
   "scripts": {
-    "typecheck": "npm run build:session && npm run build:config && npm run build:cloud && npm run build:utils && npm run build:policy && npm run build:sdk && npm run build:harness-driver && npm run build:harnesses && npm run build:fleet && cd packages/cli && npx tsc --noEmit",
+    "typecheck": "npm run build:session && npm run build:config && npm run build:cloud && npm run build:utils && npm run build:policy && npm run build:sdk && npm run build:harness-driver && npm run build:harnesses && npm run build:fleet && npm run build:cli-surface && cd packages/cli && npx tsc --noEmit",
     "build": "npm run clean && npm run build:rust && npm run build:core",
-    "build:core": "npm run build:session && npm run build:config && npm run build:cloud && npm run build:utils && npm run build:policy && npm run build:sdk && npm run build:harness-driver && npm run build:harnesses && npm run build:integration-prompts && npm run build:evals && npm run build:fleet && npm run build:cli",
+    "build:core": "npm run build:session && npm run build:config && npm run build:cloud && npm run build:utils && npm run build:policy && npm run build:sdk && npm run build:harness-driver && npm run build:harnesses && npm run build:integration-prompts && npm run build:evals && npm run build:fleet && npm run build:cli-surface && npm run build:cli",
     "build:packages": "npm run build:core",
     "build:packages:watch": "echo 'Package watch build was removed with the simplified core surface. Use package-specific watch commands instead.'",
     "build:cli": "npm --prefix packages/cli run build",
@@ -110,7 +110,8 @@
     "verify:fleet-daytona:dry-run": "DRY_RUN=1 relayflows run workflows/verify-fleet-daytona.ts",
     "test:e2e": "vitest run --config vitest.e2e.config.ts",
     "smoke:prod": "node tests/e2e/prod-smoke/prod-smoke.mjs",
-    "test:subscriptions:proof": "node --test tests/e2e/github-subscriptions/*.test.mjs"
+    "test:subscriptions:proof": "node --test tests/e2e/github-subscriptions/*.test.mjs",
+    "build:cli-surface": "npm --prefix packages/cli-surface run build"
   },
   "author": "AgentWorkforce <hello@agentrelay.com>",
   "license": "Apache-2.0",

@@ -5,12 +5,94 @@ All notable changes to Agent Relay will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased - Major]
+## [Unreleased]
+
+## [12.2.4] - 2026-09-18
+
+### Added
+
+- `agent-relay file`, `agent-relay flows`, and `agent-relay sessions` expose the relayfile, relayflows, and relayhistory CLIs from their own SDKs, so every Relay product is reachable from one binary.
+- `agent-relay sessions cloud list|events|search|thread|turns|digest|coverage` read Relayhistory cloud history once `@relayhistory/cloud-client` is installed alongside the CLI and Relayhistory credentials are configured.
+- `@agent-relay/cli-surface`: the contract a product SDK implements to be mounted as an `agent-relay` command group.
+
+### Changed
+
+- `agent-relay session` is now a hidden alias of `agent-relay sessions`; `session replay` keeps working unchanged.
+
+### Deprecated
+
+- `agent-relay cloud schedule` and `agent-relay cloud schedules` warn as relayflows v1. Both stay listed and supported: relayflows v2 has no hosted scheduling yet.
+- `--relayflow-version v1` on `agent-relay cloud run` warns; use `agent-relay flows run --cloud` for the v2 engine.
+- `agent-relay node workflow run|logs|sync` run on the relayflows v1 engine and are hidden from help; use `agent-relay flows run|replay|sync`.
+
+### Removed
+
+- `agent-relay reflex` (`on`, `off`, `status`).
 
 ### Fixed
 
+- `ai-hist`'s `--acquisition-timeout-ms` is accepted instead of always failing as an unknown option, and `ai-hist` no longer publishes its compiled tests.
+
+### Breaking Changes
+
+- The `agent-relay reflex` command group is removed. Reflex history capture still runs from its stored enabled flag, but the CLI no longer toggles it.
+
+### Migration Guidance
+
+- Scripts calling `agent-relay reflex on|off|status` must be updated; there is no replacement command. Edit the Reflex state file directly if you need to change the flag.
+- Scripts calling `agent-relay cloud run --relayflow-version v1` should move to `agent-relay flows run --cloud`.
+- Scripts calling `agent-relay node workflow run|logs|sync` should move to `agent-relay flows run|replay|sync`. `flows replay` reads a run's local journal rather than tailing a log file.
+
+## [12.2.3] - 2026-09-18
+
+### Added
+
+- Opt-in persistent broker task providers preserve final results across reconnects and acknowledge callbacks only after durable Relaycast receipts.
+
+### Fixed
+
+- `node agent attach` and `message flush|hold|auto` no longer hard-error with "has no live Fleet placement on the persisted remote session" for a flag-free attach to a local PTY worker when the project also has persisted Relaycast workspace credentials — a live local broker discovered via `connection.json` is used instead.
+- Broker Codex initial tasks use small render-gated chunks and bounded submit-only retries to recover stuck prompts without retyping the task.
+
+## [12.2.2] - 2026-09-15
+
+### Changed
+
+- Stop double-publishing cloud, wait longer for the registry, tag what was built
+
+## [12.2.1] - 2026-09-15
+
+### Fixed
+
+- Broker node connections recover when inventory acknowledgements stop even while WebSocket pongs continue, with bounded retries during outages.
+
+## [12.2.0] - 2026-09-15
+
+### Added
+
+- Broker `GET /api/node-delivery` exposes frame arrival, routing decisions, pending handoff, and acknowledgement counters without requiring logs or a restart.
+
+### Fixed
+
+- Broker node connections now require an accepted registration before reporting readiness or publishing inventory and heartbeats; rejected and unanswered registrations reconnect with bounded backoff.
+- Direct-message CLI and MCP receipts separate directory name matches from unconfirmed recipient delivery, preserving the queued message ID without reporting reachability from a roster match.
+
+## [12.1.0] - 2026-09-12
+
+### Added
+
+- `agent-relay node up --local-only` runs local agents during Relaycast outages, visibly reports degraded capabilities, and retains local delivery records for reconciliation after reconnect.
+
+### Fixed
+
+- Local release of broker-owned workers now performs generation-bound direct identity cleanup with durable retries when the worker host is unavailable.
+- HTTP agent spawn rejects failed Relaycast node binding, cleans up the newly registered identity, and publishes declared metadata for successful spawns using either new or supplied tokens.
+- Multi-workspace startup rolls back already-registered memberships if a sibling registration fails, preventing leaked hosted identities.
+- No-key startup keeps Relaycast workspace creation on its own timeout so typed `workspace_busy` admission exhaustion is preserved instead of surfacing as a generic handshake timeout.
+
 - `agent-relay node up` retries the narrowly transient Relaycast `workspace_busy` admission response while keeping unrelated rate limits terminal and preserving bounded startup diagnostics.
 - `fleet spawn --sandbox` dispatches with only its temporary launcher token after Cloud target selection, avoiding the SDK's dual-credential rejection while keeping workspace-key authority limited to launcher registration and release.
+- `fleet spawn` and `mcp-args --register` retry typed Relaycast overloads up to three times with idempotent admission handling.
 
 - SDK fleet spawn placement receipts preserve invocation correlation and distinguish accepted, ready, unconfirmed, and terminal-failed outcomes.
 
@@ -20,17 +102,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - `fleet spawn --sandbox` uses the provider-neutral durable profile for explicit Daytona and E2B sandboxes, so their measured resource envelopes are routable while Agent37 retains its heavy profile.
 
+- Normal broker restarts preserve unmatched local audit backlogs without blocking fleet recovery.
 - Cloud Daytona Fleet provisioning now requires and returns the exact provider sandbox UUID alongside the stable Cloud sandbox ID, enabling ID-bound inspection and cleanup after interrupted launches.
 
 - Node startup recovery and shutdown require a persisted process and runtime-lock identity for the selected state directory, preserving unrelated agents.
 
-### Breaking Changes
+### Changed
 
-- `up` and `node up` refuse startup outside macOS and Linux because broker ownership cannot be verified on other platforms. Legacy brokers without a verifiable identity no longer support automatic shutdown or recovery.
-
-### Migration Guidance
-
-- Run nodes on macOS or Linux (including WSL) with `ps` and `lsof` available. Manually verify and stop legacy brokers before removing their retained state and restarting to create a verifiable identity.
+- `up` and `node up` refuse startup outside macOS and Linux (including WSL, with `ps` and `lsof` available) because broker ownership cannot be verified elsewhere. Brokers started by earlier versions have no verifiable identity and are not shut down or recovered automatically; stop them manually and restart once to create one.
 
 ## [12.0.0] - 2026-09-10
 

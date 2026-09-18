@@ -270,6 +270,11 @@ pub(crate) struct McpArgsCommand {
 
 #[derive(Debug, clap::Args)]
 pub(crate) struct InitCommand {
+    /// Run local agents only; retain delivery records for background reconciliation.
+    /// Fleet routing and remote attachment remain disabled until a normal restart.
+    #[arg(long)]
+    pub(crate) local_only: bool,
+
     /// Legacy broker instance name flag. Prefer --instance-name.
     #[arg(long, default_value = "", alias = "broker-name")]
     pub(crate) name: String,
@@ -371,6 +376,7 @@ mod tests {
 
     fn init_command(name: &str, instance_name: Option<&str>) -> InitCommand {
         InitCommand {
+            local_only: false,
             name: name.to_string(),
             instance_name: instance_name.map(ToOwned::to_owned),
             workspace_key: None,

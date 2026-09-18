@@ -1,0 +1,74 @@
+{
+  "version": "1.0.0",
+  "id": "2f7178f0-a2ba-4c9a-ad4a-7102fb547dbe",
+  "timestamp": "2026-09-10T18:07:12.764Z",
+  "trajectory": "traj_shd42liwvlpd",
+  "files": [
+    {
+      "path": "CHANGELOG.md",
+      "conversations": [
+        {
+          "contributor": {
+            "type": "ai"
+          },
+          "ranges": [
+            {
+              "start_line": 9,
+              "end_line": 15,
+              "revision": "bde1d4257d7a95484f4e3bcb86f0e3eb95124022"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "path": "crates/broker/src/cli_mcp_args.rs",
+      "conversations": [
+        {
+          "contributor": {
+            "type": "ai"
+          },
+          "ranges": [
+            {
+              "start_line": 4,
+              "end_line": 11,
+              "revision": "bde1d4257d7a95484f4e3bcb86f0e3eb95124022"
+            },
+            {
+              "start_line": 172,
+              "end_line": 186,
+              "revision": "bde1d4257d7a95484f4e3bcb86f0e3eb95124022"
+            },
+            {
+              "start_line": 632,
+              "end_line": 638,
+              "revision": "bde1d4257d7a95484f4e3bcb86f0e3eb95124022"
+            },
+            {
+              "start_line": 670,
+              "end_line": 682,
+              "revision": "bde1d4257d7a95484f4e3bcb86f0e3eb95124022"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "path": "tests/relayflows/cases/1715-spawn-overload/run.mjs",
+      "conversations": [
+        {
+          "contributor": {
+            "type": "ai"
+          },
+          "ranges": [
+            {
+              "start_line": 140,
+              "end_line": 159,
+              "revision": "bde1d4257d7a95484f4e3bcb86f0e3eb95124022"
+            }
+          ]
+        }
+      ]
+    }
+  ]
+}

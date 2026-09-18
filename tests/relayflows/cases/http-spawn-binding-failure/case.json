@@ -1,0 +1,21 @@
+{
+  "version": 1,
+  "id": "http-spawn-binding-failure",
+  "kind": "bugfix",
+  "title": "Reject HTTP spawn when hosted node binding fails",
+  "requirements": ["broker-linux-x64"],
+  "runner": {
+    "command": ["node", "tests/relayflows/cases/http-spawn-binding-failure/run.mjs"]
+  },
+  "timeoutSeconds": 180,
+  "expected": {
+    "base": {
+      "outcome": "bug",
+      "signature": "binding_failure_continues_spawn"
+    },
+    "head": {
+      "outcome": "fixed",
+      "signature": "binding_failure_rejects_before_launch"
+    }
+  }
+}
