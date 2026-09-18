@@ -1,0 +1,47 @@
+{
+  "id": "compact_siczab7ko3i4",
+  "version": 1,
+  "type": "compacted",
+  "compactedAt": "2026-09-17T20:02:51.418Z",
+  "sourceTrajectories": [
+    "traj_auzu1at82xi1"
+  ],
+  "dateRange": {
+    "start": "2026-09-17T19:56:01.956Z",
+    "end": "2026-09-17T20:02:50.932Z"
+  },
+  "summary": {
+    "totalDecisions": 1,
+    "totalEvents": 1,
+    "uniqueAgents": [
+      "default"
+    ]
+  },
+  "decisionGroups": [
+    {
+      "category": "tooling",
+      "decisions": [
+        {
+          "question": "Scope render-gated 768-byte delivery to broker Codex initial tasks, preserving other harness paste paths",
+          "chosen": "Scope render-gated 768-byte delivery to broker Codex initial tasks, preserving other harness paste paths",
+          "reasoning": "Native 5941-byte probe and production helper both returned PROBE_OK. Grid matching is pacing evidence, not exact whitespace proof. Partial failure must emit delivery_failed and retain dedup id to prevent upstream replay.",
+          "fromTrajectory": "traj_auzu1at82xi1"
+        }
+      ]
+    }
+  ],
+  "keyLearnings": [
+    "Visible-grid matching is only pacing evidence; exact whitespace verification is impossible from rendered cells.",
+    "Report delivery_failed and retain the delivery id after partial failure so broker retries cannot replay the body."
+  ],
+  "keyFindings": [
+    "Native 5941-byte probe and production helper both submitted with 768-byte chunks and returned PROBE_OK.",
+    "Saved Codex user messages were 5938 bytes, equal to the intended body after trimming three trailing whitespace bytes.",
+    "Regression coverage uses real PTYs for single submit, bounded retries, stale-grid timeout, and interactive cancellation."
+  ],
+  "filesAffected": [
+    "crates/broker/src/pty_worker.rs",
+    "CHANGELOG.md"
+  ],
+  "commits": []
+}

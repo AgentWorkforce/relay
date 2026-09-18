@@ -14,6 +14,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Fixed
 
 - `node agent attach` and `message flush|hold|auto` no longer hard-error with "has no live Fleet placement on the persisted remote session" for a flag-free attach to a local PTY worker when the project also has persisted Relaycast workspace credentials — a live local broker discovered via `connection.json` is used instead.
+- Broker Codex initial tasks use small render-gated chunks and bounded submit-only retries to recover stuck prompts without retyping the task.
 
 ## [12.2.2] - 2026-09-15
 
