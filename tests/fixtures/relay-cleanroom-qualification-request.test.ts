@@ -346,6 +346,10 @@ describe('trusted cleanroom qualification request', () => {
     expect(consumerSource).toContain('--source-sha "$RELAY_SHA"');
     expect(consumerSource).toContain('--package-version "$version"');
     expect(consumerSource).toContain('VERIFY_FLEET_EXPECTED_RELAY_SHA');
-    expect(consumerSource).toContain('npx relayflows run workflows/verify-fleet-daytona.ts');
+    // The v2 flow is generated, checked, then run; the consumer must still be
+    // pinned to the trusted source that emits it.
+    expect(consumerSource).toContain('node flows/verify/fleet-daytona.spec.ts --out');
+    expect(consumerSource).toContain('npx flows check "$FLEET_SPEC"');
+    expect(consumerSource).toContain('npx flows run "$FLEET_SPEC"');
   });
 });

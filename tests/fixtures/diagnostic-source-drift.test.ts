@@ -37,8 +37,10 @@ describe('diagnosis source provenance', () => {
   });
 
   it('accepts the RelayFlows CLI dry-run environment value in every verification workflow', async () => {
+    // verify-fleet-daytona migrated to relayflows v2, which has no `dryRun`
+    // run option: `flows check` validates a spec without executing it, and
+    // `npm run verify:fleet-daytona:check` is the replacement entry point.
     const workflowPaths = [
-      'workflows/verify-fleet-daytona.ts',
       'workflows/verify-cleanroom.ts',
       'workflows/diagnose-relay-orchestration-reliability.ts',
       'workflows/verify-features.ts',
@@ -48,6 +50,9 @@ describe('diagnosis source provenance', () => {
       expect(source, workflowPath).toContain("process.env.DRY_RUN === '1'");
       expect(source, workflowPath).toContain("process.env.DRY_RUN === 'true'");
     }
+    // The migrated flow keeps the same guarantee through the v2 verb.
+    const packageJson = JSON.parse(await readFile('package.json', 'utf8'));
+    expect(packageJson.scripts['verify:fleet-daytona:check']).toContain('flows check');
   });
 
   it('wires the package dry-run command into the Relayflow runner', async () => {

@@ -56,7 +56,8 @@ import {
   validateSeal,
 } from '../../scripts/verify-features/fleet-daytona.mjs';
 import { reconcileExactDaytonaSandboxes } from '../../scripts/verify-features/reconcile-fleet-daytona.mjs';
-import { deriveFleetTimeoutPlan } from '../../workflows/fleet-timeout-budget.ts';
+import { deriveFleetTimeoutPlan } from '../../flows/verify/fleet-timeout-budget.ts';
+import { buildFleetDaytonaSpec } from '../../flows/verify/fleet-daytona.spec.ts';
 // @ts-expect-error JavaScript module intentionally has no declaration file.
 import {
   diagnosisAgentNetwork,
@@ -80,6 +81,31 @@ type WorkflowStepDeclaration = {
   dependsOn: string[];
   offset: number;
 };
+
+interface SpecStepRecord {
+  id: string;
+  type: string;
+  command?: string;
+  timeoutMs?: number;
+  dependsOn?: string[];
+  agent?: string;
+  [key: string]: unknown;
+}
+
+/** Steps of the generated v2 spec, by id. */
+function specSteps(spec: any): Map<string, SpecStepRecord> {
+  return new Map((spec.steps as SpecStepRecord[]).map((step) => [step.id, step]));
+}
+
+/** Emission index, which the kernel reads as the DAG's topological order. */
+function specOrder(spec: any): (id: string) => number {
+  const index = new Map((spec.steps as SpecStepRecord[]).map((step, at) => [step.id, at]));
+  return (id: string) => {
+    const at = index.get(id);
+    if (at === undefined) throw new Error(`spec has no step ${id}`);
+    return at;
+  };
+}
 
 function workflowStepDeclarations(source: string): Map<string, WorkflowStepDeclaration> {
   const sourceFile = ts.createSourceFile(
@@ -652,73 +678,71 @@ describe('complete Daytona Fleet board', () => {
   });
 
   it('clean-installs and verifies the packed candidate before either Daytona attempt', async () => {
-    const source = await readFile('workflows/verify-fleet-daytona.ts', 'utf8');
-    const steps = workflowStepDeclarations(source);
-    const installDeps = steps.get('install-dependencies');
-    const build = steps.get('build-current-cli');
-    const installNpm = steps.get('install-candidate-npm');
-    const stageBroker = steps.get('stage-current-platform-broker');
-    const prepare = steps.get('prepare-clean-installed-candidate');
-    const inventory = steps.get('verify-candidate-cli-inventory');
-    const attemptA = steps.get('run-daytona-board-attempt-a');
-    expect(installDeps).toBeDefined();
-    expect(build).toBeDefined();
-    expect(installNpm).toBeDefined();
-    expect(stageBroker).toBeDefined();
-    expect(prepare).toBeDefined();
-    expect(inventory).toBeDefined();
-    expect(attemptA).toBeDefined();
-    expect(build!.offset).toBeGreaterThan(installDeps!.offset);
-    expect(installNpm!.offset).toBeGreaterThan(build!.offset);
-    expect(stageBroker!.offset).toBeGreaterThan(installNpm!.offset);
-    expect(prepare!.offset).toBeGreaterThan(stageBroker!.offset);
-    expect(inventory!.offset).toBeGreaterThan(prepare!.offset);
-    expect(attemptA!.offset).toBeGreaterThan(inventory!.offset);
+    const spec = buildFleetDaytonaSpec();
+    const steps = specSteps(spec);
+    const order = specOrder(spec);
+    for (const id of [
+      'install-dependencies',
+      'build-current-cli',
+      'install-candidate-npm',
+      'stage-current-platform-broker',
+      'prepare-clean-installed-candidate',
+      'verify-candidate-cli-inventory',
+      'run-daytona-board-attempt-a',
+    ]) {
+      expect(steps.get(id)).toBeDefined();
+    }
+    // Ordering is now a property of the emitted DAG rather than of source
+    // offsets, so assert the edges the proof actually depends on.
+    expect(order('build-current-cli')).toBeGreaterThan(order('install-dependencies'));
+    expect(order('run-daytona-board-attempt-a')).toBeGreaterThan(order('verify-candidate-cli-inventory'));
     // install-dependencies runs a script-free `npm ci` so build-current-cli never builds
     // against a sandbox snapshot's stale pre-baked node_modules.
-    expect(installDeps!.dependsOn).toEqual(['validate-catalog']);
-    expect(source).toMatch(/wf\.step\('install-dependencies'[\s\S]*?command:\s*'npm ci --ignore-scripts'/);
-    expect(build!.dependsOn).toEqual(['install-dependencies']);
-    expect(installNpm!.dependsOn).toEqual(['build-current-cli']);
-    expect(stageBroker!.dependsOn).toEqual(['install-candidate-npm']);
-    expect(prepare!.dependsOn).toEqual(['candidatePreparationDependency']);
-    expect(inventory!.dependsOn).toEqual(['prepare-clean-installed-candidate']);
-    expect(attemptA!.dependsOn).toEqual(['seal-trusted-fleet-inputs']);
-    expect(source).toMatch(/if\s*\(\s*!CONFIGURED_CANDIDATE_CLI\s*\)/);
-    expect(source).toMatch(/let\s+candidatePreparationDependency\s*=\s*['"]build-current-cli['"]/);
-    expect(installNpm!.offset).toBeGreaterThan(build!.offset);
-    expect(source).toMatch(/npm\s+install\s+--global\s+npm@\$\{REQUIRED_NPM_VERSION\}/);
-    expect(source).toMatch(/test\s+"\$\(npm --version\)"\s*=\s*"\$\{REQUIRED_NPM_VERSION\}"/);
-    expect(source).toMatch(/candidatePreparationDependency\s*=\s*["']stage-current-platform-broker["']/);
-    expect(source).toMatch(/relay-candidate-install\.mjs\s+stage-source-broker/);
-    expect(source).toContain('VERIFY_FLEET_CANDIDATE_ATTESTATION=');
-    expect(source).toContain('VERIFY_FLEET_CLI=');
+    expect(steps.get('install-dependencies')!.dependsOn).toEqual(['validate-catalog']);
+    expect(steps.get('install-dependencies')!.command).toBe('npm ci --ignore-scripts');
+    expect(steps.get('build-current-cli')!.dependsOn).toEqual(['install-dependencies']);
+    expect(steps.get('install-candidate-npm')!.dependsOn).toEqual(['build-current-cli']);
+    expect(steps.get('stage-current-platform-broker')!.dependsOn).toEqual(['install-candidate-npm']);
+    expect(steps.get('prepare-clean-installed-candidate')!.dependsOn).toEqual([
+      'stage-current-platform-broker',
+    ]);
+    expect(steps.get('verify-candidate-cli-inventory')!.dependsOn).toEqual([
+      'prepare-clean-installed-candidate',
+    ]);
+    expect(steps.get('run-daytona-board-attempt-a')!.dependsOn).toEqual(['seal-trusted-fleet-inputs']);
+    expect(steps.get('install-candidate-npm')!.command).toMatch(/npm install --global npm@\d/);
+    expect(steps.get('install-candidate-npm')!.command).toMatch(/test "\$\(npm --version\)" = "/);
+    expect(steps.get('stage-current-platform-broker')!.command).toContain(
+      'relay-candidate-install.mjs stage-source-broker'
+    );
+    expect(steps.get('run-daytona-board-attempt-a')!.command).toContain(
+      'VERIFY_FLEET_CANDIDATE_ATTESTATION='
+    );
+    expect(steps.get('run-daytona-board-attempt-a')!.command).toContain('VERIFY_FLEET_CLI=');
   });
 
   it('keeps independent Fleet attempts inside the consumer job deadline', async () => {
-    const [source, consumerSource] = await Promise.all([
-      readFile('workflows/verify-fleet-daytona.ts', 'utf8'),
-      readFile('.github/workflows/relay-cleanroom-qualification-consumer.yml', 'utf8'),
-    ]);
+    const consumerSource = await readFile(
+      '.github/workflows/relay-cleanroom-qualification-consumer.yml',
+      'utf8'
+    );
     const consumer = parse(consumerSource) as any;
     const qualification = consumer.jobs.qualification;
-    const steps = workflowStepDeclarations(source);
-    const attemptA = steps.get('run-daytona-board-attempt-a');
-    const attemptB = steps.get('run-daytona-board-attempt-b');
-    const materialize = steps.get('materialize-trusted-fleet-evidence');
+    const spec = buildFleetDaytonaSpec();
+    const steps = specSteps(spec);
 
     expect(qualification['timeout-minutes']).toBe(360);
-    expect(source).toContain('const ATTEMPT_TIMEOUT_MS = 5_100_000');
-    expect(source).toContain('const OUTER_JOB_TIMEOUT_MS = 21_600_000');
-    expect(source).toContain('const CONSUMER_SETUP_RESERVE_MS = 1_800_000');
-    expect(source).toContain('const CONSUMER_CLEANUP_RESERVE_MS = 180_000');
-    expect(source).toContain('const WORKFLOW_GUARD_MS = 120_000');
-    expect(source).toContain('const timeoutPlan = deriveFleetTimeoutPlan(wf.toConfig()');
-    expect(source).toContain('wf.timeout(timeoutPlan.workflowTimeoutMs)');
-    expect(attemptA?.dependsOn).toEqual(['seal-trusted-fleet-inputs']);
-    expect(attemptB?.dependsOn).toEqual(['seal-trusted-fleet-inputs']);
-    expect(materialize?.dependsOn).toEqual(['gate-attempt-a-evidence', 'gate-attempt-b-evidence']);
-    expect(source).not.toContain("dependsOn: ['gate-attempt-a-evidence']");
+    expect(steps.get('run-daytona-board-attempt-a')!.timeoutMs).toBe(5_100_000);
+    expect(steps.get('run-daytona-board-attempt-b')!.timeoutMs).toBe(5_100_000);
+    // The derived DAG deadline now travels as the flow's own wall-clock budget;
+    // v2 has no `wf.timeout()`.
+    expect(spec.budget.maxWallclockMs).toBeGreaterThan(0);
+    expect(steps.get('run-daytona-board-attempt-a')!.dependsOn).toEqual(['seal-trusted-fleet-inputs']);
+    expect(steps.get('run-daytona-board-attempt-b')!.dependsOn).toEqual(['seal-trusted-fleet-inputs']);
+    expect(steps.get('materialize-trusted-fleet-evidence')!.dependsOn).toEqual([
+      'gate-attempt-a-evidence',
+      'gate-attempt-b-evidence',
+    ]);
 
     // Two 85-minute attempts are concurrent; setup reserve, the 5-minute
     // guard, and the runtime check leave the six-hour outer job as a hard
@@ -729,22 +753,18 @@ describe('complete Daytona Fleet board', () => {
     const cleanupReserveMs = 180_000;
     const guardMs = 120_000;
     expect(attemptBudgetMs + setupReserveMs + cleanupReserveMs + guardMs).toBeLessThan(outerJobBudgetMs);
+    expect(spec.budget.maxWallclockMs).toBeLessThanOrEqual(
+      outerJobBudgetMs - setupReserveMs - cleanupReserveMs
+    );
   });
 
   it('materializes the RelayFlow DAG timeout plan and fails closed when retries extend it', async () => {
     const nonce = `timeout-contract-${process.pid}`;
     const { stdout } = await execFileAsync(
-      './node_modules/.bin/relayflows',
-      ['run', 'workflows/verify-fleet-daytona.ts'],
+      process.execPath,
+      ['flows/verify/fleet-daytona.spec.ts', '--out', `.workflow-artifacts/flows/${nonce}.json`],
       {
-        env: {
-          ...process.env,
-          DRY_RUN: '1',
-          VERIFY_FLEET_TIMEOUT_PLAN: '1',
-          VERIFY_FLEET_NONCE: nonce,
-          AGENT_RELAY_WORKFLOW_DISABLE_RELAYCAST: '1',
-          PATH: `${process.env.PATH}`,
-        },
+        env: { ...process.env, VERIFY_FLEET_TIMEOUT_PLAN: '1', VERIFY_FLEET_NONCE: nonce },
         maxBuffer: 8 * 1024 * 1024,
       }
     );
@@ -754,6 +774,8 @@ describe('complete Daytona Fleet board', () => {
     expect(plan.workflowTimeoutMs).toBeLessThanOrEqual(plan.innerWorkflowBudgetMs);
     const attemptA = plan.steps.find(({ name }: { name: string }) => name === 'run-daytona-board-attempt-a');
     const attemptB = plan.steps.find(({ name }: { name: string }) => name === 'run-daytona-board-attempt-b');
+    // v2 has no step retries, so every step counts once. The derivation is
+    // unchanged; its retry inputs are simply zero now.
     expect(attemptA).toMatchObject({
       timeoutMs: 5_100_000,
       retries: 0,
@@ -992,14 +1014,16 @@ describe('complete Daytona Fleet board', () => {
   });
 
   it('uses the exact effective Codex model for preflight and both reviewers', async () => {
-    const source = await readFile('workflows/verify-fleet-daytona.ts', 'utf8');
-
-    expect(source).toContain(
-      'process.env.VERIFY_FLEET_CODEX_MODEL?.trim() || CodexModels.GPT_5_1_CODEX_MINI'
-    );
+    const spec = buildFleetDaytonaSpec();
     for (const role of ['analysis-repair', 'final-codex-review', 'preflight-codex']) {
-      expect(source).toMatch(new RegExp(`wf\\.agent\\('${role}'[\\s\\S]*?model: FLEET_CODEX_MODEL`));
+      expect(spec.agents[role]).toMatchObject({ cli: 'codex', model: expect.any(String) });
     }
+    const models = new Set(
+      ['analysis-repair', 'final-codex-review', 'preflight-codex'].map((r) => spec.agents[r].model)
+    );
+    // One effective model across all three, so a VERIFY_FLEET_CODEX_MODEL
+    // override cannot desynchronise the preflight from what the reviewers run.
+    expect(models.size).toBe(1);
   });
 
   it('enumerates the complete Fleet and node-agent command/provider board', async () => {

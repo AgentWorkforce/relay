@@ -1,7 +1,10 @@
 {
   "extends": "../tsconfig.json",
   "compilerOptions": {
-    "noEmit": true
+    "noEmit": true,
+    // Node >= 22.18 strips types in place, so runtime imports must carry the
+    // real `.ts` extension; tsc needs this flag to accept the same specifier.
+    "allowImportingTsExtensions": true
   },
   "include": ["**/*.ts"]
 }

@@ -44,7 +44,8 @@ export function deriveFleetTimeoutPlan(
   const agents = new Map((config.agents ?? []).map((agent) => [agent.name, agent]));
   const steps = new Map<string, RelayFlowTimeoutStep>();
   for (const step of definitions) {
-    if (!step.name || steps.has(step.name)) throw new Error(`RelayFlow timeout config has duplicate step ${step.name}`);
+    if (!step.name || steps.has(step.name))
+      throw new Error(`RelayFlow timeout config has duplicate step ${step.name}`);
     steps.set(step.name, step);
   }
   const memo = new Map<string, number>();
@@ -55,19 +56,23 @@ export function deriveFleetTimeoutPlan(
     if (visiting.has(name)) throw new Error(`RelayFlow timeout dependency cycle at ${name}`);
     const step = steps.get(name);
     if (!step) throw new Error(`RelayFlow timeout dependency is missing step ${name}`);
-    if (!Number.isSafeInteger(step.timeoutMs) || step.timeoutMs < 1) {
+    // Bound to a local so the guard narrows: `Number.isSafeInteger` is not a
+    // type predicate, so the checks below would otherwise read as `undefined`.
+    const timeoutMs = step.timeoutMs;
+    if (typeof timeoutMs !== 'number' || !Number.isSafeInteger(timeoutMs) || timeoutMs < 1) {
       throw new Error(`RelayFlow step ${name} has no positive timeout`);
     }
     const agentRetries = step.agent ? agents.get(step.agent)?.constraints?.retries : undefined;
     const retries = step.retries ?? agentRetries ?? config.errorHandling?.maxRetries ?? 0;
-    if (!Number.isSafeInteger(retries) || retries < 0) throw new Error(`RelayFlow step ${name} has invalid retries`);
+    if (!Number.isSafeInteger(retries) || retries < 0)
+      throw new Error(`RelayFlow step ${name} has invalid retries`);
     visiting.add(name);
     const dependencyBudget = (step.dependsOn ?? []).reduce(
       (max, dependency) => Math.max(max, criticalPath(dependency)),
       0
     );
     visiting.delete(name);
-    const total = step.timeoutMs * (retries + 1) + dependencyBudget;
+    const total = timeoutMs * (retries + 1) + dependencyBudget;
     memo.set(name, total);
     return total;
   };

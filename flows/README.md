@@ -8,9 +8,10 @@ being migrated here one at a time.
 
 Flow names are **dot-namespaced** and mirror their directory:
 
-| File                        | Flow name           |
-| --------------------------- | ------------------- |
-| `flows/ci/pr-proof.flow.ts` | `relay.ci.pr-proof` |
+| File                                 | Flow name                    |
+| ------------------------------------ | ---------------------------- |
+| `flows/ci/pr-proof.flow.ts`          | `relay.ci.pr-proof`          |
+| `flows/verify/fleet-daytona.spec.ts` | `relay.verify.fleet-daytona` |
 
 `relay.<domain>.<name>`, where `<domain>` matches the directory under `flows/`.
 
