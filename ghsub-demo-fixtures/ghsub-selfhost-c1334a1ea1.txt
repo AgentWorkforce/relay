@@ -1,0 +1,2 @@
+Disposable subscription demo fixture ghsub-selfhost-c1334a1ea1
+Review this line for a real thread event.
