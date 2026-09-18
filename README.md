@@ -6,7 +6,7 @@ Tired of copy/pasting from Claude Code into Slack so your coworker can paste it 
 
 Ever put an important rule in a skill or AGENTS.md, only for the agent to completely ignore it?
 
-Ever had two agents build the same thing? Wondered whether your coworker's agent made that change intentionally? How many times have you typed "babysit this PR until CI passes"?
+You and your teammates agents ever build the same thing? Wondered whether your coworker's agent made that change intentionally? How many times have you typed "babysit this PR until CI passes"?
 
 Agent Relay is an open-source toolkit for problems like these. It gives engineering teams infrastructure for running coding agents together without replacing the agents and tools they already use.
 
@@ -36,7 +36,7 @@ Define multi-step workflows in TypeScript with deterministic checks, required st
 [Learn how write a flow](https://github.com/agentworkforce/flows) (or lets be honest, show your agent how)
 
 ## Getting Started
-The easiest way to get started is to use [Agent Relay Cloud](https://agentrelay.com). 
+The easiest way to get started is to use [Agent Relay Cloud](https://agentrelay.com/flows). 
 
 You don't need a credit card and you can explore all the pieces without setting up any infrastructure.
 
