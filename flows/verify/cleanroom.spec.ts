@@ -1,33 +1,35 @@
 /**
- * Long-running clean-room verification for Relay's complete feature surface.
+ * relay.verify.cleanroom — generator for the Relay clean-room verification.
  *
- * Full and soak campaigns must run through `agent-relay cloud run --sync-code`.
- * Every lane is a separate agent step, which gives it a separate Cloud sandbox;
- * the runner then adds private HOME/XDG/Relay state/temp directories and kills
- * leftover process groups. Product failures are immutable evidence: agents may
- * not edit tests or implementation to make this verification run green.
+ * v2 port of `workflows/verify-cleanroom.ts`, emitted as a Relayflows v2
+ * `FlowSpec` for the same three reasons as `fleet-daytona.spec.ts`: lane steps
+ * run far past `f.run`'s 15-minute lease cap, reviewers and lane agents need
+ * `permissions`, and the v1 step names are the vocabulary the runner and its
+ * evidence already use. See that file's header for the detail.
  *
  * Usage:
- *   VERIFY_CLEANROOM_PROFILE=full agent-relay cloud run workflows/verify-cleanroom.ts --sync-code
- *   VERIFY_CLEANROOM_PROFILE=soak agent-relay cloud run workflows/verify-cleanroom.ts --sync-code
- *   DRY_RUN=1 VERIFY_CLEANROOM_PROFILE=smoke relayflows run workflows/verify-cleanroom.ts
+ *   VERIFY_CLEANROOM_PROFILE=full node flows/verify/cleanroom.spec.ts --out <path>
+ *   flows check <path> && flows run <path>
+ *
+ * Requires Node >= 22.18 for native type stripping (CI pins 22.22.0).
  */
 
 import { randomBytes } from 'node:crypto';
 import { readFileSync, readdirSync } from 'node:fs';
-import { mkdir, open } from 'node:fs/promises';
+import { mkdir, open, writeFile } from 'node:fs/promises';
+import path from 'node:path';
 
 import { ClaudeModels, CodexModels, OpencodeModels } from '@agent-relay/config';
-import { workflow } from '@relayflows/core';
 // @ts-expect-error JavaScript module intentionally has no declaration file.
-import { cleanroomLaneTimeoutMs } from '../scripts/verify-features/cleanroom.mjs';
+import { cleanroomLaneTimeoutMs } from '../../scripts/verify-features/cleanroom.mjs';
 // @ts-expect-error JavaScript module intentionally has no declaration file.
-import {
-  cleanroomLaneEvidenceScopes,
-  cleanroomLaneNetwork,
-  cleanroomLaneWritePaths,
-  cleanroomReviewNetwork,
-} from '../scripts/verify-features/fleet-permissions.mjs';
+import { cleanroomLaneEvidenceScopes } from '../../scripts/verify-features/fleet-permissions.mjs';
+// @ts-expect-error JavaScript module intentionally has no declaration file.
+import { cleanroomLaneNetwork } from '../../scripts/verify-features/fleet-permissions.mjs';
+// @ts-expect-error JavaScript module intentionally has no declaration file.
+import { cleanroomLaneWritePaths } from '../../scripts/verify-features/fleet-permissions.mjs';
+// @ts-expect-error JavaScript module intentionally has no declaration file.
+import { cleanroomReviewNetwork } from '../../scripts/verify-features/fleet-permissions.mjs';
 
 const MATRIX = 'tests/relayflows/cleanroom/relay.matrix.json';
 const RUNNER = 'scripts/verify-features/cleanroom.mjs';
@@ -143,7 +145,7 @@ function reviewTask(role: string, kind: 'review' | 'fix' | 'supervisor', priorRo
   ].join('\n');
 }
 
-function reviewPermissions(role: string) {
+function v1ReviewPermissions(role: string) {
   const artifactDir = `.workflow-artifacts/verify-cleanroom/${NONCE}`;
   const provenancePath = `${artifactDir}/review-provenance/${role}/capture.json`;
   const cloudApiUrl = process.env.CLOUD_API_URL?.trim();
@@ -183,7 +185,7 @@ function reviewPermissions(role: string) {
   };
 }
 
-function lanePermissions(lane: string) {
+function v1LanePermissions(lane: string) {
   return {
     description: `Constrain lane-${lane} to immutable source plus generated build/evidence outputs.`,
     why: 'Lane agents may execute the deterministic runner but must not edit product source or test inputs.',
@@ -279,7 +281,38 @@ async function ensureReviewPlaceholders(roles: string[]) {
   }
 }
 
-async function main() {
+/**
+ * OpenCode is refused by v2 as `cli_unsupported` unless it identifies with the
+ * `relayflows-agent-cli-v1` contract. The campaign supervisor is deliberately a
+ * cheap third-party model, so it routes through the adapter rather than being
+ * resubstituted with Claude.
+ */
+// Absolute: a spec's relative `cli` resolves against the spec file's own
+// directory, not the working directory, and generated specs are written under
+// .workflow-artifacts/. The spec is regenerated per run, so baking the
+// resolved path in costs nothing.
+const OPENCODE_CLI = path.resolve('scripts/flows/opencode-agent-cli.mjs');
+
+/**
+ * v1 gave each agent a read set, a write set, a deny list, relayfile `scopes`,
+ * an `exec` allowlist, and a network policy. `AgentStepSpec.permissions` offers
+ * `accessPreset`, one flat `fileGlobs` list, and `networkAllowlist` — so the
+ * read/write split, the deny list, the write-once provenance scopes, and the
+ * exec allowlist cannot be expressed. The union of read and write globs is kept
+ * as tight as that allows; the runner's own seal and its write-once provenance
+ * capture, not the sandbox policy, remain what prove evidence was not mutated.
+ */
+function agentPermissions(v1: { files: { read: string[]; write: string[] }; network: { allow: string[] } }) {
+  return {
+    accessPreset: 'readwrite' as const,
+    fileGlobs: [...new Set([...v1.files.read, ...v1.files.write])],
+    networkAllowlist: [...v1.network.allow],
+  };
+}
+
+type SpecStep = Record<string, unknown> & { id: string; type: 'deterministic' | 'agent' };
+
+export function buildCleanroomSpec(): Record<string, unknown> {
   const reviewAgentRoles = [
     'campaign-supervisor',
     ...Array.from({ length: REVIEW_ROUNDS }, (_, index) => index + 1).flatMap((round) => [
@@ -291,191 +324,118 @@ async function main() {
     'final-claude-signoff',
     'final-codex-signoff',
   ];
-  const reviewArtifactRoles = reviewAgentRoles.map((role) =>
-    role === 'campaign-supervisor' ? 'supervisor' : role
-  );
-  await ensureReviewPlaceholders(reviewArtifactRoles);
-  const wf = workflow('relay-cleanroom-verification')
-    .description(
-      'Run every Relay feature domain in isolated sandboxes, account for the feature manifest and live issue/merge inventory, then require independent Claude and Codex evidence signoff.'
-    )
-    .pattern('dag')
-    .channel(`relay-cleanroom-${NONCE.slice(0, 8)}`)
-    .maxConcurrency(8)
-    .onError('continue')
-    .idleNudge({ nudgeAfterMs: 180_000, escalateAfterMs: 180_000, maxNudges: 2 });
 
-  wf.agent('campaign-supervisor', {
-    cli: 'opencode',
-    model: OpencodeModels.OPENCODE_MIMO_V2_FLASH_FREE,
-    preset: 'reviewer',
-    role: 'Summarize campaign evidence and identify integrity problems without changing product code or evidence.',
-    interactive: false,
-    retries: 1,
-  });
+  const agents: Record<string, { cli: string; model: string }> = {
+    'campaign-supervisor': { cli: OPENCODE_CLI, model: OpencodeModels.OPENCODE_MIMO_V2_FLASH_FREE },
+  };
   for (let round = 1; round <= REVIEW_ROUNDS; round += 1) {
-    wf.agent(`claude-review-${round}`, {
-      cli: 'claude',
-      model: ClaudeModels.SONNET,
-      preset: 'reviewer',
-      role: 'Fresh independent reviewer of clean-room evidence integrity and end-to-end wiring.',
-      interactive: false,
-      retries: 1,
-    });
-    wf.agent(`claude-fix-${round}`, {
-      cli: 'claude',
-      model: ClaudeModels.SONNET,
-      preset: 'worker',
-      role: 'Resolve review-analysis defects while preserving immutable product and lane evidence.',
-      interactive: false,
-      retries: 1,
-    });
-    wf.agent(`codex-review-${round}`, {
-      cli: 'codex',
-      model: CodexModels.GPT_5_1_CODEX_MINI,
-      preset: 'reviewer',
-      role: 'Fresh independent reviewer of clean-room evidence integrity and end-to-end wiring.',
-      interactive: false,
-      retries: 1,
-    });
-    wf.agent(`codex-fix-${round}`, {
-      cli: 'codex',
-      model: CodexModels.GPT_5_1_CODEX_MINI,
-      preset: 'worker',
-      role: 'Resolve review-analysis defects while preserving immutable product and lane evidence.',
-      interactive: false,
-      retries: 1,
-    });
+    agents[`claude-review-${round}`] = { cli: 'claude', model: ClaudeModels.SONNET };
+    agents[`claude-fix-${round}`] = { cli: 'claude', model: ClaudeModels.SONNET };
+    agents[`codex-review-${round}`] = { cli: 'codex', model: CodexModels.GPT_5_1_CODEX_MINI };
+    agents[`codex-fix-${round}`] = { cli: 'codex', model: CodexModels.GPT_5_1_CODEX_MINI };
   }
-  wf.agent('final-claude-signoff', {
-    cli: 'claude',
-    model: ClaudeModels.SONNET,
-    preset: 'reviewer',
-    role: 'Fresh final Claude reviewer after every clean-room review/fix round.',
-    interactive: false,
-    retries: 1,
-  });
-  wf.agent('final-codex-signoff', {
-    cli: 'codex',
-    model: CodexModels.GPT_5_1_CODEX_MINI,
-    preset: 'reviewer',
-    role: 'Fresh final Codex reviewer after every clean-room review/fix round.',
-    interactive: false,
-    retries: 1,
-  });
+  agents['final-claude-signoff'] = { cli: 'claude', model: ClaudeModels.SONNET };
+  agents['final-codex-signoff'] = { cli: 'codex', model: CodexModels.GPT_5_1_CODEX_MINI };
 
-  wf.step('preflight', {
-    type: 'deterministic',
-    command: `node ${RUNNER} validate --matrix ${MATRIX} --profile ${PROFILE}`,
-    captureOutput: true,
-    failOnError: true,
-    timeoutMs: 120_000,
-  });
-  wf.step('storage-preflight', {
-    type: 'deterministic',
-    dependsOn: ['preflight'],
-    command: command('storage-preflight'),
-    captureOutput: true,
-    failOnError: true,
-    timeoutMs: 120_000,
-  });
-  wf.step('collect-scope', {
-    type: 'deterministic',
-    dependsOn: ['storage-preflight'],
-    command: command('scope'),
-    captureOutput: true,
-    failOnError: true,
-    timeoutMs: 300_000,
-  });
-  wf.step('gate-scope', {
-    type: 'deterministic',
-    dependsOn: ['collect-scope'],
-    command: command('gate-scope'),
-    captureOutput: true,
-    failOnError: true,
-    timeoutMs: 120_000,
-  });
+  const steps: SpecStep[] = [];
+  // Agent steps take no `timeoutMs` in v2, so v1's per-agent bounds survive
+  // only as inputs to the envelope below.
+  const planTimeouts = new Map<string, number>();
+  const planRetries = new Map<string, number>();
+  const det = (id: string, commandText: string, timeoutMs: number, dependsOn?: string[]): void => {
+    planTimeouts.set(id, timeoutMs);
+    steps.push({
+      id,
+      type: 'deterministic',
+      ...(dependsOn ? { dependsOn } : {}),
+      command: commandText,
+      timeoutMs,
+    });
+  };
+  const agentStep = (
+    id: string,
+    agent: string,
+    dependsOn: string[],
+    instruction: string,
+    sentinel: string,
+    timeoutMs: number,
+    permissions: ReturnType<typeof agentPermissions>,
+    retries = 1
+  ): void => {
+    planTimeouts.set(id, timeoutMs);
+    planRetries.set(id, retries);
+    steps.push({
+      id,
+      type: 'agent',
+      agent,
+      dependsOn,
+      instruction,
+      // v1's `retries: 1` is v2's `maxIterations: 2` — the kernel's semantic
+      // retry bound, which re-runs a step whose verification gate failed.
+      maxIterations: retries + 1,
+      // Evidence an agent must not be able to repair: a failed step is
+      // inspected rather than reset and re-run.
+      recoveryMode: 'inspect',
+      permissions,
+      verification: { type: 'output_contains', value: sentinel },
+    });
+  };
+  const reviewerPermissions = (artifactRole: string) => agentPermissions(v1ReviewPermissions(artifactRole));
+
+  det('preflight', `node ${RUNNER} validate --matrix ${MATRIX} --profile ${PROFILE}`, 120_000);
+  det('storage-preflight', command('storage-preflight'), 120_000, ['preflight']);
+  det('collect-scope', command('scope'), 300_000, ['storage-preflight']);
+  det('gate-scope', command('gate-scope'), 120_000, ['collect-scope']);
 
   const laneGates: string[] = [];
   for (const lane of lanes) {
     const laneAgent = `lane-${lane}`;
-    const executeStep = `execute-${lane}`;
-    const gateStep = `gate-${lane}`;
-    laneGates.push(gateStep);
-    wf.agent(laneAgent, {
-      cli: 'codex',
-      model: CodexModels.GPT_5_1_CODEX_MINI,
-      preset: 'worker',
-      role: `Execute the ${lane} clean-room lane in this agent's isolated Cloud sandbox.`,
-      interactive: false,
-      retries: 1,
-    });
-    wf.step(executeStep, {
-      agent: laneAgent,
-      dependsOn: ['gate-scope'],
-      task: [
+    agents[laneAgent] = { cli: 'codex', model: CodexModels.GPT_5_1_CODEX_MINI };
+    laneGates.push(`gate-${lane}`);
+    // v1 set `failOnError: false` here so a lane that crashed still reached its
+    // evidence gate. v2 has no per-step opt-out and a failed agent step fails
+    // the run, so a crashed lane is now a run failure rather than something
+    // `gate-<lane>` judges. The lane runner still prints its completion
+    // sentinel for an honest RED product verdict, which is the common case and
+    // is unaffected.
+    agentStep(
+      `execute-${lane}`,
+      laneAgent,
+      ['gate-scope'],
+      [
         'Run the clean-room lane command exactly once in this isolated Cloud sandbox:',
         command('lane', ` --lane ${lane}`),
         'Do not edit product source, tests, the matrix, the runner, or collected evidence.',
         `Report the command output, including CLEANROOM_LANE_COMPLETE lane=${lane}.`,
       ].join('\n'),
-      verification: { type: 'output_contains', value: `CLEANROOM_LANE_COMPLETE lane=${lane}` },
-      failOnError: false,
-      timeoutMs: laneTimeouts[lane],
-    });
-    wf.step(gateStep, {
-      type: 'deterministic',
-      dependsOn: [executeStep],
-      command: command('gate-lane', ` --lane ${lane}`),
-      captureOutput: true,
-      failOnError: true,
-      timeoutMs: 120_000,
-    });
+      `CLEANROOM_LANE_COMPLETE lane=${lane}`,
+      laneTimeouts[lane],
+      agentPermissions(v1LanePermissions(lane))
+    );
+    det(`gate-${lane}`, command('gate-lane', ` --lane ${lane}`), 120_000, [`execute-${lane}`]);
   }
 
-  wf.step('aggregate', {
-    type: 'deterministic',
-    dependsOn: laneGates,
-    command: command('aggregate'),
-    captureOutput: true,
-    failOnError: true,
-    timeoutMs: 300_000,
-  });
-  wf.step('seal-aggregate', {
-    type: 'deterministic',
-    dependsOn: ['aggregate'],
-    command: command('seal'),
-    captureOutput: true,
-    failOnError: true,
-    timeoutMs: 120_000,
-  });
-  wf.step('export-supervisor-input', {
-    type: 'deterministic',
-    dependsOn: ['seal-aggregate'],
-    command: command('review-export', ' --role supervisor'),
-    captureOutput: true,
-    failOnError: true,
-    timeoutMs: 120_000,
-  });
-  wf.step('supervise', {
-    agent: 'campaign-supervisor',
-    dependsOn: ['export-supervisor-input'],
-    task: reviewTask('supervisor', 'supervisor', []),
-    verification: { type: 'output_contains', value: 'CLEANROOM_REVIEW_DRAFTED role=supervisor' },
-    retries: 1,
-    timeoutMs: 900_000,
-  });
-  wf.step('gate-supervisor', {
-    type: 'deterministic',
-    dependsOn: ['supervise'],
-    command: command(
+  det('aggregate', command('aggregate'), 300_000, laneGates);
+  det('seal-aggregate', command('seal'), 120_000, ['aggregate']);
+  det('export-supervisor-input', command('review-export', ' --role supervisor'), 120_000, ['seal-aggregate']);
+  agentStep(
+    'supervise',
+    'campaign-supervisor',
+    ['export-supervisor-input'],
+    reviewTask('supervisor', 'supervisor', []),
+    'CLEANROOM_REVIEW_DRAFTED role=supervisor',
+    900_000,
+    reviewerPermissions('supervisor')
+  );
+  det(
+    'gate-supervisor',
+    command(
       'review-upload',
       ` --role supervisor --review-kind supervisor --file .workflow-artifacts/verify-cleanroom/${NONCE}/review-drafts/supervisor/draft.json`
     ),
-    captureOutput: true,
-    failOnError: true,
-    timeoutMs: 120_000,
-  });
+    120_000,
+    ['supervise']
+  );
 
   const reviewRoles = ['supervisor'];
   let priorGate = 'gate-supervisor';
@@ -483,154 +443,148 @@ async function main() {
     for (let round = 1; round <= REVIEW_ROUNDS; round += 1) {
       const reviewer = `${provider}-review-${round}`;
       const fixer = `${provider}-fix-${round}`;
-      const reviewStep = `run-${reviewer}`;
-      const reviewExportStep = `export-${reviewer}`;
-      const reviewGate = `gate-${reviewer}`;
-      const fixStep = `run-${fixer}`;
-      const fixExportStep = `export-${fixer}`;
-      const fixGate = `gate-${fixer}`;
-      wf.step(reviewExportStep, {
-        type: 'deterministic',
-        dependsOn: [priorGate],
-        command: command('review-export', ` --role ${reviewer} --prior-roles ${reviewRoles.join(',')}`),
-        captureOutput: true,
-        failOnError: true,
-        timeoutMs: 120_000,
-      });
-      wf.step(reviewStep, {
-        agent: reviewer,
-        dependsOn: [reviewExportStep],
-        task: reviewTask(reviewer, 'review', [...reviewRoles]),
-        verification: { type: 'output_contains', value: `CLEANROOM_REVIEW_DRAFTED role=${reviewer}` },
-        retries: 1,
-        timeoutMs: 900_000,
-      });
-      wf.step(reviewGate, {
-        type: 'deterministic',
-        dependsOn: [reviewStep],
-        command: command(
+      det(
+        `export-${reviewer}`,
+        command('review-export', ` --role ${reviewer} --prior-roles ${reviewRoles.join(',')}`),
+        120_000,
+        [priorGate]
+      );
+      agentStep(
+        `run-${reviewer}`,
+        reviewer,
+        [`export-${reviewer}`],
+        reviewTask(reviewer, 'review', [...reviewRoles]),
+        `CLEANROOM_REVIEW_DRAFTED role=${reviewer}`,
+        900_000,
+        reviewerPermissions(reviewer)
+      );
+      det(
+        `gate-${reviewer}`,
+        command(
           'review-upload',
           ` --role ${reviewer} --review-kind review --file .workflow-artifacts/verify-cleanroom/${NONCE}/review-drafts/${reviewer}/draft.json`
         ),
-        captureOutput: true,
-        failOnError: true,
-        timeoutMs: 120_000,
-      });
+        120_000,
+        [`run-${reviewer}`]
+      );
       reviewRoles.push(reviewer);
-      wf.step(fixExportStep, {
-        type: 'deterministic',
-        dependsOn: [reviewGate],
-        command: command('review-export', ` --role ${fixer} --prior-roles ${reviewRoles.join(',')}`),
-        captureOutput: true,
-        failOnError: true,
-        timeoutMs: 120_000,
-      });
-      wf.step(fixStep, {
-        agent: fixer,
-        dependsOn: [fixExportStep],
-        task: reviewTask(fixer, 'fix', [...reviewRoles]),
-        verification: { type: 'output_contains', value: `CLEANROOM_REVIEW_DRAFTED role=${fixer}` },
-        retries: 1,
-        timeoutMs: 900_000,
-      });
-      wf.step(fixGate, {
-        type: 'deterministic',
-        dependsOn: [fixStep],
-        command: command(
+      det(
+        `export-${fixer}`,
+        command('review-export', ` --role ${fixer} --prior-roles ${reviewRoles.join(',')}`),
+        120_000,
+        [`gate-${reviewer}`]
+      );
+      agentStep(
+        `run-${fixer}`,
+        fixer,
+        [`export-${fixer}`],
+        reviewTask(fixer, 'fix', [...reviewRoles]),
+        `CLEANROOM_REVIEW_DRAFTED role=${fixer}`,
+        900_000,
+        reviewerPermissions(fixer)
+      );
+      det(
+        `gate-${fixer}`,
+        command(
           'review-upload',
           ` --role ${fixer} --review-kind fix --file .workflow-artifacts/verify-cleanroom/${NONCE}/review-drafts/${fixer}/draft.json`
         ),
-        captureOutput: true,
-        failOnError: true,
-        timeoutMs: 120_000,
-      });
+        120_000,
+        [`run-${fixer}`]
+      );
       reviewRoles.push(fixer);
-      priorGate = fixGate;
+      priorGate = `gate-${fixer}`;
     }
   }
 
   for (const provider of ['claude', 'codex'] as const) {
     const role = `final-${provider}-signoff`;
-    wf.step(`export-${role}`, {
-      type: 'deterministic',
-      dependsOn: [priorGate],
-      command: command('review-export', ` --role ${role} --prior-roles ${reviewRoles.join(',')}`),
-      captureOutput: true,
-      failOnError: true,
-      timeoutMs: 120_000,
-    });
-    wf.step(`run-${role}`, {
-      agent: role,
-      dependsOn: [`export-${role}`],
-      task: reviewTask(role, 'review', [...reviewRoles]),
-      verification: { type: 'output_contains', value: `CLEANROOM_REVIEW_DRAFTED role=${role}` },
-      retries: 1,
-      timeoutMs: 1_200_000,
-    });
-    wf.step(`gate-${role}`, {
-      type: 'deterministic',
-      dependsOn: [`run-${role}`],
-      command: command(
+    det(
+      `export-${role}`,
+      command('review-export', ` --role ${role} --prior-roles ${reviewRoles.join(',')}`),
+      120_000,
+      [priorGate]
+    );
+    agentStep(
+      `run-${role}`,
+      role,
+      [`export-${role}`],
+      reviewTask(role, 'review', [...reviewRoles]),
+      `CLEANROOM_REVIEW_DRAFTED role=${role}`,
+      1_200_000,
+      reviewerPermissions(role)
+    );
+    det(
+      `gate-${role}`,
+      command(
         'review-upload',
         ` --role ${role} --review-kind review --file .workflow-artifacts/verify-cleanroom/${NONCE}/review-drafts/${role}/draft.json`
       ),
-      captureOutput: true,
-      failOnError: true,
-      timeoutMs: 120_000,
-    });
+      120_000,
+      [`run-${role}`]
+    );
   }
-  wf.step('finalize-independent-signoff', {
-    type: 'deterministic',
-    dependsOn: ['gate-final-claude-signoff', 'gate-final-codex-signoff'],
-    command: command('finalize', ' --claude-role final-claude-signoff --codex-role final-codex-signoff'),
-    captureOutput: true,
-    failOnError: true,
-    timeoutMs: 120_000,
-  });
-  wf.step('enforce-product-verdict', {
-    type: 'deterministic',
-    dependsOn: ['finalize-independent-signoff'],
-    command: command('enforce'),
-    captureOutput: true,
-    failOnError: true,
-    timeoutMs: 300_000,
-  });
+  det(
+    'finalize-independent-signoff',
+    command('finalize', ' --claude-role final-claude-signoff --codex-role final-codex-signoff'),
+    120_000,
+    ['gate-final-claude-signoff', 'gate-final-codex-signoff']
+  );
+  det('enforce-product-verdict', command('enforce'), 300_000, ['finalize-independent-signoff']);
 
   // Derive the global envelope from the finalized step plan. Summing rather
-  // than assuming ideal DAG concurrency keeps the workflow valid if sandbox
-  // scheduling serializes lanes. Count the agent or step retry limit because
-  // each retry receives a fresh per-step timeout.
-  const timeoutPlan = wf.toConfig();
-  const timeoutAgents = new Map(timeoutPlan.agents.map((agent) => [agent.name, agent]));
-  const workflowTimeout = timeoutPlan.workflows
-    .flatMap((definition) => definition.steps)
-    .reduce((total, step) => {
-      if (!Number.isSafeInteger(step.timeoutMs) || Number(step.timeoutMs) < 1) {
-        throw new Error(`Clean-room step ${step.name} has no positive timeout`);
-      }
-      const agentRetries = step.agent ? timeoutAgents.get(step.agent)?.constraints?.retries : undefined;
-      const retries = step.retries ?? agentRetries ?? timeoutPlan.errorHandling?.maxRetries ?? 0;
-      return total + Number(step.timeoutMs) * (retries + 1);
-    }, 600_000);
-  wf.timeout(workflowTimeout);
-
-  for (const agent of wf.toConfig().agents) {
-    if (reviewAgentRoles.includes(agent.name)) {
-      const artifactRole = agent.name === 'campaign-supervisor' ? 'supervisor' : agent.name;
-      agent.permissions = reviewPermissions(artifactRole);
-    } else if (agent.name.startsWith('lane-')) {
-      agent.permissions = lanePermissions(agent.name.slice('lane-'.length));
+  // than assuming ideal DAG concurrency keeps the flow valid if sandbox
+  // scheduling serializes lanes.
+  const maxWallclockMs = steps.reduce((total, step) => {
+    const timeoutMs = planTimeouts.get(step.id);
+    if (typeof timeoutMs !== 'number' || !Number.isSafeInteger(timeoutMs) || timeoutMs < 1) {
+      throw new Error(`Clean-room step ${step.id} has no positive timeout`);
     }
-  }
+    // Each retry receives a fresh per-step timeout, exactly as v1 counted it.
+    return total + timeoutMs * ((planRetries.get(step.id) ?? 0) + 1);
+  }, 600_000);
 
-  const dryRun = process.env.DRY_RUN === '1' || process.env.DRY_RUN === 'true';
-  const result = await wf.run({ cwd: process.cwd(), dryRun });
-  if ('status' in result && result.status !== undefined && result.status !== 'completed') {
-    throw new Error(`Clean-room workflow finished with status ${String(result.status)}`);
-  }
+  return {
+    version: '0.1.0',
+    name: 'relay.verify.cleanroom',
+    description:
+      'Run every Relay feature domain in isolated sandboxes, account for the feature manifest and live ' +
+      'issue/merge inventory, then require independent Claude and Codex evidence signoff.',
+    agents,
+    budget: { maxWallclockMs },
+    steps,
+  };
 }
 
-main().catch((error) => {
-  console.error(`[verify-cleanroom] ${error instanceof Error ? error.stack : String(error)}`);
-  process.exitCode = 2;
-});
+function option(name: string, fallback: string): string {
+  const index = process.argv.indexOf(name);
+  return index >= 0 ? (process.argv[index + 1] ?? fallback) : fallback;
+}
+
+async function main(): Promise<void> {
+  const reviewAgentRoles = [
+    'campaign-supervisor',
+    ...Array.from({ length: REVIEW_ROUNDS }, (_, index) => index + 1).flatMap((round) => [
+      `claude-review-${round}`,
+      `claude-fix-${round}`,
+      `codex-review-${round}`,
+      `codex-fix-${round}`,
+    ]),
+    'final-claude-signoff',
+    'final-codex-signoff',
+  ];
+  await ensureReviewPlaceholders(
+    reviewAgentRoles.map((role) => (role === 'campaign-supervisor' ? 'supervisor' : role))
+  );
+  const out = option('--out', '.workflow-artifacts/flows/relay.verify.cleanroom.json');
+  await mkdir(path.dirname(out), { recursive: true });
+  await writeFile(out, `${JSON.stringify(buildCleanroomSpec(), null, 2)}\n`);
+  process.stdout.write(`CLEANROOM_SPEC_WRITTEN ${out}\n`);
+}
+
+if (process.argv[1] && import.meta.url === `file://${path.resolve(process.argv[1])}`) {
+  main().catch((error: unknown) => {
+    console.error(`[cleanroom.spec] ${error instanceof Error ? error.stack : String(error)}`);
+    process.exitCode = 2;
+  });
+}

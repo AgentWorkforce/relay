@@ -42,7 +42,7 @@ if (!isWithin(harnessDir, runnerPath)) {
   throw new Error('The RelayFlow runner must execute from the exact-head harness checkout.');
 }
 
-const workflowPath = path.join(targetDir, 'workflows/verify-features.ts');
+const workflowPath = path.join(targetDir, 'flows/verify/features.spec.ts');
 const statusToolPath = path.join(targetDir, 'scripts/verify-features/escalation-status.mjs');
 const infraEscalationToolPath = path.join(targetDir, 'scripts/verify-features/escalate-infra.sh');
 const slackAlertToolPath = path.join(targetDir, 'scripts/verify-features/slack-alert.sh');

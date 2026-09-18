@@ -1,43 +1,47 @@
 # Relayflows (v2)
 
-Journal-backed flows for the `flows` CLI (`@relayflows/sdk` 2.x). The older
-`@relayflows/core` `WorkflowBuilder` flows still live in `workflows/` and are
-being migrated here one at a time.
+Journal-backed flows for the `flows` CLI (`@relayflows/sdk` 2.x).
+
+## Layout
+
+Every v1 `@relayflows/core` flow has been migrated; `workflows/` is gone.
+
+| v2                                     | Flow name                      | Entry point                      |
+| -------------------------------------- | ------------------------------ | -------------------------------- |
+| `flows/ci/pr-proof.flow.ts`            | `relay.ci.pr-proof`            | `flows deploy` (hosted listener) |
+| `flows/verify/fleet-daytona.spec.ts`   | `relay.verify.fleet-daytona`   | `npm run verify:fleet-daytona`   |
+| `flows/verify/cleanroom.spec.ts`       | `relay.verify.cleanroom`       | `npm run verify:cleanroom`       |
+| `flows/verify/features.spec.ts`        | `relay.verify.features`        | `npm run verify:features`        |
+| `flows/diagnose/orchestration.spec.ts` | `relay.diagnose.orchestration` | `npm run diagnose:orchestration` |
+| `flows/audit/feature-manifest.spec.ts` | `relay.audit.feature-manifest` | `npm run audit:feature-manifest` |
+
+Each has a matching `:check` script that generates the spec and runs
+`flows check` on it — the v2 replacement for v1's `DRY_RUN=1`, which validated
+the graph without executing it.
+
+## Why most of these are generated specs, not `.flow.ts`
+
+Only `pr-proof` is authored directly against `@relayflows/surface`. The others
+emit a v2 `FlowSpec` as JSON, because three things they depend on are reachable
+only from the data dialect:
+
+1. **Steps longer than 15 minutes.** `f.run`'s `timeout` is capped at 15
+   minutes (`compile.ts`, `lease_exceeded`), and the cap is enforced at run —
+   `flows check` does not catch it. A spec's `timeoutMs` is uncapped.
+2. **Agent `permissions`.** `AgentOptions` has no permissions field;
+   `AgentStepSpec` does.
+3. **Named deterministic steps.** `f.run` takes no id, so a TypeScript body
+   labels every step `run-7`. The v1 names are the vocabulary the runners,
+   their evidence, and the tests already use.
+
+The hybrid that would have avoided this — `use:` plus `f.dispatch` — is
+accepted by `flows check` and then refused at run (`unsupported_header: use`).
+
+`flows/spec-builder.ts` holds the v1-to-v2 translation, so the four flows that
+were mostly large shell bodies keep their authoring calls byte-identical and
+only what they build changed.
 
 ## Naming
-
-Flow names are **dot-namespaced** and mirror their directory:
-
-| File                                 | Flow name                    |
-| ------------------------------------ | ---------------------------- |
-| `flows/ci/pr-proof.flow.ts`          | `relay.ci.pr-proof`          |
-| `flows/verify/fleet-daytona.spec.ts` | `relay.verify.fleet-daytona` |
-
-`relay.<domain>.<name>`, where `<domain>` matches the directory under `flows/`.
-
-Dots rather than slashes is a constraint, not a preference: `flows build` seals
-a bundle as `<name>@sha256:<digest>` and validates the name against
-`/^[A-Za-z0-9][A-Za-z0-9._-]*$/`, so a `relay/ci/pr-proof` name cannot be built
-or deployed at all. Hyphens stay inside a single segment.
-
-Deterministic steps cannot be named. `f.run(...)` has no id parameter, so the
-journal labels them positionally (`run-1`, `run-2`, …) in source order. Only
-`f.agent(name, …)` carries a name through to the journal, which is why the
-agent steps here are `base-prover` and `head-verifier` — name those well, and
-keep a comment above each `f.run` saying what it is.
-
-## Planned names for the remaining v1 flows
-
-| v1                                                      | v2 name                        |
-| ------------------------------------------------------- | ------------------------------ |
-| `workflows/verify-features.ts`                          | `relay.verify.features`        |
-| `workflows/verify-cleanroom.ts`                         | `relay.verify.cleanroom`       |
-| `workflows/verify-fleet-daytona.ts`                     | `relay.verify.fleet-daytona`   |
-| `workflows/diagnose-relay-orchestration-reliability.ts` | `relay.diagnose.orchestration` |
-| `workflows/audit-feature-manifest.ts`                   | `relay.audit.feature-manifest` |
-
-`workflows/fleet-timeout-budget.ts` is a plain helper module with no builder
-call; it does not migrate.
 
 ## Checking and deploying
 
@@ -65,16 +69,16 @@ installation is the ingress, and each matching pull request launches a run with
 Migrating the rest means deciding what to do with builder features v2's
 TypeScript surface has no equivalent for. Counted across the v1 flows:
 
-| v1 feature             | uses | v2 status                                             |
-| ---------------------- | ---- | ----------------------------------------------------- |
-| `retries`              | 58   | No equivalent. A failed step fails the run.           |
-| `preset`               | 27   | No equivalent.                                        |
-| `channel` (relaycast)  | 75   | No equivalent in the body.                            |
-| `permissions`          | 8    | YAML/JSON steps only — not expressible in `.flow.ts`. |
-| `onError('fail-fast')` | 7    | Default and only behaviour.                           |
-| `maxConcurrency`       | 6    | An awaited body is sequential by construction.        |
-| `repoReads`            | 5    | No equivalent.                                        |
-| `.timeout(ms)`         | 5    | `{ budget: { wallclock: '<n>m' } }` header.           |
+| v1 feature             | uses | v2 status                                                       |
+| ---------------------- | ---- | --------------------------------------------------------------- |
+| `retries`              | 58   | `maxIterations: retries + 1` on a spec step; no TS knob.        |
+| `preset`               | 27   | No equivalent.                                                  |
+| `channel` (relaycast)  | 75   | No equivalent in the body.                                      |
+| `permissions`          | 8    | Spec steps only, and coarser: no read/write split or deny list. |
+| `onError('fail-fast')` | 7    | Default and only behaviour.                                     |
+| `maxConcurrency`       | 6    | An awaited body is sequential by construction.                  |
+| `repoReads`            | 5    | No equivalent.                                                  |
+| `.timeout(ms)`         | 5    | `{ budget: { wallclock: '<n>m' } }` header.                     |
 
 For `pr-proof` these were all either the v2 default already or expressible in
 the header. The verification flows use `permissions` heavily, so those steps

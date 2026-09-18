@@ -292,10 +292,10 @@ type SpecStep = Record<string, unknown> & { id: string; type: 'deterministic' | 
  * numbers still drive the critical-path derivation below, so the budget the
  * flow asks for is the one v1 reserved.
  */
-const planTimeouts = new Map<string, number>();
-
 export function buildFleetDaytonaSpec(): Record<string, unknown> {
   const steps: SpecStep[] = [];
+  const planTimeouts = new Map<string, number>();
+  const planRetries = new Map<string, number>();
   const det = (id: string, commandText: string, timeoutMs: number, dependsOn?: string[]): void => {
     planTimeouts.set(id, timeoutMs);
     steps.push({
@@ -312,15 +312,22 @@ export function buildFleetDaytonaSpec(): Record<string, unknown> {
     dependsOn: string[],
     instruction: string,
     sentinel: string,
-    timeoutMs: number
+    timeoutMs: number,
+    retries: number
   ): void => {
     planTimeouts.set(id, timeoutMs);
+    planRetries.set(id, retries);
     steps.push({
       id,
       type: 'agent',
       agent,
       dependsOn,
       instruction,
+      // v1's `retries: N` is v2's `maxIterations: N + 1` — the kernel's
+      // semantic retry bound, which re-runs a step whose verification gate
+      // failed. The proof arms keep the default 1, so no agent gets a second
+      // look at evidence a gate already rejected.
+      maxIterations: retries + 1,
       // Every reviewer runs on evidence it must not be able to repair, so a
       // failed agent step is inspected rather than reset and retried.
       recoveryMode: 'inspect',
@@ -378,7 +385,8 @@ export function buildFleetDaytonaSpec(): Record<string, unknown> {
       ['verify-candidate-cli-inventory'],
       `Respond with exactly ${sentinel} and no other text.`,
       sentinel,
-      180_000
+      180_000,
+      0
     );
   }
 
@@ -441,7 +449,8 @@ node ${shellQuote(path.join(TRUSTED_ROOT, 'scripts/verify-features/materialize-f
     ['gate-immutable-campaign'],
     reviewTask('cheap-supervisor', 'supervisor', []),
     'FLEET_DAYTONA_REVIEW_DRAFTED role=cheap-supervisor',
-    900_000
+    900_000,
+    1
   );
   det(
     'gate-supervisor',
@@ -459,7 +468,8 @@ node ${shellQuote(path.join(TRUSTED_ROOT, 'scripts/verify-features/materialize-f
     ['gate-supervisor'],
     reviewTask('analysis-repair', 'fix', ['cheap-supervisor']),
     'FLEET_DAYTONA_REVIEW_DRAFTED role=analysis-repair',
-    900_000
+    900_000,
+    1
   );
   det(
     'gate-analysis-repair',
@@ -480,7 +490,8 @@ node ${shellQuote(path.join(TRUSTED_ROOT, 'scripts/verify-features/materialize-f
       ['gate-analysis-repair'],
       reviewTask(role, 'review', ['cheap-supervisor', 'analysis-repair']),
       `FLEET_DAYTONA_REVIEW_DRAFTED role=${role}`,
-      1_200_000
+      1_200_000,
+      1
     );
     det(
       `gate-${role}`,
@@ -512,9 +523,8 @@ node ${shellQuote(path.join(TRUSTED_ROOT, 'scripts/verify-features/materialize-f
   // report a clean failure and start the independent cleanup job instead of
   // being hard-killed at the same instant.
   //
-  // v2 has no step retries, so every step counts once. v1 counted each
-  // configured retry, which made its critical path strictly longer; the
-  // derivation is unchanged, the retry inputs are simply zero now.
+  // Each configured retry receives a fresh per-step timeout, so the critical
+  // path counts them exactly as v1 did.
   const timeoutPlan = deriveFleetTimeoutPlan(
     {
       workflows: [
@@ -523,7 +533,7 @@ node ${shellQuote(path.join(TRUSTED_ROOT, 'scripts/verify-features/materialize-f
             (step): RelayFlowTimeoutStep => ({
               name: step.id,
               timeoutMs: planTimeouts.get(step.id) as number,
-              retries: 0,
+              retries: planRetries.get(step.id) ?? 0,
               ...(step.agent ? { agent: step.agent as string } : {}),
               dependsOn: (step.dependsOn as string[] | undefined) ?? [],
             })

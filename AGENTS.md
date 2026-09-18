@@ -282,3 +282,32 @@ Publishing (npm, crates, GitHub releases) is gated on chief green-light.
 - Also pending: 64 dependabot alerts on main (1 critical); skills repo
   relay-team/relay-pipeline/relay-fanout SKILL.mds still instruct printing
   raw observer URLs — unsatisfiable once #1380 lands.
+<!-- PRPM_MANIFEST_START -->
+
+<skills_system priority="1">
+<usage>
+When users ask you to perform tasks, check if any of the available skills below can help complete the task more effectively. Skills provide specialized capabilities and domain knowledge.
+
+How to use skills (loaded into main context):
+- Use the <path> from the skill entry below
+- Invoke: Bash("cat <path>")
+- The skill content will load into your current context
+- Example: Bash("cat .openskills/backend-architect/SKILL.md")
+
+Usage notes:
+- Skills share your context window
+- Do not invoke a skill that is already loaded in your context
+</usage>
+
+<available_skills>
+
+<skill activation="lazy">
+<name>writing-relayflows</name>
+<description>Use when authoring a Relayflows flow (@relayflows/surface / @relayflows/sdk, the v2 journal-based engine, CLI `flows`) in TypeScript or YAML/JSON. Covers the run/llm/agent ladder, human/dispatch/done, verification gates, cli/model resolution, flows.json, and flows check/run/resume refusal shapes. Not for the older @relayflows/core WorkflowBuilder (chained .pattern(&apos;dag&apos;)/.agent()/.step() calls) — see writing-agent-relay-workflows / migrating-persona-to-relayflow instead.</description>
+<path>.openskills/writing-relayflows/SKILL.md</path>
+</skill>
+
+</available_skills>
+</skills_system>
+
+<!-- PRPM_MANIFEST_END -->

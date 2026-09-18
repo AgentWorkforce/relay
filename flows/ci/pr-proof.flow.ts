@@ -24,9 +24,11 @@
  *   4. a deterministic gate verifies exact SHAs and distinct sandbox IDs.
  *
  * Proof failures are evidence, not repair assignments. v1 said this with
- * `.onError('fail-fast')` and `retries: 0`; v2 has no repair agents and no
- * step retries, so the property holds by construction — a failed step fails
- * the run and no agent gets a second look at the harness or the artifacts.
+ * `.onError('fail-fast')` and `retries: 0`. v2 has no repair agents, and the
+ * TypeScript surface exposes no retry knob at all — the kernel's retry bound
+ * (`maxIterations`) is a spec-only field — so the property holds by
+ * construction: a failed step fails the run and no agent gets a second look at
+ * the harness or the artifacts.
  */
 
 import { flow } from '@relayflows/surface';

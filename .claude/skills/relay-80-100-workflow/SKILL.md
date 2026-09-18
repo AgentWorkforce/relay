@@ -1,6 +1,6 @@
 ---
 name: relay-80-100-workflow
-description: Use when writing agent-relay workflows that must fully validate features end-to-end before merging. Covers the 80-to-100 pattern - going beyond "code compiles" to "feature works, tested E2E locally." Includes repair-before-failure validation gates, mandatory sequential Claude-then-Codex fresh-eyes review/fix loops with test hardening, PGlite for in-memory Postgres testing, mock sandbox patterns, test-fix-rerun loops, verify gates after every edit, and the full lifecycle from implementation through passing tests to commit.
+description: Use when writing agent-relay workflows that must fully validate features end-to-end before merging. Covers the 80-to-100 pattern - going beyond "code compiles" to "feature works, tested E2E locally." Includes repair-before-failure validation gates, review-depth fresh-eyes review/fix loops with test hardening, PGlite for in-memory Postgres testing, mock sandbox patterns, test-fix-rerun loops, verify gates after every edit, and the full lifecycle from implementation through passing tests to commit.
 ---
 
 # Writing 80-to-100 Validated Workflows
@@ -62,9 +62,9 @@ For high-stakes implementation workflows, validation should include human-like r
 3. Before external review, the implementer writes a self-reflection artifact under `.workflow-artifacts/<task>/` covering spec coverage, changed files, tests/proofs, repo-rule alignment, and known risks.
 4. A fresh self-review agent reads the actual files, AGENTS.md / CLAUDE.md, recent related work, and local conventions. It writes findings to disk.
 5. The implementer repairs valid findings, then deterministic gates rerun from captured output.
-6. After all squads converge, run the mandatory sequential fresh-eyes review/fix loops: Claude reviews the final diff and artifacts, a fixer repairs valid findings and adds or updates appropriate tests/proofs, Claude reviews the post-fix state again, then Codex repeats the same cycle from scratch over the post-Claude-fix state.
-7. If either final review still finds issues, run another explicit fix pass or write `BLOCKED_NO_COMMIT` with exact evidence.
-8. Commit or PR creation is allowed only after final deterministic acceptance and post-Codex-fix review are green. Otherwise write a `BLOCKED_NO_COMMIT` artifact with exact evidence.
+6. After all squads converge, run the selected review-depth fresh-eyes review/fix path. Light requires `review-claude` -> `fix-loop` and gates final review pass on `post-fix-validation`. Standard adds `final-review-claude` -> `final-fix-claude` and gates final review pass on `final-fix-claude`. Deep requires the standard Claude path plus `review-codex` -> `fix-loop-codex` -> `final-review-codex` -> `final-fix-codex` and gates final review pass on `final-fix-codex`.
+7. If the selected review path still finds issues, run another explicit fix pass or write `BLOCKED_NO_COMMIT` with exact evidence.
+8. Commit or PR creation is allowed only after the selected review-depth path, final-review-pass gate, final deterministic acceptance, and scoped diff/regression gates are green. Otherwise write a `BLOCKED_NO_COMMIT` artifact with exact evidence.
 
 This keeps "100%" tied to both executable evidence and independent review over the final state.
 
@@ -121,7 +121,6 @@ If it failed, fix the remaining issue and rerun until green:
 ```
 
 **Why four steps instead of one?**
-
 - The first run captures output for the agent to diagnose
 - The agent step can iterate (read errors, fix, re-run) multiple times
 - The final deterministic run is still evidence-based, but a repair agent sees it before the workflow stops
@@ -172,13 +171,13 @@ export async function createTestDb() {
 
 ### PGlite Gotchas
 
-| Issue                              | Fix                                                                            |
-| ---------------------------------- | ------------------------------------------------------------------------------ |
-| `pgcrypto` extension not available | Use `gen_random_uuid()` (built-in since PG 13) or generate UUIDs in app code   |
-| UUID columns                       | PGlite supports UUID natively — no special handling needed                     |
-| `drizzle-orm/pglite` import        | Exists since drizzle-orm 0.30+. If not found, check version.                   |
-| Index creation                     | PGlite supports standard CREATE INDEX — no limitations                         |
-| Concurrent writes                  | PGlite is single-connection. Test concurrent logic with sequential assertions. |
+| Issue | Fix |
+|-------|-----|
+| `pgcrypto` extension not available | Use `gen_random_uuid()` (built-in since PG 13) or generate UUIDs in app code |
+| UUID columns | PGlite supports UUID natively — no special handling needed |
+| `drizzle-orm/pglite` import | Exists since drizzle-orm 0.30+. If not found, check version. |
+| Index creation | PGlite supports standard CREATE INDEX — no limitations |
+| Concurrent writes | PGlite is single-connection. Test concurrent logic with sequential assertions. |
 
 ### Test Structure
 
@@ -236,7 +235,6 @@ grep "my_new_table" packages/web/lib/db/schema.ts >/dev/null && echo "OK" || (ec
 ```
 
 **What to verify:**
-
 - File was actually modified (`git diff --quiet` returns non-zero)
 - Key content exists (grep for table names, function names, imports)
 - For new files: `file_exists` verification type
@@ -245,7 +243,6 @@ grep "my_new_table" packages/web/lib/db/schema.ts >/dev/null && echo "OK" || (ec
   ignores untracked files
 
 **What NOT to verify:**
-
 - Exact content (too brittle — agents format differently)
 - Line counts or byte sizes (meaningless)
 
@@ -326,9 +323,7 @@ For testing that your code calls the right methods, record calls in an array:
 ```typescript
 const emitted: EmitEventOptions[] = [];
 const mockClient: SessionEventClient = {
-  emit: async (opts) => {
-    emitted.push(opts);
-  },
+  emit: async (opts) => { emitted.push(opts); },
   getEvents: async () => [],
   getLatestSequence: async () => 0,
 };
@@ -376,7 +371,7 @@ Fix until all tests pass.`,
 Here's the complete pattern for a feature that touches the database:
 
 ```typescript
-import { workflow } from '@relayflows/core';
+import { workflow } from '@agent-relay/sdk/workflows';
 
 const result = await workflow('my-feature')
   .description('Add feature X with full E2E validation')
@@ -496,18 +491,9 @@ Only edit this one file.`,
   })
 
   // ── Phase 6: Commit ──────────────────────────────────────────────
-  .step('record-head-baseline', {
-    type: 'deterministic',
-    dependsOn: ['fix-regressions'],
-    // Snapshot HEAD *before* committing so verify-commit-created can prove
-    // HEAD actually advanced, not just that the latest subject happens to match.
-    command: 'git rev-parse HEAD > .workflow-head-before',
-    captureOutput: true,
-    failOnError: true,
-  })
   .step('commit', {
     type: 'deterministic',
-    dependsOn: ['record-head-baseline'],
+    dependsOn: ['fix-regressions'],
     command: [
       'npx tsx --test tests/my-feature.test.ts',
       'npm test',
@@ -529,18 +515,7 @@ Output:
   .step('verify-commit-created', {
     type: 'deterministic',
     dependsOn: ['repair-commit'],
-    // Assert HEAD advanced past the baseline AND the new commit has the
-    // expected subject AND nothing is left uncommitted. Checking the subject
-    // alone passes falsely when HEAD was already a matching commit and the
-    // commit step never created a new one.
-    command:
-      [
-        'baseline="$(cat .workflow-head-before)"',
-        'rm -f .workflow-head-before',
-        'test "$(git rev-parse HEAD)" != "$baseline"',
-        'git log -1 --pretty=%s | grep -q "^feat: "',
-        'test -z "$(git status --porcelain)"',
-      ].join(' && ') + ' && echo "COMMIT_OK" || (echo "COMMIT_MISSING_OR_HEAD_UNCHANGED"; exit 1)',
+    command: 'git log -1 --pretty=%s | grep -q "^feat: " && echo "COMMIT_OK" || (echo "COMMIT_MISSING"; exit 1)',
     captureOutput: true,
     failOnError: true,
   })
@@ -551,28 +526,28 @@ Output:
 
 ## Checklist: Is Your Workflow 80-to-100?
 
-| Check                                    | How                                                                                                                                   |
-| ---------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------- |
-| Tests exist                              | `file_exists` verification on test file                                                                                               |
-| Tests actually run                       | Deterministic step executes them                                                                                                      |
-| Test failures get fixed                  | Agent step reads output, fixes, re-runs                                                                                               |
-| Final test run is repairable             | Deterministic rerun captures output, then a repair owner gets one more pass                                                           |
-| Build passes                             | `npx tsc --noEmit` deterministic step                                                                                                 |
-| No regressions                           | Existing test suite runs after changes                                                                                                |
-| Every edit is verified and repairable    | `git diff --quiet` + grep for tracked-only edits; `git status --short -- <paths>` when new files/packages may appear; then a fix step |
-| Commit only happens after green evidence | Final commit step reruns acceptance checks and commits only on zero exit codes                                                        |
+| Check | How |
+|-------|-----|
+| Tests exist | `file_exists` verification on test file |
+| Tests actually run | Deterministic step executes them |
+| Test failures get fixed | Agent step reads output, fixes, re-runs |
+| Final test run is repairable | Deterministic rerun captures output, then a repair owner gets one more pass |
+| Build passes | `npx tsc --noEmit` deterministic step |
+| No regressions | Existing test suite runs after changes |
+| Every edit is verified and repairable | `git diff --quiet` + grep for tracked-only edits; `git status --short -- <paths>` when new files/packages may appear; then a fix step |
+| Commit only happens after green evidence | Final commit step reruns acceptance checks and commits only on zero exit codes |
 
 ## Common Anti-Patterns
 
-| Anti-pattern                                                 | Why it fails                                                                     | Fix                                                                                     |
-| ------------------------------------------------------------ | -------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------- |
-| Tests written but never executed                             | Agent claims they pass, they don't                                               | Add deterministic `run-tests` step                                                      |
-| Single `failOnError: true` test run                          | First failure kills workflow, no chance to fix                                   | Use repairable run-fix-rerun-final-fix loops                                            |
-| No regression test                                           | New feature works, old features break                                            | Run `npm test` after build check                                                        |
-| Agent asked to "write and run tests" in one step             | Agent writes tests, runs them, they fail, it edits, output is garbled            | Separate write/run/fix into distinct steps                                              |
-| PGlite DDL doesn't match Drizzle schema                      | Tests pass on wrong schema                                                       | Derive DDL from schema.ts or test with real migration                                   |
-| Final test output not handed to an agent                     | Broken tests can stop the run or get ignored                                     | Add a final repair owner before commit                                                  |
-| Testing only happy path                                      | Edge cases break in prod                                                         | Specify edge case tests in the task prompt                                              |
-| No verify gate after agent edits                             | Agent exits 0 without writing anything                                           | Add `git diff --quiet` check after every edit, then route failures to a repair step     |
-| `git diff --quiet` for new package/test directories          | Untracked files are invisible, so valid new artifacts can look like "no changes" | Use `git status --short -- <paths>` and a repairable capture → fix → final gate pattern |
-| Committing after `failOnError: false` without checking exits | Broken work can be committed because the shell step returned successfully        | In `commit-if-green`, record each exit code and skip commit unless all are zero         |
+| Anti-pattern | Why it fails | Fix |
+|-------------|-------------|-----|
+| Tests written but never executed | Agent claims they pass, they don't | Add deterministic `run-tests` step |
+| Single `failOnError: true` test run | First failure kills workflow, no chance to fix | Use repairable run-fix-rerun-final-fix loops |
+| No regression test | New feature works, old features break | Run `npm test` after build check |
+| Agent asked to "write and run tests" in one step | Agent writes tests, runs them, they fail, it edits, output is garbled | Separate write/run/fix into distinct steps |
+| PGlite DDL doesn't match Drizzle schema | Tests pass on wrong schema | Derive DDL from schema.ts or test with real migration |
+| Final test output not handed to an agent | Broken tests can stop the run or get ignored | Add a final repair owner before commit |
+| Testing only happy path | Edge cases break in prod | Specify edge case tests in the task prompt |
+| No verify gate after agent edits | Agent exits 0 without writing anything | Add `git diff --quiet` check after every edit, then route failures to a repair step |
+| `git diff --quiet` for new package/test directories | Untracked files are invisible, so valid new artifacts can look like "no changes" | Use `git status --short -- <paths>` and a repairable capture → fix → final gate pattern |
+| Committing after `failOnError: false` without checking exits | Broken work can be committed because the shell step returned successfully | In `commit-if-green`, record each exit code and skip commit unless all are zero |

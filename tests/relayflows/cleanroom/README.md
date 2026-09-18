@@ -1,6 +1,7 @@
 # Relay clean-room verification campaign
 
-This catalog drives `workflows/verify-cleanroom.ts`. It complements the fast
+This catalog drives `flows/verify/cleanroom.spec.ts`, which emits the
+`relay.verify.cleanroom` Relayflows v2 spec. It complements the fast
 per-PR red/green proof in `tests/relayflows/cases/`; it does not replace it.
 
 The campaign has three promises:
@@ -26,7 +27,8 @@ Use the released CLI to submit the checkout:
 
 ```bash
 VERIFY_CLEANROOM_PROFILE=full \
-  agent-relay cloud run workflows/verify-cleanroom.ts --sync-code
+  node flows/verify/cleanroom.spec.ts --out .workflow-artifacts/flows/relay.verify.cleanroom.json
+  flows run --cloud --sync-code .workflow-artifacts/flows/relay.verify.cleanroom.json
 ```
 
 For a long flake hunt, use `VERIFY_CLEANROOM_PROFILE=soak`. For graph and
@@ -35,7 +37,7 @@ catalog development, use:
 ```bash
 npm run verify:cleanroom:validate
 DRY_RUN=1 VERIFY_CLEANROOM_PROFILE=smoke \
-  relayflows run workflows/verify-cleanroom.ts
+  npm run verify:cleanroom
 ```
 
 The smoke profile may be executed locally, but local execution is process

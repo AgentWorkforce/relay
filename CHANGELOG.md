@@ -5,15 +5,28 @@ All notable changes to Agent Relay will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased - Patch]
+## [Unreleased - Minor]
+
+### Added
+
+- `scripts/flows/opencode-agent-cli.mjs` implements the `relayflows-agent-cli-v1` contract, so relayflows v2 can run OpenCode agents. It needs `opencode auth login`: v2 spawns harness adapters with a closed environment allowlist, so an ambient `OPENCODE_API_KEY` is not passed through.
+- `npm run <flow>:check` for every verification flow generates its spec and runs `flows check` on it — the replacement for v1's `DRY_RUN=1` graph validation.
 
 ### Changed
 
-- The PR proof now runs as the relayflows v2 flow `relay.ci.pr-proof` (`flows/ci/pr-proof.flow.ts`), deployed as a hosted GitHub listener with `flows deploy --on github:events=pull_request`, and journals the classification and broker staging the GitHub dispatcher used to do.
+- Every relayflow moved from the v1 `@relayflows/core` builder to relayflows v2: `relay.ci.pr-proof`, `relay.verify.fleet-daytona`, `relay.verify.cleanroom`, `relay.verify.features`, `relay.diagnose.orchestration`, and `relay.audit.feature-manifest`. Flow names are dot-namespaced and all v1 step names are preserved.
+- The PR proof is now deployed as a hosted GitHub listener (`flows deploy --on github:events=pull_request`) and journals the classification and broker staging its GitHub dispatcher used to do.
+- `verify:cleanroom`, `verify:fleet-daytona`, `diagnose:orchestration`, and `verify:features` now generate a v2 spec and run it through the `flows` CLI. `audit:feature-manifest` gained an npm entry point.
+- `@relayflows/sdk` 2.x is a dev dependency, so `npx flows` resolves in this repo.
 
 ### Removed
 
-- `.github/workflows/relayflow-pr-proof.yml` and the relayflows v1 `workflows/pr-proof.ts`. Repoint branch protection at the deployed listener; the PR-proof required status check no longer comes from GitHub Actions.
+- `.github/workflows/relayflow-pr-proof.yml` and the whole `workflows/` directory. Repoint branch protection at the deployed listener; the PR-proof required status check no longer comes from GitHub Actions.
+- `DRY_RUN=1` on the verification flows; relayflows v2 has no dry-run execution mode.
+
+### Migration Guidance
+
+- v1 knobs with no v2 equivalent are dropped and documented in `flows/README.md`: the relaycast `channel`, `idleNudge`, agent `preset`/`role`, and per-agent-step timeouts. `permissions` survives but is coarser — `AgentStepSpec.permissions` has no read/write split, deny list, or exec allowlist, so the runners' own seals remain what prove evidence was not mutated.
 
 ## [12.2.4] - 2026-09-18
 
