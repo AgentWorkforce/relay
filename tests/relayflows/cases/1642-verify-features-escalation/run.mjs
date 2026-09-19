@@ -42,25 +42,14 @@ if (!isWithin(harnessDir, runnerPath)) {
   throw new Error('The RelayFlow runner must execute from the exact-head harness checkout.');
 }
 
-// Base and head no longer share a layout: the flow migrated from the v1
-// `@relayflows/core` builder at `workflows/verify-features.ts` to the v2
-// generated spec at `flows/verify/features.spec.ts`. Each arm reads its own.
-const workflowPath =
-  arm === 'base'
-    ? path.join(targetDir, 'workflows/verify-features.ts')
-    : path.join(targetDir, 'flows/verify/features.spec.ts');
+const workflowPath = path.join(targetDir, 'workflows/verify-features.ts');
 const statusToolPath = path.join(targetDir, 'scripts/verify-features/escalation-status.mjs');
 const infraEscalationToolPath = path.join(targetDir, 'scripts/verify-features/escalate-infra.sh');
 const slackAlertToolPath = path.join(targetDir, 'scripts/verify-features/slack-alert.sh');
 const slackPostToolPath = path.join(targetDir, 'scripts/verify-features/slack-post.mjs');
 const runArtifactsToolPath = path.join(targetDir, 'scripts/verify-features/run-artifacts.mjs');
 const runWorktreeToolPath = path.join(targetDir, 'scripts/verify-features/run-worktree.mjs');
-const specBuilderPath = path.join(targetDir, 'flows/spec-builder.ts');
-const flowRunnerPath = path.join(targetDir, 'flows/verify/run-features.ts');
 const workflowSource = await readFile(workflowPath, 'utf8');
-// Head-only: the base checkout predates the runner, and reading it there would
-// crash the arm instead of letting it record the bug it exists to prove.
-const runnerSource = arm === 'head' ? await readFile(flowRunnerPath, 'utf8') : '';
 
 let outcome;
 let signature;
@@ -182,28 +171,25 @@ if (arm === 'base') {
     /VERIFY_SLACK_CHANNEL\s*=\s*['"]C0AEKNLDNKW['"]/,
     'required Slack channel C0AEKNLDNKW'
   );
-  // The prepare/run/verdict/escalation bracket moved to the runner when the
-  // flow became a generated spec: a spec is executed by the `flows` CLI, so
-  // the post-run audit cannot live in the flow file any more. Assert it there.
   assertWorkflowPattern(
-    runnerSource,
+    workflowSource,
     /\[\s*ESCALATION_STATUS_TOOL\s*,\s*['"]audit['"]\s*,\s*ARTIFACTS/,
     'post-run escalation audit invocation'
   );
   assertWorkflowPattern(
-    runnerSource,
+    workflowSource,
     /if\s*\(\s*escalationAudit\.status\s*!==\s*0\s*\)/,
     'non-zero escalation audit branch'
   );
   assertWorkflowPattern(
-    runnerSource,
+    workflowSource,
     /process\.exitCode\s*=\s*2/,
     'non-zero process exit after failed escalation audit'
   );
   assertWorkflowPattern(
-    runnerSource,
-    /run\('npx',\s*\['flows',\s*'run',\s*SPEC\]\)/,
-    'source-checkout flow execution'
+    workflowSource,
+    /wf\.run\s*\(\s*\{\s*dryRun\s*,\s*cwd\s*:\s*REPO_ROOT\s*\}\s*\)/,
+    'source-checkout workflow execution'
   );
   for (const mutatingStep of ['attempt-fix', 'fix-integrity', 'open-pr']) {
     const stepSource = workflowStep(workflowSource, mutatingStep);
@@ -219,32 +205,56 @@ if (arm === 'base') {
   }
 
   // The exact-SHA target is intentionally a bare checkout, so it has no
-  // node_modules. Execute an unchanged copy of the production flow generator in
-  // a disposable tree that mirrors the repository layout it imports from. The
-  // generator emits the real v2 FlowSpec, so the graph asserted below is the
-  // one the kernel would run; nothing manufactures a source-only answer and no
-  // network install happens in the proof sandbox.
+  // node_modules. Execute an unchanged copy of the production workflow in a
+  // disposable tree with only the workflow-builder boundary stubbed. The stub
+  // records the graph registered by the real module; it does not manufacture a
+  // source-only answer or require a network install in the proof sandbox.
   const graphRoot = await mkdtemp(path.join(os.tmpdir(), 'relay-pr1642-graph-'));
   let graphPlan;
-  let graphSpec;
-  const graphSpecPath = path.join(graphRoot, 'spec.json');
   try {
-    const graphFlowRoot = path.join(graphRoot, 'flows', 'verify');
+    const graphWorkflowRoot = path.join(graphRoot, 'workflows');
     const graphScriptRoot = path.join(graphRoot, 'scripts', 'verify-features');
+    const graphCoreRoot = path.join(graphRoot, 'node_modules', '@relayflows', 'core');
     await Promise.all([
-      mkdir(graphFlowRoot, { recursive: true }),
+      mkdir(graphWorkflowRoot, { recursive: true }),
       mkdir(graphScriptRoot, { recursive: true }),
+      mkdir(graphCoreRoot, { recursive: true }),
     ]);
     await Promise.all([
-      copyFile(workflowPath, path.join(graphFlowRoot, 'features.spec.ts')),
-      // The generator imports the shared v1-to-v2 translation one level up.
-      copyFile(specBuilderPath, path.join(graphRoot, 'flows', 'spec-builder.ts')),
+      copyFile(workflowPath, path.join(graphWorkflowRoot, 'verify-features.ts')),
       copyFile(runArtifactsToolPath, path.join(graphScriptRoot, 'run-artifacts.mjs')),
       copyFile(runWorktreeToolPath, path.join(graphScriptRoot, 'run-worktree.mjs')),
+      writeFile(
+        path.join(graphCoreRoot, 'package.json'),
+        '{"name":"@relayflows/core","type":"module","exports":"./index.js"}\n'
+      ),
+      writeFile(
+        path.join(graphCoreRoot, 'index.js'),
+        `export function workflow(name) {
+  const steps = [];
+  const builder = {
+    description() { return builder; },
+    pattern() { return builder; },
+    channel() { return builder; },
+    maxConcurrency() { return builder; },
+    onError() { return builder; },
+    timeout() { return builder; },
+    agent() { return builder; },
+    step(stepName, options) { steps.push({ name: stepName, dependsOn: options.dependsOn ?? [], command: options.command, failOnError: options.failOnError ?? false }); return builder; },
+    async run({ dryRun } = {}) {
+      if (!dryRun && process.env.DRY_RUN !== '1') throw new Error('proof graph recorder only supports dry-run planning');
+      process.stdout.write(JSON.stringify({ name, steps }) + '\\n');
+      return {};
+    },
+  };
+  return builder;
+}
+`
+      ),
     ]);
     graphPlan = spawnSync(
       process.execPath,
-      ['--experimental-strip-types', path.join(graphFlowRoot, 'features.spec.ts'), '--out', graphSpecPath],
+      ['--experimental-strip-types', path.join(graphWorkflowRoot, 'verify-features.ts')],
       {
         cwd: graphRoot,
         encoding: 'utf8',
@@ -257,25 +267,11 @@ if (arm === 'base') {
         timeout: COMMAND_TIMEOUT_MS,
       }
     );
-    if (graphPlan.status === 0) graphSpec = JSON.parse(await readFile(graphSpecPath, 'utf8'));
   } finally {
     await rm(graphRoot, { recursive: true, force: true });
   }
   assertCompleted(graphPlan, 'verify-features executable graph plan', 0);
-  if (!graphSpec) throw new Error('verify-features generator did not emit a spec.');
-  // v2 has no per-step `failOnError`: a deterministic step is always gated on
-  // its exit code, and v1's opt-out is expressed by the command absorbing its
-  // own status with `|| true`. A step that must not fail silently is therefore
-  // one whose command does not end that way.
-  const plannedGraph = {
-    name: graphSpec.name,
-    steps: graphSpec.steps.map((step) => ({
-      name: step.id,
-      dependsOn: step.dependsOn ?? [],
-      command: step.command,
-      failOnError: typeof step.command === 'string' ? !/\|\|\s*true\s*$/.test(step.command.trim()) : true,
-    })),
-  };
+  const plannedGraph = JSON.parse(graphPlan.stdout.trim());
   for (const step of [
     'emit-posthog',
     'escalate-infra',
