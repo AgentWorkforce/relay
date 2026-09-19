@@ -145,6 +145,17 @@ export interface SurfacePackage {
   name: string;
   /** Version range copied from `packages/cli/package.json`, e.g. `^0.10.64`. */
   range: string;
+  /**
+   * Packages the surface needs but does not depend on.
+   *
+   * `sessions` builds its Relayhistory cloud client from
+   * `@relayhistory/cloud-client`, which is an optional dependency of the CLI
+   * rather than of `ai-hist`. Installing only the surface leaves the child
+   * unable to import it, so `sessions cloud …` silently disappears in the
+   * standalone binary while working on npm — the two distributions would
+   * declare different command trees.
+   */
+  companions?: readonly SurfacePackage[];
 }
 
 /** Injectable seams; the defaults are the real store on the real filesystem. */
@@ -476,7 +487,14 @@ async function npmInstall(pkg: SurfacePackage, directory: string): Promise<void>
   try {
     await execFileAsync(
       command,
-      ['install', `${pkg.name}@${pkg.range}`, '--no-audit', '--no-fund', '--loglevel=error'],
+      [
+        'install',
+        `${pkg.name}@${pkg.range}`,
+        ...(pkg.companions ?? []).map((companion) => `${companion.name}@${companion.range}`),
+        '--no-audit',
+        '--no-fund',
+        '--loglevel=error',
+      ],
       {
         cwd: directory,
         timeout: INSTALL_TIMEOUT_MS,

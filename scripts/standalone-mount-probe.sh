@@ -53,10 +53,15 @@ printf 'export default { }\n' > probe.flow.ts
 # caller's group IDs, and `declare -a GROUPS=(...)` silently does not replace
 # it — the loop then iterates GIDs.
 declare -a SURFACE_GROUPS=(file flows sessions)
+# One real command per group, as newline-separated argv rather than a single
+# string. A string has to be word-split at the call site, and an unquoted
+# expansion breaks on a $BIN path containing whitespace — the shell's own error
+# then matches none of the payload patterns below, so the probe would report
+# that the product was reached when nothing ran.
 declare -a REAL=(
-  "file integration available"
-  "flows check probe.flow.ts"
-  "sessions stats"
+  $'integration\navailable'
+  $'check\nprobe.flow.ts'
+  $'stats'
 )
 
 broken=0
@@ -82,8 +87,13 @@ for i in "${!SURFACE_GROUPS[@]}"; do
   # an earlier version of this check called `REFUSED [invalid_spec] … Cannot
   # find module '@relayflows/surface/runtime'` a mount failure, when it was
   # the probe's own throwaway flow file that could not resolve.
-  real="${REAL[$i]}"
-  real_out="$($BIN $real 2>&1 || true)"
+  # Split on newlines only, so an argument may contain spaces and the binary
+  # path is never word-split.
+  local_ifs="$IFS"
+  IFS=$'\n' read -r -d '' -a real_args < <(printf '%s\0' "${REAL[$i]}")
+  IFS="$local_ifs"
+  real="$group ${real_args[*]}"
+  real_out="$("$BIN" "$group" "${real_args[@]}" 2>&1 || true)"
   if printf '%s\n' "$real_out" | grep -qE "needs @?[a-z/-]+, which is not installed|could not be prepared|installed but incomplete|@relayfile/cli-|ai-hist-native|relayfile binary not found|command-spec\.json"; then
     broken=1
     echo "  $group: help renders but \`$real\` cannot reach its implementation"

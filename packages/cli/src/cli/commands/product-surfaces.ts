@@ -123,7 +123,14 @@ export const PRODUCT_SURFACES: readonly ProductSurfaceDefinition[] = [
 export const SURFACE_PACKAGES: Readonly<Record<string, SurfacePackage>> = {
   '@relayfile/sdk/relay-cli': { name: '@relayfile/sdk', range: '^0.10.64' },
   '@relayflows/sdk/relay-cli': { name: '@relayflows/sdk', range: '^2.0.19' },
-  'ai-hist/relay-cli': { name: 'ai-hist', range: '^0.18.1' },
+  'ai-hist/relay-cli': {
+    name: 'ai-hist',
+    range: '^0.18.1',
+    // The cloud client is an optional dependency of this CLI, not of ai-hist,
+    // so provisioning ai-hist alone leaves the child unable to build it and
+    // `sessions cloud …` vanishes in the standalone binary only.
+    companions: [{ name: '@relayhistory/cloud-client', range: '^0.1.1' }],
+  },
 };
 
 /** Seams for the standalone fallback; the defaults are the real store. */
@@ -160,9 +167,17 @@ function withImportDefaults(
     importFromStore:
       overrides.importFromStore ??
       (async (installRoot: string, specifier: string) => {
-        // For sessions, pass the relayhistory config to enable cloud commands
+        // Derived from the specifier, not taken from overrides: nothing in the
+        // command registration sets `optionsFor`, so relying on it meant the
+        // runner was always told "no options" and `sessions cloud …` was
+        // missing from the standalone binary while present on npm — the two
+        // distributions declaring different command trees. The override stays
+        // as a test seam.
+        const optionsFor =
+          overrides.optionsFor ?? (specifier === 'ai-hist/relay-cli' ? 'sessions' : undefined);
+
         let relayhistoryConfig: { baseUrl: string; token: string } | undefined;
-        if (specifier === 'ai-hist/relay-cli' || overrides.optionsFor === 'sessions') {
+        if (optionsFor === 'sessions') {
           try {
             // Get the Relayhistory configuration that would be used in the normal flow
             const { readStoredRelayhistoryAuth, resolveRelayhistoryConfig } = await import('./session.js');
@@ -179,7 +194,7 @@ function withImportDefaults(
           createRelayCliSurface: await loadSurfaceFromStore(
             installRoot,
             specifier,
-            overrides.optionsFor,
+            optionsFor,
             relayhistoryConfig
           ).then((surface) => () => surface),
         };
