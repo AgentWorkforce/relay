@@ -428,7 +428,7 @@ jobs:
           # derived DAG deadline are computed here, then `flows check` validates
           # the emitted data before anything runs.
           FLEET_SPEC=".workflow-artifacts/flows/relay.verify.fleet-daytona.json"
-          node flows/verify/fleet-daytona.spec.ts --out "$FLEET_SPEC"
+          node --experimental-strip-types flows/verify/fleet-daytona.spec.ts --out "$FLEET_SPEC"
           npx flows check "$FLEET_SPEC"
           npx flows run "$FLEET_SPEC"
 

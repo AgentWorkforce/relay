@@ -28,7 +28,12 @@ function run(command, args) {
   return status ?? 2;
 }
 
-const generated = run(process.execPath, ['flows/audit/feature-manifest.spec.ts', '--out', SPEC]);
+const generated = run(process.execPath, [
+  '--experimental-strip-types',
+  'flows/audit/feature-manifest.spec.ts',
+  '--out',
+  SPEC,
+]);
 if (generated !== 0) {
   console.error('[audit-feature-manifest] could not generate the flow spec');
   process.exit(2);

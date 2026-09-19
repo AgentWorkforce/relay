@@ -244,7 +244,7 @@ if (arm === 'base') {
     ]);
     graphPlan = spawnSync(
       process.execPath,
-      [path.join(graphFlowRoot, 'features.spec.ts'), '--out', graphSpecPath],
+      ['--experimental-strip-types', path.join(graphFlowRoot, 'features.spec.ts'), '--out', graphSpecPath],
       {
         cwd: graphRoot,
         encoding: 'utf8',

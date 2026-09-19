@@ -762,7 +762,12 @@ describe('complete Daytona Fleet board', () => {
     const nonce = `timeout-contract-${process.pid}`;
     const { stdout } = await execFileAsync(
       process.execPath,
-      ['flows/verify/fleet-daytona.spec.ts', '--out', `.workflow-artifacts/flows/${nonce}.json`],
+      [
+        '--experimental-strip-types',
+        'flows/verify/fleet-daytona.spec.ts',
+        '--out',
+        `.workflow-artifacts/flows/${nonce}.json`,
+      ],
       {
         env: { ...process.env, VERIFY_FLEET_TIMEOUT_PLAN: '1', VERIFY_FLEET_NONCE: nonce },
         maxBuffer: 8 * 1024 * 1024,

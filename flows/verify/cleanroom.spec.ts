@@ -8,10 +8,13 @@
  * evidence already use. See that file's header for the detail.
  *
  * Usage:
- *   VERIFY_CLEANROOM_PROFILE=full node flows/verify/cleanroom.spec.ts --out <path>
+ *   VERIFY_CLEANROOM_PROFILE=full node --experimental-strip-types flows/verify/cleanroom.spec.ts --out <path>
  *   flows check <path> && flows run <path>
  *
- * Requires Node >= 22.18 for native type stripping (CI pins 22.22.0).
+ * Run it with `node --experimental-strip-types`: most CI jobs pin Node 22.14,
+ * which strips types only behind that flag (unflagged stripping needs 22.18+).
+ * The flag is still accepted on Node 24 and 26, so one invocation works
+ * everywhere.
  */
 
 import { randomBytes } from 'node:crypto';

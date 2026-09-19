@@ -53,7 +53,10 @@ function run(command: string, args: string[]): number {
 async function main(): Promise<void> {
   if (!CHECK_ONLY) prepareRunArtifacts(ARTIFACTS_ROOT, RUN_ID, RUN_NONCE);
 
-  if (run(process.execPath, ['flows/verify/features.spec.ts', '--out', SPEC]) !== 0) {
+  if (
+    run(process.execPath, ['--experimental-strip-types', 'flows/verify/features.spec.ts', '--out', SPEC]) !==
+    0
+  ) {
     console.error('[verify-features] could not generate the flow spec');
     process.exitCode = 2;
     return;

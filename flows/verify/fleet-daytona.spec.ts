@@ -22,10 +22,13 @@
  * (`unsupported_header: use`), so it is not available.
  *
  * Usage:
- *   node flows/verify/fleet-daytona.spec.ts --out <path>
+ *   node --experimental-strip-types flows/verify/fleet-daytona.spec.ts --out <path>
  *   flows check <path> && flows run <path>
  *
- * Requires Node >= 22.18 for native type stripping (CI pins 22.22.0).
+ * Run it with `node --experimental-strip-types`: most CI jobs pin Node 22.14,
+ * which strips types only behind that flag (unflagged stripping needs 22.18+).
+ * The flag is still accepted on Node 24 and 26, so one invocation works
+ * everywhere.
  *
  * Workspace-wide enable/disable/inherit probes are safety-skipped unless the
  * active workspace is disposable and VERIFY_FLEET_DISPOSABLE_WORKSPACE=1.

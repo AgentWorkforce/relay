@@ -127,7 +127,7 @@ describe('verify-features escalation status', () => {
     // the graph itself is the artifact: assert on its steps and the dependsOn
     // closure rather than on planner output.
     const out = `${await mkdtemp(path.join(os.tmpdir(), 'verify-features-spec-'))}/spec.json`;
-    await execFileAsync(process.execPath, [workflowPath, '--out', out], {
+    await execFileAsync(process.execPath, ['--experimental-strip-types', workflowPath, '--out', out], {
       cwd: repositoryRoot,
       env: { ...process.env, DRY_RUN: '1' },
       timeout: 30_000,
