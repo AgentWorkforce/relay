@@ -513,32 +513,75 @@ export async function scheduleWorkflow(
     throw new Error('Workflow prepare response was not valid JSON.');
   }
   const prepared = prepPayload;
-  const tarball = await createTarball(process.cwd());
-  if (isCloudApiWorkflowStorage(prepared)) {
-    const upload = await api.fetch(workflowStorageObjectPath(prepared.runId, prepared.s3CodeKey), {
-      method: 'PUT',
-      headers: { 'content-type': 'application/gzip', accept: 'application/json' },
-      body: tarball as unknown as BodyInit,
-    });
-    const uploadPayload = await readJsonResponse(upload);
-    if (!upload.ok) {
-      throw new Error(`Workflow storage upload failed: ${describeResponseError(upload, uploadPayload)}`);
+  let s3Client: S3Client | null = null;
+  const uploadCodeObject = async (objectKey: string, tarball: Buffer) => {
+    if (isCloudApiWorkflowStorage(prepared)) {
+      const upload = await api.fetch(workflowStorageObjectPath(prepared.runId, objectKey), {
+        method: 'PUT',
+        headers: { 'content-type': 'application/gzip', accept: 'application/json' },
+        body: tarball as unknown as BodyInit,
+      });
+      const uploadPayload = await readJsonResponse(upload);
+      if (!upload.ok) {
+        throw new Error(`Workflow storage upload failed: ${describeResponseError(upload, uploadPayload)}`);
+      }
+      return;
+    }
+
+    s3Client ??= createScopedS3Client(prepared.s3Credentials);
+    await s3Client.send(
+      new PutObjectCommand({
+        Bucket: prepared.s3Credentials.bucket,
+        Key: scopedCodeKey(prepared.s3Credentials.prefix, objectKey),
+        Body: tarball,
+        ContentType: 'application/gzip',
+      })
+    );
+  };
+  const scheduledWorkflowRequest = requestBody.workflowRequest as Record<string, unknown>;
+  scheduledWorkflowRequest.codeSourceRunId = prepared.runId;
+  const declaredPaths = parseWorkflowPaths(input.workflow, input.fileType);
+  if (declaredPaths.length > 0) {
+    const seenNames = new Set<string>();
+    const pathSubmissions: PathSubmission[] = [];
+    const resolvedPathRoots: string[] = [];
+    console.error(`Creating ${declaredPaths.length} scheduled path tarball(s)...`);
+    for (const pathDef of declaredPaths) {
+      if (!PATH_NAME_RE.test(pathDef.name) || seenNames.has(pathDef.name)) {
+        throw new Error(`Invalid or duplicate workflow path name: ${pathDef.name}`);
+      }
+      seenNames.add(pathDef.name);
+      const absolutePath = path.resolve(process.cwd(), pathDef.path);
+      resolvedPathRoots.push(absolutePath);
+      const s3CodeKey = `code-${pathDef.name}.tar.gz`;
+      const tarball = await createTarball(absolutePath);
+      await uploadCodeObject(s3CodeKey, tarball);
+      const repo = parseGitHubRemoteForPath(absolutePath);
+      pathSubmissions.push({
+        name: pathDef.name,
+        s3CodeKey,
+        ...(repo ? { repoOwner: repo.repoOwner, repoName: repo.repoName } : {}),
+        ...(pathDef.pushBranch ? { pushBranch: pathDef.pushBranch } : {}),
+        ...(pathDef.pushBase ? { pushBase: pathDef.pushBase } : {}),
+        ...(pathDef.pushPrBody ? { pushPrBody: pathDef.pushPrBody } : {}),
+      });
+    }
+    scheduledWorkflowRequest.paths = pathSubmissions;
+    for (const root of resolvedPathRoots) {
+      const workflowPath = relativizeWorkflowPathFromRoot(workflowArg, root);
+      if (workflowPath) {
+        scheduledWorkflowRequest.workflowPath = workflowPath;
+        break;
+      }
     }
   } else {
-    const s3Client = createScopedS3Client(prepared.s3Credentials);
-    await s3Client.send(new PutObjectCommand({
-      Bucket: prepared.s3Credentials.bucket,
-      Key: scopedCodeKey(prepared.s3Credentials.prefix, prepared.s3CodeKey),
-      Body: tarball,
-      ContentType: 'application/gzip',
-    }));
-  }
-  const scheduledWorkflowRequest = requestBody.workflowRequest as Record<string, unknown>;
-  scheduledWorkflowRequest.s3CodeKey = prepared.s3CodeKey;
-  scheduledWorkflowRequest.codeSourceRunId = prepared.runId;
-  const workflowPath = relativizeWorkflowPath(workflowArg);
-  if (workflowPath) {
-    scheduledWorkflowRequest.workflowPath = workflowPath;
+    const tarball = await createTarball(process.cwd());
+    await uploadCodeObject(prepared.s3CodeKey, tarball);
+    scheduledWorkflowRequest.s3CodeKey = prepared.s3CodeKey;
+    const workflowPath = relativizeWorkflowPath(workflowArg);
+    if (workflowPath) {
+      scheduledWorkflowRequest.workflowPath = workflowPath;
+    }
   }
   if (options.description?.trim()) {
     requestBody.description = options.description.trim();

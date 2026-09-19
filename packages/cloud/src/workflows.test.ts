@@ -812,21 +812,43 @@ describe('workflow schedules', () => {
     };
   }
 
-  it('creates a cron schedule without one-time code sync fields', async () => {
+  function mockScheduleRequests(onSchedule: (body: Record<string, unknown>) => Response): void {
+    authorizedApiFetchMock.mockImplementation(async (_auth, requestPath, init) => {
+      if (requestPath === '/api/v1/workflows/prepare') {
+        return {
+          auth: { accessToken: 'token' },
+          response: new Response(
+            JSON.stringify({
+              runId: '11111111-1111-4111-8111-111111111111',
+              s3Credentials: {
+                accessKeyId: 'access',
+                secretAccessKey: 'secret',
+                sessionToken: 'session',
+                bucket: 'bucket',
+                prefix: 'user/11111111-1111-4111-8111-111111111111',
+              },
+              s3CodeKey: 'code.tar.gz',
+            }),
+            { status: 200, headers: { 'Content-Type': 'application/json' } }
+          ),
+        };
+      }
+      if (requestPath === '/api/v1/workflows/schedules') {
+        return { auth: { accessToken: 'token' }, response: onSchedule(JSON.parse(String(init?.body))) };
+      }
+      throw new Error(`unexpected request: ${requestPath}`);
+    });
+  }
+
+  it('creates a cron schedule with an immutable code snapshot', async () => {
     const workflowPath = await writeScheduleWorkflow();
     const scheduleBodies: unknown[] = [];
-    authorizedApiFetchMock.mockImplementation(async (_auth, requestPath, init) => {
-      expect(requestPath).toBe('/api/v1/workflows/schedules');
-      scheduleBodies.push(JSON.parse(String(init?.body)));
-      return {
-        auth: { accessToken: 'token' },
-        response: new Response(
-          JSON.stringify({
-            schedule: scheduleRecord(),
-          }),
-          { status: 201, headers: { 'Content-Type': 'application/json' } }
-        ),
-      };
+    mockScheduleRequests((body) => {
+      scheduleBodies.push(body);
+      return new Response(JSON.stringify({ schedule: scheduleRecord() }), {
+        status: 201,
+        headers: { 'Content-Type': 'application/json' },
+      });
     });
 
     const result = await scheduleWorkflow(workflowPath, {
@@ -854,27 +876,24 @@ describe('workflow schedules', () => {
         },
       },
     });
-    expect(
-      (scheduleBodies[0] as { workflowRequest: Record<string, unknown> }).workflowRequest.runId
-    ).toBeUndefined();
-    expect(
-      (scheduleBodies[0] as { workflowRequest: Record<string, unknown> }).workflowRequest.s3CodeKey
-    ).toBeUndefined();
+    expect((scheduleBodies[0] as { workflowRequest: Record<string, unknown> }).workflowRequest).toMatchObject(
+      {
+        s3CodeKey: 'code.tar.gz',
+        codeSourceRunId: '11111111-1111-4111-8111-111111111111',
+        workflowPath: 'workflow.yaml',
+      }
+    );
   });
 
-  it('preserves the omitted schedule request byte-for-byte without a relayflowVersion field', async () => {
+  it('keeps an omitted relayflowVersion omitted while storing the code snapshot', async () => {
     const workflowPath = await writeScheduleWorkflow();
     const scheduleBodyBytes: string[] = [];
-    authorizedApiFetchMock.mockImplementation(async (_auth, requestPath, init) => {
-      expect(requestPath).toBe('/api/v1/workflows/schedules');
-      scheduleBodyBytes.push(String(init?.body));
-      return {
-        auth: { accessToken: 'token' },
-        response: new Response(JSON.stringify({ schedule: scheduleRecord() }), {
-          status: 201,
-          headers: { 'Content-Type': 'application/json' },
-        }),
-      };
+    mockScheduleRequests((body) => {
+      scheduleBodyBytes.push(JSON.stringify(body));
+      return new Response(JSON.stringify({ schedule: scheduleRecord() }), {
+        status: 201,
+        headers: { 'Content-Type': 'application/json' },
+      });
     });
 
     await scheduleWorkflow(workflowPath, {
@@ -882,26 +901,52 @@ describe('workflow schedules', () => {
       name: 'Hourly eval',
     });
 
-    expect(scheduleBodyBytes).toEqual([
-      JSON.stringify({
-        name: 'Hourly eval',
-        schedule_type: 'cron',
-        timezone: 'UTC',
-        workflowRequest: {
-          workflow: [
-            'version: "1.0"',
-            'name: eval',
-            'swarm:',
-            '  pattern: dag',
-            'agents: []',
-            'workflows: []',
-          ].join('\n'),
-          fileType: 'yaml',
-        },
-        cron_expression: '0 * * * *',
-      }),
-    ]);
+    expect(JSON.parse(scheduleBodyBytes[0]).workflowRequest).toMatchObject({
+      s3CodeKey: 'code.tar.gz',
+      codeSourceRunId: '11111111-1111-4111-8111-111111111111',
+    });
     expect(scheduleBodyBytes[0]).not.toContain('relayflowVersion');
+  });
+
+  it('stores each declared path archive in a multi-path schedule snapshot', async () => {
+    await mkdir(path.join(tmpRoot, 'app'));
+    const workflowPath = path.join(tmpRoot, 'app', 'workflow.yaml');
+    await writeFile(path.join(tmpRoot, 'app', 'README.md'), 'application\n');
+    await writeFile(
+      workflowPath,
+      [
+        'version: "1.0"',
+        'name: paths',
+        'paths:',
+        '  - name: app',
+        '    path: app',
+        'swarm:',
+        '  pattern: dag',
+        'agents: []',
+        'workflows: []',
+      ].join('\n')
+    );
+    const scheduleBodies: Record<string, unknown>[] = [];
+    mockScheduleRequests((body) => {
+      scheduleBodies.push(body);
+      return new Response(JSON.stringify({ schedule: scheduleRecord() }), {
+        status: 201,
+        headers: { 'Content-Type': 'application/json' },
+      });
+    });
+
+    await scheduleWorkflow(workflowPath, { cron: '0 * * * *' });
+
+    expect(scheduleBodies[0]?.workflowRequest).toMatchObject({
+      codeSourceRunId: '11111111-1111-4111-8111-111111111111',
+      workflowPath: 'workflow.yaml',
+      paths: [{ name: 'app', s3CodeKey: 'code-app.tar.gz' }],
+    });
+    expect(s3SendMock).toHaveBeenCalledWith(
+      expect.objectContaining({
+        input: expect.objectContaining({ Key: 'user/11111111-1111-4111-8111-111111111111/code-app.tar.gz' }),
+      })
+    );
   });
 
   it('rejects unsupported v2 schedules before authentication, filesystem, or network access', async () => {
@@ -928,26 +973,22 @@ describe('workflow schedules', () => {
     expect(authorizedApiFetchMock).not.toHaveBeenCalled();
   });
 
-  it('creates a one-time schedule without one-time code sync fields', async () => {
+  it('creates a one-time schedule with an immutable code snapshot', async () => {
     const workflowPath = await writeScheduleWorkflow();
     const scheduleBodies: unknown[] = [];
-    authorizedApiFetchMock.mockImplementation(async (_auth, requestPath, init) => {
-      expect(requestPath).toBe('/api/v1/workflows/schedules');
-      scheduleBodies.push(JSON.parse(String(init?.body)));
-      return {
-        auth: { accessToken: 'token' },
-        response: new Response(
-          JSON.stringify({
-            schedule: scheduleRecord({
-              name: 'One-off eval',
-              scheduleType: 'once',
-              cronExpression: null,
-              scheduledAt: '2026-05-10T09:00:00.000Z',
-            }),
+    mockScheduleRequests((body) => {
+      scheduleBodies.push(body);
+      return new Response(
+        JSON.stringify({
+          schedule: scheduleRecord({
+            name: 'One-off eval',
+            scheduleType: 'once',
+            cronExpression: null,
+            scheduledAt: '2026-05-10T09:00:00.000Z',
           }),
-          { status: 201, headers: { 'Content-Type': 'application/json' } }
-        ),
-      };
+        }),
+        { status: 201, headers: { 'Content-Type': 'application/json' } }
+      );
     });
 
     const result = await scheduleWorkflow(workflowPath, {
@@ -966,12 +1007,12 @@ describe('workflow schedules', () => {
       },
     });
     expect((scheduleBodies[0] as { cron_expression?: unknown }).cron_expression).toBeUndefined();
-    expect(
-      (scheduleBodies[0] as { workflowRequest: Record<string, unknown> }).workflowRequest.runId
-    ).toBeUndefined();
-    expect(
-      (scheduleBodies[0] as { workflowRequest: Record<string, unknown> }).workflowRequest.s3CodeKey
-    ).toBeUndefined();
+    expect((scheduleBodies[0] as { workflowRequest: Record<string, unknown> }).workflowRequest).toMatchObject(
+      {
+        s3CodeKey: 'code.tar.gz',
+        codeSourceRunId: '11111111-1111-4111-8111-111111111111',
+      }
+    );
   });
 
   it('rejects invalid schedule option combinations', async () => {
