@@ -1,0 +1,77 @@
+{
+  "id": "traj_j9kwhhairbh5",
+  "version": 1,
+  "task": {
+    "title": "Fix generic invoked root timeout inference",
+    "source": {
+      "system": "plain",
+      "id": "cloud#3463"
+    }
+  },
+  "status": "completed",
+  "startedAt": "2026-09-09T02:16:06.088Z",
+  "completedAt": "2026-09-09T02:17:32.784Z",
+  "agents": [
+    {
+      "name": "default",
+      "role": "lead",
+      "joinedAt": "2026-09-09T02:17:24.985Z"
+    }
+  ],
+  "chapters": [
+    {
+      "id": "chap_scjxlzt29mmj",
+      "title": "Work",
+      "agentName": "default",
+      "startedAt": "2026-09-09T02:17:24.985Z",
+      "endedAt": "2026-09-09T02:17:32.784Z",
+      "events": [
+        {
+          "ts": 1788920244986,
+          "type": "decision",
+          "content": "Require invoked timeout roots to be exactly workflow, while retaining proven assigned builder variables: Require invoked timeout roots to be exactly workflow, while retaining proven assigned builder variables",
+          "raw": {
+            "question": "Require invoked timeout roots to be exactly workflow, while retaining proven assigned builder variables",
+            "chosen": "Require invoked timeout roots to be exactly workflow, while retaining proven assigned builder variables",
+            "alternatives": [],
+            "reasoning": "Generic factory calls such as httpClient() and Python http_client() can expose timeout methods but are not RelayFlow builders; accepting them would reintroduce false launch metadata."
+          },
+          "significance": "high"
+        },
+        {
+          "ts": 1788920245469,
+          "type": "reflection",
+          "content": "Generic invoked roots are now excluded in both TypeScript and Python; full Cloud and CLI suites, builds, format, and diff checks are passing.",
+          "raw": {
+            "focalPoints": [
+              "builder-identity",
+              "scanner",
+              "tests"
+            ],
+            "confidence": 0.95
+          },
+          "significance": "high",
+          "tags": [
+            "focal:builder-identity",
+            "focal:scanner",
+            "focal:tests",
+            "confidence:0.95"
+          ]
+        }
+      ]
+    }
+  ],
+  "retrospective": {
+    "summary": "Excluded generic invoked timeout roots; TypeScript and Python now infer only direct workflow chains or proven builder variables. Full Node 22 Cloud/CLI tests and builds pass.",
+    "approach": "Standard approach",
+    "confidence": 0.95
+  },
+  "commits": [],
+  "filesChanged": [],
+  "projectId": "AgentWorkforce/relay",
+  "tags": [],
+  "_trace": {
+    "startRef": "1f63d0ea6dcde2e4aa7844cfa62caa3449142876",
+    "endRef": "1f63d0ea6dcde2e4aa7844cfa62caa3449142876"
+  }
+}

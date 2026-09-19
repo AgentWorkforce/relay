@@ -21,6 +21,10 @@ import {
   type PathSubmission,
 } from './types.js';
 import { inferWorkflowFileType, parseWorkflowPaths, shouldSyncCodeByDefault } from './workflow-paths.js';
+import {
+  resolveWorkflowLaunchTimeoutMs,
+  validateExplicitWorkflowLaunchTimeoutMs,
+} from './workflow-timeout.js';
 
 // Re-exported so consumers (cloud package barrel, workflows tests) keep
 // importing these from './workflows.js' after the parsers moved out.
@@ -258,6 +262,7 @@ export async function runWorkflow(
   options: RunWorkflowOptions = {}
 ): Promise<RunWorkflowResponse> {
   validateRelayflowVersion(options.relayflowVersion);
+  validateExplicitWorkflowLaunchTimeoutMs(options.launchTimeoutMs);
   const apiUrl = options.apiUrl ?? defaultApiUrl();
   const api = await workflowApiClient(apiUrl);
   const input = await resolveWorkflowInput(workflowArg, options.fileType);
@@ -274,6 +279,14 @@ export async function runWorkflow(
     workflow: input.workflow,
     fileType: input.fileType,
   };
+  const launchTimeoutMs = resolveWorkflowLaunchTimeoutMs(
+    input.workflow,
+    input.fileType,
+    options.launchTimeoutMs
+  );
+  if (launchTimeoutMs !== undefined) {
+    requestBody.launchTimeoutMs = launchTimeoutMs;
+  }
   if (options.relayflowVersion !== undefined) {
     requestBody.relayflowVersion = options.relayflowVersion;
   }
@@ -464,6 +477,7 @@ export async function scheduleWorkflow(
   options: ScheduleWorkflowOptions = {}
 ): Promise<WorkflowSchedule> {
   validateScheduleRelayflowVersion(options.relayflowVersion);
+  validateExplicitWorkflowLaunchTimeoutMs(options.launchTimeoutMs);
   const hasCron = typeof options.cron === 'string' && options.cron.trim().length > 0;
   const hasAt = typeof options.at === 'string' && options.at.trim().length > 0;
   if (hasCron === hasAt) {
@@ -480,6 +494,11 @@ export async function scheduleWorkflow(
     console.error('Validating workflow...');
     validateYamlWorkflow(input.workflow, options.relayflowVersion);
   }
+  const launchTimeoutMs = resolveWorkflowLaunchTimeoutMs(
+    input.workflow,
+    input.fileType,
+    options.launchTimeoutMs
+  );
 
   const requestBody: Record<string, unknown> = {
     name: options.name?.trim() || path.basename(workflowArg),
@@ -488,6 +507,7 @@ export async function scheduleWorkflow(
     workflowRequest: {
       workflow: input.workflow,
       fileType: input.fileType,
+      ...(launchTimeoutMs === undefined ? {} : { launchTimeoutMs }),
       ...(options.relayflowVersion === undefined ? {} : { relayflowVersion: options.relayflowVersion }),
       ...(input.sourceFileType ? { sourceFileType: input.sourceFileType } : {}),
       ...(options.envSecrets && Object.keys(options.envSecrets).length > 0
