@@ -276,6 +276,12 @@ function applyResolvedNodeSession(
  * so reading it back from there covers a stored enrollment, a project-pinned
  * enrollment, and pre-set credentials alike.
  *
+ * This is the operator-facing half of the guard: it turns a conflict into
+ * remedies instead of a startup failure. It is NOT what makes ownership
+ * exclusive — `runUpCommand` reserves the node id under an interprocess lock
+ * before it spawns anything, and that reservation is what two starts racing
+ * past this check are serialized by.
+ *
  * @returns True when startup may continue.
  */
 async function guardEnrolledNodeIdentity(

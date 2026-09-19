@@ -1285,8 +1285,12 @@ export class HarnessDriverClient {
     this.transport.disconnect();
 
     if (this.child) {
-      await waitForExit(this.child, 5000);
-      this.child = null;
+      // Keep the handle when the exit was not observed: the process may still
+      // be holding its sockets, and a later shutdown() should retry rather than
+      // let the caller treat an unproven exit as a clean one.
+      if (await waitForExit(this.child, 5000)) {
+        this.child = null;
+      }
     }
   }
 

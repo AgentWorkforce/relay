@@ -125,6 +125,26 @@ function createClaimHome(): string {
   return home;
 }
 
+/**
+ * Environment pinning every machine-global store the guard consults to `home`.
+ * `HOME`/`XDG_DATA_HOME` matter because the guard now also asks whether the
+ * broker could authenticate as the node id from its own token cache, which
+ * lives under `dirs::data_local_dir()`.
+ */
+function claimEnv(home: string): NodeJS.ProcessEnv {
+  return { AGENT_RELAY_HOME: home, HOME: home, XDG_DATA_HOME: path.join(home, 'data') };
+}
+
+/** Cache a node token where the broker's `resolve_cached_node_token` reads it. */
+function writeCachedNodeToken(home: string, nodeId: string): void {
+  const file = path.join(home, 'data', 'agent-relay', 'node-tokens', `${nodeId}.json`);
+  fs.mkdirSync(path.dirname(file), { recursive: true });
+  fs.writeFileSync(
+    file,
+    JSON.stringify({ node_id: nodeId, workspace_id: 'rw_test', token: 'nt_live_cached' })
+  );
+}
+
 function writeNodeClaim(home: string, claim: Partial<NodeClaim> & { pid: number }): NodeClaim {
   const env = { AGENT_RELAY_HOME: home };
   const full: NodeClaim = {
@@ -583,7 +603,7 @@ describe('registerNodeCommands', () => {
       () => enrollmentRecord
     ) as unknown as NodeCommandDependencies['resolveEnrollment'];
     const { program, error, exit } = createNodeHarness({
-      env: { AGENT_RELAY_HOME: home },
+      env: claimEnv(home),
       resolveEnrollment,
     });
 
@@ -609,7 +629,7 @@ describe('registerNodeCommands', () => {
       () => enrollmentRecord
     ) as unknown as NodeCommandDependencies['resolveEnrollment'];
     const { program, env, error, warn } = createNodeHarness({
-      env: { AGENT_RELAY_HOME: home },
+      env: claimEnv(home),
       resolveEnrollment,
     });
 
@@ -629,7 +649,7 @@ describe('registerNodeCommands', () => {
       () => enrollmentRecord
     ) as unknown as NodeCommandDependencies['resolveEnrollment'];
     const { program, env, error } = createNodeHarness({
-      env: { AGENT_RELAY_HOME: home },
+      env: claimEnv(home),
       resolveEnrollment,
     });
 
@@ -647,7 +667,7 @@ describe('registerNodeCommands', () => {
       () => enrollmentRecord
     ) as unknown as NodeCommandDependencies['resolveEnrollment'];
     const { program, warn, error } = createNodeHarness({
-      env: { AGENT_RELAY_HOME: home },
+      env: claimEnv(home),
       resolveEnrollment,
     });
 
@@ -665,13 +685,36 @@ describe('registerNodeCommands', () => {
     );
   });
 
-  it('does not guard a node id that has no token to register with', async () => {
+  it('guards a node id the broker can authenticate from its cached token', async () => {
+    const home = createClaimHome();
+    writeNodeClaim(home, { pid: process.pid });
+    // No RELAY_NODE_TOKEN and no resolvable enrollment — but the broker's
+    // `resolve_cached_node_token` falls back to this cache and registers as
+    // node_abc anyway, taking the live broker's delivery socket. The guard has
+    // to cover the identity the broker actually resolves, not just the one the
+    // environment spells out.
+    writeCachedNodeToken(home, 'node_abc');
+    const { program, error, exit } = createNodeHarness({
+      env: { ...claimEnv(home), RELAY_NODE_ID: 'node_abc' },
+      resolveEnrollment: vi.fn(() => undefined) as unknown as NodeCommandDependencies['resolveEnrollment'],
+    });
+
+    await expect(program.parseAsync(['node', 'up'], { from: 'user' })).rejects.toBeInstanceOf(ExitSignal);
+
+    expect(exit).toHaveBeenCalledWith(1);
+    expect(error.mock.calls.flat().join('\n')).toContain(
+      'node node_abc is already served by a live broker on this machine'
+    );
+    expect(brokerMocks.runUpCommand).not.toHaveBeenCalled();
+  });
+
+  it('does not guard a node id with no credential anywhere', async () => {
     const home = createClaimHome();
     writeNodeClaim(home, { pid: process.pid });
     const { program, error } = createNodeHarness({
-      // A pinned-but-unresolvable enrollment leaves the id without a token, so
-      // this broker cannot register as that node and cannot steal its socket.
-      env: { AGENT_RELAY_HOME: home, RELAY_NODE_ID: 'node_abc' },
+      // A pinned-but-unresolvable enrollment with no cached token leaves the id
+      // unauthenticated, so this broker cannot register as that node at all.
+      env: { ...claimEnv(home), RELAY_NODE_ID: 'node_abc' },
       resolveEnrollment: vi.fn(() => undefined) as unknown as NodeCommandDependencies['resolveEnrollment'],
     });
 
@@ -685,7 +728,7 @@ describe('registerNodeCommands', () => {
     const home = createClaimHome();
     writeNodeClaim(home, { pid: process.pid });
     const { program, error } = createNodeHarness({
-      env: { AGENT_RELAY_HOME: home, RELAY_NODE_ID: 'node_abc', RELAY_NODE_TOKEN: 'nt_secret' },
+      env: { ...claimEnv(home), RELAY_NODE_ID: 'node_abc', RELAY_NODE_TOKEN: 'nt_secret' },
     });
 
     await program.parseAsync(['node', 'up', '--local-only'], { from: 'user' });

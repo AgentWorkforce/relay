@@ -166,23 +166,34 @@ registered as that node, the engine handed the node-control delivery socket to
 whichever registered last, and the first broker kept running and reporting
 healthy while messages silently stopped arriving.
 
-A broker now records its enrolled node id in
+A start now takes machine-global ownership of its enrolled node id in
 `~/.agentworkforce/relay/node-claims/<node-id>.json` (pid, state dir, API port,
-broker name, claim time) once its process identity is verified, and releases it
-on a clean stop. `node up` refuses to adopt a node id that a live claim names,
-printing the holding broker's pid and state directory:
+broker name, claim time) **before** it spawns a broker, because the broker
+registers with the engine from its own startup — anything claimed afterwards is
+claimed after the delivery socket could already have moved. Ownership is handed
+to the broker process once its identity is verified, and is released only after
+that process is observed to exit. Concurrent starts are serialized by a
+per-node lock file, so exactly one of them wins; the lock is reclaimed
+automatically once its holder is provably gone. `node up` refuses to adopt a
+node id that a live claim names, printing the holding broker's pid and state
+directory:
 
 ```text
 Refusing to start: node node_2230437463 is already served by a live broker on this machine.
   holding broker      pid 48211, state dir /repo/.agentworkforce/relay, API port 3891
 ```
 
-A claim whose pid is gone — or whose pid has since been recycled by another
-process — is stale, so an ordinary restart after a crash or reboot is never
+A claim whose pids are gone — or whose pids have since been recycled by other
+processes — is stale, so an ordinary restart after a crash or reboot is never
 refused. To run a second node on this machine alongside the live one, enroll a
 distinct node (`agent-relay cloud enroll --name <other-node>`) and start from
 that enrollment; `node up --force` takes the node over instead, evicting the
 live broker's delivery socket.
+
+A node id is guarded whenever the broker could actually register as it: with
+`RELAY_NODE_TOKEN` set, or with a node token the broker has already cached for
+that id. A bare `RELAY_NODE_ID` with no credential anywhere cannot register, so
+it is neither claimed nor guarded.
 
 Because the claims are machine-global, they also give `node down` a way to point
 at a live broker it cannot see: run from the wrong directory it still reports

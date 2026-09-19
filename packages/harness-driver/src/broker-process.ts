@@ -173,22 +173,40 @@ function formatCommand(binaryPath: string, args: string[]): string {
   return render.join(' ');
 }
 
-export function waitForExit(child: ChildProcess, timeoutMs: number): Promise<void> {
+/**
+ * Wait for `child` to exit, escalating to SIGKILL after `timeoutMs`.
+ *
+ * Resolves `true` only when the exit was actually observed. SIGKILL is not
+ * instantaneous — the process still has to be reaped, and one wedged in an
+ * uninterruptible wait can outlive the signal entirely — so resolving as soon
+ * as the signal was sent reports an exit nobody saw. Callers use this to decide
+ * that a broker is gone (and, in the CLI, that its node claim may be released),
+ * which makes an optimistic answer worse than a slow one.
+ */
+export function waitForExit(child: ChildProcess, timeoutMs: number, killGraceMs = 2_000): Promise<boolean> {
   return new Promise((resolve) => {
     // A process that already exited via signal has exitCode === null but
     // signalCode !== null; check both so we don't wait the full timeout and
     // then issue a redundant SIGKILL.
     if (child.exitCode !== null || child.signalCode !== null) {
-      resolve();
+      resolve(true);
       return;
     }
+    let settled = false;
+    let killTimer: NodeJS.Timeout | undefined;
+    const finish = (exited: boolean): void => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      if (killTimer) clearTimeout(killTimer);
+      child.removeListener('exit', onExit);
+      resolve(exited);
+    };
+    const onExit = (): void => finish(true);
     const timer = setTimeout(() => {
       child.kill('SIGKILL');
-      resolve();
+      killTimer = setTimeout(() => finish(false), killGraceMs);
     }, timeoutMs);
-    child.on('exit', () => {
-      clearTimeout(timer);
-      resolve();
-    });
+    child.on('exit', onExit);
   });
 }

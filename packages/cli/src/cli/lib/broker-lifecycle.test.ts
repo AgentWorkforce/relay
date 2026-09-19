@@ -453,10 +453,15 @@ function createUpHarness() {
   } as unknown as CoreDependencies;
 
   // Every start now consults the machine-global workspace store, so point it at
-  // a scratch home instead of the developer's real one.
+  // a scratch home instead of the developer's real one. HOME/XDG_DATA_HOME are
+  // pinned too: node-claim probes the broker's node-token cache through them,
+  // and whether this machine happens to have one cached must not decide what
+  // these tests observe.
   const home = fsReal.mkdtempSync(pathReal.join(os.tmpdir(), 'broker-lifecycle-home-'));
   upTmpRoots.push(home);
   (deps.env as NodeJS.ProcessEnv).AGENT_RELAY_HOME = home;
+  (deps.env as NodeJS.ProcessEnv).HOME = home;
+  (deps.env as NodeJS.ProcessEnv).XDG_DATA_HOME = pathReal.join(home, 'data');
 
   return { deps, projectRoot, dataDir, home, createRelay, log, warn, error, exit };
 }
@@ -891,7 +896,64 @@ describe('runUpCommand node claims', () => {
       state_dir: fsReal.realpathSync(dataDir),
       // Recorded from `ps`, so a recycled pid cannot read as this broker.
       process_started_at: 'Thu Sep 10 18:00:00 2026',
+      // The supervisor stays on the record, so its death does not unprotect a
+      // broker that is still registered and serving.
+      supervisor_pid: process.pid,
+      status: 'active',
     });
+  });
+
+  it('reserves the node id before anything that can register is spawned', async () => {
+    const { deps, home, dataDir, createRelay } = createUpHarness();
+    deps.env.RELAY_NODE_ID = 'node_claimed';
+    const spawnBroker = createRelay.getMockImplementation()!;
+    let claimAtSpawn: Record<string, unknown> | null = null;
+    createRelay.mockImplementation(async (...args: Parameters<typeof spawnBroker>) => {
+      const file = claimFile(home, 'node_claimed');
+      claimAtSpawn = fsReal.existsSync(file)
+        ? (JSON.parse(fsReal.readFileSync(file, 'utf8')) as Record<string, unknown>)
+        : null;
+      return spawnBroker(...args);
+    });
+
+    await runUpCommand({}, deps);
+
+    // The broker queues `node.register` from its own startup, so a claim
+    // written only after the spawn is written after the delivery socket could
+    // already have moved. Ownership has to exist before the process does.
+    expect(claimAtSpawn).toMatchObject({
+      node_id: 'node_claimed',
+      pid: deps.pid,
+      status: 'reserved',
+      state_dir: fsReal.realpathSync(dataDir),
+    });
+  });
+
+  it('refuses a second start before it spawns a broker', async () => {
+    const { deps, home, error, createRelay } = createUpHarness();
+    deps.env.RELAY_NODE_ID = 'node_claimed';
+    deps.killProcess = vi.fn((pid: number) => {
+      if (pid !== 4242) throw new Error('not running');
+    });
+    fsReal.mkdirSync(pathReal.join(home, 'node-claims'), { recursive: true });
+    fsReal.writeFileSync(
+      claimFile(home, 'node_claimed'),
+      JSON.stringify({
+        version: 1,
+        node_id: 'node_claimed',
+        pid: 4242,
+        state_dir: '/other-checkout/.agentworkforce/relay',
+        status: 'active',
+        claimed_at: '2026-10-05T12:00:00.000Z',
+      })
+    );
+
+    await expect(runUpCommand({}, deps)).rejects.toBeInstanceOf(ExitSignal);
+
+    expect(error.mock.calls.flat().join('\n')).toContain('already served by a live local broker');
+    // The refusal is what matters: a loser that got as far as starting a broker
+    // has already had a chance to take the incumbent's delivery socket.
+    expect(createRelay).not.toHaveBeenCalled();
   });
 
   it('releases the claim when the broker stops cleanly', async () => {
@@ -1003,7 +1065,57 @@ describe('runUpCommand node claims', () => {
     expect(output).toContain('node down --state-dir');
   });
 
-  it('claims nothing for a node id with no token to register with', async () => {
+  it('keeps the claim when shutdown fails and the broker is still alive', async () => {
+    const { deps, home, warn, createRelay } = createUpHarness();
+    deps.env.RELAY_NODE_ID = 'node_claimed';
+    const spawnBroker = createRelay.getMockImplementation()!;
+    createRelay.mockImplementation(async (...args: Parameters<typeof spawnBroker>) => {
+      const relay = await spawnBroker(...args);
+      // `shutdownUpResources` swallows this, so "shutdown returned" says
+      // nothing about whether the process is gone.
+      relay.shutdown = vi.fn(async () => {
+        throw new Error('broker refused to shut down');
+      });
+      return relay;
+    });
+
+    await runUpCommand({}, deps);
+    // The broker survives the stop attempt and still holds its node-control
+    // socket; only now does the fixture report it alive.
+    deps.killProcess = vi.fn((pid: number) => {
+      if (pid !== 999999) throw new Error('not running');
+    });
+
+    await expect(sigtermHandler(deps)()).rejects.toBeInstanceOf(ExitSignal);
+
+    expect(fsReal.existsSync(claimFile(home, 'node_claimed'))).toBe(true);
+    expect(warn.mock.calls.flat().join('\n')).toContain("keeping this machine's claim");
+  });
+
+  it('claims a node id the broker can authenticate from its cached token', async () => {
+    const { deps, home } = createUpHarness();
+    delete deps.env.RELAY_NODE_TOKEN;
+    deps.env.RELAY_NODE_ID = 'node_claimed';
+    // `resolve_cached_node_token` reads this when RELAY_NODE_TOKEN is unset, so
+    // this start can register as — and evict — node_claimed.
+    const tokenFile = pathReal.join(
+      deps.env.XDG_DATA_HOME!,
+      'agent-relay',
+      'node-tokens',
+      'node_claimed.json'
+    );
+    fsReal.mkdirSync(pathReal.dirname(tokenFile), { recursive: true });
+    fsReal.writeFileSync(
+      tokenFile,
+      JSON.stringify({ node_id: 'node_claimed', workspace_id: 'rw_test', token: 'nt_live_cached' })
+    );
+
+    await runUpCommand({}, deps);
+
+    expect(fsReal.existsSync(claimFile(home, 'node_claimed'))).toBe(true);
+  });
+
+  it('claims nothing for a node id with no credential anywhere', async () => {
     const { deps, home } = createUpHarness();
     delete deps.env.RELAY_NODE_TOKEN;
     deps.env.RELAY_NODE_ID = 'node_claimed';
