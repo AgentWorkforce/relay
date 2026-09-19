@@ -1637,6 +1637,28 @@ describe('releaseNodeClaim', () => {
     expect(released.map((claim) => claim.node_id)).toEqual(['node_1']);
   });
 
+  it('releases a claim recorded under a non-canonical spelling of the state dir', async () => {
+    // A claim written by an older CLI or by hand may carry a symlinked path;
+    // on macOS every temp dir is one (`/var/...` -> `/private/var/...`), which
+    // is how this surfaced. Both spellings must name the same claim.
+    const env = createHome();
+    const real = createStateDir();
+    const link = path.join(fs.mkdtempSync(path.join(os.tmpdir(), 'node-claim-link-')), 'state');
+    tmpRoots.push(path.dirname(link));
+    fs.symlinkSync(real, link);
+    writeClaim(env, { node_id: 'node_1', pid: 555, state_dir: link });
+
+    const released = await releaseNodeClaimsForBroker({
+      pid: 555,
+      stateDir: real,
+      env,
+      killProcess: () => undefined,
+      execCommand: psDeps(),
+    });
+
+    expect(released.map((claim) => claim.node_id)).toEqual(['node_1']);
+  });
+
   it('keeps a claim another live broker holds in the same state dir', async () => {
     const env = createHome();
     const stateDir = createStateDir();
