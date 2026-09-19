@@ -167,16 +167,19 @@ whichever registered last, and the first broker kept running and reporting
 healthy while messages silently stopped arriving.
 
 A start now takes machine-global ownership of its enrolled node id in
-`~/.agentworkforce/relay/node-claims/<node-id>.json` (pid, state dir, API port,
-broker name, claim time) **before** it spawns a broker, because the broker
-registers with the engine from its own startup — anything claimed afterwards is
-claimed after the delivery socket could already have moved. Ownership is handed
-to the broker process once its identity is verified, and is released only after
-that process is observed to exit. Concurrent starts are serialized by a
-per-node lock file, so exactly one of them wins; the lock is reclaimed
-automatically once its holder is provably gone. `node up` refuses to adopt a
-node id that a live claim names, printing the holding broker's pid and state
-directory:
+`~/.agentworkforce/relay/node-claims/<node-id>.<generation>.json` (pid, state
+dir, API port, broker name, claim time) **before** it spawns a broker, because
+the broker registers with the engine from its own startup — anything claimed
+afterwards is claimed after the delivery socket could already have moved.
+Ownership is handed to the broker process once its identity is verified, and is
+released only after that process is observed to exit.
+
+Ownership _is_ the exclusive creation of the next generation file, so concurrent
+starts cannot both win and no start ever deletes a record another one might have
+replaced: whoever creates `…000002.json` first owns the node, and the others
+re-read and refuse. A crashed start leaves a generation whose pids are dead,
+which is stale rather than blocking. `node up` refuses to adopt a node id that a
+live claim names, printing the holding broker's pid and state directory:
 
 ```text
 Refusing to start: node node_2230437463 is already served by a live broker on this machine.
@@ -185,7 +188,10 @@ Refusing to start: node node_2230437463 is already served by a live broker on th
 
 A claim whose pids are gone — or whose pids have since been recycled by other
 processes — is stale, so an ordinary restart after a crash or reboot is never
-refused. To run a second node on this machine alongside the live one, enroll a
+refused. One exception keeps a crash from unguarding a running broker: if the
+supervising CLI was killed before it could record its broker's pid, the broker's
+own `connection.json` in the claimed state directory still names a live process,
+and that reads as held. To run a second node on this machine alongside the live one, enroll a
 distinct node (`agent-relay cloud enroll --name <other-node>`) and start from
 that enrollment; `node up --force` takes the node over instead, evicting the
 live broker's delivery socket.

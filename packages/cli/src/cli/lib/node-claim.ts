@@ -15,6 +15,9 @@ function relayHome(env: NodeJS.ProcessEnv): string {
   return env.AGENT_RELAY_HOME ?? path.join(os.homedir(), '.agentworkforce/relay');
 }
 
+/** Filename the broker writes its API endpoint and pid into, inside its state dir. */
+const BROKER_CONNECTION_FILENAME = 'connection.json';
+
 /**
  * Machine-local record of which live broker serves an enrolled node id.
  *
@@ -32,7 +35,7 @@ function relayHome(env: NodeJS.ProcessEnv): string {
  * initialization — any claim written after the spawn is written after the
  * delivery socket could already have moved. Once a verified broker process
  * exists the reservation is *adopted* (`status: 'active'`, `pid` = the broker's)
- * under the same interprocess lock, so ownership is never dropped in between.
+ * in place, so ownership is never dropped in between.
  */
 export interface NodeClaim {
   version: 1;
@@ -58,16 +61,28 @@ export interface NodeClaim {
   /**
    * PID of the CLI supervising the broker, recorded from the reservation
    * onward. After adoption the claim names both, and either one being alive
-   * keeps it held: a supervisor that dies between spawn and verification must
-   * not leave a registered broker unprotected, and a broker that dies before
-   * its supervisor has finished shutting down must not open the node id up
-   * while the socket is still being torn down.
+   * keeps it held: a supervisor that dies after its broker registered must not
+   * leave that broker unprotected, and a broker that dies before its supervisor
+   * has finished shutting down must not open the node id up while the socket is
+   * still being torn down.
    */
   supervisor_pid?: number;
   supervisor_started_at?: string;
   /** `reserved` until a verified broker process owns the state dir. */
   status?: 'reserved' | 'active';
   claimed_at: string;
+  /**
+   * Sequence number encoded in this claim's filename. Ownership IS the
+   * successful exclusive creation of `<node>.<generation>.json`: generations
+   * only ever increase, so taking a node id over never means deleting somebody
+   * else's file. See {@link acquireNodeClaim}.
+   */
+  generation?: number;
+  /**
+   * Unique per acquisition. A claim is only ever rewritten or removed by the
+   * acquisition that created it, and this is how that is proven.
+   */
+  owner_token?: string;
 }
 
 /** Whether a node id is free to serve, held by a live broker, or left behind. */
@@ -85,10 +100,11 @@ export interface NodeClaimDependencies {
   /** Signal sender used for liveness probes. Defaults to `process.kill`. */
   killProcess?: (pid: number, signal?: NodeJS.Signals | number) => void;
   /**
-   * Shell runner used to read a pid's birth time. Every CLI command passes its
-   * `CoreDependencies.execCommand`; without one the pid-reuse check is skipped
-   * and a live pid simply reads as held. This module imports no child_process
-   * itself so a claim check can be made from commands that mock that module.
+   * Shell runner used to read a pid's birth time and command line. Every CLI
+   * command passes its `CoreDependencies.execCommand`; without one the pid-reuse
+   * check is skipped and a live pid simply reads as held. This module imports no
+   * child_process itself so a claim check can be made from commands that mock
+   * that module.
    */
   execCommand?: (command: string) => Promise<{ stdout: string; stderr: string }>;
 }
@@ -123,25 +139,26 @@ export class NodeClaimConflictError extends Error {
 }
 
 /**
- * Thrown when the per-node interprocess lock could not be taken.
+ * Thrown when ownership could not be established because other starts kept
+ * winning the exclusive create.
  *
- * The lock is held for a handful of syscalls and is broken automatically once
- * its owner is provably gone, so a timeout means a live process is wedged
- * holding it. Ownership cannot be established in that state, and starting
- * anyway is exactly the double-registration this module exists to prevent.
+ * Each attempt is a handful of syscalls, so exhausting them means a pathological
+ * amount of contention on one node id. Ownership cannot be established in that
+ * state, and starting anyway is exactly the double registration this module
+ * exists to prevent.
  */
-export class NodeClaimLockError extends Error {
+export class NodeClaimContentionError extends Error {
   constructor(
     public readonly nodeId: string,
-    public readonly lockPath: string,
+    public readonly claimsDir: string,
     cause?: unknown
   ) {
     super(
-      `could not take the ownership lock for node ${nodeId} (${lockPath}). ` +
-        'Another agent-relay process is holding it; retry, or remove the lock file if no relay process is running.',
+      `could not take ownership of node ${nodeId}: other agent-relay starts kept winning the claim in ${claimsDir}. ` +
+        'Retry, or run `agent-relay node down` on the state dir that should keep the node.',
       { cause }
     );
-    this.name = 'NodeClaimLockError';
+    this.name = 'NodeClaimContentionError';
   }
 }
 
@@ -229,30 +246,46 @@ export function enrolledNodeIdForClaim(env: NodeJS.ProcessEnv): string | undefin
   return hasCachedNodeToken(nodeId, env) ? nodeId : undefined;
 }
 
-/** Directory holding one claim file per enrolled node id served on this machine. */
+/* ------------------------------------------------------------------ *
+ * Claim files and generations
+ * ------------------------------------------------------------------ */
+
+/** Zero padding, so claim generations sort lexically as well as numerically. */
+const GENERATION_DIGITS = 6;
+/** Matches `<stem>.<generation>.json` for any node. */
+const CLAIM_FILENAME_PATTERN = new RegExp(`^(.+)\\.(\\d{${GENERATION_DIGITS},})\\.json$`);
+
+/** Directory holding the claim files for every node id served on this machine. */
 export function nodeClaimsDir(env: NodeJS.ProcessEnv = process.env): string {
   return path.join(relayHome(env), 'node-claims');
 }
 
 /**
- * Filename for a node id's claim. Node ids are engine-issued (`node_<digits>`),
- * but the filename is sanitized anyway so a hand-edited enrollment store cannot
- * write outside the claims directory. Readers verify `node_id` from the file
- * contents, so a sanitized collision is reported as a conflict rather than
- * silently overwriting another node's claim.
+ * Filename stem for a node id's claims. Node ids are engine-issued
+ * (`node_<digits>`), but the stem is sanitized anyway so a hand-edited
+ * enrollment store cannot write outside the claims directory. Readers verify
+ * `node_id` from the file contents, so a sanitized collision is reported as a
+ * conflict rather than silently overwriting another node's claim.
  */
-export function nodeClaimPath(nodeId: string, env: NodeJS.ProcessEnv = process.env): string {
-  const safe =
+function nodeClaimStem(nodeId: string): string {
+  return (
     nodeId
       .trim()
       .replace(/[^\w.-]/g, '-')
-      .slice(0, 96) || 'unnamed';
-  return path.join(nodeClaimsDir(env), `${safe}.json`);
+      .slice(0, 96) || 'unnamed'
+  );
 }
 
-/** Lock guarding every read-modify-write of one node id's claim file. */
-export function nodeClaimLockPath(nodeId: string, env: NodeJS.ProcessEnv = process.env): string {
-  return `${nodeClaimPath(nodeId, env)}.lock`;
+/**
+ * Path of one generation of a node id's claim.
+ *
+ * Every write this module makes is the exclusive creation of a NEW generation,
+ * never an overwrite of an existing one — that is what makes takeover safe
+ * without a lock file (see {@link acquireNodeClaim}).
+ */
+export function nodeClaimPath(nodeId: string, env: NodeJS.ProcessEnv = process.env, generation = 1): string {
+  const suffix = String(generation).padStart(GENERATION_DIGITS, '0');
+  return path.join(nodeClaimsDir(env), `${nodeClaimStem(nodeId)}.${suffix}.json`);
 }
 
 /** Resolve a state dir to its canonical path so two spellings compare equal. */
@@ -264,14 +297,23 @@ export function normalizeClaimStateDir(stateDir: string): string {
   }
 }
 
+function isOptionalString(value: unknown): boolean {
+  return value === undefined || typeof value === 'string';
+}
+
+function isOptionalPositiveInteger(value: unknown): boolean {
+  return value === undefined || (Number.isSafeInteger(value) && (value as number) > 0);
+}
+
 function hasValidOptionalClaimFields(record: Record<string, unknown>): boolean {
   return (
     (record.api_port === undefined || Number.isSafeInteger(record.api_port)) &&
-    (record.broker_name === undefined || typeof record.broker_name === 'string') &&
-    (record.process_started_at === undefined || typeof record.process_started_at === 'string') &&
-    (record.supervisor_started_at === undefined || typeof record.supervisor_started_at === 'string') &&
-    (record.supervisor_pid === undefined ||
-      (Number.isSafeInteger(record.supervisor_pid) && (record.supervisor_pid as number) > 0)) &&
+    isOptionalString(record.broker_name) &&
+    isOptionalString(record.process_started_at) &&
+    isOptionalString(record.supervisor_started_at) &&
+    isOptionalString(record.owner_token) &&
+    isOptionalPositiveInteger(record.supervisor_pid) &&
+    isOptionalPositiveInteger(record.generation) &&
     (record.status === undefined || record.status === 'reserved' || record.status === 'active')
   );
 }
@@ -292,40 +334,100 @@ function isNodeClaim(value: unknown): value is NodeClaim {
   );
 }
 
-/**
- * Read a claim file. A missing, unreadable, or malformed file reads as `null`:
- * an unparseable claim is no evidence of a live broker, and treating it as one
- * would brick every later `node up` for that node id.
- */
-export function readNodeClaim(nodeId: string, env: NodeJS.ProcessEnv = process.env): NodeClaim | null {
+function readClaimFile(file: string): NodeClaim | null {
   try {
-    const parsed = JSON.parse(fs.readFileSync(nodeClaimPath(nodeId, env), 'utf-8')) as unknown;
+    const parsed = JSON.parse(fs.readFileSync(file, 'utf-8')) as unknown;
     return isNodeClaim(parsed) ? parsed : null;
   } catch {
     return null;
   }
 }
 
-/** Every readable claim on this machine, newest first. */
-export function listNodeClaims(env: NodeJS.ProcessEnv = process.env): NodeClaim[] {
+interface ClaimGeneration {
+  generation: number;
+  file: string;
+  /** `null` for a file that is not a readable claim record. */
+  claim: NodeClaim | null;
+}
+
+/**
+ * Every generation file present for `nodeId`, ascending.
+ *
+ * Unreadable files are kept in the list with a `null` claim: they must still
+ * raise the next generation number (or an exclusive create would collide with
+ * them forever) even though they are no evidence of a live broker.
+ */
+function readClaimGenerations(nodeId: string, env: NodeJS.ProcessEnv): ClaimGeneration[] {
+  const dir = nodeClaimsDir(env);
+  const stem = nodeClaimStem(nodeId);
   let filenames: string[];
   try {
-    filenames = fs.readdirSync(nodeClaimsDir(env));
+    filenames = fs.readdirSync(dir);
   } catch {
     return [];
   }
-  const claims: NodeClaim[] = [];
+  const generations: ClaimGeneration[] = [];
   for (const filename of filenames) {
-    if (!filename.endsWith('.json')) continue;
-    try {
-      const parsed = JSON.parse(fs.readFileSync(path.join(nodeClaimsDir(env), filename), 'utf-8')) as unknown;
-      if (isNodeClaim(parsed)) claims.push(parsed);
-    } catch {
-      // A torn or foreign file in this directory proves nothing; skip it.
+    const match = CLAIM_FILENAME_PATTERN.exec(filename);
+    if (!match || match[1] !== stem) continue;
+    const file = path.join(dir, filename);
+    generations.push({ generation: Number.parseInt(match[2], 10), file, claim: readClaimFile(file) });
+  }
+  return generations.sort((left, right) => left.generation - right.generation);
+}
+
+/** The generation that currently owns the node id: the highest readable one. */
+function currentGeneration(generations: ClaimGeneration[]): ClaimGeneration | undefined {
+  for (let index = generations.length - 1; index >= 0; index -= 1) {
+    if (generations[index].claim) return generations[index];
+  }
+  return undefined;
+}
+
+function highestGenerationNumber(generations: ClaimGeneration[]): number {
+  return generations.length === 0 ? 0 : generations[generations.length - 1].generation;
+}
+
+/**
+ * The claim that currently owns `nodeId`, or `null`.
+ *
+ * A missing, unreadable, or malformed file reads as `null`: an unparseable
+ * claim is no evidence of a live broker, and treating it as one would brick
+ * every later `node up` for that node id.
+ */
+export function readNodeClaim(nodeId: string, env: NodeJS.ProcessEnv = process.env): NodeClaim | null {
+  return currentGeneration(readClaimGenerations(nodeId, env))?.claim ?? null;
+}
+
+/** The current claim for every node id on this machine, newest first. */
+export function listNodeClaims(env: NodeJS.ProcessEnv = process.env): NodeClaim[] {
+  const dir = nodeClaimsDir(env);
+  let filenames: string[];
+  try {
+    filenames = fs.readdirSync(dir);
+  } catch {
+    return [];
+  }
+  const newestByStem = new Map<string, { generation: number; claim: NodeClaim }>();
+  for (const filename of filenames) {
+    const match = CLAIM_FILENAME_PATTERN.exec(filename);
+    if (!match) continue;
+    const claim = readClaimFile(path.join(dir, filename));
+    if (!claim) continue;
+    const generation = Number.parseInt(match[2], 10);
+    const seen = newestByStem.get(match[1]);
+    if (!seen || seen.generation < generation) {
+      newestByStem.set(match[1], { generation, claim });
     }
   }
-  return claims.sort((left, right) => right.claimed_at.localeCompare(left.claimed_at));
+  return [...newestByStem.values()]
+    .map((entry) => entry.claim)
+    .sort((left, right) => right.claimed_at.localeCompare(left.claimed_at));
 }
+
+/* ------------------------------------------------------------------ *
+ * Liveness
+ * ------------------------------------------------------------------ */
 
 function isProcessAlive(pid: number, deps: NodeClaimDependencies): boolean {
   const kill =
@@ -402,32 +504,109 @@ function claimProcesses(claim: NodeClaim): { pid: number; startedAt?: string; ro
   return processes;
 }
 
+/** Pid recorded in `<state dir>/connection.json`, which the broker writes itself. */
+function readStateDirBrokerPid(stateDir: string): number | null {
+  try {
+    const parsed = JSON.parse(
+      fs.readFileSync(path.join(stateDir, BROKER_CONNECTION_FILENAME), 'utf-8')
+    ) as unknown;
+    if (typeof parsed !== 'object' || parsed === null) return null;
+    const pid = (parsed as Record<string, unknown>).pid;
+    return Number.isSafeInteger(pid) && (pid as number) > 0 ? (pid as number) : null;
+  } catch {
+    return null;
+  }
+}
+
 /**
- * Classify a claim for `nodeId` without taking the lock — this is the read-only
- * view used by preflight guards and diagnostics.
+ * Whether `pid` looks like an agent-relay broker rather than an unrelated
+ * process that inherited the number.
  *
- * A claim is retired only when every process it names is provably gone: the pid
- * no longer exists, or its birth time no longer matches the one recorded (the
- * number was recycled). Everything else — including a `ps` we cannot run —
- * reads as held, because refusing is recoverable (`--force`, `node down`) while
- * a wrong "free" verdict silently cuts delivery to a live broker.
+ * Reads as "yes" whenever `ps` cannot be consulted: this only ever decides
+ * whether to KEEP guarding a node id, and a spurious refusal is recoverable
+ * (`--force`) while a wrong "free" verdict is the silent delivery outage.
+ */
+async function looksLikeBrokerProcess(
+  pid: number,
+  stateDir: string,
+  deps: NodeClaimDependencies
+): Promise<boolean> {
+  const execCommand = deps.execCommand;
+  if (!execCommand) return true;
+  try {
+    const { stdout } = await execCommand(`LC_ALL=C ps -p ${pid} -o args=`);
+    const args = stdout.trim();
+    if (!args) return false;
+    return args.includes('agent-relay') || args.includes('relay-broker') || args.includes(stateDir);
+  } catch {
+    return true;
+  }
+}
+
+/**
+ * A live broker serving `stateDir`, discovered from the connection file the
+ * broker writes itself.
+ *
+ * This is the ownership evidence that survives the supervising CLI. The Rust
+ * broker writes `<state dir>/connection.json` (with its own pid) as soon as its
+ * API listener binds — BEFORE `connect_relay` and before `node.register` is
+ * queued (crates/broker/src/runtime/init.rs) — so a broker that was orphaned by
+ * a SIGKILLed supervisor before the CLI could record its pid is still
+ * discoverable by every other start on the machine. Without it, such an orphan
+ * reads as "nobody home" and the next `node up` evicts its delivery socket.
+ */
+export async function findLiveStateDirBroker(
+  stateDir: string,
+  deps: NodeClaimDependencies = {}
+): Promise<{ pid: number; startedAt?: string } | null> {
+  const pid = readStateDirBrokerPid(stateDir);
+  if (pid === null || !isProcessAlive(pid, deps)) {
+    return null;
+  }
+  if (!(await looksLikeBrokerProcess(pid, stateDir, deps))) {
+    return null;
+  }
+  const startedAt = await readProcessStartedAt(pid, deps);
+  return { pid, ...(startedAt ? { startedAt } : {}) };
+}
+
+/**
+ * Classify a claim for `nodeId` — the read-only view used by preflight guards
+ * and diagnostics.
+ *
+ * A claim is retired only when every process it names is provably gone (the pid
+ * no longer exists, or its birth time no longer matches the one recorded) AND
+ * no live broker occupies its state dir. Everything else — including a `ps` we
+ * cannot run — reads as held, because refusing is recoverable (`--force`,
+ * `node down`) while a wrong "free" verdict silently cuts delivery to a live
+ * broker.
  */
 export async function inspectNodeClaim(
   nodeId: string,
   deps: NodeClaimDependencies = {}
 ): Promise<NodeClaimState> {
   const env = deps.env ?? process.env;
-  const claim = readNodeClaim(nodeId, env);
+  const generations = readClaimGenerations(nodeId, env);
+  const claim = currentGeneration(generations)?.claim ?? null;
   if (!claim) {
     return { state: 'unclaimed' };
   }
+  return classifyNodeClaim(nodeId, claim, env, deps);
+}
+
+async function classifyNodeClaim(
+  nodeId: string,
+  claim: NodeClaim,
+  env: NodeJS.ProcessEnv,
+  deps: NodeClaimDependencies
+): Promise<NodeClaimState> {
   if (claim.node_id.trim() !== nodeId.trim()) {
     // Sanitized filenames can collide. Report it instead of overwriting the
     // other node's claim, which would leave that broker unguarded.
     return {
       state: 'held',
       claim,
-      reason: `claim file ${nodeClaimPath(nodeId, env)} records node ${claim.node_id}`,
+      reason: `claim file ${nodeClaimPath(nodeId, env, claim.generation ?? 1)} records node ${claim.node_id}`,
     };
   }
   const reasons: string[] = [];
@@ -438,6 +617,26 @@ export async function inspectNodeClaim(
     }
     reasons.push(`${candidate.role} ${status.reason}`);
   }
+  // Every recorded pid is gone, but a broker this claim started can have
+  // outlived them: the supervisor may have been SIGKILLed between the spawn and
+  // the moment it could record the broker's pid. The broker's own connection
+  // file is the ownership record that survives that.
+  const orphan = await findLiveStateDirBroker(claim.state_dir, deps);
+  if (orphan) {
+    return {
+      state: 'held',
+      claim: {
+        ...claim,
+        pid: orphan.pid,
+        ...(orphan.startedAt ? { process_started_at: orphan.startedAt } : {}),
+        supervisor_pid: undefined,
+        status: 'active',
+      },
+      reason:
+        `${reasons.join('; ')}, but broker pid ${orphan.pid} recorded in ` +
+        `${path.join(claim.state_dir, BROKER_CONNECTION_FILENAME)} is still running`,
+    };
+  }
   return { state: 'stale', claim, reason: reasons.join('; ') };
 }
 
@@ -446,236 +645,172 @@ export async function listHeldNodeClaims(deps: NodeClaimDependencies = {}): Prom
   const env = deps.env ?? process.env;
   const held: NodeClaim[] = [];
   for (const claim of listNodeClaims(env)) {
-    const status = await inspectNodeClaim(claim.node_id, deps);
-    if (status.state === 'held' && status.claim.pid === claim.pid) {
-      held.push(claim);
+    const status = await classifyNodeClaim(claim.node_id, claim, env, deps);
+    if (status.state === 'held') {
+      held.push(status.claim);
     }
   }
   return held;
 }
 
 /* ------------------------------------------------------------------ *
- * Interprocess lock
- * ------------------------------------------------------------------ */
-
-/** How long to keep retrying before giving up on the lock. */
-const CLAIM_LOCK_TIMEOUT_MS = 10_000;
-/** Backoff between retries. The critical section is a few syscalls long. */
-const CLAIM_LOCK_POLL_MS = 15;
-/**
- * A lock is only broken once its owner is provably gone AND the lock is older
- * than this. The age requirement means a lock that was just created can never
- * be caught in another process's break, whatever that process read earlier.
- */
-const CLAIM_LOCK_BREAK_AFTER_MS = 5_000;
-
-interface NodeClaimLockRecord {
-  pid: number;
-  process_started_at?: string;
-  acquired_at: string;
-  /** Unique per acquisition, so a lock is only ever released by its owner. */
-  token: string;
-}
-
-function readLockRecord(lockPath: string): NodeClaimLockRecord | null {
-  try {
-    const parsed = JSON.parse(fs.readFileSync(lockPath, 'utf-8')) as unknown;
-    if (typeof parsed !== 'object' || parsed === null) return null;
-    const record = parsed as Record<string, unknown>;
-    if (!Number.isSafeInteger(record.pid) || (record.pid as number) <= 0) return null;
-    if (typeof record.token !== 'string' || typeof record.acquired_at !== 'string') return null;
-    return record as unknown as NodeClaimLockRecord;
-  } catch {
-    return null;
-  }
-}
-
-function lockFileAgeMs(lockPath: string, record: NodeClaimLockRecord | null): number {
-  const acquiredAt = record ? Date.parse(record.acquired_at) : Number.NaN;
-  if (Number.isFinite(acquiredAt)) {
-    return Date.now() - acquiredAt;
-  }
-  try {
-    return Date.now() - fs.statSync(lockPath).mtimeMs;
-  } catch {
-    return 0;
-  }
-}
-
-/**
- * Recover a lock whose holder crashed.
- *
- * Both conditions must hold: the recorded pid is provably gone (or the record
- * is unreadable), and the lock is older than `CLAIM_LOCK_BREAK_AFTER_MS`. The
- * record is re-read immediately before the unlink and must be byte-identical,
- * so a lock that was replaced in the meantime — by the process that already
- * broke it — is left alone. A live holder therefore can never be broken: it
- * fails the liveness test on every pass.
- */
-async function breakStaleLock(lockPath: string, deps: NodeClaimDependencies): Promise<void> {
-  const before = fs.existsSync(lockPath) ? fs.readFileSync(lockPath, 'utf-8') : null;
-  if (before === null) return;
-  const record = readLockRecord(lockPath);
-  if (lockFileAgeMs(lockPath, record) < CLAIM_LOCK_BREAK_AFTER_MS) return;
-  if (record) {
-    const owner = await isRecordedProcessAlive(record.pid, record.process_started_at, deps);
-    if (owner.alive) return;
-  }
-  try {
-    // Re-read under the same name: if anything replaced the lock while we were
-    // probing its owner, that replacement is a different (live) acquisition.
-    if (fs.readFileSync(lockPath, 'utf-8') !== before) return;
-    fs.unlinkSync(lockPath);
-  } catch {
-    // Someone else broke it first, or we cannot; the retry loop handles both.
-  }
-}
-
-function sleep(ms: number): Promise<void> {
-  return new Promise((resolve) => {
-    setTimeout(resolve, ms);
-  });
-}
-
-/**
- * Serialize every read-modify-write of one node id's claim across processes.
- *
- * Exclusion comes from `open(O_CREAT|O_EXCL)`, which is atomic on every
- * filesystem this CLI supports. Crash recovery comes from `breakStaleLock`.
- * Holding this lock is what makes "inspect, then decide, then write" a single
- * indivisible step — without it two starts both observe an absent or stale
- * claim and both write, which is the double registration the claim exists to
- * prevent.
- */
-async function withNodeClaimLock<T>(
-  nodeId: string,
-  deps: NodeClaimDependencies,
-  run: () => Promise<T>
-): Promise<T> {
-  const env = deps.env ?? process.env;
-  const lockPath = nodeClaimLockPath(nodeId, env);
-  fs.mkdirSync(path.dirname(lockPath), { recursive: true, mode: 0o700 });
-  const startedAt = await readProcessStartedAt(process.pid, deps);
-  const record: NodeClaimLockRecord = {
-    pid: process.pid,
-    ...(startedAt ? { process_started_at: startedAt } : {}),
-    acquired_at: new Date().toISOString(),
-    token: crypto.randomUUID(),
-  };
-  const body = JSON.stringify(record);
-  const deadline = Date.now() + CLAIM_LOCK_TIMEOUT_MS;
-  let lastError: unknown;
-  let acquired = false;
-  while (!acquired) {
-    try {
-      const fd = fs.openSync(lockPath, 'wx', 0o600);
-      try {
-        fs.writeFileSync(fd, body);
-      } finally {
-        fs.closeSync(fd);
-      }
-      acquired = true;
-      break;
-    } catch (error) {
-      lastError = error;
-      if ((error as NodeJS.ErrnoException)?.code !== 'EEXIST') {
-        throw new NodeClaimLockError(nodeId, lockPath, error);
-      }
-    }
-    await breakStaleLock(lockPath, deps);
-    if (Date.now() >= deadline) {
-      throw new NodeClaimLockError(nodeId, lockPath, lastError);
-    }
-    await sleep(CLAIM_LOCK_POLL_MS);
-  }
-  try {
-    return await run();
-  } finally {
-    try {
-      // Only drop a lock that is still ours: if it was broken and retaken we
-      // would otherwise unlink the new holder's lock.
-      if (fs.readFileSync(lockPath, 'utf-8') === body) fs.unlinkSync(lockPath);
-    } catch {
-      // Already gone.
-    }
-  }
-}
-
-/* ------------------------------------------------------------------ *
  * Acquire / adopt / release
  * ------------------------------------------------------------------ */
 
-function writeClaimFile(claim: NodeClaim, env: NodeJS.ProcessEnv): void {
-  const file = nodeClaimPath(claim.node_id, env);
-  fs.mkdirSync(path.dirname(file), { recursive: true, mode: 0o700 });
-  const temporary = path.join(path.dirname(file), `.${path.basename(file)}.${process.pid}.tmp`);
+/**
+ * How many generations to try before giving up. Each attempt only loses to a
+ * start that genuinely won the node id, so more than a couple means the machine
+ * is starting brokers for one node id in a tight loop.
+ */
+const CLAIM_ACQUIRE_ATTEMPTS = 8;
+
+/**
+ * Create a claim file that does not exist yet, with its full contents already
+ * in place.
+ *
+ * The record is written to a private temp file and hard-linked into its
+ * generation path: `link(2)` fails with `EEXIST` rather than clobbering, so the
+ * create is both exclusive AND atomic. A reader can therefore never observe a
+ * half-written claim — which matters, because a torn read of a live broker's
+ * claim would read as "node id free".
+ *
+ * @returns False when that generation already exists.
+ */
+function createClaimGeneration(file: string, claim: NodeClaim): boolean {
+  const dir = path.dirname(file);
+  fs.mkdirSync(dir, { recursive: true, mode: 0o700 });
+  const temporary = path.join(dir, `.${path.basename(file)}.${process.pid}.${crypto.randomUUID()}.tmp`);
+  fs.writeFileSync(temporary, `${JSON.stringify(claim, null, 2)}\n`, { mode: 0o600 });
   try {
-    fs.writeFileSync(temporary, `${JSON.stringify(claim, null, 2)}\n`, { mode: 0o600 });
-    fs.renameSync(temporary, file);
+    fs.linkSync(temporary, file);
+    return true;
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException)?.code === 'EEXIST') return false;
+    throw error;
   } finally {
     try {
       fs.unlinkSync(temporary);
     } catch {
-      // Already renamed into place.
+      // Already gone; the hard link (if any) keeps the contents alive.
     }
   }
+}
+
+function safeUnlinkClaim(file: string): void {
+  try {
+    fs.unlinkSync(file);
+  } catch {
+    // Already gone, or not ours to remove.
+  }
+}
+
+async function buildClaim(
+  input: AcquireNodeClaimInput,
+  generation: number,
+  deps: NodeClaimDependencies
+): Promise<NodeClaim> {
+  const startedAt = await readProcessStartedAt(input.pid, deps);
+  const supervisorPid = input.supervisorPid ?? input.pid;
+  const supervisorStartedAt =
+    supervisorPid === input.pid ? startedAt : await readProcessStartedAt(supervisorPid, deps);
+  return {
+    version: 1,
+    node_id: input.nodeId.trim(),
+    pid: input.pid,
+    state_dir: normalizeClaimStateDir(input.stateDir),
+    ...(input.apiPort !== undefined ? { api_port: input.apiPort } : {}),
+    ...(input.brokerName ? { broker_name: input.brokerName } : {}),
+    ...(startedAt ? { process_started_at: startedAt } : {}),
+    supervisor_pid: supervisorPid,
+    ...(supervisorStartedAt ? { supervisor_started_at: supervisorStartedAt } : {}),
+    status: input.status ?? 'active',
+    claimed_at: new Date().toISOString(),
+    generation,
+    owner_token: crypto.randomUUID(),
+  };
 }
 
 /**
  * Record ownership of `nodeId`, refusing if a live local broker already holds
  * it.
  *
- * The inspection and the write happen under the node's interprocess lock, so
- * two concurrent starts are serialized: whichever takes the lock second sees
- * the first's claim and loses. Without that lock both could observe the same
- * absent-or-stale claim and both rename their own file into place.
+ * Ownership IS the exclusive creation of the next generation file. Generations
+ * only increase and each one is created exactly once, so taking a node id over
+ * never involves deleting a file another process might have replaced in the
+ * meantime — the failure mode that makes "validate the holder, then remove its
+ * record, then write ours" unsafe no matter how the validation is fenced.
+ *
+ * Two starts that both observe the same stale claim therefore cannot both win:
+ * one creates generation N+1, the other collides (`EEXIST`) and re-reads, now
+ * seeing the winner's live claim. A start that created its generation while a
+ * third one was creating a higher one loses the confirm step below, removes its
+ * own file and refuses. Exactly one — the highest generation — survives.
  *
  * Callers reserve with `status: 'reserved'` and their own pid BEFORE spawning a
  * broker, then hand ownership to the verified broker with {@link adoptNodeClaim}.
  *
  * @throws NodeClaimConflictError when a live local broker holds the node id and
  * `force` was not requested.
- * @throws NodeClaimLockError when exclusion could not be established.
+ * @throws NodeClaimContentionError when no generation could be won at all.
  */
 export async function acquireNodeClaim(input: AcquireNodeClaimInput): Promise<NodeClaim> {
   const env = input.env ?? process.env;
   const deps: NodeClaimDependencies = { ...input, env };
-  return withNodeClaimLock(input.nodeId, deps, async () => {
-    const status = await inspectNodeClaim(input.nodeId, deps);
-    if (status.state === 'held' && status.claim.pid !== input.pid && !input.force) {
-      throw new NodeClaimConflictError(input.nodeId, status.claim);
+  const nodeId = input.nodeId.trim();
+  for (let attempt = 0; attempt < CLAIM_ACQUIRE_ATTEMPTS; attempt += 1) {
+    const generations = readClaimGenerations(nodeId, env);
+    const current = currentGeneration(generations)?.claim;
+    if (current && current.pid !== input.pid && !input.force) {
+      const status = await classifyNodeClaim(nodeId, current, env, deps);
+      if (status.state === 'held') {
+        throw new NodeClaimConflictError(nodeId, status.claim);
+      }
     }
-    const startedAt = await readProcessStartedAt(input.pid, deps);
-    const supervisorPid = input.supervisorPid ?? input.pid;
-    const supervisorStartedAt =
-      supervisorPid === input.pid ? startedAt : await readProcessStartedAt(supervisorPid, deps);
-    const claim: NodeClaim = {
-      version: 1,
-      node_id: input.nodeId.trim(),
-      pid: input.pid,
-      state_dir: normalizeClaimStateDir(input.stateDir),
-      ...(input.apiPort !== undefined ? { api_port: input.apiPort } : {}),
-      ...(input.brokerName ? { broker_name: input.brokerName } : {}),
-      ...(startedAt ? { process_started_at: startedAt } : {}),
-      supervisor_pid: supervisorPid,
-      ...(supervisorStartedAt ? { supervisor_started_at: supervisorStartedAt } : {}),
-      status: input.status ?? 'active',
-      claimed_at: new Date().toISOString(),
-    };
-    writeClaimFile(claim, env);
+    const generation = highestGenerationNumber(generations) + 1;
+    const file = nodeClaimPath(nodeId, env, generation);
+    const claim = await buildClaim(input, generation, deps);
+    if (!createClaimGeneration(file, claim)) {
+      // Another start took this generation between the scan and the create.
+      // Re-read: its claim is what decides whether we may continue at all.
+      continue;
+    }
+    const winner = currentGeneration(readClaimGenerations(nodeId, env));
+    if (winner && winner.generation > generation) {
+      // A start that read our generation as free-to-take created a higher one.
+      // It owns the node id now; drop ours so two files cannot both read live.
+      safeUnlinkClaim(file);
+      throw new NodeClaimConflictError(nodeId, winner.claim ?? claim);
+    }
+    for (const superseded of generations) {
+      safeUnlinkClaim(superseded.file);
+    }
     return claim;
-  });
+  }
+  throw new NodeClaimContentionError(nodeId, nodeClaimsDir(env));
+}
+
+function isSameAcquisition(current: NodeClaim | null, claim: NodeClaim): boolean {
+  if (!current) return false;
+  if (claim.owner_token) return current.owner_token === claim.owner_token;
+  // Claims written before this process (or by hand) carry no token; fall back
+  // to the identity the record does have.
+  return (
+    current.node_id === claim.node_id && current.pid === claim.pid && current.state_dir === claim.state_dir
+  );
 }
 
 /**
  * Hand a reservation to the verified broker process that now owns the state
- * dir, under the same lock that guards acquisition.
+ * dir.
  *
- * The update is conditional: if the claim no longer names the reservation
- * (another start took the node over with `--force`, or an operator removed it)
- * the caller has already lost the node id and must not overwrite the winner.
+ * Only the acquisition that created a generation ever rewrites it, so this is a
+ * conflict-free in-place update — but it is still conditional on that
+ * generation still being the highest: a `--force` takeover that landed while
+ * this broker was starting has already won the node id, and continuing would
+ * put two brokers back on one delivery socket. Losing here fails startup, which
+ * tears this broker down.
  *
- * @throws NodeClaimConflictError when the reservation is gone.
+ * @throws NodeClaimConflictError when the reservation no longer owns the node id.
  */
 export async function adoptNodeClaim(input: {
   reservation: NodeClaim;
@@ -690,79 +825,72 @@ export async function adoptNodeClaim(input: {
   const env = input.env ?? process.env;
   const deps: NodeClaimDependencies = { ...input, env };
   const { reservation } = input;
-  return withNodeClaimLock(reservation.node_id, deps, async () => {
-    const current = readNodeClaim(reservation.node_id, env);
-    if (
-      !current ||
-      current.node_id !== reservation.node_id ||
-      current.pid !== reservation.pid ||
-      current.state_dir !== reservation.state_dir
-    ) {
-      throw new NodeClaimConflictError(reservation.node_id, current ?? reservation);
-    }
-    const startedAt = await readProcessStartedAt(input.pid, deps);
-    const claim: NodeClaim = {
-      ...reservation,
-      pid: input.pid,
-      ...(input.apiPort !== undefined ? { api_port: input.apiPort } : {}),
-      ...(input.brokerName ? { broker_name: input.brokerName } : {}),
-      ...(startedAt ? { process_started_at: startedAt } : {}),
-      supervisor_pid: reservation.pid,
-      ...(reservation.process_started_at ? { supervisor_started_at: reservation.process_started_at } : {}),
-      status: 'active',
-    };
-    if (!startedAt) delete claim.process_started_at;
-    writeClaimFile(claim, env);
-    return claim;
-  });
+  const generation = reservation.generation ?? 1;
+  const file = nodeClaimPath(reservation.node_id, env, generation);
+  const before = readClaimGenerations(reservation.node_id, env);
+  if (highestGenerationNumber(before) > generation || !isSameAcquisition(readClaimFile(file), reservation)) {
+    throw new NodeClaimConflictError(reservation.node_id, currentGeneration(before)?.claim ?? reservation);
+  }
+  const startedAt = await readProcessStartedAt(input.pid, deps);
+  const claim: NodeClaim = {
+    ...reservation,
+    pid: input.pid,
+    ...(input.apiPort !== undefined ? { api_port: input.apiPort } : {}),
+    ...(input.brokerName ? { broker_name: input.brokerName } : {}),
+    ...(startedAt ? { process_started_at: startedAt } : {}),
+    supervisor_pid: reservation.pid,
+    ...(reservation.process_started_at ? { supervisor_started_at: reservation.process_started_at } : {}),
+    status: 'active',
+  };
+  if (!startedAt) delete claim.process_started_at;
+  // Atomic replace of OUR generation only: readers see the reservation or the
+  // adopted record, never a partial write, and never another start's file.
+  const temporary = `${file}.${process.pid}.${crypto.randomUUID()}.tmp`;
+  fs.writeFileSync(temporary, `${JSON.stringify(claim, null, 2)}\n`, { mode: 0o600 });
+  fs.renameSync(temporary, file);
+  const after = readClaimGenerations(reservation.node_id, env);
+  if (highestGenerationNumber(after) > generation) {
+    // A takeover landed during the write. It owns the node id; give ours up
+    // rather than leaving a second live-looking record behind.
+    safeUnlinkClaim(file);
+    throw new NodeClaimConflictError(reservation.node_id, currentGeneration(after)?.claim ?? claim);
+  }
+  return claim;
 }
 
 /**
- * Drop a claim this broker owns.
+ * Drop a claim this start owns.
  *
- * The read and the unlink happen under the node's interprocess lock, so the
- * "still names me" check cannot be invalidated between them. Without the lock a
- * replacement claim written in that window was deleted by the supervisor it had
- * just replaced, leaving the new broker unguarded.
+ * Only the acquisition that created a generation ever removes it, and the
+ * generation path is unique to that acquisition, so no other process's claim
+ * can be deleted here. The read and the unlink are adjacent syscalls with no
+ * await in between.
  */
 export async function releaseNodeClaim(
   claim: NodeClaim,
-  env: NodeJS.ProcessEnv = process.env,
-  deps: NodeClaimDependencies = {}
+  env: NodeJS.ProcessEnv = process.env
 ): Promise<boolean> {
-  const scoped: NodeClaimDependencies = { ...deps, env };
+  const file = nodeClaimPath(claim.node_id, env, claim.generation ?? 1);
+  if (!isSameAcquisition(readClaimFile(file), claim)) {
+    return false;
+  }
   try {
-    return await withNodeClaimLock(claim.node_id, scoped, async () => {
-      const current = readNodeClaim(claim.node_id, env);
-      if (
-        !current ||
-        current.node_id !== claim.node_id ||
-        current.pid !== claim.pid ||
-        current.state_dir !== claim.state_dir
-      ) {
-        return false;
-      }
-      try {
-        fs.unlinkSync(nodeClaimPath(claim.node_id, env));
-        return true;
-      } catch {
-        return false;
-      }
-    });
-  } catch (error) {
-    if (error instanceof NodeClaimLockError) {
-      // Leaving a claim behind is recoverable — its pids are dead, so it reads
-      // as stale. Deleting one we could not prove is ours is not.
-      return false;
-    }
-    throw error;
+    fs.unlinkSync(file);
+    return true;
+  } catch {
+    return false;
   }
 }
 
 /**
- * Release every claim held by a broker pid in a state dir. `node down` stops a
+ * Release the claims a broker pid held in a state dir. `node down` stops a
  * broker it did not start, so it cannot name the node id the claim was written
  * for — the pid and state dir it verified are what it has.
+ *
+ * A claim for that state dir whose every recorded pid is already dead is
+ * released too: that is the orphan left by a supervisor that was killed before
+ * it could record its broker's pid, and `down` has just proven the state dir's
+ * broker is gone.
  */
 export async function releaseNodeClaimsForBroker(input: {
   pid: number;
@@ -772,11 +900,17 @@ export async function releaseNodeClaimsForBroker(input: {
   execCommand?: NodeClaimDependencies['execCommand'];
 }): Promise<NodeClaim[]> {
   const env = input.env ?? process.env;
+  const deps: NodeClaimDependencies = { ...input, env };
   const stateDir = normalizeClaimStateDir(input.stateDir);
   const released: NodeClaim[] = [];
   for (const claim of listNodeClaims(env)) {
-    if (claim.pid !== input.pid || claim.state_dir !== stateDir) continue;
-    if (await releaseNodeClaim(claim, env, input)) {
+    if (claim.state_dir !== stateDir) continue;
+    const namesThisBroker = claim.pid === input.pid || claim.supervisor_pid === input.pid;
+    if (!namesThisBroker) {
+      const status = await classifyNodeClaim(claim.node_id, claim, env, deps);
+      if (status.state !== 'stale') continue;
+    }
+    if (await releaseNodeClaim(claim, env)) {
       released.push(claim);
     }
   }

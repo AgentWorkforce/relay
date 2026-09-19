@@ -870,8 +870,35 @@ describe('runUpCommand workspace precedence', () => {
 // node's Cloud delivery socket.
 
 describe('runUpCommand node claims', () => {
-  const claimFile = (home: string, nodeId: string): string =>
-    pathReal.join(home, 'node-claims', `${nodeId}.json`);
+  /**
+   * Path of one generation of a node's claim. Ownership is the exclusive
+   * creation of the next generation, so a takeover writes `…000002.json`
+   * rather than overwriting the incumbent's file.
+   */
+  const claimFile = (home: string, nodeId: string, generation = 1): string =>
+    pathReal.join(home, 'node-claims', `${nodeId}.${String(generation).padStart(6, '0')}.json`);
+
+  /** The claim that currently owns a node id: its highest generation on disk. */
+  function currentClaim(home: string, nodeId: string): Record<string, unknown> | null {
+    let filenames: string[];
+    try {
+      filenames = fsReal.readdirSync(pathReal.join(home, 'node-claims'));
+    } catch {
+      return null;
+    }
+    const newest = filenames
+      .filter((name) => name.startsWith(`${nodeId}.`) && name.endsWith('.json'))
+      .sort()
+      .pop();
+    return newest
+      ? (JSON.parse(fsReal.readFileSync(pathReal.join(home, 'node-claims', newest), 'utf8')) as Record<
+          string,
+          unknown
+        >)
+      : null;
+  }
+
+  const hasClaim = (home: string, nodeId: string): boolean => currentClaim(home, nodeId) !== null;
 
   /** The SIGTERM handler `runUpCommand` registers, i.e. a clean `node down`. */
   function sigtermHandler(deps: CoreDependencies): () => Promise<void> {
@@ -888,8 +915,7 @@ describe('runUpCommand node claims', () => {
 
     await runUpCommand({}, deps);
 
-    const claim = JSON.parse(fsReal.readFileSync(claimFile(home, 'node_claimed'), 'utf8'));
-    expect(claim).toMatchObject({
+    expect(currentClaim(home, 'node_claimed')).toMatchObject({
       version: 1,
       node_id: 'node_claimed',
       pid: 999999,
@@ -961,11 +987,11 @@ describe('runUpCommand node claims', () => {
     deps.env.RELAY_NODE_ID = 'node_claimed';
 
     await runUpCommand({}, deps);
-    expect(fsReal.existsSync(claimFile(home, 'node_claimed'))).toBe(true);
+    expect(hasClaim(home, 'node_claimed')).toBe(true);
 
     await expect(sigtermHandler(deps)()).rejects.toBeInstanceOf(ExitSignal);
 
-    expect(fsReal.existsSync(claimFile(home, 'node_claimed'))).toBe(false);
+    expect(hasClaim(home, 'node_claimed')).toBe(false);
   });
 
   it('refuses to register over a live claim from another state dir', async () => {
@@ -991,7 +1017,7 @@ describe('runUpCommand node claims', () => {
 
     expect(error.mock.calls.flat().join('\n')).toContain('already served by a live local broker');
     // The holder's claim is untouched, so its next `down` still finds it.
-    expect(JSON.parse(fsReal.readFileSync(claimFile(home, 'node_claimed'), 'utf8'))).toMatchObject({
+    expect(currentClaim(home, 'node_claimed')).toMatchObject({
       pid: 4242,
       state_dir: '/other-checkout/.agentworkforce/relay',
     });
@@ -1017,9 +1043,7 @@ describe('runUpCommand node claims', () => {
 
     await runUpCommand({ force: true }, deps);
 
-    expect(JSON.parse(fsReal.readFileSync(claimFile(home, 'node_claimed'), 'utf8'))).toMatchObject({
-      pid: 999999,
-    });
+    expect(currentClaim(home, 'node_claimed')).toMatchObject({ pid: 999999 });
   });
 
   it('releases the claim when `down` cleans up a broker that already exited', async () => {
@@ -1027,13 +1051,13 @@ describe('runUpCommand node claims', () => {
     deps.env.RELAY_NODE_ID = 'node_claimed';
 
     await runUpCommand({}, deps);
-    expect(fsReal.existsSync(claimFile(home, 'node_claimed'))).toBe(true);
+    expect(hasClaim(home, 'node_claimed')).toBe(true);
 
     // The fixture's killProcess reports every pid dead, so `down` takes its
     // "process was not running" cleanup path — the claim must go with it.
     await runDownCommand({}, deps);
 
-    expect(fsReal.existsSync(claimFile(home, 'node_claimed'))).toBe(false);
+    expect(hasClaim(home, 'node_claimed')).toBe(false);
   });
 
   it('points `down` at live nodes serving other state directories', async () => {
@@ -1088,8 +1112,73 @@ describe('runUpCommand node claims', () => {
 
     await expect(sigtermHandler(deps)()).rejects.toBeInstanceOf(ExitSignal);
 
-    expect(fsReal.existsSync(claimFile(home, 'node_claimed'))).toBe(true);
+    expect(hasClaim(home, 'node_claimed')).toBe(true);
     expect(warn.mock.calls.flat().join('\n')).toContain("keeping this machine's claim");
+  });
+
+  it('keeps the claim when startup fails before adoption and the child survives', async () => {
+    // Before adoption the claim names only the supervising CLI, and the
+    // startup failure paths null `relay` out — so "no live pid on the record"
+    // used to authorize a release while the spawned broker was still running
+    // (and possibly already registered).
+    const { deps, home, warn, createRelay } = createUpHarness();
+    deps.env.RELAY_NODE_ID = 'node_claimed';
+    const spawnBroker = createRelay.getMockImplementation()!;
+    createRelay.mockImplementation(async (...args: Parameters<typeof spawnBroker>) => {
+      const relay = await spawnBroker(...args);
+      // Verification never gets to run, and cleanup cannot kill the child.
+      relay.getStatus = vi.fn(async () => {
+        throw new Error('broker never answered its status check');
+      });
+      relay.shutdown = vi.fn(async () => {
+        throw new Error('broker refused to shut down');
+      });
+      // From here on the spawned broker reads as alive.
+      deps.killProcess = vi.fn((pid: number) => {
+        if (pid !== 999999) throw new Error('not running');
+      });
+      return relay;
+    });
+
+    await expect(runUpCommand({}, deps)).rejects.toBeInstanceOf(ExitSignal);
+
+    expect(currentClaim(home, 'node_claimed')).toMatchObject({ node_id: 'node_claimed' });
+    expect(warn.mock.calls.flat().join('\n')).toContain("keeping this machine's claim");
+  });
+
+  it('refuses over a reservation whose supervisor died with its broker still serving', async () => {
+    // A supervising CLI SIGKILLed between the spawn and the moment it could
+    // record the broker's pid leaves a claim naming only dead pids. The broker
+    // writes its own connection file before it registers, so that orphan is
+    // still discoverable — and must still block this start.
+    const { deps, home, error } = createUpHarness();
+    deps.env.RELAY_NODE_ID = 'node_claimed';
+    const orphanStateDir = fsReal.mkdtempSync(pathReal.join(os.tmpdir(), 'broker-lifecycle-orphan-'));
+    upTmpRoots.push(orphanStateDir);
+    fsReal.writeFileSync(
+      pathReal.join(orphanStateDir, 'connection.json'),
+      JSON.stringify({ url: 'http://127.0.0.1:3891', port: 3891, api_key: 'k', pid: 4242 })
+    );
+    deps.killProcess = vi.fn((pid: number) => {
+      if (pid !== 4242) throw new Error('not running');
+    });
+    fsReal.mkdirSync(pathReal.join(home, 'node-claims'), { recursive: true });
+    fsReal.writeFileSync(
+      claimFile(home, 'node_claimed'),
+      JSON.stringify({
+        version: 1,
+        node_id: 'node_claimed',
+        pid: 999998,
+        supervisor_pid: 999998,
+        state_dir: orphanStateDir,
+        status: 'reserved',
+        claimed_at: '2026-10-05T12:00:00.000Z',
+      })
+    );
+
+    await expect(runUpCommand({}, deps)).rejects.toBeInstanceOf(ExitSignal);
+
+    expect(error.mock.calls.flat().join('\n')).toContain('already served by a live local broker');
   });
 
   it('claims a node id the broker can authenticate from its cached token', async () => {
@@ -1112,7 +1201,7 @@ describe('runUpCommand node claims', () => {
 
     await runUpCommand({}, deps);
 
-    expect(fsReal.existsSync(claimFile(home, 'node_claimed'))).toBe(true);
+    expect(hasClaim(home, 'node_claimed')).toBe(true);
   });
 
   it('claims nothing for a node id with no credential anywhere', async () => {
@@ -1122,7 +1211,7 @@ describe('runUpCommand node claims', () => {
 
     await runUpCommand({}, deps);
 
-    expect(fsReal.existsSync(claimFile(home, 'node_claimed'))).toBe(false);
+    expect(hasClaim(home, 'node_claimed')).toBe(false);
   });
 
   it('claims nothing in local-only mode', async () => {
@@ -1131,7 +1220,7 @@ describe('runUpCommand node claims', () => {
 
     await runUpCommand({ localOnly: true }, deps);
 
-    expect(fsReal.existsSync(claimFile(home, 'node_claimed'))).toBe(false);
+    expect(hasClaim(home, 'node_claimed')).toBe(false);
   });
 });
 

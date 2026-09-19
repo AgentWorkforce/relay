@@ -2,7 +2,9 @@ import { spawn } from 'node:child_process';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
+import { fileURLToPath } from 'node:url';
 
+import esbuild from 'esbuild';
 import { afterEach, describe, expect, it } from 'vitest';
 
 import { fleetNodeEnrollmentStorePath } from '@agent-relay/cloud';
@@ -12,11 +14,11 @@ import {
   adoptNodeClaim,
   describeNodeClaimHolder,
   enrolledNodeIdForClaim,
+  findLiveStateDirBroker,
   hasCachedNodeToken,
   inspectNodeClaim,
   listHeldNodeClaims,
   listNodeClaims,
-  nodeClaimLockPath,
   nodeClaimPath,
   nodeClaimsDir,
   NodeClaimConflictError,
@@ -44,6 +46,12 @@ function createHome(): NodeJS.ProcessEnv {
   };
 }
 
+function createStateDir(): string {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'node-claim-state-'));
+  tmpRoots.push(dir);
+  return dir;
+}
+
 /** Cache a node token where the broker's `resolve_cached_node_token` reads it. */
 function writeCachedNodeToken(env: NodeJS.ProcessEnv, nodeId: string): void {
   const file = path.join(env.XDG_DATA_HOME!, 'agent-relay', 'node-tokens', `${nodeId}.json`);
@@ -52,6 +60,25 @@ function writeCachedNodeToken(env: NodeJS.ProcessEnv, nodeId: string): void {
     file,
     JSON.stringify({ node_id: nodeId, workspace_id: 'ws_test', token: 'nt_live_cached' })
   );
+}
+
+/** The connection file the Rust broker writes into its state dir on startup. */
+function writeConnectionFile(stateDir: string, pid: number): void {
+  fs.mkdirSync(stateDir, { recursive: true });
+  fs.writeFileSync(
+    path.join(stateDir, 'connection.json'),
+    JSON.stringify({ url: 'http://localhost:3891', port: 3891, api_key: 'k', pid })
+  );
+}
+
+/** `ps` stubs: a fixed birth time, and a command line that looks like a broker. */
+function psDeps(overrides: { args?: string; lstart?: string } = {}) {
+  return async (command: string) => {
+    if (command.includes('-o args=')) {
+      return { stdout: overrides.args ?? '/usr/local/bin/agent-relay broker --persist\n', stderr: '' };
+    }
+    return { stdout: overrides.lstart ?? 'Thu Sep 10 18:00:00 2026\n', stderr: '' };
+  };
 }
 
 /**
@@ -74,15 +101,17 @@ function concurrentDeps(env: NodeJS.ProcessEnv, alive: number[]) {
 
 function writeClaim(
   env: NodeJS.ProcessEnv,
-  claim: Partial<NodeClaim> & { node_id: string; pid: number }
+  claim: Partial<NodeClaim> & { node_id: string; pid: number },
+  generation = 1
 ): NodeClaim {
   const full: NodeClaim = {
     version: 1,
     state_dir: '/repo/.agentworkforce/relay',
     claimed_at: '2026-10-05T12:00:00.000Z',
+    generation,
     ...claim,
   };
-  const file = nodeClaimPath(full.node_id, env);
+  const file = nodeClaimPath(full.node_id, env, generation);
   fs.mkdirSync(path.dirname(file), { recursive: true });
   fs.writeFileSync(file, `${JSON.stringify(full, null, 2)}\n`);
   return full;
@@ -209,6 +238,79 @@ describe('inspectNodeClaim', () => {
     expect(status).toMatchObject({ state: 'held' });
     expect(status.state === 'held' && status.reason).toContain('node_other');
   });
+
+  it('reads the newest generation, not the first one written', async () => {
+    const env = createHome();
+    writeClaim(env, { node_id: 'node_1', pid: await deadPid(), state_dir: '/old' }, 1);
+    writeClaim(env, { node_id: 'node_1', pid: process.pid, state_dir: '/new' }, 2);
+
+    const status = await inspectNodeClaim('node_1', { env });
+
+    expect(status).toMatchObject({ state: 'held' });
+    expect(status.state === 'held' && status.claim.state_dir).toBe('/new');
+  });
+});
+
+describe('inspectNodeClaim with an orphaned broker', () => {
+  it('keeps a reservation held when the supervisor was killed before it recorded the broker', async () => {
+    // The crash window: `node up` reserved the node id, spawned a broker that
+    // wrote its connection file (and can already have registered), then was
+    // SIGKILLed before it could record the broker's pid. Reading that claim as
+    // stale is what lets the next start evict a live delivery socket.
+    const env = createHome();
+    const stateDir = createStateDir();
+    writeConnectionFile(stateDir, process.pid);
+    writeClaim(env, {
+      node_id: 'node_1',
+      pid: await deadPid(),
+      status: 'reserved',
+      state_dir: stateDir,
+    });
+
+    const status = await inspectNodeClaim('node_1', { env, execCommand: psDeps() });
+
+    expect(status.state).toBe('held');
+    expect(status.state === 'held' && status.reason).toContain('connection.json');
+    expect(status.state === 'held' && status.claim.pid).toBe(process.pid);
+  });
+
+  it('ignores a connection file whose pid is no longer running', async () => {
+    const env = createHome();
+    const stateDir = createStateDir();
+    writeConnectionFile(stateDir, await deadPid());
+    writeClaim(env, { node_id: 'node_1', pid: await deadPid(), state_dir: stateDir });
+
+    await expect(inspectNodeClaim('node_1', { env, execCommand: psDeps() })).resolves.toMatchObject({
+      state: 'stale',
+    });
+  });
+
+  it('ignores a connection file whose pid belongs to an unrelated program', async () => {
+    const env = createHome();
+    const stateDir = createStateDir();
+    writeConnectionFile(stateDir, process.pid);
+    writeClaim(env, { node_id: 'node_1', pid: await deadPid(), state_dir: stateDir });
+
+    const status = await inspectNodeClaim('node_1', {
+      env,
+      execCommand: psDeps({ args: '/usr/bin/some-other-program --unrelated' }),
+    });
+
+    expect(status.state).toBe('stale');
+  });
+
+  it('reports the live broker serving a state dir', async () => {
+    const stateDir = createStateDir();
+    writeConnectionFile(stateDir, process.pid);
+
+    await expect(findLiveStateDirBroker(stateDir, { execCommand: psDeps() })).resolves.toMatchObject({
+      pid: process.pid,
+    });
+  });
+
+  it('reports no broker for a state dir with no connection file', async () => {
+    await expect(findLiveStateDirBroker(createStateDir(), { execCommand: psDeps() })).resolves.toBeNull();
+  });
 });
 
 describe('acquireNodeClaim', () => {
@@ -230,6 +332,7 @@ describe('acquireNodeClaim', () => {
       pid: process.pid,
       api_port: 3891,
       broker_name: 'kjglaptop',
+      generation: 1,
     });
     expect(readNodeClaim('node_1', env)).toEqual(claim);
     expect(fs.existsSync(nodeClaimsDir(env))).toBe(true);
@@ -247,6 +350,23 @@ describe('acquireNodeClaim', () => {
     expect(readNodeClaim('node_1', env)?.state_dir).toBe('/other/state');
   });
 
+  it('refuses when an orphaned broker still serves the claimed state dir', async () => {
+    const env = createHome();
+    const stateDir = createStateDir();
+    writeConnectionFile(stateDir, process.pid);
+    writeClaim(env, { node_id: 'node_1', pid: await deadPid(), state_dir: stateDir });
+
+    await expect(
+      acquireNodeClaim({
+        nodeId: 'node_1',
+        pid: 424242,
+        stateDir: '/repo/state',
+        env,
+        execCommand: psDeps(),
+      })
+    ).rejects.toBeInstanceOf(NodeClaimConflictError);
+  });
+
   it('takes over a live claim when forced', async () => {
     const env = createHome();
     writeClaim(env, { node_id: 'node_1', pid: process.pid, state_dir: '/other/state' });
@@ -260,6 +380,7 @@ describe('acquireNodeClaim', () => {
     });
 
     expect(claim.pid).toBe(424242);
+    expect(claim.generation).toBe(2);
     expect(readNodeClaim('node_1', env)?.state_dir).toBe('/repo/state');
   });
 
@@ -275,6 +396,8 @@ describe('acquireNodeClaim', () => {
     });
 
     expect(claim.pid).toBe(process.pid);
+    // The superseded generation is cleaned up, so files cannot pile up per boot.
+    expect(fs.existsSync(nodeClaimPath('node_1', env, 1))).toBe(false);
   });
 
   it('lets the same broker refresh its own claim', async () => {
@@ -285,11 +408,15 @@ describe('acquireNodeClaim', () => {
       acquireNodeClaim({ nodeId: 'node_1', pid: process.pid, stateDir: '/repo/state', env })
     ).resolves.toMatchObject({ pid: process.pid });
   });
-});
 
-describe('releaseNodeClaim', () => {
-  it('removes a claim it still owns', async () => {
+  it('steps over a generation another start already created', async () => {
     const env = createHome();
+    // A generation file that is not a readable claim still has to raise the
+    // next number, or the exclusive create would collide with it forever.
+    const orphan = nodeClaimPath('node_1', env, 4);
+    fs.mkdirSync(path.dirname(orphan), { recursive: true });
+    fs.writeFileSync(orphan, 'torn');
+
     const claim = await acquireNodeClaim({
       nodeId: 'node_1',
       pid: process.pid,
@@ -297,58 +424,7 @@ describe('releaseNodeClaim', () => {
       env,
     });
 
-    await expect(releaseNodeClaim(claim, env)).resolves.toBe(true);
-    expect(readNodeClaim('node_1', env)).toBeNull();
-  });
-
-  it("leaves a replacement broker's claim alone", async () => {
-    const env = createHome();
-    const mine: NodeClaim = writeClaim(env, { node_id: 'node_1', pid: 111 });
-    writeClaim(env, { node_id: 'node_1', pid: 222 });
-
-    await expect(releaseNodeClaim(mine, env)).resolves.toBe(false);
-    expect(readNodeClaim('node_1', env)?.pid).toBe(222);
-  });
-
-  it('re-reads the claim under the lock, so a late release spares a replacement', async () => {
-    const env = createHome();
-    const mine: NodeClaim = writeClaim(env, { node_id: 'node_1', pid: 111 });
-    const lock = nodeClaimLockPath('node_1', env);
-    fs.mkdirSync(path.dirname(lock), { recursive: true });
-    // Another CLI is mid-acquisition for this node: fresh lock, live owner.
-    fs.writeFileSync(
-      lock,
-      JSON.stringify({ pid: process.pid, acquired_at: new Date().toISOString(), token: 'other' })
-    );
-
-    const pending = releaseNodeClaim(mine, env);
-    // That acquisition finishes: node_1 now belongs to a different broker.
-    await new Promise((resolve) => setTimeout(resolve, 50));
-    writeClaim(env, { node_id: 'node_1', pid: 222 });
-    fs.unlinkSync(lock);
-
-    // Without the lock this read happened before the replacement landed, and
-    // the unlink after it — deleting the new broker's claim and reporting true.
-    await expect(pending).resolves.toBe(false);
-    expect(readNodeClaim('node_1', env)?.pid).toBe(222);
-  });
-
-  it('releases by broker pid and state dir, as `node down` must', async () => {
-    const env = createHome();
-    const stateDir = fs.mkdtempSync(path.join(os.tmpdir(), 'node-claim-state-'));
-    tmpRoots.push(stateDir);
-    writeClaim(env, { node_id: 'node_1', pid: 555, state_dir: stateDir });
-    writeClaim(env, { node_id: 'node_2', pid: 555, state_dir: '/elsewhere' });
-    writeClaim(env, { node_id: 'node_3', pid: 556, state_dir: stateDir });
-
-    const released = await releaseNodeClaimsForBroker({ pid: 555, stateDir, env });
-
-    expect(released.map((claim) => claim.node_id)).toEqual(['node_1']);
-    expect(
-      listNodeClaims(env)
-        .map((claim) => claim.node_id)
-        .sort()
-    ).toEqual(['node_2', 'node_3']);
+    expect(claim.generation).toBe(5);
   });
 });
 
@@ -391,23 +467,243 @@ describe('acquireNodeClaim exclusion', () => {
     expect([111, 222]).toContain(readNodeClaim('node_1', env)?.pid);
   });
 
-  it('recovers a lock whose holder crashed while holding it', async () => {
+  it('loses to a competitor that takes the generation between the scan and the create', async () => {
     const env = createHome();
-    const lock = nodeClaimLockPath('node_1', env);
-    fs.mkdirSync(path.dirname(lock), { recursive: true });
-    fs.writeFileSync(
-      lock,
-      JSON.stringify({
-        pid: await deadPid(),
-        acquired_at: new Date(Date.now() - 60_000).toISOString(),
-        token: 'crashed-holder',
-      })
-    );
+    writeClaim(env, { node_id: 'node_1', pid: await deadPid(), state_dir: '/gone' });
+    let planted = false;
 
-    await expect(
-      acquireNodeClaim({ nodeId: 'node_1', pid: process.pid, stateDir: '/repo/state', env })
-    ).resolves.toMatchObject({ pid: process.pid });
-    expect(fs.existsSync(lock)).toBe(false);
+    // Drive the exact filesystem interleaving another process would produce:
+    // while this acquisition is still resolving birth times, the competitor
+    // creates the very generation it was about to claim.
+    const claim = acquireNodeClaim({
+      nodeId: 'node_1',
+      pid: 111,
+      stateDir: '/checkout-a',
+      env,
+      killProcess: (pid: number) => {
+        if (pid !== 222) throw new Error(`no such process ${pid}`);
+      },
+      execCommand: async () => {
+        if (!planted) {
+          planted = true;
+          writeClaim(env, { node_id: 'node_1', pid: 222, state_dir: '/checkout-b' }, 2);
+        }
+        return { stdout: 'Thu Sep 10 18:00:00 2026', stderr: '' };
+      },
+    });
+
+    await expect(claim).rejects.toBeInstanceOf(NodeClaimConflictError);
+    // The competitor's record is untouched: no write of ours landed on it.
+    expect(readNodeClaim('node_1', env)).toMatchObject({ pid: 222, state_dir: '/checkout-b' });
+  });
+
+  it('gives the node up when a competitor wins a higher generation during the write', async () => {
+    const env = createHome();
+    let planted = false;
+
+    const claim = acquireNodeClaim({
+      nodeId: 'node_1',
+      pid: 111,
+      stateDir: '/checkout-a',
+      env,
+      killProcess: (pid: number) => {
+        if (pid !== 222) throw new Error(`no such process ${pid}`);
+      },
+      execCommand: async () => {
+        if (!planted) {
+          planted = true;
+          // The competitor read our generation as takeable and went past it.
+          writeClaim(env, { node_id: 'node_1', pid: 222, state_dir: '/checkout-b' }, 9);
+        }
+        return { stdout: 'Thu Sep 10 18:00:00 2026', stderr: '' };
+      },
+    });
+
+    await expect(claim).rejects.toBeInstanceOf(NodeClaimConflictError);
+    expect(readNodeClaim('node_1', env)).toMatchObject({ pid: 222 });
+    // Ours is withdrawn rather than left behind looking live.
+    expect(fs.existsSync(nodeClaimPath('node_1', env, 1))).toBe(false);
+  });
+
+  it('lets exactly one of six separate OS processes take over a stale claim', async () => {
+    const env = createHome();
+    writeClaim(env, { node_id: 'node_1', pid: await deadPid(), state_dir: '/gone' });
+
+    const outcomes = await raceRealProcesses(env, 6);
+
+    // Same-process tests cannot interleave adjacent synchronous syscalls; this
+    // one runs the real protocol in six independent OS processes.
+    expect(outcomes.filter((outcome) => outcome === 'won')).toHaveLength(1);
+    expect(outcomes.filter((outcome) => outcome === 'NodeClaimConflictError')).toHaveLength(5);
+  }, 30_000);
+});
+
+/**
+ * Run `acquireNodeClaim` for one node id in `count` real OS processes, released
+ * simultaneously, and report what each one saw.
+ *
+ * The module is transpiled to a standalone ESM file (it imports nothing but
+ * node builtins) so a child can load the actual source under test.
+ */
+async function raceRealProcesses(env: NodeJS.ProcessEnv, count: number): Promise<string[]> {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'node-claim-race-'));
+  tmpRoots.push(dir);
+  const moduleFile = path.join(dir, 'node-claim.mjs');
+  esbuild.buildSync({
+    entryPoints: [fileURLToPath(new URL('./node-claim.ts', import.meta.url))],
+    outfile: moduleFile,
+    format: 'esm',
+    platform: 'node',
+    target: 'node20',
+  });
+  const gate = path.join(dir, 'go');
+  const runner = path.join(dir, 'runner.mjs');
+  fs.writeFileSync(
+    runner,
+    `import fs from 'node:fs';
+import { acquireNodeClaim } from ${JSON.stringify(moduleFile)};
+const [gate, home, stateDir] = process.argv.slice(2);
+process.stdout.write('ready\\n');
+while (!fs.existsSync(gate)) {}
+try {
+  await acquireNodeClaim({ nodeId: 'node_1', pid: process.pid, stateDir, env: { AGENT_RELAY_HOME: home } });
+  process.stdout.write('won\\n');
+  // Stay alive: a winner that exits at once reads as a dead pid, and the next
+  // process would legitimately take the node over instead of losing to it.
+  await new Promise((resolve) => setTimeout(resolve, 2000));
+} catch (error) {
+  process.stdout.write(\`\${error.name}\\n\`);
+}
+`
+  );
+
+  const children = Array.from({ length: count }, (_, index) =>
+    spawn(process.execPath, [runner, gate, env.AGENT_RELAY_HOME!, `/checkout-${index}`], {
+      stdio: ['ignore', 'pipe', 'inherit'],
+    })
+  );
+  const outputs = children.map(() => '');
+  const ready: Promise<void>[] = children.map(
+    (child, index) =>
+      new Promise((resolve) => {
+        child.stdout.on('data', (chunk: Buffer) => {
+          outputs[index] += chunk.toString();
+          if (outputs[index].includes('ready\n')) resolve();
+        });
+      })
+  );
+  const exits = children.map((child) => new Promise<void>((resolve) => child.once('close', () => resolve())));
+  await Promise.all(ready);
+  fs.writeFileSync(gate, 'go');
+  await Promise.all(exits);
+  return outputs.map((output) => output.split('\n').filter(Boolean)[1] ?? 'no-result');
+}
+
+describe('releaseNodeClaim', () => {
+  it('removes a claim it still owns', async () => {
+    const env = createHome();
+    const claim = await acquireNodeClaim({
+      nodeId: 'node_1',
+      pid: process.pid,
+      stateDir: '/repo/state',
+      env,
+    });
+
+    await expect(releaseNodeClaim(claim, env)).resolves.toBe(true);
+    expect(readNodeClaim('node_1', env)).toBeNull();
+  });
+
+  it("leaves a replacement broker's claim alone", async () => {
+    const env = createHome();
+    const mine: NodeClaim = writeClaim(env, { node_id: 'node_1', pid: 111 }, 1);
+    writeClaim(env, { node_id: 'node_1', pid: 222 }, 2);
+
+    // Each acquisition owns exactly one generation file, so releasing ours can
+    // never reach the replacement's.
+    await releaseNodeClaim(mine, env);
+    expect(readNodeClaim('node_1', env)?.pid).toBe(222);
+  });
+
+  it('reports nothing released when the claim was already taken over', async () => {
+    const env = createHome();
+    const mine = await acquireNodeClaim({
+      nodeId: 'node_1',
+      pid: process.pid,
+      stateDir: '/repo/state',
+      env,
+    });
+    // A `--force` start took the node over and cleaned up the generation we own.
+    await acquireNodeClaim({
+      nodeId: 'node_1',
+      pid: 222,
+      stateDir: '/other/state',
+      env,
+      force: true,
+    });
+
+    await expect(releaseNodeClaim(mine, env)).resolves.toBe(false);
+    expect(readNodeClaim('node_1', env)?.pid).toBe(222);
+  });
+
+  it('releases by broker pid and state dir, as `node down` must', async () => {
+    const env = createHome();
+    const stateDir = createStateDir();
+    writeClaim(env, { node_id: 'node_1', pid: 555, state_dir: stateDir });
+    writeClaim(env, { node_id: 'node_2', pid: 555, state_dir: '/elsewhere' });
+    writeClaim(env, { node_id: 'node_3', pid: 556, state_dir: stateDir });
+
+    const released = await releaseNodeClaimsForBroker({
+      pid: 555,
+      stateDir,
+      env,
+      killProcess: () => undefined,
+      execCommand: psDeps(),
+    });
+
+    expect(released.map((claim) => claim.node_id)).toEqual(['node_1']);
+    expect(
+      listNodeClaims(env)
+        .map((claim) => claim.node_id)
+        .sort()
+    ).toEqual(['node_2', 'node_3']);
+  });
+
+  it('releases an orphaned claim for the state dir it just verified empty', async () => {
+    // `node up` was SIGKILLed before it could record its broker's pid, so the
+    // claim names only dead pids. `down` has proven that state dir is empty.
+    const env = createHome();
+    const stateDir = createStateDir();
+    writeClaim(env, {
+      node_id: 'node_1',
+      pid: await deadPid(),
+      state_dir: stateDir,
+      status: 'reserved',
+    });
+
+    const released = await releaseNodeClaimsForBroker({
+      pid: 999_999,
+      stateDir,
+      env,
+      execCommand: psDeps(),
+    });
+
+    expect(released.map((claim) => claim.node_id)).toEqual(['node_1']);
+  });
+
+  it('keeps a claim another live broker holds in the same state dir', async () => {
+    const env = createHome();
+    const stateDir = createStateDir();
+    writeClaim(env, { node_id: 'node_1', pid: process.pid, state_dir: stateDir });
+
+    const released = await releaseNodeClaimsForBroker({
+      pid: 999_999,
+      stateDir,
+      env,
+      execCommand: psDeps(),
+    });
+
+    expect(released).toEqual([]);
+    expect(readNodeClaim('node_1', env)).not.toBeNull();
   });
 });
 
@@ -450,13 +746,29 @@ describe('adoptNodeClaim', () => {
       env,
     });
     // A `--force` start landed in the meantime and owns the node id now.
-    writeClaim(env, { node_id: 'node_1', pid: 777, state_dir: '/other/state' });
+    writeClaim(env, { node_id: 'node_1', pid: 777, state_dir: '/other/state' }, 2);
 
     await expect(adoptNodeClaim({ reservation, pid: 909090, env })).rejects.toBeInstanceOf(
       NodeClaimConflictError
     );
     // The winner's claim is untouched: two brokers must not both read as owner.
     expect(readNodeClaim('node_1', env)).toMatchObject({ pid: 777 });
+  });
+
+  it('refuses when the reservation file was removed under it', async () => {
+    const env = createHome();
+    const reservation = await acquireNodeClaim({
+      nodeId: 'node_1',
+      pid: process.pid,
+      stateDir: '/repo/state',
+      status: 'reserved',
+      env,
+    });
+    fs.unlinkSync(nodeClaimPath('node_1', env, reservation.generation ?? 1));
+
+    await expect(adoptNodeClaim({ reservation, pid: 909090, env })).rejects.toBeInstanceOf(
+      NodeClaimConflictError
+    );
   });
 
   it('keeps a claim held when the supervising CLI died but the broker runs on', async () => {

@@ -278,7 +278,7 @@ function applyResolvedNodeSession(
  *
  * This is the operator-facing half of the guard: it turns a conflict into
  * remedies instead of a startup failure. It is NOT what makes ownership
- * exclusive — `runUpCommand` reserves the node id under an interprocess lock
+ * exclusive — `runUpCommand` reserves the node id with an exclusive create
  * before it spawns anything, and that reservation is what two starts racing
  * past this check are serialized by.
  *
