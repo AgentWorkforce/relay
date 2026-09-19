@@ -16,6 +16,8 @@ export interface CreateRuntimeClientOptions {
   preferConnect?: boolean;
   /** Descriptors to hand the spawned broker; see {@link RuntimeSpawnOptions.inheritFds}. */
   inheritFds?: number[];
+  /** See {@link RuntimeSpawnOptions.onSpawn} — the broker child's pid, at spawn. */
+  onSpawn?: (pid: number) => void;
   /** Forward broker stderr lines to this callback (e.g. for `--verbose`). */
   onStderr?: (line: string) => void;
   /** Forward human-readable startup step markers to this callback (e.g. for `--verbose`). */
@@ -69,6 +71,7 @@ export async function createRuntimeClient(options: CreateRuntimeClientOptions): 
     env = process.env,
     preferConnect = false,
     inheritFds,
+    onSpawn,
     onStderr,
     onStep,
   } = options;
@@ -91,6 +94,7 @@ export async function createRuntimeClient(options: CreateRuntimeClientOptions): 
     cwd,
     env: env as Record<string, string>,
     ...(inheritFds?.length ? { inheritFds } : {}),
+    ...(onSpawn ? { onSpawn } : {}),
     onStderr,
     onStep,
   });

@@ -137,6 +137,29 @@ describe('HarnessDriverClient.spawn cleanup', () => {
     return { binaryPath, cwd, pidFile };
   }
 
+  it("reports the child's pid the moment it is spawned, before the handshake", async () => {
+    // A caller fencing an inherited descriptor has to know WHICH process holds
+    // it while startup is still in flight — and it has to learn that before
+    // the child can `exec` into something else, because after that the file it
+    // was launched from no longer describes the running process at all. This
+    // fixture is exactly that shape: a shell script that execs.
+    const { binaryPath, cwd, pidFile } = writeSilentBroker();
+    const spawned: number[] = [];
+
+    await expect(
+      HarnessDriverClient.spawn({
+        binaryPath,
+        cwd,
+        startupTimeoutMs: 200,
+        onSpawn: (pid) => spawned.push(pid),
+      })
+    ).rejects.toThrow(/did not report API port/);
+
+    // `$$` is the script's own pid, and `exec` preserves it: the pid handed
+    // over at spawn is still the pid of the process that ran.
+    expect(spawned).toEqual([Number(readFileSync(pidFile, 'utf8').trim())]);
+  }, 20_000);
+
   it('reaps the broker child when startup never reports an API port', async () => {
     // The child exists the moment `spawn` forks, and a rejection returns no
     // client — so nothing downstream knows its pid or can stop it. In `node up`

@@ -38,6 +38,17 @@ export interface RuntimeSpawnOptions {
    * exactly as long as the child lives.
    */
   inheritFds?: number[];
+  /**
+   * Called with the broker child's pid in the same turn `spawn()` returns it,
+   * before anything is awaited and before the child can have `exec`d into
+   * something else.
+   *
+   * The caller of {@link inheritFds} fences its claim on the descriptor the
+   * child inherits; this is how it learns WHICH process is holding that fence
+   * while the handshake is still in flight. Throwing here aborts the spawn and
+   * the child is reaped like any other startup failure.
+   */
+  onSpawn?: (pid: number) => void;
   /** Forward broker stderr to this callback. */
   onStderr?: (line: string) => void;
   /** Forward human-readable startup step markers to this callback (e.g. for `--verbose`). */

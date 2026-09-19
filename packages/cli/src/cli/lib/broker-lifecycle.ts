@@ -45,6 +45,7 @@ import {
   listHeldNodeClaims,
   normalizeClaimStateDir,
   openNodeClaimHold,
+  recordSpawnedBrokerChild,
   releaseNodeClaim,
   releaseNodeClaimsForBroker,
   type NodeClaim,
@@ -566,11 +567,26 @@ export async function startBrokerWithPortFallback(
    * `fork` — so the claim reads as held from the instant a broker exists,
    * rather than from the moment one of them manages to write something down.
    */
-  inheritFds: number[] = []
+  inheritFds: number[] = [],
+  /**
+   * Invoked with the broker child's pid in the same turn `spawn()` returns it
+   * — before the handshake, and before a launcher script can `exec` into the
+   * real broker. `node up` writes it onto the node claim, so the process the
+   * inherited descriptor fences stays identifiable whatever executable it ends
+   * up running.
+   */
+  onBrokerSpawn?: (pid: number) => void
 ): Promise<{ relay: CoreRelay; apiPort: number }> {
   if (basePort === 0) {
     vlog(deps, verbose, 'Asking the OS to assign the broker API port...');
-    const candidate = await deps.createRelay(paths.projectRoot, 0, brokerName, verbose, inheritFds);
+    const candidate = await deps.createRelay(
+      paths.projectRoot,
+      0,
+      brokerName,
+      verbose,
+      inheritFds,
+      onBrokerSpawn
+    );
     onCandidateReady?.(candidate);
     try {
       await getBrokerStatusWithRetry(candidate, deps, verbose);
@@ -602,7 +618,14 @@ export async function startBrokerWithPortFallback(
   vlog(deps, verbose, `API port resolved: ${apiPort}`);
 
   vlog(deps, verbose, 'Creating broker client (spawns broker process, waits for handshake)...');
-  const candidate = await deps.createRelay(paths.projectRoot, apiPort, brokerName, verbose, inheritFds);
+  const candidate = await deps.createRelay(
+    paths.projectRoot,
+    apiPort,
+    brokerName,
+    verbose,
+    inheritFds,
+    onBrokerSpawn
+  );
   onCandidateReady?.(candidate);
   vlog(deps, verbose, 'Broker client created. Checking broker status...');
 
@@ -2269,7 +2292,19 @@ export async function runUpCommand(options: UpOptions, deps: CoreDependencies): 
           spawnedBrokerPids.add(candidate.brokerPid);
         }
       },
-      nodeClaimHoldFd === undefined ? [] : [nodeClaimHoldFd]
+      nodeClaimHoldFd === undefined ? [] : [nodeClaimHoldFd],
+      // Written to the claim in the same turn the child exists, because the
+      // executable identity recorded before the spawn describes the file this
+      // start MEANT to run, not the one the process ends up mapping: a shebang
+      // launcher runs as its interpreter, and a launcher that `exec`s the real
+      // broker maps that instead. Both kept their pid, and without it such a
+      // live, fenced child read as an unrelated process and the next start took
+      // its node id. Tracked for the release path too, which must not free a
+      // claim while a child this start spawned can still register under it.
+      (pid: number) => {
+        if (pid > 0) spawnedBrokerPids.add(pid);
+        if (nodeClaim) nodeClaim = recordSpawnedBrokerChild(nodeClaim, pid, deps.env);
+      }
     ).catch((err: unknown) => {
       // On failure, `startBrokerWithPortFallback` has already shut down any
       // candidate it created before rethrowing. Clear the early handle too

@@ -297,7 +297,14 @@ describe('registerCoreCommands', () => {
     const exitCode = await runCommand(program, ['up', '--broker-name', 'relayfile-dev']);
 
     expect(exitCode).toBeUndefined();
-    expect(deps.createRelay).toHaveBeenCalledWith('/tmp/project', 3889, 'relayfile-dev', undefined, []);
+    expect(deps.createRelay).toHaveBeenCalledWith(
+      '/tmp/project',
+      3889,
+      'relayfile-dev',
+      undefined,
+      [],
+      expect.any(Function)
+    );
   });
 
   it('up --verbose forwards the flag to createRelay and logs startup step markers', async () => {
@@ -309,7 +316,14 @@ describe('registerCoreCommands', () => {
     const exitCode = await runCommand(program, ['up', '--verbose']);
 
     expect(exitCode).toBeUndefined();
-    expect(deps.createRelay).toHaveBeenCalledWith('/tmp/project', 3889, 'project', true, []);
+    expect(deps.createRelay).toHaveBeenCalledWith(
+      '/tmp/project',
+      3889,
+      'project',
+      true,
+      [],
+      expect.any(Function)
+    );
     expect(deps.log).toHaveBeenCalledWith(
       expect.stringMatching(/^\[verbose\] Resolving a free API port starting near/)
     );
@@ -440,7 +454,14 @@ describe('registerCoreCommands', () => {
     // Port probing happens before createRelay — only one broker is spawned
     expect(deps.createRelay).toHaveBeenCalledTimes(1);
     // API port = base port (3888) + 1 = 3889
-    expect(deps.createRelay).toHaveBeenCalledWith('/tmp/project', 3889, 'project', undefined, []);
+    expect(deps.createRelay).toHaveBeenCalledWith(
+      '/tmp/project',
+      3889,
+      'project',
+      undefined,
+      [],
+      expect.any(Function)
+    );
     expect(relay.getStatus).toHaveBeenCalledTimes(1);
   });
 
@@ -455,7 +476,14 @@ describe('registerCoreCommands', () => {
 
     expect(exitCode).toBeUndefined();
     expect(deps.isPortInUse).not.toHaveBeenCalled();
-    expect(deps.createRelay).toHaveBeenCalledWith('/tmp/project', 0, 'project', undefined, []);
+    expect(deps.createRelay).toHaveBeenCalledWith(
+      '/tmp/project',
+      0,
+      'project',
+      undefined,
+      [],
+      expect.any(Function)
+    );
     expect(deps.log).toHaveBeenCalledWith('Relay API: http://localhost:43123');
   });
 
@@ -517,7 +545,14 @@ describe('registerCoreCommands', () => {
 
     expect(exitCode).toBeUndefined();
     expect(deps.createRelay).toHaveBeenCalledTimes(1);
-    expect(deps.createRelay).toHaveBeenCalledWith('/tmp/project', 3889, 'project', undefined, []);
+    expect(deps.createRelay).toHaveBeenCalledWith(
+      '/tmp/project',
+      3889,
+      'project',
+      undefined,
+      [],
+      expect.any(Function)
+    );
     expect(relay.getStatus).toHaveBeenCalledTimes(1);
   });
 

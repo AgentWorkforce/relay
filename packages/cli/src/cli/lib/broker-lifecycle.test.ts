@@ -857,7 +857,14 @@ describe('runUpCommand workspace precedence', () => {
 
     await runUpCommand({ brokerName: paddedName }, deps);
 
-    expect(createRelay).toHaveBeenCalledWith(projectRoot, 3889, trimmedName, undefined, []);
+    expect(createRelay).toHaveBeenCalledWith(
+      projectRoot,
+      3889,
+      trimmedName,
+      undefined,
+      [],
+      expect.any(Function)
+    );
     expect(vi.mocked(createRelay).mock.calls[0]?.[2]).toBe(trimmedName);
     expect(readBrokerIdentities({ projectRoot, dataDir, teamDir: projectRoot }, deps)).toHaveLength(1);
     expect(brokerIdentityPath({ projectRoot, dataDir, teamDir: projectRoot }, deps, trimmedName)).toContain(
@@ -990,6 +997,45 @@ describe('runUpCommand node claims', () => {
     expect(currentClaim(home, 'node_claimed')).toMatchObject({
       broker_binary: fsReal.realpathSync(binary),
       broker_executable: `0x${stat.dev.toString(16)}:${stat.ino}`,
+    });
+  });
+
+  it('records the broker child it spawned before the handshake completes', async () => {
+    // The executable identity above describes the file this start MEANT to
+    // run. A launcher script is not that file once it is running: it executes
+    // as its interpreter, and after an `exec` as whatever binary it chose. The
+    // pid survives both, so it is recorded in the same turn `spawn()` returns
+    // it — while the supervisor may still be killed before adoption, and while
+    // the child has published nothing at all.
+    const { deps, home, createRelay } = createUpHarness();
+    deps.env.RELAY_NODE_ID = 'node_claimed';
+    const spawnBroker = createRelay.getMockImplementation()!;
+    let claimAtSpawn: Record<string, unknown> | null = null;
+    createRelay.mockImplementation(
+      async (
+        projectRoot: string,
+        port: number,
+        brokerName?: string,
+        verbose?: boolean,
+        inheritFds?: number[],
+        onBrokerSpawn?: (pid: number) => void
+      ) => {
+        onBrokerSpawn?.(424242);
+        claimAtSpawn = currentClaim(home, 'node_claimed');
+        return spawnBroker(projectRoot, port, brokerName, verbose, inheritFds);
+      }
+    );
+
+    await runUpCommand({}, deps);
+
+    // On disk before the handshake resolved, not merely once adoption ran.
+    expect(claimAtSpawn).toMatchObject({ status: 'reserved', broker_child_pid: 424242 });
+    // And carried through adoption, which is when the supervisor stops being
+    // the only thing that knows this pid.
+    expect(currentClaim(home, 'node_claimed')).toMatchObject({
+      status: 'active',
+      pid: 999999,
+      broker_child_pid: 424242,
     });
   });
 

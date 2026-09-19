@@ -27,6 +27,7 @@ import {
   NodeClaimHoldError,
   openNodeClaimHold,
   readNodeClaim,
+  recordSpawnedBrokerChild,
   releaseNodeClaim,
   releaseNodeClaimsForBroker,
   type NodeClaim,
@@ -185,6 +186,47 @@ function createCustomBrokerBinary(name = 'custom-broker'): string {
   const binary = path.join(dir, name);
   fs.symlinkSync(process.execPath, binary);
   return binary;
+}
+
+/**
+ * A launcher script for the broker: `AGENT_RELAY_BIN` pointing at a shell
+ * script that sets something up and then runs the real binary. This is a
+ * supported — and ordinary — custom install, and the process it produces never
+ * maps the script the claim recorded. Before an `exec` it runs the interpreter
+ * from the `#!` line; after one it runs whatever the script chose.
+ */
+function createBrokerLauncher(body: string, name = 'relay-launcher'): string {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'node-claim-launcher-'));
+  tmpRoots.push(dir);
+  const launcher = path.join(dir, name);
+  fs.writeFileSync(launcher, `#!/bin/sh\n${body}\n`, { mode: 0o755 });
+  return launcher;
+}
+
+/** The supervisor's spawn of a launcher, with the claim's descriptor inherited. */
+async function spawnHoldingLauncher(claim: NodeClaim, env: NodeJS.ProcessEnv, launcher: string) {
+  const fd = openNodeClaimHold(claim, env);
+  expect(fd).toBeDefined();
+  const child = spawn(launcher, [], { stdio: ['ignore', 'ignore', 'ignore', fd!] });
+  await new Promise<void>((resolve) => child.once('spawn', () => resolve()));
+  // The supervisor is gone; only the child's inherited descriptor remains.
+  closeNodeClaimHold(fd);
+  return {
+    pid: child.pid!,
+    async kill(): Promise<void> {
+      child.kill('SIGKILL');
+      await new Promise<void>((resolve) => child.once('exit', () => resolve()));
+    },
+  };
+}
+
+/** Wait for a file the launched broker writes once it is really running. */
+async function waitForFile(file: string): Promise<void> {
+  for (let attempt = 0; attempt < 200; attempt += 1) {
+    if (fs.existsSync(file)) return;
+    await new Promise((resolve) => setTimeout(resolve, 25));
+  }
+  throw new Error(`timed out waiting for ${file}`);
 }
 
 /** A live process to stand in for a broker another start left registered. */
@@ -1116,6 +1158,154 @@ describe('claim hold descriptor', () => {
     } finally {
       await broker.kill();
     }
+  });
+
+  it('holds a node whose broker is started through a launcher script', async () => {
+    // A supported custom install is often a shell script, not a binary:
+    // `AGENT_RELAY_BIN=/opt/relay/start-broker`. The kernel runs the
+    // interpreter from its `#!` line, so `lsof -d txt` reports `/bin/sh` and
+    // the executable object the claim recorded before the spawn matches
+    // NOTHING the process maps. Classified on that alone, a live launcher
+    // still holding the fence read as unrelated, the node id read stale, and
+    // the next start evicted the delivery socket of the broker this one was
+    // about to become. The script is still named in argv where an interpreter
+    // puts it, and it is the same file the claim recorded.
+    const env = createHome();
+    // `sleep` runs as a child rather than an exec, so the shell stays the
+    // process holding the descriptor — the pre-exec half of the window.
+    const launcher = createBrokerLauncher('sleep 60\necho started');
+    const claim = await acquireNodeClaim({
+      nodeId: 'node_1',
+      pid: await deadPid(),
+      // A start on the default state dir is passed no `--state-dir` at all, so
+      // argv carries no Relay marker of any kind.
+      stateDir: createStateDir(),
+      brokerBinary: launcher,
+      status: 'reserved',
+      env,
+      execCommand: realExec,
+    });
+    const child = await spawnHoldingLauncher(claim, env, launcher);
+
+    try {
+      const status = await inspectNodeClaim('node_1', { env, execCommand: realExec });
+
+      expect(status.state).toBe('held');
+      await expect(
+        acquireNodeClaim({
+          nodeId: 'node_1',
+          pid: process.pid,
+          stateDir: '/checkout-b',
+          env,
+          execCommand: realExec,
+        })
+      ).rejects.toBeInstanceOf(NodeClaimConflictError);
+    } finally {
+      await child.kill();
+    }
+  });
+
+  it("holds a node whose launcher has already exec'd the real broker", async () => {
+    // One step further: the launcher `exec`s the broker, so the pid now maps a
+    // binary the claim never recorded and argv no longer mentions the script.
+    // Nothing recorded BEFORE the spawn can describe this process — which is
+    // why the spawn itself records the pid, the one thing `execve` preserves.
+    const env = createHome();
+    const brokerBinary = createCustomBrokerBinary('relay-node-svc');
+    const ready = path.join(createStateDir(), 'exec-ready');
+    const launcher = createBrokerLauncher(
+      `exec ${brokerBinary} -e 'require("fs").writeFileSync(process.argv[1], "ok"); setTimeout(() => {}, 60000)' ${ready}`
+    );
+    const claim = await acquireNodeClaim({
+      nodeId: 'node_1',
+      pid: await deadPid(),
+      stateDir: createStateDir(),
+      brokerBinary: launcher,
+      status: 'reserved',
+      env,
+      execCommand: realExec,
+    });
+    const child = await spawnHoldingLauncher(claim, env, launcher);
+    // What `runUpCommand` does in the same turn its `spawn()` returns.
+    const fenced = recordSpawnedBrokerChild(claim, child.pid, env);
+    expect(fenced.broker_child_pid).toBe(child.pid);
+    await waitForFile(ready);
+
+    try {
+      // Nothing was ever published: the supervisor died before adoption and
+      // this broker has not written `connection.json`.
+      expect(fs.existsSync(path.join(claim.state_dir, 'connection.json'))).toBe(false);
+      const status = await inspectNodeClaim('node_1', { env, execCommand: realExec });
+
+      expect(status.state).toBe('held');
+      expect(status.state === 'held' && status.claim.pid).toBe(child.pid);
+      await expect(
+        acquireNodeClaim({
+          nodeId: 'node_1',
+          pid: process.pid,
+          stateDir: '/checkout-b',
+          env,
+          execCommand: realExec,
+        })
+      ).rejects.toBeInstanceOf(NodeClaimConflictError);
+    } finally {
+      await child.kill();
+    }
+  });
+
+  it('still frees a node whose recorded child is gone and only a helper holds the fence', async () => {
+    // The spawned-child pid is positive evidence about ONE process, not a
+    // blanket exemption: a harness the broker left behind still inherits the
+    // descriptor, and must not pin a node id no broker is serving.
+    const env = createHome();
+    const claim = await acquireNodeClaim({
+      nodeId: 'node_1',
+      pid: await deadPid(),
+      stateDir: createStateDir(),
+      brokerBinary: '/bin/sh',
+      status: 'reserved',
+      env,
+      execCommand: realExec,
+    });
+    const fenced = recordSpawnedBrokerChild(claim, await deadPid(), env);
+    const child = await spawnHoldingChild(fenced, env, { brokerLikeArgv: false });
+
+    try {
+      await expect(inspectNodeClaim('node_1', { env, execCommand: realExec })).resolves.toMatchObject({
+        state: 'stale',
+      });
+    } finally {
+      await child.kill();
+    }
+  });
+
+  it("leaves a takeover's claim alone when recording a spawned child", async () => {
+    // The module's one forbidden move: a `--force` takeover that landed during
+    // the spawn owns the node id, and this write must not touch its record.
+    const env = createHome();
+    const claim = await acquireNodeClaim({
+      nodeId: 'node_1',
+      pid: process.pid,
+      stateDir: createStateDir(),
+      status: 'reserved',
+      env,
+      execCommand: realExec,
+    });
+    const taken = await acquireNodeClaim({
+      nodeId: 'node_1',
+      pid: process.pid,
+      stateDir: '/checkout-b',
+      force: true,
+      env,
+      execCommand: realExec,
+    });
+
+    expect(recordSpawnedBrokerChild(claim, process.pid, env)).toBe(claim);
+    expect(readNodeClaim('node_1', env)).toMatchObject({
+      generation: taken.generation,
+      state_dir: '/checkout-b',
+    });
+    expect(readNodeClaim('node_1', env)?.broker_child_pid).toBeUndefined();
   });
 
   it('keeps guarding a claim that records no broker executable at all', async () => {

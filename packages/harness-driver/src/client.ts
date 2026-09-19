@@ -405,6 +405,13 @@ export class HarnessDriverClient {
     // exit verified, so a failed spawn cannot leave an untracked broker holding
     // the descriptors (and the node claim) it inherited.
     try {
+      // First statement in the turn `spawn()` returned: the caller's fence is
+      // only as good as its knowledge of which process holds it, and a launcher
+      // can `exec` into a different executable the moment this yields. Inside
+      // the try so a caller that refuses to proceed gets the child reaped.
+      if (child.pid !== undefined) {
+        options?.onSpawn?.(child.pid);
+      }
       if (child.stderr) {
         const { createInterface } = await import('node:readline');
         const rl = createInterface({ input: child.stderr });

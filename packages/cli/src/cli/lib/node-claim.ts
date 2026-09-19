@@ -74,6 +74,23 @@ export interface NodeClaim {
   broker_binary?: string;
   broker_executable?: string;
   /**
+   * PID of the child this start handed the hold descriptor to, recorded by the
+   * supervising CLI in the same turn `spawn()` returned it and long before any
+   * handshake completes.
+   *
+   * The executable identity above is recorded BEFORE the spawn, so it names the
+   * file the start was going to run — which is not always the file the running
+   * process maps. A shebang launcher runs as its interpreter (`lsof -d txt`
+   * reports `/bin/sh`), and a launcher that `exec`s the real broker maps that
+   * binary instead; neither matches what the claim recorded, and the holder
+   * read as an unrelated process. A pid survives both transitions, because
+   * `execve` keeps it. Only ever used as POSITIVE evidence, and only for a
+   * process already proven to hold this generation's descriptor — where a
+   * recycled number cannot reach, since nothing but a Relay start passes that
+   * descriptor on. See {@link classifyHolderProcess}.
+   */
+  broker_child_pid?: number;
+  /**
    * `ps -o lstart` of `pid` at claim time. A PID alone cannot survive a reboot
    * or wraparound: without this, an unrelated process that inherits the number
    * would read as a live claim forever.
@@ -424,6 +441,7 @@ function hasValidOptionalClaimFields(record: Record<string, unknown>): boolean {
     isOptionalString(record.supervisor_started_at) &&
     isOptionalString(record.owner_token) &&
     isOptionalPositiveInteger(record.supervisor_pid) &&
+    isOptionalPositiveInteger(record.broker_child_pid) &&
     isOptionalPositiveInteger(record.generation) &&
     (record.status === undefined || record.status === 'reserved' || record.status === 'active')
   );
@@ -661,6 +679,16 @@ interface BrokerExecutableHint {
   binary?: string;
   /** `<device>:<inode>` of that executable, as `lsof -d txt` reports it. */
   object?: string;
+  /**
+   * PID this start's own `spawn()` returned, when it got that far.
+   *
+   * Supplied only on the hold-descriptor path. A holder of that descriptor can
+   * only have inherited it from a Relay start, so matching a pid number there
+   * cannot pick up an unrelated process that merely recycled it — which is not
+   * true of a pid read out of `connection.json`, and is why
+   * {@link findLiveStateDirBroker} is not given this.
+   */
+  childPid?: number;
 }
 
 function brokerExecutableHint(claim: NodeClaim): BrokerExecutableHint {
@@ -668,6 +696,7 @@ function brokerExecutableHint(claim: NodeClaim): BrokerExecutableHint {
     stateDir: claim.state_dir,
     ...(claim.broker_binary ? { binary: claim.broker_binary } : {}),
     ...(claim.broker_executable ? { object: claim.broker_executable } : {}),
+    ...(claim.broker_child_pid ? { childPid: claim.broker_child_pid } : {}),
   };
 }
 
@@ -676,16 +705,29 @@ function brokerExecutableHint(claim: NodeClaim): BrokerExecutableHint {
  * record. `realpathSync` first so a claim written through a symlinked install
  * path still names the file a running broker maps.
  */
+/**
+ * `<device>:<inode>` of a file on this machine, in the encoding `lsof -d txt`
+ * reports and the claim records, or `null` when it cannot be stat'ed.
+ */
+function executableObjectOf(file: string): string | null {
+  try {
+    const stats = fs.statSync(file, { bigint: true });
+    return `0x${stats.dev.toString(16)}:${stats.ino.toString()}`;
+  } catch {
+    return null;
+  }
+}
+
 function describeBrokerExecutable(
   binary: string | undefined
 ): Pick<NodeClaim, 'broker_binary' | 'broker_executable'> {
   if (!binary) return {};
   try {
     const resolved = fs.realpathSync(binary);
-    const stats = fs.statSync(resolved, { bigint: true });
+    const object = executableObjectOf(resolved);
     return {
       broker_binary: resolved,
-      broker_executable: `0x${stats.dev.toString(16)}:${stats.ino.toString()}`,
+      ...(object ? { broker_executable: object } : {}),
     };
   } catch {
     // The path is still worth recording: a process running it is recognisable
@@ -738,6 +780,63 @@ async function readExecutableObjects(pid: number, deps: NodeClaimDependencies): 
 }
 
 /**
+ * Whether a command line names the executable the claim recorded, in a
+ * position an interpreter would put it.
+ *
+ * A shebang launcher does not RUN the file the claim recorded — the kernel runs
+ * the interpreter from its `#!` line and passes the script as an argument, so
+ * `lsof -d txt` reports `/bin/sh` and the recorded device/inode matches
+ * nothing. The script path is still right there in argv, and the file it names
+ * has exactly the identity the claim recorded. Comparing that file rather than
+ * the string is what keeps this working through a symlinked install path, the
+ * same reason the claim records an inode instead of a name.
+ *
+ * Only the first two arguments are considered: `argv[0]` is the program and
+ * `argv[1]` is where an interpreter puts its script. Anything further along is
+ * a broker's own argument and proves nothing about what it is running.
+ */
+function runsRecordedExecutable(args: string, hint: BrokerExecutableHint): boolean {
+  if (!hint.binary && !hint.object) return false;
+  for (const token of args.split(/\s+/, 2)) {
+    if (!token.startsWith('/')) continue;
+    if (hint.binary && token === hint.binary) return true;
+    if (!hint.object) continue;
+    const object = executableObjectOf(token);
+    if (object !== null && object === hint.object) return true;
+  }
+  return false;
+}
+
+/**
+ * Everything a command line can say IN FAVOUR of a process being this claim's
+ * broker. Nothing here is ever read the other way round: a command line that
+ * matches none of it is not evidence of anything, because the broker binary is
+ * operator-selectable and a start on the default state dir passes no
+ * `--state-dir` for argv to carry.
+ */
+function argvIdentifiesBroker(args: string, hint: BrokerExecutableHint): boolean {
+  if (hint.binary && (args === hint.binary || args.startsWith(`${hint.binary} `))) return true;
+  if (runsRecordedExecutable(args, hint)) return true;
+  return args.includes('agent-relay') || args.includes('relay-broker') || args.includes(hint.stateDir);
+}
+
+/**
+ * Whether `pid` maps the executable object the claim recorded.
+ *
+ * Mappings that cannot be read are NOT a mismatch — the process may simply not
+ * be ours to inspect — so they answer yes, like every other unanswerable probe
+ * in this module.
+ */
+async function mapsRecordedExecutable(
+  pid: number,
+  object: string,
+  deps: NodeClaimDependencies
+): Promise<boolean> {
+  const objects = await readExecutableObjects(pid, deps);
+  return objects === null || objects.has(object);
+}
+
+/**
  * Whether `pid` is the broker a claim names, an unrelated process that merely
  * inherited its descriptor or its pid number, or something this claim has no
  * way to tell apart.
@@ -751,6 +850,19 @@ async function readExecutableObjects(pid: number, deps: NodeClaimDependencies): 
  * that used to decide this classified a real, live broker as unrelated and
  * handed its node id to the next start.
  *
+ * Those same overrides accept a LAUNCHER — a shell script that sets something
+ * up and `exec`s the broker is the ordinary shape of a custom install — and a
+ * launcher is not the file the running process maps. Before its `exec` the
+ * process runs the interpreter from the script's `#!` line; after it, the
+ * binary the script chose. Neither is the file recorded before the spawn, so
+ * executable identity alone ruled a live, fenced startup launcher out and
+ * reopened exactly the eviction this claim exists to prevent. Two further
+ * pieces of positive evidence close that: the recorded file appearing in argv
+ * where an interpreter puts its script ({@link runsRecordedExecutable}), which
+ * needs nothing recorded after the spawn, and the pid of the child this start
+ * spawned ({@link NodeClaim.broker_child_pid}), which `execve` preserves
+ * whatever the launcher turns into.
+ *
  * Anything that cannot be consulted — no runner, an `lsof` or `ps` that fails —
  * reads as `broker`: this only ever decides whether to KEEP guarding a node id,
  * and a spurious refusal is recoverable (`--force`, `node down`) while a wrong
@@ -761,15 +873,12 @@ async function classifyHolderProcess(
   hint: BrokerExecutableHint,
   deps: NodeClaimDependencies
 ): Promise<HolderVerdict> {
+  // Recorded at the spawn itself, so it is the one piece of evidence that is
+  // immune to whatever the child turns into afterwards.
+  if (hint.childPid !== undefined && pid === hint.childPid) return 'broker';
   const execCommand = deps.execCommand;
   if (!execCommand) return 'broker';
-  if (hint.object) {
-    const objects = await readExecutableObjects(pid, deps);
-    // Unreadable mappings are not a mismatch: the process may simply not be
-    // ours to inspect.
-    if (objects === null) return 'broker';
-    if (objects.has(hint.object)) return 'broker';
-  }
+  if (hint.object && (await mapsRecordedExecutable(pid, hint.object, deps))) return 'broker';
   let args: string;
   try {
     const { stdout } = await execCommand(`LC_ALL=C ps -p ${pid} -o args=`);
@@ -779,10 +888,7 @@ async function classifyHolderProcess(
   }
   // `ps` answered with nothing: the pid is gone, so it holds nothing.
   if (!args) return 'unrelated';
-  if (hint.binary && (args === hint.binary || args.startsWith(`${hint.binary} `))) return 'broker';
-  if (args.includes('agent-relay') || args.includes('relay-broker') || args.includes(hint.stateDir)) {
-    return 'broker';
-  }
+  if (argvIdentifiesBroker(args, hint)) return 'broker';
   return hint.object || hint.binary ? 'unrelated' : 'unidentified';
 }
 
@@ -1315,6 +1421,43 @@ function isSameAcquisition(current: NodeClaim | null, claim: NodeClaim): boolean
   return (
     current.node_id === claim.node_id && current.pid === claim.pid && current.state_dir === claim.state_dir
   );
+}
+
+/**
+ * Record the pid of the child this reservation just handed its hold descriptor
+ * to, so a later start can recognise that process no matter what it becomes.
+ *
+ * Deliberately synchronous, and called from the spawn itself rather than from
+ * the adoption that follows it: the whole point is to have the pid on disk
+ * before the child can `exec` into something the recorded executable no longer
+ * describes, and before this supervisor can be killed. It is a plain write of
+ * OUR OWN generation with no `await` between the read and the write, so it
+ * cannot interleave with anything.
+ *
+ * A failure is never fatal. This is additional positive evidence layered on top
+ * of a fence that is already in place — the descriptor was inherited at the
+ * spawn — so losing it costs the launcher/exec case, not the guarantee. The
+ * caller keeps the returned claim, which is unchanged when nothing was written.
+ */
+export function recordSpawnedBrokerChild(
+  reservation: NodeClaim,
+  pid: number,
+  env: NodeJS.ProcessEnv = process.env
+): NodeClaim {
+  if (!Number.isSafeInteger(pid) || pid <= 0) return reservation;
+  const generation = reservation.generation ?? 1;
+  const file = nodeClaimPath(reservation.node_id, env, generation);
+  try {
+    // A `--force` takeover that landed during the spawn owns the node id now.
+    // Rewriting its record would be this module's one forbidden move; the
+    // adoption below will fail this start on the same evidence.
+    if (!isSameAcquisition(readClaimFile(file), reservation)) return reservation;
+    const claim: NodeClaim = { ...reservation, broker_child_pid: pid };
+    writeClaimRecordAtomically(file, claim);
+    return claim;
+  } catch {
+    return reservation;
+  }
 }
 
 /**
