@@ -11,6 +11,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - `scripts/flows/opencode-agent-cli.mjs` implements the `relayflows-agent-cli-v1` contract, so relayflows v2 can run OpenCode agents. It needs `opencode auth login`: v2 spawns harness adapters with a closed environment allowlist, so an ambient `OPENCODE_API_KEY` is not passed through.
 - `npm run <flow>:check` for every verification flow generates its spec and runs `flows check` on it — the replacement for v1's `DRY_RUN=1` graph validation.
+- `.github/workflows/deploy-relayflows.yml` redeploys the `relay.ci.pr-proof` hosted listener when its source changes on main. A listener stores a snapshot of the flow, so it otherwise kept running the old source after a merge. Needs the `FLOWS_CLOUD_TOKEN` secret and the `RELAY_PR_PROOF_APPROVER` variable.
 
 ### Changed
 

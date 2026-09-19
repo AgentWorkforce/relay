@@ -1,0 +1,75 @@
+name: Deploy Relayflows
+
+# A hosted listener stores a snapshot of the flow source, so editing
+# `flows/ci/pr-proof.flow.ts` on main does nothing until the listener is
+# redeployed. This closes that gap: merging a change to a managed flow
+# reconciles the deployment.
+#
+# The path filter is the idempotency. `flows deployments` reports no source
+# digest, so nothing downstream can tell a stale listener from a current one by
+# content; running only when the source actually changed is what keeps this
+# from redeploying on every merge.
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'flows/ci/pr-proof.flow.ts'
+      - 'scripts/flows/deploy-listeners.mjs'
+      - '.github/workflows/deploy-relayflows.yml'
+  workflow_dispatch:
+    inputs:
+      reason:
+        description: Why this manual reconcile is being run
+        required: false
+        type: string
+
+permissions:
+  contents: read
+
+# Never cancel in progress: the reconcile undeploys before it deploys, so a
+# cancelled run can leave the repository with no listener at all.
+concurrency:
+  group: deploy-relayflows
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    name: Reconcile hosted listeners
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    environment: relayflows-deploy
+    steps:
+      - name: Checkout
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+
+      - name: Set up Node.js
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: 22.22.0
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci --ignore-scripts
+
+      # Deploying a flow that cannot compile would replace a working listener
+      # with a broken one, so refuse before anything is undeployed.
+      - name: Check the flow before deploying it
+        run: |
+          npx tsc -p flows/tsconfig.json
+          npx flows check flows/ci/pr-proof.flow.ts
+
+      - name: Reconcile listeners
+        env:
+          FLOWS_CLOUD_TOKEN: ${{ secrets.FLOWS_CLOUD_TOKEN }}
+          FLOWS_CLOUD_URL: ${{ vars.FLOWS_CLOUD_URL }}
+          RELAY_PR_PROOF_APPROVER: ${{ vars.RELAY_PR_PROOF_APPROVER }}
+        run: node scripts/flows/deploy-listeners.mjs
+
+      - name: Report deployed listeners
+        if: always()
+        env:
+          FLOWS_CLOUD_TOKEN: ${{ secrets.FLOWS_CLOUD_TOKEN }}
+          FLOWS_CLOUD_URL: ${{ vars.FLOWS_CLOUD_URL }}
+        run: npx flows deployments >> "$GITHUB_STEP_SUMMARY" 2>&1 || true
