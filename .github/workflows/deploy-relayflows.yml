@@ -5,8 +5,9 @@ name: Deploy Relayflows
 # redeployed. This closes that gap: merging a change to a managed flow
 # reconciles the deployment.
 #
-# Credential: FLOWS_CLOUD_TOKEN must be a "Flows Cloud token" minted from
-# Dashboard -> Settings -> Tokens AFTER AgentWorkforce/cloud#3829 deployed.
+# Credential: FLOWS_CLOUD_TOKEN is a plain repo secret — a "Flows Cloud token"
+# minted from Dashboard -> Settings -> Tokens AFTER AgentWorkforce/cloud#3829
+# deployed. RELAY_PR_PROOF_APPROVER is a plain repo variable.
 # That change added `flows:listeners:write` to the token's purpose; the deploy,
 # list and undeploy routes require it (or a session, or `cli:auth`). A token
 # minted before #3829 does not carry the scope — scopes are fixed at issue
@@ -45,7 +46,11 @@ jobs:
     name: Reconcile hosted listeners
     runs-on: ubuntu-latest
     timeout-minutes: 20
-    environment: relayflows-deploy
+    # No `environment:` on purpose. This repo's environments carry no
+    # protection rules and no scoped secrets — they are deployment-history
+    # labels, and every Cloud credential here is a plain repo secret, the same
+    # way the PR-proof dispatcher stored RELAYFLOW_PR_PROOF_CLOUD_API_KEY. A
+    # dedicated environment would add a setup step and gate nothing.
     steps:
       - name: Checkout
         uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
