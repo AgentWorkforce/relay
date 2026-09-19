@@ -9,7 +9,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
-- `scripts/flows/opencode-agent-cli.mjs` implements the `relayflows-agent-cli-v1` contract, so relayflows v2 can run OpenCode agents. It needs `opencode auth login`: v2 spawns harness adapters with a closed environment allowlist, so an ambient `OPENCODE_API_KEY` is not passed through.
+- `scripts/flows/opencode-agent-cli.mjs` implements the `relayflows-agent-cli-v1` contract, so relayflows v2 can run OpenCode agents. A credential stored by `opencode auth login` works; an environment-only `OPENCODE_API_KEY` does not, because v2 spawns adapters with a closed environment allowlist at execution while `flows check` probes with the full environment, so an env-only key passes preflight and then fails at run.
 - `npm run <flow>:check` for every verification flow generates its spec and runs `flows check` on it — the replacement for v1's `DRY_RUN=1` graph validation.
 
 ### Changed
@@ -24,9 +24,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `.github/workflows/relayflow-pr-proof.yml` and the whole `workflows/` directory. Repoint branch protection at the deployed listener; the PR-proof required status check no longer comes from GitHub Actions.
 - `DRY_RUN=1` on the verification flows; relayflows v2 has no dry-run execution mode.
 
+### Fixed
+
+- `agent-relay cloud schedule` uploads each immutable code snapshot through Cloud's R2 workflow storage, so scheduled workflows get a code tree without cloning the repository or using AWS.
+
 ### Migration Guidance
 
 - v1 knobs with no v2 equivalent are dropped, each recorded at its call site and in `flows/spec-builder.ts`: the relaycast `channel`, `idleNudge`, agent `preset`/`role`, and per-agent-step timeouts. `permissions` survives but is coarser — `AgentStepSpec.permissions` has no read/write split, deny list, or exec allowlist, so the runners' own seals remain what prove evidence was not mutated.
+
+## [12.2.6] - 2026-09-19
+
+### Fixed
+
+- Run mounted product surfaces in a child process when standalone
 
 ## [12.2.5] - 2026-09-19
 
