@@ -102,6 +102,37 @@ export const PRODUCT_SURFACES: readonly ProductSurfaceDefinition[] = [
   },
 ];
 
+/**
+ * Literal imports for the mounted surfaces, keyed by the specifier that names
+ * them.
+ *
+ * `import(someVariable)` is invisible to a bundler. `scripts/build-standalone.sh`
+ * runs esbuild and then `bun --compile`, so a specifier that only exists at
+ * runtime is never bundled, and the compiled binary has no node_modules to fall
+ * back on: every group failed with MODULE_NOT_FOUND, reported as "not
+ * installed", in a distribution where installing cannot help (#1795).
+ *
+ * Writing each import as a literal is what makes the three SDKs reachable in
+ * that build. It is the only reason this map exists — resolution is otherwise
+ * identical to `import(specifier)`.
+ */
+const SURFACE_IMPORTS: Readonly<Record<string, () => Promise<unknown>>> = {
+  '@relayfile/sdk/relay-cli': () => import('@relayfile/sdk/relay-cli'),
+  '@relayflows/sdk/relay-cli': () => import('@relayflows/sdk/relay-cli'),
+  'ai-hist/relay-cli': () => import('ai-hist/relay-cli'),
+};
+
+/**
+ * Import a mounted surface, preferring the bundler-visible literal.
+ *
+ * Falls back to a dynamic import so a caller may still name something outside
+ * the table — the end-to-end test mounts product builds by absolute path.
+ */
+export function importProductSurface(specifier: string): Promise<unknown> {
+  const load = SURFACE_IMPORTS[specifier];
+  return load ? load() : import(specifier);
+}
+
 /** The only part of the optional Relayhistory cloud client this module uses. */
 interface RelayhistoryCloudClientModule {
   createRelayhistoryCloudClient: (options: { baseUrl: string; token: string }) => unknown;
@@ -277,7 +308,7 @@ export function registerProductSurfaceCommands(
   definitions: readonly ProductSurfaceDefinition[] = PRODUCT_SURFACES
 ): void {
   const deps: ProductSurfaceDependencies = {
-    importModule: overrides.importModule ?? ((specifier: string) => import(specifier)),
+    importModule: overrides.importModule ?? importProductSurface,
     io: overrides.io ?? processIo(),
     exit: overrides.exit ?? defaultExit,
   };

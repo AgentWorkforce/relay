@@ -1,3 +1,5 @@
+import { readFileSync } from 'node:fs';
+
 import { Command } from 'commander';
 import { describe, expect, it, vi } from 'vitest';
 
@@ -5,6 +7,7 @@ import type { RelayCliIo, RelayCliSurface } from '@agent-relay/cli-surface';
 
 import {
   PRODUCT_SURFACES,
+  importProductSurface,
   loadProductSurface,
   registerProductSurfaceCommands,
   type ProductSurfaceDefinition,
@@ -186,6 +189,33 @@ describe('loadProductSurface', () => {
         makeDeps(async () => ({}))
       )
     ).rejects.toThrow(/does not export createRelayCliSurface/);
+  });
+});
+
+describe('importProductSurface', () => {
+  it('has a bundler-visible literal for every mounted surface', () => {
+    // The standalone build bundles with esbuild, which cannot see through
+    // `import(someVariable)`. A group whose specifier is missing here compiles
+    // and passes every other test, then fails at runtime in the compiled
+    // binary with MODULE_NOT_FOUND — reported as "not installed", in a
+    // distribution where installing cannot help (#1795).
+    const source = readFileSync(
+      new URL('./product-surfaces.ts', import.meta.url),
+      'utf8'
+    );
+    for (const definition of PRODUCT_SURFACES) {
+      expect(
+        source.includes(`import('${definition.specifier}')`),
+        `${definition.as} has no literal import('${definition.specifier}'); ` +
+          'the standalone binary will not bundle it'
+      ).toBe(true);
+    }
+  });
+
+  it('still resolves a specifier outside the table', async () => {
+    // The end-to-end test mounts product builds by absolute path, so the
+    // dynamic fallback has to stay.
+    await expect(importProductSurface('node:path')).resolves.toHaveProperty('join');
   });
 });
 

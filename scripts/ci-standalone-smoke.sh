@@ -378,6 +378,32 @@ if printf '%s\n' "$UP_OUTPUT" | grep -q 'Broker already running for this project
   exit 1
 fi
 
+# The mounted product groups must work in THIS distribution, not only from npm.
+#
+# They are reached with `await import(...)`, and the standalone build bundles
+# with esbuild before `bun --compile`: a specifier the bundler cannot see
+# statically is never included, and a compiled binary has no node_modules to
+# fall back on. That shipped once (#1795) — every group failed with
+# MODULE_NOT_FOUND, reported as "not installed", in a distribution where
+# installing cannot help. Nothing here exercised the mount, so nothing caught
+# it.
+#
+# `--help` is enough: it loads the product SDK and renders its declared command
+# tree, without a daemon, a network call, or credentials.
+for group in file flows sessions; do
+  if ! GROUP_OUTPUT="$(run_cli "$group" --help 2>&1)"; then
+    echo "Standalone binary cannot mount \`agent-relay $group\`" >&2
+    print_output_excerpt "$GROUP_OUTPUT"
+    exit 1
+  fi
+  if ! printf '%s\n' "$GROUP_OUTPUT" | grep -q "^Usage: agent-relay $group"; then
+    echo "\`agent-relay $group --help\` did not render its mounted command tree" >&2
+    print_output_excerpt "$GROUP_OUTPUT"
+    exit 1
+  fi
+done
+echo "Mounted product groups verified: file, flows, sessions"
+
 if ! cleanup; then
   echo "Standalone smoke lifecycle passed but ephemeral workspace cleanup was not proved" >&2
   exit 1
