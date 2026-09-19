@@ -970,6 +970,29 @@ describe('runUpCommand node claims', () => {
     });
   });
 
+  it('records the executable it will run as the broker, whatever that file is named', async () => {
+    // `AGENT_RELAY_BIN` / `BROKER_BINARY_PATH` make the broker's filename the
+    // operator's choice. Recording the file's identity is what lets a later
+    // start recognise that process as the node's broker; classified by name, a
+    // broker installed under any other filename read as unrelated and the next
+    // start took its node id.
+    const { deps, home } = createUpHarness();
+    deps.env.RELAY_NODE_ID = 'node_claimed';
+    const binaryDir = fsReal.mkdtempSync(pathReal.join(os.tmpdir(), 'broker-lifecycle-bin-'));
+    upTmpRoots.push(binaryDir);
+    const binary = pathReal.join(binaryDir, 'custom-broker');
+    fsReal.writeFileSync(binary, '#!/bin/sh\nexec true\n', { mode: 0o755 });
+    deps.env.AGENT_RELAY_BIN = binary;
+
+    await runUpCommand({}, deps);
+
+    const stat = fsReal.statSync(binary, { bigint: true });
+    expect(currentClaim(home, 'node_claimed')).toMatchObject({
+      broker_binary: fsReal.realpathSync(binary),
+      broker_executable: `0x${stat.dev.toString(16)}:${stat.ino}`,
+    });
+  });
+
   it('refuses a second start before it spawns a broker', async () => {
     const { deps, home, error, createRelay } = createUpHarness();
     deps.env.RELAY_NODE_ID = 'node_claimed';

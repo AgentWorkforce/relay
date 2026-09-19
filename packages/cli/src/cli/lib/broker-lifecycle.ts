@@ -2,6 +2,7 @@ import { randomUUID } from 'node:crypto';
 import fs from 'node:fs';
 import path from 'node:path';
 import { HarnessDriverClient } from '@agent-relay/harness-driver';
+import { getBrokerBinaryPath } from '@agent-relay/harness-driver/broker-path';
 import { startServeNode, type FleetNodeDefinition, type RunningNode } from '@agent-relay/fleet';
 import { createLogger } from '@agent-relay/utils';
 import { redactCredentialValues } from '@agent-relay/cloud/redact';
@@ -1645,6 +1646,32 @@ function resolveBrokerName(options: UpOptions, deps: CoreDependencies, projectRo
  * @throws NodeClaimConflictError when a live local broker holds the node id.
  * @throws NodeClaimContentionError when exclusion could not be established.
  */
+/**
+ * The executable this start will run as its broker.
+ *
+ * Recorded in the claim so a later start recognises that process by executable
+ * identity rather than by its filename: `AGENT_RELAY_BIN` /
+ * `BROKER_BINARY_PATH` let a supported deployment run the broker under any
+ * name, and such a broker orphaned by a dead supervisor used to read as an
+ * unrelated process — the "node id free" verdict that evicts a live broker.
+ *
+ * Resolution mirrors `getBrokerBinaryPath`, which reads the override from the
+ * real environment; `deps.env` is consulted first so a start whose environment
+ * was overridden records the binary it is actually going to spawn.
+ */
+function resolveBrokerBinary(deps: CoreDependencies): string | undefined {
+  const override = (deps.env.BROKER_BINARY_PATH ?? deps.env.AGENT_RELAY_BIN)?.trim();
+  if (override) {
+    const resolved = path.resolve(override);
+    if (fs.existsSync(resolved)) return resolved;
+  }
+  try {
+    return getBrokerBinaryPath() ?? undefined;
+  } catch {
+    return undefined;
+  }
+}
+
 async function reserveEnrolledNode(
   paths: CoreProjectPaths,
   options: UpOptions,
@@ -1655,10 +1682,12 @@ async function reserveEnrolledNode(
   if (!nodeId) {
     return undefined;
   }
+  const brokerBinary = resolveBrokerBinary(deps);
   return acquireNodeClaim({
     nodeId,
     pid: deps.pid,
     stateDir: paths.dataDir,
+    ...(brokerBinary ? { brokerBinary } : {}),
     status: 'reserved',
     force: options.force === true,
     env: deps.env,
@@ -1801,11 +1830,11 @@ async function releaseNodeClaimAfterExit(
     );
     return false;
   }
-  const occupant = await findLiveStateDirBroker(claim.state_dir, {
-    env: deps.env,
-    killProcess: deps.killProcess,
-    execCommand: deps.execCommand,
-  });
+  const occupant = await findLiveStateDirBroker(
+    claim.state_dir,
+    { env: deps.env, killProcess: deps.killProcess, execCommand: deps.execCommand },
+    { binary: claim.broker_binary, object: claim.broker_executable }
+  );
   if (occupant) {
     deps.warn(
       `A broker (pid ${occupant.pid}) is still serving ${claim.state_dir}; keeping this machine's claim on node ${claim.node_id}. ` +

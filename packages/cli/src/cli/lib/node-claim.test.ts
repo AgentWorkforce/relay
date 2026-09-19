@@ -143,14 +143,19 @@ function realExec(command: string): Promise<{ stdout: string; stderr: string }> 
  * a port and never registers, which is exactly the orphan the old "dead
  * supervisor, nothing on disk" reading declared stale.
  */
-async function spawnHoldingChild(claim: NodeClaim, env: NodeJS.ProcessEnv, brokerLike = true) {
+async function spawnHoldingChild(
+  claim: NodeClaim,
+  env: NodeJS.ProcessEnv,
+  options: { brokerLikeArgv?: boolean; executable?: string } = {}
+) {
+  const { brokerLikeArgv = true, executable = process.execPath } = options;
   const fd = openNodeClaimHold(claim, env);
   expect(fd).toBeDefined();
-  // The real broker is `agent-relay-broker --state-dir <dir>`, and holders are
-  // filtered the same way the connection file's pid is; carry the state dir in
-  // argv so this stand-in is recognisable the same way.
-  const argv = ['-e', 'setTimeout(() => {}, 60_000)', ...(brokerLike ? [claim.state_dir] : [])];
-  const child = spawn(process.execPath, argv, {
+  // The real broker is `agent-relay-broker --state-dir <dir>`; carry the state
+  // dir in argv so this stand-in is recognisable to a claim that records no
+  // broker executable, exactly as such a broker would be.
+  const argv = ['-e', 'setTimeout(() => {}, 60_000)', ...(brokerLikeArgv ? [claim.state_dir] : [])];
+  const child = spawn(executable, argv, {
     stdio: ['ignore', 'ignore', 'ignore', fd!],
   });
   await new Promise<void>((resolve) => child.once('spawn', () => resolve()));
@@ -165,9 +170,26 @@ async function spawnHoldingChild(claim: NodeClaim, env: NodeJS.ProcessEnv, broke
   };
 }
 
+/**
+ * A broker executable under an operator-chosen filename.
+ *
+ * `AGENT_RELAY_BIN` / `BROKER_BINARY_PATH` make the broker's filename the
+ * operator's choice, so this is a supported deployment — and one whose argv
+ * says nothing about Relay. A symlink keeps the executable's device and inode
+ * (what the claim records and what `lsof -d txt` reports) those of a real
+ * binary, without copying one.
+ */
+function createCustomBrokerBinary(name = 'custom-broker'): string {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'node-claim-bin-'));
+  tmpRoots.push(dir);
+  const binary = path.join(dir, name);
+  fs.symlinkSync(process.execPath, binary);
+  return binary;
+}
+
 /** A live process to stand in for a broker another start left registered. */
-async function spawnSleeper() {
-  const child = spawn(process.execPath, ['-e', 'setTimeout(() => {}, 60_000)']);
+async function spawnSleeper(executable = process.execPath) {
+  const child = spawn(executable, ['-e', 'setTimeout(() => {}, 60_000)']);
   await new Promise<void>((resolve) => child.once('spawn', () => resolve()));
   return {
     pid: child.pid!,
@@ -1004,7 +1026,103 @@ describe('claim hold descriptor', () => {
   it('does not let an unrelated process that inherited the descriptor pin the node', async () => {
     // Inherited descriptors are not close-on-exec, so whatever the broker
     // spawns inherits this one too. A harness outliving its broker must not
-    // guard a node id no broker is serving.
+    // guard a node id no broker is serving — but ruling it out is a positive
+    // determination (it is running a different executable than the broker this
+    // claim recorded), never a guess about its filename.
+    const env = createHome();
+    const claim = await acquireNodeClaim({
+      nodeId: 'node_1',
+      pid: await deadPid(),
+      stateDir: createStateDir(),
+      brokerBinary: '/bin/sh',
+      status: 'reserved',
+      env,
+      execCommand: realExec,
+    });
+    const child = await spawnHoldingChild(claim, env, { brokerLikeArgv: false });
+
+    try {
+      const status = await inspectNodeClaim('node_1', { env, execCommand: realExec });
+
+      expect(status.state).toBe('stale');
+    } finally {
+      await child.kill();
+    }
+  });
+
+  it('holds a node whose broker runs under an operator-chosen executable name', async () => {
+    // The gap this closes: a broker started from AGENT_RELAY_BIN under any
+    // other filename, with the default state dir, carries neither `agent-relay`
+    // nor its state dir in argv. Classified by name it read as an unrelated
+    // process, so the next start took the node id from a live broker and the
+    // engine moved the delivery socket out from under it.
+    const env = createHome();
+    const binary = createCustomBrokerBinary();
+    const claim = await acquireNodeClaim({
+      nodeId: 'node_1',
+      pid: await deadPid(),
+      stateDir: createStateDir(),
+      brokerBinary: binary,
+      status: 'reserved',
+      env,
+      execCommand: realExec,
+    });
+    expect(claim.broker_executable).toMatch(/^0x[0-9a-f]+:[1-9][0-9]*$/);
+    const child = await spawnHoldingChild(claim, env, { brokerLikeArgv: false, executable: binary });
+
+    try {
+      const status = await inspectNodeClaim('node_1', { env, execCommand: realExec });
+
+      expect(status.state).toBe('held');
+      expect(status.state === 'held' && status.claim.pid).toBe(child.pid);
+      await expect(
+        acquireNodeClaim({
+          nodeId: 'node_1',
+          pid: process.pid,
+          stateDir: '/checkout-b',
+          env,
+          execCommand: realExec,
+        })
+      ).rejects.toBeInstanceOf(NodeClaimConflictError);
+    } finally {
+      await child.kill();
+    }
+  });
+
+  it('finds a published broker running under an operator-chosen executable name', async () => {
+    // The same broker one step later: it has written `connection.json`, so the
+    // evidence is its own published pid rather than the hold descriptor. That
+    // path classified processes by name too.
+    const env = createHome();
+    const binary = createCustomBrokerBinary();
+    const stateDir = createStateDir();
+    const claim = await acquireNodeClaim({
+      nodeId: 'node_1',
+      pid: await deadPid(),
+      stateDir,
+      brokerBinary: binary,
+      status: 'reserved',
+      env,
+      execCommand: realExec,
+    });
+    const broker = await spawnSleeper(binary);
+    writeConnectionFile(claim.state_dir, broker.pid);
+
+    try {
+      const status = await inspectNodeClaim('node_1', { env, execCommand: realExec });
+
+      expect(status.state).toBe('held');
+      expect(status.state === 'held' && status.claim.pid).toBe(broker.pid);
+    } finally {
+      await broker.kill();
+    }
+  });
+
+  it('keeps guarding a claim that records no broker executable at all', async () => {
+    // Claims written by an older CLI have nothing to compare a holder against.
+    // Unclassifiable is not the same as unrelated: nothing but a Relay start
+    // ever passes this descriptor on, and a refusal is recoverable where a
+    // wrong "node id free" verdict is a silent delivery outage.
     const env = createHome();
     const claim = writeClaim(env, {
       node_id: 'node_1',
@@ -1012,12 +1130,12 @@ describe('claim hold descriptor', () => {
       state_dir: createStateDir(),
       status: 'reserved',
     });
-    const child = await spawnHoldingChild(claim, env, false);
+    const child = await spawnHoldingChild(claim, env, { brokerLikeArgv: false });
 
     try {
-      const status = await inspectNodeClaim('node_1', { env, execCommand: realExec });
-
-      expect(status.state).toBe('stale');
+      await expect(inspectNodeClaim('node_1', { env, execCommand: realExec })).resolves.toMatchObject({
+        state: 'held',
+      });
     } finally {
       await child.kill();
     }

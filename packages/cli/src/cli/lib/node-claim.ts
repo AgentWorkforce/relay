@@ -59,6 +59,21 @@ export interface NodeClaim {
   /** Registered broker/node name, when the start resolved one. */
   broker_name?: string;
   /**
+   * Absolute path of the executable this start resolved to run as its broker,
+   * and that file's `<device>:<inode>` at the moment it was recorded.
+   *
+   * This is what a later start compares a live process against when it has to
+   * decide whether that process is the broker holding the node id. The broker
+   * binary is operator-selectable (`AGENT_RELAY_BIN` / `BROKER_BINARY_PATH`)
+   * and a supported deployment may run it under any filename, so looking for
+   * `agent-relay` in a command line ruled exactly such a broker OUT — the
+   * "node id free" verdict that evicts a live broker's delivery socket. Both
+   * are best effort; see {@link classifyHolderProcess} for what their absence
+   * means.
+   */
+  broker_binary?: string;
+  broker_executable?: string;
+  /**
    * `ps -o lstart` of `pid` at claim time. A PID alone cannot survive a reboot
    * or wraparound: without this, an unrelated process that inherits the number
    * would read as a live claim forever.
@@ -154,6 +169,12 @@ export interface AcquireNodeClaimInput extends NodeClaimDependencies {
   status?: 'reserved' | 'active';
   /** Supervising CLI pid, when it differs from the owning `pid`. */
   supervisorPid?: number;
+  /**
+   * Path of the executable this start will run as the broker, recorded so a
+   * later start can recognise that process by executable identity rather than
+   * by its filename. See {@link NodeClaim.broker_binary}.
+   */
+  brokerBinary?: string;
 }
 
 /** Thrown when a live local broker already serves the requested node id. */
@@ -397,6 +418,8 @@ function hasValidOptionalClaimFields(record: Record<string, unknown>): boolean {
   return (
     (record.api_port === undefined || Number.isSafeInteger(record.api_port)) &&
     isOptionalString(record.broker_name) &&
+    isOptionalString(record.broker_binary) &&
+    isOptionalString(record.broker_executable) &&
     isOptionalString(record.process_started_at) &&
     isOptionalString(record.supervisor_started_at) &&
     isOptionalString(record.owner_token) &&
@@ -630,29 +653,137 @@ function readStateDirBrokerPid(stateDir: string): number | null {
   }
 }
 
+/** What a claim knows about the executable its broker runs as. */
+interface BrokerExecutableHint {
+  /** Resolved broker state directory, which the broker carries in its argv. */
+  stateDir: string;
+  /** Absolute path of the broker executable, recorded at claim time. */
+  binary?: string;
+  /** `<device>:<inode>` of that executable, as `lsof -d txt` reports it. */
+  object?: string;
+}
+
+function brokerExecutableHint(claim: NodeClaim): BrokerExecutableHint {
+  return {
+    stateDir: claim.state_dir,
+    ...(claim.broker_binary ? { binary: claim.broker_binary } : {}),
+    ...(claim.broker_executable ? { object: claim.broker_executable } : {}),
+  };
+}
+
 /**
- * Whether `pid` looks like an agent-relay broker rather than an unrelated
- * process that inherited the number.
- *
- * Reads as "yes" whenever `ps` cannot be consulted: this only ever decides
- * whether to KEEP guarding a node id, and a spurious refusal is recoverable
- * (`--force`) while a wrong "free" verdict is the silent delivery outage.
+ * Identity of the executable file a claim's start was going to run, for the
+ * record. `realpathSync` first so a claim written through a symlinked install
+ * path still names the file a running broker maps.
  */
-async function looksLikeBrokerProcess(
-  pid: number,
-  stateDir: string,
-  deps: NodeClaimDependencies
-): Promise<boolean> {
+function describeBrokerExecutable(
+  binary: string | undefined
+): Pick<NodeClaim, 'broker_binary' | 'broker_executable'> {
+  if (!binary) return {};
+  try {
+    const resolved = fs.realpathSync(binary);
+    const stats = fs.statSync(resolved, { bigint: true });
+    return {
+      broker_binary: resolved,
+      broker_executable: `0x${stats.dev.toString(16)}:${stats.ino.toString()}`,
+    };
+  } catch {
+    // The path is still worth recording: a process running it is recognisable
+    // by argv even when the file cannot be stat'ed from here.
+    return path.isAbsolute(binary) ? { broker_binary: binary } : {};
+  }
+}
+
+/**
+ * What a live process that turned up holding a node id is.
+ *
+ * `unidentified` is NOT `unrelated`. It means the claim recorded nothing to
+ * compare the process against — it was written by an older CLI, or by a start
+ * that could not resolve its broker binary — so the process is neither
+ * confirmed nor ruled out. The two call sites decide differently, because they
+ * differ in what an unknown process is likely to be.
+ */
+type HolderVerdict = 'broker' | 'unrelated' | 'unidentified';
+
+/**
+ * The executable objects `pid` is running, as `<device>:<inode>` pairs, or
+ * `null` when they cannot be read.
+ *
+ * `txt` mappings identify an executable by device and inode on both macOS and
+ * Linux, which is the only handle on "what is this process running" that does
+ * not go through a filename. Same command and same field encoding as
+ * `readBrokerProcessIdentity` in `broker-process-identity.ts`, so the two agree
+ * on what an executable's identity is.
+ */
+async function readExecutableObjects(pid: number, deps: NodeClaimDependencies): Promise<Set<string> | null> {
   const execCommand = deps.execCommand;
-  if (!execCommand) return true;
+  if (!execCommand) return null;
+  let stdout: string;
+  try {
+    ({ stdout } = await execCommand(`LC_ALL=C lsof -nP -a -p ${pid} -d txt -FfDi`));
+  } catch {
+    return null;
+  }
+  const fields = stdout.trim().split('\n');
+  if (fields.shift() !== `p${pid}`) return null;
+  const objects = new Set<string>();
+  for (let index = 0; index < fields.length; index += 3) {
+    const [descriptor, device, inode] = fields.slice(index, index + 3);
+    if (descriptor !== 'ftxt' || !/^D0x[0-9a-f]+$/i.test(device ?? '') || !/^i[1-9]\d*$/.test(inode ?? '')) {
+      return null;
+    }
+    objects.add(`${device.slice(1).toLowerCase()}:${inode.slice(1)}`);
+  }
+  return objects.size > 0 ? objects : null;
+}
+
+/**
+ * Whether `pid` is the broker a claim names, an unrelated process that merely
+ * inherited its descriptor or its pid number, or something this claim has no
+ * way to tell apart.
+ *
+ * Executable identity decides it: the device and inode of the file the process
+ * is running, against the broker executable the claim recorded. Command lines
+ * are consulted only as further POSITIVE evidence and never to rule a process
+ * out. `AGENT_RELAY_BIN` / `BROKER_BINARY_PATH` let a supported deployment run
+ * the broker under any filename, and with the default state dir such a broker
+ * carries neither `agent-relay` nor its state dir in argv — so the name test
+ * that used to decide this classified a real, live broker as unrelated and
+ * handed its node id to the next start.
+ *
+ * Anything that cannot be consulted — no runner, an `lsof` or `ps` that fails —
+ * reads as `broker`: this only ever decides whether to KEEP guarding a node id,
+ * and a spurious refusal is recoverable (`--force`, `node down`) while a wrong
+ * "free" verdict is the silent delivery outage.
+ */
+async function classifyHolderProcess(
+  pid: number,
+  hint: BrokerExecutableHint,
+  deps: NodeClaimDependencies
+): Promise<HolderVerdict> {
+  const execCommand = deps.execCommand;
+  if (!execCommand) return 'broker';
+  if (hint.object) {
+    const objects = await readExecutableObjects(pid, deps);
+    // Unreadable mappings are not a mismatch: the process may simply not be
+    // ours to inspect.
+    if (objects === null) return 'broker';
+    if (objects.has(hint.object)) return 'broker';
+  }
+  let args: string;
   try {
     const { stdout } = await execCommand(`LC_ALL=C ps -p ${pid} -o args=`);
-    const args = stdout.trim();
-    if (!args) return false;
-    return args.includes('agent-relay') || args.includes('relay-broker') || args.includes(stateDir);
+    args = stdout.trim();
   } catch {
-    return true;
+    return 'broker';
   }
+  // `ps` answered with nothing: the pid is gone, so it holds nothing.
+  if (!args) return 'unrelated';
+  if (hint.binary && (args === hint.binary || args.startsWith(`${hint.binary} `))) return 'broker';
+  if (args.includes('agent-relay') || args.includes('relay-broker') || args.includes(hint.stateDir)) {
+    return 'broker';
+  }
+  return hint.object || hint.binary ? 'unrelated' : 'unidentified';
 }
 
 /**
@@ -671,11 +802,14 @@ async function looksLikeBrokerProcess(
  * with `--force` or `node down` while a wrong "free" verdict is the silent
  * delivery outage the claim exists to prevent.
  *
- * Holders are filtered through {@link looksLikeBrokerProcess}, exactly as the
+ * Holders are classified by {@link classifyHolderProcess}, exactly as the
  * connection file's pid is. An inherited descriptor is not close-on-exec, so
  * anything the broker itself spawns inherits it too; a harness left running by
  * a SIGKILLed broker would otherwise pin the node id with no broker anywhere
- * near it. A `ps` that cannot be read still counts as a broker.
+ * near it. Only a holder positively identified as running some OTHER executable
+ * is dropped: a holder the claim cannot classify at all stays a holder, because
+ * nothing but a Relay start ever passes this descriptor on and a spurious
+ * refusal is recoverable while a wrong "free" verdict is not.
  *
  * `selfPids` are dropped from the holder set: a start re-reading its own
  * reservation still has that generation's descriptor open, and its own
@@ -710,9 +844,10 @@ async function inspectClaimHold(
     .map((value) => value.trim())
     .filter((value) => /^\d+$/.test(value))
     .filter((value) => !selfPids?.has(Number(value)));
+  const hint = brokerExecutableHint(claim);
   const brokers: string[] = [];
   for (const pid of pids) {
-    if (await looksLikeBrokerProcess(Number(pid), claim.state_dir, deps)) brokers.push(pid);
+    if ((await classifyHolderProcess(Number(pid), hint, deps)) !== 'unrelated') brokers.push(pid);
   }
   if (brokers.length > 0) {
     return {
@@ -828,13 +963,18 @@ export function closeNodeClaimHold(fd: number | undefined): void {
  */
 export async function findLiveStateDirBroker(
   stateDir: string,
-  deps: NodeClaimDependencies = {}
+  deps: NodeClaimDependencies = {},
+  /** What the claim for this state dir knows about its broker executable. */
+  hint: { binary?: string; object?: string } = {}
 ): Promise<{ pid: number; startedAt?: string } | null> {
   const pid = readStateDirBrokerPid(stateDir);
   if (pid === null || !isProcessAlive(pid, deps)) {
     return null;
   }
-  if (!(await looksLikeBrokerProcess(pid, stateDir, deps))) {
+  // Unlike the hold descriptor, this pid was read from a file and can have been
+  // recycled by any process on the machine, with no relationship to Relay at
+  // all. Only a positive identification keeps the node id guarded here.
+  if ((await classifyHolderProcess(pid, { stateDir, ...hint }, deps)) !== 'broker') {
     return null;
   }
   const startedAt = await readProcessStartedAt(pid, deps);
@@ -929,7 +1069,10 @@ async function classifyNodeClaim(
   }
   // Then the broker's own connection file, which survives a supervisor that
   // died after its child had published but before it could record the pid.
-  const orphan = await findLiveStateDirBroker(claim.state_dir, deps);
+  const orphan = await findLiveStateDirBroker(claim.state_dir, deps, {
+    binary: claim.broker_binary,
+    object: claim.broker_executable,
+  });
   if (orphan) {
     return {
       state: 'held',
@@ -1051,6 +1194,7 @@ async function buildClaim(
     node_id: input.nodeId.trim(),
     pid: input.pid,
     state_dir: normalizeClaimStateDir(input.stateDir),
+    ...describeBrokerExecutable(input.brokerBinary),
     ...(input.apiPort !== undefined ? { api_port: input.apiPort } : {}),
     ...(input.brokerName ? { broker_name: input.brokerName } : {}),
     ...(startedAt ? { process_started_at: startedAt } : {}),
