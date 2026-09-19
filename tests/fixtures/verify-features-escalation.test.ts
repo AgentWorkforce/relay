@@ -37,9 +37,13 @@ import { prepareRunWorktree, removeRunWorktree } from '../../scripts/verify-feat
 
 const temporaryDirectories: string[] = [];
 const execFileAsync = promisify(execFile);
-const workflowPath = fileURLToPath(new URL('../../workflows/verify-features.ts', import.meta.url));
+const workflowPath = fileURLToPath(new URL('../../flows/verify/features.spec.ts', import.meta.url));
 const repositoryRoot = fileURLToPath(new URL('../..', import.meta.url));
 const workflowSourcePromise = readFile(workflowPath, 'utf8');
+// The prepare/run/verdict lifecycle v1 kept inside the flow file now lives in
+// the runner, because a generated spec is executed by the `flows` CLI.
+const runnerPath = fileURLToPath(new URL('../../flows/verify/run-features.ts', import.meta.url));
+const runnerSourcePromise = readFile(runnerPath, 'utf8');
 const slackAlertPath = fileURLToPath(
   new URL('../../scripts/verify-features/slack-alert.sh', import.meta.url)
 );
@@ -90,7 +94,7 @@ describe('verify-features escalation status', () => {
     expect(capabilities).toContain("if ! grep -q '^VERIFY_PROVENANCE_VALID=1$'");
     expect(source).toContain('abort_for_invalid_provenance');
     expect(source).toContain("if ! grep -q '^VERIFY_PROVENANCE_VALID=1$'");
-    expect(source).toContain('verdict.runId !== RUN_ID');
+    expect(await runnerSourcePromise).toContain('verdict.runId !== RUN_ID');
   });
 
   it('audits every mandatory escalation independently of the workflow DAG', async () => {
@@ -108,20 +112,30 @@ describe('verify-features escalation status', () => {
     expect(followup).toMatch(/dependsOn:\s*\[\s*['"]open-pr['"]\s*,\s*['"]slack-alert['"]\s*\]/);
     expect(source).toContain('failure-assessment.json');
     expect(source).toContain('relay-alert-envelope/1');
-    expect(source).toContain("[ESCALATION_STATUS_TOOL, 'audit', ARTIFACTS");
+    expect(await runnerSourcePromise).toContain("[ESCALATION_STATUS_TOOL, 'audit', ARTIFACTS");
     expect(posthogGate).toContain('[ "$VERDICT" = "PASS" ] && [ "$CHANNEL" != "posthog" ]');
     expect(workflowStep(source, 'enforce-escalations')).toContain(
       'node "$STATUS_TOOL" audit-channel "$ARTIFACTS" posthog 1 0'
     );
-    expect(source).toContain("[ESCALATION_STATUS_TOOL, 'audit-channel', ARTIFACTS, 'posthog', '1', '0']");
+    expect(await runnerSourcePromise).toContain(
+      "[ESCALATION_STATUS_TOOL, 'audit-channel', ARTIFACTS, 'posthog', '1', '0']"
+    );
   });
 
   it('registers every delivery step and terminal leaf gate in the executable workflow graph', async () => {
-    const { stdout } = await execFileAsync(process.execPath, ['--experimental-strip-types', workflowPath], {
+    // v1 asserted on a dry-run wave dump. The v2 flow is a generated spec, so
+    // the graph itself is the artifact: assert on its steps and the dependsOn
+    // closure rather than on planner output.
+    const out = `${await mkdtemp(path.join(os.tmpdir(), 'verify-features-spec-'))}/spec.json`;
+    await execFileAsync(process.execPath, ['--experimental-strip-types', workflowPath, '--out', out], {
       cwd: repositoryRoot,
       env: { ...process.env, DRY_RUN: '1' },
-      timeout: 15_000,
+      timeout: 30_000,
     });
+    const spec = JSON.parse(await readFile(out, 'utf8')) as {
+      steps: Array<{ id: string; dependsOn?: string[] }>;
+    };
+    const byId = new Map(spec.steps.map((step) => [step.id, step]));
 
     for (const step of [
       'emit-posthog',
@@ -139,8 +153,22 @@ describe('verify-features escalation status', () => {
       'enforce-escalations',
       'enforce-verdict',
     ]) {
-      expect(stdout).toContain(step);
+      expect(byId.has(step), step).toBe(true);
     }
+
+    /** Longest dependency chain to this step — v2's equivalent of a wave. */
+    const depth = (id: string, seen = new Set<string>()): number => {
+      if (seen.has(id)) throw new Error(`dependency cycle at ${id}`);
+      const step = byId.get(id);
+      if (!step) throw new Error(`spec has no step ${id}`);
+      const parents = step.dependsOn ?? [];
+      if (parents.length === 0) return 0;
+      seen.add(id);
+      const result = 1 + Math.max(...parents.map((parent) => depth(parent, new Set(seen))));
+      seen.delete(id);
+      return result;
+    };
+
     for (const [delivery, gate] of [
       ['escalate-infra', 'enforce-infra-delivery'],
       ['emit-posthog', 'enforce-posthog-delivery'],
@@ -150,9 +178,8 @@ describe('verify-features escalation status', () => {
       ['slack-followup', 'enforce-slack-followup-delivery'],
       ['slack-followup', 'enforce-escalations'],
     ]) {
-      expect(plannedWave(stdout, gate)).toBeGreaterThan(plannedWave(stdout, delivery));
+      expect(depth(gate!), `${gate} after ${delivery}`).toBeGreaterThan(depth(delivery!));
     }
-    expect(stdout).toContain('Validation: PASS');
   });
 
   it('records explicit failed receipts for every delivery primitive', async () => {
@@ -460,10 +487,11 @@ exit "$FAKE_CURL_EXIT_STATUS"
 
     expect(setup).toContain('reset "${ARTIFACTS}"');
     expect(setup).toContain('if ! node "${ESCALATION_STATUS_TOOL}" reset "${ARTIFACTS}"');
-    expect(source).toContain('prepareRunArtifacts(ARTIFACTS_ROOT, RUN_ID, RUN_NONCE)');
-    expect(source).toContain('await prepareRunWorktree(REPO_ROOT, WORKTREE_ROOT, RUN_ID)');
-    expect(source).toContain('await removeRunWorktree(REPO_ROOT, RUN_WORKTREE)');
-    expect(source).toContain('const result = await wf.run({ dryRun, cwd: REPO_ROOT })');
+    const runner = await runnerSourcePromise;
+    expect(runner).toContain('prepareRunArtifacts(ARTIFACTS_ROOT, RUN_ID, RUN_NONCE)');
+    expect(runner).toContain('await prepareRunWorktree(REPO_ROOT, WORKTREE_ROOT, RUN_ID)');
+    expect(runner).toContain('await removeRunWorktree(REPO_ROOT, RUN_WORKTREE)');
+    expect(runner).toContain("run('npx', ['flows', 'run', SPEC])");
     for (const mutatingStep of ['attempt-fix', 'fix-integrity', 'open-pr']) {
       expect(workflowStep(source, mutatingStep)).toContain('cwd: RUN_WORKTREE');
     }
@@ -474,17 +502,23 @@ exit "$FAKE_CURL_EXIT_STATUS"
     expect(followup).toContain('refusing to post unredacted evidence');
     expect(source).toContain('const ARTIFACTS = `${ARTIFACTS_ROOT}/runs/${RUN_ID}`');
     expect(source).not.toContain('INVOCATION_LOCK');
-    expect(source).toContain('[verify-features] worktree cleanup failed:');
-    expect(source).toContain('[verify-features] artifact completion marker failed:');
-    expect(source).toContain('if (workflowLifecycleCompleted)');
+    expect(runner).toContain('[verify-features] worktree cleanup failed:');
+    expect(runner).toContain('[verify-features] artifact completion marker failed:');
+    expect(runner).toContain('if (workflowLifecycleCompleted)');
   });
 
   it('preserves the required Slack target and dry-run/run identity controls', async () => {
     const source = await workflowSourcePromise;
 
     expect(source).toContain('VERIFY_SLACK_CHANNEL="C0AEKNLDNKW"');
-    expect(source).toContain("const dryRun = process.env.DRY_RUN === '1'");
-    expect(source).toMatch(/const RUN_ID = `verify-\$\{TIMESTAMP\}-\$\{RUN_NONCE\}`/);
+    // v1's DRY_RUN became `--check-only`, which stops after `flows check`:
+    // the graph is validated without being executed.
+    expect(await runnerSourcePromise).toContain("process.argv.includes('--check-only')");
+    // The runner owns the run identity and the generator inherits it; a
+    // self-minted id in the child would point the emitted spec at a directory
+    // the runner never reads.
+    expect(source).toMatch(/RUN_ID = process\.env\.VERIFY_RUN_ID\?\.trim\(\) \|\| `verify-/);
+    expect(await runnerSourcePromise).toContain('VERIFY_RUN_ID: RUN_ID');
   });
 
   it('puts a failed issue delivery in the first Slack alert', async () => {

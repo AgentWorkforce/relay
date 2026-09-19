@@ -67,6 +67,66 @@ narrative. The release workflow also skips these commits automatically.
 
 The `.agentworkforce/trajectories/` directory must remain tracked in git. It contains trajectory records from the `trail` tool that provide valuable context for future agents and humans about past decisions, reasoning, and work history.
 
+## Resident lead
+
+The resident `relay` agent is this repo's lead. Reports to **chief**
+(Will → chief → relay; no engineering department is seated yet). One
+writer: the resident is sole writer of this repo while online; delegates
+use worktrees off origin/main (others — including Khaliq and bots — work
+this repo in parallel). Session start: this file, `git log --oneline -15`,
+relay inbox. ACK / progress / DONE with evidence on every assignment.
+Publishing (npm, crates, GitHub releases) is gated on chief green-light.
+
+### Standing board (2026-07-29 — delete entries as they close)
+
+- Telemetry identity-leak cluster: merged as PR #1363; CLI stayed 11.2.0
+  (no release cut yet — release-train needs chief green-light).
+- Secrets fix train (issue #1379): PR A = #1380 (CLI output/error masking,
+  key off argv) + required companion relayfile#380 which must merge and
+  release FIRST (relayfile scrapes raw secrets from CLI output and error
+  text). PR B (Rust file modes) and PR C (--mcp-config argv→file; must
+  also update .claude/rules/mcp-injection.md) are unstarted — full spec
+  in #1379. #1380 unblocks the fleet-wide credential rotation.
+- Open issue batch: #1378 (fresh `node up` silently mints a workspace),
+  #1381 (teams.json per-agent model pinning gap; `claude:opus` doc syntax
+  is dead), #1382 (attach pairs broker URL/key from different sources;
+  delete chief's orgchart env-unset workaround when fixed), #1383
+  (non-Error rejections render as `[object Object]`).
+- Also pending: 64 dependabot alerts on main (1 critical); skills repo
+relay-team/relay-pipeline/relay-fanout SKILL.mds still instruct printing
+raw observer URLs — unsatisfiable once #1380 lands.
+<!-- PRPM_MANIFEST_START -->
+
+<skills_system priority="1">
+<usage>
+When users ask you to perform tasks, check if any of the available skills below can help complete the task more effectively. Skills provide specialized capabilities and domain knowledge.
+
+How to use skills (loaded into main context):
+
+- Use the <path> from the skill entry below
+- Invoke: Bash("cat <path>")
+- The skill content will load into your current context
+- Example: Bash("cat .openskills/backend-architect/SKILL.md")
+
+Usage notes:
+
+- Skills share your context window
+- Do not invoke a skill that is already loaded in your context
+  </usage>
+
+<available_skills>
+
+<skill activation="lazy">
+<name>writing-relayflows</name>
+<description>Use when authoring a Relayflows flow (@relayflows/surface / @relayflows/sdk, the v2 journal-based engine, CLI `flows`) in TypeScript or YAML/JSON. Covers the run/llm/agent ladder, human/dispatch/done, verification gates, cli/model resolution, flows.json, and flows check/run/resume refusal shapes. Not for the older @relayflows/core WorkflowBuilder (chained .pattern(&apos;dag&apos;)/.agent()/.step() calls) — see writing-agent-relay-workflows / migrating-persona-to-relayflow instead.</description>
+<path>.openskills/writing-relayflows/SKILL.md</path>
+</skill>
+
+</available_skills>
+</skills_system>
+
+<!-- PRPM_MANIFEST_END -->
+
 <!-- prpm:snippet:start @agent-workforce/trail-snippet@1.1.2 -->
 
 # Trail
@@ -84,7 +144,7 @@ trail start "Task description"
 If not globally installed, use npx to run from local installation:
 
 ```bash
-npx --yes agent-trajectories start "Task description"
+npx trail start "Task description"
 ```
 
 ## When Starting Work
@@ -253,32 +313,3 @@ Your trajectory helps others understand:
 Future agents can query past trajectories to learn from your decisions.
 
 <!-- prpm:snippet:end @agent-workforce/trail-snippet@1.1.2 -->
-
-## Resident lead
-
-The resident `relay` agent is this repo's lead. Reports to **chief**
-(Will → chief → relay; no engineering department is seated yet). One
-writer: the resident is sole writer of this repo while online; delegates
-use worktrees off origin/main (others — including Khaliq and bots — work
-this repo in parallel). Session start: this file, `git log --oneline -15`,
-relay inbox. ACK / progress / DONE with evidence on every assignment.
-Publishing (npm, crates, GitHub releases) is gated on chief green-light.
-
-### Standing board (2026-07-29 — delete entries as they close)
-
-- Telemetry identity-leak cluster: merged as PR #1363; CLI stayed 11.2.0
-  (no release cut yet — release-train needs chief green-light).
-- Secrets fix train (issue #1379): PR A = #1380 (CLI output/error masking,
-  key off argv) + required companion relayfile#380 which must merge and
-  release FIRST (relayfile scrapes raw secrets from CLI output and error
-  text). PR B (Rust file modes) and PR C (--mcp-config argv→file; must
-  also update .claude/rules/mcp-injection.md) are unstarted — full spec
-  in #1379. #1380 unblocks the fleet-wide credential rotation.
-- Open issue batch: #1378 (fresh `node up` silently mints a workspace),
-  #1381 (teams.json per-agent model pinning gap; `claude:opus` doc syntax
-  is dead), #1382 (attach pairs broker URL/key from different sources;
-  delete chief's orgchart env-unset workaround when fixed), #1383
-  (non-Error rejections render as `[object Object]`).
-- Also pending: 64 dependabot alerts on main (1 critical); skills repo
-  relay-team/relay-pipeline/relay-fanout SKILL.mds still instruct printing
-  raw observer URLs — unsatisfiable once #1380 lands.

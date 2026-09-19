@@ -56,9 +56,17 @@ describe('shipped relay plugin credential safety', () => {
   });
 
   it('keeps credential-printing startup commands out of mirrored agent-facing skills', () => {
-    const [agentsSkill, claudeSkill] = agentFacingSkillFiles.map(readRepoFile);
-
-    expect(agentsSkill).toBe(claudeSkill);
-    expect(agentsSkill).not.toMatch(/\bagent-relay node (?:up|status)\b/);
+    // These two files are no longer byte-identical and cannot be: prpm ships
+    // `@agent-relay/using-agent-relay` as a `#claude` package installed to
+    // `.claude/` and a `#codex` package installed to `.agents/`, and the codex
+    // entry is a format conversion of the claude source rather than a copy.
+    //
+    // The equality assertion this replaces was a proxy — it applied the
+    // credential check to one file and relied on equality to cover the other.
+    // Checking each file directly keeps the actual guarantee and drops only the
+    // assumption about how the two are produced.
+    for (const path of agentFacingSkillFiles) {
+      expect(readRepoFile(path), path).not.toMatch(/\bagent-relay node (?:up|status)\b/);
+    }
   });
 });

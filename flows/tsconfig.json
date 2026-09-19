@@ -1,0 +1,15 @@
+{
+  "extends": "../tsconfig.json",
+  "compilerOptions": {
+    "noEmit": true,
+    // Node strips types in place, so runtime imports carry the real `.ts`
+    // extension; tsc needs this flag to accept the same specifier.
+    "allowImportingTsExtensions": true,
+    // These files are run by `node --experimental-strip-types`, which erases
+    // types rather than compiling them. An enum, namespace, or parameter
+    // property would parse here and then fail at runtime on the CI runners
+    // that pin Node 22.14, so refuse it at typecheck instead.
+    "erasableSyntaxOnly": true
+  },
+  "include": ["**/*.ts"]
+}

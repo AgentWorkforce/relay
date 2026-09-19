@@ -27,15 +27,17 @@
  *   2. Nothing aggregated the per-tier results into a run verdict. `verdict`
  *      plus `enforce-verdict` now do, and `main()` sets a non-zero process exit
  *      so a scheduler sees red.
- *   3. `main()` discarded the runner result entirely. It now reads verdict.json
- *      and fails closed when that file is missing.
+ *   3. `main()` discarded the runner result entirely. `run-features.ts` now
+ *      reads verdict.json and fails closed when that file is missing.
  *
- * A fourth defect was subtler. `applyReliabilityDefaults` in @relayflows/core
- * force-enables `strategy: "retry"` with a repair agent for any workflow that
- * declares agents, so a failing verification gate got handed to an agent that
- * edited the working tree until the gate passed. A verification workflow whose
- * assertions can be rewritten to make them pass measures nothing. `onError`
- * is set to "continue" below specifically to opt out of that path.
+ * A fourth defect was subtler. `applyReliabilityDefaults` in the v1
+ * `@relayflows/core` engine force-enabled `strategy: "retry"` with a repair
+ * agent for any workflow declaring agents, so a failing verification gate got
+ * handed to an agent that edited the working tree until the gate passed. A
+ * verification flow whose assertions can be rewritten to make them pass
+ * measures nothing. v1 opted out with `onError('continue')`; relayflows v2 has
+ * no repair agents at all, so the property now holds by construction and the
+ * `.onError()` call below is accepted and ignored by the spec builder.
  *
  * ## Honest accounting
  *
@@ -70,24 +72,52 @@
 import { randomUUID } from 'node:crypto';
 import { spawnSync } from 'node:child_process';
 import { existsSync, readFileSync } from 'node:fs';
+import { mkdir, writeFile } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
+import { pathToFileURL } from 'node:url';
 
-import { workflow } from '@relayflows/core';
+import { specWorkflow } from '../spec-builder.ts';
 
-import { markRunArtifactsComplete, prepareRunArtifacts } from '../scripts/verify-features/run-artifacts.mjs';
-import { prepareRunWorktree, removeRunWorktree } from '../scripts/verify-features/run-worktree.mjs';
+/**
+ * v2 refuses the raw OpenCode binary as `cli_unsupported`; this adapter
+ * implements the `relayflows-agent-cli-v1` contract so the same harness stays
+ * usable. Absolute, because a spec's relative `cli` resolves against the spec
+ * file's own directory rather than the working directory.
+ */
+const OPENCODE_CLI = path.resolve('scripts/flows/opencode-agent-cli.mjs');
 
-const REPO_ROOT = process.cwd();
-const ARTIFACTS_ROOT = path.join(REPO_ROOT, '.workflow-artifacts/verify-features');
-const WORKTREE_ROOT = path.join(os.tmpdir(), 'relay-verify-features-worktrees', path.basename(REPO_ROOT));
+import {
+  markRunArtifactsComplete,
+  prepareRunArtifacts,
+} from '../../scripts/verify-features/run-artifacts.mjs';
+import { prepareRunWorktree, removeRunWorktree } from '../../scripts/verify-features/run-worktree.mjs';
+
+export const REPO_ROOT = process.cwd();
+export const ARTIFACTS_ROOT = path.join(REPO_ROOT, '.workflow-artifacts/verify-features');
+export const WORKTREE_ROOT = path.join(
+  os.tmpdir(),
+  'relay-verify-features-worktrees',
+  path.basename(REPO_ROOT)
+);
 const TIMESTAMP = new Date().toISOString().replace(/[:.]/g, '-').slice(0, 16);
-const RUN_NONCE = randomUUID().slice(0, 8);
-const RUN_ID = `verify-${TIMESTAMP}-${RUN_NONCE}`;
-const ARTIFACTS = `${ARTIFACTS_ROOT}/runs/${RUN_ID}`;
-const RUN_WORKTREE = path.join(WORKTREE_ROOT, 'worktrees', RUN_ID);
-const VERDICT_FILE = `${ARTIFACTS}/verdict.json`;
-const ESCALATION_STATUS_TOOL = path.join(REPO_ROOT, 'scripts/verify-features/escalation-status.mjs');
+/**
+ * Run identity flows one way: the runner owns it, the generator reads it.
+ *
+ * `run-features.ts` prepares artifacts under its own RUN_ID and then spawns
+ * this file as a separate process to emit the spec. Deriving the identity from
+ * the clock here would give the child a different RUN_ID, so every path in the
+ * emitted spec would point at a directory the runner never reads — and the
+ * runner's verdict lookup would always miss, turning a genuine PASS into
+ * "no verdict … treating this run as FAILED". Inheriting keeps both halves on
+ * the same directory; a standalone invocation still mints its own.
+ */
+export const RUN_NONCE = process.env.VERIFY_RUN_NONCE?.trim() || randomUUID().slice(0, 8);
+export const RUN_ID = process.env.VERIFY_RUN_ID?.trim() || `verify-${TIMESTAMP}-${RUN_NONCE}`;
+export const ARTIFACTS = `${ARTIFACTS_ROOT}/runs/${RUN_ID}`;
+export const RUN_WORKTREE = path.join(WORKTREE_ROOT, 'worktrees', RUN_ID);
+export const VERDICT_FILE = `${ARTIFACTS}/verdict.json`;
+export const ESCALATION_STATUS_TOOL = path.join(REPO_ROOT, 'scripts/verify-features/escalation-status.mjs');
 const INFRA_ESCALATION_TOOL = path.join(REPO_ROOT, 'scripts/verify-features/escalate-infra.sh');
 const SLACK_ALERT_TOOL = path.join(REPO_ROOT, 'scripts/verify-features/slack-alert.sh');
 const SLACK_POST_TOOL = path.join(REPO_ROOT, 'scripts/verify-features/slack-post.mjs');
@@ -98,7 +128,7 @@ const SUFFIX = `vf-${RUN_NONCE}`;
 /** Canonical fix branch. RUN_ID already carries the "verify-" prefix. */
 const FIX_BRANCH = `fix/${RUN_ID}`;
 
-const AUTOFIX = process.env.VERIFY_AUTOFIX !== '0';
+export const AUTOFIX = process.env.VERIFY_AUTOFIX !== '0';
 
 /**
  * A literal backtick.
@@ -283,8 +313,8 @@ finish_tier() {
  * environment. Pinning makes a missing CLOUD_API_* pair throw
  * `auth_token_missing` instead of silently taking a different path.
  *
- * The primitive is a hard dependency of @relayflows/core, which this workflow
- * already imports, so it resolves wherever the workflow itself does.
+ * The primitive ships as `@relayflows/slack-primitive`, which this generator
+ * imports directly, so it resolves wherever the generator itself does.
  */
 const SLACK_POST_FN = String.raw`
 SLACK_POST_EXECUTABLE="${SLACK_POST_TOOL}"
@@ -345,7 +375,7 @@ posthog_capture() {
 `;
 
 async function main() {
-  const wf = workflow('relay-verify-features')
+  const wf = specWorkflow('relay.verify.features')
     .description(
       'Automated feature health check. Runs verification tiers 1-6 and the 6 critical paths, ' +
         'posts PASS/FAIL to Slack, and opens an issue plus a draft fix PR when something breaks.'
@@ -363,7 +393,10 @@ async function main() {
 
   // opencode is cheap and this is routine summarization of files already written.
   wf.agent('reporter', {
-    cli: 'opencode',
+    // v2 refuses the raw OpenCode binary as `cli_unsupported`; the adapter
+    // makes the same harness usable. No model is pinned, so it keeps
+    // OpenCode's own default exactly as v1 did.
+    cli: OPENCODE_CLI,
     role: 'Read verification artifacts and write a structured PASS/FAIL/SKIP report',
     retries: 1,
   });
@@ -1596,12 +1629,12 @@ exit 0
 
   // ── Phase 12: verdict ────────────────────────────────────────────────────
   //
-  // The authoritative aggregation. It exits 0 even on FAIL, on purpose:
-  // findReadySteps() in @relayflows/core only schedules a step whose
-  // dependencies are "completed" or "skipped", so a failing gate here would
-  // permanently block the Slack, issue, and PR steps below — the escalation
-  // path would silently never run. Enforcement is `enforce-verdict` plus the
-  // process exit code in main().
+  // The authoritative aggregation. It exits 0 even on FAIL, on purpose: a
+  // dependent step runs only once its dependencies complete, so a failing gate
+  // here would permanently block the Slack, issue, and PR steps below — the
+  // escalation path would silently never run. That was true of v1's
+  // findReadySteps() and is true of the v2 kernel's DAG scheduling too.
+  // Enforcement is `enforce-verdict` plus the exit code in run-features.ts.
 
   wf.step('verdict', {
     type: 'deterministic',
@@ -2667,115 +2700,26 @@ exit 1
 `,
   });
 
-  const dryRun = process.env.DRY_RUN === '1' || process.env.DRY_RUN === 'true';
-  let workflowLifecycleCompleted = false;
-  if (!dryRun) prepareRunArtifacts(ARTIFACTS_ROOT, RUN_ID, RUN_NONCE);
-  try {
-    if (!dryRun) {
-      const preparedWorktree = await prepareRunWorktree(REPO_ROOT, WORKTREE_ROOT, RUN_ID);
-      if (preparedWorktree !== RUN_WORKTREE) {
-        throw new Error(`prepared unexpected worktree path: ${preparedWorktree}`);
-      }
-    }
-    const result = await wf.run({ dryRun, cwd: REPO_ROOT });
-    workflowLifecycleCompleted = true;
-
-    // A dry run plans the graph without executing it, so there is no verdict to
-    // read and nothing to enforce. Bail before the checks below, which would
-    // otherwise report a validated plan as harness breakage.
-    if (dryRun || !('status' in result)) {
-      return;
-    }
-
-    // ── Post-run: make the process exit code tell the truth ──────────────────
-    //
-    // The previous version awaited run() and discarded the result, so a run with
-    // four failing checks still exited 0 and every scheduler saw success. Read
-    // the verdict directly rather than trusting the runner's row status, and
-    // fail closed when the verdict is missing.
-
-    let verdict: {
-      runId?: string;
-      verdict?: string;
-      reasons?: string[];
-      totals?: Record<string, number>;
-    } | null = null;
-    if (existsSync(VERDICT_FILE)) {
-      try {
-        verdict = JSON.parse(readFileSync(VERDICT_FILE, 'utf8'));
-      } catch (err) {
-        console.error(`[verify-features] verdict.json is unreadable: ${(err as Error).message}`);
-      }
-    }
-
-    if (!verdict || verdict.runId !== RUN_ID) {
-      console.error(
-        `[verify-features] no verdict for run ${RUN_ID} at ${VERDICT_FILE} — treating this run as FAILED. ` +
-          `The verification pipeline did not complete; this is harness breakage, not a clean run.`
-      );
-      process.exitCode = 2;
-      return;
-    }
-
-    const totals = verdict.totals ?? {};
-    console.log(
-      `[verify-features] verdict=${verdict.verdict} ` +
-        `pass=${totals.pass ?? '?'} fail=${totals.fail ?? '?'} skip=${totals.skip ?? '?'} ` +
-        `(workflow row status: ${'status' in result ? String(result.status) : 'unknown'})`
-    );
-
-    if (verdict.verdict !== 'PASS') {
-      console.error(`[verify-features] FAILED: ${(verdict.reasons ?? []).join('; ')}`);
-    }
-    const escalationAuditArgs =
-      verdict.verdict === 'PASS'
-        ? [ESCALATION_STATUS_TOOL, 'audit-channel', ARTIFACTS, 'posthog', '1', '0']
-        : [ESCALATION_STATUS_TOOL, 'audit', ARTIFACTS, AUTOFIX ? '1' : '0'];
-    const escalationAudit = spawnSync(process.execPath, escalationAuditArgs, {
-      cwd: process.cwd(),
-      encoding: 'utf8',
-    });
-    if (escalationAudit.stdout) process.stdout.write(escalationAudit.stdout);
-    if (escalationAudit.stderr) process.stderr.write(escalationAudit.stderr);
-    if (escalationAudit.status !== 0) {
-      console.error(
-        `[verify-features] ESCALATION DELIVERY FAILED independently of the workflow DAG ` +
-          `(audit exit ${escalationAudit.status ?? 'unknown'})`
-      );
-      process.exitCode = 2;
-    } else if (verdict.verdict !== 'PASS') {
-      process.exitCode = 1;
-    }
-  } finally {
-    if (!dryRun) {
-      try {
-        await removeRunWorktree(REPO_ROOT, RUN_WORKTREE);
-      } catch (cleanupError) {
-        console.error(
-          `[verify-features] worktree cleanup failed: ${
-            cleanupError instanceof Error ? cleanupError.stack : String(cleanupError)
-          }`
-        );
-      }
-      if (workflowLifecycleCompleted) {
-        try {
-          markRunArtifactsComplete(ARTIFACTS, RUN_ID);
-        } catch (completionError) {
-          console.error(
-            `[verify-features] artifact completion marker failed: ${
-              completionError instanceof Error ? completionError.stack : String(completionError)
-            }`
-          );
-        }
-      }
-    }
-  }
+  const out = option('--out', '.workflow-artifacts/flows/relay.verify.features.json');
+  await mkdir(path.dirname(out), { recursive: true });
+  await writeFile(out, `${JSON.stringify(wf.toSpec(), null, 2)}\n`);
+  console.log(`VERIFY_FEATURES_SPEC_WRITTEN ${out}`);
 }
 
-main().catch((err) => {
-  // A throw here means the harness itself broke — the runner could not even
-  // produce a result. That is the NightCTO escalation case, and it must not
-  // exit 0.
-  console.error(`[verify-features] harness failure: ${err instanceof Error ? err.stack : String(err)}`);
-  process.exitCode = 2;
-});
+function option(name: string, fallback: string): string {
+  const index = process.argv.indexOf(name);
+  return index >= 0 ? (process.argv[index + 1] ?? fallback) : fallback;
+}
+
+// Only run as a program. `run-features.ts` and the fixture tests import this
+// module for its constants; without this guard that import would emit a spec
+// as a side effect, to a path chosen by the *importing* process's argv.
+if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
+  main().catch((err: unknown) => {
+    // A throw here means the harness itself broke — the runner could not even
+    // produce a result. That is the NightCTO escalation case, and it must not
+    // exit 0.
+    console.error(`[verify-features] harness failure: ${err instanceof Error ? err.stack : String(err)}`);
+    process.exitCode = 2;
+  });
+}

@@ -82,6 +82,9 @@ __pycache__/
 .relay/
 .agent-relay/
 .relayflow/pr-proof-input.json
+.relayflow/pr-proof-event.json
+.relayflow/pr-proof-outputs.env
+.relayflow/pr-proof-binaries/
 
 .msd/
 /workflows/*

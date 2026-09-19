@@ -51,9 +51,11 @@
  *                           configured Slack integration. No bot token is read.
  */
 
-import { existsSync, readFileSync } from 'node:fs';
+import { readFileSync } from 'node:fs';
+import { mkdir, writeFile } from 'node:fs/promises';
+import { dirname } from 'node:path';
 
-import { workflow } from '@relayflows/core';
+import { specWorkflow } from '../spec-builder.ts';
 
 const ARTIFACTS = '.workflow-artifacts/audit-feature-manifest';
 const TIMESTAMP = new Date().toISOString().replace(/[:.]/g, '-').slice(0, 16);
@@ -159,7 +161,7 @@ SLACKPOSTEOF
 `;
 
 async function main() {
-  const wf = workflow('relay-audit-feature-manifest')
+  const wf = specWorkflow('relay.audit.feature-manifest')
     .description(
       'Derive the CLI and MCP surface, diff it against the feature manifest, and open a ' +
         'draft PR updating the manifest when it has drifted.'
@@ -863,55 +865,18 @@ esac
 `,
   });
 
-  const result = await wf.run();
-
-  if (process.env.DRY_RUN || !('status' in result)) {
-    return;
-  }
-
-  // Make the process exit code tell the truth, the same way verify-features
-  // does: a scheduler must be able to see drift without reading logs.
-  const exitFile = `${ARTIFACTS}/audit-exit.txt`;
-  if (!existsSync(exitFile)) {
-    console.error(
-      `[audit-feature-manifest] no ${exitFile} — the audit step did not complete. ` +
-        `Treating as harness breakage.`
-    );
-    process.exitCode = 2;
-    return;
-  }
-
-  const auditExit = Number(readFileSync(exitFile, 'utf8').trim());
-  let report: { undocumentedCommands?: string[]; staleCommands?: string[] } | null = null;
-  if (existsSync(REPORT_FILE)) {
-    try {
-      report = JSON.parse(readFileSync(REPORT_FILE, 'utf8'));
-    } catch {
-      report = null;
-    }
-  }
-
-  if (auditExit === 0) {
-    console.log('[audit-feature-manifest] manifest is clean');
-    return;
-  }
-
-  if (auditExit === 1) {
-    const undocumented = report?.undocumentedCommands ?? [];
-    const stale = report?.staleCommands ?? [];
-    console.error(
-      `[audit-feature-manifest] DRIFT: ${undocumented.length} undocumented, ${stale.length} stale. ` +
-        `Undocumented commands are unverified commands.`
-    );
-    process.exitCode = 1;
-    return;
-  }
-
-  console.error(`[audit-feature-manifest] the audit could not run (exit ${auditExit})`);
-  process.exitCode = 2;
+  const out = option('--out', '.workflow-artifacts/flows/relay.audit.feature-manifest.json');
+  await mkdir(dirname(out), { recursive: true });
+  await writeFile(out, `${JSON.stringify(wf.toSpec(), null, 2)}\n`);
+  console.log(`AUDIT_MANIFEST_SPEC_WRITTEN ${out}`);
 }
 
-main().catch((err) => {
+function option(name: string, fallback: string): string {
+  const index = process.argv.indexOf(name);
+  return index >= 0 ? (process.argv[index + 1] ?? fallback) : fallback;
+}
+
+main().catch((err: unknown) => {
   console.error(
     `[audit-feature-manifest] harness failure: ${err instanceof Error ? err.stack : String(err)}`
   );
