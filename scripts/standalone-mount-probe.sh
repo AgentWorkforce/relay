@@ -9,10 +9,13 @@
 # Two properties make this a real probe rather than a restatement of the build:
 #
 #   1. It runs the COMPILED binary, not dist/cli/index.js. The failure is a
-#      property of bundling, so an unbundled entry point cannot show it.
+#      property of the single-file distribution — no node_modules to import
+#      from — so an entry point that has one cannot show it.
 #   2. It runs with no node_modules reachable and an isolated HOME. A stray
 #      tree anywhere above the cwd silently satisfies the import and the probe
-#      passes for the wrong reason.
+#      passes for the wrong reason. The isolated HOME also means the binary
+#      provisions its SDKs from scratch here, so the first run installs them
+#      and takes minutes — which is the path being tested.
 #
 # And it does not stop at `--help`. Help renders from the surface's declared
 # command tree, which is JavaScript; the implementations are a Go binary and a
@@ -81,7 +84,7 @@ for i in "${!SURFACE_GROUPS[@]}"; do
   # the probe's own throwaway flow file that could not resolve.
   real="${REAL[$i]}"
   real_out="$($BIN $real 2>&1 || true)"
-  if printf '%s\n' "$real_out" | grep -qE "needs @?[a-z/-]+, which is not installed|installed but incomplete|@relayfile/cli-|ai-hist-native|relayfile binary not found|command-spec\.json"; then
+  if printf '%s\n' "$real_out" | grep -qE "needs @?[a-z/-]+, which is not installed|could not be prepared|installed but incomplete|@relayfile/cli-|ai-hist-native|relayfile binary not found|command-spec\.json"; then
     broken=1
     echo "  $group: help renders but \`$real\` cannot reach its implementation"
     echo "    $(printf '%s' "$real_out" | head -1)"

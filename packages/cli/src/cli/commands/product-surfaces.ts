@@ -15,6 +15,14 @@ import { describeError } from '../lib/describe-error.js';
 import { redactCredentialValues } from '@agent-relay/cloud/redact';
 
 import { defaultExit } from '../lib/exit.js';
+import {
+  importFromSurfaceStore,
+  isCompiledStandalone,
+  provisionSurfacePackage,
+  PROVISION_ERROR_CODE,
+  SurfaceProvisionError,
+  type SurfacePackage,
+} from '../lib/product-surface-store.js';
 import { mountRelayCliSurface, type RelayCliSurfaceDependencies } from '../lib/relay-cli-surface.js';
 
 /** How one product group is mounted. */
@@ -103,34 +111,97 @@ export const PRODUCT_SURFACES: readonly ProductSurfaceDefinition[] = [
 ];
 
 /**
- * Literal imports for the mounted surfaces, keyed by the specifier that names
- * them.
+ * The npm spec behind each mounted surface, mirroring `packages/cli/package.json`.
  *
- * `import(someVariable)` is invisible to a bundler. `scripts/build-standalone.sh`
- * runs esbuild and then `bun --compile`, so a specifier that only exists at
- * runtime is never bundled, and the compiled binary has no node_modules to fall
- * back on: every group failed with MODULE_NOT_FOUND, reported as "not
- * installed", in a distribution where installing cannot help (#1795).
- *
- * Writing each import as a literal is what makes the three SDKs reachable in
- * that build. It is the only reason this map exists — resolution is otherwise
- * identical to `import(specifier)`.
+ * Only the compiled standalone binary reads this: it has no `node_modules` and
+ * no manifest on disk, so when a specifier does not resolve it installs the
+ * package itself, and the version it installs has to be the one the npm
+ * distribution would have had. `product-surfaces.test.ts` asserts these ranges
+ * still match the manifest, because a pin bumped in one place and not the other
+ * is invisible until someone runs the binary.
  */
-const SURFACE_IMPORTS: Readonly<Record<string, () => Promise<unknown>>> = {
-  '@relayfile/sdk/relay-cli': () => import('@relayfile/sdk/relay-cli'),
-  '@relayflows/sdk/relay-cli': () => import('@relayflows/sdk/relay-cli'),
-  'ai-hist/relay-cli': () => import('ai-hist/relay-cli'),
+export const SURFACE_PACKAGES: Readonly<Record<string, SurfacePackage>> = {
+  '@relayfile/sdk/relay-cli': { name: '@relayfile/sdk', range: '^0.10.64' },
+  '@relayflows/sdk/relay-cli': { name: '@relayflows/sdk', range: '^2.0.19' },
+  'ai-hist/relay-cli': { name: 'ai-hist', range: '^0.18.1' },
 };
 
+/** Seams for the standalone fallback; the defaults are the real store. */
+export interface SurfaceImportDependencies {
+  /** Plain `import()`. The only path the npm distribution ever takes. */
+  importSpecifier: (specifier: string) => Promise<unknown>;
+  /** Whether this process is the compiled binary, which carries no packages. */
+  isStandalone: () => boolean;
+  /** Install the package on demand; returns the directory holding it. */
+  provision: (pkg: SurfacePackage) => Promise<string>;
+  /** Import the specifier out of a provisioned directory. */
+  importFromStore: (installRoot: string, specifier: string) => Promise<unknown>;
+}
+
+function withImportDefaults(
+  overrides: Partial<SurfaceImportDependencies>
+): SurfaceImportDependencies {
+  return {
+    importSpecifier: overrides.importSpecifier ?? ((specifier) => import(specifier)),
+    isStandalone: overrides.isStandalone ?? (() => isCompiledStandalone()),
+    provision: overrides.provision ?? ((pkg) => provisionSurfacePackage(pkg)),
+    importFromStore: overrides.importFromStore ?? importFromSurfaceStore,
+  };
+}
+
 /**
- * Import a mounted surface, preferring the bundler-visible literal.
+ * Whether the import failed because nothing answered to the specifier.
  *
- * Falls back to a dynamic import so a caller may still name something outside
- * the table — the end-to-end test mounts product builds by absolute path.
+ * Node reports this as a code; Bun's compiled runtime words it as a resolution
+ * failure and does not always carry one. Anything else — a package that exists
+ * and threw while evaluating, say — must propagate untouched, since installing
+ * a second copy of it would not help and would hide the real error.
  */
-export function importProductSurface(specifier: string): Promise<unknown> {
-  const load = SURFACE_IMPORTS[specifier];
-  return load ? load() : import(specifier);
+function isUnresolvedSpecifier(error: unknown): boolean {
+  const code = (error as { code?: unknown } | undefined)?.code;
+  if (code === 'ERR_MODULE_NOT_FOUND' || code === 'MODULE_NOT_FOUND') return true;
+  const message = (error as { message?: string } | undefined)?.message ?? '';
+  return /Cannot find (module|package)|Could not resolve/i.test(message);
+}
+
+/**
+ * Import a mounted surface, provisioning it first if this binary has to.
+ *
+ * On npm — every install, every CI runner, every test in this repo — the first
+ * `import()` resolves and this returns exactly what `import(specifier)` returns.
+ * Nothing below the `catch` runs, and no directory is created.
+ *
+ * The compiled standalone binary is the one caller that falls through: it is a
+ * single file with no `node_modules`, so a mounted SDK has to be installed
+ * before it can be imported (#1795). Only a specifier this CLI pins is eligible
+ * — a caller naming something else (the end-to-end test mounts product builds
+ * by absolute path) gets its original error back.
+ */
+export async function importProductSurface(
+  specifier: string,
+  overrides: Partial<SurfaceImportDependencies> = {}
+): Promise<unknown> {
+  const deps = withImportDefaults(overrides);
+  try {
+    return await deps.importSpecifier(specifier);
+  } catch (error) {
+    const pkg = SURFACE_PACKAGES[specifier];
+    if (!pkg || !isUnresolvedSpecifier(error) || !deps.isStandalone()) throw error;
+    const installRoot = await deps.provision(pkg);
+    try {
+      return await deps.importFromStore(installRoot, specifier);
+    } catch (storeError) {
+      // The package is on disk now, so "not installed" — what the generic
+      // handler would say about an ERR_MODULE_NOT_FOUND — is simply false, and
+      // sends the operator to reinstall something already there.
+      if (!isUnresolvedSpecifier(storeError)) throw storeError;
+      throw new SurfaceProvisionError(
+        `${pkg.name} is installed at ${installRoot}, but this build cannot import it from there.\n` +
+          `${describeError(storeError)}`,
+        { cause: storeError }
+      );
+    }
+  }
 }
 
 /** The only part of the optional Relayhistory cloud client this module uses. */
@@ -223,6 +294,13 @@ function describeLoadFailure(definition: ProductSurfaceDefinition, error: unknow
     .split('/')
     .slice(0, definition.specifier.startsWith('@') ? 2 : 1)
     .join('/');
+
+  // Provisioning already composed the operator-facing text — which package,
+  // which directory, and what to do about it. Re-describing it here would only
+  // bury that behind a second framing.
+  if (code === PROVISION_ERROR_CODE) {
+    return `\`agent-relay ${definition.as}\` could not be prepared.\n${describeError(error)}`;
+  }
 
   if (code === 'ERR_MODULE_NOT_FOUND' || code === 'MODULE_NOT_FOUND') {
     const missing = missingPackageFrom(error);

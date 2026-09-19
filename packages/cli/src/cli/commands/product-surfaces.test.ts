@@ -5,8 +5,11 @@ import { describe, expect, it, vi } from 'vitest';
 
 import type { RelayCliIo, RelayCliSurface } from '@agent-relay/cli-surface';
 
+import { SurfaceProvisionError } from '../lib/product-surface-store.js';
+
 import {
   PRODUCT_SURFACES,
+  SURFACE_PACKAGES,
   importProductSurface,
   loadProductSurface,
   registerProductSurfaceCommands,
@@ -182,6 +185,28 @@ describe('loadProductSurface', () => {
     ).rejects.toThrow(/Could not load `agent-relay file`[\s\S]*disk on fire/);
   });
 
+  it('prints a provisioning failure as written, with no stack', async () => {
+    // The store already composed the actionable text — which package, which
+    // directory, what to do. Re-framing it as "Could not load … : <message>"
+    // would bury the instruction under a second layer of narration.
+    const failure = new SurfaceProvisionError(
+      '@relayfile/sdk could not be installed into /home/x/.agentworkforce/relay/surfaces.\n' +
+        'npm error code ENOTFOUND\n' +
+        'Retry when online, or install agent-relay from npm.'
+    );
+    const message = await loadProductSurface(
+      DEFINITION,
+      makeDeps(async () => {
+        throw failure;
+      })
+    ).catch((error: unknown) => (error as Error).message);
+
+    expect(message).toContain('`agent-relay file` could not be prepared.');
+    expect(message).toContain('npm error code ENOTFOUND');
+    expect(message).toContain('Retry when online');
+    expect(message).not.toContain('at ');
+  });
+
   it('rejects a module that exports no factory', async () => {
     await expect(
       loadProductSurface(
@@ -192,26 +217,127 @@ describe('loadProductSurface', () => {
   });
 });
 
-describe('importProductSurface', () => {
-  it('has a bundler-visible literal for every mounted surface', () => {
-    // The standalone build bundles with esbuild, which cannot see through
-    // `import(someVariable)`. A group whose specifier is missing here compiles
-    // and passes every other test, then fails at runtime in the compiled
-    // binary with MODULE_NOT_FOUND — reported as "not installed", in a
-    // distribution where installing cannot help (#1795).
-    const source = readFileSync(new URL('./product-surfaces.ts', import.meta.url), 'utf8');
+describe('SURFACE_PACKAGES', () => {
+  const manifest = JSON.parse(
+    readFileSync(new URL('../../../package.json', import.meta.url), 'utf8')
+  ) as { dependencies: Record<string, string> };
+
+  it('pins the same version the npm distribution installs', () => {
+    // The standalone binary installs these itself and has no manifest to read,
+    // so the ranges live in source. A pin bumped in package.json alone is
+    // invisible until someone runs the compiled binary and gets the old SDK.
     for (const definition of PRODUCT_SURFACES) {
-      expect(
-        source.includes(`import('${definition.specifier}')`),
-        `${definition.as} has no literal import('${definition.specifier}'); ` +
-          'the standalone binary will not bundle it'
-      ).toBe(true);
+      const pkg = SURFACE_PACKAGES[definition.specifier];
+      expect(pkg, `${definition.as} has no entry in SURFACE_PACKAGES`).toBeDefined();
+      expect(pkg!.range, `${pkg!.name} disagrees with packages/cli/package.json`).toBe(
+        manifest.dependencies[pkg!.name]
+      );
     }
+  });
+
+  it('names the package the specifier belongs to', () => {
+    for (const [specifier, pkg] of Object.entries(SURFACE_PACKAGES)) {
+      expect(specifier.startsWith(`${pkg.name}/`)).toBe(true);
+    }
+  });
+});
+
+describe('importProductSurface', () => {
+  /** Seams whose defaults would provision; every test starts from "never". */
+  function fallbackDeps(overrides: Partial<Parameters<typeof importProductSurface>[1]> = {}) {
+    return {
+      isStandalone: () => false,
+      provision: vi.fn(async () => '/unused'),
+      importFromStore: vi.fn(async () => ({ createRelayCliSurface: () => fakeSurface() })),
+      ...overrides,
+    };
+  }
+
+  function notFound(specifier: string): Error {
+    return Object.assign(new Error(`Cannot find package '${specifier}' imported from /x/y.js`), {
+      code: 'ERR_MODULE_NOT_FOUND',
+    });
+  }
+
+  it('returns the resolved module without provisioning anything', async () => {
+    // The npm distribution's only path. Nothing may be installed, created, or
+    // even checked for when the specifier resolves.
+    const module = { createRelayCliSurface: () => fakeSurface() };
+    const deps = fallbackDeps({ isStandalone: () => true, importSpecifier: async () => module });
+
+    await expect(importProductSurface('@relayfile/sdk/relay-cli', deps)).resolves.toBe(module);
+    expect(deps.provision).not.toHaveBeenCalled();
+    expect(deps.importFromStore).not.toHaveBeenCalled();
+  });
+
+  it('provisions the package when it does not resolve in the compiled binary', async () => {
+    const stored = { createRelayCliSurface: () => fakeSurface() };
+    const deps = fallbackDeps({
+      isStandalone: () => true,
+      importSpecifier: async () => {
+        throw notFound('@relayfile/sdk');
+      },
+      provision: vi.fn(async () => '/store/relayfile-sdk-0.10.64-abcd1234'),
+      importFromStore: vi.fn(async () => stored),
+    });
+
+    await expect(importProductSurface('@relayfile/sdk/relay-cli', deps)).resolves.toBe(stored);
+    expect(deps.provision).toHaveBeenCalledWith(SURFACE_PACKAGES['@relayfile/sdk/relay-cli']);
+    expect(deps.importFromStore).toHaveBeenCalledWith(
+      '/store/relayfile-sdk-0.10.64-abcd1234',
+      '@relayfile/sdk/relay-cli'
+    );
+  });
+
+  it('leaves the npm distribution alone when the import fails there', async () => {
+    // An npm install that cannot resolve the SDK has a broken dependency tree,
+    // and `describeLoadFailure` already says so. Installing a second copy into
+    // the home directory would paper over it.
+    const error = notFound('@relayfile/sdk');
+    const deps = fallbackDeps({
+      isStandalone: () => false,
+      importSpecifier: async () => {
+        throw error;
+      },
+    });
+
+    await expect(importProductSurface('@relayfile/sdk/relay-cli', deps)).rejects.toBe(error);
+    expect(deps.provision).not.toHaveBeenCalled();
+  });
+
+  it('does not provision a specifier this CLI does not pin', async () => {
+    // The end-to-end test mounts product builds by absolute path; there is no
+    // package to install for those, and no version to install it at.
+    const error = notFound('/abs/path/dist/relay-cli.js');
+    const deps = fallbackDeps({
+      isStandalone: () => true,
+      importSpecifier: async () => {
+        throw error;
+      },
+    });
+
+    await expect(importProductSurface('/abs/path/dist/relay-cli.js', deps)).rejects.toBe(error);
+    expect(deps.provision).not.toHaveBeenCalled();
+  });
+
+  it('does not provision when the package resolved and then threw', async () => {
+    // The package is present; a second copy of it would throw identically, and
+    // installing one would hide the error that actually needs reading.
+    const error = new Error('surface module threw while evaluating');
+    const deps = fallbackDeps({
+      isStandalone: () => true,
+      importSpecifier: async () => {
+        throw error;
+      },
+    });
+
+    await expect(importProductSurface('@relayfile/sdk/relay-cli', deps)).rejects.toBe(error);
+    expect(deps.provision).not.toHaveBeenCalled();
   });
 
   it('still resolves a specifier outside the table', async () => {
     // The end-to-end test mounts product builds by absolute path, so the
-    // dynamic fallback has to stay.
+    // dynamic import has to stay.
     await expect(importProductSurface('node:path')).resolves.toHaveProperty('join');
   });
 });

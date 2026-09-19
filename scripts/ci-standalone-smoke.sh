@@ -380,16 +380,21 @@ fi
 
 # The mounted product groups must work in THIS distribution, not only from npm.
 #
-# They are reached with `await import(...)`, and the standalone build bundles
-# with esbuild before `bun --compile`: a specifier the bundler cannot see
-# statically is never included, and a compiled binary has no node_modules to
-# fall back on. That shipped once (#1795) — every group failed with
-# MODULE_NOT_FOUND, reported as "not installed", in a distribution where
-# installing cannot help. Nothing here exercised the mount, so nothing caught
-# it.
+# They are reached with `await import(...)`, and a compiled binary has no
+# node_modules for that to resolve against. That shipped once (#1795) — every
+# group failed with MODULE_NOT_FOUND, reported as "not installed", in a
+# distribution where installing cannot help. Nothing here exercised the mount,
+# so nothing caught it.
 #
-# `--help` is enough: it loads the product SDK and renders its declared command
-# tree, without a daemon, a network call, or credentials.
+# The binary now installs each SDK on first use, under the isolated HOME set
+# above, so the first group here pays for a real npm install. That is the
+# behaviour under test: if provisioning is broken or the pins name a version
+# that cannot resolve, this is where it shows.
+#
+# `--help` is enough to prove the SDK loaded and its declared command tree
+# rendered, without a daemon or credentials. It is NOT enough to prove the
+# product's own payload (a Go binary, a native addon) is reachable — that is
+# scripts/standalone-mount-probe.sh, which runs real commands.
 for group in file flows sessions; do
   if ! GROUP_OUTPUT="$(run_cli "$group" --help 2>&1)"; then
     echo "Standalone binary cannot mount \`agent-relay $group\`" >&2
