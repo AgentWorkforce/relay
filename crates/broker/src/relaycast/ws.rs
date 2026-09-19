@@ -23,14 +23,6 @@ use crate::{fleet_wire::AgentRegistrationMetadata, protocol::MessageInjectionMod
 #[cfg(test)]
 use relaycast::registration_is_retryable;
 
-/// Floor under the server's `Retry-After` before the broker replays a worker
-/// channel join rejected with Relaycast's exact `workspace_busy`
-/// write-admission code (served with `Retry-After: 2`). The SDK has already
-/// paced its own attempts on that header; the broker never replays sooner.
-#[cfg(not(test))]
-const WORKER_CHANNEL_BUSY_REPLAY_FLOOR: Duration = Duration::from_secs(1);
-#[cfg(test)]
-const WORKER_CHANNEL_BUSY_REPLAY_FLOOR: Duration = Duration::from_millis(5);
 /// Requests the relaycast SDK sends for one call that keeps being denied
 /// admission (its bounded admission-retry schedule). Sizes the budget below;
 /// the loop itself measures each round from the SDK's reported `attempts`.
@@ -41,7 +33,9 @@ const WORKER_CHANNEL_BUSY_SDK_ROUND_REQUESTS: u32 = 3;
 /// would multiply pressure on a saturated workspace by the SDK's retry factor
 /// — and the broker replays only when a whole round (sized by the SDK's last
 /// one) still fits, so the ceiling is never crossed. It stays this small
-/// because a spawn holds the broker event loop while it reconciles membership.
+/// because a spawn holds the broker event loop while it reconciles membership;
+/// for the same reason the replay waits out a cooldown only within the
+/// reconcile policy ([`reconcile_cooldown`]) and is otherwise terminal.
 const WORKER_CHANNEL_BUSY_MAX_REQUESTS: u32 = 2 * WORKER_CHANNEL_BUSY_SDK_ROUND_REQUESTS;
 
 #[derive(Debug, Clone)]
@@ -1398,11 +1392,14 @@ impl RelaycastHttpClient {
                             break Err(error);
                         }
                         // The SDK paced its own attempts on the server's
-                        // Retry-After; never replay sooner than that.
-                        let delay = workspace_busy_retry_after(&error)
-                            .map_or(WORKER_CHANNEL_BUSY_REPLAY_FLOOR, |retry_after| {
-                                retry_after.max(WORKER_CHANNEL_BUSY_REPLAY_FLOOR)
-                            });
+                        // Retry-After; never replay sooner than that, and never
+                        // hold the event loop for a cooldown beyond the
+                        // reconcile policy — a long cooldown is terminal here,
+                        // exactly as on the registration and reconcile paths.
+                        let Some(delay) = reconcile_cooldown(workspace_busy_retry_after(&error))
+                        else {
+                            break Err(error);
+                        };
                         tracing::warn!(
                             worker = %agent_name,
                             channel = %name,
@@ -4574,6 +4571,44 @@ mod tests {
                 first.assert_hits(3);
             }
         }
+    }
+
+    /// A `workspace_busy` cooldown beyond the reconcile policy is terminal for
+    /// a worker channel join: the spawn holds the broker event loop, so the
+    /// broker neither waits it out nor shortens it.
+    #[tokio::test]
+    async fn worker_channel_join_long_cooldown_is_terminal_without_waiting() {
+        let server = MockServer::start();
+        let busy = server.mock(|when, then| {
+            when.method(POST).path("/v1/channels");
+            then.status(429)
+                .header("retry-after", "120")
+                .json_body(json!({"ok":false,"error":{"code":"workspace_busy","message":"Workspace write capacity is busy; retry with backoff"}}));
+        });
+        let client = seeded_http_client(&server.base_url());
+        client.seed_agent_token("worker", "owned-token");
+        let channels = [ChannelName::from("proof")];
+        let started = std::time::Instant::now();
+        let error = tokio::time::timeout(
+            Duration::from_secs(60),
+            client.ensure_agent_channels("worker", None, &channels),
+        )
+        .await
+        .expect("a long cooldown must not be waited out")
+        .unwrap_err()
+        .to_string();
+        assert!(error.contains("workspace_busy"), "{error}");
+        // Only the SDK's own paced round reached the server: no broker replay.
+        let hits = busy.hits();
+        assert!(
+            hits >= 1 && hits <= super::WORKER_CHANNEL_BUSY_SDK_ROUND_REQUESTS as usize,
+            "{hits}"
+        );
+        assert!(
+            started.elapsed() < Duration::from_secs(60),
+            "broker must not sleep a refused cooldown: {:?}",
+            started.elapsed()
+        );
     }
 
     #[tokio::test]
