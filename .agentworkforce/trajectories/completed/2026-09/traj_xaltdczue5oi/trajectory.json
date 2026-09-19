@@ -1,0 +1,53 @@
+{
+  "id": "traj_xaltdczue5oi",
+  "version": 1,
+  "task": {
+    "title": "Clean up failed scheduled Cloud workflow snapshots for PR #1797"
+  },
+  "status": "completed",
+  "startedAt": "2026-09-19T06:32:54.337Z",
+  "completedAt": "2026-09-19T06:37:13.865Z",
+  "agents": [
+    {
+      "name": "default",
+      "role": "lead",
+      "joinedAt": "2026-09-19T06:37:13.480Z"
+    }
+  ],
+  "chapters": [
+    {
+      "id": "chap_hjhr7tgmkn7o",
+      "title": "Work",
+      "agentName": "default",
+      "startedAt": "2026-09-19T06:37:13.480Z",
+      "endedAt": "2026-09-19T06:37:13.865Z",
+      "events": [
+        {
+          "ts": 1789799833480,
+          "type": "decision",
+          "content": "Use empty overwrites as snapshot tombstones before cancellation: Use empty overwrites as snapshot tombstones before cancellation",
+          "raw": {
+            "question": "Use empty overwrites as snapshot tombstones before cancellation",
+            "chosen": "Use empty overwrites as snapshot tombstones before cancellation",
+            "alternatives": [],
+            "reasoning": "Cloud exposes PUT workflow storage and POST cancellation but no delete-object route; an empty run-scoped overwrite removes archive contents without inventing an API."
+          },
+          "significance": "high"
+        }
+      ]
+    }
+  ],
+  "retrospective": {
+    "summary": "Added best-effort scheduled snapshot tombstoning and prepared-run cancellation with failure-preserving tests.",
+    "approach": "Standard approach",
+    "confidence": 0.9
+  },
+  "commits": [],
+  "filesChanged": [],
+  "projectId": "AgentWorkforce/relay",
+  "tags": [],
+  "_trace": {
+    "startRef": "ca4c0a77aa3a6ac20291944e6896dfa694064e66",
+    "endRef": "ca4c0a77aa3a6ac20291944e6896dfa694064e66"
+  }
+}
