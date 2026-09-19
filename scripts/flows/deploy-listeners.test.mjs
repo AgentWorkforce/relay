@@ -4,7 +4,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { describe, it } from 'node:test';
 
-import { declaredFlowName } from './deploy-listeners.mjs';
+import { declaredFlowName, flowDeclarations } from './deploy-listeners.mjs';
 
 const dir = mkdtempSync(path.join(os.tmpdir(), 'deploy-listeners-'));
 function flowFile(name, source) {
@@ -44,6 +44,26 @@ describe('declaredFlowName', () => {
       ].join('\n')
     );
     assert.equal(declaredFlowName(file), 'relay.ci.pr-proof-v2');
+  });
+
+  it('ignores flow(...) text inside string literals and trailing inline comments', () => {
+    const file = flowFile(
+      'strings.flow.ts',
+      [
+        "import { flow } from '@relayflows/surface';",
+        "const help = \"see flow('relay.ci.pr-proof') for the old shape\"; // flow('relay.ci.pr-proof')",
+        'const tpl = `flow("relay.ci.pr-proof")`;',
+        "const escaped = 'it\\'s flow(\"relay.ci.pr-proof\")';",
+        "export default flow<Input>('relay.ci.pr-proof-v2', (f) => f.run(help + tpl + escaped));",
+        '',
+      ].join('\n')
+    );
+    assert.equal(declaredFlowName(file), 'relay.ci.pr-proof-v2');
+  });
+
+  it('reads a call whose identifier is flow and nothing else', () => {
+    assert.deepEqual(flowDeclarations("reflow('a'); flows('b'); flow ( 'c' ); x.flow('d')"), ['c', 'd']);
+    assert.deepEqual(flowDeclarations('flow<Input<Extra>>(\n  "e",\n)'), ['e']);
   });
 
   it('refuses a file that declares no flow or more than one', () => {

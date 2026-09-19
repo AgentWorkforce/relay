@@ -80,19 +80,92 @@ function flows(args, { expectJson = true } = {}) {
  * else. Matching the raw source would accept the managed name in a comment or
  * an unrelated literal after the declaration itself was renamed, and every run
  * would then deploy one more listener under the new name that no reconcile
- * removes. Comments are stripped first, and the file must declare exactly one
- * flow, so the name compared is the one the listener will be created under.
+ * removes. The scan is token-aware — comments and string literals are skipped
+ * as units, so `flow('old')` inside a string or after a trailing `//` is not
+ * a declaration — and the file must declare exactly one flow, so the name
+ * compared is the one the listener will be created under.
  */
 export function declaredFlowName(flowPath) {
-  const source = readFileSync(flowPath, 'utf8')
-    .replace(/\/\*[\s\S]*?\*\//g, '')
-    .replace(/^\s*\/\/.*$/gm, '');
-  // `flow('name'` or `flow<Input>('name'`; the generic never contains parens.
-  const declarations = [...source.matchAll(/\bflow\s*(?:<[^()]*>)?\s*\(\s*(['"`])([^'"`\n]+)\1/g)];
+  const declarations = flowDeclarations(readFileSync(flowPath, 'utf8'));
   if (declarations.length !== 1) {
     throw new Error(`${flowPath} must declare exactly one flow(...); found ${declarations.length}`);
   }
-  return declarations[0][2];
+  return declarations[0];
+}
+
+const IDENTIFIER = /[A-Za-z0-9_$]/;
+
+/**
+ * Every `flow('name'` / `flow<Input>('name'` call in the source, skipping
+ * comments and string literals as whole tokens. Deliberately not a full
+ * TypeScript lexer: it only has to know where strings and comments end, which
+ * is enough to keep a mention inside one from counting as a declaration.
+ */
+export function flowDeclarations(source) {
+  const names = [];
+  let i = 0;
+  // Advance past one string literal starting at `i` (its quote is source[i]).
+  const skipString = () => {
+    const quote = source[i];
+    for (i += 1; i < source.length && source[i] !== quote; i += 1) {
+      if (source[i] === '\\') i += 1;
+    }
+    i += 1;
+  };
+  while (i < source.length) {
+    const ch = source[i];
+    const next = source[i + 1];
+    if (ch === '/' && next === '/') {
+      i = source.indexOf('\n', i);
+      if (i === -1) break;
+      continue;
+    }
+    if (ch === '/' && next === '*') {
+      const close = source.indexOf('*/', i + 2);
+      i = close === -1 ? source.length : close + 2;
+      continue;
+    }
+    if (ch === "'" || ch === '"' || ch === '`') {
+      skipString();
+      continue;
+    }
+    if (
+      source.startsWith('flow', i) &&
+      !IDENTIFIER.test(source[i - 1] ?? '') &&
+      !IDENTIFIER.test(source[i + 4] ?? '')
+    ) {
+      // Past the identifier, an optional generic, and the opening paren.
+      let j = i + 4;
+      while (/\s/.test(source[j] ?? '')) j += 1;
+      if (source[j] === '<') {
+        // Nested generics (`flow<Input<Extra>>(`) close at depth zero.
+        let depth = 0;
+        for (; j < source.length; j += 1) {
+          if (source[j] === '<') depth += 1;
+          if (source[j] === '>' && (depth -= 1) === 0) break;
+        }
+        j += 1;
+        while (/\s/.test(source[j] ?? '')) j += 1;
+      }
+      if (source[j] === '(') {
+        j += 1;
+        while (/\s/.test(source[j] ?? '')) j += 1;
+        const quote = source[j];
+        if (quote === "'" || quote === '"' || quote === '`') {
+          const close = source.indexOf(quote, j + 1);
+          if (close !== -1) {
+            names.push(source.slice(j + 1, close));
+            i = close + 1;
+            continue;
+          }
+        }
+      }
+      i += 4;
+      continue;
+    }
+    i += 1;
+  }
+  return names;
 }
 
 /** Listeners already deployed for this flow name against this repository. */
