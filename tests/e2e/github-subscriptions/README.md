@@ -13,6 +13,21 @@ node tests/e2e/github-subscriptions/run.mjs prepare /absolute/demo-config.json
 
 `prepare` creates one clearly labelled PR per repository, each targeting its own disposable base branch. It records every acknowledged mutation immediately in `manifest.json`; it never updates main. If interrupted between a server mutation and the manifest write, reconcile the deterministic branch/PR names before retrying. Never adopt an unrelated existing fixture. Comments and reviews remain on closed disposable PRs as evidence after cleanup.
 
+`assert` requires the exact adapter-owned path and provider identity captured by the producer, including the PR/commit/author fields appropriate to the event. After a real Actions run finishes, run `resolve` to bind the CI stimulus to its successful completed GitHub Actions check ID; the workflow commit SHA alone is insufficient. Responses before injection, responses more than 120 seconds after stimulus creation, duplicate or early acknowledgments, and receiver exits invalidate the case. The generic receiver task waits for `GHSUB_EXPECT_KIND` semantics before consuming a nonce, so a PR body edit or an in-progress check cannot satisfy a merge/completion case.
+
+Review, root review-comment, and check records use repository-level `reviews/{id}.json`, `comments/{id}.json`, and `checks/{id}.json` paths. A PR directory scope does not cover them. Provision exact adapter paths for independently inventoried pending reviews/comments and in-progress real checks before their terminal event; preserve existing repository routes. The current `subscribe` command provisions its configured issue/PR/repository scope only and does not stage these additional records automatically. An unobserved terminal event must be repeated with a new owned fixture, never replaced by a fabricated event.
+
+For the normal Nango route, configure `nango.destination` with the deployed Cloud Nango webhook URL, `nango.connectionId`, and `nango.providerConfigKey`. Set `NANGO_SECRET_KEY` from the existing environment credential, then run:
+
+```sh
+node tests/e2e/github-subscriptions/run.mjs resolve /absolute/demo-config.json
+node tests/e2e/github-subscriptions/run.mjs capture-nango /absolute/demo-config.json
+```
+
+The read-only Nango Management MCP collector exhausts operation and message pagination, including empty pages with cursors. Forward operations omit top-level connection identity; the collector checks the forwarded request body instead. It saves only the matching destination/status, connection, GitHub delivery ID, event/action, timestamps and hashes, excluding credentials, request headers and provider content. Link these receipts to authenticated Cloud ingress logs by delivery ID and canonical-path hash, then to Relayfile application, broker injection and the actor response. A Nango success receipt alone is not application or demo proof. `assert` continues to report `ready: false`; full acceptance requires the independent nine-gate review.
+
+The observer paginates channel history back to a known boundary before recording coverage. Negative windows last at least 120 seconds and reject nonce delivery or digest acknowledgment. The initial subscription inventory is immutable; subsequent snapshots append to a journal. Cleanup checks each owned branch's expected SHA before deleting it and refuses an externally advanced branch. GitHub's delete-ref API has no atomic SHA precondition, so retain exclusive ownership of fixture branches during cleanup.
+
 The runner can provision and update its owned subscriptions using `subscribe`, and retire them using `unsubscribe`. It refuses unowned binding replacements and verifies old resource IDs disappear. Set `brokerProjectRoot`, `receiverCwd`, `receiverCli`, `subscriptionScope` (`issue`, `pr`, or `repo`) and `spawnReceiver` explicitly. For chief, set `spawnReceiver: false`. Start `collect` before `subscribe`; it reloads channel configuration after provisioning.
 
 ```sh

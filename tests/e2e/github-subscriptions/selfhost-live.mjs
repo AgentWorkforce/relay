@@ -12,6 +12,8 @@ import {
   rmSync,
   realpathSync,
   existsSync,
+  accessSync,
+  constants,
 } from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -101,6 +103,27 @@ const runId = 'ghsub-selfhost-' + randomBytes(5).toString('hex');
 const work = mkdtempSync(path.join(output, 'work-'));
 const name = 'ghsub-live-' + randomBytes(4).toString('hex');
 const binary = process.env.GHSUB_BROKER_BINARY ?? root + '/target/release/agent-relay-broker';
+const cloudflared =
+  process.env.GHSUB_CLOUDFLARED_BINARY ??
+  ['/opt/homebrew/bin/cloudflared', '/usr/local/bin/cloudflared', 'cloudflared'].find((candidate) =>
+    candidate === 'cloudflared' ? true : existsSync(candidate)
+  );
+const commandExists = (tool) => {
+  if (tool.includes('/')) return existsSync(tool);
+  return (process.env.PATH ?? '').split(path.delimiter).some((dir) => {
+    try {
+      accessSync(path.join(dir, tool), constants.X_OK);
+      return true;
+    } catch {
+      return false;
+    }
+  });
+};
+for (const tool of ['gh', 'git', 'python3', 'shasum', process.env.GHSUB_CODEX_BINARY ?? 'codex']) {
+  assert(commandExists(tool), `Missing required tool on PATH: ${tool}`);
+}
+assert(existsSync(binary), `Missing candidate broker binary: ${binary}`);
+assert(commandExists(cloudflared), 'Missing cloudflared binary');
 const report = {
   runId,
   at: new Date().toISOString(),
@@ -509,7 +532,7 @@ try {
   proxy.listen(0, '127.0.0.1');
   await once(proxy, 'listening');
   tunnel = spawn(
-    '/opt/homebrew/bin/cloudflared',
+    cloudflared,
     ['tunnel', '--url', 'http://127.0.0.1:' + proxy.address().port, '--no-autoupdate', '--protocol', 'http2'],
     { stdio: ['ignore', 'pipe', 'pipe'] }
   );

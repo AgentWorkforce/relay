@@ -28,6 +28,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - v1 knobs with no v2 equivalent are dropped, each recorded at its call site and in `flows/spec-builder.ts`: the relaycast `channel`, `idleNudge`, agent `preset`/`role`, and per-agent-step timeouts. `permissions` survives but is coarser — `AgentStepSpec.permissions` has no read/write split, deny list, or exec allowlist, so the runners' own seals remain what prove evidence was not mutated.
 
+## [12.2.5] - 2026-09-19
+
+### Changed
+
+- Harden subscription evidence and capture Nango forwards
+- Install command
+- Readme tweaks
+
+### Fixed
+
+- Retry Relaycast overloads across spawn and mcp-args
+
 ## [12.2.4] - 2026-09-18
 
 ### Added
@@ -108,9 +120,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - Local release of broker-owned workers now performs generation-bound direct identity cleanup with durable retries when the worker host is unavailable.
 - HTTP agent spawn rejects failed Relaycast node binding, cleans up the newly registered identity, and publishes declared metadata for successful spawns using either new or supplied tokens.
+- Multi-workspace startup rolls back already-registered memberships if a sibling registration fails, preventing leaked hosted identities.
+- No-key startup keeps Relaycast workspace creation on its own timeout so typed `workspace_busy` admission exhaustion is preserved instead of surfacing as a generic handshake timeout.
 
 - `agent-relay node up` retries the narrowly transient Relaycast `workspace_busy` admission response while keeping unrelated rate limits terminal and preserving bounded startup diagnostics.
 - `fleet spawn --sandbox` dispatches with only its temporary launcher token after Cloud target selection, avoiding the SDK's dual-credential rejection while keeping workspace-key authority limited to launcher registration and release.
+- `fleet spawn` and `mcp-args --register` retry typed Relaycast overloads up to three times with idempotent admission handling.
 
 - SDK fleet spawn placement receipts preserve invocation correlation and distinguish accepted, ready, unconfirmed, and terminal-failed outcomes.
 

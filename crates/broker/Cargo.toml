@@ -50,3 +50,6 @@ libc = "0.2"
 httpmock = "0.7"
 tempfile = "3.19"
 tower = { version = "0.5", features = ["util"] }
+# Enables `#[tokio::test(start_paused = true)]` and `tokio::time::{pause,advance}`
+# for deterministic virtual-clock tests of budget/timeout retry logic.
+tokio = { version = "1.44", features = ["test-util"] }

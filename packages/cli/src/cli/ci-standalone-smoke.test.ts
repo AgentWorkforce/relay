@@ -118,9 +118,21 @@ exit 0
 set -euo pipefail
 printf 'cli %s %s\\n' "\${1:-}" "\${2:-}" >> "$INVOCATION_LOG"
 
-if [ "\${1:-}" != "node" ]; then
-  exit 64
-fi
+case "\${1:-}" in
+  node) ;;
+  file|flows|sessions)
+    # The mounted product groups. In the real binary these install their SDK on
+    # first use; here they only have to render the usage line the smoke greps
+    # for, or fail the way an unreachable SDK fails.
+    if [ "\${FAKE_MOUNT_BROKEN:-}" = "\${1:-}" ]; then
+      echo "\\\`agent-relay \${1}\\\` needs @relayfile/sdk, which is not installed." >&2
+      exit 1
+    fi
+    echo "Usage: agent-relay \${1} [options]"
+    exit 0
+    ;;
+  *) exit 64 ;;
+esac
 
 case "\${2:-}" in
   status)
@@ -228,9 +240,12 @@ describe('ci-standalone-smoke workspace reuse', () => {
     const smokeSeconds = Number(
       script.match(/AGENT_RELAY_STANDALONE_STARTUP_TIMEOUT_SECONDS:-([0-9]+)}/)?.[1]
     );
-    const brokerSeconds = Number(
-      brokerSession.match(/const HANDSHAKE_TOTAL_TIMEOUT:[^=]+=[\s\n]*Duration::from_secs\(([0-9]+)\);/)?.[1]
+    const brokerTimeoutMatch = brokerSession.match(
+      /const HANDSHAKE_TOTAL_TIMEOUT\s*:\s*Duration\s*=\s*Duration::from_secs\(([0-9]+)\);/
     );
+    expect(brokerTimeoutMatch).not.toBeNull();
+    const brokerSeconds = Number(brokerTimeoutMatch?.[1]);
+    expect(Number.isFinite(brokerSeconds)).toBe(true);
 
     expect(minimumSeconds).toBeGreaterThanOrEqual(brokerSeconds + 10);
     expect(smokeSeconds).toBeGreaterThanOrEqual(minimumSeconds);
@@ -239,13 +254,13 @@ describe('ci-standalone-smoke workspace reuse', () => {
 
   it('rejects unsafe startup-timeout overrides before invoking binaries', () => {
     for (const [override, expectedMessage] of [
-      ['49', 'must be at least 50s'],
+      ['59', 'must be at least 60s'],
       ['050', 'without leading zeros'],
       ['060', 'without leading zeros'],
       ['08', 'without leading zeros'],
       ['241', 'must be no more than 240s'],
       ['99999', 'must be no more than 240s'],
-      ['9223372036854775808', 'between 50s and 240s'],
+      ['9223372036854775808', 'between 60s and 240s'],
     ]) {
       const { cli, broker, invocationLog } = createFakeBinaries();
       const result = spawnSync('bash', [smokeScript, cli, broker], {
@@ -282,6 +297,29 @@ describe('ci-standalone-smoke workspace reuse', () => {
     const ordinaryOutput = result.stdout.replace(/::add-mask::[^\n]*\n/g, '');
     expect(ordinaryOutput).not.toContain('rk_live_fake_smoke_key');
     expect(result.stderr).not.toContain('rk_live_fake_smoke_key');
+  });
+
+  it('verifies every mounted product group and fails when one cannot mount', () => {
+    // The check whose absence let #1795 ship: the broker lifecycle passed while
+    // `agent-relay file` could not load its SDK at all. It has to bite for each
+    // group, not just the first.
+    for (const group of ['file', 'flows', 'sessions']) {
+      const { cli, broker, invocationLog, toolsPath } = createFakeBinaries();
+      const result = spawnSync('bash', [smokeScript, cli, broker], {
+        encoding: 'utf8',
+        env: {
+          ...process.env,
+          PATH: `${toolsPath}:${process.env.PATH ?? ''}`,
+          INVOCATION_LOG: invocationLog,
+          FAKE_MOUNT_BROKEN: group,
+        },
+        timeout: 10_000,
+      });
+
+      expect(result.status, `${group}: ${result.stderr}`).not.toBe(0);
+      expect(result.stderr, group).toContain(`cannot mount \`agent-relay ${group}\``);
+      expect(result.stdout, group).not.toContain('Standalone smoke passed');
+    }
   });
 
   it('accepts a successful delete without adding a follow-up read dependency', () => {
@@ -467,7 +505,7 @@ describe('ci-standalone-smoke workspace reuse', () => {
       env: {
         ...process.env,
         AGENT_RELAY_STANDALONE_BROKER_NAME: 'relay-ci-test-c',
-        AGENT_RELAY_STANDALONE_STARTUP_TIMEOUT_SECONDS: '50',
+        AGENT_RELAY_STANDALONE_STARTUP_TIMEOUT_SECONDS: '60',
         FAKE_READY_AFTER_SECOND_DOWN: '1',
         INVOCATION_LOG: invocationLog,
         BASH_ENV: bashEnv,

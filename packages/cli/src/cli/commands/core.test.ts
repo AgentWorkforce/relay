@@ -940,7 +940,7 @@ describe('registerCoreCommands', () => {
 
     expect(exitCode).toBe(1);
     expect(deps.error).toHaveBeenCalledWith(
-      'Broker background start did not become ready within 10s (pid: 9001).'
+      'Broker background start did not become ready within 60s (pid: 9001).'
     );
     expect(deps.error).toHaveBeenCalledWith(
       'Run `agent-relay status --wait-for=10` for details, or `agent-relay down --force` to clean up.'
@@ -1987,7 +1987,7 @@ describe('registerCoreCommands', () => {
 
     expect(exitCode).toBe(1);
     expect(deps.error).toHaveBeenCalledWith(
-      'Broker background start did not become ready within 10s (pid: 4242).'
+      'Broker background start did not become ready within 60s (pid: 4242).'
     );
     expect(deps.error).toHaveBeenCalledWith('Broker process is running, but the API did not become ready.');
     expect(killImpl).toHaveBeenCalledWith(9001, 'SIGTERM');
