@@ -1038,6 +1038,213 @@ describe('workflow schedules', () => {
     expect(s3SendMock).not.toHaveBeenCalled();
   });
 
+  it('tombstones uploaded path snapshots and cancels the prepared run when a later upload fails', async () => {
+    await mkdir(path.join(tmpRoot, 'app'));
+    await mkdir(path.join(tmpRoot, 'worker'));
+    const workflowPath = path.join(tmpRoot, 'workflow.yaml');
+    await writeFile(path.join(tmpRoot, 'app', 'README.md'), 'application\n');
+    await writeFile(path.join(tmpRoot, 'worker', 'README.md'), 'worker\n');
+    await writeFile(
+      workflowPath,
+      [
+        'version: "1.0"',
+        'name: paths',
+        'paths:',
+        '  - name: app',
+        '    path: app',
+        '  - name: worker',
+        '    path: worker',
+        'swarm:',
+        '  pattern: dag',
+        'agents: []',
+        'workflows: []',
+      ].join('\n')
+    );
+    const requests: Array<{ path: string; bodyLength?: number }> = [];
+    authorizedApiFetchMock.mockImplementation(async (_auth, requestPath, init) => {
+      const bodyLength = init?.body instanceof Buffer ? init.body.length : undefined;
+      requests.push({ path: requestPath, bodyLength });
+      if (requestPath === '/api/v1/workflows/prepare') {
+        return {
+          auth: { accessToken: 'token' },
+          response: new Response(
+            JSON.stringify({
+              runId: '11111111-1111-4111-8111-111111111111',
+              s3Credentials: {
+                accessKeyId: 'access',
+                secretAccessKey: 'secret',
+                sessionToken: 'session',
+                bucket: 'bucket',
+                prefix: 'user/11111111-1111-4111-8111-111111111111',
+                backend: 'cloud-api',
+              },
+              s3CodeKey: 'code.tar.gz',
+              workflowStorage: { backend: 'cloud-api' },
+            }),
+            { status: 200, headers: { 'Content-Type': 'application/json' } }
+          ),
+        };
+      }
+      if (requestPath.endsWith('/storage/code-app.tar.gz')) {
+        return {
+          auth: { accessToken: 'token' },
+          response: new Response(JSON.stringify({ ok: true }), {
+            status: 200,
+            headers: { 'Content-Type': 'application/json' },
+          }),
+        };
+      }
+      if (requestPath.endsWith('/storage/code-worker.tar.gz')) {
+        return {
+          auth: { accessToken: 'token' },
+          response: new Response(JSON.stringify({ error: 'upload failed' }), {
+            status: 500,
+            headers: { 'Content-Type': 'application/json' },
+          }),
+        };
+      }
+      if (requestPath.endsWith('/cancel')) {
+        return {
+          auth: { accessToken: 'token' },
+          response: new Response(
+            JSON.stringify({ runId: '11111111-1111-4111-8111-111111111111', status: 'cancelled' }),
+            {
+              status: 200,
+              headers: { 'Content-Type': 'application/json' },
+            }
+          ),
+        };
+      }
+      throw new Error(`unexpected request: ${requestPath}`);
+    });
+
+    await expect(scheduleWorkflow(workflowPath, { cron: '0 * * * *' })).rejects.toThrow(
+      'Workflow storage upload failed: 500'
+    );
+
+    expect(requests).toEqual([
+      { path: '/api/v1/workflows/prepare', bodyLength: undefined },
+      {
+        path: '/api/v1/workflows/runs/11111111-1111-4111-8111-111111111111/storage/code-app.tar.gz',
+        bodyLength: expect.any(Number),
+      },
+      {
+        path: '/api/v1/workflows/runs/11111111-1111-4111-8111-111111111111/storage/code-worker.tar.gz',
+        bodyLength: expect.any(Number),
+      },
+      {
+        path: '/api/v1/workflows/runs/11111111-1111-4111-8111-111111111111/storage/code-app.tar.gz',
+        bodyLength: 0,
+      },
+      { path: '/api/v1/workflows/runs/11111111-1111-4111-8111-111111111111/cancel', bodyLength: undefined },
+    ]);
+  });
+
+  it('tombstones the uploaded snapshot and cancels the prepared run when schedule creation fails', async () => {
+    const workflowPath = await writeScheduleWorkflow();
+    const requests: Array<{ path: string; bodyLength?: number }> = [];
+    mockScheduleRequests(
+      () =>
+        new Response(JSON.stringify({ error: 'schedule unavailable' }), {
+          status: 503,
+          headers: { 'Content-Type': 'application/json' },
+        }),
+      (requestPath, init) => {
+        requests.push({
+          path: requestPath,
+          bodyLength: init?.body instanceof Buffer ? init.body.length : undefined,
+        });
+        return new Response(JSON.stringify({ ok: true }), {
+          status: 200,
+          headers: { 'Content-Type': 'application/json' },
+        });
+      }
+    );
+    const originalMock = authorizedApiFetchMock.getMockImplementation()!;
+    authorizedApiFetchMock.mockImplementation(async (auth, requestPath, init) => {
+      if (requestPath.endsWith('/cancel')) {
+        requests.push({ path: requestPath });
+        return {
+          auth: { accessToken: 'token' },
+          response: new Response(
+            JSON.stringify({ runId: '11111111-1111-4111-8111-111111111111', status: 'cancelled' }),
+            {
+              status: 200,
+              headers: { 'Content-Type': 'application/json' },
+            }
+          ),
+        };
+      }
+      return originalMock(auth, requestPath, init);
+    });
+
+    await expect(scheduleWorkflow(workflowPath, { cron: '0 * * * *' })).rejects.toThrow(
+      'Workflow schedule failed: 503'
+    );
+
+    expect(requests).toEqual([
+      {
+        path: '/api/v1/workflows/runs/11111111-1111-4111-8111-111111111111/storage/code.tar.gz',
+        bodyLength: expect.any(Number),
+      },
+      {
+        path: '/api/v1/workflows/runs/11111111-1111-4111-8111-111111111111/storage/code.tar.gz',
+        bodyLength: 0,
+      },
+      { path: '/api/v1/workflows/runs/11111111-1111-4111-8111-111111111111/cancel' },
+    ]);
+  });
+
+  it('reports cleanup failures without hiding the original schedule failure', async () => {
+    const workflowPath = await writeScheduleWorkflow();
+    const requests: string[] = [];
+    mockScheduleRequests(
+      () =>
+        new Response(JSON.stringify({ error: 'schedule unavailable' }), {
+          status: 503,
+          headers: { 'Content-Type': 'application/json' },
+        }),
+      (requestPath, init) => {
+        requests.push(`${requestPath}:${init?.body instanceof Buffer ? init.body.length : 'unknown'}`);
+        if (init?.body instanceof Buffer && init.body.length === 0) {
+          return new Response(JSON.stringify({ error: 'tombstone unavailable' }), {
+            status: 500,
+            headers: { 'Content-Type': 'application/json' },
+          });
+        }
+        return new Response(JSON.stringify({ ok: true }), {
+          status: 200,
+          headers: { 'Content-Type': 'application/json' },
+        });
+      }
+    );
+    const originalMock = authorizedApiFetchMock.getMockImplementation()!;
+    authorizedApiFetchMock.mockImplementation(async (auth, requestPath, init) => {
+      if (requestPath.endsWith('/cancel')) {
+        requests.push(`${requestPath}:cancel`);
+        return {
+          auth: { accessToken: 'token' },
+          response: new Response(JSON.stringify({ error: 'cancel unavailable' }), {
+            status: 500,
+            headers: { 'Content-Type': 'application/json' },
+          }),
+        };
+      }
+      return originalMock(auth, requestPath, init);
+    });
+
+    await expect(scheduleWorkflow(workflowPath, { cron: '0 * * * *' })).rejects.toThrow(
+      /Workflow schedule failed: 503[\s\S]*scheduled snapshot cleanup failed:.*tombstone unavailable[\s\S]*cancel unavailable/
+    );
+    expect(requests[0]).toMatch(
+      /^\/api\/v1\/workflows\/runs\/11111111-1111-4111-8111-111111111111\/storage\/code\.tar\.gz:[1-9]\d*$/
+    );
+    expect(requests.slice(1)).toEqual([
+      '/api/v1/workflows/runs/11111111-1111-4111-8111-111111111111/storage/code.tar.gz:0',
+      '/api/v1/workflows/runs/11111111-1111-4111-8111-111111111111/cancel:cancel',
+    ]);
+  });
+
   it('rejects unsupported v2 schedules before authentication, filesystem, or network access', async () => {
     await expect(
       scheduleWorkflow('missing-workflow.yaml', {

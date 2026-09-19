@@ -545,67 +545,78 @@ export async function scheduleWorkflow(
   }
   const scheduledWorkflowRequest = requestBody.workflowRequest as Record<string, unknown>;
   scheduledWorkflowRequest.codeSourceRunId = prepared.runId;
-  if (declaredPaths.length > 0) {
-    const pathSubmissions: PathSubmission[] = [];
-    const resolvedPathRoots: string[] = [];
-    console.error(`Creating ${declaredPaths.length} scheduled path tarball(s)...`);
-    for (const pathDef of declaredPaths) {
-      const absolutePath = path.resolve(process.cwd(), pathDef.path);
-      resolvedPathRoots.push(absolutePath);
-      const s3CodeKey = `code-${pathDef.name}.tar.gz`;
-      const tarball = await createTarball(absolutePath);
-      await uploadCodeObjectToCloudWorkflowStorage(api, prepared.runId, s3CodeKey, tarball);
-      const repo = parseGitHubRemoteForPath(absolutePath);
-      pathSubmissions.push({
-        name: pathDef.name,
-        s3CodeKey,
-        ...(repo ? { repoOwner: repo.repoOwner, repoName: repo.repoName } : {}),
-        ...(pathDef.pushBranch ? { pushBranch: pathDef.pushBranch } : {}),
-        ...(pathDef.pushBase ? { pushBase: pathDef.pushBase } : {}),
-        ...(pathDef.pushPrBody ? { pushPrBody: pathDef.pushPrBody } : {}),
-      });
-    }
-    scheduledWorkflowRequest.paths = pathSubmissions;
-    // Inline workflow content has no file inside the snapshot; a path hint
-    // would point every fire at a file that does not exist.
-    if (input.fromFile) {
-      for (const root of resolvedPathRoots) {
-        const workflowPath = relativizeWorkflowPathFromRoot(workflowArg, root);
-        if (workflowPath) {
-          scheduledWorkflowRequest.workflowPath = workflowPath;
-          break;
+  const uploadedObjectKeys: string[] = [];
+  const uploadScheduledSnapshot = async (objectKey: string, tarball: Buffer) => {
+    await uploadCodeObjectToCloudWorkflowStorage(api, prepared.runId, objectKey, tarball);
+    uploadedObjectKeys.push(objectKey);
+  };
+
+  try {
+    if (declaredPaths.length > 0) {
+      const pathSubmissions: PathSubmission[] = [];
+      const resolvedPathRoots: string[] = [];
+      console.error(`Creating ${declaredPaths.length} scheduled path tarball(s)...`);
+      for (const pathDef of declaredPaths) {
+        const absolutePath = path.resolve(process.cwd(), pathDef.path);
+        resolvedPathRoots.push(absolutePath);
+        const s3CodeKey = `code-${pathDef.name}.tar.gz`;
+        const tarball = await createTarball(absolutePath);
+        await uploadScheduledSnapshot(s3CodeKey, tarball);
+        const repo = parseGitHubRemoteForPath(absolutePath);
+        pathSubmissions.push({
+          name: pathDef.name,
+          s3CodeKey,
+          ...(repo ? { repoOwner: repo.repoOwner, repoName: repo.repoName } : {}),
+          ...(pathDef.pushBranch ? { pushBranch: pathDef.pushBranch } : {}),
+          ...(pathDef.pushBase ? { pushBase: pathDef.pushBase } : {}),
+          ...(pathDef.pushPrBody ? { pushPrBody: pathDef.pushPrBody } : {}),
+        });
+      }
+      scheduledWorkflowRequest.paths = pathSubmissions;
+      // Inline workflow content has no file inside the snapshot; a path hint
+      // would point every fire at a file that does not exist.
+      if (input.fromFile) {
+        for (const root of resolvedPathRoots) {
+          const workflowPath = relativizeWorkflowPathFromRoot(workflowArg, root);
+          if (workflowPath) {
+            scheduledWorkflowRequest.workflowPath = workflowPath;
+            break;
+          }
         }
       }
+    } else {
+      const tarball = await createTarball(process.cwd());
+      await uploadScheduledSnapshot(prepared.s3CodeKey, tarball);
+      scheduledWorkflowRequest.s3CodeKey = prepared.s3CodeKey;
+      const workflowPath = input.fromFile ? relativizeWorkflowPath(workflowArg) : null;
+      if (workflowPath) {
+        scheduledWorkflowRequest.workflowPath = workflowPath;
+      }
     }
-  } else {
-    const tarball = await createTarball(process.cwd());
-    await uploadCodeObjectToCloudWorkflowStorage(api, prepared.runId, prepared.s3CodeKey, tarball);
-    scheduledWorkflowRequest.s3CodeKey = prepared.s3CodeKey;
-    const workflowPath = input.fromFile ? relativizeWorkflowPath(workflowArg) : null;
-    if (workflowPath) {
-      scheduledWorkflowRequest.workflowPath = workflowPath;
+
+    const response = await api.fetch('/api/v1/workflows/schedules', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        Accept: 'application/json',
+      },
+      body: JSON.stringify(requestBody),
+    });
+
+    const payload = await readJsonResponse(response);
+    if (!response.ok) {
+      throw new Error(`Workflow schedule failed: ${describeResponseError(response, payload)}`);
     }
+
+    if (!isWorkflowScheduleEnvelope(payload)) {
+      throw new Error('Workflow schedule response was not valid JSON.');
+    }
+
+    return payload.schedule;
+  } catch (error) {
+    const cleanupFailures = await cleanupFailedScheduledSnapshot(api, prepared.runId, uploadedObjectKeys);
+    rethrowScheduleFailure(error, cleanupFailures);
   }
-
-  const response = await api.fetch('/api/v1/workflows/schedules', {
-    method: 'POST',
-    headers: {
-      'Content-Type': 'application/json',
-      Accept: 'application/json',
-    },
-    body: JSON.stringify(requestBody),
-  });
-
-  const payload = await readJsonResponse(response);
-  if (!response.ok) {
-    throw new Error(`Workflow schedule failed: ${describeResponseError(response, payload)}`);
-  }
-
-  if (!isWorkflowScheduleEnvelope(payload)) {
-    throw new Error('Workflow schedule response was not valid JSON.');
-  }
-
-  return payload.schedule;
 }
 
 export async function listWorkflowSchedules(options: { apiUrl?: string } = {}): Promise<WorkflowSchedule[]> {
@@ -912,6 +923,77 @@ async function uploadCodeObjectToCloudWorkflowStorage(
   if (!response.ok) {
     throw new Error(`Workflow storage upload failed: ${describeResponseError(response, payload)}`);
   }
+}
+
+async function tombstoneCodeObjectInCloudWorkflowStorage(
+  api: WorkflowHttpClient,
+  runId: string,
+  objectKey: string
+): Promise<void> {
+  // Cloud's workflow-storage route has no object-delete operation. An empty
+  // overwrite erases the uploaded archive before the prepared run is cancelled;
+  // the now-empty run-scoped object is retained under Cloud's storage lifecycle.
+  const response = await api.fetch(workflowStorageObjectPath(runId, objectKey), {
+    method: 'PUT',
+    headers: {
+      'content-type': 'application/octet-stream',
+      accept: 'application/json',
+    },
+    body: Buffer.alloc(0) as unknown as BodyInit,
+  });
+  const payload = await readJsonResponse(response);
+  if (!response.ok) {
+    throw new Error(`Workflow storage tombstone failed: ${describeResponseError(response, payload)}`);
+  }
+}
+
+async function cancelPreparedWorkflow(api: WorkflowHttpClient, runId: string): Promise<void> {
+  const response = await api.fetch(`/api/v1/workflows/runs/${encodeURIComponent(runId)}/cancel`, {
+    method: 'POST',
+    headers: { Accept: 'application/json' },
+  });
+  const payload = await readJsonResponse(response);
+  if (!response.ok) {
+    throw new Error(`Prepared workflow cancellation failed: ${describeResponseError(response, payload)}`);
+  }
+}
+
+async function cleanupFailedScheduledSnapshot(
+  api: WorkflowHttpClient,
+  runId: string,
+  uploadedObjectKeys: readonly string[]
+): Promise<unknown[]> {
+  const cleanupFailures: unknown[] = [];
+  for (const objectKey of uploadedObjectKeys) {
+    try {
+      await tombstoneCodeObjectInCloudWorkflowStorage(api, runId, objectKey);
+    } catch (error) {
+      cleanupFailures.push(error);
+    }
+  }
+  try {
+    await cancelPreparedWorkflow(api, runId);
+  } catch (error) {
+    cleanupFailures.push(error);
+  }
+  return cleanupFailures;
+}
+
+function rethrowScheduleFailure(error: unknown, cleanupFailures: readonly unknown[]): never {
+  if (cleanupFailures.length === 0) {
+    throw error;
+  }
+
+  const cleanupMessage = cleanupFailures
+    .map((failure) => (failure instanceof Error ? failure.message : String(failure)))
+    .join('; ');
+  if (error instanceof Error) {
+    error.message = `${error.message} (scheduled snapshot cleanup failed: ${cleanupMessage})`;
+    throw error;
+  }
+  throw new Error(`${String(error)} (scheduled snapshot cleanup failed: ${cleanupMessage})`, {
+    cause: error,
+  });
 }
 
 function createScopedS3Client(s3Credentials: S3Credentials): S3Client {
