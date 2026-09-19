@@ -548,8 +548,7 @@ function listAllNodeClaims(env: NodeJS.ProcessEnv): NodeClaim[] {
   }
   return claims.sort(
     (left, right) =>
-      right.claimed_at.localeCompare(left.claimed_at) ||
-      (right.generation ?? 0) - (left.generation ?? 0)
+      right.claimed_at.localeCompare(left.claimed_at) || (right.generation ?? 0) - (left.generation ?? 0)
   );
 }
 
