@@ -64,7 +64,6 @@ test_required: deterministic proof needed
 evidence: commands, files, or spec clause
 ```
 
-
 ### Scope Matrix
 
 #### Create a machine-readable and human-readable matrix before the first fix pass for work that spans repositories, packages, providers, or CI gates. Keep it updated every iteration.
@@ -72,7 +71,6 @@ evidence: commands, files, or spec clause
 ```text
 repo | branch | PR | package/provider/surface | expected change | producer version | consumer version | files expected | gates required | status | evidence | owner
 ```
-
 
 ### Fresh Context Implementation
 
@@ -88,7 +86,6 @@ for (let iteration = 1; ; iteration += 1) {
   }
 }
 ```
-
 
 ### Codex Fixer Reliability
 
@@ -110,7 +107,6 @@ for (let iteration = 1; ; iteration += 1) {
 })
 ```
 
-
 ### PR Signoff Comment
 
 #### Final signoff should be both a durable artifact and a PR comment.
@@ -119,7 +115,6 @@ for (let iteration = 1; ; iteration += 1) {
 gh pr comment "$PR_NUMBER" --body-file .workflow-artifacts/my-workflow/pr-comment.md
 ```
 
-
 ### Blocked State
 
 #### Do not spin forever when progress is impossible. If agents identify a true external blocker, write:
@@ -127,7 +122,6 @@ gh pr comment "$PR_NUMBER" --body-file .workflow-artifacts/my-workflow/pr-commen
 ```text
 .workflow-artifacts/<workflow>/iteration-N/BLOCKED_NO_COMMIT.md
 ```
-
 
 ### Common Mistakes
 

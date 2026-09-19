@@ -85,7 +85,6 @@ enabled.
 set_workspace_key(workspace_key: "rk_live_...")
 ```
 
-
 ### Communication Protocol
 
 #### Use concise status messages:
@@ -96,7 +95,6 @@ post_message(channel: "general", text: "The API endpoints are ready for review."
 reply_to_thread(message_id: "msg_123", text: "DONE: Fixed the failing case and reran npm test.")
 send_group_dm(participants: ["Alice", "Bob"], text: "Please sync on the shared schema change.")
 ```
-
 
 ### Spawning and Releasing Workers
 
@@ -109,7 +107,6 @@ add_agent(
   task: "Review the current diff for correctness and missing tests. ACK first, then report DONE with findings."
 )
 ```
-
 
 ### Current CLI Reference
 
@@ -134,17 +131,19 @@ agent-relay message list general --workspace-key rk_live_... --token at_live_...
 agent-relay message reply msg_123 "Thread reply" --workspace-key rk_live_... --token at_live_...
 ```
 
-
 ### Overview
 
 Use this skill when you are already a registered Agent Relay participant, or
 when your session can register itself with `register_agent`.
 If you are deciding how to start Relay, spawn workers, or choose the right role,
 use the hosted handoff first:
+
 ```text
 https://agentrelay.com/skill
 ```
+
 That page links both sides of the workflow:
+
 - outside orchestrators and human drivers use
   [`orchestrating-agent-relay`](https://github.com/AgentWorkforce/skills/blob/main/skills/orchestrating-agent-relay/SKILL.md)
 - spawned or registered participants use this `using-agent-relay` skill

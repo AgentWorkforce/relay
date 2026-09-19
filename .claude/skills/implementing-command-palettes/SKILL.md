@@ -19,13 +19,13 @@ Command palettes (Cmd+K / Ctrl+K) need precise keyboard navigation, scroll behav
 
 ## Quick Reference
 
-| Feature | Implementation |
-|---------|----------------|
-| Arrow navigation | Track `selectedIndex`, clamp with `Math.min/max` |
-| Keep in view | `scrollIntoView({ block: 'nearest', behavior: 'smooth' })` |
-| Shortcut matching | Strip spaces from shortcuts, match against query |
-| Stable icons | Define icon elements outside component |
-| Stable handlers | `useCallback` + `noop` constant for disabled states |
+| Feature           | Implementation                                             |
+| ----------------- | ---------------------------------------------------------- |
+| Arrow navigation  | Track `selectedIndex`, clamp with `Math.min/max`           |
+| Keep in view      | `scrollIntoView({ block: 'nearest', behavior: 'smooth' })` |
+| Shortcut matching | Strip spaces from shortcuts, match against query           |
+| Stable icons      | Define icon elements outside component                     |
+| Stable handlers   | `useCallback` + `noop` constant for disabled states        |
 
 ## Keyboard Navigation
 
@@ -42,12 +42,12 @@ useEffect(() => {
       case 'ArrowDown':
         e.preventDefault();
         // Clamp to last item
-        setSelectedIndex(prev => Math.min(prev + 1, filteredItems.length - 1));
+        setSelectedIndex((prev) => Math.min(prev + 1, filteredItems.length - 1));
         break;
       case 'ArrowUp':
         e.preventDefault();
         // Clamp to first item
-        setSelectedIndex(prev => Math.max(prev - 1, 0));
+        setSelectedIndex((prev) => Math.max(prev - 1, 0));
         break;
       case 'Enter':
         e.preventDefault();
@@ -69,6 +69,7 @@ useEffect(() => {
 ```
 
 **Key patterns:**
+
 - `e.preventDefault()` stops arrow keys from scrolling the page
 - `Math.min/max` prevents index going out of bounds
 - Effect depends on `filteredItems` so navigation updates when filter changes
@@ -78,9 +79,9 @@ useEffect(() => {
 ```tsx
 <input
   value={query}
-  onChange={e => {
+  onChange={(e) => {
     setQuery(e.target.value);
-    setSelectedIndex(0);  // Reset to first item when query changes
+    setSelectedIndex(0); // Reset to first item when query changes
   }}
 />
 ```
@@ -97,22 +98,26 @@ useEffect(() => {
   const selectedItem = itemRefs.current[selectedIndex];
   if (selectedItem) {
     selectedItem.scrollIntoView({
-      block: 'nearest',    // Minimal scroll - only scroll if needed
-      behavior: 'smooth'   // Smooth animation
+      block: 'nearest', // Minimal scroll - only scroll if needed
+      behavior: 'smooth', // Smooth animation
     });
   }
 }, [selectedIndex]);
 
 // Assign refs in render
-{filteredItems.map((item, index) => (
-  <button
-    key={index}
-    ref={el => { itemRefs.current[index] = el; }}
-    className={index === selectedIndex ? 'bg-blue-100' : ''}
-  >
-    {item.label}
-  </button>
-))}
+{
+  filteredItems.map((item, index) => (
+    <button
+      key={index}
+      ref={(el) => {
+        itemRefs.current[index] = el;
+      }}
+      className={index === selectedIndex ? 'bg-blue-100' : ''}
+    >
+      {item.label}
+    </button>
+  ));
+}
 ```
 
 ### Alternative: Single Ref for Selected Item
@@ -136,6 +141,7 @@ useEffect(() => {
 ```
 
 **Why `block: 'nearest'`?**
+
 - `'nearest'` only scrolls if the element is outside the visible area
 - `'center'` would scroll even when item is already visible, causing jarring movement
 - `'start'` or `'end'` would always align to top/bottom
@@ -143,7 +149,7 @@ useEffect(() => {
 ## Filtering with Shortcut Matching
 
 ```tsx
-const filteredCommands = commands.filter(command => {
+const filteredCommands = commands.filter((command) => {
   const q = query.toLowerCase().trim();
   if (!q) return true;
 
@@ -182,13 +188,18 @@ Command palettes often suffer from infinite re-renders when command objects are 
 ```tsx
 // BAD: Icons recreated every render
 function usePageCommands() {
-  const commands = useMemo(() => [{
-    label: 'Sync',
-    icon: <RefreshCw size={16} />,  // New element every render!
-    action: () => onSync(),          // New function every render!
-  }], [onSync]);  // Even with deps, icon is new
+  const commands = useMemo(
+    () => [
+      {
+        label: 'Sync',
+        icon: <RefreshCw size={16} />, // New element every render!
+        action: () => onSync(), // New function every render!
+      },
+    ],
+    [onSync]
+  ); // Even with deps, icon is new
 
-  useRegisterCommands(commands);  // Triggers re-registration → re-render loop
+  useRegisterCommands(commands); // Triggers re-registration → re-render loop
 }
 ```
 
@@ -204,11 +215,16 @@ function usePageCommands({ onSync, isSyncing }: Props) {
   // Memoize handlers
   const handleSync = useCallback(() => onSync?.(), [onSync]);
 
-  const commands = useMemo(() => [{
-    label: isSyncing ? 'Syncing...' : 'Sync',
-    icon: isSyncing ? refreshSpinIcon : refreshIcon,  // Stable references
-    action: isSyncing ? noop : handleSync,             // noop, not undefined
-  }], [isSyncing, handleSync]);
+  const commands = useMemo(
+    () => [
+      {
+        label: isSyncing ? 'Syncing...' : 'Sync',
+        icon: isSyncing ? refreshSpinIcon : refreshIcon, // Stable references
+        action: isSyncing ? noop : handleSync, // noop, not undefined
+      },
+    ],
+    [isSyncing, handleSync]
+  );
 
   useRegisterCommands(commands);
 }
@@ -224,15 +240,21 @@ export function useRegisterCommands(commands: CommandItem[]) {
 
   // Create stable ID based on LABELS, not object references
   const commandIds = useMemo(
-    () => commands.map(c => {
-      if (c.type === 'nav') return `nav:${c.path}`;
-      return `action:${c.label}`;
-    }).sort().join('|'),
+    () =>
+      commands
+        .map((c) => {
+          if (c.type === 'nav') return `nav:${c.path}`;
+          return `action:${c.label}`;
+        })
+        .sort()
+        .join('|'),
     [commands]
   );
 
   const commandsRef = useRef<CommandItem[]>(commands);
-  useEffect(() => { commandsRef.current = commands; });
+  useEffect(() => {
+    commandsRef.current = commands;
+  });
 
   const prevIdsRef = useRef<string>('');
 
@@ -277,14 +299,14 @@ function executeCommand(command: CommandItem) {
 
 ## Common Mistakes
 
-| Mistake | Why It Fails | Fix |
-|---------|--------------|-----|
-| Icons inside useMemo | New icon element every render | Define icons as constants outside component |
-| Not resetting index on filter | Arrow keys start from wrong position | `setSelectedIndex(0)` in onChange |
-| `block: 'center'` in scrollIntoView | Jarring scroll when item already visible | Use `block: 'nearest'` |
-| Missing `e.preventDefault()` | Arrow keys scroll page AND move selection | Add preventDefault for ArrowUp/Down |
-| Forgetting cleanup in useEffect | Event listeners accumulate | Return cleanup function |
-| `undefined` for disabled action | Type error or click does nothing | Use `noop` constant |
+| Mistake                             | Why It Fails                              | Fix                                         |
+| ----------------------------------- | ----------------------------------------- | ------------------------------------------- |
+| Icons inside useMemo                | New icon element every render             | Define icons as constants outside component |
+| Not resetting index on filter       | Arrow keys start from wrong position      | `setSelectedIndex(0)` in onChange           |
+| `block: 'center'` in scrollIntoView | Jarring scroll when item already visible  | Use `block: 'nearest'`                      |
+| Missing `e.preventDefault()`        | Arrow keys scroll page AND move selection | Add preventDefault for ArrowUp/Down         |
+| Forgetting cleanup in useEffect     | Event listeners accumulate                | Return cleanup function                     |
+| `undefined` for disabled action     | Type error or click does nothing          | Use `noop` constant                         |
 
 ## Testing Checklist
 

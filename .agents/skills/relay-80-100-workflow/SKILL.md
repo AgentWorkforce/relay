@@ -22,7 +22,6 @@ Most agent workflows get features to ~80%: code written, types check, maybe a bu
 implement → write tests → run tests → fix failures → re-run → build check → regression check → commit
 ```
 
-
 ### Repair Before Failure
 
 An 80-to-100 workflow should not stop merely because a test, typecheck, lint, schema, or E2E gate turns red. That red output is work for the agent team. Capture it, hand it to a repair owner, fix it, and rerun. Workflow-owned validation gates should never terminate the run with `FAILED`. If the team exhausts its repair budget or hits an external blocker such as missing credentials, wrong repository, or unsafe dirty worktree, write a `BLOCKED_NO_COMMIT` artifact and end without committing or opening a PR instead of crashing the workflow.
@@ -117,7 +116,6 @@ If it failed, fix the remaining issue and rerun until green:
 })
 ```
 
-
 ### PGlite: In-Memory Postgres for Database Testing
 
 #### Setup
@@ -179,7 +177,6 @@ describe('my feature', () => {
   });
 });
 ```
-
 
 ### Verify Gates After Every Edit
 
@@ -250,7 +247,6 @@ echo "EDIT_GATE_FINAL_OK"`,
 })
 ```
 
-
 ### Mock Sandbox Pattern
 
 #### When testing code that interacts with Daytona sandboxes, use inline mock objects matching the existing test conventions:
@@ -273,7 +269,6 @@ const daytona = {
   remove: async () => undefined,
 };
 ```
-
 
 ### Regression Testing
 
@@ -306,7 +301,6 @@ Fix until all tests pass.`,
   verification: { type: 'exit_code' },
 })
 ```
-
 
 ### Full Workflow Template
 
@@ -457,7 +451,8 @@ Output:
   .step('verify-commit-created', {
     type: 'deterministic',
     dependsOn: ['repair-commit'],
-    command: 'git log -1 --pretty=%s | grep -q "^feat: " && echo "COMMIT_OK" || (echo "COMMIT_MISSING"; exit 1)',
+    command:
+      'git log -1 --pretty=%s | grep -q "^feat: " && echo "COMMIT_OK" || (echo "COMMIT_MISSING"; exit 1)',
     captureOutput: true,
     failOnError: true,
   })
@@ -466,31 +461,30 @@ Output:
   .run({ cwd: process.cwd() });
 ```
 
-
 ### Checklist: Is Your Workflow 80-to-100?
 
-| Check | How |
-|-------|-----|
-| Tests exist | `file_exists` verification on test file |
-| Tests actually run | Deterministic step executes them |
-| Test failures get fixed | Agent step reads output, fixes, re-runs |
-| Final test run is repairable | Deterministic rerun captures output, then a repair owner gets one more pass |
-| Build passes | `npx tsc --noEmit` deterministic step |
-| No regressions | Existing test suite runs after changes |
-| Every edit is verified and repairable | `git diff --quiet` + grep for tracked-only edits; `git status --short -- <paths>` when new files/packages may appear; then a fix step |
-| Commit only happens after green evidence | Final commit step reruns acceptance checks and commits only on zero exit codes |
+| Check                                    | How                                                                                                                                   |
+| ---------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------- |
+| Tests exist                              | `file_exists` verification on test file                                                                                               |
+| Tests actually run                       | Deterministic step executes them                                                                                                      |
+| Test failures get fixed                  | Agent step reads output, fixes, re-runs                                                                                               |
+| Final test run is repairable             | Deterministic rerun captures output, then a repair owner gets one more pass                                                           |
+| Build passes                             | `npx tsc --noEmit` deterministic step                                                                                                 |
+| No regressions                           | Existing test suite runs after changes                                                                                                |
+| Every edit is verified and repairable    | `git diff --quiet` + grep for tracked-only edits; `git status --short -- <paths>` when new files/packages may appear; then a fix step |
+| Commit only happens after green evidence | Final commit step reruns acceptance checks and commits only on zero exit codes                                                        |
 
 ### Common Anti-Patterns
 
-| Anti-pattern | Why it fails | Fix |
-|-------------|-------------|-----|
-| Tests written but never executed | Agent claims they pass, they don't | Add deterministic `run-tests` step |
-| Single `failOnError: true` test run | First failure kills workflow, no chance to fix | Use repairable run-fix-rerun-final-fix loops |
-| No regression test | New feature works, old features break | Run `npm test` after build check |
-| Agent asked to "write and run tests" in one step | Agent writes tests, runs them, they fail, it edits, output is garbled | Separate write/run/fix into distinct steps |
-| PGlite DDL doesn't match Drizzle schema | Tests pass on wrong schema | Derive DDL from schema.ts or test with real migration |
-| Final test output not handed to an agent | Broken tests can stop the run or get ignored | Add a final repair owner before commit |
-| Testing only happy path | Edge cases break in prod | Specify edge case tests in the task prompt |
-| No verify gate after agent edits | Agent exits 0 without writing anything | Add `git diff --quiet` check after every edit, then route failures to a repair step |
-| `git diff --quiet` for new package/test directories | Untracked files are invisible, so valid new artifacts can look like "no changes" | Use `git status --short -- <paths>` and a repairable capture → fix → final gate pattern |
-| Committing after `failOnError: false` without checking exits | Broken work can be committed because the shell step returned successfully | In `commit-if-green`, record each exit code and skip commit unless all are zero |
+| Anti-pattern                                                 | Why it fails                                                                     | Fix                                                                                     |
+| ------------------------------------------------------------ | -------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------- |
+| Tests written but never executed                             | Agent claims they pass, they don't                                               | Add deterministic `run-tests` step                                                      |
+| Single `failOnError: true` test run                          | First failure kills workflow, no chance to fix                                   | Use repairable run-fix-rerun-final-fix loops                                            |
+| No regression test                                           | New feature works, old features break                                            | Run `npm test` after build check                                                        |
+| Agent asked to "write and run tests" in one step             | Agent writes tests, runs them, they fail, it edits, output is garbled            | Separate write/run/fix into distinct steps                                              |
+| PGlite DDL doesn't match Drizzle schema                      | Tests pass on wrong schema                                                       | Derive DDL from schema.ts or test with real migration                                   |
+| Final test output not handed to an agent                     | Broken tests can stop the run or get ignored                                     | Add a final repair owner before commit                                                  |
+| Testing only happy path                                      | Edge cases break in prod                                                         | Specify edge case tests in the task prompt                                              |
+| No verify gate after agent edits                             | Agent exits 0 without writing anything                                           | Add `git diff --quiet` check after every edit, then route failures to a repair step     |
+| `git diff --quiet` for new package/test directories          | Untracked files are invisible, so valid new artifacts can look like "no changes" | Use `git status --short -- <paths>` and a repairable capture → fix → final gate pattern |
+| Committing after `failOnError: false` without checking exits | Broken work can be committed because the shell step returned successfully        | In `commit-if-green`, record each exit code and skip commit unless all are zero         |

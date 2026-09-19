@@ -9,7 +9,5 @@
   "format": "claude",
   "subtype": "skill",
   "tags": ["typescript", "best-practices", "code-quality"],
-  "files": [
-    ".claude/skills/my-awesome-skill/SKILL.md"
-  ]
+  "files": [".claude/skills/my-awesome-skill/SKILL.md"]
 }

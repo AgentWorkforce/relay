@@ -67,7 +67,6 @@ narrative. The release workflow also skips these commits automatically.
 
 The `.agentworkforce/trajectories/` directory must remain tracked in git. It contains trajectory records from the `trail` tool that provide valuable context for future agents and humans about past decisions, reasoning, and work history.
 
-
 ## Resident lead
 
 The resident `relay` agent is this repo's lead. Reports to **chief**
@@ -103,15 +102,17 @@ raw observer URLs — unsatisfiable once #1380 lands.
 When users ask you to perform tasks, check if any of the available skills below can help complete the task more effectively. Skills provide specialized capabilities and domain knowledge.
 
 How to use skills (loaded into main context):
+
 - Use the <path> from the skill entry below
 - Invoke: Bash("cat <path>")
 - The skill content will load into your current context
 - Example: Bash("cat .openskills/backend-architect/SKILL.md")
 
 Usage notes:
+
 - Skills share your context window
 - Do not invoke a skill that is already loaded in your context
-</usage>
+  </usage>
 
 <available_skills>
 
@@ -127,6 +128,7 @@ Usage notes:
 <!-- PRPM_MANIFEST_END -->
 
 <!-- prpm:snippet:start @agent-workforce/trail-snippet@1.1.2 -->
+
 # Trail
 
 Record your work as a trajectory for future agents and humans to follow.
@@ -134,11 +136,13 @@ Record your work as a trajectory for future agents and humans to follow.
 ## Usage
 
 If `trail` is installed globally, run commands directly:
+
 ```bash
 trail start "Task description"
 ```
 
 If not globally installed, use npx to run from local installation:
+
 ```bash
 npx trail start "Task description"
 ```
@@ -152,6 +156,7 @@ trail start "Implement user authentication"
 ```
 
 With external task reference:
+
 ```bash
 trail start "Fix login bug" --task "ENG-123"
 ```
@@ -166,11 +171,13 @@ trail decision "Chose JWT over sessions" \
 ```
 
 For minor decisions, reasoning is optional:
+
 ```bash
 trail decision "Used existing auth middleware"
 ```
 
 **Record decisions when you:**
+
 - Choose between alternatives
 - Make architectural trade-offs
 - Decide on an approach after investigation
@@ -185,6 +192,7 @@ trail reflect "Workers aligned on auth approach, API layer progressing well" \
 ```
 
 With focal points and adjustments:
+
 ```bash
 trail reflect "Frontend and backend duplicating validation logic" \
   --focal-points "duplication,ownership" \
@@ -193,6 +201,7 @@ trail reflect "Frontend and backend duplicating validation logic" \
 ```
 
 **Record reflections when you:**
+
 - Have received several updates and need to synthesize the big picture
 - Notice workers or tasks diverging from the plan
 - Want to course-correct before continuing
@@ -225,6 +234,7 @@ updates the index. Use it after confirming the compacted artifact is the record
 you want to keep.
 
 **Confidence levels:**
+
 - 0.9+ : High confidence, well-tested
 - 0.7-0.9 : Good confidence, standard implementation
 - 0.5-0.7 : Some uncertainty, edge cases possible
@@ -241,6 +251,7 @@ trail abandon --reason "Blocked by missing API credentials"
 ## Checking Status
 
 View current trajectory:
+
 ```bash
 trail status
 ```
@@ -248,16 +259,19 @@ trail status
 ## Listing and Viewing Trajectories
 
 List all trajectories:
+
 ```bash
 trail list
 ```
 
 View a specific trajectory:
+
 ```bash
 trail show <trajectory-id>
 ```
 
 Export a trajectory (markdown, json, timeline, html):
+
 ```bash
 trail export <trajectory-id> --format markdown
 ```
@@ -272,11 +286,13 @@ trail compact --pr 42 --discard-sources
 ```
 
 Compact by branch (finds trajectories with commits not in the specified base branch):
+
 ```bash
 trail compact --branch main --discard-sources
 ```
 
 Compact by specific commits:
+
 ```bash
 trail compact --commits abc123,def456 --discard-sources
 ```
@@ -288,10 +304,12 @@ the raw trajectories and their index entries.
 ## Why Trail?
 
 Your trajectory helps others understand:
+
 - **What** you built (commits show this)
 - **Why** you built it this way (trajectory shows this)
 - **What alternatives** you considered
 - **What challenges** you faced
 
 Future agents can query past trajectories to learn from your decisions.
+
 <!-- prpm:snippet:end @agent-workforce/trail-snippet@1.1.2 -->
