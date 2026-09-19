@@ -199,10 +199,7 @@ describe('importProductSurface', () => {
     // and passes every other test, then fails at runtime in the compiled
     // binary with MODULE_NOT_FOUND — reported as "not installed", in a
     // distribution where installing cannot help (#1795).
-    const source = readFileSync(
-      new URL('./product-surfaces.ts', import.meta.url),
-      'utf8'
-    );
+    const source = readFileSync(new URL('./product-surfaces.ts', import.meta.url), 'utf8');
     for (const definition of PRODUCT_SURFACES) {
       expect(
         source.includes(`import('${definition.specifier}')`),
