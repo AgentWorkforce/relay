@@ -318,11 +318,24 @@ const CODEX_LANE_MODEL = process.env.CLEANROOM_CODEX_LANE_MODEL?.trim() || Codex
 /**
  * v1 gave each agent a read set, a write set, a deny list, relayfile `scopes`,
  * an `exec` allowlist, and a network policy. `AgentStepSpec.permissions` offers
- * `accessPreset`, one flat `fileGlobs` list, and `networkAllowlist` — so the
+ * `accessPreset`, one flat `fileGlobs` list, and `networkAllowlist`, so the
  * read/write split, the deny list, the write-once provenance scopes, and the
- * exec allowlist cannot be expressed. The union of read and write globs is kept
- * as tight as that allows; the runner's own seal and its write-once provenance
- * capture, not the sandbox policy, remain what prove evidence was not mutated.
+ * exec allowlist cannot be expressed.
+ *
+ * KNOWN WEAKENING, not merely a coarser spelling. Flattening read ∪ write into
+ * one `readwrite` glob set is materially weaker for LANE agents, whose v1 read
+ * set is `**`: the union is therefore `**` at `readwrite`, so a lane agent can
+ * write the runner, the matrix, product source, tests, and other lanes'
+ * evidence — all of which v1's split denied. Reviewer inputs are writable for
+ * the same reason. Sealing happens after lanes run and hashes whatever is
+ * present, so it records a mutation rather than preventing one.
+ *
+ * What still holds: the runner's seal and its write-once provenance capture
+ * detect post-hoc tampering of the evidence they cover. What no longer holds
+ * is the sandbox-level guarantee that a lane could not reach those files at
+ * all. Closing this needs either read/write scopes in the agent runtime or an
+ * OS-level read-only mount per agent; neither is expressible here, so it is
+ * recorded rather than silently absorbed.
  */
 function agentPermissions(v1: { files: { read: string[]; write: string[] }; network: { allow: string[] } }) {
   return {
@@ -382,7 +395,14 @@ export function buildCleanroomSpec(): Record<string, unknown> {
     sentinel: string,
     timeoutMs: number,
     permissions: ReturnType<typeof agentPermissions>,
-    retries = 1
+    retries = 1,
+    /**
+     * Whether the sentinel gates the step. Reviewers are gated on drafting —
+     * a reviewer that wrote nothing has produced nothing to upload. Lanes are
+     * not: their deterministic `gate-<lane>` is the judge, and gating the
+     * agent step too would abort the campaign before that gate ever ran.
+     */
+    gateOnSentinel = true
   ): void => {
     planTimeouts.set(id, timeoutMs);
     planRetries.set(id, retries);
@@ -399,7 +419,7 @@ export function buildCleanroomSpec(): Record<string, unknown> {
       // inspected rather than reset and re-run.
       recoveryMode: 'inspect',
       permissions,
-      verification: { type: 'output_contains', value: sentinel },
+      ...(gateOnSentinel ? { verification: { type: 'output_contains', value: sentinel } } : {}),
     });
   };
   const reviewerPermissions = (artifactRole: string) => agentPermissions(v1ReviewPermissions(artifactRole));
@@ -415,11 +435,17 @@ export function buildCleanroomSpec(): Record<string, unknown> {
     agents[laneAgent] = { cli: 'codex', model: CODEX_LANE_MODEL };
     laneGates.push(`gate-${lane}`);
     // v1 set `failOnError: false` here so a lane that crashed still reached its
-    // evidence gate. v2 has no per-step opt-out and a failed agent step fails
-    // the run, so a crashed lane is now a run failure rather than something
-    // `gate-<lane>` judges. The lane runner still prints its completion
-    // sentinel for an honest RED product verdict, which is the common case and
-    // is unaffected.
+    // evidence gate, and `onError('continue')` kept a failed sentinel check
+    // from stopping the DAG. v2 has neither, so gating this step on the
+    // sentinel would turn a reportable RED or blocked lane into an aborted
+    // campaign — `gate-<lane>`, aggregation and signoff would never inspect
+    // the partial evidence.
+    //
+    // So the lane step carries no sentinel gate. `gate-<lane>` below runs the
+    // runner's own `gate-lane` check and is the judge, which is what v1
+    // effectively relied on. That is strictly stronger than grepping stdout
+    // for a sentinel: a lane that produced nothing fails its gate on missing
+    // evidence rather than on a missing line of output.
     agentStep(
       `execute-${lane}`,
       laneAgent,
@@ -432,7 +458,9 @@ export function buildCleanroomSpec(): Record<string, unknown> {
       ].join('\n'),
       `CLEANROOM_LANE_COMPLETE lane=${lane}`,
       laneTimeouts[lane],
-      agentPermissions(v1LanePermissions(lane))
+      agentPermissions(v1LanePermissions(lane)),
+      1,
+      false
     );
     det(`gate-${lane}`, command('gate-lane', ` --lane ${lane}`), 120_000, [`execute-${lane}`]);
   }
