@@ -21,7 +21,8 @@
 set -euo pipefail
 
 MODE="${1:---expect-working}"
-BIN="${STANDALONE_BIN:-$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)/build/agent-relay}"
+# Where scripts/build-standalone.sh actually writes the compiled binary.
+BIN="${STANDALONE_BIN:-$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)/bin/agent-relay-standalone}"
 
 if [ ! -x "$BIN" ]; then
   echo "PROBE: no compiled binary at $BIN (run scripts/build-standalone.sh)" >&2
