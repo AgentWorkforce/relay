@@ -1,7 +1,12 @@
 import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
 
-import { PROOF_ACTIONS, pullRequestAction, pullRequestNumber } from './event-from-input.mjs';
+import {
+  PROOF_ACTIONS,
+  classifyDelivery,
+  pullRequestAction,
+  pullRequestNumber,
+} from './event-from-input.mjs';
 
 const delivery = (type, extra = {}) => ({
   approver: 'someone',
@@ -51,5 +56,23 @@ describe('proof-worthy actions', () => {
     for (const ignored of ['labeled', 'closed', 'assigned', 'review_requested']) {
       assert.equal(PROOF_ACTIONS.has(ignored), false, ignored);
     }
+  });
+});
+
+describe('classifyDelivery', () => {
+  it('proves proof-worthy actions and skips the rest', () => {
+    assert.deepEqual(classifyDelivery(delivery('pull_request.synchronize')), { number: 1792 });
+    assert.deepEqual(classifyDelivery(delivery('pull_request.labeled')), { skip: 'labeled' });
+    assert.deepEqual(classifyDelivery(delivery('pull_request', { action: 'closed' })), { skip: 'closed' });
+  });
+
+  it('refuses a foreign event kind before the action filter can skip it', () => {
+    // `issues.labeled` carries an unlisted action; checking the action first
+    // would have skipped it as a success and hidden a misconfigured listener.
+    assert.throws(
+      () => classifyDelivery(delivery('issues.labeled')),
+      /proves pull requests; the listener delivered a "issues.labeled" event/
+    );
+    assert.throws(() => classifyDelivery(delivery('pull_request_review.submitted')), /delivered a/);
   });
 });
