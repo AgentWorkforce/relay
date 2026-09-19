@@ -495,6 +495,51 @@ export async function scheduleWorkflow(
         : {}),
     },
   };
+
+  // Schedules are snapshots, not future clones: upload the same archive a
+  // synced `cloud run` would upload, then let Cloud copy it into each fire's
+  // fresh run scope. The prepared-run id is only a storage source reference;
+  // it is never launched and no credential is stored in the schedule.
+  console.error('Preparing scheduled code snapshot...');
+  const prepResponse = await api.fetch('/api/v1/workflows/prepare', {
+    method: 'POST',
+    headers: { Accept: 'application/json' },
+  });
+  const prepPayload = await readJsonResponse(prepResponse);
+  if (!prepResponse.ok) {
+    throw new Error(`Workflow prepare failed: ${describeResponseError(prepResponse, prepPayload)}`);
+  }
+  if (!isPrepareWorkflowResponse(prepPayload)) {
+    throw new Error('Workflow prepare response was not valid JSON.');
+  }
+  const prepared = prepPayload;
+  const tarball = await createTarball(process.cwd());
+  if (isCloudApiWorkflowStorage(prepared)) {
+    const upload = await api.fetch(workflowStorageObjectPath(prepared.runId, prepared.s3CodeKey), {
+      method: 'PUT',
+      headers: { 'content-type': 'application/gzip', accept: 'application/json' },
+      body: tarball as unknown as BodyInit,
+    });
+    const uploadPayload = await readJsonResponse(upload);
+    if (!upload.ok) {
+      throw new Error(`Workflow storage upload failed: ${describeResponseError(upload, uploadPayload)}`);
+    }
+  } else {
+    const s3Client = createScopedS3Client(prepared.s3Credentials);
+    await s3Client.send(new PutObjectCommand({
+      Bucket: prepared.s3Credentials.bucket,
+      Key: scopedCodeKey(prepared.s3Credentials.prefix, prepared.s3CodeKey),
+      Body: tarball,
+      ContentType: 'application/gzip',
+    }));
+  }
+  const scheduledWorkflowRequest = requestBody.workflowRequest as Record<string, unknown>;
+  scheduledWorkflowRequest.s3CodeKey = prepared.s3CodeKey;
+  scheduledWorkflowRequest.codeSourceRunId = prepared.runId;
+  const workflowPath = relativizeWorkflowPath(workflowArg);
+  if (workflowPath) {
+    scheduledWorkflowRequest.workflowPath = workflowPath;
+  }
   if (options.description?.trim()) {
     requestBody.description = options.description.trim();
   }
