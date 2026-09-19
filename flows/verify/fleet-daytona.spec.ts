@@ -211,13 +211,19 @@ function reviewTask(role: string, kind: 'supervisor' | 'fix' | 'review', priorRo
 
 /**
  * v1 granted a reviewer a read set, a one-file write set, a deny list, a
- * network allowlist, and an empty exec list. `AgentStepSpec.permissions` has
- * one flat `fileGlobs` list plus `accessPreset` and `networkAllowlist`, so the
- * read/write split and the explicit deny list cannot be expressed: a reviewer
- * that may write its own draft is `readwrite` over the whole glob set. The
- * glob set is therefore kept as tight as the union allows, and the runner's
- * own seal — not the sandbox policy — remains what proves evidence was not
- * mutated.
+ * network allowlist, and an empty exec list, and those were compiled and
+ * enforced.
+ *
+ * ⚠️  RELAYFLOWS v2 ENFORCES NONE OF THIS. `AgentStepSpec.permissions` is
+ * carried as journal data and never read to gate a file access — the kernel's
+ * own comment reads "Carried as data in gate 1; enforcement lands with agent
+ * dispatch." So the block below is declarative intent, not a sandbox, and
+ * these reviewers are currently unconstrained on the filesystem.
+ *
+ * It is written out in full so the intent is reviewable and so the flow
+ * becomes correct the moment gate 8 lands. Tracked upstream at
+ * AgentWorkforce/flows#487. The runner's own seal — never the sandbox policy —
+ * remains what proves evidence was not mutated.
  */
 function reviewerPermissions(role: string) {
   const artifactDir = `.workflow-artifacts/verify-fleet-daytona/${NONCE}`;

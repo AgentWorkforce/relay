@@ -317,25 +317,29 @@ const CODEX_LANE_MODEL = process.env.CLEANROOM_CODEX_LANE_MODEL?.trim() || Codex
 
 /**
  * v1 gave each agent a read set, a write set, a deny list, relayfile `scopes`,
- * an `exec` allowlist, and a network policy. `AgentStepSpec.permissions` offers
- * `accessPreset`, one flat `fileGlobs` list, and `networkAllowlist`, so the
- * read/write split, the deny list, the write-once provenance scopes, and the
- * exec allowlist cannot be expressed.
+ * an `exec` allowlist, and a network policy, and those were COMPILED AND
+ * ENFORCED — `packages/cloud/src/compiler.ts` normalized them, merged the
+ * `.agentignore`/`.agentreadonly` presets, and emitted relayfile scopes the
+ * mount applied.
  *
- * KNOWN WEAKENING, not merely a coarser spelling. Flattening read ∪ write into
- * one `readwrite` glob set is materially weaker for LANE agents, whose v1 read
- * set is `**`: the union is therefore `**` at `readwrite`, so a lane agent can
- * write the runner, the matrix, product source, tests, and other lanes'
- * evidence — all of which v1's split denied. Reviewer inputs are writable for
- * the same reason. Sealing happens after lanes run and hashes whatever is
- * present, so it records a mutation rather than preventing one.
+ * ⚠️  RELAYFLOWS v2 ENFORCES NONE OF THIS. `AgentStepSpec.permissions` is
+ * carried as journal data and never read to gate a file access. The kernel
+ * says so itself (`kernel/relayflowd-core/src/spec.rs`): "Carried as data in
+ * gate 1; enforcement lands with agent dispatch." Every reference in the SDK
+ * and kernel is parse, validate, or round-trip.
  *
- * What still holds: the runner's seal and its write-once provenance capture
- * detect post-hoc tampering of the evidence they cover. What no longer holds
- * is the sandbox-level guarantee that a lane could not reach those files at
- * all. Closing this needs either read/write scopes in the agent runtime or an
- * OS-level read-only mount per agent; neither is expressible here, so it is
- * recorded rather than silently absorbed.
+ * So the block below is DECLARATIVE INTENT, not a sandbox. These agents run
+ * untrusted product test lanes and are currently unconstrained: they can read
+ * `.env` and anything matching `*secret*`, and write the runner, the matrix,
+ * product source, tests, `.git`, and other lanes' evidence — all of which v1
+ * denied. Sealing runs after the lanes and hashes whatever is present, so it
+ * records a mutation rather than preventing one.
+ *
+ * It is written out in full anyway so the intent is reviewable and so the
+ * flows become correct the moment gate 8 lands. Tracked upstream at
+ * AgentWorkforce/flows#487. Until then, treat a `flows run` of this campaign
+ * as running unsandboxed code, and do not run it on a machine holding
+ * credentials you care about.
  */
 function agentPermissions(v1: { files: { read: string[]; write: string[] }; network: { allow: string[] } }) {
   return {

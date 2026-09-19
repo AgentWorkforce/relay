@@ -312,10 +312,30 @@ const OPENCODE_CLI = path.resolve(ROOT, 'scripts/flows/opencode-agent-cli.mjs');
 const DIAGNOSIS_CODEX_MODEL = process.env.DIAGNOSE_CODEX_MODEL?.trim() || CodexModels.GPT_5_5;
 
 /**
- * v1 gave every agent a read set, a write set, a deny list, and a network
- * policy. `AgentStepSpec.permissions` offers `accessPreset`, one flat
- * `fileGlobs` list, and `networkAllowlist`, so the read/write split and the
- * deny list cannot be expressed; the union is kept as tight as that allows.
+ * v1 gave each agent a read set, a write set, a deny list, relayfile `scopes`,
+ * an `exec` allowlist, and a network policy, and those were COMPILED AND
+ * ENFORCED — `packages/cloud/src/compiler.ts` normalized them, merged the
+ * `.agentignore`/`.agentreadonly` presets, and emitted relayfile scopes the
+ * mount applied.
+ *
+ * ⚠️  RELAYFLOWS v2 ENFORCES NONE OF THIS. `AgentStepSpec.permissions` is
+ * carried as journal data and never read to gate a file access. The kernel
+ * says so itself (`kernel/relayflowd-core/src/spec.rs`): "Carried as data in
+ * gate 1; enforcement lands with agent dispatch." Every reference in the SDK
+ * and kernel is parse, validate, or round-trip.
+ *
+ * So the block below is DECLARATIVE INTENT, not a sandbox. These agents perform a read-only
+ * four-repository diagnosis and are currently unconstrained: they can read
+ * `.env` and anything matching `*secret*`, and write the runner, the matrix,
+ * product source, tests, `.git`, and other lanes' evidence — all of which v1
+ * denied. Sealing runs after the lanes and hashes whatever is present, so it
+ * records a mutation rather than preventing one.
+ *
+ * It is written out in full anyway so the intent is reviewable and so the
+ * flows become correct the moment gate 8 lands. Tracked upstream at
+ * AgentWorkforce/flows#487. Until then, treat a `flows run` of this campaign
+ * as running unsandboxed code, and do not run it on a machine holding
+ * credentials you care about.
  */
 function agentPermissions(agentName: string) {
   const v1 = v1DiagnosisPermissions(agentName) as {
