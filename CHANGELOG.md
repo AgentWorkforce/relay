@@ -9,7 +9,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
-- `agent-relay cloud schedule` uploads the current code as an immutable snapshot that Cloud copies into every scheduled run, so scheduled workflows get a code tree without cloning the repository.
+- `agent-relay cloud schedule` uploads each immutable code snapshot through Cloud's R2 workflow storage, so scheduled workflows get a code tree without cloning the repository or using AWS.
 
 ## [12.2.5] - 2026-09-19
 

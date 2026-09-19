@@ -327,18 +327,7 @@ export async function runWorkflow(
     let s3Client: S3Client | null = null;
     const uploadCodeObject = async (objectKey: string, tarball: Buffer) => {
       if (isCloudApiWorkflowStorage(prepared)) {
-        const response = await api.fetch(workflowStorageObjectPath(prepared.runId, objectKey), {
-          method: 'PUT',
-          headers: {
-            'content-type': 'application/gzip',
-            accept: 'application/json',
-          },
-          body: tarball as unknown as BodyInit,
-        });
-        const payload = await readJsonResponse(response);
-        if (!response.ok) {
-          throw new Error(`Workflow storage upload failed: ${describeResponseError(response, payload)}`);
-        }
+        await uploadCodeObjectToCloudWorkflowStorage(api, prepared.runId, objectKey, tarball);
         return;
       }
 
@@ -549,31 +538,11 @@ export async function scheduleWorkflow(
     throw new Error('Workflow prepare response was not valid JSON.');
   }
   const prepared = prepPayload;
-  let s3Client: S3Client | null = null;
-  const uploadCodeObject = async (objectKey: string, tarball: Buffer) => {
-    if (isCloudApiWorkflowStorage(prepared)) {
-      const upload = await api.fetch(workflowStorageObjectPath(prepared.runId, objectKey), {
-        method: 'PUT',
-        headers: { 'content-type': 'application/gzip', accept: 'application/json' },
-        body: tarball as unknown as BodyInit,
-      });
-      const uploadPayload = await readJsonResponse(upload);
-      if (!upload.ok) {
-        throw new Error(`Workflow storage upload failed: ${describeResponseError(upload, uploadPayload)}`);
-      }
-      return;
-    }
-
-    s3Client ??= createScopedS3Client(prepared.s3Credentials);
-    await s3Client.send(
-      new PutObjectCommand({
-        Bucket: prepared.s3Credentials.bucket,
-        Key: scopedCodeKey(prepared.s3Credentials.prefix, objectKey),
-        Body: tarball,
-        ContentType: 'application/gzip',
-      })
+  if (!isCloudApiWorkflowStorage(prepared)) {
+    throw new Error(
+      `Scheduled workflow snapshots require Cloud's R2 workflow storage; prepare returned backend ${workflowStorageBackend(prepared)}.`
     );
-  };
+  }
   const scheduledWorkflowRequest = requestBody.workflowRequest as Record<string, unknown>;
   scheduledWorkflowRequest.codeSourceRunId = prepared.runId;
   if (declaredPaths.length > 0) {
@@ -585,7 +554,7 @@ export async function scheduleWorkflow(
       resolvedPathRoots.push(absolutePath);
       const s3CodeKey = `code-${pathDef.name}.tar.gz`;
       const tarball = await createTarball(absolutePath);
-      await uploadCodeObject(s3CodeKey, tarball);
+      await uploadCodeObjectToCloudWorkflowStorage(api, prepared.runId, s3CodeKey, tarball);
       const repo = parseGitHubRemoteForPath(absolutePath);
       pathSubmissions.push({
         name: pathDef.name,
@@ -610,7 +579,7 @@ export async function scheduleWorkflow(
     }
   } else {
     const tarball = await createTarball(process.cwd());
-    await uploadCodeObject(prepared.s3CodeKey, tarball);
+    await uploadCodeObjectToCloudWorkflowStorage(api, prepared.runId, prepared.s3CodeKey, tarball);
     scheduledWorkflowRequest.s3CodeKey = prepared.s3CodeKey;
     const workflowPath = input.fromFile ? relativizeWorkflowPath(workflowArg) : null;
     if (workflowPath) {
@@ -915,10 +884,34 @@ function isCloudApiWorkflowStorage(prepared: PrepareWorkflowResponse): boolean {
   return prepared.workflowStorage?.backend === 'cloud-api' || prepared.s3Credentials.backend === 'cloud-api';
 }
 
+function workflowStorageBackend(prepared: PrepareWorkflowResponse): string {
+  return prepared.workflowStorage?.backend ?? prepared.s3Credentials.backend ?? 's3';
+}
+
 function workflowStorageObjectPath(runId: string, objectKey: string): string {
   const encodedRunId = encodeURIComponent(runId);
   const encodedKey = objectKey.split('/').map(encodeURIComponent).join('/');
   return `/api/v1/workflows/runs/${encodedRunId}/storage/${encodedKey}`;
+}
+
+async function uploadCodeObjectToCloudWorkflowStorage(
+  api: WorkflowHttpClient,
+  runId: string,
+  objectKey: string,
+  tarball: Buffer
+): Promise<void> {
+  const response = await api.fetch(workflowStorageObjectPath(runId, objectKey), {
+    method: 'PUT',
+    headers: {
+      'content-type': 'application/gzip',
+      accept: 'application/json',
+    },
+    body: tarball as unknown as BodyInit,
+  });
+  const payload = await readJsonResponse(response);
+  if (!response.ok) {
+    throw new Error(`Workflow storage upload failed: ${describeResponseError(response, payload)}`);
+  }
 }
 
 function createScopedS3Client(s3Credentials: S3Credentials): S3Client {
