@@ -138,21 +138,47 @@ export interface SurfaceImportDependencies {
   importFromStore: (installRoot: string, specifier: string) => Promise<unknown>;
 }
 
-function withImportDefaults(overrides: Partial<SurfaceImportDependencies>): SurfaceImportDependencies {
+/**
+ * Injectable dependencies for surface import, with optional context for provisioned options.
+ */
+export interface SurfaceImportDependenciesWithContext extends SurfaceImportDependencies {
+  /** Optional product name for which to create options (e.g., 'sessions'). */
+  optionsFor?: string;
+}
+
+function withImportDefaults(overrides: Partial<SurfaceImportDependenciesWithContext>): SurfaceImportDependenciesWithContext {
   return {
     importSpecifier: overrides.importSpecifier ?? ((specifier) => import(specifier)),
     isStandalone: overrides.isStandalone ?? (() => isCompiledStandalone()),
     provision: overrides.provision ?? ((pkg) => provisionSurfacePackage(pkg)),
+    optionsFor: overrides.optionsFor,
     // Wrapped as a module so the caller's shape does not change: the store
     // returns a ready surface, because `run` crosses a process boundary and
     // cannot be reconstructed from an imported module.
     importFromStore:
       overrides.importFromStore ??
-      (async (installRoot: string, specifier: string) => ({
-        createRelayCliSurface: await loadSurfaceFromStore(installRoot, specifier).then(
-          (surface) => () => surface
-        ),
-      })),
+      (async (installRoot: string, specifier: string) => {
+        // For sessions, pass the relayhistory config to enable cloud commands
+        let relayhistoryConfig: { baseUrl: string; token: string } | undefined;
+        if (specifier === 'ai-hist/relay-cli' || overrides.optionsFor === 'sessions') {
+          try {
+            // Get the Relayhistory configuration that would be used in the normal flow
+            const { readStoredRelayhistoryAuth, resolveRelayhistoryConfig } = await import('./session.js');
+            const config = resolveRelayhistoryConfig(readStoredRelayhistoryAuth());
+            if (config.baseUrl && config.token) {
+              relayhistoryConfig = config as { baseUrl: string; token: string };
+            }
+          } catch {
+            // If helpers can't be imported, continue without config
+          }
+        }
+
+        return {
+          createRelayCliSurface: await loadSurfaceFromStore(installRoot, specifier, overrides.optionsFor, relayhistoryConfig).then(
+            (surface) => () => surface
+          ),
+        };
+      }),
   };
 }
 
@@ -183,10 +209,13 @@ function isUnresolvedSpecifier(error: unknown): boolean {
  * before it can be imported (#1795). Only a specifier this CLI pins is eligible
  * — a caller naming something else (the end-to-end test mounts product builds
  * by absolute path) gets its original error back.
+ *
+ * @param specifier - Package subpath exporting `createRelayCliSurface`.
+ * @param overrides - Optional dependencies and context (including optionsFor for provisioned surfaces).
  */
 export async function importProductSurface(
   specifier: string,
-  overrides: Partial<SurfaceImportDependencies> = {}
+  overrides: Partial<SurfaceImportDependenciesWithContext> = {}
 ): Promise<unknown> {
   const deps = withImportDefaults(overrides);
   try {
@@ -262,14 +291,16 @@ async function composeSessionReplay(base: RelayCliSurface): Promise<RelayCliSurf
 /**
  * The package Node says it could not find, when it says so.
  *
- * ERR_MODULE_NOT_FOUND covers two different situations and the code alone does
+ * ERR_MODULE_NOT_FOUND covers multiple situations and the code alone does
  * not separate them:
  *
  *   Cannot find package '@relayfile/sdk' imported from …   -> genuinely absent
  *   Cannot find module '/abs/path/…/dist/index.js'         -> present, incomplete
+ *   Cannot find module 'some-dep'                           -> missing dependency
  *
- * The second happens while an install is still writing, and reporting it as
- * "not installed" sends the operator to reinstall something already there.
+ * The second and third happen while an install is still writing or a dependency
+ * is missing, and misreporting them as "not installed" sends the operator
+ * to reinstall the wrong thing.
  */
 function missingPackageFrom(error: unknown): string | undefined {
   const message = (error as { message?: string } | undefined)?.message ?? '';
@@ -279,13 +310,28 @@ function missingPackageFrom(error: unknown): string | undefined {
 /**
  * Whether Node named a file rather than a package.
  *
- * Detected positively, not by the absence of a package name: an error shape
- * this does not recognise should fall through to the plain "not installed"
- * advice, which is right far more often than "incomplete" would be.
+ * Detected positively on POSIX (/path/to/file), Windows (C:\path\to\file),
+ * and UNC (\\server\share\path) paths. An error shape this does not recognise
+ * should fall through to the plain "not installed" advice, which is right far
+ * more often than "incomplete" would be.
  */
 function missingFileFrom(error: unknown): string | undefined {
   const message = (error as { message?: string } | undefined)?.message ?? '';
-  return /Cannot find module '(\/[^']+)'/.exec(message)?.[1];
+  // Match POSIX paths (/), Windows paths (C:\), and UNC paths (\\)
+  return /Cannot find module '((?:\/|[A-Za-z]:\\|\\\\)[^']*)'/.exec(message)?.[1];
+}
+
+/**
+ * Whether the module import failed because a transitive dependency is missing.
+ *
+ * Bare module names in CommonJS errors indicate missing dependencies, distinct
+ * from package exports (which are qualified names). A CommonJS module that was
+ * present but incomplete would name a file instead.
+ */
+function missingDependencyFrom(error: unknown): string | undefined {
+  const message = (error as { message?: string } | undefined)?.message ?? '';
+  const bareMatch = /Cannot find module '([^/\\][^']*)'/.exec(message);
+  return bareMatch?.[1];
 }
 
 /**
@@ -310,22 +356,36 @@ function describeLoadFailure(definition: ProductSurfaceDefinition, error: unknow
   }
 
   if (code === 'ERR_MODULE_NOT_FOUND' || code === 'MODULE_NOT_FOUND') {
-    const missing = missingPackageFrom(error);
+    // Check what Node said is missing: a package name, a file path, or a bare module
+    const missingPackage = missingPackageFrom(error);
+    const missingFile = missingFileFrom(error);
+    const missingDependency = missingDependencyFrom(error);
 
-    // A dependency of the product, not the product: reinstalling the product
-    // alone would not fix it, and naming the wrong package wastes the operator.
-    if (missing !== undefined && missing !== packageName) {
+    // A package import that failed: a dependency of the product, not the product itself.
+    // Reinstalling the product alone would not fix it, and naming the wrong package
+    // wastes the operator.
+    if (missingPackage !== undefined && missingPackage !== packageName) {
       return (
         `\`agent-relay ${definition.as}\` could not load ${packageName}: ` +
-        `it depends on ${missing}, which is not installed.\n` +
+        `it depends on ${missingPackage}, which is not installed.\n` +
         `Reinstall agent-relay to repair the dependency tree.`
       );
     }
 
-    // Node named a file rather than a package, so the package directory exists
-    // but its contents do not. An interrupted or concurrent install looks like
+    // A CommonJS bare module name: a transitive dependency is missing. Likely caused
+    // by an interrupted install or version mismatch in the dependency tree.
+    if (missingDependency !== undefined) {
+      return (
+        `\`agent-relay ${definition.as}\` could not load ${packageName}: ` +
+        `it depends on ${missingDependency}, which is not installed.\n` +
+        `Reinstall agent-relay to repair the dependency tree.`
+      );
+    }
+
+    // Node named a file path rather than a package name, so the package directory
+    // exists but its contents do not. An interrupted or concurrent install looks like
     // this, and it resolves itself once the install finishes.
-    if (missingFileFrom(error) !== undefined) {
+    if (missingFile !== undefined) {
       return (
         `\`agent-relay ${definition.as}\` could not load ${packageName}: ` +
         `it is installed but incomplete.\n` +
@@ -351,6 +411,9 @@ function describeLoadFailure(definition: ProductSurfaceDefinition, error: unknow
 /**
  * Import a product's surface and prepare it for mounting.
  *
+ * For the compiled standalone binary, passes context (optionsFor) to ensure
+ * provisioned surfaces are created with the same options as the npm distribution.
+ *
  * @param definition - The group being loaded.
  * @param deps - Import hook and output sink.
  * @returns The surface, extended when the definition asks for it.
@@ -362,6 +425,7 @@ export async function loadProductSurface(
   deps: ProductSurfaceDependencies
 ): Promise<RelayCliSurface> {
   let module: SurfaceModule;
+
   try {
     module = (await deps.importModule(definition.specifier)) as SurfaceModule;
   } catch (error) {
