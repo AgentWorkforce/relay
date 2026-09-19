@@ -7,6 +7,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [12.2.5] - 2026-09-19
+
+### Changed
+
+- Harden subscription evidence and capture Nango forwards
+- Install command
+- Readme tweaks
+
+### Fixed
+
+- Retry Relaycast overloads across spawn and mcp-args
+
 ## [12.2.4] - 2026-09-18
 
 ### Added
