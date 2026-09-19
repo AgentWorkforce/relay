@@ -193,6 +193,12 @@ try {
     if (calls.filter((a) => a[0] === 'deploy').length !== 1) {
       throw new Error('Head deployed more than once.');
     }
+    // Convergence must be observed, not assumed: the script has to re-list
+    // after deploying. The state file alone cannot tell a script that checked
+    // from one that skipped its final verification.
+    if (!calls.some((a, i) => i > firstDeploy && a[0] === 'deployments')) {
+      throw new Error(`Head did not re-list listeners after deploying: ${JSON.stringify(calls)}`);
+    }
 
     outcome = 'fixed';
     signature = 'listener_reconcile_converges_by_name';

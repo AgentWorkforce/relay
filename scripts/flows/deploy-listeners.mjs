@@ -32,6 +32,7 @@
 
 import { spawnSync } from 'node:child_process';
 import { readFileSync } from 'node:fs';
+import { pathToFileURL } from 'node:url';
 
 /**
  * Only flows that are hosted listeners belong here. The verification and audit
@@ -74,6 +75,28 @@ function flows(args, { expectJson = true } = {}) {
   }
 }
 
+/**
+ * The name a flow file declares, read from its `flow(...)` call and nowhere
+ * else. Matching the raw source would accept the managed name in a comment or
+ * an unrelated literal after the declaration itself was renamed, and every run
+ * would then deploy one more listener under the new name that no reconcile
+ * removes. Comments are stripped first, and the file must declare exactly one
+ * flow, so the name compared is the one the listener will be created under.
+ */
+export function declaredFlowName(flowPath) {
+  const source = readFileSync(flowPath, 'utf8')
+    .replace(/\/\*[\s\S]*?\*\//g, '')
+    .replace(/^\s*\/\/.*$/gm, '');
+  // `flow('name'` or `flow<Input>('name'`; the generic never contains parens.
+  const declarations = [...source.matchAll(/\bflow\s*(?:<[^()]*>)?\s*\(\s*(['"`])([^'"`\n]+)\1/g)];
+  if (declarations.length !== 1) {
+    throw new Error(
+      `${flowPath} must declare exactly one flow(...); found ${declarations.length}`
+    );
+  }
+  return declarations[0][2];
+}
+
 /** Listeners already deployed for this flow name against this repository. */
 function existingFor(deployments, flow) {
   const [owner, name] = flow.repo.split('/');
@@ -107,9 +130,11 @@ function main() {
   for (const flow of MANAGED) {
     // Fail before touching anything if the file no longer declares this name;
     // a renamed flow would otherwise leave its old listener running forever.
-    const source = readFileSync(flow.path, 'utf8');
-    if (!source.includes(`'${flow.name}'`) && !source.includes(`"${flow.name}"`)) {
-      throw new Error(`${flow.path} does not declare the managed name ${flow.name}`);
+    const declared = declaredFlowName(flow.path);
+    if (declared !== flow.name) {
+      throw new Error(
+        `${flow.path} declares flow ${JSON.stringify(declared)}, not the managed name ${JSON.stringify(flow.name)}`
+      );
     }
 
     const stale = existingFor(deployments, flow);
@@ -157,9 +182,11 @@ function main() {
   console.log('Relayflows listeners reconciled.');
 }
 
-try {
-  main();
-} catch (error) {
-  console.error(`[deploy-listeners] ${error instanceof Error ? error.message : String(error)}`);
-  process.exitCode = 1;
+if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
+  try {
+    main();
+  } catch (error) {
+    console.error(`[deploy-listeners] ${error instanceof Error ? error.message : String(error)}`);
+    process.exitCode = 1;
+  }
 }

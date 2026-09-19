@@ -52,6 +52,20 @@ jobs:
     # way the PR-proof dispatcher stored RELAYFLOW_PR_PROOF_CLOUD_API_KEY. A
     # dedicated environment would add a setup step and gate nothing.
     steps:
+      # `push` is already limited to main above; this is for workflow_dispatch,
+      # which runs whatever ref the dispatcher selected. Deploying a branch
+      # would hand production credentials to unreviewed flow source that then
+      # decides the proof result for every pull request, so refuse anything
+      # but main outright rather than checking out main behind the caller's
+      # back.
+      - name: Refuse to deploy anything but main
+        if: github.ref != 'refs/heads/main'
+        env:
+          REF: ${{ github.ref }}
+        run: |
+          echo "::error::Refusing to reconcile listeners from $REF; only refs/heads/main is deployable."
+          exit 1
+
       - name: Checkout
         uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
@@ -67,10 +81,13 @@ jobs:
         run: npm ci --ignore-scripts
 
       # Deploying a flow that cannot compile would replace a working listener
-      # with a broken one, so refuse before anything is undeployed.
+      # with a broken one, so refuse before anything is undeployed. The project
+      # is `flows/ci/`, not all of `flows/`: the generators there import
+      # workspace packages whose types come from an unbuilt `dist/`, and this
+      # job runs on a plain `npm ci` with no workspace build.
       - name: Check the flow before deploying it
         run: |
-          npx tsc -p flows/tsconfig.json
+          npx tsc -p flows/ci/tsconfig.json
           npx flows check flows/ci/pr-proof.flow.ts
 
       - name: Reconcile listeners

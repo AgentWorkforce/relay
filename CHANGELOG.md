@@ -9,7 +9,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
-- `.github/workflows/deploy-relayflows.yml` redeploys the `relay.ci.pr-proof` hosted listener when its source changes on main, so the listener no longer runs a stale snapshot after a merge. Needs a `FLOWS_CLOUD_TOKEN` repo secret minted after cloud#3829 (which added `flows:listeners:write` to Flows Cloud tokens) plus a `RELAY_PR_PROOF_APPROVER` repo variable; a token minted earlier lacks the scope and is refused.
+- The `relay.ci.pr-proof` hosted listener is redeployed automatically when its source changes on main, so pull requests are proved against the merged flow instead of a stale snapshot. Configure a `FLOWS_CLOUD_TOKEN` repo secret (a Flows Cloud token carrying `flows:listeners:write`) and a `RELAY_PR_PROOF_APPROVER` repo variable; a token without that scope is refused.
 
 ## [12.3.0] - 2026-09-19
 
