@@ -359,14 +359,18 @@ function runnerProcess(
   }
 
   return new Promise((resolve, reject) => {
-    const child = spawn(process.execPath.endsWith('node') ? process.execPath : 'node', [runner, ...runnerArgs], {
-      // Do not change cwd: product commands may read relative paths (e.g., mount roots,
-      // output files), and those should be relative to where the user invoked the CLI.
-      cwd: process.cwd(),
-      // stdin inherited so an interactive product prompt still works.
-      stdio: ['inherit', 'pipe', 'pipe'],
-      env,
-    });
+    const child = spawn(
+      process.execPath.endsWith('node') ? process.execPath : 'node',
+      [runner, ...runnerArgs],
+      {
+        // Do not change cwd: product commands may read relative paths (e.g., mount roots,
+        // output files), and those should be relative to where the user invoked the CLI.
+        cwd: process.cwd(),
+        // stdin inherited so an interactive product prompt still works.
+        stdio: ['inherit', 'pipe', 'pipe'],
+        env,
+      }
+    );
     let stdout = '';
     let stderr = '';
     child.stdout?.on('data', (chunk: Buffer) => {
@@ -407,7 +411,13 @@ export async function loadSurfaceFromStore(
   optionsFor?: string,
   relayhistoryConfig?: { baseUrl: string; token: string }
 ): Promise<RelayCliSurface> {
-  const described = await runnerProcess(installRoot, ['describe', specifier], undefined, optionsFor, relayhistoryConfig);
+  const described = await runnerProcess(
+    installRoot,
+    ['describe', specifier],
+    undefined,
+    optionsFor,
+    relayhistoryConfig
+  );
   if (described.code !== 0) {
     // If describe failed, show the child's stderr so the operator sees the real error
     // (missing Go binary, native addon not compiled, factory threw, etc.) instead of
@@ -424,7 +434,13 @@ export async function loadSurfaceFromStore(
   return {
     ...declaration,
     run: async (argv, io) => {
-      const result = await runnerProcess(installRoot, ['run', specifier, ...argv], io, optionsFor, relayhistoryConfig);
+      const result = await runnerProcess(
+        installRoot,
+        ['run', specifier, ...argv],
+        io,
+        optionsFor,
+        relayhistoryConfig
+      );
       return result.code;
     },
   };

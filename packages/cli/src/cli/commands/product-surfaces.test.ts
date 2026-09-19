@@ -115,8 +115,8 @@ describe('loadProductSurface', () => {
   });
 
   it.each([
-    ['Windows drive letter', "C:\\Users\\dev\\node_modules\\@relayfile\\sdk\\dist\\index.js"],
-    ['UNC share', "\\\\build\\share\\node_modules\\@relayfile\\sdk\\dist\\index.js"],
+    ['Windows drive letter', 'C:\\Users\\dev\\node_modules\\@relayfile\\sdk\\dist\\index.js'],
+    ['UNC share', '\\\\build\\share\\node_modules\\@relayfile\\sdk\\dist\\index.js'],
   ])('treats an incomplete install as incomplete on a %s path', async (_label, modulePath) => {
     // The first version of this check required a leading "/", so every Windows
     // and UNC incomplete install was reported as "not installed" — sending the

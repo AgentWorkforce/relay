@@ -146,7 +146,9 @@ export interface SurfaceImportDependenciesWithContext extends SurfaceImportDepen
   optionsFor?: string;
 }
 
-function withImportDefaults(overrides: Partial<SurfaceImportDependenciesWithContext>): SurfaceImportDependenciesWithContext {
+function withImportDefaults(
+  overrides: Partial<SurfaceImportDependenciesWithContext>
+): SurfaceImportDependenciesWithContext {
   return {
     importSpecifier: overrides.importSpecifier ?? ((specifier) => import(specifier)),
     isStandalone: overrides.isStandalone ?? (() => isCompiledStandalone()),
@@ -174,9 +176,12 @@ function withImportDefaults(overrides: Partial<SurfaceImportDependenciesWithCont
         }
 
         return {
-          createRelayCliSurface: await loadSurfaceFromStore(installRoot, specifier, overrides.optionsFor, relayhistoryConfig).then(
-            (surface) => () => surface
-          ),
+          createRelayCliSurface: await loadSurfaceFromStore(
+            installRoot,
+            specifier,
+            overrides.optionsFor,
+            relayhistoryConfig
+          ).then((surface) => () => surface),
         };
       }),
   };
