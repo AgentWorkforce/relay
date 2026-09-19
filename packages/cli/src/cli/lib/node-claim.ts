@@ -368,6 +368,17 @@ export function normalizeClaimStateDir(stateDir: string): string {
   }
 }
 
+/**
+ * Whether a recorded claim names this state dir. Both sides are canonicalised:
+ * a claim written by an older CLI, by hand, or before its directory existed
+ * (when `realpathSync` could not resolve it) may carry a non-canonical
+ * spelling, and on macOS every `/var/...` temp dir is really `/private/var/...`.
+ * Comparing a canonical input against the raw record missed all of those.
+ */
+export function claimNamesStateDir(claim: NodeClaim, stateDir: string): boolean {
+  return normalizeClaimStateDir(claim.state_dir) === normalizeClaimStateDir(stateDir);
+}
+
 function isOptionalString(value: unknown): boolean {
   return value === undefined || typeof value === 'string';
 }
@@ -1460,7 +1471,9 @@ function isSameAcquisition(current: NodeClaim | null, claim: NodeClaim): boolean
   // Claims written before this process (or by hand) carry no token; fall back
   // to the identity the record does have.
   return (
-    current.node_id === claim.node_id && current.pid === claim.pid && current.state_dir === claim.state_dir
+    current.node_id === claim.node_id &&
+    current.pid === claim.pid &&
+    claimNamesStateDir(current, claim.state_dir)
   );
 }
 
@@ -1622,10 +1635,9 @@ export async function releaseNodeClaimsForBroker(input: {
 }): Promise<NodeClaim[]> {
   const env = input.env ?? process.env;
   const deps: NodeClaimDependencies = { ...input, env };
-  const stateDir = normalizeClaimStateDir(input.stateDir);
   const released: NodeClaim[] = [];
   for (const claim of listAllNodeClaims(env)) {
-    if (claim.state_dir !== stateDir) continue;
+    if (!claimNamesStateDir(claim, input.stateDir)) continue;
     const namesThisBroker = claim.pid === input.pid || claim.supervisor_pid === input.pid;
     if (!namesThisBroker) {
       const status = await classifyNodeClaim(claim.node_id, claim, env, deps);

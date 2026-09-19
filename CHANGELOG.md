@@ -11,6 +11,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - The `relay.ci.pr-proof` hosted listener is redeployed automatically when its source changes on main, so pull requests are proved against the merged flow instead of a stale snapshot. Configure a `FLOWS_CLOUD_TOKEN` repo secret (a Flows Cloud token carrying `flows:listeners:write`) and a `RELAY_PR_PROOF_APPROVER` repo variable; a token without that scope is refused.
 
+### Fixed
+
+- `agent-relay node down` now releases a node claim whose recorded state dir is a different spelling of the same directory (a symlinked path, or a record written by an older CLI); previously the claim was left behind and kept blocking `node up` for that node id.
+
 ## [12.3.0] - 2026-09-19
 
 ### Added
