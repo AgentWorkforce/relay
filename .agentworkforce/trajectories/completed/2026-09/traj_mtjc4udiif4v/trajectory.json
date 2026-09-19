@@ -1,0 +1,25 @@
+{
+  "id": "traj_mtjc4udiif4v",
+  "version": 1,
+  "task": {
+    "title": "Fresh-eyes review of CLI node claim crash safety"
+  },
+  "status": "completed",
+  "startedAt": "2026-09-19T05:56:19.045Z",
+  "completedAt": "2026-09-19T05:57:23.549Z",
+  "agents": [],
+  "chapters": [],
+  "retrospective": {
+    "summary": "Blocked CLI ownership hardening: reproduced generation reuse deleting a live successor claim; pre-connection supervisor-crash window remains. 153 focused tests pass; non-exclusive-create mutation fails four tests.",
+    "approach": "Standard approach",
+    "confidence": 0.98
+  },
+  "commits": [],
+  "filesChanged": [],
+  "projectId": "AgentWorkforce/relay",
+  "tags": [],
+  "_trace": {
+    "startRef": "082b2511bae7ed6aec026f5f0e400192e5a5dabe",
+    "endRef": "082b2511bae7ed6aec026f5f0e400192e5a5dabe"
+  }
+}

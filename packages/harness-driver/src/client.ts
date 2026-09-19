@@ -74,6 +74,7 @@ import {
   formatBrokerStartupError,
   isProcessRunning,
   pushBufferedLine,
+  terminateFailedBrokerSpawn,
   waitForApiUrl,
   waitForExit,
   type BrokerExitInfo,
@@ -395,108 +396,125 @@ export class HarnessDriverClient {
     const child = spawn(binaryPath, args, {
       cwd,
       env,
-      stdio: ['ignore', 'pipe', 'pipe'],
+      // Inherited descriptors land on fd 3 upward, after the three stdio slots.
+      stdio: ['ignore', 'pipe', 'pipe', ...(options?.inheritFds ?? [])],
     });
 
-    if (child.stderr) {
-      const { createInterface } = await import('node:readline');
-      const rl = createInterface({ input: child.stderr });
-      rl.on('line', (line) => {
-        pushBufferedLine(stderrLines, line);
-        options?.onStderr?.(line);
-      });
-    }
-
-    // Parse the API URL from stdout (the broker prints it after binding)
-    const baseUrl = await waitForApiUrl(child, timeoutMs, {
-      binaryPath,
-      args,
-      cwd,
-      stdoutLines,
-      stderrLines,
-    });
-    onStep?.(`Broker API listening at ${baseUrl}`);
-    drainBrokerStdioAfterStartup(child);
-
-    const client = new HarnessDriverClient({
-      baseUrl,
-      apiKey,
-      requestTimeoutMs: options?.requestTimeoutMs,
-      ...(options?.eventBus ? { eventBus: options.eventBus } : {}),
-    });
-    client.child = child;
-    client.installManagedBrokerExitHandler(child, stderrLines);
-
-    // The broker prints "API listening on …" the moment its TCP listener is
-    // bound, but it still needs to complete a Relaycast handshake before
-    // `getSession()` will return. Two failure modes to handle:
-    //
-    //   1. Broker is alive and warming up — the startup-only API responds
-    //      503 until the handshake completes. Poll until it succeeds.
-    //   2. Broker died during the handshake (e.g. Relaycast unreachable) —
-    //      the in-flight fetch sees the socket drop as `TypeError: fetch
-    //      failed`, which is uninformative on its own.
-    //
-    // We race each `getSession()` against `brokerExited` so case (2) reports
-    // as the actual broker exit (with its stderr tail and exit code), not as
-    // a mystery network error. No backoff for the death case — we know it
-    // immediately. 503 polling stays simple at 1s intervals.
-    const brokerExited = new Promise<never>((_, reject) => {
-      child.once('exit', (code) => {
-        reject(
-          new Error(
-            formatBrokerStartupError(
-              `Broker process exited with code ${code} during initial handshake`,
-              child,
-              { binaryPath, args, cwd, stdoutLines, stderrLines }
-            )
-          )
-        );
-      });
-    });
-    // Suppress unhandledRejection if the race is won by getSession before
-    // the broker exits later (e.g. on normal shutdown).
-    brokerExited.catch(() => {});
-
-    onStep?.('Waiting for broker session handshake...');
-    let session: SessionInfo | undefined;
-    // The Relaycast handshake can take many seconds on a cold or slow network,
-    // during which the startup-only API answers 503. Poll for the full startup
-    // budget (`timeoutMs`) rather than a fixed attempt count so a slow-but-
-    // healthy handshake isn't misreported as a spawn failure. The `brokerExited`
-    // race still surfaces a dead broker immediately, so this only extends how
-    // long we wait on a broker that is alive and warming up.
-    const handshakeDeadline = Date.now() + timeoutMs;
-    for (let attempt = 0; ; attempt++) {
-      try {
-        session = await Promise.race([client.getSession(), brokerExited]);
-        break;
-      } catch (err) {
-        // The broker's startup-only API returns a structured 503
-        // (`http_503`) while it warms up. Prefer the typed fields over the
-        // formatted message, which the broker is free to customize.
-        const is503 =
-          err instanceof HarnessDriverProtocolError
-            ? err.status === 503 || err.code === 'http_503'
-            : /503|Service Unavailable/.test(err instanceof Error ? err.message : String(err));
-        if (!is503 || Date.now() >= handshakeDeadline) throw err;
-        onStep?.(`Broker still starting (handshake attempt ${attempt + 1}), retrying in 1s...`);
-        await new Promise((resolve) => setTimeout(resolve, 1000));
+    // Every failure below leaves a broker child already running, and none of
+    // them return a client the caller could shut down: reap it here, with its
+    // exit verified, so a failed spawn cannot leave an untracked broker holding
+    // the descriptors (and the node claim) it inherited.
+    try {
+      // First statement in the turn `spawn()` returned: the caller's fence is
+      // only as good as its knowledge of which process holds it, and a launcher
+      // can `exec` into a different executable the moment this yields. Inside
+      // the try so a caller that refuses to proceed gets the child reaped.
+      if (child.pid !== undefined) {
+        options?.onSpawn?.(child.pid);
       }
+      if (child.stderr) {
+        const { createInterface } = await import('node:readline');
+        const rl = createInterface({ input: child.stderr });
+        rl.on('line', (line) => {
+          pushBufferedLine(stderrLines, line);
+          options?.onStderr?.(line);
+        });
+      }
+
+      // Parse the API URL from stdout (the broker prints it after binding)
+      const baseUrl = await waitForApiUrl(child, timeoutMs, {
+        binaryPath,
+        args,
+        cwd,
+        stdoutLines,
+        stderrLines,
+      });
+      onStep?.(`Broker API listening at ${baseUrl}`);
+      drainBrokerStdioAfterStartup(child);
+
+      const client = new HarnessDriverClient({
+        baseUrl,
+        apiKey,
+        requestTimeoutMs: options?.requestTimeoutMs,
+        ...(options?.eventBus ? { eventBus: options.eventBus } : {}),
+      });
+      client.child = child;
+      client.installManagedBrokerExitHandler(child, stderrLines);
+
+      // The broker prints "API listening on …" the moment its TCP listener is
+      // bound, but it still needs to complete a Relaycast handshake before
+      // `getSession()` will return. Two failure modes to handle:
+      //
+      //   1. Broker is alive and warming up — the startup-only API responds
+      //      503 until the handshake completes. Poll until it succeeds.
+      //   2. Broker died during the handshake (e.g. Relaycast unreachable) —
+      //      the in-flight fetch sees the socket drop as `TypeError: fetch
+      //      failed`, which is uninformative on its own.
+      //
+      // We race each `getSession()` against `brokerExited` so case (2) reports
+      // as the actual broker exit (with its stderr tail and exit code), not as
+      // a mystery network error. No backoff for the death case — we know it
+      // immediately. 503 polling stays simple at 1s intervals.
+      const brokerExited = new Promise<never>((_, reject) => {
+        child.once('exit', (code) => {
+          reject(
+            new Error(
+              formatBrokerStartupError(
+                `Broker process exited with code ${code} during initial handshake`,
+                child,
+                { binaryPath, args, cwd, stdoutLines, stderrLines }
+              )
+            )
+          );
+        });
+      });
+      // Suppress unhandledRejection if the race is won by getSession before
+      // the broker exits later (e.g. on normal shutdown).
+      brokerExited.catch(() => {});
+
+      onStep?.('Waiting for broker session handshake...');
+      let session: SessionInfo | undefined;
+      // The Relaycast handshake can take many seconds on a cold or slow network,
+      // during which the startup-only API answers 503. Poll for the full startup
+      // budget (`timeoutMs`) rather than a fixed attempt count so a slow-but-
+      // healthy handshake isn't misreported as a spawn failure. The `brokerExited`
+      // race still surfaces a dead broker immediately, so this only extends how
+      // long we wait on a broker that is alive and warming up.
+      const handshakeDeadline = Date.now() + timeoutMs;
+      for (let attempt = 0; ; attempt++) {
+        try {
+          session = await Promise.race([client.getSession(), brokerExited]);
+          break;
+        } catch (err) {
+          // The broker's startup-only API returns a structured 503
+          // (`http_503`) while it warms up. Prefer the typed fields over the
+          // formatted message, which the broker is free to customize.
+          const is503 =
+            err instanceof HarnessDriverProtocolError
+              ? err.status === 503 || err.code === 'http_503'
+              : /503|Service Unavailable/.test(err instanceof Error ? err.message : String(err));
+          if (!is503 || Date.now() >= handshakeDeadline) throw err;
+          onStep?.(`Broker still starting (handshake attempt ${attempt + 1}), retrying in 1s...`);
+          await new Promise((resolve) => setTimeout(resolve, 1000));
+        }
+      }
+      onStep?.(`Broker handshake complete (workspace: ${maskWorkspaceKey(session?.workspace_key)})`);
+
+      if (!client.brokerExitInfo) {
+        client.connectEvents();
+        onStep?.('Event stream connected.');
+
+        // Renew the owner lease so the broker doesn't auto-shutdown
+        client.leaseTimer = setInterval(() => {
+          client.renewLease().catch(() => {});
+        }, 60_000);
+      }
+
+      return client;
+    } catch (err) {
+      await terminateFailedBrokerSpawn(child);
+      throw err;
     }
-    onStep?.(`Broker handshake complete (workspace: ${maskWorkspaceKey(session?.workspace_key)})`);
-
-    if (!client.brokerExitInfo) {
-      client.connectEvents();
-      onStep?.('Event stream connected.');
-
-      // Renew the owner lease so the broker doesn't auto-shutdown
-      client.leaseTimer = setInterval(() => {
-        client.renewLease().catch(() => {});
-      }, 60_000);
-    }
-
-    return client;
   }
 
   /** PID of the managed broker process, if spawned locally. */
@@ -1285,8 +1303,12 @@ export class HarnessDriverClient {
     this.transport.disconnect();
 
     if (this.child) {
-      await waitForExit(this.child, 5000);
-      this.child = null;
+      // Keep the handle when the exit was not observed: the process may still
+      // be holding its sockets, and a later shutdown() should retry rather than
+      // let the caller treat an unproven exit as a clean one.
+      if (await waitForExit(this.child, 5000)) {
+        this.child = null;
+      }
     }
   }
 

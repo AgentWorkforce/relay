@@ -17,6 +17,7 @@ import {
   waitForNodeDelivery,
 } from './broker-lifecycle.js';
 import { brokerIdentityPath, readBrokerIdentities } from './broker-process-identity.js';
+import { nodeClaimHoldPath } from './node-claim.js';
 import type { CoreDependencies, CoreRelay } from '../commands/core.js';
 
 type StructuredLogEntry = { level?: string; component?: string; msg?: string };
@@ -345,12 +346,13 @@ vi.mock('@agent-relay/harness-driver', () => ({
   },
 }));
 
+import { exec as execChild, spawn as spawnChild } from 'node:child_process';
 import fsReal from 'node:fs';
 import os from 'node:os';
 import pathReal from 'node:path';
 import { startServeNode } from '@agent-relay/fleet';
 import { setWorkspaceKey } from '@agent-relay/cloud';
-import { runUpCommand } from './broker-lifecycle.js';
+import { runDownCommand, runUpCommand } from './broker-lifecycle.js';
 import { startReflexCapture } from './reflex-capture.js';
 class ExitSignal extends Error {
   constructor(public readonly code: number) {
@@ -403,6 +405,9 @@ function createUpHarness() {
     execCommand: vi.fn(async (command: string) => {
       if (command === 'LC_ALL=C TZ=UTC ps -p 999999 -o lstart=')
         return { stdout: 'Thu Sep 10 18:00:00 2026\n', stderr: '' };
+      // Nothing in this fixture spawns a real child, so no claim hold file has
+      // a live holder. `lsof -t` exits 1 with no output in exactly that case.
+      if (command.startsWith('LC_ALL=C lsof -t --')) return { stdout: 'rc=1', stderr: '' };
       if (command === 'lsof -nP -a -p 999999 -d txt -FfDi')
         return { stdout: 'p999999\nftxt\nD0x100\ni1234\n', stderr: '' };
       if (command === 'lsof -nP -a -p 999999 -FfnDi') {
@@ -453,10 +458,15 @@ function createUpHarness() {
   } as unknown as CoreDependencies;
 
   // Every start now consults the machine-global workspace store, so point it at
-  // a scratch home instead of the developer's real one.
+  // a scratch home instead of the developer's real one. HOME/XDG_DATA_HOME are
+  // pinned too: node-claim probes the broker's node-token cache through them,
+  // and whether this machine happens to have one cached must not decide what
+  // these tests observe.
   const home = fsReal.mkdtempSync(pathReal.join(os.tmpdir(), 'broker-lifecycle-home-'));
   upTmpRoots.push(home);
   (deps.env as NodeJS.ProcessEnv).AGENT_RELAY_HOME = home;
+  (deps.env as NodeJS.ProcessEnv).HOME = home;
+  (deps.env as NodeJS.ProcessEnv).XDG_DATA_HOME = pathReal.join(home, 'data');
 
   return { deps, projectRoot, dataDir, home, createRelay, log, warn, error, exit };
 }
@@ -847,7 +857,14 @@ describe('runUpCommand workspace precedence', () => {
 
     await runUpCommand({ brokerName: paddedName }, deps);
 
-    expect(createRelay).toHaveBeenCalledWith(projectRoot, 3889, trimmedName, undefined);
+    expect(createRelay).toHaveBeenCalledWith(
+      projectRoot,
+      3889,
+      trimmedName,
+      undefined,
+      [],
+      expect.any(Function)
+    );
     expect(vi.mocked(createRelay).mock.calls[0]?.[2]).toBe(trimmedName);
     expect(readBrokerIdentities({ projectRoot, dataDir, teamDir: projectRoot }, deps)).toHaveLength(1);
     expect(brokerIdentityPath({ projectRoot, dataDir, teamDir: projectRoot }, deps, trimmedName)).toContain(
@@ -856,6 +873,556 @@ describe('runUpCommand workspace precedence', () => {
     expect(
       brokerIdentityPath({ projectRoot, dataDir, teamDir: projectRoot }, deps, trimmedName)
     ).not.toContain(paddedName);
+  });
+});
+
+// ── machine-global node claims ───────────────────────────────────────────────
+// The Fleet enrollment store is machine-global and not scoped to a state dir, so
+// the claim written here is what stops a second broker from taking over a live
+// node's Cloud delivery socket.
+
+describe('runUpCommand node claims', () => {
+  /**
+   * Path of one generation of a node's claim. Ownership is the exclusive
+   * creation of the next generation, so a takeover writes `…000002.json`
+   * rather than overwriting the incumbent's file.
+   */
+  const claimFile = (home: string, nodeId: string, generation = 1): string =>
+    pathReal.join(home, 'node-claims', `${nodeId}.${String(generation).padStart(6, '0')}.json`);
+
+  /**
+   * The claim that currently owns a node id: its highest generation on disk
+   * that is still a claim.
+   *
+   * A released generation leaves a tombstone behind so its number can never be
+   * reissued (see `releaseNodeClaim`). It is a file, but it is not a claim, and
+   * it must read here exactly as it reads in the module: node id free.
+   */
+  function currentClaim(home: string, nodeId: string): Record<string, unknown> | null {
+    let filenames: string[];
+    try {
+      filenames = fsReal.readdirSync(pathReal.join(home, 'node-claims'));
+    } catch {
+      return null;
+    }
+    const newest = filenames
+      .filter((name) => name.startsWith(`${nodeId}.`) && name.endsWith('.json'))
+      .sort()
+      .reverse()
+      .map(
+        (name) =>
+          JSON.parse(fsReal.readFileSync(pathReal.join(home, 'node-claims', name), 'utf8')) as Record<
+            string,
+            unknown
+          >
+      )
+      .find((record) => record.released !== true);
+    return newest ?? null;
+  }
+
+  const hasClaim = (home: string, nodeId: string): boolean => currentClaim(home, nodeId) !== null;
+
+  /** The SIGTERM handler `runUpCommand` registers, i.e. a clean `node down`. */
+  function sigtermHandler(deps: CoreDependencies): () => Promise<void> {
+    const handler = vi
+      .mocked(deps.onSignal)
+      .mock.calls.find(([signal]) => signal === 'SIGTERM')?.[1] as () => Promise<void>;
+    expect(handler).toBeTypeOf('function');
+    return handler;
+  }
+
+  it('claims the enrolled node id once a verified broker owns the state dir', async () => {
+    const { deps, home, dataDir } = createUpHarness();
+    deps.env.RELAY_NODE_ID = 'node_claimed';
+
+    await runUpCommand({}, deps);
+
+    expect(currentClaim(home, 'node_claimed')).toMatchObject({
+      version: 1,
+      node_id: 'node_claimed',
+      pid: 999999,
+      state_dir: fsReal.realpathSync(dataDir),
+      // Recorded from `ps`, so a recycled pid cannot read as this broker.
+      process_started_at: 'Thu Sep 10 18:00:00 2026',
+      // The supervisor stays on the record, so its death does not unprotect a
+      // broker that is still registered and serving.
+      supervisor_pid: process.pid,
+      status: 'active',
+    });
+  });
+
+  it('reserves the node id before anything that can register is spawned', async () => {
+    const { deps, home, dataDir, createRelay } = createUpHarness();
+    deps.env.RELAY_NODE_ID = 'node_claimed';
+    const spawnBroker = createRelay.getMockImplementation()!;
+    let claimAtSpawn: Record<string, unknown> | null = null;
+    createRelay.mockImplementation(async (...args: Parameters<typeof spawnBroker>) => {
+      const file = claimFile(home, 'node_claimed');
+      claimAtSpawn = fsReal.existsSync(file)
+        ? (JSON.parse(fsReal.readFileSync(file, 'utf8')) as Record<string, unknown>)
+        : null;
+      return spawnBroker(...args);
+    });
+
+    await runUpCommand({}, deps);
+
+    // The broker queues `node.register` from its own startup, so a claim
+    // written only after the spawn is written after the delivery socket could
+    // already have moved. Ownership has to exist before the process does.
+    expect(claimAtSpawn).toMatchObject({
+      node_id: 'node_claimed',
+      pid: deps.pid,
+      status: 'reserved',
+      state_dir: fsReal.realpathSync(dataDir),
+    });
+  });
+
+  it('records the executable it will run as the broker, whatever that file is named', async () => {
+    // `AGENT_RELAY_BIN` / `BROKER_BINARY_PATH` make the broker's filename the
+    // operator's choice. Recording the file's identity is what lets a later
+    // start recognise that process as the node's broker; classified by name, a
+    // broker installed under any other filename read as unrelated and the next
+    // start took its node id.
+    const { deps, home } = createUpHarness();
+    deps.env.RELAY_NODE_ID = 'node_claimed';
+    const binaryDir = fsReal.mkdtempSync(pathReal.join(os.tmpdir(), 'broker-lifecycle-bin-'));
+    upTmpRoots.push(binaryDir);
+    const binary = pathReal.join(binaryDir, 'custom-broker');
+    fsReal.writeFileSync(binary, '#!/bin/sh\nexec true\n', { mode: 0o755 });
+    deps.env.AGENT_RELAY_BIN = binary;
+
+    await runUpCommand({}, deps);
+
+    const stat = fsReal.statSync(binary, { bigint: true });
+    expect(currentClaim(home, 'node_claimed')).toMatchObject({
+      broker_binary: fsReal.realpathSync(binary),
+      broker_executable: `0x${stat.dev.toString(16)}:${stat.ino}`,
+    });
+  });
+
+  it('records the broker child it spawned before the handshake completes', async () => {
+    // The executable identity above describes the file this start MEANT to
+    // run. A launcher script is not that file once it is running: it executes
+    // as its interpreter, and after an `exec` as whatever binary it chose. The
+    // pid survives both, so it is recorded in the same turn `spawn()` returns
+    // it — while the supervisor may still be killed before adoption, and while
+    // the child has published nothing at all.
+    const { deps, home, createRelay } = createUpHarness();
+    deps.env.RELAY_NODE_ID = 'node_claimed';
+    const spawnBroker = createRelay.getMockImplementation()!;
+    let claimAtSpawn: Record<string, unknown> | null = null;
+    createRelay.mockImplementation(
+      async (
+        projectRoot: string,
+        port: number,
+        brokerName?: string,
+        verbose?: boolean,
+        inheritFds?: number[],
+        onBrokerSpawn?: (pid: number) => void
+      ) => {
+        onBrokerSpawn?.(424242);
+        claimAtSpawn = currentClaim(home, 'node_claimed');
+        return spawnBroker(projectRoot, port, brokerName, verbose, inheritFds);
+      }
+    );
+
+    await runUpCommand({}, deps);
+
+    // On disk before the handshake resolved, not merely once adoption ran.
+    expect(claimAtSpawn).toMatchObject({ status: 'reserved', broker_child_pid: 424242 });
+    // And carried through adoption, which is when the supervisor stops being
+    // the only thing that knows this pid.
+    expect(currentClaim(home, 'node_claimed')).toMatchObject({
+      status: 'active',
+      pid: 999999,
+      broker_child_pid: 424242,
+    });
+  });
+
+  it('refuses a second start before it spawns a broker', async () => {
+    const { deps, home, error, createRelay } = createUpHarness();
+    deps.env.RELAY_NODE_ID = 'node_claimed';
+    deps.killProcess = vi.fn((pid: number) => {
+      if (pid !== 4242) throw new Error('not running');
+    });
+    fsReal.mkdirSync(pathReal.join(home, 'node-claims'), { recursive: true });
+    fsReal.writeFileSync(
+      claimFile(home, 'node_claimed'),
+      JSON.stringify({
+        version: 1,
+        node_id: 'node_claimed',
+        pid: 4242,
+        state_dir: '/other-checkout/.agentworkforce/relay',
+        status: 'active',
+        claimed_at: '2026-10-05T12:00:00.000Z',
+      })
+    );
+
+    await expect(runUpCommand({}, deps)).rejects.toBeInstanceOf(ExitSignal);
+
+    expect(error.mock.calls.flat().join('\n')).toContain('already served by a live local broker');
+    // The refusal is what matters: a loser that got as far as starting a broker
+    // has already had a chance to take the incumbent's delivery socket.
+    expect(createRelay).not.toHaveBeenCalled();
+  });
+
+  it('releases the claim when the broker stops cleanly', async () => {
+    const { deps, home } = createUpHarness();
+    deps.env.RELAY_NODE_ID = 'node_claimed';
+
+    await runUpCommand({}, deps);
+    expect(hasClaim(home, 'node_claimed')).toBe(true);
+
+    await expect(sigtermHandler(deps)()).rejects.toBeInstanceOf(ExitSignal);
+
+    expect(hasClaim(home, 'node_claimed')).toBe(false);
+  });
+
+  it('refuses to register over a live claim from another state dir', async () => {
+    const { deps, home, error } = createUpHarness();
+    deps.env.RELAY_NODE_ID = 'node_claimed';
+    // Only pid 4242 is alive, so the pre-written claim reads as held.
+    deps.killProcess = vi.fn((pid: number) => {
+      if (pid !== 4242) throw new Error('not running');
+    });
+    fsReal.mkdirSync(pathReal.join(home, 'node-claims'), { recursive: true });
+    fsReal.writeFileSync(
+      claimFile(home, 'node_claimed'),
+      JSON.stringify({
+        version: 1,
+        node_id: 'node_claimed',
+        pid: 4242,
+        state_dir: '/other-checkout/.agentworkforce/relay',
+        claimed_at: '2026-10-05T12:00:00.000Z',
+      })
+    );
+
+    await expect(runUpCommand({}, deps)).rejects.toBeInstanceOf(ExitSignal);
+
+    expect(error.mock.calls.flat().join('\n')).toContain('already served by a live local broker');
+    // The holder's claim is untouched, so its next `down` still finds it.
+    expect(currentClaim(home, 'node_claimed')).toMatchObject({
+      pid: 4242,
+      state_dir: '/other-checkout/.agentworkforce/relay',
+    });
+  });
+
+  it('takes over a live claim when --force is passed', async () => {
+    const { deps, home } = createUpHarness();
+    deps.env.RELAY_NODE_ID = 'node_claimed';
+    deps.killProcess = vi.fn((pid: number) => {
+      if (pid !== 4242) throw new Error('not running');
+    });
+    fsReal.mkdirSync(pathReal.join(home, 'node-claims'), { recursive: true });
+    fsReal.writeFileSync(
+      claimFile(home, 'node_claimed'),
+      JSON.stringify({
+        version: 1,
+        node_id: 'node_claimed',
+        pid: 4242,
+        state_dir: '/other-checkout/.agentworkforce/relay',
+        claimed_at: '2026-10-05T12:00:00.000Z',
+      })
+    );
+
+    await runUpCommand({ force: true }, deps);
+
+    expect(currentClaim(home, 'node_claimed')).toMatchObject({ pid: 999999 });
+  });
+
+  it('releases the claim when `down` cleans up a broker that already exited', async () => {
+    const { deps, home } = createUpHarness();
+    deps.env.RELAY_NODE_ID = 'node_claimed';
+
+    await runUpCommand({}, deps);
+    expect(hasClaim(home, 'node_claimed')).toBe(true);
+
+    // The fixture's killProcess reports every pid dead, so `down` takes its
+    // "process was not running" cleanup path — the claim must go with it.
+    await runDownCommand({}, deps);
+
+    expect(hasClaim(home, 'node_claimed')).toBe(false);
+  });
+
+  it('points `down` at live nodes serving other state directories', async () => {
+    const { deps, home, log } = createUpHarness();
+    // `down` run from the wrong cwd finds no connection file of its own.
+    (deps.fs as { readFileSync: unknown }).readFileSync = fsReal.readFileSync;
+    deps.killProcess = vi.fn((pid: number) => {
+      if (pid !== 4242) throw new Error('not running');
+    });
+    fsReal.mkdirSync(pathReal.join(home, 'node-claims'), { recursive: true });
+    fsReal.writeFileSync(
+      claimFile(home, 'node_elsewhere'),
+      JSON.stringify({
+        version: 1,
+        node_id: 'node_elsewhere',
+        pid: 4242,
+        state_dir: '/other-checkout/.agentworkforce/relay',
+        api_port: 3891,
+        claimed_at: '2026-10-05T12:00:00.000Z',
+      })
+    );
+
+    await runDownCommand({}, deps);
+
+    const output = log.mock.calls.flat().join('\n');
+    expect(output).toContain('Not running');
+    expect(output).toContain('node node_elsewhere');
+    expect(output).toContain('/other-checkout/.agentworkforce/relay');
+    expect(output).toContain('node down --state-dir');
+  });
+
+  it('keeps the claim when shutdown fails and the broker is still alive', async () => {
+    const { deps, home, warn, createRelay } = createUpHarness();
+    deps.env.RELAY_NODE_ID = 'node_claimed';
+    const spawnBroker = createRelay.getMockImplementation()!;
+    createRelay.mockImplementation(async (...args: Parameters<typeof spawnBroker>) => {
+      const relay = await spawnBroker(...args);
+      // `shutdownUpResources` swallows this, so "shutdown returned" says
+      // nothing about whether the process is gone.
+      relay.shutdown = vi.fn(async () => {
+        throw new Error('broker refused to shut down');
+      });
+      return relay;
+    });
+
+    await runUpCommand({}, deps);
+    // The broker survives the stop attempt and still holds its node-control
+    // socket; only now does the fixture report it alive.
+    deps.killProcess = vi.fn((pid: number) => {
+      if (pid !== 999999) throw new Error('not running');
+    });
+
+    await expect(sigtermHandler(deps)()).rejects.toBeInstanceOf(ExitSignal);
+
+    expect(hasClaim(home, 'node_claimed')).toBe(true);
+    expect(warn.mock.calls.flat().join('\n')).toContain("keeping this machine's claim");
+  });
+
+  it('keeps the claim when startup fails before adoption and the child survives', async () => {
+    // Before adoption the claim names only the supervising CLI, and the
+    // startup failure paths null `relay` out — so "no live pid on the record"
+    // used to authorize a release while the spawned broker was still running
+    // (and possibly already registered).
+    const { deps, home, warn, createRelay } = createUpHarness();
+    deps.env.RELAY_NODE_ID = 'node_claimed';
+    const spawnBroker = createRelay.getMockImplementation()!;
+    createRelay.mockImplementation(async (...args: Parameters<typeof spawnBroker>) => {
+      const relay = await spawnBroker(...args);
+      // Verification never gets to run, and cleanup cannot kill the child.
+      relay.getStatus = vi.fn(async () => {
+        throw new Error('broker never answered its status check');
+      });
+      relay.shutdown = vi.fn(async () => {
+        throw new Error('broker refused to shut down');
+      });
+      // From here on the spawned broker reads as alive.
+      deps.killProcess = vi.fn((pid: number) => {
+        if (pid !== 999999) throw new Error('not running');
+      });
+      return relay;
+    });
+
+    await expect(runUpCommand({}, deps)).rejects.toBeInstanceOf(ExitSignal);
+
+    expect(currentClaim(home, 'node_claimed')).toMatchObject({ node_id: 'node_claimed' });
+    expect(warn.mock.calls.flat().join('\n')).toContain("keeping this machine's claim");
+  });
+
+  it('keeps the claim when the spawn rejects with a fenced child still alive', async () => {
+    // `onCandidateReady` cannot fire until `createRelay` RESOLVES, so a spawn
+    // that rejects after the fork — a handshake that never completed, a startup
+    // SIGTERM the child outlived — leaves a broker child that no captured pid
+    // names and that has published no `connection.json` either. Releasing on
+    // that evidence tombstoned the claim and unlinked the hold file out from
+    // under a live, still-fenced child, so the next start read the node id as
+    // free while that child could still register.
+    const { deps, home, dataDir, warn, createRelay } = createUpHarness();
+    deps.env.RELAY_NODE_ID = 'node_claimed';
+    const stateDir = fsReal.realpathSync(dataDir);
+    let child: ReturnType<typeof spawnChild> | undefined;
+    createRelay.mockImplementation(async (...args: unknown[]) => {
+      const inheritFds = args[4] as number[];
+      expect(inheritFds).toHaveLength(1);
+      // A real child holding the real inherited descriptor. It carries the
+      // state dir in argv for the same reason the broker does: holders are
+      // filtered by whether they look like this claim's broker.
+      child = spawnChild(process.execPath, ['-e', 'setTimeout(() => {}, 60_000)', stateDir], {
+        stdio: ['ignore', 'ignore', 'ignore', inheritFds[0]],
+      });
+      await new Promise<void>((resolve) => child!.once('spawn', () => resolve()));
+      throw new Error('broker rejected before it could return a client');
+    });
+    // The fence has to reach the kernel: `lsof` on the hold file and `ps` on
+    // its holders are what answer for a child nothing else recorded.
+    const fixtureExec = deps.execCommand;
+    deps.execCommand = vi.fn(async (command: string) => {
+      if (command.startsWith('LC_ALL=C lsof -t --') || command.includes('-o args=')) {
+        return new Promise<{ stdout: string; stderr: string }>((resolve, reject) => {
+          execChild(command, (error, stdout, stderr) =>
+            error ? reject(error) : resolve({ stdout, stderr })
+          );
+        });
+      }
+      return fixtureExec(command);
+    });
+
+    try {
+      await expect(runUpCommand({}, deps)).rejects.toBeInstanceOf(ExitSignal);
+
+      expect(currentClaim(home, 'node_claimed')).toMatchObject({ node_id: 'node_claimed' });
+      expect(warn.mock.calls.flat().join('\n')).toContain("keeping this machine's claim");
+      // The hold file survives with it: unlinking the name is what let the next
+      // start read the node id as free while the child still held the inode.
+      const generation = Number(currentClaim(home, 'node_claimed')?.generation ?? 1);
+      expect(fsReal.existsSync(nodeClaimHoldPath('node_claimed', deps.env, generation))).toBe(true);
+    } finally {
+      child?.kill('SIGKILL');
+      if (child) await new Promise<void>((resolve) => child!.once('exit', () => resolve()));
+    }
+  });
+
+  it('hands the broker child a descriptor on the claim it must not outlive', async () => {
+    // The fence that does not depend on either process living long enough to
+    // write anything: the child inherits this descriptor across `fork`, so the
+    // claim reads as held from the instant a broker exists — including while it
+    // is still paused before binding a port or writing `connection.json`.
+    const { deps, home, createRelay } = createUpHarness();
+    deps.env.RELAY_NODE_ID = 'node_claimed';
+
+    await runUpCommand({}, deps);
+
+    const inheritFds = createRelay.mock.calls.at(-1)?.[4] as number[] | undefined;
+    expect(inheritFds).toHaveLength(1);
+    const generation = Number(currentClaim(home, 'node_claimed')?.generation ?? 1);
+    const holdPath = nodeClaimHoldPath('node_claimed', deps.env, generation);
+    expect(fsReal.existsSync(holdPath)).toBe(true);
+    // The descriptor really is open on THIS claim's hold file, not some other
+    // inode that happens to share the name.
+    expect(fsReal.fstatSync(inheritFds![0]).ino).toBe(fsReal.statSync(holdPath).ino);
+
+    await sigtermHandler(deps)().catch(() => undefined);
+    // Released with the claim, so a spent hold file never blocks a later start.
+    expect(fsReal.existsSync(holdPath)).toBe(false);
+  });
+
+  it('refuses to spawn a broker when the ownership fence cannot be established', async () => {
+    // Every other guarantee in this lane assumes the child is holding a
+    // descriptor. When it cannot be opened at all, spawning anyway would put a
+    // broker on the node's delivery socket with no evidence that outlives this
+    // supervisor -- so the next start would read the node id as free and take
+    // it, which is the original incident. Refusing is the only safe answer.
+    const { deps, home, error, createRelay } = createUpHarness();
+    deps.env.RELAY_NODE_ID = 'node_claimed';
+    const realOpenSync = fsReal.openSync.bind(fsReal);
+    const openSync = vi.spyOn(fsReal, 'openSync').mockImplementation(((
+      file: fsReal.PathLike,
+      ...rest: unknown[]
+    ) => {
+      if (typeof file === 'string' && file.endsWith('.hold')) {
+        const failure: NodeJS.ErrnoException = new Error('ENOSPC: no space left on device');
+        failure.code = 'ENOSPC';
+        throw failure;
+      }
+      return realOpenSync(file, ...(rest as [fsReal.OpenMode]));
+    }) as typeof fsReal.openSync);
+
+    try {
+      await expect(runUpCommand({}, deps)).rejects.toBeInstanceOf(ExitSignal);
+    } finally {
+      openSync.mockRestore();
+    }
+
+    expect(createRelay).not.toHaveBeenCalled();
+    expect(error.mock.calls.flat().join('\n')).toContain('could not establish the ownership fence');
+    // The reservation is given back on the way out, so a fence that could not
+    // be opened once does not leave the node id blocked.
+    expect(hasClaim(home, 'node_claimed')).toBe(false);
+  });
+
+  it('refuses over a reservation whose supervisor died with its broker still serving', async () => {
+    // A supervising CLI SIGKILLed between the spawn and the moment it could
+    // record the broker's pid leaves a claim naming only dead pids. The broker
+    // writes its own connection file before it registers, so that orphan is
+    // still discoverable — and must still block this start.
+    const { deps, home, error } = createUpHarness();
+    deps.env.RELAY_NODE_ID = 'node_claimed';
+    const orphanStateDir = fsReal.mkdtempSync(pathReal.join(os.tmpdir(), 'broker-lifecycle-orphan-'));
+    upTmpRoots.push(orphanStateDir);
+    fsReal.writeFileSync(
+      pathReal.join(orphanStateDir, 'connection.json'),
+      JSON.stringify({ url: 'http://127.0.0.1:3891', port: 3891, api_key: 'k', pid: 4242 })
+    );
+    deps.killProcess = vi.fn((pid: number) => {
+      if (pid !== 4242) throw new Error('not running');
+    });
+    fsReal.mkdirSync(pathReal.join(home, 'node-claims'), { recursive: true });
+    fsReal.writeFileSync(
+      claimFile(home, 'node_claimed'),
+      JSON.stringify({
+        version: 1,
+        node_id: 'node_claimed',
+        pid: 999998,
+        supervisor_pid: 999998,
+        state_dir: orphanStateDir,
+        status: 'reserved',
+        claimed_at: '2026-10-05T12:00:00.000Z',
+      })
+    );
+
+    await expect(runUpCommand({}, deps)).rejects.toBeInstanceOf(ExitSignal);
+
+    expect(error.mock.calls.flat().join('\n')).toContain('already served by a live local broker');
+  });
+
+  it('claims a node id the broker can authenticate from its cached token', async () => {
+    const { deps, home } = createUpHarness();
+    delete deps.env.RELAY_NODE_TOKEN;
+    deps.env.RELAY_NODE_ID = 'node_claimed';
+    // `resolve_cached_node_token` reads this when RELAY_NODE_TOKEN is unset, so
+    // this start can register as — and evict — node_claimed.
+    const tokenFile = pathReal.join(
+      deps.env.XDG_DATA_HOME!,
+      'agent-relay',
+      'node-tokens',
+      'node_claimed.json'
+    );
+    fsReal.mkdirSync(pathReal.dirname(tokenFile), { recursive: true });
+    fsReal.writeFileSync(
+      tokenFile,
+      JSON.stringify({ node_id: 'node_claimed', workspace_id: 'rw_test', token: 'nt_live_cached' })
+    );
+
+    await runUpCommand({}, deps);
+
+    expect(hasClaim(home, 'node_claimed')).toBe(true);
+  });
+
+  it('claims a node id the broker would mint its own token for', async () => {
+    const { deps, home } = createUpHarness();
+    delete deps.env.RELAY_NODE_TOKEN;
+    deps.env.RELAY_NODE_ID = 'node_claimed';
+    // No token in the environment and none cached — but `init.rs` wires a
+    // workspace-key minter and `node_control.rs` mints and connects without a
+    // cached token, requesting this node id. A start that reserves nothing here
+    // registers as node_claimed anyway, which is the eviction the claim exists
+    // to prevent, so the identity is what decides, not a credential the CLI can
+    // happen to see.
+    deps.env.RELAY_WORKSPACE_KEY = 'rw_live_key';
+
+    await runUpCommand({}, deps);
+
+    expect(hasClaim(home, 'node_claimed')).toBe(true);
+  });
+
+  it('claims nothing in local-only mode', async () => {
+    const { deps, home } = createUpHarness();
+    deps.env.RELAY_NODE_ID = 'node_claimed';
+
+    await runUpCommand({ localOnly: true }, deps);
+
+    expect(hasClaim(home, 'node_claimed')).toBe(false);
   });
 });
 

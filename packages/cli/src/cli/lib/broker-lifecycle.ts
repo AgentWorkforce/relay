@@ -2,6 +2,7 @@ import { randomUUID } from 'node:crypto';
 import fs from 'node:fs';
 import path from 'node:path';
 import { HarnessDriverClient } from '@agent-relay/harness-driver';
+import { getBrokerBinaryPath } from '@agent-relay/harness-driver/broker-path';
 import { startServeNode, type FleetNodeDefinition, type RunningNode } from '@agent-relay/fleet';
 import { createLogger } from '@agent-relay/utils';
 import { redactCredentialValues } from '@agent-relay/cloud/redact';
@@ -33,6 +34,22 @@ import {
   type RunningNodeProviderChild,
 } from './node-provider-child.js';
 import { describeError } from './describe-error.js';
+import {
+  acquireNodeClaim,
+  adoptNodeClaim,
+  closeNodeClaimHold,
+  describeNodeClaimHolder,
+  enrolledNodeIdForClaim,
+  findLiveStateDirBroker,
+  inspectNodeClaimHold,
+  listHeldNodeClaims,
+  normalizeClaimStateDir,
+  openNodeClaimHold,
+  recordSpawnedBrokerChild,
+  releaseNodeClaim,
+  releaseNodeClaimsForBroker,
+  type NodeClaim,
+} from './node-claim.js';
 import { maskSecret } from './redact.js';
 import { startReflexCapture, type RunningReflexCapture } from './reflex-capture.js';
 import {
@@ -69,6 +86,11 @@ type UpOptions = {
   logLevel?: string;
   /** Emit logs as JSON lines instead of human-readable text. */
   logJson?: boolean;
+  /**
+   * Serve the enrolled node id even when a live local broker already claims it.
+   * Set by `node up --force`; the other broker loses its delivery socket.
+   */
+  force?: boolean;
 };
 
 type DownOptions = {
@@ -538,11 +560,33 @@ export async function startBrokerWithPortFallback(
    * function returns -- a signal arriving during the status check would
    * otherwise find no handle to shut down and leak the broker child.
    */
-  onCandidateReady?: (candidate: CoreRelay) => void
+  onCandidateReady?: (candidate: CoreRelay) => void,
+  /**
+   * Descriptors every spawn attempt must hand the broker child. `node up`
+   * passes its node claim's hold descriptor, which the child inherits across
+   * `fork` — so the claim reads as held from the instant a broker exists,
+   * rather than from the moment one of them manages to write something down.
+   */
+  inheritFds: number[] = [],
+  /**
+   * Invoked with the broker child's pid in the same turn `spawn()` returns it
+   * — before the handshake, and before a launcher script can `exec` into the
+   * real broker. `node up` writes it onto the node claim, so the process the
+   * inherited descriptor fences stays identifiable whatever executable it ends
+   * up running.
+   */
+  onBrokerSpawn?: (pid: number) => void
 ): Promise<{ relay: CoreRelay; apiPort: number }> {
   if (basePort === 0) {
     vlog(deps, verbose, 'Asking the OS to assign the broker API port...');
-    const candidate = await deps.createRelay(paths.projectRoot, 0, brokerName, verbose);
+    const candidate = await deps.createRelay(
+      paths.projectRoot,
+      0,
+      brokerName,
+      verbose,
+      inheritFds,
+      onBrokerSpawn
+    );
     onCandidateReady?.(candidate);
     try {
       await getBrokerStatusWithRetry(candidate, deps, verbose);
@@ -574,7 +618,14 @@ export async function startBrokerWithPortFallback(
   vlog(deps, verbose, `API port resolved: ${apiPort}`);
 
   vlog(deps, verbose, 'Creating broker client (spawns broker process, waits for handshake)...');
-  const candidate = await deps.createRelay(paths.projectRoot, apiPort, brokerName, verbose);
+  const candidate = await deps.createRelay(
+    paths.projectRoot,
+    apiPort,
+    brokerName,
+    verbose,
+    inheritFds,
+    onBrokerSpawn
+  );
   onCandidateReady?.(candidate);
   vlog(deps, verbose, 'Broker client created. Checking broker status...');
 
@@ -1597,6 +1648,227 @@ function resolveBrokerName(options: UpOptions, deps: CoreDependencies, projectRo
   );
 }
 
+/**
+ * Take machine-local ownership of the enrolled node id this start will register
+ * as, if any — BEFORE anything that can register is spawned.
+ *
+ * The broker queues `node.register` from its own initialization
+ * (`crates/broker/src/runtime/init.rs`), so by the time the CLI can verify the
+ * child and write a claim the engine may already have moved the node's delivery
+ * socket. Claiming after the spawn therefore could not deliver the guarantee it
+ * was written for: a loser that is correctly refused had already evicted the
+ * incumbent. The reservation names this supervising CLI, is exclusive against
+ * every other start on the machine, and is handed to the broker by
+ * {@link adoptEnrolledNodeClaim} once a verified process owns the state dir.
+ *
+ * `node up` also refuses a conflicting node id in its own preflight so the
+ * operator gets remedies instead of a startup failure; this is what guards the
+ * plain `up` / `local up` aliases, which have no preflight, and what serializes
+ * two starts that raced past one.
+ *
+ * @throws NodeClaimConflictError when a live local broker holds the node id.
+ * @throws NodeClaimContentionError when exclusion could not be established.
+ */
+/**
+ * The executable this start will run as its broker.
+ *
+ * Recorded in the claim so a later start recognises that process by executable
+ * identity rather than by its filename: `AGENT_RELAY_BIN` /
+ * `BROKER_BINARY_PATH` let a supported deployment run the broker under any
+ * name, and such a broker orphaned by a dead supervisor used to read as an
+ * unrelated process — the "node id free" verdict that evicts a live broker.
+ *
+ * Resolution mirrors `getBrokerBinaryPath`, which reads the override from the
+ * real environment; `deps.env` is consulted first so a start whose environment
+ * was overridden records the binary it is actually going to spawn.
+ */
+function resolveBrokerBinary(deps: CoreDependencies): string | undefined {
+  const override = (deps.env.BROKER_BINARY_PATH ?? deps.env.AGENT_RELAY_BIN)?.trim();
+  if (override) {
+    const resolved = path.resolve(override);
+    if (fs.existsSync(resolved)) return resolved;
+  }
+  try {
+    return getBrokerBinaryPath() ?? undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+async function reserveEnrolledNode(
+  paths: CoreProjectPaths,
+  options: UpOptions,
+  deps: CoreDependencies,
+  localOnly: boolean
+): Promise<NodeClaim | undefined> {
+  const nodeId = localOnly ? undefined : enrolledNodeIdForClaim(deps.env);
+  if (!nodeId) {
+    return undefined;
+  }
+  const brokerBinary = resolveBrokerBinary(deps);
+  return acquireNodeClaim({
+    nodeId,
+    pid: deps.pid,
+    stateDir: paths.dataDir,
+    ...(brokerBinary ? { brokerBinary } : {}),
+    status: 'reserved',
+    force: options.force === true,
+    env: deps.env,
+    killProcess: deps.killProcess,
+    execCommand: deps.execCommand,
+  });
+}
+
+/**
+ * Move the reservation onto the verified broker process.
+ *
+ * Conditional on the reservation still being the claim on disk: a `--force`
+ * takeover that landed while this broker was starting has already won the node
+ * id, and overwriting it would put two brokers back on one delivery socket.
+ * Losing here fails startup, which tears this broker down.
+ */
+async function adoptEnrolledNodeClaim(
+  reservation: NodeClaim,
+  broker: { pid: number; brokerName: string; apiPort?: number },
+  deps: CoreDependencies
+): Promise<NodeClaim> {
+  return adoptNodeClaim({
+    reservation,
+    pid: broker.pid,
+    ...(broker.apiPort !== undefined ? { apiPort: broker.apiPort } : {}),
+    brokerName: broker.brokerName,
+    env: deps.env,
+    killProcess: deps.killProcess,
+    execCommand: deps.execCommand,
+  });
+}
+
+/** Polls before giving up on observing a shut-down broker actually exit. */
+const NODE_CLAIM_EXIT_POLL_ATTEMPTS = 50;
+const NODE_CLAIM_EXIT_POLL_MS = 100;
+
+/**
+ * Wait for a claimed pid to disappear.
+ *
+ * Bounded by attempts rather than a deadline read from `deps.now()`: a frozen
+ * clock must not turn this into an unbounded loop.
+ */
+async function waitForClaimedProcessExit(pid: number, deps: CoreDependencies): Promise<boolean> {
+  for (let attempt = 0; attempt < NODE_CLAIM_EXIT_POLL_ATTEMPTS; attempt += 1) {
+    if (!isProcessRunning(pid, deps)) {
+      return true;
+    }
+    await deps.sleep(NODE_CLAIM_EXIT_POLL_MS);
+  }
+  return !isProcessRunning(pid, deps);
+}
+
+/**
+ * Polls before giving up on a fenced child that has not dropped the claim's
+ * hold descriptor. Shorter than the pid wait above: every attempt runs `lsof`,
+ * and a holder this start never captured is either exiting right now or is not
+ * going to.
+ */
+const NODE_CLAIM_HOLD_POLL_ATTEMPTS = 10;
+
+/**
+ * Wait for every holder of the claim's hold descriptor other than this
+ * supervisor to exit.
+ *
+ * This is the release-side half of the spawn-to-publication fence. `claim.pid`,
+ * `supervisor_pid` and `spawnedPids` only ever name a child some part of this
+ * start managed to capture, and `onCandidateReady` cannot fire until
+ * `createRelay` RESOLVES: a spawn that rejects (a handshake that never
+ * completed, a startup SIGTERM the child outlived) leaves a broker child that no
+ * pid anywhere names and no `connection.json` either. Releasing then would
+ * tombstone the claim and unlink the hold file out from under a live process
+ * that is still fenced by it, and the next start would read the node id as free
+ * while that child can still register — the eviction this lane exists to
+ * prevent.
+ *
+ * This process's own descriptor is excluded: it is dropped only after the
+ * release decision, and it is never evidence that somebody else owns the node.
+ */
+async function waitForClaimHoldRelease(
+  claim: NodeClaim,
+  deps: CoreDependencies
+): Promise<{ held: boolean; reason: string }> {
+  const claimDeps = { env: deps.env, killProcess: deps.killProcess, execCommand: deps.execCommand };
+  // `deps.pid` is the supervisor of record; `process.pid` is who actually holds
+  // the descriptor. They are the same process in production and can differ in
+  // tests, so neither may read as a rival holder.
+  const selfPids = new Set<number>([deps.pid, process.pid]);
+  let status = await inspectNodeClaimHold(claim, claimDeps, selfPids);
+  for (let attempt = 0; status.held && attempt < NODE_CLAIM_HOLD_POLL_ATTEMPTS; attempt += 1) {
+    await deps.sleep(NODE_CLAIM_EXIT_POLL_MS);
+    status = await inspectNodeClaimHold(claim, claimDeps, selfPids);
+  }
+  return status;
+}
+
+/**
+ * Release the node claim only once every process it protects is provably gone.
+ *
+ * "shutdown returned" is not evidence of exit: `shutdownUpResources` swallows
+ * shutdown errors, and the SDK's `waitForExit` gives up after its timeout.
+ * Releasing on that signal alone opened the node id while the old broker still
+ * held its node-control socket — the eviction this claim exists to prevent.
+ * Keeping a claim costs nothing: once the pids really die it reads as stale and
+ * the next start takes it over, and `node down` releases it by verified pid.
+ *
+ * Before adoption the claim names only this supervising CLI, so its pids alone
+ * do not cover the broker this start spawned. `spawnedPids` carries every child
+ * pid this start ever saw — kept across the failure paths that clear `relay` —
+ * the claim's hold descriptor answers for a child that was never captured at
+ * all, and the state dir's own connection file is consulted last, for a broker
+ * that published but was never fenced by this start.
+ *
+ * @returns Whether the claim was released.
+ */
+async function releaseNodeClaimAfterExit(
+  claim: NodeClaim,
+  deps: CoreDependencies,
+  spawnedPids: Iterable<number> = []
+): Promise<boolean> {
+  const protectedPids = [...new Set([claim.pid, claim.supervisor_pid, ...spawnedPids])].filter(
+    (pid): pid is number => typeof pid === 'number' && pid > 0 && pid !== deps.pid
+  );
+  for (const pid of protectedPids) {
+    if (!(await waitForClaimedProcessExit(pid, deps))) {
+      deps.warn(
+        `Broker pid ${pid} is still running after shutdown; keeping this machine's claim on node ${claim.node_id}. ` +
+          `Stop it with: agent-relay node down --state-dir ${claim.state_dir} --force`
+      );
+      return false;
+    }
+  }
+  // Checked before the connection file, exactly as `inspectNodeClaim` orders
+  // them: the descriptor is the only evidence that covers a child's whole life,
+  // including the window before it has published anything at all.
+  const fence = await waitForClaimHoldRelease(claim, deps);
+  if (fence.held) {
+    deps.warn(
+      `${fence.reason}; keeping this machine's claim on node ${claim.node_id}. ` +
+        `Stop it with: agent-relay node down --state-dir ${claim.state_dir} --force`
+    );
+    return false;
+  }
+  const occupant = await findLiveStateDirBroker(
+    claim.state_dir,
+    { env: deps.env, killProcess: deps.killProcess, execCommand: deps.execCommand },
+    { binary: claim.broker_binary, object: claim.broker_executable }
+  );
+  if (occupant) {
+    deps.warn(
+      `A broker (pid ${occupant.pid}) is still serving ${claim.state_dir}; keeping this machine's claim on node ${claim.node_id}. ` +
+        `Stop it with: agent-relay node down --state-dir ${claim.state_dir} --force`
+    );
+    return false;
+  }
+  await releaseNodeClaim(claim, deps.env);
+  return true;
+}
+
 export async function runUpCommand(options: UpOptions, deps: CoreDependencies): Promise<void> {
   if (!['darwin', 'linux'].includes(process.platform)) {
     deps.error(
@@ -1846,6 +2118,33 @@ export async function runUpCommand(options: UpOptions, deps: CoreDependencies): 
   let shutdownPromise: Promise<void> | undefined;
   let stopWatchingBrokerExit: (() => void) | undefined;
   let managedIdentity: BrokerProcessIdentity | undefined;
+  /** Machine-global claim on this broker's enrolled node id, once registered. */
+  let nodeClaim: NodeClaim | undefined;
+  /**
+   * Descriptor on the claim's hold file, opened before the broker is spawned
+   * and inherited by it.
+   *
+   * This is the ownership fence that does not depend on either process living
+   * long enough to write anything down. A supervisor SIGKILLed between the
+   * spawn and the broker's first write used to leave a reservation whose pids
+   * were all dead and a state dir with no `connection.json`: a competing start
+   * read that as stale, began a second broker, and the orphaned child then
+   * registered against the same node id with nobody left to adopt or stop it.
+   * The child inherits this descriptor across `fork`, so from the instant it
+   * exists the kernel answers for it, and it stops answering the instant it
+   * dies.
+   */
+  let nodeClaimHoldFd: number | undefined;
+  /**
+   * Every broker pid this start spawned, remembered independently of `relay`.
+   *
+   * The startup failure paths null `relay` out (to avoid a double `shutdown()`)
+   * while the child can still be alive — a `shutdown()` that rejected, a status
+   * check that failed with cleanup failing too. Releasing the node claim then
+   * would open the node id for a broker that is still registered, so the pids
+   * stay here and every release waits on them.
+   */
+  const spawnedBrokerPids = new Set<number>();
   let ownedBrokerExited = false;
   let rejectBrokerExit: (reason: Error) => void;
   const brokerExit = new Promise<never>((_resolve, reject) => {
@@ -1857,12 +2156,32 @@ export async function runUpCommand(options: UpOptions, deps: CoreDependencies): 
     if (!shutdownPromise) {
       shuttingDown = true;
       if (relay === null) {
-        shutdownPromise = Promise.resolve();
+        // A reservation taken before the broker spawned protects nothing once
+        // this start gives up. Drop it here so the node id frees immediately
+        // instead of staying held until this supervisor's pid disappears.
+        shutdownPromise = (async () => {
+          if (nodeClaim && (await releaseNodeClaimAfterExit(nodeClaim, deps, spawnedBrokerPids))) {
+            nodeClaim = undefined;
+          }
+          // Dropped last: while this descriptor is open, this start is still
+          // one of the live processes the claim's hold answers for.
+          closeNodeClaimHold(nodeClaimHoldFd);
+          nodeClaimHoldFd = undefined;
+        })();
       } else {
         shutdownPromise = (async () => {
           await reflexCapture?.stop();
           await nodeProviders?.stop();
           await shutdownUpResources(relay, paths, deps, ownedBrokerExited ? managedIdentity : undefined);
+          // Released only after the broker's exit is OBSERVED: dropping the
+          // claim while its node-control socket is still connected would wave a
+          // second `node up` straight through to evict it, and shutdown can
+          // return without the process being gone.
+          if (nodeClaim && (await releaseNodeClaimAfterExit(nodeClaim, deps, spawnedBrokerPids))) {
+            nodeClaim = undefined;
+          }
+          closeNodeClaimHold(nodeClaimHoldFd);
+          nodeClaimHoldFd = undefined;
         })();
       }
     }
@@ -1939,6 +2258,20 @@ export async function runUpCommand(options: UpOptions, deps: CoreDependencies): 
       throw new Error('Could not verify orphan broker exit; retained its state for a later cleanup.');
     }
 
+    // Ownership is taken BEFORE the broker exists, because the broker registers
+    // with the engine on its own initialization path. A start that loses here
+    // has spawned nothing, so it cannot have moved the node's delivery socket.
+    nodeClaim = await reserveEnrolledNode(paths, options, deps, localOnly);
+    if (nodeClaim) {
+      // Opened BEFORE the spawn: a fence established afterwards would leave
+      // exactly the window it exists to close. A failure here throws, so the
+      // spawn below is unreachable without the fence in place -- warning and
+      // continuing would have started a broker whose claim silently loses its
+      // crash safety, which is the failure this whole path exists to prevent.
+      // The outer catch releases the reservation on the way out.
+      nodeClaimHoldFd = openNodeClaimHold(nodeClaim, deps.env);
+    }
+
     const started = await startBrokerWithPortFallback(
       paths,
       basePort,
@@ -1952,6 +2285,25 @@ export async function runUpCommand(options: UpOptions, deps: CoreDependencies): 
       // child instead of shutting it down.
       (candidate) => {
         relay = candidate;
+        // Remembered here and never cleared: the catch below nulls `relay` out
+        // while this process can still be running, and the node claim must not
+        // be released while it is.
+        if (typeof candidate.brokerPid === 'number' && candidate.brokerPid > 0) {
+          spawnedBrokerPids.add(candidate.brokerPid);
+        }
+      },
+      nodeClaimHoldFd === undefined ? [] : [nodeClaimHoldFd],
+      // Written to the claim in the same turn the child exists, because the
+      // executable identity recorded before the spawn describes the file this
+      // start MEANT to run, not the one the process ends up mapping: a shebang
+      // launcher runs as its interpreter, and a launcher that `exec`s the real
+      // broker maps that instead. Both kept their pid, and without it such a
+      // live, fenced child read as an unrelated process and the next start took
+      // its node id. Tracked for the release path too, which must not free a
+      // claim while a child this start spawned can still register under it.
+      (pid: number) => {
+        if (pid > 0) spawnedBrokerPids.add(pid);
+        if (nodeClaim) nodeClaim = recordSpawnedBrokerChild(nodeClaim, pid, deps.env);
       }
     ).catch((err: unknown) => {
       // On failure, `startBrokerWithPortFallback` has already shut down any
@@ -1971,6 +2323,17 @@ export async function runUpCommand(options: UpOptions, deps: CoreDependencies): 
     if (!managedIdentity) {
       throw new Error(
         'Could not persist a verified broker process identity. Startup was stopped; ensure ps and lsof are available, process inspection is permitted, and the project identity directory is writable.'
+      );
+    }
+
+    // Hand the reservation to the verified broker process that now owns the
+    // state dir, so the claim survives this supervisor and `node down` can
+    // release it by the pid it verifies.
+    if (nodeClaim) {
+      nodeClaim = await adoptEnrolledNodeClaim(
+        nodeClaim,
+        { pid: managedIdentity.pid, brokerName, apiPort: started.apiPort },
+        deps
       );
     }
 
@@ -2099,6 +2462,38 @@ export async function runUpCommand(options: UpOptions, deps: CoreDependencies): 
   }
 }
 
+/**
+ * Point `down` at live brokers serving other state directories.
+ *
+ * `down` resolves its state dir from the cwd (or `--state-dir`), so running it
+ * from the wrong directory reports "Not running" while the broker it was meant
+ * to stop keeps serving. The machine-global node claims are the one index that
+ * spans state dirs, so use them to name the live brokers instead.
+ */
+async function reportNodeClaimsElsewhere(paths: CoreProjectPaths, deps: CoreDependencies): Promise<void> {
+  let held: NodeClaim[];
+  try {
+    held = await listHeldNodeClaims({
+      env: deps.env,
+      killProcess: deps.killProcess,
+      execCommand: deps.execCommand,
+    });
+  } catch {
+    // Diagnostics only — an unreadable claims directory changes nothing here.
+    return;
+  }
+  const stateDir = normalizeClaimStateDir(paths.dataDir);
+  const elsewhere = held.filter((claim) => claim.state_dir !== stateDir);
+  if (elsewhere.length === 0) {
+    return;
+  }
+  deps.log('Live relay nodes on this machine are serving other state directories:');
+  for (const claim of elsewhere) {
+    deps.log(`  node ${claim.node_id} — ${describeNodeClaimHolder(claim)}`);
+  }
+  deps.log('Stop one with: agent-relay node down --state-dir <state dir>');
+}
+
 // eslint-disable-next-line complexity, max-depth
 export async function runDownCommand(options: DownOptions, deps: CoreDependencies): Promise<void> {
   const paths = deps.getProjectPaths();
@@ -2167,12 +2562,14 @@ export async function runDownCommand(options: DownOptions, deps: CoreDependencie
       }
       if (result.matchedCount === 0) {
         deps.log('No verified orphan broker found; retained existing state.');
+        await reportNodeClaimsElsewhere(paths, deps);
         return;
       }
       cleanupBrokerFiles(paths, deps);
       deps.log('Cleaned up (was not running)');
     } else {
       deps.log('Not running');
+      await reportNodeClaimsElsewhere(paths, deps);
     }
     return;
   }
@@ -2186,6 +2583,13 @@ export async function runDownCommand(options: DownOptions, deps: CoreDependencie
 
   if (!isProcessRunning(pid, deps)) {
     cleanupBrokerFiles(paths, deps);
+    await releaseNodeClaimsForBroker({
+      pid,
+      stateDir: paths.dataDir,
+      env: deps.env,
+      killProcess: deps.killProcess,
+      execCommand: deps.execCommand,
+    });
     deps.log('Cleaned up stale state (process was not running)');
     return;
   }
@@ -2224,6 +2628,18 @@ export async function runDownCommand(options: DownOptions, deps: CoreDependencie
     }
     if (identity) removeBrokerIdentity(paths, identity, deps);
     cleanupBrokerFiles(paths, deps);
+    // The supervising CLI releases its own claim on a graceful exit, but `down`
+    // can outlive it (or kill it with --force), so release by the pid and state
+    // dir it just verified. Only a claim naming both is removed.
+    for (const claim of await releaseNodeClaimsForBroker({
+      pid,
+      stateDir: paths.dataDir,
+      env: deps.env,
+      killProcess: deps.killProcess,
+      execCommand: deps.execCommand,
+    })) {
+      deps.log(`Released this machine's claim on node ${claim.node_id}.`);
+    }
     deps.log('Stopped');
     return;
   } catch (err: unknown) {
@@ -2231,6 +2647,13 @@ export async function runDownCommand(options: DownOptions, deps: CoreDependencie
     if (withCode.code === 'ESRCH') {
       removeBrokerIdentity(paths, identity, deps);
       cleanupBrokerFiles(paths, deps);
+      await releaseNodeClaimsForBroker({
+        pid,
+        stateDir: paths.dataDir,
+        env: deps.env,
+        killProcess: deps.killProcess,
+        execCommand: deps.execCommand,
+      });
       deps.log('Cleaned up stale state');
       return;
     }

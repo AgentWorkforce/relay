@@ -1,0 +1,53 @@
+{
+  "id": "traj_6m2rwyji6ypq",
+  "version": 1,
+  "task": {
+    "title": "Fresh-eyes CLI node claim correctness review"
+  },
+  "status": "completed",
+  "startedAt": "2026-09-19T06:55:36.197Z",
+  "completedAt": "2026-09-19T07:00:01.768Z",
+  "agents": [
+    {
+      "name": "default",
+      "role": "lead",
+      "joinedAt": "2026-09-19T07:00:01.308Z"
+    }
+  ],
+  "chapters": [
+    {
+      "id": "chap_kg25pyruvaek",
+      "title": "Work",
+      "agentName": "default",
+      "startedAt": "2026-09-19T07:00:01.308Z",
+      "endedAt": "2026-09-19T07:00:01.768Z",
+      "events": [
+        {
+          "ts": 1789801201308,
+          "type": "decision",
+          "content": "Do not approve: custom executable names bypass the orphan descriptor fence: Do not approve: custom executable names bypass the orphan descriptor fence",
+          "raw": {
+            "question": "Do not approve: custom executable names bypass the orphan descriptor fence",
+            "chosen": "Do not approve: custom executable names bypass the orphan descriptor fence",
+            "alternatives": [],
+            "reasoning": "Real-process probe showed a live inherited descriptor holder classified stale and a non-force successor admitted; 176 focused tests passed and two latest fix mutations failed as expected."
+          },
+          "significance": "high"
+        }
+      ]
+    }
+  ],
+  "retrospective": {
+    "summary": "Reviewed CLI hardening; wrote REVIEW_VERDICT.json with one reproduced custom-binary crash-safety blocker and verification limits",
+    "approach": "Standard approach",
+    "confidence": 0.93
+  },
+  "commits": [],
+  "filesChanged": [],
+  "projectId": "AgentWorkforce/relay",
+  "tags": [],
+  "_trace": {
+    "startRef": "bf4f16bb2c08d2eb4b80b0b82f9124ca05777d6f",
+    "endRef": "bf4f16bb2c08d2eb4b80b0b82f9124ca05777d6f"
+  }
+}
