@@ -7236,9 +7236,15 @@ async fn http_spawn_binding_failure_stops_before_launch_and_cleans_owned_identit
         "{error}"
     );
     create.assert_hits(1);
-    bind.assert_hits(1);
+    // The SDK retries an admission denial itself before surfacing the terminal
+    // error; the broker adds no binding retry of its own, so once that error
+    // arrives the spawn stops and cleans up without touching the bind again.
+    // Capture the count here and prove it is final after the settle window.
+    let bind_requests = bind.hits();
+    assert!(bind_requests >= 1, "binding must have been attempted");
     // Let any incorrectly detached request run before the name can be reused.
     tokio::time::sleep(Duration::from_millis(100)).await;
+    bind.assert_hits(bind_requests);
     metadata.assert_hits(0);
     scope.assert_hits(0);
     cleanup.assert_hits(1);

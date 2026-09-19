@@ -14,6 +14,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Fixed
 
 - `agent-relay node down` now releases a node claim whose recorded state dir is a different spelling of the same directory (a symlinked path, or a record written by an older CLI); previously the claim was left behind and kept blocking `node up` for that node id.
+- Broker registration and channel-join retries no longer stack on top of the relaycast SDK's own admission retries: the SDK paces individual requests on the server's `Retry-After`, the broker owns the startup and spawn budgets, and `workspace_busy` failures now report the true `attempts` total the server received instead of only the broker's round count.
+- Registration errors now render a server `Retry-After` longer than the one-second admission minimum, and reconcile loops honour it.
+
+### Changed
+
+- Broker depends on relaycast SDK 8.0.1, which classifies a body-read failure during registration as a retryable transport error and reports the endpoint URL and status on malformed responses.
 
 ## [12.3.0] - 2026-09-19
 

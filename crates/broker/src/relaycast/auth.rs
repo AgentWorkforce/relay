@@ -1246,7 +1246,7 @@ pub(crate) fn is_workspace_busy_error(error: &RelayError) -> bool {
 
 /// HTTP attempts the SDK reports behind a terminal error, so the broker can
 /// report the true total rather than only its own outermost count.
-fn relay_error_attempts(error: &RelayError) -> u32 {
+pub(crate) fn relay_error_attempts(error: &RelayError) -> u32 {
     match error {
         RelayError::Api { attempts, .. } => (*attempts).max(1),
         _ => 1,
@@ -1263,6 +1263,7 @@ fn with_total_attempts(error: RelayError, total_attempts: u32) -> RelayError {
             message,
             status,
             request_id,
+            retry_after_ms,
             ..
         } => RelayError::Api {
             code,
@@ -1270,6 +1271,7 @@ fn with_total_attempts(error: RelayError, total_attempts: u32) -> RelayError {
             status,
             request_id,
             attempts: total_attempts,
+            retry_after_ms,
         },
         other => other,
     }
@@ -1369,7 +1371,8 @@ where
                     return Err(with_total_attempts(error, total_attempts));
                 }
 
-                let Some(backoff) = startup_retry_backoff(&error, retry, started, startup_deadline)
+                let Some(backoff) =
+                    startup_retry_backoff(&error, retry, total_attempts, started, startup_deadline)
                 else {
                     return Err(with_total_attempts(error, total_attempts));
                 };
@@ -1401,33 +1404,72 @@ fn is_startup_retryable_overload(error: &RelayError) -> bool {
         )
 }
 
+/// Decide whether, and after how long, to send another startup request.
+///
+/// Two layers retry `workspace_busy`, and each owns what only it can see:
+///
+///   - The SDK (relaycast ≥ 8.0.1, #440) retries a denial up to its own
+///     bounded count, sleeping the server's `Retry-After` between attempts,
+///     then returns the denial with `attempts` and `retry_after_ms` filled in.
+///     It is the only layer that reads the response headers, so it owns
+///     *pacing*.
+///   - This broker owns the *budget*: the handshake's finite deadline and a
+///     safety cap. It is the only layer that knows the process has a total
+///     time limit.
+///
+/// So the sleep between rounds is the server's `retry_after_ms` when the SDK
+/// supplied one — the same cadence the SDK just honoured — and the fixed
+/// constant only when it did not. And the cap counts *requests*, not rounds:
+/// one round is now several requests, and a cap on rounds would let total
+/// pressure on an already-saturated workspace grow by that factor, which is
+/// the opposite of what admission control is for.
 fn startup_retry_backoff(
     error: &RelayError,
     retry: usize,
+    total_requests: u32,
     started: std::time::Instant,
     startup_deadline: Option<tokio::time::Instant>,
 ) -> Option<std::time::Duration> {
     match error {
         RelayError::Api {
-            status: 429, code, ..
+            status: 429,
+            code,
+            retry_after_ms,
+            ..
         } if code == WORKSPACE_BUSY_CODE => {
+            // Never retry sooner than the admission contract's minimum; a
+            // longer server cooldown wins.
+            let backoff = retry_after_ms
+                .map(std::time::Duration::from_millis)
+                .map_or(WORKSPACE_BUSY_STARTUP_RETRY_BACKOFF, |retry_after| {
+                    retry_after.max(WORKSPACE_BUSY_STARTUP_RETRY_BACKOFF)
+                });
+            // `total_requests` already includes every request this round made.
+            // Reserve a whole next round (the SDK's last round is its size) so
+            // the cap is a ceiling the server never sees crossed mid-round.
+            let round_requests = relay_error_attempts(error);
+            let projected_requests = usize::try_from(total_requests.saturating_add(round_requests))
+                .unwrap_or(usize::MAX);
+            // Budget the time of the whole next round, not only this sleep:
+            // the SDK sleeps the same cooldown between each of its own
+            // attempts, so a round that does not fit would be cut off by the
+            // outer handshake timer and lose the typed receipt.
+            let round_cost = backoff.saturating_mul(round_requests.max(1));
             if let Some(deadline) = startup_deadline {
                 let remaining = deadline.saturating_duration_since(tokio::time::Instant::now());
-                (retry + 1 < WORKSPACE_BUSY_STARTUP_RETRY_SAFETY_CAP
-                    && remaining
-                        >= WORKSPACE_BUSY_STARTUP_RETRY_BACKOFF
-                            + WORKSPACE_BUSY_STARTUP_RETRY_RESERVE)
-                    .then_some(WORKSPACE_BUSY_STARTUP_RETRY_BACKOFF)
+                (projected_requests <= WORKSPACE_BUSY_STARTUP_RETRY_SAFETY_CAP
+                    && remaining >= round_cost + WORKSPACE_BUSY_STARTUP_RETRY_RESERVE)
+                    .then_some(backoff)
             } else {
                 let elapsed = started.elapsed();
                 workspace_busy_retry_allowed(
-                    retry + 1,
+                    projected_requests,
                     elapsed,
-                    WORKSPACE_BUSY_STARTUP_RETRY_BACKOFF,
+                    round_cost,
                     WORKSPACE_BUSY_STARTUP_RETRY_DEADLINE,
                     WORKSPACE_BUSY_STARTUP_RETRY_SAFETY_CAP,
                 )
-                .then_some(WORKSPACE_BUSY_STARTUP_RETRY_BACKOFF)
+                .then_some(backoff)
             }
         }
         _ => TRANSIENT_STARTUP_RETRY_BACKOFFS_MS
@@ -1437,17 +1479,19 @@ fn startup_retry_backoff(
     }
 }
 
-/// `attempt` is the failed attempt that would be followed by the proposed
-/// sleep. Permit another request only when both the explicit deadline and the
-/// independent safety cap leave room for it.
+/// `projected_requests` is the total the server will have received once the
+/// next round completes and `round_cost` is how long that round will take
+/// (the inter-round sleep plus the SDK's own paced sleeps inside it). Permit
+/// the round only when both the explicit deadline and the independent safety
+/// cap leave room for all of it.
 fn workspace_busy_retry_allowed(
-    attempt: usize,
+    projected_requests: usize,
     elapsed: std::time::Duration,
-    backoff: std::time::Duration,
+    round_cost: std::time::Duration,
     deadline: std::time::Duration,
     safety_cap: usize,
 ) -> bool {
-    attempt < safety_cap && elapsed.saturating_add(backoff) < deadline
+    projected_requests <= safety_cap && elapsed.saturating_add(round_cost) < deadline
 }
 
 async fn relay_request_with_timeout<T>(
@@ -1489,6 +1533,7 @@ fn relay_error_to_anyhow(error: RelayError) -> anyhow::Error {
             code,
             request_id,
             attempts,
+            ..
         } => anyhow::Error::new(AuthHttpError {
             status: StatusCode::from_u16(*status).unwrap_or(StatusCode::INTERNAL_SERVER_ERROR),
             message: message.clone(),
@@ -1706,6 +1751,7 @@ async fn admit_agent_registration(
                 return Err(relay_error_to_anyhow(RelayError::Api {
                     code: "agent_identity_mismatch".to_string(),
                     status: 409,
+                    retry_after_ms: None,
                     message: format!(
                         "agent name '{name}' is already registered and this registration did \
                          not prove ownership of that identity; refusing to hand over its \
@@ -1798,6 +1844,7 @@ async fn admit_agent_registration(
             message,
             request_id,
             attempts,
+            retry_after_ms,
         }) if is_agent_token_invalid_code(&code)
             || (status == 401 && message.trim() == AGENT_TOKEN_INVALID_MESSAGE) =>
         {
@@ -1810,6 +1857,7 @@ async fn admit_agent_registration(
                 message,
                 request_id,
                 attempts,
+                retry_after_ms,
             }))
         }
         Err(error) => Err(relay_error_to_anyhow(error)),
@@ -2018,9 +2066,11 @@ mod tests {
         is_workspace_busy_error, reclaim_legacy_identity, relay_error_to_anyhow,
         relay_request_with_timeout, resolve_relaycast_base_url, retry_transient_relay_error,
         retry_typed_startup_registration_error_with_sleep, stable_node_identity_key,
-        workspace_busy_retry_allowed, AuthClient, AuthHttpError, CredentialCache,
-        AGENT_TOKEN_INVALID_CODE, DEFAULT_RELAYCAST_BASE_URL, TRANSIENT_STARTUP_RETRY_BACKOFFS_MS,
-        WORKSPACE_BUSY_STARTUP_RETRY_DEADLINE, WORKSPACE_BUSY_STARTUP_RETRY_SAFETY_CAP,
+        startup_retry_backoff, workspace_busy_retry_allowed, AuthClient, AuthHttpError,
+        CredentialCache, AGENT_TOKEN_INVALID_CODE, DEFAULT_RELAYCAST_BASE_URL,
+        TRANSIENT_STARTUP_RETRY_BACKOFFS_MS, WORKSPACE_BUSY_CODE,
+        WORKSPACE_BUSY_STARTUP_RETRY_DEADLINE, WORKSPACE_BUSY_STARTUP_RETRY_RESERVE,
+        WORKSPACE_BUSY_STARTUP_RETRY_SAFETY_CAP,
     };
     use relaycast::RelayError;
     use std::sync::atomic::Ordering;
@@ -2091,6 +2141,7 @@ mod tests {
             message: "Invalid agent token".to_string(),
             request_id: None,
             attempts: 1,
+            retry_after_ms: None,
         });
         assert!(is_agent_token_invalid_anyhow(&err));
     }
@@ -2156,6 +2207,7 @@ mod tests {
             message: "deterministic registration failure".to_string(),
             request_id: Some("auth-374-request".to_string()),
             attempts: 3,
+            retry_after_ms: None,
         });
 
         let auth_error = err
@@ -2189,6 +2241,7 @@ mod tests {
             message: "anything".to_string(),
             request_id: None,
             attempts: 1,
+            retry_after_ms: None,
         };
         assert!(is_agent_token_invalid(&typed));
 
@@ -2198,6 +2251,7 @@ mod tests {
             message: "Invalid agent token".to_string(),
             request_id: None,
             attempts: 1,
+            retry_after_ms: None,
         };
         assert!(is_agent_token_invalid(&legacy));
 
@@ -2207,6 +2261,7 @@ mod tests {
             message: "bad workspace key".to_string(),
             request_id: None,
             attempts: 1,
+            retry_after_ms: None,
         };
         assert!(!is_agent_token_invalid(&unrelated));
     }
@@ -2219,6 +2274,7 @@ mod tests {
             message: "Invalid agent token".to_string(),
             request_id: None,
             attempts: 1,
+            retry_after_ms: None,
         });
         assert!(is_agent_token_invalid_anyhow(&err));
 
@@ -2228,6 +2284,7 @@ mod tests {
             message: "Invalid agent token".to_string(),
             request_id: None,
             attempts: 1,
+            retry_after_ms: None,
         });
         assert!(is_agent_token_invalid_anyhow(&legacy));
 
@@ -2237,6 +2294,7 @@ mod tests {
             message: "name taken".to_string(),
             request_id: None,
             attempts: 1,
+            retry_after_ms: None,
         });
         assert!(!is_agent_token_invalid_anyhow(&unrelated));
     }
@@ -2882,11 +2940,26 @@ mod tests {
             "429 Too Many Requests",
             "workspace admission is busy",
             "request_id: workspace-busy-test",
-            "attempts: 3",
         ] {
             assert!(message.contains(marker), "missing {marker}: {message}");
         }
-        register.assert_hits(3);
+        // `Retry-After: 0` is the "server returns immediately forever" shape:
+        // the SDK paces its own attempts on it, the broker floors its rounds
+        // at the admission minimum, and the request cap plus deadline bound
+        // the total. The diagnostic reports that total, whatever it is.
+        let hits = register.hits();
+        assert!(
+            hits > 1,
+            "expected the admission denial to be retried, got {hits} request(s)"
+        );
+        assert!(
+            hits < WORKSPACE_BUSY_STARTUP_RETRY_SAFETY_CAP,
+            "retries exceeded the startup request cap: {hits}"
+        );
+        assert!(
+            message.contains(&format!("attempts: {hits}")),
+            "attempts must equal the {hits} requests the server received: {message}"
+        );
         workspace.assert_hits(0);
         unsafe {
             std::env::remove_var("RELAY_API_KEY");
@@ -2993,11 +3066,29 @@ mod tests {
             "429 Too Many Requests",
             "Workspace write capacity is busy",
             "request_id: multi-workspace-busy-374",
-            "attempts: 3",
         ] {
             assert!(message.contains(marker), "missing {marker}: {message}");
         }
-        busy_register.assert_hits(3);
+        // Retry ownership is layered: the SDK paces individual requests (it
+        // retries an admission denial itself, honouring Retry-After) and the
+        // broker owns the startup budget. The diagnostic must therefore report
+        // the total the server actually saw -- never one layer's count -- and
+        // that total must stay inside the broker's request cap. The exact
+        // number depends on the SDK's per-call schedule and is not the
+        // contract.
+        let hits = busy_register.hits();
+        assert!(
+            hits > 1,
+            "expected the busy workspace to be retried, got {hits} request(s)"
+        );
+        assert!(
+            hits < WORKSPACE_BUSY_STARTUP_RETRY_SAFETY_CAP,
+            "retries exceeded the startup request cap: {hits}"
+        );
+        assert!(
+            message.contains(&format!("attempts: {hits}")),
+            "attempts must equal the {hits} requests the server received: {message}"
+        );
         auth_register.assert_hits(1);
 
         unsafe {
@@ -3956,6 +4047,50 @@ mod tests {
         }
     }
 
+    /// The room check must budget the whole next round, not only the broker's
+    /// inter-round sleep: the SDK sleeps the same cooldown between each of its
+    /// own attempts, so a round the outer handshake timer would cut off must
+    /// not be started (the typed receipt would be lost).
+    #[tokio::test(start_paused = true)]
+    async fn startup_retry_budgets_the_sdk_round_not_only_the_inter_round_sleep() {
+        let busy = |attempts: u32, retry_after_ms: Option<u64>| RelayError::Api {
+            status: 429,
+            code: WORKSPACE_BUSY_CODE.to_string(),
+            message: "busy".to_string(),
+            request_id: None,
+            attempts,
+            retry_after_ms,
+        };
+        let started = std::time::Instant::now();
+        // 2s cooldown, 3-request SDK rounds: the next round costs 6s.
+        let remaining = std::time::Duration::from_secs(6)
+            + WORKSPACE_BUSY_STARTUP_RETRY_RESERVE
+            + std::time::Duration::from_millis(500);
+        let deadline = Some(tokio::time::Instant::now() + remaining);
+        assert_eq!(
+            startup_retry_backoff(&busy(3, Some(2_000)), 0, 3, started, deadline),
+            Some(std::time::Duration::from_secs(2)),
+            "a round that fits (6s + reserve) is allowed"
+        );
+        // Same sleep, but the reserve now only covers the sleep, not the
+        // round: refused, where budgeting the sleep alone would have allowed it.
+        let deadline = Some(
+            tokio::time::Instant::now()
+                + std::time::Duration::from_secs(2)
+                + WORKSPACE_BUSY_STARTUP_RETRY_RESERVE
+                + std::time::Duration::from_millis(500),
+        );
+        assert_eq!(
+            startup_retry_backoff(&busy(3, Some(2_000)), 0, 3, started, deadline),
+            None
+        );
+        // A single-request round with the same sleep still fits that window.
+        assert_eq!(
+            startup_retry_backoff(&busy(1, Some(2_000)), 0, 1, started, deadline),
+            Some(std::time::Duration::from_secs(2))
+        );
+    }
+
     #[test]
     fn workspace_busy_startup_policy_is_deadline_and_cap_bounded() {
         // A queue that needs more than the old eleven observed turns is still
@@ -3967,8 +4102,17 @@ mod tests {
             WORKSPACE_BUSY_STARTUP_RETRY_DEADLINE,
             WORKSPACE_BUSY_STARTUP_RETRY_SAFETY_CAP,
         ));
-        assert!(!workspace_busy_retry_allowed(
+        // The cap is a ceiling on the projected total: a round that fills it
+        // exactly is allowed, one that would cross it is not.
+        assert!(workspace_busy_retry_allowed(
             WORKSPACE_BUSY_STARTUP_RETRY_SAFETY_CAP,
+            std::time::Duration::from_secs(1),
+            std::time::Duration::from_secs(1),
+            WORKSPACE_BUSY_STARTUP_RETRY_DEADLINE,
+            WORKSPACE_BUSY_STARTUP_RETRY_SAFETY_CAP,
+        ));
+        assert!(!workspace_busy_retry_allowed(
+            WORKSPACE_BUSY_STARTUP_RETRY_SAFETY_CAP + 1,
             std::time::Duration::from_secs(1),
             std::time::Duration::from_secs(1),
             WORKSPACE_BUSY_STARTUP_RETRY_DEADLINE,

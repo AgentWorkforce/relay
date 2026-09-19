@@ -1,0 +1,21 @@
+{
+  "version": 1,
+  "id": "workspace-busy-layered-retry-ownership",
+  "kind": "bugfix",
+  "title": "Startup workspace_busy retries pace on the server's Retry-After and report every request",
+  "requirements": ["broker-linux-x64"],
+  "runner": {
+    "command": ["node", "tests/relayflows/cases/workspace-busy-layered-retry-ownership/run.mjs"]
+  },
+  "timeoutSeconds": 900,
+  "expected": {
+    "base": {
+      "outcome": "bug",
+      "signature": "startup_workspace_busy_retry_after_ignored"
+    },
+    "head": {
+      "outcome": "fixed",
+      "signature": "startup_workspace_busy_paced_by_retry_after"
+    }
+  }
+}
