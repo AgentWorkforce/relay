@@ -23,31 +23,26 @@ use crate::{fleet_wire::AgentRegistrationMetadata, protocol::MessageInjectionMod
 #[cfg(test)]
 use relaycast::registration_is_retryable;
 
-/// Replays of a worker channel join rejected with Relaycast's exact
-/// `workspace_busy` write-admission code (served with `Retry-After: 2`). One
-/// entry per broker retry round, used as the floor under the server's own
-/// `Retry-After`; the budget stays short because a spawn holds the broker
-/// event loop while it reconciles membership.
+/// Floor under the server's `Retry-After` before the broker replays a worker
+/// channel join rejected with Relaycast's exact `workspace_busy`
+/// write-admission code (served with `Retry-After: 2`). The SDK has already
+/// paced its own attempts on that header; the broker never replays sooner.
 #[cfg(not(test))]
-const WORKER_CHANNEL_BUSY_RETRY_BACKOFFS: [Duration; 3] = [
-    Duration::from_secs(1),
-    Duration::from_secs(2),
-    Duration::from_secs(4),
-];
+const WORKER_CHANNEL_BUSY_REPLAY_FLOOR: Duration = Duration::from_secs(1);
 #[cfg(test)]
-const WORKER_CHANNEL_BUSY_RETRY_BACKOFFS: [Duration; 3] = [
-    Duration::from_millis(5),
-    Duration::from_millis(5),
-    Duration::from_millis(5),
-];
-/// Total `workspace_busy` requests one spawn may send while joining channels.
-/// The SDK already retries an admission denial several times per call, so
-/// the budget is counted in requests the server receives, not broker rounds:
-/// a round cap would multiply pressure on a saturated workspace by the SDK's
-/// retry factor. The broker starts another round only when a whole round
-/// (sized by the SDK's last one) still fits, so the ceiling is never crossed;
-/// in practice the SDK's own retries consume most or all of it.
-const WORKER_CHANNEL_BUSY_MAX_REQUESTS: u32 = 1 + WORKER_CHANNEL_BUSY_RETRY_BACKOFFS.len() as u32;
+const WORKER_CHANNEL_BUSY_REPLAY_FLOOR: Duration = Duration::from_millis(5);
+/// Requests the relaycast SDK sends for one call that keeps being denied
+/// admission (its bounded admission-retry schedule). Sizes the budget below;
+/// the loop itself measures each round from the SDK's reported `attempts`.
+const WORKER_CHANNEL_BUSY_SDK_ROUND_REQUESTS: u32 = 3;
+/// Total `workspace_busy` requests one spawn may send while joining channels:
+/// the SDK's own round plus one broker replay after the server's cooldown.
+/// Counted in requests the server receives, not broker rounds — a round cap
+/// would multiply pressure on a saturated workspace by the SDK's retry factor
+/// — and the broker replays only when a whole round (sized by the SDK's last
+/// one) still fits, so the ceiling is never crossed. It stays this small
+/// because a spawn holds the broker event loop while it reconciles membership.
+const WORKER_CHANNEL_BUSY_MAX_REQUESTS: u32 = 2 * WORKER_CHANNEL_BUSY_SDK_ROUND_REQUESTS;
 
 #[derive(Debug, Clone)]
 pub enum WsControl {
@@ -1371,9 +1366,8 @@ impl RelaycastHttpClient {
         let mut seen = BTreeSet::new();
         let mut failures = Vec::new();
         // One `workspace_busy` budget for the whole spawn, not per channel: the
-        // spawn holds the broker event loop, so the total stall stays bounded by
-        // the backoff table however many channels the worker joins.
-        let mut busy_retries = WORKER_CHANNEL_BUSY_RETRY_BACKOFFS.iter();
+        // spawn holds the broker event loop, so the total stall stays bounded
+        // however many channels the worker joins.
         let mut busy_requests: u32 = 0;
         for (index, channel) in channels.iter().enumerate() {
             let name = channel.as_str();
@@ -1400,23 +1394,23 @@ impl RelaycastHttpClient {
                         busy_requests = busy_requests.saturating_add(round_requests);
                         let next_round_fits = busy_requests.saturating_add(round_requests)
                             <= WORKER_CHANNEL_BUSY_MAX_REQUESTS;
-                        match busy_retries.next() {
-                            Some(floor) if next_round_fits => {
-                                // The SDK paced its own attempts on the server's
-                                // Retry-After; never retry sooner than that.
-                                let delay = workspace_busy_retry_after(&error)
-                                    .map_or(*floor, |retry_after| retry_after.max(*floor));
-                                tracing::warn!(
-                                    worker = %agent_name,
-                                    channel = %name,
-                                    delay_ms = delay.as_millis() as u64,
-                                    busy_requests,
-                                    "worker channel join hit workspace_busy; retrying"
-                                );
-                                tokio::time::sleep(delay).await;
-                            }
-                            _ => break Err(error),
+                        if !next_round_fits {
+                            break Err(error);
                         }
+                        // The SDK paced its own attempts on the server's
+                        // Retry-After; never replay sooner than that.
+                        let delay = workspace_busy_retry_after(&error)
+                            .map_or(WORKER_CHANNEL_BUSY_REPLAY_FLOOR, |retry_after| {
+                                retry_after.max(WORKER_CHANNEL_BUSY_REPLAY_FLOOR)
+                            });
+                        tracing::warn!(
+                            worker = %agent_name,
+                            channel = %name,
+                            delay_ms = delay.as_millis() as u64,
+                            busy_requests,
+                            "worker channel join hit workspace_busy; retrying"
+                        );
+                        tokio::time::sleep(delay).await;
                     }
                     other => break other,
                 }
@@ -4645,12 +4639,13 @@ mod tests {
                 // never unbounded. The SDK retries an admission denial itself,
                 // so the server sees several requests per broker round; the
                 // budget is a ceiling on what the server receives, and the
-                // denial was retried at least once by some layer.
+                // broker replayed the SDK's round at least once.
                 let hits = busy.hits();
                 let budget = super::WORKER_CHANNEL_BUSY_MAX_REQUESTS as usize;
+                let sdk_round = super::WORKER_CHANNEL_BUSY_SDK_ROUND_REQUESTS as usize;
                 assert!(
-                    hits > 1,
-                    "expected the admission denial to be retried, got {hits}"
+                    hits > sdk_round,
+                    "expected the broker to replay after the SDK's own round, got {hits}"
                 );
                 assert!(
                     hits <= budget,
