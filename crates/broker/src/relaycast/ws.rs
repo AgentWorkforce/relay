@@ -25,7 +25,8 @@ use relaycast::registration_is_retryable;
 
 /// Replays of a worker channel join rejected with Relaycast's exact
 /// `workspace_busy` write-admission code (served with `Retry-After: 2`). One
-/// entry per retry; the budget stays short because a spawn holds the broker
+/// entry per broker retry round, used as the floor under the server's own
+/// `Retry-After`; the budget stays short because a spawn holds the broker
 /// event loop while it reconciles membership.
 #[cfg(not(test))]
 const WORKER_CHANNEL_BUSY_RETRY_BACKOFFS: [Duration; 3] = [
@@ -39,6 +40,13 @@ const WORKER_CHANNEL_BUSY_RETRY_BACKOFFS: [Duration; 3] = [
     Duration::from_millis(5),
     Duration::from_millis(5),
 ];
+/// Total `workspace_busy` requests one spawn may send while joining channels.
+/// The SDK already retries an admission denial several times per call, so
+/// the budget is counted in requests the server receives, not broker rounds:
+/// a round cap would multiply pressure on a saturated workspace by the SDK's
+/// retry factor. A round is never started once the budget is spent, so the
+/// total overshoots it by at most one round.
+const WORKER_CHANNEL_BUSY_MAX_REQUESTS: u32 = 1 + WORKER_CHANNEL_BUSY_RETRY_BACKOFFS.len() as u32;
 
 #[derive(Debug, Clone)]
 pub enum WsControl {
@@ -1364,6 +1372,7 @@ impl RelaycastHttpClient {
         // spawn holds the broker event loop, so the total stall stays bounded by
         // the backoff table however many channels the worker joins.
         let mut busy_retries = WORKER_CHANNEL_BUSY_RETRY_BACKOFFS.iter();
+        let mut busy_requests: u32 = 0;
         for (index, channel) in channels.iter().enumerate() {
             let name = channel.as_str();
             if !seen.insert(name.to_ascii_lowercase()) {
@@ -1385,17 +1394,24 @@ impl RelaycastHttpClient {
                     // bounded replay is safe. Without it a saturated workspace
                     // fails every fleet spawn on its first channel join.
                     Err(error) if super::auth::is_workspace_busy_error(&error) => {
+                        busy_requests =
+                            busy_requests.saturating_add(super::auth::relay_error_attempts(&error));
                         match busy_retries.next() {
-                            Some(delay) => {
+                            Some(floor) if busy_requests < WORKER_CHANNEL_BUSY_MAX_REQUESTS => {
+                                // The SDK paced its own attempts on the server's
+                                // Retry-After; never retry sooner than that.
+                                let delay = workspace_busy_retry_after(&error)
+                                    .map_or(*floor, |retry_after| retry_after.max(*floor));
                                 tracing::warn!(
                                     worker = %agent_name,
                                     channel = %name,
                                     delay_ms = delay.as_millis() as u64,
+                                    busy_requests,
                                     "worker channel join hit workspace_busy; retrying"
                                 );
-                                tokio::time::sleep(*delay).await;
+                                tokio::time::sleep(delay).await;
                             }
-                            None => break Err(error),
+                            _ => break Err(error),
                         }
                     }
                     other => break other,
@@ -1862,6 +1878,25 @@ fn restamp_registration_attempts(detail: String, total_attempts: u32) -> String 
     )
 }
 
+/// HTTP requests one SDK call made before returning this error, as stamped by
+/// [`registration_metadata_error`]. Errors minted locally (no stamp) count as
+/// the single request the broker issued.
+fn registration_error_requests(error: &RelaycastRegistrationError) -> u32 {
+    let detail = match error {
+        RelaycastRegistrationError::Api { detail, .. }
+        | RelaycastRegistrationError::RateLimited { detail, .. }
+        | RelaycastRegistrationError::Transport { detail, .. } => detail,
+        _ => return 1,
+    };
+    let Some((_, rest)) = detail.split_once("; attempts: ") else {
+        return 1;
+    };
+    rest.split([';', ')'])
+        .next()
+        .and_then(|value| value.trim().parse::<u32>().ok())
+        .map_or(1, |value| value.max(1))
+}
+
 fn with_registration_attempts(
     error: RelaycastRegistrationError,
     total_attempts: u32,
@@ -1945,8 +1980,22 @@ fn agent_registration_retry_delay(error: &RelaycastRegistrationError) -> Duratio
         .min(MAX_AGENT_REGISTRATION_RETRY_DELAY)
 }
 
+/// The server's `Retry-After` behind a terminal SDK error, when it sent one.
+fn workspace_busy_retry_after(error: &RelayError) -> Option<Duration> {
+    match error {
+        RelayError::Api { retry_after_ms, .. } => retry_after_ms.map(Duration::from_millis),
+        _ => None,
+    }
+}
+
 fn workspace_busy_reconcile_delay(error: &RelayError) -> Option<Duration> {
-    let RelayError::Api { status, code, .. } = error else {
+    let RelayError::Api {
+        status,
+        code,
+        retry_after_ms,
+        ..
+    } = error
+    else {
         return None;
     };
     if !matches!(status, 429 | 503) {
@@ -1955,11 +2004,14 @@ fn workspace_busy_reconcile_delay(error: &RelayError) -> Option<Duration> {
     if code != "workspace_busy" {
         return None;
     }
-    // relaycast 8.0.0 does not expose the Retry-After header on typed errors;
-    // use the server's workspace-admission minimum while keeping the loop
-    // bounded. The owned-cleanup path below uses raw HTTP and can honor the
-    // header directly.
-    Some(Duration::from_secs(1).min(WORKSPACE_BUSY_RECONCILE_MAX_DELAY))
+    // Pace on the server's Retry-After when it sent one, falling back to the
+    // workspace-admission minimum, and keep the loop bounded either way.
+    Some(
+        retry_after_ms
+            .map(Duration::from_millis)
+            .unwrap_or(Duration::from_secs(1))
+            .min(WORKSPACE_BUSY_RECONCILE_MAX_DELAY),
+    )
 }
 
 async fn retry_workspace_busy_reconcile<T, F, Fut>(mut request: F) -> relaycast::Result<T>
@@ -2163,7 +2215,6 @@ async fn retry_agent_registration_with_timeout(
     let mut attempt: usize = 0;
     loop {
         attempt += 1;
-        total_attempts.fetch_add(1, Ordering::Relaxed);
         let remaining_before_request =
             deadline.saturating_duration_since(tokio::time::Instant::now());
         if remaining_before_request.is_zero() {
@@ -2171,7 +2222,7 @@ async fn retry_agent_registration_with_timeout(
                 registration_budget_exhausted_error(
                     name,
                     budget,
-                    total_attempts.load(Ordering::Relaxed),
+                    total_attempts.load(Ordering::Relaxed).saturating_add(1),
                 ),
             ));
         }
@@ -2183,7 +2234,13 @@ async fn retry_agent_registration_with_timeout(
         {
             Ok(Ok(token)) => return Ok(token),
             Ok(Err(error)) => {
-                let attempts_so_far = total_attempts.load(Ordering::Relaxed);
+                // One broker round is several HTTP requests: the SDK retries
+                // admission denials itself (honouring Retry-After) before
+                // surfacing a terminal error. Count what the server saw.
+                let requests = registration_error_requests(&error);
+                let attempts_so_far = total_attempts
+                    .fetch_add(requests, Ordering::Relaxed)
+                    .saturating_add(requests);
                 let error = with_registration_attempts(error, attempts_so_far);
                 if !is_retryable_registration_error(&error) {
                     return Err(RegRetryOutcome::Fatal(error));
@@ -2206,10 +2263,14 @@ async fn retry_agent_registration_with_timeout(
                     let delay = registration_retry_after_secs(&error)
                         .map(Duration::from_secs)
                         .unwrap_or(Duration::from_secs(1));
+                    // The cap bounds *requests*, not rounds: capping rounds
+                    // would let pressure on a saturated workspace grow by the
+                    // SDK's per-call retry factor.
+                    let requests_so_far = usize::try_from(attempts_so_far).unwrap_or(usize::MAX);
                     if delay > MAX_AGENT_REGISTRATION_RETRY_DELAY
                         || delay > remaining_after_request
                         || !workspace_busy_retry_allowed_with_budget(
-                            attempt,
+                            requests_so_far,
                             retry_started.elapsed(),
                             delay,
                             budget,
@@ -2238,11 +2299,12 @@ async fn retry_agent_registration_with_timeout(
                 }
             }
             Err(_) => {
+                // The cancelled request was issued; count it once.
                 return Err(RegRetryOutcome::RetryableExhausted(
                     registration_budget_exhausted_error(
                         name,
                         budget,
-                        total_attempts.load(Ordering::Relaxed),
+                        total_attempts.load(Ordering::Relaxed).saturating_add(1),
                     ),
                 ));
             }
@@ -2340,6 +2402,9 @@ async fn register_new_spawn_identity_inner(
     let retry_started = tokio::time::Instant::now();
     loop {
         attempt += 1;
+        // Provisionally count the request now so an outer timeout that
+        // cancels it mid-flight still reports it; a terminal error below
+        // corrects the total to what the SDK actually sent.
         total_attempts.fetch_add(1, Ordering::Relaxed);
         match client
             .http_client()
@@ -2369,10 +2434,12 @@ async fn register_new_spawn_identity_inner(
                 ))
             }
             Err(error) => {
-                let error = with_registration_attempts(
-                    registration_metadata_error(name, error),
-                    total_attempts.load(Ordering::Relaxed),
-                );
+                let error = registration_metadata_error(name, error);
+                let extra_requests = registration_error_requests(&error).saturating_sub(1);
+                let attempts_so_far = total_attempts
+                    .fetch_add(extra_requests, Ordering::Relaxed)
+                    .saturating_add(extra_requests);
+                let error = with_registration_attempts(error, attempts_so_far);
                 if !is_retryable_registration_error(&error) {
                     return Err(RegRetryOutcome::Fatal(error));
                 }
@@ -2393,7 +2460,9 @@ async fn register_new_spawn_identity_inner(
                 };
                 let elapsed = retry_started.elapsed();
                 if is_workspace_busy_registration_error(&error) {
-                    if !workspace_busy_retry_allowed(attempt, elapsed, delay) {
+                    // Cap requests, not rounds (see the takeover loop above).
+                    let requests_so_far = usize::try_from(attempts_so_far).unwrap_or(usize::MAX);
+                    if !workspace_busy_retry_allowed(requests_so_far, elapsed, delay) {
                         return Err(RegRetryOutcome::RetryableExhausted(error));
                     }
                 } else if attempt > TRANSIENT_REGISTRATION_RETRY_BACKOFFS_MS.len() {
@@ -2428,6 +2497,12 @@ fn declared_metadata_map(declared: &AgentRegistrationMetadata) -> serde_json::Ma
     metadata
 }
 
+/// Convert a terminal SDK error into the typed registration error, keeping
+/// the two facts the broker's retry loops need from the SDK layer: the
+/// server's `Retry-After` (so the broker paces on the same cadence the SDK
+/// just honoured, never a shorter guess) and the number of HTTP requests the
+/// SDK already made for this one call (so `attempts` in the final diagnostic
+/// is the true total across both layers, not the broker's round count).
 fn registration_metadata_error(agent_name: &str, error: RelayError) -> RelaycastRegistrationError {
     match error {
         RelayError::Api {
@@ -2435,26 +2510,36 @@ fn registration_metadata_error(agent_name: &str, error: RelayError) -> Relaycast
             message,
             code,
             request_id,
+            retry_after_ms,
+            attempts,
             ..
         } => RelaycastRegistrationError::RateLimited {
             agent_name: agent_name.to_string(),
-            // The pinned SDK exposes no response headers on RelayError. Keep
-            // workspace admission retries bounded to one second (the engine
-            // contract's minimum Retry-After), while retaining the SDK's
-            // conservative minute fallback for other rate limits.
-            retry_after_secs: if code == "workspace_busy" { 1 } else { 60 },
-            detail: registration_api_detail(message, code, request_id),
+            retry_after_secs: retry_after_ms
+                .map(|ms| ms.div_ceil(1_000).max(1))
+                // No header: workspace admission uses the engine contract's
+                // one-second minimum; other rate limits keep the SDK's
+                // conservative minute fallback.
+                .unwrap_or(if code == "workspace_busy" { 1 } else { 60 }),
+            detail: restamp_registration_attempts(
+                registration_api_detail(message, code, request_id),
+                attempts.max(1),
+            ),
         },
         RelayError::Api {
             status,
             message,
             code,
             request_id,
+            attempts,
             ..
         } => RelaycastRegistrationError::Api {
             agent_name: agent_name.to_string(),
             status,
-            detail: registration_api_detail(message, code, request_id),
+            detail: restamp_registration_attempts(
+                registration_api_detail(message, code, request_id),
+                attempts.max(1),
+            ),
         },
         error => RelaycastRegistrationError::Transport {
             agent_name: agent_name.to_string(),
@@ -2500,8 +2585,9 @@ mod tests {
         workspace_busy_retry_allowed, ImpersonationAwareRegistrationError, MessageInjectionMode,
         RecipientReachability, RegRetryOutcome, RegisterIntent, RelaycastHttpClient,
         RelaycastRegistrationError, MAX_AGENT_REGISTRATION_ELAPSED,
-        MAX_AGENT_REGISTRATION_OUTER_TIMEOUT, WORKSPACE_BUSY_CREATE_ONLY_SAFETY_CAP,
-        WORKSPACE_BUSY_RECONCILE_BUDGET, WORKSPACE_BUSY_RECONCILE_SAFETY_CAP,
+        MAX_AGENT_REGISTRATION_OUTER_TIMEOUT, WORKSPACE_BUSY_ACTION_SAFETY_CAP,
+        WORKSPACE_BUSY_CREATE_ONLY_SAFETY_CAP, WORKSPACE_BUSY_RECONCILE_BUDGET,
+        WORKSPACE_BUSY_RECONCILE_SAFETY_CAP,
     };
 
     fn seeded_http_client(base_url: &str) -> RelaycastHttpClient {
@@ -2536,6 +2622,7 @@ mod tests {
                 message: "Workspace write capacity is busy; retry with backoff".to_string(),
                 request_id: Some("req-busy".to_string()),
                 attempts: 1,
+                retry_after_ms: None,
             },
         );
         assert!(matches!(
@@ -2627,6 +2714,7 @@ mod tests {
                         message: "busy".to_string(),
                         request_id: None,
                         attempts: 1,
+                        retry_after_ms: None,
                     })
                 } else {
                     Ok::<_, RelayError>("recovered")
@@ -2650,6 +2738,7 @@ mod tests {
                     message: "busy".to_string(),
                     request_id: None,
                     attempts: 1,
+                    retry_after_ms: None,
                 })
             }
         })
@@ -2663,6 +2752,7 @@ mod tests {
             message: "denied".to_string(),
             request_id: None,
             attempts: 1,
+            retry_after_ms: None,
         })
         .is_none());
     }
@@ -3099,9 +3189,11 @@ mod tests {
     /// An action-spawn `workspace_busy` response uses its one-second admission
     /// cooldown, not the typed-5xx three-attempt schedule. The finite test
     /// budget proves a persistent queue failure returns the typed receipt
-    /// without sleeping after the budget has been exhausted.
+    /// without sleeping after the budget has been exhausted, and that the
+    /// receipt's `attempts` is the total across the SDK's own admission
+    /// retries and the broker's rounds -- exactly what the server received.
     #[tokio::test]
-    async fn action_spawn_third_attempt_429_returns_without_final_sleep() {
+    async fn action_spawn_workspace_busy_exhaustion_reports_every_request() {
         let server = MockServer::start();
         let register = server.mock(|when, then| {
             when.method(POST)
@@ -3136,16 +3228,26 @@ mod tests {
                     }
                 )) if detail.contains("workspace_busy")
                     && detail.contains("admission busy")
-                    && detail.contains("attempts: 3")
+                    && detail.contains(&format!("attempts: {}", register.hits()))
             ),
-            "expected the final typed 429 to be returned with its receipt, got {result:?}"
+            "expected the final typed 429 with attempts equal to the {} requests the \
+             server received, got {result:?}",
+            register.hits()
         );
         assert!(
             started.elapsed() < Duration::from_secs(4),
             "retry budget was not bounded: {:?}",
             started.elapsed()
         );
-        register.assert_hits(3);
+        let hits = register.hits();
+        assert!(
+            hits > 1,
+            "expected the admission denial to be retried, got {hits} request(s)"
+        );
+        assert!(
+            hits < WORKSPACE_BUSY_ACTION_SAFETY_CAP,
+            "retries exceeded the action request cap: {hits}"
+        );
     }
 
     /// Full action path proof: admission can take more than the old observed
@@ -4314,9 +4416,20 @@ mod tests {
                     error.contains("skipped after workspace_busy: engineering"),
                     "{error}"
                 );
-                // One initial attempt plus the bounded retry budget for the whole
-                // spawn; never per channel, never unbounded.
-                busy.assert_hits(1 + super::WORKER_CHANNEL_BUSY_RETRY_BACKOFFS.len());
+                // One request budget for the whole spawn; never per channel,
+                // never unbounded. The SDK retries an admission denial itself,
+                // so the server sees several requests per broker round: the
+                // budget must be spent, and overshot by less than one round.
+                let hits = busy.hits();
+                let budget = super::WORKER_CHANNEL_BUSY_MAX_REQUESTS as usize;
+                assert!(
+                    hits >= budget,
+                    "busy budget was not used: {hits} < {budget}"
+                );
+                assert!(
+                    hits < 2 * budget,
+                    "busy retries overshot the request budget by a full round: {hits}"
+                );
                 join.assert_hits(0);
             }
         }
