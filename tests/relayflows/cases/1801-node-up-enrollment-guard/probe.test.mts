@@ -99,10 +99,7 @@ function writeHeldClaim(home: string): void {
     broker_name: 'kjglaptop',
     claimed_at: '2026-10-05T12:00:00.000Z',
   };
-  fs.writeFileSync(
-    path.join(claimsDir, 'node_abc.000001.json'),
-    `${JSON.stringify(claim, null, 2)}\n`
-  );
+  fs.writeFileSync(path.join(claimsDir, 'node_abc.000001.json'), `${JSON.stringify(claim, null, 2)}\n`);
 }
 
 describe('node up enrollment guard (PR proof)', () => {
