@@ -108,6 +108,43 @@ describe('loadProductSurface', () => {
     ).rejects.toThrow(/needs @relayfile\/sdk, which is not installed/);
   });
 
+  it('separates an incomplete install from a missing package', async () => {
+    // ERR_MODULE_NOT_FOUND covers both, and reporting the second as "not
+    // installed" sends the operator to reinstall a package already on disk.
+    // Reported against a global install mid-upgrade to 12.2.5.
+    const partial = Object.assign(
+      new Error(
+        "Cannot find module '/usr/lib/node_modules/agent-relay/node_modules/@relayfile/sdk/dist/relay-cli/index.js'"
+      ),
+      { code: 'ERR_MODULE_NOT_FOUND' }
+    );
+    await expect(
+      loadProductSurface(
+        DEFINITION,
+        makeDeps(async () => {
+          throw partial;
+        })
+      )
+    ).rejects.toThrow(/installed but incomplete/);
+  });
+
+  it('names the dependency when the product itself is present', async () => {
+    // Reinstalling @relayfile/sdk would not fix a missing transitive dep, so
+    // the message must not name @relayfile/sdk as the thing to install.
+    const transitive = Object.assign(
+      new Error("Cannot find package 'some-transitive-dep' imported from /x/y.js"),
+      { code: 'ERR_MODULE_NOT_FOUND' }
+    );
+    await expect(
+      loadProductSurface(
+        DEFINITION,
+        makeDeps(async () => {
+          throw transitive;
+        })
+      )
+    ).rejects.toThrow(/depends on some-transitive-dep, which is not installed/);
+  });
+
   it('says to upgrade when the package predates the subpath export', async () => {
     // The raw ERR_PACKAGE_PATH_NOT_EXPORTED text never names the fix.
     await expect(

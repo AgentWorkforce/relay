@@ -151,6 +151,35 @@ async function composeSessionReplay(base: RelayCliSurface): Promise<RelayCliSurf
 }
 
 /**
+ * The package Node says it could not find, when it says so.
+ *
+ * ERR_MODULE_NOT_FOUND covers two different situations and the code alone does
+ * not separate them:
+ *
+ *   Cannot find package '@relayfile/sdk' imported from …   -> genuinely absent
+ *   Cannot find module '/abs/path/…/dist/index.js'         -> present, incomplete
+ *
+ * The second happens while an install is still writing, and reporting it as
+ * "not installed" sends the operator to reinstall something already there.
+ */
+function missingPackageFrom(error: unknown): string | undefined {
+  const message = (error as { message?: string } | undefined)?.message ?? '';
+  return /Cannot find package '([^']+)'/.exec(message)?.[1];
+}
+
+/**
+ * Whether Node named a file rather than a package.
+ *
+ * Detected positively, not by the absence of a package name: an error shape
+ * this does not recognise should fall through to the plain "not installed"
+ * advice, which is right far more often than "incomplete" would be.
+ */
+function missingFileFrom(error: unknown): string | undefined {
+  const message = (error as { message?: string } | undefined)?.message ?? '';
+  return /Cannot find module '(\/[^']+)'/.exec(message)?.[1];
+}
+
+/**
  * Explain an import failure in terms the operator can act on.
  *
  * A missing subpath export is the common case while a product is mid-upgrade,
@@ -165,6 +194,30 @@ function describeLoadFailure(definition: ProductSurfaceDefinition, error: unknow
     .join('/');
 
   if (code === 'ERR_MODULE_NOT_FOUND' || code === 'MODULE_NOT_FOUND') {
+    const missing = missingPackageFrom(error);
+
+    // A dependency of the product, not the product: reinstalling the product
+    // alone would not fix it, and naming the wrong package wastes the operator.
+    if (missing !== undefined && missing !== packageName) {
+      return (
+        `\`agent-relay ${definition.as}\` could not load ${packageName}: ` +
+        `it depends on ${missing}, which is not installed.\n` +
+        `Reinstall agent-relay to repair the dependency tree.`
+      );
+    }
+
+    // Node named a file rather than a package, so the package directory exists
+    // but its contents do not. An interrupted or concurrent install looks like
+    // this, and it resolves itself once the install finishes.
+    if (missingFileFrom(error) !== undefined) {
+      return (
+        `\`agent-relay ${definition.as}\` could not load ${packageName}: ` +
+        `it is installed but incomplete.\n` +
+        `If an install is running, wait for it to finish and retry; ` +
+        `otherwise reinstall agent-relay.\n${describeError(error)}`
+      );
+    }
+
     return (
       `\`agent-relay ${definition.as}\` needs ${packageName}, which is not installed.\n` +
       `Reinstall agent-relay, or install ${packageName} alongside it.`
