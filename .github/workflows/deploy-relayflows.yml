@@ -1,0 +1,105 @@
+name: Deploy Relayflows
+
+# A hosted listener stores a snapshot of the flow source, so editing
+# `flows/ci/pr-proof.flow.ts` on main does nothing until the listener is
+# redeployed. This closes that gap: merging a change to a managed flow
+# reconciles the deployment.
+#
+# Credential: FLOWS_CLOUD_TOKEN is a plain repo secret — a "Flows Cloud token"
+# minted from Dashboard -> Settings -> Tokens AFTER AgentWorkforce/cloud#3829
+# deployed. RELAY_PR_PROOF_APPROVER is a plain repo variable.
+# That change added `flows:listeners:write` to the token's purpose; the deploy,
+# list and undeploy routes require it (or a session, or `cli:auth`). A token
+# minted before #3829 does not carry the scope — scopes are fixed at issue
+# time — and fails these routes with 403 `insufficient_scope` even though
+# `whoami` accepts it. Recreate the token rather than reusing an old one.
+#
+# The path filter is the idempotency. `flows deployments` reports no source
+# digest, so nothing downstream can tell a stale listener from a current one by
+# content; running only when the source actually changed is what keeps this
+# from redeploying on every merge.
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'flows/ci/pr-proof.flow.ts'
+      - 'scripts/flows/deploy-listeners.mjs'
+      - '.github/workflows/deploy-relayflows.yml'
+  workflow_dispatch:
+    inputs:
+      reason:
+        description: Why this manual reconcile is being run
+        required: false
+        type: string
+
+permissions:
+  contents: read
+
+# Never cancel in progress: the reconcile undeploys before it deploys, so a
+# cancelled run can leave the repository with no listener at all.
+concurrency:
+  group: deploy-relayflows
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    name: Reconcile hosted listeners
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    # No `environment:` on purpose. This repo's environments carry no
+    # protection rules and no scoped secrets — they are deployment-history
+    # labels, and every Cloud credential here is a plain repo secret, the same
+    # way the PR-proof dispatcher stored RELAYFLOW_PR_PROOF_CLOUD_API_KEY. A
+    # dedicated environment would add a setup step and gate nothing.
+    steps:
+      # `push` is already limited to main above; this is for workflow_dispatch,
+      # which runs whatever ref the dispatcher selected. Deploying a branch
+      # would hand production credentials to unreviewed flow source that then
+      # decides the proof result for every pull request, so refuse anything
+      # but main outright rather than checking out main behind the caller's
+      # back.
+      - name: Refuse to deploy anything but main
+        if: github.ref != 'refs/heads/main'
+        env:
+          REF: ${{ github.ref }}
+        run: |
+          echo "::error::Refusing to reconcile listeners from $REF; only refs/heads/main is deployable."
+          exit 1
+
+      - name: Checkout
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+
+      - name: Set up Node.js
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: 22.22.0
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci --ignore-scripts
+
+      # Deploying a flow that cannot compile would replace a working listener
+      # with a broken one, so refuse before anything is undeployed. The project
+      # is `flows/ci/`, not all of `flows/`: the generators there import
+      # workspace packages whose types come from an unbuilt `dist/`, and this
+      # job runs on a plain `npm ci` with no workspace build.
+      - name: Check the flow before deploying it
+        run: |
+          npx tsc -p flows/ci/tsconfig.json
+          npx flows check flows/ci/pr-proof.flow.ts
+
+      - name: Reconcile listeners
+        env:
+          FLOWS_CLOUD_TOKEN: ${{ secrets.FLOWS_CLOUD_TOKEN }}
+          FLOWS_CLOUD_URL: ${{ vars.FLOWS_CLOUD_URL }}
+          RELAY_PR_PROOF_APPROVER: ${{ vars.RELAY_PR_PROOF_APPROVER }}
+        run: node scripts/flows/deploy-listeners.mjs
+
+      - name: Report deployed listeners
+        if: always()
+        env:
+          FLOWS_CLOUD_TOKEN: ${{ secrets.FLOWS_CLOUD_TOKEN }}
+          FLOWS_CLOUD_URL: ${{ vars.FLOWS_CLOUD_URL }}
+        run: npx flows deployments >> "$GITHUB_STEP_SUMMARY" 2>&1 || true
