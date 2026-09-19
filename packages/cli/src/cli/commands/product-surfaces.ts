@@ -138,9 +138,7 @@ export interface SurfaceImportDependencies {
   importFromStore: (installRoot: string, specifier: string) => Promise<unknown>;
 }
 
-function withImportDefaults(
-  overrides: Partial<SurfaceImportDependencies>
-): SurfaceImportDependencies {
+function withImportDefaults(overrides: Partial<SurfaceImportDependencies>): SurfaceImportDependencies {
   return {
     importSpecifier: overrides.importSpecifier ?? ((specifier) => import(specifier)),
     isStandalone: overrides.isStandalone ?? (() => isCompiledStandalone()),

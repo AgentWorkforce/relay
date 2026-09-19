@@ -261,7 +261,12 @@ async function provisionOnce(
     fs.writeFileSync(
       path.join(staging, 'package.json'),
       `${JSON.stringify(
-        { name: 'agent-relay-surface', version: '0.0.0', private: true, dependencies: { [pkg.name]: pkg.range } },
+        {
+          name: 'agent-relay-surface',
+          version: '0.0.0',
+          private: true,
+          dependencies: { [pkg.name]: pkg.range },
+        },
         null,
         2
       )}\n`
@@ -360,13 +365,17 @@ export function describeInstallFailure(command: string, error: unknown): string 
 async function npmInstall(pkg: SurfacePackage, directory: string): Promise<void> {
   const command = process.platform === 'win32' ? 'npm.cmd' : 'npm';
   try {
-    await execFileAsync(command, ['install', `${pkg.name}@${pkg.range}`, '--no-audit', '--no-fund', '--loglevel=error'], {
-      cwd: directory,
-      timeout: INSTALL_TIMEOUT_MS,
-      maxBuffer: INSTALL_MAX_BUFFER,
-      // The update notifier writes to stderr and can outlive the install.
-      env: { ...process.env, npm_config_update_notifier: 'false' },
-    });
+    await execFileAsync(
+      command,
+      ['install', `${pkg.name}@${pkg.range}`, '--no-audit', '--no-fund', '--loglevel=error'],
+      {
+        cwd: directory,
+        timeout: INSTALL_TIMEOUT_MS,
+        maxBuffer: INSTALL_MAX_BUFFER,
+        // The update notifier writes to stderr and can outlive the install.
+        env: { ...process.env, npm_config_update_notifier: 'false' },
+      }
+    );
   } catch (error) {
     throw new Error(describeInstallFailure(command, error), { cause: error });
   }

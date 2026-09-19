@@ -218,9 +218,9 @@ describe('loadProductSurface', () => {
 });
 
 describe('SURFACE_PACKAGES', () => {
-  const manifest = JSON.parse(
-    readFileSync(new URL('../../../package.json', import.meta.url), 'utf8')
-  ) as { dependencies: Record<string, string> };
+  const manifest = JSON.parse(readFileSync(new URL('../../../package.json', import.meta.url), 'utf8')) as {
+    dependencies: Record<string, string>;
+  };
 
   it('pins the same version the npm distribution installs', () => {
     // The standalone binary installs these itself and has no manifest to read,

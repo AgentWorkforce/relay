@@ -78,9 +78,7 @@ describe('surfaceInstallPath', () => {
   it('separates ranges that sanitize to the same name', () => {
     // `^0.10.64` and `~0.10.64` are different installs; stripping the operator
     // to make a directory name would silently serve one for the other.
-    expect(surfaceInstallPath(root, PKG)).not.toBe(
-      surfaceInstallPath(root, { ...PKG, range: '~0.10.64' })
-    );
+    expect(surfaceInstallPath(root, PKG)).not.toBe(surfaceInstallPath(root, { ...PKG, range: '~0.10.64' }));
   });
 
   it('keeps the package readable in the directory name', () => {
@@ -249,9 +247,9 @@ describe('importFromSurfaceStore', () => {
 
 describe('describeInstallFailure', () => {
   it('names a missing npm rather than echoing a spawn error', () => {
-    expect(describeInstallFailure('npm', Object.assign(new Error('spawn npm ENOENT'), { code: 'ENOENT' }))).toBe(
-      '`npm` is not on PATH.'
-    );
+    expect(
+      describeInstallFailure('npm', Object.assign(new Error('spawn npm ENOENT'), { code: 'ENOENT' }))
+    ).toBe('`npm` is not on PATH.');
   });
 
   it('reports a timeout as a timeout', () => {
