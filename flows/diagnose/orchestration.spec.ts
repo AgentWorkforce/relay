@@ -302,6 +302,13 @@ async function ensurePermissionPlaceholders() {
 const OPENCODE_CLI = path.resolve(ROOT, 'scripts/flows/opencode-agent-cli.mjs');
 
 /**
+ * A ChatGPT-account Codex credential accepts only `gpt-5.5`; every other
+ * registry entry is refused with "not supported when using Codex with a
+ * ChatGPT account". Override for a credential that allows more.
+ */
+const DIAGNOSIS_CODEX_MODEL = process.env.DIAGNOSE_CODEX_MODEL?.trim() || CodexModels.GPT_5_5;
+
+/**
  * v1 gave every agent a read set, a write set, a deny list, and a network
  * policy. `AgentStepSpec.permissions` offers `accessPreset`, one flat
  * `fileGlobs` list, and `networkAllowlist`, so the read/write split and the
@@ -575,10 +582,10 @@ export function buildDiagnosisSpec(): Record<string, unknown> {
       'data-plane-specialist': { cli: OPENCODE_CLI, model: OpencodeModels.OPENCODE_MIMO_V2_FLASH_FREE },
       'claude-reviewer': { cli: 'claude', model: ClaudeModels.SONNET },
       'claude-fixer': { cli: 'claude', model: ClaudeModels.SONNET },
-      'codex-reviewer': { cli: 'codex', model: CodexModels.GPT_5_1_CODEX_MINI },
-      'codex-fixer': { cli: 'codex', model: CodexModels.GPT_5_1_CODEX_MINI },
+      'codex-reviewer': { cli: 'codex', model: DIAGNOSIS_CODEX_MODEL },
+      'codex-fixer': { cli: 'codex', model: DIAGNOSIS_CODEX_MODEL },
       'fresh-claude-signoff': { cli: 'claude', model: ClaudeModels.SONNET },
-      'fresh-codex-signoff': { cli: 'codex', model: CodexModels.GPT_5_1_CODEX_MINI },
+      'fresh-codex-signoff': { cli: 'codex', model: DIAGNOSIS_CODEX_MODEL },
     },
     // v1's `.timeout(21_600_000)`, unchanged.
     budget: { maxWallclockMs: 21_600_000 },

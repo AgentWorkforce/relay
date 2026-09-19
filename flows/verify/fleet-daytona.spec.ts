@@ -92,7 +92,10 @@ const TRUSTED_ARTIFACT_ROOT = path.join(TRUSTED_ROOT, '.workflow-artifacts', 've
 const CANDIDATE_INSTALL_ROOT = INSTALL_ROOT;
 const CONFIGURED_CANDIDATE_CLI = process.env.VERIFY_FLEET_CLI?.trim();
 const CONFIGURED_CANDIDATE_ATTESTATION = process.env.VERIFY_FLEET_CANDIDATE_ATTESTATION?.trim();
-const FLEET_CODEX_MODEL = process.env.VERIFY_FLEET_CODEX_MODEL?.trim() || CodexModels.GPT_5_1_CODEX_MINI;
+// A ChatGPT-account Codex credential accepts only `gpt-5.5`; every other
+// registry entry is refused with "not supported when using Codex with a
+// ChatGPT account". VERIFY_FLEET_CODEX_MODEL overrides it where allowed.
+const FLEET_CODEX_MODEL = process.env.VERIFY_FLEET_CODEX_MODEL?.trim() || CodexModels.GPT_5_5;
 const SAFE_MODEL = /^[A-Za-z0-9][A-Za-z0-9._:/-]{0,199}$/;
 
 function rootedInstallPath(value: string, label: string): string {

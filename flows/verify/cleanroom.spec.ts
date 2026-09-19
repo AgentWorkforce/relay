@@ -294,6 +294,25 @@ async function ensureReviewPlaceholders(roles: string[]) {
 const OPENCODE_CLI = path.resolve('scripts/flows/opencode-agent-cli.mjs');
 
 /**
+ * Evidence-integrity reviewers, their fixers, and the final signoff. Paired
+ * with the Claude side's Sonnet, because these agents make the judgment the
+ * campaign's verdict rests on.
+ */
+const CODEX_REVIEW_MODEL = process.env.CLEANROOM_CODEX_MODEL?.trim() || CodexModels.GPT_5_5;
+/**
+ * Lane executors invoke one deterministic runner command in an isolated
+ * sandbox and report its output; `gate-<lane>` judges the result, so capability
+ * buys little here and a cheaper, faster model would suit them.
+ *
+ * It is the same model as the reviewers today because a ChatGPT-account Codex
+ * credential accepts only `gpt-5.5` — every other registry entry, the cheap
+ * ones included, is refused with "not supported when using Codex with a
+ * ChatGPT account". Point `CLEANROOM_CODEX_LANE_MODEL` at a cheaper model on a
+ * credential that allows one.
+ */
+const CODEX_LANE_MODEL = process.env.CLEANROOM_CODEX_LANE_MODEL?.trim() || CodexModels.GPT_5_5;
+
+/**
  * v1 gave each agent a read set, a write set, a deny list, relayfile `scopes`,
  * an `exec` allowlist, and a network policy. `AgentStepSpec.permissions` offers
  * `accessPreset`, one flat `fileGlobs` list, and `networkAllowlist` — so the
@@ -331,11 +350,11 @@ export function buildCleanroomSpec(): Record<string, unknown> {
   for (let round = 1; round <= REVIEW_ROUNDS; round += 1) {
     agents[`claude-review-${round}`] = { cli: 'claude', model: ClaudeModels.SONNET };
     agents[`claude-fix-${round}`] = { cli: 'claude', model: ClaudeModels.SONNET };
-    agents[`codex-review-${round}`] = { cli: 'codex', model: CodexModels.GPT_5_1_CODEX_MINI };
-    agents[`codex-fix-${round}`] = { cli: 'codex', model: CodexModels.GPT_5_1_CODEX_MINI };
+    agents[`codex-review-${round}`] = { cli: 'codex', model: CODEX_REVIEW_MODEL };
+    agents[`codex-fix-${round}`] = { cli: 'codex', model: CODEX_REVIEW_MODEL };
   }
   agents['final-claude-signoff'] = { cli: 'claude', model: ClaudeModels.SONNET };
-  agents['final-codex-signoff'] = { cli: 'codex', model: CodexModels.GPT_5_1_CODEX_MINI };
+  agents['final-codex-signoff'] = { cli: 'codex', model: CODEX_REVIEW_MODEL };
 
   const steps: SpecStep[] = [];
   // Agent steps take no `timeoutMs` in v2, so v1's per-agent bounds survive
@@ -390,7 +409,7 @@ export function buildCleanroomSpec(): Record<string, unknown> {
   const laneGates: string[] = [];
   for (const lane of lanes) {
     const laneAgent = `lane-${lane}`;
-    agents[laneAgent] = { cli: 'codex', model: CodexModels.GPT_5_1_CODEX_MINI };
+    agents[laneAgent] = { cli: 'codex', model: CODEX_LANE_MODEL };
     laneGates.push(`gate-${lane}`);
     // v1 set `failOnError: false` here so a lane that crashed still reached its
     // evidence gate. v2 has no per-step opt-out and a failed agent step fails
