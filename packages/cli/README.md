@@ -198,18 +198,24 @@ Refusing to start: node node_2230437463 is already served by a live broker on th
 
 A claim whose pids are gone — or whose pids have since been recycled by other
 processes — is stale, so an ordinary restart after a crash or reboot is never
-refused. One exception keeps a crash from unguarding a running broker: if the
+refused. Two exceptions keep a crash from unguarding a running broker: if the
 supervising CLI was killed before it could record its broker's pid, the broker's
 own `connection.json` in the claimed state directory still names a live process,
-and that reads as held. To run a second node on this machine alongside the live one, enroll a
+and that reads as held; and until a start has recorded which child it spawned,
+anything still holding that generation's `.hold` file keeps the node guarded,
+because a process that has since `exec`d into another binary is no longer
+anything the claim could identify. To run a second node on this machine alongside the live one, enroll a
 distinct node (`agent-relay cloud enroll --name <other-node>`) and start from
 that enrollment; `node up --force` takes the node over instead, evicting the
 live broker's delivery socket.
 
-A node id is guarded whenever the broker could actually register as it: with
-`RELAY_NODE_TOKEN` set, or with a node token the broker has already cached for
-that id. A bare `RELAY_NODE_ID` with no credential anywhere cannot register, so
-it is neither claimed nor guarded.
+An explicit `RELAY_NODE_ID` is the identity the broker sends in `node.register`,
+so it is guarded on that basis alone — the CLI does not try to predict which of
+the broker's credential routes will resolve. A node token in the environment, one
+the broker has already cached, and one it mints for itself from workspace
+credentials all end in the same registration, and only `--local-only`, which
+registers nothing, is exempt. A start that turns out to have had no credential at
+all is refused for a node somebody else is serving, which costs one `--force`.
 
 Because the claims are machine-global, they also give `node down` a way to point
 at a live broker it cannot see: run from the wrong directory it still reports

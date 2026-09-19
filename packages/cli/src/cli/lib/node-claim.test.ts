@@ -16,7 +16,6 @@ import {
   describeNodeClaimHolder,
   enrolledNodeIdForClaim,
   findLiveStateDirBroker,
-  hasCachedNodeToken,
   inspectNodeClaim,
   listHeldNodeClaims,
   listNodeClaims,
@@ -37,9 +36,8 @@ const tmpRoots: string[] = [];
 
 /**
  * A scratch `AGENT_RELAY_HOME` so no test reads the developer's real claims.
- * `HOME`/`XDG_DATA_HOME` are pinned too: the cached-node-token probe resolves
- * the broker's `dirs::data_local_dir()` from those, and must not find (or miss)
- * a token because of the machine the suite happens to run on.
+ * `HOME`/`XDG_DATA_HOME` are pinned too, so nothing this module resolves from
+ * the ambient home depends on the machine the suite happens to run on.
  */
 function createHome(): NodeJS.ProcessEnv {
   const home = fs.mkdtempSync(path.join(os.tmpdir(), 'node-claim-home-'));
@@ -55,16 +53,6 @@ function createStateDir(): string {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'node-claim-state-'));
   tmpRoots.push(dir);
   return dir;
-}
-
-/** Cache a node token where the broker's `resolve_cached_node_token` reads it. */
-function writeCachedNodeToken(env: NodeJS.ProcessEnv, nodeId: string): void {
-  const file = path.join(env.XDG_DATA_HOME!, 'agent-relay', 'node-tokens', `${nodeId}.json`);
-  fs.mkdirSync(path.dirname(file), { recursive: true });
-  fs.writeFileSync(
-    file,
-    JSON.stringify({ node_id: nodeId, workspace_id: 'ws_test', token: 'nt_live_cached' })
-  );
 }
 
 /** The connection file the Rust broker writes into its state dir on startup. */
@@ -1070,7 +1058,9 @@ describe('claim hold descriptor', () => {
     // spawns inherits this one too. A harness outliving its broker must not
     // guard a node id no broker is serving — but ruling it out is a positive
     // determination (it is running a different executable than the broker this
-    // claim recorded), never a guess about its filename.
+    // claim recorded), never a guess about its filename. It also needs the
+    // claim to know which process the start spawned: a broker that lived long
+    // enough to spawn a harness has long since been recorded.
     const env = createHome();
     const claim = await acquireNodeClaim({
       nodeId: 'node_1',
@@ -1081,12 +1071,67 @@ describe('claim hold descriptor', () => {
       env,
       execCommand: realExec,
     });
-    const child = await spawnHoldingChild(claim, env, { brokerLikeArgv: false });
+    const fenced = recordSpawnedBrokerChild(claim, await deadPid(), env);
+    const child = await spawnHoldingChild(fenced, env, { brokerLikeArgv: false });
 
     try {
       const status = await inspectNodeClaim('node_1', { env, execCommand: realExec });
 
       expect(status.state).toBe('stale');
+    } finally {
+      await child.kill();
+    }
+  });
+
+  it('holds a node whose supervisor died before it could record the child it spawned', async () => {
+    // The publication window: `recordSpawnedBrokerChild` runs in the same turn
+    // `spawn()` returns, but "no await" is not atomicity — a SIGKILL can land
+    // between the fork and that write. The launcher has already exec'd the real
+    // broker by then, so the process maps a binary the claim never recorded and
+    // its argv no longer mentions the launcher either. With no recorded child
+    // pid to fall back on, classifying it ruled the one live holder of the
+    // node's fence OUT, the node id read free, and the next start won
+    // generation 2 over a broker that was about to register.
+    const env = createHome();
+    const brokerBinary = createCustomBrokerBinary('relay-node-svc');
+    const ready = path.join(createStateDir(), 'exec-ready');
+    const launcher = createBrokerLauncher(
+      `exec ${brokerBinary} -e 'require("fs").writeFileSync(process.argv[1], "ok"); setTimeout(() => {}, 60000)' ${ready}`
+    );
+    const claim = await acquireNodeClaim({
+      nodeId: 'node_1',
+      pid: await deadPid(),
+      stateDir: createStateDir(),
+      brokerBinary: launcher,
+      status: 'reserved',
+      env,
+      execCommand: realExec,
+    });
+    // The supervisor is killed here — `recordSpawnedBrokerChild` never runs.
+    const child = await spawnHoldingLauncher(claim, env, launcher);
+    await waitForFile(ready);
+
+    try {
+      const onDisk = JSON.parse(
+        fs.readFileSync(nodeClaimPath('node_1', env, claim.generation ?? 1), 'utf-8')
+      ) as NodeClaim;
+      expect(onDisk.broker_child_pid).toBeUndefined();
+      expect(fs.existsSync(path.join(claim.state_dir, 'connection.json'))).toBe(false);
+      const status = await inspectNodeClaim('node_1', { env, execCommand: realExec });
+
+      expect(status.state).toBe('held');
+      expect(status.state === 'held' && status.reason).toContain(String(child.pid));
+      await expect(
+        acquireNodeClaim({
+          nodeId: 'node_1',
+          pid: process.pid,
+          stateDir: '/checkout-b',
+          env,
+          execCommand: realExec,
+        })
+      ).rejects.toBeInstanceOf(NodeClaimConflictError);
+      // The original fence is still in place for the broker that holds it.
+      expect(fs.existsSync(nodeClaimHoldPath('node_1', env, claim.generation ?? 1))).toBe(true);
     } finally {
       await child.kill();
     }
@@ -1664,31 +1709,36 @@ describe('enrolledNodeIdForClaim', () => {
     expect(enrolledNodeIdForClaim(env)).toBe('node_1');
   });
 
-  it('guards a node id the broker can authenticate from its cached token', () => {
-    const env = { ...createHome(), RELAY_NODE_ID: 'node_1' };
-    writeCachedNodeToken(env, 'node_1');
+  it('guards an explicit node id the broker can mint its own token for', () => {
+    // No RELAY_NODE_TOKEN and nothing in the broker's token cache — but
+    // `init.rs` hands the node-control client a workspace-key minter, and
+    // `node_control.rs` mints and connects with no cached token, requesting
+    // this very node id. Gating the claim on a token being visible to the CLI
+    // let exactly this start walk past a live claim and take the node's
+    // delivery socket.
+    const env = { ...createHome(), RELAY_NODE_ID: 'node_1', RELAY_WORKSPACE_KEY: 'rw_live_key' };
 
-    // `resolve_cached_node_token` falls back to this cache when RELAY_NODE_TOKEN
-    // is unset, so such a start can still register as (and evict) node_1.
-    expect(hasCachedNodeToken('node_1', env)).toBe(true);
     expect(enrolledNodeIdForClaim(env)).toBe('node_1');
   });
 
-  it('ignores a token cached for a different node id', () => {
-    const env = { ...createHome(), RELAY_NODE_ID: 'node_1' };
-    writeCachedNodeToken(env, 'node_2');
-
-    expect(enrolledNodeIdForClaim(env)).toBeUndefined();
-  });
-
-  it('claims nothing for a node id with no credential anywhere', () => {
+  it('guards an explicit node id even when the CLI can see no credential at all', () => {
+    // The identity is what evicts, and the CLI cannot know which of the
+    // broker's credential routes will resolve until after it has started. A
+    // start that genuinely cannot authenticate registers nothing, so the cost
+    // of claiming here is one recoverable `--force`.
     const env = { ...createHome(), RELAY_NODE_ID: 'node_1' };
 
-    expect(enrolledNodeIdForClaim(env)).toBeUndefined();
+    expect(enrolledNodeIdForClaim(env)).toBe('node_1');
   });
 
   it('claims nothing without a node id to register as', () => {
     const env = { ...createHome(), RELAY_NODE_TOKEN: 'nt_live_env' };
+
+    expect(enrolledNodeIdForClaim(env)).toBeUndefined();
+  });
+
+  it('claims nothing for a blank node id', () => {
+    const env = { ...createHome(), RELAY_NODE_ID: '   ' };
 
     expect(enrolledNodeIdForClaim(env)).toBeUndefined();
   });

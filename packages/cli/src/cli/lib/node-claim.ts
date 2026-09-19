@@ -257,87 +257,32 @@ export class NodeClaimContentionError extends Error {
 }
 
 /**
- * Directory the broker caches minted node tokens in, mirroring the Rust
- * `dirs::data_local_dir()/agent-relay/node-tokens`. Both candidates are
- * returned because `dirs` uses `$XDG_DATA_HOME` on Linux and
- * `~/Library/Application Support` on macOS; probing both keeps this check
- * erring toward "a token exists", which errs toward guarding the node id.
- */
-function nodeTokenCacheDirs(env: NodeJS.ProcessEnv): string[] {
-  const home = env.HOME ?? os.homedir();
-  const candidates = [
-    env.XDG_DATA_HOME ? path.join(env.XDG_DATA_HOME, 'agent-relay', 'node-tokens') : undefined,
-    process.platform === 'darwin'
-      ? path.join(home, 'Library', 'Application Support', 'agent-relay', 'node-tokens')
-      : path.join(home, '.local', 'share', 'agent-relay', 'node-tokens'),
-  ];
-  return candidates.filter((value): value is string => value !== undefined);
-}
-
-/**
- * Filename stem the broker caches a node token under. Mirrors
- * `sanitize_node_id_for_filename` in `crates/broker/src/node_control.rs`: keep
- * ASCII alphanumerics, `-` and `_`; everything else becomes `_`.
- */
-function sanitizeNodeIdForTokenFilename(nodeId: string): string {
-  const sanitized = nodeId.replace(/[^A-Za-z0-9_-]/g, '_');
-  return sanitized.length > 0 ? sanitized : 'node';
-}
-
-/** Every path the broker might read a cached token for `nodeId` from. */
-export function nodeTokenCachePaths(nodeId: string, env: NodeJS.ProcessEnv = process.env): string[] {
-  const file = `${sanitizeNodeIdForTokenFilename(nodeId)}.json`;
-  return nodeTokenCacheDirs(env).map((dir) => path.join(dir, file));
-}
-
-/**
- * Whether the broker can authenticate as `nodeId` from its on-disk token cache
- * alone.
- *
- * `resolve_cached_node_token` (crates/broker/src/runtime/init.rs) falls back to
- * this cache when `RELAY_NODE_TOKEN` is unset, so a start carrying only
- * `RELAY_NODE_ID` can still register — and evict — that node. The workspace and
- * engine scoping the broker also applies is deliberately NOT re-checked here:
- * the CLI cannot know which workspace the broker will resolve until after it
- * has started, and guarding a node id the broker turns out not to register is
- * recoverable (`--force`, a different enrollment) while missing one is the
- * silent delivery outage this module exists to prevent.
- */
-export function hasCachedNodeToken(nodeId: string, env: NodeJS.ProcessEnv = process.env): boolean {
-  for (const file of nodeTokenCachePaths(nodeId, env)) {
-    try {
-      const parsed = JSON.parse(fs.readFileSync(file, 'utf-8')) as unknown;
-      if (typeof parsed !== 'object' || parsed === null) continue;
-      const record = parsed as Record<string, unknown>;
-      if (record.node_id !== nodeId) continue;
-      if (typeof record.token === 'string' && record.token.trim().length > 0) return true;
-    } catch {
-      // No cache here (or an unreadable one); try the next candidate.
-    }
-  }
-  return false;
-}
-
-/**
  * The enrolled node id a start will register as, or `undefined` when it will
  * mint its own identity.
  *
- * `RELAY_NODE_ID` is sent verbatim in `node.register`, so it is the identity
- * that can evict another broker — but only if the broker can authenticate as
- * it. The broker resolves that credential from `RELAY_NODE_TOKEN` first and
- * then from its per-node token cache, so both sources have to be considered
- * here: guarding only the env token left a start with a cached token free to
- * walk past a live claim and take the node's delivery socket.
+ * `RELAY_NODE_ID` is sent verbatim in `node.register` (`resolve_broker_node_id`,
+ * crates/broker/src/runtime/init.rs), so an explicit node id IS the identity
+ * that can evict another broker, and it is claimed on that basis alone.
+ *
+ * This deliberately does not try to predict whether the broker will manage to
+ * authenticate as it. An earlier version claimed the id only when a token was
+ * in the environment or already in the broker's on-disk cache, and that was a
+ * hole: `init.rs` also wires a workspace-key token minter, and
+ * `node_control.rs` mints and connects with no cached token at all, so a start
+ * carrying nothing but `RELAY_NODE_ID` and workspace credentials walked past a
+ * live claim and took the node's delivery socket — the incident this module
+ * exists to close. Enumerating the credential routes instead of the identity
+ * just moves the hole to the next route that gets added.
+ *
+ * The cost is a start that could not have registered at all (no token, no
+ * workspace key, nothing to mint with) being refused when some other broker
+ * genuinely holds the id. That is recoverable in one flag (`--force`) and the
+ * start it refuses was headed for local-only operation anyway, while the
+ * opposite error is a silent delivery outage. `--local-only` starts register
+ * nothing and are excluded by the callers, not here.
  */
 export function enrolledNodeIdForClaim(env: NodeJS.ProcessEnv): string | undefined {
-  const nodeId = env.RELAY_NODE_ID?.trim();
-  if (!nodeId) {
-    return undefined;
-  }
-  if (env.RELAY_NODE_TOKEN?.trim()) {
-    return nodeId;
-  }
-  return hasCachedNodeToken(nodeId, env) ? nodeId : undefined;
+  return env.RELAY_NODE_ID?.trim() || undefined;
 }
 
 /* ------------------------------------------------------------------ *
@@ -912,10 +857,13 @@ async function classifyHolderProcess(
  * connection file's pid is. An inherited descriptor is not close-on-exec, so
  * anything the broker itself spawns inherits it too; a harness left running by
  * a SIGKILLed broker would otherwise pin the node id with no broker anywhere
- * near it. Only a holder positively identified as running some OTHER executable
- * is dropped: a holder the claim cannot classify at all stays a holder, because
- * nothing but a Relay start ever passes this descriptor on and a spurious
- * refusal is recoverable while a wrong "free" verdict is not.
+ * near it. Dropping one is a positive determination and needs BOTH halves of
+ * the evidence: the holder identified as some other executable, AND a claim
+ * that durably recorded the child it spawned. Without the second half the first
+ * cannot be trusted — a process that has `exec`d is not the file the claim
+ * recorded — so every holder stays a holder, as one does when the claim cannot
+ * classify it at all. Nothing but a Relay start ever passes this descriptor on,
+ * and a spurious refusal is recoverable where a wrong "free" verdict is not.
  *
  * `selfPids` are dropped from the holder set: a start re-reading its own
  * reservation still has that generation's descriptor open, and its own
@@ -951,15 +899,43 @@ async function inspectClaimHold(
     .filter((value) => /^\d+$/.test(value))
     .filter((value) => !selfPids?.has(Number(value)));
   const hint = brokerExecutableHint(claim);
+  // Ruling a holder OUT requires the claim to know which process this start
+  // actually spawned. Everything recorded before a spawn describes a FILE, and
+  // `execve` swaps the file while keeping the descriptor: a launcher that has
+  // already exec'd the real broker maps a binary the claim never recorded and
+  // no longer carries the launcher anywhere in its argv. `broker_child_pid` is
+  // what covers that — but it is published after the spawn, so a supervisor
+  // SIGKILLed in between leaves a claim that can never identify its own broker,
+  // and the one live process holding the node's fence classifies as
+  // `unrelated`. The node id then reads free while that broker is on its way to
+  // registering, which is the eviction this module exists to prevent.
+  //
+  // So until child identity is durably established, a holder of this descriptor
+  // keeps the node guarded whatever it is running. Nothing but a Relay start
+  // ever passes this descriptor on, and the bias is the module's usual one: a
+  // refusal costs one `--force`, a wrong "free" verdict costs deliveries.
+  const childEstablished = claim.broker_child_pid !== undefined;
   const brokers: string[] = [];
+  const unprovable: string[] = [];
   for (const pid of pids) {
-    if ((await classifyHolderProcess(Number(pid), hint, deps)) !== 'unrelated') brokers.push(pid);
+    const verdict = await classifyHolderProcess(Number(pid), hint, deps);
+    if (verdict !== 'unrelated') brokers.push(pid);
+    else if (!childEstablished) unprovable.push(pid);
   }
   if (brokers.length > 0) {
     return {
       held: true,
       reason: `pid ${brokers.join(', ')} still holds ${file} open`,
       pids: brokers.map(Number),
+    };
+  }
+  if (unprovable.length > 0) {
+    return {
+      held: true,
+      reason:
+        `pid ${unprovable.join(', ')} still holds ${file} open, and the start that created it ` +
+        'never recorded the broker child it spawned, so that process cannot be ruled out',
+      pids: unprovable.map(Number),
     };
   }
   if (pids.length > 0) {

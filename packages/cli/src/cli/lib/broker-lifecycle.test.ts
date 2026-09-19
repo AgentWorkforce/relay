@@ -1399,14 +1399,21 @@ describe('runUpCommand node claims', () => {
     expect(hasClaim(home, 'node_claimed')).toBe(true);
   });
 
-  it('claims nothing for a node id with no credential anywhere', async () => {
+  it('claims a node id the broker would mint its own token for', async () => {
     const { deps, home } = createUpHarness();
     delete deps.env.RELAY_NODE_TOKEN;
     deps.env.RELAY_NODE_ID = 'node_claimed';
+    // No token in the environment and none cached — but `init.rs` wires a
+    // workspace-key minter and `node_control.rs` mints and connects without a
+    // cached token, requesting this node id. A start that reserves nothing here
+    // registers as node_claimed anyway, which is the eviction the claim exists
+    // to prevent, so the identity is what decides, not a credential the CLI can
+    // happen to see.
+    deps.env.RELAY_WORKSPACE_KEY = 'rw_live_key';
 
     await runUpCommand({}, deps);
 
-    expect(hasClaim(home, 'node_claimed')).toBe(false);
+    expect(hasClaim(home, 'node_claimed')).toBe(true);
   });
 
   it('claims nothing in local-only mode', async () => {

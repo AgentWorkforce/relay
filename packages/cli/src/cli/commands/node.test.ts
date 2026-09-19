@@ -708,20 +708,28 @@ describe('registerNodeCommands', () => {
     expect(brokerMocks.runUpCommand).not.toHaveBeenCalled();
   });
 
-  it('does not guard a node id with no credential anywhere', async () => {
+  it('guards a node id the broker would mint its own token for', async () => {
     const home = createClaimHome();
     writeNodeClaim(home, { pid: process.pid });
-    const { program, error } = createNodeHarness({
-      // A pinned-but-unresolvable enrollment with no cached token leaves the id
-      // unauthenticated, so this broker cannot register as that node at all.
-      env: { ...claimEnv(home), RELAY_NODE_ID: 'node_abc' },
+    // The reachable bypass: no RELAY_NODE_TOKEN, nothing in the token cache,
+    // no resolvable enrollment — just an explicit node id and workspace
+    // credentials. `init.rs` wires a workspace-key minter and
+    // `node_control.rs` mints and connects without a cached token, requesting
+    // this node id, so this start registers as node_abc and evicts the live
+    // broker's delivery socket. Gating the claim on a credential the CLI can
+    // see let it straight through.
+    const { program, error, exit } = createNodeHarness({
+      env: { ...claimEnv(home), RELAY_NODE_ID: 'node_abc', RELAY_WORKSPACE_KEY: 'rw_live_key' },
       resolveEnrollment: vi.fn(() => undefined) as unknown as NodeCommandDependencies['resolveEnrollment'],
     });
 
-    await program.parseAsync(['node', 'up'], { from: 'user' });
+    await expect(program.parseAsync(['node', 'up'], { from: 'user' })).rejects.toBeInstanceOf(ExitSignal);
 
-    expect(error).not.toHaveBeenCalled();
-    expect(brokerMocks.runUpCommand).toHaveBeenCalledTimes(1);
+    expect(exit).toHaveBeenCalledWith(1);
+    expect(error.mock.calls.flat().join('\n')).toContain(
+      'node node_abc is already served by a live broker on this machine'
+    );
+    expect(brokerMocks.runUpCommand).not.toHaveBeenCalled();
   });
 
   it('skips the claim guard entirely for --local-only startup', async () => {
