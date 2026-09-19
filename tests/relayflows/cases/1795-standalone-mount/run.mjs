@@ -51,7 +51,8 @@ if (arm !== 'base' && arm !== 'head') {
   throw new Error(`RELAY_PR_PROOF_ARM must be base or head, received ${JSON.stringify(arm)}.`);
 }
 
-const expectedSha = arm === 'base' ? process.env.RELAY_PR_PROOF_BASE_SHA : process.env.RELAY_PR_PROOF_HEAD_SHA;
+const expectedSha =
+  arm === 'base' ? process.env.RELAY_PR_PROOF_BASE_SHA : process.env.RELAY_PR_PROOF_HEAD_SHA;
 if (!expectedSha) throw new Error(`Missing expected ${arm} SHA.`);
 const actualSha = execFileSync('git', ['-C', targetDir, 'rev-parse', 'HEAD'], { encoding: 'utf8' }).trim();
 if (actualSha !== expectedSha) {
@@ -86,7 +87,9 @@ async function main() {
     const real = invoke(binary, [group.name, ...group.real], sandbox, home);
     if (PAYLOAD_MISSING.test(real.combined)) {
       broken = true;
-      details.push(`${group.name}: help renders but the implementation is absent — ${firstLine(real.combined)}`);
+      details.push(
+        `${group.name}: help renders but the implementation is absent — ${firstLine(real.combined)}`
+      );
       continue;
     }
     details.push(`${group.name}: mounted, and \`${group.real.join(' ')}\` reached the product`);
