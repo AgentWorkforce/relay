@@ -1,6 +1,6 @@
 {
   "name": "@agent-relay/cli-surface",
-  "version": "12.2.6",
+  "version": "12.3.0",
   "engines": {
     "node": ">=22.0.0"
   },
