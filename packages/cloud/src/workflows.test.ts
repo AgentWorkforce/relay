@@ -1024,12 +1024,95 @@ describe('workflow schedules', () => {
     );
   });
 
-  it('rejects invalid one-time schedule timestamps with a clear error', async () => {
+  it('rejects invalid one-time schedule timestamps before preparing or uploading a snapshot', async () => {
     const workflowPath = await writeScheduleWorkflow();
 
     await expect(scheduleWorkflow(workflowPath, { at: 'next tuesday' })).rejects.toThrow(
       'Invalid date for --at: next tuesday'
     );
+
+    expect(ensureAuthenticatedMock).not.toHaveBeenCalled();
+    expect(authorizedApiFetchMock).not.toHaveBeenCalled();
+    expect(s3SendMock).not.toHaveBeenCalled();
+  });
+
+  it('rejects duplicate declared path names before preparing or uploading a snapshot', async () => {
+    await mkdir(path.join(tmpRoot, 'app'));
+    const workflowPath = path.join(tmpRoot, 'workflow.yaml');
+    await writeFile(
+      workflowPath,
+      [
+        'version: "1.0"',
+        'name: paths',
+        'paths:',
+        '  - name: app',
+        '    path: app',
+        '  - name: app',
+        '    path: app',
+        'swarm:',
+        '  pattern: dag',
+        'agents: []',
+        'workflows: []',
+      ].join('\n')
+    );
+    mockScheduleRequests(() => new Response(null, { status: 500 }));
+
+    await expect(scheduleWorkflow(workflowPath, { cron: '0 * * * *' })).rejects.toThrow(
+      'Invalid or duplicate workflow path name: app'
+    );
+
+    expect(authorizedApiFetchMock).not.toHaveBeenCalled();
+    expect(s3SendMock).not.toHaveBeenCalled();
+  });
+
+  it('snapshots code for an inline workflow without pointing fires at a nonexistent workflow file', async () => {
+    const scheduleBodies: Record<string, unknown>[] = [];
+    mockScheduleRequests((body) => {
+      scheduleBodies.push(body);
+      return new Response(JSON.stringify({ schedule: scheduleRecord() }), {
+        status: 201,
+        headers: { 'Content-Type': 'application/json' },
+      });
+    });
+
+    await scheduleWorkflow(INLINE_WORKFLOW, { cron: '0 * * * *', name: 'Inline eval' });
+
+    const workflowRequest = scheduleBodies[0]?.workflowRequest as Record<string, unknown>;
+    expect(workflowRequest).toMatchObject({
+      workflow: INLINE_WORKFLOW,
+      s3CodeKey: 'code.tar.gz',
+      codeSourceRunId: '11111111-1111-4111-8111-111111111111',
+    });
+    expect(workflowRequest).not.toHaveProperty('workflowPath');
+  });
+
+  it('omits the workflow path hint for an inline workflow with declared paths', async () => {
+    await mkdir(path.join(tmpRoot, 'app'));
+    const inlineWithPaths = [
+      'version: "1.0"',
+      'name: inline-paths',
+      'paths:',
+      '  - name: app',
+      '    path: app',
+      'swarm:',
+      '  pattern: dag',
+      'agents: []',
+      'workflows: []',
+    ].join('\n');
+    const scheduleBodies: Record<string, unknown>[] = [];
+    mockScheduleRequests((body) => {
+      scheduleBodies.push(body);
+      return new Response(JSON.stringify({ schedule: scheduleRecord() }), {
+        status: 201,
+        headers: { 'Content-Type': 'application/json' },
+      });
+    });
+
+    await scheduleWorkflow(inlineWithPaths, { cron: '0 * * * *', name: 'Inline paths' });
+
+    const workflowRequest = scheduleBodies[0]?.workflowRequest as Record<string, unknown>;
+    expect(workflowRequest).toMatchObject({ paths: [{ name: 'app', s3CodeKey: 'code-app.tar.gz' }] });
+    expect(workflowRequest).not.toHaveProperty('workflowPath');
   });
 
   it('lists workflow schedules', async () => {

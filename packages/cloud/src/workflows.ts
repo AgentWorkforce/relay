@@ -30,6 +30,12 @@ type ResolvedWorkflowInput = {
   workflow: string;
   fileType: WorkflowFileType;
   sourceFileType?: WorkflowFileType;
+  /**
+   * True when `workflow` was read from the file named by the argument, false
+   * for inline workflow content. Only a file-backed workflow has a path inside
+   * a synced code archive.
+   */
+  fromFile: boolean;
 };
 
 type S3Credentials = {
@@ -232,7 +238,7 @@ export async function resolveWorkflowInput(
     if (!fileType) {
       throw new Error(`Could not infer workflow type from ${workflowArg}. Use --file-type.`);
     }
-    return { workflow, fileType };
+    return { workflow, fileType, fromFile: true };
   } catch (error) {
     const err = error as NodeJS.ErrnoException;
     if (err.code === 'EISDIR') {
@@ -250,6 +256,7 @@ export async function resolveWorkflowInput(
   return {
     workflow: workflowArg,
     fileType: explicitFileType ?? 'yaml',
+    fromFile: false,
   };
 }
 
@@ -470,6 +477,18 @@ export async function scheduleWorkflow(
     throw new Error('Provide exactly one of --cron or --at.');
   }
 
+  // Everything that can reject the schedule locally is checked before the
+  // snapshot is prepared and uploaded, so a typo never allocates a prepared
+  // run scope or uploads an archive that no schedule will reference.
+  let scheduledAt: string | undefined;
+  if (hasAt) {
+    const date = new Date(String(options.at));
+    if (Number.isNaN(date.getTime())) {
+      throw new Error(`Invalid date for --at: ${options.at}`);
+    }
+    scheduledAt = date.toISOString();
+  }
+
   const apiUrl = options.apiUrl ?? defaultApiUrl();
   const api = await workflowApiClient(apiUrl);
   const input = await resolveWorkflowInput(workflowArg, options.fileType);
@@ -479,6 +498,15 @@ export async function scheduleWorkflow(
   } else if (input.fileType === 'yaml') {
     console.error('Validating workflow...');
     validateYamlWorkflow(input.workflow, options.relayflowVersion);
+  }
+
+  const declaredPaths = parseWorkflowPaths(input.workflow, input.fileType);
+  const seenPathNames = new Set<string>();
+  for (const pathDef of declaredPaths) {
+    if (!PATH_NAME_RE.test(pathDef.name) || seenPathNames.has(pathDef.name)) {
+      throw new Error(`Invalid or duplicate workflow path name: ${pathDef.name}`);
+    }
+    seenPathNames.add(pathDef.name);
   }
 
   const requestBody: Record<string, unknown> = {
@@ -495,6 +523,14 @@ export async function scheduleWorkflow(
         : {}),
     },
   };
+  if (options.description?.trim()) {
+    requestBody.description = options.description.trim();
+  }
+  if (hasCron) {
+    requestBody.cron_expression = options.cron?.trim();
+  } else {
+    requestBody.scheduled_at = scheduledAt;
+  }
 
   // Schedules are snapshots, not future clones: upload the same archive a
   // synced `cloud run` would upload, then let Cloud copy it into each fire's
@@ -540,17 +576,11 @@ export async function scheduleWorkflow(
   };
   const scheduledWorkflowRequest = requestBody.workflowRequest as Record<string, unknown>;
   scheduledWorkflowRequest.codeSourceRunId = prepared.runId;
-  const declaredPaths = parseWorkflowPaths(input.workflow, input.fileType);
   if (declaredPaths.length > 0) {
-    const seenNames = new Set<string>();
     const pathSubmissions: PathSubmission[] = [];
     const resolvedPathRoots: string[] = [];
     console.error(`Creating ${declaredPaths.length} scheduled path tarball(s)...`);
     for (const pathDef of declaredPaths) {
-      if (!PATH_NAME_RE.test(pathDef.name) || seenNames.has(pathDef.name)) {
-        throw new Error(`Invalid or duplicate workflow path name: ${pathDef.name}`);
-      }
-      seenNames.add(pathDef.name);
       const absolutePath = path.resolve(process.cwd(), pathDef.path);
       resolvedPathRoots.push(absolutePath);
       const s3CodeKey = `code-${pathDef.name}.tar.gz`;
@@ -567,33 +597,25 @@ export async function scheduleWorkflow(
       });
     }
     scheduledWorkflowRequest.paths = pathSubmissions;
-    for (const root of resolvedPathRoots) {
-      const workflowPath = relativizeWorkflowPathFromRoot(workflowArg, root);
-      if (workflowPath) {
-        scheduledWorkflowRequest.workflowPath = workflowPath;
-        break;
+    // Inline workflow content has no file inside the snapshot; a path hint
+    // would point every fire at a file that does not exist.
+    if (input.fromFile) {
+      for (const root of resolvedPathRoots) {
+        const workflowPath = relativizeWorkflowPathFromRoot(workflowArg, root);
+        if (workflowPath) {
+          scheduledWorkflowRequest.workflowPath = workflowPath;
+          break;
+        }
       }
     }
   } else {
     const tarball = await createTarball(process.cwd());
     await uploadCodeObject(prepared.s3CodeKey, tarball);
     scheduledWorkflowRequest.s3CodeKey = prepared.s3CodeKey;
-    const workflowPath = relativizeWorkflowPath(workflowArg);
+    const workflowPath = input.fromFile ? relativizeWorkflowPath(workflowArg) : null;
     if (workflowPath) {
       scheduledWorkflowRequest.workflowPath = workflowPath;
     }
-  }
-  if (options.description?.trim()) {
-    requestBody.description = options.description.trim();
-  }
-  if (hasCron) {
-    requestBody.cron_expression = options.cron?.trim();
-  } else {
-    const scheduledAt = new Date(String(options.at));
-    if (Number.isNaN(scheduledAt.getTime())) {
-      throw new Error(`Invalid date for --at: ${options.at}`);
-    }
-    requestBody.scheduled_at = scheduledAt.toISOString();
   }
 
   const response = await api.fetch('/api/v1/workflows/schedules', {
