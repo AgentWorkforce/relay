@@ -1,0 +1,20 @@
+{
+  "version": 1,
+  "id": "1801-node-up-enrollment-guard",
+  "kind": "bugfix",
+  "title": "Refuse node up when a live local broker already claims the enrolled node id",
+  "runner": {
+    "command": ["node", "tests/relayflows/cases/1801-node-up-enrollment-guard/run.mjs"]
+  },
+  "timeoutSeconds": 900,
+  "expected": {
+    "base": {
+      "outcome": "bug",
+      "signature": "second_node_up_proceeds_past_live_claim"
+    },
+    "head": {
+      "outcome": "fixed",
+      "signature": "second_node_up_refused_while_claim_held"
+    }
+  }
+}
