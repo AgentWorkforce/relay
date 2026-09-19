@@ -177,8 +177,18 @@ released only after that process is observed to exit.
 Ownership _is_ the exclusive creation of the next generation file, so concurrent
 starts cannot both win and no start ever deletes a record another one might have
 replaced: whoever creates `…000002.json` first owns the node, and the others
-re-read and refuse. A crashed start leaves a generation whose pids are dead,
-which is stale rather than blocking. `node up` refuses to adopt a node id that a
+re-read and refuse. Releasing a claim retires its generation number instead of
+freeing it, so a number is never handed out twice and a start that was suspended
+across a full release-and-restart cycle cannot wake up and win a node id that
+now belongs to somebody else. A crashed start leaves a generation whose pids are
+dead, which is stale rather than blocking.
+
+Each generation also has a `…000002.hold` file that the supervising CLI opens
+before it spawns a broker and the broker child inherits. Whether anything still
+holds it open is answered by the kernel, not by a file either process has to
+survive long enough to write — so a supervisor killed anywhere between the spawn
+and the broker's first write still leaves a node id that reads as held, instead
+of one that looks free right up until the orphan registers. `node up` refuses to adopt a node id that a
 live claim names, printing the holding broker's pid and state directory:
 
 ```text

@@ -36,11 +36,13 @@ import { describeError } from './describe-error.js';
 import {
   acquireNodeClaim,
   adoptNodeClaim,
+  closeNodeClaimHold,
   describeNodeClaimHolder,
   enrolledNodeIdForClaim,
   findLiveStateDirBroker,
   listHeldNodeClaims,
   normalizeClaimStateDir,
+  openNodeClaimHold,
   releaseNodeClaim,
   releaseNodeClaimsForBroker,
   type NodeClaim,
@@ -555,11 +557,18 @@ export async function startBrokerWithPortFallback(
    * function returns -- a signal arriving during the status check would
    * otherwise find no handle to shut down and leak the broker child.
    */
-  onCandidateReady?: (candidate: CoreRelay) => void
+  onCandidateReady?: (candidate: CoreRelay) => void,
+  /**
+   * Descriptors every spawn attempt must hand the broker child. `node up`
+   * passes its node claim's hold descriptor, which the child inherits across
+   * `fork` — so the claim reads as held from the instant a broker exists,
+   * rather than from the moment one of them manages to write something down.
+   */
+  inheritFds: number[] = []
 ): Promise<{ relay: CoreRelay; apiPort: number }> {
   if (basePort === 0) {
     vlog(deps, verbose, 'Asking the OS to assign the broker API port...');
-    const candidate = await deps.createRelay(paths.projectRoot, 0, brokerName, verbose);
+    const candidate = await deps.createRelay(paths.projectRoot, 0, brokerName, verbose, inheritFds);
     onCandidateReady?.(candidate);
     try {
       await getBrokerStatusWithRetry(candidate, deps, verbose);
@@ -591,7 +600,7 @@ export async function startBrokerWithPortFallback(
   vlog(deps, verbose, `API port resolved: ${apiPort}`);
 
   vlog(deps, verbose, 'Creating broker client (spawns broker process, waits for handshake)...');
-  const candidate = await deps.createRelay(paths.projectRoot, apiPort, brokerName, verbose);
+  const candidate = await deps.createRelay(paths.projectRoot, apiPort, brokerName, verbose, inheritFds);
   onCandidateReady?.(candidate);
   vlog(deps, verbose, 'Broker client created. Checking broker status...');
 
@@ -2004,6 +2013,21 @@ export async function runUpCommand(options: UpOptions, deps: CoreDependencies): 
   /** Machine-global claim on this broker's enrolled node id, once registered. */
   let nodeClaim: NodeClaim | undefined;
   /**
+   * Descriptor on the claim's hold file, opened before the broker is spawned
+   * and inherited by it.
+   *
+   * This is the ownership fence that does not depend on either process living
+   * long enough to write anything down. A supervisor SIGKILLed between the
+   * spawn and the broker's first write used to leave a reservation whose pids
+   * were all dead and a state dir with no `connection.json`: a competing start
+   * read that as stale, began a second broker, and the orphaned child then
+   * registered against the same node id with nobody left to adopt or stop it.
+   * The child inherits this descriptor across `fork`, so from the instant it
+   * exists the kernel answers for it, and it stops answering the instant it
+   * dies.
+   */
+  let nodeClaimHoldFd: number | undefined;
+  /**
    * Every broker pid this start spawned, remembered independently of `relay`.
    *
    * The startup failure paths null `relay` out (to avoid a double `shutdown()`)
@@ -2031,6 +2055,10 @@ export async function runUpCommand(options: UpOptions, deps: CoreDependencies): 
           if (nodeClaim && (await releaseNodeClaimAfterExit(nodeClaim, deps, spawnedBrokerPids))) {
             nodeClaim = undefined;
           }
+          // Dropped last: while this descriptor is open, this start is still
+          // one of the live processes the claim's hold answers for.
+          closeNodeClaimHold(nodeClaimHoldFd);
+          nodeClaimHoldFd = undefined;
         })();
       } else {
         shutdownPromise = (async () => {
@@ -2044,6 +2072,8 @@ export async function runUpCommand(options: UpOptions, deps: CoreDependencies): 
           if (nodeClaim && (await releaseNodeClaimAfterExit(nodeClaim, deps, spawnedBrokerPids))) {
             nodeClaim = undefined;
           }
+          closeNodeClaimHold(nodeClaimHoldFd);
+          nodeClaimHoldFd = undefined;
         })();
       }
     }
@@ -2124,6 +2154,17 @@ export async function runUpCommand(options: UpOptions, deps: CoreDependencies): 
     // with the engine on its own initialization path. A start that loses here
     // has spawned nothing, so it cannot have moved the node's delivery socket.
     nodeClaim = await reserveEnrolledNode(paths, options, deps, localOnly);
+    if (nodeClaim) {
+      // Opened BEFORE the spawn: a fence established afterwards would leave
+      // exactly the window it exists to close.
+      nodeClaimHoldFd = openNodeClaimHold(nodeClaim, deps.env);
+      if (nodeClaimHoldFd === undefined) {
+        deps.warn(
+          `Could not open the ownership hold for node ${nodeClaim.node_id}; this start is still claimed, but a crash ` +
+            'before the broker publishes its connection file would not be detected by another start.'
+        );
+      }
+    }
 
     const started = await startBrokerWithPortFallback(
       paths,
@@ -2144,7 +2185,8 @@ export async function runUpCommand(options: UpOptions, deps: CoreDependencies): 
         if (typeof candidate.brokerPid === 'number' && candidate.brokerPid > 0) {
           spawnedBrokerPids.add(candidate.brokerPid);
         }
-      }
+      },
+      nodeClaimHoldFd === undefined ? [] : [nodeClaimHoldFd]
     ).catch((err: unknown) => {
       // On failure, `startBrokerWithPortFallback` has already shut down any
       // candidate it created before rethrowing. Clear the early handle too

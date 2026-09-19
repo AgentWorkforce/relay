@@ -29,6 +29,15 @@ export interface RuntimeSpawnOptions {
   cwd?: string;
   /** Environment variables for the broker process. */
   env?: NodeJS.ProcessEnv;
+  /**
+   * Descriptors open in this process to hand the broker child, appended after
+   * stdio. They are inherited across `fork`, so whatever they hold — an
+   * ownership lease, a lock — is held by the child from the instant it exists,
+   * with no window in which the parent's death releases it early. The broker
+   * itself never reads them; the point is that the kernel keeps them open for
+   * exactly as long as the child lives.
+   */
+  inheritFds?: number[];
   /** Forward broker stderr to this callback. */
   onStderr?: (line: string) => void;
   /** Forward human-readable startup step markers to this callback (e.g. for `--verbose`). */

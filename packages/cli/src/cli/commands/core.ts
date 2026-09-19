@@ -99,7 +99,13 @@ export interface CoreDependencies {
     cwd: string,
     apiPort?: number,
     brokerName?: string,
-    verbose?: boolean
+    verbose?: boolean,
+    /**
+     * Descriptors the broker child must inherit. `node up` passes its node
+     * claim's hold descriptor here so the claim is fenced by a live process
+     * from the instant the child exists — see `openNodeClaimHold`.
+     */
+    inheritFds?: number[]
   ) => CoreRelay | Promise<CoreRelay>;
   spawnProcess: (command: string, args: string[], options?: Record<string, unknown>) => SpawnedProcess;
   execCommand: (command: string) => Promise<{ stdout: string; stderr: string }>;
@@ -158,7 +164,8 @@ async function createDefaultRelay(
   cwd: string,
   apiPort = 0,
   brokerName?: string,
-  verbose = false
+  verbose = false,
+  inheritFds: number[] = []
 ): Promise<CoreRelay> {
   // This is the `up` command's broker factory. `up` is persistent even when
   // port 0 delegates atomic port selection to the OS; the connection file is
@@ -176,6 +183,7 @@ async function createDefaultRelay(
     binaryArgs,
     brokerName,
     preferConnect: apiPort > 0,
+    ...(inheritFds.length ? { inheritFds } : {}),
     ...(verbose
       ? {
           onStep: (message: string) => console.error(`[agent-relay][verbose] ${message}`),

@@ -17,6 +17,7 @@ import {
   waitForNodeDelivery,
 } from './broker-lifecycle.js';
 import { brokerIdentityPath, readBrokerIdentities } from './broker-process-identity.js';
+import { nodeClaimHoldPath } from './node-claim.js';
 import type { CoreDependencies, CoreRelay } from '../commands/core.js';
 
 type StructuredLogEntry = { level?: string; component?: string; msg?: string };
@@ -403,6 +404,9 @@ function createUpHarness() {
     execCommand: vi.fn(async (command: string) => {
       if (command === 'LC_ALL=C TZ=UTC ps -p 999999 -o lstart=')
         return { stdout: 'Thu Sep 10 18:00:00 2026\n', stderr: '' };
+      // Nothing in this fixture spawns a real child, so no claim hold file has
+      // a live holder. `lsof -t` exits 1 with no output in exactly that case.
+      if (command.startsWith('LC_ALL=C lsof -t --')) return { stdout: 'rc=1', stderr: '' };
       if (command === 'lsof -nP -a -p 999999 -d txt -FfDi')
         return { stdout: 'p999999\nftxt\nD0x100\ni1234\n', stderr: '' };
       if (command === 'lsof -nP -a -p 999999 -FfnDi') {
@@ -852,7 +856,7 @@ describe('runUpCommand workspace precedence', () => {
 
     await runUpCommand({ brokerName: paddedName }, deps);
 
-    expect(createRelay).toHaveBeenCalledWith(projectRoot, 3889, trimmedName, undefined);
+    expect(createRelay).toHaveBeenCalledWith(projectRoot, 3889, trimmedName, undefined, []);
     expect(vi.mocked(createRelay).mock.calls[0]?.[2]).toBe(trimmedName);
     expect(readBrokerIdentities({ projectRoot, dataDir, teamDir: projectRoot }, deps)).toHaveLength(1);
     expect(brokerIdentityPath({ projectRoot, dataDir, teamDir: projectRoot }, deps, trimmedName)).toContain(
@@ -878,7 +882,14 @@ describe('runUpCommand node claims', () => {
   const claimFile = (home: string, nodeId: string, generation = 1): string =>
     pathReal.join(home, 'node-claims', `${nodeId}.${String(generation).padStart(6, '0')}.json`);
 
-  /** The claim that currently owns a node id: its highest generation on disk. */
+  /**
+   * The claim that currently owns a node id: its highest generation on disk
+   * that is still a claim.
+   *
+   * A released generation leaves a tombstone behind so its number can never be
+   * reissued (see `releaseNodeClaim`). It is a file, but it is not a claim, and
+   * it must read here exactly as it reads in the module: node id free.
+   */
   function currentClaim(home: string, nodeId: string): Record<string, unknown> | null {
     let filenames: string[];
     try {
@@ -889,13 +900,16 @@ describe('runUpCommand node claims', () => {
     const newest = filenames
       .filter((name) => name.startsWith(`${nodeId}.`) && name.endsWith('.json'))
       .sort()
-      .pop();
-    return newest
-      ? (JSON.parse(fsReal.readFileSync(pathReal.join(home, 'node-claims', newest), 'utf8')) as Record<
-          string,
-          unknown
-        >)
-      : null;
+      .reverse()
+      .map(
+        (name) =>
+          JSON.parse(fsReal.readFileSync(pathReal.join(home, 'node-claims', name), 'utf8')) as Record<
+            string,
+            unknown
+          >
+      )
+      .find((record) => record.released !== true);
+    return newest ?? null;
   }
 
   const hasClaim = (home: string, nodeId: string): boolean => currentClaim(home, nodeId) !== null;
@@ -1144,6 +1158,30 @@ describe('runUpCommand node claims', () => {
 
     expect(currentClaim(home, 'node_claimed')).toMatchObject({ node_id: 'node_claimed' });
     expect(warn.mock.calls.flat().join('\n')).toContain("keeping this machine's claim");
+  });
+
+  it('hands the broker child a descriptor on the claim it must not outlive', async () => {
+    // The fence that does not depend on either process living long enough to
+    // write anything: the child inherits this descriptor across `fork`, so the
+    // claim reads as held from the instant a broker exists — including while it
+    // is still paused before binding a port or writing `connection.json`.
+    const { deps, home, createRelay } = createUpHarness();
+    deps.env.RELAY_NODE_ID = 'node_claimed';
+
+    await runUpCommand({}, deps);
+
+    const inheritFds = createRelay.mock.calls.at(-1)?.[4] as number[] | undefined;
+    expect(inheritFds).toHaveLength(1);
+    const generation = Number(currentClaim(home, 'node_claimed')?.generation ?? 1);
+    const holdPath = nodeClaimHoldPath('node_claimed', deps.env, generation);
+    expect(fsReal.existsSync(holdPath)).toBe(true);
+    // The descriptor really is open on THIS claim's hold file, not some other
+    // inode that happens to share the name.
+    expect(fsReal.fstatSync(inheritFds![0]).ino).toBe(fsReal.statSync(holdPath).ino);
+
+    await sigtermHandler(deps)().catch(() => undefined);
+    // Released with the claim, so a spent hold file never blocks a later start.
+    expect(fsReal.existsSync(holdPath)).toBe(false);
   });
 
   it('refuses over a reservation whose supervisor died with its broker still serving', async () => {

@@ -1,4 +1,4 @@
-import { spawn } from 'node:child_process';
+import { exec, spawn } from 'node:child_process';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
@@ -12,6 +12,7 @@ import { fleetNodeEnrollmentStorePath } from '@agent-relay/cloud';
 import {
   acquireNodeClaim,
   adoptNodeClaim,
+  closeNodeClaimHold,
   describeNodeClaimHolder,
   enrolledNodeIdForClaim,
   findLiveStateDirBroker,
@@ -19,9 +20,11 @@ import {
   inspectNodeClaim,
   listHeldNodeClaims,
   listNodeClaims,
+  nodeClaimHoldPath,
   nodeClaimPath,
   nodeClaimsDir,
   NodeClaimConflictError,
+  openNodeClaimHold,
   readNodeClaim,
   releaseNodeClaim,
   releaseNodeClaimsForBroker,
@@ -115,6 +118,50 @@ function writeClaim(
   fs.mkdirSync(path.dirname(file), { recursive: true });
   fs.writeFileSync(file, `${JSON.stringify(full, null, 2)}\n`);
   return full;
+}
+
+/**
+ * A real shell runner, for the checks that must reach the kernel rather than a
+ * stub: the hold-descriptor probe is only evidence if `lsof` really answers it.
+ */
+function realExec(command: string): Promise<{ stdout: string; stderr: string }> {
+  return new Promise((resolve, reject) => {
+    exec(command, (error, stdout, stderr) => {
+      if (error) reject(error);
+      else resolve({ stdout, stderr });
+    });
+  });
+}
+
+/**
+ * Stand in for a supervisor that opened its claim's hold descriptor, spawned a
+ * broker that inherited it, and was then SIGKILLed before the child published
+ * anything at all.
+ *
+ * The child is a plain sleeper: it never writes `connection.json`, never binds
+ * a port and never registers, which is exactly the orphan the old "dead
+ * supervisor, nothing on disk" reading declared stale.
+ */
+async function spawnHoldingChild(claim: NodeClaim, env: NodeJS.ProcessEnv, brokerLike = true) {
+  const fd = openNodeClaimHold(claim, env);
+  expect(fd).toBeDefined();
+  // The real broker is `agent-relay-broker --state-dir <dir>`, and holders are
+  // filtered the same way the connection file's pid is; carry the state dir in
+  // argv so this stand-in is recognisable the same way.
+  const argv = ['-e', 'setTimeout(() => {}, 60_000)', ...(brokerLike ? [claim.state_dir] : [])];
+  const child = spawn(process.execPath, argv, {
+    stdio: ['ignore', 'ignore', 'ignore', fd!],
+  });
+  await new Promise<void>((resolve) => child.once('spawn', () => resolve()));
+  // The supervisor is gone; only the child's inherited descriptor remains.
+  closeNodeClaimHold(fd);
+  return {
+    pid: child.pid!,
+    async kill(): Promise<void> {
+      child.kill('SIGKILL');
+      await new Promise<void>((resolve) => child.once('exit', () => resolve()));
+    },
+  };
 }
 
 /** A pid that is guaranteed dead: spawned, then observed to exit. */
@@ -525,6 +572,86 @@ describe('acquireNodeClaim exclusion', () => {
     expect(fs.existsSync(nodeClaimPath('node_1', env, 1))).toBe(false);
   });
 
+  it('refuses a node id a successor took while this start was suspended mid-acquire', async () => {
+    const env = createHome();
+    // The stale claim both this start and the takeover cycle below read.
+    writeClaim(env, { node_id: 'node_1', pid: await deadPid(), state_dir: '/gone' });
+    let interleaved = false;
+    let successor: NodeClaim | undefined;
+
+    // A start that read the generations and then lost the CPU. While it is
+    // suspended, a complete acquire/release/re-acquire cycle runs: the release
+    // is what used to make its generation number available again, so this start
+    // could wake up, re-create a number that had already been handed out, pass
+    // the higher-generation check and prune the successor's live claim from its
+    // own stale scan — two live brokers on one node id, one of them recorded.
+    const suspended = acquireNodeClaim({
+      nodeId: 'node_1',
+      pid: 111,
+      stateDir: '/checkout-a',
+      env,
+      killProcess: (pid: number) => {
+        if (pid !== 222) throw new Error(`no such process ${pid}`);
+      },
+      execCommand: async () => {
+        if (!interleaved) {
+          interleaved = true;
+          const intermediate = await acquireNodeClaim({
+            nodeId: 'node_1',
+            pid: 333,
+            stateDir: '/checkout-b',
+            env,
+            killProcess: (pid: number) => {
+              if (pid !== 333) throw new Error(`no such process ${pid}`);
+            },
+            execCommand: psDeps(),
+          });
+          // `node down` on the intermediate start: the node id genuinely frees.
+          await expect(releaseNodeClaim(intermediate, env)).resolves.toBe(true);
+          successor = await acquireNodeClaim({
+            nodeId: 'node_1',
+            pid: 222,
+            stateDir: '/checkout-c',
+            env,
+            killProcess: (pid: number) => {
+              if (pid !== 222) throw new Error(`no such process ${pid}`);
+            },
+            execCommand: psDeps(),
+          });
+        }
+        return { stdout: 'Thu Sep 10 18:00:00 2026', stderr: '' };
+      },
+    });
+
+    await expect(suspended).rejects.toBeInstanceOf(NodeClaimConflictError);
+    // The successor is still alive, still owns the node id, and still has its
+    // record: nothing the suspended start did reached another acquisition.
+    expect(readNodeClaim('node_1', env)).toMatchObject({ pid: 222, state_dir: '/checkout-c' });
+    expect(fs.existsSync(nodeClaimPath('node_1', env, successor!.generation ?? 1))).toBe(true);
+  });
+
+  it('never reissues a generation number once it has been released', async () => {
+    const env = createHome();
+    const generations: number[] = [];
+    for (let start = 0; start < 4; start += 1) {
+      const claim = await acquireNodeClaim({
+        nodeId: 'node_1',
+        pid: process.pid,
+        stateDir: '/repo/state',
+        env,
+        execCommand: psDeps(),
+      });
+      generations.push(claim.generation ?? 1);
+      await releaseNodeClaim(claim, env);
+      // Released reads as free straight away — the spent number is not a claim.
+      expect(readNodeClaim('node_1', env)).toBeNull();
+    }
+
+    expect(generations).toEqual([1, 2, 3, 4]);
+    // One spent file per node id at rest: each acquisition prunes the last.
+    expect(fs.readdirSync(nodeClaimsDir(env))).toHaveLength(1);
+  });
+
   it('lets exactly one of six separate OS processes take over a stale claim', async () => {
     const env = createHome();
     writeClaim(env, { node_id: 'node_1', pid: await deadPid(), state_dir: '/gone' });
@@ -598,6 +725,176 @@ try {
   await Promise.all(exits);
   return outputs.map((output) => output.split('\n').filter(Boolean)[1] ?? 'no-result');
 }
+
+describe('claim hold descriptor', () => {
+  it('holds a reservation whose supervisor died with the child paused before publication', async () => {
+    const env = createHome();
+    // Deliberately empty: the child has bound nothing and written nothing, so
+    // `connection.json` — the evidence that used to carry this case — does not
+    // exist yet. This is the spawn-to-publication window.
+    const stateDir = createStateDir();
+    const claim = writeClaim(env, {
+      node_id: 'node_1',
+      pid: await deadPid(),
+      state_dir: stateDir,
+      status: 'reserved',
+    });
+    const child = await spawnHoldingChild(claim, env);
+
+    try {
+      const status = await inspectNodeClaim('node_1', { env, execCommand: realExec });
+
+      expect(status.state).toBe('held');
+      expect(status.state === 'held' && status.reason).toContain(String(child.pid));
+      // The operator is pointed at the process that actually holds the node,
+      // not at the supervisor pid the record still names and that is dead.
+      expect(status.state === 'held' && status.claim.pid).toBe(child.pid);
+      expect(fs.existsSync(path.join(stateDir, 'connection.json'))).toBe(false);
+    } finally {
+      await child.kill();
+    }
+  });
+
+  it('refuses to start a second broker over a supervisor-less child', async () => {
+    const env = createHome();
+    const stateDir = createStateDir();
+    const claim = writeClaim(env, {
+      node_id: 'node_1',
+      pid: await deadPid(),
+      state_dir: stateDir,
+      status: 'reserved',
+    });
+    const child = await spawnHoldingChild(claim, env);
+
+    try {
+      await expect(
+        acquireNodeClaim({
+          nodeId: 'node_1',
+          pid: process.pid,
+          stateDir: '/checkout-b',
+          env,
+          execCommand: realExec,
+        })
+      ).rejects.toBeInstanceOf(NodeClaimConflictError);
+    } finally {
+      await child.kill();
+    }
+  });
+
+  it('names the holder through a claims path that needs shell quoting', async () => {
+    // `AGENT_RELAY_HOME` is operator input and reaches `lsof` as an argument.
+    // A mis-quoted path degrades to "could not be checked", which still reads
+    // as held — so the holder's pid, not the verdict, is what proves the
+    // command was well formed.
+    const base = fs.mkdtempSync(path.join(os.tmpdir(), 'node-claim-home-'));
+    tmpRoots.push(base);
+    const env: NodeJS.ProcessEnv = {
+      AGENT_RELAY_HOME: path.join(base, "re'lay home"),
+      HOME: base,
+      XDG_DATA_HOME: path.join(base, 'data'),
+    };
+    const claim = writeClaim(env, {
+      node_id: 'node_1',
+      pid: await deadPid(),
+      state_dir: createStateDir(),
+      status: 'reserved',
+    });
+    const child = await spawnHoldingChild(claim, env);
+
+    try {
+      const status = await inspectNodeClaim('node_1', { env, execCommand: realExec });
+
+      expect(status.state === 'held' && status.reason).toContain(String(child.pid));
+    } finally {
+      await child.kill();
+    }
+  });
+
+  it('does not let an unrelated process that inherited the descriptor pin the node', async () => {
+    // Inherited descriptors are not close-on-exec, so whatever the broker
+    // spawns inherits this one too. A harness outliving its broker must not
+    // guard a node id no broker is serving.
+    const env = createHome();
+    const claim = writeClaim(env, {
+      node_id: 'node_1',
+      pid: await deadPid(),
+      state_dir: createStateDir(),
+      status: 'reserved',
+    });
+    const child = await spawnHoldingChild(claim, env, false);
+
+    try {
+      const status = await inspectNodeClaim('node_1', { env, execCommand: realExec });
+
+      expect(status.state).toBe('stale');
+    } finally {
+      await child.kill();
+    }
+  });
+
+  it('prunes a superseded generation together with its hold file', async () => {
+    const env = createHome();
+    const first = await acquireNodeClaim({
+      nodeId: 'node_1',
+      pid: process.pid,
+      stateDir: '/repo/state',
+      env,
+      execCommand: psDeps(),
+    });
+    closeNodeClaimHold(openNodeClaimHold(first, env));
+
+    const second = await acquireNodeClaim({
+      nodeId: 'node_1',
+      pid: process.pid,
+      stateDir: '/other/state',
+      env,
+      force: true,
+      execCommand: psDeps(),
+    });
+
+    expect(second.generation).toBe(2);
+    expect(fs.existsSync(nodeClaimPath('node_1', env, 1))).toBe(false);
+    // Left behind, the spent hold file would keep answering for a generation
+    // that no longer owns anything.
+    expect(fs.existsSync(nodeClaimHoldPath('node_1', env, 1))).toBe(false);
+  });
+
+  it('frees the node id as soon as the orphaned child is gone', async () => {
+    const env = createHome();
+    const stateDir = createStateDir();
+    const claim = writeClaim(env, {
+      node_id: 'node_1',
+      pid: await deadPid(),
+      state_dir: stateDir,
+      status: 'reserved',
+    });
+    const child = await spawnHoldingChild(claim, env);
+    await child.kill();
+
+    // The kernel dropped the last reference; nothing is left to guard.
+    const status = await inspectNodeClaim('node_1', { env, execCommand: realExec });
+
+    expect(status.state).toBe('stale');
+  });
+
+  it('takes the node over cleanly and leaves no hold file behind', async () => {
+    const env = createHome();
+    const claim = await acquireNodeClaim({
+      nodeId: 'node_1',
+      pid: process.pid,
+      stateDir: '/repo/state',
+      env,
+      execCommand: psDeps(),
+    });
+    const hold = openNodeClaimHold(claim, env);
+    closeNodeClaimHold(hold);
+    expect(fs.existsSync(nodeClaimHoldPath('node_1', env, claim.generation ?? 1))).toBe(true);
+
+    await expect(releaseNodeClaim(claim, env)).resolves.toBe(true);
+
+    expect(fs.existsSync(nodeClaimHoldPath('node_1', env, claim.generation ?? 1))).toBe(false);
+  });
+});
 
 describe('releaseNodeClaim', () => {
   it('removes a claim it still owns', async () => {

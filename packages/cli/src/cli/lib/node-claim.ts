@@ -36,6 +36,12 @@ const BROKER_CONNECTION_FILENAME = 'connection.json';
  * delivery socket could already have moved. Once a verified broker process
  * exists the reservation is *adopted* (`status: 'active'`, `pid` = the broker's)
  * in place, so ownership is never dropped in between.
+ *
+ * Neither phase depends on a process surviving long enough to record anything:
+ * the reservation also opens a hold descriptor that the broker child inherits
+ * across `fork` ({@link nodeClaimHoldPath}), so a supervisor killed anywhere
+ * between the spawn and the broker's first write still leaves a claim the
+ * kernel answers for.
  */
 export interface NodeClaim {
   version: 1;
@@ -73,9 +79,13 @@ export interface NodeClaim {
   claimed_at: string;
   /**
    * Sequence number encoded in this claim's filename. Ownership IS the
-   * successful exclusive creation of `<node>.<generation>.json`: generations
-   * only ever increase, so taking a node id over never means deleting somebody
-   * else's file. See {@link acquireNodeClaim}.
+   * successful exclusive creation of `<node>.<generation>.json`.
+   *
+   * A number is issued at most once for the life of the stem: releasing leaves
+   * a tombstone rather than removing the file, so `max(generation)` never
+   * decreases and no suspended start can wake up and re-create a number that
+   * has since been handed to somebody else. See {@link acquireNodeClaim} and
+   * {@link NodeClaimTombstone}.
    */
   generation?: number;
   /**
@@ -83,6 +93,28 @@ export interface NodeClaim {
    * acquisition that created it, and this is how that is proven.
    */
   owner_token?: string;
+}
+
+/**
+ * What a released generation leaves behind in place of its claim.
+ *
+ * Deleting the record outright made generation numbers reusable: once the last
+ * file for a node id was gone the next start began again at generation 1, and a
+ * start that had been suspended since before the release could then re-create a
+ * number that had already been handed out — winning the node id from a live
+ * successor and pruning that successor's file from its own stale scan. The
+ * tombstone is what keeps `max(generation)` monotonic for the lifetime of the
+ * stem: {@link releaseNodeClaim} never removes the last file, so the number can
+ * never be issued twice. It is not a claim ({@link isNodeClaim} rejects it), so
+ * it reads as "node id free" and is pruned by the next acquisition, which has
+ * already created a strictly higher generation.
+ */
+interface NodeClaimTombstone {
+  version: 1;
+  released: true;
+  node_id: string;
+  generation: number;
+  released_at: string;
 }
 
 /** Whether a node id is free to serve, held by a live broker, or left behind. */
@@ -288,6 +320,38 @@ export function nodeClaimPath(nodeId: string, env: NodeJS.ProcessEnv = process.e
   return path.join(nodeClaimsDir(env), `${nodeClaimStem(nodeId)}.${suffix}.json`);
 }
 
+/**
+ * Sibling of a claim generation whose OPEN DESCRIPTORS are the ownership
+ * evidence, held by the kernel rather than written by a process.
+ *
+ * `<stem>.<generation>.hold` is created and opened by the supervising CLI
+ * BEFORE it spawns a broker, and the descriptor is inherited by the child
+ * across `fork`. From the instant a broker child exists — long before it binds
+ * its API, writes `connection.json` or queues `node.register` — some live
+ * process holds this file open, and the kernel drops the last reference the
+ * moment both of them die. That is what closes the window a supervisor
+ * SIGKILLed between the spawn and the broker's first write used to leave: there
+ * is no interval in which a competing start can see "dead supervisor, nothing
+ * published" and conclude the node id is free while the orphan is on its way to
+ * registering.
+ *
+ * Not matched by {@link CLAIM_FILENAME_PATTERN} (which requires `.json`), so it
+ * never counts as a generation of its own.
+ */
+export function nodeClaimHoldPath(
+  nodeId: string,
+  env: NodeJS.ProcessEnv = process.env,
+  generation = 1
+): string {
+  return `${nodeClaimPath(nodeId, env, generation).slice(0, -'.json'.length)}.hold`;
+}
+
+/** Single-quote a path for a shell command (`AGENT_RELAY_HOME` is operator input). */
+function shellQuote(value: string): string {
+  // Close the quoted run, emit an escaped quote, reopen: '  ->  '\''
+  return `'${value.split("'").join("'\\''")}'`;
+}
+
 /** Resolve a state dir to its canonical path so two spellings compare equal. */
 export function normalizeClaimStateDir(stateDir: string): string {
   try {
@@ -321,6 +385,10 @@ function hasValidOptionalClaimFields(record: Record<string, unknown>): boolean {
 function isNodeClaim(value: unknown): value is NodeClaim {
   if (typeof value !== 'object' || value === null) return false;
   const record = value as Record<string, unknown>;
+  // A tombstone occupies a generation number so it can never be reissued, but
+  // it is evidence of nothing. Rejecting it here is what makes it read as an
+  // unclaimed node id everywhere a claim is read.
+  if (record.released === true) return false;
   return (
     record.version === 1 &&
     typeof record.node_id === 'string' &&
@@ -334,13 +402,27 @@ function isNodeClaim(value: unknown): value is NodeClaim {
   );
 }
 
-function readClaimFile(file: string): NodeClaim | null {
+/** Exact bytes of a claim file, or `null` when it cannot be read at all. */
+function readClaimBytes(file: string): string | null {
   try {
-    const parsed = JSON.parse(fs.readFileSync(file, 'utf-8')) as unknown;
+    return fs.readFileSync(file, 'utf-8');
+  } catch {
+    return null;
+  }
+}
+
+function parseClaim(raw: string | null): NodeClaim | null {
+  if (raw === null) return null;
+  try {
+    const parsed = JSON.parse(raw) as unknown;
     return isNodeClaim(parsed) ? parsed : null;
   } catch {
     return null;
   }
+}
+
+function readClaimFile(file: string): NodeClaim | null {
+  return parseClaim(readClaimBytes(file));
 }
 
 interface ClaimGeneration {
@@ -348,6 +430,11 @@ interface ClaimGeneration {
   file: string;
   /** `null` for a file that is not a readable claim record. */
   claim: NodeClaim | null;
+  /**
+   * The bytes this scan saw. Re-read before the file is pruned, so a generation
+   * is only ever removed while it still holds exactly what was classified.
+   */
+  raw: string | null;
 }
 
 /**
@@ -371,7 +458,8 @@ function readClaimGenerations(nodeId: string, env: NodeJS.ProcessEnv): ClaimGene
     const match = CLAIM_FILENAME_PATTERN.exec(filename);
     if (!match || match[1] !== stem) continue;
     const file = path.join(dir, filename);
-    generations.push({ generation: Number.parseInt(match[2], 10), file, claim: readClaimFile(file) });
+    const raw = readClaimBytes(file);
+    generations.push({ generation: Number.parseInt(match[2], 10), file, raw, claim: parseClaim(raw) });
   }
   return generations.sort((left, right) => left.generation - right.generation);
 }
@@ -544,6 +632,122 @@ async function looksLikeBrokerProcess(
 }
 
 /**
+ * Whether any live process still holds this generation's hold file open.
+ *
+ * `lsof -t` answers from the kernel's open-file table, so this reports the
+ * broker child a SIGKILLed supervisor left behind from the instant that child
+ * exists — there is no publish step to wait for and nothing to go stale. The
+ * exit status is read from an explicit marker rather than from the runner's
+ * error shape: `lsof` exits 1 with no output when a file simply has no holders,
+ * and that has to be told apart from an `lsof` that could not run at all.
+ *
+ * An `lsof` that cannot be consulted reads as HELD, matching the rest of this
+ * module: `node up` already refuses to start without a usable `lsof` (it is how
+ * broker process identity is verified), and a spurious refusal is recoverable
+ * with `--force` or `node down` while a wrong "free" verdict is the silent
+ * delivery outage the claim exists to prevent.
+ *
+ * Holders are filtered through {@link looksLikeBrokerProcess}, exactly as the
+ * connection file's pid is. An inherited descriptor is not close-on-exec, so
+ * anything the broker itself spawns inherits it too; a harness left running by
+ * a SIGKILLed broker would otherwise pin the node id with no broker anywhere
+ * near it. A `ps` that cannot be read still counts as a broker.
+ */
+async function inspectClaimHold(
+  claim: NodeClaim,
+  env: NodeJS.ProcessEnv,
+  deps: NodeClaimDependencies
+): Promise<{ held: boolean; reason: string; pids: number[] }> {
+  const file = nodeClaimHoldPath(claim.node_id, env, claim.generation ?? 1);
+  if (!fs.existsSync(file)) {
+    return { held: false, reason: `no start holds ${file}`, pids: [] };
+  }
+  const execCommand = deps.execCommand;
+  if (!execCommand) {
+    return { held: true, reason: `open descriptors on ${file} could not be checked`, pids: [] };
+  }
+  let stdout: string;
+  try {
+    ({ stdout } = await execCommand(
+      `LC_ALL=C lsof -t -- ${shellQuote(file)} 2>/dev/null; printf 'rc=%d' "$?"`
+    ));
+  } catch {
+    return { held: true, reason: `open descriptors on ${file} could not be checked`, pids: [] };
+  }
+  const status = /rc=(\d+)/.exec(stdout);
+  const pids = stdout
+    .replace(/rc=\d+/, '')
+    .split(/\s+/)
+    .map((value) => value.trim())
+    .filter((value) => /^\d+$/.test(value));
+  const brokers: string[] = [];
+  for (const pid of pids) {
+    if (await looksLikeBrokerProcess(Number(pid), claim.state_dir, deps)) brokers.push(pid);
+  }
+  if (brokers.length > 0) {
+    return {
+      held: true,
+      reason: `pid ${brokers.join(', ')} still holds ${file} open`,
+      pids: brokers.map(Number),
+    };
+  }
+  if (pids.length > 0) {
+    return {
+      held: false,
+      reason: `only unrelated processes (pid ${pids.join(', ')}) hold ${file} open`,
+      pids: [],
+    };
+  }
+  // `lsof` exits 1 for "no holders"; anything else means it could not answer.
+  if (!status || (status[1] !== '0' && status[1] !== '1')) {
+    return { held: true, reason: `open descriptors on ${file} could not be checked`, pids: [] };
+  }
+  return { held: false, reason: `no process holds ${file} open`, pids: [] };
+}
+
+/**
+ * Create and open this generation's hold file, handing the supervising CLI the
+ * descriptor it passes to the broker child.
+ *
+ * Created exclusively (`wx`): only the acquisition that won the generation ever
+ * creates it, so a concurrent start can never replace the inode a live child is
+ * holding. Opened BEFORE the spawn, because a fence established after `fork`
+ * would leave exactly the gap it exists to close.
+ *
+ * @returns The descriptor to inherit into the broker, or `undefined` when the
+ * hold could not be established (the claim still works, without this fence).
+ */
+export function openNodeClaimHold(
+  claim: NodeClaim,
+  env: NodeJS.ProcessEnv = process.env
+): number | undefined {
+  const generation = claim.generation ?? 1;
+  const file = nodeClaimHoldPath(claim.node_id, env, generation);
+  try {
+    fs.mkdirSync(path.dirname(file), { recursive: true, mode: 0o700 });
+    const fd = fs.openSync(file, 'wx', 0o600);
+    // Contents are operator-facing only; the evidence is the open descriptor.
+    fs.writeSync(
+      fd,
+      `${JSON.stringify({ node_id: claim.node_id, generation, supervisor_pid: claim.pid, state_dir: claim.state_dir }, null, 2)}\n`
+    );
+    return fd;
+  } catch {
+    return undefined;
+  }
+}
+
+/** Drop this process's reference to a hold file. Other holders keep it alive. */
+export function closeNodeClaimHold(fd: number | undefined): void {
+  if (fd === undefined) return;
+  try {
+    fs.closeSync(fd);
+  } catch {
+    // Already closed, or never ours.
+  }
+}
+
+/**
  * A live broker serving `stateDir`, discovered from the connection file the
  * broker writes itself.
  *
@@ -619,8 +823,30 @@ async function classifyNodeClaim(
   }
   // Every recorded pid is gone, but a broker this claim started can have
   // outlived them: the supervisor may have been SIGKILLed between the spawn and
-  // the moment it could record the broker's pid. The broker's own connection
-  // file is the ownership record that survives that.
+  // the moment it could record the broker's pid.
+  //
+  // The hold descriptor is checked FIRST because it is the only evidence that
+  // exists for the whole life of that orphan. A broker child inherits it across
+  // `fork`, so it answers even while the child is still paused before binding
+  // its API — the window in which `connection.json` does not exist yet and the
+  // old "dead supervisor, nothing published" reading let a second broker start.
+  const hold = await inspectClaimHold(claim, env, deps);
+  if (hold.held) {
+    return {
+      state: 'held',
+      // Report the pid that is actually holding the node, not the supervisor
+      // the record still names — that one is what was just proven dead, and an
+      // operator told to stop it would be chasing a process that is gone.
+      claim: {
+        ...claim,
+        ...(hold.pids[0] !== undefined ? { pid: hold.pids[0] } : {}),
+        supervisor_pid: undefined,
+      },
+      reason: `${reasons.join('; ')}, but ${hold.reason}`,
+    };
+  }
+  // Then the broker's own connection file, which survives a supervisor that
+  // died after its child had published but before it could record the pid.
   const orphan = await findLiveStateDirBroker(claim.state_dir, deps);
   if (orphan) {
     return {
@@ -696,12 +922,37 @@ function createClaimGeneration(file: string, claim: NodeClaim): boolean {
   }
 }
 
+/** Replace a claim file in place, atomically, so no reader sees a partial write. */
+function writeClaimRecordAtomically(file: string, record: NodeClaim | NodeClaimTombstone): void {
+  const temporary = `${file}.${process.pid}.${crypto.randomUUID()}.tmp`;
+  fs.writeFileSync(temporary, `${JSON.stringify(record, null, 2)}\n`, { mode: 0o600 });
+  fs.renameSync(temporary, file);
+}
+
 function safeUnlinkClaim(file: string): void {
   try {
     fs.unlinkSync(file);
   } catch {
     // Already gone, or not ours to remove.
   }
+}
+
+/**
+ * Remove a generation this acquisition has superseded, and its hold file.
+ *
+ * Only removed while the file still holds the exact bytes the scan classified.
+ * Generation numbers are never reissued (see {@link NodeClaimTombstone}), so a
+ * path cannot come back as somebody else's claim — but the scan that chose
+ * these files happened before an `await`, and pruning by path alone is what
+ * deleted a live successor's record when a number COULD be reissued. Comparing
+ * the bytes makes the check local instead of resting on that invariant.
+ */
+function pruneSupersededGeneration(entry: ClaimGeneration, nodeId: string, env: NodeJS.ProcessEnv): void {
+  if (readClaimBytes(entry.file) !== entry.raw) {
+    return;
+  }
+  safeUnlinkClaim(entry.file);
+  safeUnlinkClaim(nodeClaimHoldPath(nodeId, env, entry.generation));
 }
 
 async function buildClaim(
@@ -735,10 +986,20 @@ async function buildClaim(
  * it.
  *
  * Ownership IS the exclusive creation of the next generation file. Generations
- * only increase and each one is created exactly once, so taking a node id over
- * never involves deleting a file another process might have replaced in the
- * meantime — the failure mode that makes "validate the holder, then remove its
- * record, then write ours" unsafe no matter how the validation is fenced.
+ * only increase and each one is created exactly once — for the whole life of
+ * the stem, not just while a claim is live: {@link releaseNodeClaim} leaves a
+ * tombstone in place of the record it drops, so the highest number on disk
+ * never falls back. Taking a node id over therefore never involves deleting a
+ * file another process might have replaced in the meantime — the failure mode
+ * that makes "validate the holder, then remove its record, then write ours"
+ * unsafe no matter how the validation is fenced.
+ *
+ * Without that, a start suspended between the scan and the create could wake up
+ * after a complete release-and-reacquire cycle, re-create a number that had
+ * been reissued to a live successor, pass the higher-generation check because
+ * its own file was the highest again, and then prune that successor's claim
+ * from its own stale scan. Both would stay alive with one of them recorded —
+ * exactly the double registration this module exists to prevent.
  *
  * Two starts that both observe the same stale claim therefore cannot both win:
  * one creates generation N+1, the other collides (`EEXIST`) and re-reads, now
@@ -747,7 +1008,9 @@ async function buildClaim(
  * own file and refuses. Exactly one — the highest generation — survives.
  *
  * Callers reserve with `status: 'reserved'` and their own pid BEFORE spawning a
- * broker, then hand ownership to the verified broker with {@link adoptNodeClaim}.
+ * broker, open the generation's hold descriptor with {@link openNodeClaimHold}
+ * so the child inherits it, and then hand ownership to the verified broker with
+ * {@link adoptNodeClaim}.
  *
  * @throws NodeClaimConflictError when a live local broker holds the node id and
  * `force` was not requested.
@@ -782,7 +1045,7 @@ export async function acquireNodeClaim(input: AcquireNodeClaimInput): Promise<No
       throw new NodeClaimConflictError(nodeId, winner.claim ?? claim);
     }
     for (const superseded of generations) {
-      safeUnlinkClaim(superseded.file);
+      pruneSupersededGeneration(superseded, nodeId, env);
     }
     return claim;
   }
@@ -845,41 +1108,60 @@ export async function adoptNodeClaim(input: {
   if (!startedAt) delete claim.process_started_at;
   // Atomic replace of OUR generation only: readers see the reservation or the
   // adopted record, never a partial write, and never another start's file.
-  const temporary = `${file}.${process.pid}.${crypto.randomUUID()}.tmp`;
-  fs.writeFileSync(temporary, `${JSON.stringify(claim, null, 2)}\n`, { mode: 0o600 });
-  fs.renameSync(temporary, file);
+  writeClaimRecordAtomically(file, claim);
   const after = readClaimGenerations(reservation.node_id, env);
   if (highestGenerationNumber(after) > generation) {
     // A takeover landed during the write. It owns the node id; give ours up
     // rather than leaving a second live-looking record behind.
     safeUnlinkClaim(file);
+    safeUnlinkClaim(nodeClaimHoldPath(reservation.node_id, env, generation));
     throw new NodeClaimConflictError(reservation.node_id, currentGeneration(after)?.claim ?? claim);
   }
   return claim;
 }
 
 /**
- * Drop a claim this start owns.
+ * Drop a claim this start owns, leaving its generation number spent.
  *
- * Only the acquisition that created a generation ever removes it, and the
- * generation path is unique to that acquisition, so no other process's claim
- * can be deleted here. The read and the unlink are adjacent syscalls with no
- * await in between.
+ * The record is REPLACED by a tombstone rather than removed. Removing it made
+ * the number reusable, and a suspended start could then re-create a generation
+ * that had since been handed to somebody else: it would pass the
+ * higher-generation check (its own file was the highest again) and prune the
+ * successor's live claim from its own stale scan, leaving two brokers alive on
+ * one node id with only one of them recorded. A tombstone keeps
+ * `max(generation)` from ever decreasing, so no number is issued twice; it
+ * parses as no claim at all, so the node id reads free immediately; and the
+ * next acquisition prunes it, so at most one spent file per node id is ever on
+ * disk.
+ *
+ * Only the acquisition that created a generation ever rewrites it, proven by
+ * `owner_token`, and the read and the write are adjacent syscalls with no await
+ * in between.
  */
 export async function releaseNodeClaim(
   claim: NodeClaim,
   env: NodeJS.ProcessEnv = process.env
 ): Promise<boolean> {
-  const file = nodeClaimPath(claim.node_id, env, claim.generation ?? 1);
+  const generation = claim.generation ?? 1;
+  const file = nodeClaimPath(claim.node_id, env, generation);
   if (!isSameAcquisition(readClaimFile(file), claim)) {
     return false;
   }
   try {
-    fs.unlinkSync(file);
-    return true;
+    writeClaimRecordAtomically(file, {
+      version: 1,
+      released: true,
+      node_id: claim.node_id,
+      generation,
+      released_at: new Date().toISOString(),
+    });
   } catch {
     return false;
   }
+  // The hold descriptor protected this generation only; both processes it
+  // fenced are gone by the time a release is allowed to run.
+  safeUnlinkClaim(nodeClaimHoldPath(claim.node_id, env, generation));
+  return true;
 }
 
 /**

@@ -395,7 +395,8 @@ export class HarnessDriverClient {
     const child = spawn(binaryPath, args, {
       cwd,
       env,
-      stdio: ['ignore', 'pipe', 'pipe'],
+      // Inherited descriptors land on fd 3 upward, after the three stdio slots.
+      stdio: ['ignore', 'pipe', 'pipe', ...(options?.inheritFds ?? [])],
     });
 
     if (child.stderr) {
