@@ -22,7 +22,6 @@ cd agent-tools
 ```
 
 **Verify installation:**
-
 ```bash
 # Check that browser tools are available
 which browser-start.js
@@ -30,12 +29,11 @@ which browser-nav.js
 which browser-screenshot.js
 ```
 
-All browser-\* commands referenced in this skill come from the agent-tools repository and must be properly installed and accessible in your system PATH.
+All browser-* commands referenced in this skill come from the agent-tools repository and must be properly installed and accessible in your system PATH.
 
 ## When to Use
 
 **Use this skill when:**
-
 - Testing web application UI flows
 - Verifying visual changes or layouts
 - Automating repetitive browser interactions
@@ -44,22 +42,21 @@ All browser-\* commands referenced in this skill come from the agent-tools repos
 - Need to interact with elements that require human-like selection
 
 **Don't use for:**
-
 - API testing (use direct HTTP calls)
 - Headless testing where visuals don't matter
 - Simple page content validation (use curl/wget)
 
 ## Quick Reference
 
-| Task            | Command                                          | Purpose                       |
-| --------------- | ------------------------------------------------ | ----------------------------- |
-| Start browser   | `browser-start.js`                               | Launch Chrome with debugging  |
-| Navigate        | `browser-nav.js http://localhost:5172/dashboard` | Go to specific URL            |
-| Take screenshot | `browser-screenshot.js`                          | Capture current viewport      |
-| Pick elements   | `browser-pick.js "Select the login button"`      | Interactive element selection |
-| Run JavaScript  | `browser-eval.js 'document.title'`               | Execute code in page context  |
-| Extract content | `browser-content.js`                             | Get readable page content     |
-| View cookies    | `browser-cookies.js`                             | List session cookies          |
+| Task | Command | Purpose |
+|------|---------|---------|
+| Start browser | `browser-start.js` | Launch Chrome with debugging |
+| Navigate | `browser-nav.js http://localhost:5172/dashboard` | Go to specific URL |
+| Take screenshot | `browser-screenshot.js` | Capture current viewport |
+| Pick elements | `browser-pick.js "Select the login button"` | Interactive element selection |
+| Run JavaScript | `browser-eval.js 'document.title'` | Execute code in page context |
+| Extract content | `browser-content.js` | Get readable page content |
+| View cookies | `browser-cookies.js` | List session cookies |
 
 ## Setup and Basic Workflow
 
@@ -204,14 +201,14 @@ browser-eval.js 'document.body.textContent.includes("Welcome to Dashboard")'
 
 ## Common Mistakes
 
-| Mistake                   | Problem                       | Solution                                      |
-| ------------------------- | ----------------------------- | --------------------------------------------- |
-| No sleep after navigation | Screenshots of loading page   | Add `sleep 2-5` after nav                     |
-| Hardcoded selectors       | Breaks when UI changes        | Use `browser-pick.js` for selection           |
-| Missing Chrome setup      | "Connection refused" errors   | Run `browser-start.js` first                  |
-| Wrong localhost port      | Navigation fails              | Verify application is running on correct port |
-| Screenshot timing         | Captures before content loads | Wait for page load or specific elements       |
-| Not preserving state      | Login lost between commands   | Use default profile, not `--fresh`            |
+| Mistake | Problem | Solution |
+|---------|---------|----------|
+| No sleep after navigation | Screenshots of loading page | Add `sleep 2-5` after nav |
+| Hardcoded selectors | Breaks when UI changes | Use `browser-pick.js` for selection |
+| Missing Chrome setup | "Connection refused" errors | Run `browser-start.js` first |
+| Wrong localhost port | Navigation fails | Verify application is running on correct port |
+| Screenshot timing | Captures before content loads | Wait for page load or specific elements |
+| Not preserving state | Login lost between commands | Use default profile, not `--fresh` |
 
 ## Error Handling
 
@@ -259,7 +256,6 @@ done
 ## Real-World Impact
 
 **Benefits:**
-
 - **Visual verification**: Screenshots provide immediate feedback on UI state
 - **Interactive debugging**: Element picker works with dynamic/complex selectors
 - **State preservation**: Maintains login sessions between commands
@@ -267,7 +263,6 @@ done
 - **Development workflow**: Quick verification of localhost changes
 
 **Results:**
-
 - Faster UI testing iteration (visual confirmation vs manual checking)
 - Reliable element selection (human picks, automation uses)
 - Test documentation with visual proof

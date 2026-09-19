@@ -70,7 +70,6 @@ relayfile status my-agent
 ```
 
 Healthy output:
-
 ```text
 workspace rw_xxxxxxxx (my-agent)   mode: poll   lag: 4s
 
@@ -114,18 +113,18 @@ Before writing, read the relevant `_PERMISSIONS.md` or discovery files for the t
 Use `@relayfile/sdk` against the workspace token:
 
 ```ts
-import { RelayFileClient } from '@relayfile/sdk';
+import { RelayFileClient } from "@relayfile/sdk";
 
-const token = process.env.RELAYFILE_TOKEN; // from ~/.relayfile/credentials.json
-const client = new RelayFileClient({ token, server: 'https://api.relayfile.dev' });
+const token = process.env.RELAYFILE_TOKEN;  // from ~/.relayfile/credentials.json
+const client = new RelayFileClient({ token, server: "https://api.relayfile.dev" });
 
 // Read
-const file = await client.getFile('rw_xxxxxxxx', '/notion/pages/xxx/content.md');
+const file = await client.getFile("rw_xxxxxxxx", "/notion/pages/xxx/content.md");
 
 // Write — triggers writeback automatically
-await client.putFile('rw_xxxxxxxx', '/notion/pages/xxx/content.md', {
-  content: '# New body\n\n…',
-  contentType: 'text/markdown',
+await client.putFile("rw_xxxxxxxx", "/notion/pages/xxx/content.md", {
+  content: "# New body\n\n…",
+  contentType: "text/markdown",
 });
 ```
 
@@ -172,12 +171,12 @@ The `<id>` pattern is resource-specific. A Linear issue ID is a UUID; a Slack me
 
 ## Path conventions per provider
 
-| Provider | Read paths                                                                                                          | Write paths                                                                                                                                        |
-| -------- | ------------------------------------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------- |
-| Notion   | `/notion/pages/<slug>--<id>/content.md`, `/notion/databases/<id>/pages/.../content.md`, `<slug>.json` (metadata)    | same paths overwrite the body / properties                                                                                                         |
-| Slack    | `/slack/channels/<id>/messages/` plus `.adapter.md` / `.schema.json` discovery                                      | create by writing a valid message JSON to `/slack/channels/<id>/messages/<non-canonical>.json`; edit/delete canonical message files when supported |
-| Linear   | `/linear/issues/<id>.json`, comments under issue resources, plus `.adapter.md` / `.schema.json` discovery           | create by writing a valid issue/comment JSON to a non-canonical filename; edit/delete canonical issue files when supported                         |
-| GitHub   | `/github/repos/<owner>/<repo>/pulls/<n>/metadata.json`, `files.json`, plus `.adapter.md` / `.schema.json` discovery | create a review by writing the review JSON to a non-canonical file under the reviews resource                                                      |
+| Provider | Read paths | Write paths |
+|---|---|---|
+| Notion | `/notion/pages/<slug>--<id>/content.md`, `/notion/databases/<id>/pages/.../content.md`, `<slug>.json` (metadata) | same paths overwrite the body / properties |
+| Slack | `/slack/channels/<id>/messages/` plus `.adapter.md` / `.schema.json` discovery | create by writing a valid message JSON to `/slack/channels/<id>/messages/<non-canonical>.json`; edit/delete canonical message files when supported |
+| Linear | `/linear/issues/<id>.json`, comments under issue resources, plus `.adapter.md` / `.schema.json` discovery | create by writing a valid issue/comment JSON to a non-canonical filename; edit/delete canonical issue files when supported |
+| GitHub | `/github/repos/<owner>/<repo>/pulls/<n>/metadata.json`, `files.json`, plus `.adapter.md` / `.schema.json` discovery | create a review by writing the review JSON to a non-canonical file under the reviews resource |
 
 `new.json` is not special in the file-native adapter contract. If a current `.adapter.md` and `.schema.json` are present, translate older examples using `/messages/new.json` or `/comments/new.json` to "write the create payload to any non-canonical filename in the resource directory." If the live mount only exposes `new.json`, treat that as an older deployment surface and follow the mounted template or wait for the workspace to refresh onto the new adapter version.
 
@@ -237,7 +236,7 @@ If it 500s twice in a row, check `aws logs tail /aws/lambda/clou-production-Agen
 
 ### G2 — OAuth callback timing trap
 
-The wizard prints the cloud-login URL, opens a localhost callback server, then waits. If you complete the login _after_ the wizard has timed out (or if you click the callback URL by hand later), the redirect-to-localhost won't load — that's expected. The login already completed; the wizard just isn't listening anymore. Re-run `relayfile setup` from scratch.
+The wizard prints the cloud-login URL, opens a localhost callback server, then waits. If you complete the login *after* the wizard has timed out (or if you click the callback URL by hand later), the redirect-to-localhost won't load — that's expected. The login already completed; the wizard just isn't listening anymore. Re-run `relayfile setup` from scratch.
 
 Same trap on the Nango Connect URL: it has a ~30 minute TTL. If the wizard exited and you click it later, you may need to mint a fresh one:
 
@@ -360,7 +359,7 @@ that non-zero cleanup exit is what stamps the run FAILED. The tell is in the
 sandbox's run-tick log:
 
 ```json
-{ "message": "relayfile.mount.cleanup", "flushExitCode": 124, "killAttempted": true, "killExitCode": 0 }
+{"message":"relayfile.mount.cleanup","flushExitCode":124,"killAttempted":true,"killExitCode":0}
 ```
 
 `flushExitCode: 124` is a **timeout** (124 = `timeout` killed the flush). The
@@ -446,22 +445,22 @@ The cloud-side workspace persists indefinitely — there's no public DELETE endp
 
 ## Quick reference
 
-| Command                                                                                             | Purpose                                                                         |
-| --------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------- |
-| `relayfile setup --provider <p> --workspace <name> --local-dir <path>`                              | First-time setup                                                                |
-| `relayfile status <workspace>`                                                                      | Health overview                                                                 |
-| `relayfile mount <workspace> <local-dir>`                                                           | Restart the daemon                                                              |
-| `relayfile stop <workspace>`                                                                        | Stop the daemon                                                                 |
-| `relayfile integration available [--search <q>] [--backend <nango\|composio>] [--json] [--refresh]` | Browse the live provider catalog                                                |
-| `relayfile integration search <q> [--backend <nango\|composio>] [--json] [--refresh]`               | Search dynamic Nango providers and Composio toolkits                            |
-| `relayfile integration list --workspace <name> --json`                                              | List connected providers                                                        |
-| `relayfile integration connect <provider> [--backend <nango\|composio>] --workspace <name>`         | Add another provider                                                            |
-| `relayfile integration set-metadata <provider> KEY=VALUE... --workspace <name> --yes`               | Replace flat provider metadata, such as Jira/Confluence `cloudId` and `baseUrl` |
-| `relayfile integration disconnect <provider> --workspace <name> --yes`                              | Remove a provider                                                               |
-| `relayfile tree <workspace> <path>`                                                                 | Live cloud-side directory listing                                               |
-| `relayfile read <workspace> <path>`                                                                 | Live cloud-side file read                                                       |
-| `relayfile writeback status <workspace> [--json]`                                                   | Pending / failed / dead-lettered counts                                         |
-| `relayfile writeback retry --opId <op> <workspace>`                                                 | Re-enqueue a dead-lettered op                                                   |
-| `relayfile pull --workspace <name>`                                                                 | Force a refresh from provider                                                   |
-| `relayfile ops list --workspace <name> --json`                                                      | Cloud-side operation log                                                        |
-| `relayfile workspace delete <name> --yes`                                                           | Remove from local registry                                                      |
+| Command | Purpose |
+|---|---|
+| `relayfile setup --provider <p> --workspace <name> --local-dir <path>` | First-time setup |
+| `relayfile status <workspace>` | Health overview |
+| `relayfile mount <workspace> <local-dir>` | Restart the daemon |
+| `relayfile stop <workspace>` | Stop the daemon |
+| `relayfile integration available [--search <q>] [--backend <nango\|composio>] [--json] [--refresh]` | Browse the live provider catalog |
+| `relayfile integration search <q> [--backend <nango\|composio>] [--json] [--refresh]` | Search dynamic Nango providers and Composio toolkits |
+| `relayfile integration list --workspace <name> --json` | List connected providers |
+| `relayfile integration connect <provider> [--backend <nango\|composio>] --workspace <name>` | Add another provider |
+| `relayfile integration set-metadata <provider> KEY=VALUE... --workspace <name> --yes` | Replace flat provider metadata, such as Jira/Confluence `cloudId` and `baseUrl` |
+| `relayfile integration disconnect <provider> --workspace <name> --yes` | Remove a provider |
+| `relayfile tree <workspace> <path>` | Live cloud-side directory listing |
+| `relayfile read <workspace> <path>` | Live cloud-side file read |
+| `relayfile writeback status <workspace> [--json]` | Pending / failed / dead-lettered counts |
+| `relayfile writeback retry --opId <op> <workspace>` | Re-enqueue a dead-lettered op |
+| `relayfile pull --workspace <name>` | Force a refresh from provider |
+| `relayfile ops list --workspace <name> --json` | Cloud-side operation log |
+| `relayfile workspace delete <name> --yes` | Remove from local registry |

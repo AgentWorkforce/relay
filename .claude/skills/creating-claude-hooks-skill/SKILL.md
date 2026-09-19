@@ -12,7 +12,6 @@ Use this skill when creating, improving, or publishing Claude Code hooks. Provid
 ## When to Use This Skill
 
 Activate this skill when:
-
 - User asks to create a new Claude Code hook
 - User wants to publish a hook as a PRPM package
 - User needs to understand hook format or events
@@ -23,38 +22,36 @@ Activate this skill when:
 
 ### Hook File Format
 
-| Aspect          | Requirement                                       |
-| --------------- | ------------------------------------------------- |
-| **Location**    | `.claude/hooks/<event-name>`                      |
-| **Format**      | Executable file (shell, TypeScript, Python, etc.) |
-| **Permissions** | Must be executable (`chmod +x`)                   |
-| **Shebang**     | Required (`#!/bin/bash` or `#!/usr/bin/env node`) |
-| **Input**       | JSON via stdin                                    |
-| **Output**      | Text via stdout (shown to user)                   |
-| **Exit Codes**  | `0` = success, `2` = block, other = error         |
+| Aspect | Requirement |
+|--------|-------------|
+| **Location** | `.claude/hooks/<event-name>` |
+| **Format** | Executable file (shell, TypeScript, Python, etc.) |
+| **Permissions** | Must be executable (`chmod +x`) |
+| **Shebang** | Required (`#!/bin/bash` or `#!/usr/bin/env node`) |
+| **Input** | JSON via stdin |
+| **Output** | Text via stdout (shown to user) |
+| **Exit Codes** | `0` = success, `2` = block, other = error |
 
 ### Available Events
 
-| Event                | When It Fires               | Common Use Cases                         |
-| -------------------- | --------------------------- | ---------------------------------------- |
-| `session-start`      | New session begins          | Environment setup, logging, checks       |
-| `user-prompt-submit` | Before user input processes | Validation, enhancement, filtering       |
-| `tool-call`          | Before tool execution       | Permission checks, logging, modification |
-| `assistant-response` | After assistant responds    | Formatting, logging, cleanup             |
+| Event | When It Fires | Common Use Cases |
+|-------|---------------|------------------|
+| `session-start` | New session begins | Environment setup, logging, checks |
+| `user-prompt-submit` | Before user input processes | Validation, enhancement, filtering |
+| `tool-call` | Before tool execution | Permission checks, logging, modification |
+| `assistant-response` | After assistant responds | Formatting, logging, cleanup |
 
 ## Hook Format Requirements
 
 ### File Location
 
 **Project hooks:**
-
 ```
 .claude/hooks/session-start
 .claude/hooks/user-prompt-submit
 ```
 
 **User-global hooks:**
-
 ```
 ~/.claude/hooks/session-start
 ~/.claude/hooks/tool-call
@@ -65,7 +62,6 @@ Activate this skill when:
 Every hook MUST:
 
 1. **Have a shebang line:**
-
 ```bash
 #!/bin/bash
 # or
@@ -75,13 +71,11 @@ Every hook MUST:
 ```
 
 2. **Be executable:**
-
 ```bash
 chmod +x .claude/hooks/session-start
 ```
 
 3. **Handle JSON input from stdin:**
-
 ```bash
 #!/bin/bash
 INPUT=$(cat)
@@ -89,7 +83,6 @@ FILE=$(echo "$INPUT" | jq -r '.input.file_path // empty')
 ```
 
 4. **Exit with appropriate code:**
-
 ```bash
 exit 0  # Success
 exit 2  # Block operation
@@ -125,11 +118,11 @@ Hooks receive JSON via stdin with event-specific data:
 
 ### Exit Codes
 
-| Code         | Meaning | Behavior                   |
-| ------------ | ------- | -------------------------- |
-| `0`          | Success | Continue normally          |
-| `2`          | Block   | Stop operation, show error |
-| `1` or other | Error   | Log error, continue        |
+| Code | Meaning | Behavior |
+|------|---------|----------|
+| `0` | Success | Continue normally |
+| `2` | Block | Stop operation, show error |
+| `1` or other | Error | Log error, continue |
 
 ## Schema Validation
 
@@ -138,7 +131,6 @@ Hooks should validate against the JSON schema:
 **Schema URL:** https://github.com/pr-pm/prpm/blob/main/packages/converters/schemas/claude-hook.schema.json
 
 **Required frontmatter fields:**
-
 - `name` - Hook identifier (lowercase, hyphens only)
 - `description` - What the hook does
 - `event` - Event type (optional, inferred from filename)
@@ -147,16 +139,16 @@ Hooks should validate against the JSON schema:
 
 ## Common Mistakes
 
-| Mistake                | Problem                   | Solution                             |
-| ---------------------- | ------------------------- | ------------------------------------ |
-| Not quoting variables  | Breaks on spaces          | Always use `"$VAR"`                  |
-| Missing shebang        | Won't execute             | Add `#!/bin/bash`                    |
-| Not executable         | Permission denied         | Run `chmod +x hook-file`             |
-| Logging to stdout      | Clutters transcript       | Use stderr: `echo "log" >&2`         |
-| Wrong exit code        | Doesn't block when needed | Use `exit 2` to block                |
-| No input validation    | Security risk             | Always validate JSON fields          |
-| Slow operations        | Blocks Claude             | Run in background or use PostToolUse |
-| Absolute paths missing | Can't find scripts        | Use `$CLAUDE_PLUGIN_ROOT`            |
+| Mistake | Problem | Solution |
+|---------|---------|----------|
+| Not quoting variables | Breaks on spaces | Always use `"$VAR"` |
+| Missing shebang | Won't execute | Add `#!/bin/bash` |
+| Not executable | Permission denied | Run `chmod +x hook-file` |
+| Logging to stdout | Clutters transcript | Use stderr: `echo "log" >&2` |
+| Wrong exit code | Doesn't block when needed | Use `exit 2` to block |
+| No input validation | Security risk | Always validate JSON fields |
+| Slow operations | Blocks Claude | Run in background or use PostToolUse |
+| Absolute paths missing | Can't find scripts | Use `$CLAUDE_PLUGIN_ROOT` |
 
 ## Basic Hook Examples
 
@@ -206,7 +198,6 @@ process.exit(0);
 ### 1. Keep Hooks Fast
 
 Target < 100ms for PreToolUse hooks:
-
 - Cache results where possible
 - Run heavy operations in background
 - Use specific matchers, not wildcards
@@ -231,7 +222,6 @@ fi
 ### 3. Use Shebangs
 
 Always start with shebang:
-
 ```bash
 #!/bin/bash
 #!/usr/bin/env node
@@ -390,7 +380,6 @@ fi
 ### User Confirmation
 
 Claude Code automatically:
-
 - Requires confirmation before installing hooks
 - Shows hook source code to user
 - Warns about hook execution
@@ -398,16 +387,15 @@ Claude Code automatically:
 
 ## Hooks vs Skills vs Commands
 
-| Feature      | Hooks                  | Skills                 | Commands              |
-| ------------ | ---------------------- | ---------------------- | --------------------- |
-| **Format**   | Executable code        | Markdown               | Markdown              |
-| **Trigger**  | Automatic (events)     | Automatic (context)    | Manual (`/command`)   |
-| **Language** | Any executable         | N/A                    | N/A                   |
-| **Use Case** | Automation, validation | Reference, patterns    | Quick tasks           |
-| **Security** | Requires confirmation  | No special permissions | Inherits from session |
+| Feature | Hooks | Skills | Commands |
+|---------|-------|--------|----------|
+| **Format** | Executable code | Markdown | Markdown |
+| **Trigger** | Automatic (events) | Automatic (context) | Manual (`/command`) |
+| **Language** | Any executable | N/A | N/A |
+| **Use Case** | Automation, validation | Reference, patterns | Quick tasks |
+| **Security** | Requires confirmation | No special permissions | Inherits from session |
 
 **Examples:**
-
 - **Hook:** Auto-format files on save
 - **Skill:** Reference guide for testing patterns
 - **Command:** `/review-pr` quick code review
