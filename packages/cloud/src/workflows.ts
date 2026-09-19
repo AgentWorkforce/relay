@@ -546,6 +546,8 @@ export async function scheduleWorkflow(
   const scheduledWorkflowRequest = requestBody.workflowRequest as Record<string, unknown>;
   scheduledWorkflowRequest.codeSourceRunId = prepared.runId;
   const uploadedObjectKeys: string[] = [];
+  let schedulePostSent = false;
+  let schedulePostResponse: Response | undefined;
   const uploadScheduledSnapshot = async (objectKey: string, tarball: Buffer) => {
     await uploadCodeObjectToCloudWorkflowStorage(api, prepared.runId, objectKey, tarball);
     uploadedObjectKeys.push(objectKey);
@@ -594,6 +596,7 @@ export async function scheduleWorkflow(
       }
     }
 
+    schedulePostSent = true;
     const response = await api.fetch('/api/v1/workflows/schedules', {
       method: 'POST',
       headers: {
@@ -602,6 +605,7 @@ export async function scheduleWorkflow(
       },
       body: JSON.stringify(requestBody),
     });
+    schedulePostResponse = response;
 
     const payload = await readJsonResponse(response);
     if (!response.ok) {
@@ -614,8 +618,14 @@ export async function scheduleWorkflow(
 
     return payload.schedule;
   } catch (error) {
-    const cleanupFailures = await cleanupFailedScheduledSnapshot(api, prepared.runId, uploadedObjectKeys);
-    rethrowScheduleFailure(error, cleanupFailures);
+    // Once the POST is in flight, the server may have created the schedule even
+    // if the client never receives a usable response. Its snapshot must remain
+    // intact unless the server definitively rejected the POST.
+    if (!schedulePostSent || (schedulePostResponse && !schedulePostResponse.ok)) {
+      const cleanupFailures = await cleanupFailedScheduledSnapshot(api, prepared.runId, uploadedObjectKeys);
+      rethrowScheduleFailure(error, cleanupFailures);
+    }
+    rethrowUncertainScheduleFailure(error);
   }
 }
 
@@ -994,6 +1004,15 @@ function rethrowScheduleFailure(error: unknown, cleanupFailures: readonly unknow
   throw new Error(`${String(error)} (scheduled snapshot cleanup failed: ${cleanupMessage})`, {
     cause: error,
   });
+}
+
+function rethrowUncertainScheduleFailure(error: unknown): never {
+  const note = 'The schedule may have been created; the scheduled snapshot was left in place.';
+  if (error instanceof Error) {
+    error.message = `${error.message} (${note})`;
+    throw error;
+  }
+  throw new Error(`${String(error)} (${note})`, { cause: error });
 }
 
 function createScopedS3Client(s3Credentials: S3Credentials): S3Client {

@@ -1,0 +1,53 @@
+{
+  "id": "traj_2p8emur2ijdj",
+  "version": 1,
+  "task": {
+    "title": "Fix cloud schedule cleanup behavior after uncertain POST outcomes"
+  },
+  "status": "completed",
+  "startedAt": "2026-09-19T06:49:42.236Z",
+  "completedAt": "2026-09-19T06:52:07.239Z",
+  "agents": [
+    {
+      "name": "default",
+      "role": "lead",
+      "joinedAt": "2026-09-19T06:51:47.384Z"
+    }
+  ],
+  "chapters": [
+    {
+      "id": "chap_8ctq3hk00mso",
+      "title": "Work",
+      "agentName": "default",
+      "startedAt": "2026-09-19T06:51:47.384Z",
+      "endedAt": "2026-09-19T06:52:07.239Z",
+      "events": [
+        {
+          "ts": 1789800707385,
+          "type": "decision",
+          "content": "Retain snapshots after uncertain schedule POST outcomes: Retain snapshots after uncertain schedule POST outcomes",
+          "raw": {
+            "question": "Retain snapshots after uncertain schedule POST outcomes",
+            "chosen": "Retain snapshots after uncertain schedule POST outcomes",
+            "alternatives": [],
+            "reasoning": "A transport failure or malformed successful response may follow server-side schedule creation, so cleanup would leave a live schedule pointing at empty storage."
+          },
+          "significance": "high"
+        }
+      ]
+    }
+  ],
+  "retrospective": {
+    "summary": "Scoped cloud schedule snapshot cleanup to failures before the schedules POST or definitive non-2xx responses, retaining snapshots after uncertain outcomes and covering upload, HTTP rejection, network rejection, and malformed-envelope paths.",
+    "approach": "Standard approach",
+    "confidence": 0.93
+  },
+  "commits": [],
+  "filesChanged": [],
+  "projectId": "AgentWorkforce/relay",
+  "tags": [],
+  "_trace": {
+    "startRef": "79574ba5df6c9b733a12fd196f0d6e45ec484232",
+    "endRef": "79574ba5df6c9b733a12fd196f0d6e45ec484232"
+  }
+}
