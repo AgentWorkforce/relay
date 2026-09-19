@@ -171,6 +171,30 @@ export class NodeClaimConflictError extends Error {
 }
 
 /**
+ * Thrown when the kernel-level ownership fence could not be established.
+ *
+ * The hold descriptor is what makes a claim survive its own supervisor, so a
+ * start that cannot open one cannot honour the guarantee it is claiming under.
+ * It refuses instead of spawning an unfenced broker.
+ */
+export class NodeClaimHoldError extends Error {
+  constructor(
+    public readonly nodeId: string,
+    public readonly holdPath: string,
+    cause?: unknown
+  ) {
+    super(
+      `could not establish the ownership fence for node ${nodeId} at ${holdPath}: ` +
+        `${cause instanceof Error ? cause.message : String(cause)}. ` +
+        'Startup was stopped rather than run a broker that another start could silently take the node from. ' +
+        'Ensure the claims directory is writable and has free space, then retry.',
+      { cause }
+    );
+    this.name = 'NodeClaimHoldError';
+  }
+}
+
+/**
  * Thrown when ownership could not be established because other starts kept
  * winning the exclusive create.
  *
@@ -652,11 +676,16 @@ async function looksLikeBrokerProcess(
  * anything the broker itself spawns inherits it too; a harness left running by
  * a SIGKILLed broker would otherwise pin the node id with no broker anywhere
  * near it. A `ps` that cannot be read still counts as a broker.
+ *
+ * `selfPids` are dropped from the holder set: a start re-reading its own
+ * reservation still has that generation's descriptor open, and its own
+ * descriptor is not evidence that somebody else owns the node id.
  */
 async function inspectClaimHold(
   claim: NodeClaim,
   env: NodeJS.ProcessEnv,
-  deps: NodeClaimDependencies
+  deps: NodeClaimDependencies,
+  selfPids?: ReadonlySet<number>
 ): Promise<{ held: boolean; reason: string; pids: number[] }> {
   const file = nodeClaimHoldPath(claim.node_id, env, claim.generation ?? 1);
   if (!fs.existsSync(file)) {
@@ -679,7 +708,8 @@ async function inspectClaimHold(
     .replace(/rc=\d+/, '')
     .split(/\s+/)
     .map((value) => value.trim())
-    .filter((value) => /^\d+$/.test(value));
+    .filter((value) => /^\d+$/.test(value))
+    .filter((value) => !selfPids?.has(Number(value)));
   const brokers: string[] = [];
   for (const pid of pids) {
     if (await looksLikeBrokerProcess(Number(pid), claim.state_dir, deps)) brokers.push(pid);
@@ -714,26 +744,38 @@ async function inspectClaimHold(
  * holding. Opened BEFORE the spawn, because a fence established after `fork`
  * would leave exactly the gap it exists to close.
  *
- * @returns The descriptor to inherit into the broker, or `undefined` when the
- * hold could not be established (the claim still works, without this fence).
+ * Failing to establish the hold is FATAL to the start, which is why this throws
+ * rather than reporting a missing fence. Without the descriptor, a supervisor
+ * killed between the fork and the broker's `connection.json` write leaves a
+ * claim with only dead pids and no evidence at all — so the next start reads
+ * the node id as free and evicts a broker that is about to register. Continuing
+ * would mean spawning a broker under a guarantee that is not actually in force,
+ * which is worse than not starting: the operator can see and fix a refusal.
+ *
+ * @throws NodeClaimHoldError when the hold could not be established. Any
+ * partially created file and descriptor are cleaned up first, so a retry (or a
+ * later start, on the next generation) is not blocked by this one's debris.
  */
-export function openNodeClaimHold(
-  claim: NodeClaim,
-  env: NodeJS.ProcessEnv = process.env
-): number | undefined {
+export function openNodeClaimHold(claim: NodeClaim, env: NodeJS.ProcessEnv = process.env): number {
   const generation = claim.generation ?? 1;
   const file = nodeClaimHoldPath(claim.node_id, env, generation);
+  let fd: number | undefined;
   try {
     fs.mkdirSync(path.dirname(file), { recursive: true, mode: 0o700 });
-    const fd = fs.openSync(file, 'wx', 0o600);
+    fd = fs.openSync(file, 'wx', 0o600);
     // Contents are operator-facing only; the evidence is the open descriptor.
     fs.writeSync(
       fd,
       `${JSON.stringify({ node_id: claim.node_id, generation, supervisor_pid: claim.pid, state_dir: claim.state_dir }, null, 2)}\n`
     );
     return fd;
-  } catch {
-    return undefined;
+  } catch (error) {
+    // Drop our reference before unlinking: an fd we opened and then abandoned
+    // would keep answering `lsof` for as long as this process lives, pinning a
+    // node id behind a fence nothing is actually being fenced by.
+    closeNodeClaimHold(fd);
+    if (fd !== undefined) safeUnlinkClaim(file);
+    throw new NodeClaimHoldError(claim.node_id, file, error);
   }
 }
 
@@ -798,11 +840,22 @@ export async function inspectNodeClaim(
   return classifyNodeClaim(nodeId, claim, env, deps);
 }
 
+/**
+ * Decide whether `claim` still names a live owner.
+ *
+ * `selfPids` names processes that ARE the caller. They are skipped as recorded
+ * holders — a process cannot be a competing broker against itself — but they
+ * suppress nothing else: the orphan fences below still run in full, because a
+ * pid the caller happens to share (its own, or one recycled from the dead
+ * supervisor this claim records) says nothing about the broker that supervisor
+ * may have left registered.
+ */
 async function classifyNodeClaim(
   nodeId: string,
   claim: NodeClaim,
   env: NodeJS.ProcessEnv,
-  deps: NodeClaimDependencies
+  deps: NodeClaimDependencies,
+  selfPids?: ReadonlySet<number>
 ): Promise<NodeClaimState> {
   if (claim.node_id.trim() !== nodeId.trim()) {
     // Sanitized filenames can collide. Report it instead of overwriting the
@@ -815,6 +868,10 @@ async function classifyNodeClaim(
   }
   const reasons: string[] = [];
   for (const candidate of claimProcesses(claim)) {
+    if (selfPids?.has(candidate.pid)) {
+      reasons.push(`${candidate.role} pid ${candidate.pid} is this start itself`);
+      continue;
+    }
     const status = await isRecordedProcessAlive(candidate.pid, candidate.startedAt, deps);
     if (status.alive) {
       return { state: 'held', claim, reason: `${candidate.role} ${status.reason}` };
@@ -830,7 +887,7 @@ async function classifyNodeClaim(
   // `fork`, so it answers even while the child is still paused before binding
   // its API — the window in which `connection.json` does not exist yet and the
   // old "dead supervisor, nothing published" reading let a second broker start.
-  const hold = await inspectClaimHold(claim, env, deps);
+  const hold = await inspectClaimHold(claim, env, deps, selfPids);
   if (hold.held) {
     return {
       state: 'held',
@@ -1023,8 +1080,17 @@ export async function acquireNodeClaim(input: AcquireNodeClaimInput): Promise<No
   for (let attempt = 0; attempt < CLAIM_ACQUIRE_ATTEMPTS; attempt += 1) {
     const generations = readClaimGenerations(nodeId, env);
     const current = currentGeneration(generations)?.claim;
-    if (current && current.pid !== input.pid && !input.force) {
-      const status = await classifyNodeClaim(nodeId, current, env, deps);
+    if (current && !input.force) {
+      // Our own pid is never evidence that somebody else holds the node id, so
+      // a start may re-take a claim that records it. That exemption is scoped
+      // to the pid AS A RECORDED HOLDER and nothing more: the fence still runs.
+      //
+      // Exempting the whole check on pid equality (as this once did) was
+      // unsound, because a pid is not an identity. A supervisor that died
+      // leaving a registered broker behind records a pid the OS is free to
+      // reissue, and the next start to be handed that number would have walked
+      // straight past the orphan its own claim was pointing at.
+      const status = await classifyNodeClaim(nodeId, current, env, deps, new Set([input.pid]));
       if (status.state === 'held') {
         throw new NodeClaimConflictError(nodeId, status.claim);
       }

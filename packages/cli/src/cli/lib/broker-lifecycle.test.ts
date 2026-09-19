@@ -1184,6 +1184,40 @@ describe('runUpCommand node claims', () => {
     expect(fsReal.existsSync(holdPath)).toBe(false);
   });
 
+  it('refuses to spawn a broker when the ownership fence cannot be established', async () => {
+    // Every other guarantee in this lane assumes the child is holding a
+    // descriptor. When it cannot be opened at all, spawning anyway would put a
+    // broker on the node's delivery socket with no evidence that outlives this
+    // supervisor -- so the next start would read the node id as free and take
+    // it, which is the original incident. Refusing is the only safe answer.
+    const { deps, home, error, createRelay } = createUpHarness();
+    deps.env.RELAY_NODE_ID = 'node_claimed';
+    const realOpenSync = fsReal.openSync.bind(fsReal);
+    const openSync = vi.spyOn(fsReal, 'openSync').mockImplementation(((
+      file: fsReal.PathLike,
+      ...rest: unknown[]
+    ) => {
+      if (typeof file === 'string' && file.endsWith('.hold')) {
+        const failure: NodeJS.ErrnoException = new Error('ENOSPC: no space left on device');
+        failure.code = 'ENOSPC';
+        throw failure;
+      }
+      return realOpenSync(file, ...(rest as [fsReal.OpenMode]));
+    }) as typeof fsReal.openSync);
+
+    try {
+      await expect(runUpCommand({}, deps)).rejects.toBeInstanceOf(ExitSignal);
+    } finally {
+      openSync.mockRestore();
+    }
+
+    expect(createRelay).not.toHaveBeenCalled();
+    expect(error.mock.calls.flat().join('\n')).toContain('could not establish the ownership fence');
+    // The reservation is given back on the way out, so a fence that could not
+    // be opened once does not leave the node id blocked.
+    expect(hasClaim(home, 'node_claimed')).toBe(false);
+  });
+
   it('refuses over a reservation whose supervisor died with its broker still serving', async () => {
     // A supervising CLI SIGKILLed between the spawn and the moment it could
     // record the broker's pid leaves a claim naming only dead pids. The broker

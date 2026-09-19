@@ -2156,14 +2156,12 @@ export async function runUpCommand(options: UpOptions, deps: CoreDependencies): 
     nodeClaim = await reserveEnrolledNode(paths, options, deps, localOnly);
     if (nodeClaim) {
       // Opened BEFORE the spawn: a fence established afterwards would leave
-      // exactly the window it exists to close.
+      // exactly the window it exists to close. A failure here throws, so the
+      // spawn below is unreachable without the fence in place -- warning and
+      // continuing would have started a broker whose claim silently loses its
+      // crash safety, which is the failure this whole path exists to prevent.
+      // The outer catch releases the reservation on the way out.
       nodeClaimHoldFd = openNodeClaimHold(nodeClaim, deps.env);
-      if (nodeClaimHoldFd === undefined) {
-        deps.warn(
-          `Could not open the ownership hold for node ${nodeClaim.node_id}; this start is still claimed, but a crash ` +
-            'before the broker publishes its connection file would not be detected by another start.'
-        );
-      }
     }
 
     const started = await startBrokerWithPortFallback(
