@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [12.2.6] - 2026-09-19
+
+### Fixed
+
+- Run mounted product surfaces in a child process when standalone
+
 ## [12.2.5] - 2026-09-19
 
 ### Changed

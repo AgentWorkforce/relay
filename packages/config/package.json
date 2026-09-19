@@ -1,6 +1,6 @@
 {
   "name": "@agent-relay/config",
-  "version": "12.2.5",
+  "version": "12.2.6",
   "engines": {
     "node": ">=22.0.0"
   },
