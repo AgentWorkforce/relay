@@ -16,7 +16,7 @@ import { redactCredentialValues } from '@agent-relay/cloud/redact';
 
 import { defaultExit } from '../lib/exit.js';
 import {
-  importFromSurfaceStore,
+  loadSurfaceFromStore,
   isCompiledStandalone,
   provisionSurfacePackage,
   PROVISION_ERROR_CODE,
@@ -143,7 +143,16 @@ function withImportDefaults(overrides: Partial<SurfaceImportDependencies>): Surf
     importSpecifier: overrides.importSpecifier ?? ((specifier) => import(specifier)),
     isStandalone: overrides.isStandalone ?? (() => isCompiledStandalone()),
     provision: overrides.provision ?? ((pkg) => provisionSurfacePackage(pkg)),
-    importFromStore: overrides.importFromStore ?? importFromSurfaceStore,
+    // Wrapped as a module so the caller's shape does not change: the store
+    // returns a ready surface, because `run` crosses a process boundary and
+    // cannot be reconstructed from an imported module.
+    importFromStore:
+      overrides.importFromStore ??
+      (async (installRoot: string, specifier: string) => ({
+        createRelayCliSurface: await loadSurfaceFromStore(installRoot, specifier).then(
+          (surface) => () => surface
+        ),
+      })),
   };
 }
 

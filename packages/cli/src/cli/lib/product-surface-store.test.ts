@@ -7,7 +7,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import {
   SurfaceProvisionError,
   describeInstallFailure,
-  importFromSurfaceStore,
+  loadSurfaceFromStore,
   isCompiledStandalone,
   provisionSurfacePackage,
   surfaceInstallPath,
@@ -43,7 +43,21 @@ function fakeInstaller(options: { body?: string; onInstall?: (directory: string)
         exports: { './relay-cli': './relay-cli.mjs' },
       })
     );
-    fs.writeFileSync(path.join(moduleDir, 'relay-cli.mjs'), options.body ?? 'export const from = "store";\n');
+    // A real surface factory, because the runner now calls it in a child
+    // process and asks it to describe itself.
+    fs.writeFileSync(
+      path.join(moduleDir, 'relay-cli.mjs'),
+      options.body ??
+        'export function createRelayCliSurface() {\n' +
+          '  return {\n' +
+          "    id: 'relayfile-fake',\n" +
+          "    version: '0.10.64',\n" +
+          '    contract: 1,\n' +
+          "    commands: [{ name: 'status', description: 'fake' }],\n" +
+          '    run: async () => 0,\n' +
+          '  };\n' +
+          '}\n'
+    );
   });
   return { install, calls };
 }
@@ -62,7 +76,8 @@ function provisionedMarker(installRoot: string): string {
     path.join(installRoot, 'node_modules', '@relayfile', 'sdk', 'relay-cli.mjs'),
     'utf8'
   );
-  return /"([^"]+)"/.exec(body)?.[1] ?? '';
+  // The surface id the fake factory declares; proves which install landed.
+  return /id: '([^']+)'/.exec(body)?.[1] ?? '';
 }
 
 function silent() {
@@ -88,19 +103,18 @@ describe('surfaceInstallPath', () => {
 
 describe('provisionSurfacePackage', () => {
   it('installs once into a tree the surface really imports from', async () => {
-    // The only real import in this file. It proves the mechanism the whole
-    // module rests on: a bare specifier resolving against the node_modules
-    // beside the generated loader, from a process whose own module directory
-    // is somewhere else entirely.
+    // The only real child process in this file. It proves the mechanism the
+    // whole module rests on: the surface is described by a node running inside
+    // the provisioned tree, because the compiled binary cannot resolve that
+    // tree's specifiers itself.
     const installer = fakeInstaller();
     const notices = silent();
     const installRoot = await provisionSurfacePackage(PKG, { root, install: installer.install, ...notices });
 
     expect(installRoot).toBe(surfaceInstallPath(root, PKG));
-    const surface = (await importFromSurfaceStore(installRoot, '@relayfile/sdk/relay-cli')) as {
-      from: string;
-    };
-    expect(surface.from).toBe('store');
+    const surface = await loadSurfaceFromStore(installRoot, '@relayfile/sdk/relay-cli');
+    expect(surface.id).toBe('relayfile-fake');
+    expect(typeof surface.run).toBe('function');
   });
 
   it('says what it is doing before the install and how long it took after', async () => {
@@ -146,7 +160,7 @@ describe('provisionSurfacePackage', () => {
 
     expect(installer.install).toHaveBeenCalledTimes(1);
     expect([a, b, c]).toEqual([a, a, a]);
-    expect(provisionedMarker(a)).toBe('store');
+    expect(provisionedMarker(a)).toBe('relayfile-fake');
   });
 
   it('adopts another process’s tree when it publishes the same version first', async () => {
@@ -159,12 +173,32 @@ describe('provisionSurfacePackage', () => {
     try {
       const winnerTree = await provisionSurfacePackage(PKG, {
         root: elsewhere,
-        install: fakeInstaller({ body: 'export const from = "winner";\n' }).install,
+        install: fakeInstaller({
+          body:
+            'export function createRelayCliSurface() {\n' +
+            '  return {\n' +
+            "    id: 'winner',\n" +
+            "    version: '0.10.64',\n" +
+            '    contract: 1,\n' +
+            '    commands: [],\n' +
+            '    run: async () => 0,\n' +
+            '  };\n' +
+            '}\n',
+        }).install,
         ...silent(),
       });
 
       const loser = fakeInstaller({
-        body: 'export const from = "loser";\n',
+        body:
+          'export function createRelayCliSurface() {\n' +
+          '  return {\n' +
+          "    id: 'loser',\n" +
+          "    version: '0.10.64',\n" +
+          '    contract: 1,\n' +
+          '    commands: [],\n' +
+          '    run: async () => 0,\n' +
+          '  };\n' +
+          '}\n',
         // The winner's rename lands while our own install is still running.
         onInstall: () => fs.renameSync(winnerTree, target),
       });
@@ -233,14 +267,16 @@ describe('provisionSurfacePackage', () => {
   });
 });
 
-describe('importFromSurfaceStore', () => {
+describe('loadSurfaceFromStore', () => {
   it('reports a damaged tree as something the operator can repair', async () => {
     const broken = path.join(root, 'broken');
     fs.mkdirSync(broken, { recursive: true });
-    fs.writeFileSync(path.join(broken, 'load-surface.mjs'), 'export const importSurface = 42;\n');
+    // A runner that cannot describe the surface: the tree is present but
+    // unusable, which is a repair instruction, not "not installed".
+    fs.writeFileSync(path.join(broken, 'run-surface.mjs'), 'process.exit(3);\n');
 
-    await expect(importFromSurfaceStore(broken, '@relayfile/sdk/relay-cli')).rejects.toThrow(
-      /damaged[\s\S]*Delete that directory and retry/
+    await expect(loadSurfaceFromStore(broken, '@relayfile/sdk/relay-cli')).rejects.toThrow(
+      /could not describe[\s\S]*Delete that directory and retry/
     );
   });
 });
