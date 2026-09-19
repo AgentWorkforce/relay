@@ -52,7 +52,8 @@ if (arm !== 'base' && arm !== 'head') {
   throw new Error(`RELAY_PR_PROOF_ARM must be base or head, received ${JSON.stringify(arm)}.`);
 }
 
-const expectedSha = arm === 'base' ? process.env.RELAY_PR_PROOF_BASE_SHA : process.env.RELAY_PR_PROOF_HEAD_SHA;
+const expectedSha =
+  arm === 'base' ? process.env.RELAY_PR_PROOF_BASE_SHA : process.env.RELAY_PR_PROOF_HEAD_SHA;
 if (!expectedSha) throw new Error(`Missing expected ${arm} SHA.`);
 const targetSha = execFileSync('git', ['-C', targetDir, 'rev-parse', 'HEAD'], {
   encoding: 'utf8',
@@ -78,16 +79,12 @@ const GENERATORS = [
 ];
 
 function generate(relativePath, extraEnv, outPath) {
-  return spawnSync(
-    process.execPath,
-    ['--experimental-strip-types', relativePath, '--out', outPath],
-    {
-      cwd: targetDir,
-      encoding: 'utf8',
-      timeout: COMMAND_TIMEOUT_MS,
-      env: { ...process.env, ...extraEnv },
-    }
-  );
+  return spawnSync(process.execPath, ['--experimental-strip-types', relativePath, '--out', outPath], {
+    cwd: targetDir,
+    encoding: 'utf8',
+    timeout: COMMAND_TIMEOUT_MS,
+    env: { ...process.env, ...extraEnv },
+  });
 }
 
 /** `sh -n` parses without executing, so an unrunnable command is caught safely. */
