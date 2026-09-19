@@ -28,12 +28,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
-- `agent-relay cloud schedule` uploads each immutable code snapshot through Cloud's R2 workflow storage, so scheduled workflows get a code tree without cloning the repository or using AWS.
 - `agent-relay node up` no longer lets a second local broker silently steal a live node's Cloud delivery socket: it refuses an enrolled node id another live broker on this machine already holds — naming that broker's pid and state directory and offering `node down`, a distinct enrollment, or `--force` — including an explicit `RELAY_NODE_ID`, while `--local-only` claims nothing and a crashed broker's stale claim never blocks a restart.
 
 ### Migration Guidance
 
 - v1 knobs with no v2 equivalent are dropped, each recorded at its call site and in `flows/spec-builder.ts`: the relaycast `channel`, `idleNudge`, agent `preset`/`role`, and per-agent-step timeouts. `permissions` survives but is coarser — `AgentStepSpec.permissions` has no read/write split, deny list, or exec allowlist, so the runners' own seals remain what prove evidence was not mutated.
+
+## [12.2.7] - 2026-09-19
+
+### Fixed
+
+- `agent-relay cloud schedule` uploads each immutable code snapshot through Cloud's R2 workflow storage, so scheduled workflows get a code tree without cloning the repository or using AWS.
 
 ## [12.2.6] - 2026-09-19
 
