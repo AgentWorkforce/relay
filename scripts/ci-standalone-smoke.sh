@@ -378,6 +378,37 @@ if printf '%s\n' "$UP_OUTPUT" | grep -q 'Broker already running for this project
   exit 1
 fi
 
+# The mounted product groups must work in THIS distribution, not only from npm.
+#
+# They are reached with `await import(...)`, and a compiled binary has no
+# node_modules for that to resolve against. That shipped once (#1795) — every
+# group failed with MODULE_NOT_FOUND, reported as "not installed", in a
+# distribution where installing cannot help. Nothing here exercised the mount,
+# so nothing caught it.
+#
+# The binary now installs each SDK on first use, under the isolated HOME set
+# above, so the first group here pays for a real npm install. That is the
+# behaviour under test: if provisioning is broken or the pins name a version
+# that cannot resolve, this is where it shows.
+#
+# `--help` is enough to prove the SDK loaded and its declared command tree
+# rendered, without a daemon or credentials. It is NOT enough to prove the
+# product's own payload (a Go binary, a native addon) is reachable — that is
+# scripts/standalone-mount-probe.sh, which runs real commands.
+for group in file flows sessions; do
+  if ! GROUP_OUTPUT="$(run_cli "$group" --help 2>&1)"; then
+    echo "Standalone binary cannot mount \`agent-relay $group\`" >&2
+    print_output_excerpt "$GROUP_OUTPUT"
+    exit 1
+  fi
+  if ! printf '%s\n' "$GROUP_OUTPUT" | grep -q "^Usage: agent-relay $group"; then
+    echo "\`agent-relay $group --help\` did not render its mounted command tree" >&2
+    print_output_excerpt "$GROUP_OUTPUT"
+    exit 1
+  fi
+done
+echo "Mounted product groups verified: file, flows, sessions"
+
 if ! cleanup; then
   echo "Standalone smoke lifecycle passed but ephemeral workspace cleanup was not proved" >&2
   exit 1

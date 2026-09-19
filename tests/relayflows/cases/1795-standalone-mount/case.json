@@ -1,0 +1,21 @@
+{
+  "version": 1,
+  "id": "1795-standalone-mount",
+  "kind": "bugfix",
+  "title": "Mounted product groups work in the compiled standalone binary",
+  "runner": {
+    "command": ["node", "tests/relayflows/cases/1795-standalone-mount/run.mjs"]
+  },
+  "requirements": [],
+  "timeoutSeconds": 1800,
+  "expected": {
+    "base": {
+      "outcome": "bug",
+      "signature": "standalone_groups_unmountable"
+    },
+    "head": {
+      "outcome": "fixed",
+      "signature": "standalone_groups_mounted"
+    }
+  }
+}
