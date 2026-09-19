@@ -33,6 +33,16 @@ import {
   type RunningNodeProviderChild,
 } from './node-provider-child.js';
 import { describeError } from './describe-error.js';
+import {
+  acquireNodeClaim,
+  describeNodeClaimHolder,
+  enrolledNodeIdForClaim,
+  listHeldNodeClaims,
+  normalizeClaimStateDir,
+  releaseNodeClaim,
+  releaseNodeClaimsForBroker,
+  type NodeClaim,
+} from './node-claim.js';
 import { maskSecret } from './redact.js';
 import { startReflexCapture, type RunningReflexCapture } from './reflex-capture.js';
 import {
@@ -69,6 +79,11 @@ type UpOptions = {
   logLevel?: string;
   /** Emit logs as JSON lines instead of human-readable text. */
   logJson?: boolean;
+  /**
+   * Serve the enrolled node id even when a live local broker already claims it.
+   * Set by `node up --force`; the other broker loses its delivery socket.
+   */
+  force?: boolean;
 };
 
 type DownOptions = {
@@ -1597,6 +1612,46 @@ function resolveBrokerName(options: UpOptions, deps: CoreDependencies, projectRo
   );
 }
 
+/**
+ * Record machine-local ownership of the enrolled node id this broker registers
+ * as, if any.
+ *
+ * `node up` refuses a conflicting node id before it starts anything; this is the
+ * backstop for the two starts that raced past that check, and the only guard for
+ * the plain `up` / `local up` aliases. The loser fails startup here instead of
+ * quietly sharing the node — worse for it, but the alternative is two brokers
+ * trading one delivery socket.
+ *
+ * @throws NodeClaimConflictError when a live local broker holds the node id.
+ */
+async function claimEnrolledNode(
+  broker: {
+    paths: CoreProjectPaths;
+    pid: number;
+    brokerName: string;
+    apiPort?: number;
+    localOnly: boolean;
+  },
+  options: UpOptions,
+  deps: CoreDependencies
+): Promise<NodeClaim | undefined> {
+  const nodeId = broker.localOnly ? undefined : enrolledNodeIdForClaim(deps.env);
+  if (!nodeId) {
+    return undefined;
+  }
+  return acquireNodeClaim({
+    nodeId,
+    pid: broker.pid,
+    stateDir: broker.paths.dataDir,
+    ...(broker.apiPort !== undefined ? { apiPort: broker.apiPort } : {}),
+    brokerName: broker.brokerName,
+    force: options.force === true,
+    env: deps.env,
+    killProcess: deps.killProcess,
+    execCommand: deps.execCommand,
+  });
+}
+
 export async function runUpCommand(options: UpOptions, deps: CoreDependencies): Promise<void> {
   if (!['darwin', 'linux'].includes(process.platform)) {
     deps.error(
@@ -1846,6 +1901,8 @@ export async function runUpCommand(options: UpOptions, deps: CoreDependencies): 
   let shutdownPromise: Promise<void> | undefined;
   let stopWatchingBrokerExit: (() => void) | undefined;
   let managedIdentity: BrokerProcessIdentity | undefined;
+  /** Machine-global claim on this broker's enrolled node id, once registered. */
+  let nodeClaim: NodeClaim | undefined;
   let ownedBrokerExited = false;
   let rejectBrokerExit: (reason: Error) => void;
   const brokerExit = new Promise<never>((_resolve, reject) => {
@@ -1863,6 +1920,13 @@ export async function runUpCommand(options: UpOptions, deps: CoreDependencies): 
           await reflexCapture?.stop();
           await nodeProviders?.stop();
           await shutdownUpResources(relay, paths, deps, ownedBrokerExited ? managedIdentity : undefined);
+          // Released only after the broker is down: dropping the claim while
+          // its node-control socket is still connected would wave a second
+          // `node up` straight through to evict it.
+          if (nodeClaim) {
+            releaseNodeClaim(nodeClaim, deps.env);
+            nodeClaim = undefined;
+          }
         })();
       }
     }
@@ -1973,6 +2037,14 @@ export async function runUpCommand(options: UpOptions, deps: CoreDependencies): 
         'Could not persist a verified broker process identity. Startup was stopped; ensure ps and lsof are available, process inspection is permitted, and the project identity directory is writable.'
       );
     }
+
+    // Claim the enrolled node id for this machine now that a verified broker
+    // process owns the state dir.
+    nodeClaim = await claimEnrolledNode(
+      { paths, pid: managedIdentity.pid, brokerName, apiPort: started.apiPort, localOnly },
+      options,
+      deps
+    );
 
     try {
       writeBrokerBindingSource(paths.dataDir, workspaceBindingSource, deps);
@@ -2099,6 +2171,38 @@ export async function runUpCommand(options: UpOptions, deps: CoreDependencies): 
   }
 }
 
+/**
+ * Point `down` at live brokers serving other state directories.
+ *
+ * `down` resolves its state dir from the cwd (or `--state-dir`), so running it
+ * from the wrong directory reports "Not running" while the broker it was meant
+ * to stop keeps serving. The machine-global node claims are the one index that
+ * spans state dirs, so use them to name the live brokers instead.
+ */
+async function reportNodeClaimsElsewhere(paths: CoreProjectPaths, deps: CoreDependencies): Promise<void> {
+  let held: NodeClaim[];
+  try {
+    held = await listHeldNodeClaims({
+      env: deps.env,
+      killProcess: deps.killProcess,
+      execCommand: deps.execCommand,
+    });
+  } catch {
+    // Diagnostics only — an unreadable claims directory changes nothing here.
+    return;
+  }
+  const stateDir = normalizeClaimStateDir(paths.dataDir);
+  const elsewhere = held.filter((claim) => claim.state_dir !== stateDir);
+  if (elsewhere.length === 0) {
+    return;
+  }
+  deps.log('Live relay nodes on this machine are serving other state directories:');
+  for (const claim of elsewhere) {
+    deps.log(`  node ${claim.node_id} — ${describeNodeClaimHolder(claim)}`);
+  }
+  deps.log('Stop one with: agent-relay node down --state-dir <state dir>');
+}
+
 // eslint-disable-next-line complexity, max-depth
 export async function runDownCommand(options: DownOptions, deps: CoreDependencies): Promise<void> {
   const paths = deps.getProjectPaths();
@@ -2167,12 +2271,14 @@ export async function runDownCommand(options: DownOptions, deps: CoreDependencie
       }
       if (result.matchedCount === 0) {
         deps.log('No verified orphan broker found; retained existing state.');
+        await reportNodeClaimsElsewhere(paths, deps);
         return;
       }
       cleanupBrokerFiles(paths, deps);
       deps.log('Cleaned up (was not running)');
     } else {
       deps.log('Not running');
+      await reportNodeClaimsElsewhere(paths, deps);
     }
     return;
   }
@@ -2186,6 +2292,7 @@ export async function runDownCommand(options: DownOptions, deps: CoreDependencie
 
   if (!isProcessRunning(pid, deps)) {
     cleanupBrokerFiles(paths, deps);
+    releaseNodeClaimsForBroker({ pid, stateDir: paths.dataDir, env: deps.env });
     deps.log('Cleaned up stale state (process was not running)');
     return;
   }
@@ -2224,6 +2331,12 @@ export async function runDownCommand(options: DownOptions, deps: CoreDependencie
     }
     if (identity) removeBrokerIdentity(paths, identity, deps);
     cleanupBrokerFiles(paths, deps);
+    // The supervising CLI releases its own claim on a graceful exit, but `down`
+    // can outlive it (or kill it with --force), so release by the pid and state
+    // dir it just verified. Only a claim naming both is removed.
+    for (const claim of releaseNodeClaimsForBroker({ pid, stateDir: paths.dataDir, env: deps.env })) {
+      deps.log(`Released this machine's claim on node ${claim.node_id}.`);
+    }
     deps.log('Stopped');
     return;
   } catch (err: unknown) {
@@ -2231,6 +2344,7 @@ export async function runDownCommand(options: DownOptions, deps: CoreDependencie
     if (withCode.code === 'ESRCH') {
       removeBrokerIdentity(paths, identity, deps);
       cleanupBrokerFiles(paths, deps);
+      releaseNodeClaimsForBroker({ pid, stateDir: paths.dataDir, env: deps.env });
       deps.log('Cleaned up stale state');
       return;
     }

@@ -10,6 +10,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Fixed
 
 - `agent-relay cloud schedule` uploads each immutable code snapshot through Cloud's R2 workflow storage, so scheduled workflows get a code tree without cloning the repository or using AWS.
+- `agent-relay node up` no longer lets a second local broker silently steal a live node's Cloud delivery socket: a machine-global node claim (`~/.agentworkforce/relay/node-claims/`) makes it refuse an enrolled node id another live broker holds, naming that broker's pid and state directory (`--force` overrides, stale claims from a crashed broker never block a restart).
 
 ## [12.2.6] - 2026-09-19
 

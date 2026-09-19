@@ -350,7 +350,7 @@ import os from 'node:os';
 import pathReal from 'node:path';
 import { startServeNode } from '@agent-relay/fleet';
 import { setWorkspaceKey } from '@agent-relay/cloud';
-import { runUpCommand } from './broker-lifecycle.js';
+import { runDownCommand, runUpCommand } from './broker-lifecycle.js';
 import { startReflexCapture } from './reflex-capture.js';
 class ExitSignal extends Error {
   constructor(public readonly code: number) {
@@ -856,6 +856,170 @@ describe('runUpCommand workspace precedence', () => {
     expect(
       brokerIdentityPath({ projectRoot, dataDir, teamDir: projectRoot }, deps, trimmedName)
     ).not.toContain(paddedName);
+  });
+});
+
+// ── machine-global node claims ───────────────────────────────────────────────
+// The Fleet enrollment store is machine-global and not scoped to a state dir, so
+// the claim written here is what stops a second broker from taking over a live
+// node's Cloud delivery socket.
+
+describe('runUpCommand node claims', () => {
+  const claimFile = (home: string, nodeId: string): string =>
+    pathReal.join(home, 'node-claims', `${nodeId}.json`);
+
+  /** The SIGTERM handler `runUpCommand` registers, i.e. a clean `node down`. */
+  function sigtermHandler(deps: CoreDependencies): () => Promise<void> {
+    const handler = vi
+      .mocked(deps.onSignal)
+      .mock.calls.find(([signal]) => signal === 'SIGTERM')?.[1] as () => Promise<void>;
+    expect(handler).toBeTypeOf('function');
+    return handler;
+  }
+
+  it('claims the enrolled node id once a verified broker owns the state dir', async () => {
+    const { deps, home, dataDir } = createUpHarness();
+    deps.env.RELAY_NODE_ID = 'node_claimed';
+
+    await runUpCommand({}, deps);
+
+    const claim = JSON.parse(fsReal.readFileSync(claimFile(home, 'node_claimed'), 'utf8'));
+    expect(claim).toMatchObject({
+      version: 1,
+      node_id: 'node_claimed',
+      pid: 999999,
+      state_dir: fsReal.realpathSync(dataDir),
+      // Recorded from `ps`, so a recycled pid cannot read as this broker.
+      process_started_at: 'Thu Sep 10 18:00:00 2026',
+    });
+  });
+
+  it('releases the claim when the broker stops cleanly', async () => {
+    const { deps, home } = createUpHarness();
+    deps.env.RELAY_NODE_ID = 'node_claimed';
+
+    await runUpCommand({}, deps);
+    expect(fsReal.existsSync(claimFile(home, 'node_claimed'))).toBe(true);
+
+    await expect(sigtermHandler(deps)()).rejects.toBeInstanceOf(ExitSignal);
+
+    expect(fsReal.existsSync(claimFile(home, 'node_claimed'))).toBe(false);
+  });
+
+  it('refuses to register over a live claim from another state dir', async () => {
+    const { deps, home, error } = createUpHarness();
+    deps.env.RELAY_NODE_ID = 'node_claimed';
+    // Only pid 4242 is alive, so the pre-written claim reads as held.
+    deps.killProcess = vi.fn((pid: number) => {
+      if (pid !== 4242) throw new Error('not running');
+    });
+    fsReal.mkdirSync(pathReal.join(home, 'node-claims'), { recursive: true });
+    fsReal.writeFileSync(
+      claimFile(home, 'node_claimed'),
+      JSON.stringify({
+        version: 1,
+        node_id: 'node_claimed',
+        pid: 4242,
+        state_dir: '/other-checkout/.agentworkforce/relay',
+        claimed_at: '2026-10-05T12:00:00.000Z',
+      })
+    );
+
+    await expect(runUpCommand({}, deps)).rejects.toBeInstanceOf(ExitSignal);
+
+    expect(error.mock.calls.flat().join('\n')).toContain('already served by a live local broker');
+    // The holder's claim is untouched, so its next `down` still finds it.
+    expect(JSON.parse(fsReal.readFileSync(claimFile(home, 'node_claimed'), 'utf8'))).toMatchObject({
+      pid: 4242,
+      state_dir: '/other-checkout/.agentworkforce/relay',
+    });
+  });
+
+  it('takes over a live claim when --force is passed', async () => {
+    const { deps, home } = createUpHarness();
+    deps.env.RELAY_NODE_ID = 'node_claimed';
+    deps.killProcess = vi.fn((pid: number) => {
+      if (pid !== 4242) throw new Error('not running');
+    });
+    fsReal.mkdirSync(pathReal.join(home, 'node-claims'), { recursive: true });
+    fsReal.writeFileSync(
+      claimFile(home, 'node_claimed'),
+      JSON.stringify({
+        version: 1,
+        node_id: 'node_claimed',
+        pid: 4242,
+        state_dir: '/other-checkout/.agentworkforce/relay',
+        claimed_at: '2026-10-05T12:00:00.000Z',
+      })
+    );
+
+    await runUpCommand({ force: true }, deps);
+
+    expect(JSON.parse(fsReal.readFileSync(claimFile(home, 'node_claimed'), 'utf8'))).toMatchObject({
+      pid: 999999,
+    });
+  });
+
+  it('releases the claim when `down` cleans up a broker that already exited', async () => {
+    const { deps, home } = createUpHarness();
+    deps.env.RELAY_NODE_ID = 'node_claimed';
+
+    await runUpCommand({}, deps);
+    expect(fsReal.existsSync(claimFile(home, 'node_claimed'))).toBe(true);
+
+    // The fixture's killProcess reports every pid dead, so `down` takes its
+    // "process was not running" cleanup path — the claim must go with it.
+    await runDownCommand({}, deps);
+
+    expect(fsReal.existsSync(claimFile(home, 'node_claimed'))).toBe(false);
+  });
+
+  it('points `down` at live nodes serving other state directories', async () => {
+    const { deps, home, log } = createUpHarness();
+    // `down` run from the wrong cwd finds no connection file of its own.
+    (deps.fs as { readFileSync: unknown }).readFileSync = fsReal.readFileSync;
+    deps.killProcess = vi.fn((pid: number) => {
+      if (pid !== 4242) throw new Error('not running');
+    });
+    fsReal.mkdirSync(pathReal.join(home, 'node-claims'), { recursive: true });
+    fsReal.writeFileSync(
+      claimFile(home, 'node_elsewhere'),
+      JSON.stringify({
+        version: 1,
+        node_id: 'node_elsewhere',
+        pid: 4242,
+        state_dir: '/other-checkout/.agentworkforce/relay',
+        api_port: 3891,
+        claimed_at: '2026-10-05T12:00:00.000Z',
+      })
+    );
+
+    await runDownCommand({}, deps);
+
+    const output = log.mock.calls.flat().join('\n');
+    expect(output).toContain('Not running');
+    expect(output).toContain('node node_elsewhere');
+    expect(output).toContain('/other-checkout/.agentworkforce/relay');
+    expect(output).toContain('node down --state-dir');
+  });
+
+  it('claims nothing for a node id with no token to register with', async () => {
+    const { deps, home } = createUpHarness();
+    delete deps.env.RELAY_NODE_TOKEN;
+    deps.env.RELAY_NODE_ID = 'node_claimed';
+
+    await runUpCommand({}, deps);
+
+    expect(fsReal.existsSync(claimFile(home, 'node_claimed'))).toBe(false);
+  });
+
+  it('claims nothing in local-only mode', async () => {
+    const { deps, home } = createUpHarness();
+    deps.env.RELAY_NODE_ID = 'node_claimed';
+
+    await runUpCommand({ localOnly: true }, deps);
+
+    expect(fsReal.existsSync(claimFile(home, 'node_claimed'))).toBe(false);
   });
 });
 

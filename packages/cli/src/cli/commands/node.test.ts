@@ -1,5 +1,10 @@
+import { spawn } from 'node:child_process';
+import fs from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
+
 import { Command } from 'commander';
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 const brokerMocks = vi.hoisted(() => ({
   runUpCommand: vi.fn(async () => undefined),
@@ -17,6 +22,7 @@ vi.mock('../lib/broker-lifecycle.js', () => ({
 }));
 
 import { registerNodeCommands, type NodeCommandDependencies } from './node.js';
+import { nodeClaimPath, type NodeClaim } from '../lib/node-claim.js';
 import type { CoreDependencies } from './core.js';
 
 class ExitSignal extends Error {
@@ -40,6 +46,7 @@ function createNodeHarness(opts?: {
   resolveEnrollment?: NodeCommandDependencies['resolveEnrollment'];
   listFleetEnrollments?: NodeCommandDependencies['listFleetEnrollments'];
   resolveProjectWorkspaceSession?: NodeCommandDependencies['resolveProjectWorkspaceSession'];
+  inspectNodeClaim?: NodeCommandDependencies['inspectNodeClaim'];
 }) {
   const env: NodeJS.ProcessEnv = opts?.env ?? {};
   const exit = vi.fn((code: number) => {
@@ -76,6 +83,9 @@ function createNodeHarness(opts?: {
     resolveEnrollment,
     listFleetEnrollments,
     resolveProjectWorkspaceSession,
+    // Left undefined by default so the real machine-global claim store is
+    // exercised, scoped to a temp AGENT_RELAY_HOME.
+    ...(opts?.inspectNodeClaim ? { inspectNodeClaim: opts.inspectNodeClaim } : {}),
   });
 
   return {
@@ -96,6 +106,49 @@ beforeEach(() => {
   brokerMocks.runDownCommand.mockClear();
   brokerMocks.runStatusCommand.mockClear();
 });
+
+const claimHomes: string[] = [];
+
+afterEach(() => {
+  for (const home of claimHomes.splice(0)) {
+    fs.rmSync(home, { recursive: true, force: true });
+  }
+});
+
+/**
+ * A scratch `AGENT_RELAY_HOME` for the machine-global node-claim store, so the
+ * guard never reads the developer's real claims.
+ */
+function createClaimHome(): string {
+  const home = fs.mkdtempSync(path.join(os.tmpdir(), 'node-up-claim-home-'));
+  claimHomes.push(home);
+  return home;
+}
+
+function writeNodeClaim(home: string, claim: Partial<NodeClaim> & { pid: number }): NodeClaim {
+  const env = { AGENT_RELAY_HOME: home };
+  const full: NodeClaim = {
+    version: 1,
+    node_id: 'node_abc',
+    state_dir: '/other-checkout/.agentworkforce/relay',
+    api_port: 3891,
+    broker_name: 'kjglaptop',
+    claimed_at: '2026-10-05T12:00:00.000Z',
+    ...claim,
+  };
+  const file = nodeClaimPath(full.node_id, env);
+  fs.mkdirSync(path.dirname(file), { recursive: true });
+  fs.writeFileSync(file, `${JSON.stringify(full, null, 2)}\n`);
+  return full;
+}
+
+/** A pid that is guaranteed dead: spawned, then observed to exit. */
+async function deadPid(): Promise<number> {
+  const child = spawn(process.execPath, ['-e', '']);
+  const pid = child.pid!;
+  await new Promise<void>((resolve) => child.once('exit', () => resolve()));
+  return pid;
+}
 
 describe('registerNodeCommands', () => {
   it('registers the node command tree (up/down/status/metrics/agent/tail/workflow)', () => {
@@ -521,6 +574,146 @@ describe('registerNodeCommands', () => {
 
     expect(error).toHaveBeenCalledWith(expect.stringContaining('Multiple fleet node enrollments match'));
     expect(brokerMocks.runUpCommand).not.toHaveBeenCalled();
+  });
+
+  it('refuses to adopt an enrolled node a live local broker already serves', async () => {
+    const home = createClaimHome();
+    writeNodeClaim(home, { pid: process.pid });
+    const resolveEnrollment = vi.fn(
+      () => enrollmentRecord
+    ) as unknown as NodeCommandDependencies['resolveEnrollment'];
+    const { program, error, exit } = createNodeHarness({
+      env: { AGENT_RELAY_HOME: home },
+      resolveEnrollment,
+    });
+
+    await expect(program.parseAsync(['node', 'up'], { from: 'user' })).rejects.toBeInstanceOf(ExitSignal);
+
+    expect(exit).toHaveBeenCalledWith(1);
+    const message = error.mock.calls.flat().join('\n');
+    expect(message).toContain('node node_abc is already served by a live broker on this machine');
+    expect(message).toContain(`pid ${process.pid}`);
+    expect(message).toContain('/other-checkout/.agentworkforce/relay');
+    expect(message).toContain('agent-relay node down --state-dir /other-checkout/.agentworkforce/relay');
+    expect(message).toContain('agent-relay cloud enroll --name <other-node>');
+    expect(message).toContain('--force');
+    // Diagnostics name the holder, never the enrollment's credentials.
+    expect(message).not.toContain('nt_secret');
+    expect(brokerMocks.runUpCommand).not.toHaveBeenCalled();
+  });
+
+  it('starts when the claim on the enrolled node names a dead pid', async () => {
+    const home = createClaimHome();
+    writeNodeClaim(home, { pid: await deadPid() });
+    const resolveEnrollment = vi.fn(
+      () => enrollmentRecord
+    ) as unknown as NodeCommandDependencies['resolveEnrollment'];
+    const { program, env, error, warn } = createNodeHarness({
+      env: { AGENT_RELAY_HOME: home },
+      resolveEnrollment,
+    });
+
+    await program.parseAsync(['node', 'up'], { from: 'user' });
+
+    // A claim left behind by a crashed broker is stale, not a conflict: an
+    // ordinary restart must not need --force.
+    expect(error).not.toHaveBeenCalled();
+    expect(warn).not.toHaveBeenCalled();
+    expect(env.RELAY_NODE_ID).toBe('node_abc');
+    expect(brokerMocks.runUpCommand).toHaveBeenCalledTimes(1);
+  });
+
+  it('starts unchanged when no node claim exists at all', async () => {
+    const home = createClaimHome();
+    const resolveEnrollment = vi.fn(
+      () => enrollmentRecord
+    ) as unknown as NodeCommandDependencies['resolveEnrollment'];
+    const { program, env, error } = createNodeHarness({
+      env: { AGENT_RELAY_HOME: home },
+      resolveEnrollment,
+    });
+
+    await program.parseAsync(['node', 'up'], { from: 'user' });
+
+    expect(error).not.toHaveBeenCalled();
+    expect(env.RELAY_NODE_TOKEN).toBe('nt_secret');
+    expect(brokerMocks.runUpCommand).toHaveBeenCalledTimes(1);
+  });
+
+  it('lets --force take a node over from a live broker, with a warning', async () => {
+    const home = createClaimHome();
+    writeNodeClaim(home, { pid: process.pid });
+    const resolveEnrollment = vi.fn(
+      () => enrollmentRecord
+    ) as unknown as NodeCommandDependencies['resolveEnrollment'];
+    const { program, warn, error } = createNodeHarness({
+      env: { AGENT_RELAY_HOME: home },
+      resolveEnrollment,
+    });
+
+    await program.parseAsync(['node', 'up', '--force'], { from: 'user' });
+
+    expect(error).not.toHaveBeenCalled();
+    const warned = warn.mock.calls.flat().join('\n');
+    expect(warned).toContain('--force');
+    expect(warned).toContain('node_abc');
+    expect(warned).toContain(`pid ${process.pid}`);
+    expect(warned).toContain('delivery socket is evicted');
+    expect(brokerMocks.runUpCommand).toHaveBeenCalledWith(
+      expect.objectContaining({ force: true }),
+      expect.anything()
+    );
+  });
+
+  it('does not guard a node id that has no token to register with', async () => {
+    const home = createClaimHome();
+    writeNodeClaim(home, { pid: process.pid });
+    const { program, error } = createNodeHarness({
+      // A pinned-but-unresolvable enrollment leaves the id without a token, so
+      // this broker cannot register as that node and cannot steal its socket.
+      env: { AGENT_RELAY_HOME: home, RELAY_NODE_ID: 'node_abc' },
+      resolveEnrollment: vi.fn(() => undefined) as unknown as NodeCommandDependencies['resolveEnrollment'],
+    });
+
+    await program.parseAsync(['node', 'up'], { from: 'user' });
+
+    expect(error).not.toHaveBeenCalled();
+    expect(brokerMocks.runUpCommand).toHaveBeenCalledTimes(1);
+  });
+
+  it('skips the claim guard entirely for --local-only startup', async () => {
+    const home = createClaimHome();
+    writeNodeClaim(home, { pid: process.pid });
+    const { program, error } = createNodeHarness({
+      env: { AGENT_RELAY_HOME: home, RELAY_NODE_ID: 'node_abc', RELAY_NODE_TOKEN: 'nt_secret' },
+    });
+
+    await program.parseAsync(['node', 'up', '--local-only'], { from: 'user' });
+
+    expect(error).not.toHaveBeenCalled();
+    expect(brokerMocks.runUpCommand).toHaveBeenCalledWith(
+      expect.objectContaining({ localOnly: true }),
+      expect.anything()
+    );
+  });
+
+  it('starts anyway when the claim store cannot be inspected', async () => {
+    const resolveEnrollment = vi.fn(
+      () => enrollmentRecord
+    ) as unknown as NodeCommandDependencies['resolveEnrollment'];
+    const { program, error } = createNodeHarness({
+      env: {},
+      resolveEnrollment,
+      inspectNodeClaim: vi.fn(async () => {
+        throw new Error('EACCES: permission denied');
+      }),
+    });
+
+    await program.parseAsync(['node', 'up'], { from: 'user' });
+
+    // The guard is a guard, not a dependency.
+    expect(error).not.toHaveBeenCalled();
+    expect(brokerMocks.runUpCommand).toHaveBeenCalledTimes(1);
   });
 
   it('forwards --config through to runUpCommand', async () => {

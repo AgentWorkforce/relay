@@ -157,6 +157,39 @@ the ladder. If a stored enrollment addresses a different workspace than the
 repository pin, `node up` refuses to start and names both source files and
 workspace IDs, never their keys.
 
+### One live broker per enrolled node
+
+The Fleet enrollment store is machine-global and is not scoped to a broker state
+directory, so a second `node up` — another checkout, or the same one with a
+different `--state-dir` — used to adopt the same node id. Both brokers then
+registered as that node, the engine handed the node-control delivery socket to
+whichever registered last, and the first broker kept running and reporting
+healthy while messages silently stopped arriving.
+
+A broker now records its enrolled node id in
+`~/.agentworkforce/relay/node-claims/<node-id>.json` (pid, state dir, API port,
+broker name, claim time) once its process identity is verified, and releases it
+on a clean stop. `node up` refuses to adopt a node id that a live claim names,
+printing the holding broker's pid and state directory:
+
+```text
+Refusing to start: node node_2230437463 is already served by a live broker on this machine.
+  holding broker      pid 48211, state dir /repo/.agentworkforce/relay, API port 3891
+```
+
+A claim whose pid is gone — or whose pid has since been recycled by another
+process — is stale, so an ordinary restart after a crash or reboot is never
+refused. To run a second node on this machine alongside the live one, enroll a
+distinct node (`agent-relay cloud enroll --name <other-node>`) and start from
+that enrollment; `node up --force` takes the node over instead, evicting the
+live broker's delivery socket.
+
+Because the claims are machine-global, they also give `node down` a way to point
+at a live broker it cannot see: run from the wrong directory it still reports
+`Not running`, but now lists the live nodes and the state directories serving
+them. Two brokers on _different_ machines sharing one enrollment store (a synced
+home directory) are out of scope — nothing local can see the other host's pids.
+
 `workspace create`, `join`, and `switch` select a named workspace globally and
 pin it to the current project. A changed selection records the old name, so an
 accidental create can be undone:
