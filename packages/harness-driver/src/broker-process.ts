@@ -174,6 +174,37 @@ function formatCommand(binaryPath: string, args: string[]): string {
 }
 
 /**
+ * Stop and reap a broker child whose startup failed, before the failure is
+ * reported to the caller.
+ *
+ * A rejection from `spawn()` returns no client, so the caller gets no handle to
+ * shut the child down and never learns its pid — but the child is already a
+ * broker process: it can be mid-bind, mid-handshake, or holding descriptors it
+ * inherited (the CLI passes its node claim's ownership fence). Leaving it
+ * running turns "the broker failed to start" into an untracked broker that may
+ * still register. `waitForApiUrl` already sends SIGTERM on timeout without
+ * observing the exit, so the escalation in {@link waitForExit} is what makes the
+ * exit verified rather than assumed.
+ *
+ * @returns Whether the child was observed to exit.
+ */
+export async function terminateFailedBrokerSpawn(child: ChildProcess, timeoutMs = 2_000): Promise<boolean> {
+  if (child.exitCode !== null || child.signalCode !== null) {
+    return true;
+  }
+  // Start waiting BEFORE signalling: `waitForExit` attaches its `exit` listener
+  // synchronously, so a child that dies on the spot is still observed rather
+  // than waited out to the SIGKILL escalation.
+  const exited = waitForExit(child, timeoutMs);
+  try {
+    child.kill('SIGTERM');
+  } catch {
+    // Already gone, or never ours to signal; `waitForExit` decides either way.
+  }
+  return exited;
+}
+
+/**
  * Wait for `child` to exit, escalating to SIGKILL after `timeoutMs`.
  *
  * Resolves `true` only when the exit was actually observed. SIGKILL is not

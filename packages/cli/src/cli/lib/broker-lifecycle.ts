@@ -40,6 +40,7 @@ import {
   describeNodeClaimHolder,
   enrolledNodeIdForClaim,
   findLiveStateDirBroker,
+  inspectNodeClaimHold,
   listHeldNodeClaims,
   normalizeClaimStateDir,
   openNodeClaimHold,
@@ -1711,6 +1712,49 @@ async function waitForClaimedProcessExit(pid: number, deps: CoreDependencies): P
 }
 
 /**
+ * Polls before giving up on a fenced child that has not dropped the claim's
+ * hold descriptor. Shorter than the pid wait above: every attempt runs `lsof`,
+ * and a holder this start never captured is either exiting right now or is not
+ * going to.
+ */
+const NODE_CLAIM_HOLD_POLL_ATTEMPTS = 10;
+
+/**
+ * Wait for every holder of the claim's hold descriptor other than this
+ * supervisor to exit.
+ *
+ * This is the release-side half of the spawn-to-publication fence. `claim.pid`,
+ * `supervisor_pid` and `spawnedPids` only ever name a child some part of this
+ * start managed to capture, and `onCandidateReady` cannot fire until
+ * `createRelay` RESOLVES: a spawn that rejects (a handshake that never
+ * completed, a startup SIGTERM the child outlived) leaves a broker child that no
+ * pid anywhere names and no `connection.json` either. Releasing then would
+ * tombstone the claim and unlink the hold file out from under a live process
+ * that is still fenced by it, and the next start would read the node id as free
+ * while that child can still register — the eviction this lane exists to
+ * prevent.
+ *
+ * This process's own descriptor is excluded: it is dropped only after the
+ * release decision, and it is never evidence that somebody else owns the node.
+ */
+async function waitForClaimHoldRelease(
+  claim: NodeClaim,
+  deps: CoreDependencies
+): Promise<{ held: boolean; reason: string }> {
+  const claimDeps = { env: deps.env, killProcess: deps.killProcess, execCommand: deps.execCommand };
+  // `deps.pid` is the supervisor of record; `process.pid` is who actually holds
+  // the descriptor. They are the same process in production and can differ in
+  // tests, so neither may read as a rival holder.
+  const selfPids = new Set<number>([deps.pid, process.pid]);
+  let status = await inspectNodeClaimHold(claim, claimDeps, selfPids);
+  for (let attempt = 0; status.held && attempt < NODE_CLAIM_HOLD_POLL_ATTEMPTS; attempt += 1) {
+    await deps.sleep(NODE_CLAIM_EXIT_POLL_MS);
+    status = await inspectNodeClaimHold(claim, claimDeps, selfPids);
+  }
+  return status;
+}
+
+/**
  * Release the node claim only once every process it protects is provably gone.
  *
  * "shutdown returned" is not evidence of exit: `shutdownUpResources` swallows
@@ -1723,8 +1767,9 @@ async function waitForClaimedProcessExit(pid: number, deps: CoreDependencies): P
  * Before adoption the claim names only this supervising CLI, so its pids alone
  * do not cover the broker this start spawned. `spawnedPids` carries every child
  * pid this start ever saw — kept across the failure paths that clear `relay` —
- * and the state dir's own connection file is consulted as the last check, for
- * the child that was spawned before its pid could be captured at all.
+ * the claim's hold descriptor answers for a child that was never captured at
+ * all, and the state dir's own connection file is consulted last, for a broker
+ * that published but was never fenced by this start.
  *
  * @returns Whether the claim was released.
  */
@@ -1744,6 +1789,17 @@ async function releaseNodeClaimAfterExit(
       );
       return false;
     }
+  }
+  // Checked before the connection file, exactly as `inspectNodeClaim` orders
+  // them: the descriptor is the only evidence that covers a child's whole life,
+  // including the window before it has published anything at all.
+  const fence = await waitForClaimHoldRelease(claim, deps);
+  if (fence.held) {
+    deps.warn(
+      `${fence.reason}; keeping this machine's claim on node ${claim.node_id}. ` +
+        `Stop it with: agent-relay node down --state-dir ${claim.state_dir} --force`
+    );
+    return false;
   }
   const occupant = await findLiveStateDirBroker(claim.state_dir, {
     env: deps.env,

@@ -346,6 +346,7 @@ vi.mock('@agent-relay/harness-driver', () => ({
   },
 }));
 
+import { exec as execChild, spawn as spawnChild } from 'node:child_process';
 import fsReal from 'node:fs';
 import os from 'node:os';
 import pathReal from 'node:path';
@@ -1158,6 +1159,59 @@ describe('runUpCommand node claims', () => {
 
     expect(currentClaim(home, 'node_claimed')).toMatchObject({ node_id: 'node_claimed' });
     expect(warn.mock.calls.flat().join('\n')).toContain("keeping this machine's claim");
+  });
+
+  it('keeps the claim when the spawn rejects with a fenced child still alive', async () => {
+    // `onCandidateReady` cannot fire until `createRelay` RESOLVES, so a spawn
+    // that rejects after the fork — a handshake that never completed, a startup
+    // SIGTERM the child outlived — leaves a broker child that no captured pid
+    // names and that has published no `connection.json` either. Releasing on
+    // that evidence tombstoned the claim and unlinked the hold file out from
+    // under a live, still-fenced child, so the next start read the node id as
+    // free while that child could still register.
+    const { deps, home, dataDir, warn, createRelay } = createUpHarness();
+    deps.env.RELAY_NODE_ID = 'node_claimed';
+    const stateDir = fsReal.realpathSync(dataDir);
+    let child: ReturnType<typeof spawnChild> | undefined;
+    createRelay.mockImplementation(async (...args: unknown[]) => {
+      const inheritFds = args[4] as number[];
+      expect(inheritFds).toHaveLength(1);
+      // A real child holding the real inherited descriptor. It carries the
+      // state dir in argv for the same reason the broker does: holders are
+      // filtered by whether they look like this claim's broker.
+      child = spawnChild(process.execPath, ['-e', 'setTimeout(() => {}, 60_000)', stateDir], {
+        stdio: ['ignore', 'ignore', 'ignore', inheritFds[0]],
+      });
+      await new Promise<void>((resolve) => child!.once('spawn', () => resolve()));
+      throw new Error('broker rejected before it could return a client');
+    });
+    // The fence has to reach the kernel: `lsof` on the hold file and `ps` on
+    // its holders are what answer for a child nothing else recorded.
+    const fixtureExec = deps.execCommand;
+    deps.execCommand = vi.fn(async (command: string) => {
+      if (command.startsWith('LC_ALL=C lsof -t --') || command.includes('-o args=')) {
+        return new Promise<{ stdout: string; stderr: string }>((resolve, reject) => {
+          execChild(command, (error, stdout, stderr) =>
+            error ? reject(error) : resolve({ stdout, stderr })
+          );
+        });
+      }
+      return fixtureExec(command);
+    });
+
+    try {
+      await expect(runUpCommand({}, deps)).rejects.toBeInstanceOf(ExitSignal);
+
+      expect(currentClaim(home, 'node_claimed')).toMatchObject({ node_id: 'node_claimed' });
+      expect(warn.mock.calls.flat().join('\n')).toContain("keeping this machine's claim");
+      // The hold file survives with it: unlinking the name is what let the next
+      // start read the node id as free while the child still held the inode.
+      const generation = Number(currentClaim(home, 'node_claimed')?.generation ?? 1);
+      expect(fsReal.existsSync(nodeClaimHoldPath('node_claimed', deps.env, generation))).toBe(true);
+    } finally {
+      child?.kill('SIGKILL');
+      if (child) await new Promise<void>((resolve) => child!.once('exit', () => resolve()));
+    }
   });
 
   it('hands the broker child a descriptor on the claim it must not outlive', async () => {

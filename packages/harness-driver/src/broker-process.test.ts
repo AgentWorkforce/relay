@@ -1,9 +1,13 @@
-import { EventEmitter } from 'node:events';
 import type { ChildProcess } from 'node:child_process';
+import { EventEmitter } from 'node:events';
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 
-import { describe, expect, it, vi } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 
-import { waitForExit } from './broker-process.js';
+import { isProcessRunning, terminateFailedBrokerSpawn, waitForExit } from './broker-process.js';
+import { HarnessDriverClient } from './client.js';
 
 /**
  * A child that never exits unless told to. `kill` is observed rather than
@@ -73,4 +77,80 @@ describe('waitForExit', () => {
     expect(removeListener).toHaveBeenCalledWith('exit', expect.any(Function));
     expect(child.listenerCount('exit')).toBe(0);
   });
+});
+
+describe('terminateFailedBrokerSpawn', () => {
+  it('stops a child whose startup failed and reports the observed exit', async () => {
+    // A spawn that rejects returns no client, so nothing downstream can stop
+    // this child or even learn its pid — while it may already be binding,
+    // handshaking, or holding a node claim's inherited fence descriptor.
+    const child = stubChild({ dieOnKill: true });
+
+    await expect(terminateFailedBrokerSpawn(child, 50)).resolves.toBe(true);
+    expect(child.killed).toEqual(['SIGTERM']);
+  });
+
+  it('escalates to SIGKILL when the child ignores SIGTERM', async () => {
+    const child = stubChild();
+    setTimeout(() => child.emit('exit', null, 'SIGKILL'), 10);
+
+    await expect(terminateFailedBrokerSpawn(child, 5)).resolves.toBe(true);
+    expect(child.killed).toEqual(['SIGTERM', 'SIGKILL']);
+  });
+
+  it('does not claim an exit it never saw', async () => {
+    // The answer callers act on: an unverified exit must not read as gone.
+    const child = stubChild();
+
+    await expect(terminateFailedBrokerSpawn(child, 5)).resolves.toBe(false);
+  });
+
+  it('signals nothing when the child has already exited', async () => {
+    const child = stubChild();
+    Object.assign(child, { exitCode: 1 });
+
+    await expect(terminateFailedBrokerSpawn(child, 50)).resolves.toBe(true);
+    expect(child.killed).toEqual([]);
+  });
+});
+
+describe('HarnessDriverClient.spawn cleanup', () => {
+  const spawnTmpRoots: string[] = [];
+
+  afterEach(() => {
+    for (const dir of spawnTmpRoots.splice(0)) {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  /** A "broker" that never announces an API port, so startup can only time out. */
+  function writeSilentBroker(): { binaryPath: string; cwd: string; pidFile: string } {
+    const cwd = mkdtempSync(join(tmpdir(), 'broker-spawn-cleanup-'));
+    spawnTmpRoots.push(cwd);
+    const pidFile = join(cwd, 'child.pid');
+    const binaryPath = join(cwd, 'silent-broker.sh');
+    // `exec` keeps the recorded pid: the process that has to be reaped is the
+    // one this file names.
+    writeFileSync(binaryPath, `#!/bin/sh\necho $$ > ${JSON.stringify(pidFile)}\nexec sleep 30\n`, {
+      mode: 0o755,
+    });
+    return { binaryPath, cwd, pidFile };
+  }
+
+  it('reaps the broker child when startup never reports an API port', async () => {
+    // The child exists the moment `spawn` forks, and a rejection returns no
+    // client — so nothing downstream knows its pid or can stop it. In `node up`
+    // it is also already holding the node claim's inherited fence descriptor.
+    const { binaryPath, cwd, pidFile } = writeSilentBroker();
+
+    await expect(HarnessDriverClient.spawn({ binaryPath, cwd, startupTimeoutMs: 200 })).rejects.toThrow(
+      /did not report API port/
+    );
+
+    const pid = Number(readFileSync(pidFile, 'utf8').trim());
+    expect(pid).toBeGreaterThan(0);
+    // Verified gone, not merely signalled: `waitForApiUrl` sends SIGTERM on
+    // timeout without ever observing an exit.
+    expect(isProcessRunning(pid)).toBe(false);
+  }, 20_000);
 });

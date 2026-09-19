@@ -666,6 +666,97 @@ describe('acquireNodeClaim exclusion', () => {
     expect(fs.readdirSync(nodeClaimsDir(env))).toHaveLength(1);
   });
 
+  it('refuses to win beneath a generation that was spent while this start was suspended', async () => {
+    // The reviewer's interleaving, and the case the successor test above misses:
+    // every start that raised the generation number has RELEASED, so the only
+    // file above the suspended start is a tombstone. Skipping tombstones when
+    // confirming the create let that start declare itself the owner of a low
+    // number, while a start that had already read the tombstone went on to
+    // create `max + 1`. Neither one's prune list names the other, so both stay
+    // live and both spawn.
+    const env = createHome();
+    const alive = new Set([111, 444]);
+    const liveness = (pid: number): void => {
+      if (!alive.has(pid)) throw new Error(`no such process ${pid}`);
+    };
+    let suspendLater: () => void = () => undefined;
+    const laterIsSuspended = new Promise<void>((resolve) => {
+      suspendLater = resolve;
+    });
+    let resumeLater: () => void = () => undefined;
+    const laterMayResume = new Promise<void>((resolve) => {
+      resumeLater = resolve;
+    });
+    let laterSuspended = false;
+    let interleaved = false;
+    let later: Promise<NodeClaim> | undefined;
+
+    // The start that scanned an EMPTY store and then lost the CPU inside
+    // `buildClaim`, before it could create generation 1.
+    const suspended = acquireNodeClaim({
+      nodeId: 'node_1',
+      pid: 111,
+      stateDir: '/checkout-a',
+      env,
+      killProcess: liveness,
+      execCommand: async () => {
+        if (!interleaved) {
+          interleaved = true;
+          // Two complete start/stop cycles retire generations 1 and 2, leaving
+          // no claim at all: the node id is genuinely free, and the only file
+          // on disk is generation 2's tombstone.
+          for (const pid of [222, 333]) {
+            const spent = await acquireNodeClaim({
+              nodeId: 'node_1',
+              pid,
+              stateDir: `/checkout-${pid}`,
+              env,
+              killProcess: () => undefined,
+              execCommand: psDeps(),
+            });
+            await expect(releaseNodeClaim(spent, env)).resolves.toBe(true);
+          }
+          // A start that reads that tombstone and picks generation 3, then
+          // suspends before creating it — exactly where the old code let the
+          // start below take generation 1 underneath it.
+          later = acquireNodeClaim({
+            nodeId: 'node_1',
+            pid: 444,
+            stateDir: '/checkout-d',
+            env,
+            killProcess: liveness,
+            execCommand: async () => {
+              if (!laterSuspended) {
+                laterSuspended = true;
+                suspendLater();
+                await laterMayResume;
+              }
+              return { stdout: 'Thu Sep 10 18:00:00 2026', stderr: '' };
+            },
+          });
+          await laterIsSuspended;
+        }
+        return { stdout: 'Thu Sep 10 18:00:00 2026', stderr: '' };
+      },
+    });
+
+    // The suspended start may still own the node id — nothing is serving it —
+    // but only above every number ever issued for the stem.
+    const winner = await suspended;
+    expect(winner.generation).toBeGreaterThan(2);
+    resumeLater();
+    // And the start that had already read the tombstone loses, instead of
+    // creating a second live claim beside it.
+    await expect(later).rejects.toBeInstanceOf(NodeClaimConflictError);
+    expect(readNodeClaim('node_1', env)).toMatchObject({ pid: 111, state_dir: '/checkout-a' });
+    const live = fs
+      .readdirSync(nodeClaimsDir(env))
+      .filter((name) => name.endsWith('.json'))
+      .map((name) => JSON.parse(fs.readFileSync(path.join(nodeClaimsDir(env), name), 'utf8')) as NodeClaim)
+      .filter((record) => (record as unknown as { released?: boolean }).released !== true);
+    expect(live).toHaveLength(1);
+  });
+
   it('lets exactly one of six separate OS processes take over a stale claim', async () => {
     const env = createHome();
     writeClaim(env, { node_id: 'node_1', pid: await deadPid(), state_dir: '/gone' });

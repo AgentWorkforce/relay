@@ -736,6 +736,31 @@ async function inspectClaimHold(
 }
 
 /**
+ * Whether anything other than `selfPids` still holds this claim's generation
+ * fenced, for a caller deciding whether ownership may be dropped.
+ *
+ * A release has to consult this, not just the pids on the record. The record
+ * names a broker only once a start got far enough to capture one: a spawn that
+ * rejects before it returns a client — a handshake that never completed, a
+ * SIGTERM the child outlived — leaves a broker child that no pid anywhere names,
+ * and releasing on "no live pid recorded" tombstones the claim and unlinks the
+ * hold file out from under a process that is still fenced by it. The next start
+ * then reads the node id as free while that child can still register. The
+ * descriptor is the one piece of evidence that exists from the instant the child
+ * does, so it is what decides.
+ *
+ * Holders are filtered exactly as {@link inspectNodeClaim} filters them, so a
+ * release never frees a node id that another start would still read as held.
+ */
+export async function inspectNodeClaimHold(
+  claim: NodeClaim,
+  deps: NodeClaimDependencies = {},
+  selfPids?: ReadonlySet<number>
+): Promise<{ held: boolean; reason: string; pids: number[] }> {
+  return inspectClaimHold(claim, deps.env ?? process.env, deps, selfPids);
+}
+
+/**
  * Create and open this generation's hold file, handing the supervising CLI the
  * descriptor it passes to the broker child.
  *
@@ -1062,7 +1087,9 @@ async function buildClaim(
  * one creates generation N+1, the other collides (`EEXIST`) and re-reads, now
  * seeing the winner's live claim. A start that created its generation while a
  * third one was creating a higher one loses the confirm step below, removes its
- * own file and refuses. Exactly one — the highest generation — survives.
+ * own file and refuses. Exactly one — the highest generation NUMBER ever issued
+ * for the stem, live claim or spent tombstone — can own the node id, which is
+ * the invariant the post-create check below enforces.
  *
  * Callers reserve with `status: 'reserved'` and their own pid BEFORE spawning a
  * broker, open the generation's hold descriptor with {@link openNodeClaimHold}
@@ -1103,12 +1130,30 @@ export async function acquireNodeClaim(input: AcquireNodeClaimInput): Promise<No
       // Re-read: its claim is what decides whether we may continue at all.
       continue;
     }
-    const winner = currentGeneration(readClaimGenerations(nodeId, env));
-    if (winner && winner.generation > generation) {
-      // A start that read our generation as free-to-take created a higher one.
-      // It owns the node id now; drop ours so two files cannot both read live.
+    const after = readClaimGenerations(nodeId, env);
+    if (highestGenerationNumber(after) > generation) {
+      // Somebody else has already been ISSUED a higher generation number, so
+      // this one cannot be the owner — whatever that higher file holds now.
+      //
+      // The test is the highest NUMBER on disk and not the highest live claim:
+      // a spent generation is a file too. A start suspended since before a
+      // release cycle could otherwise wake up, re-create a low number in the
+      // gap the cycle's pruning left, see only tombstones above it and declare
+      // itself the owner — while the start that had already read those
+      // tombstones goes on to create `max + 1`. Neither one's prune list names
+      // the other (each scanned before the other's file existed), so both stay
+      // live and both spawn. Only the record with the highest number ever
+      // issued can own the node id.
       safeUnlinkClaim(file);
-      throw new NodeClaimConflictError(nodeId, winner.claim ?? claim);
+      const winner = currentGeneration(after);
+      if (winner && winner.generation > generation) {
+        // A live claim above ours: that start legitimately won the node id.
+        throw new NodeClaimConflictError(nodeId, winner.claim ?? claim);
+      }
+      // Only spent or unreadable generations sit above ours, so the node id
+      // itself is free — this number just is not ours to hold. Re-scan and take
+      // one above the highest file on disk instead.
+      continue;
     }
     for (const superseded of generations) {
       pruneSupersededGeneration(superseded, nodeId, env);
