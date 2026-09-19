@@ -37,6 +37,16 @@
       "types": "./dist/capabilities.d.ts",
       "import": "./dist/capabilities.js",
       "default": "./dist/capabilities.js"
+    },
+    "./attach": {
+      "types": "./dist/attach.d.ts",
+      "import": "./dist/attach.js",
+      "default": "./dist/attach.js"
+    },
+    "./fleet": {
+      "types": "./dist/fleet.d.ts",
+      "import": "./dist/fleet.js",
+      "default": "./dist/fleet.js"
     }
   },
   "files": [
@@ -64,6 +74,7 @@
   "dependencies": {
     "@relaycast/sdk": "^8.0.7",
     "@relaycast/types": "^8.0.7",
-    "zod": "^4.4.3"
+    "zod": "^4.4.3",
+    "@agent-relay/cloud": "12.2.4"
   }
 }

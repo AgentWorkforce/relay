@@ -395,6 +395,19 @@ agent-relay fleet spawn claude \
   --task 'Review the live draft under /workspace/live-review/run-123'
 ```
 
+Use `--sandbox-readonly-path '/reference/**'` to request a read-only Relayfile
+subtree. It requires `--sandbox` with Relayfile enabled and accepts explicit
+`/path/**` subtrees (no traversal or other wildcards). This client forwards the
+request; the deployed Cloud ensure handler must implement chmod enforcement.
+
+The ESM `@agent-relay/cloud/attach` and `@agent-relay/sdk/attach` entries expose
+`startFleetNodeAttachProxy({ nodeId, mode })`. An omitted agent is discovered
+only when the node has exactly one agent. `socketPath` accepts one raw stdio
+connection; `close()` removes it. `finished` reports an inferred status (0 for
+terminal closure or detach, 1 for transport failure), because Relaycast does
+not currently transmit the remote harness exit code. Existing CLI broker
+transport fields remain available for compatibility.
+
 `--session-ref` is a real CLI resume, not a logical collaboration label. Pass
 the actual Claude session ID or Codex thread ID and target its origin node.
 `--cwd` must name an absolute directory that exists on the selected node. The

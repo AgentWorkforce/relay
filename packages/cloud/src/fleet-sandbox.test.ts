@@ -1114,6 +1114,7 @@ describe('Cloud fleet sandbox client', () => {
       requiredCapability: 'spawn:claude',
       forceProvision: true,
       relayfilePaths: ['/live-review/run-123/**'],
+      readonlyPaths: ['/live-review/run-123/reference/**'],
     });
 
     const ensureCall = mocks.authorizedApiFetch.mock.calls[1];
@@ -1122,7 +1123,34 @@ describe('Cloud fleet sandbox client', () => {
       requiredCapability: 'spawn:claude',
       forceProvision: true,
       relayfilePaths: ['/live-review/run-123/**'],
+      readonlyPaths: ['/live-review/run-123/reference/**'],
     });
+  });
+
+  it.each([[], ['/'], ['relative/**'], ['/foo'], ['/foo/../bar/**'], ['/foo/*/**']])(
+    'rejects invalid readonlyPaths before authentication: %j',
+    async (...paths) => {
+      await expect(
+        ensureCloudFleetSandbox({
+          workspaceId: 'rw_abc',
+          requiredCapability: 'spawn:claude',
+          readonlyPaths: paths as string[],
+        })
+      ).rejects.toThrow('readonlyPaths');
+      expect(mocks.ensureCloudSession).not.toHaveBeenCalled();
+    }
+  );
+
+  it('rejects readonly paths without a mount', async () => {
+    await expect(
+      ensureCloudFleetSandbox({
+        workspaceId: 'rw_abc',
+        requiredCapability: 'spawn:claude',
+        mountRelayfile: false,
+        readonlyPaths: ['/foo/**'],
+      })
+    ).rejects.toThrow('requires mounting');
+    expect(mocks.ensureCloudSession).not.toHaveBeenCalled();
   });
 
   it('rejects incomplete revision maps before Cloud authentication', async () => {
