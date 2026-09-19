@@ -77,9 +77,17 @@ export default flow<PrProofInput>(
     // extracts only the pull request number, so `prepare.mjs` resolves the
     // authoritative pull request from the API and no listener-supplied SHA,
     // title, or body can reach the proof contract.
-    await f.run(
+    // Cloud delivers every pull_request event to this listener, including the
+    // ones the proof has no opinion about (`labeled`, `closed`, `assigned`).
+    // `event-from-input.mjs` writes nothing and says so for those, and the run
+    // ends here rather than spending the 110-minute budget on them.
+    const delivery = await f.run(
       `node scripts/pr-proof/event-from-input.mjs --input-base64 ${encodeInput(input)} --out ${EVENT_PATH}`
     );
+    if (delivery.includes('PR_PROOF_EVENT_SKIPPED')) {
+      f.done('success');
+      return;
+    }
 
     // Classify the PR and validate the declared case. Fails closed: an
     // unreadable diff, a fork head, or a PR that does not touch exactly its one

@@ -56,6 +56,37 @@ export function decodeInput(encoded) {
 }
 
 /**
+ * The actions the proof runs for, the same set the GitHub Actions dispatcher
+ * this replaced declared (`types: [opened, synchronize, reopened, edited,
+ * ready_for_review]`). Cloud delivers every pull_request event, so an action
+ * outside this set — `labeled`, `closed`, `assigned` — is a normal delivery to
+ * ignore, not a failure: each one would otherwise start a 110-minute proof.
+ */
+export const PROOF_ACTIONS = new Set(['opened', 'synchronize', 'reopened', 'edited', 'ready_for_review']);
+
+/** `pull_request.synchronize` -> `pull_request`; `pull_request` -> `pull_request`. */
+function eventKind(type) {
+  return type.split('.', 1)[0];
+}
+
+/**
+ * The action this delivery carries, from the event name Cloud sends
+ * (`pull_request.synchronize`) or from the webhook payload's own field.
+ * `null` when neither says, which is treated as proof-worthy: the Actions
+ * dispatcher only ever received events it had subscribed to.
+ */
+export function pullRequestAction(input) {
+  const event = record(input.event) ?? {};
+  const payload = record(event.payload) ?? {};
+  const type = event.type ?? event.eventType;
+  if (typeof type === 'string') {
+    const [, action] = type.split('.');
+    if (action) return action;
+  }
+  return typeof payload.action === 'string' ? payload.action : null;
+}
+
+/**
  * The pull request number carried by the listener envelope.
  *
  * The candidate list is deliberately broad: Cloud's envelope is versioned
@@ -67,9 +98,13 @@ export function pullRequestNumber(input) {
   const payload = record(event.payload) ?? {};
   const issue = record(input.issue) ?? {};
   // A non-pull_request event reaching a pull-request proof is a deployment
-  // misconfiguration, not something to guess a number out of.
+  // misconfiguration, not something to guess a number out of. Cloud's listener
+  // names the event `pull_request.<action>` (the Actions dispatcher this
+  // replaced got `pull_request` with the action in a separate field), so
+  // compare the kind, not the whole string: requiring an exact `pull_request`
+  // rejected every real delivery at the proof's first step.
   const type = event.type ?? event.eventType;
-  if (typeof type === 'string' && type !== 'pull_request') {
+  if (typeof type === 'string' && eventKind(type) !== 'pull_request') {
     throw new Error(`This flow proves pull requests; the listener delivered a "${type}" event`);
   }
   const candidates = [
@@ -99,6 +134,13 @@ export function pullRequestNumber(input) {
 export async function main() {
   const input = decodeInput(option('--input-base64'));
   const outputPath = option('--out', '.relayflow/pr-proof-event.json');
+  const action = pullRequestAction(input);
+  if (action !== null && !PROOF_ACTIONS.has(action)) {
+    // Nothing is written: the flow reads this line and ends the run as a
+    // success without proving anything.
+    console.log(`PR_PROOF_EVENT_SKIPPED action=${action}`);
+    return;
+  }
   const number = pullRequestNumber(input);
   await mkdir(path.dirname(outputPath), { recursive: true });
   await writeFile(outputPath, `${JSON.stringify({ inputs: { pr_number: number } }, null, 2)}\n`);
