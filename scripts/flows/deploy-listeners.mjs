@@ -52,14 +52,31 @@ const MANAGED = [
 
 const DRY_RUN = process.argv.includes('--dry-run');
 
+/**
+ * The environment the CLI runs with. An empty `FLOWS_CLOUD_URL` is dropped:
+ * a workflow that exports `${{ vars.FLOWS_CLOUD_URL }}` with the variable
+ * unset yields "" rather than nothing, and the CLI refuses an empty URL instead
+ * of falling back to production — which took every reconcile down before it
+ * listed a single listener.
+ */
+function cliEnvironment() {
+  const env = { ...process.env };
+  if (!env.FLOWS_CLOUD_URL?.trim()) delete env.FLOWS_CLOUD_URL;
+  return env;
+}
+
 function flows(args, { expectJson = true } = {}) {
   const { status, stdout, stderr } = spawnSync('npx', ['flows', ...args], {
     encoding: 'utf8',
-    env: process.env,
+    env: cliEnvironment(),
   });
   if (stderr?.trim()) process.stderr.write(`${stderr.trim()}\n`);
   if (status !== 0) {
-    throw new Error(`flows ${args.join(' ')} exited ${status ?? 'null'}`);
+    // With --json the CLI reports its refusal on stdout as
+    // `{"ok":false,"code":…,"message":…}` and exits 2; without echoing it the
+    // failure reads as a bare exit code.
+    const refusal = (stdout ?? '').trim().split('\n').filter(Boolean).at(-1);
+    throw new Error(`flows ${args.join(' ')} exited ${status ?? 'null'}${refusal ? `: ${refusal}` : ''}`);
   }
   if (!expectJson) return undefined;
   const line = (stdout ?? '')

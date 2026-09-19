@@ -90,10 +90,15 @@ jobs:
           npx tsc -p flows/ci/tsconfig.json
           npx flows check flows/ci/pr-proof.flow.ts
 
+      # FLOWS_CLOUD_URL is deliberately not exported here. `${{ vars.X }}` for an
+      # unset variable is an empty string, and the CLI refuses an empty URL
+      # (`FLOWS_CLOUD_URL must be an absolute Cloud application base URL`)
+      # rather than falling back to production. Point at another Cloud by
+      # setting the variable AND uncommenting the line, not by one alone.
       - name: Reconcile listeners
         env:
           FLOWS_CLOUD_TOKEN: ${{ secrets.FLOWS_CLOUD_TOKEN }}
-          FLOWS_CLOUD_URL: ${{ vars.FLOWS_CLOUD_URL }}
+          # FLOWS_CLOUD_URL: ${{ vars.FLOWS_CLOUD_URL }}
           RELAY_PR_PROOF_APPROVER: ${{ vars.RELAY_PR_PROOF_APPROVER }}
         run: node scripts/flows/deploy-listeners.mjs
 
@@ -101,5 +106,4 @@ jobs:
         if: always()
         env:
           FLOWS_CLOUD_TOKEN: ${{ secrets.FLOWS_CLOUD_TOKEN }}
-          FLOWS_CLOUD_URL: ${{ vars.FLOWS_CLOUD_URL }}
         run: npx flows deployments >> "$GITHUB_STEP_SUMMARY" 2>&1 || true
