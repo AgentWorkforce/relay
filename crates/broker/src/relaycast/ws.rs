@@ -2079,29 +2079,30 @@ where
 fn workspace_busy_retry_allowed(
     projected_requests: usize,
     elapsed: Duration,
-    retry_after: Duration,
+    round_cost: Duration,
 ) -> bool {
     workspace_busy_retry_allowed_with_budget(
         projected_requests,
         elapsed,
-        retry_after,
+        round_cost,
         MAX_AGENT_REGISTRATION_ELAPSED,
         WORKSPACE_BUSY_CREATE_ONLY_SAFETY_CAP,
     )
 }
 
 /// `projected_requests` is the total the server will have received once the
-/// next round completes (every request so far plus a full round). Permit the
-/// round only when that total stays within the cap and the sleep fits the
-/// remaining budget.
+/// next round completes (every request so far plus a full round) and
+/// `round_cost` is how long that round will take (the inter-round sleep plus
+/// the SDK's own paced sleeps inside it). Permit the round only when that
+/// total stays within the cap and the whole round fits the remaining budget.
 fn workspace_busy_retry_allowed_with_budget(
     projected_requests: usize,
     elapsed: Duration,
-    retry_after: Duration,
+    round_cost: Duration,
     budget: Duration,
     safety_cap: usize,
 ) -> bool {
-    projected_requests <= safety_cap && elapsed.saturating_add(retry_after) < budget
+    projected_requests <= safety_cap && elapsed.saturating_add(round_cost) < budget
 }
 
 /// Requests the server will have received after one more round of
@@ -2317,12 +2318,17 @@ async fn retry_agent_registration_with_timeout(
                     // round (the SDK's last round is its size) so the cap is
                     // a ceiling, never a threshold crossed mid-round.
                     let projected = projected_requests(attempts_so_far, round_requests);
+                    // The next round costs this sleep plus the SDK's own paced
+                    // sleeps between its attempts; a round that does not fit
+                    // would be cancelled by the request timeout and lose the
+                    // typed receipt.
+                    let round_cost = delay.saturating_mul(round_requests.max(1));
                     if delay > MAX_AGENT_REGISTRATION_RETRY_DELAY
-                        || delay > remaining_after_request
+                        || round_cost > remaining_after_request
                         || !workspace_busy_retry_allowed_with_budget(
                             projected,
                             retry_started.elapsed(),
-                            delay,
+                            round_cost,
                             budget,
                             WORKSPACE_BUSY_ACTION_SAFETY_CAP,
                         )
@@ -2524,7 +2530,9 @@ async fn register_new_spawn_identity_inner(
                     // next round so the cap is never exceeded (see the takeover
                     // loop above).
                     let projected = projected_requests(attempts_so_far, round_requests);
-                    if !workspace_busy_retry_allowed(projected, elapsed, delay) {
+                    // Budget the whole next round, SDK-internal sleeps included.
+                    let round_cost = delay.saturating_mul(round_requests.max(1));
+                    if !workspace_busy_retry_allowed(projected, elapsed, round_cost) {
                         return Err(RegRetryOutcome::RetryableExhausted(error));
                     }
                 } else if attempt > TRANSIENT_REGISTRATION_RETRY_BACKOFFS_MS.len() {

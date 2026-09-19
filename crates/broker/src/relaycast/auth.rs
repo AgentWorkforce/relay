@@ -1447,20 +1447,25 @@ fn startup_retry_backoff(
             // `total_requests` already includes every request this round made.
             // Reserve a whole next round (the SDK's last round is its size) so
             // the cap is a ceiling the server never sees crossed mid-round.
-            let projected_requests =
-                usize::try_from(total_requests.saturating_add(relay_error_attempts(error)))
-                    .unwrap_or(usize::MAX);
+            let round_requests = relay_error_attempts(error);
+            let projected_requests = usize::try_from(total_requests.saturating_add(round_requests))
+                .unwrap_or(usize::MAX);
+            // Budget the time of the whole next round, not only this sleep:
+            // the SDK sleeps the same cooldown between each of its own
+            // attempts, so a round that does not fit would be cut off by the
+            // outer handshake timer and lose the typed receipt.
+            let round_cost = backoff.saturating_mul(round_requests.max(1));
             if let Some(deadline) = startup_deadline {
                 let remaining = deadline.saturating_duration_since(tokio::time::Instant::now());
                 (projected_requests <= WORKSPACE_BUSY_STARTUP_RETRY_SAFETY_CAP
-                    && remaining >= backoff + WORKSPACE_BUSY_STARTUP_RETRY_RESERVE)
+                    && remaining >= round_cost + WORKSPACE_BUSY_STARTUP_RETRY_RESERVE)
                     .then_some(backoff)
             } else {
                 let elapsed = started.elapsed();
                 workspace_busy_retry_allowed(
                     projected_requests,
                     elapsed,
-                    backoff,
+                    round_cost,
                     WORKSPACE_BUSY_STARTUP_RETRY_DEADLINE,
                     WORKSPACE_BUSY_STARTUP_RETRY_SAFETY_CAP,
                 )
@@ -1475,16 +1480,18 @@ fn startup_retry_backoff(
 }
 
 /// `projected_requests` is the total the server will have received once the
-/// next round completes. Permit that round only when both the explicit
-/// deadline and the independent safety cap leave room for all of it.
+/// next round completes and `round_cost` is how long that round will take
+/// (the inter-round sleep plus the SDK's own paced sleeps inside it). Permit
+/// the round only when both the explicit deadline and the independent safety
+/// cap leave room for all of it.
 fn workspace_busy_retry_allowed(
     projected_requests: usize,
     elapsed: std::time::Duration,
-    backoff: std::time::Duration,
+    round_cost: std::time::Duration,
     deadline: std::time::Duration,
     safety_cap: usize,
 ) -> bool {
-    projected_requests <= safety_cap && elapsed.saturating_add(backoff) < deadline
+    projected_requests <= safety_cap && elapsed.saturating_add(round_cost) < deadline
 }
 
 async fn relay_request_with_timeout<T>(
@@ -2059,9 +2066,11 @@ mod tests {
         is_workspace_busy_error, reclaim_legacy_identity, relay_error_to_anyhow,
         relay_request_with_timeout, resolve_relaycast_base_url, retry_transient_relay_error,
         retry_typed_startup_registration_error_with_sleep, stable_node_identity_key,
-        workspace_busy_retry_allowed, AuthClient, AuthHttpError, CredentialCache,
-        AGENT_TOKEN_INVALID_CODE, DEFAULT_RELAYCAST_BASE_URL, TRANSIENT_STARTUP_RETRY_BACKOFFS_MS,
-        WORKSPACE_BUSY_STARTUP_RETRY_DEADLINE, WORKSPACE_BUSY_STARTUP_RETRY_SAFETY_CAP,
+        startup_retry_backoff, workspace_busy_retry_allowed, AuthClient, AuthHttpError,
+        CredentialCache, AGENT_TOKEN_INVALID_CODE, DEFAULT_RELAYCAST_BASE_URL,
+        TRANSIENT_STARTUP_RETRY_BACKOFFS_MS, WORKSPACE_BUSY_CODE,
+        WORKSPACE_BUSY_STARTUP_RETRY_DEADLINE, WORKSPACE_BUSY_STARTUP_RETRY_RESERVE,
+        WORKSPACE_BUSY_STARTUP_RETRY_SAFETY_CAP,
     };
     use relaycast::RelayError;
     use std::sync::atomic::Ordering;
@@ -4036,6 +4045,50 @@ mod tests {
             }
             other => panic!("expected terminal typed 429 diagnostics, got {other}"),
         }
+    }
+
+    /// The room check must budget the whole next round, not only the broker's
+    /// inter-round sleep: the SDK sleeps the same cooldown between each of its
+    /// own attempts, so a round the outer handshake timer would cut off must
+    /// not be started (the typed receipt would be lost).
+    #[tokio::test(start_paused = true)]
+    async fn startup_retry_budgets_the_sdk_round_not_only_the_inter_round_sleep() {
+        let busy = |attempts: u32, retry_after_ms: Option<u64>| RelayError::Api {
+            status: 429,
+            code: WORKSPACE_BUSY_CODE.to_string(),
+            message: "busy".to_string(),
+            request_id: None,
+            attempts,
+            retry_after_ms,
+        };
+        let started = std::time::Instant::now();
+        // 2s cooldown, 3-request SDK rounds: the next round costs 6s.
+        let remaining = std::time::Duration::from_secs(6)
+            + WORKSPACE_BUSY_STARTUP_RETRY_RESERVE
+            + std::time::Duration::from_millis(500);
+        let deadline = Some(tokio::time::Instant::now() + remaining);
+        assert_eq!(
+            startup_retry_backoff(&busy(3, Some(2_000)), 0, 3, started, deadline),
+            Some(std::time::Duration::from_secs(2)),
+            "a round that fits (6s + reserve) is allowed"
+        );
+        // Same sleep, but the reserve now only covers the sleep, not the
+        // round: refused, where budgeting the sleep alone would have allowed it.
+        let deadline = Some(
+            tokio::time::Instant::now()
+                + std::time::Duration::from_secs(2)
+                + WORKSPACE_BUSY_STARTUP_RETRY_RESERVE
+                + std::time::Duration::from_millis(500),
+        );
+        assert_eq!(
+            startup_retry_backoff(&busy(3, Some(2_000)), 0, 3, started, deadline),
+            None
+        );
+        // A single-request round with the same sleep still fits that window.
+        assert_eq!(
+            startup_retry_backoff(&busy(1, Some(2_000)), 0, 1, started, deadline),
+            Some(std::time::Duration::from_secs(2))
+        );
     }
 
     #[test]
