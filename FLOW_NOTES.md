@@ -50,7 +50,7 @@ Ownership moves in two phases:
 The claim records both pids (`pid` + `supervisor_pid`) and reads as **held while
 either is alive**. A start's own pid is never evidence against it — a claim that
 records the acquirer's pid can be re-taken — but that exemption is scoped to the
-pid *as a recorded holder* and suppresses nothing else: the orphan fences below
+pid _as a recorded holder_ and suppresses nothing else: the orphan fences below
 still run in full. (Exempting the whole check on pid equality, as round 2 did,
 was unsound: a pid is not an identity, and a start handed a dead supervisor's
 recycled number would have walked straight past the broker that supervisor left
@@ -329,14 +329,13 @@ code, and neither needed a Rust change.
 `acquireNodeClaim` skipped `classifyNodeClaim` outright whenever
 `current.pid === input.pid`. The reviewer's repro is exact: a reservation naming
 a dead supervisor 102 with an old birth time, that supervisor's broker 103 still
-live in the state dir's `connection.json`, and a new start whose recycled pid is
-102. `inspectNodeClaim` answered `held` correctly, but the acquisition backstop
-— which is the *only* guard for plain `up` / `local up`, neither of which has
+live in the state dir's `connection.json`, and a new start whose recycled pid is 102. `inspectNodeClaim` answered `held` correctly, but the acquisition backstop
+— which is the _only_ guard for plain `up` / `local up`, neither of which has
 `node up`'s preflight — waved it through and pruned the orphan's claim.
 
 The exemption is now scoped instead of removed. `classifyNodeClaim` and
-`inspectClaimHold` take a `selfPids` set: pids in it are skipped as *recorded
-holders* (a process is not a competing broker against itself, and a start still
+`inspectClaimHold` take a `selfPids` set: pids in it are skipped as _recorded
+holders_ (a process is not a competing broker against itself, and a start still
 holding its own reservation's descriptor must not read as its own rival), and
 that is all they do. The `connection.json` orphan check and the hold-descriptor
 check run unchanged, so any evidence of a broker that is not this process still
@@ -361,7 +360,7 @@ round 2 was written to close, reopened by any `ENOSPC`/`EACCES` on one open.
 `openNodeClaimHold` now throws `NodeClaimHoldError`. Before throwing it closes
 any descriptor it opened and unlinks any file it created — an abandoned fd would
 keep answering `lsof` for this process's whole life, pinning a node id nothing is
-serving — while a hold file it did *not* create is left exactly as found, since
+serving — while a hold file it did _not_ create is left exactly as found, since
 removing it would drop the fence off whatever is holding that inode. The
 reservation is released by the existing `shutdownOnce()` path, so a transient
 failure does not block the node id.
@@ -377,7 +376,7 @@ and `refuses rather than reusing a hold file it did not create`.
 
 - `npx vitest run packages/cli packages/harness-driver packages/cloud` → 2295
   passed, 1 failed: the same pre-existing `local-agent.test.ts > message hold and
-  auto switch local broker delivery mode`. Re-confirmed pre-existing this round
+auto switch local broker delivery mode`. Re-confirmed pre-existing this round
   by stashing only this round's source and test changes and re-running that
   file: 68 passed / 1 failed either way.
 - `npm run typecheck` → exit 0.
@@ -401,7 +400,7 @@ code, and neither needed a Rust change.
 The reviewer's interleaving is exact, and it is the case the round-2 test
 missed: that test left its successor **live**, so the suspended start was
 refused by the successor's claim rather than by the generation number. When
-every start that raised the number has *released*, the only thing above the
+every start that raised the number has _released_, the only thing above the
 suspended start is a tombstone — and the post-create fence read
 `currentGeneration()`, which skips tombstones by design because a tombstone
 means "node id free".
@@ -417,7 +416,7 @@ The fence is now on the highest generation **number** on disk, not the highest
 live claim: `highestGenerationNumber(after) > generation` ⇒ this start cannot be
 the owner, whatever that higher file holds. If the higher generation is a live
 claim, that start won and this one refuses as before. If it is only a tombstone
-(or an unreadable file), the node id itself is free but *this number* is not ours
+(or an unreadable file), the node id itself is free but _this number_ is not ours
 to hold, so the acquisition drops its own file and retries above the highest one
 — which is what a start scanning that same tombstone would have picked in the
 first place. The invariant is now statable without reference to what the higher
@@ -438,7 +437,7 @@ the state dir's `connection.json`, and `onCandidateReady` cannot fire until
 `createRelay` **resolves** — so a spawn that rejects after the fork (a handshake
 that never completed, `waitForApiUrl`'s SIGTERM that the child outlived) left a
 broker child that no captured pid names and that has published nothing. Release
-then tombstoned the claim *and unlinked the hold file*, which is worse than
+then tombstoned the claim _and unlinked the hold file_, which is worse than
 leaving it: removing the name is exactly what makes `inspectClaimHold` read "no
 start holds this", so the next start saw a free node id while that child could
 still register.
@@ -465,7 +464,7 @@ Fixed on both sides:
 New tests: `keeps the claim when the spawn rejects with a fenced child still
 alive` drives the real `runUpCommand` with a factory that spawns a real child on
 the real inherited descriptor and then rejects, with real `lsof`/`ps` behind the
-probe — asserting the claim *and* its hold file survive; `reaps the broker child
+probe — asserting the claim _and_ its hold file survive; `reaps the broker child
 when startup never reports an API port` drives the real
 `HarnessDriverClient.spawn` against a broker stand-in that never announces a
 port and asserts the child is gone, not merely signalled; plus four unit tests
@@ -475,7 +474,7 @@ for `terminateFailedBrokerSpawn`.
 
 - `npx vitest run packages/cli packages/harness-driver packages/cloud` → 2302
   passed, 1 failed: the same pre-existing `local-agent.test.ts > message hold and
-  auto switch local broker delivery mode`. Re-confirmed pre-existing this round
+auto switch local broker delivery mode`. Re-confirmed pre-existing this round
   by stashing only this round's source and test changes and re-running that
   file: 68 passed / 1 failed either way.
 - `npm run typecheck` → exit 0. `npm --prefix packages/harness-driver run check`
@@ -566,7 +565,7 @@ holder out is a determination rather than a guess about its filename.
 
 - `npx vitest run packages/cli packages/harness-driver` → 1869 passed, 1 failed:
   the same pre-existing `local-agent.test.ts > message hold and auto switch local
-  broker delivery mode`. Re-confirmed pre-existing this round by stashing only
+broker delivery mode`. Re-confirmed pre-existing this round by stashing only
   this round's source and test changes and re-running that file: 68 passed / 1
   failed either way. `local-agent.ts` and its test are untouched by every commit
   on this branch.
@@ -648,7 +647,7 @@ same descriptor and is still dropped.
 
 The release path is unaffected: `releaseNodeClaimAfterExit` waits for every
 protected pid — `spawnedBrokerPids` now includes the pid from the spawn itself —
-to be observed gone *before* it consults the fence, so the recorded child pid is
+to be observed gone _before_ it consults the fence, so the recorded child pid is
 already dead by the time this evidence could be read.
 
 New tests: `holds a node whose broker is started through a launcher script`
@@ -670,7 +669,7 @@ shell script that `exec`s — `$$` before the exec is the pid after it).
 
 - `npx vitest run packages/cli packages/harness-driver` → 1875 passed, 1 failed:
   the same pre-existing `local-agent.test.ts > message hold and auto switch local
-  broker delivery mode`. Re-confirmed pre-existing this round by stashing every
+broker delivery mode`. Re-confirmed pre-existing this round by stashing every
   source and test change under `packages/` and re-running that file: 68 passed /
   1 failed either way.
 - `npm run typecheck` → exit 0.
@@ -733,7 +732,7 @@ never consulted on the `connection.json` path, where it could have been
 recycled by anything (round 2).
 
 This is a strict widening of the fence, so `--force`, `node down` and every
-stale-claim path are untouched, and a claim that *does* record its child still
+stale-claim path are untouched, and a claim that _does_ record its child still
 drops an unrelated inheritor.
 
 New test: `holds a node whose supervisor died before it could record the child
@@ -787,7 +786,7 @@ env-token gate fails all four.
 
 - `npx vitest run packages/cli packages/harness-driver` → 1876 passed, 1 failed:
   the same pre-existing `local-agent.test.ts > message hold and auto switch local
-  broker delivery mode`. Re-confirmed pre-existing this round by stashing every
+broker delivery mode`. Re-confirmed pre-existing this round by stashing every
   change under `packages/` and re-running that file: 68 passed / 1 failed either
   way.
 - `npm run typecheck` → exit 0.
@@ -844,7 +843,7 @@ env-token gate fails all four.
   hand-started one was never fenced by a reservation to begin with.
 - **Executable identity is recorded, not verified against the child** (was a
   risk in round 5; closed in rounds 6 and 7). The claim still records the binary
-  the supervising CLI *resolved*, which is not what the process maps once a
+  the supervising CLI _resolved_, which is not what the process maps once a
   launcher script runs as its interpreter and then `exec`s the real broker — but
   that holder is identified anyway, by the recorded file appearing in argv where
   an interpreter puts it and by the child pid the start records at the spawn,
@@ -852,7 +851,7 @@ env-token gate fails all four.
   syscalls between `spawn()` returning and that pid reaching disk, whose child
   has ALSO already `exec`d — is closed in round 7 by not ruling any holder out
   until that pid is on disk. What remains is not a safety gap but its price: in
-  that window the node id is guarded by *anything* holding the descriptor.
+  that window the node id is guarded by _anything_ holding the descriptor.
 - **The spawned child pid is recorded on a best-effort write.** If the claims
   directory cannot be written at that instant, `recordSpawnedBrokerChild`
   returns the claim unchanged rather than failing the start — unlike the hold
