@@ -114,6 +114,45 @@ describe('loadProductSurface', () => {
     ).rejects.toThrow(/needs @relayfile\/sdk, which is not installed/);
   });
 
+  it.each([
+    ['Windows drive letter', "C:\\Users\\dev\\node_modules\\@relayfile\\sdk\\dist\\index.js"],
+    ['UNC share', "\\\\build\\share\\node_modules\\@relayfile\\sdk\\dist\\index.js"],
+  ])('treats an incomplete install as incomplete on a %s path', async (_label, modulePath) => {
+    // The first version of this check required a leading "/", so every Windows
+    // and UNC incomplete install was reported as "not installed" — sending the
+    // operator to reinstall a package already on disk.
+    const partial = Object.assign(new Error(`Cannot find module '${modulePath}'`), {
+      code: 'ERR_MODULE_NOT_FOUND',
+    });
+    await expect(
+      loadProductSurface(
+        DEFINITION,
+        makeDeps(async () => {
+          throw partial;
+        })
+      )
+    ).rejects.toThrow(/installed but incomplete/);
+  });
+
+  it('blames the dependency, not the product, for a CommonJS module error', async () => {
+    // A CommonJS failure names a bare specifier — `Cannot find module 'yaml'` —
+    // with no path and no "package" wording, so neither of the other two
+    // matchers sees it. Left alone it falls through and tells the operator to
+    // reinstall @relayfile/sdk, which is present and not the problem.
+    const transitive = Object.assign(new Error("Cannot find module 'yaml'"), {
+      code: 'MODULE_NOT_FOUND',
+    });
+    const message = await loadProductSurface(
+      DEFINITION,
+      makeDeps(async () => {
+        throw transitive;
+      })
+    ).catch((error: Error) => error.message);
+
+    expect(message).toMatch(/yaml/);
+    expect(message).not.toMatch(/needs @relayfile\/sdk, which is not installed/);
+  });
+
   it('separates an incomplete install from a missing package', async () => {
     // ERR_MODULE_NOT_FOUND covers both, and reporting the second as "not
     // installed" sends the operator to reinstall a package already on disk.

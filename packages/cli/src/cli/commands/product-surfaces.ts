@@ -330,8 +330,18 @@ function missingFileFrom(error: unknown): string | undefined {
  */
 function missingDependencyFrom(error: unknown): string | undefined {
   const message = (error as { message?: string } | undefined)?.message ?? '';
-  const bareMatch = /Cannot find module '([^/\\][^']*)'/.exec(message);
-  return bareMatch?.[1];
+  const named = /Cannot find module '([^']+)'/.exec(message)?.[1];
+  if (named === undefined) return undefined;
+
+  // Reject anything path-shaped rather than trusting the first character. A
+  // leading-character test reads `C:\\Users\\...` as a bare name starting with
+  // "C", so a Windows incomplete install was reported as a missing dependency
+  // called `C:\\Users\\...`. Excluding paths here also makes the order of the
+  // checks below irrelevant, which is one less thing to get wrong.
+  if (/^(?:\/|[A-Za-z]:[\\/]|\\\\)/.test(named)) return undefined;
+  // A specifier may contain forward slashes (`@scope/pkg`), never a backslash.
+  if (named.includes('\\')) return undefined;
+  return named;
 }
 
 /**
