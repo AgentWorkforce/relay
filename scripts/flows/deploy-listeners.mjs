@@ -90,9 +90,7 @@ export function declaredFlowName(flowPath) {
   // `flow('name'` or `flow<Input>('name'`; the generic never contains parens.
   const declarations = [...source.matchAll(/\bflow\s*(?:<[^()]*>)?\s*\(\s*(['"`])([^'"`\n]+)\1/g)];
   if (declarations.length !== 1) {
-    throw new Error(
-      `${flowPath} must declare exactly one flow(...); found ${declarations.length}`
-    );
+    throw new Error(`${flowPath} must declare exactly one flow(...); found ${declarations.length}`);
   }
   return declarations[0][2];
 }
