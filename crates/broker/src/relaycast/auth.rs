@@ -1445,16 +1445,20 @@ fn startup_retry_backoff(
                     retry_after.max(WORKSPACE_BUSY_STARTUP_RETRY_BACKOFF)
                 });
             // `total_requests` already includes every request this round made.
-            let requests_so_far = usize::try_from(total_requests).unwrap_or(usize::MAX);
+            // Reserve a whole next round (the SDK's last round is its size) so
+            // the cap is a ceiling the server never sees crossed mid-round.
+            let projected_requests =
+                usize::try_from(total_requests.saturating_add(relay_error_attempts(error)))
+                    .unwrap_or(usize::MAX);
             if let Some(deadline) = startup_deadline {
                 let remaining = deadline.saturating_duration_since(tokio::time::Instant::now());
-                (requests_so_far < WORKSPACE_BUSY_STARTUP_RETRY_SAFETY_CAP
+                (projected_requests <= WORKSPACE_BUSY_STARTUP_RETRY_SAFETY_CAP
                     && remaining >= backoff + WORKSPACE_BUSY_STARTUP_RETRY_RESERVE)
                     .then_some(backoff)
             } else {
                 let elapsed = started.elapsed();
                 workspace_busy_retry_allowed(
-                    requests_so_far,
+                    projected_requests,
                     elapsed,
                     backoff,
                     WORKSPACE_BUSY_STARTUP_RETRY_DEADLINE,
@@ -1470,17 +1474,17 @@ fn startup_retry_backoff(
     }
 }
 
-/// `attempt` is the failed attempt that would be followed by the proposed
-/// sleep. Permit another request only when both the explicit deadline and the
-/// independent safety cap leave room for it.
+/// `projected_requests` is the total the server will have received once the
+/// next round completes. Permit that round only when both the explicit
+/// deadline and the independent safety cap leave room for all of it.
 fn workspace_busy_retry_allowed(
-    attempt: usize,
+    projected_requests: usize,
     elapsed: std::time::Duration,
     backoff: std::time::Duration,
     deadline: std::time::Duration,
     safety_cap: usize,
 ) -> bool {
-    attempt < safety_cap && elapsed.saturating_add(backoff) < deadline
+    projected_requests <= safety_cap && elapsed.saturating_add(backoff) < deadline
 }
 
 async fn relay_request_with_timeout<T>(
@@ -4045,8 +4049,17 @@ mod tests {
             WORKSPACE_BUSY_STARTUP_RETRY_DEADLINE,
             WORKSPACE_BUSY_STARTUP_RETRY_SAFETY_CAP,
         ));
-        assert!(!workspace_busy_retry_allowed(
+        // The cap is a ceiling on the projected total: a round that fills it
+        // exactly is allowed, one that would cross it is not.
+        assert!(workspace_busy_retry_allowed(
             WORKSPACE_BUSY_STARTUP_RETRY_SAFETY_CAP,
+            std::time::Duration::from_secs(1),
+            std::time::Duration::from_secs(1),
+            WORKSPACE_BUSY_STARTUP_RETRY_DEADLINE,
+            WORKSPACE_BUSY_STARTUP_RETRY_SAFETY_CAP,
+        ));
+        assert!(!workspace_busy_retry_allowed(
+            WORKSPACE_BUSY_STARTUP_RETRY_SAFETY_CAP + 1,
             std::time::Duration::from_secs(1),
             std::time::Duration::from_secs(1),
             WORKSPACE_BUSY_STARTUP_RETRY_DEADLINE,
