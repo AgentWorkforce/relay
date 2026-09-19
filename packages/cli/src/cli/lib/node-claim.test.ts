@@ -497,6 +497,59 @@ describe('acquireNodeClaim', () => {
     expect(readNodeClaim('node_1', env)?.state_dir).toBe('/repo/state');
   });
 
+  it('keeps a live incumbent guarded when a forced takeover releases before registering', async () => {
+    const env = createHome();
+    const incumbent = await spawnSleeper();
+    try {
+      writeClaim(env, { node_id: 'node_1', pid: incumbent.pid, state_dir: '/other/state' });
+
+      // --force reserves the next generation; the start then fails and the
+      // replacement is released. The reservation must not have pruned the
+      // incumbent's live claim: that record is the only thing guarding a
+      // broker that is still running and registered.
+      const takeover = await acquireNodeClaim({
+        nodeId: 'node_1',
+        pid: 424242,
+        stateDir: '/repo/state',
+        env,
+        force: true,
+      });
+      expect(takeover.generation).toBe(2);
+      expect(fs.existsSync(nodeClaimPath('node_1', env, 1))).toBe(true);
+
+      await expect(releaseNodeClaim(takeover, env)).resolves.toBe(true);
+
+      // Beneath the tombstone the incumbent still reads as held, so a plain
+      // start refuses rather than taking the node id from a live broker.
+      await expect(inspectNodeClaim('node_1', { env })).resolves.toMatchObject({ state: 'held' });
+      await expect(
+        acquireNodeClaim({ nodeId: 'node_1', pid: 424242, stateDir: '/repo/state', env })
+      ).rejects.toBeInstanceOf(NodeClaimConflictError);
+    } finally {
+      await incumbent.kill();
+    }
+  });
+
+  it('keeps a live incumbent guarded beneath a stale top claim', async () => {
+    const env = createHome();
+    const incumbent = await spawnSleeper();
+    try {
+      writeClaim(env, { node_id: 'node_1', pid: incumbent.pid, state_dir: '/other/state' });
+      // A successful --force takeover leaves the incumbent's live claim under
+      // the replacement's record. When the replacement's own holder dies, the
+      // incumbent is still running: judging only the top claim would wave a
+      // third broker straight past it onto the same node id.
+      writeClaim(env, { node_id: 'node_1', pid: await deadPid(), state_dir: '/repo/state' }, 2);
+
+      await expect(inspectNodeClaim('node_1', { env })).resolves.toMatchObject({ state: 'held' });
+      await expect(
+        acquireNodeClaim({ nodeId: 'node_1', pid: 424242, stateDir: '/repo/state', env })
+      ).rejects.toBeInstanceOf(NodeClaimConflictError);
+    } finally {
+      await incumbent.kill();
+    }
+  });
+
   it('takes over a claim left by a dead broker without --force', async () => {
     const env = createHome();
     writeClaim(env, { node_id: 'node_1', pid: await deadPid(), state_dir: '/other/state' });
@@ -1383,7 +1436,7 @@ describe('claim hold descriptor', () => {
       pid: process.pid,
       stateDir: '/repo/state',
       env,
-      execCommand: psDeps(),
+      execCommand: realExec,
     });
     closeNodeClaimHold(openNodeClaimHold(first, env));
 
@@ -1393,7 +1446,7 @@ describe('claim hold descriptor', () => {
       stateDir: '/other/state',
       env,
       force: true,
-      execCommand: psDeps(),
+      execCommand: realExec,
     });
 
     expect(second.generation).toBe(2);
@@ -1514,7 +1567,7 @@ describe('releaseNodeClaim', () => {
     expect(readNodeClaim('node_1', env)?.pid).toBe(222);
   });
 
-  it('reports nothing released when the claim was already taken over', async () => {
+  it('tombstones only its own generation when a takeover superseded it', async () => {
     const env = createHome();
     const mine = await acquireNodeClaim({
       nodeId: 'node_1',
@@ -1522,7 +1575,8 @@ describe('releaseNodeClaim', () => {
       stateDir: '/repo/state',
       env,
     });
-    // A `--force` start took the node over and cleaned up the generation we own.
+    // A `--force` takeover keeps the incumbent's record while its holder is
+    // alive — pruning it up front is what left a live broker unguarded.
     await acquireNodeClaim({
       nodeId: 'node_1',
       pid: 222,
@@ -1531,8 +1585,11 @@ describe('releaseNodeClaim', () => {
       force: true,
     });
 
-    await expect(releaseNodeClaim(mine, env)).resolves.toBe(false);
+    // Releasing the incumbent's claim retires only its own generation; the
+    // replacement's record is untouched.
+    await expect(releaseNodeClaim(mine, env)).resolves.toBe(true);
     expect(readNodeClaim('node_1', env)?.pid).toBe(222);
+    await expect(releaseNodeClaim(mine, env)).resolves.toBe(false);
   });
 
   it('releases by broker pid and state dir, as `node down` must', async () => {

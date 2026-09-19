@@ -1080,11 +1080,21 @@ export async function inspectNodeClaim(
 ): Promise<NodeClaimState> {
   const env = deps.env ?? process.env;
   const generations = readClaimGenerations(nodeId, env);
-  const claim = currentGeneration(generations)?.claim ?? null;
-  if (!claim) {
-    return { state: 'unclaimed' };
+  // A held generation can sit beneath a stale top claim: a `--force` takeover
+  // preserves the incumbent's record while its broker lives, and a failed
+  // takeover leaves it under the replacement's tombstone. Any live holder is
+  // a conflict for a new start, so report the newest held generation rather
+  // than only judging the top file. Newest-first keeps the diagnosis pointed
+  // at the most recent owner.
+  let fallback: NodeClaimState | null = null;
+  for (let index = generations.length - 1; index >= 0; index -= 1) {
+    const entry = generations[index];
+    if (!entry.claim) continue;
+    const status = await classifyNodeClaim(nodeId, entry.claim, env, deps);
+    if (status.state === 'held') return status;
+    fallback ??= status;
   }
-  return classifyNodeClaim(nodeId, claim, env, deps);
+  return fallback ?? { state: 'unclaimed' };
 }
 
 /**
@@ -1330,10 +1340,10 @@ export async function acquireNodeClaim(input: AcquireNodeClaimInput): Promise<No
   const env = input.env ?? process.env;
   const deps: NodeClaimDependencies = { ...input, env };
   const nodeId = input.nodeId.trim();
+  const selfPids = new Set([input.pid]);
   for (let attempt = 0; attempt < CLAIM_ACQUIRE_ATTEMPTS; attempt += 1) {
     const generations = readClaimGenerations(nodeId, env);
-    const current = currentGeneration(generations)?.claim;
-    if (current && !input.force) {
+    if (!input.force) {
       // Our own pid is never evidence that somebody else holds the node id, so
       // a start may re-take a claim that records it. That exemption is scoped
       // to the pid AS A RECORDED HOLDER and nothing more: the fence still runs.
@@ -1343,9 +1353,19 @@ export async function acquireNodeClaim(input: AcquireNodeClaimInput): Promise<No
       // leaving a registered broker behind records a pid the OS is free to
       // reissue, and the next start to be handed that number would have walked
       // straight past the orphan its own claim was pointing at.
-      const status = await classifyNodeClaim(nodeId, current, env, deps, new Set([input.pid]));
-      if (status.state === 'held') {
-        throw new NodeClaimConflictError(nodeId, status.claim);
+      //
+      // EVERY live claim refuses, not just the current one: a `--force`
+      // takeover preserves a held generation it supersedes (see the prune
+      // below), so more than one generation can record a live broker. Checking
+      // only the highest would let a stale top claim mask a held one beneath.
+      // Scan newest-first so a conflict names the most recent owner.
+      for (let index = generations.length - 1; index >= 0; index -= 1) {
+        const entry = generations[index];
+        if (!entry.claim) continue;
+        const status = await classifyNodeClaim(nodeId, entry.claim, env, deps, selfPids);
+        if (status.state === 'held') {
+          throw new NodeClaimConflictError(nodeId, status.claim);
+        }
       }
     }
     const generation = highestGenerationNumber(generations) + 1;
@@ -1382,7 +1402,23 @@ export async function acquireNodeClaim(input: AcquireNodeClaimInput): Promise<No
       continue;
     }
     for (const superseded of generations) {
-      pruneSupersededGeneration(superseded, nodeId, env);
+      if (!superseded.claim) {
+        pruneSupersededGeneration(superseded, nodeId, env);
+        continue;
+      }
+      // A generation whose holder is still alive is not garbage: it is the
+      // only record guarding that broker's node id. A `--force` takeover that
+      // pruned it here and then failed to start left the incumbent running and
+      // unguarded — the next plain `node up` took the node id from under a
+      // live, still-registered broker. Held generations stay until their
+      // holder exits (a later acquisition prunes them as stale) or their
+      // broker is stopped (releaseNodeClaimsForBroker retires them); our own
+      // superseded generations are exempted from "held" the same way the
+      // conflict check above exempts them, so a re-acquire still cleans up.
+      const status = await classifyNodeClaim(nodeId, superseded.claim, env, deps, selfPids);
+      if (status.state !== 'held') {
+        pruneSupersededGeneration(superseded, nodeId, env);
+      }
     }
     return claim;
   }
