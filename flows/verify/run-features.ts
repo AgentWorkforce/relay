@@ -46,7 +46,12 @@ const SPEC = '.workflow-artifacts/flows/relay.verify.features.json';
 const CHECK_ONLY = process.argv.includes('--check-only');
 
 function run(command: string, args: string[]): number {
-  const { status } = spawnSync(command, args, { stdio: 'inherit' });
+  const { status } = spawnSync(command, args, {
+    stdio: 'inherit',
+    // The generator derives its run identity from these when set, so the spec
+    // it emits points at the directory this runner prepared and reads.
+    env: { ...process.env, VERIFY_RUN_ID: RUN_ID, VERIFY_RUN_NONCE: RUN_NONCE },
+  });
   return status ?? 2;
 }
 
@@ -74,8 +79,16 @@ async function main(): Promise<void> {
     if (preparedWorktree !== RUN_WORKTREE) {
       throw new Error(`prepared unexpected worktree path: ${preparedWorktree}`);
     }
-    run('npx', ['flows', 'run', SPEC]);
-    workflowLifecycleCompleted = true;
+    // Only a run that actually reached a terminal flow state may mark its
+    // artifacts complete. A failed launch — `flows run` exiting before it
+    // produces verdict.json — would otherwise get a completion marker, and
+    // retention would treat a partial artifact directory as a finished run.
+    // v1 set this after `wf.run()` returned a result, which is the same bar.
+    const runStatus = run('npx', ['flows', 'run', SPEC]);
+    workflowLifecycleCompleted = existsSync(VERDICT_FILE);
+    if (runStatus !== 0 && !workflowLifecycleCompleted) {
+      console.error(`[verify-features] flows run exited ${runStatus} before producing a verdict`);
+    }
 
     // Read the verdict directly rather than trusting the run's row status, and
     // fail closed when it is missing: a run with four failing checks must not

@@ -514,7 +514,11 @@ exit "$FAKE_CURL_EXIT_STATUS"
     // v1's DRY_RUN became `--check-only`, which stops after `flows check`:
     // the graph is validated without being executed.
     expect(await runnerSourcePromise).toContain("process.argv.includes('--check-only')");
-    expect(source).toMatch(/const RUN_ID = `verify-\$\{TIMESTAMP\}-\$\{RUN_NONCE\}`/);
+    // The runner owns the run identity and the generator inherits it; a
+    // self-minted id in the child would point the emitted spec at a directory
+    // the runner never reads.
+    expect(source).toMatch(/RUN_ID = process\.env\.VERIFY_RUN_ID\?\.trim\(\) \|\| `verify-/);
+    expect(await runnerSourcePromise).toContain('VERIFY_RUN_ID: RUN_ID');
   });
 
   it('puts a failed issue delivery in the first Slack alert', async () => {

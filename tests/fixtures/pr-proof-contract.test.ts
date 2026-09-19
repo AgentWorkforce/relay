@@ -1932,7 +1932,9 @@ describe('trusted dispatcher source contract', () => {
     // The only thing extracted from the envelope, and the only thing written.
     expect(normalizer).toContain('pullRequestNumber');
     expect(normalizer).toContain('{ inputs: { pr_number: number } }');
-    expect(normalizer).toContain('Number.isInteger(value) && value > 0');
+    // Safe, not merely integral: JSON.parse rounds past 2^53, so an integral
+    // check would accept a rounded id and prove the wrong pull request.
+    expect(normalizer).toContain('Number.isSafeInteger(value) && value > 0');
     // A non-pull_request event must refuse rather than guess a number out of it.
     expect(normalizer).toContain('This flow proves pull requests; the listener delivered a');
     // base64 keeps attacker-controlled text out of the lowered shell command.

@@ -84,7 +84,9 @@ export function pullRequestNumber(input) {
     input.pullRequest,
     input.pr_number,
   ];
-  const number = candidates.find((value) => Number.isInteger(value) && value > 0);
+  // Safe, not merely integral: JSON.parse rounds values past 2^53, so
+  // Number.isInteger would accept a rounded id and prove the wrong pull request.
+  const number = candidates.find((value) => Number.isSafeInteger(value) && value > 0);
   if (number === undefined) {
     throw new Error(
       'The listener event does not carry a pull request number; ' +

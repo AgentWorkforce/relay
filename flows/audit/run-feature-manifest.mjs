@@ -17,7 +17,7 @@
  */
 
 import { spawnSync } from 'node:child_process';
-import { existsSync, readFileSync } from 'node:fs';
+import { existsSync, readFileSync, rmSync } from 'node:fs';
 
 // Must match ARTIFACTS in flows/audit/feature-manifest.spec.ts exactly.
 const ARTIFACTS = '.workflow-artifacts/audit-feature-manifest';
@@ -44,9 +44,15 @@ if (run('npx', ['flows', 'check', SPEC]) !== 0) {
   console.error('[audit-feature-manifest] flows check refused the generated spec');
   process.exit(2);
 }
+const exitFile = `${ARTIFACTS}/audit-exit.txt`;
+// ARTIFACTS is a fixed path with no run id, so a previous invocation's verdict
+// survives here. If `flows run` fails before the audit step rewrites it, the
+// stale value would be read as this run's result — a run that audited nothing
+// reporting "manifest is clean". Remove it first so a missing file is the only
+// possible outcome of a run that did not get that far.
+rmSync(exitFile, { force: true });
 run('npx', ['flows', 'run', SPEC]);
 
-const exitFile = `${ARTIFACTS}/audit-exit.txt`;
 if (!existsSync(exitFile)) {
   console.error(
     `[audit-feature-manifest] no ${exitFile} — the audit step did not complete. ` +

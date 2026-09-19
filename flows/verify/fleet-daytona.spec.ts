@@ -396,14 +396,25 @@ export function buildFleetDaytonaSpec(): Record<string, unknown> {
     );
   }
 
+  // The GITHUB_ENV write is guarded because this step runs inside `flows run`,
+  // including `npm run verify:fleet-daytona` locally, where no GitHub Actions
+  // command file exists. Under `set -eu` an unset $GITHUB_ENV made the
+  // redirection abort the whole sealing step. Carried over from v1, where the
+  // same line ran unguarded.
+  //
+  // Note this only stops the abort. Appending to GITHUB_ENV still does not
+  // export the UID/GID to later steps within the same `flows run`; that was
+  // true of v1 too and is left alone here rather than changed blind.
   det(
     'seal-trusted-fleet-inputs',
     `set -eu
 mkdir -p ${shellQuote(CANDIDATE_EXEC_ROOT)} ${shellQuote(CANDIDATE_ARTIFACT_ROOT)}
 chmod -R a-w ${shellQuote(TRUSTED_ROOT)} ${shellQuote(CANDIDATE_INSTALL_ROOT)}
 test "$(id -u nobody)" -gt 0
-echo "VERIFY_FLEET_CANDIDATE_UID=$(id -u nobody)" >> "$GITHUB_ENV"
-echo "VERIFY_FLEET_CANDIDATE_GID=$(id -g nobody)" >> "$GITHUB_ENV"
+if [ -n "\${GITHUB_ENV:-}" ]; then
+  echo "VERIFY_FLEET_CANDIDATE_UID=$(id -u nobody)" >> "$GITHUB_ENV"
+  echo "VERIFY_FLEET_CANDIDATE_GID=$(id -g nobody)" >> "$GITHUB_ENV"
+fi
 test ! -w ${shellQuote(path.join(TRUSTED_ROOT, 'package.json'))}
 test ! -w ${shellQuote(path.join(TRUSTED_ROOT, 'node_modules'))}
 test ! -w ${shellQuote(CANDIDATE_INSTALL_ROOT)}`,

@@ -75,6 +75,7 @@ import { existsSync, readFileSync } from 'node:fs';
 import { mkdir, writeFile } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
+import { pathToFileURL } from 'node:url';
 
 import { specWorkflow } from '../spec-builder.ts';
 
@@ -100,8 +101,19 @@ export const WORKTREE_ROOT = path.join(
   path.basename(REPO_ROOT)
 );
 const TIMESTAMP = new Date().toISOString().replace(/[:.]/g, '-').slice(0, 16);
-export const RUN_NONCE = randomUUID().slice(0, 8);
-export const RUN_ID = `verify-${TIMESTAMP}-${RUN_NONCE}`;
+/**
+ * Run identity flows one way: the runner owns it, the generator reads it.
+ *
+ * `run-features.ts` prepares artifacts under its own RUN_ID and then spawns
+ * this file as a separate process to emit the spec. Deriving the identity from
+ * the clock here would give the child a different RUN_ID, so every path in the
+ * emitted spec would point at a directory the runner never reads — and the
+ * runner's verdict lookup would always miss, turning a genuine PASS into
+ * "no verdict … treating this run as FAILED". Inheriting keeps both halves on
+ * the same directory; a standalone invocation still mints its own.
+ */
+export const RUN_NONCE = process.env.VERIFY_RUN_NONCE?.trim() || randomUUID().slice(0, 8);
+export const RUN_ID = process.env.VERIFY_RUN_ID?.trim() || `verify-${TIMESTAMP}-${RUN_NONCE}`;
 export const ARTIFACTS = `${ARTIFACTS_ROOT}/runs/${RUN_ID}`;
 export const RUN_WORKTREE = path.join(WORKTREE_ROOT, 'worktrees', RUN_ID);
 export const VERDICT_FILE = `${ARTIFACTS}/verdict.json`;
@@ -2699,10 +2711,15 @@ function option(name: string, fallback: string): string {
   return index >= 0 ? (process.argv[index + 1] ?? fallback) : fallback;
 }
 
-main().catch((err: unknown) => {
-  // A throw here means the harness itself broke — the runner could not even
-  // produce a result. That is the NightCTO escalation case, and it must not
-  // exit 0.
-  console.error(`[verify-features] harness failure: ${err instanceof Error ? err.stack : String(err)}`);
-  process.exitCode = 2;
-});
+// Only run as a program. `run-features.ts` and the fixture tests import this
+// module for its constants; without this guard that import would emit a spec
+// as a side effect, to a path chosen by the *importing* process's argv.
+if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
+  main().catch((err: unknown) => {
+    // A throw here means the harness itself broke — the runner could not even
+    // produce a result. That is the NightCTO escalation case, and it must not
+    // exit 0.
+    console.error(`[verify-features] harness failure: ${err instanceof Error ? err.stack : String(err)}`);
+    process.exitCode = 2;
+  });
+}

@@ -175,7 +175,11 @@ export function specWorkflow(name: string): SpecWorkflow {
       // answer it. v2 gates every deterministic step on exit code with no
       // opt-out, so the step absorbs its own status and a later explicit gate
       // stays the thing that decides.
-      const command = options.failOnError === false ? `${options.command}\n|| true` : options.command;
+      // The group braces are load-bearing: `||` cannot begin a line, so
+      // appending "\n|| true" to a multi-line command is a shell syntax error
+      // rather than a fallback. Grouping applies the fallback to the whole
+      // command and preserves its own exit status.
+      const command = options.failOnError === false ? `{\n${options.command}\n} || true` : options.command;
       const retries = options.retries ?? 0;
       steps.push({
         id,
