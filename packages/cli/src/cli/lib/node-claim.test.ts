@@ -1652,6 +1652,25 @@ describe('releaseNodeClaim', () => {
     expect(released).toEqual([]);
     expect(readNodeClaim('node_1', env)).not.toBeNull();
   });
+
+  it('reaches a claim preserved beneath a newer generation', async () => {
+    const env = createHome();
+    // A `--force` takeover left the incumbent's record under the replacement's
+    // generation. `node down` for the incumbent's state dir must still find
+    // and release it — listing only the newest claim would orphan it forever.
+    writeClaim(env, { node_id: 'node_1', pid: 555, state_dir: '/repo/state' });
+    writeClaim(env, { node_id: 'node_1', pid: 666, state_dir: '/other/state' }, 2);
+
+    const released = await releaseNodeClaimsForBroker({
+      pid: 555,
+      stateDir: '/repo/state',
+      env,
+      execCommand: psDeps(),
+    });
+
+    expect(released.map((claim) => claim.generation)).toEqual([1]);
+    expect(readNodeClaim('node_1', env)?.pid).toBe(666);
+  });
 });
 
 describe('adoptNodeClaim', () => {
@@ -1818,6 +1837,21 @@ describe('listHeldNodeClaims', () => {
 
     expect(listNodeClaims(env)).toEqual([]);
     await expect(listHeldNodeClaims({ env })).resolves.toEqual([]);
+  });
+
+  it('finds a held claim preserved beneath a newer generation', async () => {
+    const env = createHome();
+    const incumbent = await spawnSleeper();
+    try {
+      writeClaim(env, { node_id: 'node_1', pid: incumbent.pid, state_dir: '/other/state' });
+      writeClaim(env, { node_id: 'node_1', pid: await deadPid(), state_dir: '/repo/state' }, 2);
+
+      const held = await listHeldNodeClaims({ env });
+
+      expect(held.map((claim) => claim.generation)).toEqual([1]);
+    } finally {
+      await incumbent.kill();
+    }
   });
 });
 

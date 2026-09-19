@@ -523,6 +523,36 @@ export function listNodeClaims(env: NodeJS.ProcessEnv = process.env): NodeClaim[
     .sort((left, right) => right.claimed_at.localeCompare(left.claimed_at));
 }
 
+/**
+ * Every readable claim on this machine, across ALL generations, newest first.
+ *
+ * `listNodeClaims` reports only the current generation per node id, but a
+ * `--force` takeover can leave a still-held incumbent beneath the
+ * replacement's file. Callers that diagnose or release by broker identity must
+ * see every generation, or that hidden claim never surfaces.
+ */
+function listAllNodeClaims(env: NodeJS.ProcessEnv): NodeClaim[] {
+  const dir = nodeClaimsDir(env);
+  let filenames: string[];
+  try {
+    filenames = fs.readdirSync(dir);
+  } catch {
+    return [];
+  }
+  const claims: NodeClaim[] = [];
+  for (const filename of filenames) {
+    const match = CLAIM_FILENAME_PATTERN.exec(filename);
+    if (!match) continue;
+    const claim = readClaimFile(path.join(dir, filename));
+    if (claim) claims.push(claim);
+  }
+  return claims.sort(
+    (left, right) =>
+      right.claimed_at.localeCompare(left.claimed_at) ||
+      (right.generation ?? 0) - (left.generation ?? 0)
+  );
+}
+
 /* ------------------------------------------------------------------ *
  * Liveness
  * ------------------------------------------------------------------ */
@@ -1187,7 +1217,7 @@ async function classifyNodeClaim(
 export async function listHeldNodeClaims(deps: NodeClaimDependencies = {}): Promise<NodeClaim[]> {
   const env = deps.env ?? process.env;
   const held: NodeClaim[] = [];
-  for (const claim of listNodeClaims(env)) {
+  for (const claim of listAllNodeClaims(env)) {
     const status = await classifyNodeClaim(claim.node_id, claim, env, deps);
     if (status.state === 'held') {
       held.push(status.claim);
@@ -1595,7 +1625,7 @@ export async function releaseNodeClaimsForBroker(input: {
   const deps: NodeClaimDependencies = { ...input, env };
   const stateDir = normalizeClaimStateDir(input.stateDir);
   const released: NodeClaim[] = [];
-  for (const claim of listNodeClaims(env)) {
+  for (const claim of listAllNodeClaims(env)) {
     if (claim.state_dir !== stateDir) continue;
     const namesThisBroker = claim.pid === input.pid || claim.supervisor_pid === input.pid;
     if (!namesThisBroker) {
