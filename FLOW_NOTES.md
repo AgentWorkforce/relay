@@ -2,7 +2,7 @@
 
 Branch `fix/node-up-enrollment-guard` (worktree `/tmp/relay-node-guard`).
 
-Incident being closed: on 2026-10-05 (host `kjg-laptop`) a second
+Incident being closed: on 2026-09-19 (host `kjg-laptop`) a second
 `agent-relay node up` adopted the machine-global enrollment for node
 `node_223043746339667968` while broker `relay-lead-0908b` was live, and the
 engine moved that node's delivery socket to the newcomer. Deliveries to the
