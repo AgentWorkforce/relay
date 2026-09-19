@@ -1904,6 +1904,29 @@ fn registration_error_requests(error: &RelaycastRegistrationError) -> u32 {
         .map_or(1, |value| value.max(1))
 }
 
+/// Fold one broker round's terminal error into the running request total.
+///
+/// Returns the error restamped with the cumulative `attempts`, the number of
+/// requests this round made (read *before* the restamp overwrites it), and
+/// the new cumulative total. `already_counted` is how many of this round's
+/// requests the caller had provisionally added to `total` before the call.
+fn absorb_registration_round(
+    error: RelaycastRegistrationError,
+    total: &AtomicU32,
+    already_counted: u32,
+) -> (RelaycastRegistrationError, u32, u32) {
+    let round_requests = registration_error_requests(&error);
+    let extra = round_requests.saturating_sub(already_counted);
+    let attempts_so_far = total
+        .fetch_add(extra, Ordering::Relaxed)
+        .saturating_add(extra);
+    (
+        with_registration_attempts(error, attempts_so_far),
+        round_requests,
+        attempts_so_far,
+    )
+}
+
 fn with_registration_attempts(
     error: RelaycastRegistrationError,
     total_attempts: u32,
@@ -2265,11 +2288,8 @@ async fn retry_agent_registration_with_timeout(
                 // One broker round is several HTTP requests: the SDK retries
                 // admission denials itself (honouring Retry-After) before
                 // surfacing a terminal error. Count what the server saw.
-                let requests = registration_error_requests(&error);
-                let attempts_so_far = total_attempts
-                    .fetch_add(requests, Ordering::Relaxed)
-                    .saturating_add(requests);
-                let error = with_registration_attempts(error, attempts_so_far);
+                let (error, round_requests, attempts_so_far) =
+                    absorb_registration_round(error, &total_attempts, 0);
                 if !is_retryable_registration_error(&error) {
                     return Err(RegRetryOutcome::Fatal(error));
                 }
@@ -2296,8 +2316,7 @@ async fn retry_agent_registration_with_timeout(
                     // SDK's per-call retry factor. Reserve the whole next
                     // round (the SDK's last round is its size) so the cap is
                     // a ceiling, never a threshold crossed mid-round.
-                    let projected =
-                        projected_requests(attempts_so_far, registration_error_requests(&error));
+                    let projected = projected_requests(attempts_so_far, round_requests);
                     if delay > MAX_AGENT_REGISTRATION_RETRY_DELAY
                         || delay > remaining_after_request
                         || !workspace_busy_retry_allowed_with_budget(
@@ -2465,12 +2484,12 @@ async fn register_new_spawn_identity_inner(
                 ))
             }
             Err(error) => {
-                let error = registration_metadata_error(name, error);
-                let extra_requests = registration_error_requests(&error).saturating_sub(1);
-                let attempts_so_far = total_attempts
-                    .fetch_add(extra_requests, Ordering::Relaxed)
-                    .saturating_add(extra_requests);
-                let error = with_registration_attempts(error, attempts_so_far);
+                // One request was counted provisionally at the top of the loop.
+                let (error, round_requests, attempts_so_far) = absorb_registration_round(
+                    registration_metadata_error(name, error),
+                    &total_attempts,
+                    1,
+                );
                 if !is_retryable_registration_error(&error) {
                     return Err(RegRetryOutcome::Fatal(error));
                 }
@@ -2504,8 +2523,7 @@ async fn register_new_spawn_identity_inner(
                     // Cap requests, not rounds, and reserve room for the whole
                     // next round so the cap is never exceeded (see the takeover
                     // loop above).
-                    let projected =
-                        projected_requests(attempts_so_far, registration_error_requests(&error));
+                    let projected = projected_requests(attempts_so_far, round_requests);
                     if !workspace_busy_retry_allowed(projected, elapsed, delay) {
                         return Err(RegRetryOutcome::RetryableExhausted(error));
                     }
@@ -2608,7 +2626,10 @@ mod tests {
     use relaycast::{AgentRegistrationError, RelayError};
     use serde_json::json;
     use std::{
-        sync::{Arc, Mutex},
+        sync::{
+            atomic::{AtomicU32, Ordering},
+            Arc, Mutex,
+        },
         time::Duration,
     };
     use tokio::{
@@ -2620,19 +2641,19 @@ mod tests {
     use crate::{fleet_wire::AgentRegistrationMetadata, ids::ChannelName};
 
     use super::{
-        agent_registration_retry_delay, format_worker_preregistration_error,
-        is_typed_registration_overload, is_workspace_busy_reconcile_error,
-        is_workspace_busy_registration_error, register_new_spawn_identity,
-        registration_is_retryable, registration_retry_after_secs, retry_agent_registration,
-        retry_agent_registration_with, retry_agent_registration_with_budget,
-        retry_agent_registration_with_timeout, retry_workspace_busy_reconcile,
-        with_registration_attempts, workspace_busy_reconcile_delay, workspace_busy_retry_allowed,
-        ImpersonationAwareRegistrationError, MessageInjectionMode, RecipientReachability,
-        RegRetryOutcome, RegisterIntent, RelaycastHttpClient, RelaycastRegistrationError,
-        MAX_AGENT_REGISTRATION_ELAPSED, MAX_AGENT_REGISTRATION_OUTER_TIMEOUT,
-        MAX_AGENT_REGISTRATION_RETRY_DELAY, WORKSPACE_BUSY_ACTION_SAFETY_CAP,
-        WORKSPACE_BUSY_CREATE_ONLY_SAFETY_CAP, WORKSPACE_BUSY_RECONCILE_BUDGET,
-        WORKSPACE_BUSY_RECONCILE_SAFETY_CAP,
+        absorb_registration_round, agent_registration_retry_delay,
+        format_worker_preregistration_error, is_typed_registration_overload,
+        is_workspace_busy_reconcile_error, is_workspace_busy_registration_error,
+        register_new_spawn_identity, registration_is_retryable, registration_retry_after_secs,
+        retry_agent_registration, retry_agent_registration_with,
+        retry_agent_registration_with_budget, retry_agent_registration_with_timeout,
+        retry_workspace_busy_reconcile, with_registration_attempts, workspace_busy_reconcile_delay,
+        workspace_busy_retry_allowed, ImpersonationAwareRegistrationError, MessageInjectionMode,
+        RecipientReachability, RegRetryOutcome, RegisterIntent, RelaycastHttpClient,
+        RelaycastRegistrationError, MAX_AGENT_REGISTRATION_ELAPSED,
+        MAX_AGENT_REGISTRATION_OUTER_TIMEOUT, MAX_AGENT_REGISTRATION_RETRY_DELAY,
+        WORKSPACE_BUSY_ACTION_SAFETY_CAP, WORKSPACE_BUSY_CREATE_ONLY_SAFETY_CAP,
+        WORKSPACE_BUSY_RECONCILE_BUDGET, WORKSPACE_BUSY_RECONCILE_SAFETY_CAP,
     };
 
     fn seeded_http_client(base_url: &str) -> RelaycastHttpClient {
@@ -4108,6 +4129,50 @@ mod tests {
             "the broker must not sleep a cooldown it refuses to honour in full: {:?}",
             started.elapsed()
         );
+    }
+
+    /// The round size must be read before the cumulative restamp: from the
+    /// second round on the detail carries the running total, and projecting
+    /// with that would exhaust the request cap at roughly half its value.
+    #[test]
+    fn absorb_registration_round_reports_round_size_not_running_total() {
+        let total = AtomicU32::new(6);
+        let sdk_round = RelaycastRegistrationError::RateLimited {
+            agent_name: "worker".to_string(),
+            retry_after_secs: 1,
+            detail: "admission busy (code: workspace_busy); attempts: 3".to_string(),
+        };
+        let (error, round_requests, attempts_so_far) =
+            absorb_registration_round(sdk_round, &total, 0);
+        assert_eq!(round_requests, 3);
+        assert_eq!(attempts_so_far, 9);
+        assert_eq!(total.load(Ordering::Relaxed), 9);
+        assert!(
+            matches!(&error, RelaycastRegistrationError::RateLimited { detail, .. }
+                if detail.ends_with("attempts: 9")),
+            "{error:?}"
+        );
+        // With one request counted provisionally (create-only loop), only the
+        // SDK's extra requests are added.
+        let total = AtomicU32::new(4);
+        let (_, round_requests, attempts_so_far) = absorb_registration_round(
+            RelaycastRegistrationError::Transport {
+                agent_name: "worker".to_string(),
+                detail: "reset (code: none); attempts: 3".to_string(),
+            },
+            &total,
+            1,
+        );
+        assert_eq!((round_requests, attempts_so_far), (3, 6));
+        // A locally minted error with no stamp is one request.
+        let (_, round_requests, _) = absorb_registration_round(
+            RelaycastRegistrationError::MissingToken {
+                agent_name: "worker".to_string(),
+            },
+            &AtomicU32::new(0),
+            0,
+        );
+        assert_eq!(round_requests, 1);
     }
 
     #[test]
