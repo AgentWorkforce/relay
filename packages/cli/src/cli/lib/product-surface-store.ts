@@ -339,10 +339,7 @@ function runnerProcess(
  * Only the declaration crosses the process boundary — `run` cannot, so the
  * returned surface's `run` delegates to another child process.
  */
-export async function loadSurfaceFromStore(
-  installRoot: string,
-  specifier: string
-): Promise<RelayCliSurface> {
+export async function loadSurfaceFromStore(installRoot: string, specifier: string): Promise<RelayCliSurface> {
   const described = await runnerProcess(installRoot, ['describe', specifier]);
   if (described.code !== 0) {
     throw new SurfaceProvisionError(
