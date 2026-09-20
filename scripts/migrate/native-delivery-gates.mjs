@@ -655,6 +655,21 @@ async function record() {
     schemaVersion: 1,
     kind: 'native-delivery-evidence',
     name,
+    /**
+     * The run that produced this. A `record` step always exits 0 so a red
+     * command becomes repair work, which also makes every recorder step
+     * REUSABLE by `flows run --reuse-from` — the step succeeded even though the
+     * command it wrapped did not. Reuse then carries the old evidence file
+     * forward untouched, and a later gate reads a verdict from a tree that no
+     * longer exists. Observed: run g reused `ts-typecheck` from run f and kept
+     * its exit=2, recorded before the missing workspace link that caused it was
+     * repaired.
+     *
+     * Stamping lets a gate say so. `final-evidence` re-records everything
+     * before acceptance, so the flow already self-heals; this makes a stale
+     * read visible instead of silent.
+     */
+    runId: option('--run-id', 'unknown'),
     command,
     exitCode,
     verdict,
@@ -691,6 +706,12 @@ function requireGreen() {
     if (evidence.kind !== 'native-delivery-evidence' || evidence.name !== name) {
       problems.push(`${name}: evidence identity does not match`);
       continue;
+    }
+    const runId = option('--run-id', 'unknown');
+    if (evidence.runId !== undefined && evidence.runId !== runId) {
+      process.stdout.write(
+        `STALE_EVIDENCE ${name} was recorded by run "${evidence.runId}", not "${runId}"\n`
+      );
     }
     if (evidence.verdict !== 'green') {
       const detail = [
