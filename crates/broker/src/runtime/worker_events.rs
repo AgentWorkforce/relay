@@ -899,7 +899,33 @@ impl BrokerRuntime {
                                     if let Some(deliver) =
                                         unobserved_pending.withheld_fleet_ack.as_ref()
                                     {
-                                        fleet_delivery_book.abandon_unconfirmed_delivery(deliver);
+                                        // Advancing the cursor has consequences the
+                                        // book cannot apply. Siblings at or below the
+                                        // new floor sit in `pending_deliveries` solely
+                                        // to carry a withheld fleet ack
+                                        // (`fleet.rs:1825`) and lose their retry hold
+                                        // the moment the cursor passes them, so they
+                                        // must be purged here or an already-delivered
+                                        // message is re-injected. This mirrors the
+                                        // confirm path at `fleet.rs:1816-1823`.
+                                        if let Some(up_to_seq) = fleet_delivery_book
+                                            .abandon_unconfirmed_delivery(deliver)
+                                        {
+                                            crate::runtime::delivery::advance_pending_fleet_ack_floors(
+                                                pending_deliveries,
+                                                &deliver.agent_id,
+                                                up_to_seq,
+                                            );
+                                            pending_deliveries.retain(|_, sibling| {
+                                                !sibling.withheld_fleet_ack.as_ref().is_some_and(
+                                                    |sibling| {
+                                                        sibling.agent_id == deliver.agent_id
+                                                            && sibling.seq > 0
+                                                            && sibling.seq <= up_to_seq
+                                                    },
+                                                )
+                                            });
+                                        }
                                         tracing::warn!(
                                             target = "relay_broker::fleet",
                                             worker = %name,

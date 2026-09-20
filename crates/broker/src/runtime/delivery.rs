@@ -1,5 +1,47 @@
 use super::*;
 
+/// The error a caller sees for a write that MAY have committed.
+///
+/// Paired with [`pre_write_failure_error`] so the two are defined together and
+/// cannot drift into the same shape. That drift WAS the bug: both reached
+/// `handle_fleet_deliver`'s `Err` arm as a plain `anyhow::Error`, so it could
+/// not tell a possible write from one that provably never started and gave
+/// both the drop-and-withhold treatment. A dropped in-doubt delivery is never
+/// recorded, so the engine redelivers and the broker re-injects — a post-write
+/// retry on the same transport, which seam rule 1 forbids.
+pub(crate) fn in_doubt_error(reason: String) -> anyhow::Error {
+    anyhow::Error::new(TerminalInDoubtError { reason })
+}
+
+/// The error a caller sees for a write that provably never started. Safe to
+/// retry, and must NOT be accounted for as delivered.
+pub(crate) fn pre_write_failure_error(reason: String) -> anyhow::Error {
+    anyhow::anyhow!(reason)
+}
+
+/// A delivery whose write MAY have committed before it failed.
+///
+/// Carried as a typed error so a caller can tell "never wrote" from "may have
+/// written". Without it both arrive as a plain `anyhow::Error` and get the same
+/// treatment, which is how an in-doubt fleet delivery came to be dropped
+/// without being recorded: `handle_fleet_deliver`'s `Err` arm withheld the ack
+/// and returned without `commit_received`, so the engine's redelivery of the
+/// same `msg_id` was classified `Deliver` rather than `Duplicate` and the
+/// broker re-injected it — a post-write failure retried on the same transport,
+/// which seam rule 1 exists to forbid.
+#[derive(Debug, Clone)]
+pub(crate) struct TerminalInDoubtError {
+    pub(crate) reason: String,
+}
+
+impl std::fmt::Display for TerminalInDoubtError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}", self.reason)
+    }
+}
+
+impl std::error::Error for TerminalInDoubtError {}
+
 #[derive(Debug, Clone, PartialEq)]
 pub(crate) struct PendingDelivery {
     pub(super) worker_name: WorkerName,
@@ -936,10 +978,14 @@ pub(crate) async fn insert_and_attempt_delivery(
             pending.last_error = Some(last_error.clone());
             pending.next_retry_at = Instant::now();
             pending_deliveries.insert(pending.delivery.delivery_id.clone(), *pending);
-            anyhow::bail!(last_error);
+            // Paired with the in-doubt arm below: a caller must be able to tell
+            // these apart, so both go through the named constructors.
+            return Err(pre_write_failure_error(last_error));
         }
         DeliveryAttemptOutcome::TerminalInDoubt { last_error, .. } => {
-            anyhow::bail!(last_error);
+            // Typed, so the caller can account for it instead of treating a
+            // possible write as a failed one.
+            return Err(in_doubt_error(last_error));
         }
         _ => {}
     }

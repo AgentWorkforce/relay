@@ -909,12 +909,44 @@ impl BrokerRuntime {
                 Err(error) => {
                     self.node_delivery_probe
                         .record_disposition(&deliver, DeliverDisposition::SurfaceFailed);
+                    // A write that MAY have committed must be accounted for, not
+                    // merely dropped. Without `commit_received` the engine's
+                    // redelivery of this `msg_id` is classified `Deliver` rather
+                    // than `Duplicate` and the broker re-injects it — a post-write
+                    // failure retried on the same transport, which seam rule 1
+                    // forbids. Abandoning the withheld ack additionally keeps this
+                    // sequence from pinning the cumulative cursor.
+                    let in_doubt = error
+                        .downcast_ref::<crate::runtime::delivery::TerminalInDoubtError>()
+                        .is_some();
+                    if in_doubt {
+                        self.fleet_delivery_book.commit_received(&deliver);
+                        if let Some(up_to_seq) = self
+                            .fleet_delivery_book
+                            .abandon_unconfirmed_delivery(&deliver)
+                        {
+                            crate::runtime::delivery::advance_pending_fleet_ack_floors(
+                                &mut self.pending_deliveries,
+                                &deliver.agent_id,
+                                up_to_seq,
+                            );
+                            let agent_id = deliver.agent_id.clone();
+                            self.pending_deliveries.retain(|_, sibling| {
+                                !sibling.withheld_fleet_ack.as_ref().is_some_and(|sibling| {
+                                    sibling.agent_id == agent_id
+                                        && sibling.seq > 0
+                                        && sibling.seq <= up_to_seq
+                                })
+                            });
+                        }
+                    }
                     tracing::warn!(
                         target = "relay_broker::fleet",
                         agent = %deliver.agent,
                         delivery_id = %deliver.delivery_id,
                         msg_id = %deliver.msg_id,
                         error = %error,
+                        in_doubt,
                         "fleet delivery injection failed; withholding ack"
                     );
                     return;
@@ -2817,6 +2849,36 @@ mod tests {
     use super::*;
     use crate::protocol::PtyHarnessConfig;
     use httpmock::{Method::GET, Method::POST, MockServer};
+
+    /// relay: F2 — a possible write and a provably-failed one must not reach
+    /// the caller as the same shape.
+    ///
+    /// `handle_fleet_deliver`'s `Err` arm drops and withholds. That is right for
+    /// a pre-write failure and wrong for an in-doubt one: an in-doubt delivery
+    /// that is never recorded gets redelivered by the engine and re-injected by
+    /// the broker, retrying a possibly-committed write on the same transport,
+    /// which seam rule 1 forbids. The arm can only branch if the two outcomes
+    /// are distinguishable, so this pins the mapping that makes them so.
+    #[test]
+    fn a_possible_write_and_a_failed_write_map_to_different_errors() {
+        use crate::runtime::delivery::{
+            in_doubt_error, pre_write_failure_error, TerminalInDoubtError,
+        };
+
+        let in_doubt = in_doubt_error("writer faulted after admission".to_string());
+        let pre_write = pre_write_failure_error("worker handle missing".to_string());
+
+        assert!(
+            in_doubt.downcast_ref::<TerminalInDoubtError>().is_some(),
+            "an in-doubt failure reached the caller untyped, so the fleet Err arm \
+             cannot tell it from a pre-write failure and drops it unrecorded"
+        );
+        assert!(
+            pre_write.downcast_ref::<TerminalInDoubtError>().is_none(),
+            "a pre-write failure was typed as in-doubt: it would be accounted for as \
+             delivered when it provably never started"
+        );
+    }
 
     fn live_fleet_worker(
         name: &str,
