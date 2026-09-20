@@ -52,6 +52,18 @@
             "focal:ci",
             "confidence:0.75"
           ]
+        },
+        {
+          "ts": 1789945599636,
+          "type": "decision",
+          "content": "Reject non-portable Muse argv prompts before worker registration: Reject non-portable Muse argv prompts before worker registration",
+          "raw": {
+            "question": "Reject non-portable Muse argv prompts before worker registration",
+            "chosen": "Reject non-portable Muse argv prompts before worker registration",
+            "alternatives": [],
+            "reasoning": "Muse requires its initial assignment at process startup, so argv is unavoidable. A 16 KiB UTF-8 ceiling plus NUL rejection leaves command-line headroom across supported operating systems and prevents late E2BIG/interior-NUL failures after remote identity creation."
+          },
+          "significance": "high"
         }
       ]
     }

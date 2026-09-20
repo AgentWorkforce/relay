@@ -656,6 +656,7 @@ pub(super) async fn spawn_worker_from_request(
             "prepared relay skill prefix before Relaycast worker startup"
         );
     }
+    crate::worker::validate_muse_startup_prompt_for_spec(&spec, effective_task.as_deref())?;
 
     // Pre-register an agent token for every spawned worker.
     // The Agent Relay MCP server needs RELAY_AGENT_TOKEN +

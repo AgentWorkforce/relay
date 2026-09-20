@@ -627,6 +627,7 @@ impl WorkerRegistry {
         if self.workers.contains_key(&spec.name) {
             anyhow::bail!("agent '{}' already exists", spec.name);
         }
+        validate_muse_startup_prompt_for_spec(&spec, initial_task.as_deref())?;
 
         tracing::info!(
             target = "broker::spawn",
@@ -2081,6 +2082,58 @@ fn muse_startup_prompt<'a>(cli_lower: &str, initial_task: Option<&'a str>) -> Op
         return None;
     }
     initial_task.filter(|task| !task.trim().is_empty())
+}
+
+/// Portable ceiling for Muse's single-argument startup prompt. Windows limits
+/// the complete command line to roughly 32 Ki UTF-16 code units; reserving half
+/// for the executable and broker/user flags keeps accepted prompts portable.
+pub(crate) const MUSE_STARTUP_PROMPT_MAX_BYTES: usize = 16 * 1024;
+
+/// Validate text that must cross Muse's argv startup boundary. Callers perform
+/// this check before registering a remote worker identity; `spawn` repeats it
+/// as a final defense for restart and direct registry callers.
+pub(crate) fn validate_muse_startup_prompt(cli: &str, task: Option<&str>) -> Result<()> {
+    if !is_muse_executable(cli) {
+        return Ok(());
+    }
+    let Some(task) = task.filter(|task| !task.trim().is_empty()) else {
+        return Ok(());
+    };
+    if task.contains('\0') {
+        anyhow::bail!(
+            "Muse startup task contains a NUL byte and cannot be passed as a process argument"
+        );
+    }
+    if task.len() > MUSE_STARTUP_PROMPT_MAX_BYTES {
+        anyhow::bail!(
+            "Muse startup task is {} bytes; the portable argv limit is {} bytes",
+            task.len(),
+            MUSE_STARTUP_PROMPT_MAX_BYTES
+        );
+    }
+    Ok(())
+}
+
+/// Resolve the command that a PTY spec will actually launch before validating
+/// its Muse prompt. Explicit PTY harness configs own the executable; ordinary
+/// PTY specs use `spec.cli`.
+pub(crate) fn validate_muse_startup_prompt_for_spec(
+    spec: &AgentSpec,
+    task: Option<&str>,
+) -> Result<()> {
+    let cli = match spec.harness_config.as_ref() {
+        Some(ResolvedHarnessConfig::Pty(config)) => Some(
+            parse_cli_command(&config.command)
+                .with_context(|| format!("invalid harness command '{}'", config.command))?
+                .0,
+        ),
+        None if spec.runtime == AgentRuntime::Pty => spec.cli.clone(),
+        _ => None,
+    };
+    match cli {
+        Some(cli) => validate_muse_startup_prompt(&cli, task),
+        None => Ok(()),
+    }
 }
 
 /// Clean Muse config home for a worker spawn, when Relay MCP injection is
@@ -3950,6 +4003,28 @@ sleep 30
         assert_eq!(muse_startup_prompt("codex", Some("task")), None);
         assert_eq!(muse_startup_prompt("muse", None), None);
         assert_eq!(muse_startup_prompt("muse", Some("  \n")), None);
+    }
+
+    #[test]
+    fn muse_startup_prompt_rejects_nonportable_argv_text() {
+        assert!(validate_muse_startup_prompt("muse", Some("valid task")).is_ok());
+        assert!(validate_muse_startup_prompt("codex", Some("nul\0is fine off argv")).is_ok());
+
+        let nul = validate_muse_startup_prompt("muse", Some("invalid\0task"))
+            .expect_err("Muse argv cannot contain NUL")
+            .to_string();
+        assert!(nul.contains("NUL byte"), "{nul}");
+
+        let maximum = "x".repeat(MUSE_STARTUP_PROMPT_MAX_BYTES);
+        assert!(validate_muse_startup_prompt("muse", Some(&maximum)).is_ok());
+        let oversized = format!("{maximum}x");
+        let error = validate_muse_startup_prompt("muse", Some(&oversized))
+            .expect_err("oversized Muse argv must fail before process spawn")
+            .to_string();
+        assert!(
+            error.contains(&MUSE_STARTUP_PROMPT_MAX_BYTES.to_string()),
+            "{error}"
+        );
     }
 
     #[test]

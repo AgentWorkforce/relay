@@ -429,6 +429,134 @@ impl BrokerRuntime {
                         return;
                     }
                 };
+                let skip_relay_prompt = skip_relay_prompt || local_only;
+                let task = if local_only {
+                    normalize_initial_task(task)
+                        .map(|task| format!("{}\n\n{}", super::degraded::WARNING, task))
+                } else {
+                    task
+                };
+                let mut effective_task = if exit_after_task {
+                    Some(apply_exit_after_task_instruction(task))
+                } else {
+                    normalize_initial_task(task)
+                };
+                if let Some(ref continue_from) = continue_from {
+                    let continuity_dir = continuity_dir(&paths.state);
+                    let continuity_file = continuity_dir.join(format!("{}.json", continue_from));
+                    if continuity_file.exists() {
+                        match std::fs::read_to_string(&continuity_file) {
+                            Ok(contents) => {
+                                if let Ok(ctx) = serde_json::from_str::<Value>(&contents) {
+                                    let prev_task = ctx
+                                        .get("initial_task")
+                                        .and_then(Value::as_str)
+                                        .unwrap_or("unknown");
+                                    let summary = ctx
+                                        .get("summary")
+                                        .and_then(Value::as_str)
+                                        .unwrap_or("no summary available");
+                                    let messages = ctx
+                                        .get("message_history")
+                                        .and_then(Value::as_array)
+                                        .map(|msgs| {
+                                            msgs.iter()
+                                                .filter_map(|m| {
+                                                    let from = m
+                                                        .get("from")
+                                                        .and_then(Value::as_str)
+                                                        .unwrap_or("?");
+                                                    let text = m
+                                                        .get("text")
+                                                        .and_then(Value::as_str)
+                                                        .unwrap_or("");
+                                                    if text.is_empty() {
+                                                        None
+                                                    } else {
+                                                        Some(format!("  {}: {}", from, text))
+                                                    }
+                                                })
+                                                .collect::<Vec<_>>()
+                                                .join("\n")
+                                        })
+                                        .unwrap_or_default();
+
+                                    let continuity_block = format!(
+                                        "## Continuity Context (from previous session as '{}')\n\
+                                                     Previous task: {}\n\
+                                                     Session summary: {}\n{}",
+                                        continue_from,
+                                        prev_task,
+                                        summary,
+                                        if messages.is_empty() {
+                                            String::new()
+                                        } else {
+                                            format!("Recent messages:\n{}\n", messages)
+                                        }
+                                    );
+
+                                    effective_task = Some(match effective_task {
+                                        Some(new_task) => {
+                                            format!(
+                                                "{}\n\n## Current Task\n{}",
+                                                continuity_block, new_task
+                                            )
+                                        }
+                                        None => continuity_block,
+                                    });
+                                    tracing::info!(
+                                        agent = %name,
+                                        continue_from = %continue_from,
+                                        "injected continuity context from previous session for HTTP API spawn"
+                                    );
+                                }
+                            }
+                            Err(e) => {
+                                tracing::warn!(
+                                    agent = %name,
+                                    continue_from = %continue_from,
+                                    error = %e,
+                                    "failed to read continuity file for HTTP API spawn"
+                                );
+                            }
+                        }
+                    } else {
+                        tracing::warn!(
+                            agent = %name,
+                            continue_from = %continue_from,
+                            "no continuity file found at {}",
+                            continuity_file.display()
+                        );
+                    }
+                }
+                // Muse consumes the assigned task as its startup argv prompt,
+                // so all task decoration must be complete before registration
+                // or spawn. This also lets the broker reject non-portable argv
+                // text before creating a remote worker identity.
+                if !skip_relay_prompt {
+                    if let Some(prefix) = relay_skill_prefix(
+                        spec.cli.as_deref().unwrap_or(&cli),
+                        spec.model.as_deref(),
+                    ) {
+                        effective_task = Some(match effective_task {
+                            Some(task) => format!("{prefix}\n\n{task}"),
+                            None => prefix,
+                        });
+                        tracing::debug!(
+                            agent = %name,
+                            cli = %spec.cli.as_deref().unwrap_or(&cli),
+                            model = ?spec.model,
+                            "prepared relay skill prefix before worker startup"
+                        );
+                    }
+                }
+                if let Err(error) = crate::worker::validate_muse_startup_prompt_for_spec(
+                    &spec,
+                    effective_task.as_deref(),
+                ) {
+                    let _ = reply.send(Err(error.to_string()));
+                    return;
+                }
                 if local_only && agent_token.is_some() {
                     let _ = reply.send(Err("DEGRADED: supplied Relaycast agent tokens are unsupported in local-only mode".into()));
                     return;
@@ -605,107 +733,6 @@ impl BrokerRuntime {
                     }
                 }
 
-                let skip_relay_prompt = skip_relay_prompt || local_only;
-                let task = if local_only {
-                    normalize_initial_task(task)
-                        .map(|task| format!("{}\n\n{}", super::degraded::WARNING, task))
-                } else {
-                    task
-                };
-                let mut effective_task = if exit_after_task {
-                    Some(apply_exit_after_task_instruction(task))
-                } else {
-                    normalize_initial_task(task)
-                };
-                if let Some(ref continue_from) = continue_from {
-                    let continuity_dir = continuity_dir(&paths.state);
-                    let continuity_file = continuity_dir.join(format!("{}.json", continue_from));
-                    if continuity_file.exists() {
-                        match std::fs::read_to_string(&continuity_file) {
-                            Ok(contents) => {
-                                if let Ok(ctx) = serde_json::from_str::<Value>(&contents) {
-                                    let prev_task = ctx
-                                        .get("initial_task")
-                                        .and_then(Value::as_str)
-                                        .unwrap_or("unknown");
-                                    let summary = ctx
-                                        .get("summary")
-                                        .and_then(Value::as_str)
-                                        .unwrap_or("no summary available");
-                                    let messages = ctx
-                                        .get("message_history")
-                                        .and_then(Value::as_array)
-                                        .map(|msgs| {
-                                            msgs.iter()
-                                                .filter_map(|m| {
-                                                    let from = m
-                                                        .get("from")
-                                                        .and_then(Value::as_str)
-                                                        .unwrap_or("?");
-                                                    let text = m
-                                                        .get("text")
-                                                        .and_then(Value::as_str)
-                                                        .unwrap_or("");
-                                                    if text.is_empty() {
-                                                        None
-                                                    } else {
-                                                        Some(format!("  {}: {}", from, text))
-                                                    }
-                                                })
-                                                .collect::<Vec<_>>()
-                                                .join("\n")
-                                        })
-                                        .unwrap_or_default();
-
-                                    let continuity_block = format!(
-                                        "## Continuity Context (from previous session as '{}')\n\
-                                                     Previous task: {}\n\
-                                                     Session summary: {}\n{}",
-                                        continue_from,
-                                        prev_task,
-                                        summary,
-                                        if messages.is_empty() {
-                                            String::new()
-                                        } else {
-                                            format!("Recent messages:\n{}\n", messages)
-                                        }
-                                    );
-
-                                    effective_task = Some(match effective_task {
-                                        Some(new_task) => {
-                                            format!(
-                                                "{}\n\n## Current Task\n{}",
-                                                continuity_block, new_task
-                                            )
-                                        }
-                                        None => continuity_block,
-                                    });
-                                    tracing::info!(
-                                        agent = %name,
-                                        continue_from = %continue_from,
-                                        "injected continuity context from previous session for HTTP API spawn"
-                                    );
-                                }
-                            }
-                            Err(e) => {
-                                tracing::warn!(
-                                    agent = %name,
-                                    continue_from = %continue_from,
-                                    error = %e,
-                                    "failed to read continuity file for HTTP API spawn"
-                                );
-                            }
-                        }
-                    } else {
-                        tracing::warn!(
-                            agent = %name,
-                            continue_from = %continue_from,
-                            "no continuity file found at {}",
-                            continuity_file.display()
-                        );
-                    }
-                }
-
                 let spawn_workspace_id = default_workspace_id.clone().or_else(|| {
                     workspaces
                         .first()
@@ -719,27 +746,6 @@ impl BrokerRuntime {
                     token: format!("arr_{}", Uuid::new_v4().simple()),
                     schema: Some(schema),
                 });
-                // Muse consumes the assigned task as its startup argv prompt,
-                // so all task decoration must be complete before spawn. This
-                // keeps the same relay-skill text other harnesses receive via
-                // post-ready injection.
-                if !skip_relay_prompt {
-                    if let Some(prefix) = relay_skill_prefix(
-                        spec.cli.as_deref().unwrap_or(&cli),
-                        spec.model.as_deref(),
-                    ) {
-                        effective_task = Some(match effective_task {
-                            Some(task) => format!("{prefix}\n\n{task}"),
-                            None => prefix,
-                        });
-                        tracing::debug!(
-                            agent = %name,
-                            cli = %spec.cli.as_deref().unwrap_or(&cli),
-                            model = ?spec.model,
-                            "prepared relay skill prefix before worker startup"
-                        );
-                    }
-                }
                 if let Some(config) = &agent_result {
                     agent_result_tokens.insert(config.token.clone(), name.clone());
                 }
