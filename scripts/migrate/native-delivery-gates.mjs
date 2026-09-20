@@ -95,6 +95,19 @@ export const PHASES = {
         verify_tier: 6,
       },
     ],
+    /**
+     * The exit criterion is "the PTY injector becomes ONE IMPLEMENTATION", not
+     * "a trait exists". The first run produced a trait, a coordinator and four
+     * passing invariant tests with nothing behind them: no code path called the
+     * seam and the PTY backend wrote nothing. `edit-gate` passed it — files
+     * changed, required sources present — and the shadow reviewer caught what
+     * the gate could not, that a green parity suite on that tree cannot
+     * distinguish "seam works" from "seam absent".
+     *
+     * A signal that an artifact EXISTS never proves anything ACTS on it. So the
+     * consumer is named here, by file.
+     */
+    wiring: [{ symbol: 'DeliveryBackend', from: 'crates/broker/src/runtime/delivery.rs' }],
     invariants: SEAM_INVARIANTS,
     parity: Object.keys(PARITY),
     rust: true,
@@ -122,6 +135,7 @@ export const PHASES = {
         verify_tier: 4,
       },
     ],
+    wiring: [{ symbol: 'CodexQueueBackend', outside: 'crates/broker/src/delivery/codex_queue.rs' }],
     invariants: SEAM_INVARIANTS,
     parity: Object.keys(PARITY),
     rust: true,
@@ -158,6 +172,10 @@ export const PHASES = {
         verify_tier: 5,
       },
     ],
+    wiring: [
+      { symbol: 'ClaudeSocketBackend', outside: 'crates/broker/src/delivery/claude_socket.rs' },
+      { symbol: 'ClaudeCloudBackend', outside: 'crates/broker/src/delivery/claude_cloud.rs' },
+    ],
     invariants: SEAM_INVARIANTS,
     parity: Object.keys(PARITY),
     rust: true,
@@ -183,6 +201,7 @@ export const PHASES = {
         verify_tier: 4,
       },
     ],
+    wiring: [{ symbol: 'AcpBackend', outside: 'crates/broker/src/delivery/acp.rs' }],
     invariants: SEAM_INVARIANTS,
     parity: Object.keys(PARITY),
     rust: true,
@@ -208,6 +227,7 @@ export const PHASES = {
         verify_tier: 2,
       },
     ],
+    wiring: [{ symbol: 'select_route', outside: 'crates/broker/src/delivery/routing.rs' }],
     invariants: [...SEAM_INVARIANTS, 'muse_and_cursor_select_pty'],
     /**
      * `muse session-message` refuses outsiders with `sender_unverified`. The
@@ -237,6 +257,7 @@ export const PHASES = {
       },
     ],
     /** The four things the doc says must survive detachment. */
+    wiring: [{ symbol: 'DeliveryBackend', from: 'crates/broker/src/spawner.rs' }],
     invariants: [
       ...SEAM_INVARIANTS,
       'detached_spawn_keeps_parent_lineage',
@@ -817,6 +838,32 @@ function seamRules() {
       encoding: 'utf8',
     });
     if (diff.includes(symbol)) problems.push(`${symbol} is declared out of scope but appears in the diff`);
+  }
+
+  /**
+   * Wiring: the seam has to be reachable from the real path, not merely
+   * compiled. Grep is crude and it is exactly the right crudeness here — the
+   * question is "does any file outside this module name the symbol", and a
+   * false pass needs someone to write the name somewhere it does nothing.
+   */
+  for (const rule of config.wiring ?? []) {
+    if (rule.from) {
+      if (!existsSync(rule.from)) {
+        problems.push(`wiring target missing: ${rule.from} must reference ${rule.symbol}`);
+      } else if (!readFileSync(rule.from, 'utf8').includes(rule.symbol)) {
+        problems.push(
+          `${rule.symbol} is never referenced from ${rule.from}: the seam compiles but nothing routes through it`
+        );
+      }
+      continue;
+    }
+    const callers = walk('crates/broker/src')
+      .concat(existsSync('crates/broker/tests') ? walk('crates/broker/tests') : [])
+      .filter((file) => file !== rule.outside && file.endsWith('.rs'))
+      .filter((file) => readFileSync(file, 'utf8').includes(rule.symbol));
+    if (callers.length === 0) {
+      problems.push(`${rule.symbol} is defined in ${rule.outside} and referenced nowhere else`);
+    }
   }
 
   // The standing order in this repo: a test that cannot fail is not evidence.
