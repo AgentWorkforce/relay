@@ -1,0 +1,53 @@
+{
+  "id": "traj_8uwf6kxyn7ay",
+  "version": 1,
+  "task": {
+    "title": "Native delivery phase 0 seam"
+  },
+  "status": "completed",
+  "startedAt": "2026-09-20T17:17:54.092Z",
+  "completedAt": "2026-09-20T17:19:37.804Z",
+  "agents": [
+    {
+      "name": "default",
+      "role": "lead",
+      "joinedAt": "2026-09-20T17:18:42.564Z"
+    }
+  ],
+  "chapters": [
+    {
+      "id": "chap_c0n0askabrk5",
+      "title": "Work",
+      "agentName": "default",
+      "startedAt": "2026-09-20T17:18:42.564Z",
+      "endedAt": "2026-09-20T17:19:37.804Z",
+      "events": [
+        {
+          "ts": 1789924722565,
+          "type": "decision",
+          "content": "Mapped pty_worker.rs to delivery-backend-seam: Mapped pty_worker.rs to delivery-backend-seam",
+          "raw": {
+            "question": "Mapped pty_worker.rs to delivery-backend-seam",
+            "chosen": "Mapped pty_worker.rs to delivery-backend-seam",
+            "alternatives": [],
+            "reasoning": "Phase-0 changed-file gates include the PTY worker test fix; routing it prevents targeted verification from failing closed to an unmapped runtime path without weakening assertions."
+          },
+          "significance": "high"
+        }
+      ]
+    }
+  ],
+  "retrospective": {
+    "summary": "Phase 0 native delivery seam gates rechecked; routed pty_worker.rs through delivery-backend-seam and covered it in targeted verification regression.",
+    "approach": "Standard approach",
+    "confidence": 0.88
+  },
+  "commits": [],
+  "filesChanged": [],
+  "projectId": "AgentWorkforce/relay",
+  "tags": [],
+  "_trace": {
+    "startRef": "475535df06b7ec26192d0d9a1f2858443d871fe0",
+    "endRef": "475535df06b7ec26192d0d9a1f2858443d871fe0"
+  }
+}

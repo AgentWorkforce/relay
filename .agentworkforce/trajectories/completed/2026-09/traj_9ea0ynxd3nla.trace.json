@@ -1,0 +1,50 @@
+{
+  "version": "1.0.0",
+  "id": "641507c2-1b76-4c29-971b-66921acc3d40",
+  "timestamp": "2026-09-20T16:33:17.885Z",
+  "trajectory": "traj_9ea0ynxd3nla",
+  "files": [
+    {
+      "path": "scripts/migrate/native-delivery-gates.mjs",
+      "conversations": [
+        {
+          "contributor": {
+            "type": "ai"
+          },
+          "ranges": [
+            {
+              "start_line": 79,
+              "end_line": 85,
+              "revision": "e3bd628d06000ebd987ff05a53c88813d020d90e"
+            },
+            {
+              "start_line": 120,
+              "end_line": 131,
+              "revision": "e3bd628d06000ebd987ff05a53c88813d020d90e"
+            },
+            {
+              "start_line": 156,
+              "end_line": 167,
+              "revision": "e3bd628d06000ebd987ff05a53c88813d020d90e"
+            },
+            {
+              "start_line": 201,
+              "end_line": 207,
+              "revision": "e3bd628d06000ebd987ff05a53c88813d020d90e"
+            },
+            {
+              "start_line": 227,
+              "end_line": 233,
+              "revision": "e3bd628d06000ebd987ff05a53c88813d020d90e"
+            },
+            {
+              "start_line": 256,
+              "end_line": 267,
+              "revision": "e3bd628d06000ebd987ff05a53c88813d020d90e"
+            }
+          ]
+        }
+      ]
+    }
+  ]
+}

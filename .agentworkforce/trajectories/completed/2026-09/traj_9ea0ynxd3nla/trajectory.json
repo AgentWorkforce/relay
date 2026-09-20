@@ -1,0 +1,90 @@
+{
+  "id": "traj_9ea0ynxd3nla",
+  "version": 1,
+  "task": {
+    "title": "Native-delivery phase 0: TypeScript lane (feature manifest + delivery-contract regression coverage)"
+  },
+  "status": "completed",
+  "startedAt": "2026-09-20T16:32:16.034Z",
+  "completedAt": "2026-09-20T16:33:17.815Z",
+  "agents": [
+    {
+      "name": "default",
+      "role": "lead",
+      "joinedAt": "2026-09-20T16:32:16.338Z"
+    }
+  ],
+  "chapters": [
+    {
+      "id": "chap_o61mtuc6lve1",
+      "title": "Work",
+      "agentName": "default",
+      "startedAt": "2026-09-20T16:32:16.338Z",
+      "endedAt": "2026-09-20T16:33:17.815Z",
+      "events": [
+        {
+          "ts": 1789921936339,
+          "type": "decision",
+          "content": "Registered delivery-backend-seam routing five phase-0 Rust paths, not just crates/broker/src/delivery/: Registered delivery-backend-seam routing five phase-0 Rust paths, not just crates/broker/src/delivery/",
+          "raw": {
+            "question": "Registered delivery-backend-seam routing five phase-0 Rust paths, not just crates/broker/src/delivery/",
+            "chosen": "Registered delivery-backend-seam routing five phase-0 Rust paths, not just crates/broker/src/delivery/",
+            "alternatives": [],
+            "reasoning": "The contract names delivery/ as the minimum and the gate uses includes(); routing lib.rs, runtime/delivery.rs, runtime/tests.rs and tests/ as well is what actually stops #1812's fail-closed fallback for this PR's real changed-file set (63 scenarios -> 1)"
+          },
+          "significance": "high"
+        },
+        {
+          "ts": 1789921936617,
+          "type": "decision",
+          "content": "Put the new delivery-contract cases in tests/fixtures/ rather than evals/suites/*/cases.md: Put the new delivery-contract cases in tests/fixtures/ rather than evals/suites/*/cases.md",
+          "raw": {
+            "question": "Put the new delivery-contract cases in tests/fixtures/ rather than evals/suites/*/cases.md",
+            "chosen": "Put the new delivery-contract cases in tests/fixtures/ rather than evals/suites/*/cases.md",
+            "alternatives": [],
+            "reasoning": "The phase-0 edit-gate allowlist treats any evals/ change as scope creep and tsScope is tests/ + manifest.yaml only; tests/fixtures runs in npm test, loads and asserts all four named suites, and keeps the lane green. Flagged the allowlist gap for the operator"
+          },
+          "significance": "high"
+        },
+        {
+          "ts": 1789921997529,
+          "type": "reflection",
+          "content": "Manifest routing fixed (63 scenarios -> 1) and 13 new tests land green, all mutation-proven. Two gates stay red and both are outside this lane: phase-0 scope omits its own wiring file (crates/broker/src/runtime/), and targeted-gate structurally cannot pass in the same PR that manifest-gate requires the manifest edit in.",
+          "raw": {
+            "focalPoints": [
+              "manifest-routing",
+              "mutation-proof",
+              "gate-conflict"
+            ],
+            "confidence": 0.85
+          },
+          "significance": "high",
+          "tags": [
+            "focal:manifest-routing",
+            "focal:mutation-proof",
+            "focal:gate-conflict",
+            "confidence:0.85"
+          ]
+        }
+      ]
+    }
+  ],
+  "retrospective": {
+    "summary": "Registered delivery-backend-seam in the feature manifest routing all five phase-0 Rust paths, and added 13 tests: the four doc-named delivery-contract suites now execute in npm test, plus 5 seam-rule regression cases and 2 manifest-routing assertions. Every assertion mutation-proven. Reported two campaign-level gate defects rather than working around them.",
+    "approach": "Standard approach",
+    "confidence": 0.85
+  },
+  "commits": [
+    "e3bd628d0"
+  ],
+  "filesChanged": [
+    "scripts/migrate/native-delivery-gates.mjs"
+  ],
+  "projectId": "AgentWorkforce/relay",
+  "tags": [],
+  "_trace": {
+    "startRef": "d0722bb33b7496132dd11d169d46b5f5d02e0d0f",
+    "endRef": "e3bd628d06000ebd987ff05a53c88813d020d90e",
+    "traceId": "641507c2-1b76-4c29-971b-66921acc3d40"
+  }
+}

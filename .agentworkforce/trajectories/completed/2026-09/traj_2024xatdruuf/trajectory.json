@@ -1,0 +1,53 @@
+{
+  "id": "traj_2024xatdruuf",
+  "version": 1,
+  "task": {
+    "title": "Implement native delivery phase 0 Rust seam"
+  },
+  "status": "completed",
+  "startedAt": "2026-09-20T09:39:49.131Z",
+  "completedAt": "2026-09-20T09:47:03.950Z",
+  "agents": [
+    {
+      "name": "default",
+      "role": "lead",
+      "joinedAt": "2026-09-20T09:46:50.274Z"
+    }
+  ],
+  "chapters": [
+    {
+      "id": "chap_zrgbcbkfmd27",
+      "title": "Work",
+      "agentName": "default",
+      "startedAt": "2026-09-20T09:46:50.274Z",
+      "endedAt": "2026-09-20T09:47:03.950Z",
+      "events": [
+        {
+          "ts": 1789897610274,
+          "type": "decision",
+          "content": "Added a pure delivery seam before wiring native backends: Added a pure delivery seam before wiring native backends",
+          "raw": {
+            "question": "Added a pure delivery seam before wiring native backends",
+            "chosen": "Added a pure delivery seam before wiring native backends",
+            "alternatives": [],
+            "reasoning": "Phase 0 only needs the commit-boundary and route-settlement contract beside the existing PTY injector; keeping it pure lets invariant tests prove fallback, doubt, route, and ack semantics without launching vendor CLIs."
+          },
+          "significance": "high"
+        }
+      ]
+    }
+  ],
+  "retrospective": {
+    "summary": "Added the phase-0 Rust delivery seam with route-aware send/settle policy, PTY adapter, invariant tests, and mutation evidence.",
+    "approach": "Standard approach",
+    "confidence": 0.9
+  },
+  "commits": [],
+  "filesChanged": [],
+  "projectId": "AgentWorkforce/relay",
+  "tags": [],
+  "_trace": {
+    "startRef": "a7ab690837fa89ee8602f2533ad06df362c5c530",
+    "endRef": "a7ab690837fa89ee8602f2533ad06df362c5c530"
+  }
+}

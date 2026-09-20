@@ -1,0 +1,37 @@
+{
+  "id": "traj_qjxjdv7jlz9s",
+  "version": 1,
+  "task": {
+    "title": "native-delivery phase 0: make the unlaunched-delivery gate real and executable"
+  },
+  "status": "completed",
+  "startedAt": "2026-09-20T18:53:59.086Z",
+  "completedAt": "2026-09-20T21:16:03.520Z",
+  "agents": [],
+  "chapters": [],
+  "retrospective": {
+    "summary": "Validated and evidenced phase-0 Rust seam invariants, mutation proofs, and broker test gates",
+    "approach": "Standard approach",
+    "confidence": 0.88
+  },
+  "commits": [
+    "fd8436adc",
+    "24a07187e",
+    "b85c9f602",
+    "1b899f256",
+    "a78a984ae",
+    "01292d184"
+  ],
+  "filesChanged": [
+    "flows/migrate/native-delivery.spec.ts",
+    "scripts/flows/cursor-agent-cli.mjs",
+    "scripts/migrate/native-delivery-gates.mjs"
+  ],
+  "projectId": "AgentWorkforce/relay",
+  "tags": [],
+  "_trace": {
+    "startRef": "1e06740ef31120260c292b3ae2047ec19dc1d772",
+    "endRef": "fd8436adcddecc140603bdaf78b2ae620c556992",
+    "traceId": "768c30f9-2990-471d-94ee-5bdf744bd0b5"
+  }
+}

@@ -124,6 +124,7 @@
     "verify:fleet-daytona:validate": "node scripts/verify-features/fleet-daytona.mjs validate",
     "verify:fleet-daytona:check": "npm run flows:spec:fleet-daytona && flows check .workflow-artifacts/flows/relay.verify.fleet-daytona.json",
     "test:e2e": "vitest run --config vitest.e2e.config.ts",
+    "test:e2e:unlaunched": "vitest run --config vitest.e2e.config.ts tests/e2e/unlaunched/**/*.test.ts",
     "smoke:prod": "node tests/e2e/prod-smoke/prod-smoke.mjs",
     "test:subscriptions:proof": "node --test tests/e2e/github-subscriptions/*.test.mjs",
     "build:cli-surface": "npm --prefix packages/cli-surface run build"

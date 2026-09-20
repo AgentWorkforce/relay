@@ -44,6 +44,7 @@ export default defineConfig({
     globals: true,
     environment: 'node',
     include: ['tests/e2e/**/*.test.ts'],
+    exclude: ['tests/e2e/unlaunched/**/*.test.ts'],
     testTimeout: 60_000,
     hookTimeout: 90_000,
     teardownTimeout: 30_000,
