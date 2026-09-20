@@ -9,6 +9,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- MCP `spawn`, `add_agent`, and direct-message calls now coalesce in-flight JSON-RPC replays and accept an `idempotency_key` for safe retries after a lost response, preventing duplicate workers, false duplicate-name failures, and duplicate DMs while keeping later JSON-RPC ID reuse distinct.
 - `node agent attach --node` now replaces an expired remote terminal session once and reconnects existing local terminal clients, while transient terminal failures retain the bounded resume budget without minting additional sessions.
 
 ### Added

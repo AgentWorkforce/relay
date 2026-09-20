@@ -11,6 +11,7 @@ import {
 } from '../lib/message-delivery-receipts.js';
 import { jsonContent, jsonResult, textContent } from './tool-results.js';
 import { identityOverrideInputShape, messageResult } from './tool-shapes.js';
+import { McpRequestReplay } from './request-replay.js';
 import type { AgentClientLike } from './types.js';
 
 const directMessageResult = z.looseObject({
@@ -69,8 +70,10 @@ function resolveEmoji(input: string): string {
 export function registerMessagingTools(
   server: McpServer,
   getAgentClient: (asIdentity?: string) => AgentClientLike,
-  listAgentsForRecipientResolution?: () => Promise<unknown[] | undefined>
+  listAgentsForRecipientResolution?: () => Promise<unknown[] | undefined>,
+  requestReplay?: McpRequestReplay
 ): void {
+  const replay = requestReplay ?? new McpRequestReplay();
   server.registerTool(
     'create_channel',
     {
@@ -345,6 +348,14 @@ export function registerMessagingTools(
             'wait (default): queue until the recipient reaches a safe idle boundary; steer: request immediate injection, which may interrupt active work. Both modes return before reading is confirmed.'
           ),
         attachments: z.array(z.string()).optional().describe('File attachment IDs'),
+        idempotency_key: z
+          .string()
+          .min(1)
+          .max(255)
+          .optional()
+          .describe(
+            'Stable key for retrying this same message after a lost response; use a new key for a new message.'
+          ),
         ...identityOverrideInputShape,
       },
       outputSchema: directMessageResult,
@@ -355,18 +366,21 @@ export function registerMessagingTools(
         openWorldHint: true,
       },
     },
-    async ({ to, text, mode, attachments, as }) => {
-      const agents = await listAgentsForRecipientResolution?.();
-      const resolvedRecipient = agents ? resolveExactAgentName(agents, to) : undefined;
-      const message = await getAgentClient(as).dm(to, text, {
-        mode,
-        attachments,
-        data: replayMessageMetadata(),
-      });
-      const receipt = compactDirectMessageReceipt(directMessageReceipt(message, to, mode, resolvedRecipient));
-      const result = jsonContent(receipt);
-      return directMessageDeliveryFailure(receipt) ? { ...result, isError: true as const } : result;
-    }
+    async ({ to, text, mode, attachments, idempotency_key, as }, extra) =>
+      replay.run('send_dm', extra, idempotency_key, async () => {
+        const agents = await listAgentsForRecipientResolution?.();
+        const resolvedRecipient = agents ? resolveExactAgentName(agents, to) : undefined;
+        const message = await getAgentClient(as).dm(to, text, {
+          mode,
+          attachments,
+          data: replayMessageMetadata(),
+        });
+        const receipt = compactDirectMessageReceipt(
+          directMessageReceipt(message, to, mode, resolvedRecipient)
+        );
+        const result = jsonContent(receipt);
+        return directMessageDeliveryFailure(receipt) ? { ...result, isError: true as const } : result;
+      })
   );
 
   server.registerTool(
