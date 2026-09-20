@@ -739,8 +739,8 @@ genuinely bites.
 ## F16 — LOW. `settle` returns `None` for two different things, one of which is exactly what rule 3 exists to catch
 
 **Evidence:** `crates/broker/src/delivery/backend.rs:276-295`. `None` is returned both at
-`:285` (`?` on "no receipt for this delivery_id" — the message was never sent by this seam)
-and at `:293` (`?` on "the recorded route's backend is not in the slice" — the message _was_
+`:285` (`?` on "no receipt for this delivery*id" — the message was never sent by this seam)
+and at `:293` (`?` on "the recorded route's backend is not in the slice" — the message \_was*
 sent, over a route that is not currently available).
 
 The second case is the contract's own trap shape: "not in the queue and not in the session
