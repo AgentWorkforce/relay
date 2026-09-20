@@ -603,6 +603,15 @@ agentStep({
     'Fix both source and tests as needed. A regression in an existing suite is the most likely',
     'failure here: constructor signatures changed, a new required field has no default, or an import',
     'path shifted when the seam was introduced.',
+    '',
+    'Before treating a failure as a regression, establish that it IS one:',
+    '  - Run the failing file ALONE. Several suites here fail only under full-suite parallel load',
+    '    (tight startup budgets, workspace contention) and pass 16/16 in isolation. A contention',
+    '    flake is not a regression and must not be "fixed" by weakening the test.',
+    '  - Check whether the change could reach it at all: `git status --porcelain -- <subject>`.',
+    '    If the subject is untouched, the failure is not yours. Say so rather than editing it.',
+    'The regression gate judges against a declared known-failure baseline, so you only need the',
+    'failures outside that baseline to be real and green. Never add a flake to the baseline.',
     'Rerun until the recorder writes green. Do not skip or delete a failing test.',
   ],
 });
@@ -612,7 +621,12 @@ det(
   ['repair-ts'],
   7_200_000
 );
-det('ts-assert', gate('require-green', '--names ts-typecheck,unit-tests'), ['ts-final'], 300_000);
+det(
+  'ts-assert',
+  [gate('require-green', '--names ts-typecheck'), gate('regression-gate', '--name unit-tests')].join('\n'),
+  ['ts-final'],
+  300_000
+);
 
 // ─────────────────────────── 6. parity: the real gate ───────────────────────────
 

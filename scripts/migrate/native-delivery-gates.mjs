@@ -338,6 +338,71 @@ export const PHASES = {
   },
 };
 
+/**
+ * Tests already failing on this tree before the campaign touched it.
+ *
+ * A regression gate asks "did I break anything", not "is the repo perfect".
+ * Demanding a wholly green suite makes the gate unsatisfiable for reasons that
+ * have nothing to do with the change, and the usual escape — deleting or
+ * skipping the test — is exactly the weakening this campaign forbids.
+ *
+ * Every entry is justified, and the justification is that the change cannot
+ * reach it: `git status --porcelain -- <subject>` reports zero changed files
+ * for each subject below. Re-derive that before adding a row. A row is a
+ * standing claim that a failure is someone else's, so it must be cheap to
+ * disprove.
+ */
+const KNOWN_FAILURES = [
+  {
+    match: "reports the child's pid the moment it is spawned",
+    why: 'packages/harness-driver unchanged; the test spawns a stub shell script, never the broker binary, so no Rust change can reach it. Fails on a 200ms startup budget under load.',
+  },
+  {
+    match: 'reaps the broker child when startup never reports an API port',
+    why: 'Same file, same stub-script fixture, same 200ms budget.',
+  },
+  {
+    match: 'derives the current-main command surface without conflating it',
+    why: 'packages/cli/src/cli/commands unchanged; asserts a CLI command-surface inventory count (expects 36, tree has 35).',
+  },
+];
+
+/**
+ * Pass when every failing test is a declared known failure. New failures are
+ * the regression this gate exists to catch; a known failure that has started
+ * passing is reported but not fatal.
+ */
+function regressionGate() {
+  const art = artifactRoot();
+  const name = option('--name', 'unit-tests');
+  const file = path.join(art, 'evidence', `${name}.json`);
+  if (!existsSync(file)) {
+    fail(`regression-gate: ${name} never ran`);
+    return;
+  }
+  const evidence = readJson(file);
+  const failing = [
+    ...new Set(
+      (evidence.tail.match(/^\s*FAIL\s+.+$/gm) ?? []).map((line) => line.replace(/^\s*FAIL\s+/, '').trim())
+    ),
+  ];
+  const unexplained = failing.filter((entry) => !KNOWN_FAILURES.some((known) => entry.includes(known.match)));
+  if (unexplained.length > 0) {
+    fail(
+      `regression-gate ${name}: ${unexplained.length} failure(s) not in the known-failure baseline\n  ` +
+        unexplained.join('\n  ')
+    );
+    return;
+  }
+  const fixed = KNOWN_FAILURES.filter((known) => !failing.some((entry) => entry.includes(known.match)));
+  pass(
+    `regression-gate ${name} failing=${failing.length} all-known` +
+      (fixed.length > 0
+        ? ` (${fixed.length} baseline entr${fixed.length === 1 ? 'y' : 'ies'} now passing — prune it)`
+        : '')
+  );
+}
+
 // ───────────────────────────── plumbing ─────────────────────────────
 
 function option(name, fallback) {
@@ -1159,6 +1224,7 @@ const ACTIONS = {
   contract,
   record,
   'require-green': requireGreen,
+  'regression-gate': regressionGate,
   'require-artifacts': requireArtifacts,
   'edit-gate': editGate,
   'manifest-gate': manifestGate,
