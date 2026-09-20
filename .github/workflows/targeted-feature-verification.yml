@@ -80,7 +80,7 @@ jobs:
             --plan .workflow-artifacts/targeted-pr/plan.json \
             --output-dir .workflow-artifacts/targeted-pr/shards \
             --max-command-budget-seconds 2880 \
-            --max-command-seconds 1200
+            --max-command-seconds 720
           echo "matrix=$(jq -c '.matrix' .workflow-artifacts/targeted-pr/shards/matrix.json)" >> "$GITHUB_OUTPUT"
 
       - name: Upload immutable selection

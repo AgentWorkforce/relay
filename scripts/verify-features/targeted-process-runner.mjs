@@ -2,12 +2,15 @@ import { runBoundedProcess } from '../pr-proof/process-runner.mjs';
 
 const DEFAULT_TERMINATION_GRACE_MS = 2_000;
 
-function appendWithinLimit(current, chunk, maximum) {
+function appendWithinLimit(current, currentBytes, chunk, maximum) {
+  const chunkBytes = Buffer.byteLength(chunk, 'utf8');
+  if (currentBytes + chunkBytes <= maximum) {
+    return { value: current + chunk, bytes: currentBytes + chunkBytes, exceeded: false };
+  }
   const combined = Buffer.from(current + chunk, 'utf8');
-  if (combined.length <= maximum) return { value: combined.toString('utf8'), exceeded: false };
   let end = maximum;
   while (end > 0 && (combined[end] & 0xc0) === 0x80) end -= 1;
-  return { value: combined.subarray(0, end).toString('utf8'), exceeded: true };
+  return { value: combined.subarray(0, end).toString('utf8'), bytes: end, exceeded: true };
 }
 
 /**
@@ -26,11 +29,23 @@ export async function runTargetedProcess(
   const controller = new AbortController();
   let stdout = '';
   let stderr = '';
+  let stdoutBytes = 0;
+  let stderrBytes = 0;
   let outputLimitExceeded = false;
   const capture = (stream, chunk) => {
-    const captured = appendWithinLimit(stream === 'stdout' ? stdout : stderr, chunk, maxOutputBytes);
-    if (stream === 'stdout') stdout = captured.value;
-    else stderr = captured.value;
+    const captured = appendWithinLimit(
+      stream === 'stdout' ? stdout : stderr,
+      stream === 'stdout' ? stdoutBytes : stderrBytes,
+      chunk,
+      maxOutputBytes
+    );
+    if (stream === 'stdout') {
+      stdout = captured.value;
+      stdoutBytes = captured.bytes;
+    } else {
+      stderr = captured.value;
+      stderrBytes = captured.bytes;
+    }
     if (captured.exceeded && !outputLimitExceeded) {
       outputLimitExceeded = true;
       controller.abort();

@@ -225,11 +225,22 @@ describe('targeted Flows v2 PR verification', () => {
     ).toEqual([caseId]);
   });
 
+  it('fails closed for unmapped integration and shared test infrastructure', () => {
+    for (const changedFile of [
+      'tests/integration/broker/new-runtime.test.ts',
+      'tests/relayflows/shared/new-corpus-helper.mjs',
+    ]) {
+      const result = plan([changedFile]);
+      expect(result.mode, changedFile).toBe('full-smoke');
+      expect(result.unmatchedRuntimeFiles, changedFile).toContain(changedFile);
+    }
+  });
+
   it('shards full smoke under the 60-minute job budget without dropping scenarios', () => {
     const selected = plan(['scripts/verify-features/targeted-pr-plan.mjs']);
     const shards = shardTargetedPlan(selected, {
       maxCommandBudgetSeconds: 2_880,
-      maxCommandSeconds: 1_200,
+      maxCommandSeconds: 720,
     });
     const scenarioIds = shards.flatMap((shard) => shard.scenarios.map(({ id }: { id: string }) => id));
 
@@ -240,7 +251,7 @@ describe('targeted Flows v2 PR verification', () => {
       expect(shard.shard.commandBudgetSeconds).toBeLessThanOrEqual(2_880);
       expect(
         [...shard.setup, ...shard.scenarios].every(
-          ({ timeoutSeconds }: { timeoutSeconds: number }) => timeoutSeconds <= 1_200
+          ({ timeoutSeconds }: { timeoutSeconds: number }) => timeoutSeconds <= 720
         )
       ).toBe(true);
     }
@@ -277,6 +288,21 @@ describe('targeted Flows v2 PR verification', () => {
     expect(() => validateMatrix(invalid, manifestCategories())).toThrow(
       /targetedSetup must be a non-empty array/
     );
+  });
+
+  it('rejects explicit setup that is unavailable in targeted mode', () => {
+    const invalid = structuredClone(matrix);
+    const lane = invalid.lanes.find(({ id }: { id: string }) => id === 'fleet-injection-attach');
+    lane.setup.find(({ id }: { id: string }) => id === 'build-core').profiles = ['smoke'];
+
+    expect(() =>
+      buildTargetedPlan({
+        changedFiles: ['packages/cli/src/cli/commands/fleet.ts'],
+        matrix: invalid,
+        manifestText,
+        corpusCases,
+      })
+    ).toThrow(/requires setup build-core that is unavailable in targeted/);
   });
 
   it('rejects malformed output and exit gates instead of dropping them', () => {
@@ -342,14 +368,18 @@ describe('targeted Flows v2 PR verification', () => {
     const payload = Buffer.from(
       JSON.stringify({
         version: 1,
-        argv: [process.execPath, '-e', "console.log('expected-marker'); process.exit(7)"],
+        argv: [
+          process.execPath,
+          '-e',
+          "console.log('expected-marker', process.env.TARGETED_FIXTURE_ENV); process.exit(7)",
+        ],
         cwd: process.cwd(),
-        environment: {},
+        environment: { TARGETED_FIXTURE_ENV: 'from-payload' },
         timeoutSeconds: 10,
         requiredCommands: ['node'],
-        requiredEnvironment: [],
+        requiredEnvironment: ['TARGETED_FIXTURE_ENV'],
         expectedExitCodes: [7],
-        mustContain: ['expected-marker'],
+        mustContain: ['expected-marker', 'from-payload'],
         forbidOutput: ['forbidden-marker'],
       })
     ).toString('base64url');
@@ -359,7 +389,7 @@ describe('targeted Flows v2 PR verification', () => {
       ['scripts/verify-features/targeted-command.mjs', '--payload', payload],
       { cwd: process.cwd(), timeout: 30_000 }
     );
-    expect(passing.stdout).toContain('TARGETED_COMMAND_PASS exit=7 required=1 forbidden=1');
+    expect(passing.stdout).toContain('TARGETED_COMMAND_PASS exit=7 required=2 forbidden=1');
 
     const rejectedPayload = Buffer.from(
       JSON.stringify({
@@ -401,17 +431,38 @@ describe('targeted Flows v2 PR verification', () => {
         {
           cwd: process.cwd(),
           env: process.env,
-          timeoutMs: 100,
-          terminationGraceMs: 100,
+          timeoutMs: 1_000,
+          terminationGraceMs: 200,
           maxOutputBytes: 1024,
         }
       );
 
       expect(result.timedOut).toBe(true);
-      expect(Date.now() - started).toBeLessThan(5_000);
+      expect(Date.now() - started).toBeLessThan(10_000);
       const descendantPid = Number(result.stdout.trim());
       expect(Number.isSafeInteger(descendantPid)).toBe(true);
-      expect(() => process.kill(descendantPid, 0)).toThrow();
+      const stillRunning = async () => {
+        try {
+          process.kill(descendantPid, 0);
+        } catch {
+          return false;
+        }
+        if (process.platform === 'linux') {
+          try {
+            const stat = await readFile(`/proc/${descendantPid}/stat`, 'utf8');
+            if (stat.slice(stat.lastIndexOf(') ') + 2, stat.lastIndexOf(') ') + 3) === 'Z') return false;
+          } catch {
+            return false;
+          }
+        }
+        return true;
+      };
+      let running = true;
+      for (let attempt = 0; attempt < 50 && running; attempt += 1) {
+        running = await stillRunning();
+        if (running) await new Promise((resolve) => setTimeout(resolve, 100));
+      }
+      expect(running).toBe(false);
     }
   );
 

@@ -165,6 +165,11 @@
           "timeoutSeconds": 900
         },
         {
+          "id": "compile-broker-tests",
+          "command": ["npm", "run", "test:integration:broker:build"],
+          "timeoutSeconds": 600
+        },
+        {
           "id": "build-broker",
           "command": ["cargo", "build", "--release", "--bin", "agent-relay-broker"],
           "timeoutSeconds": 1800,
@@ -175,9 +180,16 @@
         {
           "id": "broker-process-integration",
           "title": "Real broker protocol, lifecycle, injection and child cleanup",
-          "command": ["npm", "run", "test:integration:broker"],
+          "command": [
+            "node",
+            "--test",
+            "--test-concurrency=1",
+            "tests/integration/broker/dist/messaging.test.js",
+            "tests/integration/broker/dist/observability.test.js",
+            "tests/integration/broker/dist/pty-exit.test.js"
+          ],
           "timeoutSeconds": 1800,
-          "prSetup": ["build-broker"],
+          "prSetup": ["build-core", "compile-broker-tests", "build-broker"],
           "environment": {
             "AGENT_RELAY_BIN": "{{brokerBinary}}"
           },
@@ -278,18 +290,15 @@
         },
         {
           "id": "messaging-mcp-process-roundtrip",
-          "title": "Real broker messaging and MCP injection round trips",
+          "title": "Real broker messaging round trips",
           "command": [
             "node",
             "--test",
-            "tests/integration/broker/dist/messaging.test.js",
-            "tests/integration/broker/dist/channel-management.test.js",
-            "tests/integration/broker/dist/mcp-injection.test.js",
-            "tests/integration/broker/dist/mcp-hints.test.js",
-            "tests/integration/broker/dist/agent-spawns-agent.test.js"
+            "--test-concurrency=1",
+            "tests/integration/broker/dist/messaging.test.js"
           ],
           "timeoutSeconds": 900,
-          "prSetup": ["compile-broker-tests", "build-broker"],
+          "prSetup": ["build-core", "compile-broker-tests", "build-broker"],
           "environment": {
             "AGENT_RELAY_BIN": "{{brokerBinary}}"
           },

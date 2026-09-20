@@ -15,7 +15,7 @@ const DEFAULT_MANIFEST = '.agentworkforce/features/manifest.yaml';
 const SAFE_ID = /^[a-z0-9][a-z0-9-]{0,127}$/;
 const SHA = /^[0-9a-f]{40}$/;
 const DEFAULT_SHARD_COMMAND_BUDGET_SECONDS = 2_880;
-const DEFAULT_MAX_COMMAND_SECONDS = 1_200;
+const DEFAULT_MAX_COMMAND_SECONDS = 720;
 
 const SELF_CHECK_PATHS = new Set([
   '.agentworkforce/features/manifest.yaml',
@@ -202,6 +202,11 @@ function setupForScenario(lane, scenario, mode, profile) {
     if (!lane.setup.some((step) => step.id === id)) {
       throw new Error(`scenario PR setup references unknown ${lane.id} setup ${id}`);
     }
+    if (!available.some((step) => step.id === id)) {
+      throw new Error(
+        `scenario ${lane.id}/${scenario.id} requires setup ${id} that is unavailable in ${mode}`
+      );
+    }
   }
   return available.filter((step) => ids.has(step.id));
 }
@@ -281,7 +286,7 @@ export function buildTargetedPlan({
         }
       }
     }
-    if (!matched && !isInert(file) && !file.startsWith('tests/')) unmatchedRuntimeFiles.push(file);
+    if (!matched && !isInert(file)) unmatchedRuntimeFiles.push(file);
   }
 
   const targeted = selectedFeatures.size > 0 || selectedCategories.size > 0 || directScenarioIds.size > 0;
@@ -326,9 +331,11 @@ export function buildTargetedPlan({
             if (!Number.isSafeInteger(corpusCase.timeoutSeconds) || corpusCase.timeoutSeconds < 1) {
               throw new Error(`RelayFlow corpus case ${corpusCase.id} has an invalid timeout`);
             }
-            const caseSetup = corpusCase.needsBroker
-              ? lane.setup.filter((step) => step.id === 'build-broker')
-              : [];
+            const requiredSetupIds = new Set([
+              'build-core',
+              ...(corpusCase.needsBroker ? ['build-broker'] : []),
+            ]);
+            const caseSetup = lane.setup.filter((step) => requiredSetupIds.has(step.id));
             for (const step of caseSetup) {
               assertCommandSpec(step, `setup ${lane.id}/${step.id}`);
               setup.push({ ...step, laneId: lane.id });

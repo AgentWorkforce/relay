@@ -89,7 +89,7 @@ async function main() {
     JSON.parse(Buffer.from(requiredOption('--payload'), 'base64url').toString('utf8'))
   );
   const environment = { ...process.env, ...payload.environment };
-  const missingEnvironment = payload.requiredEnvironment.filter((name) => !process.env[name]);
+  const missingEnvironment = payload.requiredEnvironment.filter((name) => !environment[name]);
   const missingCommands = payload.requiredCommands.filter((command) => !commandExists(command, environment));
   if (missingEnvironment.length > 0 || missingCommands.length > 0) {
     throw new Error(
