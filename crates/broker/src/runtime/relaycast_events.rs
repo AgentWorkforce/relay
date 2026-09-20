@@ -639,6 +639,23 @@ pub(super) async fn spawn_worker_from_request(
     } else {
         normalize_initial_task(task.clone())
     };
+    // Muse receives this text as its startup argv prompt. Decorate it before
+    // spawning so Muse sees the same relay guidance that other harnesses get
+    // through the post-ready injection path.
+    if let Some(prefix) =
+        super::api::relay_skill_prefix(spec.cli.as_deref().unwrap_or(&cli), spec.model.as_deref())
+    {
+        effective_task = Some(match effective_task {
+            Some(task) => format!("{prefix}\n\n{task}"),
+            None => prefix,
+        });
+        tracing::debug!(
+            agent = %name,
+            cli = %spec.cli.as_deref().unwrap_or(&cli),
+            model = ?spec.model,
+            "prepared relay skill prefix before Relaycast worker startup"
+        );
+    }
 
     // Pre-register an agent token for every spawned worker.
     // The Agent Relay MCP server needs RELAY_AGENT_TOKEN +
@@ -847,6 +864,7 @@ pub(super) async fn spawn_worker_from_request(
             worker_relay_key.clone(),
             false,
             Some(workspace_id.clone()),
+            effective_task.clone(),
             task_binding.as_ref().map(|(config, _)| config.clone()),
             commit_attestation,
             task_binding.as_ref().map(|(_, generation)| *generation),
@@ -870,26 +888,6 @@ pub(super) async fn spawn_worker_from_request(
                     session_ref,
                 )
                 .await;
-            }
-            if let Some(prefix) = super::api::relay_skill_prefix(
-                effective_spec.cli.as_deref().unwrap_or(&cli),
-                effective_spec.model.as_deref(),
-            ) {
-                effective_task = Some(match effective_task {
-                    Some(task) => format!("{prefix}\n\n{task}"),
-                    None => prefix,
-                });
-                tracing::debug!(
-                    agent = %name,
-                    cli = %effective_spec.cli.as_deref().unwrap_or(&cli),
-                    model = ?effective_spec.model,
-                    "injected relay skill prefix for Relaycast spawn"
-                );
-            }
-            if let Some(ref task_text) = effective_task {
-                workers
-                    .initial_tasks
-                    .insert(name.clone(), task_text.clone());
             }
             *agent_spawn_count += 1;
             telemetry.track(TelemetryEvent::AgentSpawn {

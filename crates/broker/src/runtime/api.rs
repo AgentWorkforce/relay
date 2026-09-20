@@ -719,6 +719,27 @@ impl BrokerRuntime {
                     token: format!("arr_{}", Uuid::new_v4().simple()),
                     schema: Some(schema),
                 });
+                // Muse consumes the assigned task as its startup argv prompt,
+                // so all task decoration must be complete before spawn. This
+                // keeps the same relay-skill text other harnesses receive via
+                // post-ready injection.
+                if !skip_relay_prompt {
+                    if let Some(prefix) = relay_skill_prefix(
+                        spec.cli.as_deref().unwrap_or(&cli),
+                        spec.model.as_deref(),
+                    ) {
+                        effective_task = Some(match effective_task {
+                            Some(task) => format!("{prefix}\n\n{task}"),
+                            None => prefix,
+                        });
+                        tracing::debug!(
+                            agent = %name,
+                            cli = %spec.cli.as_deref().unwrap_or(&cli),
+                            model = ?spec.model,
+                            "prepared relay skill prefix before worker startup"
+                        );
+                    }
+                }
                 if let Some(config) = &agent_result {
                     agent_result_tokens.insert(config.token.clone(), name.clone());
                 }
@@ -739,6 +760,7 @@ impl BrokerRuntime {
                         worker_relay_key.clone(),
                         skip_relay_prompt,
                         spawn_workspace_id.clone(),
+                        effective_task.clone(),
                         agent_result.clone(),
                         None,
                     )
@@ -773,31 +795,6 @@ impl BrokerRuntime {
                                 session_ref,
                             )
                             .await;
-                        }
-                        // Prepend relay skill text for small-tier models and CLI harnesses that
-                        // need explicit tool guidance to reliably call add_agent / remove_agent.
-                        // Skip when relay prompt injection is opted out — relay tools are absent.
-                        if !skip_relay_prompt {
-                            if let Some(prefix) = relay_skill_prefix(
-                                effective_spec.cli.as_deref().unwrap_or(&cli),
-                                effective_spec.model.as_deref(),
-                            ) {
-                                effective_task = Some(match effective_task {
-                                    Some(task) => format!("{prefix}\n\n{task}"),
-                                    None => prefix,
-                                });
-                                tracing::debug!(
-                                    agent = %name,
-                                    cli = %effective_spec.cli.as_deref().unwrap_or(&cli),
-                                    model = ?effective_spec.model,
-                                    "injected relay skill prefix for model or CLI harness"
-                                );
-                            }
-                        }
-                        if let Some(ref task_text) = effective_task {
-                            workers
-                                .initial_tasks
-                                .insert(name.clone(), task_text.clone());
                         }
                         *agent_spawn_count += 1;
                         telemetry.track(TelemetryEvent::AgentSpawn {

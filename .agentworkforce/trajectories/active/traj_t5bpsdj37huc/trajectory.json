@@ -1,0 +1,46 @@
+{
+  "id": "traj_t5bpsdj37huc",
+  "version": 1,
+  "task": {
+    "title": "Fix unattended deterministic Muse broker startup"
+  },
+  "status": "active",
+  "startedAt": "2026-09-20T21:27:41.117Z",
+  "agents": [
+    {
+      "name": "default",
+      "role": "lead",
+      "joinedAt": "2026-09-20T22:02:36.312Z"
+    }
+  ],
+  "chapters": [
+    {
+      "id": "chap_e0qqrw9cm5ef",
+      "title": "Work",
+      "agentName": "default",
+      "startedAt": "2026-09-20T22:02:36.312Z",
+      "events": [
+        {
+          "ts": 1789941756313,
+          "type": "decision",
+          "content": "Launch broker-managed Muse with --yolo and pass the complete initial task as the final startup argv value: Launch broker-managed Muse with --yolo and pass the complete initial task as the final startup argv value",
+          "raw": {
+            "question": "Launch broker-managed Muse with --yolo and pass the complete initial task as the final startup argv value",
+            "chosen": "Launch broker-managed Muse with --yolo and pass the complete initial task as the final startup argv value",
+            "alternatives": [],
+            "reasoning": "Muse otherwise renders broker initialization but does not begin the assigned work; retaining the task in broker pending state until readiness prevents follow-up delivery races while an argv-consumed marker avoids duplicate PTY injection."
+          },
+          "significance": "high"
+        }
+      ]
+    }
+  ],
+  "commits": [],
+  "filesChanged": [],
+  "projectId": "AgentWorkforce/relay",
+  "tags": [],
+  "_trace": {
+    "startRef": "cdd6612985eacd06dfa6279ea1e2c630ff7b99fa",
+    "endRef": "cdd6612985eacd06dfa6279ea1e2c630ff7b99fa"
+  }
+}

@@ -1,5 +1,5 @@
 use std::{
-    collections::{HashMap, VecDeque},
+    collections::{HashMap, HashSet, VecDeque},
     path::{Path, PathBuf},
     process::Stdio,
     time::{Duration, Instant},
@@ -255,6 +255,7 @@ pub(crate) struct WorkerRegistry {
     worker_logs_dir: PathBuf,
     commit_hooks_dir: Option<tempfile::TempDir>,
     pub(crate) initial_tasks: HashMap<WorkerName, String>,
+    argv_initial_tasks: HashSet<WorkerName>,
     // Ownership outlives reaping so a failed pre-ready handle can clean up safely.
     pub(crate) owned_spawn_generations:
         HashMap<WorkerName, (Uuid, crate::relaycast::RelaycastHttpClient)>,
@@ -366,6 +367,7 @@ impl WorkerRegistry {
             worker_logs_dir,
             commit_hooks_dir: None,
             initial_tasks: HashMap::new(),
+            argv_initial_tasks: HashSet::new(),
             owned_spawn_generations: HashMap::new(),
             completed_owned_releases: VecDeque::new(),
             identity_cleanups: HashMap::new(),
@@ -572,6 +574,7 @@ impl WorkerRegistry {
         }
         self.workers.remove(name);
         self.initial_tasks.remove(name);
+        self.argv_initial_tasks.remove(name);
         self.supervisor.unregister(name);
     }
 
@@ -584,6 +587,7 @@ impl WorkerRegistry {
         worker_relay_api_key: Option<String>,
         skip_relay_prompt: bool,
         workspace_id: Option<crate::ids::WorkspaceId>,
+        initial_task: Option<String>,
         agent_result: Option<AgentResultMcpConfig>,
         commit_attestation: Option<CommitAttestation>,
     ) -> Result<AgentSpec> {
@@ -594,6 +598,7 @@ impl WorkerRegistry {
             worker_relay_api_key,
             skip_relay_prompt,
             workspace_id,
+            initial_task,
             agent_result,
             commit_attestation,
             None,
@@ -610,6 +615,7 @@ impl WorkerRegistry {
         worker_relay_api_key: Option<String>,
         skip_relay_prompt: bool,
         workspace_id: Option<crate::ids::WorkspaceId>,
+        initial_task: Option<String>,
         agent_result: Option<AgentResultMcpConfig>,
         commit_attestation: Option<CommitAttestation>,
         task_generation: Option<Uuid>,
@@ -666,6 +672,7 @@ impl WorkerRegistry {
         let mut suppress_worker_env: Vec<&'static str> = Vec::new();
         let mut initial_harness_pid: Option<u32> = None;
         let mut direct_native_harness_sidecar = false;
+        let mut initial_task_in_argv = false;
 
         match spec.harness_config.clone() {
             Some(ResolvedHarnessConfig::Pty(config)) => {
@@ -709,7 +716,7 @@ impl WorkerRegistry {
                 let is_codex = cli_lower == "codex";
                 let is_gemini = cli_lower == "gemini";
                 let is_grok = cli_lower == "grok";
-                let trust_flag = muse_trust_flag(&cli_lower, &effective_args);
+                let muse_flag = muse_yolo_flag(&cli_lower, &effective_args);
                 if let Some(model) = apply_codex_model_arg_fallback(
                     &resolved_cli,
                     &cli_lower,
@@ -809,6 +816,13 @@ impl WorkerRegistry {
                         "auto-injecting permission-bypass flag for spawned agent"
                     );
                 }
+                if let Some(flag) = muse_flag {
+                    tracing::warn!(
+                        worker = %spec.name,
+                        flag = %flag,
+                        "auto-injecting permission-bypass flag for spawned Muse agent"
+                    );
+                }
 
                 let mcp_args = self
                     .build_mcp_args(
@@ -834,13 +848,16 @@ impl WorkerRegistry {
                     spec.model = Some(model.clone());
                 }
 
+                let startup_prompt = muse_startup_prompt(&cli_lower, initial_task.as_deref());
+                initial_task_in_argv = startup_prompt.is_some();
                 let pty_cli_args = ordered_pty_cli_args(
                     bypass_flag,
-                    trust_flag,
+                    muse_flag,
                     model_flag.as_deref(),
                     &mcp_args,
                     &effective_args,
                     &harness_session_args,
+                    startup_prompt,
                 );
                 if !pty_cli_args.is_empty() {
                     command.arg("--");
@@ -952,7 +969,7 @@ impl WorkerRegistry {
                     let is_codex = cli_lower == "codex";
                     let is_gemini = cli_lower == "gemini";
                     let is_grok = cli_lower == "grok";
-                    let trust_flag = muse_trust_flag(&cli_lower, &effective_args);
+                    let muse_flag = muse_yolo_flag(&cli_lower, &effective_args);
                     if let Some(model) = apply_codex_model_arg_fallback(
                         &resolved_cli,
                         &cli_lower,
@@ -1055,6 +1072,13 @@ impl WorkerRegistry {
                             "auto-injecting permission-bypass flag for spawned agent"
                         );
                     }
+                    if let Some(flag) = muse_flag {
+                        tracing::warn!(
+                            worker = %spec.name,
+                            flag = %flag,
+                            "auto-injecting permission-bypass flag for spawned Muse agent"
+                        );
+                    }
 
                     let mcp_args = self
                         .build_mcp_args(
@@ -1080,13 +1104,16 @@ impl WorkerRegistry {
                         spec.model = Some(model.clone());
                     }
 
+                    let startup_prompt = muse_startup_prompt(&cli_lower, initial_task.as_deref());
+                    initial_task_in_argv = startup_prompt.is_some();
                     let pty_cli_args = ordered_pty_cli_args(
                         bypass_flag,
-                        trust_flag,
+                        muse_flag,
                         model_flag.as_deref(),
                         &mcp_args,
                         &effective_args,
                         &harness_session_args,
+                        startup_prompt,
                     );
                     if !pty_cli_args.is_empty() {
                         command.arg("--");
@@ -1394,6 +1421,12 @@ impl WorkerRegistry {
             exit_reason: None,
         };
         self.workers.insert(spec.name.clone(), handle);
+        if let Some(task) = initial_task {
+            self.initial_tasks.insert(spec.name.clone(), task);
+            if initial_task_in_argv {
+                self.argv_initial_tasks.insert(spec.name.clone());
+            }
+        }
 
         if let Err(error) = self
             .send_to_worker(
@@ -1568,6 +1601,19 @@ impl WorkerRegistry {
             .await
     }
 
+    /// Remove a startup task once the harness is ready and return it only when
+    /// the broker still needs to inject it through the PTY. Muse receives its
+    /// startup task as an argv prompt, but remains present in `initial_tasks`
+    /// until readiness so follow-up deliveries cannot race the assigned work.
+    pub(crate) fn take_initial_task_for_injection(&mut self, name: &str) -> Option<String> {
+        let task = self.initial_tasks.remove(name);
+        if self.argv_initial_tasks.remove(name) {
+            None
+        } else {
+            task
+        }
+    }
+
     /// Stop a terminal task without touching a replacement worker or bypassing
     /// the normal reap/owned-identity cleanup path.
     pub(crate) async fn stop_task_generation(
@@ -1590,6 +1636,7 @@ impl WorkerRegistry {
     pub(crate) async fn release(&mut self, name: &str) -> Result<()> {
         tracing::info!(target = "broker::release", name = %name, "releasing worker");
         self.initial_tasks.remove(name);
+        self.argv_initial_tasks.remove(name);
         // An explicit release is terminal even when the process already exited
         // and disappeared from `workers`. Cancel any pending restart before
         // looking up the handle so maintenance cannot resurrect the released
@@ -1766,6 +1813,7 @@ impl WorkerRegistry {
                 }
                 self.workers.remove(&name);
                 self.initial_tasks.remove(&name);
+                self.argv_initial_tasks.remove(&name);
                 exited.push((name, generation, None, None, reason));
                 continue;
             }
@@ -1789,6 +1837,7 @@ impl WorkerRegistry {
                     .and_then(|handle| handle.exit_reason.clone());
                 self.workers.remove(&name);
                 self.initial_tasks.remove(&name);
+                self.argv_initial_tasks.remove(&name);
                 exited.push((name, generation, code, signal, reason));
             } else if gone_via_kill0 {
                 let generation = self
@@ -1802,6 +1851,7 @@ impl WorkerRegistry {
                     .and_then(|handle| handle.exit_reason.clone());
                 self.workers.remove(&name);
                 self.initial_tasks.remove(&name);
+                self.argv_initial_tasks.remove(&name);
                 exited.push((name, generation, None, None, reason));
             }
         }
@@ -2005,27 +2055,32 @@ fn prepare_claude_session_args(args: &mut Vec<String>) -> Option<String> {
     Some(session_id)
 }
 
-/// Broker-owned default for the Muse CLI: trust the workspace for the run so
-/// its skills and rules load, while keeping tool approvals on. `--yolo`
-/// implies workspace trust, so an explicit `--trust-workspace` or `--yolo`
-/// suppresses the default. `--disable-approval` is deliberately never
-/// auto-injected here — unlike the legacy bypass flags for
-/// claude/codex/gemini/grok, weakening Muse approvals stays an explicit
-/// caller choice passed through via `effective_args`.
-fn muse_trust_flag(cli_lower: &str, effective_args: &[String]) -> Option<&'static str> {
+/// Broker-owned default for the Muse CLI: run unattended with tool approvals
+/// disabled. `--yolo` also implies workspace trust, so it replaces the weaker
+/// `--trust-workspace` default used by the first Muse integration. Preserve an
+/// explicit caller flag without adding a duplicate.
+fn muse_yolo_flag(cli_lower: &str, effective_args: &[String]) -> Option<&'static str> {
     // Callers pass the lowercased executable basename (directories already
     // stripped by `normalize_cli_name`); the shared matcher also tolerates
     // Windows executable suffixes.
     if !is_muse_executable(cli_lower) {
         return None;
     }
-    let already_trusted = effective_args
-        .iter()
-        .any(|arg| arg == "--trust-workspace" || arg == "--yolo");
-    if already_trusted {
+    if effective_args.iter().any(|arg| arg == "--yolo") {
         return None;
     }
-    Some("--trust-workspace")
+    Some("--yolo")
+}
+
+/// Muse only begins a broker-assigned task deterministically when the prompt is
+/// present at process startup. Keep the prompt as one argv value (including
+/// newlines) and leave every other harness on the established post-ready PTY
+/// injection path.
+fn muse_startup_prompt<'a>(cli_lower: &str, initial_task: Option<&'a str>) -> Option<&'a str> {
+    if !is_muse_executable(cli_lower) {
+        return None;
+    }
+    initial_task.filter(|task| !task.trim().is_empty())
 }
 
 /// Clean Muse config home for a worker spawn, when Relay MCP injection is
@@ -2055,17 +2110,18 @@ fn muse_config_home_for_worker(
 
 fn ordered_pty_cli_args(
     bypass_flag: Option<&str>,
-    trust_flag: Option<&str>,
+    muse_flag: Option<&str>,
     model: Option<&str>,
     mcp_args: &[String],
     effective_args: &[String],
     harness_session_args: &[String],
+    startup_prompt: Option<&str>,
 ) -> Vec<String> {
     let mut args = Vec::new();
     if let Some(flag) = bypass_flag {
         args.push(flag.to_string());
     }
-    if let Some(flag) = trust_flag {
+    if let Some(flag) = muse_flag {
         args.push(flag.to_string());
     }
     if let Some(model) = model {
@@ -2078,6 +2134,9 @@ fn ordered_pty_cli_args(
     // Codex accepts its resume options after the session positional.
     args.extend_from_slice(harness_session_args);
     args.extend_from_slice(effective_args);
+    if let Some(prompt) = startup_prompt {
+        args.push(prompt.to_string());
+    }
     args
 }
 
@@ -2769,6 +2828,7 @@ mod tests {
                 None,
                 None,
                 None,
+                None,
             )
             .await
             .expect("worker with an existing cwd should spawn");
@@ -2812,6 +2872,7 @@ mod tests {
                 None,
                 None,
                 None,
+                None,
             )
             .await
             .expect_err("missing cwd must fail instead of inheriting the broker cwd")
@@ -2843,6 +2904,7 @@ mod tests {
                 None,
                 None,
                 true,
+                None,
                 None,
                 None,
                 None,
@@ -2912,7 +2974,7 @@ sleep 30
         let mut registry = make_registry(Vec::new());
 
         let effective_spec = registry
-            .spawn(spec, None, None, None, true, None, None, None)
+            .spawn(spec, None, None, None, true, None, None, None, None)
             .await
             .expect("attested worker should spawn");
         assert_eq!(effective_spec.session_id.as_deref(), Some(session_id));
@@ -3755,6 +3817,7 @@ sleep 30
             ],
             &args,
             &harness_session_args,
+            None,
         );
         assert_eq!(
             ordered,
@@ -3794,34 +3857,35 @@ sleep 30
     }
 
     #[test]
-    fn muse_trust_flag_defaults_to_trust_workspace() {
-        assert_eq!(muse_trust_flag("muse", &[]), Some("--trust-workspace"));
+    fn muse_yolo_flag_defaults_to_unattended_mode() {
+        assert_eq!(muse_yolo_flag("muse", &[]), Some("--yolo"));
         assert_eq!(
-            muse_trust_flag("muse", &["--model".to_string(), "muse-spark".to_string()]),
-            Some("--trust-workspace")
+            muse_yolo_flag("muse", &["--model".to_string(), "muse-spark".to_string()]),
+            Some("--yolo")
         );
     }
 
     #[test]
-    fn muse_trust_flag_skips_when_workspace_already_trusted() {
+    fn muse_yolo_flag_preserves_explicit_flag_without_duplication() {
         assert_eq!(
-            muse_trust_flag("muse", &["--trust-workspace".to_string()]),
-            None
+            muse_yolo_flag("muse", &["--trust-workspace".to_string()]),
+            Some("--yolo"),
+            "workspace trust alone does not make a broker worker unattended"
         );
-        assert_eq!(muse_trust_flag("muse", &["--yolo".to_string()]), None);
+        assert_eq!(muse_yolo_flag("muse", &["--yolo".to_string()]), None);
     }
 
     #[test]
-    fn muse_trust_flag_ignores_other_clis() {
+    fn muse_yolo_flag_ignores_other_clis() {
         for cli in ["claude", "codex", "gemini", "grok", "opencode", "aider"] {
-            assert_eq!(muse_trust_flag(cli, &[]), None);
+            assert_eq!(muse_yolo_flag(cli, &[]), None);
         }
     }
 
     #[test]
-    fn muse_trust_flag_covers_windows_executable_spellings() {
+    fn muse_yolo_flag_covers_windows_executable_spellings() {
         // Bare and absolute-path spellings reduce to the same basename before
-        // reaching the helper; every Windows suffix must still trust.
+        // reaching the helper; every Windows suffix must still run unattended.
         for cli in [
             "muse.exe",
             "muse.cmd",
@@ -3835,46 +3899,72 @@ sleep 30
                 .unwrap_or(cli)
                 .to_ascii_lowercase();
             assert_eq!(
-                muse_trust_flag(&basename, &[]),
-                Some("--trust-workspace"),
-                "{cli} must get the workspace-trust default"
+                muse_yolo_flag(&basename, &[]),
+                Some("--yolo"),
+                "{cli} must get the unattended default"
             );
         }
         // Suffix stripping must not mint false positives.
         for cli in ["xmuse", "muse2", "amuse.exe", "my-muse-wrapper"] {
-            assert_eq!(muse_trust_flag(cli, &[]), None);
+            assert_eq!(muse_yolo_flag(cli, &[]), None);
         }
     }
 
     #[test]
-    fn muse_spawn_args_trust_workspace_without_weakening_approvals() {
-        // The broker default trusts the workspace (skills/rules load) but
-        // never auto-injects --disable-approval: approvals stay on unless the
-        // caller passes the flag explicitly, and an explicit opt-in flows
-        // through untouched in user-arg position.
-        let ordered = ordered_pty_cli_args(None, muse_trust_flag("muse", &[]), None, &[], &[], &[]);
-        assert_eq!(ordered, vec!["--trust-workspace".to_string()]);
-        assert!(
-            !ordered.iter().any(|arg| arg.contains("disable-approval")),
-            "muse spawn must not auto-inject --disable-approval"
-        );
-
-        let explicit = vec!["--disable-approval".to_string()];
+    fn muse_spawn_args_are_unattended_and_start_with_the_assigned_prompt() {
+        let task = "Run pwd, then report ready.\nDo not ask for approval.";
         let ordered = ordered_pty_cli_args(
             None,
-            muse_trust_flag("muse", &explicit),
+            muse_yolo_flag("muse", &[]),
+            None,
+            &[],
+            &[],
+            &[],
+            muse_startup_prompt("muse", Some(task)),
+        );
+        assert_eq!(ordered, vec!["--yolo".to_string(), task.to_string()]);
+
+        let explicit = vec!["--yolo".to_string()];
+        let ordered = ordered_pty_cli_args(
+            None,
+            muse_yolo_flag("muse", &explicit),
             None,
             &[],
             &explicit,
             &[],
+            muse_startup_prompt("muse", Some(task)),
         );
+        assert_eq!(ordered, vec!["--yolo".to_string(), task.to_string()]);
         assert_eq!(
-            ordered,
-            vec![
-                "--trust-workspace".to_string(),
-                "--disable-approval".to_string()
-            ]
+            ordered
+                .iter()
+                .filter(|arg| arg.as_str() == "--yolo")
+                .count(),
+            1,
+            "an explicit --yolo must not be duplicated"
         );
+    }
+
+    #[test]
+    fn muse_startup_prompt_is_not_used_for_other_harnesses_or_empty_tasks() {
+        assert_eq!(muse_startup_prompt("codex", Some("task")), None);
+        assert_eq!(muse_startup_prompt("muse", None), None);
+        assert_eq!(muse_startup_prompt("muse", Some("  \n")), None);
+    }
+
+    #[test]
+    fn argv_initial_task_blocks_followups_but_is_not_injected_twice() {
+        let mut registry = make_registry(Vec::new());
+        let name = WorkerName::from("muse-startup-task");
+        registry
+            .initial_tasks
+            .insert(name.clone(), "assigned task".to_string());
+        registry.argv_initial_tasks.insert(name.clone());
+
+        assert!(registry.initial_tasks.contains_key(&name));
+        assert_eq!(registry.take_initial_task_for_injection(&name), None);
+        assert!(!registry.initial_tasks.contains_key(&name));
+        assert!(!registry.argv_initial_tasks.contains(&name));
     }
 
     #[test]
@@ -4259,6 +4349,7 @@ sleep 30
                 None,
                 None,
                 true,
+                None,
                 None,
                 Some(AgentResultMcpConfig {
                     callback_url: "http://127.0.0.1:1/api/agent-result".into(),

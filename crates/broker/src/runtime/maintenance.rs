@@ -658,6 +658,7 @@ impl BrokerRuntime {
                         worker_relay_key,
                         rst.payload.skip_relay_prompt,
                         None,
+                        rst.payload.initial_task.clone(),
                         rst.payload.agent_result.clone(),
                         None,
                     )
@@ -680,9 +681,6 @@ impl BrokerRuntime {
                         workers.supervisor.on_restarted(&name);
                         workers.metrics.on_restart(&name);
                         let initial_task = rst.payload.initial_task.clone();
-                        if let Some(task) = initial_task.clone() {
-                            workers.initial_tasks.insert(name.clone(), task);
-                        }
                         let pid = workers.worker_pid(&name);
                         let restart_policy = state
                             .agents
