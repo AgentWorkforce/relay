@@ -5102,6 +5102,50 @@ class FleetBoard {
       { timeoutMs: 45_000, maxCaptureBytes: 4 * 1024 * 1024 }
     );
     await this.assertedCommand(
+      'fleet-nodes-list-parent-options',
+      this.cliArgv(
+        'fleet',
+        'nodes',
+        '--name',
+        primary?.nodeName ?? 'missing',
+        '--capability',
+        'spawn:codex',
+        '--all',
+        'list',
+        '--pretty'
+      ),
+      (result) => ({
+        pass:
+          Boolean(primary?.nodeName) &&
+          result._rawStdout.includes('NODE') &&
+          result._rawStdout.includes(primary.nodeName),
+        summary: `prettyContainsExactNode=${Boolean(primary?.nodeName) && result._rawStdout.includes(primary.nodeName)}`,
+      }),
+      { timeoutMs: 45_000, maxCaptureBytes: 4 * 1024 * 1024 }
+    );
+    await this.assertedCommand(
+      'fleet-nodes-list-options',
+      this.cliArgv(
+        'fleet',
+        'nodes',
+        'list',
+        '--name',
+        primary?.nodeName ?? 'missing',
+        '--capability',
+        'spawn:codex',
+        '--all',
+        '--pretty'
+      ),
+      (result) => ({
+        pass:
+          Boolean(primary?.nodeName) &&
+          result._rawStdout.includes('NODE') &&
+          result._rawStdout.includes(primary.nodeName),
+        summary: `prettyContainsExactNode=${Boolean(primary?.nodeName) && result._rawStdout.includes(primary.nodeName)}`,
+      }),
+      { timeoutMs: 45_000, maxCaptureBytes: 4 * 1024 * 1024 }
+    );
+    await this.assertedCommand(
       'fleet-nodes-name',
       this.cliArgv('fleet', 'nodes', '--name', primary?.nodeName ?? 'missing'),
       (result) => {

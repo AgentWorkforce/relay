@@ -27,14 +27,24 @@ type FakeRemoteHandle = {
   close: () => Promise<void>;
 };
 
-async function startFakeRemote(upgradeDelayMs = 0): Promise<FakeRemoteHandle> {
+async function startFakeRemote(
+  upgradeDelayMs = 0,
+  rejectUpgrade?: (url: string) => number | undefined
+): Promise<FakeRemoteHandle> {
   const wss = new WebSocketServer({
     host: '127.0.0.1',
     port: 0,
-    ...(upgradeDelayMs > 0
+    ...(upgradeDelayMs > 0 || rejectUpgrade
       ? {
-          verifyClient: (_info, done) => {
-            setTimeout(() => done(true), upgradeDelayMs);
+          verifyClient: (info, done) => {
+            const status = rejectUpgrade?.(info.req.url ?? '/');
+            setTimeout(
+              () =>
+                status === undefined
+                  ? done(true)
+                  : done(false, status, status === 410 ? 'Gone' : 'Unavailable'),
+              upgradeDelayMs
+            );
           },
         }
       : {}),
@@ -95,11 +105,15 @@ function terminalSessionErrorResponse(code: string, message: string, status = 50
   } as unknown as Response;
 }
 
-function sendReady(socket: WsSocket, deliveryMode?: 'auto_inject' | 'manual_flush'): void {
+function sendReady(
+  socket: WsSocket,
+  deliveryMode?: 'auto_inject' | 'manual_flush',
+  sessionId = SESSION_ID
+): void {
   socket.send(
     JSON.stringify({
       type: 'terminal.ready',
-      session_id: SESSION_ID,
+      session_id: sessionId,
       screen: '',
       rows: 24,
       cols: 80,
@@ -477,9 +491,10 @@ describe('startFleetNodeAttachProxy delivery-mode PUT lifecycle', () => {
     });
     cleanup.push(proxy.close);
 
-    // Six complete reconnect generations (151.5s), the post-ready delivery
-    // acknowledgement (10s), and response-delivery headroom (1s).
-    expect(proxy.requestTimeoutMs).toBe(162_500);
+    // Six complete reconnect generations (151.5s), one bounded replacement
+    // session allocation including safe structured retries (90s), the post-ready delivery acknowledgement
+    // (10s), and response-delivery headroom (1s).
+    expect(proxy.requestTimeoutMs).toBe(252_500);
 
     const socket = await remote.nextConnection();
     sendReady(socket, 'auto_inject');
@@ -821,6 +836,328 @@ describe('startFleetNodeAttachProxy view target lifecycle', () => {
     );
     await closed;
     expect(closes).toEqual([{ code: 1011, reason: 'remote terminal session closed' }]);
+  });
+
+  // MUST FIRE: cast terminal sessions have a finite lifetime. Before this
+  // regression, a view that outlived its session kept retrying the expired
+  // resume token six times and then closed its local client with code 1011.
+  it('replaces an expired terminal session once and keeps the existing view attached', async () => {
+    const oldSessionId = 'session-expired';
+    const freshSessionId = 'session-fresh';
+    let resumeRequests = 0;
+    const remote = await startFakeRemote(0, (requestUrl) => {
+      const url = new URL(requestUrl, 'ws://127.0.0.1');
+      if (url.searchParams.get('resume')) {
+        resumeRequests += 1;
+        return 410;
+      }
+      return undefined;
+    });
+    cleanup.push(remote.close);
+    const requests: Array<{ url: string; body: Record<string, unknown> }> = [];
+    const fetchFn = (async (input: string | URL | Request, init?: RequestInit) => {
+      const body = JSON.parse(String(init?.body ?? '{}')) as Record<string, unknown>;
+      requests.push({ url: String(input), body });
+      const replacement = requests.length === 2;
+      return {
+        ok: true,
+        status: 201,
+        json: async () => ({
+          ok: true,
+          data: {
+            session_id: replacement ? freshSessionId : oldSessionId,
+            terminal_url: `${remote.url}?ticket=${replacement ? 'fresh-ticket' : 'old-ticket'}`,
+            resume_token: replacement ? 'fresh-resume-secret' : 'old-resume-secret',
+            expires_at: replacement
+              ? new Date(Date.now() + 600_000).toISOString()
+              : new Date(Date.now() - 1).toISOString(),
+          },
+        }),
+      } as Response;
+    }) as typeof globalThis.fetch;
+    const proxy = await startFleetNodeAttachProxy({
+      agent: 'view-expired',
+      node: 'node-expired',
+      mode: 'view',
+      baseUrl: 'https://cast.agentrelay.com',
+      workspaceKey: 'wk',
+      fetch: fetchFn,
+      reconnectDelay: { initialMs: 1, maxMs: 1 },
+    });
+    cleanup.push(proxy.close);
+
+    const initial = await remote.nextConnection();
+    sendReady(initial, 'auto_inject', oldSessionId);
+    const viewSocket = await connectLoopbackEvents(proxy);
+    cleanup.push(
+      () =>
+        new Promise<void>((resolve) => {
+          if (viewSocket.readyState === WsClient.CLOSED) return resolve();
+          viewSocket.once('close', () => resolve());
+          viewSocket.close();
+        })
+    );
+
+    initial.terminate();
+    const replacement = await remote.nextConnection();
+    sendReady(replacement, 'auto_inject', freshSessionId);
+    const output = new Promise<void>((resolve) => viewSocket.once('message', () => resolve()));
+    replacement.send(
+      JSON.stringify({
+        type: 'terminal.output',
+        session_id: freshSessionId,
+        chunk: 'fresh session output',
+        offset: 1,
+      })
+    );
+    await output;
+
+    expect(viewSocket.readyState).toBe(WsClient.OPEN);
+    expect(requests).toEqual([
+      {
+        url: 'https://cast.agentrelay.com/v1/nodes/node-expired/terminal/sessions',
+        body: { agent: 'view-expired', mode: 'view' },
+      },
+      {
+        url: 'https://cast.agentrelay.com/v1/nodes/node-expired/terminal/sessions',
+        body: { agent: 'view-expired', mode: 'view' },
+      },
+    ]);
+    expect(resumeRequests).toBe(0);
+  });
+
+  it.each([401, 410])(
+    'replaces a session once when the terminal rejects its resume credential with %i',
+    async (rejectedStatus) => {
+      const oldSessionId = 'session-resume-expired';
+      const freshSessionId = 'session-after-expired-resume';
+      let resumeRequests = 0;
+      const remote = await startFakeRemote(0, (requestUrl) => {
+        const url = new URL(requestUrl, 'ws://127.0.0.1');
+        if (url.searchParams.get('resume')) {
+          resumeRequests += 1;
+          return rejectedStatus;
+        }
+        return undefined;
+      });
+      cleanup.push(remote.close);
+      let sessionRequests = 0;
+      const proxy = await startFleetNodeAttachProxy({
+        agent: 'view-resume-expired',
+        node: 'node-resume-expired',
+        mode: 'view',
+        baseUrl: 'https://cast.agentrelay.com',
+        workspaceKey: 'wk',
+        fetch: (async () => {
+          sessionRequests += 1;
+          const replacement = sessionRequests === 2;
+          return {
+            ok: true,
+            status: 201,
+            json: async () => ({
+              ok: true,
+              data: {
+                session_id: replacement ? freshSessionId : oldSessionId,
+                terminal_url: `${remote.url}?ticket=${replacement ? 'fresh-ticket' : 'old-ticket'}`,
+                resume_token: replacement ? 'fresh-resume-secret' : 'old-resume-secret',
+                expires_at: new Date(Date.now() + 600_000).toISOString(),
+              },
+            }),
+          } as Response;
+        }) as typeof globalThis.fetch,
+        reconnectDelay: { initialMs: 1, maxMs: 1 },
+      });
+      cleanup.push(proxy.close);
+
+      const initial = await remote.nextConnection();
+      sendReady(initial, 'auto_inject', oldSessionId);
+      const viewSocket = await connectLoopbackEvents(proxy);
+      cleanup.push(
+        () =>
+          new Promise<void>((resolve) => {
+            if (viewSocket.readyState === WsClient.CLOSED) return resolve();
+            viewSocket.once('close', () => resolve());
+            viewSocket.close();
+          })
+      );
+
+      initial.terminate();
+      const replacement = await remote.nextConnection();
+      sendReady(replacement, 'auto_inject', freshSessionId);
+      const output = new Promise<void>((resolve) => viewSocket.once('message', () => resolve()));
+      replacement.send(
+        JSON.stringify({
+          type: 'terminal.output',
+          session_id: freshSessionId,
+          chunk: 'fresh after expired resume',
+          offset: 1,
+        })
+      );
+      await output;
+
+      expect(viewSocket.readyState).toBe(WsClient.OPEN);
+      expect(resumeRequests).toBe(1);
+      expect(sessionRequests).toBe(2);
+    }
+  );
+
+  it('does not allocate a replacement terminal for transient resume failures', async () => {
+    let resumeRequests = 0;
+    const remote = await startFakeRemote(0, (requestUrl) => {
+      if (new URL(requestUrl, 'ws://127.0.0.1').searchParams.get('resume')) {
+        resumeRequests += 1;
+        return 503;
+      }
+      return undefined;
+    });
+    cleanup.push(remote.close);
+    let sessionRequests = 0;
+    const proxy = await startFleetNodeAttachProxy({
+      agent: 'view-transient-resume',
+      node: 'node-transient-resume',
+      mode: 'view',
+      baseUrl: 'https://cast.agentrelay.com',
+      workspaceKey: 'wk',
+      fetch: (async () => {
+        sessionRequests += 1;
+        return {
+          ok: true,
+          status: 201,
+          json: async () => ({
+            ok: true,
+            data: {
+              session_id: SESSION_ID,
+              terminal_url: `${remote.url}?ticket=initial-ticket`,
+              resume_token: 'initial-resume-secret',
+              expires_at: new Date(Date.now() + 600_000).toISOString(),
+            },
+          }),
+        } as Response;
+      }) as typeof globalThis.fetch,
+      sessionRequest: { sleep: async () => undefined },
+      reconnectDelay: { initialMs: 1, maxMs: 1 },
+    });
+    cleanup.push(proxy.close);
+
+    const initial = await remote.nextConnection();
+    sendReady(initial);
+    const viewSocket = await connectLoopbackEvents(proxy);
+    const closed = new Promise<void>((resolve) => viewSocket.once('close', () => resolve()));
+    initial.terminate();
+    await closed;
+
+    expect(resumeRequests).toBe(6);
+    expect(sessionRequests).toBe(1);
+  });
+
+  it('uses the terminal-session request timeout, not the WebSocket handshake timeout, for replacement allocation', async () => {
+    const remote = await startFakeRemote();
+    cleanup.push(remote.close);
+    let requests = 0;
+    let replacementAborted = false;
+    let resolveReplacementAbort!: () => void;
+    const replacementAbort = new Promise<void>((resolve) => {
+      resolveReplacementAbort = resolve;
+    });
+    const proxy = await startFleetNodeAttachProxy({
+      agent: 'view-replacement-timeout',
+      node: 'node-replacement-timeout',
+      mode: 'view',
+      baseUrl: 'https://cast.agentrelay.com',
+      workspaceKey: 'wk',
+      fetch: ((_: string | URL | Request, init?: RequestInit) => {
+        requests += 1;
+        if (requests === 1) {
+          return Promise.resolve({
+            ok: true,
+            status: 201,
+            json: async () => ({
+              ok: true,
+              data: {
+                session_id: SESSION_ID,
+                terminal_url: `${remote.url}?ticket=initial-ticket`,
+                resume_token: 'initial-resume-secret',
+                expires_at: new Date(Date.now() - 1).toISOString(),
+              },
+            }),
+          } as Response);
+        }
+        return new Promise<Response>((_resolve, reject) => {
+          init?.signal?.addEventListener(
+            'abort',
+            () => {
+              replacementAborted = true;
+              resolveReplacementAbort();
+              reject(new Error('replacement request aborted'));
+            },
+            { once: true }
+          );
+        });
+      }) as typeof globalThis.fetch,
+      sessionRequest: { timeoutMs: 40, totalTimeoutMs: 40 },
+      reconnectDelay: { initialMs: 1, maxMs: 1, handshakeTimeoutMs: 5 },
+    });
+    cleanup.push(proxy.close);
+
+    const initial = await remote.nextConnection();
+    sendReady(initial);
+    initial.terminate();
+    await new Promise<void>((resolve) => setTimeout(resolve, 15));
+    expect(replacementAborted).toBe(false);
+    await replacementAbort;
+    expect(requests).toBe(2);
+  });
+
+  it('preserves a replacement allocation failure code for readiness-gated requests', async () => {
+    const remote = await startFakeRemote();
+    cleanup.push(remote.close);
+    let requests = 0;
+    const proxy = await startFleetNodeAttachProxy({
+      agent: 'view-replacement-error',
+      node: 'node-replacement-error',
+      mode: 'view',
+      baseUrl: 'https://cast.agentrelay.com',
+      workspaceKey: 'wk',
+      fetch: (async () => {
+        requests += 1;
+        if (requests >= 2) {
+          return terminalSessionErrorResponse(
+            'terminal_session_unavailable',
+            'replacement terminal session is unavailable'
+          );
+        }
+        return {
+          ok: true,
+          status: 201,
+          json: async () => ({
+            ok: true,
+            data: {
+              session_id: SESSION_ID,
+              terminal_url: `${remote.url}?ticket=initial-ticket`,
+              resume_token: 'initial-resume-secret',
+              expires_at: new Date(Date.now() - 1).toISOString(),
+            },
+          }),
+        } as Response;
+      }) as typeof globalThis.fetch,
+      sessionRequest: { sleep: async () => undefined },
+      reconnectDelay: { initialMs: 1, maxMs: 1 },
+    });
+    cleanup.push(proxy.close);
+
+    const initial = await remote.nextConnection();
+    sendReady(initial);
+    initial.terminate();
+    await new Promise<void>((resolve) => setTimeout(resolve, 20));
+
+    const response = await fetch(`${proxy.brokerUrl}/api/spawned/view-replacement-error/snapshot`, {
+      headers: { Authorization: `Bearer ${proxy.apiKey}` },
+    });
+    expect(response.status).toBe(503);
+    await expect(response.json()).resolves.toMatchObject({
+      error: { code: 'terminal_session_unavailable' },
+    });
+    expect(requests).toBe(6);
   });
 
   it('recovers on the sixth resume attempt instead of exhausting the old 15.5s budget', async () => {
