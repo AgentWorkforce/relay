@@ -414,6 +414,17 @@ try {
     'preserve target GitHub origin in disposable workspace',
     INSTALL_TIMEOUT_MS
   );
+  // pull_request workflows execute GitHub's synthetic merge commit. It is an
+  // exact hosted candidate, but it is fetched through refs/pull/*/merge rather
+  // than an origin/* remote-tracking branch. Model the pushed precondition in
+  // the disposable probe clone without changing the candidate checkout.
+  run(
+    'git',
+    ['-C', workingDir, 'update-ref', 'refs/remotes/origin/relayflow-proof', expectedSha],
+    workingDir,
+    'mark exact hosted candidate as origin-tracked in disposable workspace',
+    INSTALL_TIMEOUT_MS
+  );
   await appendFile(
     path.join(workingDir, '.git/info/exclude'),
     [
