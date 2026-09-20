@@ -11,14 +11,14 @@ keystrokes (`crates/relay-pty/`, `crates/broker/src/pty_worker.rs`,
 `crates/broker/src/wrap.rs`,
 `crates/broker/src/broker/delivery_verification.rs` — roughly 15K lines).
 
-Both Anthropic and OpenAI now ship supported ways to hand a *running* session a
+Both Anthropic and OpenAI now ship supported ways to hand a _running_ session a
 message. This migration puts a delivery-backend seam beside the PTY injector and
 moves each CLI onto its native route where one exists, keeping the PTY for the
 rest.
 
 Coordination does not change. Workspaces, `register_agent`, `send_dm`,
 channels, the agent directory and the receipt contract all stay exactly as they
-are. This is about how a message *arrives*, not how agents address each other.
+are. This is about how a message _arrives_, not how agents address each other.
 
 ## Why
 
@@ -42,7 +42,7 @@ cites are failure modes relay is equally exposed to:
 
 Counter-evidence worth weighing: `anywhere-labs/Agents-Anywhere` (~1067★) built
 on Codex's private IPC router and then removed it — not because it broke, but as
-policy: *"It is not a documented OpenAI public API."* That argues for preferring
+policy: _"It is not a documented OpenAI public API."_ That argues for preferring
 public commands over reverse-engineered sockets wherever one exists, which is
 what the plan below does.
 
@@ -53,14 +53,14 @@ failure modes and delivery semantics are in
 `../relay-desktop/docs/native-delivery-spec.md`, with the non-Claude/Codex
 survey in §6a on the branch `docs/other-cli-injection-survey`.
 
-| CLI | Route | Reaches a session relay did not launch? | Completion signal |
-| --- | --- | --- | --- |
-| Codex (app + terminal) | `codex queue --thread <uuid> --message=<text>` — public command over Codex's own durable queue | **yes** | yes, from the session file |
-| Claude terminal | the session's inbox socket (cross-session messaging, on by default since v2.1.224) | **yes** | via the transcript (to build) |
-| Claude cloud / desktop app | `claude -p --cloud <id> --output-format json` — documented | **yes** | no — acks end at delivered |
-| grok, opencode, devin | ACP; opencode also has an HTTP API with `--port` | no — must be launched for it | yes |
-| muse | `muse serve` (MSP over stdio) | no | yes |
-| cursor-agent | none | no | — |
+| CLI                        | Route                                                                                          | Reaches a session relay did not launch? | Completion signal             |
+| -------------------------- | ---------------------------------------------------------------------------------------------- | --------------------------------------- | ----------------------------- |
+| Codex (app + terminal)     | `codex queue --thread <uuid> --message=<text>` — public command over Codex's own durable queue | **yes**                                 | yes, from the session file    |
+| Claude terminal            | the session's inbox socket (cross-session messaging, on by default since v2.1.224)             | **yes**                                 | via the transcript (to build) |
+| Claude cloud / desktop app | `claude -p --cloud <id> --output-format json` — documented                                     | **yes**                                 | no — acks end at delivered    |
+| grok, opencode, devin      | ACP; opencode also has an HTTP API with `--port`                                               | no — must be launched for it            | yes                           |
+| muse                       | `muse serve` (MSP over stdio)                                                                  | no                                      | yes                           |
+| cursor-agent               | none                                                                                           | no                                      | —                             |
 
 Headless resume (`-p --resume`, `codex exec resume`, `devin -p -r`) is **not**
 injection. It is a second process over the same history, invisible to the live
@@ -73,7 +73,7 @@ Ordered by value over risk. Phase 6 is independent and can go first.
 ### Phase 0 — the seam
 
 A delivery-backend trait beside the PTY injector: `discover` (list targets and
-reachability), `send` (report *sent* / *refused* / *failed* / *in doubt*),
+reachability), `send` (report _sent_ / _refused_ / _failed_ / _in doubt_),
 `settle` (optionally report turn start, outcome and reply). The PTY injector
 becomes one implementation. Relay's queue, verification states and telemetry are
 kept; the four outcomes map onto them.
@@ -86,12 +86,12 @@ Four rules belong in the seam itself:
    reached the same rule independently.
 2. **Never re-send on doubt.** "Not in the vendor's queue and not in the session
    file" is also what the instant between dequeue and record looks like.
-3. **Record which route each send took** and settle by *that* route's rules.
+3. **Record which route each send took** and settle by _that_ route's rules.
 4. **Never claim an acknowledgement you did not observe.** A socket write that
    gets nothing back means handed over, not delivered.
 
-*Effort: small. Exit: parity suite green, unchanged, with the PTY backend behind
-the new trait.*
+_Effort: small. Exit: parity suite green, unchanged, with the PTY backend behind
+the new trait._
 
 ### Phase 1 — Codex
 
@@ -103,21 +103,21 @@ to queued messages, so carry a marker in the message text and match on that.
 `~/.codex/state_5.sqlite`'s `threads` table has `id`, `source`, `cwd`,
 `updated_at`. Solve this first — it gates the phase.
 
-*Effort: medium, mostly discovery. Exit: parity + `eval:matrix` for codex.*
+_Effort: medium, mostly discovery. Exit: parity + `eval:matrix` for codex._
 
 ### Phase 2 — Claude Code
 
 Two targets that do not overlap: terminal sessions via the inbox socket, cloud
 sessions via `--cloud`. Relay gets a simplification here because it launches its
 agents — `claude --session-id <uuid>` assigns the id up front, so there is no
-discovery problem. For sessions relay did *not* launch, read the registry.
+discovery problem. For sessions relay did _not_ launch, read the registry.
 
 Correctness details, learned from agent-deck's review: verify the registry's
 `procStart` against the live process (pids get recycled), resolve by the
 selected account rather than the freshest record, and note a message beginning
 with `/` will not run as a slash command.
 
-*Effort: medium. Exit: parity + `eval:claude`.*
+_Effort: medium. Exit: parity + `eval:claude`._
 
 ### Phase 3 — one ACP backend for grok, opencode, devin
 
@@ -127,7 +127,7 @@ opencode's HTTP API (`--port`, then `/tui/append-prompt` + `/tui/submit-prompt`
 — **not** `prompt_async`, which does not render in the TUI) is the easier win if
 the TUI must stay visible.
 
-*Effort: medium. Exit: `eval:matrix` per harness. Blocked on decision D2.*
+_Effort: medium. Exit: `eval:matrix` per harness. Blocked on decision D2._
 
 ### Phase 4 — what stays on the PTY
 
@@ -153,13 +153,13 @@ Two real losses to answer first: relay loses the agent's output stream
 (readiness, liveness, session capture) and the prompt auto-answering that
 handles first-launch trust dialogs. See decision D2.
 
-*Effort: large. Exit: `tests/e2e/fleet` two-node matrix + `stability-soak`.*
+_Effort: large. Exit: `tests/e2e/fleet` two-node matrix + `stability-soak`._
 
 ### Phase 6 — stop writing into user config
 
 Relay already has the right pattern twice. `crates/broker/src/devin.rs` states
-it: *"Isolate that directory in the worker process, leaving HOME/data paths
-intact. **Never edit user files.**"* Muse (#1815) does the same via a clean
+it: _"Isolate that directory in the worker process, leaving HOME/data paths
+intact. **Never edit user files.**"_ Muse (#1815) does the same via a clean
 config home and `--muse-config-home`. Claude gets `--mcp-config` inline, Codex
 repeated `--config` args.
 
@@ -177,7 +177,7 @@ enumerates the last two, so the blast radius is known.
 
 **Out of scope: gemini and droid.** Leave `configure_gemini_droid_mcp` alone.
 
-*Effort: small, per CLI. Independent of everything else.*
+_Effort: small, per CLI. Independent of everything else._
 
 ## Readiness gates
 
@@ -186,18 +186,18 @@ asserts PTY behaviour — `orch-to-worker.ts` says so in its header — which is
 exactly what makes it the right gate: **the same assertions must pass with the
 backend swapped.**
 
-| Gate | What it proves |
-| --- | --- |
-| `tests/parity/orch-to-worker.ts` | a spawned worker receives |
-| `tests/parity/multi-worker.ts` | fan-out holds |
-| `tests/parity/broadcast.ts` | channel delivery holds |
-| `tests/parity/continuity-handoff.ts` | handoff across agents |
-| `tests/parity/stability-soak.ts` | no drift or leak over time |
-| `npm run eval:matrix` / `eval:claude` (`RELAY_INTEGRATION_REAL_CLI=1`) | per-harness, against real CLIs |
-| `evals/suites/{delivery-modes,messaging,read-receipts,agent-directory}` | the delivery contract is unchanged |
-| `tests/e2e/fleet` | two-node fleet, needed for Phase 5 |
-| `tests/e2e/tic-tac-toe` | sustained multi-turn cross-agent conversation |
-| `tests/e2e/prod-smoke` | end to end against prod |
+| Gate                                                                    | What it proves                                |
+| ----------------------------------------------------------------------- | --------------------------------------------- |
+| `tests/parity/orch-to-worker.ts`                                        | a spawned worker receives                     |
+| `tests/parity/multi-worker.ts`                                          | fan-out holds                                 |
+| `tests/parity/broadcast.ts`                                             | channel delivery holds                        |
+| `tests/parity/continuity-handoff.ts`                                    | handoff across agents                         |
+| `tests/parity/stability-soak.ts`                                        | no drift or leak over time                    |
+| `npm run eval:matrix` / `eval:claude` (`RELAY_INTEGRATION_REAL_CLI=1`)  | per-harness, against real CLIs                |
+| `evals/suites/{delivery-modes,messaging,read-receipts,agent-directory}` | the delivery contract is unchanged            |
+| `tests/e2e/fleet`                                                       | two-node fleet, needed for Phase 5            |
+| `tests/e2e/tic-tac-toe`                                                 | sustained multi-turn cross-agent conversation |
+| `tests/e2e/prod-smoke`                                                  | end to end against prod                       |
 
 A phase is done when its gates pass **and** the PTY path still passes for every
 CLI not yet migrated. No phase retires the PTY; that is decision D3, taken only
@@ -262,7 +262,7 @@ particular way.
 links (`claude://code/new?q=…`, `claude://cowork/new?q=…`) create new sessions
 with a starting prompt, which would let relay open work in the app rather than
 a terminal. No equivalent was confirmed for the Codex app. Deep links only
-*create*; they cannot address an existing session.
+_create_; they cannot address an existing session.
 
 **What relay gives up for an app session.** It is not a broker child, so there
 is no PTY, no output stream, no supervision or restart, and no spawn lineage —
@@ -278,22 +278,22 @@ case bolted on for desktop apps.
 
 **D1 — how does relay discover the thread id of a `codex` it spawned?**
 Match on cwd plus recency in `state_5.sqlite`, or find a better handle. Gates
-Phase 1. *Recommend: resolve during Phase 0 spike, before committing to Phase 1
-scope.*
+Phase 1. _Recommend: resolve during Phase 0 spike, before committing to Phase 1
+scope._
 
 **D2 — for ACP-hosted and detached agents, does relay keep a PTY for the
 human's view?** An agent run as an ACP server is not a TUI. Keeping a PTY purely
 for display retains the per-agent cost but preserves the experience.
-*Recommend: keep it initially, make it optional, measure before removing.*
+_Recommend: keep it initially, make it optional, measure before removing._
 
 **D3 — is the PTY path ever retired, or permanently demoted to fallback?**
-*Recommend: permanent fallback. cursor-agent has no native route, new CLIs will
-appear without one, and version gates need somewhere to fall back to.*
+_Recommend: permanent fallback. cursor-agent has no native route, new CLIs will
+appear without one, and version gates need somewhere to fall back to._
 
 **D4 — are the Mac apps a supported target, or a side effect?** Supporting them
 properly means owning an outbound MCP setup story per app and accepting agents
-relay neither spawned nor supervises. *Recommend: treat "agent relay did not
-launch" as a first-class case; the desktop apps then follow for free.*
+relay neither spawned nor supervises. _Recommend: treat "agent relay did not
+launch" as a first-class case; the desktop apps then follow for free._
 
 ## Risks
 

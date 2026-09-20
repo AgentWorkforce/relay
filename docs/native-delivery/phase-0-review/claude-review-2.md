@@ -17,7 +17,7 @@ The working-tree diff and every new file in it; the branch diff against
 `evidence/mutation-proof.md`; `seal-implementation.json`;
 `BLOCKED_NO_COMMIT.md`.
 
-I also read the code the diff *touches but does not show*, because the
+I also read the code the diff _touches but does not show_, because the
 defects below live in the interaction: `crates/broker/src/worker.rs`,
 `crates/broker/src/runtime/fleet.rs`, `crates/broker/src/runtime/maintenance.rs`,
 `crates/broker/src/runtime/dead_letter.rs`, `crates/broker/src/runtime/headless.rs`,
@@ -35,7 +35,7 @@ line makes the claim true rather than asserting a run I did not do.
 **Blocked. Do not seal, commit or merge.** Two HIGH findings below are new in
 this pass and both are double-delivery class — the failure mode the doc calls
 "the worst" and "a release blocker". R2-1 in particular is a consequence of the
-*fix* applied in `claude-fix-1`, not of the code that fix replaced, so it is not
+_fix_ applied in `claude-fix-1`, not of the code that fix replaced, so it is not
 covered by any prior review or by any gate in this campaign.
 
 Findings are numbered `R2-n` to avoid collision with round 1's `F1–F20`. Where
@@ -50,7 +50,7 @@ the timeout-fallback branch settles by calling
 `clear_pending_delivery_if_event_matches` and letting the withheld ack "ride out
 on the removed `PendingDelivery`", logged and dropped at `:899-906`.
 
-That path does *not* call `confirm_pending_delivery_and_resolve_fleet_ack`, so
+That path does _not_ call `confirm_pending_delivery_and_resolve_fleet_ack`, so
 `FleetDeliveryBook` is never told anything about this sequence. The cursor is
 strictly prefix-ordered:
 
@@ -86,7 +86,7 @@ due immediately, with an empty `confirmed_delivery_seqs`, so
 the operator sees a healthy broker.
 
 The comment at `fleet.rs:1779-1782` accepts "the broker may retry an
-already-landed delivery" precisely because the hold was assumed *transient* —
+already-landed delivery" precisely because the hold was assumed _transient_ —
 before this change the timeout fallback always eventually confirmed, so the
 prefix always closed. This change makes the hold permanent for any agent that
 ever has one unmatched echo.
@@ -103,7 +103,7 @@ for the affected agent. The `timeout_fallback` path is not exotic; it is the
 designed response to every echo false negative.
 
 **Repair.** Do not settle a withheld fleet ack by silently dropping it. Give the
-book an explicit *abandon* operation — e.g.
+book an explicit _abandon_ operation — e.g.
 `FleetDeliveryBook::abandon_unconfirmed_delivery(&Deliver)` — that removes that
 sequence from the contiguity requirement so later confirmations can release
 (either by advancing `received_up_to_seq` past it with an explicit
@@ -111,7 +111,7 @@ sequence from the contiguity requirement so later confirmations can release
 `commit_confirmed_delivery` loop at `node_control.rs:1167-1175`). Call it from
 the new branch in `worker_events.rs:886-908` alongside the pending removal, and
 assert in `timeout_fallback_never_confirms_or_acks_an_unobserved_delivery` that
-a *subsequent* echo-verified delivery to the same agent both releases its own
+a _subsequent_ echo-verified delivery to the same agent both releases its own
 ack and leaves `pending_deliveries` empty. Without that assertion the test is
 green on the broken state today.
 
@@ -138,8 +138,8 @@ That classification is contradicted in this crate:
   for the writer's own completion rather than timing out, and returns the
   writer's error.
 - `crates/broker/src/worker.rs:322` — the writer's comment, on the path that
-  produces that error: *"A failed or timed-out write may have consumed part of
-  the frame."*
+  produces that error: _"A failed or timed-out write may have consumed part of
+  the frame."_
 - `crates/broker/src/worker.rs:293-310` — the failure is a `write_all` + `flush`
   under a 5 s timeout. A `flush` that times out after a successful `write_all`
   is the canonical post-write error: the bytes are in the pipe and the worker
@@ -221,7 +221,7 @@ stop exactly this.
 **Repair.** Make the Rust side an allow-list too. Introduce
 `const ECHO_VERIFICATION: &str = "echo"` next to
 `TIMEOUT_FALLBACK_VERIFICATION` (`broker/delivery_verification.rs:283-286`) and
-treat *only* an explicit `"echo"` as observed; route a missing or unknown value
+treat _only_ an explicit `"echo"` as observed; route a missing or unknown value
 into the same unobserved settlement as `timeout_fallback`. Separately, give the
 headless route its own honest label — `verification: "process_exit"` — at
 `headless.rs:316-325`, and decide explicitly whether a zero exit is an
@@ -257,7 +257,7 @@ message is never re-sent, `failed_attempts` never reaches
 `message_delivery_retry` event per tick for a retry that never happened —
 a fabricated attempt, reported on the wire, indefinitely.
 
-`never_resends_on_doubt` (`delivery_seam_invariants.rs:149-159`) *asserts* this
+`never_resends_on_doubt` (`delivery_seam_invariants.rs:149-159`) _asserts_ this
 aliasing is correct (`assert_eq!(duplicate, receipt)`), so the invariant suite
 will stay green through it.
 
@@ -302,13 +302,14 @@ oldest is gone and the newest still guards.
 ## R2-6 — MEDIUM. The broker's Steer ack timeout equals the worker's verification window, and the only duplicate guard is cleared at exactly that instant
 
 **Where.**
+
 - `crates/broker/src/runtime/delivery.rs:1060-1069` —
   `delivery_ack_timeout(Steer, _) = max(retry_interval, VERIFICATION_WINDOW)`;
   `VERIFICATION_WINDOW` is 5 s (`broker/delivery_verification.rs:102`) and the
   default retry interval is 1 s (`runtime/util.rs:232-238`). So: exactly 5 s.
 - `crates/broker/src/pty_worker.rs:2256-2258` — the worker's timeout fires on a
   200 ms tick once `injected_at.elapsed() >= verification_window`, i.e. also
-  ~5 s, from a slightly *earlier* origin than the broker's timer (the broker
+  ~5 s, from a slightly _earlier_ origin than the broker's timer (the broker
   arms its timer when it receives `delivery_injected`).
 - `crates/broker/src/pty_worker.rs:2293` — the fallback removes the id from
   `pending_worker_delivery_ids`, the worker-local set (`:1164`) that is the
@@ -322,7 +323,7 @@ maintenance tick wins: `retry_pending_delivery` re-injects the same
 `pending_worker_delivery_ids`, so the duplicate is **not** deduped and is
 injected a second time. The fallback frame for the first attempt is then
 processed, removes the pending entry and records the id in
-`terminal_failed_deliveries` — so when the second injection *does* echo-verify,
+`terminal_failed_deliveries` — so when the second injection _does_ echo-verify,
 its `delivery_ack` is discarded by the terminal guard at
 `worker_events.rs:705-714`. Net result: the agent sees the message twice, the
 engine ack is dropped, and the delivery is filed as terminally failed.
@@ -394,7 +395,7 @@ report zero.
 which `emit_delivery_attempt_outcome` files as a dead letter. Meanwhile
 `crates/broker/src/runtime/worker_events.rs:889-893` (new) refuses to
 dead-letter the PTY timeout fallback, in a comment that states the reason
-exactly: *"a dead letter invites a redelivery that would double-deliver."*
+exactly: _"a dead letter invites a redelivery that would double-deliver."_
 
 Both statements cannot be right. And the dead-letter store is not inert:
 `crates/broker/src/runtime/dead_letter.rs:208-237` requeues on operator command
@@ -425,7 +426,7 @@ that makes it more than a design gap.
 skips `mark_delivery_read_ack` (the call at `:787-795` on the ack path).
 
 The reasoning is sound for a message that never arrived. But the timeout
-fallback's dominant real-world cause is an echo *false negative* — the message
+fallback's dominant real-world cause is an echo _false negative_ — the message
 arrived and the screen scrape missed it. For those:
 
 **Failure scenario.** The agent receives and answers the message. Relay never
@@ -441,7 +442,7 @@ than to the gates: no parity script, eval or unit test observes read state.
 **Repair.** Separate the two claims. "The recipient read this" (a read receipt)
 and "relay observed the delivery land" (the engine ack) are different
 assertions, and only the second is unsupported here. If relay is unwilling to
-assert either, then the honest state must be *visible*: emit a distinct
+assert either, then the honest state must be _visible_: emit a distinct
 `delivery_unobserved` SDK event (not a relabelled `delivery_verified`) carrying
 the delivery id, and add a runtime test asserting that an operator-visible
 signal exists for every timeout fallback. At minimum, record the decision in
@@ -457,19 +458,19 @@ Claude routes will face the same choice with no completion signal at all.
 
 Two separate problems.
 
-*Coverage.* The old test drove the full retry loop for a **present** worker to
+_Coverage._ The old test drove the full retry loop for a **present** worker to
 cap exhaustion and asserted the terminal `message_delivery_failed` payload, the
 `dead_letter_added` event, dead-letter retention, and the wire contract that the
 field is `lastError` and not `last_error`. The new test makes one call and
 asserts `Noop`. I checked for the coverage elsewhere rather than assuming its
 absence: `retry_exhaustion_dead_letters_instead_of_discarding`
-(`tests.rs:1991-2052`) covers exhaustion → dead letter for an *absent* worker
+(`tests.rs:1991-2052`) covers exhaustion → dead letter for an _absent_ worker
 via a pre-seeded `failed_attempts`, and `tests.rs:4720-4745` covers the
 `lastError` field name. What is now uncovered is the loop itself — that a
 present worker's repeated writer faults actually reach the cap — which is the
 only part of that lifecycle the seam change can break.
 
-*Flake.* The old test carried an explicit tolerance:
+_Flake._ The old test carried an explicit tolerance:
 "Some platforms can accept a final pipe write after the child exits, so terminal
 failure may arrive on the immediate post-cap check", and accepted `Attempted`
 for any `retry_index <= MAX_DELIVERY_RETRIES`. The new test requires the **first**

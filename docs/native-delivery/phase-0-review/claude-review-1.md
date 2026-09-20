@@ -131,22 +131,22 @@ labels it:
 **Evidence (b): the evidence is older than the code.** Compare `evidence/*.json` `startedAt`
 (UTC) against file mtimes (local PDT = UTC-7):
 
-| Artifact | `startedAt` (UTC) | Verdict |
-| --- | --- | --- |
-| `rust-clippy.json` | 17:12:48Z | green |
-| `rust-build.json` | 17:13:10Z | green |
-| `invariant-tests.json` (`cargo test -p agent-relay-broker`) | 17:14:34Z | green |
-| `rust-fmt.json` | 17:15:27Z | green |
-| `ts-typecheck.json` | 18:07:41Z | green |
+| Artifact                                                    | `startedAt` (UTC) | Verdict |
+| ----------------------------------------------------------- | ----------------- | ------- |
+| `rust-clippy.json`                                          | 17:12:48Z         | green   |
+| `rust-build.json`                                           | 17:13:10Z         | green   |
+| `invariant-tests.json` (`cargo test -p agent-relay-broker`) | 17:14:34Z         | green   |
+| `rust-fmt.json`                                             | 17:15:27Z         | green   |
+| `ts-typecheck.json`                                         | 18:07:41Z         | green   |
 
-| File edited after those runs | mtime (UTC) |
-| --- | --- |
-| `crates/broker/src/delivery/pty.rs` | **18:18:17Z** |
-| `crates/broker/src/pty_worker.rs` | **18:25:10Z** |
+| File edited after those runs                        | mtime (UTC)   |
+| --------------------------------------------------- | ------------- |
+| `crates/broker/src/delivery/pty.rs`                 | **18:18:17Z** |
+| `crates/broker/src/pty_worker.rs`                   | **18:25:10Z** |
 | `crates/broker/src/broker/delivery_verification.rs` | **18:28:58Z** |
-| `tests/e2e/unlaunched/session-host.ts` | **19:01:12Z** |
-| `tests/e2e/unlaunched/unlaunched-delivery.test.ts` | **19:04:59Z** |
-| `crates/broker/src/runtime/app_server.rs` | **19:09:43Z** |
+| `tests/e2e/unlaunched/session-host.ts`              | **19:01:12Z** |
+| `tests/e2e/unlaunched/unlaunched-delivery.test.ts`  | **19:04:59Z** |
+| `crates/broker/src/runtime/app_server.rs`           | **19:09:43Z** |
 
 `gate-log.txt` has no `rust-build` / `invariant-tests` / `ts-typecheck` line after
 17:16:29Z. The seal was taken at 19:11:59Z. So:
@@ -172,6 +172,7 @@ red, including relay#1543's blocker regression, and has no way to tell which of 
 changes caused it.
 
 **Repair:**
+
 1. Fix F3 (the cause of both failures), then re-run `cargo fmt --check`,
    `cargo clippy -p agent-relay-broker --all-targets`,
    `cargo test -p agent-relay-broker`, and `npm run typecheck`, and replace the stale
@@ -314,8 +315,8 @@ pub(crate) fn check_echo_in_output(output: &str, expected: &str) -> bool {
 
 The `\r\n` → `\n` half is correct and is what the accompanying test covers
 (`check_echo_normalizes_terminal_crlf`, `:353-359`). The `.replace('\r', "\n")` half is
-different in kind: in a terminal a bare CR means *return to column 0 and overwrite*, not
-*new line*. Rewriting it to `\n` synthesises text that was never simultaneously on screen.
+different in kind: in a terminal a bare CR means _return to column 0 and overwrite_, not
+_new line_. Rewriting it to `\n` synthesises text that was never simultaneously on screen.
 
 **Failure scenario:** a TUI redraws a status line in place, emitting `…foo\rbar…`. On the
 real screen the row reads `bar`; `foo` was overwritten and never co-existed with `bar`.
@@ -345,8 +346,8 @@ Then add a negative test pinning the property the current code loses, e.g.
 
 ## F6 — HIGH. The phase's only exit criterion was changed, in product code and in the harness, in the same session it went green
 
-The contract exit is *"The parity suite is green, **unchanged**, with the PTY backend behind
-the new trait."* Three things happened to that gate:
+The contract exit is _"The parity suite is green, **unchanged**, with the PTY backend behind
+the new trait."_ Three things happened to that gate:
 
 **(a) Product code was changed to alter what the parity suite measures.**
 `crates/broker/src/pty_worker.rs:70-82`:
@@ -394,7 +395,7 @@ already exists as the supported override (`pty_worker.rs:60-64`); if the harness
 injection, set `RELAY_INJECT_RATE_MS=0` in the env the parity tests pass to
 `HarnessDriverClient.spawn` — that is a harness decision in harness code and leaves the
 product default alone. Keep the timeout increase only with a recorded reason (they are
-defensible against a 5 ms-paced `cat`, but then they are a *consequence* of the pacing and
+defensible against a 5 ms-paced `cat`, but then they are a _consequence_ of the pacing and
 the two changes should not both be in). Make `record` persist every attempt's transcript,
 not only the winning one.
 
@@ -516,7 +517,7 @@ test edit.
 `message_delivery_failed.attempts` (`runtime/delivery.rs:1113`) and stored on the
 dead-letter entry. Setting it to `MAX_DELIVERY_RETRIES` (= 10, `runtime/mod.rs:61`) reports
 ten attempts for a delivery that was attempted **once**. The deleted test
-(F9) asserted `attempts == MAX_DELIVERY_RETRIES` *only after a real ten-iteration loop*;
+(F9) asserted `attempts == MAX_DELIVERY_RETRIES` _only after a real ten-iteration loop_;
 that number is now synthetic and an operator cannot distinguish a first-try failure from a
 genuinely stuck worker.
 
@@ -602,7 +603,7 @@ tests/fixtures/targeted-feature-verification.test.ts, tests/parity/
 ```
 
 `pty_worker.rs` is the PTY injector — the ~7 000-line thing the seam is supposed to sit
-*beside*, not the seam. Claiming it means every future change to PTY injection routes to
+_beside_, not the seam. Claiming it means every future change to PTY injection routes to
 this one tier-6 delivery-seam feature instead of the features that actually own it
 (`sdk-delivery`, `broker-redeliver`, `local-agent-spawn`, … — the neighbours doc:222-226
 names). The manifest is the repo's map of what verifies what; this entry makes it wrong.
@@ -660,11 +661,11 @@ phase's drift detector.
 **Repair:** add to `:106`:
 
 ```ts
-    const passed =
-      successRate >= 90 &&
-      sendErrors === 0 &&
-      sent - total === 0 &&               // every message accounted for
-      sent >= expectedMsgs * 0.9;         // the rate held
+const passed =
+  successRate >= 90 &&
+  sendErrors === 0 &&
+  sent - total === 0 && // every message accounted for
+  sent >= expectedMsgs * 0.9; // the rate held
 ```
 
 and record the resulting baseline numbers in the artifact so phase 1 has something to
@@ -679,7 +680,7 @@ this phase introduces, and the parity gates cannot catch either.
 
 **(a) Claude cloud has no completion signal at all** (doc:70, doc:296). `SettleStatus`
 (`delivery/backend.rs:167-172`) is `Acked | HandedOver | Failed(String)`. `HandedOver` is
-the right shape for "delivered, not confirmed", but it is the *same* value a route returns
+the right shape for "delivered, not confirmed", but it is the _same_ value a route returns
 while it is still waiting for a signal that is genuinely coming. A `settle` poller cannot
 distinguish "no completion signal exists for this route, stop asking" from "not yet". A
 Claude-cloud delivery would sit in `HandedOver` indefinitely, indistinguishable from a
@@ -719,7 +720,7 @@ mock's configuration. `assert_ne!(settle, SettleStatus::Acked(…))` at `:231` i
 the `assert_eq!` on the line above it and can never fail independently.
 
 `evidence/mutation-proof.md`'s fourth mutation ("changed settlement to upgrade a handoff-only
-result into a fabricated `Acked`") does show the test catching an *added* fabrication, which
+result into a fabricated `Acked`") does show the test catching an _added_ fabrication, which
 is worth something — but it catches it in `settle`, and nothing constrains `send`, where
 `ObservedAck` (`backend.rs:89-100`) is a public `String` wrapper any future backend can
 construct without observing anything.
@@ -739,7 +740,7 @@ genuinely bites.
 
 **Evidence:** `crates/broker/src/delivery/backend.rs:276-295`. `None` is returned both at
 `:285` (`?` on "no receipt for this delivery_id" — the message was never sent by this seam)
-and at `:293` (`?` on "the recorded route's backend is not in the slice" — the message *was*
+and at `:293` (`?` on "the recorded route's backend is not in the slice" — the message _was_
 sent, over a route that is not currently available).
 
 The second case is the contract's own trap shape: "not in the queue and not in the session
@@ -766,7 +767,7 @@ absence and re-sends is the failure the doc calls out at doc:85-87.
 
 To be clear about quality: the code itself is careful and I found nothing wrong with it.
 `session-host.ts:70-82` isolates all four XDG dirs, passes `--pure`, runs in a `mkdtemp`
-cwd, and the header at `:13-18` correctly explains why `claude`/`codex` are *not* used —
+cwd, and the header at `:13-18` correctly explains why `claude`/`codex` are _not_ used —
 it respects the testing hazard properly. The `--port 0` + read-the-listening-line pattern
 (`:166-202`) avoids the usual port race, and the pid-lineage assertion
 (`unlaunched-delivery.test.ts:154-162`) proves the claim rather than asserting it. The
@@ -793,7 +794,7 @@ the phase notes that phase 0 ships it unexecuted. Add `PATH` lookup to
 `tail: output.slice(-20_000)`; `:386` derives the failure list by regexing `^\s*FAIL\s+.+$`
 out of that string. `evidence/unit-tests.json` is a 3 438-test vitest run whose full output
 is far larger than 20 000 characters. Vitest prints a `FAIL` line both inline as each file
-finishes *and* in the trailing "Failed Tests" block, so this happened to work here — but
+finishes _and_ in the trailing "Failed Tests" block, so this happened to work here — but
 nothing guarantees it. A single failure with a large diff can push earlier `FAIL` headers
 out of the window, and the gate would then pass having seen fewer failures than occurred.
 
@@ -820,7 +821,7 @@ phase can be said to have achieved.
 
 - `crates/broker/src/runtime/delivery.rs:818-833` —
   `timeout(retry_interval, workers.deliver(worker_name, delivery))`. The timeout can fire
-  *after* the frame is admitted; `worker.rs:1480-1485` states in so many words that an
+  _after_ the frame is admitted; `worker.rs:1480-1485` states in so many words that an
   admitted command will still be emitted. Its caller
   (`crates/broker/src/runtime/fleet.rs:1984-1990`) sets `result.failure` and `break`s,
   leaving the message at the head of the FIFO — so the next flush writes it again. That is
@@ -830,7 +831,7 @@ phase can be said to have achieved.
   the error only logged.
 
 **Repair:** route both through the seam (which requires F4's long-lived seam first), or
-state plainly in the phase notes that phase 0 put *one* of three PTY write paths behind the
+state plainly in the phase notes that phase 0 put _one_ of three PTY write paths behind the
 trait, so phase 1 does not assume the rules are enforced repo-wide.
 
 ---
@@ -880,7 +881,7 @@ That review is careful and most of it holds. Two of its highest-ranked findings 
 - **Its F2** ("the PTY adapter classifies every `deliver` error as post-write") no longer
   describes the tree. `pty.rs:49`, `:53` and `:56` now return `DeliveryError::unavailable`,
   and since the adapter moved to `try_send_to_worker` — whose four failure modes are all
-  strictly pre-admission — that classification is now *correct*. The fix, however, is what
+  strictly pre-admission — that classification is now _correct_. The fix, however, is what
   broke both tests and created F3 above.
 - **Its F1** ("the committed/`InDoubt` branches are not terminal on the
   `insert_and_attempt_delivery` path") has been addressed: `runtime/delivery.rs:933-936`
@@ -901,28 +902,28 @@ reviewer; it is the cost of F7.
 
 # Summary table
 
-| # | Severity | Finding | Anchor |
-| --- | --- | --- | --- |
-| F1 | **BLOCKER** | Mutation probe in product code; panics on empty/non-ASCII body | `runtime/app_server.rs:279-282` |
-| F2 | **BLOCKER** | Tree is red (2 failures, one P1 blocker); all evidence predates the code; seal covers only artifacts | `runtime/tests.rs:2101`, `:3269`; `seal-implementation.json` |
-| F3 | HIGH | Dead PTY writer reads as a successful attempt; PTY route can no longer dead-letter | `delivery/pty.rs:50-57` |
-| F4 | HIGH | Seam rebuilt per call; `settle`/`recorded_route` have no callers; 3 of 4 invariants test-only | `runtime/delivery.rs:997` |
-| F5 | HIGH | Bare `\r` → `\n` can manufacture an echo observation | `broker/delivery_verification.rs:290` |
-| F6 | HIGH | Parity gate changed in product code and harness in the session it went green; pass recorded on retry | `pty_worker.rs:74-75`; `tests/parity/broadcast.ts:13` |
-| F7 | MED-HIGH | Four changed files absent from `changed-files.json`, so no gate saw them | `changed-files.json` |
-| F8 | MEDIUM | Timeout-fallback fleet ack still sent; comment now claims otherwise; new guard is inert | `runtime/delivery.rs:13-17`; `worker_events.rs:864` |
-| F9 | MEDIUM | ~90 assertions on the retry-cap → dead-letter lifecycle deleted | `runtime/tests.rs:3219-3283` |
-| F10 | MEDIUM | Fabricated `attempts: 10` on the wire; new terminal-shape writes untested | `runtime/delivery.rs:933-936` |
-| F11 | MEDIUM | In-doubt branches unreachable, and route into the disposition that makes the engine redeliver | `runtime/delivery.rs:1002`, `:1024`, `:1120-1127` |
-| F12 | MEDIUM | Manifest feature claims the whole PTY injector; grew per gate failure; contract-scope drift | `manifest.yaml:110`; `native-delivery-gates.mjs:77-84` |
-| F13 | MEDIUM | `stability-soak` cannot fail on lost messages or a 10× rate collapse; this run had one | `tests/parity/stability-soak.ts:91-106` |
-| F14 | MEDIUM | No type can say "this route never reports completion" or "this route rewrote the framing" | `delivery/backend.rs:44-50`, `:167-172` |
-| F15 | LOW-MED | `never_acks_without_observation` asserts the mock's configuration | `delivery_seam_invariants.rs:202-232` |
-| F16 | LOW | `settle` returns `None` for both "never sent" and "route gone" | `delivery/backend.rs:285`, `:293` |
-| F17 | LOW | Unlaunched e2e never run or typechecked; breaks `test:e2e` without `opencode` | `tests/e2e/unlaunched/*` |
-| F18 | LOW | Regression gate parses failures from a 20 000-char tail with no cross-check | `native-delivery-gates.mjs:386`, `:711` |
-| F19 | INFO | Two PTY write paths bypass the seam; one re-sends after a possible write | `runtime/delivery.rs:826`; `fleet.rs:1984` |
-| F20 | INFO | Duplicated payload, one-variant enums, clone count, wire text, cancel-safety gap | `delivery/backend.rs` |
+| #   | Severity    | Finding                                                                                              | Anchor                                                       |
+| --- | ----------- | ---------------------------------------------------------------------------------------------------- | ------------------------------------------------------------ |
+| F1  | **BLOCKER** | Mutation probe in product code; panics on empty/non-ASCII body                                       | `runtime/app_server.rs:279-282`                              |
+| F2  | **BLOCKER** | Tree is red (2 failures, one P1 blocker); all evidence predates the code; seal covers only artifacts | `runtime/tests.rs:2101`, `:3269`; `seal-implementation.json` |
+| F3  | HIGH        | Dead PTY writer reads as a successful attempt; PTY route can no longer dead-letter                   | `delivery/pty.rs:50-57`                                      |
+| F4  | HIGH        | Seam rebuilt per call; `settle`/`recorded_route` have no callers; 3 of 4 invariants test-only        | `runtime/delivery.rs:997`                                    |
+| F5  | HIGH        | Bare `\r` → `\n` can manufacture an echo observation                                                 | `broker/delivery_verification.rs:290`                        |
+| F6  | HIGH        | Parity gate changed in product code and harness in the session it went green; pass recorded on retry | `pty_worker.rs:74-75`; `tests/parity/broadcast.ts:13`        |
+| F7  | MED-HIGH    | Four changed files absent from `changed-files.json`, so no gate saw them                             | `changed-files.json`                                         |
+| F8  | MEDIUM      | Timeout-fallback fleet ack still sent; comment now claims otherwise; new guard is inert              | `runtime/delivery.rs:13-17`; `worker_events.rs:864`          |
+| F9  | MEDIUM      | ~90 assertions on the retry-cap → dead-letter lifecycle deleted                                      | `runtime/tests.rs:3219-3283`                                 |
+| F10 | MEDIUM      | Fabricated `attempts: 10` on the wire; new terminal-shape writes untested                            | `runtime/delivery.rs:933-936`                                |
+| F11 | MEDIUM      | In-doubt branches unreachable, and route into the disposition that makes the engine redeliver        | `runtime/delivery.rs:1002`, `:1024`, `:1120-1127`            |
+| F12 | MEDIUM      | Manifest feature claims the whole PTY injector; grew per gate failure; contract-scope drift          | `manifest.yaml:110`; `native-delivery-gates.mjs:77-84`       |
+| F13 | MEDIUM      | `stability-soak` cannot fail on lost messages or a 10× rate collapse; this run had one               | `tests/parity/stability-soak.ts:91-106`                      |
+| F14 | MEDIUM      | No type can say "this route never reports completion" or "this route rewrote the framing"            | `delivery/backend.rs:44-50`, `:167-172`                      |
+| F15 | LOW-MED     | `never_acks_without_observation` asserts the mock's configuration                                    | `delivery_seam_invariants.rs:202-232`                        |
+| F16 | LOW         | `settle` returns `None` for both "never sent" and "route gone"                                       | `delivery/backend.rs:285`, `:293`                            |
+| F17 | LOW         | Unlaunched e2e never run or typechecked; breaks `test:e2e` without `opencode`                        | `tests/e2e/unlaunched/*`                                     |
+| F18 | LOW         | Regression gate parses failures from a 20 000-char tail with no cross-check                          | `native-delivery-gates.mjs:386`, `:711`                      |
+| F19 | INFO        | Two PTY write paths bypass the seam; one re-sends after a possible write                             | `runtime/delivery.rs:826`; `fleet.rs:1984`                   |
+| F20 | INFO        | Duplicated payload, one-variant enums, clone count, wire text, cancel-safety gap                     | `delivery/backend.rs`                                        |
 
 **F1 and F2 must be cleared before this phase can be sealed at all. F3 is the cause of F2's
 red tests and must be fixed rather than asserted around. F4, F6 and F11 determine whether

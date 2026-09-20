@@ -214,8 +214,7 @@ describe('delivery into a session relay did not launch', () => {
       async () =>
         events.find(
           (event) =>
-            event.kind === 'message_delivery_confirmed' &&
-            (event as { name?: unknown }).name === AGENT_NAME
+            event.kind === 'message_delivery_confirmed' && (event as { name?: unknown }).name === AGENT_NAME
         ),
       30_000,
       'relay never confirmed the delivery it had already put into the session'
@@ -226,9 +225,7 @@ describe('delivery into a session relay did not launch', () => {
     await new Promise((resolve) => setTimeout(resolve, 3_000));
 
     const kinds = new Set(
-      events
-        .filter((event) => (event as { name?: unknown }).name === AGENT_NAME)
-        .map((event) => event.kind)
+      events.filter((event) => (event as { name?: unknown }).name === AGENT_NAME).map((event) => event.kind)
     );
 
     // The app-server driver acks the `deliver_relay` frame once its own HTTP
@@ -255,8 +252,7 @@ describe('delivery into a session relay did not launch', () => {
 
   it('relay addresses a process it never forked', () => {
     const spawned = events.find(
-      (event) =>
-        event.kind === 'agent_spawned' && (event as { name?: unknown }).name === AGENT_NAME
+      (event) => event.kind === 'agent_spawned' && (event as { name?: unknown }).name === AGENT_NAME
     );
     expect(spawned, 'relay never announced the attached session').toBeTruthy();
     // Relay reports the attached host's own pid. Combined with the lineage
@@ -325,10 +321,7 @@ describe('control: the same assertions against a session relay DID launch', () =
     for (const kind of PTY_OWNED_SESSION_KINDS) {
       await waitFor(
         async () =>
-          events.find(
-            (event) =>
-              event.kind === kind && (event as { name?: unknown }).name === controlName
-          ),
+          events.find((event) => event.kind === kind && (event as { name?: unknown }).name === controlName),
         45_000,
         `a PTY worker produced no ${kind}: the unlaunched case's "no ${kind}" assertion proves nothing`
       );
