@@ -611,6 +611,7 @@ impl BrokerRuntime {
         let pty_observability = &mut self.pty_observability;
         let ws_control_tx = &self.ws_control_tx;
         let workers = &mut self.workers;
+        let delivery_seam = &mut self.delivery_seam;
         let dedup = &mut self.dedup;
         let pending_deliveries = &mut self.pending_deliveries;
         let dead_letters = &mut self.dead_letters;
@@ -1550,6 +1551,7 @@ impl BrokerRuntime {
                                 delivery_retry_interval,
                                 None,
                                 None,
+                                delivery_seam,
                             )
                             .await
                             {
@@ -1885,6 +1887,7 @@ impl BrokerRuntime {
                                                     delivery_retry_interval,
                                                     None,
                                                     None,
+                                                    delivery_seam,
                                                 )
                                                 .await
                                                 {

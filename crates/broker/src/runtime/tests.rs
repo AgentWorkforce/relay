@@ -680,6 +680,7 @@ fn worker_event_runtime_fixture_with_relay(
         dedup: DedupCache::new(Duration::from_secs(60), 16),
         delivery_retry_interval: Duration::from_millis(10),
         pending_deliveries: PendingDeliveryStore::new(pending_deliveries),
+        delivery_seam: crate::delivery::DeliverySeam::new(),
         dead_letters: DeadLetterStore::default(),
         terminal_failed_deliveries: super::event_loop::TerminalDeliveryGuard::default(),
         pending_requests: HashMap::new(),
@@ -2009,6 +2010,7 @@ async fn retry_exhaustion_dead_letters_instead_of_discarding() {
         &mut workers,
         &mut pending_deliveries,
         Duration::from_millis(1),
+        &mut crate::delivery::DeliverySeam::new(),
     )
     .await
     .expect("exhausted retries should classify as terminal failure");
@@ -2090,6 +2092,7 @@ async fn timed_out_initial_handoff_still_registers_its_withheld_fleet_ack() {
             Duration::from_millis(20),
             Some(deliver.clone()),
             Some(deliver.seq),
+            &mut crate::delivery::DeliverySeam::new(),
         ),
     )
     .await
@@ -2156,6 +2159,7 @@ async fn terminal_disposition_helpers_remove_withheld_fleet_ack_state() {
             &mut workers,
             &mut pending_deliveries,
             Duration::from_millis(1),
+            &mut crate::delivery::DeliverySeam::new(),
         )
         .await
         .expect("exhausted retries should classify as terminal failure");
@@ -2271,6 +2275,7 @@ async fn terminal_disposition_helpers_remove_withheld_fleet_ack_state() {
             Duration::from_millis(1),
             Some(withheld_ack_for("del_worker_missing")),
             Some(1),
+            &mut crate::delivery::DeliverySeam::new(),
         )
         .await;
         assert!(
@@ -2295,6 +2300,7 @@ async fn terminal_disposition_helpers_remove_withheld_fleet_ack_state() {
             &mut workers,
             &mut pending_deliveries,
             Duration::from_millis(1),
+            &mut crate::delivery::DeliverySeam::new(),
         )
         .await
         .expect("a still-missing recipient should classify as terminal failure");
@@ -2480,6 +2486,7 @@ async fn every_terminal_disposition_drops_its_withheld_fleet_ack() {
         &mut fixture.runtime.workers,
         &mut fixture.runtime.pending_deliveries,
         Duration::from_millis(1),
+        &mut crate::delivery::DeliverySeam::new(),
     )
     .await
     .expect("retry exhaustion should classify as terminal");
@@ -2600,6 +2607,7 @@ async fn every_terminal_disposition_drops_its_withheld_fleet_ack() {
         Duration::from_millis(1),
         Some(withheld_ack_for(missing_id.as_str())),
         Some(1),
+        &mut crate::delivery::DeliverySeam::new(),
     )
     .await;
     assert!(first_attempt.is_err());
@@ -2608,6 +2616,7 @@ async fn every_terminal_disposition_drops_its_withheld_fleet_ack() {
         &mut fixture.runtime.workers,
         &mut fixture.runtime.pending_deliveries,
         Duration::from_millis(1),
+        &mut crate::delivery::DeliverySeam::new(),
     )
     .await
     .expect("missing worker retry should classify as terminal");
@@ -2848,6 +2857,7 @@ async fn worker_confirmation_ack_diagnostics(closed: bool) {
         Duration::from_secs(2),
         Some(deliver.clone()),
         Some(deliver.seq),
+        &mut crate::delivery::DeliverySeam::new(),
     )
     .await
     .expect("a registered worker should accept the handoff");
@@ -3128,6 +3138,7 @@ async fn restored_ack_floor_survives_lower_failure_and_a_second_restart() {
         &mut workers,
         &mut after_first_restart,
         Duration::from_millis(1),
+        &mut crate::delivery::DeliverySeam::new(),
     )
     .await
     .expect("exhausted lower delivery should classify as terminal");
@@ -3302,6 +3313,7 @@ async fn delivery_retry_fails_promptly_when_recipient_is_gone() {
         &mut workers,
         &mut pending_deliveries,
         Duration::from_millis(1),
+        &mut crate::delivery::DeliverySeam::new(),
     )
     .await
     .expect("retry should classify missing recipient");
@@ -3354,6 +3366,7 @@ async fn initial_delivery_failure_stays_owned_until_dead_lettered() {
         Duration::from_millis(1),
         None,
         None,
+        &mut crate::delivery::DeliverySeam::new(),
     )
     .await
     .expect_err("missing recipient should fail the initial handoff");
@@ -3383,6 +3396,7 @@ async fn initial_delivery_failure_stays_owned_until_dead_lettered() {
         &mut workers,
         &mut pending_deliveries,
         Duration::from_millis(1),
+        &mut crate::delivery::DeliverySeam::new(),
     )
     .await
     .expect("terminal retained delivery should dead-letter on maintenance retry");
@@ -3451,6 +3465,7 @@ async fn delivery_retry_committed_writer_failure_stops_without_dead_letter() {
         &mut workers,
         &mut pending_deliveries,
         Duration::from_millis(1),
+        &mut crate::delivery::DeliverySeam::new(),
     )
     .await
     .expect("transient delivery write errors should be classified");
@@ -3508,6 +3523,7 @@ async fn delivery_retry_success_clears_stale_last_error() {
         &mut workers,
         &mut pending_deliveries,
         Duration::from_millis(1),
+        &mut crate::delivery::DeliverySeam::new(),
     )
     .await
     .expect("live worker should accept retry");
@@ -3540,6 +3556,7 @@ async fn wait_delivery_successful_handoffs_do_not_exhaust_failure_budget() {
         &mut workers,
         &mut pending_deliveries,
         Duration::from_secs(1),
+        &mut crate::delivery::DeliverySeam::new(),
     )
     .await
     .expect("live worker should accept the tenth handoff");
@@ -3556,6 +3573,7 @@ async fn wait_delivery_successful_handoffs_do_not_exhaust_failure_budget() {
         &mut workers,
         &mut pending_deliveries,
         Duration::from_secs(1),
+        &mut crate::delivery::DeliverySeam::new(),
     )
     .await
     .expect("a successful handoff must remain redeliverable while its wait ack is pending");
@@ -6652,10 +6670,15 @@ async fn startup_queues_initial_task_before_early_events_without_exhausting_retr
     let id = delivery.delivery_id.clone();
     let mut pending = HashMap::from([(id.clone(), incoming)]);
     for _ in 0..100 {
-        let result =
-            retry_pending_delivery(&id, &mut workers, &mut pending, Duration::from_millis(10))
-                .await
-                .unwrap();
+        let result = retry_pending_delivery(
+            &id,
+            &mut workers,
+            &mut pending,
+            Duration::from_millis(10),
+            &mut crate::delivery::DeliverySeam::new(),
+        )
+        .await
+        .unwrap();
         assert!(matches!(result, DeliveryAttemptOutcome::Noop));
     }
     assert_eq!(pending[&id].attempts, 0);
@@ -6670,9 +6693,15 @@ async fn startup_queues_initial_task_before_early_events_without_exhausting_retr
     let mut initial = delivery.clone();
     initial.event_id = EventId::new("init_assignment");
     workers.deliver(name, initial).await.unwrap();
-    let result = retry_pending_delivery(&id, &mut workers, &mut pending, Duration::from_millis(10))
-        .await
-        .unwrap();
+    let result = retry_pending_delivery(
+        &id,
+        &mut workers,
+        &mut pending,
+        Duration::from_millis(10),
+        &mut crate::delivery::DeliverySeam::new(),
+    )
+    .await
+    .unwrap();
     assert!(matches!(result, DeliveryAttemptOutcome::Attempted { .. }));
     assert_eq!(pending[&id].attempts, 1);
     workers.release(name).await.unwrap();
@@ -7485,9 +7514,15 @@ async fn local_only_queued_work_survives_restart_and_replays_when_recipient_reco
     let (tx, _rx) = mpsc::channel(8);
     let mut absent = WorkerRegistry::new(tx, vec![], dir.path().join("logs"), Instant::now());
     assert!(matches!(
-        retry_pending_delivery(&id, &mut absent, &mut pending, Duration::from_secs(1))
-            .await
-            .unwrap(),
+        retry_pending_delivery(
+            &id,
+            &mut absent,
+            &mut pending,
+            Duration::from_secs(1),
+            &mut crate::delivery::DeliverySeam::new()
+        )
+        .await
+        .unwrap(),
         DeliveryAttemptOutcome::Noop
     ));
     assert_eq!(pending[&id].attempts, 0);
@@ -7498,9 +7533,15 @@ async fn local_only_queued_work_survives_restart_and_replays_when_recipient_reco
         .contains("reconnect"));
     let mut reconnected = make_worker_registry_with_worker("local-worker").await;
     assert!(matches!(
-        retry_pending_delivery(&id, &mut reconnected, &mut pending, Duration::from_secs(1))
-            .await
-            .unwrap(),
+        retry_pending_delivery(
+            &id,
+            &mut reconnected,
+            &mut pending,
+            Duration::from_secs(1),
+            &mut crate::delivery::DeliverySeam::new()
+        )
+        .await
+        .unwrap(),
         DeliveryAttemptOutcome::Attempted { .. }
     ));
     assert_eq!(pending[&id].attempts, 1);
@@ -7524,9 +7565,15 @@ async fn local_only_exhausted_delivery_survives_absence_and_replays_after_restar
     let mut absent = WorkerRegistry::new(tx, vec![], dir.path().join("logs"), Instant::now());
     for _ in 0..2 {
         assert!(matches!(
-            retry_pending_delivery(&id, &mut absent, &mut pending, Duration::from_secs(1))
-                .await
-                .unwrap(),
+            retry_pending_delivery(
+                &id,
+                &mut absent,
+                &mut pending,
+                Duration::from_secs(1),
+                &mut crate::delivery::DeliverySeam::new()
+            )
+            .await
+            .unwrap(),
             DeliveryAttemptOutcome::Noop
         ));
         assert_eq!(pending[&id].delivery, expected_delivery);
@@ -7535,10 +7582,15 @@ async fn local_only_exhausted_delivery_survives_absence_and_replays_after_restar
         pending = load_pending_deliveries(&path);
     }
     let mut reconnected = make_worker_registry_with_worker("local-worker").await;
-    let outcome =
-        retry_pending_delivery(&id, &mut reconnected, &mut pending, Duration::from_secs(1))
-            .await
-            .unwrap();
+    let outcome = retry_pending_delivery(
+        &id,
+        &mut reconnected,
+        &mut pending,
+        Duration::from_secs(1),
+        &mut crate::delivery::DeliverySeam::new(),
+    )
+    .await
+    .unwrap();
     cleanup_worker_registry(reconnected).await;
     assert!(matches!(outcome, DeliveryAttemptOutcome::Attempted { .. }));
     assert_eq!(pending[&id].delivery, expected_delivery);
@@ -7558,9 +7610,15 @@ async fn local_only_restored_exhausted_delivery_replays_to_already_registered_wo
     super::save_pending_deliveries(&path, &HashMap::from([(id.clone(), entry)])).unwrap();
     let mut pending = load_pending_deliveries(&path);
     let mut workers = make_worker_registry_with_worker("local-worker").await;
-    let outcome = retry_pending_delivery(&id, &mut workers, &mut pending, Duration::from_secs(1))
-        .await
-        .unwrap();
+    let outcome = retry_pending_delivery(
+        &id,
+        &mut workers,
+        &mut pending,
+        Duration::from_secs(1),
+        &mut crate::delivery::DeliverySeam::new(),
+    )
+    .await
+    .unwrap();
     cleanup_worker_registry(workers).await;
     assert!(matches!(outcome, DeliveryAttemptOutcome::Attempted { .. }));
     assert_eq!(pending[&id].delivery, expected_delivery);

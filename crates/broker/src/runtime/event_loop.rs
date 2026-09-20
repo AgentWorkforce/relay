@@ -252,6 +252,16 @@ pub(crate) struct BrokerRuntime {
     pub(super) dedup: DedupCache,
     pub(super) delivery_retry_interval: Duration,
     pub(super) pending_deliveries: PendingDeliveryStore,
+    /// The delivery-backend seam, owned for the broker's lifetime.
+    ///
+    /// Constructing one per attempt made its receipt memory always empty, so
+    /// `SendOutcome::AlreadySent` was unreachable, `recorded_route` had no
+    /// production caller, `settle` had none at all, and the receipt bound
+    /// bounded nothing — three of the four phase-0 contract rules were enforced
+    /// only inside `crates/broker/tests/delivery_seam_invariants.rs`, against a
+    /// scripted backend. Living here is what makes them apply to the running
+    /// broker.
+    pub(super) delivery_seam: crate::delivery::DeliverySeam,
     pub(super) dead_letters: DeadLetterStore,
     pub(super) terminal_failed_deliveries: TerminalDeliveryGuard,
     pub(super) pending_requests: HashMap<String, worker_request::PendingRequest>,

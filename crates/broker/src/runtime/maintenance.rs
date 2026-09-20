@@ -14,6 +14,7 @@ impl BrokerRuntime {
         let hosted_agent_event_tx = &self.hosted_agent_event_tx;
         let pty_observability = &mut self.pty_observability;
         let workers = &mut self.workers;
+        let delivery_seam = &mut self.delivery_seam;
         let fleet_control_tx = &self.fleet_control_tx;
         let fleet_inventory = &mut self.fleet_inventory;
         let fleet_inventory_reconcile_retry_after = &mut self.fleet_inventory_reconcile_retry_after;
@@ -177,6 +178,7 @@ impl BrokerRuntime {
                 workers,
                 pending_deliveries,
                 delivery_retry_interval,
+                delivery_seam,
             )
             .await
             {
