@@ -14,6 +14,7 @@ use crate::{
         ResolvedHarnessConfig, PROTOCOL_VERSION,
     },
     relaycast::configure_agent_relay_mcp_with_result,
+    snippets::{is_muse_executable, muse_clean_home_dir},
     supervisor::Supervisor,
     types::{AgentResultMcpConfig, CommitAttestation},
 };
@@ -690,6 +691,17 @@ impl WorkerRegistry {
                 if let Some(secs) = idle_threshold_secs {
                     command.arg("--idle-threshold-secs").arg(secs.to_string());
                 }
+                if let Some(home) = muse_config_home_for_worker(
+                    &normalized_cli,
+                    spec.cwd.as_deref(),
+                    &spec.name,
+                    skip_relay_prompt,
+                    self.env_value("AGENT_RELAY_LOCAL_ONLY").as_deref(),
+                ) {
+                    // Path only (no secrets): the pty worker points this Muse
+                    // invocation at its isolated clean config home.
+                    command.arg("--muse-config-home").arg(home);
+                }
                 command.arg(&resolved_cli);
 
                 let cli_lower = normalized_cli.to_lowercase();
@@ -921,6 +933,17 @@ impl WorkerRegistry {
                     command.arg("--agent-name").arg(&spec.name);
                     if let Some(secs) = idle_threshold_secs {
                         command.arg("--idle-threshold-secs").arg(secs.to_string());
+                    }
+                    if let Some(home) = muse_config_home_for_worker(
+                        &normalized_cli,
+                        spec.cwd.as_deref(),
+                        &spec.name,
+                        skip_relay_prompt,
+                        self.env_value("AGENT_RELAY_LOCAL_ONLY").as_deref(),
+                    ) {
+                        // Path only (no secrets): the pty worker points this Muse
+                        // invocation at its isolated clean config home.
+                        command.arg("--muse-config-home").arg(home);
                     }
                     command.arg(&resolved_cli);
 
@@ -1986,14 +2009,9 @@ fn prepare_claude_session_args(args: &mut Vec<String>) -> Option<String> {
 /// caller choice passed through via `effective_args`.
 fn muse_trust_flag(cli_lower: &str, effective_args: &[String]) -> Option<&'static str> {
     // Callers pass the lowercased executable basename (directories already
-    // stripped by `normalize_cli_name`); also strip Windows executable
-    // suffixes so `muse.exe`/`muse.cmd`/`muse.bat` get the same default.
-    let cli = cli_lower
-        .strip_suffix(".exe")
-        .or_else(|| cli_lower.strip_suffix(".cmd"))
-        .or_else(|| cli_lower.strip_suffix(".bat"))
-        .unwrap_or(cli_lower);
-    if cli != "muse" {
+    // stripped by `normalize_cli_name`); the shared matcher also tolerates
+    // Windows executable suffixes.
+    if !is_muse_executable(cli_lower) {
         return None;
     }
     let already_trusted = effective_args
@@ -2003,6 +2021,31 @@ fn muse_trust_flag(cli_lower: &str, effective_args: &[String]) -> Option<&'stati
         return None;
     }
     Some("--trust-workspace")
+}
+
+/// Clean Muse config home for a worker spawn, when Relay MCP injection is
+/// active for Muse: an isolated `XDG_CONFIG_HOME` scope provisioned by the
+/// MCP configurator. Returns `None` for other CLIs and when injection is
+/// disabled (`skip_relay_prompt` / `AGENT_RELAY_LOCAL_ONLY=1`), preserving
+/// their argv and config scope exactly. Only a path crosses into argv —
+/// never a secret.
+fn muse_config_home_for_worker(
+    normalized_cli: &str,
+    cwd: Option<&str>,
+    agent_name: &str,
+    skip_relay_prompt: bool,
+    local_only: Option<&str>,
+) -> Option<PathBuf> {
+    if skip_relay_prompt || local_only == Some("1") {
+        return None;
+    }
+    if !is_muse_executable(normalized_cli) {
+        return None;
+    }
+    Some(muse_clean_home_dir(
+        Path::new(cwd.unwrap_or(".")),
+        agent_name,
+    ))
 }
 
 fn ordered_pty_cli_args(
@@ -3788,6 +3831,33 @@ sleep 30
                 "--trust-workspace".to_string(),
                 "--disable-approval".to_string()
             ]
+        );
+    }
+
+    #[test]
+    fn muse_config_home_for_worker_gates_on_mcp_active() {
+        let home = muse_config_home_for_worker("muse", Some("/ws"), "agent-1", false, None)
+            .expect("muse with MCP active gets a clean home");
+        assert!(home.is_absolute());
+        assert_eq!(
+            home,
+            std::path::Path::new("/ws")
+                .join(".agent-relay")
+                .join("muse-agent-1")
+        );
+        // Other CLIs keep their argv and config scope exactly.
+        assert_eq!(
+            muse_config_home_for_worker("claude", Some("/ws"), "agent-1", false, None),
+            None
+        );
+        // Injection disabled: no clean home, no argv change.
+        assert_eq!(
+            muse_config_home_for_worker("muse", Some("/ws"), "agent-1", true, None),
+            None
+        );
+        assert_eq!(
+            muse_config_home_for_worker("muse", Some("/ws"), "agent-1", false, Some("1")),
+            None
         );
     }
 

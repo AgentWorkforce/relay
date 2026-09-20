@@ -1,6 +1,7 @@
 use std::{
     collections::{HashSet, VecDeque},
     future::Future,
+    path::Path,
     pin::Pin,
     sync::{
         atomic::{AtomicBool, Ordering},
@@ -807,6 +808,22 @@ pub(crate) async fn run_pty_worker(cmd: PtyCommand) -> Result<()> {
 
     let (resolved_cli, inline_cli_args) = parse_cli_command(&cmd.cli)
         .with_context(|| format!("invalid CLI command '{}'", cmd.cli))?;
+    if let Some(home) = cmd.muse_config_home.as_deref().filter(|s| !s.is_empty()) {
+        // The broker passes this flag only for Muse workers with Relay MCP
+        // provisioned, but re-check the executable identity defensively: a
+        // stray flag must never redirect another CLI's config scope.
+        if crate::snippets::is_muse_executable(&resolved_cli) {
+            #[allow(deprecated)]
+            std::env::set_var("XDG_CONFIG_HOME", home);
+            #[allow(deprecated)]
+            std::env::set_var(
+                "MUSE_AUTH_PATH",
+                Path::new(home).join("muse").join("auth.json"),
+            );
+            #[allow(deprecated)]
+            std::env::set_var("MUSE_NO_AUTO_UPDATE", "1");
+        }
+    }
     let mut effective_args = inline_cli_args;
     effective_args.extend(cmd.args.clone());
 

@@ -1076,6 +1076,161 @@ pub fn ensure_cursor_mcp_config(
     Ok(changed)
 }
 
+/// True when a CLI string names the Muse executable: basename match with
+/// Windows executable suffixes tolerated (`muse`, `muse.exe`, `muse.cmd`,
+/// `muse.bat`, any directory prefix). Used everywhere Relay must classify a
+/// Muse invocation independent of spelling.
+pub fn is_muse_executable(cli: &str) -> bool {
+    let basename = cli
+        .rsplit(['/', '\\'])
+        .next()
+        .filter(|part| !part.is_empty())
+        .unwrap_or(cli);
+    let lower = basename.to_ascii_lowercase();
+    let stem = lower
+        .strip_suffix(".exe")
+        .or_else(|| lower.strip_suffix(".cmd"))
+        .or_else(|| lower.strip_suffix(".bat"))
+        .unwrap_or(&lower);
+    stem == "muse"
+}
+
+/// Clean Muse config home for one worker: `<base>/.agent-relay/muse-<agent>/`.
+/// Pointing `XDG_CONFIG_HOME` there gives the worker an isolated Muse settings
+/// scope, so Relay MCP credentials never touch the user's shared config or
+/// `auth.json`. The agent name is sanitized so a hostile name cannot escape
+/// the base directory; relative bases resolve against the process cwd so the
+/// returned home is always absolute (workers may spawn from another cwd).
+pub fn muse_clean_home_dir(base: &Path, agent_name: &str) -> PathBuf {
+    let mut sanitized: String = agent_name
+        .chars()
+        .map(|c| {
+            if c.is_ascii_alphanumeric() || c == '-' || c == '_' || c == '.' {
+                c
+            } else {
+                '_'
+            }
+        })
+        .take(64)
+        .collect();
+    if sanitized.is_empty() || sanitized == "." || sanitized == ".." {
+        sanitized = "worker".to_string();
+    }
+    let base = if base.is_absolute() {
+        base.to_path_buf()
+    } else {
+        std::env::current_dir()
+            .unwrap_or_else(|_| PathBuf::from("."))
+            .join(base)
+    };
+    base.join(".agent-relay").join(format!("muse-{sanitized}"))
+}
+
+/// Env overrides that point one spawned Muse worker at its clean home:
+/// isolated settings scope, an isolated credential path (the shared user
+/// `auth.json` is never read or written), and launcher auto-update off so a
+/// spawn performs no network update checks or install-dir state writes.
+pub fn muse_clean_home_env(clean_home: &Path) -> Vec<(String, String)> {
+    vec![
+        (
+            "XDG_CONFIG_HOME".to_string(),
+            clean_home.to_string_lossy().into_owned(),
+        ),
+        (
+            "MUSE_AUTH_PATH".to_string(),
+            clean_home
+                .join("muse")
+                .join("auth.json")
+                .to_string_lossy()
+                .into_owned(),
+        ),
+        ("MUSE_NO_AUTO_UPDATE".to_string(), "1".to_string()),
+    ]
+}
+
+/// Muse `settings.json` schema version accepted by the installed Muse 1.3.0
+/// (`missing field 'schema_version'` otherwise). Update here (and the unit
+/// tests) if Muse bumps the accepted version.
+pub const MUSE_SETTINGS_SCHEMA_VERSION: u64 = 1;
+
+/// Write (or merge) `<clean_home>/muse/settings.json` with the Agent Relay
+/// MCP server configured with per-agent credentials (name + token), reusing
+/// the shared stdio server definition the other file-based harnesses use.
+/// Key names follow the Muse 1.3.0 `mcpServers` schema verified against the
+/// installed binary: a stdio entry carries `{command, args, env}`; update
+/// here (and the unit tests) if Muse renames these fields.
+/// Secrets land only in this isolated per-worker home — never in shared user
+/// state. Returns the settings file path.
+#[allow(clippy::too_many_arguments)]
+pub fn ensure_muse_mcp_config(
+    clean_home: &Path,
+    relay_api_key: Option<&str>,
+    relay_base_url: Option<&str>,
+    relay_agent_name: Option<&str>,
+    relay_agent_token: Option<&str>,
+    workspaces_json: Option<&str>,
+    default_workspace: Option<&str>,
+    _agent_result: Option<&AgentResultMcpConfig>,
+) -> io::Result<PathBuf> {
+    let muse_dir = clean_home.join("muse");
+    fs::create_dir_all(&muse_dir)?;
+    let path = muse_dir.join("settings.json");
+
+    let server = agent_relay_mcp_server_config(
+        relay_api_key,
+        relay_base_url,
+        relay_agent_name,
+        relay_agent_token,
+        workspaces_json,
+        default_workspace,
+        None,
+    );
+    // Carry RELAY_API_KEY in the server entry's env block (same shape as
+    // Cursor's file config) so the tools authenticate regardless of how Muse
+    // scopes subprocess environments.
+    let mut server = server;
+    if let Some(key) = relay_api_key.map(str::trim).filter(|s| !s.is_empty()) {
+        if let Some(env_obj) = server.get_mut("env").and_then(Value::as_object_mut) {
+            env_obj.insert("RELAY_API_KEY".into(), Value::String(key.to_string()));
+        } else {
+            let mut env_map = Map::new();
+            env_map.insert("RELAY_API_KEY".into(), Value::String(key.to_string()));
+            if let Some(obj) = server.as_object_mut() {
+                obj.insert("env".into(), Value::Object(env_map));
+            }
+        }
+    }
+
+    let mut envelope = if path.exists() {
+        let existing = fs::read_to_string(&path)?;
+        serde_json::from_str::<Value>(&existing).unwrap_or(Value::Object(Map::new()))
+    } else {
+        Value::Object(Map::new())
+    };
+    let obj = envelope.as_object_mut().ok_or_else(|| {
+        io::Error::new(
+            io::ErrorKind::InvalidData,
+            "muse settings must be an object",
+        )
+    })?;
+    obj.entry("schema_version")
+        .or_insert_with(|| Value::Number(MUSE_SETTINGS_SCHEMA_VERSION.into()));
+    let servers = obj
+        .entry("mcpServers")
+        .or_insert_with(|| Value::Object(Map::new()));
+    if let Some(servers_obj) = servers.as_object_mut() {
+        servers_obj.remove(LEGACY_RELAYCAST_SERVER);
+        servers_obj.insert(AGENT_RELAY_MCP_SERVER.to_string(), server);
+    } else {
+        let mut servers_obj = Map::new();
+        servers_obj.insert(AGENT_RELAY_MCP_SERVER.to_string(), server);
+        *servers = Value::Object(servers_obj);
+    }
+
+    write_pretty_json(&path, &envelope)?;
+    Ok(path)
+}
+
 /// - `cli`: CLI tool name (e.g. "claude", "codex", "gemini", "droid", "grok", "muse", "opencode", "cursor")
 /// - `agent_name`: the name of the agent being spawned
 /// - `api_key`: optional relay API key (empty or `None` means omit)
@@ -1155,6 +1310,7 @@ pub async fn configure_agent_relay_mcp_with_result(
     let is_droid = cli_lower == "droid";
     let is_opencode = cli_lower == "opencode";
     let is_grok = cli_lower == "grok";
+    let is_muse = is_muse_executable(&cli_lower);
     let is_cursor = cli_lower == "cursor" || cli_lower == "cursor-agent" || cli_lower == "agent"; // "agent" is cursor-agent's binary name
 
     let injects_agent_relay_mcp = (is_claude
@@ -1169,7 +1325,8 @@ pub async fn configure_agent_relay_mcp_with_result(
         || is_droid
         || is_grok
         || (is_opencode && !existing_args.iter().any(|a| a == "--agent"))
-        || is_cursor;
+        || is_cursor
+        || is_muse;
     #[cfg(not(test))]
     if injects_agent_relay_mcp {
         validate_agent_relay_mcp_command().await?;
@@ -1372,6 +1529,24 @@ pub async fn configure_agent_relay_mcp_with_result(
         .with_context(|| {
             "failed to write .cursor/mcp.json for Agent Relay MCP. \
                  Please configure the Agent Relay MCP server manually in .cursor/mcp.json"
+        })?;
+    } else if is_muse {
+        // Muse has no MCP launch flags: provision an isolated clean config
+        // home instead. The worker process picks it up via --muse-config-home
+        // (no argv is needed here).
+        ensure_muse_mcp_config(
+            &muse_clean_home_dir(cwd, agent_name),
+            api_key,
+            base_url,
+            Some(agent_name),
+            agent_token,
+            workspaces_json,
+            default_workspace,
+            None,
+        )
+        .with_context(|| {
+            "failed to write Muse settings.json for Agent Relay MCP. \
+                 Please configure the Agent Relay MCP server manually in settings.json"
         })?;
     }
 
@@ -1874,6 +2049,231 @@ mod tests {
             token: "arr_test".to_string(),
             schema: Some(json!({"type": "object"})),
         }
+    }
+
+    #[test]
+    fn is_muse_executable_matches_spellings_without_false_positives() {
+        for cli in [
+            "muse",
+            "Muse",
+            "MUSE",
+            "muse.exe",
+            "muse.cmd",
+            "muse.bat",
+            "MUSE.EXE",
+            "/Users/khaliqgant/.local/bin/muse",
+            "/usr/local/bin/muse.exe",
+            r"C:\Tools\Muse.CMD",
+        ] {
+            assert!(
+                super::is_muse_executable(cli),
+                "{cli} must classify as Muse"
+            );
+        }
+        for cli in [
+            "claude",
+            "codex",
+            "opencode",
+            "xmuse",
+            "muse2",
+            "amuse.exe",
+            "my-muse",
+        ] {
+            assert!(
+                !super::is_muse_executable(cli),
+                "{cli} must not classify as Muse"
+            );
+        }
+    }
+
+    #[test]
+    fn muse_clean_home_dir_is_absolute_and_traversal_safe() {
+        let temp = tempdir().expect("tempdir");
+        let home = super::muse_clean_home_dir(temp.path(), "agent-1");
+        assert!(home.is_absolute());
+        assert_eq!(home, temp.path().join(".agent-relay").join("muse-agent-1"));
+        for hostile in ["../evil", "..", "", "a/b\\c", "x:y*z?"] {
+            let home = super::muse_clean_home_dir(temp.path(), hostile);
+            assert!(
+                home.starts_with(temp.path().join(".agent-relay")),
+                "{hostile:?} must stay inside the base dir, got {home:?}"
+            );
+            assert!(home.is_absolute());
+        }
+    }
+
+    #[test]
+    fn muse_clean_home_env_isolates_settings_auth_and_updates() {
+        let home = std::path::Path::new("/tmp/relay-muse-home");
+        let env = super::muse_clean_home_env(home);
+        let get = |k: &str| env.iter().find(|(key, _)| key == k).map(|(_, v)| v.clone());
+        assert_eq!(
+            get("XDG_CONFIG_HOME").as_deref(),
+            Some("/tmp/relay-muse-home")
+        );
+        assert_eq!(
+            get("MUSE_AUTH_PATH").as_deref(),
+            Some("/tmp/relay-muse-home/muse/auth.json")
+        );
+        assert_eq!(get("MUSE_NO_AUTO_UPDATE").as_deref(), Some("1"));
+    }
+
+    #[test]
+    fn ensure_muse_mcp_config_writes_schema_backed_settings() {
+        let temp = tempdir().expect("tempdir");
+        let home = temp.path().join("clean");
+        let settings = super::ensure_muse_mcp_config(
+            &home,
+            Some("rk_test"),
+            Some("https://relay.example"),
+            Some("agent-1"),
+            Some("at_test"),
+            None,
+            None,
+            None,
+        )
+        .expect("write muse settings");
+        assert_eq!(settings, home.join("muse").join("settings.json"));
+
+        let contents = fs::read_to_string(&settings).expect("read settings");
+        let parsed: Value = serde_json::from_str(&contents).expect("parse settings");
+        assert_eq!(
+            parsed["schema_version"].as_u64(),
+            Some(super::MUSE_SETTINGS_SCHEMA_VERSION)
+        );
+        let server = &parsed["mcpServers"]["agent-relay"];
+        // Same stdio server shape the other file-based harnesses use.
+        assert_is_agent_relay_mcp_config(server);
+        // Per-worker credentials land in this isolated file only.
+        assert_eq!(server["env"]["RELAY_AGENT_TOKEN"].as_str(), Some("at_test"));
+        assert_eq!(server["env"]["RELAY_SKIP_BOOTSTRAP"].as_str(), Some("1"));
+        assert_eq!(server["env"]["RELAY_AGENT_NAME"].as_str(), Some("agent-1"));
+        assert_eq!(server["env"]["RELAY_API_KEY"].as_str(), Some("rk_test"));
+    }
+
+    #[test]
+    fn ensure_muse_mcp_config_merges_without_clobbering() {
+        let temp = tempdir().expect("tempdir");
+        let home = temp.path().join("clean");
+        let dir = home.join("muse");
+        fs::create_dir_all(&dir).expect("muse dir");
+        fs::write(
+            dir.join("settings.json"),
+            r#"{"schema_version": 1, "theme": "dark", "mcpServers": {"other": {"command": "other-mcp"}}}"#,
+        )
+        .expect("seed settings");
+        super::ensure_muse_mcp_config(
+            &home,
+            None,
+            None,
+            Some("agent-9"),
+            Some("at_9"),
+            None,
+            None,
+            None,
+        )
+        .expect("merge muse settings");
+        let parsed: Value = serde_json::from_str(
+            &fs::read_to_string(dir.join("settings.json")).expect("read merged"),
+        )
+        .expect("parse merged");
+        assert_eq!(parsed["theme"].as_str(), Some("dark"));
+        assert_eq!(
+            parsed["mcpServers"]["other"]["command"].as_str(),
+            Some("other-mcp")
+        );
+        assert_eq!(
+            parsed["mcpServers"]["agent-relay"]["env"]["RELAY_AGENT_TOKEN"].as_str(),
+            Some("at_9")
+        );
+    }
+
+    #[tokio::test]
+    async fn configure_muse_provisions_clean_home_settings() {
+        // End-to-end of the spawn path minus the TUI: the public configurator
+        // returns no argv for Muse (no launch flags exist) and provisions the
+        // isolated settings file Relay tools come from.
+        let temp = tempdir().expect("tempdir");
+        let args = super::configure_agent_relay_mcp_with_token(
+            "muse",
+            "agent-7",
+            Some("rk_live_test"),
+            Some("https://relay.example"),
+            &[],
+            temp.path(),
+            Some("at_live_test"),
+            None,
+            None,
+        )
+        .await
+        .expect("configure muse");
+        assert!(args.is_empty(), "muse takes no MCP argv, got {args:?}");
+        let settings = temp
+            .path()
+            .join(".agent-relay")
+            .join("muse-agent-7")
+            .join("muse")
+            .join("settings.json");
+        let parsed: Value =
+            serde_json::from_str(&fs::read_to_string(&settings).expect("read settings"))
+                .expect("parse settings");
+        assert_eq!(
+            parsed["schema_version"].as_u64(),
+            Some(super::MUSE_SETTINGS_SCHEMA_VERSION)
+        );
+        assert_is_agent_relay_mcp_config(&parsed["mcpServers"]["agent-relay"]);
+        assert_eq!(
+            parsed["mcpServers"]["agent-relay"]["env"]["RELAY_AGENT_TOKEN"].as_str(),
+            Some("at_live_test")
+        );
+    }
+
+    #[test]
+    fn muse_clean_home_startup_accepts_generated_settings() {
+        // Startup/config acceptance against the real Muse binary when it is
+        // installed; skipped loudly otherwise. Boots `muse exec` (headless,
+        // no pty needed) with XDG_CONFIG_HOME pointed at a generated clean
+        // home and asserts startup parses it. Live-TUI MCP attach (the worker
+        // actually calling Relay tools) remains supervisor-verified: this
+        // sandbox cannot allocate a pty.
+        let temp = tempdir().expect("tempdir");
+        let home = temp.path().join("clean");
+        super::ensure_muse_mcp_config(
+            &home,
+            None,
+            None,
+            Some("agent-probe"),
+            Some("at_probe"),
+            None,
+            None,
+            None,
+        )
+        .expect("write probe settings");
+        let muse = std::process::Command::new("muse")
+            .arg("exec")
+            .arg("--provider")
+            .arg("echo")
+            .arg("probe")
+            .env("XDG_CONFIG_HOME", &home)
+            .env("MUSE_AUTH_PATH", home.join("muse").join("auth.json"))
+            .env("MUSE_NO_AUTO_UPDATE", "1")
+            .output();
+        let output = match muse {
+            Err(_) => {
+                eprintln!("SKIP: muse binary not installed; clean-home startup untested");
+                return;
+            }
+            Ok(output) => output,
+        };
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        assert!(
+            output.status.success(),
+            "muse exec must start on the generated clean home: {stderr}"
+        );
+        assert!(
+            !stderr.contains("malformed settings") && !stderr.contains("missing field"),
+            "generated settings must parse: {stderr}"
+        );
     }
 
     #[test]
