@@ -132,9 +132,20 @@ if (!['light', 'standard', 'deep'].includes(DEPTH)) {
  * the flow-level `agents` map and are not part of any `step_spec_hash`.
  * Changing them does not invalidate `--reuse-from`.
  */
-const CODEX_CLI = process.env.NATIVE_DELIVERY_CODEX_CLI?.trim() || 'codex';
+const CODEX_CLI_NAME = process.env.NATIVE_DELIVERY_CODEX_CLI?.trim() || 'codex';
+/**
+ * Relayflows runs raw Claude/Codex executables directly and refuses everything
+ * else `cli_unsupported`, so cursor-agent reaches it through the repo's
+ * `relayflows-agent-cli-v1` wrapper. Absolute: a spec's relative `cli` resolves
+ * against the spec FILE's directory, not the working directory.
+ */
+const CODEX_CLI =
+  CODEX_CLI_NAME === 'cursor-agent' || CODEX_CLI_NAME === 'cursor'
+    ? path.resolve(process.cwd(), 'scripts/flows/cursor-agent-cli.mjs')
+    : CODEX_CLI_NAME;
 const CODEX_MODEL =
-  process.env.NATIVE_DELIVERY_CODEX_MODEL?.trim() || (CODEX_CLI === 'codex' ? 'gpt-5.5' : 'gpt-5.3-codex');
+  process.env.NATIVE_DELIVERY_CODEX_MODEL?.trim() ||
+  (CODEX_CLI_NAME === 'codex' ? 'gpt-5.5' : 'gpt-5.3-codex');
 const CLAUDE_IMPL_MODEL = process.env.NATIVE_DELIVERY_CLAUDE_MODEL?.trim() || 'opus';
 /** Reviewers read more than they write, so they get the strongest model available. */
 const CLAUDE_REVIEW_MODEL = process.env.NATIVE_DELIVERY_CLAUDE_REVIEW_MODEL?.trim() || 'opus';
