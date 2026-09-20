@@ -1282,6 +1282,9 @@ impl WorkerRegistry {
             command.env("RELAY_AGENT_TYPE", "agent");
             command.env("RELAY_STRICT_AGENT_NAME", "1");
         }
+        if skip_relay_prompt {
+            command.env("RELAY_SKIP_PROMPT", "1");
+        }
         // Local-only workers must not bootstrap a separate Relaycast session.
         if self.env_value("AGENT_RELAY_LOCAL_ONLY") == Some("1") {
             for key in [
@@ -2008,6 +2011,24 @@ fn apply_requested_session_reference(
         anyhow::bail!("session_ref must not be empty");
     }
 
+    if crate::readiness::is_devin_cli(cli_lower) {
+        if let Some(existing) =
+            cli_flag_value(args, "--resume").or_else(|| cli_flag_value(args, "-r"))
+        {
+            anyhow::ensure!(
+                existing == session_id,
+                "session_ref conflicts with the Devin session argument"
+            );
+            return Ok(());
+        }
+        anyhow::ensure!(
+            !cli_flag_present(args, &["--resume", "-r", "--continue", "-c"]),
+            "session_ref requires an explicit Devin session id"
+        );
+        harness_session_args.extend(["--resume".into(), session_id.into()]);
+        return Ok(());
+    }
+
     if cli_lower == "claude" || cli_lower.starts_with("claude:") {
         if let Some(existing) =
             cli_flag_value(args, "--resume").or_else(|| cli_flag_value(args, "-r"))
@@ -2057,7 +2078,7 @@ fn apply_requested_session_reference(
         }
     }
 
-    anyhow::bail!("session_ref resume is supported only for Claude and Codex PTY harnesses");
+    anyhow::bail!("session_ref resume is supported only for Claude, Codex and Devin PTY harnesses");
 }
 
 fn codex_session_reference(args: &[String]) -> CodexSessionReference {
@@ -2872,6 +2893,26 @@ sleep 30
             .release("attested-native-worker")
             .await
             .expect("release spawned worker");
+    }
+
+    #[test]
+    fn devin_session_reference_resumes_and_rejects_conflicting_flags() {
+        let mut args = Vec::new();
+        let mut session = Vec::new();
+        apply_requested_session_reference("devin", "session-1", &mut args, &mut session).unwrap();
+        assert_eq!(session, ["--resume", "session-1"]);
+        for original in [
+            vec!["--continue".into()],
+            vec!["--resume".into(), "other".into()],
+        ] {
+            assert!(apply_requested_session_reference(
+                "devin",
+                "session-1",
+                &mut original.clone(),
+                &mut Vec::new()
+            )
+            .is_err());
+        }
     }
 
     #[test]

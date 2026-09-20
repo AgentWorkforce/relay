@@ -395,6 +395,9 @@ pub(crate) fn infer_harness_from_command(command: &str) -> Option<&'static str> 
     if base == "goose" || lower.contains("goose") {
         return Some("goose");
     }
+    if relay_pty::readiness::is_devin_cli(command) {
+        return Some("devin");
+    }
     if base == "droid" || lower.contains("droid") {
         return Some("droid");
     }

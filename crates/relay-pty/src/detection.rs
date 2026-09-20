@@ -12,6 +12,8 @@ impl ActivityDetector {
             vec!["⠋", "⠙", "⠹", "Tool:", "Read(", "Write(", "Edit("]
         } else if lower.contains("codex") {
             vec!["Thinking...", "Running:", "$ ", "function_call"]
+        } else if crate::readiness::is_devin_cli(cli) {
+            vec!["Thinking ·", "Guide Devin while it works"]
         } else if lower.contains("gemini") {
             vec!["Generating", "Action:", "Executing"]
         } else {

@@ -20,6 +20,8 @@ export const CLIVersions = {
   GEMINI: '0.39.1',
   /** Cursor v2026.02.27-e7d2ef6 */
   CURSOR: '2026.02.27-e7d2ef6',
+  /** Devin v3000.10.31 */
+  DEVIN: '3000.10.31',
   /** Droid v0.1.0 */
   DROID: '0.1.0',
   /** OpenCode v1.2.24 */
@@ -40,6 +42,7 @@ export const CLIs = {
   CODEX: 'codex',
   GEMINI: 'gemini',
   CURSOR: 'cursor',
+  DEVIN: 'devin',
   DROID: 'droid',
   OPENCODE: 'opencode',
   GROK: 'grok',
@@ -300,6 +303,16 @@ export const CursorModels = {
 } as const;
 
 export type CursorModel = (typeof CursorModels)[keyof typeof CursorModels];
+
+/**
+ * Devin model identifiers.
+ */
+export const DevinModels = {
+  /** SWE-1.6 */
+  SWE_1_6: 'swe-1.6',
+} as const;
+
+export type DevinModel = (typeof DevinModels)[keyof typeof DevinModels];
 
 /**
  * Droid model identifiers.
@@ -588,6 +601,13 @@ export const CURSOR_MODEL_OPTIONS: ModelOption[] = [
 ];
 
 /**
+ * Devin model options for UI dropdowns.
+ */
+export const DEVIN_MODEL_OPTIONS: ModelOption[] = [
+  { value: 'swe-1.6', label: 'SWE-1.6' },
+];
+
+/**
  * Droid model options for UI dropdowns.
  */
 export const DROID_MODEL_OPTIONS: ModelOption[] = [
@@ -795,6 +815,13 @@ export const CURSOR_MODEL_METADATA: Record<CursorModel, ModelOption> = {
 };
 
 /**
+ * Devin model metadata keyed by model id.
+ */
+export const DEVIN_MODEL_METADATA: Record<DevinModel, ModelOption> = {
+  'swe-1.6': { value: 'swe-1.6', label: 'SWE-1.6' },
+};
+
+/**
  * Droid model metadata keyed by model id.
  */
 export const DROID_MODEL_METADATA: Record<DroidModel, ModelOption> = {
@@ -883,6 +910,7 @@ export const Models = {
   Codex: CodexModels,
   Gemini: GeminiModels,
   Cursor: CursorModels,
+  Devin: DevinModels,
   Droid: DroidModels,
   Opencode: OpencodeModels,
   Grok: GrokModels,
@@ -905,6 +933,7 @@ export const ModelOptions = {
   Codex: CODEX_MODEL_OPTIONS,
   Gemini: GEMINI_MODEL_OPTIONS,
   Cursor: CURSOR_MODEL_OPTIONS,
+  Devin: DEVIN_MODEL_OPTIONS,
   Droid: DROID_MODEL_OPTIONS,
   Opencode: OPENCODE_MODEL_OPTIONS,
   Grok: GROK_MODEL_OPTIONS,
@@ -918,6 +947,7 @@ export const ModelMetadata = {
   Codex: CODEX_MODEL_METADATA,
   Gemini: GEMINI_MODEL_METADATA,
   Cursor: CURSOR_MODEL_METADATA,
+  Devin: DEVIN_MODEL_METADATA,
   Droid: DROID_MODEL_METADATA,
   Opencode: OPENCODE_MODEL_METADATA,
   Grok: GROK_MODEL_METADATA,
@@ -928,6 +958,7 @@ const MODEL_METADATA_BY_CLI: Record<CLI, Record<string, ModelOption>> = {
   codex: CODEX_MODEL_METADATA,
   gemini: GEMINI_MODEL_METADATA,
   cursor: CURSOR_MODEL_METADATA,
+  devin: DEVIN_MODEL_METADATA,
   droid: DROID_MODEL_METADATA,
   opencode: OPENCODE_MODEL_METADATA,
   grok: GROK_MODEL_METADATA,
@@ -1020,6 +1051,13 @@ export const CLIRegistry = {
     package: 'cursor',
     version: '2026.02.27-e7d2ef6',
     install: 'Download from cursor.com',
+    npmLink: undefined,
+  },
+  devin: {
+    name: 'Devin',
+    package: 'devin',
+    version: '3000.10.31',
+    install: 'Install Devin CLI from https://docs.devin.ai/cli',
     npmLink: undefined,
   },
   droid: {

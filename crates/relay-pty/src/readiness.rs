@@ -25,6 +25,10 @@ pub fn detect_cli_ready(
     let clean = strip_ansi(output);
     let lower_cli = cli.to_lowercase();
 
+    if is_devin_cli(cli) {
+        return devin_prompt_ready(grid);
+    }
+
     if clean.contains("->pty:ready") {
         return true;
     }
@@ -58,6 +62,9 @@ pub fn detect_cli_ready(
 
 /// Detect prompt visibility from the rendered grid.
 pub fn cli_prompt_ready(cli: &str, grid: GridReadinessSnapshot<'_>) -> bool {
+    if is_devin_cli(cli) {
+        return devin_prompt_ready(grid);
+    }
     let lower_cli = cli.to_lowercase();
     let grid_snapshot = snapshot_for_grid(grid);
 
@@ -74,6 +81,35 @@ pub fn cli_prompt_ready(cli: &str, grid: GridReadinessSnapshot<'_>) -> bool {
         for_cli::generic()
     };
     set.evaluate(&grid_snapshot).is_some()
+}
+
+/// Match an executable basename, including Windows launcher suffixes.
+pub fn is_devin_cli(cli: &str) -> bool {
+    let base = cli
+        .rsplit(['/', '\\'])
+        .next()
+        .unwrap_or(cli)
+        .to_ascii_lowercase();
+    matches!(
+        base.as_str(),
+        "devin" | "devin.exe" | "devin.cmd" | "devin.bat"
+    )
+}
+
+fn devin_prompt_ready(grid: GridReadinessSnapshot<'_>) -> bool {
+    let Some((row, _)) = grid.cursor else {
+        return false;
+    };
+    // A trust choice also uses ❭. Require the actual idle composer, not the
+    // glyph, historical output volume, or the busy "Guide Devin" composer.
+    row > 0
+        && grid
+            .screen
+            .lines()
+            .nth((row - 1) as usize)
+            .is_some_and(|line| {
+                line.trim() == "❭ Ask Devin to build features, fix bugs, or work on your code"
+            })
 }
 
 fn claude_grid_ready(grid: GridReadinessSnapshot<'_>) -> bool {
@@ -121,6 +157,53 @@ fn snapshot_for_grid(grid: GridReadinessSnapshot<'_>) -> WaitSnapshot<'_> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn devin_requires_live_idle_composer_for_all_executable_spellings() {
+        for cli in [
+            "devin",
+            "/usr/local/bin/devin",
+            r"C:\tools\Devin.EXE",
+            "devin.cmd",
+            "devin.bat",
+        ] {
+            assert!(is_devin_cli(cli));
+            let screen = "Devin CLI\n❭ Ask Devin to build features, fix bugs, or work on your code\nSWE-2 High";
+            assert!(detect_cli_ready(
+                cli,
+                "",
+                0,
+                GridReadinessSnapshot {
+                    screen,
+                    cursor: Some((2, 3))
+                }
+            ));
+            for blocked in [
+                "❭ 1 Yes, trust",
+                "❭ Guide Devin while it works",
+                "Loading...",
+                "❭ submitted text",
+            ] {
+                assert!(!detect_cli_ready(
+                    cli,
+                    "->pty:ready",
+                    99999,
+                    GridReadinessSnapshot {
+                        screen: blocked,
+                        cursor: Some((1, 3))
+                    }
+                ));
+            }
+            assert!(!cli_prompt_ready(
+                cli,
+                GridReadinessSnapshot {
+                    screen,
+                    cursor: Some((3, 3))
+                }
+            ));
+        }
+        assert!(!is_devin_cli("not-devin"));
+    }
 
     #[test]
     fn versioned_claude_banner_with_real_composer_is_ready_without_greeting() {
