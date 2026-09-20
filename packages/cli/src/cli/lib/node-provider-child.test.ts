@@ -122,6 +122,17 @@ describe('parseNodeDescriptor', () => {
   it('returns undefined when the child produced no descriptor', () => {
     expect(parseNodeDescriptor('some unrelated output\n')).toBeUndefined();
   });
+
+  it('rejects descriptor maxAgents outside the broker-parseable range', () => {
+    const line = (maxAgents: unknown) =>
+      `${MARKER}${JSON.stringify({ name: 'n', capabilities: [], maxAgents })}\n`;
+    // The u32 boundary is accepted; anything the broker would silently
+    // normalize to unlimited fails fast instead.
+    expect(parseNodeDescriptor(line(4294967295))).toMatchObject({ maxAgents: 4294967295 });
+    for (const maxAgents of [0, -2, 1.5, '15', 4294967296]) {
+      expect(() => parseNodeDescriptor(line(maxAgents))).toThrow(/maxAgents must be a positive integer/);
+    }
+  });
 });
 
 describe('descriptorCapacitySource', () => {

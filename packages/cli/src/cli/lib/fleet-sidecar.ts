@@ -1,5 +1,5 @@
 import { AgentRelay } from '@agent-relay/sdk';
-import type { FleetTriggerSyncClient } from '@agent-relay/fleet';
+import { MAX_FLEET_NODE_AGENTS, type FleetTriggerSyncClient } from '@agent-relay/fleet';
 
 import type { CoreTeamsConfig } from '../commands/core.js';
 
@@ -72,8 +72,10 @@ export function resolveNodeCapacityHarnesses(
  * provider-level agent capacity from. A pre-set value is the operator's
  * authoritative declaration of the node's real capacity and is returned
  * verbatim; otherwise the node definition's `maxAgents` wins. Returns
- * `undefined` when neither declares a cap so the broker keeps its
- * historically unbounded capacity instead of inheriting a stale value.
+ * `undefined` when neither declares a cap — or when the declared cap is
+ * outside the shared range the broker can parse — so the broker keeps its
+ * historically unbounded capacity instead of reporting a number it would
+ * silently normalize to unlimited.
  */
 export function resolveNodeMaxAgents(
   preset: string | undefined,
@@ -84,7 +86,12 @@ export function resolveNodeMaxAgents(
     return trimmed;
   }
   const maxAgents = definition?.maxAgents;
-  if (typeof maxAgents === 'number' && Number.isInteger(maxAgents) && maxAgents > 0) {
+  if (
+    typeof maxAgents === 'number' &&
+    Number.isInteger(maxAgents) &&
+    maxAgents > 0 &&
+    maxAgents <= MAX_FLEET_NODE_AGENTS
+  ) {
     return String(maxAgents);
   }
   return undefined;

@@ -129,6 +129,14 @@ describe('resolveNodeMaxAgents', () => {
     expect(resolveNodeMaxAgents(undefined, undefined)).toBeUndefined();
     expect(resolveNodeMaxAgents('   ', undefined)).toBeUndefined();
   });
+
+  it('drops definition caps the broker cannot parse instead of reporting unlimited', () => {
+    // Above u32::MAX the broker rejects the env value and reports unlimited,
+    // so the forwarder must not emit it; the boundary itself stays valid.
+    expect(resolveNodeMaxAgents(undefined, { capabilities: {}, maxAgents: 4294967296 })).toBeUndefined();
+    expect(resolveNodeMaxAgents(undefined, { capabilities: {}, maxAgents: 4294967295 })).toBe('4294967295');
+    expect(resolveNodeMaxAgents(undefined, { capabilities: {}, maxAgents: 0 })).toBeUndefined();
+  });
 });
 
 describe('createTriggerSyncClient', () => {

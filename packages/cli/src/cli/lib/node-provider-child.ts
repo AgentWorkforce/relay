@@ -4,7 +4,7 @@ import path from 'node:path';
 import { createRequire } from 'node:module';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 
-import { normalizeFleetRepoPaths } from '@agent-relay/fleet';
+import { MAX_FLEET_NODE_AGENTS, normalizeFleetRepoPaths } from '@agent-relay/fleet';
 import { createLogger } from '@agent-relay/utils';
 
 import type { CoreDependencies, SpawnedProcess } from '../commands/core.js';
@@ -282,12 +282,30 @@ export function parseNodeDescriptor(stdout: string): NodeDefinitionDescriptor | 
   }
   const parsed = JSON.parse(last.slice(NODE_DESCRIPTOR_MARKER.length)) as NodeDefinitionDescriptor;
   const repoPaths = parseDescriptorRepoPaths(parsed.repoPaths);
+  const maxAgents = parseDescriptorMaxAgents(parsed.maxAgents);
   return {
     name: parsed.name,
     capabilities: Array.isArray(parsed.capabilities) ? parsed.capabilities : [],
-    ...(typeof parsed.maxAgents === 'number' ? { maxAgents: parsed.maxAgents } : {}),
+    ...(maxAgents !== undefined ? { maxAgents } : {}),
     ...(repoPaths !== undefined ? { repoPaths } : {}),
   };
+}
+
+/**
+ * Validate a descriptor's agent cap against the shared range. The `--describe`
+ * child reports whatever the installed `@agent-relay/fleet` accepted, which
+ * may predate the range check — and the JSON itself is just printed text, so a
+ * malformed line must fail fast here rather than forward a cap the broker
+ * would silently normalize to unlimited.
+ */
+function parseDescriptorMaxAgents(value: unknown): number | undefined {
+  if (value === undefined) {
+    return undefined;
+  }
+  if (typeof value !== 'number' || !Number.isInteger(value) || value <= 0 || value > MAX_FLEET_NODE_AGENTS) {
+    throw new Error(`Fleet node descriptor maxAgents must be a positive integer no larger than ${MAX_FLEET_NODE_AGENTS}`);
+  }
+  return value;
 }
 
 function parseDescriptorRepoPaths(value: unknown): Readonly<Record<string, string>> | undefined {

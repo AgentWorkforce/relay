@@ -643,6 +643,20 @@ describe('runUpCommand node-config gating', () => {
     expect((deps.env as NodeJS.ProcessEnv).AGENT_RELAY_NODE_MAX_AGENTS).toBe('32');
   });
 
+  it('leaves AGENT_RELAY_NODE_MAX_AGENTS unset when the declared cap exceeds the broker range', async () => {
+    const { deps, projectRoot } = createUpHarness();
+    fsReal.writeFileSync(
+      pathReal.join(projectRoot, 'agent-relay.mjs'),
+      // Above u32::MAX the broker would reject the value and report unlimited,
+      // so the forwarder drops it instead of advertising a false cap.
+      "export default { __agentRelayFleetNode: true, name: 'sf-frame', maxAgents: 4294967296, capabilities: {}, triggers: [] };\n"
+    );
+
+    await runUpCommand({ discoverConfig: true }, deps);
+
+    expect((deps.env as NodeJS.ProcessEnv).AGENT_RELAY_NODE_MAX_AGENTS).toBeUndefined();
+  });
+
   it('leaves AGENT_RELAY_NODE_MAX_AGENTS unset when no cap is declared anywhere', async () => {
     const { deps, projectRoot } = createUpHarness();
     fsReal.writeFileSync(

@@ -9,7 +9,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
-- `node up` forwards a node definition's `maxAgents` to the broker's advertised capacity, so `fleet nodes list` (including `--pretty`) reports the configured cap instead of `0`/`unlimited`. A pre-set `AGENT_RELAY_NODE_MAX_AGENTS` still wins as the operator's authoritative declaration.
+- `node up` forwards a node definition's `maxAgents` to the broker's advertised capacity, so `fleet nodes list` (including `--pretty`) reports the configured cap instead of `0`/`unlimited`. A pre-set `AGENT_RELAY_NODE_MAX_AGENTS` still wins as the operator's authoritative declaration. Caps above the broker-parseable `u32` range are rejected at definition time instead of silently reporting unlimited.
 
 ## [12.4.0] - 2026-09-20
 
