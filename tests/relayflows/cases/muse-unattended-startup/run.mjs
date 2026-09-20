@@ -150,16 +150,32 @@ sleep 60
     });
   }
 
-  const connection = await waitFor(async () => {
+  const brokerUrl = await waitFor(async () => {
     try {
-      return JSON.parse(await readFile(path.join(stateDir, 'connection.json'), 'utf8'));
+      const connection = JSON.parse(
+        await readFile(path.join(stateDir, 'connection.json'), 'utf8')
+      );
+      const url = new URL(connection.url);
+      const port = Number(url.port);
+      if (
+        url.protocol !== 'http:' ||
+        url.hostname !== '127.0.0.1' ||
+        !Number.isInteger(port) ||
+        port <= 0 ||
+        port > 65535
+      ) {
+        throw new Error(`bad connection url ${connection.url}`);
+      }
+      // Only the validated port comes from on-disk state. Rebuild the origin
+      // so a stale or tampered connection file cannot redirect the harness.
+      return `http://127.0.0.1:${port}`;
     } catch (error) {
       if (error.code === 'ENOENT' || error instanceof SyntaxError) return undefined;
       throw error;
     }
   }, 'broker connection metadata');
   const api = async (method, pathname, body) => {
-    const response = await fetch(`${connection.url}${pathname}`, {
+    const response = await fetch(`${brokerUrl}${pathname}`, {
       method,
       headers: { 'content-type': 'application/json', 'x-api-key': API_KEY },
       body: body === undefined ? undefined : JSON.stringify(body),
