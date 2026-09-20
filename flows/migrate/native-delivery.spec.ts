@@ -247,19 +247,44 @@ type AgentStep = {
  * path, so a dropped agent transport surfaces as "nothing was written" instead
  * of as a crashed run.
  */
+/**
+ * Steps whose artifact is checked by a following deterministic step rather than
+ * by a gate. `after(id)` yields the id a dependent should wait on.
+ */
+const artifactChecked = new Set<string>();
+const after = (id: string): string => (artifactChecked.has(id) ? `${id}-artifact` : id);
+
 function agentStep(step: AgentStep): void {
-  const options: V1StepOptions = {
+  flow.step(step.id, {
     agent: step.agent,
     dependsOn: step.dependsOn,
     task: step.task.join('\n'),
     retries: step.retries ?? 1,
     recoveryMode: 'inspect',
     permissions: permissions(step.agent),
-  };
-  if (step.artifact) {
-    options.verification = { type: 'file_exists', value: `${ART}/${step.artifact}` };
-  }
-  flow.step(step.id, options);
+  });
+  if (!step.artifact) return;
+  /**
+   * `artifact_exists` cannot be used here. It reads the worker's journaled
+   * `artifacts` list, and that list omits everything under `.workflow-artifacts/`
+   * — this repo's conventional artifact directory, and a dot-directory.
+   *
+   * Measured, not assumed: `implement-rust` journaled 6,832 paths under
+   * `target/` and 5 under `crates/`, and zero under `.workflow-artifacts/`,
+   * while provably having written `evidence/mutation-proof.md` there. A later
+   * run then died at `shadow-rust.gate` with the review file sitting on disk at
+   * 25 KB. (AgentWorkforce/flows#513)
+   *
+   * So the check reads the disk, from a deterministic step, where a red verdict
+   * is also legible instead of being swallowed with the gate's stdio.
+   */
+  artifactChecked.add(step.id);
+  det(
+    `${step.id}-artifact`,
+    recordedGate(`${step.id}-artifact`, 'require-artifacts', `--names ${step.artifact}`),
+    [step.id],
+    600_000
+  );
 }
 
 function det(id: string, command: string, dependsOn?: string[], timeoutMs = 3_600_000): void {
@@ -327,7 +352,7 @@ if ((CONFIG.requiredArtifacts ?? []).includes('decisions/D1-codex-thread-id.md')
   det(
     'spike-d1-gate',
     gate('require-artifacts', '--names decisions/D1-codex-thread-id.md'),
-    ['spike-d1-thread-id'],
+    [after('spike-d1-thread-id')],
     600_000
   );
   ready = 'spike-d1-gate';
@@ -402,7 +427,7 @@ agentStep({
 agentStep({
   id: 'implement-ts',
   agent: 'claude-impl',
-  dependsOn: ['shadow-rust'],
+  dependsOn: [after('shadow-rust')],
   retries: 2,
   task: [
     ...HOUSE_RULES,
@@ -762,7 +787,7 @@ for (let round = 1; round <= rounds; round += 1) {
   agentStep({
     id: `codex-fix-${round}`,
     agent: 'codex-fixer',
-    dependsOn: [`claude-review-${round}`],
+    dependsOn: [after(`claude-review-${round}`)],
     artifact: `reviews/codex-fix-${round}.md`,
     task: fixTask('codex', round),
   });
@@ -772,7 +797,7 @@ for (let round = 1; round <= rounds; round += 1) {
       record(`post-claude-review-${round}-parity`, parityCommands['parity-orch-to-worker']!),
       recordedGate(`post-claude-review-${round}-seam`, 'seam-rules'),
     ].join('\n'),
-    [`codex-fix-${round}`],
+    [after(`codex-fix-${round}`)],
     5_400_000
   );
 
@@ -791,7 +816,7 @@ for (let round = 1; round <= rounds; round += 1) {
   agentStep({
     id: `claude-fix-${round}`,
     agent: 'claude-fixer',
-    dependsOn: [`codex-review-${round}`],
+    dependsOn: [after(`codex-review-${round}`)],
     artifact: `reviews/claude-fix-${round}.md`,
     task: fixTask('claude', round),
   });
@@ -801,7 +826,7 @@ for (let round = 1; round <= rounds; round += 1) {
       record(`post-codex-review-${round}-typecheck`, 'npm run typecheck'),
       recordedGate(`post-codex-review-${round}-edit`, 'edit-gate'),
     ].join('\n'),
-    [`claude-fix-${round}`],
+    [after(`claude-fix-${round}`)],
     5_400_000
   );
   reviewReady = `gate-after-claude-fix-${round}`;
