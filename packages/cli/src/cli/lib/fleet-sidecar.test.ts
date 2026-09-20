@@ -32,14 +32,7 @@ import {
 
 describe('nodeCapacityHarnesses', () => {
   it('advertises the default harness set (matching the broker default) when there is no config', () => {
-    expect(nodeCapacityHarnesses(null)).toEqual([
-      'claude',
-      'codex',
-      'gemini',
-      'opencode',
-      'muse',
-      'devin',
-    ]);
+    expect(nodeCapacityHarnesses(null)).toEqual(['claude', 'codex', 'gemini', 'opencode', 'muse', 'devin']);
   });
 
   it('advertises spawn:muse capacity from the default set', () => {
@@ -99,9 +92,7 @@ describe('resolveNodeCapacityHarnesses', () => {
       'claude,codex,gemini,opencode,muse,devin,aider'
     );
     // A blank/whitespace value is treated as unset.
-    expect(resolveNodeCapacityHarnesses('   ', null)).toBe(
-      'claude,codex,gemini,opencode,muse,devin'
-    );
+    expect(resolveNodeCapacityHarnesses('   ', null)).toBe('claude,codex,gemini,opencode,muse,devin');
   });
 });
 
