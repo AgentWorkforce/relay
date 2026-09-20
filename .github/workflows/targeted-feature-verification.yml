@@ -57,8 +57,17 @@ jobs:
       - name: Install dependencies
         run: |
           npm ci --ignore-scripts
-          npm install --no-save --package-lock=false --ignore-scripts \
+
+      - name: Install pinned Relayflows runtime
+        run: |
+          mkdir -p "$RUNNER_TEMP/relayflowd-runtime"
+          npm pack --ignore-scripts \
+            --pack-destination "$RUNNER_TEMP/relayflowd-runtime" \
             @relayflows/runtime-linux-x64@2.0.20
+          tar -xzf "$RUNNER_TEMP/relayflowd-runtime/relayflows-runtime-linux-x64-2.0.20.tgz" \
+            -C "$RUNNER_TEMP/relayflowd-runtime"
+          chmod +x "$RUNNER_TEMP/relayflowd-runtime/package/bin/relayflowd"
+          echo "RELAYFLOWD_BIN=$RUNNER_TEMP/relayflowd-runtime/package/bin/relayflowd" >> "$GITHUB_ENV"
 
       - name: Select affected features and scenarios
         env:
