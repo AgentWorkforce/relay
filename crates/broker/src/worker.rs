@@ -2127,7 +2127,14 @@ pub(crate) fn validate_muse_startup_prompt_for_spec(
                 .with_context(|| format!("invalid harness command '{}'", config.command))?
                 .0,
         ),
-        None if spec.runtime == AgentRuntime::Pty => spec.cli.clone(),
+        None if spec.runtime == AgentRuntime::Pty => match spec.cli.as_deref() {
+            Some(command) => Some(
+                parse_cli_command(command)
+                    .with_context(|| format!("invalid CLI command '{command}'"))?
+                    .0,
+            ),
+            None => None,
+        },
         _ => None,
     };
     match cli {
@@ -4024,6 +4031,31 @@ sleep 30
         assert!(
             error.contains(&MUSE_STARTUP_PROMPT_MAX_BYTES.to_string()),
             "{error}"
+        );
+    }
+
+    #[test]
+    fn muse_startup_prompt_validation_parses_inline_cli_arguments() {
+        let spec = AgentSpec {
+            name: WorkerName::from("muse-inline-validation"),
+            runtime: AgentRuntime::Pty,
+            provider: None,
+            cli: Some("muse --model muse-spark".to_string()),
+            session_id: None,
+            harness_config: None,
+            model: None,
+            cwd: None,
+            team: None,
+            shadow_of: None,
+            shadow_mode: None,
+            args: Vec::new(),
+            channels: Vec::new(),
+            restart_policy: None,
+        };
+        let oversized = "x".repeat(MUSE_STARTUP_PROMPT_MAX_BYTES + 1);
+        assert!(
+            validate_muse_startup_prompt_for_spec(&spec, Some(&oversized)).is_err(),
+            "inline Muse commands must not bypass argv prompt validation"
         );
     }
 
