@@ -303,7 +303,9 @@ function parseDescriptorMaxAgents(value: unknown): number | undefined {
     return undefined;
   }
   if (typeof value !== 'number' || !Number.isInteger(value) || value <= 0 || value > MAX_FLEET_NODE_AGENTS) {
-    throw new Error(`Fleet node descriptor maxAgents must be a positive integer no larger than ${MAX_FLEET_NODE_AGENTS}`);
+    throw new Error(
+      `Fleet node descriptor maxAgents must be a positive integer no larger than ${MAX_FLEET_NODE_AGENTS}`
+    );
   }
   return value;
 }
