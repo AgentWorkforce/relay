@@ -8,8 +8,8 @@ so explicitly.
 
 ## What I read
 
-`git diff main -- crates/` in full, plus the code the diff *touches but does
-not show*, because every finding below lives in the interaction:
+`git diff main -- crates/` in full, plus the code the diff _touches but does
+not show_, because every finding below lives in the interaction:
 `crates/broker/src/runtime/fleet.rs` (the confirm path and
 `handle_fleet_deliver`), `crates/broker/src/runtime/maintenance.rs` (the retry
 filter), `crates/broker/src/node_control.rs` (`FleetDeliveryBook` in full),
@@ -21,7 +21,7 @@ filter), `crates/broker/src/node_control.rs` (`FleetDeliveryBook` in full),
 `tests/integration/broker/utils/obligation-conformance.ts`.
 
 I read `docs/native-delivery-migration.md` ("Phase 0 — the seam"), and the four
-prior review/fix documents in this directory as *claims*, not as findings. I
+prior review/fix documents in this directory as _claims_, not as findings. I
 re-derived everything. Where a prior finding is still live I say so and do not
 re-litigate it; where a fix created a new defect I treat it as new.
 
@@ -76,7 +76,7 @@ loop {
 sole backing store for `is_delivery_confirmation_held`.
 
 `crates/broker/src/runtime/maintenance.rs:155-166` — `is_delivery_confirmation_held`
-is the *only* thing that keeps an out-of-order-confirmed pending entry out of
+is the _only_ thing that keeps an out-of-order-confirmed pending entry out of
 the retry sweep:
 
 ```rust
@@ -85,7 +85,7 @@ let confirmation_is_held = pending.withheld_fleet_ack.as_ref()
 if pending.next_retry_at <= now && !confirmation_is_held { /* retry */ }
 ```
 
-`crates/broker/src/runtime/fleet.rs:1814-1827` — the *confirm* path, when it
+`crates/broker/src/runtime/fleet.rs:1814-1827` — the _confirm_ path, when it
 advances the cursor, also prunes every sibling at or below the new floor:
 
 ```rust
@@ -146,7 +146,7 @@ tracked in `pending_deliveries` with a `withheld_fleet_ack`. Cursor starts
 
 Wrong outcome: an agent receives the same message every ~6 seconds until the
 broker is restarted, and the orchestrator is told it was confirmed every time.
-Note that the two preconditions are *correlated, not independent*: the message
+Note that the two preconditions are _correlated, not independent_: the message
 whose echo never matches is exactly the one whose successor confirms first.
 
 ### Repair
@@ -169,7 +169,7 @@ through the same bookkeeping as `commit_confirmed_delivery`:
 
 ---
 
-## F2 — BLOCKER. `TerminalInDoubt` on the fleet path makes the *engine* redeliver a message whose write may already have committed
+## F2 — BLOCKER. `TerminalInDoubt` on the fleet path makes the _engine_ redeliver a message whose write may already have committed
 
 ### Evidence
 
@@ -212,7 +212,7 @@ Secondary, on the same finding: `emit_delivery_attempt_outcome`
 (`delivery.rs:1153-1176`) emits `BrokerEvent::MessageDeliveryFailed` for an
 in-doubt delivery while its own `tracing::warn!` says it is deliberately not
 dead-lettering "because redelivery may duplicate". Telling the orchestrator a
-message *failed* is the same invitation to redeliver as a dead letter, delivered
+message _failed_ is the same invitation to redeliver as a dead letter, delivered
 over a different channel. And the withheld `Deliver` riding on the removed
 `PendingDelivery` is never passed to `abandon_unconfirmed_delivery`, so this
 path reproduces in full the cursor-pinning defect (R2-1) that
@@ -221,7 +221,7 @@ of the several terminal paths.
 
 ### Repair
 
-An in-doubt fleet delivery must be *recorded as received and owned* before it is
+An in-doubt fleet delivery must be _recorded as received and owned_ before it is
 abandoned, so the engine cannot resurrect it:
 
 1. In the `TerminalInDoubt` arm of `handle_fleet_deliver`'s caller, call
@@ -246,7 +246,7 @@ pre-write after bytes reached the tty") and is the one that is actually present.
 ### Evidence
 
 `crates/broker/src/worker.rs:333-340` — when one write fails, the writer drains
-every *queued, unwritten* command and completes each with an `Err`:
+every _queued, unwritten_ command and completes each with an `Err`:
 
 ```rust
 while let Ok(mut queued) = command_rx.try_recv() {
@@ -362,7 +362,7 @@ unrestored frontier:
 
 `crates/broker/src/node_control.rs:1180-1183` claims: "This does not return an
 ACK to send immediately". True and irrelevant — the cursor it advances is
-cumulative. Once `acked_up_to_seq` includes an unobserved sequence, the *next*
+cumulative. Once `acked_up_to_seq` includes an unobserved sequence, the _next_
 real confirmation emits an ack that covers it (`fleet.rs:967-972`,
 `delivery.rs:107-111`). The engine retires a message nobody observed landing.
 Rule 4 is satisfied in the letter of the immediate frame and broken in the
@@ -379,7 +379,7 @@ explicit and observable: emit the cumulative ack at abandon time with an
 `unobserved_through_seq` marker on the probe
 (`crates/broker/src/node_delivery_probe.rs`), and call
 `advance_pending_fleet_ack_floors` in the same breath. If it does not accept it,
-the delivery must instead be dead-lettered *and* the engine told explicitly, not
+the delivery must instead be dead-lettered _and_ the engine told explicitly, not
 silently folded into a later cumulative ack. Either way the current middle
 position — silently advance, tell nobody — is the one option that is
 indefensible.
@@ -404,7 +404,7 @@ contract rules are enforced only inside
 `crates/broker/tests/delivery_seam_invariants.rs`, against `ScriptedBackend`.
 This was claude-review-1 F4; it is still live and I re-derived it independently.
 
-What is *new* is that the R2-4 fix picked a mapping that makes the eventual
+What is _new_ is that the R2-4 fix picked a mapping that makes the eventual
 repair actively dangerous. When the seam is hoisted to live on `BrokerRuntime`:
 
 - `delivery.rs:1008` maps `AlreadySent` to `DeliveryAttemptOutcome::Noop`,
@@ -421,7 +421,7 @@ repair actively dangerous. When the seam is hoisted to live on `BrokerRuntime`:
   a FIFO of receipts that silently forgets.
 
 **Repair.** Hoist the seam to a runtime field in the same change that maps
-`AlreadySent` to a *distinct* outcome (e.g. `AlreadyRouted { route }`) which
+`AlreadySent` to a _distinct_ outcome (e.g. `AlreadyRouted { route }`) which
 still advances `next_retry_at` and still permits dead-lettering, and replace the
 FIFO with a bounded structure whose eviction cannot produce `Fresh` for a known
 id.
@@ -431,7 +431,7 @@ id.
 ## F7 — MEDIUM. The headless route acks before the child has read anything, and now also declares the same delivery unobserved
 
 `crates/broker/src/runtime/headless.rs:277-286` sends `delivery_ack`
-*immediately after spawning the child*, before it has written or read a byte of
+_immediately after spawning the child_, before it has written or read a byte of
 the message. The broker treats that as an observation:
 `worker_events.rs:716-727` confirms and clears the pending delivery,
 `:776-786` emits `MessageDeliveryConfirmed`, `:787-795` marks it read. That is
@@ -448,7 +448,7 @@ instead, and a delivery whose child exited 0 is settled terminally and has its
 fleet cursor abandoned.
 
 **Repair.** Move the headless `delivery_ack` to after `child.wait()` succeeds,
-and treat `process_exit` as an *observed* verification value (it is one: the
+and treat `process_exit` as an _observed_ verification value (it is one: the
 process consumed the message and exited cleanly). Add `process_exit` beside
 `ECHO_VERIFICATION` in a single `is_observed(verification)` predicate in
 `delivery_verification.rs` so the worker and the broker cannot drift.
@@ -504,7 +504,7 @@ cannot have consumed the message. Treating a broken-pipe write to a dead child
 as committed converts a dead-lettered, operator-redeliverable message into a
 silent drop, in exactly the case the deleted test covered.
 
-**Repair.** Restore the lifecycle assertions against a *transient* writer error
+**Repair.** Restore the lifecycle assertions against a _transient_ writer error
 (the case that still retries), and keep the new in-doubt assertion as a second
 case. If a dead child is to be classified in doubt, the dead-letter store must
 still receive the entry under an `in_doubt` disposition so nothing is lost — a
@@ -564,7 +564,7 @@ state rather than minting a parallel one.
   `ackIdx < verifiedIdx`, which requires a `delivery_ack` to exist.
 - `tests/integration/broker/utils/obligation-conformance.ts:557,579` documents
   and asserts the sequence `… → message_delivery_confirmed → delivery_verified
-  → delivery_read_ack`, none of which the unobserved path now produces.
+→ delivery_read_ack`, none of which the unobserved path now produces.
 
 None of these are in the phase's declared exit gates, which is itself the point:
 the gate set cannot see this drift. (The parity scripts' blindness to the
