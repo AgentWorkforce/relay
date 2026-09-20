@@ -80,6 +80,7 @@ export const PHASES = {
       'crates/broker/src/lib.rs',
       'crates/broker/tests/',
       'crates/broker/src/runtime/',
+      'crates/broker/src/pty_worker.rs',
     ],
     tsScope: ['tests/', '.agentworkforce/features/manifest.yaml'],
     requiredSources: [
@@ -125,6 +126,7 @@ export const PHASES = {
       'crates/broker/src/codex_thread.rs',
       'crates/broker/tests/',
       'crates/broker/src/runtime/',
+      'crates/broker/src/pty_worker.rs',
     ],
     tsScope: ['tests/', '.agentworkforce/features/manifest.yaml', MATRIX],
     requiredSources: [
@@ -161,6 +163,7 @@ export const PHASES = {
       'crates/broker/src/claude_registry.rs',
       'crates/broker/tests/',
       'crates/broker/src/runtime/',
+      'crates/broker/src/pty_worker.rs',
     ],
     tsScope: ['tests/', '.agentworkforce/features/manifest.yaml', MATRIX],
     requiredSources: [
@@ -201,7 +204,12 @@ export const PHASES = {
   3: {
     slug: 'acp',
     title: 'One ACP backend for grok, opencode and devin',
-    scope: ['crates/broker/src/delivery/', 'crates/broker/tests/', 'crates/broker/src/runtime/'],
+    scope: [
+      'crates/broker/src/delivery/',
+      'crates/broker/tests/',
+      'crates/broker/src/runtime/',
+      'crates/broker/src/pty_worker.rs',
+    ],
     tsScope: ['tests/', '.agentworkforce/features/manifest.yaml'],
     requiredSources: ['crates/broker/src/delivery/acp.rs', INVARIANT_TEST_FILE],
     features: [
@@ -227,7 +235,12 @@ export const PHASES = {
   4: {
     slug: 'pty-retained',
     title: 'What stays on the PTY: muse and cursor-agent',
-    scope: ['crates/broker/src/delivery/', 'crates/broker/tests/', 'crates/broker/src/runtime/'],
+    scope: [
+      'crates/broker/src/delivery/',
+      'crates/broker/tests/',
+      'crates/broker/src/runtime/',
+      'crates/broker/src/pty_worker.rs',
+    ],
     tsScope: ['tests/', '.agentworkforce/features/manifest.yaml'],
     requiredSources: ['crates/broker/src/delivery/routing.rs', INVARIANT_TEST_FILE],
     features: [
@@ -261,6 +274,7 @@ export const PHASES = {
       'crates/broker/src/delivery/',
       'crates/broker/tests/',
       'crates/broker/src/runtime/',
+      'crates/broker/src/pty_worker.rs',
     ],
     tsScope: ['tests/', 'packages/', '.agentworkforce/features/manifest.yaml'],
     requiredSources: ['crates/broker/src/spawner.rs', INVARIANT_TEST_FILE],
