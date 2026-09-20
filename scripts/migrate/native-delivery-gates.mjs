@@ -26,7 +26,15 @@
 import { spawn } from 'node:child_process';
 import { execFileSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
-import { existsSync, mkdirSync, readdirSync, readFileSync, statSync, writeFileSync } from 'node:fs';
+import {
+  appendFileSync,
+  existsSync,
+  mkdirSync,
+  readdirSync,
+  readFileSync,
+  statSync,
+  writeFileSync,
+} from 'node:fs';
 import path from 'node:path';
 import { parse as parseYaml } from 'yaml';
 
@@ -66,7 +74,12 @@ export const PHASES = {
   0: {
     slug: 'seam',
     title: 'Delivery-backend seam beside the PTY injector',
-    scope: ['crates/broker/src/delivery/', 'crates/broker/src/broker/', 'crates/broker/src/lib.rs'],
+    scope: [
+      'crates/broker/src/delivery/',
+      'crates/broker/src/broker/',
+      'crates/broker/src/lib.rs',
+      'crates/broker/tests/',
+    ],
     tsScope: ['tests/', '.agentworkforce/features/manifest.yaml'],
     requiredSources: [
       'crates/broker/src/delivery/mod.rs',
@@ -93,7 +106,7 @@ export const PHASES = {
   1: {
     slug: 'codex-queue',
     title: 'Codex native delivery over `codex queue`',
-    scope: ['crates/broker/src/delivery/', 'crates/broker/src/codex_thread.rs'],
+    scope: ['crates/broker/src/delivery/', 'crates/broker/src/codex_thread.rs', 'crates/broker/tests/'],
     tsScope: ['tests/', '.agentworkforce/features/manifest.yaml', MATRIX],
     requiredSources: [
       'crates/broker/src/delivery/codex_queue.rs',
@@ -123,7 +136,7 @@ export const PHASES = {
   2: {
     slug: 'claude-native',
     title: 'Claude terminal inbox socket and `--cloud` delivery',
-    scope: ['crates/broker/src/delivery/', 'crates/broker/src/claude_registry.rs'],
+    scope: ['crates/broker/src/delivery/', 'crates/broker/src/claude_registry.rs', 'crates/broker/tests/'],
     tsScope: ['tests/', '.agentworkforce/features/manifest.yaml', MATRIX],
     requiredSources: [
       'crates/broker/src/delivery/claude_socket.rs',
@@ -159,7 +172,7 @@ export const PHASES = {
   3: {
     slug: 'acp',
     title: 'One ACP backend for grok, opencode and devin',
-    scope: ['crates/broker/src/delivery/'],
+    scope: ['crates/broker/src/delivery/', 'crates/broker/tests/'],
     tsScope: ['tests/', '.agentworkforce/features/manifest.yaml'],
     requiredSources: ['crates/broker/src/delivery/acp.rs', INVARIANT_TEST_FILE],
     features: [
@@ -184,7 +197,7 @@ export const PHASES = {
   4: {
     slug: 'pty-retained',
     title: 'What stays on the PTY: muse and cursor-agent',
-    scope: ['crates/broker/src/delivery/'],
+    scope: ['crates/broker/src/delivery/', 'crates/broker/tests/'],
     tsScope: ['tests/', '.agentworkforce/features/manifest.yaml'],
     requiredSources: ['crates/broker/src/delivery/routing.rs', INVARIANT_TEST_FILE],
     features: [
@@ -212,7 +225,7 @@ export const PHASES = {
   5: {
     slug: 'detached-spawn',
     title: 'Decouple spawning from wrapping',
-    scope: ['crates/broker/src/spawner.rs', 'crates/broker/src/delivery/'],
+    scope: ['crates/broker/src/spawner.rs', 'crates/broker/src/delivery/', 'crates/broker/tests/'],
     tsScope: ['tests/', 'packages/', '.agentworkforce/features/manifest.yaml'],
     requiredSources: ['crates/broker/src/spawner.rs', INVARIANT_TEST_FILE],
     features: [
@@ -243,7 +256,7 @@ export const PHASES = {
   6: {
     slug: 'config-hygiene',
     title: 'Stop writing into user config for grok, opencode and cursor',
-    scope: ['crates/broker/src/snippets.rs', 'crates/broker/src/cli_mcp_args.rs'],
+    scope: ['crates/broker/src/snippets.rs', 'crates/broker/src/cli_mcp_args.rs', 'crates/broker/tests/'],
     tsScope: ['tests/', '.agentworkforce/features/manifest.yaml'],
     requiredSources: ['crates/broker/src/cli_mcp_args.rs', 'crates/broker/tests/config_isolation.rs'],
     features: [
@@ -306,13 +319,37 @@ function artifactRoot() {
   return dir;
 }
 
+/**
+ * Every verdict is also appended to `<artifact>/gate-log.txt`.
+ *
+ * Not belt-and-braces: a gate invoked as a Relayflows `subprocess_gate` runs
+ * under `stdio: 'inherit'`, and the daemon's stdio is captured nowhere — the
+ * journal records `exit=1` with empty stdout and stderr tails, and
+ * `relayflowd.log` stays empty too (AgentWorkforce/flows#511). Writing the
+ * verdict to a file is the only way such a failure stays diagnosable.
+ */
+function journal(line) {
+  const index = process.argv.indexOf('--artifact');
+  if (index < 0) return;
+  const dir = process.argv[index + 1];
+  if (!dir) return;
+  try {
+    mkdirSync(dir, { recursive: true });
+    appendFileSync(path.join(dir, 'gate-log.txt'), `${new Date().toISOString()} ${line}\n`);
+  } catch {
+    // A gate must never fail because its own audit line could not be written.
+  }
+}
+
 function fail(message) {
   process.stderr.write(`GATE_FAILED ${message}\n`);
+  journal(`GATE_FAILED ${message.replace(/\n\s*/g, ' | ')}`);
   process.exitCode = 1;
 }
 
 function pass(message) {
   process.stdout.write(`GATE_PASSED ${message}\n`);
+  journal(`GATE_PASSED ${message}`);
 }
 
 function git(args) {
@@ -616,6 +653,10 @@ function editGate() {
       '.workflow-artifacts/',
       'scripts/migrate/',
       'flows/migrate/',
+      '.gitignore',
+      // Trail writes these as agents work; CLAUDE.md requires them tracked, so
+      // they are legitimate output of a run rather than scope creep.
+      '.agentworkforce/trajectories/',
       'CHANGELOG.md',
       'docs/',
     ];

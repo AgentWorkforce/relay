@@ -219,13 +219,33 @@ type AgentStep = {
   agent: string;
   dependsOn: string[];
   task: string[];
-  /** The command that must pass after the agent finishes. */
-  gateCommand?: string;
-  /** Or: the artifact the agent must have written. */
+  /**
+   * The artifact the agent must have journaled. Lowered to the `artifact_exists`
+   * named gate, which reads the worker's recorded artifact list rather than the
+   * disk, so the verdict survives replay.
+   */
   artifact?: string;
   retries?: number;
 };
 
+/**
+ * No agent step carries a `subprocess_gate`.
+ *
+ * The first run of this campaign died there. `implement-rust` succeeded and
+ * journaled all four required sources; its `subprocess_gate` then failed three
+ * times and exhausted retries, reporting `exit=1` with **empty** `stdout_tail`
+ * and `stderr_tail`. The gate command prints a verdict on every path, and that
+ * verdict reached nowhere: not the journal, not `relayflowd.log` (0 bytes), not
+ * the CLI output. The lowering runs the command under `stdio: 'inherit'` and
+ * the daemon's stdio is captured nowhere (AgentWorkforce/flows#511).
+ *
+ * An undiagnosable gate is worse than no gate, and this flow does not need one:
+ * every agent step is followed by a deterministic recorded gate and a `*-assert`
+ * that reads the recording back. That is where enforcement belongs anyway —
+ * `relay-80-100-workflow` calls it keeping repairable gates on the critical
+ * path, so a dropped agent transport surfaces as "nothing was written" instead
+ * of as a crashed run.
+ */
 function agentStep(step: AgentStep): void {
   const options: V1StepOptions = {
     agent: step.agent,
@@ -237,9 +257,6 @@ function agentStep(step: AgentStep): void {
   };
   if (step.artifact) {
     options.verification = { type: 'file_exists', value: `${ART}/${step.artifact}` };
-  } else if (step.gateCommand) {
-    options.verification = { type: 'exit_code', value: '0' };
-    options.exitCodeGateCommand = step.gateCommand;
   }
   flow.step(step.id, options);
 }
@@ -321,7 +338,6 @@ agentStep({
   id: 'implement-rust',
   agent: 'codex-impl',
   dependsOn: [ready],
-  gateCommand: gate('edit-gate', '--scope rust'),
   retries: 2,
   task: [
     ...HOUSE_RULES,
@@ -373,7 +389,6 @@ agentStep({
   id: 'implement-ts',
   agent: 'claude-impl',
   dependsOn: ['shadow-rust'],
-  gateCommand: gate('edit-gate', '--scope ts'),
   retries: 2,
   task: [
     ...HOUSE_RULES,
@@ -415,7 +430,6 @@ agentStep({
   id: 'repair-implementation',
   agent: 'claude-fixer',
   dependsOn: ['implementation-reconcile'],
-  gateCommand: gate('edit-gate'),
   retries: 2,
   task: [
     ...HOUSE_RULES,
@@ -434,7 +448,6 @@ agentStep({
   id: 'repair-routing',
   agent: 'claude-fixer',
   dependsOn: ['targeted-gate'],
-  gateCommand: gate('manifest-gate'),
   retries: 2,
   task: [
     ...HOUSE_RULES,
@@ -488,7 +501,6 @@ if (CONFIG.rust) {
     id: 'repair-rust',
     agent: 'codex-fixer',
     dependsOn: ['invariant-tests'],
-    gateCommand: gate('require-green', '--names rust-fmt,rust-clippy,rust-build,invariant-tests'),
     retries: 2,
     task: [
       ...HOUSE_RULES,
@@ -526,7 +538,6 @@ agentStep({
   id: 'repair-seam-rules',
   agent: 'codex-fixer',
   dependsOn: ['seam-rules'],
-  gateCommand: gate('seam-rules'),
   retries: 2,
   task: [
     ...HOUSE_RULES,
@@ -546,7 +557,6 @@ agentStep({
   id: 'repair-ts',
   agent: 'claude-fixer',
   dependsOn: ['unit-tests'],
-  gateCommand: gate('require-green', '--names ts-typecheck,unit-tests'),
   retries: 2,
   task: [
     ...HOUSE_RULES,
@@ -588,7 +598,6 @@ agentStep({
   id: 'repair-parity',
   agent: 'codex-fixer',
   dependsOn: ['parity'],
-  gateCommand: gate('require-green', `--names ${parityNames.join(',')}`),
   retries: 2,
   task: [
     ...HOUSE_RULES,
@@ -625,7 +634,6 @@ if (nativeNames.length > 0) {
     id: 'repair-native-evidence',
     agent: 'codex-fixer',
     dependsOn: ['native-evidence'],
-    gateCommand: gate('require-green', `--names ${nativeNames.join(',')}`),
     retries: 2,
     task: [
       ...HOUSE_RULES,
@@ -657,7 +665,6 @@ agentStep({
   id: 'repair-unlaunched',
   agent: 'claude-fixer',
   dependsOn: ['unlaunched-gate'],
-  gateCommand: gate('unlaunched-gate'),
   retries: 2,
   task: [
     ...HOUSE_RULES,
