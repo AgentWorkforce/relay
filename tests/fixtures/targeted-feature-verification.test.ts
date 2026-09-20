@@ -165,4 +165,34 @@ describe('targeted Flows v2 PR verification', () => {
       expect(spec.steps[index].dependsOn).toEqual([spec.steps[index - 1].id]);
     }
   });
+
+  it('expands the broker binary template in a full-smoke spec', async () => {
+    const directory = await mkdtemp(path.join(os.tmpdir(), 'relay-targeted-pr-broker-'));
+    temporaryDirectories.push(directory);
+    const planPath = path.join(directory, 'plan.json');
+    const specPath = path.join(directory, 'spec.json');
+    const selected = plan(['scripts/verify-features/targeted-pr-plan.mjs']);
+    await writeFile(planPath, `${JSON.stringify(selected)}\n`);
+
+    await execFileAsync(
+      process.execPath,
+      [
+        '--experimental-strip-types',
+        'flows/verify/targeted-pr.spec.ts',
+        '--plan',
+        planPath,
+        '--out',
+        specPath,
+      ],
+      { cwd: process.cwd(), timeout: 30_000 }
+    );
+    const spec = JSON.parse(await readFile(specPath, 'utf8'));
+    const brokerScenario = spec.steps.find(
+      ({ id }: { id: string }) => id === 'scenario-broker-agents-broker-process-integration'
+    );
+    expect(brokerScenario.command).toContain(
+      path.join(process.cwd(), 'target', 'release', 'agent-relay-broker')
+    );
+    expect(brokerScenario.command).not.toContain('{{brokerBinary}}');
+  });
 });

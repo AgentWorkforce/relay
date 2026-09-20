@@ -42,12 +42,20 @@ function stepId(kind: string, laneId: string, id: string): string {
 }
 
 function replaceTemplates(value: string, roots: Record<string, string>): string {
-  return value.replace(/\{\{(repoRoot|fixtureRoot|laneRoot)\}\}/g, (_, key: string) => roots[key]);
+  return value.replace(
+    /\{\{(repoRoot|fixtureRoot|laneRoot|brokerBinary)\}\}/g,
+    (_, key: string) => roots[key]
+  );
 }
 
 function commandFor(spec: CommandSpec, plan: TargetedPlan, repoRoot: string, fixtureRoot: string): string {
   const laneRoot = path.join(fixtureRoot, spec.laneId);
-  const roots = { repoRoot, fixtureRoot, laneRoot };
+  const roots = {
+    repoRoot,
+    fixtureRoot,
+    laneRoot,
+    brokerBinary: path.join(repoRoot, 'target', 'release', 'agent-relay-broker'),
+  };
   const cwd = replaceTemplates(spec.cwd ?? repoRoot, roots);
   const environment = {
     ...(plan.environmentDefaults ?? {}),
