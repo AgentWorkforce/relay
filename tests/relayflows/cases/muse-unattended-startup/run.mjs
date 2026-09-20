@@ -152,9 +152,7 @@ sleep 60
 
   const brokerUrl = await waitFor(async () => {
     try {
-      const connection = JSON.parse(
-        await readFile(path.join(stateDir, 'connection.json'), 'utf8')
-      );
+      const connection = JSON.parse(await readFile(path.join(stateDir, 'connection.json'), 'utf8'));
       const url = new URL(connection.url);
       const port = Number(url.port);
       if (
