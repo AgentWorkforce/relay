@@ -27,6 +27,8 @@ export const droid: PtyHarness = definePtyHarness({ runtime: 'pty', command: 'dr
 
 export const opencode = defineManagedHarness('opencode', { runtime: 'pty', command: 'opencode' });
 
+export const muse: PtyHarness = definePtyHarness({ runtime: 'pty', command: 'muse' });
+
 export const aider: PtyHarness = definePtyHarness({ runtime: 'pty', command: 'aider' });
 
 export const goose: PtyHarness = definePtyHarness({ runtime: 'pty', command: 'goose' });

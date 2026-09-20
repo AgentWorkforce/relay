@@ -39,6 +39,7 @@ AgentCli = Literal[
     "aider",
     "goose",
     "grok",
+    "muse",
     "opencode",
     "droid",
     "cursor",

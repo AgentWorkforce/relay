@@ -5,7 +5,11 @@ All notable changes to Agent Relay will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
+## [Unreleased - Minor]
+
+### Added
+
+- `fleet spawn`, `node up` capacity, and the `spawn`/`add_agent` MCP tools accept the Muse CLI (`muse`): nodes advertise `spawn:muse`, launches default to `--trust-workspace` so workspace skills and rules load, and injected tasks submit without a manual Enter. Tool approvals stay on unless `--disable-approval` is passed explicitly.
 
 ## [12.3.1] - 2026-09-20
 

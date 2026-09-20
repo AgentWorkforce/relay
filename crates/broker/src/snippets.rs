@@ -1076,7 +1076,7 @@ pub fn ensure_cursor_mcp_config(
     Ok(changed)
 }
 
-/// - `cli`: CLI tool name (e.g. "claude", "codex", "gemini", "droid", "grok", "opencode", "cursor")
+/// - `cli`: CLI tool name (e.g. "claude", "codex", "gemini", "droid", "grok", "muse", "opencode", "cursor")
 /// - `agent_name`: the name of the agent being spawned
 /// - `api_key`: optional relay API key (empty or `None` means omit)
 /// - `base_url`: optional relay base URL (empty or `None` means omit)

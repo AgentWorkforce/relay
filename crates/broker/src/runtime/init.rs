@@ -963,7 +963,7 @@ fn bracket_ipv6_host(host: &str) -> String {
 
 /// The harnesses the broker advertises `spawn:<harness>` capacity for when
 /// `AGENT_RELAY_NODE_HARNESSES` is unset.
-const DEFAULT_NODE_HARNESSES: &[&str] = &["claude", "codex", "gemini", "opencode"];
+const DEFAULT_NODE_HARNESSES: &[&str] = &["claude", "codex", "gemini", "opencode", "muse"];
 
 /// Build the node descriptor the broker registers as the `broker` provider.
 ///
@@ -1044,7 +1044,7 @@ mod tests {
     use super::*;
     use std::ffi::OsString;
     use std::net::{Ipv4Addr, Ipv6Addr};
-    use std::sync::{Mutex, MutexGuard};
+    use std::sync::{Mutex, MutexGuard, PoisonError};
 
     static NODE_ID_ENV_MUTEX: Mutex<()> = Mutex::new(());
 
@@ -1114,6 +1114,44 @@ mod tests {
 
         assert_eq!(std::env::var_os("RELAY_NODE_ID"), original_node_id);
         assert_eq!(std::env::var_os("RELAY_NODE_TOKEN"), original_node_token);
+    }
+
+    static NODE_HARNESSES_ENV_MUTEX: Mutex<()> = Mutex::new(());
+
+    #[test]
+    fn default_node_harnesses_advertise_spawn_muse() {
+        // `AGENT_RELAY_NODE_HARNESSES` may be preset in the ambient
+        // environment (notably on nodes that set their own capacity); clear it
+        // under a lock so this test observes the built-in default.
+        let _lock = NODE_HARNESSES_ENV_MUTEX
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner);
+        let saved = std::env::var_os("AGENT_RELAY_NODE_HARNESSES");
+        // SAFETY: NODE_HARNESSES_ENV_MUTEX serializes environment mutations
+        // for these tests before any code under test observes the value.
+        unsafe {
+            std::env::remove_var("AGENT_RELAY_NODE_HARNESSES");
+        }
+        let harnesses = node_capacity_harnesses();
+        let manifest = bootstrap_node_manifest("node-a", "node_a", "relay-broker/9.1.1");
+        // SAFETY: same lock held; restoring the ambient value on the way out.
+        unsafe {
+            match saved {
+                Some(value) => std::env::set_var("AGENT_RELAY_NODE_HARNESSES", value),
+                None => std::env::remove_var("AGENT_RELAY_NODE_HARNESSES"),
+            }
+        }
+        assert!(
+            harnesses.contains(&"muse".to_string()),
+            "default node capacity must include muse, got {harnesses:?}"
+        );
+        assert!(
+            manifest
+                .capabilities
+                .iter()
+                .any(|cap| cap.name == "spawn:muse"),
+            "broker manifest must advertise spawn:muse capacity"
+        );
     }
 
     #[test]

@@ -49,6 +49,7 @@ const CLI_MODEL_COMMANDS: Record<string, ModelCommandConfig> = {
   codex: { supported: false },
   gemini: { supported: false },
   droid: { supported: false },
+  muse: { supported: false },
   opencode: { supported: false },
   aider: { supported: false },
   goose: { supported: false },

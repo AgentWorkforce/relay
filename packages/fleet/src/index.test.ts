@@ -275,8 +275,14 @@ describe('@agent-relay/fleet', () => {
       'spawn:claude',
       'spawn:codex',
       'spawn:gemini',
+      'spawn:muse',
       'spawn:aider',
     ]);
+  });
+
+  it('advertises spawn:muse from the default local node', () => {
+    const node = defineDefaultLocalNode({ name: 'local' });
+    expect(Object.keys(node.capabilities)).toContain('spawn:muse');
   });
 
   it('rejects invalid definitions early', () => {

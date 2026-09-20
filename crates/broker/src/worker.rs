@@ -697,6 +697,7 @@ impl WorkerRegistry {
                 let is_codex = cli_lower == "codex";
                 let is_gemini = cli_lower == "gemini";
                 let is_grok = cli_lower == "grok";
+                let trust_flag = muse_trust_flag(&cli_lower, &effective_args);
                 if let Some(model) = apply_codex_model_arg_fallback(
                     &resolved_cli,
                     &cli_lower,
@@ -823,6 +824,7 @@ impl WorkerRegistry {
 
                 let pty_cli_args = ordered_pty_cli_args(
                     bypass_flag,
+                    trust_flag,
                     model_flag.as_deref(),
                     &mcp_args,
                     &effective_args,
@@ -927,6 +929,7 @@ impl WorkerRegistry {
                     let is_codex = cli_lower == "codex";
                     let is_gemini = cli_lower == "gemini";
                     let is_grok = cli_lower == "grok";
+                    let trust_flag = muse_trust_flag(&cli_lower, &effective_args);
                     if let Some(model) = apply_codex_model_arg_fallback(
                         &resolved_cli,
                         &cli_lower,
@@ -1056,6 +1059,7 @@ impl WorkerRegistry {
 
                     let pty_cli_args = ordered_pty_cli_args(
                         bypass_flag,
+                        trust_flag,
                         model_flag.as_deref(),
                         &mcp_args,
                         &effective_args,
@@ -1973,8 +1977,29 @@ fn prepare_claude_session_args(args: &mut Vec<String>) -> Option<String> {
     Some(session_id)
 }
 
+/// Broker-owned default for the Muse CLI: trust the workspace for the run so
+/// its skills and rules load, while keeping tool approvals on. `--yolo`
+/// implies workspace trust, so an explicit `--trust-workspace` or `--yolo`
+/// suppresses the default. `--disable-approval` is deliberately never
+/// auto-injected here — unlike the legacy bypass flags for
+/// claude/codex/gemini/grok, weakening Muse approvals stays an explicit
+/// caller choice passed through via `effective_args`.
+fn muse_trust_flag(cli_lower: &str, effective_args: &[String]) -> Option<&'static str> {
+    if cli_lower != "muse" {
+        return None;
+    }
+    let already_trusted = effective_args
+        .iter()
+        .any(|arg| arg == "--trust-workspace" || arg == "--yolo");
+    if already_trusted {
+        return None;
+    }
+    Some("--trust-workspace")
+}
+
 fn ordered_pty_cli_args(
     bypass_flag: Option<&str>,
+    trust_flag: Option<&str>,
     model: Option<&str>,
     mcp_args: &[String],
     effective_args: &[String],
@@ -1982,6 +2007,9 @@ fn ordered_pty_cli_args(
 ) -> Vec<String> {
     let mut args = Vec::new();
     if let Some(flag) = bypass_flag {
+        args.push(flag.to_string());
+    }
+    if let Some(flag) = trust_flag {
         args.push(flag.to_string());
     }
     if let Some(model) = model {
@@ -3625,6 +3653,7 @@ sleep 30
 
         let ordered = ordered_pty_cli_args(
             Some("--dangerously-bypass-approvals-and-sandbox"),
+            None,
             Some("gpt-5.4"),
             &[
                 "-c".to_string(),
@@ -3668,6 +3697,81 @@ sleep 30
         .expect("matching explicit Codex resume");
 
         assert!(harness_session_args.is_empty());
+    }
+
+    #[test]
+    fn muse_trust_flag_defaults_to_trust_workspace() {
+        assert_eq!(muse_trust_flag("muse", &[]), Some("--trust-workspace"));
+        assert_eq!(
+            muse_trust_flag("muse", &["--model".to_string(), "muse-spark".to_string()]),
+            Some("--trust-workspace")
+        );
+    }
+
+    #[test]
+    fn muse_trust_flag_skips_when_workspace_already_trusted() {
+        assert_eq!(
+            muse_trust_flag("muse", &["--trust-workspace".to_string()]),
+            None
+        );
+        assert_eq!(muse_trust_flag("muse", &["--yolo".to_string()]), None);
+    }
+
+    #[test]
+    fn muse_trust_flag_ignores_other_clis() {
+        for cli in ["claude", "codex", "gemini", "grok", "opencode", "aider"] {
+            assert_eq!(muse_trust_flag(cli, &[]), None);
+        }
+    }
+
+    #[test]
+    fn muse_spawn_args_trust_workspace_without_weakening_approvals() {
+        // The broker default trusts the workspace (skills/rules load) but
+        // never auto-injects --disable-approval: approvals stay on unless the
+        // caller passes the flag explicitly, and an explicit opt-in flows
+        // through untouched in user-arg position.
+        let ordered = ordered_pty_cli_args(None, muse_trust_flag("muse", &[]), None, &[], &[], &[]);
+        assert_eq!(ordered, vec!["--trust-workspace".to_string()]);
+        assert!(
+            !ordered.iter().any(|arg| arg.contains("disable-approval")),
+            "muse spawn must not auto-inject --disable-approval"
+        );
+
+        let explicit = vec!["--disable-approval".to_string()];
+        let ordered = ordered_pty_cli_args(
+            None,
+            muse_trust_flag("muse", &explicit),
+            None,
+            &[],
+            &explicit,
+            &[],
+        );
+        assert_eq!(
+            ordered,
+            vec![
+                "--trust-workspace".to_string(),
+                "--disable-approval".to_string()
+            ]
+        );
+    }
+
+    #[test]
+    fn muse_session_reference_resume_is_rejected() {
+        let mut args = Vec::new();
+        let mut harness_session_args = Vec::new();
+        let error = apply_requested_session_reference(
+            "muse",
+            "session-muse-1",
+            &mut args,
+            &mut harness_session_args,
+        )
+        .expect_err("muse session resume is unsupported");
+        assert!(
+            error
+                .to_string()
+                .contains("supported only for Claude and Codex"),
+            "unexpected error: {error}"
+        );
     }
 
     #[test]

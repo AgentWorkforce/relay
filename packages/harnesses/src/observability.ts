@@ -47,6 +47,7 @@ const PTY_HARNESSES = [
   'aider',
   'goose',
   'grok',
+  'muse',
 ] as const;
 
 export type PtyHarnessName = (typeof PTY_HARNESSES)[number];
@@ -89,6 +90,7 @@ const PTY_ALIASES: Record<string, PtyHarnessName> = {
   aider: 'aider',
   goose: 'goose',
   grok: 'grok',
+  muse: 'muse',
 };
 
 export function getPtyObservabilityProfile(harnessName: string): AgentObservabilityCapabilities {

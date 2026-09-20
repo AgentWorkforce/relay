@@ -1,7 +1,7 @@
 import { isAbsolute } from 'node:path';
 
 import { z } from 'zod';
-import { claude, codex, definePtyHarness, gemini, type PtyHarness } from '@agent-relay/harnesses';
+import { claude, codex, definePtyHarness, gemini, muse, type PtyHarness } from '@agent-relay/harnesses';
 import { resolveStaticHarnessConfig, type StaticPtyHarnessDefinition } from '@agent-relay/harness-driver';
 import type {
   AgentSpec,
@@ -442,6 +442,7 @@ export function defineDefaultLocalNode(input: {
     ['claude', claude],
     ['codex', codex],
     ['gemini', gemini],
+    ['muse', muse],
   ]);
   for (const agent of input.teams?.agents ?? []) {
     const cli = agent.cli?.trim();
