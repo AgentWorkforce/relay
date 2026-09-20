@@ -23,9 +23,7 @@ const binary = path.resolve(required('RELAY_PR_PROOF_BROKER_BINARY'));
 const targetDir = path.resolve(required('RELAY_PR_PROOF_TARGET_DIR'));
 const harnessDir = path.resolve(required('RELAY_PR_PROOF_HARNESS_DIR'));
 const resultPath = path.resolve(required('RELAY_PR_PROOF_RESULT_PATH'));
-const expectedSha = required(
-  arm === 'base' ? 'RELAY_PR_PROOF_BASE_SHA' : 'RELAY_PR_PROOF_HEAD_SHA'
-);
+const expectedSha = required(arm === 'base' ? 'RELAY_PR_PROOF_BASE_SHA' : 'RELAY_PR_PROOF_HEAD_SHA');
 assert.equal(
   execFileSync('git', ['-C', targetDir, 'rev-parse', 'HEAD'], { encoding: 'utf8' }).trim(),
   expectedSha,
