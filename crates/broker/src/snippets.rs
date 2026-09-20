@@ -1095,12 +1095,15 @@ pub fn is_muse_executable(cli: &str) -> bool {
     stem == "muse"
 }
 
-/// Clean Muse config home for one worker: `<base>/.agent-relay/muse-<agent>/`.
+/// Clean Muse config home for one worker:
+/// `<base>/.agent-relay/muse-<agent>-<hash>/`.
 /// Pointing `XDG_CONFIG_HOME` there gives the worker an isolated Muse settings
 /// scope, so Relay MCP credentials never touch the user's shared config or
 /// `auth.json`. The agent name is sanitized so a hostile name cannot escape
-/// the base directory; relative bases resolve against the process cwd so the
-/// returned home is always absolute (workers may spawn from another cwd).
+/// the base directory, and a stable sha256 suffix of the full original name
+/// keeps distinct workers apart (`a/b` vs `a_b` must not share credentials).
+/// Relative bases resolve against the process cwd so the returned home is
+/// always absolute (workers may spawn from another cwd).
 pub fn muse_clean_home_dir(base: &Path, agent_name: &str) -> PathBuf {
     let mut sanitized: String = agent_name
         .chars()
@@ -1111,11 +1114,20 @@ pub fn muse_clean_home_dir(base: &Path, agent_name: &str) -> PathBuf {
                 '_'
             }
         })
-        .take(64)
+        .take(48)
         .collect();
     if sanitized.is_empty() || sanitized == "." || sanitized == ".." {
         sanitized = "worker".to_string();
     }
+    let digest = {
+        use sha2::{Digest, Sha256};
+        let mut hasher = Sha256::new();
+        hasher.update(agent_name.as_bytes());
+        hasher.finalize()[..6]
+            .iter()
+            .map(|b| format!("{b:02x}"))
+            .collect::<String>()
+    };
     let base = if base.is_absolute() {
         base.to_path_buf()
     } else {
@@ -1123,7 +1135,32 @@ pub fn muse_clean_home_dir(base: &Path, agent_name: &str) -> PathBuf {
             .unwrap_or_else(|_| PathBuf::from("."))
             .join(base)
     };
-    base.join(".agent-relay").join(format!("muse-{sanitized}"))
+    base.join(".agent-relay")
+        .join(format!("muse-{sanitized}-{digest}"))
+}
+
+/// Enforce restrictive permissions on a provisioned Muse clean home (Unix):
+/// `0700` on the home and its `muse/` subdir, `0600` on `settings.json` when
+/// present, so `RELAY_API_KEY`/`RELAY_AGENT_TOKEN` are not exposed to other
+/// local users by a permissive umask. Runs on every provision, so re-spawns
+/// tighten pre-existing entries too. No-op on non-Unix platforms.
+fn restrict_muse_home_permissions(clean_home: &Path, muse_dir: &Path) -> io::Result<()> {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        for dir in [clean_home, muse_dir] {
+            fs::set_permissions(dir, fs::Permissions::from_mode(0o700))?;
+        }
+        let settings = muse_dir.join("settings.json");
+        if settings.exists() {
+            fs::set_permissions(&settings, fs::Permissions::from_mode(0o600))?;
+        }
+    }
+    #[cfg(not(unix))]
+    {
+        let _ = (clean_home, muse_dir);
+    }
+    Ok(())
 }
 
 /// Env overrides that point one spawned Muse worker at its clean home:
@@ -1170,10 +1207,11 @@ pub fn ensure_muse_mcp_config(
     relay_agent_token: Option<&str>,
     workspaces_json: Option<&str>,
     default_workspace: Option<&str>,
-    _agent_result: Option<&AgentResultMcpConfig>,
+    agent_result: Option<&AgentResultMcpConfig>,
 ) -> io::Result<PathBuf> {
     let muse_dir = clean_home.join("muse");
     fs::create_dir_all(&muse_dir)?;
+    restrict_muse_home_permissions(clean_home, &muse_dir)?;
     let path = muse_dir.join("settings.json");
 
     let server = agent_relay_mcp_server_config(
@@ -1183,7 +1221,7 @@ pub fn ensure_muse_mcp_config(
         relay_agent_token,
         workspaces_json,
         default_workspace,
-        None,
+        agent_result,
     );
     // Carry RELAY_API_KEY in the server entry's env block (same shape as
     // Cursor's file config) so the tools authenticate regardless of how Muse
@@ -1228,6 +1266,9 @@ pub fn ensure_muse_mcp_config(
     }
 
     write_pretty_json(&path, &envelope)?;
+    // Tighten again after the write (covers fresh files and pre-existing
+    // entries on the merge path) — never rely on the ambient umask.
+    restrict_muse_home_permissions(clean_home, &muse_dir)?;
     Ok(path)
 }
 
@@ -1533,7 +1574,8 @@ pub async fn configure_agent_relay_mcp_with_result(
     } else if is_muse {
         // Muse has no MCP launch flags: provision an isolated clean config
         // home instead. The worker process picks it up via --muse-config-home
-        // (no argv is needed here).
+        // (no argv is needed here). Result-callback config flows through like
+        // every other harness so listen/task callbacks keep working.
         ensure_muse_mcp_config(
             &muse_clean_home_dir(cwd, agent_name),
             api_key,
@@ -1542,7 +1584,7 @@ pub async fn configure_agent_relay_mcp_with_result(
             agent_token,
             workspaces_json,
             default_workspace,
-            None,
+            agent_result,
         )
         .with_context(|| {
             "failed to write Muse settings.json for Agent Relay MCP. \
@@ -2091,7 +2133,26 @@ mod tests {
         let temp = tempdir().expect("tempdir");
         let home = super::muse_clean_home_dir(temp.path(), "agent-1");
         assert!(home.is_absolute());
-        assert_eq!(home, temp.path().join(".agent-relay").join("muse-agent-1"));
+        let name = home
+            .file_name()
+            .expect("dir name")
+            .to_string_lossy()
+            .into_owned();
+        assert!(
+            name.starts_with("muse-agent-1-") && name.len() == "muse-agent-1-".len() + 12,
+            "readable prefix plus stable hash suffix, got {name:?}"
+        );
+        // Stability: same input always maps to the same home.
+        assert_eq!(home, super::muse_clean_home_dir(temp.path(), "agent-1"));
+        // Distinct names that sanitize alike must not share credentials.
+        let slash = super::muse_clean_home_dir(temp.path(), "a/b");
+        let underscore = super::muse_clean_home_dir(temp.path(), "a_b");
+        assert_ne!(slash, underscore, "a/b and a_b must map apart");
+        // Long names stay bounded: 48 readable chars plus hash.
+        let long = "a".repeat(200);
+        let home = super::muse_clean_home_dir(temp.path(), &long);
+        let name = home.file_name().expect("dir name").to_string_lossy();
+        assert!(name.len() <= "muse-".len() + 48 + 1 + 12, "got {name:?}");
         for hostile in ["../evil", "..", "", "a/b\\c", "x:y*z?"] {
             let home = super::muse_clean_home_dir(temp.path(), hostile);
             assert!(
@@ -2208,10 +2269,7 @@ mod tests {
         .await
         .expect("configure muse");
         assert!(args.is_empty(), "muse takes no MCP argv, got {args:?}");
-        let settings = temp
-            .path()
-            .join(".agent-relay")
-            .join("muse-agent-7")
+        let settings = super::muse_clean_home_dir(temp.path(), "agent-7")
             .join("muse")
             .join("settings.json");
         let parsed: Value =
@@ -2225,6 +2283,101 @@ mod tests {
         assert_eq!(
             parsed["mcpServers"]["agent-relay"]["env"]["RELAY_AGENT_TOKEN"].as_str(),
             Some("at_live_test")
+        );
+    }
+
+    #[test]
+    fn ensure_muse_mcp_config_forwards_result_callbacks() {
+        // Cursor r4056178535: AGENT_RELAY_RESULT_* must reach the isolated
+        // settings or listen/task callbacks fail silently for Muse workers.
+        let temp = tempdir().expect("tempdir");
+        let home = temp.path().join("clean");
+        super::ensure_muse_mcp_config(
+            &home,
+            None,
+            None,
+            Some("agent-r"),
+            Some("at_r"),
+            None,
+            None,
+            Some(&test_agent_result_config()),
+        )
+        .expect("write muse settings with result config");
+        let parsed: Value = serde_json::from_str(
+            &fs::read_to_string(home.join("muse").join("settings.json")).expect("read"),
+        )
+        .expect("parse");
+        let env = &parsed["mcpServers"]["agent-relay"]["env"];
+        assert_eq!(
+            env["AGENT_RELAY_RESULT_URL"].as_str(),
+            Some("http://127.0.0.1:3889/api/agent-result")
+        );
+        assert_eq!(env["AGENT_RELAY_RESULT_TOKEN"].as_str(), Some("arr_test"));
+        assert!(env["AGENT_RELAY_RESULT_SCHEMA"]
+            .as_str()
+            .is_some_and(|s| !s.is_empty()));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn ensure_muse_mcp_config_enforces_restrictive_permissions() {
+        use std::os::unix::fs::PermissionsExt;
+        let temp = tempdir().expect("tempdir");
+        let home = temp.path().join("clean");
+        super::ensure_muse_mcp_config(
+            &home,
+            Some("rk_perm"),
+            None,
+            Some("agent-p"),
+            Some("at_p"),
+            None,
+            None,
+            None,
+        )
+        .expect("write muse settings");
+        let mode =
+            |p: &std::path::Path| fs::metadata(p).expect("meta").permissions().mode() & 0o777;
+        assert_eq!(mode(&home), 0o700, "clean home must be 0700");
+        assert_eq!(mode(&home.join("muse")), 0o700, "muse dir must be 0700");
+        assert_eq!(
+            mode(&home.join("muse").join("settings.json")),
+            0o600,
+            "settings.json must be 0600"
+        );
+        // Re-provisioning tightens pre-existing permissive entries too.
+        let loose_dir = temp.path().join("loose");
+        let loose_muse = loose_dir.join("muse");
+        fs::create_dir_all(&loose_muse).expect("loose dirs");
+        let loose_settings = loose_muse.join("settings.json");
+        fs::write(&loose_settings, r#"{"mcpServers": {}}"#).expect("seed");
+        fs::set_permissions(&loose_dir, fs::Permissions::from_mode(0o755)).expect("loosen");
+        fs::set_permissions(&loose_muse, fs::Permissions::from_mode(0o755)).expect("loosen");
+        fs::set_permissions(&loose_settings, fs::Permissions::from_mode(0o644)).expect("loosen");
+        super::ensure_muse_mcp_config(
+            &loose_dir,
+            None,
+            None,
+            Some("agent-q"),
+            None,
+            None,
+            None,
+            None,
+        )
+        .expect("re-provision");
+        assert_eq!(
+            mode(&loose_dir),
+            0o700,
+            "existing home must tighten to 0700"
+        );
+        assert_eq!(
+            mode(&loose_muse),
+            0o700,
+            "existing muse dir must tighten to 0700"
+        );
+        assert_eq!(
+            mode(&loose_settings),
+            0o600,
+            "existing settings must tighten to 0600"
         );
     }
 

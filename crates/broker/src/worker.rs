@@ -3841,9 +3841,7 @@ sleep 30
         assert!(home.is_absolute());
         assert_eq!(
             home,
-            std::path::Path::new("/ws")
-                .join(".agent-relay")
-                .join("muse-agent-1")
+            muse_clean_home_dir(std::path::Path::new("/ws"), "agent-1")
         );
         // Other CLIs keep their argv and config scope exactly.
         assert_eq!(
