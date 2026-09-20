@@ -746,10 +746,13 @@ agentStep({
   retries: 2,
   task: [
     ...HOUSE_RULES,
-    `Read ${ART}/evidence/unlaunched-gate.json.`,
-    'This is the gate the migration doc says does not exist yet, and it is the only proof of the',
-    'capability the whole migration claims. Make the scenario real and executable; never mark it a',
-    'coverage-gap to get past the check.',
+    `Read ${ART}/evidence/unlaunched-gate.json. If its verdict is green, DO NOTHING and say so.`,
+    'A phase with no native route yet reports `not-required`, and that is the correct answer for it —',
+    'there is no unlaunched session to deliver into until a backend exists. Do not invent a scenario',
+    'to satisfy a gate that is already satisfied.',
+    'If it is red: this is the gate the migration doc says does not exist yet, and it is the only',
+    'proof of the capability the whole migration claims. Make the scenario real and executable;',
+    'never mark it a coverage-gap to get past the check.',
   ],
 });
 det(
