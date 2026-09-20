@@ -1034,15 +1034,17 @@ describe('complete Daytona Fleet board', () => {
   it('enumerates the complete Fleet and node-agent command/provider board', async () => {
     const matrix = await loadFleetMatrix('tests/relayflows/cleanroom/fleet-daytona.matrix.json');
 
-    expect(matrix.operations).toHaveLength(108);
+    expect(matrix.operations).toHaveLength(110);
     expect(() => validateFleetAcceptance(matrix)).not.toThrow();
-    expect(Object.keys(matrix.acceptance.operationProfiles)).toHaveLength(108);
+    expect(Object.keys(matrix.acceptance.operationProfiles)).toHaveLength(110);
     expect(matrix.operations.map(({ id }: { id: string }) => id)).toEqual(
       expect.arrayContaining([
         'fleet-config',
         'fleet-enable',
         'fleet-disable',
         'fleet-inherit',
+        'fleet-nodes-list-parent-options',
+        'fleet-nodes-list-options',
         'fleet-spawn-provider-opencode',
         'node-agent-spawn-codex-auto-a',
         'node-agent-spawn-codex-auto-b',
@@ -1385,7 +1387,7 @@ describe('complete Daytona Fleet board', () => {
     const missing = structuredClone(matrix);
     delete missing.acceptance.operationProfiles['fleet-status'];
     expect(() => validateFleetAcceptance(missing)).toThrow(
-      /exactly map all 108|exactly map every matrix operation/
+      /exactly map all 110|exactly map every matrix operation/
     );
   });
 
@@ -2060,13 +2062,21 @@ describe('complete Daytona Fleet board', () => {
     const actual = await collectFleetCliInventory('packages/cli/dist/cli/index.js');
     // The trusted verifier runs from current main while the candidate CLI is
     // hydrated separately. Keep this assertion pinned to main's known
-    // 29-leaf/35-record surface; candidate inventory equality is checked in
+    // 30-executable-leaf/36-record surface; candidate inventory equality is checked in
     // the qualification job against the hydrated artifact.
-    expect(actual.commands).toHaveLength(35);
-    expect(actual.commands.filter(({ leaf }: { leaf: boolean }) => leaf)).toHaveLength(29);
+    expect(actual.commands).toHaveLength(36);
+    expect(actual.commands.filter(({ leaf }: { leaf: boolean }) => leaf)).toHaveLength(30);
     expect(inventorySha256(actual)).toMatch(/^[a-f0-9]{64}$/);
     expect(actual.commands.find(({ path }: { path: string }) => path === 'fleet serve')).toMatchObject({
       hidden: true,
+      leaf: true,
+    });
+    expect(actual.commands.find(({ path }: { path: string }) => path === 'fleet nodes')).toMatchObject({
+      hidden: false,
+      leaf: true,
+    });
+    expect(actual.commands.find(({ path }: { path: string }) => path === 'fleet nodes list')).toMatchObject({
+      hidden: false,
       leaf: true,
     });
     expect(
@@ -2103,7 +2113,7 @@ describe('complete Daytona Fleet board', () => {
     );
     incomplete.operations.push({ id: 'unmapped-replacement', group: 'fixture', expect: 'success' });
     expect(() => validateFleetMatrix(incomplete)).toThrow(
-      /must exactly map every matrix operation|must exactly map all 108 operations/
+      /must exactly map every matrix operation|must exactly map all 110 operations/
     );
   });
 

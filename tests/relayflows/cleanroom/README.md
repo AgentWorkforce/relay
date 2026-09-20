@@ -72,7 +72,7 @@ Daytona baseline and hard acceptance gates, use
 Fleet has a dedicated operator-host Relayflow because its proof environment is
 itself a set of fresh Cloud sandboxes. The flow runs two sequential attempts;
 each provisions at least two distinct Daytona sandboxes, registers both as live
-Fleet nodes, and measures 108 operations:
+Fleet nodes, and measures 110 operations:
 every visible `fleet` leaf, all supported Fleet provider values, every `node`
 leaf, all `node agent spawn` providers/runtimes/lifecycle modes, initial and
 post-ready injection, remote and broker-local attach/message control,
@@ -87,7 +87,7 @@ acknowledgements, exact injection reader receipts, same-name reuse, and verified
 process/identity absence after release. The baseline rejects any total or online
 agent identity and any total or live Fleet node record; release qualification
 also hashes the actual CLI and broker executables inside each sandbox. See the
-exact 108-operation acceptance crosswalk and external gates in
+exact 110-operation acceptance crosswalk and external gates in
 [`FLEET_ACCEPTANCE_AUDIT.md`](./FLEET_ACCEPTANCE_AUDIT.md).
 
 ```bash
@@ -161,8 +161,8 @@ containing the complete verifier. The request workflow receives the
 for that trusted verifier; there is no nightly qualification schedule.
 
 The diagnosis flow is itself fail-closed. Before independent review it authors
-and validates exactly 156 runtime contracts: 12 state transitions, 23 injected
-faults, 13 release acceptance gates, and all 108 Fleet operations. Diagnosis mode
+and validates exactly 158 runtime contracts: 12 state transitions, 23 injected
+faults, 13 release acceptance gates, and all 110 Fleet operations. Diagnosis mode
 must mark every runtime row `BLOCKED` and bind it bidirectionally to an owned,
 promotion-blocking unknown; static tests and historical observations cannot
 become runtime passes. The seal hashes every generated artifact and reproduction

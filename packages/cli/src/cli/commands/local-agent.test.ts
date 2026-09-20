@@ -1173,7 +1173,10 @@ describe('local agent subtree', () => {
       setInboundDeliveryMode: vi.fn(async (_name: string, mode: string) => ({ mode, flushed: 0 })),
     };
     const connectLocal = vi.fn(async () => client as never);
-    const { program, log } = harness({ connectLocal });
+    // Keep this local-mode assertion independent of whichever Fleet workspace
+    // happens to be active on the developer machine running the suite.
+    const resolveFleetAttachTarget = vi.fn(async () => ({}));
+    const { program, log } = harness({ connectLocal, resolveFleetAttachTarget });
 
     await program.parseAsync(['local', 'agent', 'message', 'hold', 'claude'], { from: 'user' });
     await program.parseAsync(['local', 'agent', 'message', 'auto', 'claude'], { from: 'user' });

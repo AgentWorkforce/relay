@@ -47,7 +47,7 @@ const expectedLeafCommands = [
   'fleet disable',
   'fleet enable',
   'fleet inherit',
-  'fleet nodes',
+  'fleet nodes list',
   'fleet release',
   'fleet spawn',
   'fleet status',

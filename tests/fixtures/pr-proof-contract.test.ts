@@ -2211,7 +2211,7 @@ describe('classification reads the diff, not the title', () => {
     ].join('\n');
 
   it('treats a workflow-only change as non-runtime', () => {
-    expect(runtimeSurfaceChanged(['workflows/verify-features.ts', 'scripts/pr-proof/contract.mjs'])).toBe(
+    expect(runtimeSurfaceChanged(['flows/verify/features.spec.ts', 'scripts/pr-proof/contract.mjs'])).toBe(
       false
     );
   });
@@ -2288,7 +2288,7 @@ describe('classification reads the diff, not the title', () => {
     const result = classifyPullRequest({
       title: 'fix(workflow): fail loudly on alert delivery',
       body: nonFunctional(),
-      changedFiles: ['workflows/verify-features.ts', 'CHANGELOG.md'],
+      changedFiles: ['flows/verify/features.spec.ts', 'CHANGELOG.md'],
     });
     expect(result.errors).toEqual([]);
     expect(result.required).toBe(false);
@@ -2298,7 +2298,7 @@ describe('classification reads the diff, not the title', () => {
     const result = classifyPullRequest({
       title: 'fix(workflow): fail loudly on alert delivery',
       body: nonFunctional(),
-      changedFiles: ['workflows/verify-features.ts', 'crates/broker/src/runtime/fleet.rs'],
+      changedFiles: ['flows/verify/features.spec.ts', 'crates/broker/src/runtime/fleet.rs'],
     });
     expect(result.errors.join(' ')).toContain('changes runtime files');
   });
