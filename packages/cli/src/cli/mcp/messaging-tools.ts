@@ -11,6 +11,7 @@ import {
 } from '../lib/message-delivery-receipts.js';
 import { jsonContent, jsonResult, textContent } from './tool-results.js';
 import { identityOverrideInputShape, messageResult } from './tool-shapes.js';
+import { McpRequestReplay } from './request-replay.js';
 import type { AgentClientLike } from './types.js';
 
 const directMessageResult = z.looseObject({
@@ -69,8 +70,10 @@ function resolveEmoji(input: string): string {
 export function registerMessagingTools(
   server: McpServer,
   getAgentClient: (asIdentity?: string) => AgentClientLike,
-  listAgentsForRecipientResolution?: () => Promise<unknown[] | undefined>
+  listAgentsForRecipientResolution?: () => Promise<unknown[] | undefined>,
+  requestReplay?: McpRequestReplay
 ): void {
+  const replay = requestReplay ?? new McpRequestReplay();
   server.registerTool(
     'create_channel',
     {
@@ -355,18 +358,21 @@ export function registerMessagingTools(
         openWorldHint: true,
       },
     },
-    async ({ to, text, mode, attachments, as }) => {
-      const agents = await listAgentsForRecipientResolution?.();
-      const resolvedRecipient = agents ? resolveExactAgentName(agents, to) : undefined;
-      const message = await getAgentClient(as).dm(to, text, {
-        mode,
-        attachments,
-        data: replayMessageMetadata(),
-      });
-      const receipt = compactDirectMessageReceipt(directMessageReceipt(message, to, mode, resolvedRecipient));
-      const result = jsonContent(receipt);
-      return directMessageDeliveryFailure(receipt) ? { ...result, isError: true as const } : result;
-    }
+    async ({ to, text, mode, attachments, as }, extra) =>
+      replay.run('send_dm', extra, async () => {
+        const agents = await listAgentsForRecipientResolution?.();
+        const resolvedRecipient = agents ? resolveExactAgentName(agents, to) : undefined;
+        const message = await getAgentClient(as).dm(to, text, {
+          mode,
+          attachments,
+          data: replayMessageMetadata(),
+        });
+        const receipt = compactDirectMessageReceipt(
+          directMessageReceipt(message, to, mode, resolvedRecipient)
+        );
+        const result = jsonContent(receipt);
+        return directMessageDeliveryFailure(receipt) ? { ...result, isError: true as const } : result;
+      })
   );
 
   server.registerTool(

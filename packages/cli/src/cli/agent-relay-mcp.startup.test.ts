@@ -66,6 +66,7 @@ async function loadAgentRelayMcpModule(options: LoadOptions = {}) {
     release: ReturnType<typeof vi.fn>;
     as: ReturnType<typeof vi.fn>;
   }> = [];
+  const agentClients: ReturnType<typeof createAgentClient>[] = [];
   const behavior: RelayBehavior = {
     createWorkspaceImpl: vi.fn(async () => ({
       workspaceKey: 'rk_live_created',
@@ -91,7 +92,10 @@ async function loadAgentRelayMcpModule(options: LoadOptions = {}) {
 
   class FakeMcpServer {
     readonly options: unknown;
-    readonly tools = new Map<string, { config: unknown; handler: (input: any) => Promise<any> }>();
+    readonly tools = new Map<
+      string,
+      { config: unknown; handler: (input: any, extra?: any) => Promise<any> }
+    >();
     readonly prompts = new Map<string, { config: unknown; handler: () => Promise<any> }>();
     readonly resources = new Map<
       string,
@@ -156,7 +160,7 @@ async function loadAgentRelayMcpModule(options: LoadOptions = {}) {
       serverInstances.push(this);
     }
 
-    registerTool(name: string, config: unknown, handler: (input: any) => Promise<any>): void {
+    registerTool(name: string, config: unknown, handler: (input: any, extra?: any) => Promise<any>): void {
       this.tools.set(name, { config, handler });
     }
 
@@ -233,7 +237,11 @@ async function loadAgentRelayMcpModule(options: LoadOptions = {}) {
     const release = vi.fn((input: { name: string; reason?: string; deleteAgent?: boolean }) =>
       behavior.releaseImpl(input)
     );
-    const as = vi.fn((token: string) => createAgentClient(token));
+    const as = vi.fn((token: string) => {
+      const client = createAgentClient(token);
+      agentClients.push(client);
+      return client;
+    });
     relayInstances.push({ config, registerOrRotate, agentsList, nodesList, spawn, release, as });
     return {
       agents: {
@@ -345,6 +353,7 @@ async function loadAgentRelayMcpModule(options: LoadOptions = {}) {
       RelayCast,
       FakeTransport,
       agentRelayMessagingCommands,
+      agentClients,
     },
   };
 }
@@ -369,6 +378,52 @@ afterEach(() => {
 });
 
 describe('agent-relay-mcp startup helpers', () => {
+  it('coalesces replayed MCP request ids without collapsing separate same-name spawns', async () => {
+    const { mod, mocks } = await loadAgentRelayMcpModule();
+    mod.createAgentRelayMcpServer({ agentToken: 'at_live_fleet', agentName: 'orchestrator' });
+    const spawn = mocks.serverInstances[0].tools.get('spawn')!.handler;
+
+    const input = { name: 'ReplayWorker', cli: 'codex' };
+    const extra = { sessionId: 'mcp-session', requestId: 41 };
+    const [first, replay] = await Promise.all([spawn(input, extra), spawn(input, extra)]);
+
+    expect(first).toEqual(replay);
+    expect(mocks.agentRelayMessagingCommands.invoke).toHaveBeenCalledTimes(1);
+
+    mocks.agentRelayMessagingCommands.getInvocation.mockResolvedValueOnce({
+      invocationId: 'inv_2',
+      actionName: 'spawn',
+      status: 'failed',
+      error: 'spawn_agent_name_in_use',
+    });
+    mocks.agentRelayMessagingCommands.invoke.mockResolvedValueOnce({
+      invocationId: 'inv_2',
+      actionName: 'spawn',
+    });
+    const collision = await spawn(input, { sessionId: 'mcp-session', requestId: 42 });
+    expect(mocks.agentRelayMessagingCommands.invoke).toHaveBeenCalledTimes(2);
+    expect(collision).toMatchObject({
+      isError: true,
+      structuredContent: { error: { code: 'spawn_failed', message: 'spawn_agent_name_in_use' } },
+    });
+  });
+
+  it('coalesces a replayed DM request while separate identical messages remain distinct', async () => {
+    const { mod, mocks } = await loadAgentRelayMcpModule();
+    mod.createAgentRelayMcpServer({ agentToken: 'at_live_fleet', agentName: 'orchestrator' });
+    const sendDm = mocks.serverInstances[0].tools.get('send_dm')!.handler;
+    const input = { to: 'cli-support-lead', text: 'same text' };
+
+    await Promise.all([
+      sendDm(input, { sessionId: 'mcp-session', requestId: 71 }),
+      sendDm(input, { sessionId: 'mcp-session', requestId: 71 }),
+    ]);
+    expect(mocks.agentClients.reduce((count, client) => count + client.dm.mock.calls.length, 0)).toBe(1);
+
+    await sendDm(input, { sessionId: 'mcp-session', requestId: 72 });
+    expect(mocks.agentClients.reduce((count, client) => count + client.dm.mock.calls.length, 0)).toBe(2);
+  });
+
   it('parses startup options and helper flags from the environment', async () => {
     const { mod } = await loadAgentRelayMcpModule();
     vi.stubEnv('RELAY_WORKSPACE_KEY', 'rk_live_env');

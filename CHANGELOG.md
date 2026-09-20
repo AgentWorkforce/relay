@@ -5,7 +5,11 @@ All notable changes to Agent Relay will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
+## [Unreleased - Patch]
+
+### Fixed
+
+- MCP `spawn`, `add_agent`, and direct-message calls now reuse the first result when their JSON-RPC request is replayed, preventing duplicate workers, false duplicate-name failures, and duplicate DMs while keeping separate requests distinct.
 
 ## [12.3.1] - 2026-09-20
 
