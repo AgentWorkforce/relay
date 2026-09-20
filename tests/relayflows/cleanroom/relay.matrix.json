@@ -179,7 +179,7 @@
       "scenarios": [
         {
           "id": "broker-process-integration",
-          "title": "Real broker protocol, lifecycle, injection and child cleanup",
+          "title": "Real broker messaging, observability, PTY input and child cleanup",
           "command": [
             "node",
             "--test",
@@ -304,13 +304,7 @@
           },
           "forbidOutput": ["# SKIP"],
           "evidence": "integration",
-          "coversCategories": [
-            "messaging-channels",
-            "messaging-messages",
-            "messaging-dm",
-            "messaging-inbox",
-            "mcp"
-          ],
+          "coversCategories": ["messaging-channels", "messaging-messages", "messaging-dm", "messaging-inbox"],
           "issues": [1117, 1255, 1367, 1368, 1471, 1525, 1541, 1542, 1594, 1614]
         },
         {

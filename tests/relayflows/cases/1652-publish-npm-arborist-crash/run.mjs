@@ -54,6 +54,8 @@ if (!isWithin(harnessDir, runnerPath)) {
 // npm, so no elevated permissions are needed for the global reinstalls
 // below.
 const npmPrefix = await mkdtemp(path.join(tmpdir(), 'relayflow-1652-npm-'));
+const packageLockPath = path.join(targetDir, 'package-lock.json');
+const originalPackageLock = await readFile(packageLockPath);
 const npmBin = path.join(npmPrefix, 'bin');
 const npmEnv = {
   ...process.env,
@@ -111,7 +113,7 @@ try {
   // The exact "fresh install" recipe from node-compat.yml's fresh-install
   // job / publish.yml's version-bump reinstall: no lockfile, no cache.
   await rm(path.join(targetDir, 'node_modules'), { recursive: true, force: true });
-  await rm(path.join(targetDir, 'package-lock.json'), { force: true });
+  await rm(packageLockPath, { force: true });
   const packagesDir = path.join(targetDir, 'packages');
   for (const entry of await readdirSafe(packagesDir)) {
     await rm(path.join(packagesDir, entry, 'node_modules'), { recursive: true, force: true });
@@ -147,6 +149,10 @@ try {
     );
   }
 } finally {
+  // This case deliberately exercises the repository-mutating fresh-install
+  // recipe. Restore the tracked lockfile so another corpus case sharing this
+  // Flows v2 shard still starts from a clean checkout.
+  await writeFile(packageLockPath, originalPackageLock);
   await rm(npmPrefix, { recursive: true, force: true });
 }
 

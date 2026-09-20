@@ -335,7 +335,13 @@ export function buildTargetedPlan({
               'build-core',
               ...(corpusCase.needsBroker ? ['build-broker'] : []),
             ]);
-            const caseSetup = lane.setup.filter((step) => requiredSetupIds.has(step.id));
+            const caseSetup = [...requiredSetupIds].map((id) => {
+              const step = lane.setup.find((candidate) => candidate.id === id);
+              if (!step) {
+                throw new Error(`RelayFlow corpus scenario ${lane.id}/${scenario.id} requires setup ${id}`);
+              }
+              return step;
+            });
             for (const step of caseSetup) {
               assertCommandSpec(step, `setup ${lane.id}/${step.id}`);
               setup.push({ ...step, laneId: lane.id });

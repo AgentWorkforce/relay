@@ -62,7 +62,11 @@ if (actualSha !== expectedSha) {
 await main();
 
 async function main() {
-  build(['ci'], 'npm ci');
+  // Match the repository's cleanroom install. Running dependency lifecycle
+  // scripts builds ssh2's optional native addon, which makes the CLI's legacy
+  // CJS bundle try to ingest a `.node` file before this case ever reaches the
+  // standalone mount behavior it is meant to prove.
+  build(['ci', '--ignore-scripts'], 'npm ci --ignore-scripts');
   build(['run', 'build'], 'npm run build');
   runShell('bash', ['scripts/build-standalone.sh'], 'standalone build');
 

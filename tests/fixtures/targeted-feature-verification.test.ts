@@ -305,6 +305,23 @@ describe('targeted Flows v2 PR verification', () => {
     ).toThrow(/requires setup build-core that is unavailable in targeted/);
   });
 
+  it('rejects a RelayFlow corpus lane that omits its required core build', () => {
+    const invalid = structuredClone(matrix);
+    const lane = invalid.lanes.find(({ id }: { id: string }) => id === 'regression-corpus');
+    lane.setup = lane.setup.filter(({ id }: { id: string }) => id !== 'build-core');
+
+    expect(() =>
+      buildTargetedPlan({
+        changedFiles: ['scripts/verify-features/targeted-pr-plan.mjs'],
+        matrix: invalid,
+        manifestText,
+        corpusCases,
+      })
+    ).toThrow(
+      /RelayFlow corpus scenario regression-corpus\/relayflow-head-regression-corpus requires setup build-core/
+    );
+  });
+
   it('rejects malformed output and exit gates instead of dropping them', () => {
     const invalid = structuredClone(matrix);
     invalid.lanes
