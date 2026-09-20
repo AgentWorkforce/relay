@@ -1069,11 +1069,37 @@ pub(crate) async fn retry_pending_delivery(
     let request =
         crate::delivery::SendRequest::relay(pending.worker_name.clone(), pending.delivery.clone());
     match seam.send(&mut [&mut pty_backend], request).await {
-        Ok(crate::delivery::SendOutcome::AlreadySent(_)) => Ok(DeliveryAttemptOutcome::Noop),
+        Ok(crate::delivery::SendOutcome::AlreadySent(_)) => {
+            // NOT `Noop`. `Noop` leaves `next_retry_at` untouched, so once the
+            // seam outlives a single call — which is the whole point of hoisting
+            // it — a delivery whose ack never arrives would be re-entered by
+            // every maintenance tick, return the same answer, never advance its
+            // own clock, and so never retry, never fail and never dead-letter:
+            // a permanently stuck delivery plus a hot loop.
+            //
+            // Backing off keeps the retry cap reachable, so an un-acked routed
+            // delivery still terminates in a dead letter instead of spinning.
+            if let Some(current) = pending_deliveries.get_mut(delivery_id) {
+                current.failed_attempts = current.failed_attempts.saturating_add(1);
+                current.next_retry_at = Instant::now() + retry_interval;
+            }
+            Ok(DeliveryAttemptOutcome::Noop)
+        }
+        Ok(crate::delivery::SendOutcome::Forgotten { .. }) => {
+            // The seam sent this before and has since evicted its receipt, so
+            // the route is unknown. Rule 2: not knowing where a message went is
+            // not evidence it did not go. Settle it in doubt rather than
+            // handing it to a transport again.
+            let removed = pending_deliveries.remove(delivery_id).unwrap_or(pending);
+            Ok(DeliveryAttemptOutcome::TerminalInDoubt {
+                pending: Box::new(removed),
+                last_error: "delivery route was forgotten by the seam; not re-sending".to_string(),
+            })
+        }
         Ok(outcome)
             if matches!(
-                outcome.receipt().status,
-                crate::delivery::SendStatus::InDoubt
+                outcome.receipt().map(|receipt| &receipt.status),
+                Some(crate::delivery::SendStatus::InDoubt)
             ) =>
         {
             let removed = pending_deliveries.remove(delivery_id).unwrap_or(pending);

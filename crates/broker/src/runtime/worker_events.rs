@@ -899,6 +899,21 @@ impl BrokerRuntime {
                                     if let Some(deliver) =
                                         unobserved_pending.withheld_fleet_ack.as_ref()
                                     {
+                                        // Restore the agent's pending frontier first,
+                                        // exactly as the confirm path does at
+                                        // `fleet.rs:1791-1796`. Without it the book
+                                        // cannot know which lower sequences are still
+                                        // outstanding, and the asymmetry its doc states
+                                        // applies here too: the broker may retry an
+                                        // already-landed delivery, but must never
+                                        // falsely ACK an undelivered lower one.
+                                        let group =
+                                            crate::runtime::delivery::pending_fleet_ack_group(
+                                                pending_deliveries.values(),
+                                                &deliver.agent_id,
+                                            );
+                                        fleet_delivery_book
+                                            .restore_pending_agent(&group.deliveries, group.floor);
                                         // Advancing the cursor has consequences the
                                         // book cannot apply. Siblings at or below the
                                         // new floor sit in `pending_deliveries` solely

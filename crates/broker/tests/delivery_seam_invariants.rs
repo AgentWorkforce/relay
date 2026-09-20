@@ -245,3 +245,55 @@ async fn never_acks_without_observation() {
         SettleStatus::HandedOver(HandoverState::HandedOver)
     ));
 }
+
+/// relay: F6 — the duplicate guard must not resurrect a duplicate at its bound.
+///
+/// `DeliverySeam` remembers a receipt per delivery so a second send for the
+/// same id returns `AlreadySent` instead of handing the message to a transport
+/// twice. That memory is bounded, and the bound was a FIFO of receipts: at
+/// capacity the oldest is dropped. A delivery whose receipt is evicted and
+/// which is then retried classifies as `Fresh` again — the guard hands the
+/// message to a backend a second time, which is precisely the double delivery
+/// it exists to prevent.
+///
+/// Forgetting must therefore be explicit: an id the seam once knew and has
+/// since evicted is not the same as an id it has never seen.
+#[tokio::test]
+async fn an_evicted_receipt_does_not_become_a_fresh_send() {
+    let mut seam = DeliverySeam::new();
+    let mut backend = ScriptedBackend::new(
+        "pty",
+        (0..DeliverySeam::max_receipts() + 2)
+            .map(|_| Ok(SendStatus::HandedOver(HandoverState::HandedOver)))
+            .collect(),
+    );
+
+    // The delivery whose receipt will be evicted.
+    let first = SendRequest::new("del_evicted", "hello");
+    let outcome = seam
+        .send(&mut [&mut backend], first)
+        .await
+        .expect("first send is accepted");
+    assert!(matches!(outcome, SendOutcome::Fresh(_)));
+
+    // Fill past the bound so `del_evicted` is pushed out.
+    for index in 0..DeliverySeam::max_receipts() + 1 {
+        let filler = SendRequest::new(format!("del_filler_{index}"), "x");
+        seam.send(&mut [&mut backend], filler)
+            .await
+            .expect("filler send is accepted");
+    }
+
+    // The original delivery is retried after its receipt was forgotten.
+    let retried = SendRequest::new("del_evicted", "hello");
+    let outcome = seam
+        .send(&mut [&mut backend], retried)
+        .await
+        .expect("retry is resolved");
+
+    assert!(
+        !matches!(outcome, SendOutcome::Fresh(_)),
+        "an evicted receipt was classified Fresh, so the seam handed an already-sent \
+         message to a backend a second time"
+    );
+}
