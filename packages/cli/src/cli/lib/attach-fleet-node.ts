@@ -465,7 +465,7 @@ export async function startFleetNodeAttachProxy(
   const terminalWaitTimeoutMs =
     retryDelayBudgetMs(MAX_RECONNECT_ATTEMPTS, reconnectInitialDelayMs, reconnectMaxDelayMs) +
     MAX_RECONNECT_ATTEMPTS * (terminalHandshakeTimeoutMs + terminalReadyTimeoutMs) +
-    sessionRequestTimeoutMs;
+    sessionRequestTotalTimeoutMs;
 
   let connectionGeneration = 0;
   const createReadiness = (): TerminalReadiness => {
@@ -935,46 +935,99 @@ export async function startFleetNodeAttachProxy(
     resumeToken: string;
     expiresAt: string | undefined;
   }> => {
-    const controller = new AbortController();
-    const timeout = setTimeout(() => controller.abort(), sessionRequestTimeoutMs);
-    try {
-      const response = await fetchFn(sessionEndpoint, {
-        method: 'POST',
-        headers: { Authorization: `Bearer ${workspaceKey}`, 'Content-Type': 'application/json' },
-        // Keep the replacement bound to precisely the session this proxy was
-        // already serving; never infer a different agent or delivery mode.
-        body: JSON.stringify({ agent: options.agent, mode: options.mode }),
-        signal: controller.signal,
-      });
-      const parsed = (await response.json()) as unknown;
-      const payload =
-        parsed && typeof parsed === 'object' && !Array.isArray(parsed)
-          ? (parsed as FleetSessionResponse)
-          : {};
-      const replacementUrl = payload.data?.terminal_url;
-      const replacementSessionId = payload.data?.session_id;
-      const replacementResumeToken = payload.data?.resume_token;
-      if (!response.ok || !replacementUrl || !replacementSessionId || !replacementResumeToken) {
-        throw new FleetNodeAttachError(
-          'terminal session could not be replaced after its resume credential expired',
-          payload.error?.code ?? 'terminal_session_unavailable'
+    const replacementDeadline = Date.now() + sessionRequestTotalTimeoutMs;
+    let lastReplacementError: TerminalSessionAttemptError | undefined;
+    const result = await collectWithRetry(
+      'replacement terminal session request',
+      async () => {
+        const remainingMs = replacementDeadline - Date.now();
+        if (remainingMs <= 0) {
+          throw new TerminalSessionAttemptError(
+            lastReplacementError?.message ??
+              'overall replacement terminal-session request deadline exhausted',
+            lastReplacementError?.code ?? 'control_plane_timeout',
+            lastReplacementError?.status,
+            false,
+            lastReplacementError?.completionUnknown ?? false
+          );
+        }
+        const controller = new AbortController();
+        let timedOut = false;
+        const timeout = setTimeout(
+          () => {
+            timedOut = true;
+            controller.abort();
+          },
+          Math.min(sessionRequestTimeoutMs, remainingMs)
         );
+        try {
+          const response = await fetchFn(sessionEndpoint, {
+            method: 'POST',
+            headers: { Authorization: `Bearer ${workspaceKey}`, 'Content-Type': 'application/json' },
+            // Keep the replacement bound to precisely the session this proxy was
+            // already serving; never infer a different agent or delivery mode.
+            body: JSON.stringify({ agent: options.agent, mode: options.mode }),
+            signal: controller.signal,
+          });
+          const parsed = (await response.json()) as unknown;
+          const payload =
+            parsed && typeof parsed === 'object' && !Array.isArray(parsed)
+              ? (parsed as FleetSessionResponse)
+              : {};
+          const replacementUrl = payload.data?.terminal_url;
+          const replacementSessionId = payload.data?.session_id;
+          const replacementResumeToken = payload.data?.resume_token;
+          if (!response.ok || !replacementUrl || !replacementSessionId || !replacementResumeToken) {
+            const error = new TerminalSessionAttemptError(
+              payload.error?.message ??
+                'terminal session could not be replaced after its resume credential expired',
+              payload.error?.code,
+              response.status,
+              isRetryableTerminalSessionFailure(payload.error?.code),
+              false
+            );
+            lastReplacementError = error;
+            throw error;
+          }
+          return {
+            terminalUrl: replacementUrl,
+            sessionId: replacementSessionId,
+            resumeToken: replacementResumeToken,
+            expiresAt: payload.data?.expires_at,
+          };
+        } catch (error) {
+          if (error instanceof TerminalSessionAttemptError) throw error;
+          const replacementError = new TerminalSessionAttemptError(
+            timedOut
+              ? 'replacement request exceeded its deadline'
+              : 'replacement terminal session request failed',
+            timedOut ? 'control_plane_timeout' : 'control_plane_unavailable',
+            undefined,
+            false,
+            true
+          );
+          lastReplacementError = replacementError;
+          throw replacementError;
+        } finally {
+          clearTimeout(timeout);
+        }
+      },
+      {
+        retries: SESSION_REQUEST_RETRIES,
+        baseDelayMs: SESSION_REQUEST_RETRY_DELAY_MS,
+        sleep: async (delayMs) => {
+          const remainingMs = replacementDeadline - Date.now();
+          if (remainingMs > 0) await sessionRequestSleep(Math.min(delayMs, remainingMs));
+        },
+        shouldRetry: (error) => error instanceof TerminalSessionAttemptError && error.retryable,
       }
-      return {
-        terminalUrl: replacementUrl,
-        sessionId: replacementSessionId,
-        resumeToken: replacementResumeToken,
-        expiresAt: payload.data?.expires_at,
-      };
-    } catch (error) {
-      if (error instanceof FleetNodeAttachError) throw error;
-      throw new FleetNodeAttachError(
-        'terminal session could not be replaced after its resume credential expired',
-        'terminal_session_unavailable'
-      );
-    } finally {
-      clearTimeout(timeout);
-    }
+    );
+    if (result.ok) return result.value;
+    if (lastReplacementError) throw lastReplacementError;
+    throw new FleetNodeAttachError(
+      'terminal session could not be replaced after its resume credential expired',
+      'terminal_session_unavailable'
+    );
   };
   /** Reject and clear any in-flight delivery-mode PUT, if one is pending. */
   const rejectPendingDeliveryMode = (error: FleetNodeAttachError) => {

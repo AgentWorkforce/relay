@@ -492,9 +492,9 @@ describe('startFleetNodeAttachProxy delivery-mode PUT lifecycle', () => {
     cleanup.push(proxy.close);
 
     // Six complete reconnect generations (151.5s), one bounded replacement
-    // session allocation (30s), the post-ready delivery acknowledgement
+    // session allocation including safe structured retries (90s), the post-ready delivery acknowledgement
     // (10s), and response-delivery headroom (1s).
-    expect(proxy.requestTimeoutMs).toBe(192_500);
+    expect(proxy.requestTimeoutMs).toBe(252_500);
 
     const socket = await remote.nextConnection();
     sendReady(socket, 'auto_inject');
@@ -1034,6 +1034,7 @@ describe('startFleetNodeAttachProxy view target lifecycle', () => {
           }),
         } as Response;
       }) as typeof globalThis.fetch,
+      sessionRequest: { sleep: async () => undefined },
       reconnectDelay: { initialMs: 1, maxMs: 1 },
     });
     cleanup.push(proxy.close);
@@ -1119,7 +1120,7 @@ describe('startFleetNodeAttachProxy view target lifecycle', () => {
       workspaceKey: 'wk',
       fetch: (async () => {
         requests += 1;
-        if (requests === 2) {
+        if (requests >= 2) {
           return terminalSessionErrorResponse(
             'terminal_session_unavailable',
             'replacement terminal session is unavailable'
@@ -1139,6 +1140,7 @@ describe('startFleetNodeAttachProxy view target lifecycle', () => {
           }),
         } as Response;
       }) as typeof globalThis.fetch,
+      sessionRequest: { sleep: async () => undefined },
       reconnectDelay: { initialMs: 1, maxMs: 1 },
     });
     cleanup.push(proxy.close);
@@ -1155,6 +1157,7 @@ describe('startFleetNodeAttachProxy view target lifecycle', () => {
     await expect(response.json()).resolves.toMatchObject({
       error: { code: 'terminal_session_unavailable' },
     });
+    expect(requests).toBe(6);
   });
 
   it('recovers on the sixth resume attempt instead of exhausting the old 15.5s budget', async () => {
