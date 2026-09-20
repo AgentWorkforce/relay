@@ -31,6 +31,27 @@
             "reasoning": "Muse otherwise renders broker initialization but does not begin the assigned work; retaining the task in broker pending state until readiness prevents follow-up delivery races while an argv-consumed marker avoids duplicate PTY injection."
           },
           "significance": "high"
+        },
+        {
+          "ts": 1789944699520,
+          "type": "reflection",
+          "content": "Implementation, focused tests, and exact-base/head proof are committed; local static checks pass, while compile verification has moved to isolated PR runners because the host is under sustained swap pressure.",
+          "raw": {
+            "focalPoints": [
+              "muse-startup",
+              "verification",
+              "ci"
+            ],
+            "adjustments": "Use the clean exact-SHA GitHub runners for compile and runtime proof, then address any failures before marking the PR ready.",
+            "confidence": 0.75
+          },
+          "significance": "high",
+          "tags": [
+            "focal:muse-startup",
+            "focal:verification",
+            "focal:ci",
+            "confidence:0.75"
+          ]
         }
       ]
     }
