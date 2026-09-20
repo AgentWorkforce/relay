@@ -224,6 +224,55 @@ function parseFrame(data: WebSocket.RawData): TerminalFrame | null {
   }
 }
 
+/**
+ * Decode a `terminal.ready` / `terminal.snapshot` `screen` field into the raw
+ * ANSI bytes a terminal can render.
+ *
+ * The two payloads this adapter bridges are encoded differently and the
+ * difference is invisible at the type level — both are `string`:
+ *
+ * - `screen` is the visible grid rendered by `Snapshot::to_ansi()` and then
+ *   **base64-encoded**, because the broker asks the worker for
+ *   `format: "ansi"` (`fleet.rs`) and that arm encodes (`pty_worker.rs`).
+ *   Broker HTTP snapshot consumers decode it (`attach.ts` `captureAndRender…`).
+ * - `worker_stream.chunk` (and `terminal.output.chunk`, which is the same
+ *   value forwarded) is **raw PTY bytes**. Attach clients write it to stdout
+ *   verbatim (`applyServerOutput` in `attach-drive.ts`).
+ *
+ * Handing an undecoded `screen` to {@link workerStreamEvent} therefore prints
+ * the base64 text itself into the operator's terminal — the reconnect flood in
+ * relay#1829. Returns `null` when the payload is not canonical base64, so a
+ * malformed or protocol-violating frame is dropped rather than rendered: a
+ * stale-but-coherent screen beats writing unintelligible bytes to a live TTY.
+ */
+export function decodeAnsiScreenPayload(screen: string): string | null {
+  if (screen === '') return '';
+  if (screen.length % 4 !== 0 || !/^[A-Za-z0-9+/]+={0,2}$/.test(screen)) return null;
+  const decoded = Buffer.from(screen, 'base64');
+  // `Buffer.from(…, 'base64')` silently skips characters outside the alphabet,
+  // so the round-trip is what actually rejects a non-base64 payload.
+  if (decoded.toString('base64') !== screen) return null;
+  return decoded.toString('utf8');
+}
+
+/**
+ * Mirror of the broker's `pty_input_error_is_connection_fatal`
+ * (`crates/broker/src/listen_api.rs`). The two lists must agree, because the
+ * SDK's `PtyInputStream` latches `closed` **only** when its socket closes
+ * (`harness-driver/src/transport.ts`): a fatal error delivered on a socket
+ * that stays open leaves `isUsable()` true forever.
+ *
+ * That matters most for a fatal error that arrives with **no write in
+ * flight** — the session-scoped `terminal.error` path below. The client's
+ * `failAll()` then has nothing to reject, so nothing marks the stream dead:
+ * the drive session never enters recovery and keeps writing into a stream the
+ * node has already declared unusable. Closing the socket, as the broker does,
+ * is what turns that into a reported outage the session can recover from.
+ */
+export function inputErrorIsConnectionFatal(code: string): boolean {
+  return code !== 'worker_timeout' && code !== 'pty_write_queue_full';
+}
+
 function rawDataToString(data: WebSocket.RawData): string {
   if (Buffer.isBuffer(data)) return data.toString('utf8');
   if (data instanceof ArrayBuffer) return Buffer.from(data).toString('utf8');
@@ -523,8 +572,25 @@ export async function startFleetNodeAttachProxy(
         }
       );
     });
-  const snapshot: { screen: string; rows: number; cols: number; offset: number } = {
-    screen: '',
+  /**
+   * The two screen representations are kept as separate, differently named
+   * fields on purpose. They are both strings and only one of them may reach a
+   * terminal; a single `screen` field spread into both consumers is what let
+   * the encoded form escape to stdout (relay#1829).
+   *
+   * `screenBase64` is the HTTP snapshot wire format (callers decode it).
+   * `screenAnsi` is the renderable form, and the only one that may be emitted
+   * as a `worker_stream` chunk.
+   */
+  const snapshot: {
+    screenBase64: string;
+    screenAnsi: string;
+    rows: number;
+    cols: number;
+    offset: number;
+  } = {
+    screenBase64: '',
+    screenAnsi: '',
     rows: 24,
     cols: 80,
     offset: 0,
@@ -590,7 +656,16 @@ export async function startFleetNodeAttachProxy(
         });
         return;
       }
-      json(response, 200, { format: 'ansi', ...snapshot });
+      // Explicit field mapping, not a spread: this endpoint's `screen` is
+      // contractually base64 (the caller decodes it), and only the encoded
+      // form may appear here.
+      json(response, 200, {
+        format: 'ansi',
+        screen: snapshot.screenBase64,
+        rows: snapshot.rows,
+        cols: snapshot.cols,
+        offset: snapshot.offset,
+      });
       return;
     }
     const name = encodeURIComponent(options.agent);
@@ -843,6 +918,32 @@ export async function startFleetNodeAttachProxy(
     return true;
   };
 
+  /**
+   * Report a PTY-input failure to one input socket the way the broker does:
+   * with the `retryable` flag the SDK reads, and — for a connection-fatal
+   * code — by closing the socket so the client's `PtyInputStream` latches
+   * `closed` and its recovery can start buffering. See
+   * {@link inputErrorIsConnectionFatal}.
+   */
+  const failInputSocket = (socket: WebSocket, code: string, message: string): void => {
+    const fatal = inputErrorIsConnectionFatal(code);
+    if (socket.readyState === WebSocket.OPEN) {
+      try {
+        socket.send(JSON.stringify({ type: 'pty_input_error', code, message, retryable: !fatal }));
+      } catch {
+        // The socket is already gone; the close below is still correct.
+      }
+    }
+    if (!fatal) return;
+    inputSockets.delete(socket);
+    closeSocket(socket, 1011, message);
+  };
+
+  /** Same, for every attached input socket (session-scoped failures). */
+  const failAllInputSockets = (code: string, message: string): void => {
+    for (const socket of [...inputSockets]) failInputSocket(socket, code, message);
+  };
+
   websocketServer.on('connection', (socket, request) => {
     const path = new URL(request.url ?? '/', 'http://127.0.0.1').pathname;
     if (path === '/ws') {
@@ -873,11 +974,10 @@ export async function startFleetNodeAttachProxy(
       socket.send(JSON.stringify({ type: 'pty_input_ready', name: options.agent }));
       socket.on('message', (data) => {
         if (!remote || remote.readyState !== WebSocket.OPEN || remote.bufferedAmount > MAX_BUFFERED_BYTES) {
-          broadcast(inputSockets, {
-            type: 'pty_input_error',
-            code: 'node_unreachable',
-            message: 'terminal transport is unavailable',
-          });
+          // Only THIS socket failed to write; a sibling input stream must not
+          // be torn down for it. `node_unreachable` is connection-fatal, so
+          // this also closes the socket — see failInputSocket.
+          failInputSocket(socket, 'node_unreachable', 'terminal transport is unavailable');
           return;
         }
         const raw = rawDataToString(data);
@@ -1067,7 +1167,7 @@ export async function startFleetNodeAttachProxy(
     const activeRemote = remote;
     remote = undefined;
     rejectReadiness(activeReadiness, error);
-    broadcast(inputSockets, { type: 'pty_input_error', code: error.code, message: error.message });
+    failAllInputSockets(error.code ?? 'terminal_error', error.message);
     for (const socket of eventSockets) closeSocket(socket, 1011, eventCloseReason);
     if (activeRemote && activeRemote.readyState !== WebSocket.CLOSED) {
       try {
@@ -1130,7 +1230,11 @@ export async function startFleetNodeAttachProxy(
       if (!frame || frame.session_id !== sessionId) return;
       if (frame.type === 'terminal.ready') {
         clearReadinessTimer();
-        snapshot.screen = typeof frame.screen === 'string' ? frame.screen : '';
+        snapshot.screenBase64 = typeof frame.screen === 'string' ? frame.screen : '';
+        // A payload that will not decode is kept out of `screenAnsi` entirely
+        // so no later consumer can render it; the HTTP snapshot still serves
+        // the bytes verbatim and lets its own decoder report the problem.
+        snapshot.screenAnsi = decodeAnsiScreenPayload(snapshot.screenBase64) ?? '';
         snapshot.rows = typeof frame.rows === 'number' ? frame.rows : 24;
         snapshot.cols = typeof frame.cols === 'number' ? frame.cols : 80;
         snapshot.offset = typeof frame.offset === 'number' ? frame.offset : 0;
@@ -1148,9 +1252,12 @@ export async function startFleetNodeAttachProxy(
           // A reconnect gets a fresh ANSI grid but existing local `/ws`
           // consumers have already performed their initial HTTP snapshot.
           // Re-emit this screen without an offset so they repaint instead of
-          // retaining a stale pre-reconnect terminal image.
-          if (readiness.generation > 1 && snapshot.screen) {
-            broadcast(eventSockets, workerStreamEvent(snapshot.screen));
+          // retaining a stale pre-reconnect terminal image. It must be the
+          // DECODED grid: a `worker_stream` chunk is raw PTY bytes that the
+          // attach client writes straight to the terminal, so the base64 form
+          // renders as a wall of text instead of a repaint (relay#1829).
+          if (readiness.generation > 1 && snapshot.screenAnsi) {
+            broadcast(eventSockets, workerStreamEvent(snapshot.screenAnsi));
           }
         }
       } else if (frame.type === 'terminal.output' && typeof frame.chunk === 'string') {
@@ -1225,7 +1332,7 @@ export async function startFleetNodeAttachProxy(
         } else if (!frameRid && readiness === activeReadiness && !readiness.settled) {
           endTerminal(new FleetNodeAttachError(message, code));
         } else if (!frameRid) {
-          broadcast(inputSockets, { type: 'pty_input_error', code, message });
+          failAllInputSockets(code, message);
         }
       } else if (frame.type === 'terminal.closed') {
         endTerminal(new FleetNodeAttachError('remote terminal session closed', 'terminal_closed'));

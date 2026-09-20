@@ -5,7 +5,12 @@ All notable changes to Agent Relay will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
+## [Unreleased - Patch]
+
+### Fixed
+
+- `node agent attach --node` no longer floods the terminal with base64 text after the remote terminal transport reconnects: the repaint now sends the decoded screen instead of the encoded snapshot payload.
+- `node agent attach --node` now closes the PTY input stream on a connection-fatal error and scopes the error to the stream that failed, matching the broker, so a dead input stream is reported instead of silently accepting keystrokes.
 
 ## [12.4.0] - 2026-09-20
 
