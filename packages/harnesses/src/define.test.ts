@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 
-import { devin, claude, codex, definePtyHarness, grok } from './index.js';
+import { claude, codex, definePtyHarness, devin, grok, muse } from './index.js';
 
 describe('harness factories (Phase C)', () => {
   it('creates a first-class Devin PTY agent', () => {
@@ -13,6 +13,12 @@ describe('harness factories (Phase C)', () => {
     expect(grok.runtime).toBe('pty');
     expect(grok.command).toBe('grok');
     expect(grok.name).toBe('grok');
+  });
+
+  it('exposes the muse PTY harness for the raw spawn surface', () => {
+    expect(muse.runtime).toBe('pty');
+    expect(muse.command).toBe('muse');
+    expect(muse.name).toBe('muse');
   });
 
   it('create() returns a registerable agent handle with identity + model', async () => {

@@ -1,6 +1,7 @@
 use std::{
     collections::{HashSet, VecDeque},
     future::Future,
+    path::Path,
     pin::Pin,
     sync::{
         atomic::{AtomicBool, Ordering},
@@ -45,8 +46,7 @@ use crate::util::terminal::{detect_claude_trust_prompt, detect_codex_trust_promp
 use crate::util::utf8_stream::Utf8StreamDecoder;
 use crate::worker::detection::ActivityDetector;
 use crate::wrap::{
-    injection_submit_followup_delay, warn_on_auto_response_write, PtyAutoState,
-    AUTO_SUGGESTION_BLOCK_TIMEOUT,
+    submit_injection_body, warn_on_auto_response_write, PtyAutoState, AUTO_SUGGESTION_BLOCK_TIMEOUT,
 };
 use base64::Engine;
 
@@ -811,6 +811,22 @@ pub(crate) async fn run_pty_worker(cmd: PtyCommand) -> Result<()> {
 
     let (resolved_cli, inline_cli_args) = parse_cli_command(&cmd.cli)
         .with_context(|| format!("invalid CLI command '{}'", cmd.cli))?;
+    if let Some(home) = cmd.muse_config_home.as_deref().filter(|s| !s.is_empty()) {
+        // The broker passes this flag only for Muse workers with Relay MCP
+        // provisioned, but re-check the executable identity defensively: a
+        // stray flag must never redirect another CLI's config scope.
+        if crate::snippets::is_muse_executable(&resolved_cli) {
+            #[allow(deprecated)]
+            std::env::set_var("XDG_CONFIG_HOME", home);
+            #[allow(deprecated)]
+            std::env::set_var(
+                "MUSE_AUTH_PATH",
+                Path::new(home).join("muse").join("auth.json"),
+            );
+            #[allow(deprecated)]
+            std::env::set_var("MUSE_NO_AUTO_UPDATE", "1");
+        }
+    }
     let mut effective_args = inline_cli_args;
     effective_args.extend(cmd.args.clone());
 
@@ -1994,30 +2010,13 @@ pub(crate) async fn run_pty_worker(cmd: PtyCommand) -> Result<()> {
                             continue;
                         }
                         // Submit the body and mandatory Enter as one FIFO
-                        // command and hold the ack. Claude Code and Codex need Enter as
-                        // a distinct PTY write after its multiline paste
-                        // boundary settles; relay-pty keeps that delayed
-                        // follow-up atomic with the body. Other harnesses keep
-                        // the established body-plus-Enter write. In both cases,
-                        // nothing (passthrough input, an auto-responder, or a
-                        // terminal-query reply) can splice into submission.
-                        // Finalization (emit `delivery_injected`, queue echo
-                        // verification) still waits for this ack in the
-                        // injection-ack arm.
-                        let mut bytes = crate::devin::injection_bytes(&resolved_cli, &injection);
-                        let write = if let Some(delay) =
-                            injection_submit_followup_delay(&resolved_cli)
-                        {
-                            pty.submit_write_paced_with_followup_and_output_boundary(
-                                bytes,
-                                inject_rate,
-                                delay,
-                                b"\r".to_vec(),
-                            )
-                        } else {
-                            bytes.extend_from_slice(b"\r");
-                            pty.submit_write_paced_with_output_boundary(bytes, inject_rate)
-                        };
+                        // command and hold the ack. Devin first applies its
+                        // bracketed-paste body shape; the shared helper then
+                        // selects the harness-specific delayed Enter. Finalization
+                        // still waits for this ack in the injection-ack arm.
+                        let bytes = crate::devin::injection_bytes(&resolved_cli, &injection);
+                        let write =
+                            submit_injection_body(&pty, &resolved_cli, bytes, inject_rate);
                         match write {
                             Ok((ack_rx, output_boundary)) => {
                                 inj.injection_text = Some(injection);

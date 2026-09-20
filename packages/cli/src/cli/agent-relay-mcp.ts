@@ -1279,9 +1279,10 @@ function registerAgentRelayTools(
       inputSchema: {
         name: z.string().describe('Worker agent name'),
         cli: z
-          .enum(['claude', 'codex', 'gemini', 'aider', 'goose', 'grok', 'opencode', 'devin'])
+          .enum(['claude', 'codex', 'gemini', 'aider', 'goose', 'grok', 'muse', 'opencode', 'devin'])
           .describe(
             'Which AI CLI runs the worker: "codex agent" → codex, "gemini agent" → gemini, ' +
+              '"muse agent" → muse, "devin agent" → devin, ' +
               '"claude/opus claude/sonnet claude agent" → claude (default).'
           ),
         task: z.string().describe('Task instructions'),
@@ -1358,7 +1359,7 @@ function registerAgentRelayTools(
       inputSchema: {
         name: z.string().describe('Agent name'),
         cli: z
-          .enum(['claude', 'codex', 'gemini', 'aider', 'goose', 'grok', 'opencode', 'devin'])
+          .enum(['claude', 'codex', 'gemini', 'aider', 'goose', 'grok', 'muse', 'opencode', 'devin'])
           .optional()
           .describe('AI CLI to launch; mutually exclusive with persona'),
         persona: z

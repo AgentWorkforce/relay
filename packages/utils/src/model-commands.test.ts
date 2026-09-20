@@ -83,6 +83,7 @@ describe('Model Commands', () => {
       expect(buildModelSwitchCommand('codex', 'gpt-4')).toBeNull();
       expect(buildModelSwitchCommand('gemini', 'pro')).toBeNull();
       expect(buildModelSwitchCommand('aider', 'some-model')).toBeNull();
+      expect(buildModelSwitchCommand('muse', 'muse-spark')).toBeNull();
     });
 
     it('returns null for unknown CLI types', () => {

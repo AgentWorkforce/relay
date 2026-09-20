@@ -68,10 +68,11 @@ const CLAUDE_TRUST_KEY_PACE: Duration = Duration::from_millis(40);
 // partially delivered and is unsafe to requeue blindly.
 const WRAP_WRITE_ACK_TIMEOUT: Duration = Duration::from_secs(5);
 
-/// Claude Code and Codex treat multiline input and a trailing Enter received in the
-/// same paste burst as editor content, leaving the task parked in its composer.
-/// Give its submit key a distinct, delayed PTY write. Other harnesses retain
-/// the established body-plus-Enter write shape.
+/// Claude Code, Codex, and Muse treat multiline input and a trailing Enter
+/// received in the same paste burst as editor content, leaving the task parked
+/// in the composer until a human presses Enter. Give its submit key a distinct,
+/// delayed PTY write. Other harnesses retain the established body-plus-Enter
+/// write shape.
 fn paste_submit_harness(cli: &str) -> bool {
     let basename = cli
         .rsplit(['/', '\\'])
@@ -79,11 +80,36 @@ fn paste_submit_harness(cli: &str) -> bool {
         .filter(|part| !part.is_empty())
         .unwrap_or(cli);
     // PTY entry points accept arbitrary executable names, including company
-    // wrappers such as `company-claude` and `claude-code`. Match the same
-    // Claude identity signal used by readiness and activity detection so a
-    // wrapper cannot silently fall back to the broken body-plus-Enter burst.
+    // wrappers such as `company-claude` and `claude-code`, and absolute paths
+    // such as `/Users/.../.local/bin/muse`. Match the same substring identity
+    // signal used by readiness and activity detection so a wrapper or path
+    // spelling cannot silently fall back to the broken body-plus-Enter burst.
     let lower = basename.to_ascii_lowercase();
-    lower.contains("claude") || lower.contains("codex") || crate::readiness::is_devin_cli(cli)
+    lower.contains("claude")
+        || lower.contains("codex")
+        || lower.contains("muse")
+        || crate::readiness::is_devin_cli(cli)
+}
+
+/// Submit an injection body with the harness-specific submit sequence,
+/// returning the drainer ack plus the receive-time output watermark.
+/// Paste-aware harnesses get the body with a distinct delayed Enter in one
+/// atomic compound write (no terminal reply, later input, or other producer
+/// can splice into the pause); other harnesses keep the single body-plus-Enter
+/// burst. Finalization still waits for this ack.
+pub(crate) fn submit_injection_body(
+    pty: &PtySession,
+    resolved_cli: &str,
+    bytes: Vec<u8>,
+    pace: Duration,
+) -> anyhow::Result<(tokio::sync::oneshot::Receiver<std::io::Result<()>>, u64)> {
+    if let Some(delay) = injection_submit_followup_delay(resolved_cli) {
+        pty.submit_write_paced_with_followup_and_output_boundary(bytes, pace, delay, b"\r".to_vec())
+    } else {
+        let mut burst = bytes;
+        burst.extend_from_slice(b"\r");
+        pty.submit_write_paced_with_output_boundary(burst, pace)
+    }
 }
 
 pub(crate) fn injection_submit_followup_delay(cli: &str) -> Option<Duration> {
@@ -710,9 +736,10 @@ impl PtyAutoState {
         }
     }
 
-    /// Acknowledgment confirms a PTY write, never a harness action. Claude and
-    /// Codex already received a separate delayed submit; another Enter after
-    /// they become idle can submit unrelated composer text or repeat a command.
+    /// Acknowledgment confirms a PTY write, never a harness action. Claude,
+    /// Codex, and Muse already received a separate delayed submit; another Enter
+    /// after they become idle can submit unrelated composer text or repeat
+    /// a command.
     /// Keep that distinction observable, including when the body only echoed.
     pub(crate) fn note_completed_injection(&mut self, cli: &str) {
         let delayed_submit = paste_submit_harness(cli);
@@ -945,6 +972,8 @@ while True:
             "/opt/codex/",
             "claude",
             "claude-code",
+            "muse",
+            "/Users/khaliqgant/.local/bin/muse",
         ] {
             let mut state = PtyAutoState::new();
             state.last_injection_time = Some(Instant::now() - Duration::from_secs(120));
@@ -2115,25 +2144,8 @@ pub(crate) async fn run_wrap(
                         pending.workspace_id.as_deref(),
                         pending.workspace_alias.as_deref(),
                     );
-                    let mut bytes = crate::devin::injection_bytes(&resolved_cli, &injection);
-                    let write = if let Some(delay) = injection_submit_followup_delay(&resolved_cli)
-                    {
-                        // Claude needs Enter in a later PTY write to close its
-                        // multiline paste boundary. The relay-pty compound
-                        // command keeps that delayed write atomic with the body
-                        // and acknowledges only after both writes succeed.
-                        pty.submit_write_paced_with_followup_and_output_boundary(
-                            bytes,
-                            Duration::ZERO,
-                            delay,
-                            b"\r".to_vec(),
-                        )
-                    } else {
-                        // Other harnesses retain the established single-write
-                        // body-plus-Enter shape.
-                        bytes.extend_from_slice(b"\r");
-                        pty.submit_write_paced_with_output_boundary(bytes, Duration::ZERO)
-                    };
+                    let bytes = crate::devin::injection_bytes(&resolved_cli, &injection);
+                    let write = submit_injection_body(&pty, &resolved_cli, bytes, Duration::ZERO);
                     match write {
                         Ok((ack_rx, output_boundary)) => {
                             let pending_write = PendingWrapWrite::Initial {
@@ -2341,19 +2353,8 @@ pub(crate) async fn run_wrap(
                         pv.workspace_id.as_deref(),
                         pv.workspace_alias.as_deref(),
                     );
-                    let mut bytes = crate::devin::injection_bytes(&resolved_cli, &injection);
-                    let write = if let Some(delay) = injection_submit_followup_delay(&resolved_cli)
-                    {
-                        pty.submit_write_paced_with_followup_and_output_boundary(
-                            bytes,
-                            Duration::ZERO,
-                            delay,
-                            b"\r".to_vec(),
-                        )
-                    } else {
-                        bytes.extend_from_slice(b"\r");
-                        pty.submit_write_paced_with_output_boundary(bytes, Duration::ZERO)
-                    };
+                    let bytes = crate::devin::injection_bytes(&resolved_cli, &injection);
+                    let write = submit_injection_body(&pty, &resolved_cli, bytes, Duration::ZERO);
                     match write {
                         Ok((ack_rx, output_boundary)) => {
                             let pending_write = PendingWrapWrite::Retry {
@@ -2459,13 +2460,14 @@ pub(crate) async fn run_wrap(
 mod tests {
     use super::{
         await_wrap_write_ack, buffer_and_drain_stdin, drain_stdin_buffer,
-        injection_submit_followup_delay, queue_or_confirm_wrap_verification,
+        injection_submit_followup_delay, queue_or_confirm_wrap_verification, submit_injection_body,
         wrap_injection_timer_allowed, wrap_write_ack_error, STDIN_PENDING_MAX_CHUNKS,
     };
     use crate::broker::delivery_verification::{
         PendingVerification, ThrottleState, VerificationOutput, MAX_VERIFICATION_ATTEMPTS,
     };
     use crate::ids::{DeliveryId, EventId, MessageTarget};
+    use crate::pty::PtySession;
     use crate::worker::detection::ActivityDetector;
     use std::collections::VecDeque;
     use std::io;
@@ -2521,10 +2523,123 @@ mod tests {
             injection_submit_followup_delay("/usr/local/bin/Codex.EXE"),
             expected
         );
+        // Regression: the reported Muse run used an absolute-path CLI and its
+        // task parked until a manual Enter — Muse missed this classification.
+        assert_eq!(injection_submit_followup_delay("muse"), expected);
+        assert_eq!(injection_submit_followup_delay("muse.exe"), expected);
+        assert_eq!(
+            injection_submit_followup_delay("/Users/khaliqgant/.local/bin/muse"),
+            expected
+        );
         assert_eq!(injection_submit_followup_delay("opencode"), None);
         for cli in ["devin", "/usr/bin/devin", "Devin.EXE"] {
             assert_eq!(injection_submit_followup_delay(cli), expected);
         }
+    }
+
+    /// Fake Muse-like composer: raw stdin, then one verdict line. A submit key
+    /// that shares its read with multiline body bytes was swallowed into the
+    /// paste (PARKED — the reported manual-Enter bug); a submit key arriving
+    /// in a later read submits the task (SUBMITTED).
+    #[cfg(unix)]
+    const MUSE_LIKE_COMPOSER: &str = r#"import os, sys, tty
+tty.setraw(sys.stdin.fileno())
+sys.stdout.write("READY\n")
+sys.stdout.flush()
+chunks = []
+while True:
+    chunk = os.read(sys.stdin.fileno(), 4096)
+    if not chunk:
+        break
+    chunks.append(chunk)
+    if b"\r" in chunk:
+        break
+head, _, _ = chunks[-1].partition(b"\r")
+sys.stdout.write("PARKED\n" if b"\n" in head else "SUBMITTED\n")
+sys.stdout.flush()"#;
+
+    #[cfg(unix)]
+    async fn await_composer_ready(pty: &PtySession) {
+        for _ in 0..100 {
+            if pty.screen_text().contains("READY") {
+                return;
+            }
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        }
+        panic!(
+            "Muse-like composer did not become ready: {:?}",
+            pty.screen_text()
+        );
+    }
+
+    #[cfg(unix)]
+    async fn composer_verdict(pty: &PtySession) -> String {
+        for _ in 0..100 {
+            let screen = pty.screen_text();
+            if screen.contains("SUBMITTED") || screen.contains("PARKED") {
+                return screen;
+            }
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        }
+        pty.screen_text()
+    }
+
+    /// Regression for the reported Muse run
+    /// (`cli=/Users/khaliqgant/.local/bin/muse`): the injected task reached
+    /// the composer but sat parked until a manual Enter, because Muse missed
+    /// paste-submit classification and took the single body-plus-Enter burst.
+    /// Through the production submit path, the task must now submit with no
+    /// manual Enter for both the bare and absolute-path CLI spellings.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn muse_injected_task_submits_without_manual_enter() {
+        for resolved_cli in ["muse", "/Users/khaliqgant/.local/bin/muse"] {
+            let args = vec!["-u".into(), "-c".into(), MUSE_LIKE_COMPOSER.into()];
+            let (pty, _rx) = PtySession::spawn("python3", &args, 24, 80).unwrap();
+            await_composer_ready(&pty).await;
+            let bytes = b"relay task line one\nrelay task line two".to_vec();
+            let (ack_rx, _boundary) =
+                submit_injection_body(&pty, resolved_cli, bytes, Duration::ZERO)
+                    .expect("muse injection submit");
+            tokio::time::timeout(Duration::from_secs(10), ack_rx)
+                .await
+                .expect("submit ack in time")
+                .expect("drainer alive")
+                .expect("writes flushed");
+            let screen = composer_verdict(&pty).await;
+            assert!(
+                screen.contains("SUBMITTED"),
+                "{resolved_cli}: injected task must submit without a manual Enter, screen: {screen:?}"
+            );
+            let _ = pty.shutdown();
+        }
+    }
+
+    /// Control for the regression above: the same fake composer parks a
+    /// same-burst trailing Enter, proving the harness discriminates the
+    /// reported failure shape instead of passing vacuously.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn burst_trailing_enter_parks_in_muse_like_composer() {
+        let args = vec!["-u".into(), "-c".into(), MUSE_LIKE_COMPOSER.into()];
+        let (pty, _rx) = PtySession::spawn("python3", &args, 24, 80).unwrap();
+        await_composer_ready(&pty).await;
+        let mut burst = b"relay task line one\nrelay task line two".to_vec();
+        burst.extend_from_slice(b"\r");
+        let (ack_rx, _boundary) = pty
+            .submit_write_paced_with_output_boundary(burst, Duration::ZERO)
+            .expect("burst write");
+        tokio::time::timeout(Duration::from_secs(10), ack_rx)
+            .await
+            .expect("burst ack in time")
+            .expect("drainer alive")
+            .expect("burst flushed");
+        let screen = composer_verdict(&pty).await;
+        assert!(
+            screen.contains("PARKED"),
+            "same-burst trailing Enter must park in a Muse-like composer, screen: {screen:?}"
+        );
+        let _ = pty.shutdown();
     }
 
     #[test]

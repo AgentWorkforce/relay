@@ -62,7 +62,17 @@ const SERVE_REPLACEMENT_MESSAGE =
   "'fleet serve' has been replaced. Run 'relay node up' (with an optional --config <file>); " +
   "for Cloud-managed nodes run 'relay cloud enroll --token <token>' first.";
 
-const FLEET_CLIS = new Set(['claude', 'codex', 'gemini', 'aider', 'goose', 'grok', 'opencode', 'devin']);
+const FLEET_CLIS = new Set([
+  'claude',
+  'codex',
+  'gemini',
+  'aider',
+  'goose',
+  'grok',
+  'muse',
+  'opencode',
+  'devin',
+]);
 const CLOUD_SANDBOX_ID_PATTERN =
   /^sbx_[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
 

@@ -50,6 +50,7 @@ const CLI_MODEL_COMMANDS: Record<string, ModelCommandConfig> = {
   gemini: { supported: false },
   devin: { supported: true, buildCommand: (model: string) => `/model ${model}\n` },
   droid: { supported: false },
+  muse: { supported: false },
   opencode: { supported: false },
   aider: { supported: false },
   goose: { supported: false },

@@ -14,6 +14,7 @@ use crate::{
         ResolvedHarnessConfig, PROTOCOL_VERSION,
     },
     relaycast::configure_agent_relay_mcp_with_result,
+    snippets::{is_muse_executable, muse_clean_home_dir},
     supervisor::Supervisor,
     types::{AgentResultMcpConfig, CommitAttestation},
 };
@@ -690,6 +691,17 @@ impl WorkerRegistry {
                 if let Some(secs) = idle_threshold_secs {
                     command.arg("--idle-threshold-secs").arg(secs.to_string());
                 }
+                if let Some(home) = muse_config_home_for_worker(
+                    &normalized_cli,
+                    spec.cwd.as_deref(),
+                    &spec.name,
+                    skip_relay_prompt,
+                    self.env_value("AGENT_RELAY_LOCAL_ONLY"),
+                ) {
+                    // Path only (no secrets): the pty worker points this Muse
+                    // invocation at its isolated clean config home.
+                    command.arg("--muse-config-home").arg(home);
+                }
                 command.arg(&resolved_cli);
 
                 let cli_lower = normalized_cli.to_lowercase();
@@ -697,6 +709,7 @@ impl WorkerRegistry {
                 let is_codex = cli_lower == "codex";
                 let is_gemini = cli_lower == "gemini";
                 let is_grok = cli_lower == "grok";
+                let trust_flag = muse_trust_flag(&cli_lower, &effective_args);
                 if let Some(model) = apply_codex_model_arg_fallback(
                     &resolved_cli,
                     &cli_lower,
@@ -823,6 +836,7 @@ impl WorkerRegistry {
 
                 let pty_cli_args = ordered_pty_cli_args(
                     bypass_flag,
+                    trust_flag,
                     model_flag.as_deref(),
                     &mcp_args,
                     &effective_args,
@@ -920,6 +934,17 @@ impl WorkerRegistry {
                     if let Some(secs) = idle_threshold_secs {
                         command.arg("--idle-threshold-secs").arg(secs.to_string());
                     }
+                    if let Some(home) = muse_config_home_for_worker(
+                        &normalized_cli,
+                        spec.cwd.as_deref(),
+                        &spec.name,
+                        skip_relay_prompt,
+                        self.env_value("AGENT_RELAY_LOCAL_ONLY"),
+                    ) {
+                        // Path only (no secrets): the pty worker points this Muse
+                        // invocation at its isolated clean config home.
+                        command.arg("--muse-config-home").arg(home);
+                    }
                     command.arg(&resolved_cli);
 
                     let cli_lower = normalized_cli.to_lowercase();
@@ -927,6 +952,7 @@ impl WorkerRegistry {
                     let is_codex = cli_lower == "codex";
                     let is_gemini = cli_lower == "gemini";
                     let is_grok = cli_lower == "grok";
+                    let trust_flag = muse_trust_flag(&cli_lower, &effective_args);
                     if let Some(model) = apply_codex_model_arg_fallback(
                         &resolved_cli,
                         &cli_lower,
@@ -1056,6 +1082,7 @@ impl WorkerRegistry {
 
                     let pty_cli_args = ordered_pty_cli_args(
                         bypass_flag,
+                        trust_flag,
                         model_flag.as_deref(),
                         &mcp_args,
                         &effective_args,
@@ -1978,8 +2005,57 @@ fn prepare_claude_session_args(args: &mut Vec<String>) -> Option<String> {
     Some(session_id)
 }
 
+/// Broker-owned default for the Muse CLI: trust the workspace for the run so
+/// its skills and rules load, while keeping tool approvals on. `--yolo`
+/// implies workspace trust, so an explicit `--trust-workspace` or `--yolo`
+/// suppresses the default. `--disable-approval` is deliberately never
+/// auto-injected here — unlike the legacy bypass flags for
+/// claude/codex/gemini/grok, weakening Muse approvals stays an explicit
+/// caller choice passed through via `effective_args`.
+fn muse_trust_flag(cli_lower: &str, effective_args: &[String]) -> Option<&'static str> {
+    // Callers pass the lowercased executable basename (directories already
+    // stripped by `normalize_cli_name`); the shared matcher also tolerates
+    // Windows executable suffixes.
+    if !is_muse_executable(cli_lower) {
+        return None;
+    }
+    let already_trusted = effective_args
+        .iter()
+        .any(|arg| arg == "--trust-workspace" || arg == "--yolo");
+    if already_trusted {
+        return None;
+    }
+    Some("--trust-workspace")
+}
+
+/// Clean Muse config home for a worker spawn, when Relay MCP injection is
+/// active for Muse: an isolated `XDG_CONFIG_HOME` scope provisioned by the
+/// MCP configurator. Returns `None` for other CLIs and when injection is
+/// disabled (`skip_relay_prompt` / `AGENT_RELAY_LOCAL_ONLY=1`), preserving
+/// their argv and config scope exactly. Only a path crosses into argv —
+/// never a secret.
+fn muse_config_home_for_worker(
+    normalized_cli: &str,
+    cwd: Option<&str>,
+    agent_name: &str,
+    skip_relay_prompt: bool,
+    local_only: Option<&str>,
+) -> Option<PathBuf> {
+    if skip_relay_prompt || local_only == Some("1") {
+        return None;
+    }
+    if !is_muse_executable(normalized_cli) {
+        return None;
+    }
+    Some(muse_clean_home_dir(
+        Path::new(cwd.unwrap_or(".")),
+        agent_name,
+    ))
+}
+
 fn ordered_pty_cli_args(
     bypass_flag: Option<&str>,
+    trust_flag: Option<&str>,
     model: Option<&str>,
     mcp_args: &[String],
     effective_args: &[String],
@@ -1987,6 +2063,9 @@ fn ordered_pty_cli_args(
 ) -> Vec<String> {
     let mut args = Vec::new();
     if let Some(flag) = bypass_flag {
+        args.push(flag.to_string());
+    }
+    if let Some(flag) = trust_flag {
         args.push(flag.to_string());
     }
     if let Some(model) = model {
@@ -3668,6 +3747,7 @@ sleep 30
 
         let ordered = ordered_pty_cli_args(
             Some("--dangerously-bypass-approvals-and-sandbox"),
+            None,
             Some("gpt-5.4"),
             &[
                 "-c".to_string(),
@@ -3711,6 +3791,134 @@ sleep 30
         .expect("matching explicit Codex resume");
 
         assert!(harness_session_args.is_empty());
+    }
+
+    #[test]
+    fn muse_trust_flag_defaults_to_trust_workspace() {
+        assert_eq!(muse_trust_flag("muse", &[]), Some("--trust-workspace"));
+        assert_eq!(
+            muse_trust_flag("muse", &["--model".to_string(), "muse-spark".to_string()]),
+            Some("--trust-workspace")
+        );
+    }
+
+    #[test]
+    fn muse_trust_flag_skips_when_workspace_already_trusted() {
+        assert_eq!(
+            muse_trust_flag("muse", &["--trust-workspace".to_string()]),
+            None
+        );
+        assert_eq!(muse_trust_flag("muse", &["--yolo".to_string()]), None);
+    }
+
+    #[test]
+    fn muse_trust_flag_ignores_other_clis() {
+        for cli in ["claude", "codex", "gemini", "grok", "opencode", "aider"] {
+            assert_eq!(muse_trust_flag(cli, &[]), None);
+        }
+    }
+
+    #[test]
+    fn muse_trust_flag_covers_windows_executable_spellings() {
+        // Bare and absolute-path spellings reduce to the same basename before
+        // reaching the helper; every Windows suffix must still trust.
+        for cli in [
+            "muse.exe",
+            "muse.cmd",
+            "muse.bat",
+            "MUSE.EXE",
+            r"C:\Tools\muse.exe",
+        ] {
+            let basename = cli
+                .rsplit(['/', '\\'])
+                .next()
+                .unwrap_or(cli)
+                .to_ascii_lowercase();
+            assert_eq!(
+                muse_trust_flag(&basename, &[]),
+                Some("--trust-workspace"),
+                "{cli} must get the workspace-trust default"
+            );
+        }
+        // Suffix stripping must not mint false positives.
+        for cli in ["xmuse", "muse2", "amuse.exe", "my-muse-wrapper"] {
+            assert_eq!(muse_trust_flag(cli, &[]), None);
+        }
+    }
+
+    #[test]
+    fn muse_spawn_args_trust_workspace_without_weakening_approvals() {
+        // The broker default trusts the workspace (skills/rules load) but
+        // never auto-injects --disable-approval: approvals stay on unless the
+        // caller passes the flag explicitly, and an explicit opt-in flows
+        // through untouched in user-arg position.
+        let ordered = ordered_pty_cli_args(None, muse_trust_flag("muse", &[]), None, &[], &[], &[]);
+        assert_eq!(ordered, vec!["--trust-workspace".to_string()]);
+        assert!(
+            !ordered.iter().any(|arg| arg.contains("disable-approval")),
+            "muse spawn must not auto-inject --disable-approval"
+        );
+
+        let explicit = vec!["--disable-approval".to_string()];
+        let ordered = ordered_pty_cli_args(
+            None,
+            muse_trust_flag("muse", &explicit),
+            None,
+            &[],
+            &explicit,
+            &[],
+        );
+        assert_eq!(
+            ordered,
+            vec![
+                "--trust-workspace".to_string(),
+                "--disable-approval".to_string()
+            ]
+        );
+    }
+
+    #[test]
+    fn muse_config_home_for_worker_gates_on_mcp_active() {
+        let home = muse_config_home_for_worker("muse", Some("/ws"), "agent-1", false, None)
+            .expect("muse with MCP active gets a clean home");
+        assert!(home.is_absolute());
+        assert_eq!(
+            home,
+            muse_clean_home_dir(std::path::Path::new("/ws"), "agent-1")
+        );
+        // Other CLIs keep their argv and config scope exactly.
+        assert_eq!(
+            muse_config_home_for_worker("claude", Some("/ws"), "agent-1", false, None),
+            None
+        );
+        // Injection disabled: no clean home, no argv change.
+        assert_eq!(
+            muse_config_home_for_worker("muse", Some("/ws"), "agent-1", true, None),
+            None
+        );
+        assert_eq!(
+            muse_config_home_for_worker("muse", Some("/ws"), "agent-1", false, Some("1")),
+            None
+        );
+    }
+
+    #[test]
+    fn muse_session_reference_resume_is_rejected() {
+        let mut args = Vec::new();
+        let mut harness_session_args = Vec::new();
+        let error = apply_requested_session_reference(
+            "muse",
+            "session-muse-1",
+            &mut args,
+            &mut harness_session_args,
+        )
+        .expect_err("muse session resume is unsupported");
+        assert!(
+            error
+                .to_string()
+                .contains("supported only for Claude, Codex and Devin"),
+            "unexpected error: {error}"
+        );
     }
 
     #[test]

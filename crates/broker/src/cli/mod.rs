@@ -506,6 +506,12 @@ pub(crate) struct PtyCommand {
     #[arg(long)]
     pub(crate) agent_name: Option<String>,
 
+    /// Isolated Muse config home for this worker (path only, never a
+    /// secret): the worker points `XDG_CONFIG_HOME` (plus `MUSE_AUTH_PATH`
+    /// and `MUSE_NO_AUTO_UPDATE`) at it before spawning Muse.
+    #[arg(long)]
+    pub(crate) muse_config_home: Option<String>,
+
     /// Emit delivery_active events when output matches progress patterns.
     #[arg(long)]
     pub(crate) progress: bool,

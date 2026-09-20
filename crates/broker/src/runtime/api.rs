@@ -2979,7 +2979,7 @@ fn channel_in_list(channels: &[ChannelName], channel: &str) -> bool {
 /// One-line skill text prepended for CLI harnesses that need a minimal relay lifecycle hint.
 const RELAY_WORKER_ONE_LINER: &str = "\
 Call mcp__agent-relay__add_agent(name, cli, task) to spawn a relay worker \
-(cli: \"claude\", \"codex\", \"gemini\", \"opencode\", or \"devin\"; add model for Claude tier, \
+(cli: \"claude\", \"codex\", \"gemini\", \"aider\", \"goose\", \"grok\", \"muse\", \"opencode\", or \"devin\"; add model for Claude tier, \
 e.g. model: \"claude-opus-4-8\"), and mcp__agent-relay__remove_agent(name) to release when done.";
 
 /// Skill text prepended to the task for small/fast models (haiku, mini, flash) that need
@@ -2992,7 +2992,7 @@ const SMALL_MODEL_RELAY_SKILL: &str = "\
 ### Spawn a relay worker
 To delegate a task to a dedicated relay worker agent, call:
   mcp__agent-relay__add_agent(name: \"WorkerName\", cli: \"claude\", task: \"full task instructions\")
-Required: name (unique string), cli (\"claude\", \"codex\", \"gemini\", \"opencode\", or \"devin\"), task (complete instructions).
+Required: name (unique string), cli (\"claude\", \"codex\", \"gemini\", \"aider\", \"goose\", \"grok\", \"muse\", \"opencode\", or \"devin\"), task (complete instructions).
 To pin a Claude model: add model: \"claude-opus-4-8\" (Opus), \"claude-sonnet-4-6\" (Sonnet), or \"claude-haiku-4-5-20251001\" (Haiku).
 The relay worker will DM you \"ACK: <understanding>\" when it starts and \"DONE: <result>\" when complete.
 
@@ -3090,7 +3090,31 @@ mod skill_injection_tests {
         assert!(text.contains("mcp__agent-relay__add_agent"));
         assert!(text.contains("mcp__agent-relay__remove_agent"));
         assert!(text.contains("relay worker"));
+        assert!(text.contains("\"muse\""));
+        assert!(text.contains("\"aider\""));
+        assert!(text.contains("\"goose\""));
+        assert!(text.contains("\"grok\""));
         assert!(!text.contains("Do it yourself"));
+    }
+
+    #[test]
+    fn relay_skill_guidance_lists_every_spawnable_cli() {
+        // Both guidance strings must stay aligned with the add_agent schema:
+        // every accepted cli value is named so guided callers use valid ones.
+        for text in [RELAY_WORKER_ONE_LINER, SMALL_MODEL_RELAY_SKILL] {
+            for cli in [
+                "\"claude\"",
+                "\"codex\"",
+                "\"gemini\"",
+                "\"aider\"",
+                "\"goose\"",
+                "\"grok\"",
+                "\"muse\"",
+                "\"opencode\"",
+            ] {
+                assert!(text.contains(cli), "relay skill guidance must name {cli}");
+            }
+        }
     }
 
     #[test]

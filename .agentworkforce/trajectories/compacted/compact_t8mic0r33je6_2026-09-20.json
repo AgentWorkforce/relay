@@ -1,0 +1,48 @@
+{
+  "id": "compact_t8mic0r33je6",
+  "version": 1,
+  "type": "compacted",
+  "compactedAt": "2026-09-20T03:15:12.479Z",
+  "sourceTrajectories": [
+    "traj_zf263rtkysa2"
+  ],
+  "dateRange": {
+    "start": "2026-09-20T01:46:34.623Z",
+    "end": "2026-09-20T02:40:05.072Z"
+  },
+  "summary": {
+    "totalDecisions": 2,
+    "totalEvents": 3,
+    "uniqueAgents": [
+      "default"
+    ]
+  },
+  "decisionGroups": [
+    {
+      "category": "api",
+      "decisions": [
+        {
+          "question": "Transferred Muse's credential-free git bundle over numbered Relay DM chunks",
+          "chosen": "Transferred Muse's credential-free git bundle over numbered Relay DM chunks",
+          "reasoning": "Dogpatch lacked GitHub credentials, Relay file attachments were broken, HTTP serving was sandbox-blocked, and the user explicitly wanted Relay/Relayfile exercised without SSH. The 9,620-byte reconstruction matched Muse's SHA-256 and passed git bundle verification.",
+          "fromTrajectory": "traj_zf263rtkysa2"
+        }
+      ]
+    },
+    {
+      "category": "security",
+      "decisions": [
+        {
+          "question": "Kept Muse approvals enabled while defaulting workspace trust",
+          "chosen": "Kept Muse approvals enabled while defaulting workspace trust",
+          "reasoning": "Muse needs --trust-workspace for project skills and rules, but --disable-approval is a separate security weakening and remains caller opt-in.",
+          "fromTrajectory": "traj_zf263rtkysa2"
+        }
+      ]
+    }
+  ],
+  "keyLearnings": [],
+  "keyFindings": [],
+  "filesAffected": [],
+  "commits": []
+}

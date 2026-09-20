@@ -478,6 +478,31 @@ mod tests {
     }
 
     #[test]
+    fn detect_cli_ready_muse_uses_generic_prompt_detection() {
+        // Muse has no vendor-specific readiness arm: the generic prompt set
+        // plus the byte-count fallback release its initial task, with the
+        // STARTUP_READY_TIMEOUT last resort behind both.
+        let prompt_grid = GridReadinessSnapshot {
+            screen: "muse session ready\n❯ \n",
+            cursor: Some((2, 3)),
+        };
+        assert!(detect_cli_ready("muse", "", 100, prompt_grid));
+        assert!(detect_cli_ready(
+            "/Users/khaliqgant/.local/bin/muse",
+            "",
+            100,
+            prompt_grid
+        ));
+        assert!(cli_prompt_ready("muse", prompt_grid));
+        let loading_grid = GridReadinessSnapshot {
+            screen: "loading...\n",
+            cursor: Some((1, 11)),
+        };
+        assert!(!detect_cli_ready("muse", "loading...", 100, loading_grid));
+        assert!(detect_cli_ready("muse", "loading...", 501, loading_grid));
+    }
+
+    #[test]
     fn detect_cli_ready_unknown_cli_fallback() {
         let prompt_grid = GridReadinessSnapshot {
             screen: "$ \n",

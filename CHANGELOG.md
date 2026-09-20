@@ -7,16 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased - Minor]
 
+### Added
+
+- `fleet spawn`, `node up` capacity, and the `spawn`/`add_agent` MCP tools accept the Muse CLI (`muse`): nodes advertise `spawn:muse`, launches default to `--trust-workspace` so workspace skills and rules load, injected tasks submit without a manual Enter, and each worker gets Agent Relay MCP tools from an isolated per-worker Muse config home. Tool approvals stay on unless `--disable-approval` is passed explicitly.
+- Devin CLI is available through Relay PTY, fleet and MCP spawning with isolated worker MCP configuration, preserved approvals, and reliable initial and follow-up message submission.
+- `agent-relay fleet nodes list --pretty` renders the fleet roster as a human-readable table; `agent-relay fleet nodes --pretty` is available as a shorter equivalent, while JSON remains the default.
+
 ### Fixed
 
 - MCP `spawn`, `add_agent`, and direct-message calls now coalesce in-flight JSON-RPC replays and accept an `idempotency_key` for safe retries after a lost response, preventing duplicate workers, false duplicate-name failures, and duplicate DMs while keeping later JSON-RPC ID reuse distinct.
 - `node agent attach --node` now replaces an expired remote terminal session once and reconnects existing local terminal clients, while transient terminal failures retain the bounded resume budget without minting additional sessions.
-
-### Added
-
-- Devin CLI is available through Relay PTY, fleet and MCP spawning with isolated worker MCP configuration, preserved approvals, and reliable initial and follow-up message submission.
-
-- `agent-relay fleet nodes list --pretty` renders the fleet roster as a human-readable table; `agent-relay fleet nodes --pretty` is available as a shorter equivalent, while JSON remains the default.
 
 ## [12.3.1] - 2026-09-20
 
