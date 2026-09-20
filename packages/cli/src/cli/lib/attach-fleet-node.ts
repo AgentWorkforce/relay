@@ -464,7 +464,8 @@ export async function startFleetNodeAttachProxy(
   // finite recovery path: every backoff plus every handshake/readiness pair.
   const terminalWaitTimeoutMs =
     retryDelayBudgetMs(MAX_RECONNECT_ATTEMPTS, reconnectInitialDelayMs, reconnectMaxDelayMs) +
-    MAX_RECONNECT_ATTEMPTS * (terminalHandshakeTimeoutMs + terminalReadyTimeoutMs);
+    MAX_RECONNECT_ATTEMPTS * (terminalHandshakeTimeoutMs + terminalReadyTimeoutMs) +
+    sessionRequestTimeoutMs;
 
   let connectionGeneration = 0;
   const createReadiness = (): TerminalReadiness => {
@@ -935,7 +936,7 @@ export async function startFleetNodeAttachProxy(
     expiresAt: string | undefined;
   }> => {
     const controller = new AbortController();
-    const timeout = setTimeout(() => controller.abort(), terminalHandshakeTimeoutMs);
+    const timeout = setTimeout(() => controller.abort(), sessionRequestTimeoutMs);
     try {
       const response = await fetchFn(sessionEndpoint, {
         method: 'POST',
@@ -1266,11 +1267,21 @@ export async function startFleetNodeAttachProxy(
             expiresAt = replacement.expiresAt;
             connect(terminalUrl, nextReadiness);
           },
-          () => {
+          (error) => {
             if (stopped || terminalEnded || activeReadiness !== nextReadiness) return;
-            failRemote(
-              `terminal transport could not replace an expired terminal session (node ref ${diagnosticValue(options.node.trim())},` +
-                ` resolved node id ${diagnosticValue(resolvedNodeId ?? 'unavailable')}, endpoint ${diagnosticValue(remoteEndpoint())})`
+            const replacementError =
+              error instanceof FleetNodeAttachError
+                ? error
+                : new FleetNodeAttachError(
+                    'terminal session could not be replaced after its resume credential expired',
+                    'terminal_session_unavailable'
+                  );
+            endTerminal(
+              new FleetNodeAttachError(
+                `terminal transport could not replace an expired terminal session (node ref ${diagnosticValue(options.node.trim())},` +
+                  ` resolved node id ${diagnosticValue(resolvedNodeId ?? 'unavailable')}, endpoint ${diagnosticValue(remoteEndpoint())})`,
+                replacementError.code
+              )
             );
           }
         );

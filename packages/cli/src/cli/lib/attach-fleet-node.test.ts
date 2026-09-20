@@ -491,9 +491,10 @@ describe('startFleetNodeAttachProxy delivery-mode PUT lifecycle', () => {
     });
     cleanup.push(proxy.close);
 
-    // Six complete reconnect generations (151.5s), the post-ready delivery
-    // acknowledgement (10s), and response-delivery headroom (1s).
-    expect(proxy.requestTimeoutMs).toBe(162_500);
+    // Six complete reconnect generations (151.5s), one bounded replacement
+    // session allocation (30s), the post-ready delivery acknowledgement
+    // (10s), and response-delivery headroom (1s).
+    expect(proxy.requestTimeoutMs).toBe(192_500);
 
     const socket = await remote.nextConnection();
     sendReady(socket, 'auto_inject');
@@ -1046,6 +1047,114 @@ describe('startFleetNodeAttachProxy view target lifecycle', () => {
 
     expect(resumeRequests).toBe(6);
     expect(sessionRequests).toBe(1);
+  });
+
+  it('uses the terminal-session request timeout, not the WebSocket handshake timeout, for replacement allocation', async () => {
+    const remote = await startFakeRemote();
+    cleanup.push(remote.close);
+    let requests = 0;
+    let replacementAborted = false;
+    let resolveReplacementAbort!: () => void;
+    const replacementAbort = new Promise<void>((resolve) => {
+      resolveReplacementAbort = resolve;
+    });
+    const proxy = await startFleetNodeAttachProxy({
+      agent: 'view-replacement-timeout',
+      node: 'node-replacement-timeout',
+      mode: 'view',
+      baseUrl: 'https://cast.agentrelay.com',
+      workspaceKey: 'wk',
+      fetch: ((_: string | URL | Request, init?: RequestInit) => {
+        requests += 1;
+        if (requests === 1) {
+          return Promise.resolve({
+            ok: true,
+            status: 201,
+            json: async () => ({
+              ok: true,
+              data: {
+                session_id: SESSION_ID,
+                terminal_url: `${remote.url}?ticket=initial-ticket`,
+                resume_token: 'initial-resume-secret',
+                expires_at: new Date(Date.now() - 1).toISOString(),
+              },
+            }),
+          } as Response);
+        }
+        return new Promise<Response>((_resolve, reject) => {
+          init?.signal?.addEventListener(
+            'abort',
+            () => {
+              replacementAborted = true;
+              resolveReplacementAbort();
+              reject(new Error('replacement request aborted'));
+            },
+            { once: true }
+          );
+        });
+      }) as typeof globalThis.fetch,
+      sessionRequest: { timeoutMs: 40, totalTimeoutMs: 40 },
+      reconnectDelay: { initialMs: 1, maxMs: 1, handshakeTimeoutMs: 5 },
+    });
+    cleanup.push(proxy.close);
+
+    const initial = await remote.nextConnection();
+    sendReady(initial);
+    initial.terminate();
+    await new Promise<void>((resolve) => setTimeout(resolve, 15));
+    expect(replacementAborted).toBe(false);
+    await replacementAbort;
+    expect(requests).toBe(2);
+  });
+
+  it('preserves a replacement allocation failure code for readiness-gated requests', async () => {
+    const remote = await startFakeRemote();
+    cleanup.push(remote.close);
+    let requests = 0;
+    const proxy = await startFleetNodeAttachProxy({
+      agent: 'view-replacement-error',
+      node: 'node-replacement-error',
+      mode: 'view',
+      baseUrl: 'https://cast.agentrelay.com',
+      workspaceKey: 'wk',
+      fetch: (async () => {
+        requests += 1;
+        if (requests === 2) {
+          return terminalSessionErrorResponse(
+            'terminal_session_unavailable',
+            'replacement terminal session is unavailable'
+          );
+        }
+        return {
+          ok: true,
+          status: 201,
+          json: async () => ({
+            ok: true,
+            data: {
+              session_id: SESSION_ID,
+              terminal_url: `${remote.url}?ticket=initial-ticket`,
+              resume_token: 'initial-resume-secret',
+              expires_at: new Date(Date.now() - 1).toISOString(),
+            },
+          }),
+        } as Response;
+      }) as typeof globalThis.fetch,
+      reconnectDelay: { initialMs: 1, maxMs: 1 },
+    });
+    cleanup.push(proxy.close);
+
+    const initial = await remote.nextConnection();
+    sendReady(initial);
+    initial.terminate();
+    await new Promise<void>((resolve) => setTimeout(resolve, 20));
+
+    const response = await fetch(`${proxy.brokerUrl}/api/spawned/view-replacement-error/snapshot`, {
+      headers: { Authorization: `Bearer ${proxy.apiKey}` },
+    });
+    expect(response.status).toBe(503);
+    await expect(response.json()).resolves.toMatchObject({
+      error: { code: 'terminal_session_unavailable' },
+    });
   });
 
   it('recovers on the sixth resume attempt instead of exhausting the old 15.5s budget', async () => {
