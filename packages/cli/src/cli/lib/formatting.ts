@@ -1,3 +1,4 @@
+/** Format an ISO timestamp as a compact non-negative age for terminal output. */
 export function formatRelativeTime(iso?: string): string {
   if (!iso) return 'unknown';
   const ts = Date.parse(iso);

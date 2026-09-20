@@ -236,6 +236,7 @@ function withFleetDefaults(overrides: Partial<FleetCommandDependencies> = {}): F
   };
 }
 
+/** Render fleet-node inventory as a terminal-safe, aligned table. */
 function formatFleetNodesPretty(nodes: RelayNode[]): string {
   if (nodes.length === 0) return 'No fleet nodes found.';
 
@@ -279,6 +280,7 @@ function formatFleetNodesPretty(nodes: RelayNode[]): string {
   ].join('\n');
 }
 
+/** Fetch, filter, and render the fleet-node inventory for either command spelling. */
 async function runFleetNodesList(
   deps: FleetCommandDependencies,
   options: Record<string, unknown>
@@ -308,6 +310,7 @@ async function runFleetNodesList(
   });
 }
 
+/** Attach the shared output, filter, and workspace options to a fleet-node list command. */
 function addFleetNodeListOptions(command: Command): Command {
   return addSdkOptions(
     command
@@ -319,6 +322,7 @@ function addFleetNodeListOptions(command: Command): Command {
   );
 }
 
+/** Merge options parsed before and after the optional `list` subcommand. */
 function mergeFleetNodeListOptions(
   parentOptions: Record<string, unknown>,
   childOptions: Record<string, unknown>

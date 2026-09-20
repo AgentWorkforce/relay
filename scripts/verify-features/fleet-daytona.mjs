@@ -5117,7 +5117,7 @@ class FleetBoard {
       (result) => ({
         pass:
           Boolean(primary?.nodeName) &&
-          result._rawStdout.includes('NAME') &&
+          result._rawStdout.includes('NODE') &&
           result._rawStdout.includes(primary.nodeName),
         summary: `prettyContainsExactNode=${Boolean(primary?.nodeName) && result._rawStdout.includes(primary.nodeName)}`,
       }),
@@ -5139,7 +5139,7 @@ class FleetBoard {
       (result) => ({
         pass:
           Boolean(primary?.nodeName) &&
-          result._rawStdout.includes('NAME') &&
+          result._rawStdout.includes('NODE') &&
           result._rawStdout.includes(primary.nodeName),
         summary: `prettyContainsExactNode=${Boolean(primary?.nodeName) && result._rawStdout.includes(primary.nodeName)}`,
       }),

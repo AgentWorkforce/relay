@@ -7,11 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- `agent-relay fleet nodes list --pretty` renders the fleet roster as a human-readable table; `agent-relay fleet nodes --pretty` is available as a shorter equivalent, while JSON remains the default.
+
 ## [12.3.1] - 2026-09-20
 
 ### Added
 
-- `agent-relay fleet nodes list --pretty` renders the fleet roster as a human-readable table; `agent-relay fleet nodes --pretty` is available as a shorter equivalent, while JSON remains the default.
 - The `relay.ci.pr-proof` hosted listener is redeployed automatically when its source changes on main, so pull requests are proved against the merged flow instead of a stale snapshot. Configure a `FLOWS_CLOUD_TOKEN` repo secret (a Flows Cloud token carrying `flows:listeners:write`) and a `RELAY_PR_PROOF_APPROVER` repo variable; a token without that scope is refused.
 
 ### Fixed
