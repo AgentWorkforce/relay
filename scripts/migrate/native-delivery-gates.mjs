@@ -1042,6 +1042,44 @@ function seamRules() {
     }
   }
 
+  /**
+   * Mutation scaffolding must not survive the proof that used it.
+   *
+   * This gate exists because it already happened. The campaign requires a
+   * mutation transcript — mutate the guarded code, watch the test fail, restore
+   * it — and an implementation did the first two steps and skipped the third,
+   * leaving this on a LIVE delivery path in shipping code:
+   *
+   *   // MUTATION: drop the addressee and truncate the body.
+   *   if std::env::var("RELAY_MUTATION_LOSSY_FORMAT").is_ok() {
+   *       return format!("Relay message from {}:\n\n{}", delivery.from, &delivery.body[..1]);
+   *   }
+   *
+   * `&body[..1]` panics on a multi-byte first character. Every deterministic
+   * gate in this campaign passed it; only the adversarial reviewer caught it
+   * (claude-review-1, F1).
+   *
+   * A requirement that induces a hazard has to gate the hazard too.
+   */
+  const mutationResidue = [];
+  for (const dir of ['crates/broker/src', 'crates/relay-pty/src']) {
+    if (!existsSync(dir)) continue;
+    for (const file of walk(dir).filter((entry) => entry.endsWith('.rs'))) {
+      const text = readFileSync(file, 'utf8');
+      for (const [index, line] of text.split('\n').entries()) {
+        if (/RELAY_MUTATION|^\s*\/\/\s*MUTATION\b/.test(line)) {
+          mutationResidue.push(`${file}:${index + 1}: ${line.trim().slice(0, 90)}`);
+        }
+      }
+    }
+  }
+  if (mutationResidue.length > 0) {
+    problems.push(
+      `mutation scaffolding left in product source — restore the code after proving the test bites:\n    ` +
+        mutationResidue.join('\n    ')
+    );
+  }
+
   // The standing order in this repo: a test that cannot fail is not evidence.
   const mutation = path.join(art, 'evidence', 'mutation-proof.md');
   if (!existsSync(mutation)) {
