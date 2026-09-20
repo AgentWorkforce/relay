@@ -146,6 +146,19 @@ const CODEX_CLI =
 const CODEX_MODEL =
   process.env.NATIVE_DELIVERY_CODEX_MODEL?.trim() ||
   (CODEX_CLI_NAME === 'codex' ? 'gpt-5.5' : 'gpt-5.3-codex');
+/**
+ * Steps that already completed stay pinned to whatever CLI ran them, so their
+ * normalized hash is unchanged and `--reuse-from` still carries them.
+ */
+/**
+ * The first review round whose codex reviewer runs on the alt lane. Rounds
+ * below it keep the original agent so their completed steps still reuse.
+ * Default 99: no round diverts, and the lane stays inert.
+ */
+const CODEX_ALT_FROM_ROUND = Number(process.env.NATIVE_DELIVERY_CODEX_ALT_FROM_ROUND ?? '99');
+const CODEX_DONE_CLI = process.env.NATIVE_DELIVERY_CODEX_DONE_CLI?.trim() || CODEX_CLI;
+const CODEX_DONE_MODEL = process.env.NATIVE_DELIVERY_CODEX_DONE_MODEL?.trim() || CODEX_MODEL;
+
 const CLAUDE_IMPL_MODEL = process.env.NATIVE_DELIVERY_CLAUDE_MODEL?.trim() || 'opus';
 /** Reviewers read more than they write, so they get the strongest model available. */
 const CLAUDE_REVIEW_MODEL = process.env.NATIVE_DELIVERY_CLAUDE_REVIEW_MODEL?.trim() || 'opus';
@@ -226,13 +239,31 @@ const flow = specWorkflow(`relay.migrate.native-delivery.phase-${PHASE}`)
 // Codex implements the Rust seam; Claude implements the TypeScript, tests and
 // manifest side and shadows the Rust work. Review is cross-vendor by design.
 flow
-  .agent('codex-impl', { cli: CODEX_CLI, model: CODEX_MODEL })
+  .agent('codex-impl', { cli: CODEX_DONE_CLI, model: CODEX_DONE_MODEL })
   .agent('claude-impl', { cli: 'claude', model: CLAUDE_IMPL_MODEL })
   .agent('claude-shadow', { cli: 'claude', model: CLAUDE_SHADOW_MODEL })
   .agent('claude-reviewer', { cli: 'claude', model: CLAUDE_REVIEW_MODEL })
   .agent('claude-fixer', { cli: 'claude', model: CLAUDE_IMPL_MODEL })
-  .agent('codex-reviewer', { cli: CODEX_CLI, model: CODEX_MODEL })
-  .agent('codex-fixer', { cli: CODEX_CLI, model: CODEX_MODEL })
+  .agent('codex-reviewer', { cli: CODEX_DONE_CLI, model: CODEX_DONE_MODEL })
+  .agent('codex-fixer', { cli: CODEX_DONE_CLI, model: CODEX_DONE_MODEL })
+  /**
+   * Credential-exhaustion lane.
+   *
+   * `step_spec_hash` is computed over the NORMALIZED step, and the kernel
+   * resolves a named agent into inline `cli`/`model` before hashing. So moving
+   * the shared `codex-*` agents to another CLI rewrites the hash of every step
+   * they own — including hours of completed review and fix work — and
+   * `--reuse-from` then replays all of it.
+   *
+   * A reused step never executes, so it never touches the exhausted
+   * credential; only steps that actually RUN do. Routing just the
+   * not-yet-completed steps through their own agent names keeps the completed
+   * ones byte-identical and reusable, and costs one extra entry in this map.
+   *
+   * With NATIVE_DELIVERY_CODEX_CLI unset these are plain codex and the lane is
+   * inert, so the shape is the same whether or not a credential ever ran out.
+   */
+  .agent('codex-reviewer-alt', { cli: CODEX_CLI, model: CODEX_MODEL })
   .agent('claude-signoff', { cli: 'claude', model: CLAUDE_REVIEW_MODEL })
   .agent('codex-signoff', { cli: CODEX_CLI, model: CODEX_MODEL });
 
@@ -878,7 +909,7 @@ for (let round = 1; round <= rounds; round += 1) {
 
   agentStep({
     id: `codex-review-${round}`,
-    agent: 'codex-reviewer',
+    agent: round >= CODEX_ALT_FROM_ROUND ? 'codex-reviewer-alt' : 'codex-reviewer',
     dependsOn: [`gate-after-codex-fix-${round}`],
     artifact: `reviews/codex-review-${round}.md`,
     task: reviewTask('codex', round),
