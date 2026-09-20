@@ -2475,6 +2475,8 @@ mod tests {
     #[cfg(unix)]
     const MUSE_LIKE_COMPOSER: &str = r#"import os, sys, tty
 tty.setraw(sys.stdin.fileno())
+sys.stdout.write("READY\n")
+sys.stdout.flush()
 chunks = []
 while True:
     chunk = os.read(sys.stdin.fileno(), 4096)
@@ -2486,6 +2488,20 @@ while True:
 head, _, _ = chunks[-1].partition(b"\r")
 sys.stdout.write("PARKED\n" if b"\n" in head else "SUBMITTED\n")
 sys.stdout.flush()"#;
+
+    #[cfg(unix)]
+    async fn await_composer_ready(pty: &PtySession) {
+        for _ in 0..100 {
+            if pty.screen_text().contains("READY") {
+                return;
+            }
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        }
+        panic!(
+            "Muse-like composer did not become ready: {:?}",
+            pty.screen_text()
+        );
+    }
 
     #[cfg(unix)]
     async fn composer_verdict(pty: &PtySession) -> String {
@@ -2511,6 +2527,7 @@ sys.stdout.flush()"#;
         for resolved_cli in ["muse", "/Users/khaliqgant/.local/bin/muse"] {
             let args = vec!["-u".into(), "-c".into(), MUSE_LIKE_COMPOSER.into()];
             let (pty, _rx) = PtySession::spawn("python3", &args, 24, 80).unwrap();
+            await_composer_ready(&pty).await;
             let bytes = b"relay task line one\nrelay task line two".to_vec();
             let (ack_rx, _boundary) =
                 submit_injection_body(&pty, resolved_cli, bytes, Duration::ZERO)
@@ -2537,6 +2554,7 @@ sys.stdout.flush()"#;
     async fn burst_trailing_enter_parks_in_muse_like_composer() {
         let args = vec!["-u".into(), "-c".into(), MUSE_LIKE_COMPOSER.into()];
         let (pty, _rx) = PtySession::spawn("python3", &args, 24, 80).unwrap();
+        await_composer_ready(&pty).await;
         let mut burst = b"relay task line one\nrelay task line two".to_vec();
         burst.extend_from_slice(b"\r");
         let (ack_rx, _boundary) = pty
