@@ -1,8 +1,9 @@
 /**
  * Coalesce a transport replay of one MCP request before it can repeat a
  * state-changing Relay call. A typed JSON-RPC request ID, scoped by MCP
- * session and tool, identifies a logical request; arguments deliberately do
- * not participate so two intentional identical sends remain separate requests.
+ * session and tool, identifies an in-flight logical request; arguments
+ * deliberately do not participate so two intentional identical sends remain
+ * separate requests.
  */
 export class McpRequestReplay {
   private readonly requests = new Map<string, Promise<unknown>>();
@@ -23,14 +24,12 @@ export class McpRequestReplay {
 
     const pending = operation();
     this.requests.set(key, pending);
-    // Keep a completed receipt long enough for a transport replay, without
-    // retaining every request for the lifetime of a long-running MCP server.
-    void pending
-      .finally(() => {
-        const expiry = setTimeout(() => this.requests.delete(key), 5 * 60_000);
-        expiry.unref();
-      })
-      .catch(() => undefined);
+    // JSON-RPC permits an ID to be reused after its response. Once this call
+    // settles, a later request with the same ID must be allowed to execute.
+    void pending.then(
+      () => this.requests.delete(key),
+      () => this.requests.delete(key)
+    );
     return pending;
   }
 }

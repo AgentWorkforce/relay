@@ -422,6 +422,18 @@ describe('agent-relay-mcp startup helpers', () => {
     expect(mocks.agentRelayMessagingCommands.invoke).toHaveBeenCalledTimes(2);
   });
 
+  it('allows a completed JSON-RPC request id to be reused for a later spawn', async () => {
+    const { mod, mocks } = await loadAgentRelayMcpModule();
+    mod.createAgentRelayMcpServer({ agentToken: 'at_live_fleet', agentName: 'orchestrator' });
+    const spawn = mocks.serverInstances[0].tools.get('spawn')!.handler;
+    const extra = { sessionId: 'mcp-session', requestId: 99 };
+
+    await spawn({ name: 'FirstWorker', cli: 'codex' }, extra);
+    await spawn({ name: 'SecondWorker', cli: 'codex' }, extra);
+
+    expect(mocks.agentRelayMessagingCommands.invoke).toHaveBeenCalledTimes(2);
+  });
+
   it('coalesces a replayed DM request while separate identical messages remain distinct', async () => {
     const { mod, mocks } = await loadAgentRelayMcpModule();
     mod.createAgentRelayMcpServer({ agentToken: 'at_live_fleet', agentName: 'orchestrator' });
