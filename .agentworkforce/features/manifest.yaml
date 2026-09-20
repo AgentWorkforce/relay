@@ -710,6 +710,13 @@ categories:
         location: packages/cli/src/cli/commands/fleet.ts
         verify_tier: 5
 
+      - id: fleet-nodes-pretty
+        name: List Fleet Nodes as a Table
+        cli: relay fleet nodes list [--pretty] [--name <name>] [--capability <name>] [--all]
+        description: Show fleet nodes in a human-readable table, including identity, liveness, capacity, version, and heartbeat age
+        location: packages/cli/src/cli/commands/fleet.ts
+        verify_tier: 5
+
       - id: fleet-spawn
         name: Spawn Fleet Agent
         cli: relay fleet spawn <cli> [--name <name>] [--task <text>] [--node <name>] [--persona <persona>] [--model <model>]

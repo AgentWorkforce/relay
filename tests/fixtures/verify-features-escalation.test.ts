@@ -94,6 +94,9 @@ describe('verify-features escalation status', () => {
     expect(capabilities).toContain("if ! grep -q '^VERIFY_PROVENANCE_VALID=1$'");
     expect(source).toContain('abort_for_invalid_provenance');
     expect(source).toContain("if ! grep -q '^VERIFY_PROVENANCE_VALID=1$'");
+    expect(source).toContain("grep -E '^(NODE|No fleet nodes found\\.)'");
+    expect(source).toContain('WORKFLOW_FILE="flows/verify/features.spec.ts"');
+    expect(source).not.toContain('workflows/verify-features.ts');
     expect(await runnerSourcePromise).toContain('verdict.runId !== RUN_ID');
   });
 

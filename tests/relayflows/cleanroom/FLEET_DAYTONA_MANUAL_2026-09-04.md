@@ -3,7 +3,7 @@
 This is the immutable operator summary for the first clean-board run. It is not
 a claim that Fleet is green. It records what was actually proven, what failed,
 and what was cleaned before the repeatable 95-operation Relayflow was added.
-That historical Relayflow is separate from the current 108-operation Fleet
+That historical Relayflow is separate from the current 110-operation Fleet
 matrix used by the qualification gates.
 
 ## Topology and cleanup
@@ -145,7 +145,7 @@ timings are in
 
 ## Repeatable follow-up
 
-Run `workflows/verify-fleet-daytona.ts`. Its matrix records every operation,
+Run `npm run verify:fleet-daytona`. Its Flows v2 matrix records every operation,
 monotonic duration, redacted bounded output, exact resource ownership, provider
 and snapshot provenance, cleanup retries, and final absence. It then requires a
 cheap supervisory audit, an analysis-repair disposition, and fresh independent
