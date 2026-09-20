@@ -79,6 +79,7 @@ export const PHASES = {
       'crates/broker/src/broker/',
       'crates/broker/src/lib.rs',
       'crates/broker/tests/',
+      'crates/broker/src/runtime/',
     ],
     tsScope: ['tests/', '.agentworkforce/features/manifest.yaml'],
     requiredSources: [
@@ -119,7 +120,12 @@ export const PHASES = {
   1: {
     slug: 'codex-queue',
     title: 'Codex native delivery over `codex queue`',
-    scope: ['crates/broker/src/delivery/', 'crates/broker/src/codex_thread.rs', 'crates/broker/tests/'],
+    scope: [
+      'crates/broker/src/delivery/',
+      'crates/broker/src/codex_thread.rs',
+      'crates/broker/tests/',
+      'crates/broker/src/runtime/',
+    ],
     tsScope: ['tests/', '.agentworkforce/features/manifest.yaml', MATRIX],
     requiredSources: [
       'crates/broker/src/delivery/codex_queue.rs',
@@ -150,7 +156,12 @@ export const PHASES = {
   2: {
     slug: 'claude-native',
     title: 'Claude terminal inbox socket and `--cloud` delivery',
-    scope: ['crates/broker/src/delivery/', 'crates/broker/src/claude_registry.rs', 'crates/broker/tests/'],
+    scope: [
+      'crates/broker/src/delivery/',
+      'crates/broker/src/claude_registry.rs',
+      'crates/broker/tests/',
+      'crates/broker/src/runtime/',
+    ],
     tsScope: ['tests/', '.agentworkforce/features/manifest.yaml', MATRIX],
     requiredSources: [
       'crates/broker/src/delivery/claude_socket.rs',
@@ -190,7 +201,7 @@ export const PHASES = {
   3: {
     slug: 'acp',
     title: 'One ACP backend for grok, opencode and devin',
-    scope: ['crates/broker/src/delivery/', 'crates/broker/tests/'],
+    scope: ['crates/broker/src/delivery/', 'crates/broker/tests/', 'crates/broker/src/runtime/'],
     tsScope: ['tests/', '.agentworkforce/features/manifest.yaml'],
     requiredSources: ['crates/broker/src/delivery/acp.rs', INVARIANT_TEST_FILE],
     features: [
@@ -216,7 +227,7 @@ export const PHASES = {
   4: {
     slug: 'pty-retained',
     title: 'What stays on the PTY: muse and cursor-agent',
-    scope: ['crates/broker/src/delivery/', 'crates/broker/tests/'],
+    scope: ['crates/broker/src/delivery/', 'crates/broker/tests/', 'crates/broker/src/runtime/'],
     tsScope: ['tests/', '.agentworkforce/features/manifest.yaml'],
     requiredSources: ['crates/broker/src/delivery/routing.rs', INVARIANT_TEST_FILE],
     features: [
@@ -245,7 +256,12 @@ export const PHASES = {
   5: {
     slug: 'detached-spawn',
     title: 'Decouple spawning from wrapping',
-    scope: ['crates/broker/src/spawner.rs', 'crates/broker/src/delivery/', 'crates/broker/tests/'],
+    scope: [
+      'crates/broker/src/spawner.rs',
+      'crates/broker/src/delivery/',
+      'crates/broker/tests/',
+      'crates/broker/src/runtime/',
+    ],
     tsScope: ['tests/', 'packages/', '.agentworkforce/features/manifest.yaml'],
     requiredSources: ['crates/broker/src/spawner.rs', INVARIANT_TEST_FILE],
     features: [
