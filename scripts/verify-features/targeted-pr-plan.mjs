@@ -2,11 +2,13 @@
 
 import { createHash } from 'node:crypto';
 import { spawnSync } from 'node:child_process';
-import { readFile, writeFile } from 'node:fs/promises';
+import { readFile, readdir, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 import { pathToFileURL } from 'node:url';
 
 import { parse } from 'yaml';
+
+import { CASE_ROOT, validateCaseManifest } from '../pr-proof/contract.mjs';
 
 const DEFAULT_MATRIX = 'tests/relayflows/cleanroom/relay.matrix.json';
 const DEFAULT_MANIFEST = '.agentworkforce/features/manifest.yaml';
@@ -17,7 +19,9 @@ const SELF_CHECK_PATHS = new Set([
   '.agentworkforce/features/manifest.yaml',
   '.github/workflows/targeted-feature-verification.yml',
   'flows/verify/targeted-pr.spec.ts',
+  'scripts/verify-features/targeted-command.mjs',
   'scripts/verify-features/targeted-pr-plan.mjs',
+  'scripts/verify-features/targeted-relayflow-case.mjs',
   'tests/relayflows/cleanroom/relay.matrix.json',
 ]);
 
@@ -87,6 +91,22 @@ function assertCommandSpec(spec, label) {
   if (!Number.isSafeInteger(spec.timeoutSeconds) || spec.timeoutSeconds < 1) {
     throw new Error(`${label}.timeoutSeconds must be positive`);
   }
+  for (const key of ['requiredCommands', 'requiredEnvironment', 'mustContain', 'forbidOutput']) {
+    if (
+      spec[key] !== undefined &&
+      (!Array.isArray(spec[key]) || spec[key].some((entry) => typeof entry !== 'string' || !entry))
+    ) {
+      throw new Error(`${label}.${key} must contain non-empty strings`);
+    }
+  }
+  if (
+    spec.expectedExitCodes !== undefined &&
+    (!Array.isArray(spec.expectedExitCodes) ||
+      spec.expectedExitCodes.length === 0 ||
+      spec.expectedExitCodes.some((code) => !Number.isSafeInteger(code) || code < 0 || code > 255))
+  ) {
+    throw new Error(`${label}.expectedExitCodes must contain exit codes from 0 to 255`);
+  }
 }
 
 function manifestCatalog(manifestText) {
@@ -132,6 +152,31 @@ function scenarioMentionsFile(scenario, file) {
   return Array.isArray(scenario.command) && scenario.command.includes(file);
 }
 
+function featuresForFile(locationToFeatures, file) {
+  const features = new Set(locationToFeatures.get(file) ?? []);
+  for (const [location, routedFeatures] of locationToFeatures) {
+    if (!location.endsWith('/') || !file.startsWith(location)) continue;
+    for (const feature of routedFeatures) features.add(feature);
+  }
+  return features;
+}
+
+export async function loadRelayflowCorpusCases(caseRoot = CASE_ROOT) {
+  const entries = (await readdir(caseRoot, { withFileTypes: true }))
+    .filter((entry) => entry.isDirectory())
+    .sort((left, right) => left.name.localeCompare(right.name, 'en'));
+  if (entries.length === 0) throw new Error('RelayFlow regression corpus has no case directories');
+  return Promise.all(
+    entries.map(async (entry) => {
+      const manifest = validateCaseManifest(
+        JSON.parse(await readFile(path.join(caseRoot, entry.name, 'case.json'), 'utf8')),
+        { caseId: entry.name }
+      );
+      return { id: manifest.id, timeoutSeconds: manifest.timeoutSeconds };
+    })
+  );
+}
+
 function selectedSetup(lane, scenarios, mode, profile) {
   if (mode !== 'targeted') return lane.setup.filter((step) => appliesToProfile(step, profile));
   const executable = scenarios.filter((scenario) => (scenario.kind ?? 'command') === 'command');
@@ -146,7 +191,14 @@ function selectedSetup(lane, scenarios, mode, profile) {
   return lane.setup.filter((step) => ids.has(step.id));
 }
 
-export function buildTargetedPlan({ changedFiles, matrix, manifestText, matrixBytes, manifestBytes }) {
+export function buildTargetedPlan({
+  changedFiles,
+  matrix,
+  manifestText,
+  matrixBytes,
+  manifestBytes,
+  corpusCases = [],
+}) {
   const files = unique(
     changedFiles
       .map((file) => String(file).replaceAll('\\', '/'))
@@ -166,7 +218,7 @@ export function buildTargetedPlan({ changedFiles, matrix, manifestText, matrixBy
       continue;
     }
     let matched = false;
-    for (const feature of locationToFeatures.get(file) ?? []) {
+    for (const feature of featuresForFile(locationToFeatures, file)) {
       selectedFeatures.add(feature);
       selectedCategories.add(featureById.get(feature).category);
       matched = true;
@@ -214,10 +266,7 @@ export function buildTargetedPlan({ changedFiles, matrix, manifestText, matrixBy
         if (!appliesToTargeted(scenario)) return false;
         if (directScenarioIds.has(scenario.id)) return true;
         if ((scenario.coversFeatures ?? []).some((feature) => selectedFeatures.has(feature))) return true;
-        return (
-          (scenario.coversFeatures ?? []).length === 0 &&
-          (scenario.coversCategories ?? []).some((category) => selectedCategories.has(category))
-        );
+        return (scenario.coversCategories ?? []).some((category) => selectedCategories.has(category));
       });
       if (laneScenarios.length === 0) continue;
       for (const step of selectedSetup(lane, laneScenarios, selectionMode, 'smoke')) {
@@ -227,6 +276,40 @@ export function buildTargetedPlan({ changedFiles, matrix, manifestText, matrixBy
       for (const scenario of laneScenarios) {
         if ((scenario.kind ?? 'command') === 'coverage-gap') {
           coverageGaps.push({ id: scenario.id, laneId: lane.id, reason: scenario.reason });
+          continue;
+        }
+        if ((scenario.kind ?? 'command') === 'relayflow-corpus') {
+          if (corpusCases.length === 0) {
+            throw new Error(`scenario ${lane.id}/${scenario.id} selected an empty RelayFlow corpus`);
+          }
+          for (const corpusCase of corpusCases) {
+            if (!SAFE_ID.test(corpusCase.id ?? '')) {
+              throw new Error(`RelayFlow corpus case id ${JSON.stringify(corpusCase.id)} is invalid`);
+            }
+            if (!Number.isSafeInteger(corpusCase.timeoutSeconds) || corpusCase.timeoutSeconds < 1) {
+              throw new Error(`RelayFlow corpus case ${corpusCase.id} has an invalid timeout`);
+            }
+            const expanded = {
+              id: `corpus-${corpusCase.id}`,
+              title: `${scenario.title}: ${corpusCase.id}`,
+              kind: 'command',
+              command: [
+                'node',
+                'scripts/verify-features/targeted-relayflow-case.mjs',
+                '--case',
+                corpusCase.id,
+                '--timeout-seconds',
+                String(Math.min(scenario.timeoutSeconds, corpusCase.timeoutSeconds)),
+              ],
+              timeoutSeconds: Math.min(scenario.timeoutSeconds, corpusCase.timeoutSeconds) + 30,
+              requiredCommands: ['node'],
+              evidence: scenario.evidence,
+              relayflowCorpusCase: corpusCase.id,
+              laneId: lane.id,
+            };
+            assertCommandSpec(expanded, `scenario ${lane.id}/${expanded.id}`);
+            scenarios.push(expanded);
+          }
           continue;
         }
         if ((scenario.kind ?? 'command') !== 'command') continue;
@@ -347,7 +430,11 @@ export async function main() {
   const matrixPath = option('--matrix', DEFAULT_MATRIX);
   const manifestPath = option('--manifest', DEFAULT_MANIFEST);
   const output = requiredOption('--output');
-  const [matrixBytes, manifestBytes] = await Promise.all([readFile(matrixPath), readFile(manifestPath)]);
+  const [matrixBytes, manifestBytes, corpusCases] = await Promise.all([
+    readFile(matrixPath),
+    readFile(manifestPath),
+    loadRelayflowCorpusCases(),
+  ]);
   const filesJson = option('--files-json');
   const changedFiles = filesJson
     ? JSON.parse(await readFile(filesJson, 'utf8'))
@@ -359,6 +446,7 @@ export async function main() {
     manifestText: manifestBytes.toString('utf8'),
     matrixBytes,
     manifestBytes,
+    corpusCases,
   });
   validateTargetedPlan(plan);
   await writeFile(output, `${JSON.stringify(plan, null, 2)}\n`, { flag: 'w' });

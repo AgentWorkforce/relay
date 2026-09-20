@@ -14,6 +14,11 @@ type CommandSpec = {
   cwd?: string;
   environment?: Record<string, string>;
   timeoutSeconds: number;
+  requiredCommands?: string[];
+  requiredEnvironment?: string[];
+  expectedExitCodes?: number[];
+  mustContain?: string[];
+  forbidOutput?: string[];
 };
 
 type TargetedPlan = {
@@ -67,12 +72,28 @@ function commandFor(spec: CommandSpec, plan: TargetedPlan, repoRoot: string, fix
     ),
     ...(spec.environment ?? {}),
   };
-  const env = Object.entries(environment)
-    .sort(([left], [right]) => left.localeCompare(right, 'en'))
-    .map(([name, value]) => `${name}=${shellQuote(replaceTemplates(value, roots))}`)
-    .join(' ');
-  const argv = spec.command.map((entry) => shellQuote(replaceTemplates(entry, roots))).join(' ');
-  return `mkdir -p ${shellQuote(laneRoot)} ${shellQuote(cwd)} && cd ${shellQuote(cwd)} && ${env ? `env ${env} ` : ''}${argv}`;
+  const payload = Buffer.from(
+    JSON.stringify({
+      version: 1,
+      argv: spec.command.map((entry) => replaceTemplates(entry, roots)),
+      cwd,
+      environment: Object.fromEntries(
+        Object.entries(environment)
+          .sort(([left], [right]) => left.localeCompare(right, 'en'))
+          .map(([name, value]) => [name, replaceTemplates(value, roots)])
+      ),
+      timeoutSeconds: spec.timeoutSeconds,
+      requiredCommands: spec.requiredCommands ?? [],
+      requiredEnvironment: spec.requiredEnvironment ?? [],
+      expectedExitCodes: spec.expectedExitCodes ?? [0],
+      mustContain: spec.mustContain ?? [],
+      forbidOutput: spec.forbidOutput ?? [],
+    })
+  ).toString('base64url');
+  return (
+    `mkdir -p ${shellQuote(laneRoot)} ${shellQuote(cwd)} && ` +
+    `node scripts/verify-features/targeted-command.mjs --payload ${shellQuote(payload)}`
+  );
 }
 
 async function main(): Promise<void> {
@@ -108,7 +129,7 @@ async function main(): Promise<void> {
       type: 'deterministic',
       dependsOn: [previous],
       command: commandFor(spec, plan, repoRoot, fixtureRoot),
-      timeoutMs: spec.timeoutSeconds * 1_000,
+      timeoutMs: (spec.timeoutSeconds + 30) * 1_000,
     });
     previous = id;
   }
@@ -130,7 +151,7 @@ async function main(): Promise<void> {
     timeoutMs: 30_000,
   });
 
-  const commandBudget = commands.reduce((total, spec) => total + spec.timeoutSeconds * 1_000, 0);
+  const commandBudget = commands.reduce((total, spec) => total + (spec.timeoutSeconds + 30) * 1_000, 0);
   const flow = {
     version: '0.1.0',
     name: 'relay.verify.targeted-pr',

@@ -7,17 +7,23 @@ import { promisify } from 'node:util';
 import { afterEach, beforeAll, describe, expect, it } from 'vitest';
 import { parse } from 'yaml';
 
-import { buildTargetedPlan, validateTargetedPlan } from '../../scripts/verify-features/targeted-pr-plan.mjs';
+import {
+  buildTargetedPlan,
+  loadRelayflowCorpusCases,
+  validateTargetedPlan,
+} from '../../scripts/verify-features/targeted-pr-plan.mjs';
 
 const execFileAsync = promisify(execFile);
 const temporaryDirectories: string[] = [];
 let matrix: Record<string, any>;
 let manifestText: string;
+let corpusCases: Array<{ id: string; timeoutSeconds: number }>;
 
 beforeAll(async () => {
-  [matrix, manifestText] = await Promise.all([
+  [matrix, manifestText, corpusCases] = await Promise.all([
     readFile('tests/relayflows/cleanroom/relay.matrix.json', 'utf8').then(JSON.parse),
     readFile('.agentworkforce/features/manifest.yaml', 'utf8'),
+    loadRelayflowCorpusCases(),
   ]);
 });
 
@@ -26,7 +32,13 @@ afterEach(async () => {
 });
 
 function plan(changedFiles: string[]) {
-  return buildTargetedPlan({ changedFiles, matrix, manifestText });
+  return buildTargetedPlan({ changedFiles, matrix, manifestText, corpusCases });
+}
+
+function generatedCommandPayload(command: string): Record<string, any> {
+  const match = command.match(/--payload '([A-Za-z0-9_-]+)'$/);
+  if (!match) throw new Error(`generated command has no encoded payload: ${command}`);
+  return JSON.parse(Buffer.from(match[1], 'base64url').toString('utf8'));
 }
 
 describe('targeted Flows v2 PR verification', () => {
@@ -91,6 +103,28 @@ describe('targeted Flows v2 PR verification', () => {
     }
   });
 
+  it('routes files below directory-valued manifest locations', () => {
+    const result = plan(['packages/sdk/src/messaging/new-delivery-route.ts']);
+
+    expect(result.mode).toBe('targeted');
+    expect(result.unmatchedRuntimeFiles).toEqual([]);
+    expect(result.selectedFeatures).toEqual(
+      expect.arrayContaining(['sdk-messaging', 'sdk-actions', 'sdk-sessions', 'sdk-delivery'])
+    );
+    expect(result.scenarios.map(({ id }: { id: string }) => id)).toContain('sdk-harness-contracts');
+  });
+
+  it('keeps category evidence eligible when it also declares feature coverage', () => {
+    const result = plan(['packages/fleet/src/new-placement-helper.ts']);
+
+    expect(result.mode).toBe('targeted');
+    expect(result.selectedCategories).toEqual(['fleet']);
+    expect(result.scenarios.map(({ id }: { id: string }) => id)).toEqual([
+      'fleet-attach-contracts',
+      'fleet-daytona-board-contract',
+    ]);
+  });
+
   it('falls back to smoke when a selected category has only a live coverage gap', () => {
     const result = plan(['packages/cli/src/cli/commands/skills.ts']);
 
@@ -109,6 +143,22 @@ describe('targeted Flows v2 PR verification', () => {
     const self = plan(['scripts/verify-features/targeted-pr-plan.mjs']);
     expect(self.mode).toBe('full-smoke');
     expect(self.unmatchedRuntimeFiles).toEqual([]);
+    expect(
+      self.scenarios
+        .filter(({ relayflowCorpusCase }: { relayflowCorpusCase?: string }) => relayflowCorpusCase)
+        .map(({ relayflowCorpusCase }: { relayflowCorpusCase: string }) => relayflowCorpusCase)
+    ).toEqual(corpusCases.map(({ id }) => id));
+  });
+
+  it('rejects full-smoke plans when the RelayFlow corpus cannot be expanded', () => {
+    expect(() =>
+      buildTargetedPlan({
+        changedFiles: ['scripts/verify-features/targeted-pr-plan.mjs'],
+        matrix,
+        manifestText,
+        corpusCases: [],
+      })
+    ).toThrow(/selected an empty RelayFlow corpus/);
   });
 
   it('skips documentation-only changes instead of manufacturing feature coverage', () => {
@@ -128,8 +178,24 @@ describe('targeted Flows v2 PR verification', () => {
         changedFiles: ['packages/cli/src/cli/commands/fleet.ts'],
         matrix: invalid,
         manifestText,
+        corpusCases,
       })
     ).toThrow(/unknown fleet-injection-attach setup not-a-setup/);
+  });
+
+  it('rejects malformed output and exit gates instead of dropping them', () => {
+    const invalid = structuredClone(matrix);
+    invalid.lanes
+      .find(({ id }: { id: string }) => id === 'fleet-injection-attach')
+      .scenarios.find(({ id }: { id: string }) => id === 'fleet-attach-contracts').expectedExitCodes = [];
+    expect(() =>
+      buildTargetedPlan({
+        changedFiles: ['packages/cli/src/cli/commands/fleet.ts'],
+        matrix: invalid,
+        manifestText,
+        corpusCases,
+      })
+    ).toThrow(/expectedExitCodes must contain exit codes/);
   });
 
   it('generates a checked, sequential deterministic FlowSpec from the selected plan', async () => {
@@ -138,6 +204,9 @@ describe('targeted Flows v2 PR verification', () => {
     const planPath = path.join(directory, 'plan.json');
     const specPath = path.join(directory, 'spec.json');
     const selected = plan(['packages/cli/src/cli/lib/formatting.ts']);
+    selected.scenarios[0].expectedExitCodes = [7];
+    selected.scenarios[0].mustContain = ['expected-marker'];
+    selected.scenarios[0].forbidOutput = ['forbidden-marker'];
     await writeFile(planPath, `${JSON.stringify(selected)}\n`);
 
     await execFileAsync(
@@ -164,6 +233,66 @@ describe('targeted Flows v2 PR verification', () => {
     for (let index = 1; index < spec.steps.length; index += 1) {
       expect(spec.steps[index].dependsOn).toEqual([spec.steps[index - 1].id]);
     }
+    expect(spec.steps[1].command).toContain('scripts/verify-features/targeted-command.mjs');
+    const scenarioPayload = generatedCommandPayload(spec.steps[2].command);
+    expect(scenarioPayload).toMatchObject({
+      expectedExitCodes: [7],
+      mustContain: ['expected-marker'],
+      forbidOutput: ['forbidden-marker'],
+    });
+  });
+
+  it('preserves expected exit and output gates in generated command execution', async () => {
+    const payload = Buffer.from(
+      JSON.stringify({
+        version: 1,
+        argv: [process.execPath, '-e', "console.log('expected-marker'); process.exit(7)"],
+        cwd: process.cwd(),
+        environment: {},
+        timeoutSeconds: 10,
+        requiredCommands: ['node'],
+        requiredEnvironment: [],
+        expectedExitCodes: [7],
+        mustContain: ['expected-marker'],
+        forbidOutput: ['forbidden-marker'],
+      })
+    ).toString('base64url');
+
+    const passing = await execFileAsync(
+      process.execPath,
+      ['scripts/verify-features/targeted-command.mjs', '--payload', payload],
+      { cwd: process.cwd(), timeout: 30_000 }
+    );
+    expect(passing.stdout).toContain('TARGETED_COMMAND_PASS exit=7 required=1 forbidden=1');
+
+    const rejectedPayload = Buffer.from(
+      JSON.stringify({
+        version: 1,
+        argv: [process.execPath, '-e', "console.log('forbidden-marker')"],
+        cwd: process.cwd(),
+        environment: {},
+        timeoutSeconds: 10,
+        requiredCommands: [],
+        requiredEnvironment: [],
+        expectedExitCodes: [0],
+        mustContain: [],
+        forbidOutput: ['forbidden-marker'],
+      })
+    ).toString('base64url');
+    await expect(
+      execFileAsync(
+        process.execPath,
+        ['scripts/verify-features/targeted-command.mjs', '--payload', rejectedPayload],
+        { cwd: process.cwd(), timeout: 30_000 }
+      )
+    ).rejects.toMatchObject({ stderr: expect.stringContaining('forbidden output: forbidden-marker') });
+  });
+
+  it('checks out the requested head for manual workflow dispatch', async () => {
+    const workflow = await readFile('.github/workflows/targeted-feature-verification.yml', 'utf8');
+    expect(workflow).toContain(
+      "ref: ${{ github.event_name == 'workflow_dispatch' && inputs.head_sha || github.sha }}"
+    );
   });
 
   it('expands the broker binary template in a full-smoke spec', async () => {
@@ -190,9 +319,11 @@ describe('targeted Flows v2 PR verification', () => {
     const brokerScenario = spec.steps.find(
       ({ id }: { id: string }) => id === 'scenario-broker-agents-broker-process-integration'
     );
-    expect(brokerScenario.command).toContain(
+    const payload = generatedCommandPayload(brokerScenario.command);
+    expect(payload.environment.AGENT_RELAY_BIN).toBe(
       path.join(process.cwd(), 'target', 'release', 'agent-relay-broker')
     );
-    expect(brokerScenario.command).not.toContain('{{brokerBinary}}');
+    expect(JSON.stringify(payload)).not.toContain('{{brokerBinary}}');
+    expect(payload.forbidOutput).toEqual(['# SKIP']);
   });
 });
