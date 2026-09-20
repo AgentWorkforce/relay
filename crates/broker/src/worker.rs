@@ -93,6 +93,31 @@ pub(crate) enum WorkerDeliverError {
     Committed(String),
 }
 
+/// Prefix marking a command the writer drained from its queue WITHOUT ever
+/// attempting a write.
+///
+/// When one write fails, the writer completes every still-queued command with
+/// an error so no caller is left blocked behind a dead writer. Those commands
+/// provably never reached `stdin.write_all` — the queue holds up to
+/// `WORKER_WRITE_QUEUE_CAPACITY` of them — yet every completion error was
+/// mapped to `Committed`, i.e. "may have been written". A possible write is
+/// never retried and is not dead-lettered, so a single write fault silently
+/// discarded up to 127 messages that had not been sent at all.
+pub(crate) const UNWRITTEN_PREFIX: &str = "not-attempted: ";
+
+/// Classify a writer completion error by whether a write was ever attempted.
+///
+/// Extracted so the discrimination is testable on its own: the whole of this
+/// bug was one side of it being unreachable.
+pub(crate) fn classify_write_failure(reason: String) -> WorkerDeliverError {
+    match reason.strip_prefix(UNWRITTEN_PREFIX) {
+        // Provably never written: safe to retry, and must be dead-lettered on
+        // exhaustion rather than dropped.
+        Some(rest) => WorkerDeliverError::PreWrite(rest.to_string()),
+        None => WorkerDeliverError::Committed(reason),
+    }
+}
+
 /// Why a worker was reaped despite its wrapper process still being alive.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum OrphanedWorker {
@@ -334,8 +359,11 @@ pub(crate) fn spawn_worker_writer(
             // must not leave those callers blocked behind this dead writer.
             while let Ok(mut queued) = command_rx.try_recv() {
                 if let Some(completion) = queued.completion.take() {
+                    // Never handed to `stdin.write_all`: say so, so the caller
+                    // can retry and dead-letter instead of treating it as a
+                    // possible write.
                     let _ = completion.send(Err(format!(
-                        "worker command writer stopped after write failure: {error}"
+                        "{UNWRITTEN_PREFIX}worker command writer stopped after write failure: {error}"
                     )));
                 }
             }
@@ -1558,7 +1586,7 @@ impl WorkerRegistry {
                     "worker command writer stopped before completing '{name}'"
                 ))
             })?
-            .map_err(WorkerDeliverError::Committed)?;
+            .map_err(classify_write_failure)?;
 
         Ok(())
     }
@@ -4637,6 +4665,40 @@ sleep 30
         registry.release("fenced-task").await.unwrap();
         assert!(
             matches!(event, WorkerEvent::Message { generation: observed, .. } if observed == generation)
+        );
+    }
+}
+
+#[cfg(test)]
+mod write_failure_classification_tests {
+    use super::{classify_write_failure, WorkerDeliverError, UNWRITTEN_PREFIX};
+
+    /// relay: F3 — a frame the writer never attempted must not be reported as
+    /// a possible write.
+    ///
+    /// When one write fails, the writer drains every still-queued command so no
+    /// caller blocks behind a dead writer. Those frames provably never reached
+    /// `stdin.write_all`, and the queue holds up to
+    /// `WORKER_WRITE_QUEUE_CAPACITY` of them. Mapping them all to `Committed`
+    /// made each one a possible write: never retried, and removed from the
+    /// pending map WITHOUT a dead letter. One write fault silently discarded
+    /// every message queued behind it.
+    #[test]
+    fn a_drained_command_is_pre_write_not_committed() {
+        let drained = classify_write_failure(format!(
+            "{UNWRITTEN_PREFIX}worker command writer stopped after write failure: broken pipe"
+        ));
+        assert!(
+            matches!(drained, WorkerDeliverError::PreWrite(_)),
+            "a command the writer never attempted was classified as a possible write, \
+             so it is dropped without a retry and without a dead letter"
+        );
+
+        let attempted = classify_write_failure("write timed out after 5s".to_string());
+        assert!(
+            matches!(attempted, WorkerDeliverError::Committed(_)),
+            "a write that was actually attempted must stay Committed: seam rule 1 \
+             forbids retrying it"
         );
     }
 }
