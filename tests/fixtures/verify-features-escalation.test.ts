@@ -94,6 +94,7 @@ describe('verify-features escalation status', () => {
     expect(capabilities).toContain("if ! grep -q '^VERIFY_PROVENANCE_VALID=1$'");
     expect(source).toContain('abort_for_invalid_provenance');
     expect(source).toContain("if ! grep -q '^VERIFY_PROVENANCE_VALID=1$'");
+    expect(source).toContain("grep -E '^(NODE|No fleet nodes found\\.)'");
     expect(await runnerSourcePromise).toContain('verdict.runId !== RUN_ID');
   });
 

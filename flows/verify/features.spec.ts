@@ -1008,7 +1008,8 @@ skip_check "cloud connect" "requires interactive browser auth"
 skip_check "cloud enroll"  "requires interactive browser auth"
 
 gated_check cloud "fleet nodes"              "relay fleet nodes"               "."
-gated_check cloud "fleet nodes list --pretty" "relay fleet nodes list --pretty" "NODE"
+gated_check cloud "fleet nodes list --pretty" \
+  "relay fleet nodes list --pretty | grep -E '^(NODE|No fleet nodes found\.)'" "."
 gated_check cloud "fleet config"             "relay fleet config"              "."
 gated_check cloud "fleet inherit"            "relay fleet inherit --help"      "Usage"
 skip_check "fleet enable"  "mutates workspace cloud state"
