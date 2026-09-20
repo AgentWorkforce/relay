@@ -1,0 +1,25 @@
+{
+  "id": "traj_upjzlph6ys7m",
+  "version": 1,
+  "task": {
+    "title": "native-delivery phase 0 seam contract verification"
+  },
+  "status": "completed",
+  "startedAt": "2026-09-20T21:22:26.088Z",
+  "completedAt": "2026-09-20T21:29:23.797Z",
+  "agents": [],
+  "chapters": [],
+  "retrospective": {
+    "summary": "Validated phase-0 seam invariants, reran seam rules and invariant tests, and confirmed remaining blockers are edit/manifest/targeted scope mismatches unrelated to seam-rule enforcement.",
+    "approach": "Standard approach",
+    "confidence": 0.9
+  },
+  "commits": [],
+  "filesChanged": [],
+  "projectId": "AgentWorkforce/relay",
+  "tags": [],
+  "_trace": {
+    "startRef": "f2e71d42c6478e75fc4ef81489d2a7fd03a5b380",
+    "endRef": "f2e71d42c6478e75fc4ef81489d2a7fd03a5b380"
+  }
+}

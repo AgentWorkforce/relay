@@ -1,0 +1,25 @@
+{
+  "id": "traj_y7paprr5qdrj",
+  "version": 1,
+  "task": {
+    "title": "native-delivery phase-0 seam gate rerun"
+  },
+  "status": "completed",
+  "startedAt": "2026-09-20T21:17:48.219Z",
+  "completedAt": "2026-09-20T21:20:33.706Z",
+  "agents": [],
+  "chapters": [],
+  "retrospective": {
+    "summary": "Re-ran phase-0 seam rust recorders via native-delivery gate harness and confirmed all green with require-green.",
+    "approach": "Standard approach",
+    "confidence": 0.96
+  },
+  "commits": [],
+  "filesChanged": [],
+  "projectId": "AgentWorkforce/relay",
+  "tags": [],
+  "_trace": {
+    "startRef": "fd8436adcddecc140603bdaf78b2ae620c556992",
+    "endRef": "fd8436adcddecc140603bdaf78b2ae620c556992"
+  }
+}
