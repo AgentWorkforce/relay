@@ -1166,8 +1166,28 @@ function seal() {
     bytes: statSync(file).size,
     sha256: createHash('sha256').update(readFileSync(file)).digest('hex'),
   }));
+  /**
+   * Hash the PRODUCT tree too, not just the evidence directory.
+   *
+   * Sealing only the artifacts means a reviewer signs off on a digest of
+   * evidence FILES, while the source those files describe can change
+   * afterwards without disturbing the digest. Raised as a valid finding
+   * against this harness by codex-fix-1 (F7/F2): "the seal implementation
+   * still hashes artifact files rather than recomputing and hashing every
+   * changed product path immediately before acceptance."
+   *
+   * Computed at seal time from the live tree, so `artifactSetSha256` now
+   * changes if either the evidence or the code moves.
+   */
+  const sourceEntries = changedFiles()
+    .filter((file) => existsSync(file) && statSync(file).isFile())
+    .map((file) => ({
+      path: file,
+      bytes: statSync(file).size,
+      sha256: createHash('sha256').update(readFileSync(file)).digest('hex'),
+    }));
   const setDigest = createHash('sha256')
-    .update(entries.map((entry) => `${entry.path}:${entry.sha256}`).join('\n'))
+    .update([...entries, ...sourceEntries].map((entry) => `${entry.path}:${entry.sha256}`).join('\n'))
     .digest('hex');
   writeJson(path.join(art, `seal-${label}.json`), {
     schemaVersion: 1,
@@ -1178,8 +1198,9 @@ function seal() {
     headSha: git(['rev-parse', 'HEAD']),
     artifactSetSha256: setDigest,
     entries,
+    sourceEntries,
   });
-  pass(`seal label=${label} digest=${setDigest} files=${entries.length}`);
+  pass(`seal label=${label} digest=${setDigest} artifacts=${entries.length} source=${sourceEntries.length}`);
 }
 
 /**
