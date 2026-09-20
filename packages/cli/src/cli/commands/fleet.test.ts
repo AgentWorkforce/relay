@@ -227,6 +227,113 @@ describe('fleet command support', () => {
     });
   });
 
+  it('fleet nodes list --pretty renders a human-readable node table', async () => {
+    const nodes = {
+      list: vi.fn(async () => [
+        {
+          id: 'node_123',
+          name: 'sf-mini',
+          status: 'online',
+          live: true,
+          handlersLive: true,
+          activeAgents: 2,
+          maxAgents: 15,
+          version: 'relay-broker/12.3.0',
+          lastHeartbeatAt: new Date().toISOString(),
+          capabilities: [],
+          tags: [],
+        },
+        {
+          id: 'node_unbounded',
+          name: 'relay-1797-r2-broker',
+          status: 'online',
+          live: true,
+          handlersLive: true,
+          activeAgents: 0,
+          maxAgents: 0,
+          version: 'relay-broker/12.2.5',
+          lastHeartbeatAt: new Date().toISOString(),
+          capabilities: [],
+          tags: [],
+        },
+      ]),
+    };
+    const logs: string[] = [];
+    const program = new Command();
+    program.enablePositionalOptions();
+    program.exitOverride();
+    registerFleetCommands(program, {
+      resolveSandboxRepository: () => undefined,
+      sdk: {
+        createAgentRelay: vi.fn() as never,
+        createWorkspaceRelay: vi.fn(() => ({ nodes })) as never,
+        createWorkspace: vi.fn() as never,
+        log: vi.fn() as never,
+        error: vi.fn(),
+        exit: vi.fn() as never,
+      },
+      log: (...args: unknown[]) => logs.push(args.join(' ')),
+      warn: () => undefined,
+      error: () => undefined,
+    });
+
+    await program.parseAsync(['fleet', 'nodes', 'list', '--pretty', '--workspace-key', 'rk_live_test'], {
+      from: 'user',
+    });
+
+    expect(logs).toHaveLength(1);
+    expect(logs[0]).toContain('NODE');
+    expect(logs[0]).toContain('NODE ID');
+    expect(logs[0]).toContain('sf-mini');
+    expect(logs[0]).toContain('node_123');
+    expect(logs[0]).toContain('2/15');
+    expect(logs[0]).toContain('relay-broker/12.3.0');
+    expect(logs[0]).toContain('relay-1797-r2-broker');
+    expect(logs[0]).toContain('0/unlimited');
+  });
+
+  it('fleet nodes --pretty keeps the short form available', async () => {
+    const nodes = {
+      list: vi.fn(async () => [
+        {
+          id: 'node_456',
+          name: 'finn-mini',
+          status: 'online',
+          live: true,
+          handlersLive: true,
+          activeAgents: 0,
+          maxAgents: 15,
+          capabilities: [],
+          tags: [],
+        },
+      ]),
+    };
+    const logs: string[] = [];
+    const program = new Command();
+    program.exitOverride();
+    registerFleetCommands(program, {
+      resolveSandboxRepository: () => undefined,
+      sdk: {
+        createAgentRelay: vi.fn() as never,
+        createWorkspaceRelay: vi.fn(() => ({ nodes })) as never,
+        createWorkspace: vi.fn() as never,
+        log: vi.fn() as never,
+        error: vi.fn(),
+        exit: vi.fn() as never,
+      },
+      log: (...args: unknown[]) => logs.push(args.join(' ')),
+      warn: () => undefined,
+      error: () => undefined,
+    });
+
+    await program.parseAsync(['fleet', 'nodes', '--pretty', '--workspace-key', 'rk_live_test'], {
+      from: 'user',
+    });
+
+    expect(logs[0]).toContain('finn-mini');
+    expect(logs[0]).toContain('0/15');
+  });
+
   it('must-fire: fleet agent list --node returns the named remote node agents', async () => {
     const nodes = {
       list: vi.fn(async () => [

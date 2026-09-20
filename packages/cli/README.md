@@ -258,7 +258,8 @@ the active project workspace:
 
 ```bash
 agent-relay fleet nodes
-agent-relay fleet nodes --name sf-mini --capability spawn:codex
+agent-relay fleet nodes list --pretty
+agent-relay fleet nodes list --name sf-mini --capability spawn:codex --pretty
 
 # Exact-node placement uses the same agent-scoped Fleet action as the MCP tool.
 agent-relay fleet spawn codex \

@@ -33,6 +33,7 @@ import {
 } from './fleet-agent.js';
 import { readBrokerConnection } from '../lib/broker-lifecycle.js';
 import { spawnAgentWithClient } from '../lib/client-factory.js';
+import { formatRelativeTime, sanitizeForTerminalLine } from '../lib/formatting.js';
 import { connectProjectBrokerClient } from '../lib/project-broker-client.js';
 import { isAvailableFleetNode } from '../lib/fleet-live-agents.js';
 import { declaredWorkforceMetadata } from '../lib/registration-metadata.js';
@@ -235,6 +236,89 @@ function withFleetDefaults(overrides: Partial<FleetCommandDependencies> = {}): F
   };
 }
 
+function formatFleetNodesPretty(nodes: RelayNode[]): string {
+  if (nodes.length === 0) return 'No fleet nodes found.';
+
+  const present = (value: boolean | undefined): string =>
+    value === undefined ? 'unknown' : value ? 'yes' : 'no';
+  const count = (value: number | undefined): string =>
+    typeof value === 'number' && Number.isFinite(value) ? String(value) : '?';
+  const rows = nodes.map((node) => ({
+    name: sanitizeForTerminalLine(node.name || '(unnamed)'),
+    id: sanitizeForTerminalLine(node.id ?? node.nodeId ?? '-'),
+    status: node.status,
+    live: present(node.live),
+    handlers: present(node.handlersLive),
+    agents: `${count(node.activeAgents)}/${node.maxAgents === 0 ? 'unlimited' : count(node.maxAgents)}`,
+    version: sanitizeForTerminalLine(node.version ?? '-'),
+    heartbeat: formatRelativeTime(node.lastHeartbeatAt),
+  }));
+  const columns = [
+    { header: 'NODE', values: rows.map((row) => row.name) },
+    { header: 'NODE ID', values: rows.map((row) => row.id) },
+    { header: 'STATUS', values: rows.map((row) => row.status) },
+    { header: 'LIVE', values: rows.map((row) => row.live) },
+    { header: 'HANDLERS', values: rows.map((row) => row.handlers) },
+    { header: 'AGENTS', values: rows.map((row) => row.agents) },
+    { header: 'VERSION', values: rows.map((row) => row.version) },
+    { header: 'LAST HEARTBEAT', values: rows.map((row) => row.heartbeat) },
+  ];
+  const widths = columns.map((column) =>
+    Math.max(column.header.length, ...column.values.map((value) => value.length))
+  );
+  const format = (values: string[]): string =>
+    values
+      .map((value, index) => value.padEnd(widths[index]!))
+      .join('  ')
+      .trimEnd();
+
+  return [
+    format(columns.map((column) => column.header)),
+    format(columns.map((_, index) => '-'.repeat(widths[index]!))),
+    ...rows.map((_row, rowIndex) => format(columns.map((column) => column.values[rowIndex]!))),
+  ].join('\n');
+}
+
+async function runFleetNodesList(
+  deps: FleetCommandDependencies,
+  options: Record<string, unknown>
+): Promise<void> {
+  await runSdk(deps.sdk, async () => {
+    warnIfInferredFromProjectSession(options, deps.warn);
+    const relay = deps.sdk.createWorkspaceRelay(sdkOptionsFromOpts(options));
+    const nodes = await relay.nodes.list({
+      capability: options.capability as string | undefined,
+      name: options.name as string | undefined,
+    });
+    const liveNodes = nodes.filter(isAvailableFleetNode);
+    const historyNodes = nodes.filter((node) => !isAvailableFleetNode(node));
+    const visibleNodes = options.all === true ? [...liveNodes, ...historyNodes] : liveNodes;
+    const hiddenCount = historyNodes.length;
+    if (hiddenCount > 0 && options.all !== true) {
+      deps.warn(
+        `${hiddenCount} offline or non-fleet records hidden. ` +
+          'Run `agent-relay fleet nodes list --all` to include history.'
+      );
+    }
+    if (options.pretty === true) {
+      deps.log(formatFleetNodesPretty(visibleNodes));
+      return;
+    }
+    printJson(deps.sdk, { nodes: visibleNodes });
+  });
+}
+
+function addFleetNodeListOptions(command: Command): Command {
+  return addSdkOptions(
+    command
+      .option('--pretty', 'Render as a human-readable table')
+      .option('--json', 'Render JSON output (default; explicit for scripts)')
+      .option('--capability <name>', 'Filter by capability name')
+      .option('--name <name>', 'Filter by node name')
+      .option('--all', 'Include offline and direct history records')
+  );
+}
+
 export function registerFleetCommands(
   program: Command,
   overrides: Partial<FleetCommandDependencies> = {}
@@ -255,36 +339,18 @@ export function registerFleetCommands(
       deps.exit(1);
     });
 
-  addSdkOptions(
-    group
-      .command('nodes')
-      .description('List fleet nodes in the workspace')
-      .option('--capability <name>', 'Filter by capability name')
-      .option('--name <name>', 'Filter by node name')
-      .option('--all', 'Include offline and direct history records')
-  ).action(async (options: Record<string, unknown>) => {
-    await runSdk(deps.sdk, async () => {
-      warnIfInferredFromProjectSession(options, deps.warn);
-      const relay = deps.sdk.createWorkspaceRelay(sdkOptionsFromOpts(options));
-      const nodes = await relay.nodes.list({
-        capability: options.capability as string | undefined,
-        name: options.name as string | undefined,
-      });
-      const liveNodes = nodes.filter(isAvailableFleetNode);
-      const historyNodes = nodes.filter((node) => !isAvailableFleetNode(node));
-      const visibleNodes = options.all === true ? [...liveNodes, ...historyNodes] : liveNodes;
-      const hiddenCount = historyNodes.length;
-      if (hiddenCount > 0 && options.all !== true) {
-        deps.warn(
-          `${hiddenCount} offline or non-fleet records hidden. ` +
-            'Run `agent-relay fleet nodes --all` to include history.'
-        );
-      }
-      printJson(deps.sdk, {
-        nodes: visibleNodes,
-      });
-    });
+  const nodes = group
+    .command('nodes')
+    .description('List fleet nodes in the workspace')
+    .enablePositionalOptions();
+  addFleetNodeListOptions(nodes).action(async (options: Record<string, unknown>) => {
+    await runFleetNodesList(deps, options);
   });
+  addFleetNodeListOptions(nodes.command('list').description('List fleet nodes in the workspace')).action(
+    async (options: Record<string, unknown>) => {
+      await runFleetNodesList(deps, options);
+    }
+  );
 
   // `fleet agent list` — the fleet-wide answer to `node agent list --pretty`.
   // See relay#1553 for the gap this fills and packages/cli/src/cli/commands/
