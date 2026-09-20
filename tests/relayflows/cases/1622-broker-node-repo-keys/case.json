@@ -1,0 +1,20 @@
+{
+  "version": 1,
+  "id": "1622-broker-node-repo-keys",
+  "kind": "feature",
+  "title": "Broker-served nodes advertise repository keys from AGENT_RELAY_NODE_REPOS",
+  "runner": {
+    "command": ["node", "tests/relayflows/cases/1622-broker-node-repo-keys/run.mjs"]
+  },
+  "timeoutSeconds": 1800,
+  "expected": {
+    "base": {
+      "outcome": "absent",
+      "signature": "broker_node_register_omits_repo_keys"
+    },
+    "head": {
+      "outcome": "fixed",
+      "signature": "broker_node_register_advertises_sorted_repo_keys"
+    }
+  }
+}
