@@ -1,4 +1,4 @@
-use std::collections::VecDeque;
+use std::collections::{HashSet, VecDeque};
 use std::fmt;
 use std::future::Future;
 use std::pin::Pin;
@@ -138,12 +138,23 @@ pub enum SendOutcome {
     /// This delivery id already has a recorded route. Returning it must not be
     /// counted as another transport attempt by callers.
     AlreadySent(SendReceipt),
+    /// This delivery was sent before, but its receipt has since been evicted by
+    /// the seam's bound, so the route it took is no longer known.
+    ///
+    /// Seam rule 2 governs: not knowing where a message went is not evidence it
+    /// did not go. A caller must NOT re-send — it must settle the delivery as
+    /// in doubt.
+    Forgotten { delivery_id: DeliveryId },
 }
 
 impl SendOutcome {
-    pub fn receipt(&self) -> &SendReceipt {
+    /// The receipt, when one is still known. `Forgotten` has none by
+    /// definition — that is the whole point of it being a distinct case rather
+    /// than a missing entry.
+    pub fn receipt(&self) -> Option<&SendReceipt> {
         match self {
-            Self::Fresh(receipt) | Self::AlreadySent(receipt) => receipt,
+            Self::Fresh(receipt) | Self::AlreadySent(receipt) => Some(receipt),
+            Self::Forgotten { .. } => None,
         }
     }
 }
@@ -225,6 +236,14 @@ pub trait DeliveryBackend {
 #[derive(Debug, Default)]
 pub struct DeliverySeam {
     receipts: VecDeque<SendReceipt>,
+    /// Delivery ids whose receipt was evicted by the bound.
+    ///
+    /// An id the seam once knew and has since forgotten is NOT the same as one
+    /// it has never seen. Without this, eviction reclassified a retried
+    /// delivery as `Fresh` and the seam handed an already-sent message to a
+    /// backend a second time — the duplicate the guard exists to prevent,
+    /// produced by the guard's own bound.
+    evicted: HashSet<DeliveryId>,
 }
 
 impl DeliverySeam {
@@ -232,6 +251,13 @@ impl DeliverySeam {
 
     pub fn new() -> Self {
         Self::default()
+    }
+
+    /// The receipt-memory bound, exposed so a test can exercise eviction
+    /// without hardcoding a number that would silently stop testing eviction
+    /// the day the bound changes.
+    pub fn max_receipts() -> usize {
+        Self::MAX_RECEIPTS
     }
 
     /// Cancellation safety: this coordinator records a receipt only after a
@@ -250,6 +276,14 @@ impl DeliverySeam {
             .cloned()
         {
             return Ok(SendOutcome::AlreadySent(receipt));
+        }
+
+        // Known-but-forgotten is not the same as never-seen. Re-sending here
+        // would be a re-send on doubt (rule 2) and could double-deliver.
+        if self.evicted.contains(&request.delivery_id) {
+            return Ok(SendOutcome::Forgotten {
+                delivery_id: request.delivery_id,
+            });
         }
 
         let mut last_pre_write_error = None;
@@ -324,8 +358,13 @@ impl DeliverySeam {
 
     fn record_receipt(&mut self, receipt: SendReceipt) {
         while self.receipts.len() >= Self::MAX_RECEIPTS {
-            self.receipts.pop_front();
+            if let Some(dropped) = self.receipts.pop_front() {
+                // Remember that we forgot. A later send for this id must not be
+                // treated as never-seen.
+                self.evicted.insert(dropped.delivery_id);
+            }
         }
+        self.evicted.remove(&receipt.delivery_id);
         self.receipts.push_back(receipt);
     }
 }

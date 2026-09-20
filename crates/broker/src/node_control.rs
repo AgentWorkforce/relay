@@ -1204,6 +1204,31 @@ impl FleetDeliveryBook {
     /// later confirmation then returned `None` and re-inserted it.
     pub(crate) fn abandon_unconfirmed_delivery(&mut self, deliver: &Deliver) -> Option<u64> {
         self.mark_cursors_dirty();
+        // An unobserved delivery is the worst possible source of truth for a
+        // cursor origin, so it must not establish one.
+        //
+        // `commit_received` seeds `acked = received = seq - 1` for an
+        // identity's first sequenced delivery, which is correct for a frame the
+        // agent actually received — a respawned agent resumes mid-stream and
+        // would otherwise read every message as a gap. After a restart with
+        // pending 5, 6, 7 re-injected and none confirmed, seeding from an
+        // abandoned 7 puts the cursor above two messages that were never
+        // delivered; the next genuine confirmation then emits a cumulative ack
+        // that retires all three at the engine, with no dead letter and no
+        // unread state.
+        //
+        // The confirm path guards this with a `restore_pending_agent` prologue
+        // (`runtime/fleet.rs:1791-1796`) whose doc states the asymmetry: the
+        // broker may retry an already-landed delivery, but it must never
+        // falsely ACK an undelivered lower one. This path has no such prologue,
+        // so it declines to seed at all.
+        let seeded = self
+            .agents
+            .get(deliver.agent_id.as_str())
+            .is_some_and(|cursor| cursor.has_sequenced_position);
+        if !seeded {
+            return None;
+        }
         self.commit_received(deliver);
         let cursor = self.agents.get_mut(deliver.agent_id.as_str())?;
         if deliver.seq == 0 || deliver.seq <= cursor.acked_up_to_seq {
@@ -3313,6 +3338,42 @@ mod tests {
             Some(5),
             "abandoning seq 4 advanced the cursor to 5 without reporting it: \
              confirmed seq 5 loses its retry hold with nothing to purge it"
+        );
+    }
+
+    /// relay: F4 — an unobserved delivery must never establish the cursor
+    /// origin after a restart.
+    ///
+    /// `commit_received` seeds `acked = received = seq - 1` for the first
+    /// sequenced delivery of an identity, so an agent whose engine sequence
+    /// resumes mid-stream is not permanently short of its own cursor. That is
+    /// right for a delivery the agent actually received. It is catastrophic for
+    /// an abandoned one.
+    ///
+    /// Restart shape: pending 5, 6, 7 all re-injected, none confirmed, book
+    /// empty. If 7's window expires first, seeding from 7 puts the cursor at 7
+    /// — above two messages that were never delivered. The next genuine
+    /// confirmation emits a cumulative ack that retires all three at the
+    /// engine, with no dead letter and no unread state, and
+    /// `runtime/delivery.rs:107-111` says a cumulative ACK "proves every lower
+    /// sequence is complete".
+    #[test]
+    fn abandoning_after_restart_does_not_seed_the_cursor_from_the_abandoned_frame() {
+        let mut book = FleetDeliveryBook::default();
+
+        // Restart: nothing known about this agent yet.
+        let seven = deliver_frame_at("worker-a", "worker-a-id", 7);
+        let advanced = book.abandon_unconfirmed_delivery(&seven);
+
+        assert_eq!(
+            advanced, None,
+            "an unobserved delivery advanced the cumulative cursor on a cold book"
+        );
+        assert!(
+            book.acked_up_to_seq("worker-a-id") < 5,
+            "the cursor was seeded from an ABANDONED frame, so seq 5 and 6 — never \
+             delivered, never confirmed — now sit below it and the next cumulative \
+             ack claims them"
         );
     }
 
