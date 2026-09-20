@@ -1088,10 +1088,22 @@ function seamRules() {
     );
   } else {
     const text = readFileSync(mutation, 'utf8');
-    const named = (config.invariants ?? []).filter((invariant) => text.includes(invariant));
-    if (named.length === 0) problems.push('mutation-proof.md names none of the invariant tests');
-    if (!/FAILED|panicked|assertion .*failed|test result: FAILED/.test(text))
-      problems.push('mutation-proof.md contains no failing test transcript');
+    for (const invariant of config.invariants ?? []) {
+      const index = text.indexOf(invariant);
+      if (index === -1) {
+        problems.push(`mutation-proof.md does not name invariant: ${invariant}`);
+        continue;
+      }
+      const nextIndex = (config.invariants ?? [])
+        .filter((candidate) => candidate !== invariant)
+        .map((candidate) => text.indexOf(candidate, index + invariant.length))
+        .filter((candidateIndex) => candidateIndex !== -1)
+        .sort((a, b) => a - b)[0];
+      const section = text.slice(index, nextIndex ?? text.length);
+      if (!/FAILED|panicked|assertion .*failed|test result: FAILED/.test(section)) {
+        problems.push(`mutation-proof.md has no failing transcript for invariant: ${invariant}`);
+      }
+    }
   }
 
   if (problems.length > 0) {
@@ -1213,6 +1225,32 @@ function accept() {
   const problems = [];
 
   if (existsSync(path.join(art, 'BLOCKED_NO_COMMIT.md'))) problems.push('BLOCKED_NO_COMMIT.md is present');
+
+  /**
+   * Say so, loudly, when the campaign's own harness changed during the run.
+   *
+   * `scripts/migrate/` is in edit-gate's allowed set because it IS campaign
+   * tooling, and that has already paid off once: an agent found that the
+   * mutation-proof check accepted a single failing transcript for any one
+   * invariant and tightened it to require one per invariant. A real hole,
+   * correctly closed.
+   *
+   * The same door lets a gate be WEAKENED to pass, which would be far worse and
+   * would look identical from inside the run. This does not forbid the edit —
+   * forbidding it would have cost the fix above — it records it, so a harness
+   * change reaches the acceptance record and the signoff reviewers instead of
+   * passing silently. The seal already hashes these files; this names them.
+   */
+  const harnessChanged = changedFiles().filter(
+    (file) => file.startsWith('scripts/migrate/') || file.startsWith('flows/migrate/')
+  );
+  if (harnessChanged.length > 0) {
+    process.stdout.write(
+      `HARNESS_MODIFIED during this campaign: ${harnessChanged.join(', ')}\n` +
+        '  Review these as carefully as product code: a gate edited to pass is indistinguishable\n' +
+        '  from a gate edited to be correct, from inside the run.\n'
+    );
+  }
 
   const required = [
     'rust-fmt',
