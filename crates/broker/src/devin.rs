@@ -192,7 +192,7 @@ while select.select([0],[],[],0.06)[0]: data+=os.read(0,65536)
 if data.endswith(b'\r'): os.write(1,b'PARKED')
 else:
  if os.read(0,1)==b'\r': os.write(1,b'SUBMITTED')
-time.sleep(0.3)
+os.read(0,1) # Stay alive until the test shuts down the PTY.
 "#;
         for delayed in [false, true] {
             let (pty, mut rx) = PtySession::spawn(
@@ -225,10 +225,25 @@ time.sleep(0.3)
                 body.push(b'\r');
                 pty.submit_write(body).unwrap().await.unwrap().unwrap();
             }
-            tokio::time::sleep(Duration::from_millis(100)).await;
-            assert!(pty
-                .screen_text()
-                .contains(if delayed { "SUBMITTED" } else { "PARKED" }));
+            let expected = if delayed { "SUBMITTED" } else { "PARKED" };
+            // A write acknowledgement is not a child-output acknowledgement.
+            // Wait for the semantic result instead of assuming the reader and
+            // grid update finish within 100 ms on every CI platform.
+            let observed = tokio::time::timeout(Duration::from_secs(5), async {
+                loop {
+                    let screen = pty.screen_text();
+                    if screen.contains("SUBMITTED") || screen.contains("PARKED") {
+                        break screen;
+                    }
+                    tokio::time::sleep(Duration::from_millis(10)).await;
+                }
+            })
+            .await
+            .expect("PTY fixture did not publish its submission result");
+            assert!(
+                observed.contains(expected),
+                "expected {expected}, got {observed:?}"
+            );
             pty.shutdown().unwrap();
             drain.abort();
         }
