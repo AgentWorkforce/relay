@@ -6,11 +6,11 @@
  * failure into action: a Slack alert, a GitHub issue, an attempted fix on a
  * branch, and a draft PR carrying re-verified evidence.
  *
- * Designed to run on a schedule (nightly or post-merge):
- *   relay cloud schedule workflows/verify-features.ts --cron "0 3 * * *"
+ * Validate the generated Flows v2 spec:
+ *   npm run verify:features:check
  *
- * Or manually:
- *   relay node workflow run workflows/verify-features.ts
+ * Run it manually:
+ *   npm run verify:features
  *
  * Pattern: pipeline (sequential phases — later tiers assume earlier ones ran)
  *
@@ -2063,7 +2063,7 @@ if (v.tiersNotRun.length > 0) {
 }
 out.push('');
 out.push('---');
-out.push('Filed by ${BT}workflows/verify-features.ts${BT}. Artifacts: ${BT}' + artifacts + '${BT}');
+out.push('Filed by ${BT}flows/verify/features.spec.ts${BT}. Artifacts: ${BT}' + artifacts + '${BT}');
 process.stdout.write(out.join('\n'));
 ISSUEEOF
 
@@ -2131,7 +2131,7 @@ per-tier logs in ${ARTIFACTS}/ for detail.
    tests a command that was intentionally removed, or asserts something the
    product never promised), you may correct the check — but you must say so
    explicitly and justify it in your summary.
-3. Do NOT reduce the number of checks in \`workflows/verify-features.ts\`. A
+3. Do NOT reduce the number of checks in \`flows/verify/features.spec.ts\`. A
    later gate counts them and will reject the branch if the count drops.
 4. Re-run the specific failing tier after your fix and paste the real output as
    evidence. A fix with no re-run is not a fix.
@@ -2195,7 +2195,7 @@ that. Do NOT merge anything.`,
 set -uo pipefail
 
 ARTIFACTS="${ARTIFACTS}"
-WORKFLOW_FILE="workflows/verify-features.ts"
+WORKFLOW_FILE="flows/verify/features.spec.ts"
 
 # This step is scheduled unconditionally (no conditional steps in the engine),
 # so a green run reaches it with nothing to check. Exit before the git
@@ -2441,7 +2441,7 @@ fi
   echo ""
   echo "### Review notes"
   echo ""
-  echo "- Opened as a **draft** by \`workflows/verify-features.ts\`. Not auto-merged."
+  echo "- Opened as a **draft** by \`flows/verify/features.spec.ts\`. Not auto-merged."
   echo "- The integrity gate confirmed this branch does not reduce the number of"
   echo "  verification call sites, but a human still needs to confirm the fix"
   echo "  addresses the root cause rather than the symptom."

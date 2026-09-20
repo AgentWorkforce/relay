@@ -98,6 +98,7 @@ export function parsePrProofMetadata(body = '') {
  */
 const NON_RUNTIME_PATH_PATTERNS = Object.freeze([
   /^workflows\//,
+  /^flows\//,
   /^docs\//,
   /^\.github\//,
   /^\.agentworkforce\//,
