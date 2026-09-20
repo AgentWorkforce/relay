@@ -783,6 +783,7 @@ pub(crate) fn queue_inbound_for_delivery_mode(
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 pub(crate) async fn try_inject_pending_relay_message(
     workers: &mut WorkerRegistry,
     pending_deliveries: &mut HashMap<DeliveryId, PendingDelivery>,
@@ -799,6 +800,7 @@ pub(crate) async fn try_inject_pending_relay_message(
     // still very much alive and retryable. See relay#1310 / relay#1543.
     withheld_fleet_ack: Option<crate::fleet_wire::Deliver>,
     withheld_fleet_ack_floor: Option<u64>,
+    seam: &mut crate::delivery::DeliverySeam,
 ) -> Result<DeliveryId> {
     let event_id = msg
         .event_id
@@ -826,6 +828,7 @@ pub(crate) async fn try_inject_pending_relay_message(
             retry_interval,
             withheld_fleet_ack,
             withheld_fleet_ack_floor,
+            seam,
         ),
     )
     .await
@@ -906,6 +909,7 @@ pub(crate) async fn queue_and_try_delivery_raw(
     retry_interval: Duration,
     withheld_fleet_ack: Option<crate::fleet_wire::Deliver>,
     withheld_fleet_ack_floor: Option<u64>,
+    seam: &mut crate::delivery::DeliverySeam,
 ) -> Result<DeliveryId> {
     // Fleet delivery IDs are stable across Relaycast retries. Preserve that
     // identity all the way into the worker so its completed-delivery cache can
@@ -935,6 +939,7 @@ pub(crate) async fn queue_and_try_delivery_raw(
         retry_interval,
         withheld_fleet_ack,
         withheld_fleet_ack_floor,
+        seam,
     )
     .await
 }
@@ -948,6 +953,7 @@ pub(crate) async fn queue_and_try_delivery_raw(
 /// that already has a fully-built [`RelayDelivery`] (the fleet
 /// `WorkerMissing` injection path, which must keep the engine's own
 /// `delivery_id`).
+#[allow(clippy::too_many_arguments)]
 pub(crate) async fn insert_and_attempt_delivery(
     workers: &mut WorkerRegistry,
     pending_deliveries: &mut HashMap<DeliveryId, PendingDelivery>,
@@ -956,6 +962,7 @@ pub(crate) async fn insert_and_attempt_delivery(
     retry_interval: Duration,
     withheld_fleet_ack: Option<crate::fleet_wire::Deliver>,
     explicit_withheld_fleet_ack_floor: Option<u64>,
+    seam: &mut crate::delivery::DeliverySeam,
 ) -> Result<DeliveryId> {
     let delivery_id = delivery.delivery_id.clone();
     let withheld_fleet_ack_floor = withheld_fleet_ack
@@ -984,7 +991,15 @@ pub(crate) async fn insert_and_attempt_delivery(
         },
     );
 
-    match retry_pending_delivery(&delivery_id, workers, pending_deliveries, retry_interval).await? {
+    match retry_pending_delivery(
+        &delivery_id,
+        workers,
+        pending_deliveries,
+        retry_interval,
+        seam,
+    )
+    .await?
+    {
         DeliveryAttemptOutcome::Failed {
             mut pending,
             last_error,
@@ -1015,6 +1030,10 @@ pub(crate) async fn retry_pending_delivery(
     workers: &mut WorkerRegistry,
     pending_deliveries: &mut HashMap<DeliveryId, PendingDelivery>,
     retry_interval: Duration,
+    // Borrowed, not constructed. A seam that lives only for this call has an
+    // always-empty receipt memory, which makes its duplicate guard, route
+    // recording and bounded eviction inert.
+    seam: &mut crate::delivery::DeliverySeam,
 ) -> Result<DeliveryAttemptOutcome> {
     let pending = match pending_deliveries.get(delivery_id) {
         Some(pending) => pending.clone(),
@@ -1064,7 +1083,6 @@ pub(crate) async fn retry_pending_delivery(
         return Ok(DeliveryAttemptOutcome::Noop);
     }
 
-    let mut seam = crate::delivery::DeliverySeam::new();
     let mut pty_backend = crate::delivery::pty::PtyDeliveryBackend::new(workers);
     let request =
         crate::delivery::SendRequest::relay(pending.worker_name.clone(), pending.delivery.clone());

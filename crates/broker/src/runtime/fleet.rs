@@ -1296,6 +1296,7 @@ impl BrokerRuntime {
                                 self.delivery_retry_interval,
                                 is_current.then(|| deliver.clone()),
                                 is_current.then_some(withheld_fleet_ack_floor).flatten(),
+                                &mut self.delivery_seam,
                             )
                             .await
                             {
@@ -1353,6 +1354,7 @@ impl BrokerRuntime {
                             self.delivery_retry_interval,
                             Some(deliver.clone()),
                             withheld_fleet_ack_floor,
+                            &mut self.delivery_seam,
                         )
                         .await
                         .map(|_delivery_id| FleetDeliverySurfaceOutcome::AcknowledgeAfterEcho)

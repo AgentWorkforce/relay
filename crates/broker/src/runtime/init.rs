@@ -776,6 +776,7 @@ pub(crate) async fn run_init(cmd: InitCommand, telemetry: TelemetryClient) -> Re
     let mut sigterm = tokio::signal::windows::ctrl_shutdown()?;
 
     let mut runtime = BrokerRuntime {
+        delivery_seam: crate::delivery::DeliverySeam::new(),
         degraded,
         persist: paths.persist,
         broker_start,
