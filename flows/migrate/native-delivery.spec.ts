@@ -119,7 +119,22 @@ if (!['light', 'standard', 'deep'].includes(DEPTH)) {
  * credential that allows more; an exhausted or refused model fails every step
  * Codex owns, which is most of the implementation.
  */
-const CODEX_MODEL = process.env.NATIVE_DELIVERY_CODEX_MODEL?.trim() || 'gpt-5.5';
+/**
+ * The CLI the "codex" agents run on.
+ *
+ * Swappable because a Codex credential can exhaust mid-campaign, and it did:
+ * `codex-review-2` failed `worker_error exit=1` on usage exhaustion with three
+ * steps left. `cursor-agent` serves the same GPT-5.x Codex models under a
+ * different account, so the swap keeps the cross-vendor property the review
+ * rounds depend on — Claude still reviews what the Codex-family model wrote.
+ *
+ * Cheap to flip: every step references its agent BY NAME, so cli/model live in
+ * the flow-level `agents` map and are not part of any `step_spec_hash`.
+ * Changing them does not invalidate `--reuse-from`.
+ */
+const CODEX_CLI = process.env.NATIVE_DELIVERY_CODEX_CLI?.trim() || 'codex';
+const CODEX_MODEL =
+  process.env.NATIVE_DELIVERY_CODEX_MODEL?.trim() || (CODEX_CLI === 'codex' ? 'gpt-5.5' : 'gpt-5.3-codex');
 const CLAUDE_IMPL_MODEL = process.env.NATIVE_DELIVERY_CLAUDE_MODEL?.trim() || 'opus';
 /** Reviewers read more than they write, so they get the strongest model available. */
 const CLAUDE_REVIEW_MODEL = process.env.NATIVE_DELIVERY_CLAUDE_REVIEW_MODEL?.trim() || 'opus';
@@ -200,15 +215,15 @@ const flow = specWorkflow(`relay.migrate.native-delivery.phase-${PHASE}`)
 // Codex implements the Rust seam; Claude implements the TypeScript, tests and
 // manifest side and shadows the Rust work. Review is cross-vendor by design.
 flow
-  .agent('codex-impl', { cli: 'codex', model: CODEX_MODEL })
+  .agent('codex-impl', { cli: CODEX_CLI, model: CODEX_MODEL })
   .agent('claude-impl', { cli: 'claude', model: CLAUDE_IMPL_MODEL })
   .agent('claude-shadow', { cli: 'claude', model: CLAUDE_SHADOW_MODEL })
   .agent('claude-reviewer', { cli: 'claude', model: CLAUDE_REVIEW_MODEL })
   .agent('claude-fixer', { cli: 'claude', model: CLAUDE_IMPL_MODEL })
-  .agent('codex-reviewer', { cli: 'codex', model: CODEX_MODEL })
-  .agent('codex-fixer', { cli: 'codex', model: CODEX_MODEL })
+  .agent('codex-reviewer', { cli: CODEX_CLI, model: CODEX_MODEL })
+  .agent('codex-fixer', { cli: CODEX_CLI, model: CODEX_MODEL })
   .agent('claude-signoff', { cli: 'claude', model: CLAUDE_REVIEW_MODEL })
-  .agent('codex-signoff', { cli: 'codex', model: CODEX_MODEL });
+  .agent('codex-signoff', { cli: CODEX_CLI, model: CODEX_MODEL });
 
 /**
  * v2 carries `permissions` as journal data and enforces none of it
