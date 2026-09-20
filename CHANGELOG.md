@@ -9,7 +9,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
-- MCP `spawn`, `add_agent`, and direct-message calls now reuse the first result when their JSON-RPC request is replayed, preventing duplicate workers, false duplicate-name failures, and duplicate DMs while keeping separate requests distinct.
+- MCP `spawn`, `add_agent`, and direct-message calls now coalesce in-flight JSON-RPC replays and accept an `idempotency_key` for safe retries after a lost response, preventing duplicate workers, false duplicate-name failures, and duplicate DMs while keeping later JSON-RPC ID reuse distinct.
 
 ## [12.3.1] - 2026-09-20
 

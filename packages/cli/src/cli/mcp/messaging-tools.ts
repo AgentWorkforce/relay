@@ -348,6 +348,14 @@ export function registerMessagingTools(
             'wait (default): queue until the recipient reaches a safe idle boundary; steer: request immediate injection, which may interrupt active work. Both modes return before reading is confirmed.'
           ),
         attachments: z.array(z.string()).optional().describe('File attachment IDs'),
+        idempotency_key: z
+          .string()
+          .min(1)
+          .max(255)
+          .optional()
+          .describe(
+            'Stable key for retrying this same message after a lost response; use a new key for a new message.'
+          ),
         ...identityOverrideInputShape,
       },
       outputSchema: directMessageResult,
@@ -358,8 +366,8 @@ export function registerMessagingTools(
         openWorldHint: true,
       },
     },
-    async ({ to, text, mode, attachments, as }, extra) =>
-      replay.run('send_dm', extra, async () => {
+    async ({ to, text, mode, attachments, idempotency_key, as }, extra) =>
+      replay.run('send_dm', extra, idempotency_key, async () => {
         const agents = await listAgentsForRecipientResolution?.();
         const resolvedRecipient = agents ? resolveExactAgentName(agents, to) : undefined;
         const message = await getAgentClient(as).dm(to, text, {

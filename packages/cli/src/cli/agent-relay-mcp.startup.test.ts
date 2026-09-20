@@ -422,16 +422,54 @@ describe('agent-relay-mcp startup helpers', () => {
     expect(mocks.agentRelayMessagingCommands.invoke).toHaveBeenCalledTimes(2);
   });
 
-  it('allows a completed JSON-RPC request id to be reused for a later spawn', async () => {
+  it('reuses a completed spawn result only for an explicit idempotency key', async () => {
+    const { mod, mocks } = await loadAgentRelayMcpModule();
+    mod.createAgentRelayMcpServer({ agentToken: 'at_live_fleet', agentName: 'orchestrator' });
+    const spawn = mocks.serverInstances[0].tools.get('spawn')!.handler;
+    const input = {
+      name: 'LostResponseWorker',
+      cli: 'codex',
+      idempotency_key: 'spawn-lost-response-1',
+    };
+
+    const first = await spawn(input, { sessionId: 'mcp-session', requestId: 81 });
+    const retry = await spawn(input, { sessionId: 'mcp-session', requestId: 82 });
+
+    expect(retry).toEqual(first);
+    expect(mocks.agentRelayMessagingCommands.invoke).toHaveBeenCalledTimes(1);
+  });
+
+  it('allows a completed JSON-RPC request id to be reused for a later idempotency key', async () => {
     const { mod, mocks } = await loadAgentRelayMcpModule();
     mod.createAgentRelayMcpServer({ agentToken: 'at_live_fleet', agentName: 'orchestrator' });
     const spawn = mocks.serverInstances[0].tools.get('spawn')!.handler;
     const extra = { sessionId: 'mcp-session', requestId: 99 };
 
-    await spawn({ name: 'FirstWorker', cli: 'codex' }, extra);
-    await spawn({ name: 'SecondWorker', cli: 'codex' }, extra);
+    await spawn({ name: 'FirstWorker', cli: 'codex', idempotency_key: 'first-logical-spawn' }, extra);
+    await spawn({ name: 'SecondWorker', cli: 'codex', idempotency_key: 'second-logical-spawn' }, extra);
 
     expect(mocks.agentRelayMessagingCommands.invoke).toHaveBeenCalledTimes(2);
+  });
+
+  it('reuses a completed add_agent result only for an explicit idempotency key', async () => {
+    const { mod, mocks } = await loadAgentRelayMcpModule();
+    mod.createAgentRelayMcpServer({ agentToken: 'at_live_fleet', agentName: 'orchestrator' });
+    await mocks.serverInstances[0].tools.get('set_workspace_key')!.handler({
+      workspace_key: 'rk_live_workspace',
+    });
+    const addAgent = mocks.serverInstances[0].tools.get('add_agent')!.handler;
+    const input = {
+      name: 'LostResponseLegacyWorker',
+      cli: 'codex',
+      task: 'do the work',
+      idempotency_key: 'add-agent-lost-response-1',
+    };
+
+    const first = await addAgent(input, { sessionId: 'mcp-session', requestId: 91 });
+    const retry = await addAgent(input, { sessionId: 'mcp-session', requestId: 92 });
+
+    expect(retry).toEqual(first);
+    expect(mocks.relayInstances.at(-1)!.spawn).toHaveBeenCalledTimes(1);
   });
 
   it('coalesces a replayed DM request while separate identical messages remain distinct', async () => {
@@ -448,6 +486,23 @@ describe('agent-relay-mcp startup helpers', () => {
 
     await sendDm(input, { sessionId: 'mcp-session', requestId: 72 });
     expect(mocks.agentClients.reduce((count, client) => count + client.dm.mock.calls.length, 0)).toBe(2);
+  });
+
+  it('reuses a completed DM receipt only for an explicit idempotency key', async () => {
+    const { mod, mocks } = await loadAgentRelayMcpModule();
+    mod.createAgentRelayMcpServer({ agentToken: 'at_live_fleet', agentName: 'orchestrator' });
+    const sendDm = mocks.serverInstances[0].tools.get('send_dm')!.handler;
+    const input = {
+      to: 'cli-support-lead',
+      text: 'retry after a lost response',
+      idempotency_key: 'dm-lost-response-1',
+    };
+
+    const first = await sendDm(input, { sessionId: 'mcp-session', requestId: 73 });
+    const retry = await sendDm(input, { sessionId: 'mcp-session', requestId: 74 });
+
+    expect(retry).toEqual(first);
+    expect(mocks.agentClients.reduce((count, client) => count + client.dm.mock.calls.length, 0)).toBe(1);
   });
 
   it('parses startup options and helper flags from the environment', async () => {

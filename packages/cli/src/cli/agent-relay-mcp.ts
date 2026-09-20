@@ -1303,6 +1303,14 @@ function registerAgentRelayTools(
           .boolean()
           .optional()
           .describe('Exit the worker after it completes the injected task.'),
+        idempotency_key: z
+          .string()
+          .min(1)
+          .max(255)
+          .optional()
+          .describe(
+            'Stable key for retrying this same request after a lost response; use a new key for a new spawn.'
+          ),
       },
       outputSchema: jsonResult,
       annotations: {
@@ -1312,8 +1320,11 @@ function registerAgentRelayTools(
         openWorldHint: true,
       },
     },
-    async ({ name, cli, task, channel, persona, model, spawn_mode, exit_after_task }, extra) =>
-      requestReplay.run('add_agent', extra, async () => {
+    async (
+      { name, cli, task, channel, persona, model, spawn_mode, exit_after_task, idempotency_key },
+      extra
+    ) =>
+      requestReplay.run('add_agent', extra, idempotency_key, async () => {
         const invocation = await getRelay().agents.spawn({
           name,
           cli,
@@ -1376,6 +1387,14 @@ function registerAgentRelayTools(
         objective: z.string().optional().describe('Declared objective; defaults to task when omitted'),
         session_ref: z.string().optional().describe('Session reference for resumable spawns'),
         target_node: z.string().optional().describe('Optional target fleet node name'),
+        idempotency_key: z
+          .string()
+          .min(1)
+          .max(255)
+          .optional()
+          .describe(
+            'Stable key for retrying this same request after a lost response; use a new key for a new spawn.'
+          ),
         ...identityOverrideInputShape,
       },
       outputSchema: jsonResult,
@@ -1405,11 +1424,12 @@ function registerAgentRelayTools(
         objective,
         session_ref,
         target_node,
+        idempotency_key,
         as,
       },
       extra
     ) =>
-      requestReplay.run('spawn', extra, async () => {
+      requestReplay.run('spawn', extra, idempotency_key, async () => {
         const request = {
           name,
           cli,
