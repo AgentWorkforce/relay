@@ -1210,9 +1210,29 @@ pub fn ensure_muse_mcp_config(
     agent_result: Option<&AgentResultMcpConfig>,
 ) -> io::Result<PathBuf> {
     let muse_dir = clean_home.join("muse");
-    fs::create_dir_all(&muse_dir)?;
-    restrict_muse_home_permissions(clean_home, &muse_dir)?;
     let path = muse_dir.join("settings.json");
+    // The clean-home tree sits inside the shared workspace and its layout is
+    // predictable, so fail closed on pre-planted links before touching
+    // anything: provisioning must never chmod, read through, or write
+    // credentials into a link target.
+    for component in [clean_home, &muse_dir] {
+        reject_muse_provision_symlink(component)?;
+    }
+    if clean_home
+        .parent()
+        .is_some_and(|p| p.file_name().is_some_and(|n| n == ".agent-relay"))
+    {
+        if let Some(parent) = clean_home.parent() {
+            reject_muse_provision_symlink(parent)?;
+        }
+    }
+    fs::create_dir_all(&muse_dir)?;
+    // Re-check after creation: a component swapped for a link in between
+    // must not receive credentials or permission changes.
+    for component in [clean_home, &muse_dir] {
+        reject_muse_provision_symlink(component)?;
+    }
+    restrict_muse_home_permissions(clean_home, &muse_dir)?;
 
     let server = agent_relay_mcp_server_config(
         relay_api_key,
@@ -1239,6 +1259,9 @@ pub fn ensure_muse_mcp_config(
         }
     }
 
+    // A pre-planted settings link must fail, never leak credentials into its
+    // target on the merge read below.
+    reject_muse_provision_symlink(&path)?;
     let mut envelope = if path.exists() {
         let existing = fs::read_to_string(&path)?;
         serde_json::from_str::<Value>(&existing).unwrap_or(Value::Object(Map::new()))
@@ -1265,11 +1288,78 @@ pub fn ensure_muse_mcp_config(
         *servers = Value::Object(servers_obj);
     }
 
-    write_pretty_json(&path, &envelope)?;
+    write_muse_settings_atomic(&muse_dir, &path, &envelope)?;
     // Tighten again after the write (covers fresh files and pre-existing
     // entries on the merge path) — never rely on the ambient umask.
     restrict_muse_home_permissions(clean_home, &muse_dir)?;
+    // The atomic replace swaps a raced-in link itself rather than following
+    // it, but verify anyway: credentials must never sit behind a link.
+    reject_muse_provision_symlink(&path)?;
     Ok(path)
+}
+
+/// Reject a pre-planted symbolic link inside the Muse clean-home tree:
+/// provisioning must never chmod, read through, or write credentials into a
+/// link target. Fails closed so the operator removes the plant. (A swap
+/// racing between this check and use needs directory-handle-relative
+/// no-follow syscalls unavailable in std; the atomic settings replace below
+/// still neutralizes a raced settings link by swapping the link itself.)
+fn reject_muse_provision_symlink(path: &Path) -> io::Result<()> {
+    if fs::symlink_metadata(path)
+        .map(|meta| meta.file_type().is_symlink())
+        .unwrap_or(false)
+    {
+        return Err(io::Error::new(
+            io::ErrorKind::AlreadyExists,
+            format!(
+                "refusing to provision Muse config through a symbolic link (remove it first): {}",
+                path.display()
+            ),
+        ));
+    }
+    Ok(())
+}
+
+/// Write `settings.json` without ever following a link: stage to a uniquely
+/// named temp file created with `O_EXCL` (a pre-planted temp link fails the
+/// create instead of capturing the write), then atomically rename over the
+/// target — a rename swaps a raced-in link itself rather than writing through
+/// it. Temp file starts `0600` on Unix so no umask window exposes secrets.
+fn write_muse_settings_atomic(muse_dir: &Path, path: &Path, envelope: &Value) -> io::Result<()> {
+    use std::io::Write;
+    let bytes = serde_json::to_vec_pretty(envelope)
+        .map_err(|err| io::Error::new(io::ErrorKind::InvalidData, err))?;
+    for attempt in 0..8u32 {
+        let tmp = muse_dir.join(format!(
+            ".settings.json.tmp.{}.{attempt}",
+            std::process::id()
+        ));
+        let mut options = fs::OpenOptions::new();
+        options.write(true).create_new(true);
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::OpenOptionsExt;
+            options.mode(0o600);
+        }
+        match options.open(&tmp) {
+            Ok(mut staged) => {
+                let result = staged
+                    .write_all(&bytes)
+                    .and_then(|()| staged.sync_all())
+                    .and_then(|()| fs::rename(&tmp, path));
+                if result.is_err() {
+                    let _ = fs::remove_file(&tmp);
+                }
+                return result;
+            }
+            Err(err) if err.kind() == io::ErrorKind::AlreadyExists => continue,
+            Err(err) => return Err(err),
+        }
+    }
+    Err(io::Error::new(
+        io::ErrorKind::AlreadyExists,
+        "could not stage a unique Muse settings temp file",
+    ))
 }
 
 /// - `cli`: CLI tool name (e.g. "claude", "codex", "gemini", "droid", "grok", "muse", "opencode", "cursor")
@@ -2378,6 +2468,93 @@ mod tests {
             mode(&loose_settings),
             0o600,
             "existing settings must tighten to 0600"
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn ensure_muse_mcp_config_refuses_planted_symlinks() {
+        use std::os::unix::fs::symlink;
+        // A workspace user plants links in the predictable tree; provisioning
+        // must fail closed without chmodding, reading through, or writing
+        // credentials into any link target.
+        let temp = tempdir().expect("tempdir");
+
+        // Planted clean home pointing at a victim dir.
+        let victim = temp.path().join("victim");
+        fs::create_dir_all(&victim).expect("victim dir");
+        let home = temp.path().join("clean");
+        symlink(&victim, &home).expect("plant home link");
+        let err = super::ensure_muse_mcp_config(
+            &home,
+            Some("rk_link"),
+            None,
+            Some("agent-link"),
+            Some("at_link"),
+            None,
+            None,
+            None,
+        )
+        .expect_err("planted home link must fail");
+        assert!(
+            err.to_string().contains("symbolic link"),
+            "unexpected error: {err}"
+        );
+        assert!(
+            !victim.join("muse").exists(),
+            "victim dir must stay untouched"
+        );
+
+        // Planted settings link pointing at a victim file.
+        let home2 = temp.path().join("clean2");
+        let muse_dir = home2.join("muse");
+        fs::create_dir_all(&muse_dir).expect("muse dir");
+        let victim_file = temp.path().join("victim.txt");
+        fs::write(&victim_file, "original-contents").expect("seed victim");
+        symlink(&victim_file, muse_dir.join("settings.json")).expect("plant settings link");
+        let err = super::ensure_muse_mcp_config(
+            &home2,
+            Some("rk_link"),
+            None,
+            Some("agent-link"),
+            Some("at_link"),
+            None,
+            None,
+            None,
+        )
+        .expect_err("planted settings link must fail");
+        assert!(
+            err.to_string().contains("symbolic link"),
+            "unexpected error: {err}"
+        );
+        let contents = fs::read_to_string(&victim_file).expect("read victim");
+        assert_eq!(
+            contents, "original-contents",
+            "victim file must stay intact"
+        );
+        assert!(
+            !contents.contains("rk_link") && !contents.contains("at_link"),
+            "no credentials may leak through the link"
+        );
+
+        // Planted muse subdir link.
+        let home3 = temp.path().join("clean3");
+        fs::create_dir_all(&home3).expect("home3");
+        symlink(&victim, home3.join("muse")).expect("plant muse link");
+        super::ensure_muse_mcp_config(
+            &home3,
+            Some("rk_link"),
+            None,
+            Some("agent-link"),
+            Some("at_link"),
+            None,
+            None,
+            None,
+        )
+        .expect_err("planted muse link must fail");
+        assert!(
+            !victim.join("settings.json").exists(),
+            "victim dir must stay untouched"
         );
     }
 
