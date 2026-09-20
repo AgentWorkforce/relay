@@ -48,6 +48,7 @@ const CLI_MODEL_COMMANDS: Record<string, ModelCommandConfig> = {
   },
   codex: { supported: false },
   gemini: { supported: false },
+  devin: { supported: true, buildCommand: (model: string) => `/model ${model}\n` },
   droid: { supported: false },
   muse: { supported: false },
   opencode: { supported: false },

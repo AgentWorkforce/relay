@@ -392,6 +392,23 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn devin_defers_private_mcp_configuration_to_the_worker() {
+        let temp = tempfile::tempdir().unwrap();
+        let output = compute_mcp_args_output(command("devin", temp.path()))
+            .await
+            .unwrap();
+        assert!(
+            output.args.is_empty(),
+            "no trust or permission bypass flags"
+        );
+        assert!(output.side_effect_files.is_empty());
+        assert!(
+            !temp.path().join(".devin").exists(),
+            "never write shared project state"
+        );
+    }
+
+    #[tokio::test]
     async fn claude_output_contains_resolved_mcp_config_json() {
         // The broker must render the same local executable it preflights, rather
         // than handing Claude `npx -y agent-relay mcp`. The latter silently

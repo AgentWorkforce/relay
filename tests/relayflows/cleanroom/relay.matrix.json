@@ -114,6 +114,7 @@
             "packages/cli/src/cli/telemetry/config.test.ts"
           ],
           "timeoutSeconds": 600,
+          "prSetup": "none",
           "evidence": "contract",
           "coversCategories": ["workspace", "telemetry"]
         },
@@ -122,6 +123,7 @@
           "title": "The checkout-built CLI exposes the public command tree",
           "command": ["node", "packages/cli/dist/cli/index.js", "--help"],
           "timeoutSeconds": 60,
+          "prSetup": ["build-cli"],
           "mustContain": ["Agent-to-agent messaging", "node", "workspace", "mcp"],
           "evidence": "integration",
           "coversCategories": ["setup", "node"]
@@ -163,6 +165,11 @@
           "timeoutSeconds": 900
         },
         {
+          "id": "compile-broker-tests",
+          "command": ["npm", "run", "test:integration:broker:build"],
+          "timeoutSeconds": 600
+        },
+        {
           "id": "build-broker",
           "command": ["cargo", "build", "--release", "--bin", "agent-relay-broker"],
           "timeoutSeconds": 1800,
@@ -172,9 +179,17 @@
       "scenarios": [
         {
           "id": "broker-process-integration",
-          "title": "Real broker protocol, lifecycle, injection and child cleanup",
-          "command": ["npm", "run", "test:integration:broker"],
+          "title": "Real broker messaging, observability, PTY input and child cleanup",
+          "command": [
+            "node",
+            "--test",
+            "--test-concurrency=1",
+            "tests/integration/broker/dist/messaging.test.js",
+            "tests/integration/broker/dist/observability.test.js",
+            "tests/integration/broker/dist/pty-exit.test.js"
+          ],
           "timeoutSeconds": 1800,
+          "prSetup": ["build-core", "compile-broker-tests", "build-broker"],
           "environment": {
             "AGENT_RELAY_BIN": "{{brokerBinary}}"
           },
@@ -262,6 +277,7 @@
             "packages/sdk/src/__tests__/delivery-actions.test.ts"
           ],
           "timeoutSeconds": 600,
+          "prSetup": "none",
           "evidence": "contract",
           "coversCategories": [
             "messaging-channels",
@@ -274,29 +290,21 @@
         },
         {
           "id": "messaging-mcp-process-roundtrip",
-          "title": "Real broker messaging and MCP injection round trips",
+          "title": "Real broker messaging round trips",
           "command": [
             "node",
             "--test",
-            "tests/integration/broker/dist/messaging.test.js",
-            "tests/integration/broker/dist/channel-management.test.js",
-            "tests/integration/broker/dist/mcp-injection.test.js",
-            "tests/integration/broker/dist/mcp-hints.test.js",
-            "tests/integration/broker/dist/agent-spawns-agent.test.js"
+            "--test-concurrency=1",
+            "tests/integration/broker/dist/messaging.test.js"
           ],
           "timeoutSeconds": 900,
+          "prSetup": ["build-core", "compile-broker-tests", "build-broker"],
           "environment": {
             "AGENT_RELAY_BIN": "{{brokerBinary}}"
           },
           "forbidOutput": ["# SKIP"],
           "evidence": "integration",
-          "coversCategories": [
-            "messaging-channels",
-            "messaging-messages",
-            "messaging-dm",
-            "messaging-inbox",
-            "mcp"
-          ],
+          "coversCategories": ["messaging-channels", "messaging-messages", "messaging-dm", "messaging-inbox"],
           "issues": [1117, 1255, 1367, 1368, 1471, 1525, 1541, 1542, 1594, 1614]
         },
         {
@@ -432,10 +440,12 @@
             "packages/cli/src/cli/lib/attach-passthrough.test.ts"
           ],
           "timeoutSeconds": 900,
+          "targetedSetup": ["build-core"],
           "evidence": "contract",
           "coversCategories": ["fleet"],
           "coversFeatures": [
             "fleet-nodes",
+            "fleet-nodes-pretty",
             "fleet-spawn",
             "fleet-release",
             "fleet-config",
@@ -475,6 +485,7 @@
           "title": "The complete two-Daytona Fleet board and evidence contract stay executable",
           "command": ["npx", "vitest", "run", "tests/fixtures/verify-fleet-daytona.test.ts"],
           "timeoutSeconds": 120,
+          "targetedSetup": ["build-core"],
           "evidence": "contract",
           "coversCategories": ["fleet"]
         },
@@ -501,7 +512,8 @@
         "cloud-integrations",
         "cloud-rooms",
         "cloud-workers",
-        "integration"
+        "integration",
+        "product-surfaces"
       ],
       "issueMatch": [
         "workflow",
@@ -540,6 +552,7 @@
             "packages/cloud/src/fleet-sandbox.test.ts"
           ],
           "timeoutSeconds": 900,
+          "prSetup": "none",
           "evidence": "contract",
           "coversCategories": [
             "local-workflows",
@@ -564,6 +577,22 @@
           "evidence": "integration",
           "coversCategories": ["cloud", "cloud-integrations", "cloud-rooms", "cloud-workers", "integration"],
           "issues": [1265, 1393, 1481, 1620, 1621]
+        },
+        {
+          "id": "product-surface-contracts",
+          "title": "Mounted relayfile, relayflows, and session command surfaces",
+          "command": [
+            "npx",
+            "vitest",
+            "run",
+            "packages/cli/src/cli/commands/product-surfaces.test.ts",
+            "packages/cli/src/cli/commands/product-surfaces.e2e.test.ts",
+            "packages/cli/src/cli/commands/session.test.ts"
+          ],
+          "timeoutSeconds": 300,
+          "targetedSetup": ["build-core"],
+          "evidence": "contract",
+          "coversCategories": ["product-surfaces"]
         }
       ]
     },
@@ -688,6 +717,7 @@
           "command": ["swift", "test", "--package-path", "packages/sdk-swift"],
           "requiredCommands": ["swift"],
           "timeoutSeconds": 1200,
+          "prSetup": "none",
           "evidence": "contract",
           "coversCategories": ["swift-sdk"]
         },
@@ -786,6 +816,7 @@
             "packages/cli/src/install-script.test.ts"
           ],
           "timeoutSeconds": 600,
+          "prSetup": "none",
           "evidence": "contract",
           "issues": [1059, 1370, 1379, 1389, 1405, 1409, 1460, 1526, 1570]
         },
@@ -795,6 +826,7 @@
           "command": ["cargo", "test", "--workspace", "--all-targets"],
           "requiredCommands": ["cargo"],
           "timeoutSeconds": 2400,
+          "prSetup": "none",
           "evidence": "contract",
           "issues": [1293, 1294, 1295, 1299, 1300, 1301, 1302, 1303, 1304, 1305, 1306, 1307, 1308, 1309]
         },

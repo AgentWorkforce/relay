@@ -1,8 +1,11 @@
 import { describe, expect, it } from 'vitest';
 
-import { claude, codex, definePtyHarness, grok, muse } from './index.js';
+import { claude, codex, definePtyHarness, devin, grok, muse } from './index.js';
 
 describe('harness factories (Phase C)', () => {
+  it('creates a first-class Devin PTY agent', () => {
+    expect(devin.new({ name: 'devin-worker' }).cli).toBe('devin');
+  });
   it('exposes the static definition shape for the runtime', () => {
     expect(claude.runtime).toBe('pty');
     expect(claude.command).toBe('claude');

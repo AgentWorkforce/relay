@@ -15,6 +15,7 @@ describe('PTY parity against the AI SDK reference profile', () => {
       'claude',
       'codex',
       'cursor-agent',
+      'devin',
       'droid',
       'gemini',
       'goose',

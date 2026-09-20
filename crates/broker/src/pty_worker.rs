@@ -69,7 +69,10 @@ const DEFAULT_INJECT_RATE_MS: u64 = 5;
 /// bulk-input path accepts the same reminder and task immediately.
 fn default_inject_rate_ms(cli: &str) -> u64 {
     let cli = cli_basename(cli);
-    if cli.eq_ignore_ascii_case("codex") || cli.eq_ignore_ascii_case("codex.exe") {
+    if cli.eq_ignore_ascii_case("codex")
+        || cli.eq_ignore_ascii_case("codex.exe")
+        || crate::readiness::is_devin_cli(cli)
+    {
         0
     } else {
         DEFAULT_INJECT_RATE_MS
@@ -827,6 +830,7 @@ pub(crate) async fn run_pty_worker(cmd: PtyCommand) -> Result<()> {
     let mut effective_args = inline_cli_args;
     effective_args.extend(cmd.args.clone());
 
+    let _devin_state = crate::devin::prepare_worker_config(&resolved_cli).await?;
     let (init_rows, init_cols) = get_terminal_size().unwrap_or((24, 80));
     let (pty, mut pty_rx) =
         PtySession::spawn(&resolved_cli, &effective_args, init_rows, init_cols)?;
@@ -857,6 +861,7 @@ pub(crate) async fn run_pty_worker(cmd: PtyCommand) -> Result<()> {
     let mut child_exit_detected = false;
 
     let mut pty_auto = PtyAutoState::new();
+    pty_auto.automatic_responses_disabled = crate::readiness::is_devin_cli(&resolved_cli);
 
     let idle_threshold = if cmd.idle_threshold_secs == 0 {
         None
@@ -1839,6 +1844,7 @@ pub(crate) async fn run_pty_worker(cmd: PtyCommand) -> Result<()> {
             // Gated off while an interactive hold is active so queued deliveries
             // stay parked (not dropped) until the human releases the drive.
             _ = pending_injection_interval.tick() => {
+                if !crate::devin::can_inject(&resolved_cli, &pty) { continue; }
                 if let Some(index) = next_injection_index(
                     &pending_worker_injections,
                     active_injection.is_some(),
@@ -1926,6 +1932,13 @@ pub(crate) async fn run_pty_worker(cmd: PtyCommand) -> Result<()> {
                         }
                     }
                     InjectionStage::Body => {
+                        // Recheck after throttling/steer delay: never paste
+                        // into a dialog that replaced the previously idle UI.
+                        if !crate::devin::can_inject(&resolved_cli, &pty) {
+                            inj.next_at = tokio::time::Instant::now() + Duration::from_millis(50);
+                            active_injection = Some(inj);
+                            continue;
+                        }
                         pty_auto.auto_suggestion_visible = false;
                         let include_mcp_reminder = !suppress_multiline_mcp_reminder
                             && mcp_reminder_throttle.should_include(Instant::now());
@@ -1997,17 +2010,13 @@ pub(crate) async fn run_pty_worker(cmd: PtyCommand) -> Result<()> {
                             continue;
                         }
                         // Submit the body and mandatory Enter as one FIFO
-                        // command and hold the ack (see `submit_injection_body`
-                        // for the harness-specific submit shape). Finalization
-                        // (emit `delivery_injected`, queue echo verification)
+                        // command and hold the ack. Devin first applies its
+                        // bracketed-paste body shape; the shared helper then
+                        // selects the harness-specific delayed Enter. Finalization
                         // still waits for this ack in the injection-ack arm.
-                        let bytes = injection.clone().into_bytes();
-                        let write = submit_injection_body(
-                            &pty,
-                            &resolved_cli,
-                            bytes,
-                            inject_rate,
-                        );
+                        let bytes = crate::devin::injection_bytes(&resolved_cli, &injection);
+                        let write =
+                            submit_injection_body(&pty, &resolved_cli, bytes, inject_rate);
                         match write {
                             Ok((ack_rx, output_boundary)) => {
                                 inj.injection_text = Some(injection);

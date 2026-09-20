@@ -6,6 +6,7 @@
 // binary/library split; each annotated module has at least one genuinely
 // unused public-facing item that the compiler would otherwise warn about.
 
+mod devin;
 pub mod fleet_wire;
 pub mod ids;
 pub mod protocol;

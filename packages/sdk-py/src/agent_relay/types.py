@@ -42,6 +42,7 @@ AgentCli = Literal[
     "muse",
     "opencode",
     "droid",
+    "devin",
     "cursor",
     "cursor-agent",
     "agent",

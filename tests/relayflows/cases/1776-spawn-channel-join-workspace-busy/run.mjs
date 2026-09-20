@@ -19,8 +19,9 @@ const BUSY_CODE = 'workspace_busy';
 const BUSY_MESSAGE = 'Workspace write capacity is busy; retry with backoff';
 const SKIPPED_MARKER = 'skipped after workspace_busy: engineering';
 const RECOVER_BUSY_RESPONSES = 2;
-// Head: one initial attempt plus the three-entry backoff table (1s, 2s, 4s).
-const HEAD_EXHAUSTED_ATTEMPTS = 4;
+// Relaycast 8 owns a bounded three-request admission round. The broker permits
+// one more complete round while keeping one request budget across all channels.
+const HEAD_EXHAUSTED_ATTEMPTS = 6;
 
 const targetDir = requiredDirectory('RELAY_PR_PROOF_TARGET_DIR');
 const harnessDir = requiredDirectory('RELAY_PR_PROOF_HARNESS_DIR');
@@ -98,8 +99,8 @@ try {
     exhausted.errorText.includes(BUSY_CODE) &&
     exhausted.errorText.includes(SKIPPED_MARKER) &&
     !exhausted.launched &&
-    // Backoff 1s + 2s + 4s must actually elapse between the attempts.
-    exhausted.busySpanMs >= 6_500;
+    // Two SDK rounds plus the broker-owned cooldown must actually elapse.
+    exhausted.busySpanMs >= 9_500;
 
   let outcome;
   let signature;

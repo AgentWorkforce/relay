@@ -963,7 +963,7 @@ fn bracket_ipv6_host(host: &str) -> String {
 
 /// The harnesses the broker advertises `spawn:<harness>` capacity for when
 /// `AGENT_RELAY_NODE_HARNESSES` is unset.
-const DEFAULT_NODE_HARNESSES: &[&str] = &["claude", "codex", "gemini", "opencode", "muse"];
+const DEFAULT_NODE_HARNESSES: &[&str] = &["claude", "codex", "gemini", "opencode", "muse", "devin"];
 
 /// Build the node descriptor the broker registers as the `broker` provider.
 ///

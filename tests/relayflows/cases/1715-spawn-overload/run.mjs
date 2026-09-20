@@ -576,8 +576,9 @@ function isWithin(directory, candidate) {
 
 function retryScheduleIsBounded(timestamps, proofArm) {
   // Unsafe spawn: 3 attempts on the fixed 200/400ms transient-5xx schedule.
-  // Safe spawn (head only): the proven eleven-attempt `workspace_busy`
-  // budget at a flat one-second cooldown between attempts.
+  // Safe spawn (head only): each broker-owned one-second `workspace_busy`
+  // retry contains the SDK's three immediate create-only attempts. The final
+  // outer retry succeeds on its first SDK attempt.
   const safeAttempts = proofArm === 'head' ? SAFE_AGENT_WORKSPACE_BUSY_ATTEMPTS : 3;
   if (timestamps.length !== 3 + safeAttempts) return false;
 
@@ -596,11 +597,15 @@ function retryScheduleIsBounded(timestamps, proofArm) {
   const safeStart = 3;
   const safeElapsed = timestamps[safeStart + safeAttempts - 1] - timestamps[safeStart];
   if (safeElapsed > SAFE_AGENT_WORKSPACE_BUSY_DEADLINE_MS) return false;
-  const expectedSafeBackoff = proofArm === 'head' ? 1_000 : RETRY_BACKOFFS_MS[0];
   for (let retry = 0; retry < safeAttempts - 1; retry += 1) {
     const delta = timestamps[safeStart + retry + 1] - timestamps[safeStart + retry];
     if (proofArm === 'head') {
-      if (delta < expectedSafeBackoff - 100 || delta > expectedSafeBackoff + RETRY_DELAY_TOLERANCE_MS) {
+      const sdkAttemptsPerOuterRetry = RETRY_BACKOFFS_MS.length + 1;
+      const startsNextOuterRetry = (retry + 1) % sdkAttemptsPerOuterRetry === 0;
+      if (startsNextOuterRetry && (delta < 1_000 - 100 || delta > 1_000 + RETRY_DELAY_TOLERANCE_MS)) {
+        return false;
+      }
+      if (!startsNextOuterRetry && (delta < 0 || delta > RETRY_DELAY_TOLERANCE_MS)) {
         return false;
       }
     } else if (
