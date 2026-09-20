@@ -693,7 +693,7 @@ fn worker_event_runtime_fixture_with_relay(
         delivery_retry_interval: Duration::from_millis(10),
         pending_deliveries: PendingDeliveryStore::new(pending_deliveries),
         dead_letters: DeadLetterStore::default(),
-        terminal_failed_deliveries: HashSet::new(),
+        terminal_failed_deliveries: super::event_loop::TerminalDeliveryGuard::default(),
         pending_requests: HashMap::new(),
         pending_verified_spawns: HashMap::new(),
         resize_owners: HashMap::new(),
@@ -3060,11 +3060,171 @@ async fn every_terminal_disposition_drops_its_withheld_fleet_ack() {
     cleanup_worker_registry(fixture.runtime.workers).await;
 }
 
+/// Seam rule 4 (docs/native-delivery-migration.md): "Never claim an
+/// acknowledgement you did not observe."
+///
+/// `delivery_verified { verification: "timeout_fallback" }` is what the PTY
+/// worker reports when the injection write was handed over and the echo never
+/// came back. That is a hand-off in doubt, not a delivery, so it must produce
+/// none of the engine-facing consequences of an observed ack: no
+/// `message_delivery_confirmed` and no read ack. And because seam rule 2
+/// forbids re-sending on doubt, it must not be left pending either —
+/// `runtime/maintenance.rs` would re-inject it.
+///
+/// Two controls keep the negative assertions from passing for the wrong
+/// reason: the echo arm proves the same event shape still confirms, and the
+/// late-ack arm proves the fallback settled the delivery terminally rather
+/// than merely being ignored by the handler.
+#[tokio::test]
+async fn timeout_fallback_never_confirms_or_acks_an_unobserved_delivery() {
+    struct Observed {
+        kinds: Vec<String>,
+        fleet_ack_released: bool,
+        still_pending: bool,
+        terminal: bool,
+    }
+
+    async fn drive_verification(verification: &str, then_late_ack: bool) -> Observed {
+        let worker_name = "worker-a";
+        let registry = make_worker_registry_with_worker(worker_name).await;
+        let generation = registry.workers[worker_name].generation;
+        let delivery_id = DeliveryId::new("del_timeout_fallback");
+        let event_id = format!("evt_{}", delivery_id.as_str());
+        let mut pending = make_pending_delivery(delivery_id.as_str(), worker_name);
+        pending.withheld_fleet_ack = Some(withheld_ack_for(delivery_id.as_str()));
+        let mut fixture =
+            worker_event_runtime_fixture(registry, HashMap::from([(delivery_id.clone(), pending)]));
+
+        fixture
+            .runtime
+            .handle_worker_event(WorkerEvent::Message {
+                name: WorkerName::from(worker_name),
+                generation,
+                value: json!({
+                    "type": "delivery_verified",
+                    "payload": {
+                        "delivery_id": delivery_id.as_str(),
+                        "event_id": event_id,
+                        "verification": verification,
+                        "reason": "echo not detected within 5s window",
+                    },
+                }),
+            })
+            .await;
+
+        if then_late_ack {
+            fixture
+                .runtime
+                .handle_worker_event(delivery_lifecycle_worker_event(
+                    worker_name,
+                    generation,
+                    "delivery_ack",
+                    delivery_id.as_str(),
+                    &event_id,
+                ))
+                .await;
+        }
+
+        let mut kinds = Vec::new();
+        while let Ok(frame) = fixture._sdk_out_rx.try_recv() {
+            if let Some(kind) = frame.payload.get("kind").and_then(Value::as_str) {
+                kinds.push(kind.to_string());
+            }
+        }
+        let observed = Observed {
+            kinds,
+            fleet_ack_released: fixture.fleet_control_rx.try_recv().is_ok(),
+            still_pending: fixture
+                .runtime
+                .pending_deliveries
+                .contains_key(&delivery_id),
+            terminal: fixture
+                .runtime
+                .terminal_failed_deliveries
+                .contains(&delivery_id),
+        };
+        cleanup_worker_registry(fixture.runtime.workers).await;
+        observed
+    }
+
+    let fallback = drive_verification("timeout_fallback", false).await;
+    assert!(
+        fallback
+            .kinds
+            .iter()
+            .any(|kind| kind == "delivery_verified"),
+        "the fallback must still be reported, just not as an acknowledgement: {:?}",
+        fallback.kinds
+    );
+    for forbidden in [
+        "message_delivery_confirmed",
+        "delivery_read_ack",
+        "delivery_ack",
+    ] {
+        assert!(
+            !fallback.kinds.iter().any(|kind| kind == forbidden),
+            "unobserved timeout fallback emitted {forbidden}: {:?}",
+            fallback.kinds
+        );
+    }
+    assert!(
+        !fallback.fleet_ack_released,
+        "unobserved timeout fallback must not release the withheld engine-facing ack"
+    );
+    assert!(
+        !fallback.still_pending,
+        "an in-doubt delivery must not stay pending: maintenance would re-inject it"
+    );
+    assert!(
+        fallback.terminal,
+        "an in-doubt delivery must be recorded terminal so a late ack cannot confirm it"
+    );
+
+    // Control 1: a late `delivery_ack` for the same delivery — the shape that
+    // released the fleet ack before this fix — cannot resurrect it.
+    let late = drive_verification("timeout_fallback", true).await;
+    for forbidden in ["message_delivery_confirmed", "delivery_read_ack"] {
+        assert!(
+            !late.kinds.iter().any(|kind| kind == forbidden),
+            "a late ack after an unobserved fallback emitted {forbidden}: {:?}",
+            late.kinds
+        );
+    }
+    assert!(
+        !late.fleet_ack_released,
+        "a late ack after an unobserved fallback must not release the withheld fleet ack"
+    );
+
+    // Control 2: the echo arm still confirms, so the assertions above are
+    // about the fallback and not about the event being dropped before the
+    // handler. (The fleet ack is released by `delivery_ack` on the echo path,
+    // not by `delivery_verified`; that is covered by
+    // `successful_injection_still_resolves_its_withheld_fleet_ack`.)
+    let echo = drive_verification("echo", false).await;
+    assert!(
+        echo.kinds
+            .iter()
+            .any(|kind| kind == "message_delivery_confirmed"),
+        "an echo-verified delivery must still confirm: {:?}",
+        echo.kinds
+    );
+    assert!(
+        !echo.still_pending,
+        "a confirmed delivery leaves the pending map"
+    );
+    assert!(
+        !echo.terminal,
+        "an observed delivery is confirmed, not recorded as a terminal failure"
+    );
+}
+
 // relay#1310 MUST-NOT-FIRE: once the worker confirms the injection landed
-// (echo-verified, or its bounded timeout fallback — pty_worker.rs sends the
-// same internal `delivery_ack` event either way), the engine ack must still
-// fire, with the delivery's own (agent, up_to_seq) — i.e. the happy path is
-// unchanged, just correctly gated on confirmation instead of write-enqueue.
+// (echo-verified — the ONLY case in which pty_worker.rs sends the internal
+// `delivery_ack`; its bounded timeout fallback deliberately does not, see
+// `timeout_fallback_never_confirms_or_acks_an_unobserved_delivery`), the engine
+// ack must still fire, with the delivery's own (agent, up_to_seq) — i.e. the
+// happy path is unchanged, just correctly gated on confirmation instead of
+// write-enqueue.
 // Exercises the full wiring: a real handoff through
 // `try_inject_pending_relay_message`, followed by a matching worker event
 // through `BrokerRuntime::handle_worker_event`, with the assertion made on the
@@ -3629,10 +3789,38 @@ async fn initial_delivery_failure_stays_owned_until_dead_lettered() {
         EventId::new("evt_initial_failure")
     );
     assert_eq!(pending.delivery.body, "must remain auditable");
+    assert_eq!(pending.attempts, 0);
+    assert_eq!(pending.failed_attempts, MAX_DELIVERY_RETRIES);
+    assert_eq!(pending.last_error.as_deref(), Some("recipient gone"));
+    let delivery_id = pending.delivery.delivery_id.clone();
+
+    let outcome = retry_pending_delivery(
+        &delivery_id,
+        &mut workers,
+        &mut pending_deliveries,
+        Duration::from_millis(1),
+    )
+    .await
+    .expect("terminal retained delivery should dead-letter on maintenance retry");
+    match outcome {
+        DeliveryAttemptOutcome::Failed {
+            pending,
+            last_error,
+        } => {
+            assert_eq!(pending.attempts, 0);
+            assert_eq!(pending.failed_attempts, MAX_DELIVERY_RETRIES);
+            assert_eq!(last_error, "recipient gone");
+        }
+        other => panic!("terminal retained delivery should fail once, got {other:?}"),
+    }
+    assert!(
+        pending_deliveries.is_empty(),
+        "terminal retained delivery must be removed before dead-lettering"
+    );
 }
 
 #[tokio::test]
-async fn delivery_retry_transient_blip_emits_failed_event_for_present_worker() {
+async fn delivery_retry_committed_writer_failure_stops_without_dead_letter() {
     let worker_name = "worker-blip";
     let mut workers = make_worker_registry_with_worker(worker_name).await;
     {
@@ -3674,116 +3862,31 @@ async fn delivery_retry_transient_blip_emits_failed_event_for_present_worker() {
         },
     )]);
 
-    let mut final_outcome = None;
-    for retry_index in 1..=MAX_DELIVERY_RETRIES + 1 {
-        match retry_pending_delivery(
-            &DeliveryId::new("del_blip"),
-            &mut workers,
-            &mut pending_deliveries,
-            Duration::from_millis(1),
-        )
-        .await
-        {
-            Ok(outcome @ DeliveryAttemptOutcome::Failed { .. }) => {
-                let DeliveryAttemptOutcome::Failed { ref pending, .. } = outcome else {
-                    unreachable!();
-                };
-                assert_eq!(pending.attempts, MAX_DELIVERY_RETRIES);
-                // Some platforms can accept a final pipe write after the child exits,
-                // so terminal failure may arrive on the immediate post-cap check.
-                assert!(
-                    retry_index >= MAX_DELIVERY_RETRIES,
-                    "delivery should not fail before the retry cap is exhausted"
-                );
-                final_outcome = Some(outcome);
-                break;
-            }
-            Ok(DeliveryAttemptOutcome::Attempted { attempts, .. }) => {
-                assert!(
-                    attempts <= MAX_DELIVERY_RETRIES,
-                    "retry attempts must stay within the retry cap"
-                );
-                assert!(
-                    retry_index <= MAX_DELIVERY_RETRIES,
-                    "the retry after the cap should return a terminal failure"
-                );
-            }
-            Ok(DeliveryAttemptOutcome::Noop) => {
-                assert!(
-                    retry_index < MAX_DELIVERY_RETRIES,
-                    "the final bounded retry should return a terminal failure"
-                );
-                let pending = pending_deliveries
-                    .get("del_blip")
-                    .expect("delivery remains pending before terminal failure");
-                assert_eq!(pending.attempts, retry_index);
-                assert!(pending
-                    .last_error
-                    .as_deref()
-                    .unwrap_or_default()
-                    .contains("failed writing frame to worker 'worker-blip'"));
-            }
-            Err(error) => panic!("transient delivery write errors should stay queued: {error}"),
-        }
-    }
-
-    let outcome = final_outcome.expect("present worker write blip must terminate as failed");
-    assert!(
-        pending_deliveries.is_empty(),
-        "terminal failed deliveries are removed so they cannot stall silently"
-    );
-
-    let (sdk_out_tx, mut sdk_out_rx) = mpsc::channel(4);
-    let mut dead_letters = DeadLetterStore::default();
-    emit_delivery_attempt_outcome(
-        &sdk_out_tx,
-        &mut dead_letters,
+    let outcome = retry_pending_delivery(
         &DeliveryId::new("del_blip"),
-        true,
-        outcome,
+        &mut workers,
+        &mut pending_deliveries,
+        Duration::from_millis(1),
     )
     .await
-    .expect("failed outcome should emit to sdk_out_tx");
-
-    let frame = tokio::time::timeout(Duration::from_secs(1), sdk_out_rx.recv())
-        .await
-        .expect("orchestrator should receive delivery failure event promptly")
-        .expect("sdk_out_tx should remain open");
-    assert_eq!(frame.msg_type, "event");
-    assert_eq!(frame.payload["kind"], "message_delivery_failed");
-    assert_eq!(frame.payload["name"], worker_name);
-    assert_eq!(frame.payload["delivery_id"], "del_blip");
-    assert_eq!(frame.payload["event_id"], "evt_blip");
-    assert_eq!(frame.payload["from"], "orchestrator");
-    assert_eq!(frame.payload["to"], worker_name);
-    assert_eq!(
-        frame.payload["attempts"].as_u64(),
-        Some(u64::from(MAX_DELIVERY_RETRIES))
-    );
-    let last_error = frame.payload["lastError"].as_str().unwrap_or_default();
+    .expect("transient delivery write errors should be classified");
+    match outcome {
+        DeliveryAttemptOutcome::TerminalInDoubt {
+            pending,
+            last_error,
+        } => {
+            assert_eq!(pending.delivery.delivery_id.as_str(), "del_blip");
+            assert!(
+                last_error.contains("delivery backend error after possible write"),
+                "terminal doubt should preserve the committed error boundary"
+            );
+        }
+        other => panic!("committed PTY writer failure should stop in doubt, got {other:?}"),
+    }
     assert!(
-        last_error.contains("failed writing frame to worker 'worker-blip'")
-            || last_error.contains("max delivery retries exceeded")
+        pending_deliveries.is_empty(),
+        "possible-write failures must not stay pending for retry"
     );
-    assert!(
-        frame.payload.get("last_error").is_none(),
-        "wire event should use the typed lastError field only"
-    );
-
-    let dead_frame = tokio::time::timeout(Duration::from_secs(1), sdk_out_rx.recv())
-        .await
-        .expect("terminal failure should also emit dead_letter_added")
-        .expect("sdk_out_tx should remain open");
-    assert_eq!(dead_frame.payload["kind"], "dead_letter_added");
-    assert_eq!(dead_frame.payload["delivery_id"], "del_blip");
-    assert_eq!(
-        dead_letters.len(),
-        1,
-        "terminal failure is retained in the dead-letter store, not discarded"
-    );
-    let entry = dead_letters.get("del_blip").expect("dead letter by id");
-    assert_eq!(entry.delivery.body, "transient auth blip");
-    assert_eq!(entry.attempts, MAX_DELIVERY_RETRIES);
 }
 
 #[tokio::test]

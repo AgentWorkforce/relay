@@ -834,22 +834,23 @@ impl BrokerRuntime {
                                 .get("event_id")
                                 .and_then(Value::as_str)
                                 .unwrap_or("");
-                            // "echo" when the injection was confirmed in PTY
-                            // output; "timeout_fallback" when the worker acked
-                            // without ever seeing the echo.
                             let verification = payload
                                 .get("verification")
                                 .and_then(Value::as_str)
-                                .unwrap_or("echo");
+                                .unwrap_or("missing");
                             let reason = payload.get("reason").and_then(Value::as_str);
-                            if verification == "timeout_fallback" {
-                                tracing::info!(
+                            let echo_verified = verification
+                                == crate::broker::delivery_verification::ECHO_VERIFICATION;
+                            let unobserved = !echo_verified;
+                            if unobserved {
+                                tracing::warn!(
                                     target = "agent_relay::broker",
                                     worker = %name,
                                     delivery_id = %delivery_id,
                                     event_id = %event_id,
+                                    verification = %verification,
                                     reason = reason.unwrap_or(""),
-                                    "delivery acked via timeout fallback — echo never verified"
+                                    "delivery verification did not provide observed echo; settling in doubt without an acknowledgement"
                                 );
                             } else {
                                 tracing::debug!(
@@ -860,13 +861,64 @@ impl BrokerRuntime {
                                     "delivery verified by echo detection"
                                 );
                             }
-                            let pending_for_confirmation = clear_pending_delivery_if_event_matches(
-                                pending_deliveries,
-                                delivery_id,
-                                Some(event_id),
-                                &name,
-                                "delivery_verified",
-                            );
+                            let pending_for_confirmation = if unobserved {
+                                // Seam rule 4: never claim an acknowledgement that was
+                                // not observed. A timeout fallback means the injection
+                                // write was handed to the PTY and the echo never came
+                                // back, so the delivery is in doubt — not delivered.
+                                // Settle it terminally, without confirming it:
+                                //
+                                //  * it leaves `pending_deliveries`, because seam rule 2
+                                //    forbids re-sending on doubt and anything left
+                                //    pending is re-injected by the maintenance retry
+                                //    loop (`runtime/maintenance.rs`);
+                                //  * it is recorded terminal so a later stray
+                                //    `delivery_ack` cannot resurrect and confirm it;
+                                //  * any withheld fleet (engine-facing) ack rides out on
+                                //    the removed `PendingDelivery` and is therefore
+                                //    dropped rather than sent. The engine keeps its own
+                                //    un-acked record (relay#1310, relay#1543).
+                                //
+                                // Deliberately NOT done here: `MessageDeliveryConfirmed`
+                                // and `mark_delivery_read_ack`. Both assert an
+                                // observation this route does not have. Also not
+                                // dead-lettered: "in doubt" is not "failed", and a dead
+                                // letter invites a redelivery that would double-deliver.
+                                let unobserved = clear_pending_delivery_if_event_matches(
+                                    pending_deliveries,
+                                    delivery_id,
+                                    Some(event_id),
+                                    &name,
+                                    "delivery_verified:unobserved",
+                                );
+                                if let Some(unobserved_pending) = unobserved.as_ref() {
+                                    if !delivery_id.is_empty() {
+                                        terminal_failed_deliveries
+                                            .insert(DeliveryId::from(delivery_id));
+                                    }
+                                    if let Some(deliver) =
+                                        unobserved_pending.withheld_fleet_ack.as_ref()
+                                    {
+                                        fleet_delivery_book.abandon_unconfirmed_delivery(deliver);
+                                        tracing::warn!(
+                                            target = "relay_broker::fleet",
+                                            worker = %name,
+                                            delivery_id = %delivery_id,
+                                            event_id = %event_id,
+                                            "abandoned withheld fleet delivery_ack: delivery was not observed"
+                                        );
+                                    }
+                                }
+                                None
+                            } else {
+                                clear_pending_delivery_if_event_matches(
+                                    pending_deliveries,
+                                    delivery_id,
+                                    Some(event_id),
+                                    &name,
+                                    "delivery_verified",
+                                )
+                            };
                             let mut verified_event = json!({
                                 "kind": "delivery_verified",
                                 "name": name,
@@ -880,6 +932,24 @@ impl BrokerRuntime {
                                 map.insert("reason".to_string(), Value::String(reason.to_string()));
                             }
                             let _ = send_event(sdk_out_tx, verified_event).await;
+                            if unobserved {
+                                let mut unobserved_event = json!({
+                                    "kind": "delivery_unobserved",
+                                    "name": name,
+                                    "delivery_id": delivery_id,
+                                    "event_id": event_id,
+                                    "verification": verification,
+                                });
+                                if let (Some(reason), Some(map)) =
+                                    (reason, unobserved_event.as_object_mut())
+                                {
+                                    map.insert(
+                                        "reason".to_string(),
+                                        Value::String(reason.to_string()),
+                                    );
+                                }
+                                let _ = send_event(sdk_out_tx, unobserved_event).await;
+                            }
                             if let Some(pending) = pending_for_confirmation {
                                 if let Some(handle) = workers.workers.get_mut(&name) {
                                     handle.last_activity_at = Instant::now();

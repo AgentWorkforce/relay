@@ -85,6 +85,14 @@ pub(crate) struct WorkerWriteCommand {
     completion: Option<oneshot::Sender<std::result::Result<(), String>>>,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
+pub(crate) enum WorkerDeliverError {
+    #[error("worker delivery failed before write: {0}")]
+    PreWrite(String),
+    #[error("worker delivery failed after possible write: {0}")]
+    Committed(String),
+}
+
 /// Why a worker was reaped despite its wrapper process still being alive.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum OrphanedWorker {
@@ -1500,13 +1508,26 @@ impl WorkerRegistry {
         request_id: Option<RequestId>,
         payload: Value,
     ) -> Result<()> {
+        self.send_to_worker_with_commit_boundary(name, msg_type, request_id, payload)
+            .await
+            .map_err(anyhow::Error::from)
+    }
+
+    pub(crate) async fn send_to_worker_with_commit_boundary(
+        &mut self,
+        name: &str,
+        msg_type: &str,
+        request_id: Option<RequestId>,
+        payload: Value,
+    ) -> std::result::Result<(), WorkerDeliverError> {
         let command_tx = self
             .workers
             .get(name)
-            .with_context(|| format!("unknown worker '{name}'"))?
+            .ok_or_else(|| WorkerDeliverError::PreWrite(format!("unknown worker '{name}'")))?
             .command_tx
             .clone();
-        let frame = encode_worker_frame(msg_type, request_id, payload)?;
+        let frame = encode_worker_frame(msg_type, request_id, payload)
+            .map_err(|error| WorkerDeliverError::PreWrite(error.to_string()))?;
         let (completion_tx, completion_rx) = oneshot::channel();
         timeout(
             WORKER_COMMAND_QUEUE_TIMEOUT,
@@ -1516,9 +1537,14 @@ impl WorkerRegistry {
             }),
         )
         .await
-        .map_err(|_| anyhow::anyhow!("worker command queue timed out for '{name}'"))?
-        .map_err(|_| anyhow::anyhow!("worker command writer is unavailable for '{name}'"))
-        .with_context(|| format!("failed writing frame to worker '{name}'"))?;
+        .map_err(|_| {
+            WorkerDeliverError::PreWrite(format!("worker command queue timed out for '{name}'"))
+        })?
+        .map_err(|_| {
+            WorkerDeliverError::PreWrite(format!(
+                "worker command writer is unavailable for '{name}'"
+            ))
+        })?;
         // Once a command enters the writer queue, do not return a timeout
         // before that sole writer resolves it. Reporting an accepted PTY
         // write as failed while it can still be emitted would invite callers
@@ -1528,11 +1554,11 @@ impl WorkerRegistry {
         completion_rx
             .await
             .map_err(|_| {
-                anyhow::anyhow!("worker command writer stopped before completing '{name}'")
-            })
-            .with_context(|| format!("failed writing frame to worker '{name}'"))?
-            .map_err(anyhow::Error::msg)
-            .with_context(|| format!("failed writing frame to worker '{name}'"))?;
+                WorkerDeliverError::Committed(format!(
+                    "worker command writer stopped before completing '{name}'"
+                ))
+            })?
+            .map_err(WorkerDeliverError::Committed)?;
 
         Ok(())
     }
@@ -1594,10 +1620,21 @@ impl WorkerRegistry {
     }
 
     pub(crate) async fn deliver(&mut self, name: &str, delivery: RelayDelivery) -> Result<()> {
-        anyhow::ensure!(
-            !self.initial_tasks.contains_key(name),
-            "worker initial task has not been queued"
-        );
+        self.deliver_with_commit_boundary(name, delivery)
+            .await
+            .map_err(anyhow::Error::from)
+    }
+
+    pub(crate) async fn deliver_with_commit_boundary(
+        &mut self,
+        name: &str,
+        delivery: RelayDelivery,
+    ) -> std::result::Result<(), WorkerDeliverError> {
+        if self.initial_tasks.contains_key(name) {
+            return Err(WorkerDeliverError::PreWrite(
+                "worker initial task has not been queued".to_string(),
+            ));
+        }
         tracing::debug!(
             target = "broker::deliver",
             worker = %name,
@@ -1606,7 +1643,9 @@ impl WorkerRegistry {
             event_id = %delivery.event_id,
             "delivering event to worker"
         );
-        self.send_to_worker(name, "deliver_relay", None, serde_json::to_value(delivery)?)
+        let payload = serde_json::to_value(delivery)
+            .map_err(|error| WorkerDeliverError::PreWrite(error.to_string()))?;
+        self.send_to_worker_with_commit_boundary(name, "deliver_relay", None, payload)
             .await
     }
 

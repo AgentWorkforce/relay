@@ -724,7 +724,7 @@ pub(crate) async fn run_init(cmd: InitCommand, telemetry: TelemetryClient) -> Re
     if reconciled > 0 {
         pending_deliveries.mark_dirty();
     }
-    let terminal_failed_deliveries: HashSet<DeliveryId> = HashSet::new();
+    let terminal_failed_deliveries = super::event_loop::TerminalDeliveryGuard::default();
     // Outstanding worker-bound RPC requests waiting on a `*_response`
     // frame from the wrapped worker. Keyed by the `request_id` we put on
     // the outbound request frame; the reply `oneshot` is consumed when

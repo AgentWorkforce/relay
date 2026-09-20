@@ -141,6 +141,10 @@ pub(crate) enum DeliveryAttemptOutcome {
         pending: Box<PendingDelivery>,
         last_error: String,
     },
+    TerminalInDoubt {
+        pending: Box<PendingDelivery>,
+        last_error: String,
+    },
     Noop,
 }
 
@@ -938,16 +942,24 @@ pub(crate) async fn insert_and_attempt_delivery(
         },
     );
 
-    if let DeliveryAttemptOutcome::Failed {
-        pending,
-        last_error,
-    } = retry_pending_delivery(&delivery_id, workers, pending_deliveries, retry_interval).await?
-    {
-        // The raw queue path has no dead-letter store/event sender. Preserve
-        // ownership locally so the maintenance retry path can record the
-        // terminal failure instead of silently discarding it here.
-        pending_deliveries.insert(pending.delivery.delivery_id.clone(), *pending);
-        anyhow::bail!(last_error);
+    match retry_pending_delivery(&delivery_id, workers, pending_deliveries, retry_interval).await? {
+        DeliveryAttemptOutcome::Failed {
+            mut pending,
+            last_error,
+        } => {
+            // The raw queue path has no dead-letter store/event sender. Preserve
+            // ownership locally so the maintenance retry path can record the
+            // terminal failure instead of silently discarding it here.
+            pending.failed_attempts = MAX_DELIVERY_RETRIES;
+            pending.last_error = Some(last_error.clone());
+            pending.next_retry_at = Instant::now();
+            pending_deliveries.insert(pending.delivery.delivery_id.clone(), *pending);
+            anyhow::bail!(last_error);
+        }
+        DeliveryAttemptOutcome::TerminalInDoubt { last_error, .. } => {
+            anyhow::bail!(last_error);
+        }
+        _ => {}
     }
     Ok(delivery_id)
 }
@@ -1006,11 +1018,25 @@ pub(crate) async fn retry_pending_delivery(
         return Ok(DeliveryAttemptOutcome::Noop);
     }
 
-    match workers
-        .deliver(&pending.worker_name, pending.delivery.clone())
-        .await
-    {
-        Ok(()) => {
+    let mut seam = crate::delivery::DeliverySeam::new();
+    let mut pty_backend = crate::delivery::pty::PtyDeliveryBackend::new(workers);
+    let request =
+        crate::delivery::SendRequest::relay(pending.worker_name.clone(), pending.delivery.clone());
+    match seam.send(&mut [&mut pty_backend], request).await {
+        Ok(crate::delivery::SendOutcome::AlreadySent(_)) => Ok(DeliveryAttemptOutcome::Noop),
+        Ok(outcome)
+            if matches!(
+                outcome.receipt().status,
+                crate::delivery::SendStatus::InDoubt
+            ) =>
+        {
+            let removed = pending_deliveries.remove(delivery_id).unwrap_or(pending);
+            Ok(DeliveryAttemptOutcome::TerminalInDoubt {
+                pending: Box::new(removed),
+                last_error: "delivery route is in doubt after possible write".to_string(),
+            })
+        }
+        Ok(crate::delivery::SendOutcome::Fresh(_)) => {
             if let Some(current) = pending_deliveries.get_mut(delivery_id) {
                 current.attempts = current.attempts.saturating_add(1);
                 current.failed_attempts = 0;
@@ -1024,6 +1050,13 @@ pub(crate) async fn retry_pending_delivery(
                 });
             }
             Ok(DeliveryAttemptOutcome::Noop)
+        }
+        Err(error) if error.is_committed() => {
+            let removed = pending_deliveries.remove(delivery_id).unwrap_or(pending);
+            Ok(DeliveryAttemptOutcome::TerminalInDoubt {
+                pending: Box::new(removed),
+                last_error: error.to_string(),
+            })
         }
         Err(error) => {
             let should_fail = if let Some(current) = pending_deliveries.get_mut(delivery_id) {
@@ -1060,7 +1093,11 @@ pub(crate) fn delivery_ack_timeout(
 ) -> Duration {
     let minimum = match injection_mode {
         MessageInjectionMode::Wait => WAIT_DELIVERY_ACK_TIMEOUT,
-        MessageInjectionMode::Steer => crate::broker::delivery_verification::VERIFICATION_WINDOW,
+        MessageInjectionMode::Steer => {
+            crate::broker::delivery_verification::VERIFICATION_WINDOW
+                + crate::broker::delivery_verification::VERIFICATION_TICK
+                + Duration::from_millis(800)
+        }
     };
     std::cmp::max(retry_interval, minimum)
 }
@@ -1130,6 +1167,31 @@ pub(crate) async fn emit_delivery_attempt_outcome(
                 );
             }
             dead_letter_pending_delivery(sdk_out_tx, dead_letters, &pending, &last_error).await;
+        }
+        DeliveryAttemptOutcome::TerminalInDoubt {
+            pending,
+            last_error,
+        } => {
+            let _ = send_broker_event(
+                sdk_out_tx,
+                BrokerEvent::MessageDeliveryFailed {
+                    name: pending.worker_name.clone(),
+                    delivery_id: Some(pending.delivery.delivery_id.clone()),
+                    event_id: Some(pending.delivery.event_id.clone()),
+                    from: pending.delivery.from.clone(),
+                    to: pending.delivery.target.clone(),
+                    attempts: pending.attempts,
+                    last_error: last_error.clone(),
+                },
+            )
+            .await;
+            tracing::warn!(
+                target = "agent_relay::broker",
+                worker = %pending.worker_name,
+                delivery_id = %pending.delivery.delivery_id,
+                event_id = %pending.delivery.event_id,
+                "delivery stopped in doubt after possible write; not dead-lettering because redelivery may duplicate"
+            );
         }
         DeliveryAttemptOutcome::Noop => {}
     }

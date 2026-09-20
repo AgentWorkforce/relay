@@ -100,6 +100,7 @@ pub(crate) const MAX_VERIFICATION_ATTEMPTS: usize = 1;
 
 /// Time window to wait for echo verification before accepting delivery.
 pub(crate) const VERIFICATION_WINDOW: std::time::Duration = std::time::Duration::from_secs(5);
+pub(crate) const VERIFICATION_TICK: std::time::Duration = std::time::Duration::from_millis(200);
 
 /// A pending delivery waiting for echo verification in PTY output.
 #[derive(Debug)]
@@ -280,10 +281,50 @@ pub(crate) fn queue_or_take_detected_activity(
     }
 }
 
+/// Value of the `verification` field on a `delivery_verified` frame that the
+/// worker emitted WITHOUT observing the echo. Shared with the broker runtime so
+/// both ends of the frame agree on the one string that means "unobserved".
+pub(crate) const TIMEOUT_FALLBACK_VERIFICATION: &str = "timeout_fallback";
+pub(crate) const ECHO_VERIFICATION: &str = "echo";
+
+/// The frames a PTY worker may emit when an echo verification window expires.
+///
+/// Seam rule 4 (`docs/native-delivery-migration.md`): "Never claim an
+/// acknowledgement you did not observe." When this window expires the worker
+/// wrote the injection and never saw it echoed back, so the one frame this
+/// list must never contain is `delivery_ack`. The broker treats `delivery_ack`
+/// as proof of observation: it confirms the pending delivery, releases the
+/// withheld engine-facing fleet ack, emits `MessageDeliveryConfirmed` and marks
+/// the message read (`runtime/worker_events.rs`). Emitting it here published a
+/// delivery nobody ever saw land.
+///
+/// Returning the frame list from one function — rather than inlining
+/// `send_frame` calls in the worker's select loop — gives that invariant a
+/// place a test can hold it to; see the tests below.
+pub(crate) fn verification_timeout_frames(
+    delivery_id: &str,
+    event_id: &str,
+    window: Duration,
+) -> Vec<(&'static str, Value)> {
+    vec![(
+        "delivery_verified",
+        json!({
+            "delivery_id": delivery_id,
+            "event_id": event_id,
+            "verification": TIMEOUT_FALLBACK_VERIFICATION,
+            "reason": format!("echo not detected within {}s window", window.as_secs()),
+        }),
+    )]
+}
+
 /// Check if the expected echo string appears in PTY output (after stripping ANSI).
 pub(crate) fn check_echo_in_output(output: &str, expected: &str) -> bool {
     let clean = strip_ansi(output);
-    clean.contains(expected)
+    if clean.contains(expected) {
+        return true;
+    }
+    let normalize = |value: &str| value.replace("\r\n", "\n");
+    normalize(&clean).contains(&normalize(expected))
 }
 
 pub(crate) fn current_timestamp_ms() -> u64 {
@@ -342,6 +383,44 @@ mod tests {
             output,
             "Relay message from Alice [evt_1]: hello world"
         ));
+    }
+
+    #[test]
+    fn verification_timeout_never_emits_a_delivery_ack() {
+        let frames = verification_timeout_frames("del_1", "evt_1", VERIFICATION_WINDOW);
+
+        assert!(
+            frames.iter().all(|(kind, _)| *kind != "delivery_ack"),
+            "a verification timeout never observed the delivery, so it must not \
+             emit the frame the broker reads as an observed acknowledgement: {:?}",
+            frames.iter().map(|(kind, _)| *kind).collect::<Vec<_>>()
+        );
+    }
+
+    #[test]
+    fn verification_timeout_reports_an_explicitly_unverified_delivery() {
+        let frames = verification_timeout_frames("del_1", "evt_1", VERIFICATION_WINDOW);
+
+        assert_eq!(frames.len(), 1);
+        let (kind, payload) = &frames[0];
+        assert_eq!(*kind, "delivery_verified");
+        assert_eq!(payload["delivery_id"], "del_1");
+        assert_eq!(payload["event_id"], "evt_1");
+        assert_eq!(payload["verification"], TIMEOUT_FALLBACK_VERIFICATION);
+        assert_eq!(payload["reason"], "echo not detected within 5s window");
+    }
+
+    #[test]
+    fn check_echo_normalizes_terminal_crlf() {
+        let output = "<system-reminder>\r\nRelay message from Alice [evt_1]: hello world\r\n";
+        let expected = "<system-reminder>\nRelay message from Alice [evt_1]: hello world\n";
+
+        assert!(check_echo_in_output(output, expected));
+    }
+
+    #[test]
+    fn check_echo_does_not_turn_bare_cr_into_line_break() {
+        assert!(!check_echo_in_output("foo\rbar", "foo\nbar"));
     }
 
     #[test]

@@ -257,7 +257,7 @@ pub(crate) struct BrokerRuntime {
     pub(super) delivery_retry_interval: Duration,
     pub(super) pending_deliveries: PendingDeliveryStore,
     pub(super) dead_letters: DeadLetterStore,
-    pub(super) terminal_failed_deliveries: HashSet<DeliveryId>,
+    pub(super) terminal_failed_deliveries: TerminalDeliveryGuard,
     pub(super) pending_requests: HashMap<String, worker_request::PendingRequest>,
     /// Persona/capability spawns whose action result is held until the harness
     /// proves readiness with worker_ready. Keyed by the node-local worker name.
@@ -287,6 +287,39 @@ pub(crate) struct BrokerRuntime {
     pub(super) sigterm: tokio::signal::windows::CtrlShutdown,
     pub(super) telemetry: TelemetryClient,
     pub(super) obligation_store: crate::obligation::ObligationStore,
+}
+
+#[derive(Debug, Default)]
+pub(super) struct TerminalDeliveryGuard {
+    ids: HashSet<DeliveryId>,
+    order: VecDeque<DeliveryId>,
+}
+
+impl TerminalDeliveryGuard {
+    const CAPACITY: usize = 4096;
+
+    pub(super) fn contains(&self, id: &str) -> bool {
+        self.ids.contains(id)
+    }
+
+    pub(super) fn insert(&mut self, id: DeliveryId) {
+        if self.ids.contains(&id) {
+            return;
+        }
+        while self.order.len() >= Self::CAPACITY {
+            if let Some(evicted) = self.order.pop_front() {
+                self.ids.remove(&evicted);
+            }
+        }
+        self.ids.insert(id.clone());
+        self.order.push_back(id);
+    }
+
+    pub(super) fn remove(&mut self, id: &DeliveryId) {
+        if self.ids.remove(id) {
+            self.order.retain(|candidate| candidate != id);
+        }
+    }
 }
 
 enum RuntimeEvent {

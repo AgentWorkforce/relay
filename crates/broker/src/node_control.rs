@@ -1234,6 +1234,31 @@ impl FleetDeliveryBook {
         (cursor.acked_up_to_seq > before).then_some(cursor.acked_up_to_seq)
     }
 
+    /// Remove an unobserved delivery from the contiguous confirmation
+    /// requirement. This does not return an ACK to send immediately; it only
+    /// prevents one unverified PTY fallback from pinning every later confirmed
+    /// delivery across restarts.
+    pub(crate) fn abandon_unconfirmed_delivery(&mut self, deliver: &Deliver) {
+        self.mark_cursors_dirty();
+        self.commit_received(deliver);
+        let Some(cursor) = self.agents.get_mut(deliver.agent_id.as_str()) else {
+            return;
+        };
+        if deliver.seq == 0 || deliver.seq <= cursor.acked_up_to_seq {
+            return;
+        }
+        cursor.confirmed_delivery_seqs.insert(deliver.seq, ());
+        loop {
+            let next = cursor.acked_up_to_seq.saturating_add(1);
+            if next > cursor.received_up_to_seq
+                || cursor.confirmed_delivery_seqs.remove(&next).is_none()
+            {
+                break;
+            }
+            cursor.acked_up_to_seq = next;
+        }
+    }
+
     pub(crate) fn is_delivery_confirmation_held(&self, deliver: &Deliver) -> bool {
         deliver.seq > 0
             && self

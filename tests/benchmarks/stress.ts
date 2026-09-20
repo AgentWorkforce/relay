@@ -6,7 +6,7 @@
  * Run: npx tsx tests/benchmarks/stress.ts [--quick]
  */
 
-import { HarnessDriverClient, type BrokerEvent } from '@agent-relay/sdk';
+import { HarnessDriverClient, type BrokerEvent } from '@agent-relay/harness-driver';
 import { performance } from 'node:perf_hooks';
 import { resolveBinaryPath, randomName } from './harness.js';
 

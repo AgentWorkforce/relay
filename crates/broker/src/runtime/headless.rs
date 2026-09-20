@@ -320,6 +320,7 @@ pub(crate) async fn run_headless_worker(cmd: HeadlessCommand) -> Result<()> {
                                 json!({
                                     "delivery_id": delivery_id,
                                     "event_id": event_id,
+                                    "verification": "process_exit",
                                 }),
                             )
                             .await;
