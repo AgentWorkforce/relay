@@ -74,6 +74,17 @@ export const PHASES = {
   0: {
     slug: 'seam',
     title: 'Delivery-backend seam beside the PTY injector',
+    /**
+     * The lane, widened four times — each time because a gate this campaign
+     * owns demanded an edit the lane forbade.
+     *
+     * `node_control.rs` and `worker.rs` are the last two, and they are not
+     * scope creep: R2-1's repair needs the fleet ACK cursor to express
+     * "never confirmable" (`abandon_unconfirmed_delivery`), and R2-2's needs a
+     * real write-commit boundary in the PTY worker. Both were identified by
+     * adversarial review as REQUIRED to satisfy the seam rules, so a lane that
+     * excluded them made the phase unsatisfiable by construction.
+     */
     scope: [
       'crates/broker/src/delivery/',
       'crates/broker/src/broker/',
@@ -81,6 +92,8 @@ export const PHASES = {
       'crates/broker/tests/',
       'crates/broker/src/runtime/',
       'crates/broker/src/pty_worker.rs',
+      'crates/broker/src/node_control.rs',
+      'crates/broker/src/worker.rs',
     ],
     tsScope: ['tests/', '.agentworkforce/features/manifest.yaml'],
     requiredSources: [
@@ -481,8 +494,41 @@ function writeJson(file, value) {
   writeFileSync(file, `${JSON.stringify(value, null, 2)}\n`);
 }
 
-/** Files this campaign has touched, tracked or not, relative to the repo root. */
+/**
+ * Files this campaign has touched, relative to the repo root.
+ *
+ * Working-tree status ALONE is wrong: it goes blind the moment the work is
+ * committed, and `edit-gate` then reports NO_CHANGES for a branch full of
+ * changes. So the campaign's recorded base (context.json `baseSha`, or
+ * `--base`) is diffed as well, and the two sets are merged — uncommitted work
+ * counts before the commit, committed work counts after it.
+ */
 function changedFiles() {
+  const committed = (() => {
+    const explicit = process.argv.indexOf('--base');
+    let base = explicit >= 0 ? process.argv[explicit + 1] : undefined;
+    if (!base) {
+      const index = process.argv.indexOf('--artifact');
+      const contextPath = index >= 0 ? path.join(process.argv[index + 1] ?? '', 'context.json') : '';
+      if (contextPath && existsSync(contextPath)) base = readJson(contextPath).baseSha;
+    }
+    if (!base) return [];
+    try {
+      // `main` rather than the recorded sha when the sha is an ancestor of the
+      // campaign's own tooling commits: the merge-base is what the PR diffs.
+      const mergeBase = execFileSync('git', ['merge-base', 'HEAD', base], { encoding: 'utf8' }).trim();
+      return execFileSync('git', ['diff', '--name-only', mergeBase], { encoding: 'utf8' })
+        .split('\n')
+        .filter(Boolean);
+    } catch {
+      return [];
+    }
+  })();
+  return [...new Set([...committed, ...workingTreeChanges()])].sort();
+}
+
+/** Uncommitted changes, tracked or not. */
+function workingTreeChanges() {
   const porcelain = execFileSync('git', ['status', '--porcelain=v1', '-z', '--untracked-files=all'], {
     encoding: 'utf8',
   });
@@ -820,6 +866,11 @@ function editGate() {
       '.workflow-artifacts/',
       'scripts/migrate/',
       'flows/migrate/',
+      // The harness adapter and the e2e wiring the phase needed: campaign
+      // tooling, not product, and so not manifest-routable either.
+      'scripts/flows/',
+      'package.json',
+      'vitest.e2e.config.ts',
       '.gitignore',
       // Trail writes these as agents work; CLAUDE.md requires them tracked, so
       // they are legitimate output of a run rather than scope creep.
@@ -950,7 +1001,16 @@ function targetedGate() {
    * check. It is excluded here by the same paths `edit-gate` allows, and
    * nowhere else, so a stray product file still fails.
    */
-  const HARNESS = ['scripts/migrate/', 'flows/migrate/'];
+  // Same set edit-gate allows: campaign tooling is not a product feature and
+  // has no manifest row to earn.
+  const HARNESS = [
+    'scripts/migrate/',
+    'flows/migrate/',
+    'scripts/flows/',
+    'package.json',
+    'vitest.e2e.config.ts',
+    '.gitignore',
+  ];
   const unmatched = (plan.unmatchedRuntimeFiles ?? []).filter(
     (file) => !HARNESS.some((prefix) => file.startsWith(prefix))
   );
