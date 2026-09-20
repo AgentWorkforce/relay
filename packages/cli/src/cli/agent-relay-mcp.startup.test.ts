@@ -439,6 +439,25 @@ describe('agent-relay-mcp startup helpers', () => {
     expect(mocks.agentRelayMessagingCommands.invoke).toHaveBeenCalledTimes(1);
   });
 
+  it('allows a keyed retry after an upstream request rejects', async () => {
+    const { mod, mocks } = await loadAgentRelayMcpModule();
+    mod.createAgentRelayMcpServer({ agentToken: 'at_live_fleet', agentName: 'orchestrator' });
+    const spawn = mocks.serverInstances[0].tools.get('spawn')!.handler;
+    const input = {
+      name: 'TransientFailureWorker',
+      cli: 'codex',
+      idempotency_key: 'transient-spawn-1',
+    };
+    mocks.agentRelayMessagingCommands.invoke.mockRejectedValueOnce(new Error('temporary network failure'));
+
+    await expect(spawn(input, { sessionId: 'mcp-session', requestId: 83 })).rejects.toThrow(
+      'temporary network failure'
+    );
+    await spawn(input, { sessionId: 'mcp-session', requestId: 84 });
+
+    expect(mocks.agentRelayMessagingCommands.invoke).toHaveBeenCalledTimes(2);
+  });
+
   it('allows a completed JSON-RPC request id to be reused for a later idempotency key', async () => {
     const { mod, mocks } = await loadAgentRelayMcpModule();
     mod.createAgentRelayMcpServer({ agentToken: 'at_live_fleet', agentName: 'orchestrator' });

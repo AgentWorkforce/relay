@@ -39,7 +39,7 @@ export class McpRequestReplay {
     // supplied idempotency key can safely keep a completed result for a retry.
     void pending.then(
       () => this.clearAfterSettlement(key, hasIdempotencyKey),
-      () => this.clearAfterSettlement(key, hasIdempotencyKey)
+      () => this.requests.delete(key)
     );
     return pending;
   }
