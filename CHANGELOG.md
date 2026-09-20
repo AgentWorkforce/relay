@@ -9,7 +9,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
-- Broker-managed Muse workers now start with `--yolo` and receive their assigned task as the startup prompt, so tool use proceeds unattended and work begins deterministically before readiness.
+- Broker-managed Muse workers now start with `--yolo` and receive their assigned task as the startup prompt, so tool use proceeds unattended and work begins deterministically before readiness; Muse prompts containing NUL or exceeding the portable 16 KiB startup limit are rejected before registration.
 
 ## [12.4.0] - 2026-09-20
 
