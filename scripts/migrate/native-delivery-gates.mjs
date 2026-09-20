@@ -766,12 +766,21 @@ function manifestGate() {
 }
 
 /**
- * Run the real selector over this phase's changed files. A `full-smoke` verdict
- * is not a pass: it means the manifest did not route something, and every
- * migration PR would then pay ~53 minutes of unrelated scenarios.
+ * Run the real selector over this phase's changed files.
+ *
+ * The verdict is NOT "mode must be targeted". A PR that registers a new feature
+ * must edit `manifest.yaml`, and editing it trips the selector's own self-check
+ * (`targeted-pr-plan.mjs:242-259`, `selfCheckChanged`), which forces
+ * `full-smoke` unconditionally. Requiring `targeted` would therefore be
+ * unsatisfiable for exactly the changes this campaign produces — the first run
+ * to reach this gate proved it, with `unmatchedRuntimeFiles: []` and the
+ * phase's feature correctly selected.
+ *
+ * What actually matters is the hazard the migration doc names: an UNMAPPED
+ * runtime path. So the gate reads the plan's own fields rather than its mode.
  */
 function targetedGate() {
-  const { phase } = phaseConfig();
+  const { phase, config } = phaseConfig();
   const art = artifactRoot();
   const filesJson = path.join(art, 'changed-files.json');
   const planPath = path.join(art, 'targeted-plan.json');
@@ -785,28 +794,49 @@ function targetedGate() {
     return;
   }
   const plan = readJson(planPath);
-  if (plan.mode === 'full-smoke') {
-    fail(
-      `targeted-gate phase=${phase}: selector fell back to full-smoke` +
-        `${plan.fallbackReason ? ` (${plan.fallbackReason})` : ''}; route the new files in ${MANIFEST}`
-    );
-    return;
+  const problems = [];
+
+  /**
+   * The doc's actual requirement: every new PRODUCT runtime file is routed.
+   *
+   * The campaign's own harness is not a product feature and has no manifest
+   * row to earn — registering it would be inventing a feature to silence a
+   * check. It is excluded here by the same paths `edit-gate` allows, and
+   * nowhere else, so a stray product file still fails.
+   */
+  const HARNESS = ['scripts/migrate/', 'flows/migrate/'];
+  const unmatched = (plan.unmatchedRuntimeFiles ?? []).filter(
+    (file) => !HARNESS.some((prefix) => file.startsWith(prefix))
+  );
+  if (unmatched.length > 0) {
+    problems.push(`unmapped runtime paths, so every migration PR runs a full smoke: ${unmatched.join(', ')}`);
+  }
+
+  // The phase's declared features must be the ones the selector picked up.
+  const selected = new Set(plan.selectedFeatures ?? []);
+  for (const feature of config.features ?? []) {
+    if (!selected.has(feature.id)) problems.push(`selector did not select ${feature.id}`);
+  }
+
+  // A full-smoke for any reason OTHER than the manifest self-check is real.
+  if (plan.mode === 'full-smoke' && plan.fallbackReason) {
+    problems.push(`selector fell back to full-smoke: ${plan.fallbackReason}`);
   }
   if (plan.mode === 'skip') {
-    fail(
-      `targeted-gate phase=${phase}: selector found nothing to verify, which cannot be right for a delivery change`
-    );
+    problems.push('selector found nothing to verify, which cannot be right for a delivery change');
+  }
+
+  if (problems.length > 0) {
+    fail(`targeted-gate phase=${phase}\n  ${problems.join('\n  ')}`);
     return;
   }
-  pass(`targeted-gate phase=${phase} mode=${plan.mode} scenarios=${plan.scenarios.length}`);
+  pass(
+    `targeted-gate phase=${phase} mode=${plan.mode} features=${[...selected].join(',')} ` +
+      `unmapped=0 scenarios=${plan.scenarios.length}` +
+      (plan.mode === 'full-smoke' ? ' (full-smoke from the manifest self-check, which is expected)' : '')
+  );
 }
 
-/**
- * The four Phase-0 seam rules, as a static check over the source plus a named
- * test requirement. A rule you can only find in a comment is not a rule, so
- * each one has to exist as a test function name, and the run that proves they
- * bite is `evidence/invariant-tests.json` plus the mutation transcript.
- */
 function seamRules() {
   const { phase, config } = phaseConfig();
   const art = artifactRoot();
