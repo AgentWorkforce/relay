@@ -50,12 +50,17 @@ if (!isWithin(harnessDir, runnerPath)) {
   throw new Error('The RelayFlow runner must execute from the exact-head harness checkout.');
 }
 
-// Isolated, user-writable npm prefix — never touches the sandbox's system
-// npm, so no elevated permissions are needed for the global reinstalls
-// below.
+// Run the destructive fresh-install reproduction in a disposable clone of the
+// exact target commit. Cases in the same Flows v2 shard share targetDir, so
+// deleting its lockfile or dependency trees would contaminate every later
+// case, especially if npm crashes before cleanup can reinstall them.
+const scratchRoot = await mkdtemp(path.join(tmpdir(), 'relayflow-1652-target-'));
+const workingDir = path.join(scratchRoot, 'target');
+
+// Isolated, user-writable npm prefix — never touches the sandbox's system npm,
+// so no elevated permissions are needed for the global reinstalls below.
 const npmPrefix = await mkdtemp(path.join(tmpdir(), 'relayflow-1652-npm-'));
-const packageLockPath = path.join(targetDir, 'package-lock.json');
-const originalPackageLock = await readFile(packageLockPath);
+const packageLockPath = path.join(workingDir, 'package-lock.json');
 const npmBin = path.join(npmPrefix, 'bin');
 const npmEnv = {
   ...process.env,
@@ -69,6 +74,19 @@ let outcome;
 let signature;
 
 try {
+  run(
+    'git',
+    ['clone', '--quiet', '--shared', '--no-checkout', targetDir, workingDir],
+    targetDir,
+    'clone exact target into disposable workspace'
+  );
+  run(
+    'git',
+    ['-C', workingDir, 'checkout', '--quiet', '--detach', expectedSha],
+    workingDir,
+    'checkout exact target in disposable workspace'
+  );
+
   // Establish the known-broken baseline. Each spawnSync call below is its
   // own process with a fresh PATH lookup, so — unlike a persistent bash
   // session — there's no command-hash-caching hazard here (see the
@@ -76,14 +94,14 @@ try {
   run(
     'npm',
     ['install', '-g', `npm@${BROKEN_NPM_VERSION}`],
-    targetDir,
+    workingDir,
     `install baseline npm@${BROKEN_NPM_VERSION}`,
     npmEnv
   );
   const baselineVersion = run(
     'npm',
     ['--version'],
-    targetDir,
+    workingDir,
     'npm --version (baseline)',
     npmEnv
   ).stdout.trim();
@@ -95,7 +113,7 @@ try {
 
   // Apply whatever fix the target checkout actually defines, if any —
   // driven by the checkout's own content, not by which arm this is.
-  const workflowPath = path.join(targetDir, '.github/workflows/node-compat.yml');
+  const workflowPath = path.join(workingDir, '.github/workflows/node-compat.yml');
   const workflowSource = await readFile(workflowPath, 'utf8');
   const pinMatch = workflowSource.match(PIN_LINE_RE);
   let pinnedVersion = null;
@@ -104,7 +122,7 @@ try {
     run(
       'npm',
       ['install', '-g', `npm@${pinnedVersion}`],
-      targetDir,
+      workingDir,
       `apply target's npm@${pinnedVersion} pin`,
       npmEnv
     );
@@ -112,15 +130,15 @@ try {
 
   // The exact "fresh install" recipe from node-compat.yml's fresh-install
   // job / publish.yml's version-bump reinstall: no lockfile, no cache.
-  await rm(path.join(targetDir, 'node_modules'), { recursive: true, force: true });
+  await rm(path.join(workingDir, 'node_modules'), { recursive: true, force: true });
   await rm(packageLockPath, { force: true });
-  const packagesDir = path.join(targetDir, 'packages');
+  const packagesDir = path.join(workingDir, 'packages');
   for (const entry of await readdirSafe(packagesDir)) {
     await rm(path.join(packagesDir, entry, 'node_modules'), { recursive: true, force: true });
   }
 
   const install = spawnSync('npm', ['install'], {
-    cwd: targetDir,
+    cwd: workingDir,
     env: npmEnv,
     encoding: 'utf8',
     timeout: COMMAND_TIMEOUT_MS,
@@ -149,10 +167,7 @@ try {
     );
   }
 } finally {
-  // This case deliberately exercises the repository-mutating fresh-install
-  // recipe. Restore the tracked lockfile so another corpus case sharing this
-  // Flows v2 shard still starts from a clean checkout.
-  await writeFile(packageLockPath, originalPackageLock);
+  await rm(scratchRoot, { recursive: true, force: true });
   await rm(npmPrefix, { recursive: true, force: true });
 }
 
