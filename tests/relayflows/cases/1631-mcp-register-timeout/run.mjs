@@ -35,6 +35,7 @@ if (!isWithin(harnessDir, runnerPath)) {
 
 const probeDir = await mkdtemp(path.join(tmpdir(), 'relayflow-1631-'));
 const serverPath = path.join(probeDir, 'slow-relaycast.mjs');
+const mcpPath = path.join(probeDir, 'mcp-preflight.mjs');
 const serverSource = String.raw`import http from 'node:http';
 
 const delayMs = Number(process.argv[2]);
@@ -70,10 +71,40 @@ server.listen(0, '127.0.0.1', () => {
 
 process.once('SIGTERM', () => server.close(() => process.exit(0)));
 `;
+const mcpSource = String.raw`import readline from 'node:readline';
+const lines = readline.createInterface({ input: process.stdin });
+lines.on('line', (line) => {
+  const request = JSON.parse(line);
+  if (request.method === 'initialize') {
+    process.stdout.write(JSON.stringify({
+      jsonrpc: '2.0',
+      id: request.id,
+      result: {
+        protocolVersion: '2025-06-18',
+        capabilities: {},
+        serverInfo: { name: 'relayflow-preflight', version: '1.0.0' },
+      },
+    }) + '\n');
+  } else if (request.method === 'tools/list') {
+    process.stdout.write(JSON.stringify({
+      jsonrpc: '2.0',
+      id: request.id,
+      result: {
+        tools: ['send_dm', 'post_message', 'check_inbox'].map((name) => ({
+          name,
+          description: name,
+          inputSchema: { type: 'object' },
+        })),
+      },
+    }) + '\n');
+  }
+});
+`;
 
 let server;
 try {
   await writeFile(serverPath, serverSource, { encoding: 'utf8', mode: 0o600 });
+  await writeFile(mcpPath, mcpSource, { encoding: 'utf8', mode: 0o600 });
   server = spawn(process.execPath, [serverPath, String(HEALTHY_RESPONSE_DELAY_MS)], {
     cwd: probeDir,
     stdio: ['ignore', 'pipe', 'pipe'],
@@ -101,7 +132,14 @@ try {
       cwd: targetDir,
       encoding: 'utf8',
       timeout: 45_000,
-      env: process.env,
+      // The proof invokes the compiled broker directly, so CI does not have an
+      // `agent-relay` launcher on PATH for mcp-args' post-registration
+      // coordination preflight. Point that preflight at the same exact-arm
+      // executable under test.
+      env: {
+        ...process.env,
+        AGENT_RELAY_MCP_COMMAND: `${JSON.stringify(process.execPath)} ${JSON.stringify(mcpPath)}`,
+      },
     }
   );
   const elapsedMs = Date.now() - startedAt;

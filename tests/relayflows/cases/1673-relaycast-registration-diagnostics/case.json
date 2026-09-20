@@ -15,7 +15,7 @@
     },
     "head": {
       "outcome": "fixed",
-      "signature": "registration_503_diagnostic_preserved_without_replay"
+      "signature": "registration_503_diagnostic_preserved_with_bounded_retries"
     }
   }
 }
