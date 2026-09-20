@@ -1144,21 +1144,36 @@ pub fn muse_clean_home_dir(base: &Path, agent_name: &str) -> PathBuf {
 /// present, so `RELAY_API_KEY`/`RELAY_AGENT_TOKEN` are not exposed to other
 /// local users by a permissive umask. Runs on every provision, so re-spawns
 /// tighten pre-existing entries too. No-op on non-Unix platforms.
-fn restrict_muse_home_permissions(clean_home: &Path, muse_dir: &Path) -> io::Result<()> {
+///
+/// Split into directory and file phases on purpose: the settings file must
+/// never be chmodded before its symlink reject runs, or provisioning would
+/// mutate a planted link target's mode before failing.
+fn restrict_muse_home_dirs(clean_home: &Path, muse_dir: &Path) -> io::Result<()> {
     #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt;
         for dir in [clean_home, muse_dir] {
             fs::set_permissions(dir, fs::Permissions::from_mode(0o700))?;
         }
-        let settings = muse_dir.join("settings.json");
-        if settings.exists() {
-            fs::set_permissions(&settings, fs::Permissions::from_mode(0o600))?;
-        }
     }
     #[cfg(not(unix))]
     {
         let _ = (clean_home, muse_dir);
+    }
+    Ok(())
+}
+
+fn restrict_muse_settings_file(path: &Path) -> io::Result<()> {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        if path.exists() {
+            fs::set_permissions(path, fs::Permissions::from_mode(0o600))?;
+        }
+    }
+    #[cfg(not(unix))]
+    {
+        let _ = path;
     }
     Ok(())
 }
@@ -1232,7 +1247,10 @@ pub fn ensure_muse_mcp_config(
     for component in [clean_home, &muse_dir] {
         reject_muse_provision_symlink(component)?;
     }
-    restrict_muse_home_permissions(clean_home, &muse_dir)?;
+    // Directories only here: the settings file is chmodded after its own
+    // symlink reject below, so a planted link target's mode is never
+    // mutated before provisioning fails.
+    restrict_muse_home_dirs(clean_home, &muse_dir)?;
 
     let server = agent_relay_mcp_server_config(
         relay_api_key,
@@ -1291,7 +1309,8 @@ pub fn ensure_muse_mcp_config(
     write_muse_settings_atomic(&muse_dir, &path, &envelope)?;
     // Tighten again after the write (covers fresh files and pre-existing
     // entries on the merge path) — never rely on the ambient umask.
-    restrict_muse_home_permissions(clean_home, &muse_dir)?;
+    restrict_muse_home_dirs(clean_home, &muse_dir)?;
+    restrict_muse_settings_file(&path)?;
     // The atomic replace swaps a raced-in link itself rather than following
     // it, but verify anyway: credentials must never sit behind a link.
     reject_muse_provision_symlink(&path)?;
@@ -2511,6 +2530,11 @@ mod tests {
         fs::create_dir_all(&muse_dir).expect("muse dir");
         let victim_file = temp.path().join("victim.txt");
         fs::write(&victim_file, "original-contents").expect("seed victim");
+        {
+            use std::os::unix::fs::PermissionsExt;
+            fs::set_permissions(&victim_file, fs::Permissions::from_mode(0o644))
+                .expect("seed victim mode");
+        }
         symlink(&victim_file, muse_dir.join("settings.json")).expect("plant settings link");
         let err = super::ensure_muse_mcp_config(
             &home2,
@@ -2532,6 +2556,18 @@ mod tests {
             contents, "original-contents",
             "victim file must stay intact"
         );
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let mode = fs::metadata(&victim_file)
+                .expect("victim meta")
+                .permissions()
+                .mode()
+                & 0o777;
+            assert_eq!(
+                mode, 0o644,
+                "victim mode must be untouched: no chmod before the reject"
+            );
+        }
         assert!(
             !contents.contains("rk_link") && !contents.contains("at_link"),
             "no credentials may leak through the link"

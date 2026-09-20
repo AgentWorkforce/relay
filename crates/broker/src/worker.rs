@@ -696,7 +696,7 @@ impl WorkerRegistry {
                     spec.cwd.as_deref(),
                     &spec.name,
                     skip_relay_prompt,
-                    self.env_value("AGENT_RELAY_LOCAL_ONLY").as_deref(),
+                    self.env_value("AGENT_RELAY_LOCAL_ONLY"),
                 ) {
                     // Path only (no secrets): the pty worker points this Muse
                     // invocation at its isolated clean config home.
@@ -939,7 +939,7 @@ impl WorkerRegistry {
                         spec.cwd.as_deref(),
                         &spec.name,
                         skip_relay_prompt,
-                        self.env_value("AGENT_RELAY_LOCAL_ONLY").as_deref(),
+                        self.env_value("AGENT_RELAY_LOCAL_ONLY"),
                     ) {
                         // Path only (no secrets): the pty worker points this Muse
                         // invocation at its isolated clean config home.
