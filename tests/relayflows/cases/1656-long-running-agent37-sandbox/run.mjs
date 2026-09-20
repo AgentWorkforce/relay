@@ -1,7 +1,8 @@
 /**
  * relay#1656 — `agent-relay fleet spawn --sandbox` must ask Cloud for
- * long-running semantics with a one-to-one sandbox identity and must clean up
- * against the provider Cloud actually chose.
+ * long-running semantics with a one-to-one sandbox identity, preserve the
+ * provider Cloud actually chose, and retain an explicitly replayable identity
+ * when a later local output failure occurs.
  *
  * The claim has two halves and they live in different packages, so the probe
  * runs them as one chain rather than as two independent assertions:
@@ -13,10 +14,10 @@
  *      -> deleteCloudFleetSandbox   (packages/cloud, REAL)
  *      -> DELETE /fleet/nodes/sandbox/<id>   <- providerId observed here
  *
- * The ONLY stub between the command line and those two request bodies is the
- * Cloud network boundary (`packages/cloud/src/auth.js`). The flag parsing, the
- * spawn handler, the Cloud client's request construction, its provider parsing,
- * and the CLI's cleanup call are all the target checkout's own code.
+ * The Cloud network boundary (`packages/cloud/src/auth.js`) is stubbed, as is
+ * the separate repository-materialization prerequisite added after this case
+ * was written. The flag parsing, spawn handler, sandbox request construction,
+ * provider parsing, and cleanup call are all the target checkout's own code.
  *
  * An earlier revision of this case asserted the CLI half with
  * `cliSource.includes("workloadProfile: 'long-running-agent'")` and called
@@ -43,7 +44,8 @@
  */
 import { execFileSync, spawnSync } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
-import { lstat, mkdir, open, readFile, rename, rm, writeFile } from 'node:fs/promises';
+import { appendFile, lstat, mkdir, mkdtemp, open, readFile, rename, rm, writeFile } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
 import path from 'node:path';
 import process from 'node:process';
 import { fileURLToPath } from 'node:url';
@@ -74,6 +76,9 @@ if (!expectedSha) throw new Error(`Missing expected ${arm} SHA.`);
 const targetSha = execFileSync('git', ['-C', targetDir, 'rev-parse', 'HEAD'], {
   encoding: 'utf8',
 }).trim();
+const targetOrigin = execFileSync('git', ['-C', targetDir, 'remote', 'get-url', 'origin'], {
+  encoding: 'utf8',
+}).trim();
 if (targetSha !== expectedSha) {
   throw new Error(`Target checkout ${targetSha} does not match exact ${arm} SHA ${expectedSha}.`);
 }
@@ -83,9 +88,15 @@ if (!isWithin(harnessDir, runnerPath)) {
   throw new Error('The RelayFlow runner must execute from the exact-head harness checkout.');
 }
 
-const probePath = path.join(targetDir, 'packages/cloud/src/.relayflow-1656-agent37.test.ts');
-const observationPath = path.join(targetDir, '.relayflow-1656-agent37-observation.json');
-const configPath = path.join(targetDir, '.relayflow-1656-agent37.vitest.config.mjs');
+// The CLI correctly refuses to create a sandbox from a dirty checkout. Run the
+// generated Vitest probe in a disposable exact-SHA clone, and ignore only the
+// three generated probe artifacts there so the cleanliness guard observes the
+// candidate source rather than the test harness itself.
+const scratchRoot = await mkdtemp(path.join(tmpdir(), 'relayflow-1656-target-'));
+const workingDir = path.join(scratchRoot, 'target');
+const probePath = path.join(workingDir, 'packages/cloud/src/.relayflow-1656-agent37.test.ts');
+const observationPath = path.join(workingDir, '.relayflow-1656-agent37-observation.json');
+const configPath = path.join(workingDir, '.relayflow-1656-agent37.vitest.config.mjs');
 
 // Workspace packages the probe's import graph reaches. The root vitest config
 // aliases these to `src` so tests run against a fresh checkout without a build;
@@ -131,6 +142,7 @@ import { Command } from 'commander';
 const mocks = vi.hoisted(() => ({
   ensureCloudSession: vi.fn(),
   authorizedApiFetch: vi.fn(),
+  materializeCloudRelayfileRepository: vi.fn(),
   persistWorkspaceRelaycastTarget: vi.fn(() => true),
   resolveWorkspaceSelection: vi.fn(() => ({ workspaceId: 'rw_relayflow' })),
 }));
@@ -190,11 +202,21 @@ const auth = {
   apiUrl: 'https://relayflow.invalid',
 };
 
-test('fleet spawn --sandbox replays an exact identity and cleans up by returned provider', async () => {
+test('fleet spawn --sandbox replays and retains an exact provider-attributed identity', async () => {
   const output = process.env.RELAY_PR1656_OBSERVATION_PATH;
   if (!output) throw new Error('Missing RELAY_PR1656_OBSERVATION_PATH.');
+  const proofArm = process.env.RELAY_PR_PROOF_ARM;
 
   mocks.ensureCloudSession.mockResolvedValue({ auth, client: {} });
+  mocks.materializeCloudRelayfileRepository.mockResolvedValue({
+    cloudWorkspaceId: CLOUD_WORKSPACE_ID,
+    repository: 'AgentWorkforce/relay',
+    revision: process.env.RELAY_PR_PROOF_TARGET_SHA,
+    filesWritten: 1,
+    sourceProfile: 'complete-v1',
+    contentRoot: '/github/repos/AgentWorkforce/relay/contents',
+    sentinelPath: '/github/repos/AgentWorkforce/relay/.relayfile/clone.json',
+  });
   const provisionedResponse = {
     outcome: 'provisioned',
     nodeId: 'node-relayflow',
@@ -281,6 +303,7 @@ test('fleet spawn --sandbox replays an exact identity and cleans up by returned 
       }) as never,
     },
     ensureCloudFleetSandbox,
+    materializeCloudRelayfileRepository: mocks.materializeCloudRelayfileRepository,
     deleteCloudFleetSandbox,
     resolveWorkspaceSelection: mocks.resolveWorkspaceSelection,
     persistWorkspaceRelaycastTarget: mocks.persistWorkspaceRelaycastTarget,
@@ -330,12 +353,19 @@ test('fleet spawn --sandbox replays an exact identity and cleans up by returned 
     );
   }
 
-  const ensureRequest = mocks.authorizedApiFetch.mock.calls[1]?.[2];
-  const deleteRequest = mocks.authorizedApiFetch.mock.calls[2]?.[2];
+  const ensureCall = mocks.authorizedApiFetch.mock.calls.find(
+    (call) => call[1] === '/api/v1/fleet/nodes/sandbox/ensure'
+  );
+  const deleteCall = mocks.authorizedApiFetch.mock.calls.find(
+    (call) => String(call[1]).startsWith('/api/v1/fleet/nodes/sandbox/') && call[2]?.method === 'DELETE'
+  );
+  const ensureRequest = ensureCall?.[2];
+  const deleteRequest = deleteCall?.[2];
   expect(ensureRequest?.body).toEqual(expect.any(String));
-  expect(deleteRequest?.body).toEqual(expect.any(String));
+  if (proofArm === 'head') expect(deleteCall).toBeUndefined();
+  else expect(deleteRequest?.body).toEqual(expect.any(String));
   const ensureBody = JSON.parse(ensureRequest.body);
-  const deleteBody = JSON.parse(deleteRequest.body);
+  const deleteBody = deleteRequest?.body ? JSON.parse(deleteRequest.body) : {};
   const [cliResult] = sandboxResults;
 
   await writeFile(
@@ -350,9 +380,9 @@ test('fleet spawn --sandbox replays an exact identity and cleans up by returned 
       responseProviderSandboxId: cliResult.sandbox?.providerSandboxId ?? null,
       responseProviderId: cliResult.sandbox?.providerId ?? null,
       responseNodeName: cliResult.sandbox?.nodeName ?? null,
-      deleteSandboxId: decodeURIComponent(
-        String(mocks.authorizedApiFetch.mock.calls[2]?.[1] ?? '').split('/').pop() ?? ''
-      ) || null,
+      cleanupAttempted: deleteCall !== undefined,
+      deleteSandboxId:
+        decodeURIComponent(String(deleteCall?.[1] ?? '').split('/').pop() ?? '') || null,
       deleteProviderId: deleteBody.providerId ?? null,
       relaycastTargetPersisted: mocks.persistWorkspaceRelaycastTarget.mock.calls.length === 1,
       outputFailureObserved: errors.join('\n').includes('CLI output sink failed after capture'),
@@ -363,13 +393,46 @@ test('fleet spawn --sandbox replays an exact identity and cleans up by returned 
 `;
 
 try {
+  run(
+    'git',
+    ['clone', '--quiet', '--shared', '--no-checkout', targetDir, workingDir],
+    targetDir,
+    'clone exact target into disposable workspace',
+    INSTALL_TIMEOUT_MS
+  );
+  run(
+    'git',
+    ['-C', workingDir, 'checkout', '--quiet', '--detach', expectedSha],
+    workingDir,
+    'checkout exact target in disposable workspace',
+    INSTALL_TIMEOUT_MS
+  );
+  run(
+    'git',
+    ['-C', workingDir, 'remote', 'set-url', 'origin', targetOrigin],
+    workingDir,
+    'preserve target GitHub origin in disposable workspace',
+    INSTALL_TIMEOUT_MS
+  );
+  await appendFile(
+    path.join(workingDir, '.git/info/exclude'),
+    [
+      '',
+      '.relayflow-1656-agent37-observation.json',
+      '.relayflow-1656-agent37.vitest.config.mjs',
+      'packages/cloud/src/.relayflow-1656-agent37.test.ts',
+      '',
+    ].join('\n'),
+    'utf8'
+  );
+
   // The probe drives the CLI, so the whole workspace is installed rather than
   // packages/cloud alone. No package build is needed: the config above resolves
   // every `@agent-relay/*` import to its TypeScript source.
   run(
     'npm',
     ['ci', '--ignore-scripts', '--no-audit', '--no-fund'],
-    targetDir,
+    workingDir,
     'workspace dependency installation',
     INSTALL_TIMEOUT_MS
   );
@@ -378,8 +441,8 @@ try {
   await writeGeneratedFile(configPath, probeConfigSource);
   run(
     'npm',
-    ['exec', '--', 'vitest', 'run', '--config', path.relative(targetDir, configPath)],
-    targetDir,
+    ['exec', '--', 'vitest', 'run', '--config', path.relative(workingDir, configPath)],
+    workingDir,
     'long-running Agent37 CLI probe',
     PROBE_TIMEOUT_MS,
     { RELAY_PR1656_OBSERVATION_PATH: observationPath }
@@ -407,6 +470,7 @@ try {
     observation.responseProviderSandboxId === null &&
     observation.responseProviderId === 'agent37' &&
     observation.responseNodeName === REPLAY_SANDBOX_NAME &&
+    observation.cleanupAttempted === true &&
     observation.deleteSandboxId === REPLAY_SANDBOX_ID &&
     observation.deleteProviderId === 'agent37';
   const sandboxIdentityObserved =
@@ -426,8 +490,9 @@ try {
     observation.responseProviderSandboxId === PROVIDER_SANDBOX_ID &&
     observation.responseProviderId === 'agent37' &&
     observation.responseNodeName === REPLAY_SANDBOX_NAME &&
-    observation.deleteSandboxId === REPLAY_SANDBOX_ID &&
-    observation.deleteProviderId === 'agent37';
+    observation.cleanupAttempted === false &&
+    observation.deleteSandboxId === null &&
+    observation.deleteProviderId === null;
 
   let outcome;
   let signature;
@@ -439,9 +504,9 @@ try {
       "fleet spawn --sandbox reached Cloud with the existing long-running profile and Cloud's agent37 response, but without a caller-declared sandbox identity; the one-to-one replay identity and separately observed providerSandboxId are absent while agent37 cleanup attribution remains preserved.";
   } else if (headObserved) {
     outcome = 'fixed';
-    signature = 'long_running_profile_replay_identity_and_agent37_attribution_preserved';
+    signature = 'long_running_profile_replay_identity_retained_and_agent37_attribution_preserved';
     details =
-      "fleet spawn --sandbox replayed the exact caller-declared sbx_<UUID>/fleet-sandbox-<UUID> identity with workloadProfile 'long-running-agent' and forceProvision true without pinning a provider; Cloud echoed the public identity, returned a separate providerSandboxId, and agent37 attribution reached cleanup by public sandbox ID.";
+      "fleet spawn --sandbox replayed the exact caller-declared sbx_<UUID>/fleet-sandbox-<UUID> identity with workloadProfile 'long-running-agent' and forceProvision true without pinning a provider; Cloud echoed the public identity, returned a separate providerSandboxId with agent37 attribution, and a later local output failure did not delete the explicitly retained sandbox.";
   } else {
     throw new Error(`Unexpected long-running Agent37 observation: ${JSON.stringify(observation)}.`);
   }
@@ -454,9 +519,7 @@ try {
   );
   process.stdout.write(`${signature}\n`);
 } finally {
-  await rm(probePath, { force: true });
-  await rm(configPath, { force: true });
-  await rm(observationPath, { force: true });
+  await rm(scratchRoot, { recursive: true, force: true });
 }
 
 function requiredValue(name) {

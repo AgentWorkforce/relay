@@ -32,6 +32,7 @@ import process from 'node:process';
 const CASE_ID = '1795-standalone-mount';
 const BUILD_TIMEOUT_MS = 20 * 60 * 1000;
 const COMMAND_TIMEOUT_MS = 5 * 60 * 1000;
+const BUN_VERSION = '1.4.0';
 
 /** One real command per group, chosen to reach the implementation, not the help text. */
 const GROUPS = [
@@ -59,7 +60,30 @@ if (actualSha !== expectedSha) {
   throw new Error(`${arm} arm is at ${actualSha}, expected ${expectedSha}.`);
 }
 
-await main();
+// Building the standalone mutates node_modules, bin/, and build output. Keep
+// those effects out of the shared Flows target, and provision the compiler at
+// an explicit version so the proof does not depend on the runner image or a
+// developer machine having Bun preinstalled.
+const scratchRoot = mkdtempSync(path.join(os.tmpdir(), `${CASE_ID}-target-`));
+const workingDir = path.join(scratchRoot, 'target');
+const bunPrefix = path.join(scratchRoot, 'bun-toolchain');
+
+try {
+  runShell(
+    'git',
+    ['clone', '--quiet', '--shared', '--no-checkout', targetDir, workingDir],
+    'clone exact target into disposable workspace',
+    { cwd: targetDir }
+  );
+  runShell(
+    'git',
+    ['-C', workingDir, 'checkout', '--quiet', '--detach', expectedSha],
+    'checkout exact target in disposable workspace'
+  );
+  await main();
+} finally {
+  await rm(scratchRoot, { recursive: true, force: true });
+}
 
 async function main() {
   // Match the repository's cleanroom install. Running dependency lifecycle
@@ -67,10 +91,18 @@ async function main() {
   // CJS bundle try to ingest a `.node` file before this case ever reaches the
   // standalone mount behavior it is meant to prove.
   build(['ci', '--ignore-scripts'], 'npm ci --ignore-scripts');
+  runShell(
+    'npm',
+    ['install', '--prefix', bunPrefix, '--no-audit', '--no-fund', '--no-package-lock', `bun@${BUN_VERSION}`],
+    `install pinned bun@${BUN_VERSION}`
+  );
   build(['run', 'build'], 'npm run build');
-  runShell('bash', ['scripts/build-standalone.sh'], 'standalone build');
+  const bunBin = path.join(bunPrefix, 'node_modules', '.bin');
+  runShell('bash', ['scripts/build-standalone.sh'], 'standalone build', {
+    env: { ...process.env, PATH: `${bunBin}${path.delimiter}${process.env.PATH ?? ''}` },
+  });
 
-  const binary = path.join(targetDir, 'bin', 'agent-relay-standalone');
+  const binary = path.join(workingDir, 'bin', 'agent-relay-standalone');
   // A sandbox under the system temp dir, so no ancestor node_modules can
   // satisfy an import and make a broken binary look mounted.
   const sandbox = mkdtempSync(path.join(os.tmpdir(), `${CASE_ID}-`));
@@ -128,9 +160,10 @@ function build(args, label) {
   runShell('npm', args, label);
 }
 
-function runShell(command, args, label) {
+function runShell(command, args, label, { cwd = workingDir, env = process.env } = {}) {
   const completed = spawnSync(command, args, {
-    cwd: targetDir,
+    cwd,
+    env,
     stdio: ['ignore', 'inherit', 'inherit'],
     timeout: BUILD_TIMEOUT_MS,
   });
