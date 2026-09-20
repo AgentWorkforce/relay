@@ -398,10 +398,11 @@ export function validateTargetedPlan(plan) {
   return plan;
 }
 
-function changedFilesFromGit(base, head) {
+export function changedFilesFromGit(base, head, { cwd = process.cwd() } = {}) {
   if (!SHA.test(base) || !SHA.test(head))
     throw new Error('--base and --head must be full lowercase Git SHAs');
-  const result = spawnSync('git', ['diff', '--name-status', '-z', base, head], {
+  const result = spawnSync('git', ['diff', '--name-status', '-z', `${base}...${head}`], {
+    cwd,
     encoding: 'utf8',
     maxBuffer: 8 * 1024 * 1024,
   });

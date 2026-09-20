@@ -1,5 +1,5 @@
 import { execFile } from 'node:child_process';
-import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
+import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import { promisify } from 'node:util';
@@ -9,6 +9,7 @@ import { parse } from 'yaml';
 
 import {
   buildTargetedPlan,
+  changedFilesFromGit,
   loadRelayflowCorpusCases,
   validateTargetedPlan,
 } from '../../scripts/verify-features/targeted-pr-plan.mjs';
@@ -42,6 +43,39 @@ function generatedCommandPayload(command: string): Record<string, any> {
 }
 
 describe('targeted Flows v2 PR verification', () => {
+  it('selects changes from the merge base instead of changes made only on the base branch', async () => {
+    const directory = await mkdtemp(path.join(os.tmpdir(), 'relay-targeted-diverged-git-'));
+    temporaryDirectories.push(directory);
+    const git = async (...args: string[]) =>
+      (await execFileAsync('git', args, { cwd: directory, timeout: 30_000 })).stdout.trim();
+
+    await git('init');
+    await git('config', 'user.email', 'targeted-flow@example.test');
+    await git('config', 'user.name', 'Targeted Flow Fixture');
+    await writeFile(path.join(directory, 'common.txt'), 'common\n');
+    await git('add', 'common.txt');
+    await git('commit', '-m', 'common ancestor');
+    const ancestor = await git('rev-parse', 'HEAD');
+
+    await git('checkout', '-b', 'candidate');
+    const candidatePath = 'packages/cli/src/cli/lib/formatting.ts';
+    await mkdir(path.join(directory, path.dirname(candidatePath)), { recursive: true });
+    await writeFile(path.join(directory, candidatePath), 'candidate\n');
+    await git('add', candidatePath);
+    await git('commit', '-m', 'candidate change');
+    const head = await git('rev-parse', 'HEAD');
+
+    await git('checkout', '-b', 'advanced-base', ancestor);
+    const baseOnlyPath = 'packages/sdk/src/base-only.ts';
+    await mkdir(path.join(directory, path.dirname(baseOnlyPath)), { recursive: true });
+    await writeFile(path.join(directory, baseOnlyPath), 'base only\n');
+    await git('add', baseOnlyPath);
+    await git('commit', '-m', 'base-only change');
+    const base = await git('rev-parse', 'HEAD');
+
+    expect(changedFilesFromGit(base, head, { cwd: directory })).toEqual([candidatePath]);
+  });
+
   it('selects only the Fleet contract slice for a fleet command change', () => {
     const result = plan(['packages/cli/src/cli/commands/fleet.ts']);
 
