@@ -135,7 +135,7 @@ test('observe fleet nodes pretty behavior', async () => {
     '--workspace-key',
     'rk_live_child',
   ]);
-  const parentOptions = await invoke([
+  const shortForm = await invoke([
     'fleet',
     'nodes',
     '--workspace-key',
@@ -145,13 +145,12 @@ test('observe fleet nodes pretty behavior', async () => {
     '--capability',
     'spawn:codex',
     '--all',
-    'list',
     '--pretty',
   ]);
 
   await writeFile(
     observationPath,
-    JSON.stringify({ childOptions, parentOptions }),
+    JSON.stringify({ childOptions, shortForm }),
     'utf8'
   );
 });
@@ -180,7 +179,7 @@ try {
 
   const observation = JSON.parse(await readFile(observationPath, 'utf8'));
   console.log('Fleet nodes pretty proof observation:', JSON.stringify(observation));
-  const results = [observation.childOptions, observation.parentOptions];
+  const results = [observation.childOptions, observation.shortForm];
   const baseObserved = results.every(
     (result) => typeof result?.error === 'string' && result.logs?.length === 0
   );
@@ -193,10 +192,15 @@ try {
       result.warnings.length === 0 &&
       output.includes('NODE') &&
       output.includes('NODE ID') &&
+      output.includes('LIVE') &&
+      output.includes('HANDLERS') &&
+      output.includes('LAST HEARTBEAT') &&
       output.includes('sf-mini') &&
       output.includes('node_proof_1811') &&
       output.includes('2/15') &&
       output.includes('relay-broker/proof') &&
+      output.split(/\s+/).includes('no') &&
+      /\b\d+[smhd] ago\b/.test(output) &&
       result.calls.some((call) => call?.workspace?.workspaceKey === expectedWorkspace) &&
       result.calls.some((call) => call?.name === 'sf-mini' && call?.capability === 'spawn:codex')
     );
@@ -209,12 +213,12 @@ try {
     outcome = 'absent';
     signature = 'fleet_nodes_pretty_absent';
     details =
-      'The exact base CLI rejects both placements of the fleet nodes list --pretty command and emits no table.';
+      'The exact base CLI rejects both the fleet nodes list --pretty and fleet nodes --pretty forms and emits no table.';
   } else if (headObserved) {
     outcome = 'fixed';
     signature = 'fleet_nodes_pretty_lists_nodes';
     details =
-      'The exact head CLI accepts options before or after list, preserves workspace and API filters, includes requested offline history, and emits the NODE table with identity, capacity, version, and heartbeat columns.';
+      'The exact head CLI accepts the list and short forms, preserves workspace and API filters, includes requested offline history, and emits the NODE table with identity, liveness, handler health, capacity, version, and heartbeat columns.';
   } else {
     throw new Error(`Unexpected fleet nodes pretty observation: ${JSON.stringify(observation)}.`);
   }
