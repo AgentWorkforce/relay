@@ -1238,16 +1238,36 @@ impl FleetDeliveryBook {
     /// requirement. This does not return an ACK to send immediately; it only
     /// prevents one unverified PTY fallback from pinning every later confirmed
     /// delivery across restarts.
-    pub(crate) fn abandon_unconfirmed_delivery(&mut self, deliver: &Deliver) {
+    /// Remove an unobserved delivery from the contiguous confirmation
+    /// requirement, returning the new cumulative ACK floor when the cursor
+    /// advanced.
+    ///
+    /// Returning the floor is load-bearing, not a convenience. Advancing the
+    /// cursor has consequences the BOOK cannot apply: siblings at or below the
+    /// new floor are sitting in `pending_deliveries` solely to carry a withheld
+    /// fleet ack (`runtime/fleet.rs:1825`) and must be purged, and the resolved
+    /// ack must be sent. `commit_confirmed_delivery` returns `Option<u64>` for
+    /// exactly this reason and its caller follows up with
+    /// `advance_pending_fleet_ack_floors` plus a sibling `retain`
+    /// (`runtime/fleet.rs:1816-1823`).
+    ///
+    /// This function previously returned `()`, so the advance was invisible to
+    /// its caller. The drain below then removed the entry that
+    /// `is_delivery_confirmation_held` uses to keep an out-of-order-confirmed
+    /// delivery out of the maintenance retry sweep
+    /// (`runtime/maintenance.rs:155-166`), while nothing purged it from
+    /// `pending_deliveries` — so an already-delivered, already-confirmed
+    /// message became retry-eligible and was re-injected. Permanently: every
+    /// later confirmation then returned `None` and re-inserted it.
+    pub(crate) fn abandon_unconfirmed_delivery(&mut self, deliver: &Deliver) -> Option<u64> {
         self.mark_cursors_dirty();
         self.commit_received(deliver);
-        let Some(cursor) = self.agents.get_mut(deliver.agent_id.as_str()) else {
-            return;
-        };
+        let cursor = self.agents.get_mut(deliver.agent_id.as_str())?;
         if deliver.seq == 0 || deliver.seq <= cursor.acked_up_to_seq {
-            return;
+            return None;
         }
         cursor.confirmed_delivery_seqs.insert(deliver.seq, ());
+        let before = cursor.acked_up_to_seq;
         loop {
             let next = cursor.acked_up_to_seq.saturating_add(1);
             if next > cursor.received_up_to_seq
@@ -1257,6 +1277,7 @@ impl FleetDeliveryBook {
             }
             cursor.acked_up_to_seq = next;
         }
+        (cursor.acked_up_to_seq > before).then_some(cursor.acked_up_to_seq)
     }
 
     pub(crate) fn is_delivery_confirmation_held(&self, deliver: &Deliver) -> bool {
@@ -3329,6 +3350,68 @@ mod tests {
         server.await.expect("test server should finish");
         assert_eq!(token, "nt_live_retry_success");
         assert_eq!(attempts.load(Ordering::SeqCst), 2);
+    }
+
+    /// relay: F1 — abandoning an unobserved delivery must not release the
+    /// retry hold on an already-confirmed successor.
+    ///
+    /// `confirmed_delivery_seqs` does double duty: it lets the cumulative
+    /// cursor advance across a contiguous confirmed prefix, AND it is the only
+    /// thing keeping an out-of-order-confirmed delivery out of the maintenance
+    /// retry sweep (`is_delivery_confirmation_held`, consumed at
+    /// `runtime/maintenance.rs:155-166`).
+    ///
+    /// The drain loop in `abandon_unconfirmed_delivery` removes entries for the
+    /// abandoned sequence AND every contiguous successor. For a successor that
+    /// was confirmed out of order — and is therefore sitting in
+    /// `pending_deliveries` solely to carry its withheld fleet ack
+    /// (`runtime/fleet.rs:1825`) — that makes an already-delivered message
+    /// retry-eligible, and it is re-injected.
+    ///
+    /// The two preconditions are correlated, not independent: the delivery that
+    /// fails to echo is exactly the one whose successor confirms first.
+    #[test]
+    fn abandoning_an_unobserved_delivery_keeps_a_confirmed_successor_held() {
+        let mut book = FleetDeliveryBook::default();
+        let four = deliver_frame_at("agent-a", "agent-a-id", 4);
+        let five = deliver_frame_at("agent-a", "agent-a-id", 5);
+
+        // Both surfaced to the agent.
+        book.commit_received(&four);
+        book.commit_received(&five);
+
+        // seq 5 echoes and confirms first. The cursor cannot advance past the
+        // gap at 4, so `commit_confirmed_delivery` reports no new ack and the
+        // pending entry is retained to carry the withheld one.
+        assert_eq!(book.commit_confirmed_delivery(&five), None);
+        assert!(
+            book.is_delivery_confirmation_held(&five),
+            "a confirmed-but-unackable delivery must be held out of the retry sweep"
+        );
+
+        // seq 4's echo never arrives; it settles unobserved. That advances the
+        // cursor across 4 AND the already-confirmed 5, which releases 5's retry
+        // hold — so the advance MUST be reported, or the caller cannot purge
+        // seq 5 from `pending_deliveries` and it is re-injected forever.
+        assert_eq!(
+            book.abandon_unconfirmed_delivery(&four),
+            Some(5),
+            "abandoning seq 4 advanced the cursor to 5 without reporting it: \
+             confirmed seq 5 loses its retry hold with nothing to purge it"
+        );
+    }
+
+    fn deliver_frame_at(agent: &str, agent_id: &str, seq: u64) -> Deliver {
+        Deliver {
+            v: FLEET_WIRE_VERSION,
+            agent: agent.to_string(),
+            agent_id: agent_id.to_string(),
+            delivery_id: format!("delivery-{seq}"),
+            msg_id: format!("msg-{seq}"),
+            seq,
+            mode: DeliveryMode::Wait,
+            payload: json!({"text": "x"}),
+        }
     }
 
     #[test]
