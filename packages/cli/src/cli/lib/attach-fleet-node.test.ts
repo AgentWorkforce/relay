@@ -925,77 +925,80 @@ describe('startFleetNodeAttachProxy view target lifecycle', () => {
     expect(resumeRequests).toBe(0);
   });
 
-  it('replaces a session once when the terminal rejects its resume credential with 410', async () => {
-    const oldSessionId = 'session-resume-expired';
-    const freshSessionId = 'session-after-410';
-    let resumeRequests = 0;
-    const remote = await startFakeRemote(0, (requestUrl) => {
-      const url = new URL(requestUrl, 'ws://127.0.0.1');
-      if (url.searchParams.get('resume')) {
-        resumeRequests += 1;
-        return 410;
-      }
-      return undefined;
-    });
-    cleanup.push(remote.close);
-    let sessionRequests = 0;
-    const proxy = await startFleetNodeAttachProxy({
-      agent: 'view-resume-expired',
-      node: 'node-resume-expired',
-      mode: 'view',
-      baseUrl: 'https://cast.agentrelay.com',
-      workspaceKey: 'wk',
-      fetch: (async () => {
-        sessionRequests += 1;
-        const replacement = sessionRequests === 2;
-        return {
-          ok: true,
-          status: 201,
-          json: async () => ({
+  it.each([401, 410])(
+    'replaces a session once when the terminal rejects its resume credential with %i',
+    async (rejectedStatus) => {
+      const oldSessionId = 'session-resume-expired';
+      const freshSessionId = 'session-after-expired-resume';
+      let resumeRequests = 0;
+      const remote = await startFakeRemote(0, (requestUrl) => {
+        const url = new URL(requestUrl, 'ws://127.0.0.1');
+        if (url.searchParams.get('resume')) {
+          resumeRequests += 1;
+          return rejectedStatus;
+        }
+        return undefined;
+      });
+      cleanup.push(remote.close);
+      let sessionRequests = 0;
+      const proxy = await startFleetNodeAttachProxy({
+        agent: 'view-resume-expired',
+        node: 'node-resume-expired',
+        mode: 'view',
+        baseUrl: 'https://cast.agentrelay.com',
+        workspaceKey: 'wk',
+        fetch: (async () => {
+          sessionRequests += 1;
+          const replacement = sessionRequests === 2;
+          return {
             ok: true,
-            data: {
-              session_id: replacement ? freshSessionId : oldSessionId,
-              terminal_url: `${remote.url}?ticket=${replacement ? 'fresh-ticket' : 'old-ticket'}`,
-              resume_token: replacement ? 'fresh-resume-secret' : 'old-resume-secret',
-              expires_at: new Date(Date.now() + 600_000).toISOString(),
-            },
-          }),
-        } as Response;
-      }) as typeof globalThis.fetch,
-      reconnectDelay: { initialMs: 1, maxMs: 1 },
-    });
-    cleanup.push(proxy.close);
+            status: 201,
+            json: async () => ({
+              ok: true,
+              data: {
+                session_id: replacement ? freshSessionId : oldSessionId,
+                terminal_url: `${remote.url}?ticket=${replacement ? 'fresh-ticket' : 'old-ticket'}`,
+                resume_token: replacement ? 'fresh-resume-secret' : 'old-resume-secret',
+                expires_at: new Date(Date.now() + 600_000).toISOString(),
+              },
+            }),
+          } as Response;
+        }) as typeof globalThis.fetch,
+        reconnectDelay: { initialMs: 1, maxMs: 1 },
+      });
+      cleanup.push(proxy.close);
 
-    const initial = await remote.nextConnection();
-    sendReady(initial, 'auto_inject', oldSessionId);
-    const viewSocket = await connectLoopbackEvents(proxy);
-    cleanup.push(
-      () =>
-        new Promise<void>((resolve) => {
-          if (viewSocket.readyState === WsClient.CLOSED) return resolve();
-          viewSocket.once('close', () => resolve());
-          viewSocket.close();
+      const initial = await remote.nextConnection();
+      sendReady(initial, 'auto_inject', oldSessionId);
+      const viewSocket = await connectLoopbackEvents(proxy);
+      cleanup.push(
+        () =>
+          new Promise<void>((resolve) => {
+            if (viewSocket.readyState === WsClient.CLOSED) return resolve();
+            viewSocket.once('close', () => resolve());
+            viewSocket.close();
+          })
+      );
+
+      initial.terminate();
+      const replacement = await remote.nextConnection();
+      sendReady(replacement, 'auto_inject', freshSessionId);
+      const output = new Promise<void>((resolve) => viewSocket.once('message', () => resolve()));
+      replacement.send(
+        JSON.stringify({
+          type: 'terminal.output',
+          session_id: freshSessionId,
+          chunk: 'fresh after expired resume',
+          offset: 1,
         })
-    );
+      );
+      await output;
 
-    initial.terminate();
-    const replacement = await remote.nextConnection();
-    sendReady(replacement, 'auto_inject', freshSessionId);
-    const output = new Promise<void>((resolve) => viewSocket.once('message', () => resolve()));
-    replacement.send(
-      JSON.stringify({
-        type: 'terminal.output',
-        session_id: freshSessionId,
-        chunk: 'fresh after rejected resume',
-        offset: 1,
-      })
-    );
-    await output;
-
-    expect(viewSocket.readyState).toBe(WsClient.OPEN);
-    expect(resumeRequests).toBe(1);
-    expect(sessionRequests).toBe(2);
-  });
+      expect(viewSocket.readyState).toBe(WsClient.OPEN);
+      expect(resumeRequests).toBe(1);
+      expect(sessionRequests).toBe(2);
+    }
+  );
 
   it('does not allocate a replacement terminal for transient resume failures', async () => {
     let resumeRequests = 0;
