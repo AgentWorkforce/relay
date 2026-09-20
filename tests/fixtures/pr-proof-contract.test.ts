@@ -2342,6 +2342,7 @@ describe('classification reads the diff, not the title', () => {
   it('still exempts the CI-only script subtrees', () => {
     expect(runtimeSurfaceChanged(['scripts/pr-proof/prepare.mjs'])).toBe(false);
     expect(runtimeSurfaceChanged(['scripts/evals/run-relay-evals.mjs'])).toBe(false);
+    expect(runtimeSurfaceChanged(['scripts/verify-features/targeted-pr-plan.mjs'])).toBe(false);
   });
 
   /**

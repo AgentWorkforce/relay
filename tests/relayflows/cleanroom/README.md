@@ -12,6 +12,45 @@ The campaign has three promises:
 3. a missing fixture, skipped suite, coverage gap, or dirty cleanup is never a
    pass.
 
+## Targeted pull-request verification
+
+`.github/workflows/targeted-feature-verification.yml` runs the fast pull-request
+slice. `scripts/verify-features/targeted-pr-plan.mjs` maps the changed paths
+through the feature manifest and this campaign's matrix, then
+`flows/verify/targeted-pr.spec.ts` emits a deterministic Relayflows v2 spec for
+only the selected setup and scenarios. A directly mapped feature runs its
+contract scenarios plus any category-level guard. A changed test runs the
+scenario that names it.
+
+The selector fails closed. Changes to the selector, manifest, matrix, generated
+flow, or workflow run the complete smoke profile. Any other non-documentation
+path without a known route also runs the complete smoke profile and is recorded
+in `unmatchedRuntimeFiles`; it never becomes a green skip. Documentation-only
+changes do not start the workflow. The plan and generated spec are uploaded as
+CI evidence on every run.
+
+Targeted verification is intentionally contract-level. Provider-backed and
+fresh-host scenarios remain visible in the plan as `coverageGaps` and continue
+to run in release qualification. In particular, Fleet pull requests run the
+Fleet CLI/attach/spawn contracts and the Daytona board contract, while the live
+two-node Daytona board remains a release gate.
+
+To reproduce a CI selection locally, generate a plan from two full Git SHAs,
+then check and run the generated v2 spec:
+
+```bash
+node scripts/verify-features/targeted-pr-plan.mjs plan \
+  --base <base-sha> --head <head-sha> \
+  --output .workflow-artifacts/targeted-pr/plan.json
+node --experimental-strip-types flows/verify/targeted-pr.spec.ts \
+  --plan .workflow-artifacts/targeted-pr/plan.json \
+  --out .workflow-artifacts/flows/relay.verify.targeted-pr.json
+flows check .workflow-artifacts/flows/relay.verify.targeted-pr.json
+flows run --no-observer-link \
+  --data-dir .workflow-artifacts/targeted-pr/relayflowd \
+  .workflow-artifacts/flows/relay.verify.targeted-pr.json
+```
+
 `full` and `soak` are Cloud-only profiles. Each lane is a separate non-interactive
 agent step, so the Cloud sandbox executor gives it a fresh OS sandbox. Inside
 that sandbox the lane runner creates a separate private HOME, XDG directories,

@@ -266,6 +266,7 @@ export function validateMatrix(matrix, featureCategories) {
       validateCommandSpec(step, label, profileIds);
       validateLaneScopedSetup(step, label);
     });
+    const laneSetupIds = new Set(lane.setup.map(({ id }) => id));
     if (!Array.isArray(lane.scenarios) || lane.scenarios.length === 0) {
       throw new Error(`lane ${lane.id}.scenarios must be non-empty`);
     }
@@ -313,6 +314,20 @@ export function validateMatrix(matrix, featureCategories) {
           if (!category) throw new Error(`scenario ${scenario.id} covers unknown feature ${feature}`);
           if (!lane.featureCategories.includes(category)) {
             throw new Error(`scenario ${scenario.id} covers feature ${feature} outside its lane`);
+          }
+        }
+      }
+      if (scenario.targetedSetup !== undefined) {
+        const targetedSetup = assertStringArray(
+          scenario.targetedSetup,
+          `scenario ${scenario.id}.targetedSetup`
+        );
+        if (new Set(targetedSetup).size !== targetedSetup.length) {
+          throw new Error(`scenario ${scenario.id}.targetedSetup repeats a setup id`);
+        }
+        for (const setupId of targetedSetup) {
+          if (!laneSetupIds.has(setupId)) {
+            throw new Error(`scenario ${scenario.id}.targetedSetup references unknown setup ${setupId}`);
           }
         }
       }

@@ -1,0 +1,97 @@
+name: Targeted feature verification
+
+# A PR should pay for the smallest verification slice that can honestly cover
+# its affected feature. The selector maps changed files through the feature
+# manifest and cleanroom matrix. Unmapped runtime files fail closed into the
+# complete smoke profile; they never become a green skip.
+on:
+  pull_request:
+    types: [opened, synchronize, reopened, ready_for_review]
+    paths-ignore:
+      - '.agentworkforce/trajectories/**'
+      - 'docs/**'
+      - 'specs/**'
+      - 'web/**'
+      - '**/*.md'
+      - 'CHANGELOG.md'
+      - 'LICENSE'
+  workflow_dispatch:
+    inputs:
+      base_sha:
+        description: Full base commit SHA
+        required: true
+        type: string
+      head_sha:
+        description: Full head commit SHA
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group: targeted-feature-verification-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  targeted:
+    name: Flows v2 targeted slice
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    env:
+      AGENT_RELAY_TELEMETRY_DISABLED: '1'
+      RELAYFLOWS_SANDBOX_PROVIDER: local-process
+    steps:
+      - name: Checkout exact candidate
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Set up Node.js
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version: 22.22.0
+          cache: npm
+
+      - name: Install dependencies
+        run: |
+          npm ci --ignore-scripts
+          npm install --no-save --package-lock=false --ignore-scripts \
+            @relayflows/runtime-linux-x64@2.0.20
+
+      - name: Select affected features and scenarios
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha || inputs.base_sha }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha || inputs.head_sha }}
+        run: |
+          set -euo pipefail
+          mkdir -p .workflow-artifacts/targeted-pr
+          node scripts/verify-features/targeted-pr-plan.mjs plan \
+            --base "$BASE_SHA" \
+            --head "$HEAD_SHA" \
+            --output .workflow-artifacts/targeted-pr/plan.json
+
+      - name: Generate and check Flows v2 spec
+        run: |
+          node --experimental-strip-types flows/verify/targeted-pr.spec.ts \
+            --plan .workflow-artifacts/targeted-pr/plan.json \
+            --out .workflow-artifacts/flows/relay.verify.targeted-pr.json
+          npx flows check .workflow-artifacts/flows/relay.verify.targeted-pr.json
+
+      - name: Run targeted verification
+        run: >-
+          npx flows run --no-observer-link
+          --data-dir .workflow-artifacts/targeted-pr/relayflowd
+          .workflow-artifacts/flows/relay.verify.targeted-pr.json
+
+      - name: Upload selection evidence
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: targeted-feature-plan-${{ github.run_id }}-${{ github.run_attempt }}
+          path: |
+            .workflow-artifacts/targeted-pr/plan.json
+            .workflow-artifacts/flows/relay.verify.targeted-pr.json
+          if-no-files-found: error
+          retention-days: 14

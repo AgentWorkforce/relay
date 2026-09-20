@@ -432,10 +432,12 @@
             "packages/cli/src/cli/lib/attach-passthrough.test.ts"
           ],
           "timeoutSeconds": 900,
+          "targetedSetup": ["build-core"],
           "evidence": "contract",
           "coversCategories": ["fleet"],
           "coversFeatures": [
             "fleet-nodes",
+            "fleet-nodes-pretty",
             "fleet-spawn",
             "fleet-release",
             "fleet-config",
@@ -475,6 +477,7 @@
           "title": "The complete two-Daytona Fleet board and evidence contract stay executable",
           "command": ["npx", "vitest", "run", "tests/fixtures/verify-fleet-daytona.test.ts"],
           "timeoutSeconds": 120,
+          "targetedSetup": ["build-core"],
           "evidence": "contract",
           "coversCategories": ["fleet"]
         },
@@ -501,7 +504,8 @@
         "cloud-integrations",
         "cloud-rooms",
         "cloud-workers",
-        "integration"
+        "integration",
+        "product-surfaces"
       ],
       "issueMatch": [
         "workflow",
@@ -564,6 +568,22 @@
           "evidence": "integration",
           "coversCategories": ["cloud", "cloud-integrations", "cloud-rooms", "cloud-workers", "integration"],
           "issues": [1265, 1393, 1481, 1620, 1621]
+        },
+        {
+          "id": "product-surface-contracts",
+          "title": "Mounted relayfile, relayflows, and session command surfaces",
+          "command": [
+            "npx",
+            "vitest",
+            "run",
+            "packages/cli/src/cli/commands/product-surfaces.test.ts",
+            "packages/cli/src/cli/commands/product-surfaces.e2e.test.ts",
+            "packages/cli/src/cli/commands/session.test.ts"
+          ],
+          "timeoutSeconds": 300,
+          "targetedSetup": ["build-core"],
+          "evidence": "contract",
+          "coversCategories": ["product-surfaces"]
         }
       ]
     },
