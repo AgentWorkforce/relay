@@ -27,14 +27,24 @@ type FakeRemoteHandle = {
   close: () => Promise<void>;
 };
 
-async function startFakeRemote(upgradeDelayMs = 0): Promise<FakeRemoteHandle> {
+async function startFakeRemote(
+  upgradeDelayMs = 0,
+  rejectUpgrade?: (url: string) => number | undefined
+): Promise<FakeRemoteHandle> {
   const wss = new WebSocketServer({
     host: '127.0.0.1',
     port: 0,
-    ...(upgradeDelayMs > 0
+    ...(upgradeDelayMs > 0 || rejectUpgrade
       ? {
-          verifyClient: (_info, done) => {
-            setTimeout(() => done(true), upgradeDelayMs);
+          verifyClient: (info, done) => {
+            const status = rejectUpgrade?.(info.req.url ?? '/');
+            setTimeout(
+              () =>
+                status === undefined
+                  ? done(true)
+                  : done(false, status, status === 410 ? 'Gone' : 'Unavailable'),
+              upgradeDelayMs
+            );
           },
         }
       : {}),
@@ -95,11 +105,15 @@ function terminalSessionErrorResponse(code: string, message: string, status = 50
   } as unknown as Response;
 }
 
-function sendReady(socket: WsSocket, deliveryMode?: 'auto_inject' | 'manual_flush'): void {
+function sendReady(
+  socket: WsSocket,
+  deliveryMode?: 'auto_inject' | 'manual_flush',
+  sessionId = SESSION_ID
+): void {
   socket.send(
     JSON.stringify({
       type: 'terminal.ready',
-      session_id: SESSION_ID,
+      session_id: sessionId,
       screen: '',
       rows: 24,
       cols: 80,
@@ -821,6 +835,214 @@ describe('startFleetNodeAttachProxy view target lifecycle', () => {
     );
     await closed;
     expect(closes).toEqual([{ code: 1011, reason: 'remote terminal session closed' }]);
+  });
+
+  // MUST FIRE: cast terminal sessions have a finite lifetime. Before this
+  // regression, a view that outlived its session kept retrying the expired
+  // resume token six times and then closed its local client with code 1011.
+  it('replaces an expired terminal session once and keeps the existing view attached', async () => {
+    const oldSessionId = 'session-expired';
+    const freshSessionId = 'session-fresh';
+    let resumeRequests = 0;
+    const remote = await startFakeRemote(0, (requestUrl) => {
+      const url = new URL(requestUrl, 'ws://127.0.0.1');
+      if (url.searchParams.get('resume')) {
+        resumeRequests += 1;
+        return 410;
+      }
+      return undefined;
+    });
+    cleanup.push(remote.close);
+    const requests: Array<{ url: string; body: Record<string, unknown> }> = [];
+    const fetchFn = (async (input: string | URL | Request, init?: RequestInit) => {
+      const body = JSON.parse(String(init?.body ?? '{}')) as Record<string, unknown>;
+      requests.push({ url: String(input), body });
+      const replacement = requests.length === 2;
+      return {
+        ok: true,
+        status: 201,
+        json: async () => ({
+          ok: true,
+          data: {
+            session_id: replacement ? freshSessionId : oldSessionId,
+            terminal_url: `${remote.url}?ticket=${replacement ? 'fresh-ticket' : 'old-ticket'}`,
+            resume_token: replacement ? 'fresh-resume-secret' : 'old-resume-secret',
+            expires_at: replacement
+              ? new Date(Date.now() + 600_000).toISOString()
+              : new Date(Date.now() - 1).toISOString(),
+          },
+        }),
+      } as Response;
+    }) as typeof globalThis.fetch;
+    const proxy = await startFleetNodeAttachProxy({
+      agent: 'view-expired',
+      node: 'node-expired',
+      mode: 'view',
+      baseUrl: 'https://cast.agentrelay.com',
+      workspaceKey: 'wk',
+      fetch: fetchFn,
+      reconnectDelay: { initialMs: 1, maxMs: 1 },
+    });
+    cleanup.push(proxy.close);
+
+    const initial = await remote.nextConnection();
+    sendReady(initial, 'auto_inject', oldSessionId);
+    const viewSocket = await connectLoopbackEvents(proxy);
+    cleanup.push(
+      () =>
+        new Promise<void>((resolve) => {
+          if (viewSocket.readyState === WsClient.CLOSED) return resolve();
+          viewSocket.once('close', () => resolve());
+          viewSocket.close();
+        })
+    );
+
+    initial.terminate();
+    const replacement = await remote.nextConnection();
+    sendReady(replacement, 'auto_inject', freshSessionId);
+    const output = new Promise<void>((resolve) => viewSocket.once('message', () => resolve()));
+    replacement.send(
+      JSON.stringify({
+        type: 'terminal.output',
+        session_id: freshSessionId,
+        chunk: 'fresh session output',
+        offset: 1,
+      })
+    );
+    await output;
+
+    expect(viewSocket.readyState).toBe(WsClient.OPEN);
+    expect(requests).toEqual([
+      {
+        url: 'https://cast.agentrelay.com/v1/nodes/node-expired/terminal/sessions',
+        body: { agent: 'view-expired', mode: 'view' },
+      },
+      {
+        url: 'https://cast.agentrelay.com/v1/nodes/node-expired/terminal/sessions',
+        body: { agent: 'view-expired', mode: 'view' },
+      },
+    ]);
+    expect(resumeRequests).toBe(0);
+  });
+
+  it('replaces a session once when the terminal rejects its resume credential with 410', async () => {
+    const oldSessionId = 'session-resume-expired';
+    const freshSessionId = 'session-after-410';
+    let resumeRequests = 0;
+    const remote = await startFakeRemote(0, (requestUrl) => {
+      const url = new URL(requestUrl, 'ws://127.0.0.1');
+      if (url.searchParams.get('resume')) {
+        resumeRequests += 1;
+        return 410;
+      }
+      return undefined;
+    });
+    cleanup.push(remote.close);
+    let sessionRequests = 0;
+    const proxy = await startFleetNodeAttachProxy({
+      agent: 'view-resume-expired',
+      node: 'node-resume-expired',
+      mode: 'view',
+      baseUrl: 'https://cast.agentrelay.com',
+      workspaceKey: 'wk',
+      fetch: (async () => {
+        sessionRequests += 1;
+        const replacement = sessionRequests === 2;
+        return {
+          ok: true,
+          status: 201,
+          json: async () => ({
+            ok: true,
+            data: {
+              session_id: replacement ? freshSessionId : oldSessionId,
+              terminal_url: `${remote.url}?ticket=${replacement ? 'fresh-ticket' : 'old-ticket'}`,
+              resume_token: replacement ? 'fresh-resume-secret' : 'old-resume-secret',
+              expires_at: new Date(Date.now() + 600_000).toISOString(),
+            },
+          }),
+        } as Response;
+      }) as typeof globalThis.fetch,
+      reconnectDelay: { initialMs: 1, maxMs: 1 },
+    });
+    cleanup.push(proxy.close);
+
+    const initial = await remote.nextConnection();
+    sendReady(initial, 'auto_inject', oldSessionId);
+    const viewSocket = await connectLoopbackEvents(proxy);
+    cleanup.push(
+      () =>
+        new Promise<void>((resolve) => {
+          if (viewSocket.readyState === WsClient.CLOSED) return resolve();
+          viewSocket.once('close', () => resolve());
+          viewSocket.close();
+        })
+    );
+
+    initial.terminate();
+    const replacement = await remote.nextConnection();
+    sendReady(replacement, 'auto_inject', freshSessionId);
+    const output = new Promise<void>((resolve) => viewSocket.once('message', () => resolve()));
+    replacement.send(
+      JSON.stringify({
+        type: 'terminal.output',
+        session_id: freshSessionId,
+        chunk: 'fresh after rejected resume',
+        offset: 1,
+      })
+    );
+    await output;
+
+    expect(viewSocket.readyState).toBe(WsClient.OPEN);
+    expect(resumeRequests).toBe(1);
+    expect(sessionRequests).toBe(2);
+  });
+
+  it('does not allocate a replacement terminal for transient resume failures', async () => {
+    let resumeRequests = 0;
+    const remote = await startFakeRemote(0, (requestUrl) => {
+      if (new URL(requestUrl, 'ws://127.0.0.1').searchParams.get('resume')) {
+        resumeRequests += 1;
+        return 503;
+      }
+      return undefined;
+    });
+    cleanup.push(remote.close);
+    let sessionRequests = 0;
+    const proxy = await startFleetNodeAttachProxy({
+      agent: 'view-transient-resume',
+      node: 'node-transient-resume',
+      mode: 'view',
+      baseUrl: 'https://cast.agentrelay.com',
+      workspaceKey: 'wk',
+      fetch: (async () => {
+        sessionRequests += 1;
+        return {
+          ok: true,
+          status: 201,
+          json: async () => ({
+            ok: true,
+            data: {
+              session_id: SESSION_ID,
+              terminal_url: `${remote.url}?ticket=initial-ticket`,
+              resume_token: 'initial-resume-secret',
+              expires_at: new Date(Date.now() + 600_000).toISOString(),
+            },
+          }),
+        } as Response;
+      }) as typeof globalThis.fetch,
+      reconnectDelay: { initialMs: 1, maxMs: 1 },
+    });
+    cleanup.push(proxy.close);
+
+    const initial = await remote.nextConnection();
+    sendReady(initial);
+    const viewSocket = await connectLoopbackEvents(proxy);
+    const closed = new Promise<void>((resolve) => viewSocket.once('close', () => resolve()));
+    initial.terminate();
+    await closed;
+
+    expect(resumeRequests).toBe(6);
+    expect(sessionRequests).toBe(1);
   });
 
   it('recovers on the sixth resume attempt instead of exhausting the old 15.5s budget', async () => {
