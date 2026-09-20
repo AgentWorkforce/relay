@@ -4,11 +4,11 @@
   "provider": "daytona",
   "minimumBoardNodes": 2,
   "minimumCriticalLifecycleTrials": 5,
-  "operationCount": 108,
+  "operationCount": 110,
   "requiredSnapshotRelayVersion": "11.10.3",
   "artifactRoot": ".workflow-artifacts/verify-fleet-daytona",
   "inventoryFile": "fleet-cli-inventory.json",
-  "inventorySha256": "cfd3a0debf0a7b4f318f2f462d5404b4101474f004655256b985b280519b9fd0",
+  "inventorySha256": "27dd9c9fd15677894538893e54d4157521bd4562fce2e6c0a5cc404886a8d534",
   "commandSurface": {
     "fleet agent list": [
       "fleet-agent-list-json",
@@ -20,7 +20,14 @@
     "fleet disable": ["fleet-disable"],
     "fleet enable": ["fleet-enable"],
     "fleet inherit": ["fleet-inherit"],
-    "fleet nodes": ["fleet-nodes-default", "fleet-nodes-name", "fleet-nodes-capability", "fleet-nodes-all"],
+    "fleet nodes": [
+      "fleet-nodes-default",
+      "fleet-nodes-list-parent-options",
+      "fleet-nodes-name",
+      "fleet-nodes-capability",
+      "fleet-nodes-all"
+    ],
+    "fleet nodes list": ["fleet-nodes-list-options"],
     "fleet release": ["fleet-release", "fleet-release-delete-agent", "fleet-release-reclaims-owned-sandbox"],
     "fleet serve": ["fleet-serve-migration", "fleet-serve-migration-default"],
     "fleet spawn": [
@@ -264,9 +271,69 @@
         "operationId": "fleet-nodes-capability"
       },
       {
+        "option": "--json",
+        "status": "skipped",
+        "reason": "The default fleet nodes operation already proves the JSON contract; focused CLI tests cover the explicit output selector."
+      },
+      {
         "option": "--name",
         "status": "supported",
         "operationId": "fleet-nodes-name"
+      },
+      {
+        "option": "--pretty",
+        "status": "supported",
+        "operationId": "fleet-nodes-list-parent-options",
+        "takesValue": false
+      },
+      {
+        "option": "--token",
+        "status": "skipped",
+        "reason": "Token argv would duplicate reveal-once credentials; the board proves redaction and uses the bound workspace key."
+      },
+      {
+        "option": "--wk",
+        "status": "skipped",
+        "reason": "The legacy --wk credential alias is covered by CLI connection tests; the board must not mint a second credential source."
+      },
+      {
+        "option": "--workspace-key",
+        "status": "skipped",
+        "reason": "The bound workspace key is injected only where the operation needs it; repeating it on every Fleet read would multiply secret-bearing argv."
+      }
+    ],
+    "fleet nodes list": [
+      {
+        "option": "--all",
+        "status": "supported",
+        "operationId": "fleet-nodes-list-options",
+        "takesValue": false
+      },
+      {
+        "option": "--base-url",
+        "status": "skipped",
+        "reason": "The proof uses the credential-bound workspace endpoint; alternate endpoint selection is covered by CLI connection tests without changing the Daytona target."
+      },
+      {
+        "option": "--capability",
+        "status": "supported",
+        "operationId": "fleet-nodes-list-options"
+      },
+      {
+        "option": "--json",
+        "status": "skipped",
+        "reason": "The direct fleet nodes operation already proves the JSON contract; this alias probe targets parent-option forwarding into pretty output."
+      },
+      {
+        "option": "--name",
+        "status": "supported",
+        "operationId": "fleet-nodes-list-options"
+      },
+      {
+        "option": "--pretty",
+        "status": "supported",
+        "operationId": "fleet-nodes-list-options",
+        "takesValue": false
       },
       {
         "option": "--token",
@@ -1184,6 +1251,8 @@
       "initial-task-sentinel-a": "initial-injection",
       "initial-task-sentinel-b": "initial-injection",
       "fleet-nodes-default": "fleet-read",
+      "fleet-nodes-list-parent-options": "fleet-read",
+      "fleet-nodes-list-options": "fleet-read",
       "fleet-nodes-name": "fleet-read",
       "fleet-nodes-capability": "fleet-read",
       "fleet-nodes-all": "fleet-read",
@@ -1296,6 +1365,18 @@
     { "id": "initial-task-sentinel-b", "group": "injection", "expect": "sentinel" },
 
     { "id": "fleet-nodes-default", "group": "fleet", "expect": "success" },
+    {
+      "id": "fleet-nodes-list-parent-options",
+      "group": "fleet",
+      "expect": "success",
+      "argvMustContain": ["list", "--name", "--capability", "--all", "--pretty"]
+    },
+    {
+      "id": "fleet-nodes-list-options",
+      "group": "fleet",
+      "expect": "success",
+      "argvMustContain": ["list", "--name", "--capability", "--all", "--pretty"]
+    },
     { "id": "fleet-nodes-name", "group": "fleet", "expect": "success", "argvMustContain": ["--name"] },
     {
       "id": "fleet-nodes-capability",

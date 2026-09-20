@@ -2,7 +2,9 @@ export function formatRelativeTime(iso?: string): string {
   if (!iso) return 'unknown';
   const ts = Date.parse(iso);
   if (Number.isNaN(ts)) return 'unknown';
-  const diffMs = Date.now() - ts;
+  // Treat clock skew as a just-observed timestamp instead of rendering a
+  // nonsensical negative age (for example, "-10s ago").
+  const diffMs = Math.max(0, Date.now() - ts);
   const diffSec = Math.floor(diffMs / 1000);
   if (diffSec < 60) return `${diffSec}s ago`;
   const diffMin = Math.floor(diffSec / 60);

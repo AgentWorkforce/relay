@@ -31,6 +31,10 @@ describe('formatting helpers', () => {
     expect(formatRelativeTime('2025-12-30T00:00:00.000Z')).toBe('2d ago');
   });
 
+  it('clamps future timestamps caused by clock skew to a nonnegative age', () => {
+    expect(formatRelativeTime('2026-01-01T00:00:10.000Z')).toBe('0s ago');
+  });
+
   it('parses --since duration shorthand', () => {
     const now = Date.now();
 

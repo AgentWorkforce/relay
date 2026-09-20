@@ -292,6 +292,68 @@ describe('fleet command support', () => {
     expect(logs[0]).toContain('0/unlimited');
   });
 
+  it('fleet nodes preserves filters and workspace routing declared before list', async () => {
+    const nodes = {
+      list: vi.fn(async () => [
+        {
+          id: 'node_offline',
+          name: 'sf-mini',
+          status: 'offline',
+          live: false,
+          handlersLive: false,
+          activeAgents: 0,
+          maxAgents: 15,
+          capabilities: [],
+          tags: [],
+        },
+      ]),
+    };
+    const createWorkspaceRelay = vi.fn(() => ({ nodes }));
+    const logs: string[] = [];
+    const program = new Command();
+    program.enablePositionalOptions();
+    program.exitOverride();
+    registerFleetCommands(program, {
+      resolveSandboxRepository: () => undefined,
+      sdk: {
+        createAgentRelay: vi.fn() as never,
+        createWorkspaceRelay: createWorkspaceRelay as never,
+        createWorkspace: vi.fn() as never,
+        log: vi.fn() as never,
+        error: vi.fn(),
+        exit: vi.fn() as never,
+      },
+      log: (...args: unknown[]) => logs.push(args.join(' ')),
+      warn: () => undefined,
+      error: () => undefined,
+    });
+
+    await program.parseAsync(
+      [
+        'fleet',
+        'nodes',
+        '--workspace-key',
+        'rk_live_parent',
+        '--name',
+        'sf-mini',
+        '--capability',
+        'spawn:codex',
+        '--all',
+        'list',
+        '--pretty',
+      ],
+      { from: 'user' }
+    );
+
+    expect(createWorkspaceRelay).toHaveBeenCalledWith({
+      workspaceKey: 'rk_live_parent',
+      token: undefined,
+      baseUrl: undefined,
+    });
+    expect(nodes.list).toHaveBeenCalledWith({ capability: 'spawn:codex', name: 'sf-mini' });
+    expect(logs[0]).toContain('sf-mini');
+  });
+
   it('fleet nodes --pretty keeps the short form available', async () => {
     const nodes = {
       list: vi.fn(async () => [

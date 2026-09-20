@@ -319,6 +319,21 @@ function addFleetNodeListOptions(command: Command): Command {
   );
 }
 
+function mergeFleetNodeListOptions(
+  parentOptions: Record<string, unknown>,
+  childOptions: Record<string, unknown>
+): Record<string, unknown> {
+  const merged = { ...parentOptions };
+  for (const [key, value] of Object.entries(childOptions)) {
+    // Commander supplies false for omitted boolean child options. Those
+    // defaults must not erase a matching flag parsed before the `list`
+    // subcommand; every boolean here is positive-only, so only true is
+    // meaningful as an override.
+    if (value !== undefined && value !== false) merged[key] = value;
+  }
+  return merged;
+}
+
 export function registerFleetCommands(
   program: Command,
   overrides: Partial<FleetCommandDependencies> = {}
@@ -348,7 +363,7 @@ export function registerFleetCommands(
   });
   addFleetNodeListOptions(nodes.command('list').description('List fleet nodes in the workspace')).action(
     async (options: Record<string, unknown>) => {
-      await runFleetNodesList(deps, options);
+      await runFleetNodesList(deps, mergeFleetNodeListOptions(nodes.opts(), options));
     }
   );
 
