@@ -114,6 +114,7 @@
             "packages/cli/src/cli/telemetry/config.test.ts"
           ],
           "timeoutSeconds": 600,
+          "prSetup": "none",
           "evidence": "contract",
           "coversCategories": ["workspace", "telemetry"]
         },
@@ -122,6 +123,7 @@
           "title": "The checkout-built CLI exposes the public command tree",
           "command": ["node", "packages/cli/dist/cli/index.js", "--help"],
           "timeoutSeconds": 60,
+          "prSetup": ["build-cli"],
           "mustContain": ["Agent-to-agent messaging", "node", "workspace", "mcp"],
           "evidence": "integration",
           "coversCategories": ["setup", "node"]
@@ -175,6 +177,7 @@
           "title": "Real broker protocol, lifecycle, injection and child cleanup",
           "command": ["npm", "run", "test:integration:broker"],
           "timeoutSeconds": 1800,
+          "prSetup": ["build-broker"],
           "environment": {
             "AGENT_RELAY_BIN": "{{brokerBinary}}"
           },
@@ -262,6 +265,7 @@
             "packages/sdk/src/__tests__/delivery-actions.test.ts"
           ],
           "timeoutSeconds": 600,
+          "prSetup": "none",
           "evidence": "contract",
           "coversCategories": [
             "messaging-channels",
@@ -285,6 +289,7 @@
             "tests/integration/broker/dist/agent-spawns-agent.test.js"
           ],
           "timeoutSeconds": 900,
+          "prSetup": ["compile-broker-tests", "build-broker"],
           "environment": {
             "AGENT_RELAY_BIN": "{{brokerBinary}}"
           },
@@ -544,6 +549,7 @@
             "packages/cloud/src/fleet-sandbox.test.ts"
           ],
           "timeoutSeconds": 900,
+          "prSetup": "none",
           "evidence": "contract",
           "coversCategories": [
             "local-workflows",
@@ -708,6 +714,7 @@
           "command": ["swift", "test", "--package-path", "packages/sdk-swift"],
           "requiredCommands": ["swift"],
           "timeoutSeconds": 1200,
+          "prSetup": "none",
           "evidence": "contract",
           "coversCategories": ["swift-sdk"]
         },
@@ -806,6 +813,7 @@
             "packages/cli/src/install-script.test.ts"
           ],
           "timeoutSeconds": 600,
+          "prSetup": "none",
           "evidence": "contract",
           "issues": [1059, 1370, 1379, 1389, 1405, 1409, 1460, 1526, 1570]
         },
@@ -815,6 +823,7 @@
           "command": ["cargo", "test", "--workspace", "--all-targets"],
           "requiredCommands": ["cargo"],
           "timeoutSeconds": 2400,
+          "prSetup": "none",
           "evidence": "contract",
           "issues": [1293, 1294, 1295, 1299, 1300, 1301, 1302, 1303, 1304, 1305, 1306, 1307, 1308, 1309]
         },

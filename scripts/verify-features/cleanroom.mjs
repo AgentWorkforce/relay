@@ -320,7 +320,8 @@ export function validateMatrix(matrix, featureCategories) {
       if (scenario.targetedSetup !== undefined) {
         const targetedSetup = assertStringArray(
           scenario.targetedSetup,
-          `scenario ${scenario.id}.targetedSetup`
+          `scenario ${scenario.id}.targetedSetup`,
+          { allowEmpty: false }
         );
         if (new Set(targetedSetup).size !== targetedSetup.length) {
           throw new Error(`scenario ${scenario.id}.targetedSetup repeats a setup id`);
@@ -328,6 +329,25 @@ export function validateMatrix(matrix, featureCategories) {
         for (const setupId of targetedSetup) {
           if (!laneSetupIds.has(setupId)) {
             throw new Error(`scenario ${scenario.id}.targetedSetup references unknown setup ${setupId}`);
+          }
+        }
+      }
+      if (scenario.prSetup !== undefined) {
+        if (scenario.targetedSetup !== undefined) {
+          throw new Error(`scenario ${scenario.id} cannot declare both prSetup and targetedSetup`);
+        }
+        const prSetup =
+          scenario.prSetup === 'none'
+            ? []
+            : assertStringArray(scenario.prSetup, `scenario ${scenario.id}.prSetup`, {
+                allowEmpty: false,
+              });
+        if (new Set(prSetup).size !== prSetup.length) {
+          throw new Error(`scenario ${scenario.id}.prSetup repeats a setup id`);
+        }
+        for (const setupId of prSetup) {
+          if (!laneSetupIds.has(setupId)) {
+            throw new Error(`scenario ${scenario.id}.prSetup references unknown setup ${setupId}`);
           }
         }
       }

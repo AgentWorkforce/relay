@@ -3,7 +3,8 @@
 import { constants, accessSync } from 'node:fs';
 import path from 'node:path';
 import process from 'node:process';
-import { spawnSync } from 'node:child_process';
+
+import { runTargetedProcess } from './targeted-process-runner.mjs';
 
 const MAX_OUTPUT_BYTES = 16 * 1024 * 1024;
 
@@ -83,7 +84,7 @@ function validatePayload(value) {
   };
 }
 
-function main() {
+async function main() {
   const payload = validatePayload(
     JSON.parse(Buffer.from(requiredOption('--payload'), 'base64url').toString('utf8'))
   );
@@ -101,35 +102,36 @@ function main() {
     );
   }
 
-  const result = spawnSync(payload.argv[0], payload.argv.slice(1), {
+  const result = await runTargetedProcess(payload.argv, {
     cwd: payload.cwd,
     env: environment,
-    encoding: 'utf8',
-    timeout: payload.timeoutSeconds * 1_000,
-    maxBuffer: MAX_OUTPUT_BYTES,
+    timeoutMs: payload.timeoutSeconds * 1_000,
+    maxOutputBytes: MAX_OUTPUT_BYTES,
   });
   if (result.stdout) process.stdout.write(result.stdout);
   if (result.stderr) process.stderr.write(result.stderr);
-  if (result.error) throw result.error;
+  if (result.outputLimitExceeded) throw new Error(`command output exceeded ${MAX_OUTPUT_BYTES} bytes`);
+  if (result.timedOut) throw new Error(`command timed out after ${payload.timeoutSeconds}s`);
+  if (result.aborted) throw new Error('command aborted');
 
   const combined = `${result.stdout ?? ''}\n${result.stderr ?? ''}`;
   const missingText = payload.mustContain.filter((value) => !combined.includes(value));
   const forbiddenText = payload.forbidOutput.filter((value) => combined.includes(value));
   const failures = [
-    !payload.expectedExitCodes.includes(result.status)
-      ? `exit ${result.status ?? result.signal ?? 'unknown'}; expected ${payload.expectedExitCodes.join(', ')}`
+    !payload.expectedExitCodes.includes(result.exitCode)
+      ? `exit ${result.exitCode ?? result.signal ?? 'unknown'}; expected ${payload.expectedExitCodes.join(', ')}`
       : '',
     missingText.length > 0 ? `missing output: ${missingText.join(', ')}` : '',
     forbiddenText.length > 0 ? `forbidden output: ${forbiddenText.join(', ')}` : '',
   ].filter(Boolean);
   if (failures.length > 0) throw new Error(failures.join('; '));
   console.log(
-    `TARGETED_COMMAND_PASS exit=${result.status} required=${payload.mustContain.length} forbidden=${payload.forbidOutput.length}`
+    `TARGETED_COMMAND_PASS exit=${result.exitCode} required=${payload.mustContain.length} forbidden=${payload.forbidOutput.length}`
   );
 }
 
 try {
-  main();
+  await main();
 } catch (error) {
   console.error(error instanceof Error ? error.message : String(error));
   process.exitCode = 1;

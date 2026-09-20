@@ -1,6 +1,5 @@
 #!/usr/bin/env node
 
-import { spawnSync } from 'node:child_process';
 import { constants, access, mkdtemp, readFile, rm } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
@@ -12,6 +11,7 @@ import {
   validateCaseManifest,
   validateObservation,
 } from '../pr-proof/contract.mjs';
+import { runTargetedProcess } from './targeted-process-runner.mjs';
 
 const MAX_OUTPUT_BYTES = 8 * 1024 * 1024;
 
@@ -22,9 +22,16 @@ function requiredOption(name) {
   return value;
 }
 
-function gitHead(repoRoot) {
-  const result = spawnSync('git', ['rev-parse', 'HEAD'], { cwd: repoRoot, encoding: 'utf8' });
-  if (result.status !== 0) throw new Error(`git rev-parse failed: ${(result.stderr ?? '').trim()}`);
+async function gitHead(repoRoot) {
+  const result = await runTargetedProcess(['git', 'rev-parse', 'HEAD'], {
+    cwd: repoRoot,
+    env: process.env,
+    timeoutMs: 30_000,
+    maxOutputBytes: 1024 * 1024,
+  });
+  if (result.timedOut || result.aborted || result.outputLimitExceeded || result.exitCode !== 0) {
+    throw new Error(`git rev-parse failed: ${(result.stderr ?? '').trim()}`);
+  }
   return result.stdout.trim();
 }
 
@@ -40,7 +47,7 @@ async function main() {
     { caseId }
   );
   const exactTimeoutSeconds = Math.min(timeoutSeconds, manifest.timeoutSeconds);
-  const headSha = gitHead(repoRoot);
+  const headSha = await gitHead(repoRoot);
   const brokerBinary = path.join(repoRoot, 'target/release/agent-relay-broker');
   const needsBroker = manifest.requirements.includes(BROKER_RUNTIME_REQUIREMENT);
   if (needsBroker) {
@@ -54,7 +61,7 @@ async function main() {
   const temporaryDirectory = await mkdtemp(path.join(os.tmpdir(), `relay-targeted-${caseId}-`));
   const resultPath = path.join(temporaryDirectory, 'observation.json');
   try {
-    const result = spawnSync(manifest.runner.command[0], manifest.runner.command.slice(1), {
+    const result = await runTargetedProcess(manifest.runner.command, {
       cwd: repoRoot,
       env: {
         ...process.env,
@@ -68,15 +75,18 @@ async function main() {
         RELAY_PR_PROOF_RESULT_PATH: resultPath,
         RELAY_PR_PROOF_BROKER_BINARY: needsBroker ? brokerBinary : '',
       },
-      encoding: 'utf8',
-      timeout: exactTimeoutSeconds * 1_000,
-      maxBuffer: MAX_OUTPUT_BYTES,
+      timeoutMs: exactTimeoutSeconds * 1_000,
+      maxOutputBytes: MAX_OUTPUT_BYTES,
     });
     if (result.stdout) process.stdout.write(result.stdout);
     if (result.stderr) process.stderr.write(result.stderr);
-    if (result.error) throw result.error;
-    if (result.status !== 0) {
-      throw new Error(`RelayFlow case ${caseId} exited ${result.status ?? result.signal ?? 'unknown'}`);
+    if (result.outputLimitExceeded) {
+      throw new Error(`RelayFlow case ${caseId} output exceeded ${MAX_OUTPUT_BYTES} bytes`);
+    }
+    if (result.timedOut) throw new Error(`RelayFlow case ${caseId} timed out after ${exactTimeoutSeconds}s`);
+    if (result.aborted) throw new Error(`RelayFlow case ${caseId} aborted`);
+    if (result.exitCode !== 0) {
+      throw new Error(`RelayFlow case ${caseId} exited ${result.exitCode ?? result.signal ?? 'unknown'}`);
     }
     const observation = validateObservation(JSON.parse(await readFile(resultPath, 'utf8')), {
       caseId,

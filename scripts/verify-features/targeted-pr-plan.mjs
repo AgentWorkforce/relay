@@ -2,18 +2,20 @@
 
 import { createHash } from 'node:crypto';
 import { spawnSync } from 'node:child_process';
-import { readFile, readdir, writeFile } from 'node:fs/promises';
+import { mkdir, readFile, readdir, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 import { pathToFileURL } from 'node:url';
 
 import { parse } from 'yaml';
 
-import { CASE_ROOT, validateCaseManifest } from '../pr-proof/contract.mjs';
+import { BROKER_RUNTIME_REQUIREMENT, CASE_ROOT, validateCaseManifest } from '../pr-proof/contract.mjs';
 
 const DEFAULT_MATRIX = 'tests/relayflows/cleanroom/relay.matrix.json';
 const DEFAULT_MANIFEST = '.agentworkforce/features/manifest.yaml';
 const SAFE_ID = /^[a-z0-9][a-z0-9-]{0,127}$/;
 const SHA = /^[0-9a-f]{40}$/;
+const DEFAULT_SHARD_COMMAND_BUDGET_SECONDS = 2_880;
+const DEFAULT_MAX_COMMAND_SECONDS = 1_200;
 
 const SELF_CHECK_PATHS = new Set([
   '.agentworkforce/features/manifest.yaml',
@@ -172,23 +174,44 @@ export async function loadRelayflowCorpusCases(caseRoot = CASE_ROOT) {
         JSON.parse(await readFile(path.join(caseRoot, entry.name, 'case.json'), 'utf8')),
         { caseId: entry.name }
       );
-      return { id: manifest.id, timeoutSeconds: manifest.timeoutSeconds };
+      return {
+        id: manifest.id,
+        timeoutSeconds: manifest.timeoutSeconds,
+        needsBroker: manifest.requirements.includes(BROKER_RUNTIME_REQUIREMENT),
+      };
     })
   );
 }
 
-function selectedSetup(lane, scenarios, mode, profile) {
-  if (mode !== 'targeted') return lane.setup.filter((step) => appliesToProfile(step, profile));
-  const executable = scenarios.filter((scenario) => (scenario.kind ?? 'command') === 'command');
-  const explicit = executable.filter((scenario) => Array.isArray(scenario.targetedSetup));
-  if (explicit.length !== executable.length) return lane.setup.filter(appliesToTargeted);
-  const ids = new Set(explicit.flatMap((scenario) => scenario.targetedSetup));
+function setupForScenario(lane, scenario, mode, profile) {
+  const available = lane.setup.filter((step) =>
+    mode === 'targeted' ? appliesToTargeted(step) : appliesToProfile(step, profile)
+  );
+  if (scenario.prSetup === 'none') return [];
+  const explicit = scenario.prSetup ?? scenario.targetedSetup;
+  if (explicit === undefined) return available;
+  if (
+    !Array.isArray(explicit) ||
+    explicit.length === 0 ||
+    explicit.some((id) => typeof id !== 'string' || !id)
+  ) {
+    throw new Error(`scenario ${lane.id}/${scenario.id} has invalid PR setup prerequisites`);
+  }
+  const ids = new Set(explicit);
   for (const id of ids) {
     if (!lane.setup.some((step) => step.id === id)) {
-      throw new Error(`scenario targetedSetup references unknown ${lane.id} setup ${id}`);
+      throw new Error(`scenario PR setup references unknown ${lane.id} setup ${id}`);
     }
   }
-  return lane.setup.filter((step) => ids.has(step.id));
+  return available.filter((step) => ids.has(step.id));
+}
+
+function setupRef(step) {
+  return `${step.laneId}/${step.id}`;
+}
+
+function commandBudgetSeconds(spec) {
+  return spec.timeoutSeconds + 30;
 }
 
 export function buildTargetedPlan({
@@ -209,6 +232,7 @@ export function buildTargetedPlan({
   const selectedFeatures = new Set();
   const selectedCategories = new Set();
   const directScenarioIds = new Set();
+  const selectedCorpusCaseIds = new Set();
   const unmatchedRuntimeFiles = [];
   let selfCheckChanged = false;
 
@@ -218,6 +242,19 @@ export function buildTargetedPlan({
       continue;
     }
     let matched = false;
+    const corpusMatch = file.match(/^tests\/relayflows\/cases\/([^/]+)\//);
+    if (corpusMatch) {
+      if (corpusCases.some(({ id }) => id === corpusMatch[1])) {
+        selectedCorpusCaseIds.add(corpusMatch[1]);
+        directScenarioIds.add('relayflow-head-regression-corpus');
+        matched = true;
+      } else {
+        // A deleted or renamed case is not present in the head-side catalog.
+        // Exercise the complete corpus rather than silently skipping it.
+        selfCheckChanged = true;
+        matched = true;
+      }
+    }
     for (const feature of featuresForFile(locationToFeatures, file)) {
       selectedFeatures.add(feature);
       selectedCategories.add(featureById.get(feature).category);
@@ -269,10 +306,6 @@ export function buildTargetedPlan({
         return (scenario.coversCategories ?? []).some((category) => selectedCategories.has(category));
       });
       if (laneScenarios.length === 0) continue;
-      for (const step of selectedSetup(lane, laneScenarios, selectionMode, 'smoke')) {
-        assertCommandSpec(step, `setup ${lane.id}/${step.id}`);
-        setup.push({ ...step, laneId: lane.id });
-      }
       for (const scenario of laneScenarios) {
         if ((scenario.kind ?? 'command') === 'coverage-gap') {
           coverageGaps.push({ id: scenario.id, laneId: lane.id, reason: scenario.reason });
@@ -282,12 +315,23 @@ export function buildTargetedPlan({
           if (corpusCases.length === 0) {
             throw new Error(`scenario ${lane.id}/${scenario.id} selected an empty RelayFlow corpus`);
           }
-          for (const corpusCase of corpusCases) {
+          const selectedCases =
+            selectionMode === 'targeted' && selectedCorpusCaseIds.size > 0
+              ? corpusCases.filter(({ id }) => selectedCorpusCaseIds.has(id))
+              : corpusCases;
+          for (const corpusCase of selectedCases) {
             if (!SAFE_ID.test(corpusCase.id ?? '')) {
               throw new Error(`RelayFlow corpus case id ${JSON.stringify(corpusCase.id)} is invalid`);
             }
             if (!Number.isSafeInteger(corpusCase.timeoutSeconds) || corpusCase.timeoutSeconds < 1) {
               throw new Error(`RelayFlow corpus case ${corpusCase.id} has an invalid timeout`);
+            }
+            const caseSetup = corpusCase.needsBroker
+              ? lane.setup.filter((step) => step.id === 'build-broker')
+              : [];
+            for (const step of caseSetup) {
+              assertCommandSpec(step, `setup ${lane.id}/${step.id}`);
+              setup.push({ ...step, laneId: lane.id });
             }
             const expanded = {
               id: `corpus-${corpusCase.id}`,
@@ -306,6 +350,7 @@ export function buildTargetedPlan({
               evidence: scenario.evidence,
               relayflowCorpusCase: corpusCase.id,
               laneId: lane.id,
+              setupRefs: caseSetup.map((step) => `${lane.id}/${step.id}`),
             };
             assertCommandSpec(expanded, `scenario ${lane.id}/${expanded.id}`);
             scenarios.push(expanded);
@@ -314,10 +359,26 @@ export function buildTargetedPlan({
         }
         if ((scenario.kind ?? 'command') !== 'command') continue;
         assertCommandSpec(scenario, `scenario ${lane.id}/${scenario.id}`);
-        scenarios.push({ ...scenario, laneId: lane.id });
+        const scenarioSetup = setupForScenario(lane, scenario, selectionMode, 'smoke');
+        for (const step of scenarioSetup) {
+          assertCommandSpec(step, `setup ${lane.id}/${step.id}`);
+          setup.push({ ...step, laneId: lane.id });
+        }
+        scenarios.push({
+          ...scenario,
+          laneId: lane.id,
+          setupRefs: scenarioSetup.map((step) => `${lane.id}/${step.id}`),
+        });
       }
     }
-    return { setup, scenarios, coverageGaps };
+    return {
+      setup: setup.filter(
+        (step, index, steps) =>
+          steps.findIndex((candidate) => setupRef(candidate) === setupRef(step)) === index
+      ),
+      scenarios,
+      coverageGaps,
+    };
   };
 
   let { setup, scenarios, coverageGaps } = collectPlanSteps(mode);
@@ -358,6 +419,91 @@ export function buildTargetedPlan({
   };
 }
 
+export function shardTargetedPlan(
+  plan,
+  {
+    maxCommandBudgetSeconds = DEFAULT_SHARD_COMMAND_BUDGET_SECONDS,
+    maxCommandSeconds = DEFAULT_MAX_COMMAND_SECONDS,
+  } = {}
+) {
+  validateTargetedPlan(plan);
+  if (!Number.isSafeInteger(maxCommandBudgetSeconds) || maxCommandBudgetSeconds < 60) {
+    throw new Error('maxCommandBudgetSeconds must be an integer of at least 60');
+  }
+  if (!Number.isSafeInteger(maxCommandSeconds) || maxCommandSeconds < 1) {
+    throw new Error('maxCommandSeconds must be a positive integer');
+  }
+  if (plan.mode === 'skip') return [{ ...plan, shard: { index: 0, count: 1 } }];
+
+  const setupByRef = new Map(plan.setup.map((step) => [setupRef(step), step]));
+  const bounded = (spec) => ({
+    ...spec,
+    ...(spec.timeoutSeconds > maxCommandSeconds
+      ? { originalTimeoutSeconds: spec.timeoutSeconds, timeoutSeconds: maxCommandSeconds }
+      : {}),
+  });
+  const packages = plan.scenarios.map((scenario) => {
+    const refs =
+      scenario.setupRefs ?? plan.setup.filter((step) => step.laneId === scenario.laneId).map(setupRef);
+    const requiredSetup = refs.map((ref) => {
+      const step = setupByRef.get(ref);
+      if (!step) throw new Error(`scenario ${scenario.id} references unknown setup ${ref}`);
+      return bounded(step);
+    });
+    const boundedScenario = bounded(scenario);
+    const budget = [...requiredSetup, boundedScenario].reduce(
+      (total, spec) => total + commandBudgetSeconds(spec),
+      0
+    );
+    if (budget > maxCommandBudgetSeconds) {
+      throw new Error(
+        `scenario ${scenario.id} requires ${budget}s, exceeding shard command budget ${maxCommandBudgetSeconds}s`
+      );
+    }
+    return { scenario: boundedScenario, setup: requiredSetup, budget };
+  });
+
+  packages.sort(
+    (left, right) => right.budget - left.budget || left.scenario.id.localeCompare(right.scenario.id, 'en')
+  );
+  const shards = [];
+  for (const item of packages) {
+    let destination = null;
+    for (const shard of shards) {
+      const known = new Set(shard.setup.map(setupRef));
+      const additionalSetup = item.setup.filter((step) => !known.has(setupRef(step)));
+      const additionalBudget =
+        commandBudgetSeconds(item.scenario) +
+        additionalSetup.reduce((total, step) => total + commandBudgetSeconds(step), 0);
+      if (shard.budget + additionalBudget <= maxCommandBudgetSeconds) {
+        destination = { shard, additionalSetup, additionalBudget };
+        break;
+      }
+    }
+    if (!destination) {
+      shards.push({ setup: [...item.setup], scenarios: [item.scenario], budget: item.budget });
+      continue;
+    }
+    destination.shard.setup.push(...destination.additionalSetup);
+    destination.shard.scenarios.push(item.scenario);
+    destination.shard.budget += destination.additionalBudget;
+  }
+
+  return shards.map((shard, index) => ({
+    ...plan,
+    setup: shard.setup,
+    scenarios: shard.scenarios,
+    coverageGaps: index === 0 ? plan.coverageGaps : [],
+    shard: {
+      index,
+      count: shards.length,
+      commandBudgetSeconds: shard.budget,
+      maxCommandBudgetSeconds,
+      maxCommandSeconds,
+    },
+  }));
+}
+
 export function validateTargetedPlan(plan) {
   if (plan?.version !== 1 || plan?.kind !== 'relay-targeted-pr-plan') {
     throw new Error('targeted plan identity is invalid');
@@ -378,6 +524,15 @@ export function validateTargetedPlan(plan) {
     assertCommandSpec(spec, `targeted plan command[${index}]`);
     if (!SAFE_ID.test(spec.laneId ?? ''))
       throw new Error(`targeted plan command[${index}].laneId is invalid`);
+  }
+  for (const [index, scenario] of plan.scenarios.entries()) {
+    if (
+      scenario.setupRefs !== undefined &&
+      (!Array.isArray(scenario.setupRefs) ||
+        scenario.setupRefs.some((entry) => typeof entry !== 'string' || !entry.includes('/')))
+    ) {
+      throw new Error(`targeted plan scenario[${index}].setupRefs is invalid`);
+    }
   }
   if (plan.mode !== 'skip' && plan.scenarios.length === 0) throw new Error('non-skip plan has no scenarios');
   for (const [name, value] of Object.entries(plan.environmentDefaults ?? {})) {
@@ -427,7 +582,43 @@ export async function main() {
     console.log('TARGETED_PR_PLAN_VALID');
     return;
   }
-  if (command !== 'plan') throw new Error('usage: targeted-pr-plan.mjs plan|validate');
+  if (command === 'shard') {
+    const plan = validateTargetedPlan(JSON.parse(await readFile(requiredOption('--plan'), 'utf8')));
+    const outputDirectory = requiredOption('--output-dir');
+    const shards = shardTargetedPlan(plan, {
+      maxCommandBudgetSeconds: Number(
+        option('--max-command-budget-seconds', String(DEFAULT_SHARD_COMMAND_BUDGET_SECONDS))
+      ),
+      maxCommandSeconds: Number(option('--max-command-seconds', String(DEFAULT_MAX_COMMAND_SECONDS))),
+    });
+    await mkdir(outputDirectory, { recursive: true });
+    await Promise.all(
+      shards.map((shard, index) =>
+        writeFile(path.join(outputDirectory, `plan-${index}.json`), `${JSON.stringify(shard, null, 2)}\n`)
+      )
+    );
+    const matrix = {
+      include: shards.map((shard, index) => {
+        const commands = [...shard.setup, ...shard.scenarios];
+        return {
+          shard: index,
+          requiresRust: commands.some(
+            (spec) => spec.command?.[0] === 'cargo' || spec.requiredCommands?.includes('cargo')
+          ),
+          requiresSwift: commands.some(
+            (spec) => spec.command?.[0] === 'swift' || spec.requiredCommands?.includes('swift')
+          ),
+        };
+      }),
+    };
+    await writeFile(
+      path.join(outputDirectory, 'matrix.json'),
+      `${JSON.stringify({ matrix, shardCount: shards.length }, null, 2)}\n`
+    );
+    console.log(`TARGETED_PR_SHARDS count=${shards.length}`);
+    return;
+  }
+  if (command !== 'plan') throw new Error('usage: targeted-pr-plan.mjs plan|shard|validate');
   const matrixPath = option('--matrix', DEFAULT_MATRIX);
   const manifestPath = option('--manifest', DEFAULT_MANIFEST);
   const output = requiredOption('--output');
