@@ -296,14 +296,18 @@ function parseDescriptorRepoPaths(value: unknown): Readonly<Record<string, strin
 
 /**
  * Adapt a descriptor to the capacity shape, so a node definition served
- * out-of-process still contributes its `spawn:<harness>` capabilities to the
- * broker's advertised capacity.
+ * out-of-process still contributes its `spawn:<harness>` capabilities and its
+ * `maxAgents` cap to the broker's advertised capacity.
  * @param descriptor - Descriptor reported by the `--describe` child.
  */
 export function descriptorCapacitySource(descriptor: NodeDefinitionDescriptor): {
   capabilities: Record<string, unknown>;
+  maxAgents?: number;
 } {
-  return { capabilities: Object.fromEntries(descriptor.capabilities.map((name) => [name, true])) };
+  return {
+    capabilities: Object.fromEntries(descriptor.capabilities.map((name) => [name, true])),
+    ...(typeof descriptor.maxAgents === 'number' ? { maxAgents: descriptor.maxAgents } : {}),
+  };
 }
 
 /**

@@ -615,6 +615,46 @@ describe('runUpCommand node-config gating', () => {
     expect(served.providerName).toBe('from-config');
   });
 
+  it('forwards a discovered config maxAgents to the broker so the roster reports the cap', async () => {
+    const { deps, projectRoot } = createUpHarness();
+    fsReal.writeFileSync(
+      pathReal.join(projectRoot, 'agent-relay.mjs'),
+      "export default { __agentRelayFleetNode: true, name: 'sf-frame', maxAgents: 15, capabilities: {}, triggers: [] };\n"
+    );
+
+    await runUpCommand({ discoverConfig: true }, deps);
+
+    // The broker reads this env for its register/heartbeat max_agents; without
+    // the forward it reports 0 (unlimited) while the sidecar provider
+    // registers 15, and the roster shows the broker's 0.
+    expect((deps.env as NodeJS.ProcessEnv).AGENT_RELAY_NODE_MAX_AGENTS).toBe('15');
+  });
+
+  it('leaves a pre-set AGENT_RELAY_NODE_MAX_AGENTS alone when a config also declares maxAgents', async () => {
+    const { deps, projectRoot } = createUpHarness();
+    (deps.env as NodeJS.ProcessEnv).AGENT_RELAY_NODE_MAX_AGENTS = '32';
+    fsReal.writeFileSync(
+      pathReal.join(projectRoot, 'agent-relay.mjs'),
+      "export default { __agentRelayFleetNode: true, name: 'sf-frame', maxAgents: 15, capabilities: {}, triggers: [] };\n"
+    );
+
+    await runUpCommand({ discoverConfig: true }, deps);
+
+    expect((deps.env as NodeJS.ProcessEnv).AGENT_RELAY_NODE_MAX_AGENTS).toBe('32');
+  });
+
+  it('leaves AGENT_RELAY_NODE_MAX_AGENTS unset when no cap is declared anywhere', async () => {
+    const { deps, projectRoot } = createUpHarness();
+    fsReal.writeFileSync(
+      pathReal.join(projectRoot, 'agent-relay.mjs'),
+      "export default { __agentRelayFleetNode: true, name: 'from-config', capabilities: {}, triggers: [] };\n"
+    );
+
+    await runUpCommand({ discoverConfig: true }, deps);
+
+    expect((deps.env as NodeJS.ProcessEnv).AGENT_RELAY_NODE_MAX_AGENTS).toBeUndefined();
+  });
+
   it('never prints the node token or workspace key from the session in --verbose output', async () => {
     const { deps, projectRoot, log, warn, error } = createUpHarness();
     fsReal.writeFileSync(

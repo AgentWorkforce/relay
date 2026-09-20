@@ -5,7 +5,11 @@ All notable changes to Agent Relay will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
+## [Unreleased - Patch]
+
+### Fixed
+
+- `node up` forwards a node definition's `maxAgents` to the broker's advertised capacity, so `fleet nodes list` (including `--pretty`) reports the configured cap instead of `0`/`unlimited`. A pre-set `AGENT_RELAY_NODE_MAX_AGENTS` still wins as the operator's authoritative declaration.
 
 ## [12.4.0] - 2026-09-20
 

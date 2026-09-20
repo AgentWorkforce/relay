@@ -24,7 +24,7 @@ import {
   parseNodeDescriptor,
   startNodeJsNodeProvider,
 } from './node-provider-child.js';
-import { nodeCapacityHarnesses } from './fleet-sidecar.js';
+import { nodeCapacityHarnesses, resolveNodeMaxAgents } from './fleet-sidecar.js';
 import type { CoreDependencies, SpawnedProcess } from '../commands/core.js';
 
 const MARKER = '__AGENT_RELAY_NODE_DESCRIPTOR__';
@@ -134,6 +134,24 @@ describe('descriptorCapacitySource', () => {
     // A node definition served out-of-process must still contribute its
     // spawn:<harness> capacity, exactly as an in-process definition does.
     expect(nodeCapacityHarnesses(null, source)).toContain('my-harness');
+  });
+
+  it('preserves the descriptor maxAgents so the broker reports the configured cap', () => {
+    const source = descriptorCapacitySource({
+      name: 'sf-frame',
+      capabilities: ['spawn:grok'],
+      maxAgents: 15,
+    });
+
+    expect(source.maxAgents).toBe(15);
+    expect(resolveNodeMaxAgents(undefined, source)).toBe('15');
+  });
+
+  it('omits maxAgents when the descriptor declares no cap (broker stays unlimited)', () => {
+    const source = descriptorCapacitySource({ name: 'factory', capabilities: ['spawn:claude'] });
+
+    expect(source).not.toHaveProperty('maxAgents');
+    expect(resolveNodeMaxAgents(undefined, source)).toBeUndefined();
   });
 });
 
