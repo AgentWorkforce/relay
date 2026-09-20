@@ -243,6 +243,15 @@ impl RelaycastHttpClient {
         }
     }
 
+    /// Read an already-authenticated identity without registration, takeover,
+    /// or any network fallback. Used when handing a live session to a CLI.
+    pub(crate) fn cached_agent_token(&self, agent_name: &str) -> Option<String> {
+        self.registration
+            .as_ref()
+            .as_ref()
+            .and_then(|registration| registration.cached_agent_token(agent_name))
+    }
+
     pub fn registration_block_remaining(&self, agent_name: &str) -> Option<Duration> {
         self.registration
             .as_ref()
@@ -4835,6 +4844,24 @@ mod tests {
         presence.assert_hits(1);
         rotate.assert_hits(0);
         register.assert_hits(0);
+    }
+
+    #[test]
+    fn cached_session_token_handoff_never_registers_or_takes_over() {
+        let server = MockServer::start();
+        let network = server.mock(|_when, then| {
+            then.status(500);
+        });
+        let client =
+            RelaycastHttpClient::new(Some(server.base_url()), "rk_test", "broker", "devin");
+        assert_eq!(client.cached_agent_token("worker-a"), None);
+        client.seed_agent_token("worker-a", "at_existing_session");
+        assert_eq!(
+            client.cached_agent_token("worker-a").as_deref(),
+            Some("at_existing_session")
+        );
+        assert_eq!(client.cached_agent_token("unknown-worker"), None);
+        network.assert_hits(0);
     }
 
     /// Must-not-fire: a cached token short-circuits before the presence

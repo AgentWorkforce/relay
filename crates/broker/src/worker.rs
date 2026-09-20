@@ -1282,6 +1282,8 @@ impl WorkerRegistry {
             command.env("RELAY_AGENT_TYPE", "agent");
             command.env("RELAY_STRICT_AGENT_NAME", "1");
         }
+        // The per-worker option overrides a parent broker opt-out.
+        command.env_remove("RELAY_SKIP_PROMPT");
         if skip_relay_prompt {
             command.env("RELAY_SKIP_PROMPT", "1");
         }

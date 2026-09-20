@@ -83,33 +83,56 @@ pub fn cli_prompt_ready(cli: &str, grid: GridReadinessSnapshot<'_>) -> bool {
     set.evaluate(&grid_snapshot).is_some()
 }
 
-/// Match an executable basename, including Windows launcher suffixes.
+/// Match a native executable basename, including the Windows .exe suffix.
 pub fn is_devin_cli(cli: &str) -> bool {
     let base = cli
         .rsplit(['/', '\\'])
         .next()
         .unwrap_or(cli)
         .to_ascii_lowercase();
-    matches!(
-        base.as_str(),
-        "devin" | "devin.exe" | "devin.cmd" | "devin.bat"
-    )
+    matches!(base.as_str(), "devin" | "devin.exe")
 }
 
 fn devin_prompt_ready(grid: GridReadinessSnapshot<'_>) -> bool {
     let Some((row, _)) = grid.cursor else {
         return false;
     };
-    // A trust choice also uses ❭. Require the actual idle composer, not the
-    // glyph, historical output volume, or the busy "Guide Devin" composer.
-    row > 0
-        && grid
-            .screen
-            .lines()
-            .nth((row - 1) as usize)
-            .is_some_and(|line| {
-                line.trim() == "❭ Ask Devin to build features, fix bugs, or work on your code"
-            })
+    // A trust choice also uses ❭. Require the exact idle placeholder across
+    // its visual rows, with the cursor inside that composer. Devin word-wraps
+    // continuation rows with two spaces at narrow terminal widths.
+    const IDLE: &str = "❭ Ask Devin to build features, fix bugs, or work on your code";
+    let Some(cursor_row) = row.checked_sub(1).map(usize::from) else {
+        return false;
+    };
+    let lines: Vec<_> = grid.screen.lines().collect();
+    for start in 0..=cursor_row.min(lines.len().saturating_sub(1)) {
+        let Some(first) = lines.get(start) else {
+            continue;
+        };
+        if !first.trim().starts_with("❭ ") {
+            continue;
+        }
+        let mut composer = String::new();
+        for (end, line) in lines.iter().enumerate().skip(start) {
+            if end > start {
+                if !line.starts_with("  ") || line.trim().is_empty() {
+                    break;
+                }
+                composer.push(' ');
+            }
+            composer.push_str(line.trim());
+            if composer == IDLE {
+                if cursor_row <= end {
+                    return true;
+                }
+                break;
+            }
+            if !IDLE.starts_with(&composer) {
+                break;
+            }
+        }
+    }
+    false
 }
 
 fn claude_grid_ready(grid: GridReadinessSnapshot<'_>) -> bool {
@@ -160,13 +183,7 @@ mod tests {
 
     #[test]
     fn devin_requires_live_idle_composer_for_all_executable_spellings() {
-        for cli in [
-            "devin",
-            "/usr/local/bin/devin",
-            r"C:\tools\Devin.EXE",
-            "devin.cmd",
-            "devin.bat",
-        ] {
+        for cli in ["devin", "/usr/local/bin/devin", r"C:\tools\Devin.EXE"] {
             assert!(is_devin_cli(cli));
             let screen = "Devin CLI\n❭ Ask Devin to build features, fix bugs, or work on your code\nSWE-2 High";
             assert!(detect_cli_ready(
@@ -203,6 +220,46 @@ mod tests {
             ));
         }
         assert!(!is_devin_cli("not-devin"));
+        assert!(!is_devin_cli("devin.cmd"));
+        assert!(!is_devin_cli("devin.bat"));
+    }
+
+    #[test]
+    fn devin_wrapped_idle_composer_requires_cursor_in_exact_placeholder() {
+        // Captured from Devin 3000.10.31 at 40 columns, including indentation.
+        let screen = "────────────────────────────────────────\n❭ Ask Devin to build features, fix \n  bugs, or work on your code\n────────────────────────────────────────\nSWE-2 High";
+        for row in [2, 3] {
+            let grid = GridReadinessSnapshot {
+                screen,
+                cursor: Some((row, 3)),
+            };
+            assert!(cli_prompt_ready("devin", grid));
+            assert!(detect_cli_ready("devin", "", 0, grid));
+        }
+        for row in [0, 1, 4, 5, 99] {
+            assert!(!cli_prompt_ready(
+                "devin",
+                GridReadinessSnapshot {
+                    screen,
+                    cursor: Some((row, 3))
+                }
+            ));
+        }
+        for blocked in [
+            "❭ Guide Devin while it works\n  bugs, or work on your code",
+            "❭ Ask Devin to build features, fix\n  changed text",
+            "❭ Ask Devin to build features, fix\n\n  bugs, or work on your code",
+            "❭ Ask Devin to build features, fix\nbugs, or work on your code",
+            "❭ 1 Yes, trust\n  this workspace",
+        ] {
+            assert!(!cli_prompt_ready(
+                "devin",
+                GridReadinessSnapshot {
+                    screen: blocked,
+                    cursor: Some((1, 3))
+                }
+            ));
+        }
     }
 
     #[test]

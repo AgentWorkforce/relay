@@ -54,9 +54,9 @@ running worker's user snapshot do not update the original user settings.
 
 The isolated configuration is installed by the broker PTY/wrap process;
 `mcp-args --cli devin` alone does not configure a standalone Devin process.
-Only Linux has been exercised end to end. Windows executable suffixes are
-recognized for readiness and submission; native Windows configuration isolation
-has not been validated.
+Only Linux has been exercised end to end. The native Windows `devin.exe` spelling is
+recognized for readiness and submission; `.cmd` and `.bat` launchers are not
+supported. Native Windows configuration isolation has not been validated.
 
 ## Rollout
 
