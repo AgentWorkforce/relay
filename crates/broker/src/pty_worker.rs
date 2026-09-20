@@ -30,9 +30,10 @@ use crate::broker::{
     delivery_verification::{
         current_timestamp_ms, delivery_injected_event_payload, delivery_queued_event_payload,
         pending_verification_echo_seen, queue_or_take_confirmed_verification,
-        queue_or_take_detected_activity, DeliveryOutcome, PendingActivity, PendingVerification,
-        ThrottleState, VerificationOutput, ACTIVITY_BUFFER_KEEP_BYTES, ACTIVITY_BUFFER_MAX_BYTES,
-        ACTIVITY_WINDOW, VERIFICATION_WINDOW,
+        queue_or_take_detected_activity, verification_timeout_frames, DeliveryOutcome,
+        PendingActivity, PendingVerification, ThrottleState, VerificationOutput,
+        ACTIVITY_BUFFER_KEEP_BYTES, ACTIVITY_BUFFER_MAX_BYTES, ACTIVITY_WINDOW,
+        VERIFICATION_WINDOW,
     },
     injection_format::{format_injection_for_worker_with_workspace, McpReminderThrottle},
 };
@@ -2258,36 +2259,36 @@ pub(crate) async fn run_pty_worker(cmd: PtyCommand) -> Result<()> {
                         let pv = pending_verifications.remove(i).unwrap();
                         let delivery_id = pv.delivery_id.clone();
                         let event_id = pv.event_id.clone();
-                        // Do not re-inject on verification timeout. Re-injection can duplicate
-                        // already-delivered messages when terminal echo parsing is noisy.
+                        // Do not re-inject on verification timeout. Re-injection can
+                        // duplicate already-delivered messages when terminal echo parsing
+                        // is noisy.
+                        //
+                        // Do not send `delivery_ack` either. `delivery_ack` is the
+                        // worker's one statement that it SAW the message land, and the
+                        // broker treats it as exactly that: it confirms the pending
+                        // delivery, releases the withheld engine-facing fleet ack, emits
+                        // `MessageDeliveryConfirmed` and marks the message read. None of
+                        // those are true here — the echo never arrived. Seam rule 4:
+                        // "never claim an acknowledgement you did not observe"
+                        // (docs/native-delivery-migration.md).
+                        //
+                        // The only frame this path emits is the explicitly unverified
+                        // `delivery_verified { verification: "timeout_fallback" }`, which
+                        // the broker settles as terminal-but-unobserved.
                         tracing::info!(
                             delivery_id = %delivery_id,
                             attempts = pv.attempts,
-                            "delivery echo not detected within verification window; acknowledging via timeout fallback (unverified)"
+                            "delivery echo not detected within verification window; reporting timeout fallback (unverified, not acknowledged)"
                         );
-                        let _ = send_frame(
-                            &out_tx,
-                            "delivery_ack",
-                            pv.request_id.clone(),
-                            json!({
-                                "delivery_id": delivery_id,
-                                "event_id": event_id
-                            }),
-                        )
-                        .await;
-                        let _ = send_frame(
-                            &out_tx,
-                            "delivery_verified",
-                            pv.request_id.clone(),
-                            json!({
-                                "delivery_id": delivery_id,
-                                "event_id": event_id,
-                                "verification": "timeout_fallback",
-                                "reason": format!("echo not detected within {}s window", verification_window.as_secs())
-                            }),
-                        )
-                        .await;
-                        // Timeout-fallback acks are not verified deliveries:
+                        for (kind, payload) in verification_timeout_frames(
+                            &delivery_id,
+                            &event_id,
+                            verification_window,
+                        ) {
+                            let _ =
+                                send_frame(&out_tx, kind, pv.request_id.clone(), payload).await;
+                        }
+                        // Timeout fallbacks are not verified deliveries:
                         // keep them out of the throttle's success signal.
                         throttle.record(DeliveryOutcome::Unverified);
                         pending_worker_delivery_ids.remove(&delivery_id);
@@ -2558,7 +2559,7 @@ mod tests {
         }
         assert!(pty.screen_text().contains("Ask Codex"));
         let before = pty.consumed_offset();
-        let ack = pty.submit_write(body[..768].as_bytes().to_vec()).unwrap();
+        let ack = pty.submit_write(body.as_bytes()[..768].to_vec()).unwrap();
         let cancelled = AtomicBool::new(cancel);
         let started = Instant::now();
         let result =
@@ -2569,7 +2570,7 @@ mod tests {
         let max_writer_submits = 1 + INITIAL_SUBMIT_RETRIES;
         if cancel {
             assert!(result.is_err());
-            assert_eq!(actual, body[..768].as_bytes());
+            assert_eq!(actual, &body.as_bytes()[..768]);
         } else if submits <= max_writer_submits {
             result.unwrap();
             assert!(started.elapsed() >= CODEX_STARTUP_SETTLE * 3);
@@ -2637,7 +2638,7 @@ mod tests {
         }
         assert!(pty.screen_text().contains(&body[..768]));
         let before = pty.consumed_offset();
-        let ack = pty.submit_write(body[..768].as_bytes().to_vec()).unwrap();
+        let ack = pty.submit_write(body.as_bytes()[..768].to_vec()).unwrap();
         let result = write_initial_codex(
             &pty,
             &body,
@@ -2653,7 +2654,7 @@ mod tests {
             .unwrap_err()
             .to_string()
             .contains("render gate timed out"));
-        assert_eq!(std::fs::read(log).unwrap(), body[..768].as_bytes());
+        assert_eq!(std::fs::read(log).unwrap(), &body.as_bytes()[..768]);
     }
 
     // codex_composer_ready (startup) already accepted both native `›` and
@@ -2842,7 +2843,7 @@ mod tests {
         }
         let before = pty.consumed_offset();
         let ack = pty
-            .submit_write(body[..chunk_end(&body, 0)].as_bytes().to_vec())
+            .submit_write(body.as_bytes()[..chunk_end(&body, 0)].to_vec())
             .unwrap();
         let result = write_initial_codex(
             &pty,
@@ -2888,6 +2889,14 @@ mod tests {
     fn non_codex_clis_keep_paced_injection_default() {
         assert_eq!(
             resolve_inject_rate("claude", None),
+            Duration::from_millis(DEFAULT_INJECT_RATE_MS)
+        );
+        assert_eq!(
+            resolve_inject_rate("cat", None),
+            Duration::from_millis(DEFAULT_INJECT_RATE_MS)
+        );
+        assert_eq!(
+            resolve_inject_rate(r"C:\tools\cat.exe", None),
             Duration::from_millis(DEFAULT_INJECT_RATE_MS)
         );
         assert_eq!(
