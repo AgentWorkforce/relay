@@ -68,6 +68,7 @@ type PhaseConfig = {
   features?: Array<{ id: string; category: string; location: string; verify_tier: number }>;
   invariants?: string[];
   invariantTestFile?: string;
+  wiring?: Array<{ symbol: string; from?: string; outside?: string }>;
   parity?: string[];
   parityCommands?: Record<string, string>;
   rust?: boolean;
@@ -344,6 +345,19 @@ agentStep({
     `Implement the Rust side of phase ${PHASE}. Your lane is exactly: ${CONFIG.scope.join(', ')}.`,
     'Do not edit anything outside it; a sibling agent owns the TypeScript, test and manifest side.',
     `These files must exist when you are done: ${(CONFIG.requiredSources ?? []).join(', ')}.`,
+    '',
+    'Existence is not the deliverable. The seam must be REACHED from the real delivery path:',
+    ...(CONFIG.wiring ?? []).map((rule) =>
+      rule.from
+        ? `  - ${rule.from} must call through ${rule.symbol}. A trait nothing routes through is dead code.`
+        : `  - ${rule.symbol} must be referenced from outside ${rule.outside}, i.e. actually selectable.`
+    ),
+    'A green parity suite over an unwired seam proves nothing: it cannot tell "seam works" from',
+    '"seam absent". The gate checks this, and a previous attempt failed it by shipping a trait, a',
+    'coordinator and four passing tests with no caller and a PTY backend that wrote nothing.',
+    '',
+    `If ${ART}/reviews/shadow-rust.md exists, a reviewer has already been over an earlier attempt at`,
+    'this phase. Read it first and start from its findings rather than rediscovering them.',
     '',
     'The four seam rules are not advice, they are the contract:',
     '  1. Fall back to another transport only on a strictly pre-write error. Model the distinction',
