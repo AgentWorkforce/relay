@@ -65,6 +65,7 @@ const HARNESS_COMMAND_MATCHERS: ReadonlyArray<{
     matches: ({ base, lower }) => base === 'opencode' || lower.includes('opencode'),
   },
   { harness: 'goose', matches: ({ base, lower }) => base === 'goose' || lower.includes('goose') },
+  { harness: 'devin', matches: ({ base }) => /^devin(?:\.(?:exe|cmd|bat))?$/i.test(base) },
   { harness: 'droid', matches: ({ base, lower }) => base === 'droid' || lower.includes('droid') },
   { harness: 'grok', matches: ({ base }) => base === 'grok' },
   { harness: 'amp', matches: ({ base, normalized }) => base === 'amp' || normalized.includes('/amp') },

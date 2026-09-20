@@ -8,7 +8,7 @@ import {
 
 describe('PTY observability profiles', () => {
   it('declares every built-in PTY harness against one honest baseline', () => {
-    expect(Object.keys(PTY_OBSERVABILITY_PROFILES)).toHaveLength(9);
+    expect(Object.keys(PTY_OBSERVABILITY_PROFILES)).toHaveLength(10);
     for (const profile of Object.values(PTY_OBSERVABILITY_PROFILES)) {
       expect(profile.activities.starting).toEqual({ available: true, fidelities: ['exact'] });
       expect(profile.activities.thinking).toEqual({ available: true, fidelities: ['inferred'] });

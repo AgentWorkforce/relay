@@ -32,7 +32,7 @@ import {
 
 describe('nodeCapacityHarnesses', () => {
   it('advertises the default harness set (matching the broker default) when there is no config', () => {
-    expect(nodeCapacityHarnesses(null)).toEqual(['claude', 'codex', 'gemini', 'opencode']);
+    expect(nodeCapacityHarnesses(null)).toEqual(['claude', 'codex', 'gemini', 'opencode', 'devin']);
   });
 
   it('adds teams.json clis, de-duplicated and order-preserving', () => {
@@ -43,7 +43,7 @@ describe('nodeCapacityHarnesses', () => {
         { name: 'b', cli: 'claude' },
       ],
     };
-    expect(nodeCapacityHarnesses(teams)).toEqual(['claude', 'codex', 'gemini', 'opencode', 'aider']);
+    expect(nodeCapacityHarnesses(teams)).toEqual(['claude', 'codex', 'gemini', 'opencode', 'devin', 'aider']);
   });
 
   it('adds spawn:<harness> definitions from a discovered node config', () => {
@@ -56,6 +56,7 @@ describe('nodeCapacityHarnesses', () => {
       'codex',
       'gemini',
       'opencode',
+      'devin',
       'aider',
     ]);
   });
@@ -75,10 +76,10 @@ describe('resolveNodeCapacityHarnesses', () => {
       capabilities: { 'spawn:aider': spawn({ runtime: 'pty', command: 'aider' }) },
     });
     expect(resolveNodeCapacityHarnesses(undefined, null, definition)).toBe(
-      'claude,codex,gemini,opencode,aider'
+      'claude,codex,gemini,opencode,devin,aider'
     );
     // A blank/whitespace value is treated as unset.
-    expect(resolveNodeCapacityHarnesses('   ', null)).toBe('claude,codex,gemini,opencode');
+    expect(resolveNodeCapacityHarnesses('   ', null)).toBe('claude,codex,gemini,opencode,devin');
   });
 });
 

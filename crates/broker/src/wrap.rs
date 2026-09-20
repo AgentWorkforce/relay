@@ -83,7 +83,7 @@ fn paste_submit_harness(cli: &str) -> bool {
     // Claude identity signal used by readiness and activity detection so a
     // wrapper cannot silently fall back to the broken body-plus-Enter burst.
     let lower = basename.to_ascii_lowercase();
-    lower.contains("claude") || lower.contains("codex")
+    lower.contains("claude") || lower.contains("codex") || crate::readiness::is_devin_cli(cli)
 }
 
 pub(crate) fn injection_submit_followup_delay(cli: &str) -> Option<Duration> {
@@ -222,6 +222,20 @@ fn wrap_injection_timer_allowed(has_pending_write_ack: bool) -> bool {
     !has_pending_write_ack
 }
 
+// Readiness deferrals must not spend the bounded delivery retry budget.
+fn prepare_wrap_retry(
+    verification: &mut PendingVerification,
+    injectable: bool,
+    now: Instant,
+) -> bool {
+    if !injectable {
+        verification.injected_at = now;
+        return false;
+    }
+    verification.attempts += 1;
+    true
+}
+
 /// Start echo verification after a PTY write ack without missing output that
 /// raced ahead of the ack select arm. Returns `true` when the echo was already
 /// present and the delivery was confirmed immediately.
@@ -309,6 +323,7 @@ pub(crate) struct PtyAutoState {
     /// split (`pty_worker`); `run_wrap` leaves it `false` since that mode is
     /// itself a live human passthrough where auto-responses are wanted.
     pub(crate) interactive_hold: bool,
+    pub(crate) automatic_responses_disabled: bool,
 }
 
 impl PtyAutoState {
@@ -341,6 +356,7 @@ impl PtyAutoState {
             last_output_time: Instant::now(),
             is_idle: false,
             interactive_hold: false,
+            automatic_responses_disabled: false,
         }
     }
 
@@ -357,7 +373,7 @@ impl PtyAutoState {
     /// Supports full match (header + option) and partial-match timeout (5s fallback).
     /// Handles edge cases where prompt text fragments across reads.
     pub(crate) async fn handle_mcp_approval(&mut self, text: &str, pty: &PtySession) {
-        if self.interactive_hold {
+        if self.automatic_responses_disabled || self.interactive_hold {
             return;
         }
         if self.mcp_approved {
@@ -399,7 +415,7 @@ impl PtyAutoState {
 
     /// Detect and approve bypass-permissions prompts in PTY output.
     pub(crate) async fn handle_bypass_permissions(&mut self, text: &str, pty: &PtySession) {
-        if self.interactive_hold {
+        if self.automatic_responses_disabled || self.interactive_hold {
             return;
         }
         let in_cooldown = self
@@ -439,7 +455,7 @@ impl PtyAutoState {
 
     /// Detect and dismiss Codex model upgrade prompts by selecting "Use existing model".
     pub(crate) async fn handle_codex_model_prompt(&mut self, text: &str, pty: &PtySession) {
-        if self.interactive_hold {
+        if self.automatic_responses_disabled || self.interactive_hold {
             return;
         }
         if self.codex_model_prompt_handled {
@@ -462,7 +478,7 @@ impl PtyAutoState {
     /// Detect and accept Codex's startup directory-trust prompt.
     /// "Yes, continue" is pre-selected as option 1, so Enter is sufficient.
     pub(crate) async fn handle_codex_trust(&mut self, text: &str, pty: &PtySession) {
-        if self.interactive_hold || self.codex_trust_handled {
+        if self.automatic_responses_disabled || self.interactive_hold || self.codex_trust_handled {
             return;
         }
         Self::append_buf(&mut self.codex_trust_buffer, text, 2500, 2000);
@@ -483,7 +499,7 @@ impl PtyAutoState {
     /// Detect and auto-approve opencode/droid EXECUTE permission prompts.
     /// Selects "Yes, and always allow medium impact commands" (arrow down + Enter).
     pub(crate) async fn handle_opencode_permission(&mut self, text: &str, pty: &PtySession) {
-        if self.interactive_hold {
+        if self.automatic_responses_disabled || self.interactive_hold {
             return;
         }
         let in_cooldown = self
@@ -519,7 +535,7 @@ impl PtyAutoState {
 
     /// Detect and auto-approve Gemini "Action Required" permission prompts.
     pub(crate) async fn handle_gemini_action(&mut self, text: &str, pty: &PtySession) {
-        if self.interactive_hold {
+        if self.automatic_responses_disabled || self.interactive_hold {
             return;
         }
         let in_cooldown = self
@@ -545,7 +561,7 @@ impl PtyAutoState {
     /// Detect and auto-approve Gemini "Modify Trust Level" folder trust prompts.
     /// The menu shows "Trust this folder" pre-selected as option 1, so we just press Enter.
     pub(crate) async fn handle_gemini_trust(&mut self, text: &str, pty: &PtySession) {
-        if self.interactive_hold {
+        if self.automatic_responses_disabled || self.interactive_hold {
             return;
         }
         if !self.gemini_trust_handled {
@@ -569,7 +585,7 @@ impl PtyAutoState {
     /// to open the trust menu. The existing `handle_gemini_trust` will then pick up the
     /// interactive "Modify Trust Level" prompt that appears in response.
     pub(crate) async fn handle_gemini_untrusted_banner(&mut self, text: &str, pty: &PtySession) {
-        if self.interactive_hold {
+        if self.automatic_responses_disabled || self.interactive_hold {
             return;
         }
         if !self.gemini_untrusted_handled {
@@ -601,7 +617,7 @@ impl PtyAutoState {
     /// selected and sent a bare Enter — on Claude Code 2.1.259+ that confirmed
     /// `No, exit`, killing the worker while its roster row survived.
     pub(crate) async fn handle_claude_trust(&mut self, _text: &str, pty: &PtySession) {
-        if self.interactive_hold {
+        if self.automatic_responses_disabled || self.interactive_hold {
             return;
         }
         if self.claude_trust_handled {
@@ -660,7 +676,7 @@ impl PtyAutoState {
     pub(crate) fn try_auto_enter(&mut self, pty: &PtySession) {
         // Suppressed while a human drives: pressing Enter here would submit the
         // human's half-typed input.
-        if self.interactive_hold {
+        if self.automatic_responses_disabled || self.interactive_hold {
             return;
         }
         if let Some(injection_time) = self.last_injection_time {
@@ -1336,6 +1352,20 @@ pub(crate) async fn run_wrap(
     // Spawner for child agents
     let mut spawner = Spawner::new();
 
+    if crate::readiness::is_devin_cli(&resolved_cli) && !skip_prompt {
+        let token = default_workspace
+            .http_client
+            .cached_agent_token(&default_workspace.self_name)
+            .context("Devin wrap requires the existing authenticated session token")?;
+        std::env::set_var("RELAY_AGENT_NAME", &default_workspace.self_name);
+        std::env::set_var("RELAY_AGENT_TOKEN", token);
+        std::env::set_var("RELAY_WORKSPACES_JSON", &child_workspaces_json);
+        if let Some(base) = child_base_url.as_deref() {
+            std::env::set_var("RELAY_BASE_URL", base);
+        }
+    }
+    let _devin_state = crate::devin::prepare_worker_config(&resolved_cli).await?;
+
     // --- Spawn CLI in PTY ---
     let (pty, mut pty_rx) = PtySession::spawn(
         &resolved_cli,
@@ -1408,6 +1438,7 @@ pub(crate) async fn run_wrap(
     const SUGGESTION_LOOKBEHIND_MAX: usize = 512;
 
     let mut pty_auto = PtyAutoState::new();
+    pty_auto.automatic_responses_disabled = crate::readiness::is_devin_cli(&resolved_cli);
     let mut auto_enter_interval = tokio::time::interval(Duration::from_secs(2));
     auto_enter_interval.set_missed_tick_behavior(MissedTickBehavior::Skip);
     let mut pending_injection_interval = tokio::time::interval(Duration::from_millis(50));
@@ -2051,8 +2082,13 @@ pub(crate) async fn run_wrap(
                 if should_block {
                     continue;
                 }
+                if !crate::devin::can_inject(&resolved_cli, &pty) { continue; }
                 if let Some(pending) = pending_wrap_injections.pop_front() {
                     tokio::time::sleep(throttle.delay()).await;
+                    if !crate::devin::can_inject(&resolved_cli, &pty) {
+                        pending_wrap_injections.push_front(pending);
+                        continue;
+                    }
                     if pty_auto.auto_suggestion_visible {
                         tracing::warn!(
                             event_id = %pending.event_id,
@@ -2079,7 +2115,7 @@ pub(crate) async fn run_wrap(
                         pending.workspace_id.as_deref(),
                         pending.workspace_alias.as_deref(),
                     );
-                    let mut bytes = injection.as_bytes().to_vec();
+                    let mut bytes = crate::devin::injection_bytes(&resolved_cli, &injection);
                     let write = if let Some(delay) = injection_submit_followup_delay(&resolved_cli)
                     {
                         // Claude needs Enter in a later PTY write to close its
@@ -2249,15 +2285,8 @@ pub(crate) async fn run_wrap(
                 let mut i = 0;
                 while i < pending_verifications.len() {
                     if pending_verifications[i].injected_at.elapsed() >= VERIFICATION_WINDOW {
-                        let mut pv = pending_verifications.remove(i).unwrap();
+                        let pv = pending_verifications.remove(i).unwrap();
                         if pv.attempts < pv.max_attempts {
-                            pv.attempts += 1;
-                            tracing::warn!(
-                                event_id = %pv.event_id,
-                                attempt = pv.attempts,
-                                max = pv.max_attempts,
-                                "wrap: echo verification timeout, retrying injection"
-                            );
                             retry_queue.push(pv);
                         } else {
                             tracing::warn!(
@@ -2284,8 +2313,18 @@ pub(crate) async fn run_wrap(
                 }
 
                 // Re-inject retries
-                for pv in retry_queue {
+                for mut pv in retry_queue {
                     tokio::time::sleep(throttle.delay()).await;
+                    if !prepare_wrap_retry(&mut pv, crate::devin::can_inject(&resolved_cli, &pty), Instant::now()) {
+                        pending_verifications.push_back(pv);
+                        continue;
+                    }
+                    tracing::warn!(
+                        event_id = %pv.event_id,
+                        attempt = pv.attempts,
+                        max = pv.max_attempts,
+                        "wrap: echo verification timeout, retrying injection"
+                    );
                     // Retries consult the throttle like first injections: the
                     // failed attempt usually already echoed the full block, so
                     // a fresh one within the cooldown is redundant.
@@ -2302,7 +2341,7 @@ pub(crate) async fn run_wrap(
                         pv.workspace_id.as_deref(),
                         pv.workspace_alias.as_deref(),
                     );
-                    let mut bytes = injection.as_bytes().to_vec();
+                    let mut bytes = crate::devin::injection_bytes(&resolved_cli, &injection);
                     let write = if let Some(delay) = injection_submit_followup_delay(&resolved_cli)
                     {
                         pty.submit_write_paced_with_followup_and_output_boundary(
@@ -2432,6 +2471,30 @@ mod tests {
     use std::io;
     use std::time::{Duration, Instant};
 
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn devin_disables_generic_prompt_approvals_and_idle_enter() {
+        let (pty, _rx) = crate::pty::PtySession::spawn("sleep", &["10".into()], 24, 80).unwrap();
+        let mut state = super::PtyAutoState::new();
+        state.automatic_responses_disabled = true;
+        state
+            .handle_mcp_approval("Do you want to allow this MCP server?", &pty)
+            .await;
+        state
+            .handle_opencode_permission("EXECUTE Permission required Yes, allow", &pty)
+            .await;
+        state
+            .handle_codex_trust("Do you trust this directory?", &pty)
+            .await;
+        state.last_injection_time = Some(Instant::now() - Duration::from_secs(60));
+        state.try_auto_enter(&pty);
+        assert!(state.mcp_detection_buffer.is_empty());
+        assert!(state.opencode_perm_buffer.is_empty());
+        assert!(state.codex_trust_buffer.is_empty());
+        assert!(state.last_auto_enter_time.is_none());
+        pty.shutdown().unwrap();
+    }
+
     #[test]
     fn paste_aware_harnesses_use_a_delayed_submit_followup() {
         let expected = Some(Duration::from_millis(250));
@@ -2459,6 +2522,9 @@ mod tests {
             expected
         );
         assert_eq!(injection_submit_followup_delay("opencode"), None);
+        for cli in ["devin", "/usr/bin/devin", "Devin.EXE"] {
+            assert_eq!(injection_submit_followup_delay(cli), expected);
+        }
     }
 
     #[test]
@@ -2494,6 +2560,37 @@ mod tests {
     fn wrap_injection_timer_waits_for_the_previous_write_ack() {
         assert!(wrap_injection_timer_allowed(false));
         assert!(!wrap_injection_timer_allowed(true));
+    }
+
+    #[test]
+    fn busy_devin_deferrals_preserve_retry_budget_and_reset_deadline() {
+        let mut verification = PendingVerification {
+            delivery_id: DeliveryId::new("delivery"),
+            event_id: EventId::new("event"),
+            expected_echo: String::new(),
+            output_boundary: 0,
+            injected_at: Instant::now(),
+            attempts: 1,
+            max_attempts: MAX_VERIFICATION_ATTEMPTS,
+            request_id: None,
+            workspace_id: None,
+            workspace_alias: None,
+            from: "sender".into(),
+            body: "task".into(),
+            target: MessageTarget::new("devin"),
+        };
+        for _ in 0..20 {
+            let now = verification.injected_at + super::VERIFICATION_WINDOW;
+            assert!(!super::prepare_wrap_retry(&mut verification, false, now));
+            assert_eq!(verification.attempts, 1);
+            assert_eq!(verification.injected_at, now);
+        }
+        assert!(super::prepare_wrap_retry(
+            &mut verification,
+            true,
+            Instant::now()
+        ));
+        assert_eq!(verification.attempts, 2);
     }
 
     #[test]

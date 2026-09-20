@@ -7,6 +7,9 @@ import {
 } from './model-commands.js';
 
 describe('Model Commands', () => {
+  it('uses Devin model names without rewriting them', () => {
+    expect(buildModelSwitchCommand('devin', 'swe-1.6')).toBe('/model swe-1.6\n');
+  });
   describe('isModelSwitchSupported', () => {
     it('returns true for claude', () => {
       expect(isModelSwitchSupported('claude')).toBe(true);

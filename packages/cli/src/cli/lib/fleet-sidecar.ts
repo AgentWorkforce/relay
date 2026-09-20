@@ -13,7 +13,7 @@ import type { CoreTeamsConfig } from '../commands/core.js';
 // Mirrors the broker's built-in default (crates/broker init `DEFAULT_NODE_HARNESSES`);
 // the CLI overrides `AGENT_RELAY_NODE_HARNESSES`, so omitting one would drop the
 // broker's default capacity for it.
-const DEFAULT_HARNESSES = ['claude', 'codex', 'gemini', 'opencode'] as const;
+const DEFAULT_HARNESSES = ['claude', 'codex', 'gemini', 'opencode', 'devin'] as const;
 
 /**
  * The minimum a node config has to expose to contribute `spawn:<harness>`

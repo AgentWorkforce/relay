@@ -375,7 +375,7 @@ async fn probe_agent_relay_mcp_command_with_timeout(
 }
 
 #[cfg(not(test))]
-async fn validate_agent_relay_mcp_command() -> io::Result<()> {
+pub(crate) async fn validate_agent_relay_mcp_command() -> io::Result<()> {
     static PREFLIGHT_COMPLETE: tokio::sync::OnceCell<()> = tokio::sync::OnceCell::const_new();
 
     let command = required_agent_relay_mcp_command()?;
@@ -1167,6 +1167,7 @@ pub async fn configure_agent_relay_mcp_with_result(
             }))
         || is_gemini
         || is_droid
+        || crate::readiness::is_devin_cli(&cli_lower)
         || is_grok
         || (is_opencode && !existing_args.iter().any(|a| a == "--agent"))
         || is_cursor;

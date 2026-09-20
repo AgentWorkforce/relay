@@ -5,7 +5,7 @@ All notable changes to Agent Relay will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased - Patch]
+## [Unreleased - Minor]
 
 ### Fixed
 
@@ -13,6 +13,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `node agent attach --node` now replaces an expired remote terminal session once and reconnects existing local terminal clients, while transient terminal failures retain the bounded resume budget without minting additional sessions.
 
 ### Added
+
+- Devin CLI is available through Relay PTY, fleet and MCP spawning with isolated worker MCP configuration, preserved approvals, and reliable initial and follow-up message submission.
 
 - `agent-relay fleet nodes list --pretty` renders the fleet roster as a human-readable table; `agent-relay fleet nodes --pretty` is available as a shorter equivalent, while JSON remains the default.
 
