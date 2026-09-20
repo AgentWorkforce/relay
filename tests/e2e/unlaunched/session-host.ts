@@ -123,9 +123,7 @@ export async function startUnlaunchedSession(options: {
 }
 
 /** Every text part of every message in the session, oldest first. */
-export async function readSessionTextParts(
-  session: UnlaunchedSession
-): Promise<SessionTextPart[]> {
+export async function readSessionTextParts(session: UnlaunchedSession): Promise<SessionTextPart[]> {
   const messages = (await requestJson(
     `${session.endpoint}/session/${encodeURIComponent(session.sessionId)}/message`
   )) as Array<{ info?: { role?: unknown }; parts?: Array<{ type?: unknown; text?: unknown }> }>;

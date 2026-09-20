@@ -5,9 +5,10 @@ Date: 2026-09-20
 Contract target: `crates/broker/tests/delivery_seam_invariants.rs` named tests.
 
 Each mutation was applied to `crates/broker/src/delivery/backend.rs`, then:
-1) run the named test and capture the failing transcript,
-2) restore `backend.rs`,
-3) run the same test again and capture the passing transcript.
+
+1. run the named test and capture the failing transcript,
+2. restore `backend.rs`,
+3. run the same test again and capture the passing transcript.
 
 Command prefix used throughout: `${CARGO:-$HOME/.cargo/bin/cargo}`.
 

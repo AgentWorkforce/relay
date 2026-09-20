@@ -16,7 +16,7 @@ disputed. The phase is still blocked for other reasons — see the end.
 ## F1 — High — PTY timeout fallback fabricated an acknowledgement. FIXED.
 
 Codex was right, and right about the ordering being the whole problem: the
-previous fix stopped `delivery_verified(timeout_fallback)` from *clearing* the
+previous fix stopped `delivery_verified(timeout_fallback)` from _clearing_ the
 pending delivery, but the worker had already sent a plain `delivery_ack` for the
 same unobserved timeout a few lines earlier, and by the time the fallback branch
 ran the delivery was confirmed, the withheld fleet ack released,
@@ -41,7 +41,7 @@ The emit list moved into one named function rather than staying as inline
 
 ### Broker side — `crates/broker/src/runtime/worker_events.rs`
 
-The `timeout_fallback` branch now *settles* the delivery instead of merely
+The `timeout_fallback` branch now _settles_ the delivery instead of merely
 declining to confirm it:
 
 - removed from `pending_deliveries` — **necessary**, because seam rule 2
@@ -106,18 +106,18 @@ criterion rests on, so the F1 drift could have shipped underneath a green suite.
   Written as an **allow-list**, not `!== 'timeout_fallback'`: a deny-list lets
   any future unobserved verification kind through by default.
 - `isUnobservedDelivery(event)` — the complement, tracked and reported
-  separately so a red run says *why*.
+  separately so a red run says _why_.
 
 All five phase-0 parity scripts now count only observed deliveries, print the
 unobserved count, and **fail** if any unobserved hand-off occurred:
 
-| script | change |
-| --- | --- |
-| `tests/parity/orch-to-worker.ts` | `passed` requires `deliveryVerified && !deliveryUnobserved` |
-| `tests/parity/multi-worker.ts` | `verified === WORKER_COUNT && unobserved === 0` |
-| `tests/parity/broadcast.ts` | `verified === AGENT_COUNT && unobserved === 0` |
-| `tests/parity/continuity-handoff.ts` | both legs require `verifiedN && !unobservedN` |
-| `tests/parity/stability-soak.ts` | `unobserved` counts toward `total` (so it drags the success rate) **and** `passed` requires `unobserved === 0` |
+| script                               | change                                                                                                         |
+| ------------------------------------ | -------------------------------------------------------------------------------------------------------------- |
+| `tests/parity/orch-to-worker.ts`     | `passed` requires `deliveryVerified && !deliveryUnobserved`                                                    |
+| `tests/parity/multi-worker.ts`       | `verified === WORKER_COUNT && unobserved === 0`                                                                |
+| `tests/parity/broadcast.ts`          | `verified === AGENT_COUNT && unobserved === 0`                                                                 |
+| `tests/parity/continuity-handoff.ts` | both legs require `verifiedN && !unobservedN`                                                                  |
+| `tests/parity/stability-soak.ts`     | `unobserved` counts toward `total` (so it drags the success rate) **and** `passed` requires `unobserved === 0` |
 
 Codex also asked for a negative test proving timeout fallback is not counted as
 observed delivery. That is M3 in `evidence/mutation-proof.md`, and it is a real
@@ -126,7 +126,7 @@ were relabelled `timeout_fallback`, the debug broker rebuilt, and
 `parity-orch-to-worker` run against it —
 
 - **Arm A**, the fixed script: `=== Orch-to-Worker Parity Test FAILED ===`
-- **Arm B**, control, the *pre-fix* predicate (`kind` alone) against the *same*
+- **Arm B**, control, the _pre-fix_ predicate (`kind` alone) against the _same_
   mutated broker: `=== Orch-to-Worker Parity Test PASSED ===`
 
 Arm B is F2's claim demonstrated, not argued. Source and binary were restored
@@ -146,7 +146,7 @@ Valid. The stored `seal-implementation.json` recorded `headSha`
 product changes, and had no `sourceEntries` even though `seal()` in
 `scripts/migrate/native-delivery-gates.mjs` now hashes changed product paths.
 
-The seal *implementation* was already correct; only the stored artifact was old.
+The seal _implementation_ was already correct; only the stored artifact was old.
 It was regenerated as the last action of this pass, after every recorder below
 had run, so it now carries the live `headSha`, the current evidence set, and
 `sourceEntries` for every changed product path.
@@ -175,7 +175,7 @@ GATE_FAILED targeted-gate phase=0
   tests/e2e/unlaunched/unlaunched-delivery.test.ts
 ```
 
-All three paths were already in the working tree *before* this pass, and
+All three paths were already in the working tree _before_ this pass, and
 `crates/broker/src/broker/` is in phase 0's `scope`, so those gates were red
 before their `-final` evidence claimed green — the evidence predated the files.
 
@@ -200,24 +200,24 @@ which is still open.
 All through `scripts/migrate/native-delivery-gates.mjs record`, run id
 `phase-0-seam-20260920c-claudefix1`.
 
-| recorder | verdict |
-| --- | --- |
-| `rust-fmt` | green |
-| `rust-clippy` | green |
-| `rust-build` | green |
-| `invariant-tests` (`cargo test -p agent-relay-broker`) | green — 1285 lib + 4 seam-invariant + 12 + 2 + 3 |
-| `ts-typecheck` | green |
-| `parity-orch-to-worker` | green — verified(echo) true, unobserved 0 |
-| `parity-multi-worker` | green — 3/3 echo-observed, unobserved 0 |
-| `parity-broadcast` | green — 3/3 echo-observed, unobserved 0 |
-| `parity-continuity-handoff` | green — both legs echo-observed, unobserved 0 |
-| `parity-stability-soak` | green — 32 verified, 0 failed, 0 unobserved, 100% |
-| `edit-gate` / `-final` | green |
-| `manifest-gate` / `-final` | green (after the mapping fix above) |
-| `targeted-gate` / `-final` | green |
-| `seam-rules` / `-final` | green |
-| `unlaunched-gate` / `-final` | green (not required at phase 0) |
-| `unit-tests` (`npx vitest run --maxWorkers=4`) | **red — pre-existing, see below** |
+| recorder                                               | verdict                                           |
+| ------------------------------------------------------ | ------------------------------------------------- |
+| `rust-fmt`                                             | green                                             |
+| `rust-clippy`                                          | green                                             |
+| `rust-build`                                           | green                                             |
+| `invariant-tests` (`cargo test -p agent-relay-broker`) | green — 1285 lib + 4 seam-invariant + 12 + 2 + 3  |
+| `ts-typecheck`                                         | green                                             |
+| `parity-orch-to-worker`                                | green — verified(echo) true, unobserved 0         |
+| `parity-multi-worker`                                  | green — 3/3 echo-observed, unobserved 0           |
+| `parity-broadcast`                                     | green — 3/3 echo-observed, unobserved 0           |
+| `parity-continuity-handoff`                            | green — both legs echo-observed, unobserved 0     |
+| `parity-stability-soak`                                | green — 32 verified, 0 failed, 0 unobserved, 100% |
+| `edit-gate` / `-final`                                 | green                                             |
+| `manifest-gate` / `-final`                             | green (after the mapping fix above)               |
+| `targeted-gate` / `-final`                             | green                                             |
+| `seam-rules` / `-final`                                | green                                             |
+| `unlaunched-gate` / `-final`                           | green (not required at phase 0)                   |
+| `unit-tests` (`npx vitest run --maxWorkers=4`)         | **red — pre-existing, see below**                 |
 
 The parity suite is therefore green **with strictly stronger assertions than
 before**, and with the PTY backend behind the seam. That is the phase's exit
@@ -235,7 +235,7 @@ command must still pass, the verdict is the final attempt's). Flagging it rather
 than burying it: if it recurs, it is a real flake to file, not a delivery bug.
 
 **`unit-tests`: red, pre-existing, not from this phase.** Same failures, with
-the same messages, as the evidence recorded *before* this pass:
+the same messages, as the evidence recorded _before_ this pass:
 
 - `tests/fixtures/verify-fleet-daytona.test.ts` — "expected … length 36 but got
   35" on the current-main CLI command surface. Deterministic across runs;
@@ -257,7 +257,7 @@ codex-review-1 F1). Still open:
   so its receipt memory dies immediately; the duplicate guard and
   `settle`/`recorded_route` have no production effect. Needs a runtime-owned,
   bounded seam with the route recorded on `PendingDelivery`.
-- **F11** — there is still no distinct terminal *in-doubt* disposition. This
+- **F11** — there is still no distinct terminal _in-doubt_ disposition. This
   pass gives the PTY timeout fallback a correct narrow settlement; it does not
   give the seam a general one, and `InDoubt` / committed-error remain
   unreachable from the production route.

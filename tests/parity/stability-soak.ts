@@ -117,11 +117,7 @@ async function main(): Promise<void> {
     // Pass if >90% echo-observed success rate, no send errors, no unobserved
     // hand-offs, and every sent delivery is accounted for.
     const unaccounted = sent - total;
-    const passed =
-      successRate >= 90 &&
-      sendErrors === 0 &&
-      unobserved === 0 &&
-      unaccounted === 0;
+    const passed = successRate >= 90 && sendErrors === 0 && unobserved === 0 && unaccounted === 0;
     console.log(passed ? '\n=== Stability Soak PASSED ===' : '\n=== Stability Soak FAILED ===');
     process.exit(passed ? 0 : 1);
   } finally {
