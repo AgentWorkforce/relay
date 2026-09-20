@@ -1985,7 +1985,15 @@ fn prepare_claude_session_args(args: &mut Vec<String>) -> Option<String> {
 /// claude/codex/gemini/grok, weakening Muse approvals stays an explicit
 /// caller choice passed through via `effective_args`.
 fn muse_trust_flag(cli_lower: &str, effective_args: &[String]) -> Option<&'static str> {
-    if cli_lower != "muse" {
+    // Callers pass the lowercased executable basename (directories already
+    // stripped by `normalize_cli_name`); also strip Windows executable
+    // suffixes so `muse.exe`/`muse.cmd`/`muse.bat` get the same default.
+    let cli = cli_lower
+        .strip_suffix(".exe")
+        .or_else(|| cli_lower.strip_suffix(".cmd"))
+        .or_else(|| cli_lower.strip_suffix(".bat"))
+        .unwrap_or(cli_lower);
+    if cli != "muse" {
         return None;
     }
     let already_trusted = effective_args
@@ -3720,6 +3728,34 @@ sleep 30
     #[test]
     fn muse_trust_flag_ignores_other_clis() {
         for cli in ["claude", "codex", "gemini", "grok", "opencode", "aider"] {
+            assert_eq!(muse_trust_flag(cli, &[]), None);
+        }
+    }
+
+    #[test]
+    fn muse_trust_flag_covers_windows_executable_spellings() {
+        // Bare and absolute-path spellings reduce to the same basename before
+        // reaching the helper; every Windows suffix must still trust.
+        for cli in [
+            "muse.exe",
+            "muse.cmd",
+            "muse.bat",
+            "MUSE.EXE",
+            r"C:\Tools\muse.exe",
+        ] {
+            let basename = cli
+                .rsplit(['/', '\\'])
+                .next()
+                .unwrap_or(cli)
+                .to_ascii_lowercase();
+            assert_eq!(
+                muse_trust_flag(&basename, &[]),
+                Some("--trust-workspace"),
+                "{cli} must get the workspace-trust default"
+            );
+        }
+        // Suffix stripping must not mint false positives.
+        for cli in ["xmuse", "muse2", "amuse.exe", "my-muse-wrapper"] {
             assert_eq!(muse_trust_flag(cli, &[]), None);
         }
     }
