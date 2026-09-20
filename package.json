@@ -109,7 +109,7 @@
     "audit:feature-manifest:check": "npm run flows:spec:audit-manifest && flows check .workflow-artifacts/flows/relay.audit.feature-manifest.json",
     "flows:spec:native-delivery": "node --experimental-strip-types flows/migrate/native-delivery.spec.ts --phase ${NATIVE_DELIVERY_PHASE:-0} --out .workflow-artifacts/flows/relay.migrate.native-delivery.phase-${NATIVE_DELIVERY_PHASE:-0}.json",
     "migrate:native-delivery:check": "npm run flows:spec:native-delivery && flows check .workflow-artifacts/flows/relay.migrate.native-delivery.phase-${NATIVE_DELIVERY_PHASE:-0}.json",
-    "migrate:native-delivery": "npm run flows:spec:native-delivery && flows run .workflow-artifacts/flows/relay.migrate.native-delivery.phase-${NATIVE_DELIVERY_PHASE:-0}.json",
+    "migrate:native-delivery": "npm run flows:spec:native-delivery && flows run --local-agent .workflow-artifacts/flows/relay.migrate.native-delivery.phase-${NATIVE_DELIVERY_PHASE:-0}.json",
     "flows:check": "tsc -p flows/tsconfig.json && flows check flows/ci/pr-proof.flow.ts",
     "flows:deploy:pr-proof": "flows deploy flows/ci/pr-proof.flow.ts --repo AgentWorkforce/relay --on github:events=pull_request --agents claude --approver \"$RELAY_PR_PROOF_APPROVER\"",
     "verify:cleanroom:validate": "node scripts/verify-features/cleanroom.mjs validate --profile full",
