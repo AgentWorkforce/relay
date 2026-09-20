@@ -152,6 +152,21 @@ function recordedGate(name: string, action: string, extra = ''): string {
 
 const CARGO = '${CARGO:-$HOME/.cargo/bin/cargo}';
 
+/**
+ * Vitest, capped at half this machine's cores.
+ *
+ * Unbounded, it runs 194 test files in parallel and saturates the box. Two runs
+ * died there — not on a test, but on `relayflowd could not complete the run
+ * request: journal client: run.get timed out after 30000ms`. The daemon was not
+ * resource-starved (11 open fds, 25 MB RSS); it was CPU-starved past its 30s
+ * budget by the suite the flow itself had launched.
+ *
+ * Capping also removes most of the contention flakes: 4 failures unbounded,
+ * 2 capped, and the 2 are both declared known failures. The cost is 39s instead
+ * of 26s, which is nothing against a killed run.
+ */
+const VITEST = 'npx vitest run --maxWorkers=4';
+
 const flow = specWorkflow(`relay.migrate.native-delivery.phase-${PHASE}`)
   .description(
     `Native-delivery migration phase ${PHASE} (${CONFIG.slug}): ${CONFIG.title}. ` +
@@ -591,7 +606,7 @@ det('seam-rules-final', recordedGate('seam-rules-final', 'seam-rules'), ['repair
 det('seam-rules-assert', gate('require-green', '--names seam-rules-final'), ['seam-rules-final'], 300_000);
 
 det('ts-typecheck', record('ts-typecheck', 'npm run typecheck'), ['seam-rules-assert'], 3_600_000);
-det('unit-tests', record('unit-tests', 'npx vitest run'), ['ts-typecheck'], 5_400_000);
+det('unit-tests', record('unit-tests', VITEST), ['ts-typecheck'], 5_400_000);
 agentStep({
   id: 'repair-ts',
   agent: 'claude-fixer',
@@ -617,7 +632,7 @@ agentStep({
 });
 det(
   'ts-final',
-  [record('ts-typecheck', 'npm run typecheck'), record('unit-tests', 'npx vitest run')].join('\n'),
+  [record('ts-typecheck', 'npm run typecheck'), record('unit-tests', VITEST)].join('\n'),
   ['repair-ts'],
   7_200_000
 );
@@ -864,7 +879,7 @@ det(
         ]
       : []),
     record('ts-typecheck', 'npm run typecheck'),
-    record('unit-tests', 'npx vitest run'),
+    record('unit-tests', VITEST),
     ...parityNames.map((name) => record(name, parityCommands[name]!)),
     ...nativeNames.map((name) =>
       record(name, { ...(CONFIG.evals ?? {}), ...(CONFIG.e2e ?? {}) }[name]!, { forbid: ['# SKIP'] })
