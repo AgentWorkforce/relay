@@ -18,13 +18,7 @@
     "message_delivery_failed",
     "worker_error"
   ],
-  "message_lifecycle_states": [
-    "queued",
-    "injected",
-    "verified",
-    "failed",
-    "uncertain"
-  ],
+  "message_lifecycle_states": ["queued", "injected", "verified", "failed", "uncertain"],
   "contract_events": [
     {
       "kind": "relay_inbound",
@@ -215,11 +209,6 @@
     "late_event_kind": "delivery_ack"
   },
   "wave0_broadcast_whitelist": {
-    "required_kinds": [
-      "relay_inbound",
-      "agent_spawned",
-      "agent_exited",
-      "delivery_ack"
-    ]
+    "required_kinds": ["relay_inbound", "agent_spawned", "agent_exited", "delivery_ack"]
   }
 }
