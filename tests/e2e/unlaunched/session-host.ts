@@ -17,7 +17,8 @@
  * first-run prompt, writes the user's config (the doc's testing-hazard
  * section), and neither has a delivery route until phases 1 and 2 anyway.
  */
-import { spawn, type ChildProcessWithoutNullStreams } from 'node:child_process';
+import { spawn, type ChildProcessByStdio } from 'node:child_process';
+import type { Readable } from 'node:stream';
 import { existsSync, mkdirSync, mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
@@ -58,6 +59,14 @@ export function resolveOpencodeBinary(): string | null {
  * advance: picking a free port and hoping it is still free when the server
  * binds is the classic flake in this repo's e2e suites.
  */
+/**
+ * The session is spawned with `stdio: ['ignore', 'pipe', 'pipe']`, so its
+ * `stdin` really is null. Typing it as `ChildProcessWithoutNullStreams` — which
+ * promises a writable `stdin` — was a cast that could not hold, and it is why
+ * this file never compiled.
+ */
+type SessionChild = ChildProcessByStdio<null, Readable, Readable>;
+
 export async function startUnlaunchedSession(options: {
   binary: string;
   title: string;
@@ -82,7 +91,7 @@ export async function startUnlaunchedSession(options: {
     cwd: workdir,
     env,
     stdio: ['ignore', 'pipe', 'pipe'],
-  }) as ChildProcessWithoutNullStreams;
+  }) as SessionChild;
 
   const cleanup = async () => {
     if (!child.killed) child.kill('SIGTERM');
@@ -161,7 +170,7 @@ async function requestJson(url: string, init?: RequestInit): Promise<unknown> {
   return text.length > 0 ? JSON.parse(text) : null;
 }
 
-function readListeningUrl(child: ChildProcessWithoutNullStreams, timeoutMs: number): Promise<string> {
+function readListeningUrl(child: SessionChild, timeoutMs: number): Promise<string> {
   return new Promise((resolve, reject) => {
     let settled = false;
     let buffered = '';

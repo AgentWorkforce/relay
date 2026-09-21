@@ -1188,10 +1188,66 @@ function walk(dir) {
  * session relay did not launch. Without it there is no proof of the thing the
  * migration is for, so it is a first-class gate rather than a nice-to-have.
  */
+/**
+ * Typecheck the unlaunched suite whether or not this phase has to RUN it.
+ *
+ * The suite was authored after the phase's `ts-typecheck` had already run, is
+ * excluded from `vitest.e2e.config.ts` (so `npm run test:e2e` never loads it),
+ * and sits outside the root tsconfig's empty `include`. Nothing compiled it,
+ * and it did not compile: `session-host.ts` cast a child spawned with
+ * `stdio: ['ignore', ...]` to `ChildProcessWithoutNullStreams`, which promises
+ * a writable stdin it does not have.
+ *
+ * A phase that declares `unlaunched: false` still ships these files, so the
+ * gate checks that they are valid TypeScript even when it does not require
+ * them to execute. Otherwise "not-required" silently means "unchecked", and
+ * the suite rots until the phase that needs it discovers it never built.
+ */
+function typecheckUnlaunchedSuite() {
+  const dir = path.join('tests', 'e2e', 'unlaunched');
+  if (!existsSync(dir)) return null;
+  const files = walk(dir).filter((file) => file.endsWith('.ts'));
+  if (files.length === 0) return null;
+  try {
+    execFileSync(
+      'npx',
+      [
+        'tsc',
+        '--noEmit',
+        '--skipLibCheck',
+        '--strict',
+        '--module',
+        'esnext',
+        '--target',
+        'es2022',
+        '--moduleResolution',
+        'bundler',
+        ...files,
+      ],
+      { encoding: 'utf8', stdio: 'pipe' }
+    );
+    return { ok: true, files: files.length };
+  } catch (error) {
+    const output = `${error.stdout ?? ''}${error.stderr ?? ''}`.trim();
+    return { ok: false, files: files.length, output };
+  }
+}
+
 function unlaunchedGate() {
   const { phase, config } = phaseConfig();
+  const typecheck = typecheckUnlaunchedSuite();
+  if (typecheck && !typecheck.ok) {
+    fail(
+      `unlaunched-gate phase=${phase} the unlaunched suite does not typecheck\n  ${typecheck.output
+        .split('\n')
+        .slice(0, 12)
+        .join('\n  ')}`
+    );
+    return;
+  }
+  const checked = typecheck ? ` typechecked=${typecheck.files}` : '';
   if (!config.unlaunched) {
-    pass(`unlaunched-gate phase=${phase} not-required`);
+    pass(`unlaunched-gate phase=${phase} not-required${checked}`);
     return;
   }
   const matrix = readJson(MATRIX);
@@ -1222,7 +1278,7 @@ function unlaunchedGate() {
     fail(`unlaunched-gate phase=${phase}\n  ${problems.join('\n  ')}`);
     return;
   }
-  pass(`unlaunched-gate phase=${phase} clis=${config.unlaunched.join(',')}`);
+  pass(`unlaunched-gate phase=${phase} clis=${config.unlaunched.join(',')}${checked}`);
 }
 
 /** Hash every artifact so a reviewer reviews a fixed set, not a moving one. */
