@@ -2295,6 +2295,18 @@ impl BrokerRuntime {
                     let Some(entry) = dead_letters.get(&delivery_id) else {
                         continue;
                     };
+                    // An in-doubt entry is retained so the message is not lost,
+                    // but its write may already have committed — redelivering it
+                    // is exactly the double delivery seam rule 1 forbids. It is
+                    // visible and inspectable here; it is not auto-redeliverable.
+                    if !crate::runtime::dead_letter::is_auto_redeliverable(&entry.reason) {
+                        skipped.push(json!({
+                            "delivery_id": delivery_id,
+                            "worker_name": entry.worker_name,
+                            "reason": "delivery is in doubt; redelivering may duplicate",
+                        }));
+                        continue;
+                    }
                     // Leave entries for recipients that are not running in the
                     // queue — requeueing them would only bounce straight back
                     // here with `recipient gone` on the next maintenance tick.
