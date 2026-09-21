@@ -1006,7 +1006,29 @@ pub(crate) async fn insert_and_attempt_delivery(
             // these apart, so both go through the named constructors.
             return Err(pre_write_failure_error(last_error));
         }
-        DeliveryAttemptOutcome::TerminalInDoubt { last_error, .. } => {
+        DeliveryAttemptOutcome::TerminalInDoubt {
+            mut pending,
+            last_error,
+        } => {
+            // Preserve ownership, exactly as the `Failed` arm above does and
+            // for the same reason: this layer has no dead-letter store, so an
+            // entry dropped here is a message with no operator-visible record.
+            //
+            // `retry_pending_delivery` removed it from the pending map on the
+            // way out, and the fleet caller only logs a warning, so before this
+            // the body simply vanished — the very outcome the in-doubt
+            // disposition was added to prevent.
+            //
+            // Re-inserted at the retry cap, so the next maintenance pass takes
+            // the cap branch immediately without re-sending: `was_sent` is true
+            // (the seam holds or remembers a receipt), so it terminates in
+            // doubt again and `emit_delivery_attempt_outcome` dead-letters it
+            // under `IN_DOUBT_REASON_PREFIX`. Retained, and never
+            // auto-redelivered.
+            pending.failed_attempts = MAX_DELIVERY_RETRIES;
+            pending.last_error = Some(last_error.clone());
+            pending.next_retry_at = Instant::now();
+            pending_deliveries.insert(pending.delivery.delivery_id.clone(), *pending);
             // Typed, so the caller can account for it instead of treating a
             // possible write as a failed one.
             return Err(in_doubt_error(last_error));
@@ -1061,11 +1083,21 @@ pub(crate) async fn retry_pending_delivery(
         // whose ack never arrives returns `AlreadySent` on every later tick,
         // counting `failed_attempts` up to the cap without re-writing. It then
         // arrived here and was dead-lettered as freely redeliverable.
-        if let Some(route) = seam.recorded_route(delivery_id) {
-            let route = route.as_str().to_string();
+        if seam.was_sent(delivery_id) {
+            // `was_sent`, not `recorded_route`. A receipt that has aged out of
+            // the seam's bounded memory leaves `recorded_route` answering
+            // `None` — the same answer it gives for a delivery that never
+            // reached a transport. Branching on route presence sent an
+            // evicted-but-written delivery down the freely-redeliverable path,
+            // restoring the double delivery this branch exists to prevent,
+            // under exactly the sustained load that causes eviction.
+            let route = seam
+                .recorded_route(delivery_id)
+                .map(|route| route.as_str().to_string())
+                .unwrap_or_else(|| "a route the seam has since forgotten".to_string());
             let last_error = removed.last_error.clone().unwrap_or_else(|| {
                 format!(
-                    "handed over to route {route} and never acknowledged within                      {MAX_DELIVERY_RETRIES} retries"
+                    "handed over to {route} and never acknowledged within {MAX_DELIVERY_RETRIES} retries"
                 )
             });
             return Ok(DeliveryAttemptOutcome::TerminalInDoubt {

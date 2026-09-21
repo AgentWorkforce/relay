@@ -452,6 +452,20 @@ impl DeliverySeam {
         SettleOutcome::Settled(backend.settle(&request).await)
     }
 
+    /// Whether this seam ever handed the delivery to a transport.
+    ///
+    /// [`Self::recorded_route`] answers `None` for two OPPOSITE facts: the
+    /// delivery was never sent, and it was sent over a route whose receipt has
+    /// since aged out of the bounded memory. A caller deciding whether a
+    /// message may be re-sent must not collapse them — the second is a possible
+    /// write, and re-sending a possible write double-delivers (rule 2).
+    ///
+    /// The eviction tombstones already carry exactly this fact; this is the
+    /// question they exist to answer.
+    pub fn was_sent(&self, delivery_id: &DeliveryId) -> bool {
+        self.recorded_route(delivery_id).is_some() || self.evicted.contains(delivery_id)
+    }
+
     pub fn recorded_route(&self, delivery_id: &DeliveryId) -> Option<&RouteId> {
         self.receipts
             .iter()

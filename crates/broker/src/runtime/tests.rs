@@ -8797,3 +8797,201 @@ async fn a_handed_over_delivery_that_exhausts_retries_is_in_doubt_not_failed() {
         "a possible write must never be queued for automatic redelivery: {reason}"
     );
 }
+
+/// A delivery whose receipt aged out is still a possible write.
+///
+/// The cap branch first asked `recorded_route`, which answers `None` for two
+/// opposite facts: never sent, and sent over a route the seam has since
+/// forgotten. Under sustained load the second is routine — receipts are
+/// bounded and nothing removes them on ack — so a delivery that WAS handed to
+/// a live PTY fell through to `Failed`, was dead-lettered without the in-doubt
+/// marker, and became eligible for operator redelivery. That is the double
+/// delivery the in-doubt disposition exists to prevent, restored by a cache
+/// eviction.
+#[tokio::test]
+async fn an_evicted_receipt_still_terminates_in_doubt_not_failed() {
+    let worker_name = "worker-evicted";
+    let mut workers = make_worker_registry_with_worker(worker_name).await;
+    let mut seam = crate::delivery::DeliverySeam::new();
+    let target = DeliveryId::new("del_evicted_cap");
+
+    let mut pending_deliveries = HashMap::from([(
+        target.clone(),
+        PendingDelivery {
+            worker_name: WorkerName::from(worker_name),
+            delivery: RelayDelivery {
+                delivery_id: target.clone(),
+                event_id: EventId::new("evt_evicted_cap"),
+                workspace_id: Some(WorkspaceId::new("ws_demo")),
+                workspace_alias: Some(WorkspaceAlias::new("Demo")),
+                from: "orchestrator".to_string(),
+                target: MessageTarget::new(worker_name),
+                body: "handed over, then forgotten".to_string(),
+                thread_id: None,
+                priority: Some(2),
+                injection_mode: MessageInjectionMode::Wait,
+            },
+            attempts: 0,
+            failed_attempts: MAX_DELIVERY_RETRIES,
+            next_retry_at: Instant::now(),
+            queued_at_ms: super::unix_timestamp_millis(),
+            last_error: None,
+            withheld_fleet_ack: None,
+            withheld_fleet_ack_floor: None,
+        },
+    )]);
+
+    // Hand the delivery over for real, then push its receipt out of the
+    // seam's bounded memory with unrelated traffic.
+    let relay_for = |id: &DeliveryId| RelayDelivery {
+        delivery_id: id.clone(),
+        event_id: EventId::new(format!("evt_{}", id.as_str())),
+        workspace_id: Some(WorkspaceId::new("ws_demo")),
+        workspace_alias: Some(WorkspaceAlias::new("Demo")),
+        from: "orchestrator".to_string(),
+        target: MessageTarget::new(worker_name),
+        body: "payload".to_string(),
+        thread_id: None,
+        priority: Some(2),
+        injection_mode: MessageInjectionMode::Wait,
+    };
+
+    let mut pty = crate::delivery::pty::PtyDeliveryBackend::new(&mut workers);
+    seam.send(
+        &mut [&mut pty],
+        crate::delivery::SendRequest::relay(WorkerName::from(worker_name), relay_for(&target)),
+    )
+    .await
+    .expect("the first hand-off should be recorded");
+    assert!(
+        seam.recorded_route(&target).is_some(),
+        "precondition: a receipt must exist before eviction"
+    );
+
+    for index in 0..crate::delivery::DeliverySeam::max_receipts() {
+        let filler = DeliveryId::new(format!("del_filler_{index}"));
+        let _ = seam
+            .send(
+                &mut [&mut pty],
+                crate::delivery::SendRequest::relay(
+                    WorkerName::from(worker_name),
+                    relay_for(&filler),
+                ),
+            )
+            .await;
+    }
+    drop(pty);
+
+    assert!(
+        seam.recorded_route(&target).is_none(),
+        "precondition: the receipt must have been evicted"
+    );
+    assert!(
+        seam.was_sent(&target),
+        "the seam must still know it sent this, or the cap branch cannot tell \
+         an evicted write from a message that never left"
+    );
+
+    let outcome = retry_pending_delivery(
+        &target,
+        &mut workers,
+        &mut pending_deliveries,
+        Duration::from_millis(1),
+        &mut seam,
+    )
+    .await
+    .expect("reaching the cap is not an error");
+
+    let DeliveryAttemptOutcome::TerminalInDoubt { last_error, .. } = outcome else {
+        panic!(
+            "a delivery whose receipt was evicted was still WRITTEN, so it must \
+             terminate in doubt and stay off auto-redelivery, got {outcome:?}"
+        );
+    };
+    let reason = format!(
+        "{}{last_error}",
+        crate::runtime::dead_letter::IN_DOUBT_REASON_PREFIX
+    );
+    assert!(
+        !crate::runtime::dead_letter::is_auto_redeliverable(&reason),
+        "an evicted possible-write must never be queued for redelivery: {reason}"
+    );
+}
+
+/// An in-doubt delivery on the raw queue path must not vanish.
+///
+/// `retry_pending_delivery` removes the entry on `TerminalInDoubt`, and
+/// `insert_and_attempt_delivery` used to return the typed error without
+/// preserving it. Its only fleet caller logs a warning and returns, so the
+/// message left no dead letter, no `MessageDeliveryFailed`, and nothing on the
+/// wire — the body was simply gone. The `Failed` arm beside it has re-inserted
+/// for exactly this reason all along.
+///
+/// Retained at the cap, so the next pass terminates it in doubt again and the
+/// outcome handler dead-letters it non-redeliverable rather than re-sending.
+#[tokio::test]
+async fn an_in_doubt_delivery_on_the_raw_queue_path_is_retained_not_dropped() {
+    let worker_name = "worker-raw-indoubt";
+    let mut workers = make_worker_registry_with_worker(worker_name).await;
+    // Kill the child so the very next write fails past the commit boundary.
+    {
+        let handle = workers
+            .workers
+            .get_mut(worker_name)
+            .expect("present worker handle");
+        let _ = handle.child.start_kill();
+        let _ = handle.child.wait().await;
+    }
+
+    let mut pending_deliveries: HashMap<DeliveryId, PendingDelivery> = HashMap::new();
+    let mut seam = crate::delivery::DeliverySeam::new();
+
+    let err = super::delivery::insert_and_attempt_delivery(
+        &mut workers,
+        &mut pending_deliveries,
+        worker_name,
+        RelayDelivery {
+            delivery_id: DeliveryId::new("del_raw_indoubt"),
+            event_id: EventId::new("evt_raw_indoubt"),
+            workspace_id: Some(WorkspaceId::new("ws_demo")),
+            workspace_alias: Some(WorkspaceAlias::new("Demo")),
+            from: "orchestrator".to_string(),
+            target: MessageTarget::new(worker_name),
+            body: "body that must not vanish".to_string(),
+            thread_id: None,
+            priority: Some(2),
+            injection_mode: MessageInjectionMode::Wait,
+        },
+        Duration::from_millis(1),
+        None,
+        None,
+        &mut seam,
+    )
+    .await
+    .expect_err("a committed write failure must surface as in doubt");
+
+    assert!(
+        err.downcast_ref::<crate::runtime::delivery::TerminalInDoubtError>()
+            .is_some(),
+        "the caller must be able to tell a possible write from a failed one, got {err:?}"
+    );
+
+    assert_eq!(
+        pending_deliveries.len(),
+        1,
+        "an in-doubt delivery must be retained so something can dead-letter it; \
+         dropping it here is a message lost with no operator-visible record"
+    );
+    let retained = pending_deliveries
+        .values()
+        .next()
+        .expect("the retained entry");
+    assert_eq!(
+        retained.delivery.body, "body that must not vanish",
+        "the body must survive for the dead-letter store"
+    );
+    assert_eq!(
+        retained.failed_attempts, MAX_DELIVERY_RETRIES,
+        "retained at the cap, so the next pass terminates it instead of re-sending a possible write"
+    );
+}
