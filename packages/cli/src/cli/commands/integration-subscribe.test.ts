@@ -1766,6 +1766,63 @@ describe('integration unsubscribe', () => {
     ]);
   });
 
+  it("lists health from each binding's pinned relayfile workspace, not only the active one", async () => {
+    const relay = createRelayMock();
+    relay.agents.list.mockResolvedValue([
+      { id: '227588305648525312', name: 'webhook-owner', status: 'active' },
+    ]);
+    const listWebhookSubscriptions = vi.fn(async (workspace?: string) => {
+      if (workspace === 'rw_old') {
+        return {
+          workspaceId: 'rw_old',
+          subscriptions: [
+            {
+              subscriptionId: 'whsub_old',
+              url: 'https://cast.test/inbound',
+              pathGlobs: ['/github/repos/AgentWorkforce/relay/pulls/42/**'],
+              githubPrIdentityAuthorized: true,
+              health: {
+                lastDeliveryAt: '2026-09-20T12:00:00.000Z',
+                lastSuccessAt: '2026-09-20T12:00:00.000Z',
+                lastError: null,
+                consecutiveFailures: 0,
+              },
+            },
+          ],
+        };
+      }
+      return { workspaceId: 'rw_current', subscriptions: [] };
+    });
+    const relayfile = createRelayfileMock(
+      [
+        {
+          provider: 'github',
+          resource: '/github/repos/AgentWorkforce/relay/pulls/42/**',
+          channel: 'agent-events-227588305648525312',
+          webhookId: 'wh_old',
+          subscriptionId: 'sub_old',
+          webhookSubscriptionId: 'whsub_old',
+          webhookSubscriptionWorkspaceId: 'rw_old',
+        },
+      ],
+      { listWebhookSubscriptions }
+    );
+    const { program, log } = harness({ relay, relayfile });
+
+    await program.parseAsync(['integration', 'subscribe', '--list'], { from: 'user' });
+
+    expect(listWebhookSubscriptions.mock.calls).toEqual([['rw_old']]);
+    const printed = JSON.parse(String(log.mock.calls[0]?.[0]));
+    expect(printed.bindings).toEqual([
+      expect.objectContaining({
+        webhookSubscriptionId: 'whsub_old',
+        lastDeliveryAt: '2026-09-20T12:00:00.000Z',
+        lastSuccessAt: '2026-09-20T12:00:00.000Z',
+        githubPrIdentityAuthorized: true,
+      }),
+    ]);
+  });
+
   it('unsubscribes every binding owned by a named agent', async () => {
     const ownerBinding: RelayfileBinding = {
       provider: 'github',

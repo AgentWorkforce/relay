@@ -586,6 +586,49 @@ function agentEventsChannelId(channel: string): string | undefined {
   return match?.[1] || undefined;
 }
 
+type ListedWebhookSubscription = Awaited<
+  ReturnType<RelayfileBridge['listWebhookSubscriptions']>
+>['subscriptions'][number];
+
+async function listWebhookSubscriptionsForBindings(
+  relayfile: RelayfileBridge,
+  bindings: RelayfileBinding[]
+): Promise<Map<string, ListedWebhookSubscription>> {
+  const listOne = async (workspace?: string) => {
+    if (typeof relayfile.listWebhookSubscriptions !== 'function') {
+      return { subscriptions: [] as ListedWebhookSubscription[] };
+    }
+    try {
+      return await relayfile.listWebhookSubscriptions(workspace);
+    } catch {
+      return { subscriptions: [] as ListedWebhookSubscription[] };
+    }
+  };
+
+  const pins = [
+    ...new Set(
+      bindings
+        .map((binding) => binding.webhookSubscriptionWorkspaceId?.trim())
+        .filter((workspace): workspace is string => Boolean(workspace))
+    ),
+  ];
+  const needsCurrent =
+    pins.length === 0 || bindings.some((binding) => !binding.webhookSubscriptionWorkspaceId?.trim());
+
+  const listed = await Promise.all([
+    ...pins.map((workspace) => listOne(workspace)),
+    ...(needsCurrent ? [listOne()] : []),
+  ]);
+
+  const byId = new Map<string, ListedWebhookSubscription>();
+  for (const result of listed) {
+    for (const item of result.subscriptions ?? []) {
+      byId.set(item.subscriptionId, item);
+    }
+  }
+  return byId;
+}
+
 type ListedBinding = RelayfileBinding & {
   to: string | null;
   targetAgent: { id: string; name: string; status: string } | null;
@@ -607,22 +650,7 @@ async function enrichBindingsForList(
   const agentById = new Map(agents.map((agent) => [String(agent.id), agent]));
   const agentByName = new Map(agents.map((agent) => [agent.name, agent]));
 
-  const cloud = await Promise.resolve(
-    typeof deps.relayfile.listWebhookSubscriptions === 'function'
-      ? deps.relayfile.listWebhookSubscriptions()
-      : { subscriptions: [] }
-  ).catch(() => ({
-    subscriptions: [] as Array<{
-      subscriptionId: string;
-      githubPrIdentityAuthorized?: boolean;
-      health?: {
-        lastDeliveryAt?: string | null;
-        lastSuccessAt?: string | null;
-        lastError?: string | null;
-      };
-    }>,
-  }));
-  const cloudById = new Map(cloud.subscriptions.map((item) => [item.subscriptionId, item]));
+  const cloudById = await listWebhookSubscriptionsForBindings(deps.relayfile, bindings);
 
   const channels = await Promise.resolve(
     relay.channels && typeof relay.channels.list === 'function'
