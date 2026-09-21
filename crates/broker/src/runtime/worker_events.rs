@@ -832,6 +832,26 @@ impl BrokerRuntime {
                                 .get("delivery_id")
                                 .and_then(Value::as_str)
                                 .unwrap_or("");
+                            // Same terminal guard the delivery_ack handler applies.
+                            //
+                            // It was consulted on only one of the two paths, so a
+                            // stray `delivery_verified` could re-settle a delivery
+                            // that had already reached a terminal state — emitting a
+                            // second `delivery_unobserved` for it and, if it carried a
+                            // withheld fleet ack, abandoning that cursor entry twice.
+                            // The guard's stated purpose is that a late frame "cannot
+                            // resurrect and confirm it"; that has to hold for both
+                            // frame kinds or it holds for neither.
+                            if !delivery_id.is_empty()
+                                && terminal_failed_deliveries.contains(delivery_id)
+                            {
+                                tracing::info!(
+                                    worker = %name,
+                                    delivery_id = %delivery_id,
+                                    "ignoring delivery_verified for a delivery already settled terminally"
+                                );
+                                return;
+                            }
                             let event_id = payload
                                 .get("event_id")
                                 .and_then(Value::as_str)

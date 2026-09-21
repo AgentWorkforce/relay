@@ -12,12 +12,19 @@
     "agent_context_low",
     "agent_blocked_on_send",
     "delivery_verified",
+    "delivery_unobserved",
     "delivery_failed",
     "message_delivery_confirmed",
     "message_delivery_failed",
     "worker_error"
   ],
-  "message_lifecycle_states": ["queued", "injected", "verified", "failed", "uncertain"],
+  "message_lifecycle_states": [
+    "queued",
+    "injected",
+    "verified",
+    "failed",
+    "uncertain"
+  ],
   "contract_events": [
     {
       "kind": "relay_inbound",
@@ -121,6 +128,17 @@
       }
     },
     {
+      "kind": "delivery_unobserved",
+      "eventId": "evt_0010b",
+      "seq": 111,
+      "timestamp": "2026-02-23T00:00:09.500Z",
+      "payload": {
+        "deliveryId": "del_1",
+        "name": "WorkerA",
+        "verification": "timeout_fallback"
+      }
+    },
+    {
       "kind": "delivery_failed",
       "eventId": "evt_0011",
       "seq": 111,
@@ -197,6 +215,11 @@
     "late_event_kind": "delivery_ack"
   },
   "wave0_broadcast_whitelist": {
-    "required_kinds": ["relay_inbound", "agent_spawned", "agent_exited", "delivery_ack"]
+    "required_kinds": [
+      "relay_inbound",
+      "agent_spawned",
+      "agent_exited",
+      "delivery_ack"
+    ]
   }
 }
