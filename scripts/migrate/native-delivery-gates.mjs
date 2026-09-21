@@ -1345,11 +1345,14 @@ function seal() {
   const files = walk(art)
     .filter((file) => !file.endsWith(`seal-${label}.json`))
     .sort();
-  const entries = files.map((file) => ({
-    path: path.relative(art, file),
-    bytes: statSync(file).size,
-    sha256: createHash('sha256').update(readFileSync(file)).digest('hex'),
-  }));
+  const entries = files.map((file) => {
+    const contents = readFileSync(file);
+    return {
+      path: path.relative(art, file),
+      bytes: contents.byteLength,
+      sha256: createHash('sha256').update(contents).digest('hex'),
+    };
+  });
   /**
    * Hash the PRODUCT tree too, not just the evidence directory.
    *
@@ -1363,13 +1366,23 @@ function seal() {
    * Computed at seal time from the live tree, so `artifactSetSha256` now
    * changes if either the evidence or the code moves.
    */
-  const sourceEntries = changedFiles()
-    .filter((file) => existsSync(file) && statSync(file).isFile())
-    .map((file) => ({
-      path: file,
-      bytes: statSync(file).size,
-      sha256: createHash('sha256').update(readFileSync(file)).digest('hex'),
-    }));
+  const sourceEntries = changedFiles().flatMap((file) => {
+    try {
+      const contents = readFileSync(file);
+      return [
+        {
+          path: file,
+          bytes: contents.byteLength,
+          sha256: createHash('sha256').update(contents).digest('hex'),
+        },
+      ];
+    } catch (error) {
+      if (error instanceof Error && 'code' in error && (error.code === 'ENOENT' || error.code === 'EISDIR')) {
+        return [];
+      }
+      throw error;
+    }
+  });
   const setDigest = createHash('sha256')
     .update([...entries, ...sourceEntries].map((entry) => `${entry.path}:${entry.sha256}`).join('\n'))
     .digest('hex');
