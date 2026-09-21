@@ -920,11 +920,26 @@ impl BrokerRuntime {
                         .downcast_ref::<crate::runtime::delivery::TerminalInDoubtError>()
                         .is_some();
                     if in_doubt {
-                        self.fleet_delivery_book.commit_received(&deliver);
+                        // Mark the msg_id seen so the engine's redelivery is
+                        // classified `Duplicate`, but do NOT use
+                        // `commit_received` for it. That seeds
+                        // `acked = received = seq - 1` for an identity's first
+                        // sequenced frame, which sets `has_sequenced_position`
+                        // and so defeats `abandon_unconfirmed_delivery`'s own
+                        // refusal to establish a cursor origin from a delivery
+                        // nobody observed — the guard passed because the line
+                        // above it had just created the condition it checks.
+                        self.fleet_delivery_book.mark_delivery_seen(&deliver);
                         if let Some(up_to_seq) = self
                             .fleet_delivery_book
                             .abandon_unconfirmed_delivery(&deliver)
                         {
+                            // F5's other half: this call site advanced silently
+                            // while `worker_events.rs` recorded the advance.
+                            self.node_delivery_probe.record_disposition(
+                                &deliver,
+                                crate::node_delivery_probe::DeliverDisposition::AdvancedPastUnobserved,
+                            );
                             crate::runtime::delivery::advance_pending_fleet_ack_floors(
                                 &mut self.pending_deliveries,
                                 &deliver.agent_id,
