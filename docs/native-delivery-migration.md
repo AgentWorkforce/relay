@@ -90,8 +90,43 @@ Four rules belong in the seam itself:
 4. **Never claim an acknowledgement you did not observe.** A socket write that
    gets nothing back means handed over, not delivered.
 
-_Effort: small. Exit: parity suite green, unchanged, with the PTY backend behind
-the new trait._
+_Effort: **not small** — see the note below. Exit: parity suite green, unchanged,
+with the PTY backend behind the new trait, **plus** the four rules each held by a
+test that has been shown to fail against the shipping route._
+
+> **Revised after phase 0 shipped (relay#1825).**
+>
+> "Effort: small. Exit: parity suite green" was wrong, and wrong in a way the
+> later phases would have inherited, so it is corrected here rather than
+> quietly.
+>
+> Introducing the trait _is_ small. What is not small is that the four rules
+> above are claims about states the current code had no way to express. Moving
+> delivery state from three new places, where one function had owned it,
+> produced two double-delivery defects that every deterministic gate passed —
+> typecheck, clippy, 1,294 broker tests, the parity suite and the declared exit
+> criteria were all green on a tree that could deliver a message twice. Only
+> adversarial review found them.
+>
+> Three lessons for phases 1–5:
+>
+> 1. **"Parity suite green" is not an exit criterion for a semantic change.**
+>    Parity proves the new path behaves like the old one on paths both take. A
+>    rule like "never claim an acknowledgement you did not observe" is about a
+>    state the old path never represented, so no parity run can exercise it. Each
+>    phase needs the four rules re-proven against _its_ route, not inherited.
+> 2. **A test against a scripted backend proves nothing about a real one.** The
+>    seam's four invariants were written against a mock whose behaviour the test
+>    chose; they passed identically with the production classification inverted.
+>    Each phase's route needs its invariants driven through its own transport.
+> 3. **Budget for the review, not just the implementation.** In phase 0 the
+>    implementation was a minority of the work. Seventeen findings came out of
+>    adversarial review, two of them release-blocking, and several were tests
+>    that could not fail. Assume the same ratio per phase.
+>
+> The specific debts phase 0 left for later phases are tracked in relay#1831
+> (the headless route acknowledges on spawn, before its child has read
+> anything — rule 4 violated at source, pre-dating the seam).
 
 ### Phase 1 — Codex
 
