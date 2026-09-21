@@ -872,6 +872,15 @@ pub(crate) async fn try_inject_pending_relay_message_once(
 ) -> Result<()> {
     let delivery = relay_delivery_for_pending_message(msg);
 
+    // NOT behind the delivery seam. `timeout` can fire AFTER the frame has been
+    // admitted to the sole writer queue, and an admitted command is still
+    // emitted (`worker.rs`, `send_to_worker_with_commit_boundary`). The caller
+    // in `fleet.rs` records a failure and breaks, leaving the message at the
+    // head of the FIFO, so the next flush writes it again — a fall-back after a
+    // possible write (rule 1) and a re-send on doubt (rule 2), on the fleet
+    // path. Pre-dates the seam; tracked in relay#1832 with
+    // `maintenance.rs`'s direct `workers.deliver`. Phase 0 put ONE of three PTY
+    // write paths behind the trait; phase 1 must not assume otherwise.
     timeout(retry_interval, workers.deliver(worker_name, delivery))
         .await
         .map_err(|_| {

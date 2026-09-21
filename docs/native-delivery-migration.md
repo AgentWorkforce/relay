@@ -91,8 +91,17 @@ Four rules belong in the seam itself:
    gets nothing back means handed over, not delivered.
 
 _Effort: **not small** — see the note below. Exit: parity suite green, unchanged,
-with the PTY backend behind the new trait, **plus** the four rules each held by a
-test that has been shown to fail against the shipping route._
+with **the retry path's** PTY delivery behind the new trait, **plus** the four
+rules each held by a test that has been shown to fail against the shipping
+route._
+
+> **Scope correction.** "The PTY backend behind the new trait" overstates what
+> phase 0 delivered. Relay has three PTY write paths and phase 0 put one behind
+> the seam (`retry_pending_delivery`). The other two — the fleet flush path in
+> `runtime/delivery.rs` and the obligation injection in `runtime/maintenance.rs`
+> — still write directly, and the fleet one can re-send after a possible write.
+> Both pre-date the seam and neither is a regression, but phase 1 must not
+> assume the four rules are enforced repo-wide. Tracked in relay#1832.
 
 > **Revised after phase 0 shipped (relay#1825).**
 >
