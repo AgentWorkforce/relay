@@ -67,12 +67,15 @@ async function main(): Promise<void> {
     await new Promise((r) => setTimeout(r, 3000));
     const elapsed = performance.now() - start;
 
-    const total = verified + failed;
+    // An unobserved delivery settled without anyone seeing it land; it is not
+    // evidence of reliability and must not be excluded from the denominator.
+    const total = verified + unobserved + failed;
     const successRate = total > 0 ? (verified / total) * 100 : 0;
 
     console.log(`\n  Messages sent:      ${MESSAGE_COUNT}`);
     console.log(`  Delivery verified:  ${verified}`);
     console.log(`  Delivery failed:    ${failed}`);
+    console.log(`  Delivery unobserved:${String(unobserved).padStart(8)}`);
     console.log(`  Success rate:       ${successRate.toFixed(1)}%`);
     console.log(`  Total time:         ${elapsed.toFixed(0)} ms`);
     console.log('\nDONE');
