@@ -131,11 +131,18 @@ sleep 30
         task,
         "Muse must receive the assigned task in argv before readiness"
     );
-    assert_eq!(
+    let tool_cwd = std::fs::canonicalize(
         std::fs::read_to_string(&tool_marker)
             .expect("harmless tool marker")
             .trim(),
-        directory.path().to_string_lossy(),
+    )
+    .expect("canonical harmless tool cwd");
+    assert_eq!(
+        tool_cwd,
+        directory
+            .path()
+            .canonicalize()
+            .expect("canonical fixture cwd"),
         "the harmless tool must run without an approval stop before ready"
     );
 }
