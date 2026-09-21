@@ -843,7 +843,14 @@ impl BrokerRuntime {
                             let reason = payload.get("reason").and_then(Value::as_str);
                             let echo_verified = verification
                                 == crate::broker::delivery_verification::ECHO_VERIFICATION;
-                            let unobserved = !echo_verified;
+                            // `process_exit` is an observation too: the child
+                            // consumed the message and exited cleanly. Treating
+                            // only echo as observed made the headless route
+                            // emit `delivery_unobserved` for deliveries it had
+                            // already confirmed and read-acked.
+                            let unobserved =
+                                !crate::broker::delivery_verification::is_observed(verification);
+                            let _ = echo_verified;
                             if unobserved {
                                 tracing::warn!(
                                     target = "agent_relay::broker",

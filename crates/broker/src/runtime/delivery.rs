@@ -1159,6 +1159,14 @@ pub(crate) async fn retry_pending_delivery(
     }
 }
 
+/// Headroom above the verification window and one tick.
+///
+/// Absorbs the quantisation of when a retry actually fires — the maintenance
+/// tick — plus the clock-origin difference between the broker (frame written to
+/// stdin) and the worker (paced injection complete). Named rather than a magic
+/// literal so the reason survives.
+const STEER_ACK_SLACK: Duration = Duration::from_millis(800);
+
 pub(crate) fn delivery_ack_timeout(
     injection_mode: &MessageInjectionMode,
     retry_interval: Duration,
@@ -1166,9 +1174,18 @@ pub(crate) fn delivery_ack_timeout(
     let minimum = match injection_mode {
         MessageInjectionMode::Wait => WAIT_DELIVERY_ACK_TIMEOUT,
         MessageInjectionMode::Steer => {
-            crate::broker::delivery_verification::VERIFICATION_WINDOW
+            // Must exceed the LONGEST window any harness may use, plus a tick.
+            // If the broker's retry fires while a worker is still inside its
+            // echo window, it re-injects a message whose first copy is still
+            // pending verification — a double delivery.
+            //
+            // Derived from `max_verification_window()` rather than the raw
+            // constant so a per-CLI window that exceeded it would have to go
+            // through the same accessor. `delivery_ack_timeout_outlasts_any_
+            // verification_window` pins the ordering as a test-time fact.
+            crate::broker::delivery_verification::max_verification_window()
                 + crate::broker::delivery_verification::VERIFICATION_TICK
-                + Duration::from_millis(800)
+                + STEER_ACK_SLACK
         }
     };
     std::cmp::max(retry_interval, minimum)
@@ -1432,5 +1449,33 @@ mod reply_target_tests {
                 "expected non-target: {id:?}"
             );
         }
+    }
+}
+
+#[cfg(test)]
+mod steer_timing_invariants {
+    use super::delivery_ack_timeout;
+    use crate::broker::delivery_verification::{max_verification_window, VERIFICATION_TICK};
+    use crate::protocol::MessageInjectionMode;
+    use std::time::Duration;
+
+    /// relay: F8 — the broker's Steer retry must never fire inside a worker's
+    /// verification window.
+    ///
+    /// If it does, the broker re-injects a message whose first copy is still
+    /// pending verification: a double delivery produced by the retry machinery
+    /// itself, not by any transport fault. These were two constants that
+    /// happened to be ordered; this makes the ordering a fact a change has to
+    /// break deliberately.
+    #[test]
+    fn delivery_ack_timeout_outlasts_any_verification_window() {
+        let timeout = delivery_ack_timeout(&MessageInjectionMode::Steer, Duration::ZERO);
+        assert!(
+            timeout > max_verification_window() + VERIFICATION_TICK,
+            "Steer ack timeout {timeout:?} does not outlast the longest verification window \
+             {:?} plus a tick {VERIFICATION_TICK:?}: a retry can fire while the worker is \
+             still waiting for an echo",
+            max_verification_window()
+        );
     }
 }
