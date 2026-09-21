@@ -308,6 +308,13 @@ pub(super) struct TerminalDeliveryGuard {
 impl TerminalDeliveryGuard {
     const CAPACITY: usize = 4096;
 
+    /// The bound, exposed so a test can exercise eviction without hardcoding a
+    /// number that would quietly stop testing eviction when the bound changes.
+    #[cfg(test)]
+    pub(super) fn capacity() -> usize {
+        Self::CAPACITY
+    }
+
     pub(super) fn contains(&self, id: &str) -> bool {
         self.ids.contains(id)
     }
@@ -891,5 +898,43 @@ mod resize_owner_tests {
             owners.remove(&name);
         }
         assert_eq!(owners.get(&name).map(|o| o.session_id.as_str()), Some("s1"));
+    }
+}
+
+#[cfg(test)]
+mod terminal_guard_boundary_tests {
+    use super::TerminalDeliveryGuard;
+    use crate::ids::DeliveryId;
+
+    /// relay: F13 — the guard forgets at its bound, and that is a real limit
+    /// rather than an accident, so it should be written down.
+    ///
+    /// Its stated purpose is that a late `delivery_ack` "cannot resurrect and
+    /// confirm" a terminally-settled delivery. Past CAPACITY the oldest id is
+    /// evicted and that stops being unconditionally true. Today the consequence
+    /// is benign — the pending entry is already gone, so confirmation returns
+    /// nothing — but the guarantee is narrower than the comment claims, and
+    /// nothing said so.
+    ///
+    /// This pins the boundary. If the bound is ever relied on for correctness
+    /// rather than for noise suppression, this test is where that assumption
+    /// breaks first.
+    #[test]
+    fn the_terminal_guard_forgets_the_oldest_id_at_capacity() {
+        let mut guard = TerminalDeliveryGuard::default();
+        let first = DeliveryId::from("del_first");
+        guard.insert(first.clone());
+        assert!(guard.contains(first.as_str()));
+
+        for index in 0..TerminalDeliveryGuard::capacity() {
+            guard.insert(DeliveryId::from(format!("del_filler_{index}")));
+        }
+
+        assert!(
+            !guard.contains(first.as_str()),
+            "the guard still remembers the oldest id past its bound; if that becomes \
+             true the eviction policy changed and this test should be updated rather \
+             than deleted"
+        );
     }
 }
