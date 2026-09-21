@@ -102,11 +102,26 @@ pub(crate) enum DeliverDisposition {
     /// identity reject: the agent never saw this message and the engine still
     /// owns it, so it must not be reported as the same condition.
     RejectedSequenceGap,
+    /// The cumulative ACK cursor was advanced past this sequence WITHOUT any
+    /// observation that it landed.
+    ///
+    /// The cursor is cumulative, so once it includes an unobserved sequence the
+    /// next genuine confirmation emits an ack that covers it and the engine
+    /// retires a message nobody saw arrive. Not emitting an ack at this instant
+    /// satisfies rule 4 only in the letter of the immediate frame; the
+    /// substance is decided one message later.
+    ///
+    /// Advancing is still the lesser evil — the alternative pins every later
+    /// delivery to this agent behind a gap that will never close — but it must
+    /// be visible. Silently advancing and telling nobody is the one option with
+    /// nothing to recommend it.
+    AdvancedPastUnobserved,
 }
 
 impl DeliverDisposition {
     fn as_str(self) -> &'static str {
         match self {
+            Self::AdvancedPastUnobserved => "advanced_past_unobserved",
             Self::QueuedForInjection => "queued_for_injection",
             Self::SurfacedAndAcked => "surfaced_and_acked",
             Self::HeldForManualFlush => "held_for_manual_flush",
@@ -220,6 +235,7 @@ struct AgentStats {
     acked_without_surfacing: u64,
     rejected_identity: u64,
     rejected_sequence_gap: u64,
+    advanced_past_unobserved: u64,
     last_deliver_at_ms: u64,
     last_queued_for_injection_at_ms: u64,
     /// Strictly increasing rank of the last time this row was touched. See
@@ -248,6 +264,7 @@ impl AgentStats {
                 "acked_without_surfacing": self.acked_without_surfacing,
                 "rejected_identity": self.rejected_identity,
                 "rejected_sequence_gap": self.rejected_sequence_gap,
+                "advanced_past_unobserved": self.advanced_past_unobserved,
             },
             "last_deliver_at_ms": non_zero(self.last_deliver_at_ms),
             "last_queued_for_injection_at_ms": non_zero(self.last_queued_for_injection_at_ms),
@@ -276,6 +293,7 @@ struct Counters {
     acked_without_surfacing: AtomicU64,
     rejected_identity: AtomicU64,
     rejected_sequence_gap: AtomicU64,
+    advanced_past_unobserved: AtomicU64,
     connects: AtomicU64,
     disconnects: AtomicU64,
     /// Whether a node-control session is currently established.
@@ -462,6 +480,7 @@ impl NodeDeliveryProbe {
             DeliverDisposition::AckedWithoutSurfacing => &self.counters.acked_without_surfacing,
             DeliverDisposition::RejectedIdentity => &self.counters.rejected_identity,
             DeliverDisposition::RejectedSequenceGap => &self.counters.rejected_sequence_gap,
+            DeliverDisposition::AdvancedPastUnobserved => &self.counters.advanced_past_unobserved,
         };
         counter.fetch_add(1, Ordering::Relaxed);
         let touch = self.next_agent_touch();
@@ -490,6 +509,7 @@ impl NodeDeliveryProbe {
                 DeliverDisposition::AckedWithoutSurfacing => stats.acked_without_surfacing += 1,
                 DeliverDisposition::RejectedIdentity => stats.rejected_identity += 1,
                 DeliverDisposition::RejectedSequenceGap => stats.rejected_sequence_gap += 1,
+                DeliverDisposition::AdvancedPastUnobserved => stats.advanced_past_unobserved += 1,
             }
         }
     }

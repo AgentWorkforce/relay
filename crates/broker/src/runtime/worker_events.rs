@@ -612,6 +612,7 @@ impl BrokerRuntime {
         let ws_control_tx = &self.ws_control_tx;
         let workers = &mut self.workers;
         let delivery_seam = &mut self.delivery_seam;
+        let node_delivery_probe = std::sync::Arc::clone(&self.node_delivery_probe);
         let dedup = &mut self.dedup;
         let pending_deliveries = &mut self.pending_deliveries;
         let dead_letters = &mut self.dead_letters;
@@ -927,6 +928,17 @@ impl BrokerRuntime {
                                         if let Some(up_to_seq) = fleet_delivery_book
                                             .abandon_unconfirmed_delivery(deliver)
                                         {
+                                            // The cursor now covers a sequence
+                                            // nobody observed landing, and the
+                                            // next real confirmation will ack
+                                            // through it. Advancing beats
+                                            // pinning every later delivery
+                                            // behind a gap that never closes,
+                                            // but it must not be silent.
+                                            node_delivery_probe.record_disposition(
+                                                deliver,
+                                                crate::node_delivery_probe::DeliverDisposition::AdvancedPastUnobserved,
+                                            );
                                             crate::runtime::delivery::advance_pending_fleet_ack_floors(
                                                 pending_deliveries,
                                                 &deliver.agent_id,
