@@ -7,6 +7,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased - Patch]
 
+### Added
+
+- `integration subscribe --list` now names the target agent, last delivery/ack timestamps, and whether GitHub PR identity expansion is authorized, so operators can tell a live owner binding from an opaque `agent-events-<id>` channel.
+- `integration unsubscribe <provider> --owned-by @agent` retires every binding whose identity-bound channel belongs to that agent. `fleet release --unsubscribe-bindings` runs the same cleanup; `--delete-agent` warns if bindings would otherwise stay on a dead identity.
+
 ### Fixed
 
 - `node agent attach --node` no longer floods the terminal with base64 text after the remote terminal transport reconnects: the repaint now sends the decoded screen instead of the encoded snapshot payload.

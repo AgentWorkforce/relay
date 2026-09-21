@@ -39,6 +39,7 @@ import { isAvailableFleetNode } from '../lib/fleet-live-agents.js';
 import { declaredWorkforceMetadata } from '../lib/registration-metadata.js';
 import { redactSecrets } from '../lib/redact.js';
 import { attributableReleaseReason } from '../lib/release-reason.js';
+import { retireOwnedIntegrationBindings } from './integration.js';
 import { resolveSandboxRepository, type SandboxRepositorySelection } from '../lib/sandbox-repo.js';
 import { spawnPlacementReceipt } from '../lib/spawn-lifecycle.js';
 import {
@@ -1101,9 +1102,30 @@ export function registerFleetCommands(
       .argument('<name>', 'Worker agent name')
       .option('--reason <reason>', 'Release reason')
       .option('--delete-agent', 'Permanently delete the agent after release')
+      .option(
+        '--unsubscribe-bindings',
+        'Retire provider bindings owned by this identity (implied by --delete-agent)'
+      )
   ).action(async (name: string, options: Record<string, unknown>) => {
     await runSdk(deps.sdk, async () => {
       warnIfInferredFromProjectSession(options, deps.warn);
+      const workerName = requiredText(name, 'Worker name');
+      const deleteAgent = options.deleteAgent === true;
+      if (options.unsubscribeBindings === true) {
+        try {
+          await retireOwnedIntegrationBindings(workerName, options);
+        } catch (error) {
+          deps.sdk.error(
+            `Warning: could not retire provider bindings for @${workerName}: ${
+              error instanceof Error ? error.message : String(error)
+            }`
+          );
+        }
+      } else if (deleteAgent) {
+        deps.sdk.error(
+          `Warning: deleting @${workerName} leaves provider bindings on that identity. Run \`agent-relay integration unsubscribe github --owned-by @${workerName}\` or pass --unsubscribe-bindings.`
+        );
+      }
       const workspace = deps.createFleetWorkspaceClient(sdkOptionsFromOpts(options));
       const reason = attributableReleaseReason(
         optionalText(options.reason, 'Reason'),
@@ -1111,9 +1133,9 @@ export function registerFleetCommands(
         'fleet agent released'
       );
       const released = await workspace.agents.release({
-        name: requiredText(name, 'Worker name'),
+        name: workerName,
         reason,
-        deleteAgent: options.deleteAgent === true,
+        deleteAgent,
       });
       printJson(deps.sdk, released);
     });

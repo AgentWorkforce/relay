@@ -53,6 +53,12 @@ function createRelayMock(opts: { inboundWebhooks?: InboundWebhook[] } = {}) {
       unsubscribe: vi.fn(async () => undefined),
       subscriptions: vi.fn(async () => []),
     },
+    channels: {
+      list: vi.fn(async () => []),
+    },
+    messages: {
+      list: vi.fn(async () => []),
+    },
   };
 }
 
@@ -1704,6 +1710,90 @@ describe('integration unsubscribe', () => {
 
     expect(relay.webhooks.delete).toHaveBeenCalledWith('wh_1');
     expect(relayfile.unbind).toHaveBeenCalledWith('slack', RESOURCE);
+  });
+
+  it('lists the target agent and last delivery instead of only an opaque channel', async () => {
+    const relay = createRelayMock();
+    relay.agents.list.mockResolvedValue([{ id: '227588305648525312', name: 'webhook-owner', status: 'active' }]);
+    relay.messages = { list: vi.fn(async () => [{ createdAt: '2026-09-21T00:10:00.000Z' }]) };
+    const relayfile = createRelayfileMock(
+      [
+        {
+          provider: 'github',
+          resource: '/github/repos/AgentWorkforce/relay/pulls/42/**',
+          channel: 'agent-events-227588305648525312',
+          webhookId: 'wh_1',
+          subscriptionId: 'sub_1',
+          webhookSubscriptionId: 'whsub_1',
+        },
+      ],
+      {
+        listWebhookSubscriptions: vi.fn(async () => ({
+          subscriptions: [
+            {
+              subscriptionId: 'whsub_1',
+              url: 'https://cast.test/inbound',
+              pathGlobs: ['/github/repos/AgentWorkforce/relay/pulls/42/**'],
+              githubPrIdentityAuthorized: true,
+              health: {
+                lastDeliveryAt: '2026-09-21T00:11:00.000Z',
+                lastSuccessAt: '2026-09-21T00:11:00.000Z',
+                lastError: null,
+                consecutiveFailures: 0,
+              },
+            },
+          ],
+        })),
+      }
+    );
+    const { program, log } = harness({ relay, relayfile });
+
+    await program.parseAsync(['integration', 'subscribe', '--list'], { from: 'user' });
+
+    const printed = JSON.parse(String(log.mock.calls[0]?.[0]));
+    expect(printed.bindings).toEqual([
+      expect.objectContaining({
+        resource: '/github/repos/AgentWorkforce/relay/pulls/42/**',
+        to: '@webhook-owner',
+        targetAgent: { id: '227588305648525312', name: 'webhook-owner', status: 'active' },
+        lastDeliveryAt: '2026-09-21T00:11:00.000Z',
+        lastSuccessAt: '2026-09-21T00:11:00.000Z',
+        lastChannelMessageAt: '2026-09-21T00:10:00.000Z',
+        githubPrIdentityAuthorized: true,
+      }),
+    ]);
+  });
+
+  it('unsubscribes every binding owned by a named agent', async () => {
+    const ownerBinding: RelayfileBinding = {
+      provider: 'github',
+      resource: '/github/repos/AgentWorkforce/relay/pulls/42/**',
+      channel: 'agent-events-a1',
+      webhookId: 'wh_owner',
+      subscriptionId: 'sub_owner',
+      webhookSubscriptionId: 'whsub_owner',
+    };
+    const otherBinding: RelayfileBinding = {
+      provider: 'github',
+      resource: '/github/repos/AgentWorkforce/relay/pulls/99/**',
+      channel: 'agent-events-other',
+      webhookId: 'wh_other',
+      subscriptionId: 'sub_other',
+      webhookSubscriptionId: 'whsub_other',
+    };
+    const relay = createRelayMock();
+    relay.agents.list.mockResolvedValue([{ id: 'a1', name: 'webhook-owner', status: 'active' }]);
+    const relayfile = createRelayfileMock([ownerBinding, otherBinding]);
+    const { program, log } = harness({ relay, relayfile });
+
+    await program.parseAsync(
+      ['integration', 'unsubscribe', 'github', '--owned-by', '@webhook-owner'],
+      { from: 'user' }
+    );
+
+    expect(relayfile.unbind).toHaveBeenCalledWith('github', ownerBinding.resource);
+    expect(relayfile.unbind).not.toHaveBeenCalledWith('github', otherBinding.resource);
+    expect(log).toHaveBeenCalledWith(expect.stringContaining('Retired 1 binding(s) owned by @webhook-owner'));
   });
 });
 

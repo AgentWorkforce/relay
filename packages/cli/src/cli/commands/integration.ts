@@ -136,7 +136,18 @@ export interface RelayfileBridge {
    * find subscriptions whose server-assigned id was never persisted. */
   listWebhookSubscriptions: (workspace?: string) => Promise<{
     workspaceId?: string;
-    subscriptions: Array<{ subscriptionId: string; url: string; pathGlobs: string[] }>;
+    subscriptions: Array<{
+      subscriptionId: string;
+      url: string;
+      pathGlobs: string[];
+      githubPrIdentityAuthorized?: boolean;
+      health?: {
+        lastDeliveryAt?: string | null;
+        lastSuccessAt?: string | null;
+        lastError?: string | null;
+        consecutiveFailures?: number;
+      };
+    }>;
   }>;
 }
 
@@ -568,6 +579,106 @@ function targetChannel(target: string): string {
 function agentName(target: string): string | undefined {
   const trimmed = target.trim();
   return trimmed.startsWith('@') ? trimmed.slice(1).trim() : undefined;
+}
+
+function agentEventsChannelId(channel: string): string | undefined {
+  const match = /^agent-events-(.+)$/.exec(channel.trim());
+  return match?.[1] || undefined;
+}
+
+type ListedBinding = RelayfileBinding & {
+  to: string | null;
+  targetAgent: { id: string; name: string; status: string } | null;
+  lastDeliveryAt: string | null;
+  lastSuccessAt: string | null;
+  lastError: string | null;
+  lastChannelMessageAt: string | null;
+  githubPrIdentityAuthorized: boolean | null;
+};
+
+async function enrichBindingsForList(
+  deps: IntegrationCommandDependencies,
+  relay: AgentRelayAgent,
+  bindings: RelayfileBinding[]
+): Promise<ListedBinding[]> {
+  const agents = await relay.agents.list().catch(() => [] as Array<{ id: string; name: string; status?: string }>);
+  const agentById = new Map(agents.map((agent) => [String(agent.id), agent]));
+  const agentByName = new Map(agents.map((agent) => [agent.name, agent]));
+
+  const cloud = await Promise.resolve(
+    typeof deps.relayfile.listWebhookSubscriptions === 'function'
+      ? deps.relayfile.listWebhookSubscriptions()
+      : { subscriptions: [] }
+  ).catch(() => ({
+    subscriptions: [] as Array<{
+      subscriptionId: string;
+      githubPrIdentityAuthorized?: boolean;
+      health?: {
+        lastDeliveryAt?: string | null;
+        lastSuccessAt?: string | null;
+        lastError?: string | null;
+      };
+    }>,
+  }));
+  const cloudById = new Map(cloud.subscriptions.map((item) => [item.subscriptionId, item]));
+
+  const channels = await Promise.resolve(
+    relay.channels && typeof relay.channels.list === 'function'
+      ? relay.channels.list({ includeArchived: true })
+      : []
+  ).catch(() => [] as Array<{ name: string; metadata?: Record<string, unknown> }>);
+  const channelByName = new Map(channels.map((channel) => [channel.name, channel]));
+
+  return Promise.all(
+    bindings.map(async (binding) => {
+      const channelMeta = channelByName.get(binding.channel);
+      const metaAgentId =
+        typeof channelMeta?.metadata?.subscription_agent_id === 'string'
+          ? channelMeta.metadata.subscription_agent_id
+          : undefined;
+      const channelAgentId = agentEventsChannelId(binding.channel);
+      const agent =
+        (metaAgentId ? agentById.get(metaAgentId) : undefined) ??
+        (channelAgentId ? agentById.get(channelAgentId) : undefined) ??
+        agentByName.get(binding.channel) ??
+        null;
+
+      let lastChannelMessageAt: string | null = null;
+      try {
+        const listMessages = relay.messages && typeof relay.messages.list === 'function' ? relay.messages.list : null;
+        const messages = listMessages ? await listMessages(binding.channel, { limit: 1 }) : [];
+        const latest = messages[0] as { createdAt?: string; created_at?: string } | undefined;
+        lastChannelMessageAt = latest?.createdAt ?? latest?.created_at ?? null;
+      } catch {
+        lastChannelMessageAt = null;
+      }
+
+      const cloudRow = binding.webhookSubscriptionId
+        ? cloudById.get(binding.webhookSubscriptionId)
+        : undefined;
+      const health = cloudRow?.health;
+      return {
+        ...binding,
+        to: agent ? `@${agent.name}` : null,
+        targetAgent: agent
+          ? { id: String(agent.id), name: agent.name, status: String(agent.status ?? 'unknown') }
+          : null,
+        lastDeliveryAt: health?.lastDeliveryAt ?? lastChannelMessageAt,
+        lastSuccessAt: health?.lastSuccessAt ?? null,
+        lastError: health?.lastError ?? null,
+        lastChannelMessageAt,
+        githubPrIdentityAuthorized: cloudRow?.githubPrIdentityAuthorized ?? null,
+      };
+    })
+  );
+}
+
+function bindingOwnedByAgent(
+  binding: RelayfileBinding,
+  agent: { id: string; name: string }
+): boolean {
+  const channelId = agentEventsChannelId(binding.channel);
+  return channelId === String(agent.id) || binding.channel === agent.name;
 }
 
 async function ensureProviderConnected(
@@ -1410,7 +1521,11 @@ async function runSubscribeSetup(
       relay.webhooks.list(),
       relay.webhooks.subscriptions(),
     ]);
-    printJson(deps, { bindings, webhooks, subscriptions });
+    printJson(deps, {
+      bindings: await enrichBindingsForList(deps, relay, bindings),
+      webhooks,
+      subscriptions,
+    });
     return;
   }
 
@@ -1714,14 +1829,66 @@ async function runSubscribeSetup(
   deps.log('✓ Listening. Replies will post back in-thread.');
 }
 
+async function runUnsubscribeOwnedBy(
+  deps: IntegrationCommandDependencies,
+  provider: string,
+  owner: string,
+  opts: Record<string, unknown>
+): Promise<void> {
+  await deps.relayfile.ensureCompatible();
+  const local = await deps.resolveLocalRelayOptions();
+  const relayOptions = sdkOptionsFromOpts(opts);
+  const effectiveRelayOptions =
+    local && !explicitWorkspaceKey(opts) ? localRetryOptions(relayOptions, local) : relayOptions;
+  const relay = deps.createAgentRelay(effectiveRelayOptions);
+  const agents = await relay.agents.list();
+  const agent = agents.find((item) => item.name === owner || `@${item.name}` === owner);
+  if (!agent) {
+    throw new Error(`No registered agent named ${owner} — cannot retire owned bindings.`);
+  }
+  const bindings = await deps.relayfile.listBindings();
+  const owned = bindings.filter(
+    (binding) =>
+      (!provider || binding.provider === provider) && bindingOwnedByAgent(binding, agent)
+  );
+  if (owned.length === 0) {
+    deps.log(`No ${provider} bindings target @${agent.name}.`);
+    return;
+  }
+  for (const binding of owned) {
+    await runUnsubscribe(deps, binding.provider, { ...opts, resource: binding.resource, ownedBy: undefined });
+  }
+  deps.log(`Retired ${owned.length} binding(s) owned by @${agent.name}.`);
+}
+
+/**
+ * Best-effort retirement of provider bindings whose identity-bound channel
+ * belongs to `owner`. Used by release --delete-agent so dead identities do
+ * not keep receiving GitHub events.
+ */
+export async function retireOwnedIntegrationBindings(
+  owner: string,
+  opts: Record<string, unknown> = {},
+  overrides: Partial<IntegrationCommandDependencies> = {}
+): Promise<void> {
+  const deps = withIntegrationDefaults(overrides);
+  await runUnsubscribeOwnedBy(deps, typeof opts.provider === 'string' ? opts.provider : '', owner, opts);
+}
+
 async function runUnsubscribe(
   deps: IntegrationCommandDependencies,
   provider: string,
   opts: Record<string, unknown>
 ): Promise<void> {
+  const ownedBy =
+    typeof opts.ownedBy === 'string' ? opts.ownedBy.trim().replace(/^@/, '') : '';
+  if (ownedBy) {
+    await runUnsubscribeOwnedBy(deps, provider, ownedBy, opts);
+    return;
+  }
   const resource = typeof opts.resource === 'string' ? opts.resource.trim() : '';
   if (!resource) {
-    throw new Error('Missing --resource <value> for unsubscribe.');
+    throw new Error('Missing --resource <value> for unsubscribe. Use --owned-by @agent to retire every binding for a live identity.');
   }
   await deps.relayfile.ensureCompatible();
   // Resolve native -> glob: relayfile keys bindings on the glob, so the user's
@@ -1904,6 +2071,7 @@ export function registerIntegrationCommands(
       .description('Remove a relayfile integration subscription')
       .argument('<provider>', 'Integration provider')
       .option('--resource <value>', 'Provider-native resource used when subscribing')
+      .option('--owned-by <agent>', 'Retire every binding whose identity-bound channel belongs to this agent')
   ).action(async (provider: string, o: Record<string, unknown>) => {
     await runSdk(deps, async () => {
       await runUnsubscribe(deps, provider, o);
