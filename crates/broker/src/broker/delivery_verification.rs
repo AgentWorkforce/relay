@@ -287,6 +287,34 @@ pub(crate) fn queue_or_take_detected_activity(
 pub(crate) const TIMEOUT_FALLBACK_VERIFICATION: &str = "timeout_fallback";
 pub(crate) const ECHO_VERIFICATION: &str = "echo";
 
+/// A headless route's child consumed the message and exited cleanly. That IS an
+/// observation — the process read what it was given — so it must not be settled
+/// as unobserved.
+pub(crate) const PROCESS_EXIT_VERIFICATION: &str = "process_exit";
+
+/// Whether a `delivery_verified` frame's verification value counts as an
+/// observation that the delivery landed.
+///
+/// One predicate so the worker and the broker cannot drift. When "anything that
+/// is not echo is unobserved" was open-coded at the broker, the headless route
+/// — which reports `process_exit` — began emitting `delivery_unobserved` for
+/// deliveries it had already confirmed and read-acked, so consumers received
+/// two contradictory statements about one delivery id.
+pub(crate) fn is_observed(verification: &str) -> bool {
+    matches!(verification, ECHO_VERIFICATION | PROCESS_EXIT_VERIFICATION)
+}
+
+/// The longest verification window any harness may use.
+///
+/// The broker's Steer ack timeout must exceed this plus a tick, or its retry
+/// fires while the worker is still inside its echo window and re-injects a
+/// message whose first copy is still pending — a double delivery. Both sides
+/// derive from this rather than from two constants that happen to be ordered
+/// today.
+pub(crate) fn max_verification_window() -> std::time::Duration {
+    VERIFICATION_WINDOW
+}
+
 /// The frames a PTY worker may emit when an echo verification window expires.
 ///
 /// Seam rule 4 (`docs/native-delivery-migration.md`): "Never claim an
@@ -727,5 +755,29 @@ mod tests {
         throttle.record(DeliveryOutcome::Success);
         throttle.record(DeliveryOutcome::Success);
         assert_eq!(throttle.delay(), Duration::from_millis(100));
+    }
+}
+
+#[cfg(test)]
+mod observation_predicate_tests {
+    use super::{is_observed, ECHO_VERIFICATION, PROCESS_EXIT_VERIFICATION};
+
+    /// relay: F7 — a headless child that consumed the message and exited
+    /// cleanly IS an observation.
+    ///
+    /// Open-coding "anything that is not echo is unobserved" at the broker made
+    /// the headless route emit `delivery_unobserved` for deliveries it had
+    /// already confirmed and read-acked, so consumers received two
+    /// contradictory statements about one delivery id.
+    #[test]
+    fn process_exit_counts_as_an_observation() {
+        assert!(is_observed(ECHO_VERIFICATION));
+        assert!(
+            is_observed(PROCESS_EXIT_VERIFICATION),
+            "a child that consumed the message and exited cleanly was settled as \
+             unobserved, contradicting the confirmation already sent for it"
+        );
+        assert!(!is_observed("timeout_fallback"));
+        assert!(!is_observed(""));
     }
 }
