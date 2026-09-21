@@ -480,7 +480,7 @@ pub(crate) async fn run_terminal_control_client(
         let mut reconnect_requests_open = true;
         let connection = loop {
             tokio::select! {
-                result = &mut dial => break result,
+                result = &mut dial => break Some(result),
                 command = command_rx.recv() => match command {
                     Some(TerminalControlCommand::Shutdown) | None => return,
                     Some(TerminalControlCommand::Send(_)) => {
@@ -494,11 +494,20 @@ pub(crate) async fn run_terminal_control_client(
                     Ok(()) => {
                         if let Some(generation) = *config.reconnect_rx.borrow_and_update() {
                             retain_latest_generation(&mut pending_generation, generation);
+                            // The cloud advanced while this handshake was still
+                            // in flight. Drop the potentially blackholed or
+                            // superseded dial and immediately start a fresh one;
+                            // waiting for this future could otherwise strand the
+                            // only terminal dial loop indefinitely.
+                            break None;
                         }
                     }
                     Err(_) => reconnect_requests_open = false,
                 },
             }
+        };
+        let Some(connection) = connection else {
+            continue;
         };
         let (socket, _) = match connection {
             Ok(socket) => socket,
@@ -1244,6 +1253,7 @@ mod tests {
         ));
 
         let (generation_tx, mut generation_rx) = mpsc::channel(2);
+        let (duplicate_sent_tx, duplicate_sent_rx) = tokio::sync::oneshot::channel();
         let server = tokio::spawn(async move {
             let (stream, _) = listener.accept().await.unwrap();
             let mut first = accept_async(stream).await.unwrap();
@@ -1262,8 +1272,11 @@ mod tests {
             let _second = accept_async(stream).await.unwrap();
             generation_tx.send(2_u64).await.unwrap();
 
-            // A duplicate generation is coalesced; no competing dial loop may
-            // create a third socket after the replacement is ready.
+            // Do not begin the negative accept window until the duplicate was
+            // deliberately replayed *after* replacement readiness. This is the
+            // upstream-event-queue race: a delayed copy of the hint must be
+            // fenced by the generation the fresh lane already satisfied.
+            duplicate_sent_rx.await.unwrap();
             tokio::time::timeout(Duration::from_millis(400), listener.accept())
                 .await
                 .is_err()
@@ -1278,10 +1291,6 @@ mod tests {
         ));
 
         assert!(request_terminal_reconnect(&reconnect_tx, 1));
-        assert!(
-            !request_terminal_reconnect(&reconnect_tx, 1),
-            "duplicate generation must be coalesced before it reaches the dial loop"
-        );
 
         assert_eq!(
             tokio::time::timeout(Duration::from_secs(2), generation_rx.recv())
@@ -1304,12 +1313,80 @@ mod tests {
         }
         assert!(saw_disconnect, "forced lane close was not surfaced");
         assert!(saw_second_connect, "replacement lane never became ready");
+        assert!(
+            !request_terminal_reconnect(&reconnect_tx, 1),
+            "a delayed duplicate hint closed the fresh replacement lane"
+        );
+        duplicate_sent_tx.send(()).unwrap();
         assert!(server.await.unwrap(), "duplicate hint opened a third lane");
 
         let _ = command_tx.send(TerminalControlCommand::Shutdown).await;
         tokio::time::timeout(Duration::from_secs(2), client)
             .await
             .expect("terminal client did not stop")
+            .unwrap();
+    }
+
+    /// A generation advance is itself authority to abandon an in-flight dial.
+    /// The first peer accepts TCP but never completes the WebSocket upgrade;
+    /// publishing a newer generation must drop that future and create a second
+    /// connection without waiting for a network timeout or another hint.
+    #[tokio::test]
+    async fn terminal_reconnect_request_cancels_an_in_flight_websocket_dial() {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let ws_url = format!(
+            "ws://{}/v1/node/terminal/ws",
+            listener.local_addr().unwrap()
+        );
+        let (command_tx, command_rx) = mpsc::channel(8);
+        let (event_tx, mut event_rx) = mpsc::channel(8);
+        let (reconnect_tx, reconnect_rx) = watch::channel(None);
+        let session_token = Arc::new(RwLock::new(Some("nt_test".to_string())));
+        let client = tokio::spawn(run_terminal_control_client(
+            TerminalControlConfig {
+                ws_url,
+                session_token,
+                read_idle_timeout: Some(Duration::from_secs(30)),
+                reconnect_rx,
+            },
+            command_rx,
+            event_tx,
+        ));
+
+        let (first_accepted_tx, first_accepted_rx) = tokio::sync::oneshot::channel();
+        let server = tokio::spawn(async move {
+            let (first, _) = listener.accept().await.unwrap();
+            first_accepted_tx.send(()).unwrap();
+            // Keep the superseded socket open without answering its upgrade.
+            let _first = first;
+
+            let (second, _) = tokio::time::timeout(Duration::from_secs(2), listener.accept())
+                .await
+                .expect("generation advance did not cancel the stalled dial")
+                .unwrap();
+            let _second = accept_async(second).await.unwrap();
+        });
+
+        tokio::time::timeout(Duration::from_secs(2), first_accepted_rx)
+            .await
+            .expect("client never began its first websocket dial")
+            .unwrap();
+        assert!(request_terminal_reconnect(&reconnect_tx, 9));
+        assert!(matches!(
+            tokio::time::timeout(Duration::from_secs(2), event_rx.recv())
+                .await
+                .unwrap(),
+            Some(TerminalControlEvent::Connected)
+        ));
+        server.await.unwrap();
+
+        command_tx
+            .send(TerminalControlCommand::Shutdown)
+            .await
+            .unwrap();
+        tokio::time::timeout(Duration::from_millis(250), client)
+            .await
+            .expect("terminal client did not stop after replacement readiness")
             .unwrap();
     }
 

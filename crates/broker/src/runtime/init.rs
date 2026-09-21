@@ -392,6 +392,7 @@ pub(crate) async fn run_init(cmd: InitCommand, telemetry: TelemetryClient) -> Re
                 session_token: Some(session_node_token.clone()),
                 read_idle_timeout: None,
                 probe: Some(node_delivery_probe.clone()),
+                terminal_reconnect_tx: Some(terminal_reconnect_tx.clone()),
             },
             fleet_control_rx,
             fleet_event_tx,
