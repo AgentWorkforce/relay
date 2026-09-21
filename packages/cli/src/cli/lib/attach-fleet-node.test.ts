@@ -13,7 +13,12 @@ import path from 'node:path';
 import { WebSocket as WsClient, WebSocketServer, type WebSocket as WsSocket } from 'ws';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
-import { startFleetNodeAttachProxy, type FleetNodeAttachProxy } from './attach-fleet-node.js';
+import {
+  decodeAnsiScreenPayload,
+  inputErrorIsConnectionFatal,
+  startFleetNodeAttachProxy,
+  type FleetNodeAttachProxy,
+} from './attach-fleet-node.js';
 import { writeProjectWorkspaceKey } from './project-workspace-key.js';
 
 const SESSION_ID = 'session-under-test';
@@ -108,13 +113,19 @@ function terminalSessionErrorResponse(code: string, message: string, status = 50
 function sendReady(
   socket: WsSocket,
   deliveryMode?: 'auto_inject' | 'manual_flush',
-  sessionId = SESSION_ID
+  sessionId = SESSION_ID,
+  /**
+   * Wire value for `terminal.ready.screen`. The broker asks the worker for
+   * `format: "ansi"`, which base64-encodes the rendered grid, so a realistic
+   * frame carries base64 here — never raw ANSI.
+   */
+  screen = ''
 ): void {
   socket.send(
     JSON.stringify({
       type: 'terminal.ready',
       session_id: sessionId,
-      screen: '',
+      screen,
       rows: 24,
       cols: 80,
       offset: 0,
@@ -1866,5 +1877,300 @@ describe('startFleetNodeAttachProxy flush route', () => {
     const result = await postFlush(proxy, 'agent-cross');
     expect(result.status).toBe(200);
     expect(result.body).toMatchObject({ flushed: 1 });
+  });
+});
+
+/**
+ * Regression suite for relay#1829: after an established fleet-node terminal
+ * transport reconnects, the adapter re-emitted the new generation's
+ * `terminal.ready.screen` as a `worker_stream` chunk. That field is
+ * base64-encoded ANSI (the broker requests `format: "ansi"`, which encodes),
+ * while a `worker_stream` chunk is raw PTY bytes an attach client writes to
+ * the terminal verbatim — so the operator saw a wall of base64 text instead of
+ * a repaint, right alongside the input-stream reconnect notice.
+ */
+describe('decodeAnsiScreenPayload', () => {
+  it('decodes a canonical base64 ANSI screen to renderable bytes', () => {
+    const ansi = '\u001b[2J\u001b[H hello \u001b[0m';
+    expect(decodeAnsiScreenPayload(Buffer.from(ansi, 'utf8').toString('base64'))).toBe(ansi);
+  });
+
+  it('treats an empty screen as empty rather than undecodable', () => {
+    expect(decodeAnsiScreenPayload('')).toBe('');
+  });
+
+  // MUST FIRE: `Buffer.from(…, 'base64')` silently drops out-of-alphabet
+  // characters, so a lenient decode would turn raw ANSI into garbage bytes and
+  // still hand them to the terminal. Only the round-trip check rejects them.
+  it('rejects raw ANSI mistakenly delivered in the screen field', () => {
+    expect(decodeAnsiScreenPayload('\u001b[2J\u001b[Hhello')).toBeNull();
+  });
+
+  it('rejects non-canonical and truncated base64', () => {
+    expect(decodeAnsiScreenPayload('aGVsbG8')).toBeNull(); // unpadded
+    expect(decodeAnsiScreenPayload('a GVsbG8=')).toBeNull(); // embedded space
+    expect(decodeAnsiScreenPayload('!!!!')).toBeNull();
+  });
+});
+
+describe('startFleetNodeAttachProxy reconnect repaint encoding', () => {
+  const cleanup: Array<() => Promise<void>> = [];
+
+  afterEach(async () => {
+    while (cleanup.length > 0) {
+      const fn = cleanup.pop()!;
+      await fn().catch(() => undefined);
+    }
+  });
+
+  const closeLoopback = (socket: WsClient) => () =>
+    new Promise<void>((resolve) => {
+      if (socket.readyState === WsClient.CLOSED) return resolve();
+      socket.once('close', () => resolve());
+      socket.close();
+    });
+
+  /** Collect every `worker_stream` chunk a loopback `/ws` consumer receives. */
+  function collectChunks(socket: WsClient): string[] {
+    const chunks: string[] = [];
+    socket.on('message', (data) => {
+      const event = JSON.parse(String(data)) as { kind?: string; chunk?: string };
+      if (event.kind === 'worker_stream' && typeof event.chunk === 'string') chunks.push(event.chunk);
+    });
+    return chunks;
+  }
+
+  async function startProxyWithRemote(agent: string) {
+    const remote = await startFakeRemote();
+    cleanup.push(remote.close);
+    const proxy = await startFleetNodeAttachProxy({
+      agent,
+      node: 'node-repaint',
+      mode: 'drive',
+      baseUrl: 'https://cast.agentrelay.com',
+      workspaceKey: 'wk',
+      fetch: fakeTicketFetch(remote.url),
+      reconnectDelay: { initialMs: 1, maxMs: 1 },
+    });
+    cleanup.push(proxy.close);
+    return { remote, proxy };
+  }
+
+  // MUST FIRE: before the fix this received the base64 text itself, which the
+  // drive client writes straight to the operator's terminal.
+  it('repaints a reconnect with DECODED ANSI, never the base64 payload', async () => {
+    const { remote, proxy } = await startProxyWithRemote('agent-repaint');
+    const ansiScreen = '\u001b[2J\u001b[Hrestored screen\u001b[0m';
+    const encodedScreen = Buffer.from(ansiScreen, 'utf8').toString('base64');
+
+    const initial = await remote.nextConnection();
+    sendReady(initial, 'auto_inject', SESSION_ID, encodedScreen);
+
+    const events = await connectLoopbackEvents(proxy);
+    cleanup.push(closeLoopback(events));
+    const chunks = collectChunks(events);
+
+    // Generation 1: consumers do their own HTTP snapshot, so nothing is
+    // pushed. A repaint chunk here would double-paint the initial screen.
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    expect(chunks).toEqual([]);
+
+    const repainted = new Promise<void>((resolve) => events.once('message', () => resolve()));
+    initial.terminate();
+    const replacement = await remote.nextConnection();
+    sendReady(replacement, 'auto_inject', SESSION_ID, encodedScreen);
+    await repainted;
+
+    expect(chunks).toEqual([ansiScreen]);
+    // The precise defect: the encoded form must never appear in a channel
+    // whose bytes are written verbatim to a terminal.
+    expect(chunks.join('')).not.toContain(encodedScreen);
+  });
+
+  // MUST FIRE: a decode that cannot be trusted must drop the repaint rather
+  // than emit mangled bytes. A stale-but-coherent screen beats garbage on a
+  // live TTY, and the operator can always re-attach.
+  it('drops the reconnect repaint when the screen payload is not valid base64', async () => {
+    const { remote, proxy } = await startProxyWithRemote('agent-bad-screen');
+
+    const initial = await remote.nextConnection();
+    sendReady(initial, 'auto_inject');
+
+    const events = await connectLoopbackEvents(proxy);
+    cleanup.push(closeLoopback(events));
+    const chunks = collectChunks(events);
+
+    initial.terminate();
+    const replacement = await remote.nextConnection();
+    sendReady(replacement, 'auto_inject', SESSION_ID, '\u001b[2Jnot base64 at all');
+
+    // Prove liveness of the replacement generation: real output still flows,
+    // so an empty chunk list is a dropped repaint, not a dead transport.
+    const delivered = new Promise<void>((resolve) => {
+      events.on('message', (data) => {
+        if (String(data).includes('live output')) resolve();
+      });
+    });
+    replacement.send(
+      JSON.stringify({ type: 'terminal.output', session_id: SESSION_ID, chunk: 'live output', offset: 1 })
+    );
+    await delivered;
+
+    expect(chunks).toEqual(['live output']);
+  });
+
+  // MUST FIRE: `terminal.output` chunks are already raw. Decoding them too
+  // would corrupt any agent output that happens to look like base64.
+  it('forwards terminal.output chunks verbatim even when they look base64', async () => {
+    const { remote, proxy } = await startProxyWithRemote('agent-verbatim');
+    const socket = await remote.nextConnection();
+    sendReady(socket, 'auto_inject');
+
+    const events = await connectLoopbackEvents(proxy);
+    cleanup.push(closeLoopback(events));
+    const chunks = collectChunks(events);
+
+    const lookalike = 'aGVsbG8gd29ybGQ=';
+    const delivered = new Promise<void>((resolve) => events.once('message', () => resolve()));
+    socket.send(
+      JSON.stringify({ type: 'terminal.output', session_id: SESSION_ID, chunk: lookalike, offset: 1 })
+    );
+    await delivered;
+
+    expect(chunks).toEqual([lookalike]);
+  });
+
+  // The HTTP snapshot contract is the OTHER side of this boundary and must
+  // stay base64: `captureAndRenderSnapshot` decodes it. Changing the repaint
+  // must not change this.
+  it('keeps serving the HTTP snapshot as base64 for the decoding client', async () => {
+    const { remote, proxy } = await startProxyWithRemote('agent-snapshot');
+    const ansiScreen = '\u001b[Hsnapshot body';
+    const encodedScreen = Buffer.from(ansiScreen, 'utf8').toString('base64');
+
+    const socket = await remote.nextConnection();
+    sendReady(socket, 'auto_inject', SESSION_ID, encodedScreen);
+
+    const response = await fetch(`${proxy.brokerUrl}/api/spawned/agent-snapshot/snapshot`, {
+      headers: { Authorization: `Bearer ${proxy.apiKey}` },
+    });
+    const body = (await response.json()) as Record<string, unknown>;
+    expect(response.status).toBe(200);
+    expect(body).toMatchObject({ format: 'ansi', screen: encodedScreen, rows: 24, cols: 80, offset: 0 });
+    // And the real client decoder turns it back into the renderable screen.
+    expect(Buffer.from(String(body.screen), 'base64').toString('utf8')).toBe(ansiScreen);
+  });
+});
+
+/**
+ * The loopback speaks the broker's PTY-input WebSocket contract to the SDK's
+ * `PtyInputStream`, which latches `closed` only on socket close. A
+ * connection-fatal error delivered on a socket left open therefore never
+ * marks the stream dead. When such an error arrives with no write in flight —
+ * the session-scoped `terminal.error` path — the client has nothing to reject,
+ * never enters recovery, and keeps writing into a stream the node has already
+ * declared unusable.
+ */
+describe('startFleetNodeAttachProxy PTY-input error contract', () => {
+  const cleanup: Array<() => Promise<void>> = [];
+
+  afterEach(async () => {
+    while (cleanup.length > 0) {
+      await cleanup.pop()!().catch(() => undefined);
+    }
+  });
+
+  it('matches the broker on which input errors are connection-fatal', () => {
+    // Must agree with `pty_input_error_is_connection_fatal`
+    // (crates/broker/src/listen_api.rs). Divergence here silently tears down
+    // a socket the other side is still holding open, or vice versa.
+    expect(inputErrorIsConnectionFatal('worker_timeout')).toBe(false);
+    expect(inputErrorIsConnectionFatal('pty_write_queue_full')).toBe(false);
+    expect(inputErrorIsConnectionFatal('node_unreachable')).toBe(true);
+    expect(inputErrorIsConnectionFatal('worker_disappeared')).toBe(true);
+    expect(inputErrorIsConnectionFatal('agent_not_found')).toBe(true);
+  });
+
+  async function connectLoopbackInput(proxy: FleetNodeAttachProxy, agent: string): Promise<WsClient> {
+    const socket = new WsClient(
+      `${proxy.brokerUrl.replace(/^http/, 'ws')}/api/input/${encodeURIComponent(agent)}/stream`,
+      { headers: { Authorization: `Bearer ${proxy.apiKey}` } }
+    );
+    await new Promise<void>((resolve, reject) => {
+      socket.once('open', resolve);
+      socket.once('error', reject);
+    });
+    return socket;
+  }
+
+  // MUST FIRE: before the fix the socket stayed open after `node_unreachable`,
+  // so the client never learned its input stream was dead.
+  it('closes the input socket after a connection-fatal write failure', async () => {
+    const remote = await startFakeRemote();
+    cleanup.push(remote.close);
+    const proxy = await startFleetNodeAttachProxy({
+      agent: 'agent-input-fatal',
+      node: 'node-input',
+      mode: 'drive',
+      baseUrl: 'https://cast.agentrelay.com',
+      workspaceKey: 'wk',
+      fetch: fakeTicketFetch(remote.url),
+      // No reconnect: keep the transport down for the whole assertion.
+      reconnectDelay: { initialMs: 60_000, maxMs: 60_000 },
+    });
+    cleanup.push(proxy.close);
+
+    const initial = await remote.nextConnection();
+    sendReady(initial, 'auto_inject');
+
+    const input = await connectLoopbackInput(proxy, 'agent-input-fatal');
+    const frames: Array<Record<string, unknown>> = [];
+    input.on('message', (data) => frames.push(JSON.parse(String(data)) as Record<string, unknown>));
+    const closed = new Promise<void>((resolve) => input.once('close', () => resolve()));
+
+    // Drop the node transport, then write into the now-unreachable stream.
+    initial.terminate();
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    input.send('keystroke');
+
+    await closed;
+    const error = frames.find((frame) => frame.type === 'pty_input_error');
+    expect(error).toMatchObject({ code: 'node_unreachable', retryable: false });
+  });
+
+  // A second attached input stream must not be torn down because THIS one's
+  // write failed; the broker reports per-connection, not per-session.
+  it('fails only the socket whose write could not be forwarded', async () => {
+    const remote = await startFakeRemote();
+    cleanup.push(remote.close);
+    const proxy = await startFleetNodeAttachProxy({
+      agent: 'agent-input-scope',
+      node: 'node-input',
+      mode: 'drive',
+      baseUrl: 'https://cast.agentrelay.com',
+      workspaceKey: 'wk',
+      fetch: fakeTicketFetch(remote.url),
+      reconnectDelay: { initialMs: 60_000, maxMs: 60_000 },
+    });
+    cleanup.push(proxy.close);
+
+    const initial = await remote.nextConnection();
+    sendReady(initial, 'auto_inject');
+
+    const writer = await connectLoopbackInput(proxy, 'agent-input-scope');
+    const bystander = await connectLoopbackInput(proxy, 'agent-input-scope');
+    let bystanderClosed = false;
+    bystander.on('close', () => {
+      bystanderClosed = true;
+    });
+    const writerClosed = new Promise<void>((resolve) => writer.once('close', () => resolve()));
+
+    initial.terminate();
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    writer.send('keystroke');
+    await writerClosed;
+
+    expect(bystanderClosed).toBe(false);
+    expect(bystander.readyState).toBe(WsClient.OPEN);
   });
 });
