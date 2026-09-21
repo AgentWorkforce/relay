@@ -4073,6 +4073,101 @@ describe('fleet command support', () => {
     );
   });
 
+  it('fleet release --delete-agent aborts without deleting when binding retirement fails', async () => {
+    const release = vi.fn(async () => ({
+      name: 'api-worker',
+      released: true,
+      deleted: true,
+    }));
+    const createFleetWorkspaceClient = vi.fn(() => ({ agents: { release } }));
+    const sdkError = vi.fn();
+    const exit = vi.fn((code: number) => {
+      throw new Error(`CLI exit ${code}`);
+    });
+    const program = new Command();
+    program.exitOverride();
+    const retireOwnedBindings = vi.fn(async () => {
+      throw new Error('relayfile unreachable');
+    });
+    registerFleetCommands(program, {
+      resolveSandboxRepository: () => undefined,
+      sdk: {
+        createAgentRelay: vi.fn() as never,
+        createWorkspaceRelay: vi.fn() as never,
+        createWorkspace: vi.fn() as never,
+        log: vi.fn() as never,
+        error: sdkError,
+        exit: exit as never,
+      },
+      createFleetWorkspaceClient: createFleetWorkspaceClient as never,
+      retireOwnedBindings,
+      log: () => undefined,
+      warn: () => undefined,
+      error: () => undefined,
+    });
+
+    await expect(
+      program.parseAsync(
+        ['fleet', 'release', 'api-worker', '--delete-agent', '--workspace-key', 'rk_live_test'],
+        { from: 'user' }
+      )
+    ).rejects.toThrow('CLI exit 1');
+
+    expect(retireOwnedBindings).toHaveBeenCalledWith(
+      'api-worker',
+      expect.objectContaining({ deleteAgent: true })
+    );
+    expect(release).not.toHaveBeenCalled();
+    expect(exit).toHaveBeenCalledWith(1);
+    expect(sdkError).toHaveBeenCalledWith(
+      expect.stringMatching(
+        /Refusing to delete @api-worker: could not retire provider bindings \(relayfile unreachable\)/
+      )
+    );
+  });
+
+  it('fleet release --unsubscribe-bindings still releases when retirement fails without --delete-agent', async () => {
+    const release = vi.fn(async () => ({
+      name: 'api-worker',
+      released: true,
+      deleted: false,
+    }));
+    const createFleetWorkspaceClient = vi.fn(() => ({ agents: { release } }));
+    const sdkError = vi.fn();
+    const program = new Command();
+    program.exitOverride();
+    const retireOwnedBindings = vi.fn(async () => {
+      throw new Error('relayfile unreachable');
+    });
+    registerFleetCommands(program, {
+      resolveSandboxRepository: () => undefined,
+      sdk: {
+        createAgentRelay: vi.fn() as never,
+        createWorkspaceRelay: vi.fn() as never,
+        createWorkspace: vi.fn() as never,
+        log: vi.fn() as never,
+        error: sdkError,
+        exit: vi.fn() as never,
+      },
+      createFleetWorkspaceClient: createFleetWorkspaceClient as never,
+      retireOwnedBindings,
+      log: () => undefined,
+      warn: () => undefined,
+      error: () => undefined,
+    });
+
+    await program.parseAsync(
+      ['fleet', 'release', 'api-worker', '--unsubscribe-bindings', '--workspace-key', 'rk_live_test'],
+      { from: 'user' }
+    );
+
+    expect(retireOwnedBindings).toHaveBeenCalled();
+    expect(sdkError).toHaveBeenCalledWith(
+      expect.stringMatching(/Warning: could not retire provider bindings for @api-worker/)
+    );
+    expect(release).toHaveBeenCalledWith(expect.objectContaining({ name: 'api-worker', deleteAgent: false }));
+  });
+
   it('fleet status output redacts the node token and workspace key from the session', async () => {
     const logs: string[] = [];
     const nodes = { list: vi.fn(async () => [{ name: 'live-node', status: 'online', capabilities: [] }]) };

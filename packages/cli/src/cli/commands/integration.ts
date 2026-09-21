@@ -1861,9 +1861,9 @@ async function runUnsubscribeOwnedBy(
 }
 
 /**
- * Best-effort retirement of provider bindings whose identity-bound channel
- * belongs to `owner`. Used by release --delete-agent so dead identities do
- * not keep receiving GitHub events.
+ * Retire provider bindings whose identity-bound channel belongs to `owner`.
+ * Used by release --delete-agent while the roster row still exists; callers
+ * that will delete the identity must abort if this throws.
  */
 export async function retireOwnedIntegrationBindings(
   owner: string,

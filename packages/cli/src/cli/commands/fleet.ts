@@ -1120,11 +1120,16 @@ export function registerFleetCommands(
         try {
           await deps.retireOwnedBindings(workerName, options);
         } catch (error) {
-          deps.sdk.error(
-            `Warning: could not retire provider bindings for @${workerName}: ${
-              error instanceof Error ? error.message : String(error)
-            }`
-          );
+          const message = error instanceof Error ? error.message : String(error);
+          if (deleteAgent) {
+            // --owned-by resolves the live roster row. Deleting after a
+            // failed retirement leaves bindings on a dead identity that
+            // the advertised retry cannot clean up.
+            throw new Error(
+              `Refusing to delete @${workerName}: could not retire provider bindings (${message}). Identity kept so \`agent-relay integration unsubscribe <provider> --owned-by @${workerName}\` can retry.`
+            );
+          }
+          deps.sdk.error(`Warning: could not retire provider bindings for @${workerName}: ${message}`);
         }
       }
       const workspace = deps.createFleetWorkspaceClient(sdkOptionsFromOpts(options));
