@@ -11,7 +11,7 @@ use futures_util::{Sink, SinkExt, StreamExt};
 use relaycast::ORIGIN_ACTOR_HEADER;
 use serde::Deserialize;
 use sha2::{Digest, Sha256};
-use tokio::sync::{mpsc, oneshot};
+use tokio::sync::{mpsc, oneshot, watch};
 use tokio_tungstenite::tungstenite::{client::IntoClientRequest, Message};
 use uuid::Uuid;
 
@@ -96,6 +96,11 @@ pub(crate) struct FleetControlConfig {
     /// still recorded as having arrived. `None` in tests that do not
     /// assert on the probe.
     pub(crate) probe: Option<std::sync::Arc<crate::node_delivery_probe::NodeDeliveryProbe>>,
+    /// Direct terminal-generation publication from the socket reader. This is
+    /// deliberately updated before the bounded fleet event queue: readiness on
+    /// a replacement terminal lane must fence hints already received from the
+    /// wire even when runtime event handling is delayed behind other frames.
+    pub(crate) terminal_reconnect_tx: Option<watch::Sender<Option<u64>>>,
 }
 
 /// Mints node tokens via `POST /v1/nodes` and maintains the workspace-scoped
@@ -2565,6 +2570,7 @@ async fn run_connected_once(
                     &config.node_id,
                     &mut sink,
                     config.probe.as_ref(),
+                    config.terminal_reconnect_tx.as_ref(),
                 )
                 .await
                 {
@@ -2616,6 +2622,7 @@ async fn handle_server_message<S>(
     node_id: &str,
     sink: &mut S,
     probe: Option<&std::sync::Arc<crate::node_delivery_probe::NodeDeliveryProbe>>,
+    terminal_reconnect_tx: Option<&watch::Sender<Option<u64>>>,
 ) -> bool
 where
     S: Sink<Message> + Unpin,
@@ -2634,6 +2641,21 @@ where
             }
             match serde_json::from_str::<RelaycastToBroker>(&text) {
                 Ok(frame) => {
+                    // Publish before the bounded FleetControlEvent queue. If
+                    // runtime handling is delayed, a terminal dial that becomes
+                    // ready in the meantime can still fence this generation as
+                    // already repaired; the later runtime event is a coalesced
+                    // duplicate rather than a reason to tear down the fresh lane.
+                    if let (
+                        RelaycastToBroker::TerminalReconnectRequested(request),
+                        Some(reconnect_tx),
+                    ) = (&frame, terminal_reconnect_tx)
+                    {
+                        crate::terminal_control::request_terminal_reconnect(
+                            reconnect_tx,
+                            request.generation,
+                        );
+                    }
                     if let Some(probe) = probe {
                         probe.record_frame(&frame);
                     }
@@ -3005,7 +3027,9 @@ mod tests {
     use tokio_tungstenite::accept_async;
 
     use super::*;
-    use crate::fleet_wire::{ActionInvoke, ActionResultOutput, DeliveryMode};
+    use crate::fleet_wire::{
+        ActionInvoke, ActionResultOutput, DeliveryMode, TerminalReconnectRequested,
+    };
 
     fn seed_authoritative_cursor(
         book: &mut FleetDeliveryBook,
@@ -4015,6 +4039,7 @@ mod tests {
                     "node-test",
                     &mut sink,
                     None,
+                    None,
                 )
                 .await
             );
@@ -4065,6 +4090,7 @@ mod tests {
             "node-test",
             &mut futures_util::sink::drain(),
             None,
+            None,
         ).await;
         assert!(
             healthy,
@@ -4074,6 +4100,62 @@ mod tests {
             !liveness.ready,
             "a rejection is not an application acknowledgement"
         );
+    }
+
+    /// The terminal generation must leave the socket task before this bounded
+    /// queue can delay its ordinary runtime event. Otherwise an independent
+    /// terminal reconnect can become ready while an older hint is still queued,
+    /// and runtime handling would wrongly close that fresh lane.
+    #[tokio::test]
+    async fn terminal_reconnect_generation_publishes_before_the_fleet_event_queue() {
+        let (events, mut event_rx) = mpsc::channel(1);
+        events.send(FleetControlEvent::Connected).await.unwrap();
+        let (reconnect_tx, mut reconnect_rx) = watch::channel(None);
+
+        let handler = tokio::spawn(async move {
+            handle_server_message(
+                Message::Text(
+                    serde_json::to_string(&RelaycastToBroker::TerminalReconnectRequested(
+                        TerminalReconnectRequested {
+                            v: FLEET_WIRE_VERSION,
+                            generation: 41,
+                        },
+                    ))
+                    .unwrap(),
+                ),
+                &events,
+                &mut HashMap::new(),
+                &mut HashMap::new(),
+                &mut ApplicationLiveness::new(Duration::from_secs(1)),
+                "node-test",
+                &mut futures_util::sink::drain(),
+                None,
+                Some(&reconnect_tx),
+            )
+            .await
+        });
+
+        tokio::time::timeout(Duration::from_millis(250), reconnect_rx.changed())
+            .await
+            .expect("generation publication waited behind the full fleet event queue")
+            .unwrap();
+        assert_eq!(*reconnect_rx.borrow_and_update(), Some(41));
+        assert!(
+            !handler.is_finished(),
+            "the control event queue was not actually blocking the forwarding path"
+        );
+
+        assert_eq!(event_rx.recv().await, Some(FleetControlEvent::Connected));
+        assert!(handler.await.unwrap());
+        assert!(matches!(
+            event_rx.recv().await,
+            Some(FleetControlEvent::Message(
+                RelaycastToBroker::TerminalReconnectRequested(TerminalReconnectRequested {
+                    generation: 41,
+                    ..
+                })
+            ))
+        ));
     }
 
     #[test]
@@ -4294,6 +4376,7 @@ mod tests {
                 session_token: None,
                 read_idle_timeout: None,
                 probe: None,
+                terminal_reconnect_tx: None,
             },
             command_rx,
             event_tx,
@@ -4422,6 +4505,7 @@ mod tests {
                 session_token: None,
                 read_idle_timeout: None,
                 probe: None,
+                terminal_reconnect_tx: None,
             },
             command_rx,
             event_tx,
@@ -4591,6 +4675,7 @@ mod tests {
                 session_token: Some(session_token.clone()),
                 read_idle_timeout: None,
                 probe: None,
+                terminal_reconnect_tx: None,
             },
             command_rx,
             event_tx,
@@ -4655,6 +4740,7 @@ mod tests {
                 session_token: None,
                 read_idle_timeout: None,
                 probe: None,
+                terminal_reconnect_tx: None,
             },
             command_rx,
             event_tx,
@@ -4820,6 +4906,7 @@ mod tests {
             session_token: None,
             read_idle_timeout: None,
             probe: Some(probe.clone()),
+            terminal_reconnect_tx: None,
         };
         let session = run_connected_once(
             &config,
@@ -4946,6 +5033,7 @@ mod tests {
             session_token: None,
             read_idle_timeout: None,
             probe: Some(probe.clone()),
+            terminal_reconnect_tx: None,
         };
         let session = run_connected_once(
             &config,
@@ -5164,6 +5252,7 @@ mod tests {
             session_token: None,
             read_idle_timeout: None,
             probe: Some(probe.clone()),
+            terminal_reconnect_tx: None,
         };
         let session = run_connected_once(
             &config,
@@ -5291,6 +5380,7 @@ mod tests {
                     session_token: None,
                     read_idle_timeout: None,
                     probe: None,
+                    terminal_reconnect_tx: None,
                 },
                 &mut command_rx,
                 &event_tx,
@@ -5375,6 +5465,7 @@ mod tests {
                     session_token: None,
                     read_idle_timeout: None,
                     probe: None,
+                    terminal_reconnect_tx: None,
                 },
                 &mut command_rx,
                 &event_tx,
@@ -5491,6 +5582,7 @@ mod tests {
                     session_token: None,
                     read_idle_timeout: Some(Duration::from_millis(400)),
                     probe: None,
+                    terminal_reconnect_tx: None,
                 },
                 &mut command_rx,
                 &event_tx,
@@ -5609,6 +5701,7 @@ mod tests {
                     session_token: None,
                     read_idle_timeout: Some(Duration::from_millis(400)),
                     probe: None,
+                    terminal_reconnect_tx: None,
                 },
                 &mut command_rx,
                 &event_tx,
@@ -5647,6 +5740,7 @@ mod tests {
                 session_token: None,
                 read_idle_timeout: Some(Duration::from_millis(400)),
                 probe: None,
+                terminal_reconnect_tx: None,
             },
             command_rx,
             event_tx,
@@ -5722,6 +5816,7 @@ mod tests {
                 // second; production uses READ_IDLE_TIMEOUT (48s).
                 read_idle_timeout: Some(Duration::from_millis(400)),
                 probe: None,
+                terminal_reconnect_tx: None,
             },
             command_rx,
             event_tx,
@@ -5800,6 +5895,7 @@ mod tests {
                 // separate, looser test.
                 read_idle_timeout: Some(Duration::from_millis(400)),
                 probe: None,
+                terminal_reconnect_tx: None,
             },
             command_rx,
             event_tx,
@@ -5881,6 +5977,7 @@ mod tests {
                 session_token: None,
                 read_idle_timeout: None,
                 probe: None,
+                terminal_reconnect_tx: None,
             },
             command_rx,
             event_tx,
@@ -6239,6 +6336,7 @@ mod tests {
                     &mut liveness,
                     "node-test",
                     &mut sink,
+                    None,
                     None,
                 )
                 .await

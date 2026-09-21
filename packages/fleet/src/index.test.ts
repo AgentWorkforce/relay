@@ -8,6 +8,7 @@ import {
   defineDefaultLocalNode,
   defineNode,
   invokeNodeHandler,
+  MAX_FLEET_NODE_AGENTS,
   nodeInfo,
   nodeRegistrationTags,
   onMessage,
@@ -29,6 +30,19 @@ describe('@agent-relay/fleet', () => {
     expect(node.name).toBe('builder-1');
     expect(node.maxAgents).toBe(3);
     expect(node.capabilities['run:build']).toMatchObject({ name: 'run:build', kind: 'action' });
+  });
+
+  it('rejects maxAgents outside the broker-parseable range', () => {
+    const capabilities = { ping: async () => 'pong' };
+    // The boundary itself is the largest u32 the broker parses.
+    expect(defineNode({ name: 'capped', maxAgents: MAX_FLEET_NODE_AGENTS, capabilities }).maxAgents).toBe(
+      MAX_FLEET_NODE_AGENTS
+    );
+    for (const maxAgents of [0, -1, 1.5, Number.NaN, MAX_FLEET_NODE_AGENTS + 1, Number.MAX_SAFE_INTEGER]) {
+      expect(() => defineNode({ name: 'capped', maxAgents, capabilities })).toThrow(
+        /maxAgents must be a positive integer/
+      );
+    }
   });
 
   it('accepts a plain async handler as an escape hatch', async () => {

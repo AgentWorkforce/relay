@@ -224,6 +224,10 @@ pub(crate) struct BrokerRuntime {
     /// Independent outbound terminal lane. It never shares the node-control
     /// socket, keeping high-volume PTY bytes away from heartbeats/actions.
     pub(super) terminal_control_tx: mpsc::Sender<TerminalControlCommand>,
+    /// Coalescing wake-up path from the live node-control lane into the single
+    /// terminal dial loop. A watch channel cannot fill behind PTY output and
+    /// never creates a second competing reconnect task.
+    pub(super) terminal_reconnect_tx: watch::Sender<Option<u64>>,
     pub(super) terminal_event_rx: mpsc::Receiver<TerminalControlEvent>,
     pub(super) terminal_control_open: bool,
     pub(super) terminal_sessions: HashMap<String, TerminalSession>,
