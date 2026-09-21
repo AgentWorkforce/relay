@@ -69,6 +69,36 @@ impl SendRequest {
     }
 }
 
+/// What a settlement attempt could establish.
+///
+/// Deliberately not an `Option<SettleStatus>`: "we never sent this" and "we
+/// sent it over a route we cannot currently reach" are opposite facts that an
+/// `Option` renders identically, and acting on the wrong one re-sends a
+/// delivered message.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum SettleOutcome {
+    /// The recorded route answered.
+    Settled(SettleStatus),
+    /// This seam has no record of the delivery: it was never sent from here.
+    /// Safe to treat as absence.
+    NoReceipt,
+    /// The delivery WAS sent, over a route that is not among the backends
+    /// offered. Not absence — the message is somewhere this call cannot see.
+    RouteUnavailable(RouteId),
+    /// The delivery was sent and its receipt has since been evicted from the
+    /// bounded memory, so the route is unknown. Not absence.
+    RouteUnknown,
+}
+
+impl SettleOutcome {
+    /// True only when this outcome is positive evidence that nothing was sent.
+    ///
+    /// The one question a caller deciding whether to re-send may ask.
+    pub fn is_absent(&self) -> bool {
+        matches!(self, SettleOutcome::NoReceipt)
+    }
+}
+
 /// Settlement request. The route is recorded from the accepted send and must
 /// not be recomputed from current discovery state.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -327,25 +357,45 @@ impl DeliverySeam {
 
     /// Cancellation safety: settlement never writes to an agent; canceling this
     /// future only loses the settlement observation for this poll.
+    ///
+    /// Returns a three-way answer rather than an `Option`. `None` used to mean
+    /// two different things — "this seam never sent it" and "it was sent, over
+    /// a route that is not in this slice" — and those must not be collapsed.
+    /// The second is the contract's own trap shape: it looks exactly like
+    /// absence, and a caller that reads absence as "never arrived" and re-sends
+    /// duplicates a message that may already have landed (rule 2). No caller
+    /// exists yet, which is precisely why the distinction is cheap to make now.
     pub async fn settle(
         &mut self,
         backends: &mut [&mut dyn DeliveryBackend],
         delivery_id: &DeliveryId,
-    ) -> Option<SettleStatus> {
-        let receipt = self
+    ) -> SettleOutcome {
+        let Some(receipt) = self
             .receipts
             .iter()
             .rev()
-            .find(|receipt| &receipt.delivery_id == delivery_id)?;
+            .find(|receipt| &receipt.delivery_id == delivery_id)
+        else {
+            return if self.evicted.contains(delivery_id) {
+                // Sent, then forgotten by the bounded receipt memory. Not
+                // absence.
+                SettleOutcome::RouteUnknown
+            } else {
+                SettleOutcome::NoReceipt
+            };
+        };
         let route = receipt.route.clone();
         let request = SettleRequest {
             delivery_id: delivery_id.clone(),
             route: route.clone(),
         };
-        let backend = backends
+        let Some(backend) = backends
             .iter_mut()
-            .find(|backend| backend.route_id() == route)?;
-        Some(backend.settle(&request).await)
+            .find(|backend| backend.route_id() == route)
+        else {
+            return SettleOutcome::RouteUnavailable(route);
+        };
+        SettleOutcome::Settled(backend.settle(&request).await)
     }
 
     pub fn recorded_route(&self, delivery_id: &DeliveryId) -> Option<&RouteId> {

@@ -11,6 +11,6 @@ pub mod pty;
 
 pub use backend::{
     DeliveryBackend, DeliveryBackendFuture, DeliveryError, DeliverySeam, HandoverState,
-    ObservedAck, RouteId, SendOutcome, SendReceipt, SendRequest, SendStatus, SettleRequest,
-    SettleStatus, TransportStatus,
+    ObservedAck, RouteId, SendOutcome, SendReceipt, SendRequest, SendStatus, SettleOutcome,
+    SettleRequest, SettleStatus, TransportStatus,
 };
