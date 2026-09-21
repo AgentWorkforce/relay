@@ -1,6 +1,9 @@
 import { ensureCloudSession, buildApiUrl, type CloudSession } from '@agent-relay/cloud';
 import { Client } from '@modelcontextprotocol/sdk/client/index.js';
-import { StreamableHTTPClientTransport } from '@modelcontextprotocol/sdk/client/streamableHttp.js';
+import {
+  StreamableHTTPClientTransport,
+  StreamableHTTPError,
+} from '@modelcontextprotocol/sdk/client/streamableHttp.js';
 import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { type CallToolResult, type Tool } from '@modelcontextprotocol/sdk/types.js';
 import { z } from 'zod';
@@ -14,7 +17,10 @@ export const SHARED_SESSION_TOOL_NAMES = new Set([
   'get_shared_session_context',
 ]);
 
-type CloudSessionResolver = (options: { interactive: false }) => Promise<CloudSession>;
+type CloudSessionResolver = (options: {
+  interactive: false;
+  validateApiUrl: (apiUrl: string) => void;
+}) => Promise<CloudSession>;
 
 export interface SharedSessionsMcpClientOptions {
   ensureSession?: CloudSessionResolver;
@@ -23,16 +29,48 @@ export interface SharedSessionsMcpClientOptions {
 export interface SharedSessionsMcpClientLike {
   listTools(): Promise<Tool[]>;
   callTool(name: string, args: Record<string, unknown>): Promise<CallToolResult>;
+  /** Terminally cancel discovery/calls and release any hosted MCP transport. */
+  close?(): Promise<void>;
 }
 
 /** Error shown by the stdio MCP server when no reusable Cloud login exists. */
 export class SharedSessionsCloudAuthError extends Error {
   constructor(cause: unknown) {
     super(
-      'Shared sessions require a valid Cloud login. Run `agent-relay cloud login`, then restart the MCP server.',
+      'Shared sessions require a valid Cloud login. Run `agent-relay cloud login` (or `agent-relay cloud login --device` on a headless machine), then restart the MCP server.',
       { cause }
     );
     this.name = 'SharedSessionsCloudAuthError';
+  }
+}
+
+/** Error shown when the login is valid but cannot read the selected workspace history. */
+export class SharedSessionsCloudPermissionError extends Error {
+  constructor(cause: unknown) {
+    super(
+      'Your Cloud login does not have permission to read shared sessions in this workspace. Switch to an authorized workspace or ask a workspace administrator for access.',
+      { cause }
+    );
+    this.name = 'SharedSessionsCloudPermissionError';
+  }
+}
+
+/** Error raised before Cloud credentials could be sent over an unsafe transport. */
+export class SharedSessionsInsecureCloudUrlError extends Error {
+  constructor(cause?: unknown) {
+    super(
+      'Shared sessions refuse to send Cloud credentials over an insecure API URL. Use HTTPS, or HTTP only for localhost, 127.0.0.1, or [::1].',
+      { cause }
+    );
+    this.name = 'SharedSessionsInsecureCloudUrlError';
+  }
+}
+
+/** Error raised after a discovery client has been terminally cancelled. */
+export class SharedSessionsMcpClientClosedError extends Error {
+  constructor() {
+    super('Shared sessions Cloud discovery was cancelled.');
+    this.name = 'SharedSessionsMcpClientClosedError';
   }
 }
 
@@ -68,7 +106,11 @@ export function requireCompleteSharedSessionToolset(tools: readonly Pick<Tool, '
 export class SharedSessionsMcpClient implements SharedSessionsMcpClientLike {
   private readonly ensureSession: CloudSessionResolver;
   private client: Client | undefined;
+  private connectingClient: Client | undefined;
+  private connectingTransport: StreamableHTTPClientTransport | undefined;
   private connecting: Promise<Client> | undefined;
+  private closed = false;
+  private generation = 0;
 
   constructor(options: SharedSessionsMcpClientOptions = {}) {
     this.ensureSession = options.ensureSession ?? ((authOptions) => ensureCloudSession(authOptions));
@@ -80,7 +122,7 @@ export class SharedSessionsMcpClient implements SharedSessionsMcpClientLike {
       const response = await client.listTools(undefined, { timeout: HOSTED_MCP_TIMEOUT_MS });
       return response.tools.filter((tool) => SHARED_SESSION_TOOL_NAMES.has(tool.name));
     } catch (error) {
-      throw this.actionableAuthError(error);
+      throw this.actionableCloudError(error);
     }
   }
 
@@ -95,30 +137,62 @@ export class SharedSessionsMcpClient implements SharedSessionsMcpClientLike {
         timeout: HOSTED_MCP_TIMEOUT_MS,
       })) as CallToolResult;
     } catch (error) {
-      throw this.actionableAuthError(error);
+      throw this.actionableCloudError(error);
     }
+  }
+
+  /**
+   * Terminally cancel this proxy client. State flips synchronously so a caller
+   * may intentionally fire-and-forget the returned cleanup promise on timeout.
+   */
+  close(): Promise<void> {
+    if (this.closed && !this.client && !this.connectingClient && !this.connectingTransport) {
+      return Promise.resolve();
+    }
+
+    this.closed = true;
+    this.generation += 1;
+    const clients = [...new Set([this.client, this.connectingClient].filter(Boolean))] as Client[];
+    const orphanedTransport = this.connectingClient ? undefined : this.connectingTransport;
+    this.client = undefined;
+    this.connectingClient = undefined;
+    this.connectingTransport = undefined;
+    this.connecting = undefined;
+
+    const cleanup = clients.map((client) => client.close());
+    if (orphanedTransport) cleanup.push(orphanedTransport.close());
+    return Promise.allSettled(cleanup).then(() => undefined);
   }
 
   private async connectedClient(): Promise<Client> {
+    this.assertOpen();
     if (this.client) return this.client;
     if (this.connecting) return this.connecting;
 
-    this.connecting = this.connect().catch((error) => {
+    const pending = this.connect(this.generation);
+    this.connecting = pending;
+    try {
+      return await pending;
+    } finally {
       // Login can happen after a long-lived MCP process started. Do not cache a
       // failed auth attempt: the next tools/list should retry the local store.
-      this.connecting = undefined;
-      throw error;
-    });
-    return this.connecting;
+      if (this.connecting === pending) this.connecting = undefined;
+    }
   }
 
-  private async connect(): Promise<Client> {
+  private async connect(generation: number): Promise<Client> {
     let session: CloudSession;
     try {
-      session = await this.ensureSession({ interactive: false });
+      session = await this.ensureSession({
+        interactive: false,
+        validateApiUrl: assertSharedSessionsCloudApiUrl,
+      });
     } catch (error) {
-      throw new SharedSessionsCloudAuthError(error);
+      throw this.actionableCloudError(error);
     }
+    this.assertActive(generation);
+    // Preserve the invariant for injected resolvers that do not apply the hook.
+    assertSharedSessionsCloudApiUrl(session.auth.apiUrl);
 
     const endpoint = buildApiUrl(session.auth.apiUrl, SHARED_SESSIONS_MCP_PATH);
     const transport = new StreamableHTTPClientTransport(endpoint, {
@@ -129,34 +203,95 @@ export class SharedSessionsMcpClient implements SharedSessionsMcpClientLike {
       requestInit: { redirect: 'error' },
     });
     const client = new Client({ name: 'agent-relay-shared-sessions', version: '1.0.0' });
+    this.connectingClient = client;
+    this.connectingTransport = transport;
 
     try {
       await client.connect(transport, { timeout: HOSTED_MCP_TIMEOUT_MS });
+      this.assertActive(generation);
     } catch (error) {
       await client.close().catch(() => undefined);
-      // A stored login can still be unusable (revoked/expired refresh token).
-      // Give plugin users the same concrete recovery command as a missing login.
-      if (/\b(?:401|unauthori[sz]ed|auth|token|login)\b/i.test(errorMessage(error))) {
-        throw new SharedSessionsCloudAuthError(error);
-      }
-      throw error;
+      if (!this.isActive(generation)) throw new SharedSessionsMcpClientClosedError();
+      throw this.actionableCloudError(error);
+    } finally {
+      if (this.connectingClient === client) this.connectingClient = undefined;
+      if (this.connectingTransport === transport) this.connectingTransport = undefined;
     }
 
     this.client = client;
-    this.connecting = undefined;
     return client;
   }
 
-  private actionableAuthError(error: unknown): unknown {
-    if (error instanceof SharedSessionsCloudAuthError) return error;
-    return /\b(?:401|403|unauthori[sz]ed|forbidden|auth|token|login)\b/i.test(errorMessage(error))
-      ? new SharedSessionsCloudAuthError(error)
-      : error;
+  private actionableCloudError(error: unknown): unknown {
+    if (this.closed) return new SharedSessionsMcpClientClosedError();
+    if (
+      error instanceof SharedSessionsCloudAuthError ||
+      error instanceof SharedSessionsCloudPermissionError ||
+      error instanceof SharedSessionsInsecureCloudUrlError ||
+      error instanceof SharedSessionsMcpClientClosedError
+    ) {
+      return error;
+    }
+    const status = error instanceof StreamableHTTPError ? error.code : numericErrorCode(error);
+    if (status === 403 || /\bforbidden\b/i.test(errorMessage(error))) {
+      return new SharedSessionsCloudPermissionError(error);
+    }
+    if (
+      status === 401 ||
+      /\bunauthori[sz]ed\b/i.test(errorMessage(error)) ||
+      /\blogin required\b/i.test(errorMessage(error)) ||
+      stringErrorCode(error)?.startsWith('AUTH_')
+    ) {
+      return new SharedSessionsCloudAuthError(error);
+    }
+    return error;
+  }
+
+  private assertOpen(): void {
+    if (this.closed) throw new SharedSessionsMcpClientClosedError();
+  }
+
+  private isActive(generation: number): boolean {
+    return !this.closed && this.generation === generation;
+  }
+
+  private assertActive(generation: number): void {
+    if (!this.isActive(generation)) throw new SharedSessionsMcpClientClosedError();
   }
 }
 
 function errorMessage(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
+}
+
+function numericErrorCode(error: unknown): number | undefined {
+  return error && typeof error === 'object' && 'code' in error && typeof error.code === 'number'
+    ? error.code
+    : undefined;
+}
+
+function stringErrorCode(error: unknown): string | undefined {
+  return error && typeof error === 'object' && 'code' in error && typeof error.code === 'string'
+    ? error.code
+    : undefined;
+}
+
+/** Enforce TLS except for explicit loopback development endpoints. */
+export function assertSharedSessionsCloudApiUrl(apiUrl: string): void {
+  try {
+    const url = new URL(apiUrl);
+    const loopback = url.hostname === 'localhost' || url.hostname === '127.0.0.1' || url.hostname === '[::1]';
+    if (
+      (url.protocol !== 'https:' && !(url.protocol === 'http:' && loopback)) ||
+      url.username ||
+      url.password
+    ) {
+      throw new SharedSessionsInsecureCloudUrlError();
+    }
+  } catch (error) {
+    if (error instanceof SharedSessionsInsecureCloudUrlError) throw error;
+    throw new SharedSessionsInsecureCloudUrlError(error);
+  }
 }
 
 /**

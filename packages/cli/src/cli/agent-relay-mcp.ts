@@ -428,7 +428,9 @@ const DEFAULT_SYSTEM_PROMPT = AGENT_RELAY_MCP_INSTRUCTIONS;
 
 const SHARED_SESSIONS_MCP_INSTRUCTIONS =
   'Search and read agent sessions shared with your Agent Relay Cloud workspace. ' +
-  'Run `agent-relay cloud login` before starting this MCP server.';
+  'Run `agent-relay cloud login` before starting this MCP server; on headless hosts use `agent-relay cloud login --device`.';
+
+const OPTIONAL_SHARED_SESSIONS_DISCOVERY_TIMEOUT_MS = 2_000;
 
 type AgentResultCallbackConfig = {
   url: string;
@@ -1544,11 +1546,13 @@ export function createAgentRelayMcpServer(options: AgentRelayMcpServerOptions): 
   const mcpServer = new McpServer(
     { name: 'agent-relay', version: AGENT_RELAY_MCP_VERSION },
     {
-      capabilities: {
-        resources: { subscribe: true, listChanged: true },
-        tools: {},
-        prompts: {},
-      },
+      capabilities: options.sessionsOnly
+        ? { tools: {} }
+        : {
+            resources: { subscribe: true, listChanged: true },
+            tools: {},
+            prompts: {},
+          },
       instructions: options.sessionsOnly ? SHARED_SESSIONS_MCP_INSTRUCTIONS : AGENT_RELAY_MCP_INSTRUCTIONS,
     }
   );
@@ -1795,14 +1799,30 @@ export async function startAgentRelayMcpStdio(options: AgentRelayMcpServerOption
   const sharedSessionsClient = bootstrappedOptions.sharedSessionsClient ?? new SharedSessionsMcpClient();
   let sharedSessionTools = bootstrappedOptions.sharedSessionTools;
   if (!sharedSessionTools) {
+    let discoveryTimer: ReturnType<typeof setTimeout> | undefined;
     try {
-      sharedSessionTools = await sharedSessionsClient.listTools();
+      const discovery = sharedSessionsClient.listTools();
+      sharedSessionTools = bootstrappedOptions.sessionsOnly
+        ? await discovery
+        : await Promise.race([
+            discovery,
+            new Promise<never>((_resolve, reject) => {
+              discoveryTimer = setTimeout(
+                () => reject(new Error('Optional Cloud discovery timed out.')),
+                OPTIONAL_SHARED_SESSIONS_DISCOVERY_TIMEOUT_MS
+              );
+            }),
+          ]);
     } catch (error) {
       if (bootstrappedOptions.sessionsOnly) throw error;
+      // Cancel abandoned network work without letting cleanup delay local stdio.
+      void sharedSessionsClient.close?.().catch(() => undefined);
       // A Cloud login is optional for the normal Relaycast MCP surface. Keep
-      // messaging available and omit the hosted tools when discovery cannot
-      // authenticate; a restarted process after `cloud login` will add them.
+      // messaging available even when auth, initialization, or listing stalls.
+      // A restarted process after recovery will discover the hosted tools.
       sharedSessionTools = [];
+    } finally {
+      if (discoveryTimer !== undefined) clearTimeout(discoveryTimer);
     }
   }
   const mcpServer = createAgentRelayMcpServer({

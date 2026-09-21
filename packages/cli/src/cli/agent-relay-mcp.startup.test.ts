@@ -2136,6 +2136,101 @@ describe('startAgentRelayMcpStdio', () => {
     ]);
     expect(mocks.behavior.registerImpl).not.toHaveBeenCalled();
     expect(mocks.relayInstances).toHaveLength(0);
+    expect(server.options).toMatchObject({ capabilities: { tools: {} } });
+    expect((server.options as { capabilities: unknown }).capabilities).not.toHaveProperty('resources');
+    expect((server.options as { capabilities: unknown }).capabilities).not.toHaveProperty('prompts');
+  });
+
+  it('bounds optional Cloud discovery and cleanup without blocking local messaging', async () => {
+    const { mod, mocks } = await loadAgentRelayMcpModule();
+    vi.useFakeTimers();
+    try {
+      const close = vi.fn(() => new Promise<void>(() => undefined));
+      let finishDiscovery!: (tools: []) => void;
+      const listTools = vi.fn(
+        () =>
+          new Promise<[]>((resolve) => {
+            finishDiscovery = resolve;
+          })
+      );
+      const startup = mod.startAgentRelayMcpStdio({
+        skipBootstrap: true,
+        sharedSessionsClient: { listTools, close, callTool: vi.fn() },
+      });
+      await vi.advanceTimersByTimeAsync(1_999);
+      expect(mocks.serverInstances).toHaveLength(0);
+      await vi.advanceTimersByTimeAsync(1);
+      await startup;
+      expect(close).toHaveBeenCalledTimes(1);
+      const server = mocks.serverInstances[0];
+      expect(server.connect).toHaveBeenCalledTimes(1);
+      expect(server.tools.has('post_message')).toBe(true);
+      expect(server.tools.has('search_shared_sessions')).toBe(false);
+      finishDiscovery([]);
+      await Promise.resolve();
+      expect(mocks.serverInstances).toHaveLength(1);
+      expect(vi.getTimerCount()).toBe(0);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('keeps sessions-only discovery pending beyond the optional startup budget', async () => {
+    const { mod, mocks } = await loadAgentRelayMcpModule();
+    vi.useFakeTimers();
+    try {
+      let finishDiscovery!: (tools: Array<{ name: string; inputSchema: { type: 'object' } }>) => void;
+      const close = vi.fn(async () => undefined);
+      const startup = mod.startAgentRelayMcpStdio({
+        sessionsOnly: true,
+        sharedSessionsClient: {
+          listTools: () =>
+            new Promise((resolve) => {
+              finishDiscovery = resolve;
+            }),
+          callTool: vi.fn(),
+          close,
+        },
+      });
+      await vi.advanceTimersByTimeAsync(2_001);
+      expect(mocks.serverInstances).toHaveLength(0);
+      expect(close).not.toHaveBeenCalled();
+      finishDiscovery(
+        ['search_shared_sessions', 'get_shared_session', 'get_shared_session_context'].map((name) => ({
+          name,
+          inputSchema: { type: 'object' },
+        }))
+      );
+      await startup;
+      expect(mocks.serverInstances[0].connect).toHaveBeenCalledTimes(1);
+      expect(vi.getTimerCount()).toBe(0);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('clears the optional discovery timer when Cloud rejects before the deadline', async () => {
+    const { mod, mocks } = await loadAgentRelayMcpModule();
+    vi.useFakeTimers();
+    try {
+      const close = vi.fn(async () => undefined);
+      await mod.startAgentRelayMcpStdio({
+        skipBootstrap: true,
+        sharedSessionsClient: {
+          listTools: vi.fn(async () => {
+            throw new Error('Cloud unavailable');
+          }),
+          callTool: vi.fn(),
+          close,
+        },
+      });
+      expect(close).toHaveBeenCalledTimes(1);
+      expect(mocks.serverInstances[0].tools.has('post_message')).toBe(true);
+      expect(mocks.serverInstances[0].connect).toHaveBeenCalledTimes(1);
+      expect(vi.getTimerCount()).toBe(0);
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it.each([

@@ -596,8 +596,13 @@ export async function refreshStoredAuth(
 
 async function requestStoredAuthRefresh(
   auth: StoredAuth,
-  options: { refreshTimeoutMs?: number; signal?: AbortSignal } = {}
+  options: {
+    refreshTimeoutMs?: number;
+    signal?: AbortSignal;
+    validateApiUrl?: (apiUrl: string) => void;
+  } = {}
 ): Promise<StoredAuth> {
+  options.validateApiUrl?.(auth.apiUrl);
   const response = await fetchWithRefreshTimeout(
     buildApiUrl(auth.apiUrl, '/api/v1/auth/token/refresh'),
     {
@@ -606,6 +611,9 @@ async function requestStoredAuthRefresh(
         'content-type': 'application/json',
       },
       body: JSON.stringify({ refreshToken: auth.refreshToken }),
+      // An opt-in host policy also refuses HTTP redirects so a 307 cannot
+      // replay the refresh token to an unvalidated destination.
+      ...(options.validateApiUrl ? { redirect: 'error' as const } : {}),
     },
     options
   );
@@ -734,8 +742,15 @@ export async function ensureCloudSession(options: CloudSessionOptions = {}): Pro
       );
     }
     const auth = await loginInteractive(apiUrl, { device: options.device, env });
-    return createCloudSession(auth, { refreshTimeoutMs });
+    return createCloudSession(auth, {
+      refreshTimeoutMs,
+      validateApiUrl: options.validateApiUrl,
+    });
   }
+
+  // A caller-supplied transport policy must run before an expired stored
+  // session can send its refresh token to the stored host.
+  options.validateApiUrl?.(stored.apiUrl);
 
   if (!shouldRefreshStoredAuth(stored)) {
     return createCloudSession(stored, {
@@ -780,6 +795,7 @@ function createCloudSession(
   const clientOptions: CloudApiClientOptions = {
     ...auth,
     refreshTimeoutMs: options.refreshTimeoutMs,
+    validateApiUrl: options.validateApiUrl,
   };
 
   if (!isEnvBackedAuth(auth)) {

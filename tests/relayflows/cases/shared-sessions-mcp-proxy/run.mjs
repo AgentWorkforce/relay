@@ -160,7 +160,11 @@ if (!help.includes('--sessions-only')) {
         clientInfo: { name: 'relayflow-proof', version: '1.0.0' },
       },
     });
-    await rpc.waitFor(1, 15_000);
+    const initialized = await rpc.waitFor(1, 15_000);
+    const capabilities = initialized.result?.capabilities;
+    if (!capabilities?.tools || capabilities.resources || capabilities.prompts) {
+      throw new Error('Sessions-only MCP must advertise tools, not resources or prompts.');
+    }
     send(child, { jsonrpc: '2.0', method: 'notifications/initialized', params: {} });
     send(child, { jsonrpc: '2.0', id: 2, method: 'tools/list', params: {} });
     const listed = await rpc.waitFor(2, 15_000);

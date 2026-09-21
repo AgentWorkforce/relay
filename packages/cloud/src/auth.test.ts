@@ -855,6 +855,26 @@ describe('authorizedApiFetch telemetry headers', () => {
 });
 
 describe('authorizedApiFetch re-login', () => {
+  it('rejects unsafe env auth before sending its refresh token', async () => {
+    const fetchSpy = vi.fn();
+    vi.stubGlobal('fetch', fetchSpy);
+
+    await expect(
+      ensureCloudSession({
+        interactive: false,
+        env: createEnvAuth({
+          apiUrl: 'http://unsafe.example.test',
+          accessTokenExpiresAt: '2000-01-01T00:00:00.000Z',
+        }),
+        validateApiUrl: (apiUrl) => {
+          if (new URL(apiUrl).protocol !== 'https:') throw new Error('requires HTTPS');
+        },
+      })
+    ).rejects.toThrow('requires HTTPS');
+
+    expect(fetchSpy).not.toHaveBeenCalled();
+  });
+
   it('rejects an unsafe host selected while establishing an expired stored session', async () => {
     const storedAuth: StoredAuth = {
       apiUrl: 'https://stored.example.test',
@@ -863,7 +883,7 @@ describe('authorizedApiFetch re-login', () => {
       accessTokenExpiresAt: '2000-01-01T00:00:00.000Z',
     };
     fsMocks.readFile.mockResolvedValue(JSON.stringify(storedAuth));
-    const fetchSpy = vi.fn(async (input: string | URL) => {
+    const fetchSpy = vi.fn(async (input: string | URL, _init?: RequestInit) => {
       const url = String(input);
       if (url.endsWith('/api/v1/auth/token/refresh')) {
         return new Response(
@@ -893,6 +913,7 @@ describe('authorizedApiFetch re-login', () => {
     expect(fetchSpy.mock.calls.map((call) => String(call[0]))).toEqual([
       'https://stored.example.test/api/v1/auth/token/refresh',
     ]);
+    expect(fetchSpy.mock.calls[0][1]).toMatchObject({ redirect: 'error' });
     expect(fsMocks.writeFile).not.toHaveBeenCalled();
   });
 
