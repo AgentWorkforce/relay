@@ -192,6 +192,8 @@ function harness(
         )
     )
   );
+  const createWorkspaceRelay = vi.fn(() => relay as never);
+  const createAgentRelay = vi.fn(() => relay as never);
   const log = vi.fn();
   const error = vi.fn();
   const exit = vi.fn();
@@ -199,7 +201,8 @@ function harness(
   program.exitOverride();
   registerIntegrationCommands(program, {
     ...opts.recipientDeps,
-    createAgentRelay: () => relay as never,
+    createAgentRelay,
+    createWorkspaceRelay,
     relayfile: relayfile as never,
     cleanupJournal: journal,
     resolveLocalRelayOptions:
@@ -209,7 +212,7 @@ function harness(
     error,
     exit: exit as never,
   } satisfies Partial<IntegrationCommandDependencies>);
-  return { program, relay, relayfile, journal, log, error, exit };
+  return { program, relay, relayfile, journal, log, error, exit, createWorkspaceRelay, createAgentRelay };
 }
 
 const RESOURCE = '/slack/channels/C0/**';
@@ -249,6 +252,26 @@ describe('integration subscribe', () => {
       secret: 'inbound-secret',
       workspace: 'rw_test',
     });
+  });
+
+  it('uses workspace auth for subscription management even in an agent-token worker', async () => {
+    vi.stubEnv('RELAY_WORKSPACE_KEY', 'rk_live_worker_workspace');
+    vi.stubEnv('RELAY_AGENT_TOKEN', 'at_worker_token');
+    const { program, createWorkspaceRelay, createAgentRelay, error } = harness({
+      resolveLocalRelayOptions: async () => undefined,
+    });
+    await program.parseAsync(ARGS(), { from: 'user' });
+    expect(error).not.toHaveBeenCalled();
+    expect(createWorkspaceRelay).toHaveBeenCalledTimes(1);
+    expect(createAgentRelay).not.toHaveBeenCalled();
+  });
+
+  it('rejects an explicit agent token for workspace-only subscription operations', async () => {
+    const { program, relay, error, createWorkspaceRelay } = harness();
+    await program.parseAsync(ARGS(['--token', 'at_explicit']), { from: 'user' });
+    expect(error).toHaveBeenCalledWith(expect.stringContaining('requires a workspace key'));
+    expect(createWorkspaceRelay).not.toHaveBeenCalled();
+    expect(relay.webhooks.createInbound).not.toHaveBeenCalled();
   });
 
   it('resolves provider-native resources before binding and replacement lookup', async () => {

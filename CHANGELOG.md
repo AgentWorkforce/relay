@@ -9,6 +9,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- Integration subscription setup, listing and retirement use workspace authentication even when a spawned worker also has an agent token, preventing misleading “Workspace key required” failures.
+
 - Broker `manual_flush` recovery now replays a missing cumulative-ACK predecessor without duplicating an already-completed PTY injection, restores it ahead of parked successors, and reports the head/ACK/received sequence gap plus the reconciliation action in `message flush` and `message auto` results.
 
 ## [12.4.1] - 2026-09-22
