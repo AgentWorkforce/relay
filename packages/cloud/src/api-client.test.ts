@@ -37,6 +37,66 @@ describe('WorkflowApiKeyClient', () => {
 });
 
 describe('CloudApiClient', () => {
+  it.each([true, false])(
+    'preserves the destination policy for initial and post-refresh requests (policy=%s)',
+    async (policyEnabled) => {
+      let calls = 0;
+      const fetchSpy = vi.fn(
+        async (_input: string | URL, _init?: RequestInit) =>
+          new Response(null, { status: ++calls === 1 ? 401 : 204 })
+      );
+      vi.stubGlobal('fetch', fetchSpy);
+      const client = new CloudApiClient({
+        apiUrl: 'https://safe.example.test',
+        accessToken: 'access-token',
+        refreshToken: 'refresh-token',
+        accessTokenExpiresAt: '2999-01-01T00:00:00.000Z',
+        ...(policyEnabled ? { validateApiUrl: vi.fn() } : {}),
+        refreshAuth: async (snapshot) => ({ ...snapshot, accessToken: 'refreshed-access' }),
+      });
+
+      await client.fetch('/api/v1/workflows', { method: 'POST', redirect: 'follow' });
+
+      expect(fetchSpy).toHaveBeenCalledTimes(2);
+      expect(
+        fetchSpy.mock.calls.every(([, init]) => init?.redirect === (policyEnabled ? 'error' : 'follow'))
+      ).toBe(true);
+    }
+  );
+
+  it.each([true, false])(
+    'applies the configured redirect policy during revocation (policy=%s)',
+    async (policyEnabled) => {
+      const validateApiUrl = vi.fn();
+      const fetchSpy = vi.fn(
+        async (_input: string | URL, _init?: RequestInit) => new Response(null, { status: 204 })
+      );
+      vi.stubGlobal('fetch', fetchSpy);
+      const client = new CloudApiClient({
+        apiUrl: 'https://safe.example.test',
+        accessToken: 'access-token',
+        refreshToken: 'refresh-token',
+        accessTokenExpiresAt: '2999-01-01T00:00:00.000Z',
+        ...(policyEnabled ? { validateApiUrl } : {}),
+      });
+
+      await client.revoke();
+
+      expect(fetchSpy).toHaveBeenCalledOnce();
+      const [url, init] = fetchSpy.mock.calls[0];
+      expect(String(url)).toBe('https://safe.example.test/api/v1/auth/token/revoke');
+      expect(init).toMatchObject({ method: 'POST', body: JSON.stringify({ token: 'refresh-token' }) });
+      if (policyEnabled) {
+        expect(init?.redirect).toBe('error');
+        expect(validateApiUrl).toHaveBeenCalledTimes(2);
+        expect(validateApiUrl).toHaveBeenLastCalledWith('https://safe.example.test');
+      } else {
+        expect(init).not.toHaveProperty('redirect');
+        expect(validateApiUrl).not.toHaveBeenCalled();
+      }
+    }
+  );
+
   it('rejects an unsafe initial API URL before any credentialed request', () => {
     const fetchSpy = vi.fn();
     vi.stubGlobal('fetch', fetchSpy);

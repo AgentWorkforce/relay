@@ -143,6 +143,7 @@ export class CloudApiClient {
 
     const response = await fetch(buildApiUrl(this.apiUrl, p), {
       ...init,
+      ...(this.options.validateApiUrl ? { redirect: 'error' as const } : {}),
       headers: this.buildHeaders(init.headers),
     });
 
@@ -154,6 +155,7 @@ export class CloudApiClient {
 
     return fetch(buildApiUrl(this.apiUrl, p), {
       ...init,
+      ...(this.options.validateApiUrl ? { redirect: 'error' as const } : {}),
       headers: this.buildHeaders(init.headers),
     });
   }
@@ -166,6 +168,7 @@ export class CloudApiClient {
         'Content-Type': 'application/json',
       },
       body: JSON.stringify({ token: this.refreshToken }),
+      ...(this.options.validateApiUrl ? { redirect: 'error' as const } : {}),
     });
 
     if (!response.ok && response.status !== 404) {
