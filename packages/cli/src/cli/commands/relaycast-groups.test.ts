@@ -668,6 +668,7 @@ describe('SDK-backed CLI groups', () => {
       })),
       createWebhookSubscription: vi.fn(async () => ({ subscriptionId: 'whsub_1' })),
       deleteWebhookSubscription: vi.fn(async () => undefined),
+      listWebhookSubscriptions: vi.fn(async () => ({ subscriptions: [] })),
     };
     const log = vi.fn();
     const error = vi.fn();
@@ -699,6 +700,13 @@ describe('SDK-backed CLI groups', () => {
               channel: 'slackbot',
               webhookId: 'in1',
               subscriptionId: 'sub1',
+              to: null,
+              targetAgent: null,
+              lastDeliveryAt: null,
+              lastSuccessAt: null,
+              lastError: null,
+              lastChannelMessageAt: null,
+              githubPrIdentityAuthorized: null,
             },
           ],
           webhooks: [],

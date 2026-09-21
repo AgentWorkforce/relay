@@ -39,6 +39,7 @@ import { isAvailableFleetNode } from '../lib/fleet-live-agents.js';
 import { declaredWorkforceMetadata } from '../lib/registration-metadata.js';
 import { redactSecrets } from '../lib/redact.js';
 import { attributableReleaseReason } from '../lib/release-reason.js';
+import { retireOwnedIntegrationBindings } from './integration.js';
 import { resolveSandboxRepository, type SandboxRepositorySelection } from '../lib/sandbox-repo.js';
 import { spawnPlacementReceipt } from '../lib/spawn-lifecycle.js';
 import {
@@ -216,6 +217,7 @@ export interface FleetCommandDependencies {
   warn: (...args: unknown[]) => void;
   error: (...args: unknown[]) => void;
   exit: (code: number) => never;
+  retireOwnedBindings: typeof retireOwnedIntegrationBindings;
 }
 
 function withFleetDefaults(overrides: Partial<FleetCommandDependencies> = {}): FleetCommandDependencies {
@@ -242,6 +244,7 @@ function withFleetDefaults(overrides: Partial<FleetCommandDependencies> = {}): F
     warn: (...args: unknown[]) => console.warn(...args),
     error: (...args: unknown[]) => console.error(...args),
     exit: core.exit,
+    retireOwnedBindings: retireOwnedIntegrationBindings,
     ...overrides,
   };
 }
@@ -1101,20 +1104,66 @@ export function registerFleetCommands(
       .argument('<name>', 'Worker agent name')
       .option('--reason <reason>', 'Release reason')
       .option('--delete-agent', 'Permanently delete the agent after release')
+      .option(
+        '--unsubscribe-bindings',
+        'Retire provider bindings owned by this identity (implied by --delete-agent)'
+      )
   ).action(async (name: string, options: Record<string, unknown>) => {
     await runSdk(deps.sdk, async () => {
       warnIfInferredFromProjectSession(options, deps.warn);
-      const workspace = deps.createFleetWorkspaceClient(sdkOptionsFromOpts(options));
+      const workerName = requiredText(name, 'Worker name');
+      const deleteAgent = options.deleteAgent === true;
+      const sdkOpts = sdkOptionsFromOpts(options);
+      // One transport for both cleanup and release. Cleanup otherwise
+      // substitutes the local broker session whenever --workspace-key is
+      // omitted, even if RELAY_WORKSPACE_KEY selected a different workspace.
+      const transport = resolveWorkspaceTransport(sdkOpts);
+      const cleanupOpts: Record<string, unknown> = {
+        ...options,
+        workspaceKey: transport.workspaceKey,
+        ...(transport.baseUrl ? { baseUrl: transport.baseUrl } : {}),
+      };
+      const workspace = deps.createFleetWorkspaceClient(sdkOpts);
       const reason = attributableReleaseReason(
         optionalText(options.reason, 'Reason'),
         process.env.RELAY_AGENT_NAME ?? 'agent-relay fleet CLI',
         'fleet agent released'
       );
+      // Stop first so a failed release cannot drop bindings. Keep the roster
+      // row until retirement succeeds; --owned-by cannot resolve a deleted
+      // identity.
       const released = await workspace.agents.release({
-        name: requiredText(name, 'Worker name'),
+        name: workerName,
         reason,
-        deleteAgent: options.deleteAgent === true,
+        deleteAgent: false,
       });
+      if (options.unsubscribeBindings === true || deleteAgent) {
+        try {
+          // Helper progress (`Retired ...`, `Unsubscribed ...`) must not land
+          // on stdout: `fleet release` prints one JSON document there.
+          await deps.retireOwnedBindings(workerName, cleanupOpts, {
+            log: deps.warn,
+            error: deps.error,
+          });
+        } catch (error) {
+          const message = error instanceof Error ? error.message : String(error);
+          if (deleteAgent) {
+            throw new Error(
+              `Refusing to delete @${workerName}: could not retire provider bindings (${message}). Identity kept so \`agent-relay integration unsubscribe <provider> --owned-by @${workerName}\` can retry.`
+            );
+          }
+          deps.sdk.error(`Warning: could not retire provider bindings for @${workerName}: ${message}`);
+        }
+      }
+      if (deleteAgent) {
+        const deleted = await workspace.agents.release({
+          name: workerName,
+          reason,
+          deleteAgent: true,
+        });
+        printJson(deps.sdk, deleted);
+        return;
+      }
       printJson(deps.sdk, released);
     });
   });
