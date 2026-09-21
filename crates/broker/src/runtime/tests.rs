@@ -9106,3 +9106,110 @@ async fn delivery_retry_walks_the_cap_from_zero_and_then_dead_letters() {
         "a terminally failed delivery must leave the pending map for the dead-letter store"
     );
 }
+
+/// A handed-over delivery that exhausts its retries is IN DOUBT, not failed.
+///
+/// One successful hand-off whose ack never arrives returns `AlreadySent` on
+/// every later tick, so `failed_attempts` climbs to the cap without anything
+/// being re-written. It then reached the cap branch and was dead-lettered as
+/// `Failed` — a reason with no in-doubt marker, so `is_auto_redeliverable`
+/// returns true and an operator redelivery re-sends a message that may already
+/// have landed. That is the double delivery rule 2 exists to prevent, arrived
+/// at through the ordinary un-acked path rather than through any error.
+///
+/// The discriminator is whether the seam holds a receipt: only it knows if
+/// anything ever went out over a transport.
+#[tokio::test]
+async fn a_handed_over_delivery_that_exhausts_retries_is_in_doubt_not_failed() {
+    let worker_name = "worker-handed-over";
+    let mut workers = make_worker_registry_with_worker(worker_name).await;
+    let mut seam = crate::delivery::DeliverySeam::new();
+
+    let mut pending_deliveries = HashMap::from([(
+        DeliveryId::new("del_handed"),
+        PendingDelivery {
+            worker_name: WorkerName::from(worker_name),
+            delivery: RelayDelivery {
+                delivery_id: DeliveryId::new("del_handed"),
+                event_id: EventId::new("evt_handed"),
+                workspace_id: Some(WorkspaceId::new("ws_demo")),
+                workspace_alias: Some(WorkspaceAlias::new("Demo")),
+                from: "orchestrator".to_string(),
+                target: MessageTarget::new(worker_name),
+                body: "handed over, never acked".to_string(),
+                thread_id: None,
+                priority: Some(2),
+                injection_mode: MessageInjectionMode::Wait,
+            },
+            attempts: 0,
+            failed_attempts: 0,
+            next_retry_at: Instant::now(),
+            queued_at_ms: super::unix_timestamp_millis(),
+            last_error: None,
+            withheld_fleet_ack: None,
+            withheld_fleet_ack_floor: None,
+        },
+    )]);
+
+    // One real hand-off: the worker is alive, so this writes and records a
+    // receipt against the pty route.
+    let first = retry_pending_delivery(
+        &DeliveryId::new("del_handed"),
+        &mut workers,
+        &mut pending_deliveries,
+        Duration::from_millis(1),
+        &mut seam,
+    )
+    .await
+    .expect("the first attempt should hand the delivery to the pty route");
+    assert!(
+        matches!(first, DeliveryAttemptOutcome::Attempted { .. }),
+        "precondition: the first attempt must actually send, got {first:?}"
+    );
+    assert!(
+        seam.recorded_route(&DeliveryId::new("del_handed"))
+            .is_some(),
+        "precondition: the seam must hold a receipt after a successful hand-off"
+    );
+
+    // Drive the remaining ticks. No ack ever arrives, so every one of these is
+    // `AlreadySent` -> Noop, incrementing failed_attempts without re-writing.
+    let mut terminal = None;
+    for _ in 0..=MAX_DELIVERY_RETRIES + 1 {
+        let outcome = retry_pending_delivery(
+            &DeliveryId::new("del_handed"),
+            &mut workers,
+            &mut pending_deliveries,
+            Duration::from_millis(1),
+            &mut seam,
+        )
+        .await
+        .expect("an un-acked hand-off is not an error");
+        match outcome {
+            DeliveryAttemptOutcome::Noop => continue,
+            other => {
+                terminal = Some(other);
+                break;
+            }
+        }
+    }
+
+    let terminal = terminal.expect("the retry budget must terminate");
+    let DeliveryAttemptOutcome::TerminalInDoubt { last_error, .. } = terminal else {
+        panic!(
+            "a delivery the seam handed to a route must terminate IN DOUBT so it is \
+             dead-lettered non-redeliverable, got {terminal:?}"
+        );
+    };
+
+    // The dead letter the runtime builds from this outcome must be excluded
+    // from automatic redelivery.
+    let reason = format!(
+        "{}{last_error}",
+        crate::runtime::dead_letter::IN_DOUBT_REASON_PREFIX
+    );
+    assert!(
+        !crate::runtime::dead_letter::is_auto_redeliverable(&reason),
+        "a possible write must never be queued for automatic redelivery: {reason}"
+    );
+}
