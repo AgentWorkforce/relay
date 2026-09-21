@@ -115,17 +115,71 @@ pub enum HandoverState {
     HandedOver,
 }
 
+/// What a route actually saw, when it claims to have seen a delivery land.
+///
+/// Seam rule 4 is "never claim an acknowledgement you did not observe". A free
+/// string cannot express that rule: a backend could write
+/// `ObservedAck::new("ok")` without observing anything, and the type would
+/// agree. Naming the admissible kinds of evidence makes the rule structural —
+/// a route has to say WHAT it saw, and there is no variant meaning "nothing".
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum AckEvidence {
+    /// The route matched the injected text echoed back by the recipient.
+    Echo { matched: String },
+    /// A headless child consumed the message and exited cleanly. The exit IS
+    /// the observation; see `PROCESS_EXIT_VERIFICATION`.
+    ProcessExit { code: i32 },
+    /// The message was found in the recipient's own transcript or session
+    /// file, at a byte offset that can be re-read.
+    Transcript { source: String, offset: u64 },
+    /// The transport itself confirmed the peer received the frame — an ack
+    /// from the far side, not from the act of writing.
+    PeerAck { detail: String },
+}
+
 /// Acknowledgement evidence observed by the route that accepted the send.
+///
+/// Constructible only from an [`AckEvidence`], so "acknowledged" cannot be
+/// asserted without naming the observation behind it.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ObservedAck {
-    pub detail: String,
+    evidence: AckEvidence,
 }
 
 impl ObservedAck {
-    pub fn new(detail: impl Into<String>) -> Self {
+    pub fn echo(matched: impl Into<String>) -> Self {
         Self {
-            detail: detail.into(),
+            evidence: AckEvidence::Echo {
+                matched: matched.into(),
+            },
         }
+    }
+
+    pub fn process_exit(code: i32) -> Self {
+        Self {
+            evidence: AckEvidence::ProcessExit { code },
+        }
+    }
+
+    pub fn transcript(source: impl Into<String>, offset: u64) -> Self {
+        Self {
+            evidence: AckEvidence::Transcript {
+                source: source.into(),
+                offset,
+            },
+        }
+    }
+
+    pub fn peer_ack(detail: impl Into<String>) -> Self {
+        Self {
+            evidence: AckEvidence::PeerAck {
+                detail: detail.into(),
+            },
+        }
+    }
+
+    pub fn evidence(&self) -> &AckEvidence {
+        &self.evidence
     }
 }
 
