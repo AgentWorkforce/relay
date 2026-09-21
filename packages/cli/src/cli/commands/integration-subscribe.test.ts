@@ -1766,6 +1766,35 @@ describe('integration unsubscribe', () => {
     ]);
   });
 
+  it('does not list an ordinary channel that shares an agent name as identity-owned', async () => {
+    const relay = createRelayMock();
+    relay.agents.list.mockResolvedValue([
+      { id: '227588305648525312', name: 'webhook-owner', status: 'active' },
+    ]);
+    const relayfile = createRelayfileMock([
+      {
+        provider: 'github',
+        resource: '/github/repos/AgentWorkforce/relay/pulls/7/**',
+        channel: 'webhook-owner',
+        webhookId: 'wh_named',
+        subscriptionId: 'sub_named',
+        webhookSubscriptionId: 'whsub_named',
+      },
+    ]);
+    const { program, log } = harness({ relay, relayfile });
+
+    await program.parseAsync(['integration', 'subscribe', '--list'], { from: 'user' });
+
+    const printed = JSON.parse(String(log.mock.calls[0]?.[0]));
+    expect(printed.bindings).toEqual([
+      expect.objectContaining({
+        channel: 'webhook-owner',
+        to: null,
+        targetAgent: null,
+      }),
+    ]);
+  });
+
   it("lists health from each binding's pinned relayfile workspace, not only the active one", async () => {
     const relay = createRelayMock();
     relay.agents.list.mockResolvedValue([

@@ -648,7 +648,6 @@ async function enrichBindingsForList(
     .list()
     .catch(() => [] as Array<{ id: string; name: string; status?: string }>);
   const agentById = new Map(agents.map((agent) => [String(agent.id), agent]));
-  const agentByName = new Map(agents.map((agent) => [agent.name, agent]));
 
   const cloudById = await listWebhookSubscriptionsForBindings(deps.relayfile, bindings);
 
@@ -670,7 +669,6 @@ async function enrichBindingsForList(
       const agent =
         (metaAgentId ? agentById.get(metaAgentId) : undefined) ??
         (channelAgentId ? agentById.get(channelAgentId) : undefined) ??
-        agentByName.get(binding.channel) ??
         null;
 
       let lastChannelMessageAt: string | null = null;
