@@ -1,3 +1,4 @@
+# yaml-language-server: $schema=https://schema.relayflows.dev/v0.1/flows.schema.json
 # Adversarial re-review of the phase-0 delivery seam, plus a repo-wide sweep
 # for assertions that still encode the pre-seam contract.
 #
@@ -239,14 +240,11 @@ steps:
     type: deterministic
     dependsOn: [assert-nothing-was-edited]
     command: |
-      { echo "# Phase-0 delivery review"
-        echo
-        echo "HEAD: $(cat .review-out/00-head.txt 2>/dev/null)"
-        echo
-        for r in .review-out/*.md; do
-          [ -f "$r" ] || continue
-          echo "## $(basename "$r") — $(wc -l < "$r" | tr -d ' ') lines"
-        done
-      } > .review-out/99-index.md
+      printf '# Phase-0 delivery review\n\n' > .review-out/99-index.md
+      printf 'HEAD: %s\n\n' "$(cat .review-out/00-head.txt 2>/dev/null)" >> .review-out/99-index.md
+      for r in .review-out/*.md; do
+        [ -f "$r" ] || continue
+        printf '## %s — %s lines\n' "$(basename "$r")" "$(wc -l < "$r" | tr -d ' ')" >> .review-out/99-index.md
+      done
       cat .review-out/99-index.md
       ls -la .review-out
