@@ -7,6 +7,20 @@ pub(crate) const MAX_DEAD_LETTERS: usize = 500;
 /// is gone) and was moved out of the pending map instead of being discarded.
 /// Retains the full [`RelayDelivery`] so `redeliver` can requeue it through
 /// the normal delivery path.
+/// Marks a dead letter whose write MAY have committed.
+///
+/// Such an entry must be retained — the message is otherwise lost with no
+/// operator-visible record — but must NOT be auto-redelivered, because a retry
+/// of a possible write double-delivers. The two requirements look contradictory
+/// only if "dead letter" is read as "queued for redelivery": a retained entry
+/// that is explicitly not for automatic retry satisfies both.
+pub(crate) const IN_DOUBT_REASON_PREFIX: &str = "in-doubt (do not auto-redeliver): ";
+
+/// Whether a dead letter may be redelivered automatically.
+pub(crate) fn is_auto_redeliverable(reason: &str) -> bool {
+    !reason.starts_with(IN_DOUBT_REASON_PREFIX)
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub(crate) struct DeadLetterEntry {
     pub(super) worker_name: WorkerName,
@@ -301,4 +315,36 @@ pub(crate) async fn dead_letter_pending_delivery(
     };
     dead_letters.push(entry);
     let _ = send_broker_event(sdk_out_tx, event).await;
+}
+
+#[cfg(test)]
+mod in_doubt_retention_tests {
+    use super::{is_auto_redeliverable, IN_DOUBT_REASON_PREFIX};
+
+    /// relay: F9 — an in-doubt delivery must be RETAINED but never
+    /// auto-redelivered.
+    ///
+    /// Dropping it was the only option that loses the message: a killed child
+    /// cannot have consumed it, and a broken pipe to a dead process is not
+    /// evidence of delivery, yet the entry vanished with nothing but a warn
+    /// line and no operator-visible record. Auto-redelivering it is the
+    /// opposite failure — a retry of a possible write double-delivers.
+    ///
+    /// A retained entry that is explicitly not for automatic retry satisfies
+    /// both rules, and the two only look contradictory if "dead letter" is read
+    /// as "queued for redelivery".
+    #[test]
+    fn an_in_doubt_dead_letter_is_not_auto_redeliverable() {
+        let in_doubt = format!("{IN_DOUBT_REASON_PREFIX}writer faulted after admission");
+        assert!(
+            !is_auto_redeliverable(&in_doubt),
+            "an in-doubt dead letter was offered for automatic redelivery, which \
+             re-sends a write that may already have committed"
+        );
+        assert!(
+            is_auto_redeliverable("recipient gone"),
+            "an ordinary dead letter must stay redeliverable: it is the operator's \
+             only way to recover a message that provably never landed"
+        );
+    }
 }

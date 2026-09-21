@@ -1292,12 +1292,25 @@ pub(crate) async fn emit_delivery_attempt_outcome(
                 },
             )
             .await;
+            // Retain it, marked not-for-auto-redelivery.
+            //
+            // Dropping it silently was the only option that loses the message:
+            // a killed child cannot have consumed it, and a broken pipe to a
+            // dead process is not evidence of delivery, yet the entry vanished
+            // with nothing but a warn line. Retaining it under a marker keeps
+            // rule 1 — nothing retries a possible write — while leaving an
+            // operator-visible record with the body intact.
+            let reason = format!(
+                "{}{last_error}",
+                crate::runtime::dead_letter::IN_DOUBT_REASON_PREFIX
+            );
+            dead_letter_pending_delivery(sdk_out_tx, dead_letters, &pending, &reason).await;
             tracing::warn!(
                 target = "agent_relay::broker",
                 worker = %pending.worker_name,
                 delivery_id = %pending.delivery.delivery_id,
                 event_id = %pending.delivery.event_id,
-                "delivery stopped in doubt after possible write; not dead-lettering because redelivery may duplicate"
+                "delivery stopped in doubt after possible write; dead-lettered without auto-redelivery"
             );
         }
         DeliveryAttemptOutcome::Noop => {}
