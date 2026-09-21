@@ -640,6 +640,7 @@ impl NodeDeliveryProbe {
                 "acked_without_surfacing": load(&c.acked_without_surfacing),
                 "rejected_identity": load(&c.rejected_identity),
                 "rejected_sequence_gap": load(&c.rejected_sequence_gap),
+                "advanced_past_unobserved": load(&c.advanced_past_unobserved),
             },
             "acks": {
                 "enqueued": load(&c.ack_enqueued),

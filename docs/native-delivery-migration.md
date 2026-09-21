@@ -91,9 +91,11 @@ Four rules belong in the seam itself:
    gets nothing back means handed over, not delivered.
 
 _Effort: **not small** — see the note below. Exit: parity suite green, unchanged,
-with **the retry path's** PTY delivery behind the new trait, **plus** the four
-rules each held by a test that has been shown to fail against the shipping
-route._
+with **the retry path's** PTY delivery behind the new trait, **plus** mutation-
+proven coordinator tests for all four rules. The shipping PTY route itself has
+behavioral coverage for rule 1's pre/post-write boundary and rule 4's refusal
+to fabricate an observed acknowledgement; rule 2's cancellation and duplicate
+guards and rule 3's route-aware settlement remain coordinator-level tests._
 
 > **Scope correction.** "The PTY backend behind the new trait" overstates what
 > phase 0 delivered. Relay has three PTY write paths and phase 0 put one behind

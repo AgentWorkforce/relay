@@ -166,6 +166,82 @@ async fn never_resends_on_doubt() {
     assert_eq!(pty.sends, 0);
 }
 
+/// Rule 2 at the cancellation boundary: dropping a send future after its
+/// backend starts must leave enough route state to refuse a second write.
+///
+/// The fleet path applies a wall-clock deadline outside `DeliverySeam::send`.
+/// A PTY frame can already be admitted to the sole writer queue when that
+/// deadline fires, so "the future returned no receipt" is not evidence that
+/// nothing was written.
+#[tokio::test]
+async fn a_cancelled_send_remains_in_doubt_and_is_not_retried() {
+    #[derive(Debug)]
+    struct PendingBackend {
+        sends: usize,
+    }
+
+    impl DeliveryBackend for PendingBackend {
+        fn route_id(&self) -> RouteId {
+            RouteId::new("pending")
+        }
+
+        fn transport_status(&mut self) -> TransportStatus {
+            TransportStatus::Available
+        }
+
+        fn send<'a>(
+            &'a mut self,
+            _request: &'a SendRequest,
+        ) -> DeliveryBackendFuture<'a, Result<SendStatus, DeliveryError>> {
+            self.sends += 1;
+            Box::pin(std::future::pending())
+        }
+
+        fn settle<'a>(
+            &'a mut self,
+            _request: &'a SettleRequest,
+        ) -> DeliveryBackendFuture<'a, SettleStatus> {
+            Box::pin(async { SettleStatus::HandedOver(HandoverState::HandedOver) })
+        }
+    }
+
+    let delivery_id = relay_broker::ids::DeliveryId::new("del_cancelled");
+    let mut backend = PendingBackend { sends: 0 };
+    let mut seam = DeliverySeam::new();
+
+    let timed_out = tokio::time::timeout(
+        std::time::Duration::from_millis(10),
+        seam.send(
+            &mut [&mut backend],
+            SendRequest::new(delivery_id.clone(), "possibly written"),
+        ),
+    )
+    .await;
+    assert!(timed_out.is_err(), "the fixture backend must stay pending");
+    assert_eq!(backend.sends, 1, "the first attempt must reach the backend");
+    assert_eq!(
+        seam.recorded_route(&delivery_id).map(RouteId::as_str),
+        Some("pending"),
+        "cancelling after backend admission must leave a route receipt"
+    );
+
+    let retry = seam
+        .send(
+            &mut [&mut backend],
+            SendRequest::new(delivery_id, "must not be written twice"),
+        )
+        .await
+        .expect("a cancelled delivery resolves from its provisional receipt");
+    assert!(
+        matches!(
+            retry,
+            SendOutcome::AlreadySent(ref receipt) if receipt.status == SendStatus::InDoubt
+        ),
+        "a cancelled send must be classified already-sent/in-doubt, got {retry:?}"
+    );
+    assert_eq!(backend.sends, 1, "retrying must not call the backend again");
+}
+
 #[tokio::test]
 async fn records_route_for_each_send() {
     let mut stale_native = ScriptedBackend::unavailable("native", "version gate failed")
@@ -240,6 +316,11 @@ async fn never_acks_without_observation() {
 
     let settle = seam.settle(&mut [&mut pty], &delivery_id).await;
 
+    assert_eq!(
+        pty.settles.len(),
+        1,
+        "the seam must consult the recorded route; an empty settle implementation must fail this test"
+    );
     assert!(matches!(
         settle,
         SettleOutcome::Settled(SettleStatus::HandedOver(HandoverState::HandedOver))
@@ -402,16 +483,17 @@ async fn settle_reports_an_evicted_receipt_as_unknown_not_absent() {
     );
 }
 
-/// Rule 4, made structural rather than aspirational.
+/// Rule 4's evidence vocabulary, made explicit rather than stringly typed.
 ///
 /// The rule is "never claim an acknowledgement you did not observe". A free
 /// string could not express it — `ObservedAck::new("ok")` would have satisfied
 /// the type while observing nothing. Every constructor now demands a named
 /// observation, and there is no variant meaning "nothing", so a backend cannot
-/// report `Acked` without saying what it saw.
+/// report `Acked` without saying what it claims it saw.
 ///
-/// This is the one property that has to hold for backends that do not exist
-/// yet, which is why it is enforced by the type and not by review.
+/// This is not structural proof of observation: `peer_ack("ok")` can still be
+/// constructed from arbitrary text. The shipping PTY route's behavioral test
+/// is what proves that route never upgrades a hand-off into an observed ack.
 #[test]
 fn an_acknowledgement_must_name_the_observation_behind_it() {
     let echo = ObservedAck::echo("relay-inbound-42");

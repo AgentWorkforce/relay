@@ -936,23 +936,24 @@ impl BrokerRuntime {
                         {
                             // F5's other half: this call site advanced silently
                             // while `worker_events.rs` recorded the advance.
-                            self.node_delivery_probe.record_disposition(
-                                &deliver,
-                                crate::node_delivery_probe::DeliverDisposition::AdvancedPastUnobserved,
-                            );
+                            // The disposal choke point records this delivery
+                            // together with every covered sibling; recording it
+                            // here too would double-count the current frame.
                             crate::runtime::delivery::advance_pending_fleet_ack_floors(
                                 &mut self.pending_deliveries,
                                 &deliver.agent_id,
                                 up_to_seq,
                             );
-                            let agent_id = deliver.agent_id.clone();
-                            self.pending_deliveries.retain(|_, sibling| {
-                                !sibling.withheld_fleet_ack.as_ref().is_some_and(|sibling| {
-                                    sibling.agent_id == agent_id
-                                        && sibling.seq > 0
-                                        && sibling.seq <= up_to_seq
-                                })
-                            });
+                            let _ = dispose_pending_fleet_ack_prefix(
+                                &mut self.pending_deliveries,
+                                &mut self.terminal_failed_deliveries,
+                                &self.node_delivery_probe,
+                                &self.sdk_out_tx,
+                                &mut self.dead_letters,
+                                &deliver.agent_id,
+                                up_to_seq,
+                            )
+                            .await;
                         }
                     }
                     tracing::warn!(

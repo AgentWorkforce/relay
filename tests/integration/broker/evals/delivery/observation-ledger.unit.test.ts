@@ -69,6 +69,10 @@ describe('assertDeliveryObservationLedger — accepts', () => {
 });
 
 describe('assertDeliveryObservationLedger — still fails on', () => {
+  it('an empty event stream', () => {
+    assert.throws(() => assertDeliveryObservationLedger([], AGENT), /delivery observation ledger is empty/);
+  });
+
   it('an observed delivery whose ack went missing', () => {
     assert.throws(
       () => assertDeliveryObservationLedger([verified('d1', 'echo')], AGENT),
@@ -89,6 +93,22 @@ describe('assertDeliveryObservationLedger — still fails on', () => {
     assert.throws(
       () => assertDeliveryObservationLedger([verified('d1', 'timeout_fallback')], AGENT),
       /must be reported as delivery_unobserved/
+    );
+  });
+
+  it('cross-delivery cancellation of a missing ack and a forbidden ack', () => {
+    assert.throws(
+      () =>
+        assertDeliveryObservationLedger(
+          [
+            verified('missing-ack', 'echo'),
+            ack('forbidden-ack'),
+            verified('forbidden-ack', 'timeout_fallback'),
+            unobserved('forbidden-ack'),
+          ],
+          AGENT
+        ),
+      /delivery_id=(missing-ack|forbidden-ack)/
     );
   });
 });

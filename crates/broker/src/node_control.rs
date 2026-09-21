@@ -6519,18 +6519,22 @@ mod in_doubt_cursor_seeding_tests {
     /// actually calls, and the bug was entirely in that choice — the guard was
     /// correct and the call site defeated it from the line above.
     ///
-    /// Extracts the `if in_doubt` block by balancing braces (a fixed-size
-    /// window guarded a quarter of its arm elsewhere in this crate and let two
-    /// real regressions through) and asserts it marks the delivery seen without
-    /// seeding a cursor.
+    /// Extracts the enclosing `Err(error) =>` arm by balancing braces. Guarding
+    /// only the nested `if in_doubt` block is evadable by moving
+    /// `commit_received` one line above it — the exact location of the original
+    /// defect. Anti-vacuity checks pin the anchors and minimum span too.
     #[test]
     fn the_fleet_in_doubt_branch_does_not_seed_a_cursor_origin() {
         let source = include_str!("runtime/fleet.rs");
-        let needle = "if in_doubt {";
-        let open = source
-            .find(needle)
-            .map(|offset| offset + needle.len() - 1)
+        let in_doubt = source
+            .find("if in_doubt {")
             .expect("fleet.rs must still have an `if in_doubt` branch");
+        let needle = "Err(error) => {";
+        let open = source
+            .get(..in_doubt)
+            .and_then(|prefix| prefix.rfind(needle))
+            .map(|offset| offset + needle.len() - 1)
+            .expect("the in-doubt branch must remain inside an Err(error) arm");
 
         let bytes = source.as_bytes();
         let mut depth = 0usize;
@@ -6548,20 +6552,28 @@ mod in_doubt_cursor_seeding_tests {
                 _ => {}
             }
         }
-        let branch = &source[open..=close.expect("the in_doubt branch must be brace-balanced")];
+        let arm = &source[open..=close.expect("the Err(error) arm must be brace-balanced")];
 
         // Compare against CODE, not prose. The branch carries a comment
         // explaining why `commit_received` is wrong here, and a naive substring
         // check matches its own explanation.
-        let code: String = branch
+        let code: String = arm
             .lines()
             .map(|line| line.split("//").next().unwrap_or(""))
             .collect::<Vec<_>>()
             .join("\n");
 
         assert!(
+            code.lines().count() >= 35,
+            "extracted span is too short to cover the enclosing fleet error arm"
+        );
+        assert!(
+            code.contains("TerminalInDoubtError") && code.contains("if in_doubt"),
+            "extracted the wrong arm: it must classify the typed in-doubt error"
+        );
+        assert!(
             code.contains("abandon_unconfirmed_delivery"),
-            "extracted the wrong span: the in_doubt branch must still abandon the delivery"
+            "the in-doubt error arm must still abandon the delivery"
         );
         assert!(
             code.contains("mark_delivery_seen"),
@@ -6570,7 +6582,7 @@ mod in_doubt_cursor_seeding_tests {
         );
         assert!(
             !code.contains("commit_received"),
-            "the in_doubt branch calls commit_received, which seeds \
+            "the fleet error arm calls commit_received around the in-doubt branch, which seeds \
              acked = received = seq - 1 for an identity's first sequenced frame. \
              That sets has_sequenced_position, so abandon_unconfirmed_delivery's \
              refusal to establish a cursor origin from an unobserved delivery \

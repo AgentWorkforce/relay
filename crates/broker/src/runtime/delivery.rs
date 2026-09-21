@@ -796,25 +796,29 @@ pub(crate) async fn try_inject_pending_relay_message(
         .event_id
         .clone()
         .unwrap_or_else(|| EventId::new(format!("flush_{}", Uuid::new_v4().simple())));
+    // Build the delivery outside the timed future so the timeout arm can mark
+    // the exact pending entry terminal. Looking it up after cancellation by
+    // worker/event would be ambiguous if duplicate source events were queued.
+    let delivery_id = DeliveryId::new(format!("del_{}", Uuid::new_v4().simple()));
+    let delivery = RelayDelivery {
+        delivery_id: delivery_id.clone(),
+        event_id,
+        workspace_id: msg.workspace_id.clone(),
+        workspace_alias: msg.workspace_alias.clone(),
+        from: msg.from.clone(),
+        target: msg.target.clone(),
+        body: msg.body.clone(),
+        thread_id: msg.thread_id.clone(),
+        priority: Some(msg.priority),
+        injection_mode: msg.mode.clone(),
+    };
     match timeout(
         retry_interval,
-        queue_and_try_delivery_raw(
+        insert_and_attempt_delivery(
             workers,
             pending_deliveries,
             worker_name,
-            &event_id,
-            &msg.from,
-            // Use the ORIGINAL routing target captured at queue time —
-            // `#general`, the DM recipient name, `"thread"`, etc. Falling
-            // back to `worker_name` here would silently reframe channel
-            // messages as direct-to-worker messages on drain.
-            &msg.target,
-            &msg.body,
-            msg.thread_id.clone(),
-            msg.workspace_id.clone(),
-            msg.workspace_alias.clone(),
-            msg.priority,
-            msg.mode.clone(),
+            delivery,
             retry_interval,
             withheld_fleet_ack,
             withheld_fleet_ack_floor,
@@ -824,10 +828,21 @@ pub(crate) async fn try_inject_pending_relay_message(
     .await
     {
         Ok(result) => result,
-        Err(_) => Err(anyhow::anyhow!(
-            "pending relay delivery timed out after {}ms",
-            retry_interval.as_millis()
-        )),
+        Err(_) => {
+            let reason = format!(
+                "pending relay delivery timed out after {}ms; write outcome is unknown",
+                retry_interval.as_millis()
+            );
+            if let Some(pending) = pending_deliveries.get_mut(&delivery_id) {
+                // The seam wrote an in-doubt receipt before awaiting the
+                // backend. Put the pending entry at the terminal cap too, so
+                // no maintenance tick can race another transport attempt.
+                pending.failed_attempts = MAX_DELIVERY_RETRIES;
+                pending.last_error = Some(reason.clone());
+                pending.next_retry_at = Instant::now();
+            }
+            Err(in_doubt_error(reason))
+        }
     }
 }
 
@@ -1389,6 +1404,69 @@ pub(crate) fn take_pending_for_worker(
         .into_iter()
         .filter_map(|delivery_id| pending_deliveries.remove(&delivery_id))
         .collect()
+}
+
+/// Remove fleet-backed pending deliveries covered by a cursor advance.
+///
+/// Advancing past an unobserved delivery makes every sibling at or below the
+/// new floor non-retryable: the engine will consider that prefix settled, but
+/// the broker never observed those sibling writes land. Return the full
+/// entries so callers can record a disposition, emit `MessageDeliveryFailed`,
+/// and retain each body in the dead-letter store instead of silently erasing
+/// it with `HashMap::retain`.
+pub(crate) fn take_pending_fleet_ack_prefix(
+    pending_deliveries: &mut HashMap<DeliveryId, PendingDelivery>,
+    agent_id: &str,
+    up_to_seq: u64,
+) -> Vec<PendingDelivery> {
+    let delivery_ids: Vec<DeliveryId> = pending_deliveries
+        .iter()
+        .filter(|(_, pending)| {
+            pending.withheld_fleet_ack.as_ref().is_some_and(|deliver| {
+                deliver.agent_id == agent_id && deliver.seq > 0 && deliver.seq <= up_to_seq
+            })
+        })
+        .map(|(delivery_id, _)| delivery_id.clone())
+        .collect();
+
+    delivery_ids
+        .into_iter()
+        .filter_map(|delivery_id| pending_deliveries.remove(&delivery_id))
+        .collect()
+}
+
+/// Account for every pending sibling invalidated by advancing a fleet cursor
+/// past an unobserved delivery.
+///
+/// Both advance sites (`fleet.rs` and `worker_events.rs`) use this choke point,
+/// so neither can regress to a silent `retain`: every removed message is
+/// terminal-guarded, receives a node-delivery disposition, emits
+/// `MessageDeliveryFailed`, and is dead-lettered as non-redeliverable.
+pub(super) async fn dispose_pending_fleet_ack_prefix(
+    pending_deliveries: &mut HashMap<DeliveryId, PendingDelivery>,
+    terminal_failed_deliveries: &mut super::event_loop::TerminalDeliveryGuard,
+    node_delivery_probe: &crate::node_delivery_probe::NodeDeliveryProbe,
+    sdk_out_tx: &mpsc::Sender<ProtocolEnvelope<Value>>,
+    dead_letters: &mut DeadLetterStore,
+    agent_id: &str,
+    up_to_seq: u64,
+) -> Result<usize> {
+    let dropped = take_pending_fleet_ack_prefix(pending_deliveries, agent_id, up_to_seq);
+    for sibling in &dropped {
+        terminal_failed_deliveries.insert(sibling.delivery.delivery_id.clone());
+        if let Some(deliver) = sibling.withheld_fleet_ack.as_ref() {
+            node_delivery_probe.record_disposition(
+                deliver,
+                crate::node_delivery_probe::DeliverDisposition::AdvancedPastUnobserved,
+            );
+        }
+    }
+    let reason = format!(
+        "{}cursor advanced past an unobserved sibling delivery",
+        crate::runtime::dead_letter::IN_DOUBT_REASON_PREFIX
+    );
+    emit_dropped_delivery_failures(sdk_out_tx, dead_letters, &dropped, &reason).await?;
+    Ok(dropped.len())
 }
 
 /// Choke point for every worker-exit / teardown disposition (agent release,

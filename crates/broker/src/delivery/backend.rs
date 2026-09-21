@@ -120,8 +120,11 @@ pub enum HandoverState {
 /// Seam rule 4 is "never claim an acknowledgement you did not observe". A free
 /// string cannot express that rule: a backend could write
 /// `ObservedAck::new("ok")` without observing anything, and the type would
-/// agree. Naming the admissible kinds of evidence makes the rule structural —
-/// a route has to say WHAT it saw, and there is no variant meaning "nothing".
+/// agree. Naming the admissible kinds of evidence makes unsupported claims
+/// visible and reviewable — a route has to say WHAT it claims it saw, and
+/// there is no variant meaning "nothing". It does not prove the claim:
+/// `PeerAck { detail }` still accepts backend-supplied text, so real-route
+/// behavioral tests remain the enforcement for rule 4.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum AckEvidence {
     /// The route matched the injected text echoed back by the recipient.
@@ -140,7 +143,8 @@ pub enum AckEvidence {
 /// Acknowledgement evidence observed by the route that accepted the send.
 ///
 /// Constructible only from an [`AckEvidence`], so "acknowledged" cannot be
-/// asserted without naming the observation behind it.
+/// asserted without naming the claimed observation behind it. The type does
+/// not independently verify that a backend actually observed that evidence.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ObservedAck {
     evidence: AckEvidence,
@@ -344,10 +348,16 @@ impl DeliverySeam {
         Self::MAX_RECEIPTS
     }
 
-    /// Cancellation safety: this coordinator records a receipt only after a
-    /// backend returns. If a caller cancels while `backend.send` is pending,
-    /// the caller must conservatively treat the delivery as unresolved by that
-    /// route and must not retry unless the backend reported a pre-write error.
+    /// Cancellation safety: record the selected route as in doubt before
+    /// awaiting `backend.send`. If the caller cancels after that await begins,
+    /// the provisional receipt survives and a later attempt returns
+    /// [`SendOutcome::AlreadySent`] instead of writing again.
+    ///
+    /// An explicit pre-write refusal removes the provisional receipt and may
+    /// fall back. Cancellation cannot prove that boundary, so it deliberately
+    /// fails closed: a delivery that might not have been written can become
+    /// non-redeliverable, but a delivery that might have been written is never
+    /// duplicated.
     pub async fn send(
         &mut self,
         backends: &mut [&mut dyn DeliveryBackend],
@@ -382,24 +392,35 @@ impl DeliverySeam {
             }
 
             let route = backend.route_id();
+            // This write-ahead receipt is the cancellation boundary. It must
+            // precede the first await that can admit bytes to a transport.
+            // Successful outcomes replace its status; strictly pre-write
+            // outcomes remove it before considering another backend.
+            self.record_receipt(SendReceipt::new(
+                request.delivery_id.clone(),
+                route.clone(),
+                SendStatus::InDoubt,
+            ));
             match backend.send(&request).await {
                 Ok(SendStatus::Refused) => {
+                    self.remove_receipt(&request.delivery_id, &route);
                     last_pre_write_error = Some(DeliveryError::unavailable(format!(
                         "route {route} refused before write"
                     )));
                 }
                 Ok(status) => {
                     let receipt = SendReceipt::new(request.delivery_id.clone(), route, status);
-                    self.record_receipt(receipt.clone());
+                    self.replace_receipt(receipt.clone());
                     return Ok(SendOutcome::Fresh(receipt));
                 }
                 Err(error) if error.is_pre_write() => {
+                    self.remove_receipt(&request.delivery_id, &route);
                     last_pre_write_error = Some(error);
                 }
                 Err(error) => {
-                    let receipt =
-                        SendReceipt::new(request.delivery_id.clone(), route, SendStatus::InDoubt);
-                    self.record_receipt(receipt);
+                    // The provisional receipt already records this route as in
+                    // doubt. Keep it: a committed error and a cancelled future
+                    // have the same retry rule.
                     return Err(error);
                 }
             }
@@ -431,8 +452,6 @@ impl DeliverySeam {
             .find(|receipt| &receipt.delivery_id == delivery_id)
         else {
             return if self.evicted.contains(delivery_id) {
-                // Sent, then forgotten by the bounded receipt memory. Not
-                // absence.
                 SettleOutcome::RouteUnknown
             } else {
                 SettleOutcome::NoReceipt
@@ -484,5 +503,31 @@ impl DeliverySeam {
         }
         self.evicted.remove(&receipt.delivery_id);
         self.receipts.push_back(receipt);
+    }
+
+    fn replace_receipt(&mut self, receipt: SendReceipt) {
+        if let Some(recorded) = self
+            .receipts
+            .iter_mut()
+            .rev()
+            .find(|recorded| recorded.delivery_id == receipt.delivery_id)
+        {
+            *recorded = receipt;
+        } else {
+            // Defensive fallback: the seam is exclusively borrowed while a
+            // send is in flight, so the provisional receipt cannot normally
+            // disappear before the backend returns.
+            self.record_receipt(receipt);
+        }
+    }
+
+    fn remove_receipt(&mut self, delivery_id: &DeliveryId, route: &RouteId) {
+        if let Some(index) = self
+            .receipts
+            .iter()
+            .rposition(|receipt| &receipt.delivery_id == delivery_id && &receipt.route == route)
+        {
+            self.receipts.remove(index);
+        }
     }
 }
