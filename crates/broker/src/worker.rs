@@ -67,7 +67,7 @@ const WORKER_SPAWN_STABILITY_WINDOW: Duration = Duration::from_millis(250);
 /// up. Bounded so a wrapper stuck in uninterruptible sleep cannot stall the
 /// maintenance tick, which also drives delivery retries.
 const ORPHAN_REAP_TIMEOUT: Duration = Duration::from_secs(2);
-const WORKER_WRITE_QUEUE_CAPACITY: usize = 128;
+pub(crate) const WORKER_WRITE_QUEUE_CAPACITY: usize = 128;
 /// A full command queue means the worker is already backpressured. Do not
 /// retain another normal request indefinitely waiting for capacity.
 const WORKER_COMMAND_QUEUE_TIMEOUT: Duration = Duration::from_millis(250);
