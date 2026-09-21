@@ -552,11 +552,21 @@ export async function waitForReturn(
  * verified.
  *
  * Delivery is watched across every kind the broker emits for an inbound
- * message, because the shape differs by runtime. A PTY delivery runs
+ * message, because the shape differs by runtime. An OBSERVED PTY delivery runs
  * `relay_inbound` -> `delivery_queued` -> `delivery_injected` -> `delivery_ack`
  * -> `message_delivery_confirmed` -> `delivery_verified` -> `delivery_read_ack`;
  * a native one is thinner, because the sidecar acks the `deliver_relay` frame
  * directly and never sends the queued/injected/verified frames.
+ *
+ * An UNOBSERVED PTY delivery — the worker wrote the injection and never saw it
+ * echo back — runs `relay_inbound` -> `delivery_queued` -> `delivery_injected`
+ * -> `delivery_verified` (verification `timeout_fallback`) ->
+ * `delivery_unobserved`, and carries NO `delivery_ack`,
+ * `message_delivery_confirmed` or `delivery_read_ack`: seam rule 4 forbids
+ * claiming an acknowledgement nobody observed. `delivery_unobserved` is
+ * therefore a delivery-reaching signal in its own right and must be watched
+ * here, or an arm waiting on this function would time out on a message that
+ * did reach the recipient.
  */
 export async function waitForDelivery(
   harness: BrokerHarness,
@@ -570,7 +580,10 @@ export async function waitForDelivery(
   // recipient, which is the same substitution of a well-formed signal for an
   // unverified fact that this whole issue is about.
   //
-  // PTY path: delivery_injected (stdin written) -> delivery_ack -> ...
+  // PTY path (observed): delivery_injected (stdin written) -> delivery_ack -> ...
+  // PTY path (unobserved): delivery_injected -> delivery_verified ->
+  //   delivery_unobserved. No ack is emitted, so `delivery_unobserved` has to
+  //   count as arrival here.
   // Native path: delivery_ack (sidecar acked deliver_relay frame) only —
   //   the sidecar never sends queued/injected/verified frames.
   const kinds = new Set([
@@ -578,6 +591,7 @@ export async function waitForDelivery(
     'delivery_ack',
     'message_delivery_confirmed',
     'delivery_verified',
+    'delivery_unobserved',
     'delivery_read_ack',
   ]);
   const deadline = Date.now() + options.timeoutMs;

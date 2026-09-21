@@ -188,3 +188,71 @@ export function eventsForAgent(events: BrokerEvent[], name: string, kind?: strin
     (e) => 'name' in e && (e as BrokerEvent & { name: string }).name === name && (!kind || e.kind === kind)
   );
 }
+
+// ── Observation accounting ───────────────────────────────────────────────────
+
+/**
+ * The `verification` values that mean the broker actually observed the
+ * delivery land, mirroring `is_observed` in
+ * `crates/broker/src/broker/delivery_verification.rs`.
+ *
+ * `echo` — the worker saw the injection echoed back by the child.
+ * `process_exit` — a headless child consumed the message and exited cleanly.
+ *
+ * Anything else (today: `timeout_fallback`) is a delivery the worker wrote and
+ * never saw land. Seam rule 4 forbids claiming an acknowledgement nobody
+ * observed, so those deliveries carry NO `delivery_ack`.
+ */
+const OBSERVED_VERIFICATIONS = new Set(['echo', 'process_exit']);
+
+export function isObservedVerification(event: BrokerEvent): boolean {
+  const { verification } = event as BrokerEvent & { verification?: string };
+  // A frame with no `verification` predates the field; treat it as observed so
+  // this helper cannot retroactively fail older recordings.
+  return verification === undefined || OBSERVED_VERIFICATIONS.has(verification);
+}
+
+/**
+ * Assert the delivery-observation ledger balances for one agent.
+ *
+ * The pre-seam invariant was `delivery_ack.length === delivery_verified.length`.
+ * That equality is now wrong by construction: an unobserved delivery emits
+ * `delivery_verified` (verification `timeout_fallback`) plus
+ * `delivery_unobserved`, and deliberately no `delivery_ack`.
+ *
+ * The invariant that survives is an accounting identity — every verified
+ * delivery is EITHER observed and acked, OR unobserved and reported as such.
+ * Asserting the identity rather than the old equality keeps the test sensitive
+ * to a dropped ack while allowing a legitimate fallback.
+ */
+export function assertDeliveryObservationLedger(
+  events: BrokerEvent[],
+  name: string,
+  message?: string
+): { acks: BrokerEvent[]; verified: BrokerEvent[]; unobserved: BrokerEvent[] } {
+  const acks = eventsForAgent(events, name, 'delivery_ack');
+  const verified = eventsForAgent(events, name, 'delivery_verified');
+  const unobserved = eventsForAgent(events, name, 'delivery_unobserved');
+
+  const observedVerified = verified.filter(isObservedVerification);
+  const unobservedVerified = verified.filter((e) => !isObservedVerification(e));
+  const prefix = message ? `${message}: ` : '';
+
+  assert.equal(
+    acks.length,
+    observedVerified.length,
+    `${prefix}every OBSERVED delivery_verified must have a delivery_ack ` +
+      `(acks=${acks.length}, observed verified=${observedVerified.length}, ` +
+      `unobserved verified=${unobservedVerified.length})`
+  );
+
+  assert.equal(
+    unobserved.length,
+    unobservedVerified.length,
+    `${prefix}every UNOBSERVED delivery_verified must be reported as ` +
+      `delivery_unobserved (delivery_unobserved=${unobserved.length}, ` +
+      `unobserved verified=${unobservedVerified.length})`
+  );
+
+  return { acks, verified, unobserved };
+}

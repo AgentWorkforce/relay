@@ -18,6 +18,7 @@ import test, { type TestContext } from 'node:test';
 import type { BrokerEvent } from '@agent-relay/harness-driver';
 import { BrokerHarness, checkPrerequisites, uniqueSuffix } from './utils/broker-harness.js';
 import {
+  assertDeliveryObservationLedger,
   assertNoDroppedDeliveries,
   assertNoDoubleDelivery,
   assertAgentExists,
@@ -112,11 +113,12 @@ test('stress: sustained 20 messages with 2s intervals', { timeout: 180_000 }, as
     await sleep(10_000);
 
     const events = harness.getEvents();
-    const acks = eventsForAgent(events, agentName, 'delivery_ack');
-    const verified = eventsForAgent(events, agentName, 'delivery_verified');
+    const { verified } = assertDeliveryObservationLedger(events, agentName, 'sustained load');
 
-    assert.ok(acks.length >= 18, `should have at least 18 delivery_ack events, got ${acks.length}`);
-    assert.equal(acks.length, verified.length, 'delivery_ack count should match delivery_verified count');
+    assert.ok(
+      verified.length >= 18,
+      `should have at least 18 delivery_verified events, got ${verified.length}`
+    );
 
     assertNoDroppedDeliveries(events);
 
