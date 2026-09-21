@@ -9,8 +9,8 @@ use crate::{
     node_control::{delivery_ack, handler_unavailable_result, DeliveryDecision, ReceiptAckability},
     node_delivery_probe::DeliverDisposition,
     terminal_control::{
-        TerminalControlCommand, TerminalControlEvent, TerminalFromCloud, TerminalMode,
-        TerminalToCloud, TERMINAL_CLOSE_RESERVE,
+        request_terminal_reconnect, TerminalControlCommand, TerminalControlEvent,
+        TerminalFromCloud, TerminalMode, TerminalToCloud, TERMINAL_CLOSE_RESERVE,
     },
     worker::LiveFleetInventoryCandidate,
 };
@@ -862,6 +862,16 @@ impl BrokerRuntime {
                 self.handle_task_error(error).await
             }
             FleetControlEvent::Message(RelaycastToBroker::Ping(_)) => {}
+            FleetControlEvent::Message(RelaycastToBroker::TerminalReconnectRequested(request)) => {
+                let queued =
+                    request_terminal_reconnect(&self.terminal_reconnect_tx, request.generation);
+                tracing::info!(
+                    target = "relay_broker::terminal",
+                    cloud_generation = request.generation,
+                    queued,
+                    "received terminal reconnect request on the live node-control lane"
+                );
+            }
         }
     }
 

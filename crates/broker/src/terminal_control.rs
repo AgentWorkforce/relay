@@ -10,9 +10,10 @@ use std::{
 };
 
 use futures_util::{Sink, SinkExt, StreamExt};
+use rand::Rng;
 use relaycast::ORIGIN_ACTOR_HEADER;
 use serde::{Deserialize, Serialize};
-use tokio::sync::mpsc;
+use tokio::sync::{mpsc, watch};
 use tokio_tungstenite::{
     connect_async,
     tungstenite::{client::IntoClientRequest, Message},
@@ -63,6 +64,89 @@ const PRIORITY_QUEUE_CAPACITY: usize = 8;
 // session frames get a distinct lane of that size so a full bulk-output queue
 // cannot shed the only signal that tells a client its target is gone.
 pub(crate) const TERMINAL_CLOSE_RESERVE: usize = 32;
+
+/// Equal-jitter backoff keeps every retry inside `[base/2, base]`. The base
+/// still doubles to [`MAX_RECONNECT_DELAY`], so the actual sleep is capped at
+/// 30 seconds while a fleet of nodes does not redial in lockstep.
+fn reconnect_delay_with_jitter(base: Duration, sample: u64) -> Duration {
+    let base_millis = base.as_millis().min(u64::MAX as u128) as u64;
+    let floor_millis = base_millis / 2;
+    let jitter_span = base_millis.saturating_sub(floor_millis);
+    let jitter_millis = if jitter_span == 0 {
+        0
+    } else {
+        sample % (jitter_span + 1)
+    };
+    Duration::from_millis(floor_millis + jitter_millis)
+}
+
+fn next_reconnect_delay(base: Duration) -> Duration {
+    reconnect_delay_with_jitter(base, rand::thread_rng().gen())
+}
+
+/// Publish a generation only when it advances the outstanding request. This
+/// coalesces an attach burst into one wake-up and, because `watch` is a
+/// separate one-slot state channel, cannot be starved by terminal output.
+pub(crate) fn request_terminal_reconnect(
+    reconnect_tx: &watch::Sender<Option<u64>>,
+    generation: u64,
+) -> bool {
+    reconnect_tx.send_if_modified(|current| {
+        if current.is_some_and(|current| current >= generation) {
+            return false;
+        }
+        *current = Some(generation);
+        true
+    })
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ReconnectWait {
+    Elapsed,
+    Requested(u64),
+    Shutdown,
+}
+
+fn retain_latest_generation(current: &mut Option<u64>, generation: u64) {
+    *current = Some(current.map_or(generation, |value| value.max(generation)));
+}
+
+/// Wait for the next dial without making broker shutdown wait behind the
+/// reconnect cap. `Send` commands observed while disconnected are deliberately
+/// discarded: `TerminalControlEvent::Disconnected` makes the runtime clear the
+/// old cloud sessions, so replaying their output onto a replacement lane would
+/// target invalid session ids and can only corrupt the new connection.
+async fn wait_for_reconnect(
+    delay: Duration,
+    command_rx: &mut mpsc::Receiver<TerminalControlCommand>,
+    reconnect_rx: &mut watch::Receiver<Option<u64>>,
+) -> ReconnectWait {
+    let sleep = tokio::time::sleep(delay);
+    tokio::pin!(sleep);
+    let mut reconnect_requests_open = true;
+    loop {
+        tokio::select! {
+            _ = &mut sleep => return ReconnectWait::Elapsed,
+            command = command_rx.recv() => match command {
+                Some(TerminalControlCommand::Shutdown) | None => return ReconnectWait::Shutdown,
+                Some(TerminalControlCommand::Send(_)) => {
+                    tracing::debug!(
+                        target = "relay_broker::terminal",
+                        "dropping stale terminal frame while the terminal lane is disconnected"
+                    );
+                }
+            },
+            changed = reconnect_rx.changed(), if reconnect_requests_open => match changed {
+                Ok(()) => {
+                    if let Some(generation) = *reconnect_rx.borrow_and_update() {
+                        return ReconnectWait::Requested(generation);
+                    }
+                }
+                Err(_) => reconnect_requests_open = false,
+            },
+        }
+    }
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum TerminalFrameEnqueue {
@@ -292,14 +376,20 @@ pub(crate) struct TerminalControlConfig {
     /// tests shrink this so a blackholed-peer reconnect is covered in well
     /// under a second instead of 48s.
     pub(crate) read_idle_timeout: Option<Duration>,
+    /// Generation-coalescing reconnect requests received over the independent
+    /// node-control lane. There is still exactly one terminal dial loop: this
+    /// receiver only wakes or invalidates its current connection.
+    pub(crate) reconnect_rx: watch::Receiver<Option<u64>>,
 }
 
 pub(crate) async fn run_terminal_control_client(
-    config: TerminalControlConfig,
+    mut config: TerminalControlConfig,
     mut command_rx: mpsc::Receiver<TerminalControlCommand>,
     event_tx: mpsc::Sender<TerminalControlEvent>,
 ) {
     let mut reconnect_delay = INITIAL_RECONNECT_DELAY;
+    let mut satisfied_generation: Option<u64> = None;
+    let mut pending_generation: Option<u64> = None;
     loop {
         let token = config
             .session_token
@@ -307,13 +397,16 @@ pub(crate) async fn run_terminal_control_client(
             .ok()
             .and_then(|token| token.clone());
         let Some(token) = token.filter(|token| !token.trim().is_empty()) else {
-            tokio::select! {
-                command = command_rx.recv() => {
-                    if matches!(command, Some(TerminalControlCommand::Shutdown) | None) { return; }
-                    // Preserve bounded backpressure by dropping commands only
-                    // when the caller itself chose a non-blocking try_send.
+            match wait_for_reconnect(TOKEN_WAIT_DELAY, &mut command_rx, &mut config.reconnect_rx)
+                .await
+            {
+                ReconnectWait::Shutdown => return,
+                ReconnectWait::Requested(generation) => {
+                    pending_generation = Some(
+                        pending_generation.map_or(generation, |current| current.max(generation)),
+                    );
                 }
-                _ = tokio::time::sleep(TOKEN_WAIT_DELAY) => {}
+                ReconnectWait::Elapsed => {}
             }
             continue;
         };
@@ -322,7 +415,22 @@ pub(crate) async fn run_terminal_control_client(
             Ok(request) => request,
             Err(error) => {
                 tracing::warn!(target = "relay_broker::terminal", error = %error, "invalid fleet terminal ws url");
-                tokio::time::sleep(reconnect_delay).await;
+                match wait_for_reconnect(
+                    next_reconnect_delay(reconnect_delay),
+                    &mut command_rx,
+                    &mut config.reconnect_rx,
+                )
+                .await
+                {
+                    ReconnectWait::Shutdown => return,
+                    ReconnectWait::Requested(generation) => {
+                        pending_generation = Some(
+                            pending_generation
+                                .map_or(generation, |current| current.max(generation)),
+                        );
+                    }
+                    ReconnectWait::Elapsed => {}
+                }
                 reconnect_delay = (reconnect_delay * 2).min(MAX_RECONNECT_DELAY);
                 continue;
             }
@@ -333,8 +441,22 @@ pub(crate) async fn run_terminal_control_client(
                 target = "relay_broker::terminal",
                 "invalid fleet terminal token header"
             );
+            match wait_for_reconnect(
+                next_reconnect_delay(reconnect_delay),
+                &mut command_rx,
+                &mut config.reconnect_rx,
+            )
+            .await
+            {
+                ReconnectWait::Shutdown => return,
+                ReconnectWait::Requested(generation) => {
+                    pending_generation = Some(
+                        pending_generation.map_or(generation, |current| current.max(generation)),
+                    );
+                }
+                ReconnectWait::Elapsed => {}
+            }
             reconnect_delay = (reconnect_delay * 2).min(MAX_RECONNECT_DELAY);
-            tokio::time::sleep(reconnect_delay).await;
             continue;
         };
         request.headers_mut().insert("authorization", header);
@@ -350,15 +472,71 @@ pub(crate) async fn run_terminal_control_client(
             }
         }
 
-        let (socket, _) = match connect_async(request).await {
+        // A TCP/TLS/WebSocket handshake can blackhole just like an established
+        // socket. Keep shutdown and the generation signal live while the dial
+        // future is in flight; dropping the future cancels its socket work.
+        let dial = connect_async(request);
+        tokio::pin!(dial);
+        let mut reconnect_requests_open = true;
+        let connection = loop {
+            tokio::select! {
+                result = &mut dial => break result,
+                command = command_rx.recv() => match command {
+                    Some(TerminalControlCommand::Shutdown) | None => return,
+                    Some(TerminalControlCommand::Send(_)) => {
+                        tracing::debug!(
+                            target = "relay_broker::terminal",
+                            "dropping stale terminal frame while the terminal lane is dialing"
+                        );
+                    }
+                },
+                changed = config.reconnect_rx.changed(), if reconnect_requests_open => match changed {
+                    Ok(()) => {
+                        if let Some(generation) = *config.reconnect_rx.borrow_and_update() {
+                            retain_latest_generation(&mut pending_generation, generation);
+                        }
+                    }
+                    Err(_) => reconnect_requests_open = false,
+                },
+            }
+        };
+        let (socket, _) = match connection {
             Ok(socket) => socket,
             Err(error) => {
                 tracing::warn!(target = "relay_broker::terminal", url = %config.ws_url, error = %error, "fleet terminal ws connect failed");
-                tokio::time::sleep(reconnect_delay).await;
+                match wait_for_reconnect(
+                    next_reconnect_delay(reconnect_delay),
+                    &mut command_rx,
+                    &mut config.reconnect_rx,
+                )
+                .await
+                {
+                    ReconnectWait::Shutdown => return,
+                    ReconnectWait::Requested(generation) => {
+                        pending_generation = Some(
+                            pending_generation
+                                .map_or(generation, |current| current.max(generation)),
+                        );
+                    }
+                    ReconnectWait::Elapsed => {}
+                }
                 reconnect_delay = (reconnect_delay * 2).min(MAX_RECONNECT_DELAY);
                 continue;
             }
         };
+        // A successful WebSocket upgrade is terminal-lane readiness: the node
+        // Durable Object has accepted the lane and advanced its generation.
+        // Consume every hint already visible at that point. This closes the
+        // status/nudge/connect TOCTOU where a stale control frame arrives just
+        // as a new lane becomes ready and would otherwise tear it down again.
+        if let Some(generation) = *config.reconnect_rx.borrow_and_update() {
+            pending_generation =
+                Some(pending_generation.map_or(generation, |current| current.max(generation)));
+        }
+        if let Some(generation) = pending_generation.take() {
+            satisfied_generation =
+                Some(satisfied_generation.map_or(generation, |current| current.max(generation)));
+        }
         reconnect_delay = INITIAL_RECONNECT_DELAY;
         let _ = event_tx.send(TerminalControlEvent::Connected).await;
         let (sink, mut stream) = socket.split();
@@ -387,6 +565,8 @@ pub(crate) async fn run_terminal_control_client(
         let mut shedding = false;
         let mut shed_frames: u64 = 0;
         let mut connected = true;
+        let mut reconnect_requests_open = true;
+        let mut control_requested_reconnect = false;
         let mut last_inbound = Instant::now();
         let read_idle_timeout = config.read_idle_timeout.unwrap_or(READ_IDLE_TIMEOUT);
         let ping_period = PING_INTERVAL
@@ -396,6 +576,30 @@ pub(crate) async fn run_terminal_control_client(
         ping_interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
         while connected {
             tokio::select! {
+                changed = config.reconnect_rx.changed(), if reconnect_requests_open => {
+                    if changed.is_ok() {
+                        let requested = *config.reconnect_rx.borrow_and_update();
+                        if requested.is_some_and(|generation| {
+                            satisfied_generation.is_none_or(|satisfied| generation > satisfied)
+                        }) {
+                            let generation = requested.expect("checked Some generation");
+                            tracing::warn!(
+                                target = "relay_broker::terminal",
+                                cloud_generation = generation,
+                                expected_generation = generation.saturating_add(1),
+                                "cloud reports a dark terminal lane; replacing the local terminal websocket"
+                            );
+                            control_requested_reconnect = true;
+                            connected = false;
+                        }
+                    } else {
+                        // The runtime owns the sender, so this normally means
+                        // shutdown. Disable this select arm to avoid a closed
+                        // watch receiver spinning while the command path
+                        // finishes teardown.
+                        reconnect_requests_open = false;
+                    }
+                }
                 command = command_rx.recv() => match command {
                     Some(TerminalControlCommand::Send(message)) => {
                         // A momentarily full bulk queue means the writer hasn't
@@ -529,7 +733,26 @@ pub(crate) async fn run_terminal_control_client(
         // the writer holds no state that needs a clean unwind.
         writer.abort();
         let _ = event_tx.send(TerminalControlEvent::Disconnected).await;
-        tokio::time::sleep(reconnect_delay).await;
+        if control_requested_reconnect {
+            // The cloud already observed the old lane as absent. Redial once
+            // immediately; subsequent failures use the same bounded jittered
+            // ladder as every other disconnect path.
+            continue;
+        }
+        match wait_for_reconnect(
+            next_reconnect_delay(reconnect_delay),
+            &mut command_rx,
+            &mut config.reconnect_rx,
+        )
+        .await
+        {
+            ReconnectWait::Shutdown => return,
+            ReconnectWait::Requested(generation) => {
+                pending_generation =
+                    Some(pending_generation.map_or(generation, |current| current.max(generation)));
+            }
+            ReconnectWait::Elapsed => {}
+        }
         reconnect_delay = (reconnect_delay * 2).min(MAX_RECONNECT_DELAY);
     }
 }
@@ -593,14 +816,15 @@ mod tests {
 
     use futures_util::StreamExt;
     use tokio::net::TcpListener;
-    use tokio::sync::mpsc;
+    use tokio::sync::{mpsc, watch};
     use tokio_tungstenite::accept_async;
     use tokio_tungstenite::tungstenite::Message;
 
     use super::{
-        enqueue_terminal_frame, run_terminal_control_client, InboundDeliveryMode,
-        TerminalControlCommand, TerminalControlConfig, TerminalControlEvent, TerminalFrameEnqueue,
-        TerminalFromCloud, TerminalMode, TerminalToCloud,
+        enqueue_terminal_frame, reconnect_delay_with_jitter, request_terminal_reconnect,
+        run_terminal_control_client, InboundDeliveryMode, TerminalControlCommand,
+        TerminalControlConfig, TerminalControlEvent, TerminalFrameEnqueue, TerminalFromCloud,
+        TerminalMode, TerminalToCloud, INITIAL_RECONNECT_DELAY, MAX_RECONNECT_DELAY,
     };
 
     #[tokio::test]
@@ -657,11 +881,13 @@ mod tests {
         let (command_tx, command_rx) = mpsc::channel(8);
         let (event_tx, mut event_rx) = mpsc::channel(8);
         let session_token = Arc::new(RwLock::new(Some("nt_test".to_string())));
+        let (_reconnect_tx, reconnect_rx) = watch::channel(None);
         let client = tokio::spawn(run_terminal_control_client(
             TerminalControlConfig {
                 ws_url,
                 session_token,
                 read_idle_timeout: Some(Duration::from_secs(30)),
+                reconnect_rx,
             },
             command_rx,
             event_tx,
@@ -961,6 +1187,233 @@ mod tests {
         assert!(sess_error.get("request_id").is_none());
     }
 
+    #[test]
+    fn terminal_reconnect_backoff_jitter_is_bounded() {
+        let mut base = INITIAL_RECONNECT_DELAY;
+        for _ in 0..12 {
+            let minimum = base / 2;
+            for sample in [0, 1, u64::MAX / 2, u64::MAX] {
+                let delay = reconnect_delay_with_jitter(base, sample);
+                assert!(delay >= minimum, "{delay:?} fell below {minimum:?}");
+                assert!(delay <= base, "{delay:?} exceeded {base:?}");
+                assert!(delay <= MAX_RECONNECT_DELAY);
+            }
+            base = (base * 2).min(MAX_RECONNECT_DELAY);
+        }
+        assert_eq!(base, MAX_RECONNECT_DELAY);
+
+        // Readiness resets the ladder at the call site. Pin the reset value's
+        // entire deterministic jitter range so a future refactor cannot turn
+        // one recovered lane's prior 30-second backoff into the next outage's
+        // first delay.
+        assert_eq!(
+            reconnect_delay_with_jitter(INITIAL_RECONNECT_DELAY, 0),
+            Duration::from_millis(500)
+        );
+        assert!(
+            reconnect_delay_with_jitter(INITIAL_RECONNECT_DELAY, u64::MAX)
+                <= INITIAL_RECONNECT_DELAY
+        );
+    }
+
+    /// Cloud's additive control hint must replace the stale terminal socket
+    /// through the one existing dial loop. The fake server's accept count is
+    /// its lane generation: forcing generation 1 down must produce generation
+    /// 2, while a duplicate hint must not create generation 3.
+    #[tokio::test]
+    async fn terminal_reconnect_request_forces_single_redial_and_advances_generation() {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let ws_url = format!(
+            "ws://{}/v1/node/terminal/ws",
+            listener.local_addr().unwrap()
+        );
+        let (command_tx, command_rx) = mpsc::channel(16);
+        let (event_tx, mut event_rx) = mpsc::channel(16);
+        let (reconnect_tx, reconnect_rx) = watch::channel(None);
+        let session_token = Arc::new(RwLock::new(Some("nt_test".to_string())));
+
+        let client = tokio::spawn(run_terminal_control_client(
+            TerminalControlConfig {
+                ws_url,
+                session_token,
+                read_idle_timeout: Some(Duration::from_secs(30)),
+                reconnect_rx,
+            },
+            command_rx,
+            event_tx,
+        ));
+
+        let (generation_tx, mut generation_rx) = mpsc::channel(2);
+        let server = tokio::spawn(async move {
+            let (stream, _) = listener.accept().await.unwrap();
+            let mut first = accept_async(stream).await.unwrap();
+            generation_tx.send(1_u64).await.unwrap();
+
+            // The control request makes the broker abort this stale lane. The
+            // server must observe that close before a second accept can count
+            // as the next generation.
+            while let Some(frame) = first.next().await {
+                if frame.is_err() || matches!(frame, Ok(Message::Close(_))) {
+                    break;
+                }
+            }
+
+            let (stream, _) = listener.accept().await.unwrap();
+            let _second = accept_async(stream).await.unwrap();
+            generation_tx.send(2_u64).await.unwrap();
+
+            // A duplicate generation is coalesced; no competing dial loop may
+            // create a third socket after the replacement is ready.
+            tokio::time::timeout(Duration::from_millis(400), listener.accept())
+                .await
+                .is_err()
+        });
+
+        assert_eq!(generation_rx.recv().await, Some(1));
+        assert!(matches!(
+            tokio::time::timeout(Duration::from_secs(2), event_rx.recv())
+                .await
+                .unwrap(),
+            Some(TerminalControlEvent::Connected)
+        ));
+
+        assert!(request_terminal_reconnect(&reconnect_tx, 1));
+        assert!(
+            !request_terminal_reconnect(&reconnect_tx, 1),
+            "duplicate generation must be coalesced before it reaches the dial loop"
+        );
+
+        assert_eq!(
+            tokio::time::timeout(Duration::from_secs(2), generation_rx.recv())
+                .await
+                .unwrap(),
+            Some(2)
+        );
+        let mut saw_disconnect = false;
+        let mut saw_second_connect = false;
+        for _ in 0..4 {
+            let event = tokio::time::timeout(Duration::from_secs(2), event_rx.recv())
+                .await
+                .unwrap()
+                .unwrap();
+            saw_disconnect |= matches!(event, TerminalControlEvent::Disconnected);
+            saw_second_connect |= matches!(event, TerminalControlEvent::Connected);
+            if saw_disconnect && saw_second_connect {
+                break;
+            }
+        }
+        assert!(saw_disconnect, "forced lane close was not surfaced");
+        assert!(saw_second_connect, "replacement lane never became ready");
+        assert!(server.await.unwrap(), "duplicate hint opened a third lane");
+
+        let _ = command_tx.send(TerminalControlCommand::Shutdown).await;
+        tokio::time::timeout(Duration::from_secs(2), client)
+            .await
+            .expect("terminal client did not stop")
+            .unwrap();
+    }
+
+    /// A broker shutdown must not wait for the terminal lane's reconnect cap.
+    /// The server closes a ready lane, the client reports `Disconnected` and
+    /// enters its first (at least 500ms) jittered backoff, then `Shutdown` must
+    /// end the task well inside that minimum delay.
+    #[tokio::test]
+    async fn terminal_shutdown_interrupts_disconnected_reconnect_backoff() {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let ws_url = format!(
+            "ws://{}/v1/node/terminal/ws",
+            listener.local_addr().unwrap()
+        );
+        let (command_tx, command_rx) = mpsc::channel(8);
+        let (event_tx, mut event_rx) = mpsc::channel(8);
+        let (_reconnect_tx, reconnect_rx) = watch::channel(None);
+        let session_token = Arc::new(RwLock::new(Some("nt_test".to_string())));
+        let client = tokio::spawn(run_terminal_control_client(
+            TerminalControlConfig {
+                ws_url,
+                session_token,
+                read_idle_timeout: Some(Duration::from_secs(30)),
+                reconnect_rx,
+            },
+            command_rx,
+            event_tx,
+        ));
+
+        let server = tokio::spawn(async move {
+            let (stream, _) = listener.accept().await.unwrap();
+            let ws = accept_async(stream).await.unwrap();
+            drop(ws);
+        });
+        server.await.unwrap();
+
+        let mut disconnected = false;
+        for _ in 0..2 {
+            let event = tokio::time::timeout(Duration::from_secs(2), event_rx.recv())
+                .await
+                .unwrap()
+                .unwrap();
+            disconnected |= matches!(event, TerminalControlEvent::Disconnected);
+        }
+        assert!(disconnected, "forced server close was not observed");
+
+        command_tx
+            .send(TerminalControlCommand::Shutdown)
+            .await
+            .unwrap();
+        tokio::time::timeout(Duration::from_millis(250), client)
+            .await
+            .expect("shutdown waited behind reconnect backoff")
+            .unwrap();
+    }
+
+    /// Cancellation also covers the dial itself: a peer may accept TCP and
+    /// then never answer the WebSocket handshake. `Shutdown` must drop that
+    /// in-flight future instead of waiting for the network stack's timeout.
+    #[tokio::test]
+    async fn terminal_shutdown_cancels_an_in_flight_websocket_dial() {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let ws_url = format!(
+            "ws://{}/v1/node/terminal/ws",
+            listener.local_addr().unwrap()
+        );
+        let (command_tx, command_rx) = mpsc::channel(8);
+        let (event_tx, _event_rx) = mpsc::channel(8);
+        let (_reconnect_tx, reconnect_rx) = watch::channel(None);
+        let session_token = Arc::new(RwLock::new(Some("nt_test".to_string())));
+        let client = tokio::spawn(run_terminal_control_client(
+            TerminalControlConfig {
+                ws_url,
+                session_token,
+                read_idle_timeout: Some(Duration::from_secs(30)),
+                reconnect_rx,
+            },
+            command_rx,
+            event_tx,
+        ));
+
+        let (accepted_tx, accepted_rx) = tokio::sync::oneshot::channel();
+        let stalled_server = tokio::spawn(async move {
+            let (stream, _) = listener.accept().await.unwrap();
+            accepted_tx.send(()).unwrap();
+            let _stream = stream;
+            std::future::pending::<()>().await;
+        });
+        tokio::time::timeout(Duration::from_secs(10), accepted_rx)
+            .await
+            .expect("client never began its websocket dial")
+            .unwrap();
+
+        command_tx
+            .send(TerminalControlCommand::Shutdown)
+            .await
+            .unwrap();
+        tokio::time::timeout(Duration::from_millis(250), client)
+            .await
+            .expect("shutdown did not cancel the in-flight websocket dial")
+            .unwrap();
+        stalled_server.abort();
+    }
+
     /// A blackholed `/v1/node/terminal/ws` — the socket sits open with
     /// nothing on the other end reading or writing — must be detected and
     /// reconnected. This is the fleet terminal-attach outage: node_control
@@ -984,6 +1437,7 @@ mod tests {
         let (command_tx, command_rx) = mpsc::channel(32);
         let (event_tx, mut event_rx) = mpsc::channel(32);
         let session_token = Arc::new(RwLock::new(Some("nt_test".to_string())));
+        let (_reconnect_tx, reconnect_rx) = watch::channel(None);
 
         tokio::spawn(run_terminal_control_client(
             TerminalControlConfig {
@@ -992,6 +1446,7 @@ mod tests {
                 // Short window so the blackhole is covered in well under a
                 // second; production uses READ_IDLE_TIMEOUT (48s).
                 read_idle_timeout: Some(Duration::from_millis(400)),
+                reconnect_rx,
             },
             command_rx,
             event_tx,
@@ -1057,6 +1512,7 @@ mod tests {
         let (command_tx, command_rx) = mpsc::channel(32);
         let (event_tx, _event_rx) = mpsc::channel(32);
         let session_token = Arc::new(RwLock::new(Some("nt_test".to_string())));
+        let (_reconnect_tx, reconnect_rx) = watch::channel(None);
 
         tokio::spawn(run_terminal_control_client(
             TerminalControlConfig {
@@ -1066,6 +1522,7 @@ mod tests {
                 // control arm under identical time pressure rather than a
                 // separate, looser test.
                 read_idle_timeout: Some(Duration::from_millis(400)),
+                reconnect_rx,
             },
             command_rx,
             event_tx,
@@ -1143,12 +1600,14 @@ mod tests {
         let (command_tx, command_rx) = mpsc::channel(WEDGE_CHUNK_COUNT + 16);
         let (event_tx, mut event_rx) = mpsc::channel(32);
         let session_token = Arc::new(RwLock::new(Some("nt_test".to_string())));
+        let (_reconnect_tx, reconnect_rx) = watch::channel(None);
 
         tokio::spawn(run_terminal_control_client(
             TerminalControlConfig {
                 ws_url,
                 session_token,
                 read_idle_timeout: Some(Duration::from_millis(500)),
+                reconnect_rx,
             },
             command_rx,
             event_tx,
@@ -1230,12 +1689,14 @@ mod tests {
         // frame the client tries to hand upward fails to send.
         let (event_tx, event_rx) = mpsc::channel(1);
         let session_token = Arc::new(RwLock::new(Some("nt_test".to_string())));
+        let (_reconnect_tx, reconnect_rx) = watch::channel(None);
 
         tokio::spawn(run_terminal_control_client(
             TerminalControlConfig {
                 ws_url,
                 session_token,
                 read_idle_timeout: Some(Duration::from_secs(30)),
+                reconnect_rx,
             },
             command_rx,
             event_tx,
@@ -1287,6 +1748,7 @@ mod tests {
         let (command_tx, command_rx) = mpsc::channel(CHUNK_COUNT + 16);
         let (event_tx, _event_rx) = mpsc::channel(32);
         let session_token = Arc::new(RwLock::new(Some("nt_test".to_string())));
+        let (_reconnect_tx, reconnect_rx) = watch::channel(None);
 
         tokio::spawn(run_terminal_control_client(
             TerminalControlConfig {
@@ -1296,6 +1758,7 @@ mod tests {
                 // genuine control arm under identical time pressure rather
                 // than a separate, looser test.
                 read_idle_timeout: Some(Duration::from_millis(500)),
+                reconnect_rx,
             },
             command_rx,
             event_tx,

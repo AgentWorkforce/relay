@@ -624,6 +624,7 @@ fn worker_event_runtime_fixture_with_relay(
     let (fleet_control_tx, fleet_control_rx) = mpsc::channel(16);
     let (_fleet_event_tx, fleet_event_rx) = mpsc::channel(4);
     let (terminal_control_tx, _terminal_control_rx) = mpsc::channel(4);
+    let (terminal_reconnect_tx, _terminal_reconnect_rx) = tokio::sync::watch::channel(None);
     let (_terminal_event_tx, terminal_event_rx) = mpsc::channel(4);
     let (sdk_out_tx, sdk_out_rx) = mpsc::channel(64);
     let (_worker_event_tx, worker_event_rx) = mpsc::channel(4);
@@ -669,6 +670,7 @@ fn worker_event_runtime_fixture_with_relay(
         fleet_event_rx,
         fleet_control_open: true,
         terminal_control_tx,
+        terminal_reconnect_tx,
         terminal_event_rx,
         terminal_control_open: true,
         terminal_sessions: HashMap::new(),
@@ -751,6 +753,71 @@ fn inbound_ctx<'a>(event_id: &'a str) -> InboundContext<'a> {
         event_id: Some(event_id),
         relaycast_receipt: None,
     }
+}
+
+#[tokio::test]
+async fn terminal_reconnect_control_frames_coalesce_without_blocking_node_control() {
+    let (worker_event_tx, _worker_event_rx) = mpsc::channel(4);
+    let workers = WorkerRegistry::new(
+        worker_event_tx,
+        Vec::new(),
+        PathBuf::from("/tmp/terminal-reconnect-control-fixture"),
+        Instant::now(),
+    );
+    let mut fixture = worker_event_runtime_fixture(workers, HashMap::new());
+    let mut reconnect_rx = fixture.runtime.terminal_reconnect_tx.subscribe();
+
+    fixture
+        .runtime
+        .handle_fleet_control_event(crate::node_control::FleetControlEvent::Message(
+            crate::fleet_wire::RelaycastToBroker::TerminalReconnectRequested(
+                crate::fleet_wire::TerminalReconnectRequested {
+                    v: FLEET_WIRE_VERSION,
+                    generation: 7,
+                },
+            ),
+        ))
+        .await;
+    reconnect_rx.changed().await.unwrap();
+    assert_eq!(*reconnect_rx.borrow_and_update(), Some(7));
+    assert!(
+        fixture.runtime.node_delivery_connected,
+        "terminal recovery must not disturb the live node-control plane"
+    );
+
+    // The same generation is an attach-burst duplicate, not another dial
+    // request. A newer cloud generation remains observable immediately.
+    fixture
+        .runtime
+        .handle_fleet_control_event(crate::node_control::FleetControlEvent::Message(
+            crate::fleet_wire::RelaycastToBroker::TerminalReconnectRequested(
+                crate::fleet_wire::TerminalReconnectRequested {
+                    v: FLEET_WIRE_VERSION,
+                    generation: 7,
+                },
+            ),
+        ))
+        .await;
+    assert!(
+        tokio::time::timeout(Duration::from_millis(25), reconnect_rx.changed())
+            .await
+            .is_err(),
+        "duplicate generation woke a second dial attempt"
+    );
+
+    fixture
+        .runtime
+        .handle_fleet_control_event(crate::node_control::FleetControlEvent::Message(
+            crate::fleet_wire::RelaycastToBroker::TerminalReconnectRequested(
+                crate::fleet_wire::TerminalReconnectRequested {
+                    v: FLEET_WIRE_VERSION,
+                    generation: 8,
+                },
+            ),
+        ))
+        .await;
+    reconnect_rx.changed().await.unwrap();
+    assert_eq!(*reconnect_rx.borrow_and_update(), Some(8));
 }
 
 fn fleet_deliver(seq: u64) -> Deliver {
