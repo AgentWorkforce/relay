@@ -1,7 +1,7 @@
 use relay_broker::delivery::{
-    DeliveryBackend, DeliveryBackendFuture, DeliveryError, DeliverySeam, HandoverState,
-    ObservedAck, RouteId, SendOutcome, SendRequest, SendStatus, SettleOutcome, SettleRequest,
-    SettleStatus, TransportStatus,
+    AckEvidence, DeliveryBackend, DeliveryBackendFuture, DeliveryError, DeliverySeam,
+    HandoverState, ObservedAck, RouteId, SendOutcome, SendRequest, SendStatus, SettleOutcome,
+    SettleRequest, SettleStatus, TransportStatus,
 };
 
 #[derive(Debug)]
@@ -169,12 +169,12 @@ async fn never_resends_on_doubt() {
 #[tokio::test]
 async fn records_route_for_each_send() {
     let mut stale_native = ScriptedBackend::unavailable("native", "version gate failed")
-        .with_settle_status(SettleStatus::Acked(ObservedAck::new("wrong route")));
+        .with_settle_status(SettleStatus::Acked(ObservedAck::peer_ack("wrong route")));
     let mut pty = ScriptedBackend::new(
         "pty",
         vec![Ok(SendStatus::HandedOver(HandoverState::HandedOver))],
     )
-    .with_settle_status(SettleStatus::Acked(ObservedAck::new("pty transcript")));
+    .with_settle_status(SettleStatus::Acked(ObservedAck::transcript("pty", 0)));
     let mut seam = DeliverySeam::new();
     let delivery_id = relay_broker::ids::DeliveryId::new("del_route");
 
@@ -201,7 +201,7 @@ async fn records_route_for_each_send() {
 
     assert_eq!(
         settle,
-        SettleOutcome::Settled(SettleStatus::Acked(ObservedAck::new("pty transcript")))
+        SettleOutcome::Settled(SettleStatus::Acked(ObservedAck::transcript("pty", 0)))
     );
     assert!(
         !settle.is_absent(),
@@ -400,4 +400,42 @@ async fn settle_reports_an_evicted_receipt_as_unknown_not_absent() {
         !outcome.is_absent(),
         "forgetting where a message went is not evidence it never went"
     );
+}
+
+/// Rule 4, made structural rather than aspirational.
+///
+/// The rule is "never claim an acknowledgement you did not observe". A free
+/// string could not express it — `ObservedAck::new("ok")` would have satisfied
+/// the type while observing nothing. Every constructor now demands a named
+/// observation, and there is no variant meaning "nothing", so a backend cannot
+/// report `Acked` without saying what it saw.
+///
+/// This is the one property that has to hold for backends that do not exist
+/// yet, which is why it is enforced by the type and not by review.
+#[test]
+fn an_acknowledgement_must_name_the_observation_behind_it() {
+    let echo = ObservedAck::echo("relay-inbound-42");
+    assert_eq!(
+        echo.evidence(),
+        &AckEvidence::Echo {
+            matched: "relay-inbound-42".to_string()
+        }
+    );
+
+    let exit = ObservedAck::process_exit(0);
+    assert_eq!(exit.evidence(), &AckEvidence::ProcessExit { code: 0 });
+
+    let transcript = ObservedAck::transcript("session.jsonl", 1024);
+    assert_eq!(
+        transcript.evidence(),
+        &AckEvidence::Transcript {
+            source: "session.jsonl".to_string(),
+            offset: 1024
+        }
+    );
+
+    // Distinct evidence must stay distinguishable: an ack is only as good as
+    // what produced it, so a consumer weighing a peer's claim against a byte
+    // offset it can re-read must be able to tell them apart.
+    assert_ne!(ObservedAck::peer_ack("ok"), ObservedAck::echo("ok"));
 }
