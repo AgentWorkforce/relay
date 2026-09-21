@@ -8921,3 +8921,188 @@ async fn durable_task_numeric_output_and_accounting_reconcile_javascript_json() 
         .await;
     assert!(receiver.await.unwrap().is_ok());
 }
+
+/// Register a worker that is present but whose stdin writer is gone.
+///
+/// Sends to it fail in `send_to_worker_with_commit_boundary` at
+/// `command_tx.send(..)` — strictly before any byte reaches the pipe — so the
+/// failure is a genuine `PreWrite`, produced by production code and repeatable
+/// without any timing dependency. `has_worker` stays true throughout, which is
+/// what separates this from "the recipient is gone".
+async fn make_registry_with_writerless_worker(name: &str) -> WorkerRegistry {
+    let (tx, _rx) = mpsc::channel::<WorkerEvent>(16);
+    let mut registry = WorkerRegistry::new(
+        tx,
+        Vec::new(),
+        PathBuf::from("/tmp/agent-relay-broker-tests"),
+        Instant::now(),
+    );
+    let child = tokio::process::Command::new("cat")
+        .stdin(Stdio::piped())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn()
+        .expect("test worker process should spawn");
+    let (command_tx, command_rx) = mpsc::channel(128);
+    // No writer task: dropping the receiver makes every send fail before a
+    // write is attempted.
+    drop(command_rx);
+    registry.workers.insert(
+        WorkerName::from(name),
+        WorkerHandle {
+            generation: Uuid::new_v4(),
+            spec: AgentSpec {
+                name: WorkerName::from(name),
+                runtime: AgentRuntime::Pty,
+                provider: None,
+                cli: Some("cat".to_string()),
+                session_id: None,
+                harness_config: None,
+                model: None,
+                cwd: None,
+                team: None,
+                shadow_of: None,
+                shadow_mode: None,
+                args: Vec::new(),
+                channels: Vec::new(),
+                restart_policy: None,
+            },
+            parent: None,
+            workspace_id: Some(WorkspaceId::new("ws_demo")),
+            child,
+            command_tx,
+            harness_pid: None,
+            spawned_at: Instant::now(),
+            ready_at: Some(Instant::now()),
+            last_activity_at: Instant::now(),
+            context_budget_pct: None,
+            state: AgentWorkState::Working,
+            exit_reason: None,
+        },
+    );
+    registry
+}
+
+/// The retry cap has to be *reached*, not just declared.
+///
+/// Every other test around `retry_pending_delivery` pre-sets
+/// `attempts = MAX_DELIVERY_RETRIES` and asserts what happens at the cap. None
+/// of them start at zero, so if the attempt counter stopped incrementing on a
+/// retriable failure they would all still pass while a delivery retried
+/// forever and never dead-lettered.
+///
+/// This walks the whole lifecycle from `attempts: 0` on a repeatable pre-write
+/// error: each attempt must increment the counter and leave the entry pending,
+/// and only the attempt at the cap may terminate it into the dead-letter path.
+#[tokio::test]
+async fn delivery_retry_walks_the_cap_from_zero_and_then_dead_letters() {
+    let worker_name = "worker-writerless";
+    let mut workers = make_registry_with_writerless_worker(worker_name).await;
+
+    let mut pending_deliveries = HashMap::from([(
+        DeliveryId::new("del_cap_walk"),
+        PendingDelivery {
+            worker_name: WorkerName::from(worker_name),
+            delivery: RelayDelivery {
+                delivery_id: DeliveryId::new("del_cap_walk"),
+                event_id: EventId::new("evt_cap_walk"),
+                workspace_id: Some(WorkspaceId::new("ws_demo")),
+                workspace_alias: Some(WorkspaceAlias::new("Demo")),
+                from: "orchestrator".to_string(),
+                target: MessageTarget::new(worker_name),
+                body: "walk the cap".to_string(),
+                thread_id: None,
+                priority: Some(2),
+                injection_mode: MessageInjectionMode::Wait,
+            },
+            attempts: 0,
+            failed_attempts: 0,
+            next_retry_at: Instant::now(),
+            queued_at_ms: super::unix_timestamp_millis(),
+            last_error: None,
+            withheld_fleet_ack: None,
+            withheld_fleet_ack_floor: None,
+        },
+    )]);
+
+    let mut seam = crate::delivery::DeliverySeam::new();
+    let mut terminal = None;
+
+    for attempt in 1..=MAX_DELIVERY_RETRIES + 1 {
+        let outcome = retry_pending_delivery(
+            &DeliveryId::new("del_cap_walk"),
+            &mut workers,
+            &mut pending_deliveries,
+            Duration::from_millis(1),
+            &mut seam,
+        )
+        .await
+        .expect("a pre-write refusal is retriable, not an error");
+
+        assert!(
+            workers.has_worker(worker_name),
+            "the recipient must stay present; this is a writer fault, not a missing agent"
+        );
+
+        match outcome {
+            // A retriable failure below the cap keeps the delivery queued and
+            // reports `Noop` — `Attempted` is reserved for a send that actually
+            // went out. What has to hold here is the bookkeeping: the counters
+            // advance, so the cap is reachable.
+            DeliveryAttemptOutcome::Noop => {
+                assert!(
+                    attempt < MAX_DELIVERY_RETRIES,
+                    "the attempt at the cap must terminate, not queue another retry"
+                );
+                let entry = pending_deliveries
+                    .get("del_cap_walk")
+                    .expect("a below-cap failure keeps the delivery pending");
+                assert_eq!(
+                    entry.failed_attempts, attempt,
+                    "each retriable failure must increment failed_attempts, or the cap is never reached"
+                );
+                assert_eq!(
+                    entry.attempts, attempt,
+                    "the pending entry must record the attempt"
+                );
+                assert!(
+                    entry
+                        .last_error
+                        .as_deref()
+                        .unwrap_or_default()
+                        .contains(worker_name),
+                    "the pending entry must carry the failure that caused the retry"
+                );
+            }
+            DeliveryAttemptOutcome::Failed {
+                pending,
+                last_error,
+            } => {
+                assert_eq!(
+                    attempt, MAX_DELIVERY_RETRIES,
+                    "terminal failure must arrive exactly at the cap, not before"
+                );
+                assert_eq!(
+                    pending.failed_attempts, MAX_DELIVERY_RETRIES,
+                    "the terminal entry must show a fully consumed retry budget"
+                );
+                assert!(
+                    last_error.contains(worker_name),
+                    "the terminal error must name the worker that could not be written to"
+                );
+                terminal = Some(*pending);
+                break;
+            }
+            other => panic!(
+                "a pre-write refusal must stay retriable until the cap, got {other:?} on attempt {attempt}"
+            ),
+        }
+    }
+
+    let terminal = terminal.expect("walking the cap must end in a terminal failure");
+    assert_eq!(terminal.delivery.delivery_id.as_str(), "del_cap_walk");
+    assert!(
+        pending_deliveries.is_empty(),
+        "a terminally failed delivery must leave the pending map for the dead-letter store"
+    );
+}
