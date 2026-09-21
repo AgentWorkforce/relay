@@ -10,6 +10,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Fixed
 
 - Broker-managed Muse workers now start with `--yolo` and receive their assigned task as the startup prompt, so tool use proceeds unattended and work begins deterministically before readiness; Muse prompts containing NUL or exceeding the portable 16 KiB startup limit are rejected before registration.
+- `node agent attach --node` no longer floods the terminal with base64 text after the remote terminal transport reconnects: the repaint now sends the decoded screen instead of the encoded snapshot payload.
+- `node agent attach --node` now closes the PTY input stream on a connection-fatal error and scopes the error to the stream that failed, matching the broker, so a dead input stream is reported instead of silently accepting keystrokes.
 
 ## [12.4.0] - 2026-09-20
 
