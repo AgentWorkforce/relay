@@ -458,7 +458,17 @@ async fn owned_cleanup_waits_off_actor_and_retains_custody_until_confirmed() {
     assert!(fixture
         .runtime
         .workers
-        .spawn(replacement_spec, None, None, None, false, None, None, None)
+        .spawn(
+            replacement_spec,
+            None,
+            None,
+            None,
+            false,
+            None,
+            None,
+            None,
+            None,
+        )
         .await
         .unwrap_err()
         .to_string()
