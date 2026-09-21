@@ -781,3 +781,48 @@ mod observation_predicate_tests {
         assert!(!is_observed(""));
     }
 }
+
+#[cfg(test)]
+mod timeout_arm_call_site_tests {
+    /// relay: F10 — guard the invariant at the CALL SITE, not at the helper.
+    ///
+    /// `verification_timeout_frames` exists so the "never emit `delivery_ack`
+    /// on an echo timeout" rule has somewhere a test can hold it. The tests
+    /// beside it assert properties of the vector it returns — and cannot fail
+    /// for the thing that matters. Nothing links the helper to the worker's
+    /// select loop, so an edit that adds `send_frame(&out_tx, "delivery_ack",
+    /// ...)` back into the timeout arm, right beside the loop consuming these
+    /// frames, leaves every one of them green.
+    ///
+    /// Emitting an ack there is rule 4 at its sharpest: the echo never arrived,
+    /// so the broker would confirm, clear the pending delivery, release the
+    /// withheld engine ack and mark the message read, all on the strength of a
+    /// timeout. This reads the call site itself, which is crude and is the
+    /// only version of this test that can fail for the right reason.
+    #[test]
+    fn the_verification_timeout_arm_never_sends_a_delivery_ack() {
+        let source = include_str!("../pty_worker.rs");
+        let anchor = source
+            .find("for (kind, payload) in verification_timeout_frames(")
+            .expect("the verification-timeout arm must still call verification_timeout_frames");
+
+        // The arm runs from the start of its enclosing timeout branch to the
+        // end of the frame-sending loop. Scan a generous window around the
+        // call so a `delivery_ack` added anywhere nearby is caught.
+        let start = source[..anchor]
+            .rfind("verification window")
+            .unwrap_or(anchor);
+        let end = source[anchor..]
+            .find("Timeout fallbacks are not verified deliveries")
+            .map(|offset| anchor + offset)
+            .unwrap_or_else(|| (anchor + 2_000).min(source.len()));
+
+        let arm = &source[start..end];
+        assert!(
+            !arm.contains("\"delivery_ack\""),
+            "the verification-timeout arm emits a delivery_ack. The echo never arrived, \
+             so the broker will confirm the delivery, clear it, release the withheld \
+             engine ack and mark it read — claiming an acknowledgement nobody observed."
+        );
+    }
+}
