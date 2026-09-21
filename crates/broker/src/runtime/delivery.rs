@@ -1047,6 +1047,32 @@ pub(crate) async fn retry_pending_delivery(
 
     if pending.failed_attempts >= MAX_DELIVERY_RETRIES {
         let removed = pending_deliveries.remove(delivery_id).unwrap_or(pending);
+        // A delivery the seam already handed to a route is IN DOUBT, not
+        // simply failed, however many retries followed.
+        //
+        // `Failed` dead-letters with a reason carrying no in-doubt marker, so
+        // `is_auto_redeliverable` returns true and an operator redelivery
+        // re-sends a message that may already have landed — the double
+        // delivery rule 2 exists to prevent. The retry budget is exhausted the
+        // same way in both cases; what differs is whether anything ever went
+        // out over a transport, and only the seam knows that.
+        //
+        // This is the common shape, not an edge case: one successful hand-off
+        // whose ack never arrives returns `AlreadySent` on every later tick,
+        // counting `failed_attempts` up to the cap without re-writing. It then
+        // arrived here and was dead-lettered as freely redeliverable.
+        if let Some(route) = seam.recorded_route(delivery_id) {
+            let route = route.as_str().to_string();
+            let last_error = removed.last_error.clone().unwrap_or_else(|| {
+                format!(
+                    "handed over to route {route} and never acknowledged within                      {MAX_DELIVERY_RETRIES} retries"
+                )
+            });
+            return Ok(DeliveryAttemptOutcome::TerminalInDoubt {
+                pending: Box::new(removed),
+                last_error,
+            });
+        }
         let last_error = removed
             .last_error
             .clone()
