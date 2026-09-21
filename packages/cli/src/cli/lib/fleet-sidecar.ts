@@ -1,5 +1,5 @@
 import { AgentRelay } from '@agent-relay/sdk';
-import type { FleetTriggerSyncClient } from '@agent-relay/fleet';
+import { MAX_FLEET_NODE_AGENTS, type FleetTriggerSyncClient } from '@agent-relay/fleet';
 
 import type { CoreTeamsConfig } from '../commands/core.js';
 
@@ -16,13 +16,16 @@ import type { CoreTeamsConfig } from '../commands/core.js';
 const DEFAULT_HARNESSES = ['claude', 'codex', 'gemini', 'opencode', 'muse', 'devin'] as const;
 
 /**
- * The minimum a node config has to expose to contribute `spawn:<harness>`
- * capacity: its capability names. A full {@link FleetNodeDefinition} satisfies
- * this, and so does the descriptor reported by a node definition served
- * out-of-process (which the CLI never loads in-process, so it has capability
- * names but no handlers).
+ * The minimum a node config has to expose to contribute to the broker's
+ * advertised capacity: its capability names plus its agent cap. A full
+ * {@link FleetNodeDefinition} satisfies this, and so does the descriptor
+ * reported by a node definition served out-of-process (which the CLI never
+ * loads in-process, so it has capability names but no handlers).
  */
-export type NodeCapacitySource = { capabilities: Readonly<Record<string, unknown>> };
+export type NodeCapacitySource = {
+  capabilities: Readonly<Record<string, unknown>>;
+  maxAgents?: number;
+};
 
 export function nodeCapacityHarnesses(
   teamsConfig: CoreTeamsConfig | null,
@@ -62,6 +65,36 @@ export function resolveNodeCapacityHarnesses(
     return trimmed;
   }
   return nodeCapacityHarnesses(teamsConfig, definition).join(',');
+}
+
+/**
+ * Resolve the `AGENT_RELAY_NODE_MAX_AGENTS` value the broker registers its
+ * provider-level agent capacity from. A pre-set value is the operator's
+ * authoritative declaration of the node's real capacity and is returned
+ * verbatim; otherwise the node definition's `maxAgents` wins. Returns
+ * `undefined` when neither declares a cap — or when the declared cap is
+ * outside the shared range the broker can parse — so the broker keeps its
+ * historically unbounded capacity instead of reporting a number it would
+ * silently normalize to unlimited.
+ */
+export function resolveNodeMaxAgents(
+  preset: string | undefined,
+  definition?: NodeCapacitySource
+): string | undefined {
+  const trimmed = preset?.trim();
+  if (trimmed) {
+    return trimmed;
+  }
+  const maxAgents = definition?.maxAgents;
+  if (
+    typeof maxAgents === 'number' &&
+    Number.isInteger(maxAgents) &&
+    maxAgents > 0 &&
+    maxAgents <= MAX_FLEET_NODE_AGENTS
+  ) {
+    return String(maxAgents);
+  }
+  return undefined;
 }
 
 /**

@@ -265,6 +265,44 @@ describe('serveNode', () => {
     await running.stop();
   });
 
+  it('reports the definition maxAgents in the register frame', async () => {
+    const node = defineNode({
+      name: 'sf-frame',
+      maxAgents: 15,
+      capabilities: {
+        'spawn:grok': spawn({ runtime: 'pty', command: 'grok' }),
+      },
+    });
+    const running = startServeNode({ definition: node, connection, reconnect: false });
+
+    const sock = socket();
+    sock.open();
+    const register = sock.lastRegister();
+    expect(register.max_agents).toBe(15);
+
+    sock.emit(acceptAll(register));
+    await flush();
+    await running.stop();
+  });
+
+  it('registers max_agents 0 (unlimited) when the definition declares no cap', async () => {
+    const node = defineNode({
+      name: 'unbounded',
+      capabilities: {
+        'run-etl': action({ input: z.object({ date: z.string() }) }, async () => 'done'),
+      },
+    });
+    const running = startServeNode({ definition: node, connection, reconnect: false });
+
+    const sock = socket();
+    sock.open();
+    expect(sock.lastRegister().max_agents).toBe(0);
+
+    sock.emit(acceptAll(sock.lastRegister()));
+    await flush();
+    await running.stop();
+  });
+
   it('serializes only placement-safe repo keys and never node-local paths', async () => {
     const factoryPath = resolve('private-checkouts', 'factory');
     const relayPath = resolve('private-checkouts', 'relay');

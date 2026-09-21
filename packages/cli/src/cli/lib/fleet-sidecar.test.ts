@@ -28,6 +28,7 @@ import {
   createTriggerSyncClient,
   nodeCapacityHarnesses,
   resolveNodeCapacityHarnesses,
+  resolveNodeMaxAgents,
 } from './fleet-sidecar.js';
 
 describe('nodeCapacityHarnesses', () => {
@@ -93,6 +94,48 @@ describe('resolveNodeCapacityHarnesses', () => {
     );
     // A blank/whitespace value is treated as unset.
     expect(resolveNodeCapacityHarnesses('   ', null)).toBe('claude,codex,gemini,opencode,muse,devin');
+  });
+});
+
+describe('resolveNodeMaxAgents', () => {
+  it('uses a pre-set AGENT_RELAY_NODE_MAX_AGENTS value verbatim (operator authority)', () => {
+    const definition = defineNode({
+      name: 'p',
+      maxAgents: 15,
+      capabilities: { 'spawn:aider': spawn({ runtime: 'pty', command: 'aider' }) },
+    });
+    // A pinned value wins over the definition's cap.
+    expect(resolveNodeMaxAgents('  32  ', definition)).toBe('32');
+    expect(resolveNodeMaxAgents('4', undefined)).toBe('4');
+  });
+
+  it('forwards the node definition maxAgents when no value is pre-set', () => {
+    const definition = defineNode({
+      name: 'p',
+      maxAgents: 15,
+      capabilities: { 'spawn:aider': spawn({ runtime: 'pty', command: 'aider' }) },
+    });
+    expect(resolveNodeMaxAgents(undefined, definition)).toBe('15');
+    // A blank/whitespace value is treated as unset.
+    expect(resolveNodeMaxAgents('   ', definition)).toBe('15');
+  });
+
+  it('returns undefined when neither a preset nor the definition declares a cap', () => {
+    const definition = defineNode({
+      name: 'p',
+      capabilities: { 'spawn:aider': spawn({ runtime: 'pty', command: 'aider' }) },
+    });
+    expect(resolveNodeMaxAgents(undefined, definition)).toBeUndefined();
+    expect(resolveNodeMaxAgents(undefined, undefined)).toBeUndefined();
+    expect(resolveNodeMaxAgents('   ', undefined)).toBeUndefined();
+  });
+
+  it('drops definition caps the broker cannot parse instead of reporting unlimited', () => {
+    // Above u32::MAX the broker rejects the env value and reports unlimited,
+    // so the forwarder must not emit it; the boundary itself stays valid.
+    expect(resolveNodeMaxAgents(undefined, { capabilities: {}, maxAgents: 4294967296 })).toBeUndefined();
+    expect(resolveNodeMaxAgents(undefined, { capabilities: {}, maxAgents: 4294967295 })).toBe('4294967295');
+    expect(resolveNodeMaxAgents(undefined, { capabilities: {}, maxAgents: 0 })).toBeUndefined();
   });
 });
 

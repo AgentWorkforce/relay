@@ -20,7 +20,12 @@ import { track } from '../telemetry/index.js';
 import { buildBundledAgentRelayMcpCommand, isBundledBunEntrypointPath } from './agent-relay-mcp-command.js';
 import { errorClassName } from './telemetry-helpers.js';
 import { runSignalHandler } from './exit.js';
-import { createTriggerSyncClient, resolveNodeCapacityHarnesses } from './fleet-sidecar.js';
+import {
+  createTriggerSyncClient,
+  resolveNodeCapacityHarnesses,
+  resolveNodeMaxAgents,
+  type NodeCapacitySource,
+} from './fleet-sidecar.js';
 import {
   discoverNodeConfigPath,
   discoverPythonNodeConfigPath,
@@ -1560,10 +1565,8 @@ export async function loadNodeDefinitionPlan(
   return { mode: 'child-node', configPath, descriptor };
 }
 
-/** The capability names a plan contributes to the broker's advertised capacity. */
-function planCapacitySource(
-  plan: NodeDefinitionPlan | undefined
-): { capabilities: Readonly<Record<string, unknown>> } | undefined {
+/** The capacity a plan contributes to the broker's advertised capacity. */
+function planCapacitySource(plan: NodeDefinitionPlan | undefined): NodeCapacitySource | undefined {
   if (!plan) {
     return undefined;
   }
@@ -2241,11 +2244,23 @@ export async function runUpCommand(options: UpOptions, deps: CoreDependencies): 
     // node's real capacity and is used verbatim; otherwise the CLI computes it from
     // the project's runnable harnesses (built-in defaults plus teams.json clis and
     // any spawn:<harness> definitions) and passes it to the broker before it registers.
+    const capacitySource = planCapacitySource(nodePlan);
     deps.env.AGENT_RELAY_NODE_HARNESSES = resolveNodeCapacityHarnesses(
       deps.env.AGENT_RELAY_NODE_HARNESSES,
       teamsConfig,
-      planCapacitySource(nodePlan)
+      capacitySource
     );
+
+    // The broker reports this provider-level agent cap in its register and
+    // heartbeat frames. A pre-set AGENT_RELAY_NODE_MAX_AGENTS is the
+    // operator's authoritative declaration and wins verbatim; otherwise the
+    // node definition's `maxAgents` is forwarded so the roster reports the
+    // configured cap instead of 0 (unlimited). Without either, the broker
+    // keeps its historically unbounded capacity.
+    const nodeMaxAgents = resolveNodeMaxAgents(deps.env.AGENT_RELAY_NODE_MAX_AGENTS, capacitySource);
+    if (nodeMaxAgents !== undefined) {
+      deps.env.AGENT_RELAY_NODE_MAX_AGENTS = nodeMaxAgents;
+    }
 
     // Recover a broker whose discovery files were lost only while its persisted
     // process identity and original runtime lock still prove ownership.

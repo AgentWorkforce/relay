@@ -18,6 +18,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Broker-managed Muse workers now start with `--yolo` and receive their assigned task as the startup prompt, so tool use proceeds unattended and work begins deterministically before readiness; Muse prompts containing NUL or exceeding the portable 16 KiB startup limit are rejected before registration.
 - `node agent attach --node` no longer floods the terminal with base64 text after the remote terminal transport reconnects: the repaint now sends the decoded screen instead of the encoded snapshot payload.
 - `node agent attach --node` now closes the PTY input stream on a connection-fatal error and scopes the error to the stream that failed, matching the broker, so a dead input stream is reported instead of silently accepting keystrokes.
+- `node up` forwards a node definition's `maxAgents` to the broker's advertised capacity, so `fleet nodes list` (including `--pretty`) reports the configured cap instead of `0`/`unlimited`. A pre-set `AGENT_RELAY_NODE_MAX_AGENTS` still wins as the operator's authoritative declaration. Caps above the broker-parseable `u32` range are rejected at definition time instead of silently reporting unlimited.
 
 ## [12.4.0] - 2026-09-20
 
