@@ -1,0 +1,4 @@
+interface:
+  display_name: 'Search shared sessions'
+  short_description: "Find prior work in your team's shared agent sessions"
+  default_prompt: 'Use $search-shared-sessions to find prior work and relevant decisions for my current task.'

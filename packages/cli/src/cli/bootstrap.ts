@@ -434,9 +434,13 @@ export function createProgram(options: { name?: string } = {}): Command {
   program
     .command('mcp')
     .description('Run the Agent Relay MCP stdio server')
-    .action(async () => {
+    .option('--sessions-only', 'Expose only Cloud shared-session tools')
+    .action(async (opts: { sessionsOnly?: boolean }) => {
       const mod = await import('./agent-relay-mcp.js');
-      await mod.startAgentRelayMcpStdio(mod.optionsFromEnv());
+      await mod.startAgentRelayMcpStdio({
+        ...mod.optionsFromEnv(),
+        sessionsOnly: opts.sessionsOnly === true,
+      });
     });
 
   return program;

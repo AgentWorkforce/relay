@@ -1,0 +1,8 @@
+{
+  "mcpServers": {
+    "shared-sessions": {
+      "command": "agent-relay",
+      "args": ["mcp", "--sessions-only"]
+    }
+  }
+}

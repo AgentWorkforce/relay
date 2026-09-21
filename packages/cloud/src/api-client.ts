@@ -18,6 +18,8 @@ export type CloudApiClientOptions = {
     options: { force: boolean; signal?: AbortSignal }
   ) => Promise<CloudApiClientSnapshot>;
   onRefresh?: (snapshot: CloudApiClientSnapshot) => void | Promise<void>;
+  /** Reject a selected API host before any refresh token or bearer is sent to it. */
+  validateApiUrl?: (apiUrl: string) => void;
 };
 
 export type CloudApiClientSnapshot = {
@@ -97,6 +99,7 @@ export class CloudApiClient {
   private refreshPromise: Promise<void> | null = null;
 
   constructor(private readonly options: CloudApiClientOptions) {
+    options.validateApiUrl?.(options.apiUrl);
     this.apiUrl = options.apiUrl;
     this.accessToken = options.accessToken;
     this.refreshToken = options.refreshToken;
@@ -135,10 +138,12 @@ export class CloudApiClient {
   }
 
   async fetch(p: string, init: RequestInit = {}): Promise<Response> {
+    this.options.validateApiUrl?.(this.apiUrl);
     await this.refresh(false, init.signal ?? undefined);
 
     const response = await fetch(buildApiUrl(this.apiUrl, p), {
       ...init,
+      ...(this.options.validateApiUrl ? { redirect: 'error' as const } : {}),
       headers: this.buildHeaders(init.headers),
     });
 
@@ -150,17 +155,20 @@ export class CloudApiClient {
 
     return fetch(buildApiUrl(this.apiUrl, p), {
       ...init,
+      ...(this.options.validateApiUrl ? { redirect: 'error' as const } : {}),
       headers: this.buildHeaders(init.headers),
     });
   }
 
   async revoke(): Promise<void> {
+    this.options.validateApiUrl?.(this.apiUrl);
     const response = await fetch(buildApiUrl(this.apiUrl, '/api/v1/auth/token/revoke'), {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
       },
       body: JSON.stringify({ token: this.refreshToken }),
+      ...(this.options.validateApiUrl ? { redirect: 'error' as const } : {}),
     });
 
     if (!response.ok && response.status !== 404) {
@@ -228,6 +236,7 @@ export class CloudApiClient {
         },
         body: JSON.stringify({ refreshToken: this.refreshToken }),
         signal: controller.signal,
+        ...(this.options.validateApiUrl ? { redirect: 'error' as const } : {}),
       });
     } catch (error) {
       if (timedOut || (!callerAborted && error instanceof Error && error.name === 'AbortError')) {
@@ -280,6 +289,7 @@ export class CloudApiClient {
   }
 
   private applySnapshot(snapshot: CloudApiClientSnapshot): void {
+    this.options.validateApiUrl?.(snapshot.apiUrl);
     this.apiUrl = snapshot.apiUrl;
     this.accessToken = snapshot.accessToken;
     this.accessTokenExpiresAt = snapshot.accessTokenExpiresAt;
