@@ -1,8 +1,8 @@
 # Provider subscription workspace authentication and wake proof
 
-The resumed worker had real RELAY_WORKSPACE_KEY and RELAY_AGENT_TOKEN values.
+The resumed worker had real RELAY*WORKSPACE_KEY and RELAY_AGENT_TOKEN values.
 A temporary fetch diagnostic recorded GET https://cast.agentrelay.com/v1/agents
-returning 401, followed by "Workspace key required (rk_live_...)". Removing only
+returning 401, followed by "Workspace key required (rk_live*...)". Removing only
 RELAY_AGENT_TOKEN made the same request return 200. This was client credential
 selection, not missing worker environment, a masked key, or node configuration.
 No credential values were logged. Temporary diagnostics were removed.
@@ -17,7 +17,7 @@ Validation: 154 focused CLI/auth tests and CLI typecheck pass. Regression tests
 fail before the fix for ambient agent-token setup and explicit-token rejection.
 Running the patched source CLI with the original workspace key AND agent token
 successfully subscribed webhook-subscription-closeout-r2 to
-/github/repos/AgentWorkforce/relayfile/pulls/515/**. The local Relayfile client
+/github/repos/AgentWorkforce/relayfile/pulls/515/\*\*. The local Relayfile client
 used a 120s request budget for this live proof; the deployed 30s default can
 still time out on overloaded control-plane operations (separate from auth).
 
