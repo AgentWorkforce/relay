@@ -762,6 +762,54 @@ mod tests {
 mod observation_predicate_tests {
     use super::{is_observed, ECHO_VERIFICATION, PROCESS_EXIT_VERIFICATION};
 
+    /// Pin the three `verification` values as WIRE STRINGS, not as symbols.
+    ///
+    /// Every other test compares through the constant, so renaming the
+    /// constant's value renamed the wire contract and left the whole suite
+    /// green — 25 tests here and 9 in vitest. The TypeScript side spells these
+    /// out literally (`tests/integration/broker/utils/assert-helpers.ts`,
+    /// `tests/benchmarks/harness.ts`) and the Rust build never sees that file,
+    /// so a rename here silently desynchronises the two sides of the wire.
+    ///
+    /// These assertions are deliberately literal. If one fails, the fix is to
+    /// update every consumer listed above, not to update this test.
+    #[test]
+    fn the_verification_wire_values_are_fixed_strings() {
+        assert_eq!(ECHO_VERIFICATION, "echo");
+        assert_eq!(PROCESS_EXIT_VERIFICATION, "process_exit");
+        assert_eq!(super::TIMEOUT_FALLBACK_VERIFICATION, "timeout_fallback");
+    }
+
+    /// The emitters must go through the constants, or pinning the constants
+    /// proves nothing about what actually goes on the wire.
+    ///
+    /// `headless.rs` emitted the literal `"process_exit"` while the predicate
+    /// read the constant, so renaming only that constant reclassified every
+    /// headless delivery as unobserved with the entire suite green.
+    #[test]
+    fn the_verification_emitters_use_the_constants_not_literals() {
+        for (file, source) in [
+            ("pty_worker.rs", include_str!("../pty_worker.rs")),
+            (
+                "runtime/headless.rs",
+                include_str!("../runtime/headless.rs"),
+            ),
+        ] {
+            for literal in [
+                "\"verification\": \"echo\"",
+                "\"verification\": \"process_exit\"",
+                "\"verification\": \"timeout_fallback\"",
+            ] {
+                assert!(
+                    !source.contains(literal),
+                    "{file} emits {literal} as a literal. Use the constant in \
+                     broker::delivery_verification, or a rename of the constant \
+                     desynchronises the emitter from the predicate that reads it."
+                );
+            }
+        }
+    }
+
     /// relay: F7 — a headless child that consumed the message and exited
     /// cleanly IS an observation.
     ///
@@ -802,22 +850,58 @@ mod timeout_arm_call_site_tests {
     #[test]
     fn the_verification_timeout_arm_never_sends_a_delivery_ack() {
         let source = include_str!("../pty_worker.rs");
-        let anchor = source
-            .find("for (kind, payload) in verification_timeout_frames(")
-            .expect("the verification-timeout arm must still call verification_timeout_frames");
 
-        // The arm runs from the start of its enclosing timeout branch to the
-        // end of the frame-sending loop. Scan a generous window around the
-        // call so a `delivery_ack` added anywhere nearby is caught.
-        let start = source[..anchor]
-            .rfind("verification window")
-            .unwrap_or(anchor);
-        let end = source[anchor..]
-            .find("Timeout fallbacks are not verified deliveries")
-            .map(|offset| anchor + offset)
-            .unwrap_or_else(|| (anchor + 2_000).min(source.len()));
+        // Extract the WHOLE arm by balancing braces from its opening
+        // condition, rather than scanning a window around the call.
+        //
+        // The previous version anchored with `rfind("verification window")`,
+        // which matched a `tracing::info!` string two lines above the call and
+        // guarded 10 lines of a 38-line arm. A `delivery_ack` added anywhere in
+        // the first 23 lines — which is where a reader naturally puts one,
+        // right after `let event_id = ...` — passed this test and the entire
+        // 1,298-test suite. A guard that covers a quarter of the hazard is a
+        // guard that reports a fact it never checked.
+        let condition =
+            "if pending_verifications[i].injected_at.elapsed() >= verification_window {";
+        let open = source
+            .find(condition)
+            .map(|offset| offset + condition.len() - 1)
+            .expect("the verification-timeout arm must still open with its elapsed() condition");
 
-        let arm = &source[start..end];
+        let bytes = source.as_bytes();
+        let mut depth = 0usize;
+        let mut close = None;
+        for (index, byte) in bytes.iter().enumerate().skip(open) {
+            match byte {
+                b'{' => depth += 1,
+                b'}' => {
+                    depth -= 1;
+                    if depth == 0 {
+                        close = Some(index);
+                        break;
+                    }
+                }
+                _ => {}
+            }
+        }
+        let close = close.expect("the verification-timeout arm must be brace-balanced");
+        let arm = &source[open..=close];
+
+        // Guard the guard: if the extracted span ever stops containing the
+        // call this arm exists for, the extraction broke and the assertion
+        // below would pass vacuously on an empty or wrong span.
+        assert!(
+            arm.contains("verification_timeout_frames("),
+            "extracted arm no longer contains the verification_timeout_frames call, \
+             so this test is measuring the wrong span"
+        );
+        assert!(
+            arm.lines().count() > 20,
+            "extracted arm is only {} lines, which is too short to be the whole arm; \
+             the brace balance broke",
+            arm.lines().count()
+        );
+
         assert!(
             !arm.contains("\"delivery_ack\""),
             "the verification-timeout arm emits a delivery_ack. The echo never arrived, \

@@ -416,9 +416,8 @@ test(
       const result = await harness.sendMessage({ to: sink, from: 'infra-test', text: 'swallow me' });
 
       // The sink swallows all output, so the echo can never be observed. The
-      // broker still acks after the verification window, but it must mark the
-      // delivery as unverified instead of conflating it with an echo-verified
-      // success.
+      // delivery must be reported as an explicitly unverified hand-off rather
+      // than conflated with an echo-verified success.
       const verified = await harness.waitForEvent(
         'delivery_verified',
         30_000,
@@ -437,13 +436,26 @@ test(
         'reason should explain the missing echo verification'
       );
 
-      // The fallback still acks the delivery (re-injection stays disabled to
-      // avoid duplicates) — but never as an echo-verified success.
+      // The fallback must NOT ack. `delivery_ack` is the worker's one statement
+      // that it SAW the message land, and the broker acts on it: it confirms
+      // the pending delivery, releases the withheld engine-facing fleet ack,
+      // emits `message_delivery_confirmed` and marks the message read. The echo
+      // never arrived, so none of that is true — seam rule 4, "never claim an
+      // acknowledgement you did not observe".
+      //
+      // This arm previously waited FOR that ack. It was left behind when the
+      // worker stopped sending it, so it asserted the exact behaviour the seam
+      // removed. No gate ran this suite, so it went unnoticed.
       await harness.waitForEvent(
-        'delivery_ack',
+        'delivery_unobserved',
         10_000,
-        (e) => e.kind === 'delivery_ack' && e.name === sink && e.event_id === result.event_id
+        (e) => e.kind === 'delivery_unobserved' && e.name === sink && e.event_id === result.event_id
       ).promise;
+
+      const acks = harness
+        .getEventsByKind('delivery_ack')
+        .filter((e) => e.kind === 'delivery_ack' && e.event_id === result.event_id);
+      assert.equal(acks.length, 0, `an unobserved delivery must not be acked: ${JSON.stringify(acks)}`);
       const echoVerified = harness
         .getEventsByKind('delivery_verified')
         .filter(

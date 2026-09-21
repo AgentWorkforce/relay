@@ -53,15 +53,36 @@ export function brokerTestEnv(): NodeJS.ProcessEnv {
  * exists to catch.
  *
  * This is an allow-list, not a deny-list: any future `verification` value the
- * broker learns to emit must be opted in here deliberately.
+ * broker learns to emit must be opted in here deliberately, and it must be
+ * opted in to match `is_observed` in
+ * `crates/broker/src/broker/delivery_verification.rs`, which is the source of
+ * truth for what counts as an observation.
  */
+const OBSERVED_VERIFICATIONS = new Set(['echo', 'process_exit']);
+
 export function isObservedDelivery(event: BrokerEvent): boolean {
-  return event.kind === 'delivery_verified' && event.verification === 'echo';
+  if (event.kind !== 'delivery_verified') return false;
+  const { verification } = event as BrokerEvent & { verification?: string };
+  return verification !== undefined && OBSERVED_VERIFICATIONS.has(verification);
 }
 
-/** True for a `delivery_verified` that explicitly reports an unobserved hand-off. */
+/**
+ * True for a `delivery_verified` that does NOT report an observation.
+ *
+ * Defined as the negation of `isObservedDelivery` over `delivery_verified`, so
+ * the two cannot drift apart. They previously could: this file tested
+ * `=== 'echo'` while the broker's `is_observed` accepted `echo | process_exit`,
+ * so a headless delivery reporting `process_exit` — a genuine observation, the
+ * child consumed the message and exited cleanly — was counted as unobserved.
+ * Every parity harness hard-fails on `unobserved !== 0`, so the parity suite
+ * would have gone red on a correctly delivered message.
+ *
+ * A frame with no `verification` counts as unobserved here. This is the
+ * conservative direction for a parity gate: an unlabelled frame is not
+ * evidence that anything was seen.
+ */
 export function isUnobservedDelivery(event: BrokerEvent): boolean {
-  return event.kind === 'delivery_verified' && event.verification !== 'echo';
+  return event.kind === 'delivery_verified' && !isObservedDelivery(event);
 }
 
 export async function startBroker(): Promise<HarnessDriverClient> {

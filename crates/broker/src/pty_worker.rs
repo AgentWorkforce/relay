@@ -1689,7 +1689,7 @@ pub(crate) async fn run_pty_worker(cmd: PtyCommand) -> Result<()> {
                                 json!({
                                     "delivery_id": delivery_id,
                                     "event_id": event_id,
-                                    "verification": "echo"
+                                    "verification": crate::broker::delivery_verification::ECHO_VERIFICATION
                                 }),
                             )
                             .await;
@@ -2162,7 +2162,7 @@ pub(crate) async fn run_pty_worker(cmd: PtyCommand) -> Result<()> {
                                     json!({
                                         "delivery_id": delivery_id,
                                         "event_id": event_id,
-                                        "verification": "echo"
+                                        "verification": crate::broker::delivery_verification::ECHO_VERIFICATION
                                     }),
                                 )
                                 .await;
