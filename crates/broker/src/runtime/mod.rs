@@ -17,7 +17,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use tokio::{
     io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader},
-    sync::{broadcast, mpsc, Notify, RwLock},
+    sync::{broadcast, mpsc, watch, Notify, RwLock},
     time::{timeout, MissedTickBehavior},
 };
 use uuid::Uuid;

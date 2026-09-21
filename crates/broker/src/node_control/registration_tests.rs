@@ -201,6 +201,7 @@ async fn registration_gate_case(response: &str) {
             Some(Duration::from_millis(150))
         },
         probe: None,
+        terminal_reconnect_tx: None,
     };
     let observe = async {
         if accepted {

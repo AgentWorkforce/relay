@@ -373,6 +373,7 @@ pub(crate) async fn run_init(cmd: InitCommand, telemetry: TelemetryClient) -> Re
     // independent control queue.
     let (terminal_control_tx, terminal_control_rx) =
         mpsc::channel::<crate::terminal_control::TerminalControlCommand>(1024);
+    let (terminal_reconnect_tx, terminal_reconnect_rx) = watch::channel(None);
     let (terminal_event_tx, terminal_event_rx) =
         mpsc::channel::<crate::terminal_control::TerminalControlEvent>(1024);
     let node_delivery_token_present = node_token.is_some();
@@ -391,6 +392,7 @@ pub(crate) async fn run_init(cmd: InitCommand, telemetry: TelemetryClient) -> Re
                 session_token: Some(session_node_token.clone()),
                 read_idle_timeout: None,
                 probe: Some(node_delivery_probe.clone()),
+                terminal_reconnect_tx: Some(terminal_reconnect_tx.clone()),
             },
             fleet_control_rx,
             fleet_event_tx,
@@ -400,6 +402,7 @@ pub(crate) async fn run_init(cmd: InitCommand, telemetry: TelemetryClient) -> Re
                 ws_url: terminal_ws_url,
                 session_token: session_node_token.clone(),
                 read_idle_timeout: None,
+                reconnect_rx: terminal_reconnect_rx,
             },
             terminal_control_rx,
             terminal_event_tx,
@@ -800,6 +803,7 @@ pub(crate) async fn run_init(cmd: InitCommand, telemetry: TelemetryClient) -> Re
         fleet_event_rx,
         fleet_control_open: true,
         terminal_control_tx,
+        terminal_reconnect_tx,
         terminal_event_rx,
         terminal_control_open: true,
         terminal_sessions: HashMap::new(),

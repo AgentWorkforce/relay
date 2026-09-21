@@ -261,6 +261,7 @@ struct Counters {
     parse_failures: AtomicU64,
     deliver: AtomicU64,
     action_invoke: AtomicU64,
+    terminal_reconnect_requested: AtomicU64,
     ping: AtomicU64,
     reply: AtomicU64,
     error: AtomicU64,
@@ -382,6 +383,9 @@ impl NodeDeliveryProbe {
         let counter = match frame {
             RelaycastToBroker::Deliver(_) => &self.counters.deliver,
             RelaycastToBroker::ActionInvoke(_) => &self.counters.action_invoke,
+            RelaycastToBroker::TerminalReconnectRequested(_) => {
+                &self.counters.terminal_reconnect_requested
+            }
             RelaycastToBroker::Ping(_) => &self.counters.ping,
             RelaycastToBroker::Reply(_) => &self.counters.reply,
             RelaycastToBroker::Error(_) => &self.counters.error,
@@ -600,6 +604,7 @@ impl NodeDeliveryProbe {
             "frames": {
                 "deliver": load(&c.deliver),
                 "action_invoke": load(&c.action_invoke),
+                "terminal_reconnect_requested": load(&c.terminal_reconnect_requested),
                 "ping": load(&c.ping),
                 "reply": load(&c.reply),
                 "error": load(&c.error),
