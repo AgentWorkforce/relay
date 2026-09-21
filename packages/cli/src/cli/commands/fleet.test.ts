@@ -4027,6 +4027,7 @@ describe('fleet command support', () => {
     const logs: string[] = [];
     const program = new Command();
     program.exitOverride();
+    const retireOwnedBindings = vi.fn(async () => undefined);
     registerFleetCommands(program, {
       resolveSandboxRepository: () => undefined,
       sdk: {
@@ -4038,6 +4039,7 @@ describe('fleet command support', () => {
         exit: vi.fn() as never,
       },
       createFleetWorkspaceClient: createFleetWorkspaceClient as never,
+      retireOwnedBindings,
       log: () => undefined,
       warn: () => undefined,
       error: () => undefined,
@@ -4057,11 +4059,13 @@ describe('fleet command support', () => {
       { from: 'user' }
     );
 
+    expect(retireOwnedBindings).toHaveBeenCalledWith('api-worker', expect.objectContaining({ deleteAgent: true }));
     expect(release).toHaveBeenCalledWith({
       name: 'api-worker',
       reason: expect.stringMatching(/^Work accepted \(actor: .+\)$/),
       deleteAgent: true,
     });
+    expect(retireOwnedBindings.mock.invocationCallOrder[0]).toBeLessThan(release.mock.invocationCallOrder[0]!);
   });
 
   it('fleet status output redacts the node token and workspace key from the session', async () => {

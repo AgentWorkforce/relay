@@ -217,6 +217,7 @@ export interface FleetCommandDependencies {
   warn: (...args: unknown[]) => void;
   error: (...args: unknown[]) => void;
   exit: (code: number) => never;
+  retireOwnedBindings: typeof retireOwnedIntegrationBindings;
 }
 
 function withFleetDefaults(overrides: Partial<FleetCommandDependencies> = {}): FleetCommandDependencies {
@@ -243,6 +244,7 @@ function withFleetDefaults(overrides: Partial<FleetCommandDependencies> = {}): F
     warn: (...args: unknown[]) => console.warn(...args),
     error: (...args: unknown[]) => console.error(...args),
     exit: core.exit,
+    retireOwnedBindings: retireOwnedIntegrationBindings,
     ...overrides,
   };
 }
@@ -1111,9 +1113,12 @@ export function registerFleetCommands(
       warnIfInferredFromProjectSession(options, deps.warn);
       const workerName = requiredText(name, 'Worker name');
       const deleteAgent = options.deleteAgent === true;
-      if (options.unsubscribeBindings === true) {
+      // Retire bindings while the identity is still registered. --owned-by
+      // resolves the agent-events-<id> channel from the live roster, so this
+      // must run before --delete-agent removes that row.
+      if (options.unsubscribeBindings === true || deleteAgent) {
         try {
-          await retireOwnedIntegrationBindings(workerName, options);
+          await deps.retireOwnedBindings(workerName, options);
         } catch (error) {
           deps.sdk.error(
             `Warning: could not retire provider bindings for @${workerName}: ${
@@ -1121,10 +1126,6 @@ export function registerFleetCommands(
             }`
           );
         }
-      } else if (deleteAgent) {
-        deps.sdk.error(
-          `Warning: deleting @${workerName} leaves provider bindings on that identity. Run \`agent-relay integration unsubscribe github --owned-by @${workerName}\` or pass --unsubscribe-bindings.`
-        );
       }
       const workspace = deps.createFleetWorkspaceClient(sdkOptionsFromOpts(options));
       const reason = attributableReleaseReason(
