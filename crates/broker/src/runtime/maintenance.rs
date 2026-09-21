@@ -829,6 +829,9 @@ impl BrokerRuntime {
                     obligation_msg_id = %msg_id,
                     "injecting boomerang return to recipient"
                 );
+                // NOT behind the delivery seam: a direct write whose error is
+                // only logged, so rules 1-4 do not govern it. Pre-dates the
+                // seam; tracked in relay#1832.
                 if let Err(error) = self.workers.deliver(&recipient, relay_delivery).await {
                     tracing::warn!(
                         target = "relay_broker::obligation",
