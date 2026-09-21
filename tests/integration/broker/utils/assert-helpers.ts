@@ -246,7 +246,9 @@ export function assertDeliveryObservationLedger(
 
   const deliveryId = (event: BrokerEvent): string => {
     const id = (event as BrokerEvent & { delivery_id?: unknown }).delivery_id;
-    assert.equal(typeof id, 'string', `${prefix}${event.kind} must carry a delivery_id`);
+    if (typeof id !== 'string') {
+      assert.fail(`${prefix}${event.kind} must carry a delivery_id`);
+    }
     assert.ok(id.length > 0, `${prefix}${event.kind} must carry a non-empty delivery_id`);
     return id;
   };
