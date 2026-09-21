@@ -971,15 +971,16 @@ impl BrokerRuntime {
                                                 &deliver.agent_id,
                                                 up_to_seq,
                                             );
-                                            pending_deliveries.retain(|_, sibling| {
-                                                !sibling.withheld_fleet_ack.as_ref().is_some_and(
-                                                    |sibling| {
-                                                        sibling.agent_id == deliver.agent_id
-                                                            && sibling.seq > 0
-                                                            && sibling.seq <= up_to_seq
-                                                    },
-                                                )
-                                            });
+                                            let _ = crate::runtime::delivery::dispose_pending_fleet_ack_prefix(
+                                                pending_deliveries,
+                                                terminal_failed_deliveries,
+                                                node_delivery_probe.as_ref(),
+                                                sdk_out_tx,
+                                                dead_letters,
+                                                &deliver.agent_id,
+                                                up_to_seq,
+                                            )
+                                            .await;
                                         }
                                         tracing::warn!(
                                             target = "relay_broker::fleet",

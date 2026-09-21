@@ -44,24 +44,24 @@ use super::{
     apply_exit_after_task_instruction, build_agent_state_transition_event,
     build_http_api_spawn_spec, build_thread_infos, channels_from_csv,
     clear_pending_delivery_if_event_matches, continuity_dir, default_observer_token_scopes,
-    delivery_read_ack_is_relaycast_message, delivery_retry_interval, drop_pending_for_worker,
-    emit_delivery_attempt_outcome, emit_dropped_delivery_failures, ensure_ephemeral_paths,
-    extract_mcp_message_ids, http_api_event_emit_timeout, http_api_local_delivery_timeout,
-    http_api_relaycast_send_timeout, is_relaycast_self_control_target,
-    is_unknown_worker_error_message, load_dead_letters, load_pending_deliveries,
-    mark_delivery_read_ack, mark_delivery_read_ack_with_timeout, mint_or_recover_observer_token,
-    normalize_channel, normalize_initial_task, normalize_sender, parse_sort_key_from_raw_timestamp,
-    pending_message_counts, persist_dead_letters_on_shutdown, persist_pending_on_shutdown,
-    queue_inbound_for_delivery_mode, relaycast_spawn_control_dedup_key,
-    relaycast_ws_should_apply_local_spawn_echo_dedup, relaycast_ws_spawn_token,
-    requeue_dead_letter, resolve_exit_after_task, resolve_workspace, retry_pending_delivery,
-    save_dead_letters, seed_supplied_agent_token, send_broker_event, sender_is_dashboard_label,
-    should_clear_pending_delivery_for_event, synthetic_delivery_read_ack_reason,
-    take_pending_for_worker, try_inject_pending_relay_message, AgentRuntime, BrokerRuntime,
-    DeadLetterEntry, DeadLetterStore, DeliveryAttemptOutcome, InboundContext, InboundQueueOutcome,
-    ObserverTokenMintError, ObserverTokenMintOutcome, PendingDelivery, PendingDeliveryStore,
-    ProtocolHeadlessProvider, RelayWorkspace, RuntimePaths, TypedThreadMessage, MAX_DEAD_LETTERS,
-    MAX_DELIVERY_RETRIES,
+    delivery_read_ack_is_relaycast_message, delivery_retry_interval,
+    dispose_pending_fleet_ack_prefix, drop_pending_for_worker, emit_delivery_attempt_outcome,
+    emit_dropped_delivery_failures, ensure_ephemeral_paths, extract_mcp_message_ids,
+    http_api_event_emit_timeout, http_api_local_delivery_timeout, http_api_relaycast_send_timeout,
+    is_relaycast_self_control_target, is_unknown_worker_error_message, load_dead_letters,
+    load_pending_deliveries, mark_delivery_read_ack, mark_delivery_read_ack_with_timeout,
+    mint_or_recover_observer_token, normalize_channel, normalize_initial_task, normalize_sender,
+    parse_sort_key_from_raw_timestamp, pending_message_counts, persist_dead_letters_on_shutdown,
+    persist_pending_on_shutdown, queue_inbound_for_delivery_mode,
+    relaycast_spawn_control_dedup_key, relaycast_ws_should_apply_local_spawn_echo_dedup,
+    relaycast_ws_spawn_token, requeue_dead_letter, resolve_exit_after_task, resolve_workspace,
+    retry_pending_delivery, save_dead_letters, seed_supplied_agent_token, send_broker_event,
+    sender_is_dashboard_label, should_clear_pending_delivery_for_event,
+    synthetic_delivery_read_ack_reason, take_pending_for_worker, try_inject_pending_relay_message,
+    AgentRuntime, BrokerRuntime, DeadLetterEntry, DeadLetterStore, DeliveryAttemptOutcome,
+    InboundContext, InboundQueueOutcome, ObserverTokenMintError, ObserverTokenMintOutcome,
+    PendingDelivery, PendingDeliveryStore, ProtocolHeadlessProvider, RelayWorkspace, RuntimePaths,
+    TypedThreadMessage, MAX_DEAD_LETTERS, MAX_DELIVERY_RETRIES,
 };
 use crate::dedup::DedupCache;
 use crate::relaycast::{
@@ -854,6 +854,90 @@ fn held_fleet_message(deliver: &Deliver) -> PendingRelayMessage {
             seq: deliver.seq,
         }),
     }
+}
+
+#[tokio::test]
+async fn advancing_past_unobserved_siblings_accounts_for_every_removed_delivery() {
+    let mut pending_deliveries = HashMap::new();
+    for seq in 1..=3 {
+        let delivery_id = format!("del_sibling_{seq}");
+        let mut pending = make_pending_delivery(&delivery_id, "worker-a");
+        pending.withheld_fleet_ack = Some(fleet_deliver(seq));
+        pending_deliveries.insert(DeliveryId::new(delivery_id), pending);
+    }
+    let mut other = make_pending_delivery("del_other_agent", "worker-b");
+    let mut other_ack = fleet_deliver(1);
+    other_ack.agent = "worker-b".to_string();
+    other_ack.agent_id = "agent-worker-b".to_string();
+    other.withheld_fleet_ack = Some(other_ack);
+    pending_deliveries.insert(DeliveryId::new("del_other_agent"), other);
+
+    let mut terminal = super::event_loop::TerminalDeliveryGuard::default();
+    let probe = crate::node_delivery_probe::NodeDeliveryProbe::new();
+    let (sdk_out_tx, mut sdk_out_rx) = mpsc::channel(16);
+    let mut dead_letters = DeadLetterStore::default();
+
+    let dropped = dispose_pending_fleet_ack_prefix(
+        &mut pending_deliveries,
+        &mut terminal,
+        &probe,
+        &sdk_out_tx,
+        &mut dead_letters,
+        "agent-worker-a",
+        2,
+    )
+    .await
+    .expect("disposing an advanced prefix should be infallible");
+
+    assert_eq!(dropped, 2, "both covered siblings must be accounted for");
+    assert_eq!(pending_deliveries.len(), 2);
+    assert!(pending_deliveries.contains_key("del_sibling_3"));
+    assert!(pending_deliveries.contains_key("del_other_agent"));
+
+    for delivery_id in ["del_sibling_1", "del_sibling_2"] {
+        assert!(
+            terminal.contains(delivery_id),
+            "a late worker ack for {delivery_id} must not resurrect it"
+        );
+        let dead = dead_letters
+            .get(delivery_id)
+            .unwrap_or_else(|| panic!("{delivery_id} must remain operator-visible"));
+        assert!(
+            dead.reason
+                .starts_with(crate::runtime::dead_letter::IN_DOUBT_REASON_PREFIX),
+            "a purged possible write must not be auto-redeliverable: {}",
+            dead.reason
+        );
+    }
+
+    let mut failed_ids = Vec::new();
+    let mut dead_ids = Vec::new();
+    while let Ok(frame) = sdk_out_rx.try_recv() {
+        match frame.payload.get("kind").and_then(Value::as_str) {
+            Some("message_delivery_failed") => failed_ids.push(
+                frame.payload["delivery_id"]
+                    .as_str()
+                    .expect("failure delivery id")
+                    .to_string(),
+            ),
+            Some("dead_letter_added") => dead_ids.push(
+                frame.payload["delivery_id"]
+                    .as_str()
+                    .expect("dead-letter delivery id")
+                    .to_string(),
+            ),
+            _ => {}
+        }
+    }
+    failed_ids.sort();
+    dead_ids.sort();
+    assert_eq!(failed_ids, ["del_sibling_1", "del_sibling_2"]);
+    assert_eq!(dead_ids, failed_ids);
+    assert_eq!(
+        probe.snapshot_with_token(true)["dispositions"]["advanced_past_unobserved"],
+        2,
+        "each removed sibling needs its own observable disposition"
+    );
 }
 
 fn pending_delivery(worker_name: &str, delivery_id: &str, event_id: &str) -> PendingDelivery {
@@ -2491,6 +2575,8 @@ async fn timed_out_initial_handoff_still_registers_its_withheld_fleet_ack() {
     let deliver = fleet_deliver(1);
     let msg = held_fleet_message(&deliver);
     let mut pending_deliveries = HashMap::new();
+    let mut seam = crate::delivery::DeliverySeam::new();
+    let queue_capacity_before = registry.workers["worker-a"].command_tx.capacity();
 
     let outcome = tokio::time::timeout(
         Duration::from_secs(5),
@@ -2502,7 +2588,7 @@ async fn timed_out_initial_handoff_still_registers_its_withheld_fleet_ack() {
             Duration::from_millis(20),
             Some(deliver.clone()),
             Some(deliver.seq),
-            &mut crate::delivery::DeliverySeam::new(),
+            &mut seam,
         ),
     )
     .await
@@ -2514,6 +2600,13 @@ async fn timed_out_initial_handoff_still_registers_its_withheld_fleet_ack() {
     assert!(
         outcome.is_err(),
         "a handoff that never completes must time out, not hang forever"
+    );
+    let error = outcome.expect_err("checked above");
+    assert!(
+        error
+            .downcast_ref::<crate::runtime::delivery::TerminalInDoubtError>()
+            .is_some(),
+        "a deadline after writer-queue admission must be typed in-doubt, got {error:?}"
     );
     assert_eq!(
         pending_deliveries.len(),
@@ -2532,6 +2625,35 @@ async fn timed_out_initial_handoff_still_registers_its_withheld_fleet_ack() {
         Some(deliver.msg_id.as_str()),
         "the withheld fleet ack must be registered before the timeout can expire, so a later \
          successful retry can still resolve it"
+    );
+    assert_eq!(
+        registered.failed_attempts, MAX_DELIVERY_RETRIES,
+        "the deadline must make the pending entry terminal before a maintenance tick can retry it"
+    );
+    assert_eq!(
+        registry.workers["worker-a"].command_tx.capacity(),
+        queue_capacity_before - 1,
+        "the first handoff must have crossed the writer-queue commit boundary"
+    );
+
+    let delivery_id = registered.delivery.delivery_id.clone();
+    let terminal = retry_pending_delivery(
+        &delivery_id,
+        &mut registry,
+        &mut pending_deliveries,
+        Duration::from_millis(20),
+        &mut seam,
+    )
+    .await
+    .expect("terminal in-doubt settlement is an outcome, not a transport error");
+    assert!(
+        matches!(terminal, DeliveryAttemptOutcome::TerminalInDoubt { .. }),
+        "the next tick must settle without writing again, got {terminal:?}"
+    );
+    assert_eq!(
+        registry.workers["worker-a"].command_tx.capacity(),
+        queue_capacity_before - 1,
+        "settling the cancelled handoff must not enqueue a second PTY frame"
     );
 
     cleanup_worker_registry(registry).await;
@@ -3192,7 +3314,11 @@ async fn timeout_fallback_never_confirms_or_acks_an_unobserved_delivery() {
     // Control 1: a late `delivery_ack` for the same delivery — the shape that
     // released the fleet ack before this fix — cannot resurrect it.
     let late = drive_verification("timeout_fallback", true).await;
-    for forbidden in ["message_delivery_confirmed", "delivery_read_ack"] {
+    for forbidden in [
+        "message_delivery_confirmed",
+        "delivery_read_ack",
+        "delivery_ack",
+    ] {
         assert!(
             !late.kinds.iter().any(|kind| kind == forbidden),
             "a late ack after an unobserved fallback emitted {forbidden}: {:?}",
@@ -4282,43 +4408,6 @@ fn contract_replay_fixture_requires_replay_route_exposure() {
     assert!(
         source.contains(".route(\"/api/events/replay\""),
         "listen API router does not expose /api/events/replay"
-    );
-}
-
-#[test]
-fn contract_timeout_fixture_requires_terminal_failed_guard_before_late_ack() {
-    let replay_fixture: Value = serde_json::from_str(include_str!(
-        "../../../../packages/contracts/fixtures/replay-fixtures.json"
-    ))
-    .expect("replay fixture should be valid JSON");
-    let timeout_fixture = replay_fixture
-        .get("wave0_timeout_terminal_semantics")
-        .and_then(Value::as_object)
-        .expect("replay fixture must include wave0_timeout_terminal_semantics object");
-
-    let expected_terminal_status = timeout_fixture
-        .get("expected_terminal_status")
-        .and_then(Value::as_str)
-        .expect("timeout fixture requires expected_terminal_status");
-    let late_event_kind = timeout_fixture
-        .get("late_event_kind")
-        .and_then(Value::as_str)
-        .expect("timeout fixture requires late_event_kind");
-
-    let source = include_str!("worker_events.rs");
-    let ack_branch = source
-        .find("msg_type == \"delivery_ack\"")
-        .map(|idx| {
-            let end = (idx + 1200).min(source.len());
-            &source[idx..end]
-        })
-        .expect("worker_events.rs must include delivery_ack handling");
-
-    assert!(
-        ack_branch.contains(expected_terminal_status) || ack_branch.contains("terminal"),
-        "delivery_ack branch lacks terminal guard for timeout status \"{}\" and late event \"{}\"",
-        expected_terminal_status,
-        late_event_kind
     );
 }
 
@@ -8985,11 +9074,10 @@ async fn make_registry_with_writerless_worker(name: &str) -> WorkerRegistry {
 
 /// The retry cap has to be *reached*, not just declared.
 ///
-/// Every other test around `retry_pending_delivery` pre-sets
-/// `attempts = MAX_DELIVERY_RETRIES` and asserts what happens at the cap. None
-/// of them start at zero, so if the attempt counter stopped incrementing on a
-/// retriable failure they would all still pass while a delivery retried
-/// forever and never dead-lettered.
+/// Other `retry_pending_delivery` callers cover many starting states, including
+/// zero. None of those tests walks one repeatable pre-write failure through
+/// every increment to the cap, so the individual snapshots could all pass if
+/// the retry lifecycle stopped advancing between them.
 ///
 /// This walks the whole lifecycle from `attempts: 0` on a repeatable pre-write
 /// error: each attempt must increment the counter and leave the entry pending,
@@ -9195,19 +9283,32 @@ async fn a_handed_over_delivery_that_exhausts_retries_is_in_doubt_not_failed() {
     }
 
     let terminal = terminal.expect("the retry budget must terminate");
-    let DeliveryAttemptOutcome::TerminalInDoubt { last_error, .. } = terminal else {
+    let DeliveryAttemptOutcome::TerminalInDoubt { .. } = &terminal else {
         panic!(
             "a delivery the seam handed to a route must terminate IN DOUBT so it is \
              dead-lettered non-redeliverable, got {terminal:?}"
         );
     };
 
-    // The dead letter the runtime builds from this outcome must be excluded
-    // from automatic redelivery.
-    let reason = format!(
-        "{}{last_error}",
-        crate::runtime::dead_letter::IN_DOUBT_REASON_PREFIX
-    );
+    // Drive the production outcome handler and inspect the store it writes.
+    // Formatting a prefix locally would keep this test green if production
+    // stopped adding the marker and made the message auto-redeliverable.
+    let (sdk_out_tx, _sdk_out_rx) = mpsc::channel(4);
+    let mut dead_letters = DeadLetterStore::default();
+    emit_delivery_attempt_outcome(
+        &sdk_out_tx,
+        &mut dead_letters,
+        &DeliveryId::new("del_handed"),
+        true,
+        terminal,
+    )
+    .await
+    .expect("the terminal in-doubt outcome must emit");
+    let reason = dead_letters
+        .get("del_handed")
+        .expect("the terminal in-doubt outcome must enter the dead-letter store")
+        .reason
+        .clone();
     assert!(
         !crate::runtime::dead_letter::is_auto_redeliverable(&reason),
         "a possible write must never be queued for automatic redelivery: {reason}"

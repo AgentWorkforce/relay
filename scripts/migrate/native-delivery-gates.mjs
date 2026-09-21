@@ -56,18 +56,28 @@ const PARITY = {
 };
 
 /**
- * The four seam rules from Phase 0 of the doc, as test names that must exist
- * and pass. Naming them here is what stops "we thought about double delivery"
- * from passing as "double delivery cannot happen".
+ * The seam contract tests that must exist, pass, and carry mutation evidence.
+ * This includes the original four scripted-backend tests, every invariant
+ * added by adversarial review, and the three tests against the shipping PTY
+ * route. Leaving later tests out made the gate certify evidence it never read.
  */
 const SEAM_INVARIANTS = [
   'falls_back_only_before_write',
   'never_resends_on_doubt',
+  'a_cancelled_send_remains_in_doubt_and_is_not_retried',
   'records_route_for_each_send',
   'never_acks_without_observation',
+  'an_evicted_receipt_does_not_become_a_fresh_send',
+  'settle_distinguishes_absence_from_an_unreachable_route',
+  'settle_reports_an_evicted_receipt_as_unknown_not_absent',
+  'an_acknowledgement_must_name_the_observation_behind_it',
+  'real_pty_route_unknown_worker_is_pre_write_and_may_fall_back',
+  'real_pty_route_write_failure_after_commit_does_not_fall_back',
+  'real_pty_route_never_reports_an_observed_ack',
 ];
 
 const INVARIANT_TEST_FILE = 'crates/broker/tests/delivery_seam_invariants.rs';
+const INVARIANT_TEST_FILES = [INVARIANT_TEST_FILE, 'crates/broker/src/delivery/pty.rs'];
 
 /** Phases, ordered as the doc orders them. Phase 6 is independent. */
 export const PHASES = {
@@ -93,9 +103,16 @@ export const PHASES = {
       'crates/broker/src/runtime/',
       'crates/broker/src/pty_worker.rs',
       'crates/broker/src/node_control.rs',
+      'crates/broker/src/node_delivery_probe.rs',
       'crates/broker/src/worker.rs',
     ],
-    tsScope: ['tests/', '.agentworkforce/features/manifest.yaml'],
+    tsScope: [
+      'tests/',
+      '.agentworkforce/features/manifest.yaml',
+      'packages/contracts/fixtures/event-fixtures.json',
+      'packages/harness-driver/src/protocol.ts',
+      'packages/sdk-py/src/agent_relay/protocol.py',
+    ],
     requiredSources: [
       'crates/broker/src/delivery/mod.rs',
       'crates/broker/src/delivery/backend.rs',
@@ -126,7 +143,10 @@ export const PHASES = {
     invariants: SEAM_INVARIANTS,
     parity: Object.keys(PARITY),
     rust: true,
-    evals: {},
+    evals: {
+      'observation-ledger-unit':
+        'npx vitest run tests/integration/broker/evals/delivery/observation-ledger.unit.test.ts',
+    },
     e2e: {},
     unlaunched: false,
     exit: 'The parity suite is green, unchanged, with the PTY backend behind the new trait.',
@@ -380,6 +400,36 @@ const KNOWN_FAILURES = [
   },
 ];
 
+function classifyRegressionEvidence(evidence) {
+  if (evidence.exitCode === 0) {
+    return {
+      failing: [],
+      unexplained: [],
+      malformed: evidence.verdict === 'green' ? null : 'command exited 0 but its evidence verdict is red',
+    };
+  }
+  if (!Array.isArray(evidence.failingTests)) {
+    return {
+      failing: [],
+      unexplained: [],
+      malformed: `command exited ${evidence.exitCode} without structured failure data`,
+    };
+  }
+  const failing = [...new Set(evidence.failingTests.map((line) => line.replace(/^\s*FAIL\s+/, '').trim()))];
+  if (failing.length === 0) {
+    return {
+      failing,
+      unexplained: [],
+      malformed: `command exited ${evidence.exitCode} but reported no failing tests`,
+    };
+  }
+  return {
+    failing,
+    unexplained: failing.filter((entry) => !KNOWN_FAILURES.some((known) => entry.includes(known.match))),
+    malformed: null,
+  };
+}
+
 /**
  * Pass when every failing test is a declared known failure. New failures are
  * the regression this gate exists to catch; a known failure that has started
@@ -394,12 +444,11 @@ function regressionGate() {
     return;
   }
   const evidence = readJson(file);
-  const failing = [
-    ...new Set(
-      (evidence.tail.match(/^\s*FAIL\s+.+$/gm) ?? []).map((line) => line.replace(/^\s*FAIL\s+/, '').trim())
-    ),
-  ];
-  const unexplained = failing.filter((entry) => !KNOWN_FAILURES.some((known) => entry.includes(known.match)));
+  const { failing, unexplained, malformed } = classifyRegressionEvidence(evidence);
+  if (malformed) {
+    fail(`regression-gate ${name}: ${malformed}`);
+    return;
+  }
   if (unexplained.length > 0) {
     fail(
       `regression-gate ${name}: ${unexplained.length} failure(s) not in the known-failure baseline\n  ` +
@@ -753,6 +802,10 @@ async function record() {
     forbiddenPresent: present,
     startedAt: new Date(startedAt).toISOString(),
     durationMs: Date.now() - startedAt,
+    // Preserve every failing test name independently of the bounded output
+    // tail. Regression classification must not turn green because the first
+    // failure scrolled past 20,000 characters.
+    failingTests: output.match(/^\s*FAIL\s+.+$/gm) ?? [],
     // Enough context to diagnose, bounded so a soak log cannot fill the disk.
     tail: output.slice(-20_000),
   });
@@ -785,9 +838,8 @@ function requireGreen() {
     }
     const runId = option('--run-id', 'unknown');
     if (evidence.runId !== undefined && evidence.runId !== runId) {
-      process.stdout.write(
-        `STALE_EVIDENCE ${name} was recorded by run "${evidence.runId}", not "${runId}"\n`
-      );
+      problems.push(`${name}: stale evidence from run "${evidence.runId}" (current "${runId}")`);
+      continue;
     }
     if (evidence.verdict !== 'green') {
       const detail = [
@@ -866,6 +918,7 @@ function editGate() {
       '.workflow-artifacts/',
       'scripts/migrate/',
       'flows/migrate/',
+      'flows/audit/',
       // The harness adapter and the e2e wiring the phase needed: campaign
       // tooling, not product, and so not manifest-routable either.
       'scripts/flows/',
@@ -875,6 +928,7 @@ function editGate() {
       // Trail writes these as agents work; CLAUDE.md requires them tracked, so
       // they are legitimate output of a run rather than scope creep.
       '.agentworkforce/trajectories/',
+      '.review-out/',
       'CHANGELOG.md',
       'docs/',
     ];
@@ -1006,7 +1060,9 @@ function targetedGate() {
   const HARNESS = [
     'scripts/migrate/',
     'flows/migrate/',
+    'flows/audit/',
     'scripts/flows/',
+    '.review-out/',
     'package.json',
     'vitest.e2e.config.ts',
     '.gitignore',
@@ -1047,15 +1103,15 @@ function seamRules() {
   const { phase, config } = phaseConfig();
   const art = artifactRoot();
   const problems = [];
-  const testFile = config.invariantTestFile ?? INVARIANT_TEST_FILE;
-
-  if (!existsSync(testFile)) {
-    problems.push(`invariant test file missing: ${testFile}`);
-  } else {
-    const source = readFileSync(testFile, 'utf8');
-    for (const invariant of config.invariants ?? []) {
-      if (!new RegExp(`fn\\s+${invariant}\\s*\\(`).test(source))
-        problems.push(`invariant test not defined: ${invariant}`);
+  const testFiles = config.invariantTestFile ? [config.invariantTestFile] : INVARIANT_TEST_FILES;
+  const existingTestFiles = testFiles.filter(existsSync);
+  for (const testFile of testFiles) {
+    if (!existsSync(testFile)) problems.push(`invariant test file missing: ${testFile}`);
+  }
+  const invariantSources = existingTestFiles.map((file) => readFileSync(file, 'utf8'));
+  for (const invariant of config.invariants ?? []) {
+    if (!invariantSources.some((source) => new RegExp(`fn\\s+${invariant}\\s*\\(`).test(source))) {
+      problems.push(`invariant test not defined: ${invariant}`);
     }
   }
 
@@ -1379,6 +1435,7 @@ function accept() {
     ...Object.keys(config.evals ?? {}),
     ...Object.keys(config.e2e ?? {}),
   ].filter((name) => (config.rust ? true : !name.startsWith('rust-')));
+  const runId = option('--run-id', 'unknown');
 
   for (const name of required) {
     const file = path.join(art, 'evidence', `${name}.json`);
@@ -1387,13 +1444,31 @@ function accept() {
       continue;
     }
     const evidence = readJson(file);
-    if (evidence.verdict !== 'green') problems.push(`evidence red: ${name} (exit ${evidence.exitCode})`);
+    if (evidence.runId !== undefined && evidence.runId !== runId)
+      problems.push(`${name}: stale evidence from run "${evidence.runId}" (current "${runId}")`);
+    if (name === 'unit-tests') {
+      // The workflow deliberately accepts the repo's declared, unreachable
+      // baseline through `regression-gate`; acceptance must apply the same
+      // policy or every otherwise-valid run becomes unshippable at the last
+      // step solely because the evidence JSON truthfully remains red.
+      const { unexplained, malformed } = classifyRegressionEvidence(evidence);
+      if (malformed) problems.push(`${name}: ${malformed}`);
+      else if (unexplained.length > 0)
+        problems.push(`${name}: ${unexplained.length} failure(s) outside the known-failure baseline`);
+    } else if (evidence.verdict !== 'green') {
+      problems.push(`evidence red: ${name} (exit ${evidence.exitCode})`);
+    }
   }
 
   for (const action of ['edit-gate', 'manifest-gate', 'targeted-gate', 'seam-rules', 'unlaunched-gate']) {
     const file = path.join(art, 'evidence', `${action}-final.json`);
     if (!existsSync(file)) problems.push(`final gate never ran: ${action}`);
-    else if (readJson(file).verdict !== 'green') problems.push(`final gate red: ${action}`);
+    else {
+      const evidence = readJson(file);
+      if (evidence.runId !== undefined && evidence.runId !== runId)
+        problems.push(`${action}: stale final evidence from run "${evidence.runId}" (current "${runId}")`);
+      if (evidence.verdict !== 'green') problems.push(`final gate red: ${action}`);
+    }
   }
 
   for (const provider of ['claude', 'codex']) {

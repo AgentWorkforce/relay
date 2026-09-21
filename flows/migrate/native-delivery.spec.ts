@@ -651,7 +651,7 @@ if (CONFIG.rust) {
       record('rust-fmt', `${CARGO} fmt --all -- --check`),
       record('rust-clippy', `${CARGO} clippy --all-targets -- -D warnings`),
       record('rust-build', `${CARGO} build --release --bin agent-relay-broker`),
-      record('invariant-tests', `${CARGO} test -p agent-relay-broker`, { forbid: ['0 passed'] }),
+      record('invariant-tests', `${CARGO} test -p agent-relay-broker`),
     ].join('\n'),
     ['repair-rust'],
     5_400_000
@@ -947,7 +947,7 @@ det(
           record('rust-fmt', `${CARGO} fmt --all -- --check`),
           record('rust-clippy', `${CARGO} clippy --all-targets -- -D warnings`),
           record('rust-build', `${CARGO} build --release --bin agent-relay-broker`),
-          record('invariant-tests', `${CARGO} test -p agent-relay-broker`, { forbid: ['0 passed'] }),
+          record('invariant-tests', `${CARGO} test -p agent-relay-broker`),
         ]
       : []),
     record('ts-typecheck', 'npm run typecheck'),

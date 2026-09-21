@@ -778,6 +778,26 @@ mod observation_predicate_tests {
         assert_eq!(ECHO_VERIFICATION, "echo");
         assert_eq!(PROCESS_EXIT_VERIFICATION, "process_exit");
         assert_eq!(super::TIMEOUT_FALLBACK_VERIFICATION, "timeout_fallback");
+
+        // These TypeScript consumers cannot import a Rust constant, so make
+        // their duplicated wire sets part of this Rust contract test. Without
+        // this cross-language assertion either side can rename a value and
+        // silently change observed/unobserved accounting.
+        for (file, source) in [
+            (
+                "tests/integration/broker/utils/assert-helpers.ts",
+                include_str!("../../../../tests/integration/broker/utils/assert-helpers.ts"),
+            ),
+            (
+                "tests/benchmarks/harness.ts",
+                include_str!("../../../../tests/benchmarks/harness.ts"),
+            ),
+        ] {
+            assert!(
+                source.contains("new Set(['echo', 'process_exit'])"),
+                "{file} must mirror Rust's observed verification wire values"
+            );
+        }
     }
 
     /// The emitters must go through the constants, or pinning the constants
@@ -793,6 +813,10 @@ mod observation_predicate_tests {
             (
                 "runtime/headless.rs",
                 include_str!("../runtime/headless.rs"),
+            ),
+            (
+                "runtime/worker_events.rs",
+                include_str!("../runtime/worker_events.rs"),
             ),
         ] {
             for literal in [

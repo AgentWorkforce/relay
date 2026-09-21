@@ -220,10 +220,11 @@ export function isObservedVerification(event: BrokerEvent): boolean {
  * `delivery_verified` (verification `timeout_fallback`) plus
  * `delivery_unobserved`, and deliberately no `delivery_ack`.
  *
- * The invariant that survives is an accounting identity — every verified
- * delivery is EITHER observed and acked, OR unobserved and reported as such.
- * Asserting the identity rather than the old equality keeps the test sensitive
- * to a dropped ack while allowing a legitimate fallback.
+ * The invariant that survives is a per-delivery accounting identity — every
+ * verified delivery is EITHER observed and acked with the same `delivery_id`,
+ * OR unobserved and reported as such with the same `delivery_id`. Aggregate
+ * counts are insufficient: an extra ack for one delivery can otherwise hide a
+ * missing ack for another.
  */
 export function assertDeliveryObservationLedger(
   events: BrokerEvent[],
@@ -238,21 +239,39 @@ export function assertDeliveryObservationLedger(
   const unobservedVerified = verified.filter((e) => !isObservedVerification(e));
   const prefix = message ? `${message}: ` : '';
 
-  assert.equal(
-    acks.length,
-    observedVerified.length,
-    `${prefix}every OBSERVED delivery_verified must have a delivery_ack ` +
-      `(acks=${acks.length}, observed verified=${observedVerified.length}, ` +
-      `unobserved verified=${unobservedVerified.length})`
+  assert.ok(
+    verified.length > 0,
+    `${prefix}delivery observation ledger is empty; no delivery_verified event was exercised`
   );
 
-  assert.equal(
-    unobserved.length,
-    unobservedVerified.length,
-    `${prefix}every UNOBSERVED delivery_verified must be reported as ` +
-      `delivery_unobserved (delivery_unobserved=${unobserved.length}, ` +
-      `unobserved verified=${unobservedVerified.length})`
-  );
+  const deliveryId = (event: BrokerEvent): string => {
+    const id = (event as BrokerEvent & { delivery_id?: unknown }).delivery_id;
+    assert.equal(typeof id, 'string', `${prefix}${event.kind} must carry a delivery_id`);
+    assert.ok(id.length > 0, `${prefix}${event.kind} must carry a non-empty delivery_id`);
+    return id;
+  };
+  const ids = new Set([...acks, ...verified, ...unobserved].map(deliveryId));
+
+  for (const id of ids) {
+    const acksForId = acks.filter((event) => deliveryId(event) === id);
+    const observedForId = observedVerified.filter((event) => deliveryId(event) === id);
+    const unobservedVerifiedForId = unobservedVerified.filter((event) => deliveryId(event) === id);
+    const unobservedForId = unobserved.filter((event) => deliveryId(event) === id);
+
+    assert.equal(
+      acksForId.length,
+      observedForId.length,
+      `${prefix}every OBSERVED delivery_verified must have a delivery_ack for delivery_id=${id} ` +
+        `(acks=${acksForId.length}, observed verified=${observedForId.length})`
+    );
+    assert.equal(
+      unobservedForId.length,
+      unobservedVerifiedForId.length,
+      `${prefix}every UNOBSERVED delivery_verified must be reported as delivery_unobserved ` +
+        `for delivery_id=${id} (delivery_unobserved=${unobservedForId.length}, ` +
+        `unobserved verified=${unobservedVerifiedForId.length})`
+    );
+  }
 
   return { acks, verified, unobserved };
 }

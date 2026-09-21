@@ -661,6 +661,7 @@ impl NodeDeliveryProbe {
                 "rejected_identity": load(&c.rejected_identity),
                 "rejected_replay_conflict": load(&c.rejected_replay_conflict),
                 "rejected_sequence_gap": load(&c.rejected_sequence_gap),
+                "advanced_past_unobserved": load(&c.advanced_past_unobserved),
             },
             "acks": {
                 "enqueued": load(&c.ack_enqueued),
