@@ -4,8 +4,9 @@
   "task": {
     "title": "Fix unattended deterministic Muse broker startup"
   },
-  "status": "active",
+  "status": "completed",
   "startedAt": "2026-09-20T21:27:41.117Z",
+  "completedAt": "2026-09-21T00:05:37.857Z",
   "agents": [
     {
       "name": "default",
@@ -19,6 +20,7 @@
       "title": "Work",
       "agentName": "default",
       "startedAt": "2026-09-20T22:02:36.312Z",
+      "endedAt": "2026-09-21T00:05:37.857Z",
       "events": [
         {
           "ts": 1789941756313,
@@ -92,12 +94,39 @@
       ]
     }
   ],
-  "commits": [],
-  "filesChanged": [],
+  "retrospective": {
+    "summary": "Implemented deterministic unattended Muse startup with yolo flag deduplication, argv-delivered initial tasks, readiness-safe duplicate suppression, portable prompt validation, focused broker tests, and an exact-base/head RelayFlow proof; opened PR 1826 and addressed automated review findings.",
+    "approach": "Standard approach",
+    "confidence": 0.9
+  },
+  "commits": [
+    "ec88d7995",
+    "fe98c705f",
+    "c6c646798",
+    "f91e55ea6",
+    "7a6cc0f67",
+    "e698e37e8",
+    "bc8791108",
+    "d5236be58"
+  ],
+  "filesChanged": [
+    ".agentworkforce/trajectories/active/traj_t5bpsdj37huc/trajectory.json",
+    "CHANGELOG.md",
+    "crates/broker/src/runtime/api.rs",
+    "crates/broker/src/runtime/maintenance.rs",
+    "crates/broker/src/runtime/relaycast_events.rs",
+    "crates/broker/src/runtime/tests.rs",
+    "crates/broker/src/runtime/worker_events.rs",
+    "crates/broker/src/worker.rs",
+    "crates/broker/tests/muse_startup_cli.rs",
+    "tests/relayflows/cases/muse-unattended-startup/case.json",
+    "tests/relayflows/cases/muse-unattended-startup/run.mjs"
+  ],
   "projectId": "AgentWorkforce/relay",
   "tags": [],
   "_trace": {
     "startRef": "cdd6612985eacd06dfa6279ea1e2c630ff7b99fa",
-    "endRef": "cdd6612985eacd06dfa6279ea1e2c630ff7b99fa"
+    "endRef": "ec88d7995fbf1573440dca757db074feb0c473a2",
+    "traceId": "881766aa-3474-48af-b485-9277df7747a0"
   }
 }
