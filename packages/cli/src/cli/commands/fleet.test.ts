@@ -4061,7 +4061,8 @@ describe('fleet command support', () => {
 
     expect(retireOwnedBindings).toHaveBeenCalledWith(
       'api-worker',
-      expect.objectContaining({ deleteAgent: true })
+      expect.objectContaining({ deleteAgent: true }),
+      expect.objectContaining({ log: expect.any(Function), error: expect.any(Function) })
     );
     expect(release).toHaveBeenCalledWith({
       name: 'api-worker',
@@ -4115,7 +4116,8 @@ describe('fleet command support', () => {
 
     expect(retireOwnedBindings).toHaveBeenCalledWith(
       'api-worker',
-      expect.objectContaining({ deleteAgent: true })
+      expect.objectContaining({ deleteAgent: true }),
+      expect.objectContaining({ log: expect.any(Function), error: expect.any(Function) })
     );
     expect(release).not.toHaveBeenCalled();
     expect(exit).toHaveBeenCalledWith(1);
@@ -4166,6 +4168,55 @@ describe('fleet command support', () => {
       expect.stringMatching(/Warning: could not retire provider bindings for @api-worker/)
     );
     expect(release).toHaveBeenCalledWith(expect.objectContaining({ name: 'api-worker', deleteAgent: false }));
+  });
+
+  it('fleet release --unsubscribe-bindings keeps stdout as one JSON document', async () => {
+    const release = vi.fn(async () => ({
+      name: 'api-worker',
+      released: true,
+      deleted: false,
+    }));
+    const createFleetWorkspaceClient = vi.fn(() => ({ agents: { release } }));
+    const stdout: string[] = [];
+    const warn = vi.fn();
+    const program = new Command();
+    program.exitOverride();
+    const retireOwnedBindings = vi.fn(
+      async (
+        _owner: string,
+        _opts: Record<string, unknown>,
+        overrides?: { log?: (...args: unknown[]) => void }
+      ) => {
+        overrides?.log?.('No github bindings target @api-worker.');
+        overrides?.log?.('Retired 1 binding(s) owned by @api-worker.');
+      }
+    );
+    registerFleetCommands(program, {
+      resolveSandboxRepository: () => undefined,
+      sdk: {
+        createAgentRelay: vi.fn() as never,
+        createWorkspaceRelay: vi.fn() as never,
+        createWorkspace: vi.fn() as never,
+        log: (message: unknown) => stdout.push(String(message)),
+        error: vi.fn(),
+        exit: vi.fn() as never,
+      },
+      createFleetWorkspaceClient: createFleetWorkspaceClient as never,
+      retireOwnedBindings,
+      log: () => undefined,
+      warn,
+      error: () => undefined,
+    });
+
+    await program.parseAsync(
+      ['fleet', 'release', 'api-worker', '--unsubscribe-bindings', '--workspace-key', 'rk_live_test'],
+      { from: 'user' }
+    );
+
+    expect(warn).toHaveBeenCalledWith('No github bindings target @api-worker.');
+    expect(warn).toHaveBeenCalledWith('Retired 1 binding(s) owned by @api-worker.');
+    expect(stdout).toHaveLength(1);
+    expect(JSON.parse(stdout[0]!)).toMatchObject({ name: 'api-worker', released: true });
   });
 
   it('fleet status output redacts the node token and workspace key from the session', async () => {

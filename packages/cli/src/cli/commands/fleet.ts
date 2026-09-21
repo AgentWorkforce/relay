@@ -1118,7 +1118,12 @@ export function registerFleetCommands(
       // must run before --delete-agent removes that row.
       if (options.unsubscribeBindings === true || deleteAgent) {
         try {
-          await deps.retireOwnedBindings(workerName, options);
+          // Helper progress (`Retired ...`, `Unsubscribed ...`) must not land
+          // on stdout: `fleet release` prints one JSON document there.
+          await deps.retireOwnedBindings(workerName, options, {
+            log: deps.warn,
+            error: deps.error,
+          });
         } catch (error) {
           const message = error instanceof Error ? error.message : String(error);
           if (deleteAgent) {

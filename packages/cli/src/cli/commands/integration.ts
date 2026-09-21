@@ -1863,7 +1863,8 @@ async function runUnsubscribeOwnedBy(
 /**
  * Retire provider bindings whose identity-bound channel belongs to `owner`.
  * Used by release --delete-agent while the roster row still exists; callers
- * that will delete the identity must abort if this throws.
+ * that will delete the identity must abort if this throws. Pass `log`/`error`
+ * overrides when stdout must stay a single JSON document (fleet release).
  */
 export async function retireOwnedIntegrationBindings(
   owner: string,
