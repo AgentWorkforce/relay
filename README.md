@@ -29,6 +29,8 @@ GitHub, Linear, Notion, Slack, and other tools are exposed as a virtual filesyst
 
 Capture coding agent sessions so your team and their agents can search previous work, decisions, and context.
 
+Agents can search team history through the [Shared Sessions plugin](plugins/shared-sessions/README.md), or connect its MCP with `agent-relay mcp --sessions-only` after Cloud login.
+
 [How we capture sessions](https://github.com/agentworkforce/relayhistory) <br>
 [How we capture decisions](https://github.com/agentworkforce/trajectories)
 

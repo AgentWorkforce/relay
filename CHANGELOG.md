@@ -9,6 +9,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- `agent-relay mcp` discovers Cloud shared-session search and context tools through the hosted MCP endpoint; `agent-relay mcp --sessions-only` runs that surface without a Relaycast workspace or broker registration for plugin use, reusing the stored non-interactive Cloud login and token refresh.
+- The Agent Relay Shared Sessions plugin bundles the sessions-only MCP server and a search-first skill, and is available from Relay's built-in plugin marketplace.
 - `integration subscribe --list` now names the target agent from `agent-events-<id>` or channel `subscription_agent_id` metadata (not a bare channel name), plus last delivery/ack timestamps and whether GitHub PR identity expansion is authorized. Health is read from each binding's pinned relayfile workspace, not only the currently active one.
 - `integration unsubscribe <provider> --owned-by @agent` retires every binding whose identity-bound channel is `agent-events-<id>` for that agent (ordinary `#name` channels are not treated as owned). `fleet release --unsubscribe-bindings` and `--delete-agent` stop the agent first, then retire bindings on the same resolved workspace as the release; `--delete-agent` deletes the identity only after retirement succeeds, so `--owned-by` can still retry. Cleanup progress goes to stderr so `fleet release` stdout stays one JSON document.
 

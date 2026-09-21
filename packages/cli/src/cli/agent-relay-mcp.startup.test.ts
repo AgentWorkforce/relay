@@ -4,6 +4,7 @@ type LoadOptions = {
   connectThrows?: boolean;
   forceEntrypoint?: boolean;
   persistedWorkspaceKey?: string;
+  sharedSessionToolNames?: string[];
   workspaceSpawnResult?: Record<string, unknown>;
 };
 
@@ -306,10 +307,32 @@ async function loadAgentRelayMcpModule(options: LoadOptions = {}) {
   }));
   vi.doMock('@modelcontextprotocol/sdk/server/stdio.js', () => ({ StdioServerTransport: FakeTransport }));
   vi.doMock('@modelcontextprotocol/sdk/types.js', () => ({
+    CallToolRequestSchema: { method: 'tools/call' },
     ListToolsRequestSchema: { method: 'tools/list' },
     SubscribeRequestSchema: { method: 'resources/subscribe' },
     UnsubscribeRequestSchema: { method: 'resources/unsubscribe' },
   }));
+  vi.doMock('./mcp/shared-sessions-client.js', async (importOriginal) => {
+    const actual = await importOriginal<typeof import('./mcp/shared-sessions-client.js')>();
+    return {
+      ...actual,
+      SharedSessionsMcpClient: class SharedSessionsMcpClient {
+        async listTools() {
+          return (
+            options.sharedSessionToolNames ?? [
+              'search_shared_sessions',
+              'get_shared_session',
+              'get_shared_session_context',
+            ]
+          ).map((name) => ({ name, inputSchema: { type: 'object' as const } }));
+        }
+
+        async callTool(name: string) {
+          throw new Error(`Unexpected shared-session tool call: ${name}`);
+        }
+      },
+    };
+  });
   vi.doMock('@relaycast/sdk', () => ({
     RelayCast,
     SDK_VERSION: 'test-sdk-version',
@@ -2093,6 +2116,40 @@ describe('startAgentRelayMcpStdio', () => {
         surface: 'mcp',
       })
     );
+  });
+
+  it('starts sessions-only MCP without Relaycast registration or messaging tools', async () => {
+    const { mod, mocks } = await loadAgentRelayMcpModule();
+
+    await mod.startAgentRelayMcpStdio({
+      sessionsOnly: true,
+      apiKey: 'rk_live_workspace',
+      agentName: 'WorkerA',
+    });
+
+    const server = mocks.serverInstances[0];
+    expect(server.connect).toHaveBeenCalledTimes(1);
+    expect([...server.tools.keys()]).toEqual([
+      'search_shared_sessions',
+      'get_shared_session',
+      'get_shared_session_context',
+    ]);
+    expect(mocks.behavior.registerImpl).not.toHaveBeenCalled();
+    expect(mocks.relayInstances).toHaveLength(0);
+  });
+
+  it.each([
+    ['empty', []],
+    ['partial', ['search_shared_sessions', 'get_shared_session']],
+  ])('refuses an %s hosted toolset before connecting sessions-only MCP', async (_case, toolNames) => {
+    const { mod, mocks } = await loadAgentRelayMcpModule({ sharedSessionToolNames: toolNames });
+
+    await expect(mod.startAgentRelayMcpStdio({ sessionsOnly: true })).rejects.toThrow(
+      'does not support shared sessions yet'
+    );
+
+    expect(mocks.serverInstances).toHaveLength(0);
+    expect(mocks.relayInstances).toHaveLength(0);
   });
 
   it('reports entrypoint startup failures to stderr and exits', async () => {

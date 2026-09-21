@@ -261,6 +261,13 @@ describe('bootstrap CLI', () => {
     );
   });
 
+  it('offers a sessions-only MCP mode for plugin configuration', () => {
+    const program = createProgram();
+    const mcp = program.commands.find((command) => command.name() === 'mcp');
+
+    expect(mcp?.options.map((option) => option.long)).toContain('--sessions-only');
+  });
+
   it('registers `observer` as a runnable command, not just a group', () => {
     // `observer` carries both a default action (mint a link) and subcommands
     // (list/revoke), so the leaf-path walk in the inventory test below skips

@@ -1,7 +1,9 @@
 import type { RelayAgentThinClient, RelayWorkspaceThinClient } from '@agent-relay/sdk';
 import type { ActionAuditEvent, AgentRelayActions } from '@agent-relay/sdk/actions';
+import type { Tool } from '@modelcontextprotocol/sdk/types.js';
 
 import type { RealtimeResourceBridge, SubscriptionManager } from './resources.js';
+import type { SharedSessionsMcpClientLike } from './shared-sessions-client.js';
 
 export type AgentType = 'agent' | 'human';
 export type RelayCastLike = Pick<RelayWorkspaceThinClient, 'agents'>;
@@ -18,6 +20,12 @@ export interface AgentRelayMcpServerOptions {
   strictAgentName?: boolean;
   telemetryTransport?: 'stdio' | 'http';
   skipBootstrap?: boolean;
+  /** Expose only hosted shared-session tools; used by the installable plugin. */
+  sessionsOnly?: boolean;
+  /** Test/embedding seam for the hosted MCP client. */
+  sharedSessionsClient?: SharedSessionsMcpClientLike;
+  /** Hosted definitions discovered before the stdio server starts. */
+  sharedSessionTools?: Tool[];
   actions?: AgentRelayActions;
   onActionAuditEvent?: (event: ActionAuditEvent) => Promise<void> | void;
 }

@@ -52,6 +52,11 @@ import { registerMessagingTools } from './mcp/messaging-tools.js';
 import { McpRequestReplay } from './mcp/request-replay.js';
 import { identityOverrideInputShape, messageResult } from './mcp/tool-shapes.js';
 import {
+  registerSharedSessionTools,
+  requireCompleteSharedSessionToolset,
+  SharedSessionsMcpClient,
+} from './mcp/shared-sessions-client.js';
+import {
   describeClearedEnrollment,
   persistWorkspaceSession,
   resolveWorkspaceSessionKey,
@@ -420,6 +425,10 @@ export const AGENT_RELAY_MCP_INSTRUCTIONS = `You are an AI agent in a collaborat
 - Keep messages concise and actionable`;
 
 const DEFAULT_SYSTEM_PROMPT = AGENT_RELAY_MCP_INSTRUCTIONS;
+
+const SHARED_SESSIONS_MCP_INSTRUCTIONS =
+  'Search and read agent sessions shared with your Agent Relay Cloud workspace. ' +
+  'Run `agent-relay cloud login` before starting this MCP server.';
 
 type AgentResultCallbackConfig = {
   url: string;
@@ -1520,6 +1529,10 @@ function registerAgentRelayTools(
 }
 
 export function createAgentRelayMcpServer(options: AgentRelayMcpServerOptions): McpServer {
+  if (options.sessionsOnly) {
+    requireCompleteSharedSessionToolset(options.sharedSessionTools ?? []);
+  }
+
   const session = createInitialSession({
     workspaceKey: options.workspaceKey ?? options.apiKey ?? null,
     agentToken: options.agentToken ?? null,
@@ -1536,9 +1549,17 @@ export function createAgentRelayMcpServer(options: AgentRelayMcpServerOptions): 
         tools: {},
         prompts: {},
       },
-      instructions: AGENT_RELAY_MCP_INSTRUCTIONS,
+      instructions: options.sessionsOnly ? SHARED_SESSIONS_MCP_INSTRUCTIONS : AGENT_RELAY_MCP_INSTRUCTIONS,
     }
   );
+  const sharedSessionsClient = options.sharedSessionsClient ?? new SharedSessionsMcpClient();
+
+  if (options.sessionsOnly) {
+    registerSharedSessionTools(mcpServer, sharedSessionsClient, options.sharedSessionTools ?? [], {
+      strict: true,
+    });
+    return mcpServer;
+  }
 
   const getSession = (): SessionState => session;
   const getRelay = (): RelayCastLike => {
@@ -1680,6 +1701,9 @@ export function createAgentRelayMcpServer(options: AgentRelayMcpServerOptions): 
     actionToolNames
   );
   registerAgentResultTool(mcpServer, readAgentResultCallbackConfig(options.agentName));
+  registerSharedSessionTools(mcpServer, sharedSessionsClient, options.sharedSessionTools ?? [], {
+    strict: false,
+  });
 
   mcpServer.registerPrompt(
     'system',
@@ -1738,7 +1762,7 @@ function isRelaycastAgentToken(token: string | undefined): token is string {
 export async function resolveStdioBootstrapOptions(
   options: AgentRelayMcpServerOptions
 ): Promise<AgentRelayMcpServerOptions> {
-  if (isRelaycastAgentToken(options.agentToken) || options.skipBootstrap) {
+  if (options.sessionsOnly || isRelaycastAgentToken(options.agentToken) || options.skipBootstrap) {
     return options;
   }
 
@@ -1768,8 +1792,23 @@ export async function resolveStdioBootstrapOptions(
 export async function startAgentRelayMcpStdio(options: AgentRelayMcpServerOptions): Promise<void> {
   initMcpTelemetry();
   const bootstrappedOptions = await resolveStdioBootstrapOptions(options);
+  const sharedSessionsClient = bootstrappedOptions.sharedSessionsClient ?? new SharedSessionsMcpClient();
+  let sharedSessionTools = bootstrappedOptions.sharedSessionTools;
+  if (!sharedSessionTools) {
+    try {
+      sharedSessionTools = await sharedSessionsClient.listTools();
+    } catch (error) {
+      if (bootstrappedOptions.sessionsOnly) throw error;
+      // A Cloud login is optional for the normal Relaycast MCP surface. Keep
+      // messaging available and omit the hosted tools when discovery cannot
+      // authenticate; a restarted process after `cloud login` will add them.
+      sharedSessionTools = [];
+    }
+  }
   const mcpServer = createAgentRelayMcpServer({
     ...bootstrappedOptions,
+    sharedSessionsClient,
+    sharedSessionTools,
     telemetryTransport: 'stdio',
   });
   const transport = new StdioServerTransport();
