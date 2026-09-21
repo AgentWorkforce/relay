@@ -8,7 +8,7 @@
 
 import { HarnessDriverClient, type BrokerEvent } from '@agent-relay/harness-driver';
 import { performance } from 'node:perf_hooks';
-import { resolveBinaryPath, randomName } from './harness.js';
+import { resolveBinaryPath, randomName, isObservedDelivery, isUnobservedDelivery } from './harness.js';
 
 const QUICK = process.argv.includes('--quick');
 
@@ -17,6 +17,13 @@ interface StressResult {
   sent: number;
   verified: number;
   failed: number;
+  /**
+   * Deliveries the broker settled WITHOUT observing them landing
+   * (`timeout_fallback`). Counted separately because folding them into
+   * `verified` made this benchmark report 100% success on messages nobody saw
+   * arrive — and its verdict drives an engineering recommendation.
+   */
+  unobserved: number;
   sendErrors: number;
   elapsedMs: number;
   successRate: number;
@@ -26,7 +33,10 @@ function printResult(r: StressResult): void {
   const rate = r.successRate.toFixed(1);
   const throughput = ((r.sent / r.elapsedMs) * 1000).toFixed(1);
   console.log(`\n  ${r.name}`);
-  console.log(`    Sent: ${r.sent}  Verified: ${r.verified}  Failed: ${r.failed}  Errors: ${r.sendErrors}`);
+  console.log(
+    `    Sent: ${r.sent}  Observed: ${r.verified}  Unobserved: ${r.unobserved}  ` +
+      `Failed: ${r.failed}  Errors: ${r.sendErrors}`
+  );
   console.log(
     `    Success rate: ${rate}%  Throughput: ${throughput} msgs/sec  Time: ${r.elapsedMs.toFixed(0)}ms`
   );
@@ -37,6 +47,7 @@ async function collectDeliveryEvents(
   durationMs: number
 ): Promise<{ verified: number; failed: number }> {
   let verified = 0;
+  let unobserved = 0;
   let failed = 0;
   return new Promise((resolve) => {
     const timer = setTimeout(() => {
@@ -44,7 +55,8 @@ async function collectDeliveryEvents(
       resolve({ verified, failed });
     }, durationMs);
     const unsub = client.onEvent((event: BrokerEvent) => {
-      if (event.kind === 'delivery_verified') verified++;
+      if (isObservedDelivery(event)) verified++;
+      else if (isUnobservedDelivery(event)) unobserved++;
       if (event.kind === 'delivery_failed') failed++;
     });
   });
@@ -85,6 +97,7 @@ async function testBurstOverload(client: HarnessDriverClient): Promise<StressRes
   await new Promise((r) => setTimeout(r, 5000));
 
   let verified = 0;
+  let unobserved = 0;
   let failed = 0;
   // Count via a quick send to trigger final tally
   const tallySend = await client.sendMessage({ to: worker, from: 'stress', text: 'tally' }).catch(() => null);
@@ -101,6 +114,7 @@ async function testBurstOverload(client: HarnessDriverClient): Promise<StressRes
     sent,
     verified,
     failed,
+    unobserved,
     sendErrors,
     elapsedMs: sendElapsed,
     successRate: sent > 0 ? ((sent - sendErrors) / sent) * 100 : 0,
@@ -126,10 +140,12 @@ async function testMultiAgentContention(client: HarnessDriverClient): Promise<St
   let sent = 0;
   let sendErrors = 0;
   let verified = 0;
+  let unobserved = 0;
   let failed = 0;
 
   const unsub = client.onEvent((event: BrokerEvent) => {
-    if (event.kind === 'delivery_verified') verified++;
+    if (isObservedDelivery(event)) verified++;
+    else if (isUnobservedDelivery(event)) unobserved++;
     if (event.kind === 'delivery_failed') failed++;
   });
 
@@ -169,6 +185,7 @@ async function testMultiAgentContention(client: HarnessDriverClient): Promise<St
     sent,
     verified,
     failed,
+    unobserved,
     sendErrors,
     elapsedMs: sendElapsed,
     successRate: total > 0 ? (verified / total) * 100 : sent > 0 && sendErrors === 0 ? 100 : 0,
@@ -190,10 +207,12 @@ async function testSteadyState(client: HarnessDriverClient): Promise<StressResul
   let sent = 0;
   let sendErrors = 0;
   let verified = 0;
+  let unobserved = 0;
   let failed = 0;
 
   const unsub = client.onEvent((event: BrokerEvent) => {
-    if (event.kind === 'delivery_verified') verified++;
+    if (isObservedDelivery(event)) verified++;
+    else if (isUnobservedDelivery(event)) unobserved++;
     if (event.kind === 'delivery_failed') failed++;
   });
 
@@ -223,6 +242,7 @@ async function testSteadyState(client: HarnessDriverClient): Promise<StressResul
     sent,
     verified,
     failed,
+    unobserved,
     sendErrors,
     elapsedMs: elapsed,
     successRate: total > 0 ? (verified / total) * 100 : sent > 0 && sendErrors === 0 ? 100 : 0,
@@ -238,10 +258,12 @@ async function testSpawnReleaseCycles(client: HarnessDriverClient): Promise<Stre
   let sent = 0;
   let sendErrors = 0;
   let verified = 0;
+  let unobserved = 0;
   let failed = 0;
 
   const unsub = client.onEvent((event: BrokerEvent) => {
-    if (event.kind === 'delivery_verified') verified++;
+    if (isObservedDelivery(event)) verified++;
+    else if (isUnobservedDelivery(event)) unobserved++;
     if (event.kind === 'delivery_failed') failed++;
   });
 
@@ -279,6 +301,7 @@ async function testSpawnReleaseCycles(client: HarnessDriverClient): Promise<Stre
     sent,
     verified,
     failed,
+    unobserved,
     sendErrors,
     elapsedMs: elapsed,
     successRate: total > 0 ? (verified / total) * 100 : sent > 0 && sendErrors === 0 ? 100 : 0,
