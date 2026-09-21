@@ -1,7 +1,7 @@
 use relay_broker::delivery::{
     DeliveryBackend, DeliveryBackendFuture, DeliveryError, DeliverySeam, HandoverState,
-    ObservedAck, RouteId, SendOutcome, SendRequest, SendStatus, SettleRequest, SettleStatus,
-    TransportStatus,
+    ObservedAck, RouteId, SendOutcome, SendRequest, SendStatus, SettleOutcome, SettleRequest,
+    SettleStatus, TransportStatus,
 };
 
 #[derive(Debug)]
@@ -197,12 +197,15 @@ async fn records_route_for_each_send() {
 
     let settle = seam
         .settle(&mut [&mut stale_native, &mut pty], &delivery_id)
-        .await
-        .expect("recorded route should be settled");
+        .await;
 
     assert_eq!(
         settle,
-        SettleStatus::Acked(ObservedAck::new("pty transcript"))
+        SettleOutcome::Settled(SettleStatus::Acked(ObservedAck::new("pty transcript")))
+    );
+    assert!(
+        !settle.is_absent(),
+        "a settled delivery is never evidence that nothing was sent"
     );
     assert!(stale_native.settles.is_empty());
     assert_eq!(pty.settles.len(), 1);
@@ -235,14 +238,11 @@ async fn never_acks_without_observation() {
         SendStatus::HandedOver(HandoverState::HandedOver)
     );
 
-    let settle = seam
-        .settle(&mut [&mut pty], &delivery_id)
-        .await
-        .expect("recorded route should settle as hand-off");
+    let settle = seam.settle(&mut [&mut pty], &delivery_id).await;
 
     assert!(matches!(
         settle,
-        SettleStatus::HandedOver(HandoverState::HandedOver)
+        SettleOutcome::Settled(SettleStatus::HandedOver(HandoverState::HandedOver))
     ));
 }
 
@@ -295,5 +295,109 @@ async fn an_evicted_receipt_does_not_become_a_fresh_send() {
         !matches!(outcome, SendOutcome::Fresh(_)),
         "an evicted receipt was classified Fresh, so the seam handed an already-sent \
          message to a backend a second time"
+    );
+}
+
+/// Rule 2's trap shape: a caller must be able to tell "never sent" from
+/// "sent somewhere I cannot currently see".
+///
+/// `settle` used to answer `None` for both. They are opposite facts, and the
+/// one that matters is the second: it looks exactly like absence, and a caller
+/// that reads absence as "it never arrived" and re-sends duplicates a message
+/// that may already have landed. Nothing calls `settle` in production yet,
+/// which is why this distinction is cheap to hold now and expensive once a
+/// phase-1 route depends on it.
+#[tokio::test]
+async fn settle_distinguishes_absence_from_an_unreachable_route() {
+    let mut pty = ScriptedBackend::new(
+        "pty",
+        vec![Ok(SendStatus::HandedOver(HandoverState::HandedOver))],
+    );
+    let mut seam = DeliverySeam::new();
+
+    // 1. Never sent from this seam. The only outcome that is real absence.
+    let never_sent = relay_broker::ids::DeliveryId::new("del_never_sent");
+    let outcome = seam.settle(&mut [&mut pty], &never_sent).await;
+    assert_eq!(outcome, SettleOutcome::NoReceipt);
+    assert!(
+        outcome.is_absent(),
+        "a delivery this seam never sent is the one safe 'absent'"
+    );
+
+    // 2. Sent over "pty", then settled against a slice that does not contain
+    //    it. The message is somewhere; this call just cannot reach its route.
+    let sent = relay_broker::ids::DeliveryId::new("del_sent_elsewhere");
+    seam.send(
+        &mut [&mut pty],
+        SendRequest::new(sent.clone(), "handed to pty"),
+    )
+    .await
+    .expect("hand-off should be recorded");
+
+    let mut other = ScriptedBackend::new(
+        "some-other-route",
+        vec![Ok(SendStatus::HandedOver(HandoverState::HandedOver))],
+    );
+    let outcome = seam.settle(&mut [&mut other], &sent).await;
+    assert_eq!(
+        outcome,
+        SettleOutcome::RouteUnavailable(RouteId::new("pty")),
+        "the recorded route must be named, not erased into absence"
+    );
+    assert!(
+        !outcome.is_absent(),
+        "rule 2: an unreachable route is NOT evidence the message was never sent"
+    );
+    assert_eq!(
+        other.settles.len(),
+        0,
+        "settlement must never be retargeted onto a route that did not accept the send"
+    );
+}
+
+/// The same trap, reached through the bounded receipt memory rather than
+/// through an absent backend.
+#[tokio::test]
+async fn settle_reports_an_evicted_receipt_as_unknown_not_absent() {
+    let mut seam = DeliverySeam::new();
+    let evicted = relay_broker::ids::DeliveryId::new("del_evicted");
+
+    let mut pty = ScriptedBackend::new(
+        "pty",
+        vec![
+            Ok(SendStatus::HandedOver(HandoverState::HandedOver));
+            DeliverySeam::max_receipts() + 2
+        ],
+    );
+
+    seam.send(
+        &mut [&mut pty],
+        SendRequest::new(evicted.clone(), "first, and soon forgotten"),
+    )
+    .await
+    .expect("hand-off should be recorded");
+
+    // Push the first receipt out of the bounded memory.
+    for index in 0..DeliverySeam::max_receipts() {
+        seam.send(
+            &mut [&mut pty],
+            SendRequest::new(
+                relay_broker::ids::DeliveryId::new(format!("del_filler_{index}")),
+                "filler",
+            ),
+        )
+        .await
+        .expect("filler hand-off");
+    }
+
+    let outcome = seam.settle(&mut [&mut pty], &evicted).await;
+    assert_eq!(
+        outcome,
+        SettleOutcome::RouteUnknown,
+        "a forgotten receipt must say it was forgotten"
+    );
+    assert!(
+        !outcome.is_absent(),
+        "forgetting where a message went is not evidence it never went"
     );
 }
