@@ -1421,7 +1421,7 @@ impl BrokerRuntime {
                                 );
                             }
                         }
-                        if let Some(task_text) = workers.initial_tasks.remove(&name) {
+                        if let Some(task_text) = workers.take_initial_task_for_injection(&name) {
                             let event_id = format!("init_{}", Uuid::new_v4().simple());
                             if let Err(e) = queue_and_try_delivery_raw(
                                 workers,
