@@ -1531,15 +1531,19 @@ async function runSubscribe(
 /** Subscription provisioning and retirement are workspace-owner operations, like
  * their inbound-target and subscription-channel HTTP calls. Do not let the
  * worker's ambient participant token override the selected workspace here. */
-function createSubscriptionRelay(
-  deps: IntegrationCommandDependencies,
-  options: SdkClientOptions
-): AgentRelayAgent {
+function validateSubscriptionCredentials(options: SdkClientOptions): void {
   if (options.token?.trim()) {
     throw new Error(
       'Integration subscription management requires a workspace key; use --workspace-key instead of --token.'
     );
   }
+}
+
+function createSubscriptionRelay(
+  deps: IntegrationCommandDependencies,
+  options: SdkClientOptions
+): AgentRelayAgent {
+  validateSubscriptionCredentials(options);
   return deps.createWorkspaceRelay(options);
 }
 
@@ -1549,6 +1553,7 @@ async function runSubscribeSetup(
   opts: Record<string, unknown>,
   recipient: { launch?: RecipientLaunch; committed?: boolean }
 ): Promise<void> {
+  validateSubscriptionCredentials(sdkOptionsFromOpts(opts));
   await deps.relayfile.ensureCompatible();
 
   if (opts.list) {
@@ -1877,6 +1882,7 @@ async function runUnsubscribeOwnedBy(
   owner: string,
   opts: Record<string, unknown>
 ): Promise<void> {
+  validateSubscriptionCredentials(sdkOptionsFromOpts(opts));
   await deps.relayfile.ensureCompatible();
   const local = await deps.resolveLocalRelayOptions();
   const relayOptions = sdkOptionsFromOpts(opts);
@@ -1923,6 +1929,7 @@ async function runUnsubscribe(
   provider: string,
   opts: Record<string, unknown>
 ): Promise<void> {
+  validateSubscriptionCredentials(sdkOptionsFromOpts(opts));
   const ownedBy = typeof opts.ownedBy === 'string' ? opts.ownedBy.trim().replace(/^@/, '') : '';
   if (ownedBy) {
     await runUnsubscribeOwnedBy(deps, provider, ownedBy, opts);

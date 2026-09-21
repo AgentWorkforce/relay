@@ -274,6 +274,21 @@ describe('integration subscribe', () => {
     expect(relay.webhooks.createInbound).not.toHaveBeenCalled();
   });
 
+  it.each([
+    ['subscribe', 'slack', '--resource', RESOURCE, '--to', '#general'],
+    ['subscribe', '--list'],
+    ['unsubscribe', 'slack', '--resource', RESOURCE],
+    ['unsubscribe', 'slack', '--owned-by', '@lead'],
+  ])('rejects explicit token before provider/control-plane work: %j', async (...args) => {
+    const relayfile = createRelayfileMock([], { isConnected: vi.fn(async () => false) });
+    const { program, error } = harness({ relayfile });
+    await program.parseAsync(['integration', ...args, '--token', 'at_explicit'], { from: 'user' });
+    expect(error).toHaveBeenCalledWith(expect.stringContaining('requires a workspace key'));
+    expect(relayfile.ensureCompatible).not.toHaveBeenCalled();
+    expect(relayfile.isConnected).not.toHaveBeenCalled();
+    expect(relayfile.connect).not.toHaveBeenCalled();
+  });
+
   it('resolves provider-native resources before binding and replacement lookup', async () => {
     const resolved = '/slack/channels/C123__watchdog-test/**';
     const relayfile = createRelayfileMock([], {
