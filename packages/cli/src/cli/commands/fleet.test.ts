@@ -4059,13 +4059,18 @@ describe('fleet command support', () => {
       { from: 'user' }
     );
 
-    expect(retireOwnedBindings).toHaveBeenCalledWith('api-worker', expect.objectContaining({ deleteAgent: true }));
+    expect(retireOwnedBindings).toHaveBeenCalledWith(
+      'api-worker',
+      expect.objectContaining({ deleteAgent: true })
+    );
     expect(release).toHaveBeenCalledWith({
       name: 'api-worker',
       reason: expect.stringMatching(/^Work accepted \(actor: .+\)$/),
       deleteAgent: true,
     });
-    expect(retireOwnedBindings.mock.invocationCallOrder[0]).toBeLessThan(release.mock.invocationCallOrder[0]!);
+    expect(retireOwnedBindings.mock.invocationCallOrder[0]).toBeLessThan(
+      release.mock.invocationCallOrder[0]!
+    );
   });
 
   it('fleet status output redacts the node token and workspace key from the session', async () => {

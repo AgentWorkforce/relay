@@ -1714,7 +1714,9 @@ describe('integration unsubscribe', () => {
 
   it('lists the target agent and last delivery instead of only an opaque channel', async () => {
     const relay = createRelayMock();
-    relay.agents.list.mockResolvedValue([{ id: '227588305648525312', name: 'webhook-owner', status: 'active' }]);
+    relay.agents.list.mockResolvedValue([
+      { id: '227588305648525312', name: 'webhook-owner', status: 'active' },
+    ]);
     relay.messages = { list: vi.fn(async () => [{ createdAt: '2026-09-21T00:10:00.000Z' }]) };
     const relayfile = createRelayfileMock(
       [
@@ -1786,10 +1788,9 @@ describe('integration unsubscribe', () => {
     const relayfile = createRelayfileMock([ownerBinding, otherBinding]);
     const { program, log } = harness({ relay, relayfile });
 
-    await program.parseAsync(
-      ['integration', 'unsubscribe', 'github', '--owned-by', '@webhook-owner'],
-      { from: 'user' }
-    );
+    await program.parseAsync(['integration', 'unsubscribe', 'github', '--owned-by', '@webhook-owner'], {
+      from: 'user',
+    });
 
     expect(relayfile.unbind).toHaveBeenCalledWith('github', ownerBinding.resource);
     expect(relayfile.unbind).not.toHaveBeenCalledWith('github', otherBinding.resource);

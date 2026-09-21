@@ -601,7 +601,9 @@ async function enrichBindingsForList(
   relay: AgentRelayAgent,
   bindings: RelayfileBinding[]
 ): Promise<ListedBinding[]> {
-  const agents = await relay.agents.list().catch(() => [] as Array<{ id: string; name: string; status?: string }>);
+  const agents = await relay.agents
+    .list()
+    .catch(() => [] as Array<{ id: string; name: string; status?: string }>);
   const agentById = new Map(agents.map((agent) => [String(agent.id), agent]));
   const agentByName = new Map(agents.map((agent) => [agent.name, agent]));
 
@@ -645,7 +647,8 @@ async function enrichBindingsForList(
 
       let lastChannelMessageAt: string | null = null;
       try {
-        const listMessages = relay.messages && typeof relay.messages.list === 'function' ? relay.messages.list : null;
+        const listMessages =
+          relay.messages && typeof relay.messages.list === 'function' ? relay.messages.list : null;
         const messages = listMessages ? await listMessages(binding.channel, { limit: 1 }) : [];
         const latest = messages[0] as { createdAt?: string; created_at?: string } | undefined;
         lastChannelMessageAt = latest?.createdAt ?? latest?.created_at ?? null;
@@ -673,10 +676,7 @@ async function enrichBindingsForList(
   );
 }
 
-function bindingOwnedByAgent(
-  binding: RelayfileBinding,
-  agent: { id: string; name: string }
-): boolean {
+function bindingOwnedByAgent(binding: RelayfileBinding, agent: { id: string; name: string }): boolean {
   const channelId = agentEventsChannelId(binding.channel);
   return channelId === String(agent.id) || binding.channel === agent.name;
 }
@@ -1848,8 +1848,7 @@ async function runUnsubscribeOwnedBy(
   }
   const bindings = await deps.relayfile.listBindings();
   const owned = bindings.filter(
-    (binding) =>
-      (!provider || binding.provider === provider) && bindingOwnedByAgent(binding, agent)
+    (binding) => (!provider || binding.provider === provider) && bindingOwnedByAgent(binding, agent)
   );
   if (owned.length === 0) {
     deps.log(`No ${provider} bindings target @${agent.name}.`);
@@ -1880,15 +1879,16 @@ async function runUnsubscribe(
   provider: string,
   opts: Record<string, unknown>
 ): Promise<void> {
-  const ownedBy =
-    typeof opts.ownedBy === 'string' ? opts.ownedBy.trim().replace(/^@/, '') : '';
+  const ownedBy = typeof opts.ownedBy === 'string' ? opts.ownedBy.trim().replace(/^@/, '') : '';
   if (ownedBy) {
     await runUnsubscribeOwnedBy(deps, provider, ownedBy, opts);
     return;
   }
   const resource = typeof opts.resource === 'string' ? opts.resource.trim() : '';
   if (!resource) {
-    throw new Error('Missing --resource <value> for unsubscribe. Use --owned-by @agent to retire every binding for a live identity.');
+    throw new Error(
+      'Missing --resource <value> for unsubscribe. Use --owned-by @agent to retire every binding for a live identity.'
+    );
   }
   await deps.relayfile.ensureCompatible();
   // Resolve native -> glob: relayfile keys bindings on the glob, so the user's
