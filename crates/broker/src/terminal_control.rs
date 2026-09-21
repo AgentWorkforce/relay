@@ -1823,7 +1823,7 @@ mod tests {
             listener.local_addr().unwrap()
         );
         let (command_tx, command_rx) = mpsc::channel(CHUNK_COUNT + 16);
-        let (event_tx, _event_rx) = mpsc::channel(32);
+        let (event_tx, mut event_rx) = mpsc::channel(32);
         let session_token = Arc::new(RwLock::new(Some("nt_test".to_string())));
         let (_reconnect_tx, reconnect_rx) = watch::channel(None);
 
@@ -1844,27 +1844,44 @@ mod tests {
         let server = tokio::spawn(async move {
             let (stream, _) = listener.accept().await.unwrap();
             let mut ws = accept_async(stream).await.unwrap();
+            let (drained_tx, drained_rx) = tokio::sync::oneshot::channel();
+            let (stop_tx, mut stop_rx) = tokio::sync::oneshot::channel::<()>();
             let drain = tokio::spawn(async move {
                 let mut received = 0usize;
-                while let Some(Ok(msg)) = ws.next().await {
-                    if let Message::Text(text) = msg {
-                        received += text.len();
-                        if received >= expected_bytes {
-                            break;
-                        }
+                let mut drained_tx = Some(drained_tx);
+                loop {
+                    tokio::select! {
+                        msg = ws.next() => match msg {
+                            Some(Ok(Message::Text(text))) => {
+                                received += text.len();
+                                if received >= expected_bytes {
+                                    if let Some(drained_tx) = drained_tx.take() {
+                                        let _ = drained_tx.send(received);
+                                    }
+                                }
+                            }
+                            Some(Ok(_)) => {}
+                            Some(Err(_)) | None => break,
+                        },
+                        _ = &mut stop_rx => break,
                     }
                 }
                 received
             });
-            let received = tokio::time::timeout(Duration::from_secs(5), drain)
+            let received = tokio::time::timeout(Duration::from_secs(5), drained_rx)
                 .await
                 .expect("server never finished draining the client's output")
-                .unwrap();
+                .expect("terminal connection closed before the output drained");
             assert!(
                 received >= expected_bytes,
                 "did not receive the full payload: {received} < {expected_bytes}"
             );
 
+            // Keep polling the first WebSocket while checking for a second
+            // connection. Besides preserving the lane, this lets tungstenite
+            // answer the client's liveness pings with pongs. Dropping the
+            // socket here would itself cause the reconnect this control arm
+            // is supposed to rule out.
             // If the client had disconnected and reconnected, a second
             // connection attempt would already be waiting here. None
             // should exist: sending legitimate output must not spuriously
@@ -1875,7 +1892,23 @@ mod tests {
                 second_connection.is_err(),
                 "client reconnected even though the peer kept draining legitimate output"
             );
+            let _ = stop_tx.send(());
+            drain
+                .await
+                .expect("terminal drain task panicked before shutdown");
         });
+
+        // This test is about a ready peer draining legitimate output, not
+        // pre-connect buffering. The cancellation-aware dial loop explicitly
+        // drops `Send` while dialing because such frames normally name cloud
+        // sessions invalidated with the previous lane. Wait for readiness so
+        // every frame below exercises the connected writer path on every OS.
+        assert!(matches!(
+            tokio::time::timeout(Duration::from_secs(2), event_rx.recv())
+                .await
+                .unwrap(),
+            Some(TerminalControlEvent::Connected)
+        ));
 
         let chunk = "x".repeat(CHUNK_BYTES);
         for _ in 0..CHUNK_COUNT {
