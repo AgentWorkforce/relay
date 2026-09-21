@@ -706,7 +706,7 @@ async function enrichBindingsForList(
 
 function bindingOwnedByAgent(binding: RelayfileBinding, agent: { id: string; name: string }): boolean {
   const channelId = agentEventsChannelId(binding.channel);
-  return channelId === String(agent.id) || binding.channel === agent.name;
+  return channelId === String(agent.id);
 }
 
 async function ensureProviderConnected(
@@ -1889,10 +1889,11 @@ async function runUnsubscribeOwnedBy(
 }
 
 /**
- * Retire provider bindings whose identity-bound channel belongs to `owner`.
- * Used by release --delete-agent while the roster row still exists; callers
- * that will delete the identity must abort if this throws. Pass `log`/`error`
- * overrides when stdout must stay a single JSON document (fleet release).
+ * Retire provider bindings whose identity-bound `agent-events-<id>` channel
+ * belongs to `owner`. Fleet release stops the agent first, then calls this
+ * while the roster row still exists; callers that will delete the identity
+ * must abort if this throws. Pass `log`/`error` overrides when stdout must
+ * stay a single JSON document (fleet release).
  */
 export async function retireOwnedIntegrationBindings(
   owner: string,

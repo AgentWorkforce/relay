@@ -10,7 +10,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Added
 
 - `integration subscribe --list` now names the target agent, last delivery/ack timestamps, and whether GitHub PR identity expansion is authorized, so operators can tell a live owner binding from an opaque `agent-events-<id>` channel. Health is read from each binding's pinned relayfile workspace, not only the currently active one.
-- `integration unsubscribe <provider> --owned-by @agent` retires every binding whose identity-bound channel belongs to that agent. `fleet release --unsubscribe-bindings` and `--delete-agent` run the same cleanup **before** the identity is removed; `--delete-agent` aborts without deleting if retirement fails, so `--owned-by` can still retry. Cleanup progress goes to stderr so `fleet release` stdout stays one JSON document.
+- `integration unsubscribe <provider> --owned-by @agent` retires every binding whose identity-bound channel is `agent-events-<id>` for that agent (ordinary `#name` channels are not treated as owned). `fleet release --unsubscribe-bindings` and `--delete-agent` stop the agent first, then retire bindings on the same resolved workspace as the release; `--delete-agent` deletes the identity only after retirement succeeds, so `--owned-by` can still retry. Cleanup progress goes to stderr so `fleet release` stdout stays one JSON document.
 
 ### Fixed
 

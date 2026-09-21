@@ -4059,18 +4059,63 @@ describe('fleet command support', () => {
       { from: 'user' }
     );
 
+    expect(release).toHaveBeenNthCalledWith(1, {
+      name: 'api-worker',
+      reason: expect.stringMatching(/^Work accepted \(actor: .+\)$/),
+      deleteAgent: false,
+    });
     expect(retireOwnedBindings).toHaveBeenCalledWith(
       'api-worker',
-      expect.objectContaining({ deleteAgent: true }),
+      expect.objectContaining({ deleteAgent: true, workspaceKey: 'rk_live_test' }),
       expect.objectContaining({ log: expect.any(Function), error: expect.any(Function) })
     );
-    expect(release).toHaveBeenCalledWith({
+    expect(release).toHaveBeenNthCalledWith(2, {
       name: 'api-worker',
       reason: expect.stringMatching(/^Work accepted \(actor: .+\)$/),
       deleteAgent: true,
     });
-    expect(retireOwnedBindings.mock.invocationCallOrder[0]).toBeLessThan(
-      release.mock.invocationCallOrder[0]!
+    expect(release.mock.invocationCallOrder[0]!).toBeLessThan(
+      retireOwnedBindings.mock.invocationCallOrder[0]!
+    );
+    expect(retireOwnedBindings.mock.invocationCallOrder[0]!).toBeLessThan(
+      release.mock.invocationCallOrder[1]!
+    );
+  });
+
+  it('fleet release cleanup uses the same resolved workspace as the release client', async () => {
+    vi.stubEnv('RELAY_WORKSPACE_KEY', 'rk_live_from_env');
+    const release = vi.fn(async () => ({
+      name: 'api-worker',
+      released: true,
+      deleted: false,
+    }));
+    const createFleetWorkspaceClient = vi.fn(() => ({ agents: { release } }));
+    const program = new Command();
+    program.exitOverride();
+    const retireOwnedBindings = vi.fn(async () => undefined);
+    registerFleetCommands(program, {
+      resolveSandboxRepository: () => undefined,
+      sdk: {
+        createAgentRelay: vi.fn() as never,
+        createWorkspaceRelay: vi.fn() as never,
+        createWorkspace: vi.fn() as never,
+        log: vi.fn() as never,
+        error: vi.fn(),
+        exit: vi.fn() as never,
+      },
+      createFleetWorkspaceClient: createFleetWorkspaceClient as never,
+      retireOwnedBindings,
+      log: () => undefined,
+      warn: () => undefined,
+      error: () => undefined,
+    });
+
+    await program.parseAsync(['fleet', 'release', 'api-worker', '--delete-agent'], { from: 'user' });
+
+    expect(retireOwnedBindings).toHaveBeenCalledWith(
+      'api-worker',
+      expect.objectContaining({ workspaceKey: 'rk_live_from_env' }),
+      expect.objectContaining({ log: expect.any(Function), error: expect.any(Function) })
     );
   });
 
@@ -4114,12 +4159,13 @@ describe('fleet command support', () => {
       )
     ).rejects.toThrow('CLI exit 1');
 
+    expect(release).toHaveBeenCalledTimes(1);
+    expect(release).toHaveBeenCalledWith(expect.objectContaining({ name: 'api-worker', deleteAgent: false }));
     expect(retireOwnedBindings).toHaveBeenCalledWith(
       'api-worker',
-      expect.objectContaining({ deleteAgent: true }),
+      expect.objectContaining({ deleteAgent: true, workspaceKey: 'rk_live_test' }),
       expect.objectContaining({ log: expect.any(Function), error: expect.any(Function) })
     );
-    expect(release).not.toHaveBeenCalled();
     expect(exit).toHaveBeenCalledWith(1);
     expect(sdkError).toHaveBeenCalledWith(
       expect.stringMatching(
@@ -4168,6 +4214,9 @@ describe('fleet command support', () => {
       expect.stringMatching(/Warning: could not retire provider bindings for @api-worker/)
     );
     expect(release).toHaveBeenCalledWith(expect.objectContaining({ name: 'api-worker', deleteAgent: false }));
+    expect(release.mock.invocationCallOrder[0]!).toBeLessThan(
+      retireOwnedBindings.mock.invocationCallOrder[0]!
+    );
   });
 
   it('fleet release --unsubscribe-bindings keeps stdout as one JSON document', async () => {
@@ -4217,6 +4266,45 @@ describe('fleet command support', () => {
     expect(warn).toHaveBeenCalledWith('Retired 1 binding(s) owned by @api-worker.');
     expect(stdout).toHaveLength(1);
     expect(JSON.parse(stdout[0]!)).toMatchObject({ name: 'api-worker', released: true });
+  });
+
+  it('fleet release --unsubscribe-bindings does not retire bindings when release fails', async () => {
+    const release = vi.fn(async () => {
+      throw new Error('lifecycle unavailable');
+    });
+    const createFleetWorkspaceClient = vi.fn(() => ({ agents: { release } }));
+    const exit = vi.fn((code: number) => {
+      throw new Error(`CLI exit ${code}`);
+    });
+    const program = new Command();
+    program.exitOverride();
+    const retireOwnedBindings = vi.fn(async () => undefined);
+    registerFleetCommands(program, {
+      resolveSandboxRepository: () => undefined,
+      sdk: {
+        createAgentRelay: vi.fn() as never,
+        createWorkspaceRelay: vi.fn() as never,
+        createWorkspace: vi.fn() as never,
+        log: vi.fn() as never,
+        error: vi.fn(),
+        exit: exit as never,
+      },
+      createFleetWorkspaceClient: createFleetWorkspaceClient as never,
+      retireOwnedBindings,
+      log: () => undefined,
+      warn: () => undefined,
+      error: () => undefined,
+    });
+
+    await expect(
+      program.parseAsync(
+        ['fleet', 'release', 'api-worker', '--unsubscribe-bindings', '--workspace-key', 'rk_live_test'],
+        { from: 'user' }
+      )
+    ).rejects.toThrow('CLI exit 1');
+
+    expect(release).toHaveBeenCalledWith(expect.objectContaining({ name: 'api-worker', deleteAgent: false }));
+    expect(retireOwnedBindings).not.toHaveBeenCalled();
   });
 
   it('fleet status output redacts the node token and workspace key from the session', async () => {

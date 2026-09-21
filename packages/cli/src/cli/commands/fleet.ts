@@ -1113,23 +1113,41 @@ export function registerFleetCommands(
       warnIfInferredFromProjectSession(options, deps.warn);
       const workerName = requiredText(name, 'Worker name');
       const deleteAgent = options.deleteAgent === true;
-      // Retire bindings while the identity is still registered. --owned-by
-      // resolves the agent-events-<id> channel from the live roster, so this
-      // must run before --delete-agent removes that row.
+      const sdkOpts = sdkOptionsFromOpts(options);
+      // One transport for both cleanup and release. Cleanup otherwise
+      // substitutes the local broker session whenever --workspace-key is
+      // omitted, even if RELAY_WORKSPACE_KEY selected a different workspace.
+      const transport = resolveWorkspaceTransport(sdkOpts);
+      const cleanupOpts: Record<string, unknown> = {
+        ...options,
+        workspaceKey: transport.workspaceKey,
+        ...(transport.baseUrl ? { baseUrl: transport.baseUrl } : {}),
+      };
+      const workspace = deps.createFleetWorkspaceClient(sdkOpts);
+      const reason = attributableReleaseReason(
+        optionalText(options.reason, 'Reason'),
+        process.env.RELAY_AGENT_NAME ?? 'agent-relay fleet CLI',
+        'fleet agent released'
+      );
+      // Stop first so a failed release cannot drop bindings. Keep the roster
+      // row until retirement succeeds; --owned-by cannot resolve a deleted
+      // identity.
+      const released = await workspace.agents.release({
+        name: workerName,
+        reason,
+        deleteAgent: false,
+      });
       if (options.unsubscribeBindings === true || deleteAgent) {
         try {
           // Helper progress (`Retired ...`, `Unsubscribed ...`) must not land
           // on stdout: `fleet release` prints one JSON document there.
-          await deps.retireOwnedBindings(workerName, options, {
+          await deps.retireOwnedBindings(workerName, cleanupOpts, {
             log: deps.warn,
             error: deps.error,
           });
         } catch (error) {
           const message = error instanceof Error ? error.message : String(error);
           if (deleteAgent) {
-            // --owned-by resolves the live roster row. Deleting after a
-            // failed retirement leaves bindings on a dead identity that
-            // the advertised retry cannot clean up.
             throw new Error(
               `Refusing to delete @${workerName}: could not retire provider bindings (${message}). Identity kept so \`agent-relay integration unsubscribe <provider> --owned-by @${workerName}\` can retry.`
             );
@@ -1137,17 +1155,15 @@ export function registerFleetCommands(
           deps.sdk.error(`Warning: could not retire provider bindings for @${workerName}: ${message}`);
         }
       }
-      const workspace = deps.createFleetWorkspaceClient(sdkOptionsFromOpts(options));
-      const reason = attributableReleaseReason(
-        optionalText(options.reason, 'Reason'),
-        process.env.RELAY_AGENT_NAME ?? 'agent-relay fleet CLI',
-        'fleet agent released'
-      );
-      const released = await workspace.agents.release({
-        name: workerName,
-        reason,
-        deleteAgent,
-      });
+      if (deleteAgent) {
+        const deleted = await workspace.agents.release({
+          name: workerName,
+          reason,
+          deleteAgent: true,
+        });
+        printJson(deps.sdk, deleted);
+        return;
+      }
       printJson(deps.sdk, released);
     });
   });

@@ -1853,6 +1853,36 @@ describe('integration unsubscribe', () => {
     expect(relayfile.unbind).not.toHaveBeenCalledWith('github', otherBinding.resource);
     expect(log).toHaveBeenCalledWith(expect.stringContaining('Retired 1 binding(s) owned by @webhook-owner'));
   });
+
+  it('does not treat an ordinary channel that shares the agent name as identity-owned', async () => {
+    const identityBinding: RelayfileBinding = {
+      provider: 'github',
+      resource: '/github/repos/AgentWorkforce/relay/pulls/42/**',
+      channel: 'agent-events-a1',
+      webhookId: 'wh_owner',
+      subscriptionId: 'sub_owner',
+      webhookSubscriptionId: 'whsub_owner',
+    };
+    const namedChannelBinding: RelayfileBinding = {
+      provider: 'github',
+      resource: '/github/repos/AgentWorkforce/relay/pulls/7/**',
+      channel: 'webhook-owner',
+      webhookId: 'wh_named',
+      subscriptionId: 'sub_named',
+      webhookSubscriptionId: 'whsub_named',
+    };
+    const relay = createRelayMock();
+    relay.agents.list.mockResolvedValue([{ id: 'a1', name: 'webhook-owner', status: 'active' }]);
+    const relayfile = createRelayfileMock([identityBinding, namedChannelBinding]);
+    const { program } = harness({ relay, relayfile });
+
+    await program.parseAsync(['integration', 'unsubscribe', 'github', '--owned-by', '@webhook-owner'], {
+      from: 'user',
+    });
+
+    expect(relayfile.unbind).toHaveBeenCalledWith('github', identityBinding.resource);
+    expect(relayfile.unbind).not.toHaveBeenCalledWith('github', namedChannelBinding.resource);
+  });
 });
 
 describe('confirmed agent subscription setup', () => {
