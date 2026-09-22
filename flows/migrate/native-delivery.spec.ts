@@ -655,7 +655,10 @@ if (CONFIG.rust) {
       record('rust-fmt', `${CARGO} fmt --all -- --check`),
       record('rust-clippy', `${CARGO} clippy --all-targets -- -D warnings`),
       record('rust-build', `${CARGO} build --release --bin agent-relay-broker`),
-      record('invariant-tests', `${CARGO} test -p agent-relay-broker --features seam-probe --test delivery_seam_invariants`),
+      record(
+        'invariant-tests',
+        `${CARGO} test -p agent-relay-broker --features seam-probe --test delivery_seam_invariants`
+      ),
     ].join('\n'),
     ['repair-rust'],
     5_400_000
@@ -764,9 +767,7 @@ const nativeNames = [...Object.keys(CONFIG.evals ?? {}), ...Object.keys(CONFIG.e
 const nativeCommands = { ...(CONFIG.evals ?? {}), ...(CONFIG.e2e ?? {}) };
 const nativeRecord = (name: string): string =>
   record(name, nativeCommands[name]!, {
-    ...(Object.hasOwn(CONFIG.evals ?? {}, name)
-      ? { expect: ['delivery=100%', 'scenarios='] }
-      : {}),
+    ...(Object.hasOwn(CONFIG.evals ?? {}, name) ? { expect: ['delivery=100%', 'scenarios='] } : {}),
     forbid: ['# SKIP', 'skipped'],
   });
 if (nativeNames.length > 0) {
@@ -974,7 +975,10 @@ det(
           record('rust-fmt', `${CARGO} fmt --all -- --check`),
           record('rust-clippy', `${CARGO} clippy --all-targets -- -D warnings`),
           record('rust-build', `${CARGO} build --release --bin agent-relay-broker`),
-          record('invariant-tests', `${CARGO} test -p agent-relay-broker --features seam-probe --test delivery_seam_invariants`),
+          record(
+            'invariant-tests',
+            `${CARGO} test -p agent-relay-broker --features seam-probe --test delivery_seam_invariants`
+          ),
         ]
       : []),
     record('ts-typecheck', 'npm run typecheck'),

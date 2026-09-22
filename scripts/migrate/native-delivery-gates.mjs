@@ -1639,18 +1639,14 @@ function mutationFreshnessProblems(config, art) {
   } catch (error) {
     return [`evidence/mutation-proof.json is not valid JSON: ${error.message}`];
   }
-  const entries = new Map(
-    (manifest.invariants ?? []).map((entry) => [entry.name, entry])
-  );
+  const entries = new Map((manifest.invariants ?? []).map((entry) => [entry.name, entry]));
   const digests = manifest.sources ?? {};
   const actual = new Map();
   const digestOf = (file) => {
     if (!actual.has(file)) {
       actual.set(
         file,
-        existsSync(file)
-          ? createHash('sha256').update(readFileSync(file)).digest('hex')
-          : null
+        existsSync(file) ? createHash('sha256').update(readFileSync(file)).digest('hex') : null
       );
     }
     return actual.get(file);
@@ -1669,19 +1665,13 @@ function mutationFreshnessProblems(config, art) {
     const transcript = path.join(art, 'evidence', entry.transcript ?? '');
     if (!entry.transcript || !existsSync(transcript)) {
       problems.push(`mutation transcript missing for invariant ${invariant}: ${entry.transcript}`);
-    } else if (
-      !/FAILED|panicked|assertion .*failed/.test(readFileSync(transcript, 'utf8'))
-    ) {
-      problems.push(
-        `mutation transcript for ${invariant} records no failure: ${entry.transcript}`
-      );
+    } else if (!/FAILED|panicked|assertion .*failed/.test(readFileSync(transcript, 'utf8'))) {
+      problems.push(`mutation transcript for ${invariant} records no failure: ${entry.transcript}`);
     }
     for (const file of guards) {
       const recorded = digests[file];
       if (!recorded) {
-        problems.push(
-          `mutation-proof.json records no digest for ${file}, guarded by ${invariant}`
-        );
+        problems.push(`mutation-proof.json records no digest for ${file}, guarded by ${invariant}`);
         continue;
       }
       const current = digestOf(file);

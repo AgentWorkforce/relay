@@ -280,7 +280,6 @@ describe('phase-1 codex-queue route, at the delivery contract', () => {
       expect(failed, JSON.stringify(failed, null, 2)).toEqual([]);
     });
   }
-
 });
 
 /**
