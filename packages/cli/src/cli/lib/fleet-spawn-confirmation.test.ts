@@ -193,7 +193,7 @@ describe('fleet spawn confirmation is observable from the requester (#1430)', ()
     expect((error as RelayPlacementError).state).toBe('failed');
     expect((error as RelayPlacementError).invocationId).toBe('inv-1430');
     expect((error as RelayPlacementError).dispatchState).toBe('dispatched');
-    expect((error as RelayPlacementError).message).toContain('spawned:true and ready:true proof');
+    expect((error as RelayPlacementError).message).toContain('verify_ready');
   });
 
   // VACUITY CONTROL — without `confirm` the invocation is never read back, so
@@ -316,5 +316,152 @@ describe('fleet spawn confirmation is observable from the requester (#1430)', ()
     expect((error as RelayPlacementError).code).toBe('spawn_unconfirmed');
     expect(call).toBeGreaterThan(1);
     expect((error as Error).message).not.toContain('transient socket reset');
+  });
+});
+
+describe('targeted spawn readiness contract', () => {
+  it('requests readiness from a healthy remote claude node and confirms it', async () => {
+    const { client, invoke } = createClient(async (_name, invocationId) => ({
+      invocation_id: invocationId,
+      status: 'completed',
+      // The broker only proves readiness when it was asked to.
+      output: { spawned: true, ready: invoke.mock.calls[0]?.[1]?.verify_ready === true },
+    }));
+    const ack = await client.placement.spawn(spawnInput({ confirm: true }));
+    expect(invoke.mock.calls[0]?.[1]).toMatchObject({ verify_ready: true });
+    expect(ack.placement.state).toBe('ready');
+    expect(ack.placement.confirmed).toBe(true);
+    expect(invoke).toHaveBeenCalledTimes(1);
+  });
+
+  // MUST-FIRE for the `confirm`-omitted default. Requesting broker-side
+  // verification commits the broker to holding the action open and *releasing
+  // the worker* if readiness never arrives. A caller that does not wait for
+  // that answer must not ask for it, or the default dispatch silently acquires
+  // a 90-second kill switch nobody is watching.
+  it('does not request broker verification when confirmation is omitted', async () => {
+    const { client, invoke, reader } = createClient();
+    invoke.mockResolvedValueOnce({
+      invocation_id: 'default',
+      status: 'completed',
+      output: { spawned: true, ready: false },
+    } as never);
+    const ack = await client.placement.spawn(spawnInput());
+    expect(invoke.mock.calls[0]?.[1]).not.toHaveProperty('verify_ready');
+    expect(ack.placement).toMatchObject({ state: 'accepted', confirmed: false });
+    expect(reader).not.toHaveBeenCalled();
+  });
+
+  it.each([false, true])('accepts an explicit unverified launch ack with ready=%s', async (ready) => {
+    const { client, invoke, reader } = createClient();
+    invoke.mockResolvedValueOnce({
+      invocation_id: 'launch',
+      status: 'completed',
+      output: { spawned: true, ready },
+    } as never);
+    const ack = await client.placement.spawn(spawnInput({ confirm: false }));
+    expect(ack.placement).toMatchObject({ state: 'accepted', confirmed: false });
+    expect(invoke.mock.calls[0]?.[1]).not.toHaveProperty('verify_ready');
+    expect(reader).not.toHaveBeenCalled();
+  });
+
+  // MUST-FIRE for `verifyReady: false` with confirmation. The requester told
+  // the broker not to verify readiness, so judging the result against
+  // `ready:true` would reject a healthy launch with the exact error string from
+  // the issue — through an option the SDK itself offers.
+  it('confirms a verifyReady:false spawn against the launch contract it asked for', async () => {
+    const { client, invoke, reader } = createClient(async (_name, invocationId) => ({
+      invocation_id: invocationId,
+      status: 'completed',
+      output: { spawned: true, ready: false },
+    }));
+    const ack = await client.placement.spawn(
+      spawnInput({ confirm: true, verifyReady: false, confirmPollIntervalMs: 10 })
+    );
+    expect(invoke.mock.calls[0]?.[1]).not.toHaveProperty('verify_ready');
+    expect(reader).toHaveBeenCalled();
+    // Confirmed as launched, but never proven ready — `ready` is reserved for
+    // the mode that actually asked for readiness.
+    expect(ack.placement).toMatchObject({ state: 'accepted', confirmed: true });
+  });
+
+  it('still rejects a confirmed readiness request that reports ready:false', async () => {
+    const { client } = createClient(async (_name, invocationId) => ({
+      invocation_id: invocationId,
+      status: 'completed',
+      output: { spawned: true, ready: false },
+    }));
+    await expect(
+      client.placement.spawn(spawnInput({ confirm: true, confirmPollIntervalMs: 10 }))
+    ).rejects.toMatchObject({
+      code: 'spawn_failed',
+      message: expect.stringContaining('without explicit spawned:true and ready:true proof'),
+    });
+  });
+
+  it('blames the missing ready boolean, not verify_ready, when readiness was not requested', async () => {
+    const { client, invoke } = createClient();
+    invoke.mockResolvedValueOnce({
+      invocation_id: 'old',
+      status: 'completed',
+      output: { spawned: true },
+    } as never);
+    const error = await client.placement.spawn(spawnInput({ confirm: false })).catch((e: unknown) => e);
+    expect(error).toBeInstanceOf(RelayPlacementError);
+    expect((error as RelayPlacementError).code).toBe('spawn_failed');
+    expect((error as Error).message).toContain('without an explicit ready boolean');
+    // This path never sent verify_ready, so naming it would send the next
+    // investigation to the wrong layer — which is how #1430 was first misread.
+    expect((error as Error).message).not.toContain('did not honour verify_ready');
+  });
+
+  it('names verify_ready when readiness was requested and the handler ignored it', async () => {
+    const { client } = createClient(async (_name, invocationId) => ({
+      invocation_id: invocationId,
+      status: 'completed',
+      output: { spawned: true },
+    }));
+    await expect(
+      client.placement.spawn(spawnInput({ confirm: true, confirmPollIntervalMs: 10 }))
+    ).rejects.toMatchObject({
+      code: 'spawn_failed',
+      message: expect.stringContaining('did not honour verify_ready'),
+    });
+  });
+
+  it('leaves persona engine-owned: no verify_ready on the wire', async () => {
+    const { client, invoke } = createClient();
+    // Expose persona capacity only for this fixture.
+    LIVE_NODE.capabilities.push({ name: 'spawn:persona', kind: 'spawn' });
+    try {
+      await client.placement.spawn(spawnInput({ capability: 'spawn:persona', confirm: false }));
+      expect(invoke.mock.calls[0]?.[1]).not.toHaveProperty('verify_ready');
+    } finally {
+      LIVE_NODE.capabilities.pop();
+    }
+  });
+
+  // Persona never sees `verify_ready`, but its engine-owned handler still
+  // reports proven readiness, so relaxing it to the launch contract would
+  // accept a child that was dispatched and never came up.
+  it('keeps persona confirmation pinned to proven readiness', async () => {
+    const { client } = createClient(async (_name, invocationId) => ({
+      invocation_id: invocationId,
+      status: 'completed',
+      output: { spawned: true, ready: false },
+    }));
+    LIVE_NODE.capabilities.push({ name: 'spawn:persona', kind: 'spawn' });
+    try {
+      await expect(
+        client.placement.spawn(
+          spawnInput({ capability: 'spawn:persona', confirm: true, confirmPollIntervalMs: 10 })
+        )
+      ).rejects.toMatchObject({
+        code: 'spawn_failed',
+        message: expect.stringContaining('without explicit spawned:true and ready:true proof'),
+      });
+    } finally {
+      LIVE_NODE.capabilities.pop();
+    }
   });
 });
