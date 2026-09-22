@@ -47,13 +47,205 @@ const PLANNER = 'scripts/verify-features/targeted-pr-plan.mjs';
  * PTY behaviour today; the whole point is that the same assertions pass with
  * the backend swapped, so every phase reruns all five.
  */
-const PARITY = {
+export const PARITY = {
   'parity-orch-to-worker': 'npx tsx tests/parity/orch-to-worker.ts',
   'parity-multi-worker': 'npx tsx tests/parity/multi-worker.ts',
   'parity-broadcast': 'npx tsx tests/parity/broadcast.ts',
   'parity-continuity-handoff': 'npx tsx tests/parity/continuity-handoff.ts',
   'parity-stability-soak': 'npx tsx tests/parity/stability-soak.ts',
 };
+
+/**
+ * The phase's unlaunched-session scenario, as a command.
+ *
+ * It lives here rather than in the flow for the same reason `PARITY` does:
+ * `contractCommands()` below compares recorded evidence against the command
+ * the contract names, and a command the contract does not know cannot be
+ * compared. The flow imports this instead of restating it.
+ */
+export function unlaunchedCommand(cli) {
+  return [
+    'npm run build:core',
+    'cargo build -p agent-relay-broker --bin agent-relay-broker',
+    `npx vitest run --config tests/e2e/vitest.unlaunched.config.ts tests/e2e/unlaunched/unlaunched-${cli}-delivery.test.ts`,
+  ].join(' && ');
+}
+
+/**
+ * Every evidence name whose command this contract owns, mapped to that exact
+ * command.
+ *
+ * Earned by codex-review-1 F2. `eval-codex` was tightened from `--harness=codex`
+ * to `--harness=codex --min-scenarios=1 --min-delivery-rate=1`, and the run
+ * carried forward an `evidence/eval-codex.json` recorded under the OLD, weaker
+ * command — a file whose own tail reads `sent=25% scenarios=1/8`, marked green.
+ * `require-green` and `accept` validated identity, run id and verdict and never
+ * asked what command produced the verdict, so a green recorded under a command
+ * the contract no longer names satisfied the contract. Tightening a gate then
+ * has no effect until someone notices the evidence is stale, which is the
+ * failure mode this campaign exists to prevent.
+ *
+ * Names the contract does NOT own (`rust-*`, `ts-typecheck`, `unit-tests`, the
+ * recorded structural gates) are absent from this map and are not
+ * command-checked; their commands live in the flow.
+ */
+export function contractCommands(config) {
+  const commands = {};
+  for (const name of config.parity ?? []) {
+    if (PARITY[name]) commands[name] = PARITY[name];
+  }
+  for (const [name, command] of Object.entries(config.evals ?? {})) commands[name] = command;
+  for (const [name, command] of Object.entries(config.e2e ?? {})) commands[name] = command;
+  if (Array.isArray(config.unlaunched)) {
+    for (const cli of config.unlaunched) {
+      commands[`unlaunched-${cli}-delivery`] = unlaunchedCommand(cli);
+    }
+  }
+  return commands;
+}
+
+/**
+ * `null` when the evidence was produced by the command the contract names, or
+ * when the contract does not name one. A string describing the drift otherwise.
+ */
+function commandDrift(config, name, evidence) {
+  const expected = contractCommands(config)[name];
+  if (expected === undefined) return null;
+  if (evidence.command === expected) return null;
+  return (
+    `${name}: evidence was recorded under a command the contract no longer names\n` +
+    `      recorded: ${evidence.command ?? '(none)'}\n` +
+    `      contract: ${expected}`
+  );
+}
+
+/**
+ * The recorded structural gates: gates whose verdict is written to
+ * `evidence/<name>.json` by `record` and read back later by `require-green`
+ * and `accept`, rather than decided in-line.
+ */
+const STRUCTURAL_GATE_ACTIONS = [
+  'edit-gate',
+  'manifest-gate',
+  'targeted-gate',
+  'seam-rules',
+  'unlaunched-gate',
+];
+
+/**
+ * Exactly which parts of the phase contract a structural gate reads.
+ *
+ * Earned by codex-review-2 F1. `commandDrift` closed the hole where evidence
+ * was recorded under a command the contract no longer names — but the
+ * structural gates take no contract text on their command line at all. Their
+ * command is `... seam-rules --phase 1 --artifact ... --run-id ...` whatever
+ * the contract says, so the command string is IDENTICAL before and after the
+ * contract tightens. When phase 1 grew the three Codex queue invariants
+ * (12 → 15), `evidence/seam-rules-final.json` still carried the green from the
+ * 12-invariant run, its own tail reading `invariants=12`, and `accept()`
+ * validated existence, run id and the green bit and never asked what contract
+ * the green covered. A tightened gate then has no effect until someone reads
+ * the tail by eye.
+ *
+ * So each structural gate stamps a digest of the contract inputs it actually
+ * consumed into its pass line, `record` parses that into `gateFacts.coverage`,
+ * and `require-green`/`accept` recompute the digest from the CURRENT contract
+ * and refuse a mismatch. Adding an invariant, a required source, a feature row
+ * or a wiring rule changes the digest, which makes every gate verdict recorded
+ * before that change fail closed instead of silently carrying forward.
+ *
+ * `null` for an action that reads no contract text, which is not checked.
+ */
+export function gateCoverage(config, action) {
+  switch (action) {
+    case 'edit-gate':
+      return {
+        scope: [...(config.scope ?? [])].sort(),
+        tsScope: [...(config.tsScope ?? [])].sort(),
+        requiredSources: [...(config.requiredSources ?? [])].sort(),
+        requiredArtifacts: [...(config.requiredArtifacts ?? [])].sort(),
+        allowed: [...allowedPaths(config)].sort(),
+      };
+    // Both gates are driven by the same declared feature rows: manifest-gate
+    // checks they are registered with the required category/tier/location, and
+    // targeted-gate checks the selector picked them up.
+    case 'manifest-gate':
+    case 'targeted-gate':
+      return {
+        features: (config.features ?? [])
+          .map((feature) => [feature.id, feature.category, feature.verify_tier, feature.location].join('|'))
+          .sort(),
+      };
+    case 'seam-rules':
+      return {
+        invariants: [...(config.invariants ?? [])].sort(),
+        invariantTestFiles: [...invariantTestFiles(config)].sort(),
+        wiring: (config.wiring ?? [])
+          .map((rule) => `${rule.symbol}|${rule.from ?? ''}|${rule.outside ?? ''}`)
+          .sort(),
+        forbidden: (config.forbidden ?? [])
+          .map((rule) => `${rule.where}|${rule.pattern}|${rule.unless}`)
+          .sort(),
+        untouched: [...(config.untouched ?? [])].sort(),
+      };
+    case 'unlaunched-gate':
+      return {
+        unlaunched: Array.isArray(config.unlaunched) ? [...config.unlaunched].sort() : false,
+      };
+    default:
+      return null;
+  }
+}
+
+/** The stamp a structural gate writes into its pass line. `null` when unchecked. */
+export function coverageDigest(config, action) {
+  const coverage = gateCoverage(config, action);
+  if (coverage === null) return null;
+  return createHash('sha256').update(JSON.stringify(coverage)).digest('hex').slice(0, 16);
+}
+
+/**
+ * `edit-gate-final` → `edit-gate`. `null` for a name this contract does not
+ * recognise as a structural gate, which is left unchecked rather than guessed
+ * at (`post-codex-review-1-edit` is a repair probe, not an acceptance gate).
+ */
+function structuralAction(name) {
+  const base = name.endsWith('-final') ? name.slice(0, -'-final'.length) : name;
+  return STRUCTURAL_GATE_ACTIONS.includes(base) ? base : null;
+}
+
+/**
+ * `null` when the recorded verdict covers the contract as it stands now.
+ * A string describing the drift otherwise.
+ *
+ * Absent `gateFacts.coverage` is drift, not an exemption: evidence with no
+ * stamp was produced by a gate that did not know what contract it was proving,
+ * and that is precisely the stale file this check exists to reject.
+ */
+function coverageDrift(config, name, evidence) {
+  const action = structuralAction(name);
+  if (action === null) return null;
+  const expected = coverageDigest(config, action);
+  if (expected === null) return null;
+  const recorded = evidence.gateFacts?.coverage;
+  if (recorded === undefined) {
+    return (
+      `${name}: evidence carries no contract-coverage stamp, so it predates the current gate — ` +
+      `re-record it (expected coverage ${expected})`
+    );
+  }
+  if (recorded !== expected) {
+    const summary = Object.entries(gateCoverage(config, action))
+      .map(([key, value]) => `${key}=${Array.isArray(value) ? value.length : value}`)
+      .join(' ');
+    return (
+      `${name}: the recorded verdict covers a different contract than this phase declares\n` +
+      `      recorded coverage: ${recorded}\n` +
+      `      contract coverage: ${expected} (${summary})`
+    );
+  }
+  return null;
+}
 
 /**
  * The seam contract tests that must exist, pass, and carry mutation evidence.
@@ -71,13 +263,74 @@ const SEAM_INVARIANTS = [
   'settle_distinguishes_absence_from_an_unreachable_route',
   'settle_reports_an_evicted_receipt_as_unknown_not_absent',
   'an_acknowledgement_must_name_the_observation_behind_it',
+  'unavailable_queue_capability_falls_back_before_write',
+  'queue_process_failure_is_committed_and_does_not_fall_back',
+  'successful_queue_send_is_handed_over_not_acked',
   'real_pty_route_unknown_worker_is_pre_write_and_may_fall_back',
   'real_pty_route_write_failure_after_commit_does_not_fall_back',
   'real_pty_route_never_reports_an_observed_ack',
 ];
 
 const INVARIANT_TEST_FILE = 'crates/broker/tests/delivery_seam_invariants.rs';
-const INVARIANT_TEST_FILES = [INVARIANT_TEST_FILE, 'crates/broker/src/delivery/pty.rs'];
+const INVARIANT_TEST_FILES = [
+  INVARIANT_TEST_FILE,
+  'crates/broker/src/delivery/pty.rs',
+  'crates/broker/src/delivery/codex_queue.rs',
+];
+
+/**
+ * Phase 1's own invariants, on top of the seam's.
+ *
+ * Phase 0's lesson 2 is that a scripted backend proves nothing about a real
+ * one, so each phase has to drive the four rules through ITS transport. The
+ * seam list covers rules 1 and 4 for the codex route; these cover rule 2's
+ * duplicate, cancellation, teardown and restart shapes, rule 3's
+ * settle-by-the-recorded-route, the selection guard the whole parity answer
+ * rests on, and the queued-versus-consumed acknowledgement boundary.
+ *
+ * Deliberately NOT appended to `SEAM_INVARIANTS`: phases 2-5 share that list
+ * and have no codex route to prove these against.
+ */
+const PHASE_1_NATIVE_ROUTE_INVARIANTS = [
+  // Rule 2, on the real transport.
+  'a_repeated_send_never_queues_the_same_delivery_twice',
+  'a_cancelled_queue_send_is_not_retried_on_the_codex_route',
+  // Rule 2, across the two dispositions that outlive a send: worker teardown
+  // and broker restart. A native route survives both, so both can duplicate.
+  'releasing_an_agent_with_a_handed_over_native_delivery_dead_letters_it_in_doubt',
+  'every_worker_teardown_site_disposes_through_the_seam_aware_path',
+  'a_restarted_broker_does_not_queue_a_handed_over_codex_delivery_again',
+  // Rule 3, on the real transport.
+  'settlement_uses_the_recorded_thread_route_and_never_another_codex',
+  // The selection guard: only codex, only with a known thread.
+  'only_a_codex_worker_with_a_known_thread_selects_the_codex_queue_route',
+  'an_unselectable_codex_backend_refuses_before_any_write',
+  // Rule 4: what a codex acknowledgement is allowed to mean (decision D4).
+  'a_consumed_user_item_is_observed_in_both_real_projections',
+  'a_queued_but_unconsumed_message_is_queued_not_consumed',
+  'a_quoted_marker_in_a_non_user_record_is_not_an_acknowledgement',
+  // Manual flush must not accumulate messages the flush path cannot deliver.
+  'a_native_only_delivery_target_never_parks_an_inbound_message',
+  'manual_flush_is_refused_for_a_native_only_delivery_target',
+];
+
+const PHASE_1_INVARIANT_TEST_FILES = [
+  ...INVARIANT_TEST_FILES,
+  'crates/broker/src/codex_thread.rs',
+  'crates/broker/src/runtime/tests.rs',
+];
+
+/**
+ * Where a phase's invariant tests live. `invariantTestFile` (singular) is the
+ * legacy override for a phase with exactly one file; `invariantTestFiles`
+ * declares the set. Both feed the coverage digest, so widening the set is
+ * visible in every structural gate's pass line rather than silent.
+ */
+function invariantTestFiles(config) {
+  if (config.invariantTestFiles) return [...config.invariantTestFiles];
+  if (config.invariantTestFile) return [config.invariantTestFile];
+  return [...INVARIANT_TEST_FILES];
+}
 
 /** Phases, ordered as the doc orders them. Phase 6 is independent. */
 export const PHASES = {
@@ -154,35 +407,66 @@ export const PHASES = {
   1: {
     slug: 'codex-queue',
     title: 'Codex native delivery over `codex queue`',
+    /**
+     * `wrap.rs` is the fifth widening, and it is the same shape as phase 0's:
+     * a lane that excludes an edit the phase's own repair requires makes the
+     * phase unsatisfiable. The PTY verification structs live in the in-scope
+     * `delivery_verification.rs`, but `wrap.rs` constructs them for the legacy
+     * wrap route. Leaving it out is not merely a stray:
+     * `commit-if-green` stages `git add -- <scope>`, so the commit would carry
+     * the new field without the caller that populates it and the committed
+     * tree would not compile.
+     */
     scope: [
       'crates/broker/src/delivery/',
       'crates/broker/src/codex_thread.rs',
+      'crates/broker/src/broker/delivery_verification.rs',
       'crates/broker/tests/',
+      'crates/broker/src/worker.rs',
+      'crates/broker/src/listen_api.rs',
       'crates/broker/src/runtime/',
       'crates/broker/src/pty_worker.rs',
+      'crates/broker/src/wrap.rs',
+      'crates/broker/Cargo.toml',
+      // The sixth widening, same shape as the five above. Worker teardown now
+      // dead-letters a delivery that already reached a native transport as IN
+      // DOUBT, and the withheld fleet ack that dies with it has to be recorded
+      // somewhere an operator can see rather than dropped with a log line. The
+      // probe owns every other `DeliverDisposition`, so the new
+      // `DroppedInDoubt` belongs beside them; leaving the file out would make
+      // the repair the signoff demanded unreachable.
+      'crates/broker/src/node_delivery_probe.rs',
+      'crates/relay-pty/src/codex_session.rs',
     ],
-    tsScope: ['tests/', '.agentworkforce/features/manifest.yaml', MATRIX],
+    tsScope: ['tests/', 'packages/cli/', '.agentworkforce/features/manifest.yaml', MATRIX],
     requiredSources: [
       'crates/broker/src/delivery/codex_queue.rs',
       'crates/broker/src/codex_thread.rs',
       INVARIANT_TEST_FILE,
     ],
-    requiredArtifacts: ['decisions/D1-codex-thread-id.md'],
+    requiredArtifacts: [
+      'decisions/D1-codex-thread-id.md',
+      'decisions/D2-codex-eval-floor.md',
+      'decisions/D3-codex-steer-route.md',
+      'decisions/D4-codex-read-receipt-standard.md',
+    ],
     features: [
       {
         id: 'codex-queue-delivery',
         category: 'broker',
-        location: 'crates/broker/src/delivery/codex_queue.rs, crates/broker/src/codex_thread.rs',
+        location:
+          'crates/broker/src/delivery/codex_queue.rs, crates/broker/src/codex_thread.rs, crates/broker/src/listen_api.rs, packages/cli/src/cli/agent-relay-mcp.ts',
         verify_tier: 4,
       },
     ],
     wiring: [{ symbol: 'CodexQueueBackend', outside: 'crates/broker/src/delivery/codex_queue.rs' }],
-    invariants: SEAM_INVARIANTS,
+    invariants: [...SEAM_INVARIANTS, ...PHASE_1_NATIVE_ROUTE_INVARIANTS],
+    invariantTestFiles: PHASE_1_INVARIANT_TEST_FILES,
     parity: Object.keys(PARITY),
     rust: true,
     evals: {
       'eval-codex':
-        'npm run eval:build && cd tests/integration/broker && RELAY_INTEGRATION_REAL_CLI=1 node dist/evals/runner.js --harness=codex',
+        'npm run eval:build && cd tests/integration/broker && RELAY_INTEGRATION_REAL_CLI=1 node dist/evals/runner.js --harness=codex --min-scenarios=1 --min-delivery-rate=1',
     },
     e2e: {},
     unlaunched: ['codex'],
@@ -228,7 +512,7 @@ export const PHASES = {
     rust: true,
     evals: {
       'eval-claude':
-        'npm run eval:build && cd tests/integration/broker && RELAY_INTEGRATION_REAL_CLI=1 node dist/evals/runner.js --harness=claude',
+        'npm run eval:build && cd tests/integration/broker && RELAY_INTEGRATION_REAL_CLI=1 node dist/evals/runner.js --harness=claude --min-scenarios=1 --min-delivery-rate=1',
     },
     e2e: {},
     unlaunched: ['claude'],
@@ -259,7 +543,7 @@ export const PHASES = {
     rust: true,
     evals: {
       'eval-acp-harnesses':
-        'npm run eval:build && cd tests/integration/broker && RELAY_INTEGRATION_REAL_CLI=1 node dist/evals/runner.js --harness=grok,opencode,devin',
+        'npm run eval:build && cd tests/integration/broker && RELAY_INTEGRATION_REAL_CLI=1 node dist/evals/runner.js --harness=grok,opencode,devin --min-scenarios=1 --min-delivery-rate=1',
     },
     e2e: {},
     unlaunched: false,
@@ -598,6 +882,46 @@ function withinScope(file, scope) {
   return scope.some((entry) => (entry.endsWith('/') ? file.startsWith(entry) : file === entry));
 }
 
+/**
+ * Every path this phase is permitted to change: the declared product lane plus
+ * the campaign's own output.
+ *
+ * `edit-gate` rejects anything outside this set, and `commit-if-green` stages
+ * exactly what this set admits. Those two used to disagree — the gate allowed
+ * `package.json`, `CHANGELOG.md`, `.gitignore` and the `scripts/migrate/` +
+ * `flows/migrate/` harness, while the commit staged only `scope` + `tsScope`.
+ * So a phase could pass every gate and commit a tree missing the very files
+ * the gate had approved: the `test:e2e:unlaunched` script repointed at the new
+ * vitest config, the changelog entry CLAUDE.md requires, and the gate edits
+ * `accept` prints `HARNESS_MODIFIED` about precisely so a reviewer can read
+ * them in the diff.
+ */
+function allowedPaths(config) {
+  return [
+    ...config.scope,
+    ...(config.tsScope ?? []),
+    '.workflow-artifacts/',
+    'scripts/migrate/',
+    'flows/migrate/',
+    'flows/audit/',
+    // The harness adapter and the e2e wiring the phase needed: campaign
+    // tooling, not product, and so not manifest-routable either.
+    'scripts/flows/',
+    'package.json',
+    'vitest.e2e.config.ts',
+    '.gitignore',
+    // Trail writes these as agents work; CLAUDE.md requires them tracked, so
+    // they are legitimate output of a run rather than scope creep. The bare
+    // `.trajectories/` path is the same tool's older location, which `trail
+    // compact` migrates out of mid-run.
+    '.agentworkforce/trajectories/',
+    '.trajectories/',
+    '.review-out/',
+    'CHANGELOG.md',
+    'docs/',
+  ];
+}
+
 // ───────────────────────────── actions ─────────────────────────────
 
 /**
@@ -696,6 +1020,10 @@ function contract() {
     phase: Number(phase),
     ...config,
     parityCommands: Object.fromEntries((config.parity ?? []).map((name) => [name, PARITY[name]])),
+    // The exact command each contract-owned evidence file must be recorded
+    // under. `require-green` and `accept` compare against this, so a recorder
+    // invoked by hand has the string to copy rather than to approximate.
+    contractCommands: contractCommands(config),
     seamRules: [
       'Fall back to another transport only on a strictly pre-write error.',
       'Never re-send on doubt.',
@@ -796,6 +1124,24 @@ async function record() {
      */
     runId: option('--run-id', 'unknown'),
     command,
+    /**
+     * A stable digest of the command, so the seal and a reviewer can compare
+     * two evidence files without diffing shell strings by eye. The comparison
+     * gates use `command` itself; this is the audit handle.
+     */
+    commandSha256: createHash('sha256').update(command).digest('hex'),
+    /**
+     * The `key=value` facts the wrapped gate stamped into its own pass line,
+     * chiefly `coverage` — the digest of the contract text that gate read.
+     *
+     * Structural gates take no contract text on their command line, so
+     * `commandSha256` is identical before and after the contract tightens and
+     * cannot tell a stale verdict from a current one. This can: `accept` and
+     * `require-green` recompute the digest from the contract and refuse a
+     * mismatch. `null` when the wrapped command is not a gate, or when it
+     * failed and therefore printed no pass line.
+     */
+    gateFacts: parseGateFacts(output),
     exitCode,
     verdict,
     missingExpected: missing,
@@ -813,8 +1159,28 @@ async function record() {
   process.stdout.write(`${output.slice(-4_000)}\n`);
 }
 
+/**
+ * The `key=value` pairs on the LAST `GATE_PASSED` line of a recorded run.
+ *
+ * Last, not first: a recorder may wrap a `&&` chain of several gates, and it is
+ * the final verdict that the evidence file's exit code belongs to. Tokens that
+ * are not `key=value` (the gate's own action name, the parenthetical prose
+ * `targeted-gate` appends) are dropped rather than guessed at.
+ */
+function parseGateFacts(output) {
+  const lines = output.match(/^GATE_PASSED .*$/gm);
+  if (!lines || lines.length === 0) return null;
+  const facts = {};
+  for (const token of lines[lines.length - 1].split(/\s+/).slice(1)) {
+    const match = /^([a-z][\w-]*)=(.*)$/.exec(token);
+    if (match) facts[match[1]] = match[2];
+  }
+  return Object.keys(facts).length > 0 ? facts : null;
+}
+
 /** Read recorded evidence back. This is the only thing that says "green". */
 function requireGreen() {
+  const { config } = phaseConfig();
   const art = artifactRoot();
   const names = list('--names');
   if (names.length === 0) throw new Error('--names is required');
@@ -839,6 +1205,20 @@ function requireGreen() {
     const runId = option('--run-id', 'unknown');
     if (evidence.runId !== undefined && evidence.runId !== runId) {
       problems.push(`${name}: stale evidence from run "${evidence.runId}" (current "${runId}")`);
+      continue;
+    }
+    const drift = commandDrift(config, name, evidence);
+    if (drift) {
+      problems.push(drift);
+      continue;
+    }
+    // Structural gates carry no contract text on their command line, so
+    // `commandDrift` cannot see a contract that tightened under a stable
+    // command. The coverage stamp can. Checked before the verdict, because the
+    // verdict is exactly what the older, narrower contract produced.
+    const coverage = coverageDrift(config, name, evidence);
+    if (coverage) {
+      problems.push(coverage);
       continue;
     }
     if (evidence.verdict !== 'green') {
@@ -912,27 +1292,7 @@ function editGate() {
     }
     // Anything outside the declared lane is scope creep, and scope creep in a
     // delivery migration is how double-delivery ships.
-    const allowed = [
-      ...config.scope,
-      ...(config.tsScope ?? []),
-      '.workflow-artifacts/',
-      'scripts/migrate/',
-      'flows/migrate/',
-      'flows/audit/',
-      // The harness adapter and the e2e wiring the phase needed: campaign
-      // tooling, not product, and so not manifest-routable either.
-      'scripts/flows/',
-      'package.json',
-      'vitest.e2e.config.ts',
-      '.gitignore',
-      // Trail writes these as agents work; CLAUDE.md requires them tracked, so
-      // they are legitimate output of a run rather than scope creep.
-      '.agentworkforce/trajectories/',
-      '.review-out/',
-      'CHANGELOG.md',
-      'docs/',
-    ];
-    const strays = files.filter((file) => !withinScope(file, allowed));
+    const strays = files.filter((file) => !withinScope(file, allowedPaths(config)));
     if (strays.length > 0) problems.push(`out-of-scope changes: ${strays.slice(0, 20).join(', ')}`);
   }
 
@@ -941,7 +1301,10 @@ function editGate() {
     fail(`edit-gate phase=${phase} scope=${which}\n  ${problems.join('\n  ')}`);
     return;
   }
-  pass(`edit-gate phase=${phase} scope=${which} files=${inScope.length}`);
+  pass(
+    `edit-gate phase=${phase} scope=${which} files=${inScope.length} ` +
+      `coverage=${coverageDigest(config, 'edit-gate')}`
+  );
 }
 
 /**
@@ -1013,7 +1376,10 @@ function manifestGate() {
     fail(`manifest-gate phase=${phase}\n  ${problems.join('\n  ')}`);
     return;
   }
-  pass(`manifest-gate phase=${phase} features=${(config.features ?? []).length}`);
+  pass(
+    `manifest-gate phase=${phase} features=${(config.features ?? []).length} ` +
+      `coverage=${coverageDigest(config, 'manifest-gate')}`
+  );
 }
 
 /**
@@ -1066,6 +1432,10 @@ function targetedGate() {
     'package.json',
     'vitest.e2e.config.ts',
     '.gitignore',
+    // Trail records, for the same reason `edit-gate` allows them: run output,
+    // not a product runtime path, and so with no manifest row to earn.
+    '.agentworkforce/trajectories/',
+    '.trajectories/',
   ];
   const unmatched = (plan.unmatchedRuntimeFiles ?? []).filter(
     (file) => !HARNESS.some((prefix) => file.startsWith(prefix))
@@ -1094,7 +1464,7 @@ function targetedGate() {
   }
   pass(
     `targeted-gate phase=${phase} mode=${plan.mode} features=${[...selected].join(',')} ` +
-      `unmapped=0 scenarios=${plan.scenarios.length}` +
+      `unmapped=0 scenarios=${plan.scenarios.length} coverage=${coverageDigest(config, 'targeted-gate')}` +
       (plan.mode === 'full-smoke' ? ' (full-smoke from the manifest self-check, which is expected)' : '')
   );
 }
@@ -1103,7 +1473,7 @@ function seamRules() {
   const { phase, config } = phaseConfig();
   const art = artifactRoot();
   const problems = [];
-  const testFiles = config.invariantTestFile ? [config.invariantTestFile] : INVARIANT_TEST_FILES;
+  const testFiles = invariantTestFiles(config);
   const existingTestFiles = testFiles.filter(existsSync);
   for (const testFile of testFiles) {
     if (!existsSync(testFile)) problems.push(`invariant test file missing: ${testFile}`);
@@ -1221,12 +1591,111 @@ function seamRules() {
       }
     }
   }
+  problems.push(...mutationFreshnessProblems(config, art));
 
   if (problems.length > 0) {
     fail(`seam-rules phase=${phase}\n  ${problems.join('\n  ')}`);
     return;
   }
-  pass(`seam-rules phase=${phase} invariants=${(config.invariants ?? []).length}`);
+  pass(
+    `seam-rules phase=${phase} invariants=${(config.invariants ?? []).length} ` +
+      `coverage=${coverageDigest(config, 'seam-rules')}`
+  );
+}
+
+/**
+ * A mutation transcript is only evidence about the tree it was recorded
+ * against.
+ *
+ * The prose check above asks whether each invariant has a transcript that
+ * FAILED. It cannot ask WHEN, so a transcript recorded before a later repair
+ * round rewrote the very code the invariant guards still satisfies it. That
+ * happened in phase 1: the codex-route transcripts panicked at
+ * `codex_queue.rs:465/503/546` while the shipped expectations sat ~76 lines
+ * lower, because the fix round after them changed queue capability resolution,
+ * the probe's argv and the PTY fallback predicate. Every deterministic gate
+ * passed anyway, which is exactly the failure mode `coverageDrift` already
+ * guards for the structural gates.
+ *
+ * So the proof has to carry a digest of what it proved. `mutation-proof.json`
+ * declares, per invariant, the source files that invariant guards and the
+ * sha256 each of those files had when the transcript was recorded. This gate
+ * recomputes them. A guarded file that has changed since invalidates its
+ * transcripts and the mutation must be re-run — a content digest, not a
+ * timestamp, so it survives a checkout and cannot be satisfied by `touch`.
+ */
+function mutationFreshnessProblems(config, art) {
+  const problems = [];
+  const manifestPath = path.join(art, 'evidence', 'mutation-proof.json');
+  if (!existsSync(manifestPath)) {
+    return [
+      'evidence/mutation-proof.json missing: the mutation proof must declare, per invariant, ' +
+        'which sources it guards and their sha256 at recording time',
+    ];
+  }
+  let manifest;
+  try {
+    manifest = JSON.parse(readFileSync(manifestPath, 'utf8'));
+  } catch (error) {
+    return [`evidence/mutation-proof.json is not valid JSON: ${error.message}`];
+  }
+  const entries = new Map(
+    (manifest.invariants ?? []).map((entry) => [entry.name, entry])
+  );
+  const digests = manifest.sources ?? {};
+  const actual = new Map();
+  const digestOf = (file) => {
+    if (!actual.has(file)) {
+      actual.set(
+        file,
+        existsSync(file)
+          ? createHash('sha256').update(readFileSync(file)).digest('hex')
+          : null
+      );
+    }
+    return actual.get(file);
+  };
+
+  for (const invariant of config.invariants ?? []) {
+    const entry = entries.get(invariant);
+    if (!entry) {
+      problems.push(`mutation-proof.json does not cover invariant: ${invariant}`);
+      continue;
+    }
+    const guards = entry.guards ?? [];
+    if (guards.length === 0) {
+      problems.push(`mutation-proof.json declares no guarded source for invariant: ${invariant}`);
+    }
+    const transcript = path.join(art, 'evidence', entry.transcript ?? '');
+    if (!entry.transcript || !existsSync(transcript)) {
+      problems.push(`mutation transcript missing for invariant ${invariant}: ${entry.transcript}`);
+    } else if (
+      !/FAILED|panicked|assertion .*failed/.test(readFileSync(transcript, 'utf8'))
+    ) {
+      problems.push(
+        `mutation transcript for ${invariant} records no failure: ${entry.transcript}`
+      );
+    }
+    for (const file of guards) {
+      const recorded = digests[file];
+      if (!recorded) {
+        problems.push(
+          `mutation-proof.json records no digest for ${file}, guarded by ${invariant}`
+        );
+        continue;
+      }
+      const current = digestOf(file);
+      if (current === null) {
+        problems.push(`guarded source missing: ${file} (declared by ${invariant})`);
+      } else if (current !== recorded) {
+        problems.push(
+          `mutation evidence is stale: ${file} changed since the transcript for ${invariant} ` +
+            `was recorded (recorded ${recorded.slice(0, 12)}, now ${current.slice(0, 12)}) — re-run the mutation`
+        );
+      }
+    }
+  }
+  return problems;
 }
 
 function walk(dir) {
@@ -1303,7 +1772,10 @@ function unlaunchedGate() {
   }
   const checked = typecheck ? ` typechecked=${typecheck.files}` : '';
   if (!config.unlaunched) {
-    pass(`unlaunched-gate phase=${phase} not-required${checked}`);
+    pass(
+      `unlaunched-gate phase=${phase} not-required${checked} ` +
+        `coverage=${coverageDigest(config, 'unlaunched-gate')}`
+    );
     return;
   }
   const matrix = readJson(MATRIX);
@@ -1327,14 +1799,20 @@ function unlaunchedGate() {
       problems.push(`${id} evidence is ${scenario.evidence}, must be integration`);
     if (!Array.isArray(scenario.command) || scenario.command.length === 0)
       problems.push(`${id} has no command`);
-    if (!(scenario.forbidOutput ?? []).includes('# SKIP'))
-      problems.push(`${id} must forbid "# SKIP" so a skipped test cannot read as a pass`);
+    const forbidden = new Set(scenario.forbidOutput ?? []);
+    for (const marker of ['# SKIP', 'skipped', 'SKIP', 'no tests']) {
+      if (!forbidden.has(marker))
+        problems.push(`${id} must forbid "${marker}" so a skipped or empty test run cannot read as a pass`);
+    }
   }
   if (problems.length > 0) {
     fail(`unlaunched-gate phase=${phase}\n  ${problems.join('\n  ')}`);
     return;
   }
-  pass(`unlaunched-gate phase=${phase} clis=${config.unlaunched.join(',')}${checked}`);
+  pass(
+    `unlaunched-gate phase=${phase} clis=${config.unlaunched.join(',')}${checked} ` +
+      `coverage=${coverageDigest(config, 'unlaunched-gate')}`
+  );
 }
 
 /** Hash every artifact so a reviewer reviews a fixed set, not a moving one. */
@@ -1447,6 +1925,7 @@ function accept() {
     ...(config.parity ?? []),
     ...Object.keys(config.evals ?? {}),
     ...Object.keys(config.e2e ?? {}),
+    ...(Array.isArray(config.unlaunched) ? config.unlaunched.map((cli) => `unlaunched-${cli}-delivery`) : []),
   ].filter((name) => (config.rust ? true : !name.startsWith('rust-')));
   const runId = option('--run-id', 'unknown');
 
@@ -1459,6 +1938,19 @@ function accept() {
     const evidence = readJson(file);
     if (evidence.runId !== undefined && evidence.runId !== runId)
       problems.push(`${name}: stale evidence from run "${evidence.runId}" (current "${runId}")`);
+    // A green recorded under a command the contract no longer names is not
+    // evidence for this contract. Checked before the verdict, because the
+    // verdict is exactly the thing the weaker command produced.
+    const drift = commandDrift(config, name, evidence);
+    if (drift) {
+      problems.push(drift);
+      continue;
+    }
+    const coverage = coverageDrift(config, name, evidence);
+    if (coverage) {
+      problems.push(coverage);
+      continue;
+    }
     if (name === 'unit-tests') {
       // The workflow deliberately accepts the repo's declared, unreachable
       // baseline through `regression-gate`; acceptance must apply the same
@@ -1473,15 +1965,35 @@ function accept() {
     }
   }
 
-  for (const action of ['edit-gate', 'manifest-gate', 'targeted-gate', 'seam-rules', 'unlaunched-gate']) {
-    const file = path.join(art, 'evidence', `${action}-final.json`);
-    if (!existsSync(file)) problems.push(`final gate never ran: ${action}`);
-    else {
-      const evidence = readJson(file);
-      if (evidence.runId !== undefined && evidence.runId !== runId)
-        problems.push(`${action}: stale final evidence from run "${evidence.runId}" (current "${runId}")`);
-      if (evidence.verdict !== 'green') problems.push(`final gate red: ${action}`);
+  /**
+   * The final structural gates, validated against the contract AS IT STANDS
+   * NOW rather than on the green bit alone.
+   *
+   * Earned by codex-review-2 F1. Acceptance used to check existence, run id
+   * and `verdict === 'green'`, none of which move when the contract tightens
+   * under an unchanged command line — so `seam-rules-final.json` carried a
+   * green whose own tail read `invariants=12` while the contract declared 15,
+   * and acceptance took it. `coverageDrift` recomputes the digest of the
+   * contract text each gate reads and rejects a verdict recorded against a
+   * different one; the missing `commandSha256` is the same staleness by an
+   * older shape, since `record` has stamped one on every file it writes since
+   * codex-review-1 F2.
+   */
+  for (const action of STRUCTURAL_GATE_ACTIONS) {
+    const name = `${action}-final`;
+    const file = path.join(art, 'evidence', `${name}.json`);
+    if (!existsSync(file)) {
+      problems.push(`final gate never ran: ${action}`);
+      continue;
     }
+    const evidence = readJson(file);
+    if (evidence.runId !== undefined && evidence.runId !== runId)
+      problems.push(`${action}: stale final evidence from run "${evidence.runId}" (current "${runId}")`);
+    if (typeof evidence.commandSha256 !== 'string')
+      problems.push(`${action}: final evidence predates the command digest — re-record it`);
+    const coverage = coverageDrift(config, name, evidence);
+    if (coverage) problems.push(coverage);
+    if (evidence.verdict !== 'green') problems.push(`final gate red: ${action}`);
   }
 
   for (const provider of ['claude', 'codex']) {
@@ -1549,8 +2061,21 @@ function commitIfGreen() {
     fail('refusing to commit on main');
     return;
   }
-  const scope = [...config.scope, ...(config.tsScope ?? [])];
-  execFileSync('git', ['add', '--', ...scope], { stdio: 'inherit' });
+  /**
+   * Stage what `edit-gate` approved, not a narrower list. The declared lane
+   * goes in as path prefixes (they exist whether or not anything under them
+   * changed); everything else is named file by file from the change set, so no
+   * pathspec can fail to match. `.workflow-artifacts/` is evidence, not source,
+   * and stays out of the commit.
+   */
+  const lane = [...config.scope, ...(config.tsScope ?? [])];
+  const alsoAllowed = changedFiles().filter(
+    (file) =>
+      !withinScope(file, lane) &&
+      !file.startsWith('.workflow-artifacts/') &&
+      withinScope(file, allowedPaths(config))
+  );
+  execFileSync('git', ['add', '--', ...lane, ...alsoAllowed], { stdio: 'inherit' });
   const subject = `feat(delivery): phase ${phase} — ${config.title}`;
   execFileSync(
     'git',

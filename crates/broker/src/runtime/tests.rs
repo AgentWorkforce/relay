@@ -962,6 +962,7 @@ fn pending_delivery(worker_name: &str, delivery_id: &str, event_id: &str) -> Pen
         last_error: None,
         withheld_fleet_ack: None,
         withheld_fleet_ack_floor: None,
+        sent_route: None,
     }
 }
 
@@ -2044,6 +2045,7 @@ fn make_pending_delivery(delivery_id: &str, worker: &str) -> PendingDelivery {
         last_error: None,
         withheld_fleet_ack: None,
         withheld_fleet_ack_floor: None,
+        sent_route: None,
     }
 }
 
@@ -3353,6 +3355,280 @@ async fn timeout_fallback_never_confirms_or_acks_an_unobserved_delivery() {
     );
 }
 
+/// A rollout in the shape Codex ACTUALLY writes once a turn has consumed a
+/// queued user input item.
+///
+/// Both records are the projections captured live from `codex-cli
+/// 0.155.0-alpha.9.2` (`codex app-server` → `thread/start` → `turn/start` →
+/// `codex queue`), verbatim apart from the marker text and shortened ids; the
+/// capture is in
+/// `.workflow-artifacts/migrate-native-delivery/phase-1-codex-queue-20260921a/evidence/codex-capture/rollout-consumed-user-item.jsonl`.
+///
+/// The fixture this replaced wrote `{"text":"<!-- relay-delivery-id:… -->"}`,
+/// which no Codex version emits and which names no item kind, so it pinned no
+/// real record shape and settled only because the matcher was negative.
+/// `crates/broker/src/codex_thread.rs` now refuses it by name.
+fn captured_codex_consumed_rollout(delivery_id: &DeliveryId) -> String {
+    let marker = format!("relay-delivery-id:{}", delivery_id.as_str());
+    format!(
+        concat!(
+            r#"{{"timestamp":"2026-09-22T18:29:35.389Z","ordinal":8,"type":"response_item","payload":{{"type":"message","id":"msg_01a0ca61","role":"user","content":[{{"type":"input_text","text":"hello from relay\n\n<!-- {marker} -->"}}]}}}}"#,
+            "\n",
+            r#"{{"timestamp":"2026-09-22T18:29:35.389Z","ordinal":9,"type":"event_msg","payload":{{"type":"item_completed","thread_id":"01a0ca61-60fd","turn_id":"01a0ca61-6208","item":{{"type":"UserMessage","id":"01a0ca61-641d","content":[{{"type":"text","text":"hello from relay\n\n<!-- {marker} -->","text_elements":[]}}]}}}}}}"#,
+            "\n",
+        ),
+        marker = marker
+    )
+}
+
+/// A native Codex hand-off is not complete until the marker appears in the
+/// target thread's own rollout. Once it does, the maintenance path must apply
+/// the same terminal effects as an observed PTY acknowledgement: remove the
+/// pending entry and publish exactly one confirmation rather than letting the
+/// retry cap turn a delivered message into an in-doubt dead letter.
+#[tokio::test]
+async fn codex_queue_settlement_confirms_and_removes_the_pending_delivery() {
+    use crate::delivery::{
+        DeliveryBackend, DeliveryBackendFuture, DeliveryError, HandoverState, RouteId, SendRequest,
+        SendStatus, SettleRequest, SettleStatus, TransportStatus,
+    };
+
+    struct RecordedCodexRoute;
+
+    impl DeliveryBackend for RecordedCodexRoute {
+        fn route_id(&self) -> RouteId {
+            RouteId::new("codex-queue:thread-settle")
+        }
+
+        fn transport_status(&mut self) -> TransportStatus {
+            TransportStatus::Available
+        }
+
+        fn send<'a>(
+            &'a mut self,
+            _request: &'a SendRequest,
+        ) -> DeliveryBackendFuture<'a, Result<SendStatus, DeliveryError>> {
+            Box::pin(async { Ok(SendStatus::HandedOver(HandoverState::HandedOver)) })
+        }
+
+        fn settle<'a>(
+            &'a mut self,
+            _request: &'a SettleRequest,
+        ) -> DeliveryBackendFuture<'a, SettleStatus> {
+            Box::pin(async { SettleStatus::HandedOver(HandoverState::HandedOver) })
+        }
+    }
+
+    let worker_name = "codex-attached";
+    let delivery_id = DeliveryId::new("del_codex_settle");
+    let event_id = EventId::new("evt_del_codex_settle");
+    let rollout_dir = tempfile::tempdir().expect("rollout temp dir");
+    let rollout_path = rollout_dir.path().join("rollout.jsonl");
+    std::fs::write(&rollout_path, captured_codex_consumed_rollout(&delivery_id))
+        .expect("write observed Codex marker");
+
+    let mut registry = make_worker_registry_with_worker(worker_name).await;
+    let handle = registry
+        .workers
+        .get_mut(worker_name)
+        .expect("fixture worker");
+    handle.spec.runtime = AgentRuntime::Headless;
+    handle.spec.cli = Some("codex".to_string());
+    handle.spec.session_id = Some("thread-settle".to_string());
+    handle.spec.harness_config = Some(ResolvedHarnessConfig::Native(NativeHarnessConfig {
+        command: "codex".to_string(),
+        args: Vec::new(),
+        cwd: None,
+        env: None,
+        session_id: "thread-settle".to_string(),
+        metadata: Some(HashMap::from([(
+            "rollout_path".to_string(),
+            Value::String(rollout_path.display().to_string()),
+        )])),
+    }));
+
+    let mut pending = make_pending_delivery(delivery_id.as_str(), worker_name);
+    pending.delivery.event_id = event_id.clone();
+    pending.delivery.target = MessageTarget::new(worker_name);
+    pending.next_retry_at = Instant::now();
+    let mut fixture = worker_event_runtime_fixture(
+        registry,
+        HashMap::from([(delivery_id.clone(), pending.clone())]),
+    );
+
+    let mut route = RecordedCodexRoute;
+    fixture
+        .runtime
+        .delivery_seam
+        .send(
+            &mut [&mut route],
+            SendRequest::relay(WorkerName::from(worker_name), pending.delivery),
+        )
+        .await
+        .expect("precondition: the native hand-off receipt is recorded");
+
+    fixture.runtime.handle_maintenance_tick().await;
+
+    assert!(
+        !fixture
+            .runtime
+            .pending_deliveries
+            .contains_key(&delivery_id),
+        "an observed Codex marker must settle the pending delivery"
+    );
+    assert!(
+        fixture
+            .runtime
+            .dead_letters
+            .get(delivery_id.as_str())
+            .is_none(),
+        "a settled Codex delivery must not be dead-lettered"
+    );
+
+    let mut confirmations = 0;
+    let mut failures = 0;
+    while let Ok(frame) = fixture._sdk_out_rx.try_recv() {
+        match frame.payload.get("kind").and_then(Value::as_str) {
+            Some("message_delivery_confirmed")
+                if frame.payload["delivery_id"] == delivery_id.as_str()
+                    && frame.payload["event_id"] == event_id.as_str() =>
+            {
+                confirmations += 1;
+            }
+            Some("message_delivery_failed")
+                if frame.payload["delivery_id"] == delivery_id.as_str() =>
+            {
+                failures += 1;
+            }
+            _ => {}
+        }
+    }
+    assert_eq!(confirmations, 1, "settlement must publish one confirmation");
+    assert_eq!(failures, 0, "settlement must not publish a failure");
+
+    cleanup_worker_registry(fixture.runtime.workers).await;
+}
+
+#[tokio::test]
+async fn codex_queue_settlement_does_not_reemit_ack_while_fleet_confirmation_is_held() {
+    use crate::delivery::{
+        DeliveryBackend, DeliveryBackendFuture, DeliveryError, HandoverState, RouteId, SendRequest,
+        SendStatus, SettleRequest, SettleStatus, TransportStatus,
+    };
+
+    struct RecordedCodexRoute;
+
+    impl DeliveryBackend for RecordedCodexRoute {
+        fn route_id(&self) -> RouteId {
+            RouteId::new("codex-queue:thread-held")
+        }
+
+        fn transport_status(&mut self) -> TransportStatus {
+            TransportStatus::Available
+        }
+
+        fn send<'a>(
+            &'a mut self,
+            _request: &'a SendRequest,
+        ) -> DeliveryBackendFuture<'a, Result<SendStatus, DeliveryError>> {
+            Box::pin(async { Ok(SendStatus::HandedOver(HandoverState::HandedOver)) })
+        }
+
+        fn settle<'a>(
+            &'a mut self,
+            _request: &'a SettleRequest,
+        ) -> DeliveryBackendFuture<'a, SettleStatus> {
+            Box::pin(async { SettleStatus::HandedOver(HandoverState::HandedOver) })
+        }
+    }
+
+    let worker_name = "codex-held";
+    let lower_deliver = fleet_deliver(5);
+    let deliver = fleet_deliver(6);
+    let delivery_id = DeliveryId::from(&deliver.delivery_id);
+    let lower_delivery_id = DeliveryId::from(&lower_deliver.delivery_id);
+    let event_id = EventId::from(&deliver.msg_id);
+    let rollout_dir = tempfile::tempdir().expect("rollout temp dir");
+    let rollout_path = rollout_dir.path().join("rollout.jsonl");
+    std::fs::write(&rollout_path, captured_codex_consumed_rollout(&delivery_id))
+        .expect("write observed Codex marker");
+
+    let mut registry = make_worker_registry_with_worker(worker_name).await;
+    let handle = registry
+        .workers
+        .get_mut(worker_name)
+        .expect("fixture worker");
+    handle.spec.runtime = AgentRuntime::Headless;
+    handle.spec.cli = Some("codex".to_string());
+    handle.spec.session_id = Some("thread-held".to_string());
+    handle.spec.harness_config = Some(ResolvedHarnessConfig::Native(NativeHarnessConfig {
+        command: "codex".to_string(),
+        args: Vec::new(),
+        cwd: None,
+        env: None,
+        session_id: "thread-held".to_string(),
+        metadata: Some(HashMap::from([(
+            "rollout_path".to_string(),
+            Value::String(rollout_path.display().to_string()),
+        )])),
+    }));
+
+    let mut pending = make_pending_delivery(delivery_id.as_str(), worker_name);
+    pending.delivery.event_id = event_id.clone();
+    pending.delivery.target = MessageTarget::new(worker_name);
+    pending.withheld_fleet_ack = Some(deliver);
+    pending.next_retry_at = Instant::now();
+    let mut lower_pending = make_pending_delivery(lower_delivery_id.as_str(), worker_name);
+    lower_pending.delivery.event_id = EventId::from(&lower_deliver.msg_id);
+    lower_pending.delivery.target = MessageTarget::new(worker_name);
+    lower_pending.withheld_fleet_ack = Some(lower_deliver);
+    lower_pending.next_retry_at = Instant::now() + Duration::from_secs(60);
+    let mut fixture = worker_event_runtime_fixture(
+        registry,
+        HashMap::from([
+            (lower_delivery_id.clone(), lower_pending),
+            (delivery_id.clone(), pending.clone()),
+        ]),
+    );
+
+    let mut route = RecordedCodexRoute;
+    fixture
+        .runtime
+        .delivery_seam
+        .send(
+            &mut [&mut route],
+            SendRequest::relay(WorkerName::from(worker_name), pending.delivery),
+        )
+        .await
+        .expect("precondition: the native hand-off receipt is recorded");
+
+    fixture.runtime.handle_maintenance_tick().await;
+    fixture.runtime.handle_maintenance_tick().await;
+
+    let mut sdk_delivery_acks = 0;
+    while let Ok(frame) = fixture._sdk_out_rx.try_recv() {
+        if frame.payload.get("kind").and_then(Value::as_str) == Some("delivery_ack")
+            && frame.payload["delivery_id"] == delivery_id.as_str()
+        {
+            sdk_delivery_acks += 1;
+        }
+    }
+
+    assert_eq!(
+        sdk_delivery_acks, 1,
+        "a held native confirmation must not re-emit delivery_ack on every tick"
+    );
+    assert!(
+        fixture
+            .runtime
+            .pending_deliveries
+            .contains_key(&delivery_id),
+        "the held confirmation stays pending until the lower fleet cursor releases it"
+    );
+
+    cleanup_worker_registry(fixture.runtime.workers).await;
+}
+
 // relay#1310 MUST-NOT-FIRE: once the worker confirms the injection landed
 // (echo-verified — the ONLY case in which pty_worker.rs sends the internal
 // `delivery_ack`; its bounded timeout fallback deliberately does not, see
@@ -3847,6 +4123,7 @@ async fn delivery_retry_fails_promptly_when_recipient_is_gone() {
             last_error: Some("failed writing frame".to_string()),
             withheld_fleet_ack: None,
             withheld_fleet_ack_floor: None,
+            sent_route: None,
         },
     )]);
 
@@ -3999,6 +4276,7 @@ async fn delivery_retry_committed_writer_failure_stops_without_dead_letter() {
             last_error: None,
             withheld_fleet_ack: None,
             withheld_fleet_ack_floor: None,
+            sent_route: None,
         },
     )]);
 
@@ -4057,6 +4335,7 @@ async fn delivery_retry_success_clears_stale_last_error() {
             last_error: Some("old transient failure".to_string()),
             withheld_fleet_ack: None,
             withheld_fleet_ack_floor: None,
+            sent_route: None,
         },
     )]);
 
@@ -5178,6 +5457,7 @@ fn drop_pending_for_worker_removes_only_matching_entries() {
             last_error: None,
             withheld_fleet_ack: None,
             withheld_fleet_ack_floor: None,
+            sent_route: None,
         },
     );
     pending.insert(
@@ -5203,6 +5483,7 @@ fn drop_pending_for_worker_removes_only_matching_entries() {
             last_error: None,
             withheld_fleet_ack: None,
             withheld_fleet_ack_floor: None,
+            sent_route: None,
         },
     );
 
@@ -5235,6 +5516,7 @@ async fn dropped_pending_deliveries_emit_terminal_message_failures() {
         last_error: Some("previous blip".to_string()),
         withheld_fleet_ack: None,
         withheld_fleet_ack_floor: None,
+        sent_route: None,
     };
     let (sdk_out_tx, mut sdk_out_rx) = mpsc::channel(4);
     let mut dead_letters = DeadLetterStore::default();
@@ -5307,6 +5589,7 @@ fn should_clear_pending_delivery_when_event_id_matches() {
         last_error: None,
         withheld_fleet_ack: None,
         withheld_fleet_ack_floor: None,
+        sent_route: None,
     };
 
     assert!(should_clear_pending_delivery_for_event(
@@ -5344,6 +5627,7 @@ fn clear_pending_delivery_returns_none_for_stale_event_id() {
             last_error: None,
             withheld_fleet_ack: None,
             withheld_fleet_ack_floor: None,
+            sent_route: None,
         },
     )]);
 
@@ -5763,6 +6047,7 @@ fn should_clear_pending_delivery_without_event_id_for_compatibility() {
         last_error: None,
         withheld_fleet_ack: None,
         withheld_fleet_ack_floor: None,
+        sent_route: None,
     };
 
     assert!(should_clear_pending_delivery_for_event(
@@ -9110,6 +9395,7 @@ async fn delivery_retry_walks_the_cap_from_zero_and_then_dead_letters() {
             last_error: None,
             withheld_fleet_ack: None,
             withheld_fleet_ack_floor: None,
+            sent_route: None,
         },
     )]);
 
@@ -9236,6 +9522,7 @@ async fn a_handed_over_delivery_that_exhausts_retries_is_in_doubt_not_failed() {
             last_error: None,
             withheld_fleet_ack: None,
             withheld_fleet_ack_floor: None,
+            sent_route: None,
         },
     )]);
 
@@ -9355,6 +9642,7 @@ async fn an_evicted_receipt_still_terminates_in_doubt_not_failed() {
             last_error: None,
             withheld_fleet_ack: None,
             withheld_fleet_ack_floor: None,
+            sent_route: None,
         },
     )]);
 
@@ -9511,4 +9799,472 @@ async fn an_in_doubt_delivery_on_the_raw_queue_path_is_retained_not_dropped() {
         retained.failed_attempts, MAX_DELIVERY_RETRIES,
         "retained at the cap, so the next pass terminates it instead of re-sending a possible write"
     );
+}
+
+/// A backend that reports a native route's hand-over without touching a real
+/// Codex install. Named for the route it claims, because the route string is
+/// what `survives_broker_restart` and the teardown label both key off.
+struct HandedOverNativeRoute {
+    route: &'static str,
+}
+
+impl crate::delivery::DeliveryBackend for HandedOverNativeRoute {
+    fn route_id(&self) -> crate::delivery::RouteId {
+        crate::delivery::RouteId::new(self.route)
+    }
+
+    fn transport_status(&mut self) -> crate::delivery::TransportStatus {
+        crate::delivery::TransportStatus::Available
+    }
+
+    fn send<'a>(
+        &'a mut self,
+        _request: &'a crate::delivery::SendRequest,
+    ) -> crate::delivery::DeliveryBackendFuture<
+        'a,
+        Result<crate::delivery::SendStatus, crate::delivery::DeliveryError>,
+    > {
+        Box::pin(async {
+            Ok(crate::delivery::SendStatus::HandedOver(
+                crate::delivery::HandoverState::HandedOver,
+            ))
+        })
+    }
+
+    fn settle<'a>(
+        &'a mut self,
+        _request: &'a crate::delivery::SettleRequest,
+    ) -> crate::delivery::DeliveryBackendFuture<'a, crate::delivery::SettleStatus> {
+        Box::pin(async {
+            crate::delivery::SettleStatus::HandedOver(crate::delivery::HandoverState::HandedOver)
+        })
+    }
+}
+
+/// Releasing an agent that still owes a handed-over native delivery must dead
+/// letter it IN DOUBT, not as a freely redeliverable failure.
+///
+/// The four worker-teardown sites (agent release over the HTTP API and over
+/// Relaycast, permanent worker death, unsupervised worker exit) all funnel into
+/// `dispose_pending_deliveries_for_teardown`. Before this they dead-lettered
+/// with a bare reason string, so `is_auto_redeliverable` answered true. That was
+/// sound while every route was a PTY child that died with the worker. A
+/// `codex queue` message is a row in Codex's own durable store and the session
+/// outlives both the worker and the broker, so re-sending it is the double
+/// delivery seam rule 2 forbids.
+///
+/// The unsent control in the same test is what makes the assertion mean
+/// something: a disposal path that marked EVERYTHING in doubt would pass the
+/// first half and fail the second.
+#[tokio::test]
+async fn releasing_an_agent_with_a_handed_over_native_delivery_dead_letters_it_in_doubt() {
+    let worker_name = "codex-attached";
+    let handed_over_id = DeliveryId::new("del_released_handed_over");
+    let never_sent_id = DeliveryId::new("del_released_never_sent");
+
+    let mut seam = crate::delivery::DeliverySeam::new();
+    let mut route = HandedOverNativeRoute {
+        route: "codex-queue:thread-released",
+    };
+    let mut handed_over = make_pending_delivery(handed_over_id.as_str(), worker_name);
+    handed_over.withheld_fleet_ack = Some(withheld_ack_for(handed_over_id.as_str()));
+    seam.send(
+        &mut [&mut route],
+        crate::delivery::SendRequest::relay(
+            WorkerName::from(worker_name),
+            handed_over.delivery.clone(),
+        ),
+    )
+    .await
+    .expect("precondition: the native hand-off is recorded");
+    assert!(
+        seam.was_sent(&handed_over_id),
+        "precondition: the seam must remember handing this to a transport"
+    );
+
+    let never_sent = make_pending_delivery(never_sent_id.as_str(), worker_name);
+    let mut pending_deliveries = HashMap::from([
+        (handed_over_id.clone(), handed_over),
+        (never_sent_id.clone(), never_sent),
+    ]);
+
+    // The same removal every release / reap site performs.
+    let dropped = take_pending_for_worker(&mut pending_deliveries, worker_name);
+    assert_eq!(dropped.len(), 2, "both deliveries are torn down together");
+
+    let (sdk_out_tx, _sdk_out_rx) = mpsc::channel(16);
+    let mut dead_letters = DeadLetterStore::default();
+    let probe = crate::node_delivery_probe::NodeDeliveryProbe::new();
+    super::delivery::dispose_pending_deliveries_for_teardown(
+        &sdk_out_tx,
+        &mut dead_letters,
+        &seam,
+        &probe,
+        &dropped,
+        "agent_released",
+    )
+    .await
+    .expect("teardown disposal is infallible");
+
+    let handed = dead_letters
+        .get(handed_over_id.as_str())
+        .expect("a released delivery must stay operator-visible");
+    assert!(
+        handed
+            .reason
+            .starts_with(crate::runtime::dead_letter::IN_DOUBT_REASON_PREFIX),
+        "a delivery already handed to a durable native route must be dead-lettered in doubt, got {}",
+        handed.reason
+    );
+    assert!(
+        !crate::runtime::dead_letter::is_auto_redeliverable(&handed.reason),
+        "an in-doubt native delivery must never be auto-redelivered: {}",
+        handed.reason
+    );
+    assert!(
+        handed.reason.contains("codex-queue:thread-released"),
+        "the dead letter must name the route that has the message: {}",
+        handed.reason
+    );
+    assert_eq!(
+        probe.snapshot_with_token(true)["dispositions"]["dropped_in_doubt"],
+        serde_json::json!(1),
+        "the withheld fleet ack's fate must be recorded, not dropped with a log line"
+    );
+
+    let unsent = dead_letters
+        .get(never_sent_id.as_str())
+        .expect("the control delivery must also be recorded");
+    assert!(
+        !unsent
+            .reason
+            .starts_with(crate::runtime::dead_letter::IN_DOUBT_REASON_PREFIX),
+        "a delivery no transport ever saw must stay redeliverable, got {}",
+        unsent.reason
+    );
+    assert!(
+        crate::runtime::dead_letter::is_auto_redeliverable(&unsent.reason),
+        "control: an un-sent delivery is still safe to redeliver: {}",
+        unsent.reason
+    );
+}
+
+/// Every worker-teardown site must dispose through the seam-aware path.
+///
+/// The in-doubt classification lives in
+/// `dispose_pending_deliveries_for_teardown`; a site that keeps calling
+/// `emit_dropped_delivery_failures` directly after `take_pending_for_worker`
+/// re-opens the same hole for its own path only, which is exactly how this
+/// started — one disposal site consulted the seam and four did not.
+#[test]
+fn every_worker_teardown_site_disposes_through_the_seam_aware_path() {
+    for (file, source) in [
+        ("api.rs", include_str!("api.rs")),
+        ("relaycast_events.rs", include_str!("relaycast_events.rs")),
+        ("maintenance.rs", include_str!("maintenance.rs")),
+    ] {
+        let sites = source.matches("take_pending_for_worker(").count();
+        assert!(
+            sites > 0,
+            "{file} is declared a worker-teardown site but no longer removes pending deliveries"
+        );
+        assert_eq!(
+            source
+                .matches("dispose_pending_deliveries_for_teardown(")
+                .count(),
+            sites,
+            "{file} removes pending deliveries at {sites} site(s) but does not dispose all of \
+             them through the seam-aware path"
+        );
+        assert!(
+            !source.contains("emit_dropped_delivery_failures("),
+            "{file} must not bypass the seam-aware teardown disposal"
+        );
+    }
+}
+
+/// A broker restart must not queue a landed native delivery a second time.
+///
+/// Driven end to end through the real backend: a fake `codex` on disk records
+/// every invocation, so "the backend was not invoked again" is observed from
+/// the transport's own side rather than from a mock's bookkeeping. Lifetime one
+/// hands the message over and snapshots the pending map; lifetime two loads
+/// that snapshot into a brand-new `DeliverySeam` — the empty-at-startup state
+/// that made a reloaded delivery classify `Fresh` — and runs the same retry the
+/// first maintenance tick runs.
+#[cfg(unix)]
+#[tokio::test]
+async fn a_restarted_broker_does_not_queue_a_handed_over_codex_delivery_again() {
+    use std::os::unix::fs::PermissionsExt;
+
+    let script_dir = tempfile::tempdir().expect("fake codex dir");
+    let invocations = script_dir.path().join("invocations.log");
+    let codex = script_dir.path().join("codex");
+    std::fs::write(
+        &codex,
+        format!(
+            r#"#!/bin/sh
+if [ "$1" = "queue" ] && [ "$2" = "--help" ]; then
+  printf '%s\n' 'Usage: codex queue --thread <id> --message=<text>'
+  exit 0
+fi
+printf '%s\n' "$*" >> '{}'
+exit 0
+"#,
+            invocations.display()
+        ),
+    )
+    .expect("write fake codex");
+    let mut permissions = std::fs::metadata(&codex).expect("metadata").permissions();
+    permissions.set_mode(0o755);
+    std::fs::set_permissions(&codex, permissions).expect("chmod");
+    let queue_writes = || {
+        std::fs::read_to_string(&invocations)
+            .map(|log| log.lines().filter(|line| line.contains("queue ")).count())
+            .unwrap_or(0)
+    };
+
+    let worker_name = "codex-restart";
+    let delivery_id = DeliveryId::new("del_codex_restart");
+    let mut workers = make_worker_registry_with_worker(worker_name).await;
+    {
+        let handle = workers
+            .workers
+            .get_mut(worker_name)
+            .expect("fixture worker");
+        handle.spec.runtime = AgentRuntime::Headless;
+        handle.spec.cli = Some(codex.display().to_string());
+        handle.spec.session_id = Some("thread-restart".to_string());
+    }
+
+    // --- broker lifetime one -------------------------------------------------
+    let mut seam = crate::delivery::DeliverySeam::new();
+    let mut pending_deliveries = HashMap::from([(delivery_id.clone(), {
+        let mut pending = make_pending_delivery(delivery_id.as_str(), worker_name);
+        pending.next_retry_at = Instant::now();
+        pending
+    })]);
+    let outcome = retry_pending_delivery(
+        &delivery_id,
+        &mut workers,
+        &mut pending_deliveries,
+        Duration::from_secs(5),
+        &mut seam,
+    )
+    .await
+    .expect("the first hand-off must not error");
+    assert!(
+        matches!(outcome, DeliveryAttemptOutcome::Attempted { .. }),
+        "the codex queue route must accept the first send, got {outcome:?}"
+    );
+    assert_eq!(queue_writes(), 1, "exactly one `codex queue` write so far");
+    assert_eq!(
+        pending_deliveries
+            .get(&delivery_id)
+            .and_then(|pending| pending.sent_route.as_ref())
+            .and_then(super::delivery::PersistedDeliveryRoute::route),
+        Some("codex-queue:thread-restart"),
+        "the snapshot must carry the route, or the restart has nothing to restore from"
+    );
+
+    let snapshot_dir = tempfile::tempdir().expect("snapshot dir");
+    let snapshot = snapshot_dir.path().join("pending-deliveries.json");
+    super::delivery::save_pending_deliveries(&snapshot, &pending_deliveries)
+        .expect("persist the pending snapshot");
+
+    // --- broker lifetime two -------------------------------------------------
+    // Exactly what `init.rs` does: load the snapshot, then re-seed a brand-new
+    // seam from it before the first maintenance tick.
+    let mut reloaded = super::delivery::load_pending_deliveries(&snapshot);
+    assert!(
+        reloaded.contains_key(&delivery_id),
+        "precondition: the delivery survives the restart"
+    );
+    let mut restarted_seam = crate::delivery::DeliverySeam::new();
+    assert_eq!(
+        super::delivery::rehydrate_delivery_seam(&mut restarted_seam, &reloaded),
+        1,
+        "the reloaded native receipt must be restored into the new seam"
+    );
+
+    let restarted_outcome = retry_pending_delivery(
+        &delivery_id,
+        &mut workers,
+        &mut reloaded,
+        Duration::from_secs(5),
+        &mut restarted_seam,
+    )
+    .await
+    .expect("the post-restart tick must not error");
+
+    assert_eq!(
+        queue_writes(),
+        1,
+        "a delivery already sitting in Codex's durable queue must not be queued again \
+         after a restart, got {restarted_outcome:?}"
+    );
+    assert!(
+        matches!(restarted_outcome, DeliveryAttemptOutcome::Noop),
+        "the restored receipt must answer AlreadySent and back off, got {restarted_outcome:?}"
+    );
+
+    cleanup_worker_registry(workers).await;
+}
+
+/// Build a registry whose only delivery target for `name` is an attached Codex
+/// thread — no broker-owned worker process, which is the whole point of the
+/// native route.
+fn registry_with_attached_codex(name: &str) -> (WorkerRegistry, tempfile::NamedTempFile) {
+    let (tx, _rx) = mpsc::channel::<WorkerEvent>(16);
+    let mut registry = WorkerRegistry::new(
+        tx,
+        Vec::new(),
+        PathBuf::from("/tmp/agent-relay-broker-tests"),
+        Instant::now(),
+    );
+    let rollout = tempfile::NamedTempFile::new().expect("rollout file");
+    let target = crate::delivery::codex_queue::CodexQueueTarget::new_for_test(
+        "codex",
+        Vec::new(),
+        None,
+        "thread-attached",
+        Some(rollout.path().to_path_buf()),
+    );
+    registry
+        .attach_native_codex(WorkerName::from(name), target)
+        .expect("attach the native Codex target");
+    (registry, rollout)
+}
+
+/// `has_delivery_target` was widened to accept native Codex targets, which let
+/// an inbound message for an attached Codex session be PARKED in manual flush.
+/// The manual-flush drain is `try_inject_pending_relay_message_once` →
+/// `WorkerRegistry::deliver`, which knows only broker-owned workers: it refuses
+/// pre-write for a native target, the flush loop breaks, and the message stays
+/// at the head of the FIFO forever, blocking everything queued behind it.
+///
+/// A native-only target must therefore never park. The PTY control in the same
+/// test keeps manual flush working where it means something.
+#[tokio::test]
+async fn a_native_only_delivery_target_never_parks_an_inbound_message() {
+    let worker_name = "codex-attached-flush";
+    let (workers, _rollout) = registry_with_attached_codex(worker_name);
+    let mut delivery_states: HashMap<WorkerName, InboundDeliveryState> = HashMap::from([(
+        WorkerName::from(worker_name),
+        InboundDeliveryState::new(crate::types::InboundDeliveryMode::ManualFlush),
+    )]);
+
+    let result = super::delivery::queue_inbound_for_delivery_mode(
+        &mut delivery_states,
+        &workers,
+        worker_name,
+        super::delivery::InboundContext {
+            from: "Lead",
+            body: "hello codex",
+            target: worker_name,
+            thread_id: None,
+            workspace_id: None,
+            workspace_alias: None,
+            priority: 2,
+            mode: MessageInjectionMode::Wait,
+            event_id: Some("evt_native_flush"),
+            relaycast_receipt: None,
+        },
+    );
+
+    let InboundQueueOutcome::DrainNow(to_drain) = result.outcome else {
+        panic!(
+            "a message parked for a native-only target can never be flushed, got {:?}",
+            result.outcome
+        );
+    };
+    assert_eq!(
+        to_drain.len(),
+        1,
+        "the message must be handed to the seam-backed drain"
+    );
+    assert_eq!(
+        delivery_states
+            .get(worker_name)
+            .map(InboundDeliveryState::pending_len),
+        Some(0),
+        "nothing may be left parked behind it"
+    );
+
+    // Control: a broker-owned PTY worker still honours manual flush, so the
+    // assertion above is about the native route and not about the mode being
+    // ignored everywhere.
+    let pty_name = "pty-manual-flush";
+    let pty_workers = make_worker_registry_with_worker(pty_name).await;
+    let mut pty_states: HashMap<WorkerName, InboundDeliveryState> = HashMap::from([(
+        WorkerName::from(pty_name),
+        InboundDeliveryState::new(crate::types::InboundDeliveryMode::ManualFlush),
+    )]);
+    let pty_result = super::delivery::queue_inbound_for_delivery_mode(
+        &mut pty_states,
+        &pty_workers,
+        pty_name,
+        super::delivery::InboundContext {
+            from: "Lead",
+            body: "hello pty",
+            target: pty_name,
+            thread_id: None,
+            workspace_id: None,
+            workspace_alias: None,
+            priority: 2,
+            mode: MessageInjectionMode::Wait,
+            event_id: Some("evt_pty_flush"),
+            relaycast_receipt: None,
+        },
+    );
+    assert_eq!(
+        pty_result.outcome,
+        InboundQueueOutcome::Queued,
+        "control: manual flush must still hold a PTY worker's inbound messages"
+    );
+    cleanup_worker_registry(pty_workers).await;
+}
+
+/// The other half of the same guarantee: manual flush is refused for a
+/// native-only target at the setter, so the mode a message could be parked
+/// under cannot be reached in the first place.
+#[tokio::test]
+async fn manual_flush_is_refused_for_a_native_only_delivery_target() {
+    let worker_name = "codex-attached-mode";
+    let (workers, _rollout) = registry_with_attached_codex(worker_name);
+    let mut fixture = worker_event_runtime_fixture(workers, HashMap::new());
+
+    let (reply, rx) = tokio::sync::oneshot::channel();
+    fixture
+        .runtime
+        .handle_api_request(ListenApiRequest::SetInboundDeliveryMode {
+            name: WorkerName::from(worker_name),
+            mode: crate::types::InboundDeliveryMode::ManualFlush,
+            expected_mode: None,
+            expected_revision: None,
+            reply,
+        })
+        .await;
+
+    let error = rx
+        .await
+        .expect("the handler must answer")
+        .expect_err("manual flush must be refused for a native-only delivery target");
+    assert!(
+        matches!(
+            error,
+            crate::listen_api::DeliveryRouteError::ManualFlushUnsupportedForNativeRoute(_)
+        ),
+        "the refusal must name its reason rather than pretend the agent does not exist, got {error}"
+    );
+    assert!(
+        !fixture
+            .runtime
+            .delivery_states
+            .get(worker_name)
+            .is_some_and(|state| state.mode == crate::types::InboundDeliveryMode::ManualFlush),
+        "a refused transition must not leave the worker in manual flush"
+    );
+
+    cleanup_worker_registry(fixture.runtime.workers).await;
 }

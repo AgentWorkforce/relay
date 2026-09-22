@@ -41,6 +41,11 @@ import { RealtimeResourceBridge, SubscriptionManager, registerResourceDefinition
 import { jsonContent, jsonResult, textContent } from './mcp/tool-results.js';
 import { observerUrl, resolveObserverBaseUrl } from './lib/observer-url.js';
 import {
+  defaultStateDir,
+  readConnectionFileFromDisk,
+  resolveBrokerConnection,
+} from './lib/broker-connection.js';
+import {
   createWorkspace,
   extractWorkspaceKey,
   extractWorkspaceName,
@@ -930,8 +935,7 @@ async function verifyMetadataLanded(
   }
 
   const record = agents.find((agent) => (agent as { name?: string } | null)?.name === name) as
-    | { metadata?: Record<string, unknown> }
-    | undefined;
+    { metadata?: Record<string, unknown> } | undefined;
 
   if (!record) {
     return {
@@ -1118,11 +1122,20 @@ function registerAgentRelayTools(
               'workspace listing. Use when writing durable identity you intend to rely on; ' +
               'the response reports metadata_verified as true, false, or "unchecked".'
           ),
+        native_delivery: z
+          .object({
+            provider: z.literal('codex'),
+            thread_id: z.string().min(1).describe('Codex thread id returned by the current session'),
+          })
+          .optional()
+          .describe(
+            'Attach this already-running Codex thread to the authenticated local broker so inbound messages are injected without polling.'
+          ),
       },
       outputSchema: jsonResult,
       annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: true, openWorldHint: true },
     },
-    async ({ name, type, persona, metadata, verify_metadata }: any) => {
+    async ({ name, type, persona, metadata, verify_metadata, native_delivery }: any) => {
       const payload = await registerAgentWithRebind({
         session: getSession(),
         setSession,
@@ -1148,6 +1161,45 @@ function registerAgentRelayTools(
         const nextAgents = new Map(getSession().agents);
         nextAgents.set(registeredName, createRegisteredAgent(registeredName, token));
         setSession({ agentToken: token, agentName: registeredName, agents: nextAgents });
+        if (native_delivery?.provider === 'codex') {
+          const connection = resolveBrokerConnection(
+            { stateDir: process.env.AGENT_RELAY_STATE_DIR },
+            {
+              env: process.env,
+              getDefaultStateDir: defaultStateDir,
+              readConnectionFile: readConnectionFileFromDisk,
+            }
+          );
+          if (!connection) {
+            throw new Error(
+              'Agent registered, but native Codex delivery could not attach: no local broker connection was found.'
+            );
+          }
+          const codexHome = process.env.CODEX_HOME?.trim();
+          const response = await fetch(`${connection.url}/api/native-delivery/codex/attach`, {
+            method: 'POST',
+            headers: {
+              'Content-Type': 'application/json',
+              ...(connection.apiKey ? { 'X-API-Key': connection.apiKey } : {}),
+            },
+            body: JSON.stringify({
+              name: registeredName,
+              agent_token: token,
+              thread_id: native_delivery.thread_id,
+              ...(codexHome ? { codex_home: codexHome } : {}),
+              cwd: process.cwd(),
+            }),
+          });
+          const attach = (await response.json().catch(() => ({}))) as Record<string, unknown>;
+          if (!response.ok) {
+            throw new Error(
+              `Agent registered, but native Codex delivery could not attach: ${String(
+                attach.error ?? `broker returned HTTP ${response.status}`
+              )}`
+            );
+          }
+          payload.native_delivery = attach;
+        }
       }
 
       return jsonContent(payload);

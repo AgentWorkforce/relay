@@ -1,6 +1,7 @@
 use super::fleet::{release_terminal_resize_ownership, try_send_terminal};
 use super::*;
 use crate::terminal_control::TerminalToCloud;
+use crate::worker::AgentWorkState;
 
 impl BrokerRuntime {
     pub(super) async fn handle_maintenance_tick(&mut self) {
@@ -16,6 +17,7 @@ impl BrokerRuntime {
         let workers = &mut self.workers;
         let delivery_seam = &mut self.delivery_seam;
         let fleet_control_tx = &self.fleet_control_tx;
+        let node_delivery_probe = &self.node_delivery_probe;
         let fleet_inventory = &mut self.fleet_inventory;
         let fleet_inventory_reconcile_retry_after = &mut self.fleet_inventory_reconcile_retry_after;
         let fleet_delivery_book = &mut self.fleet_delivery_book;
@@ -36,6 +38,8 @@ impl BrokerRuntime {
         let terminal_sessions = &mut self.terminal_sessions;
         let terminal_snapshot_requests = &mut self.terminal_snapshot_requests;
         let terminal_input_requests = &mut self.terminal_input_requests;
+        let dedup = &mut self.dedup;
+        let terminal_failed_deliveries = &mut self.terminal_failed_deliveries;
         let delivery_retry_interval = self.delivery_retry_interval;
         let shutdown = &self.shutdown;
         let default_workspace = &self.default_workspace;
@@ -173,6 +177,148 @@ impl BrokerRuntime {
                 .map(|pending| pending.attempts > 0)
                 .unwrap_or(false);
 
+            if delivery_seam
+                .recorded_route(&delivery_id)
+                .is_some_and(|route| route.as_str() != "pty")
+            {
+                let settle_target = pending_deliveries.get(&delivery_id).map(|pending| {
+                    (
+                        pending.worker_name.clone(),
+                        pending.delivery.event_id.clone(),
+                    )
+                });
+                if let Some((worker_name, event_id)) = settle_target {
+                    let mut codex_backend =
+                        crate::delivery::codex_queue::CodexQueueBackend::for_worker(
+                            workers,
+                            &worker_name,
+                        );
+                    let settled = match delivery_seam
+                        .settle(&mut [&mut codex_backend], &delivery_id)
+                        .await
+                    {
+                        crate::delivery::SettleOutcome::Settled(
+                            crate::delivery::SettleStatus::Acked(_),
+                        ) => true,
+                        crate::delivery::SettleOutcome::Settled(
+                            crate::delivery::SettleStatus::Failed(reason),
+                        ) => {
+                            if let Some(pending) = pending_deliveries.remove(&delivery_id) {
+                                let _ = emit_delivery_attempt_outcome(
+                                    sdk_out_tx,
+                                    dead_letters,
+                                    &delivery_id,
+                                    was_retry,
+                                    DeliveryAttemptOutcome::TerminalInDoubt {
+                                        pending: Box::new(pending),
+                                        last_error: reason,
+                                    },
+                                )
+                                .await;
+                            }
+                            continue;
+                        }
+                        _ => false,
+                    };
+
+                    if settled {
+                        let (pending_for_confirmation, resolved_fleet_ack) =
+                            super::fleet::confirm_pending_delivery_and_resolve_fleet_ack(
+                                pending_deliveries,
+                                delivery_id.as_str(),
+                                Some(event_id.as_str()),
+                                worker_name.as_str(),
+                                "codex_queue_settle",
+                                fleet_delivery_book,
+                            );
+                        if pending_for_confirmation.is_some() {
+                            terminal_failed_deliveries.remove(&delivery_id);
+                        }
+                        if let Some((agent, up_to_seq)) = resolved_fleet_ack {
+                            super::fleet::enqueue_delivery_ack(
+                                fleet_control_tx,
+                                node_delivery_probe,
+                                agent,
+                                up_to_seq,
+                            )
+                            .await;
+                        }
+                        if let Some(pending) = pending_for_confirmation {
+                            let _ = send_event(
+                                sdk_out_tx,
+                                json!({
+                                    "kind": "delivery_ack",
+                                    "name": worker_name,
+                                    "delivery_id": delivery_id,
+                                    "event_id": event_id,
+                                    "timestamp": crate::broker::delivery_verification::current_timestamp_ms(),
+                                }),
+                            )
+                            .await;
+                            let read_ack_delivery_id = pending.delivery.delivery_id.clone();
+                            let read_ack_event_id = pending.delivery.event_id.clone();
+                            let cli_hint = workers
+                                .workers
+                                .get(&worker_name)
+                                .and_then(|handle| handle.spec.cli.as_deref())
+                                .map(str::to_string);
+                            if let Some(handle) = workers.workers.get_mut(&worker_name) {
+                                handle.last_activity_at = Instant::now();
+                                handle.state = AgentWorkState::Working;
+                            }
+                            let _ = send_broker_event(
+                                sdk_out_tx,
+                                BrokerEvent::MessageDeliveryConfirmed {
+                                    name: worker_name.clone(),
+                                    delivery_id: pending.delivery.delivery_id,
+                                    event_id: pending.delivery.event_id,
+                                    from: pending.delivery.from,
+                                    to: pending.delivery.target,
+                                },
+                            )
+                            .await;
+                            mark_delivery_read_ack(
+                                relaycast_http,
+                                sdk_out_tx,
+                                dedup,
+                                &worker_name,
+                                cli_hint.as_deref(),
+                                &read_ack_delivery_id,
+                                &read_ack_event_id,
+                            );
+                        }
+                        continue;
+                    }
+
+                    if delivery_seam
+                        .recorded_age(&delivery_id)
+                        .is_some_and(|age| age >= NATIVE_DELIVERY_SETTLEMENT_TIMEOUT)
+                    {
+                        if let Some(pending) = pending_deliveries.remove(&delivery_id) {
+                            let _ = emit_delivery_attempt_outcome(
+                                sdk_out_tx,
+                                dead_letters,
+                                &delivery_id,
+                                was_retry,
+                                DeliveryAttemptOutcome::TerminalInDoubt {
+                                    pending: Box::new(pending),
+                                    last_error: format!(
+                                        "native delivery was not observed within {}s",
+                                        NATIVE_DELIVERY_SETTLEMENT_TIMEOUT.as_secs()
+                                    ),
+                                },
+                            )
+                            .await;
+                        }
+                    } else if let Some(pending) = pending_deliveries.get_mut(&delivery_id) {
+                        // Settlement is read-only. Poll it without calling send
+                        // again or consuming the transport retry budget.
+                        pending.next_retry_at = Instant::now() + delivery_retry_interval;
+                    }
+                    continue;
+                }
+            }
+
             match retry_pending_delivery(
                 &delivery_id,
                 workers,
@@ -223,6 +369,8 @@ impl BrokerRuntime {
                 sdk_out_tx,
                 pending_deliveries,
                 dead_letters,
+                delivery_seam,
+                node_delivery_probe,
                 pending_requests,
                 delivery_states,
                 agent_result_tokens,
@@ -455,9 +603,11 @@ impl BrokerRuntime {
                             }),
                         )
                         .await;
-                        let _ = emit_dropped_delivery_failures(
+                        let _ = dispose_pending_deliveries_for_teardown(
                             sdk_out_tx,
                             dead_letters,
+                            delivery_seam,
+                            node_delivery_probe,
                             &dropped,
                             "worker_permanently_dead",
                         )
@@ -527,9 +677,11 @@ impl BrokerRuntime {
                             }),
                         )
                         .await;
-                        let _ = emit_dropped_delivery_failures(
+                        let _ = dispose_pending_deliveries_for_teardown(
                             sdk_out_tx,
                             dead_letters,
+                            delivery_seam,
+                            node_delivery_probe,
                             &dropped,
                             "worker_exited",
                         )

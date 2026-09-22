@@ -65,9 +65,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Devin CLI is available through Relay PTY, fleet and MCP spawning with isolated worker MCP configuration, preserved approvals, and reliable initial and follow-up message submission.
 - `agent-relay fleet nodes list --pretty` renders the fleet roster as a human-readable table; `agent-relay fleet nodes --pretty` is available as a shorter equivalent, while JSON remains the default.
 
+### Changed
+
+- Codex native delivery appends a `relay-delivery-id` marker to queued messages so Relay can confirm delivery from the Codex thread record without fabricating an acknowledgement.
+- A Codex delivery is acknowledged (and its Relaycast read receipt published) only once the marker appears in the thread rollout as a consumed user item. A message still sitting in Codex's own queue is reported as handed over, so an idle or exited session no longer produces a read receipt for a message nobody read.
+- Setting `manual_flush` on an agent reachable only over a native route (an attached Codex thread) is refused with `manual_flush_unsupported` (HTTP 409); inbound messages for such an agent always drain over the native route instead of parking in a queue the flush path cannot empty.
+
 ### Fixed
 
 - Broker PTY delivery now fails closed when a handoff deadline races an admitted write, preventing fleet retries from injecting the same message twice and retaining cursor-purged siblings as non-redeliverable dead letters.
+- Releasing an agent, or a worker dying, no longer marks a delivery that already reached a durable native route as freely redeliverable: it is dead-lettered in doubt and the withheld engine acknowledgement is recorded on the node delivery probe rather than dropped.
+- A broker restart no longer re-queues a Codex message that a previous broker lifetime already handed to `codex queue`: the accepted route is persisted with the pending delivery and restored into the delivery seam before the first retry.
 - MCP `spawn`, `add_agent`, and direct-message calls now coalesce in-flight JSON-RPC replays and accept an `idempotency_key` for safe retries after a lost response, preventing duplicate workers, false duplicate-name failures, and duplicate DMs while keeping later JSON-RPC ID reuse distinct.
 - `node agent attach --node` now replaces an expired remote terminal session once and reconnects existing local terminal clients, while transient terminal failures retain the bounded resume budget without minting additional sessions.
 

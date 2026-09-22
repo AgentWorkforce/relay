@@ -1,0 +1,19 @@
+{
+  "id": "traj_nd5a2dd4waas",
+  "version": 1,
+  "task": {
+    "title": "Implement native delivery phase 1 with Relayflows"
+  },
+  "status": "active",
+  "startedAt": "2026-09-21T06:13:08.229Z",
+  "agents": [],
+  "chapters": [],
+  "commits": [],
+  "filesChanged": [],
+  "projectId": "AgentWorkforce/relay",
+  "tags": [],
+  "_trace": {
+    "startRef": "b2b166423560925aa43ddd06fcccd4d78d1afbb1",
+    "endRef": "b2b166423560925aa43ddd06fcccd4d78d1afbb1"
+  }
+}

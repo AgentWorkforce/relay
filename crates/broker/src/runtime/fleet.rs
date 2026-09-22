@@ -679,6 +679,16 @@ impl BrokerRuntime {
                             request_id,
                         });
                     }
+                    Ok(Err(
+                        error @ DeliveryRouteError::ManualFlushUnsupportedForNativeRoute(_),
+                    )) => {
+                        self.send_terminal(TerminalToCloud::Error {
+                            session_id,
+                            code: "manual_flush_unsupported".into(),
+                            message: error.to_string(),
+                            request_id,
+                        });
+                    }
                     Err(_) => {
                         self.send_terminal(TerminalToCloud::Error {
                             session_id,
@@ -798,6 +808,16 @@ impl BrokerRuntime {
                             session_id,
                             code: "agent_not_found".into(),
                             message: format!("no worker named '{name}'"),
+                            request_id,
+                        });
+                    }
+                    Ok(Err(
+                        error @ DeliveryRouteError::ManualFlushUnsupportedForNativeRoute(_),
+                    )) => {
+                        self.send_terminal(TerminalToCloud::Error {
+                            session_id,
+                            code: "manual_flush_unsupported".into(),
+                            message: error.to_string(),
                             request_id,
                         });
                     }
@@ -1717,6 +1737,8 @@ impl BrokerRuntime {
             &self.sdk_out_tx,
             &mut self.pending_deliveries,
             &mut self.dead_letters,
+            &self.delivery_seam,
+            &self.node_delivery_probe,
             &mut self.pending_requests,
             &mut self.delivery_states,
             &mut self.agent_result_tokens,

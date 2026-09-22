@@ -18,7 +18,7 @@ pub(crate) struct PtyDeliveryBackend<'a> {
 impl<'a> PtyDeliveryBackend<'a> {
     pub(crate) fn new(workers: &'a mut WorkerRegistry) -> Self {
         Self {
-            route: RouteId::new("pty"),
+            route: RouteId::new(RouteId::PTY),
             workers,
         }
     }
@@ -68,21 +68,9 @@ impl DeliveryBackend for PtyDeliveryBackend<'_> {
     }
 }
 
-/// The seam's contract invariants, held against the route that actually ships.
-///
-/// The four named invariants in `tests/delivery_seam_invariants.rs` all run
-/// against a `ScriptedBackend`, so they assert properties of a mock whose
-/// behaviour the test itself chose. `PtyDeliveryBackend` is the only backend
-/// that exists today, and none of them touched it: a scripted backend can be
-/// made to return `Committed`, but nothing proved the PTY route ever does.
-///
-/// These drive a real `WorkerRegistry` and a real worker-writer task, so the
-/// pre-write / committed classification comes from production code
-/// (`send_to_worker_with_commit_boundary` -> `classify_write_failure`) rather
-/// than from a script.
-#[cfg(test)]
-#[cfg(unix)]
-mod real_route_invariants {
+#[cfg(all(unix, feature = "seam-probe"))]
+#[doc(hidden)]
+pub mod real_route_probe {
     use super::*;
     use crate::delivery::backend::{DeliverySeam, SendOutcome};
     use crate::ids::{DeliveryId, EventId, MessageTarget, WorkerName};
@@ -97,9 +85,6 @@ mod real_route_invariants {
     use tokio::sync::mpsc;
     use uuid::Uuid;
 
-    /// A stand-in for a second route, used only to observe whether the seam
-    /// fell back. It never has to be realistic: what is under test is the PTY
-    /// route's classification and the seam's reaction to it.
     struct FallbackProbe {
         route: RouteId,
         sends: usize,
@@ -126,7 +111,7 @@ mod real_route_invariants {
         fn send<'a>(
             &'a mut self,
             _request: &'a SendRequest,
-        ) -> super::super::backend::DeliveryBackendFuture<'a, Result<SendStatus, DeliveryError>>
+        ) -> crate::delivery::backend::DeliveryBackendFuture<'a, Result<SendStatus, DeliveryError>>
         {
             self.sends += 1;
             Box::pin(async move { Ok(SendStatus::HandedOver(HandoverState::HandedOver)) })
@@ -135,14 +120,11 @@ mod real_route_invariants {
         fn settle<'a>(
             &'a mut self,
             _request: &'a SettleRequest,
-        ) -> super::super::backend::DeliveryBackendFuture<'a, SettleStatus> {
+        ) -> crate::delivery::backend::DeliveryBackendFuture<'a, SettleStatus> {
             Box::pin(async move { SettleStatus::HandedOver(HandoverState::HandedOver) })
         }
     }
 
-    /// Returns the registry alongside the event sender and receiver. The
-    /// receiver is returned rather than dropped so writer-failure reporting
-    /// cannot fail for the wrong reason (a closed channel).
     fn registry() -> (
         WorkerRegistry,
         mpsc::Sender<WorkerEvent>,
@@ -192,9 +174,6 @@ mod real_route_invariants {
         }
     }
 
-    /// Register a worker whose child has already exited, so the very next
-    /// write to its stdin fails at the pipe — after the frame has crossed the
-    /// writer queue's commit boundary.
     async fn register_dead_child(
         reg: &mut WorkerRegistry,
         event_tx: &mpsc::Sender<WorkerEvent>,
@@ -235,15 +214,11 @@ mod real_route_invariants {
         );
     }
 
-    /// Rule 1, on the shipping route: a refusal raised strictly before any
-    /// write is the one case that may fall back.
-    #[tokio::test]
-    async fn real_pty_route_unknown_worker_is_pre_write_and_may_fall_back() {
+    pub async fn unknown_worker_is_pre_write_and_may_fall_back() {
         let (mut reg, _event_tx, _event_rx) = registry();
         let mut pty = PtyDeliveryBackend::new(&mut reg);
         let mut fallback = FallbackProbe::new();
         let mut seam = DeliverySeam::new();
-
         let request = SendRequest::relay(
             WorkerName::from("no-such-worker"),
             delivery("del_unknown", "no-such-worker"),
@@ -257,26 +232,16 @@ mod real_route_invariants {
         let SendOutcome::Fresh(receipt) = outcome else {
             panic!("a first successful send must be fresh");
         };
-        assert_eq!(
-            receipt.route.as_str(),
-            "fallback-probe",
-            "the fallback route must be the one recorded"
-        );
-        assert_eq!(fallback.sends, 1, "the seam must have tried the fallback");
+        assert_eq!(receipt.route.as_str(), "fallback-probe");
+        assert_eq!(fallback.sends, 1);
     }
 
-    /// Rule 1's other half, on the shipping route: once the frame has entered
-    /// the sole writer's queue the write may have partially happened, so a
-    /// failure MUST NOT fall back. This is the case a scripted backend can
-    /// only assert by construction.
-    #[tokio::test]
-    async fn real_pty_route_write_failure_after_commit_does_not_fall_back() {
+    pub async fn write_failure_after_commit_does_not_fall_back() {
         let (mut reg, event_tx, _event_rx) = registry();
         register_dead_child(&mut reg, &event_tx, "dead-child").await;
         let mut pty = PtyDeliveryBackend::new(&mut reg);
         let mut fallback = FallbackProbe::new();
         let mut seam = DeliverySeam::new();
-
         let request = SendRequest::relay(
             WorkerName::from("dead-child"),
             delivery("del_committed", "dead-child"),
@@ -291,40 +256,28 @@ mod real_route_invariants {
             matches!(error, DeliveryError::CommittedError { .. }),
             "a real EPIPE after the commit boundary must classify as committed, got {error:?}"
         );
-        assert_eq!(
-            fallback.sends, 0,
-            "seam rule 1: a committed failure must never be re-sent over another route"
-        );
+        assert_eq!(fallback.sends, 0);
         assert_eq!(
             seam.recorded_route(&DeliveryId::new("del_committed"))
                 .map(RouteId::as_str),
-            Some("pty"),
-            "the route that took the risk must stay recorded against the delivery"
+            Some("pty")
         );
     }
 
-    /// Rule 4, on the shipping route: the PTY route writes into a terminal and
-    /// cannot see the child read it, so neither its send nor its settle may
-    /// ever report an observed acknowledgement.
-    #[tokio::test]
-    async fn real_pty_route_never_reports_an_observed_ack() {
+    pub async fn never_reports_an_observed_ack() {
         let (mut reg, _event_tx, _event_rx) = registry();
         let mut pty = PtyDeliveryBackend::new(&mut reg);
-
         let settled = pty
             .settle(&SettleRequest {
                 delivery_id: DeliveryId::new("del_settle"),
-                route: RouteId::new("pty"),
+                route: RouteId::new(RouteId::PTY),
             })
             .await;
 
-        assert!(
-            matches!(settled, SettleStatus::HandedOver(_)),
-            "the PTY route observes nothing, so it must settle as a hand-over, got {settled:?}"
-        );
-        assert!(
-            !matches!(settled, SettleStatus::Acked(_)),
-            "seam rule 4: never claim an acknowledgement nobody observed"
-        );
+        assert!(matches!(
+            settled,
+            SettleStatus::HandedOver(HandoverState::HandedOver)
+        ));
+        assert!(!matches!(settled, SettleStatus::Acked(_)));
     }
 }

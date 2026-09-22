@@ -521,3 +521,23 @@ fn an_acknowledgement_must_name_the_observation_behind_it() {
     // offset it can re-read must be able to tell them apart.
     assert_ne!(ObservedAck::peer_ack("ok"), ObservedAck::echo("ok"));
 }
+
+#[cfg(unix)]
+#[tokio::test]
+async fn real_pty_route_unknown_worker_is_pre_write_and_may_fall_back() {
+    relay_broker::delivery::pty::real_route_probe::unknown_worker_is_pre_write_and_may_fall_back()
+        .await;
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn real_pty_route_write_failure_after_commit_does_not_fall_back() {
+    relay_broker::delivery::pty::real_route_probe::write_failure_after_commit_does_not_fall_back()
+        .await;
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn real_pty_route_never_reports_an_observed_ack() {
+    relay_broker::delivery::pty::real_route_probe::never_reports_an_observed_ack().await;
+}

@@ -7,6 +7,9 @@
 //! acknowledgements are only reported after direct observation.
 
 pub mod backend;
+pub mod codex_queue;
+#[path = "../codex_thread.rs"]
+pub(crate) mod codex_thread;
 pub mod pty;
 
 pub use backend::{

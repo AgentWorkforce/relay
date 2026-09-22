@@ -775,8 +775,24 @@ pub(crate) async fn run_init(cmd: InitCommand, telemetry: TelemetryClient) -> Re
     #[cfg(windows)]
     let mut sigterm = tokio::signal::windows::ctrl_shutdown()?;
 
+    // A delivery that reached a native route in a previous broker lifetime is
+    // still sitting in the recipient's own durable queue. Re-seed the seam from
+    // the snapshot BEFORE the first maintenance tick, so that delivery answers
+    // `AlreadySent` (or `Forgotten`) instead of `Fresh` and is never queued a
+    // second time. PTY receipts are deliberately not restored — that child died
+    // with the broker, so its un-acked write provably never arrived.
+    let mut delivery_seam = crate::delivery::DeliverySeam::new();
+    let restored_receipts = rehydrate_delivery_seam(&mut delivery_seam, &pending_deliveries);
+    if restored_receipts > 0 {
+        tracing::info!(
+            restored = restored_receipts,
+            "restored native delivery receipts from the pending snapshot; \
+             those deliveries will settle, not re-send"
+        );
+    }
+
     let mut runtime = BrokerRuntime {
-        delivery_seam: crate::delivery::DeliverySeam::new(),
+        delivery_seam,
         degraded,
         persist: paths.persist,
         broker_start,

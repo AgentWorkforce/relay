@@ -106,3 +106,5 @@ tests/integration/broker/evals-reports/
 
 # Relayflows v2 daemon runtime state (journals, sockets, locks)
 .relayflowd/
+.relayflowd-continuation/
+.relayflowd-phase1-signoff-repair/

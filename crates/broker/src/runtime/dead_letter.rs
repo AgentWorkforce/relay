@@ -246,6 +246,7 @@ pub(crate) fn requeue_dead_letter(
         // fresh redelivery attempt, not a continuation of that withheld ack.
         withheld_fleet_ack: None,
         withheld_fleet_ack_floor: None,
+        sent_route: None,
     };
     pending_deliveries.insert(pending.delivery.delivery_id.clone(), pending.clone());
     Some(pending)

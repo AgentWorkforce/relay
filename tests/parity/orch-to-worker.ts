@@ -16,6 +16,8 @@ import {
   randomName,
 } from '../benchmarks/harness.js';
 
+const ECHO_CLI = "sh -c 'stty -echo; cat'";
+
 async function main(): Promise<void> {
   console.log('=== Parity Test: Orchestrator → Worker ===\n');
 
@@ -32,7 +34,7 @@ async function main(): Promise<void> {
     console.log('1. Spawning worker...');
     await client.spawnPty({
       name: workerName,
-      cli: 'cat',
+      cli: ECHO_CLI,
       channels: ['general'],
     });
     console.log(`   Worker: ${workerName}\n`);
