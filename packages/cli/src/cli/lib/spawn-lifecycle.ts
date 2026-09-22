@@ -25,19 +25,20 @@ function dispatchEvidence(value: Record<string, unknown>): SpawnDispatchState {
   return 'unknown';
 }
 
-export function spawnLifecycleState(value: Record<string, unknown>, verifyReady = true): SpawnLifecycleState {
+export function spawnLifecycleState(value: Record<string, unknown>): SpawnLifecycleState {
   const status = text(value.status)?.toLowerCase();
   if (status && SUCCESS.has(status)) {
     const output =
       value.output !== null && typeof value.output === 'object'
         ? (value.output as Record<string, unknown>)
         : value;
-    // Terminal success must prove launch and declare readiness in either mode.
-    // MCP callers default to requiring readiness; unverified callers only accept
-    // launch. Uncertainty is reserved for pending actions and confirmation timeouts.
-    if (output.spawned !== true || typeof output.ready !== 'boolean') return 'failed';
-    if (!verifyReady) return 'accepted';
-    return output.ready === true ? 'ready' : 'failed';
+    // Every caller of this receipt (MCP spawn, `fleet spawn --auto-place`)
+    // requires proven readiness. A terminal success without explicit launch and
+    // readiness proof is a failed spawn, not a live-but-uncertain one. Genuine
+    // uncertainty is reserved for non-terminal acknowledgements and confirmation
+    // timeouts. The unverified targeted path does not reach here: it keeps the
+    // SDK's own placement evidence (see `spawnInvocationWithMergedPlacement`).
+    return output.spawned === true && output.ready === true ? 'ready' : 'failed';
   }
   if (status && FAILURE.has(status)) return 'failed';
   if (status === 'accepted') return 'accepted';

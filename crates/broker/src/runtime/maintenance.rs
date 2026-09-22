@@ -236,6 +236,13 @@ impl BrokerRuntime {
                 invocation_id.clone(),
                 "spawn_readiness_timeout: worker released after failing to reach harness readiness",
             );
+            // This result goes out through identity cleanup or the fleet channel
+            // directly rather than `send_fleet_action_result`, so it would
+            // otherwise be the one spawn outcome missing the correlation log —
+            // and it is the outcome most likely to be investigated.
+            tracing::info!(invocation_id = %invocation_id, worker = %name, verify_ready = true,
+                deferred_to_identity_cleanup = owned.is_some(),
+                "sending fleet action result");
             if let Some((_, http)) = owned {
                 super::identity_cleanup::schedule_identity_cleanup(
                     workers,

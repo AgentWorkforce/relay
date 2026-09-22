@@ -151,16 +151,38 @@ function hasSpawnLaunchProof(value: { output?: Record<string, unknown> | null })
   return value.output?.spawned === true && typeof value.output?.ready === 'boolean';
 }
 
+/**
+ * The requester declares the mode and judges only what it asked for. A
+ * readiness request demands `ready:true`; a launch-only request accepts either
+ * boolean. Both demand `spawned:true`, so a handler that reports nothing still
+ * fails. Judging a launch-only request against `ready:true` would reject the
+ * broker's own honest `ready:false` success — the failure shape relay#1430
+ * exists to remove.
+ */
+function hasSpawnProof(
+  value: { output?: Record<string, unknown> | null },
+  requireReadiness: boolean
+): boolean {
+  return requireReadiness ? hasSpawnReadinessProof(value) : hasSpawnLaunchProof(value);
+}
+
 function spawnProofError(
   node: string,
   status: string,
   action: string,
-  output?: Record<string, unknown> | null
+  output: Record<string, unknown> | null | undefined,
+  requireReadiness: boolean
 ): string {
   if (output?.spawned === true && typeof output.ready !== 'boolean') {
-    return `node '${node}' handler did not honour verify_ready: missing explicit spawned:true and ready:true proof; upgrade to a release containing Relay PR #1708`;
+    // Only a readiness request sent `verify_ready`; on the launch-only path the
+    // accurate statement is that the handler omitted the `ready` boolean.
+    return requireReadiness
+      ? `node '${node}' handler did not honour verify_ready: missing explicit spawned:true and ready:true proof; upgrade to a release containing Relay PR #1708`
+      : `node '${node}' reported ${status} for ${action} without an explicit ready boolean; upgrade to a release containing Relay PR #1708`;
   }
-  return `node '${node}' reported ${status} for ${action} without explicit spawned:true and ready:true proof`;
+  return `node '${node}' reported ${status} for ${action} without explicit ${
+    requireReadiness ? 'spawned:true and ready:true' : 'spawned:true and a ready boolean'
+  } proof`;
 }
 
 /** Distinguishes "the read outlived its budget" from any value a read returns. */
@@ -746,10 +768,22 @@ export class RelaycastMessagingClient implements RelayMessagingClient {
             // a node can die between this read and action invocation, after
             // which the engine treats it as a targeted queued placement.
             const clientMustTarget = Boolean(targetNode || repo || sandboxOnly);
-            // Persona resolves a nested child in the engine; its contract is unchanged.
+            // Asking the broker to verify readiness commits it to holding the
+            // action open until the harness reports ready and to *releasing the
+            // worker* if it never does. Only request that when this call will
+            // wait for the answer — `confirm: true`. Deriving it from
+            // `confirm !== false` instead would make the documented default
+            // (`confirm` omitted) request verification and then walk away,
+            // killing a worker that would otherwise have survived.
+            // Persona resolves a nested child in the engine, which never reads
+            // `verify_ready`; its handler proves readiness on its own.
             const verifyReady =
               input.verifyReady ??
-              (input.confirm !== false && capability.startsWith('spawn:') && capability !== 'spawn:persona');
+              (input.confirm === true && capability.startsWith('spawn:') && capability !== 'spawn:persona');
+            // What this requester will accept as proof. Persona's engine-owned
+            // handler reports proven readiness even though it is never sent
+            // `verify_ready`, so its contract stays readiness-only.
+            const requireReadiness = verifyReady || capability === 'spawn:persona';
             const actionInput = placementActionInput(input.input, {
               verifyReady,
               capability,
@@ -793,13 +827,11 @@ export class RelaycastMessagingClient implements RelayMessagingClient {
               capability.startsWith('spawn:') &&
               ackStatus &&
               CONFIRM_SUCCESS_STATUSES.has(ackStatus) &&
-              !(capability === 'spawn:persona'
-                ? hasSpawnReadinessProof({ output: ackOutput })
-                : hasSpawnLaunchProof({ output: ackOutput }))
+              !hasSpawnProof({ output: ackOutput }, requireReadiness)
             ) {
               throw new RelayPlacementError(
                 'spawn_failed',
-                spawnProofError(placedNodeLabel, ackStatus, actionName, ackOutput),
+                spawnProofError(placedNodeLabel, ackStatus, actionName, ackOutput, requireReadiness),
                 {
                   capability,
                   node: placedNodeLabel,
@@ -822,6 +854,9 @@ export class RelaycastMessagingClient implements RelayMessagingClient {
                   node: placedNodeLabel,
                   repo,
                   attempts,
+                  // The mode this request actually asked the broker for, so the
+                  // poll judges the same contract the invocation carried.
+                  requireReadiness,
                   // Defaults and validation live in confirmPlacementInvocation
                   // so a direct caller cannot bypass them.
                   timeoutMs: input.confirmTimeoutMs,
@@ -838,7 +873,10 @@ export class RelaycastMessagingClient implements RelayMessagingClient {
                 attempts,
                 queued,
                 confirmed: Boolean(confirmation),
-                state: confirmation ? 'ready' : 'accepted',
+                // `ready` means proven harness readiness. A confirmation that
+                // only judged the launch contract (`verifyReady: false`) is
+                // confirmed, not ready.
+                state: confirmation && requireReadiness ? 'ready' : 'accepted',
               },
               ...(confirmation ? { confirmation } : {}),
             };
@@ -950,11 +988,13 @@ export class RelaycastMessagingClient implements RelayMessagingClient {
       node: string;
       repo?: string;
       attempts: number;
+      /** Whether this request asked the broker for proven harness readiness. */
+      requireReadiness: boolean;
       timeoutMs?: number;
       pollIntervalMs?: number;
     }
   ): Promise<RelayActionInvocation> {
-    const { timeoutMs, pollIntervalMs, ...errorContext } = context;
+    const { timeoutMs, pollIntervalMs, requireReadiness, ...errorContext } = context;
     const invocationId = ack.invocationId;
     // Dispatch evidence is fixed at ack time: a node id here means the engine
     // already routed the invocation to a node before this method starts
@@ -1013,10 +1053,13 @@ export class RelaycastMessagingClient implements RelayMessagingClient {
             const invocation = outcome.value;
             const status = invocation?.status?.toLowerCase();
             if (status && CONFIRM_SUCCESS_STATUSES.has(status)) {
-              if (errorContext.capability.startsWith('spawn:') && !hasSpawnReadinessProof(invocation)) {
+              if (
+                errorContext.capability.startsWith('spawn:') &&
+                !hasSpawnProof(invocation, requireReadiness)
+              ) {
                 throw new RelayPlacementError(
                   'spawn_failed',
-                  spawnProofError(context.node, status, actionName, invocation.output),
+                  spawnProofError(context.node, status, actionName, invocation.output, requireReadiness),
                   {
                     ...errorContext,
                     state: 'failed',

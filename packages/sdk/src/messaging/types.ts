@@ -647,22 +647,35 @@ export interface RelaySpawnPlacementInput {
    * invocation, and launches nothing — without this the ack is identical to a
    * real spawn. Defaults to `false` so plain dispatch keeps its semantics for
    * non-spawn capabilities; agent-spawning callers should set it.
-   * Confirmed spawn success requires spawned:true and ready:true. Without
-   * confirmation, terminal launch success still requires spawned:true and a
-   * boolean ready field; ready:false means accepted, not verified readiness.
+   * Spawn success is judged against whichever contract this request asked the
+   * node for — see `verifyReady`. Either way a terminal success must carry
+   * `spawned:true` and an explicit `ready` boolean, so a handler that reports
+   * nothing is still a failure.
    */
   confirm?: boolean;
   /**
-   * Request proven harness readiness from the broker. Defaults to confirm !== false
-   * for spawn harnesses, and false for spawn:persona (engine-owned child input).
-   * Verified success carries spawned:true, ready:true. Unverified success carries
-   * spawned:true, ready:false; confirmation still requires ready:true.
+   * Request proven harness readiness from the broker. Defaults to `true` for
+   * spawn harnesses when `confirm: true` is set, and `false` otherwise
+   * (including `spawn:persona`, whose child is engine-owned and never reads
+   * `verify_ready`).
+   *
+   * Verified success carries `spawned:true, ready:true`; unverified success
+   * carries `spawned:true, ready:false`. Confirmation judges whichever contract
+   * was requested, so `verifyReady: false` with `confirm: true` accepts a
+   * launched-but-not-yet-ready worker.
+   *
+   * Setting this to `true` without `confirm: true` asks the broker to hold the
+   * action open until the harness is ready — and to release the worker if it
+   * never is — while this call returns as soon as the dispatch is accepted. Only
+   * do that if something else reads the invocation back.
    */
   verifyReady?: boolean;
   /**
    * How long to wait for that terminal result. Must exceed the node's own
    * readiness window (the broker's `verify_ready` mode holds the action open
-   * for up to 90s). Defaults to 120000.
+   * for up to 90s, and starts that clock only once the launch completes).
+   * Defaults to 120000; `fleet spawn` enforces a 95000 floor for verified
+   * targeted spawns so the two windows nest.
    */
   confirmTimeoutMs?: number;
   /** Poll cadence while awaiting confirmation. Defaults to 500. */

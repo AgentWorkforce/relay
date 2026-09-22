@@ -3474,11 +3474,18 @@ describe('fleet command support', () => {
     expect(call).not.toHaveProperty('confirmTimeoutMs');
   });
 
-  it.each(['soon', '30000', '89999'])('fleet spawn rejects invalid --confirm-timeout %s', async (timeout) => {
-    const placement = { spawn: vi.fn() };
+  function confirmTimeoutHarness() {
+    const placement = {
+      spawn: vi.fn(async () => ({
+        invocationId: 'inv_timeout_floor',
+        actionName: 'spawn',
+        node: { name: 'sf-mini' },
+        placement: { capability: 'spawn:codex', node: 'sf-mini', attempts: 1, queued: false },
+      })),
+    };
+    const errors: string[] = [];
     const program = new Command();
     program.exitOverride();
-    const errors: unknown[] = [];
     registerFleetCommands(program, {
       resolveSandboxRepository: () => undefined,
       sdk: {
@@ -3486,7 +3493,7 @@ describe('fleet command support', () => {
         createWorkspaceRelay: vi.fn() as never,
         createWorkspace: vi.fn() as never,
         log: () => undefined,
-        error: (message: unknown) => errors.push(message),
+        error: (message: unknown) => errors.push(String(message)),
         exit: vi.fn() as never,
       },
       createFleetWorkspaceClient: vi.fn() as never,
@@ -3494,30 +3501,57 @@ describe('fleet command support', () => {
       warn: () => undefined,
       error: () => undefined,
     });
+    return { program, placement, errors };
+  }
 
-    await program.parseAsync(
-      [
-        'fleet',
-        'spawn',
-        'codex',
-        '--name',
-        'api-worker',
-        '--task',
-        'ACK and wait',
-        '--node',
-        'sf-mini',
-        '--confirm-timeout',
-        timeout,
-        '--workspace-key',
-        'rk_live_test',
-        '--token',
-        'at_live_lead',
-      ],
-      { from: 'user' }
-    );
+  function confirmTimeoutArgv(timeout: string): string[] {
+    return [
+      'fleet',
+      'spawn',
+      'codex',
+      '--name',
+      'api-worker',
+      '--task',
+      'ACK and wait',
+      '--node',
+      'sf-mini',
+      '--confirm-timeout',
+      timeout,
+      '--workspace-key',
+      'rk_live_test',
+      '--token',
+      'at_live_lead',
+    ];
+  }
+
+  // The floor and the non-numeric guard produce different errors, and each
+  // arm asserts the one it should get: a value that is simply not a number
+  // must not be reported as being below the floor.
+  it.each([
+    ['soon', 'must be a positive number of milliseconds'],
+    ['-5', 'must be a positive number of milliseconds'],
+    ['30000', 'must be at least 95000ms'],
+    ['94999', 'must be at least 95000ms'],
+  ])('fleet spawn rejects --confirm-timeout %s', async (timeout, expected) => {
+    const { program, placement, errors } = confirmTimeoutHarness();
+
+    await program.parseAsync(confirmTimeoutArgv(timeout), { from: 'user' });
 
     expect(placement.spawn).not.toHaveBeenCalled();
-    expect(String(errors.join('\n'))).toContain('--confirm-timeout');
+    expect(errors.join('\n')).toContain(expected);
+  });
+
+  // The first accepted value. The broker's own readiness window is 90000ms and
+  // starts after the launch work completes, so a budget at the floor is the
+  // smallest one that can still contain it.
+  it('fleet spawn accepts --confirm-timeout at the floor', async () => {
+    const { program, placement, errors } = confirmTimeoutHarness();
+
+    await program.parseAsync(confirmTimeoutArgv('95000'), { from: 'user' });
+
+    expect(errors).toEqual([]);
+    expect(placement.spawn).toHaveBeenCalledTimes(1);
+    expect(placement.spawn.mock.calls[0]![0]).toMatchObject({ confirm: true, confirmTimeoutMs: 95_000 });
   });
 
   describe('local default spawn', () => {

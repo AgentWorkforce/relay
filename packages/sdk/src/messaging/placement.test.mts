@@ -128,7 +128,6 @@ describe('RelaycastMessagingClient placement', () => {
       repo: 'relay',
       ttl_override_ms: 60,
       cli: 'claude',
-      verify_ready: true,
     });
   });
 
@@ -279,7 +278,6 @@ describe('RelaycastMessagingClient placement', () => {
       capability: 'spawn:claude',
       ttl_override_ms: 60,
       cli: 'claude',
-      verify_ready: true,
     });
   });
 
@@ -1266,124 +1264,5 @@ describe('RelaycastMessagingClient placement', () => {
       expect((error as RelayPlacementError).code).toBe('spawn_unconfirmed');
       expect((error as Error).message).toContain('getInvocation is not supported');
     });
-  });
-});
-
-const LIVE_NODE = {
-  id: 'node_a',
-  name: 'node-a',
-  status: 'online',
-  live: true,
-  handlers_live: true,
-  capabilities: [{ name: 'spawn:claude', kind: 'spawn' }],
-  repo_keys: ['relay'],
-};
-
-function contractClient(
-  getInvocation?: (name: string, invocationId: string) => Promise<unknown>,
-  acceptedInvocationId = 'inv-1430'
-) {
-  const invoke = vi.fn(async (name: string, input?: Record<string, unknown>) => ({
-    invocation_id: acceptedInvocationId,
-    action_name: name,
-    handler_node_id: 'node_a',
-    dispatched_node_id: 'node_a',
-    input,
-    // The engine accepted the dispatch. This is all the requester ever knew
-    // before this change, and it is identical whether or not anything launched.
-    status: 'invoked',
-  }));
-  const reader = vi.fn(getInvocation ?? (async () => undefined));
-  const relaycast = {
-    agents: {
-      list: vi.fn(async () => []),
-      get: vi.fn(),
-      register: vi.fn(),
-      update: vi.fn(),
-      delete: vi.fn(),
-      presence: vi.fn(async () => []),
-    },
-    channels: { list: vi.fn(async () => []), get: vi.fn() },
-    messages: { list: vi.fn(async () => []), get: vi.fn(), thread: vi.fn(), reactions: vi.fn() },
-    nodes: {
-      list: vi.fn(async () => [LIVE_NODE]),
-      get: vi.fn(async () => LIVE_NODE),
-    },
-  };
-  const agentClient = {
-    actions: { invoke, getInvocation: reader, completeInvocation: vi.fn() },
-  };
-  const client = new RelaycastMessagingClient({
-    relaycast: relaycast as never,
-    agentClient: agentClient as never,
-    placementTtlMs: 60,
-  });
-  return { client, invoke, reader };
-}
-
-function contractSpawnInput(overrides: Record<string, unknown> = {}) {
-  return {
-    capability: 'spawn:claude',
-    node: 'node-a',
-    repo: 'relay',
-    input: { name: 'worker-1430' },
-    ...overrides,
-  };
-}
-
-describe('targeted spawn readiness contract', () => {
-  it('requests readiness from a healthy remote claude node within the default budget', async () => {
-    const { client, invoke } = contractClient(async (_name, invocationId) => ({
-      invocation_id: invocationId,
-      status: 'completed',
-      output: { spawned: true, ready: invoke.mock.calls[0]?.[1]?.verify_ready === true },
-    }));
-    const started = Date.now();
-    const ack = await client.placement.spawn(contractSpawnInput({ confirm: true }));
-    expect(ack.placement.state).toBe('ready');
-    expect(ack.placement.confirmed).toBe(true);
-    expect(Date.now() - started).toBeLessThan(120_000);
-    expect(invoke).toHaveBeenCalledTimes(1);
-  });
-
-  it.each([false, true])('accepts an explicit unverified launch ack with ready=%s', async (ready) => {
-    const { client, invoke, reader } = contractClient();
-    invoke.mockResolvedValueOnce({
-      invocation_id: 'launch',
-      status: 'completed',
-      output: { spawned: true, ready },
-    } as never);
-    const ack = await client.placement.spawn(contractSpawnInput({ confirm: false }));
-    expect(ack.placement).toMatchObject({ state: 'accepted', confirmed: false });
-    expect(invoke.mock.calls[0]?.[1]).not.toHaveProperty('verify_ready');
-    expect(reader).not.toHaveBeenCalled();
-  });
-
-  it('rejects an obsolete handler missing the ready boolean even without confirmation', async () => {
-    const { client, invoke } = contractClient();
-    invoke.mockResolvedValueOnce({
-      invocation_id: 'old',
-      status: 'completed',
-      output: { spawned: true },
-    } as never);
-    await expect(client.placement.spawn(contractSpawnInput({ confirm: false }))).rejects.toMatchObject({
-      code: 'spawn_failed',
-      message: expect.stringContaining('verify_ready'),
-    });
-  });
-
-  it('leaves persona verification unchanged', async () => {
-    const { client, invoke } = contractClient(async () => ({
-      status: 'completed',
-      output: { spawned: true, ready: true },
-    }));
-    // Expose persona capacity only for this fixture.
-    LIVE_NODE.capabilities.push({ name: 'spawn:persona', kind: 'spawn' });
-    try {
-      await client.placement.spawn(contractSpawnInput({ capability: 'spawn:persona', confirm: true }));
-      expect(invoke.mock.calls[0]?.[1]).not.toHaveProperty('verify_ready');
-    } finally {
-      LIVE_NODE.capabilities.pop();
-    }
   });
 });
