@@ -24,8 +24,18 @@ let configCache: TeamsConfigCache | null = null;
 export interface TeamAgentConfig {
   /** Agent name (used for spawn and validation) */
   name: string;
-  /** CLI command to use (e.g., 'claude', 'claude:opus', 'codex') */
+  /**
+   * CLI command (e.g., 'claude', 'codex', 'claude --model opus').
+   * Inline --model/-m takes precedence over model. Prefer the model field:
+   * cli is also used as a harness name when advertising node capacity.
+   */
   cli: string;
+  /**
+   * Model for harnesses accepting --model, including claude, codex, and opencode.
+   * Passed through to the broker without name validation (e.g., 'opus',
+   * 'openai/gpt-5.2'); the broker owns harness-specific model handling.
+   */
+  model?: string;
   /** Agent role (e.g., 'coordinator', 'developer', 'reviewer') */
   role?: string;
   /** Initial task/prompt to inject when spawning */
@@ -130,7 +140,21 @@ export function loadTeamsConfig(projectRoot: string): TeamsConfig | null {
         console.warn(`[teams-config] Agent '${agent.name}' missing 'cli' field, defaulting to 'claude'`);
         agent.cli = 'claude';
       }
-      validAgents.push(agent);
+      let model: string | undefined;
+      if (agent.model !== undefined) {
+        if (typeof agent.model === 'string' && agent.model.trim()) {
+          model = agent.model.trim();
+        } else {
+          console.warn(`[teams-config] Agent '${agent.name}' has invalid 'model' field, ignoring it`);
+        }
+      }
+      validAgents.push({
+        name: agent.name,
+        cli: agent.cli,
+        ...(agent.role !== undefined ? { role: agent.role } : {}),
+        ...(agent.task !== undefined ? { task: agent.task } : {}),
+        ...(model ? { model } : {}),
+      });
     }
 
     console.log(

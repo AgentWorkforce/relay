@@ -2439,6 +2439,7 @@ export async function runUpCommand(options: UpOptions, deps: CoreDependencies): 
         await relay.spawn({
           name: agent.name,
           cli: agent.cli,
+          ...(agent.model ? { model: agent.model } : {}),
           channels: ['general'],
           task: agent.task ?? '',
           team: teamsConfig.team,

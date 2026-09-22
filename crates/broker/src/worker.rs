@@ -4271,6 +4271,26 @@ sleep 30
         ]));
     }
 
+    #[tokio::test]
+    async fn model_pin_yields_to_inline_model_overrides() {
+        for args in [
+            vec!["--model".to_string(), "sonnet".to_string()],
+            vec!["--model=sonnet".to_string()],
+            vec!["-m".to_string(), "sonnet".to_string()],
+            vec!["-m=sonnet".to_string()],
+        ] {
+            assert_eq!(
+                resolve_model_flag_for_cli("claude", "claude", "worker", Some("opus"), &args)
+                    .await,
+                None
+            );
+        }
+        assert_eq!(
+            resolve_model_flag_for_cli("claude", "claude", "worker", Some("opus"), &[]).await,
+            Some("opus".to_string())
+        );
+    }
+
     #[test]
     fn args_include_model_override_detects_supported_forms() {
         assert!(args_include_model_override(&[
