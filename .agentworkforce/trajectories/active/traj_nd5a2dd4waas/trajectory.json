@@ -6,8 +6,35 @@
   },
   "status": "active",
   "startedAt": "2026-09-21T06:13:08.229Z",
-  "agents": [],
-  "chapters": [],
+  "agents": [
+    {
+      "name": "default",
+      "role": "lead",
+      "joinedAt": "2026-09-22T22:32:13.924Z"
+    }
+  ],
+  "chapters": [
+    {
+      "id": "chap_60kdytoq4uet",
+      "title": "Work",
+      "agentName": "default",
+      "startedAt": "2026-09-22T22:32:13.924Z",
+      "events": [
+        {
+          "ts": 1790116333925,
+          "type": "decision",
+          "content": "Published Phase 1 as stacked draft PR #1846 on Phase 0 PR #1825: Published Phase 1 as stacked draft PR #1846 on Phase 0 PR #1825",
+          "raw": {
+            "question": "Published Phase 1 as stacked draft PR #1846 on Phase 0 PR #1825",
+            "chosen": "Published Phase 1 as stacked draft PR #1846 on Phase 0 PR #1825",
+            "alternatives": [],
+            "reasoning": "The user requested the work be pushed now. A separate draft branch preserves Phase 0 review scope, exposes the green deterministic evidence, and keeps the pending dual-provider signoff explicit without pushing to main."
+          },
+          "significance": "high"
+        }
+      ]
+    }
+  ],
   "commits": [],
   "filesChanged": [],
   "projectId": "AgentWorkforce/relay",
