@@ -313,6 +313,14 @@ pub struct SetInboundDeliveryModeOk {
     pub dead_lettered: usize,
     pub matched: bool,
     pub revision: u64,
+    pub blocked_reason: Option<String>,
+    pub blocked_reason_code: Option<&'static str>,
+    pub head_sequence: Option<u64>,
+    pub acked_up_to_sequence: Option<u64>,
+    pub received_up_to_sequence: Option<u64>,
+    pub next_ackable_sequence: Option<u64>,
+    /// Recovery step started by the broker, if any.
+    pub reconciliation_action: Option<&'static str>,
 }
 
 /// Outcome of `POST /api/spawned/{name}/flush`.
@@ -333,6 +341,18 @@ pub struct FlushPendingOk {
     pub held: usize,
     /// Why the flush stopped short, when it did.
     pub blocked_reason: Option<String>,
+    /// Stable machine-readable classification for `blocked_reason`.
+    pub blocked_reason_code: Option<&'static str>,
+    /// Sequence at the head of the parked queue.
+    pub head_sequence: Option<u64>,
+    /// Last sequence cumulatively acknowledged to Relaycast.
+    pub acked_up_to_sequence: Option<u64>,
+    /// Highest contiguous sequence received into broker custody.
+    pub received_up_to_sequence: Option<u64>,
+    /// Predecessor that must reconcile before the head can be acknowledged.
+    pub next_ackable_sequence: Option<u64>,
+    /// Recovery step started by the broker, if any.
+    pub reconciliation_action: Option<&'static str>,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -2522,6 +2542,13 @@ async fn listen_api_set_inbound_delivery_mode(
                 "dead_lettered": ok.dead_lettered,
                 "matched": ok.matched,
                 "revision": ok.revision.to_string(),
+                "blocked_reason": ok.blocked_reason,
+                "blocked_reason_code": ok.blocked_reason_code,
+                "head_sequence": ok.head_sequence,
+                "acked_up_to_sequence": ok.acked_up_to_sequence,
+                "received_up_to_sequence": ok.received_up_to_sequence,
+                "next_ackable_sequence": ok.next_ackable_sequence,
+                "reconciliation_action": ok.reconciliation_action,
             })),
         ),
         Ok(Err(err)) => delivery_route_error_to_response(&err),
@@ -2638,6 +2665,12 @@ async fn listen_api_flush_pending(
                 "dead_lettered": result.dead_lettered,
                 "held": result.held,
                 "blocked_reason": result.blocked_reason,
+                "blocked_reason_code": result.blocked_reason_code,
+                "head_sequence": result.head_sequence,
+                "acked_up_to_sequence": result.acked_up_to_sequence,
+                "received_up_to_sequence": result.received_up_to_sequence,
+                "next_ackable_sequence": result.next_ackable_sequence,
+                "reconciliation_action": result.reconciliation_action,
             })),
         ),
         Ok(Err(err)) => delivery_route_error_to_response(&err),
@@ -5951,6 +5984,13 @@ mod auth_tests {
                         dead_lettered: 0,
                         matched: true,
                         revision: 1,
+                        blocked_reason: None,
+                        blocked_reason_code: None,
+                        head_sequence: None,
+                        acked_up_to_sequence: None,
+                        received_up_to_sequence: None,
+                        next_ackable_sequence: None,
+                        reconciliation_action: None,
                     }));
                 }
                 other => panic!("unexpected request: {:?}", other.map(|_| "other")),
@@ -5979,7 +6019,14 @@ mod auth_tests {
                 "flushed": 3,
                 "dead_lettered": 0,
                 "matched": true,
-                "revision": "1"
+                "revision": "1",
+                "blocked_reason": null,
+                "blocked_reason_code": null,
+                "head_sequence": null,
+                "acked_up_to_sequence": null,
+                "received_up_to_sequence": null,
+                "next_ackable_sequence": null,
+                "reconciliation_action": null,
             })
         );
         replier.await.expect("replier should complete");
@@ -6010,6 +6057,13 @@ mod auth_tests {
                         dead_lettered: 0,
                         matched: false,
                         revision: 8,
+                        blocked_reason: None,
+                        blocked_reason_code: None,
+                        head_sequence: None,
+                        acked_up_to_sequence: None,
+                        received_up_to_sequence: None,
+                        next_ackable_sequence: None,
+                        reconciliation_action: None,
                     }));
                 }
                 other => panic!("unexpected request: {:?}", other.map(|_| "other")),
@@ -6045,7 +6099,14 @@ mod auth_tests {
                 "flushed": 0,
                 "dead_lettered": 0,
                 "matched": false,
-                "revision": "8"
+                "revision": "8",
+                "blocked_reason": null,
+                "blocked_reason_code": null,
+                "head_sequence": null,
+                "acked_up_to_sequence": null,
+                "received_up_to_sequence": null,
+                "next_ackable_sequence": null,
+                "reconciliation_action": null,
             })
         );
         replier.await.expect("replier should complete");
@@ -6305,6 +6366,7 @@ mod auth_tests {
                         dead_lettered: 0,
                         held: 0,
                         blocked_reason: None,
+                        ..Default::default()
                     }));
                 }
                 other => panic!("unexpected request: {:?}", other.map(|_| "other")),
@@ -6327,7 +6389,18 @@ mod auth_tests {
         let body = response_json(response).await;
         assert_eq!(
             body,
-            json!({ "flushed": 5, "dead_lettered": 0, "held": 0, "blocked_reason": null })
+            json!({
+                "flushed": 5,
+                "dead_lettered": 0,
+                "held": 0,
+                "blocked_reason": null,
+                "blocked_reason_code": null,
+                "head_sequence": null,
+                "acked_up_to_sequence": null,
+                "received_up_to_sequence": null,
+                "next_ackable_sequence": null,
+                "reconciliation_action": null,
+            })
         );
         replier.await.expect("replier should complete");
     }
@@ -6350,6 +6423,12 @@ mod auth_tests {
                             "delivery sequence 7 for 'worker-a' is not the next ACKable receipt"
                                 .to_string(),
                         ),
+                        blocked_reason_code: Some("missing_predecessor_ack"),
+                        head_sequence: Some(7),
+                        acked_up_to_sequence: Some(5),
+                        received_up_to_sequence: Some(9),
+                        next_ackable_sequence: Some(6),
+                        reconciliation_action: Some("predecessor_replayed"),
                     }));
                 }
                 other => panic!("unexpected request: {:?}", other.map(|_| "other")),
@@ -6378,6 +6457,12 @@ mod auth_tests {
                 "held": 3,
                 "blocked_reason":
                     "delivery sequence 7 for 'worker-a' is not the next ACKable receipt",
+                "blocked_reason_code": "missing_predecessor_ack",
+                "head_sequence": 7,
+                "acked_up_to_sequence": 5,
+                "received_up_to_sequence": 9,
+                "next_ackable_sequence": 6,
+                "reconciliation_action": "predecessor_replayed",
             }),
             "a jammed queue must not render identically to an empty one"
         );

@@ -2627,6 +2627,13 @@ impl BrokerRuntime {
                                     dead_lettered: 0,
                                     matched: false,
                                     revision,
+                                    blocked_reason: None,
+                                    blocked_reason_code: None,
+                                    head_sequence: None,
+                                    acked_up_to_sequence: None,
+                                    received_up_to_sequence: None,
+                                    next_ackable_sequence: None,
+                                    reconciliation_action: None,
                                 }));
                                 return;
                             }
@@ -2649,6 +2656,13 @@ impl BrokerRuntime {
                                     dead_lettered: 0,
                                     matched: false,
                                     revision,
+                                    blocked_reason: None,
+                                    blocked_reason_code: None,
+                                    head_sequence: None,
+                                    acked_up_to_sequence: None,
+                                    received_up_to_sequence: None,
+                                    next_ackable_sequence: None,
+                                    reconciliation_action: None,
                                 }));
                                 return;
                             }
@@ -2660,7 +2674,7 @@ impl BrokerRuntime {
                     // Deferred-ACK flush: inject and ACK only the contiguous FIFO
                     // prefix, stopping at the first not-yet-ACKable receipt or
                     // failed injection so held frames are never silently ACKed.
-                    let flush_result = if transition_requires_flush {
+                    let mut flush_result = if transition_requires_flush {
                         tracing::info!(
                             target = "agent_relay::broker",
                             worker = %name,
@@ -2682,6 +2696,19 @@ impl BrokerRuntime {
                     } else {
                         super::fleet::FlushPendingRelayResult::default()
                     };
+                    if transition_requires_flush {
+                        flush_result.reconciliation_action =
+                            super::fleet::reconcile_blocked_flush_predecessor(
+                                &flush_result,
+                                workers,
+                                pending_deliveries,
+                                sdk_out_tx,
+                                dead_letters,
+                                &name,
+                                delivery_retry_interval,
+                            )
+                            .await;
+                    }
                     let flushed = flush_result.flushed;
                     if let Some(error) = flush_result.failure.as_deref() {
                         tracing::warn!(
@@ -2783,6 +2810,13 @@ impl BrokerRuntime {
                         dead_lettered: flush_result.dead_lettered,
                         matched: true,
                         revision,
+                        blocked_reason: flush_result.failure,
+                        blocked_reason_code: flush_result.blocked_reason_code,
+                        head_sequence: flush_result.head_sequence,
+                        acked_up_to_sequence: flush_result.acked_up_to_sequence,
+                        received_up_to_sequence: flush_result.received_up_to_sequence,
+                        next_ackable_sequence: flush_result.next_ackable_sequence,
+                        reconciliation_action: flush_result.reconciliation_action,
                     }));
                 }
             }
@@ -2801,7 +2835,7 @@ impl BrokerRuntime {
                 if !workers.has_worker(&name) {
                     let _ = reply.send(Err(DeliveryRouteError::WorkerNotFound(name)));
                 } else {
-                    let flush_result = super::fleet::flush_pending_relay_messages(
+                    let mut flush_result = super::fleet::flush_pending_relay_messages(
                         delivery_states,
                         workers,
                         fleet_delivery_book,
@@ -2814,6 +2848,17 @@ impl BrokerRuntime {
                         delivery_retry_interval,
                     )
                     .await;
+                    flush_result.reconciliation_action =
+                        super::fleet::reconcile_blocked_flush_predecessor(
+                            &flush_result,
+                            workers,
+                            pending_deliveries,
+                            sdk_out_tx,
+                            dead_letters,
+                            &name,
+                            delivery_retry_interval,
+                        )
+                        .await;
                     let flushed = flush_result.flushed;
                     if flushed > 0 {
                         tracing::info!(
@@ -2879,6 +2924,12 @@ impl BrokerRuntime {
                         dead_lettered: flush_result.dead_lettered,
                         held,
                         blocked_reason: flush_result.failure,
+                        blocked_reason_code: flush_result.blocked_reason_code,
+                        head_sequence: flush_result.head_sequence,
+                        acked_up_to_sequence: flush_result.acked_up_to_sequence,
+                        received_up_to_sequence: flush_result.received_up_to_sequence,
+                        next_ackable_sequence: flush_result.next_ackable_sequence,
+                        reconciliation_action: flush_result.reconciliation_action,
                     }));
                 }
             }

@@ -1,5 +1,5 @@
 use std::{
-    collections::{HashSet, VecDeque},
+    collections::{HashMap, HashSet, VecDeque},
     future::Future,
     path::Path,
     pin::Pin,
@@ -13,7 +13,7 @@ use std::{
 use futures_util::{stream::FuturesUnordered, StreamExt};
 
 use crate::{
-    ids::{DeliveryId, RequestId},
+    ids::{DeliveryId, EventId, RequestId},
     protocol::{MessageInjectionMode, ProtocolEnvelope, RelayDelivery},
     pty::{PtySession, PtyWriteSubmitError},
 };
@@ -55,6 +55,42 @@ struct PendingWorkerInjection {
     delivery: RelayDelivery,
     request_id: Option<RequestId>,
     queued_at: Instant,
+}
+
+/// Recently completed broker deliveries retained for idempotent retry.
+///
+/// Broker custody and the worker's `delivery_ack` cross an asynchronous
+/// process boundary. If the acknowledgement is lost after the PTY write, the
+/// broker must retry the same delivery to repair its cumulative fleet cursor.
+/// Re-pasting it would duplicate a user-visible instruction, so the worker
+/// answers a matching retry with the original acknowledgement instead. The
+/// bounded FIFO matches the broker delivery book's recent-id horizon.
+#[derive(Debug, Default)]
+struct CompletedWorkerDeliveries {
+    events: HashMap<DeliveryId, EventId>,
+    order: VecDeque<DeliveryId>,
+}
+
+impl CompletedWorkerDeliveries {
+    const CAPACITY: usize = 512;
+
+    fn get(&self, delivery_id: &DeliveryId) -> Option<&EventId> {
+        self.events.get(delivery_id)
+    }
+
+    fn insert(&mut self, delivery_id: DeliveryId, event_id: EventId) {
+        if let Some(existing_event_id) = self.events.get_mut(&delivery_id) {
+            *existing_event_id = event_id;
+            return;
+        }
+        if self.order.len() >= Self::CAPACITY {
+            if let Some(evicted) = self.order.pop_front() {
+                self.events.remove(&evicted);
+            }
+        }
+        self.events.insert(delivery_id.clone(), event_id);
+        self.order.push_back(delivery_id);
+    }
 }
 
 /// Default per-atom gap for escape-aware paced injection, in milliseconds.
@@ -896,6 +932,7 @@ pub(crate) async fn run_pty_worker(cmd: PtyCommand) -> Result<()> {
     let mut mcp_reminder_throttle = McpReminderThrottle::new();
     let mut pending_worker_injections: VecDeque<PendingWorkerInjection> = VecDeque::new();
     let mut pending_worker_delivery_ids: HashSet<DeliveryId> = HashSet::new();
+    let mut completed_worker_deliveries = CompletedWorkerDeliveries::default();
     // The injection currently being written across paced stages, if any. Only
     // one injection is in flight at a time; the pending-injection interval arm
     // starts the next one once this returns to `None`.
@@ -1160,7 +1197,50 @@ pub(crate) async fn run_pty_worker(cmd: PtyCommand) -> Result<()> {
                                         continue;
                                     }
                                 };
-                                if pending_worker_delivery_ids.insert(delivery.delivery_id.clone()) {
+                                if let Some(completed_event_id) = completed_worker_deliveries
+                                    .get(&delivery.delivery_id)
+                                {
+                                    if completed_event_id == &delivery.event_id {
+                                        tracing::info!(
+                                            delivery_id = %delivery.delivery_id,
+                                            event_id = %delivery.event_id,
+                                            "re-acknowledging completed delivery replay without reinjection"
+                                        );
+                                        let _ = send_frame(
+                                            &out_tx,
+                                            "delivery_ack",
+                                            frame.request_id.clone(),
+                                            json!({
+                                                "delivery_id": delivery.delivery_id,
+                                                "event_id": delivery.event_id,
+                                            }),
+                                        )
+                                        .await;
+                                        let _ = send_frame(
+                                            &out_tx,
+                                            "delivery_verified",
+                                            frame.request_id,
+                                            json!({
+                                                "delivery_id": delivery.delivery_id,
+                                                "event_id": delivery.event_id,
+                                                "verification": "completed_replay",
+                                            }),
+                                        )
+                                        .await;
+                                    } else {
+                                        tracing::warn!(
+                                            delivery_id = %delivery.delivery_id,
+                                            completed_event_id = %completed_event_id,
+                                            replay_event_id = %delivery.event_id,
+                                            "rejecting delivery-id reuse with a different event"
+                                        );
+                                        let _ = send_frame(&out_tx, "worker_error", frame.request_id, json!({
+                                            "code": "delivery_id_reused",
+                                            "message": "delivery id was already completed for a different event",
+                                            "retryable": false,
+                                        })).await;
+                                    }
+                                } else if pending_worker_delivery_ids.insert(delivery.delivery_id.clone()) {
                                     let _ = send_frame(
                                         &out_tx,
                                         "delivery_queued",
@@ -1696,7 +1776,7 @@ pub(crate) async fn run_pty_worker(cmd: PtyCommand) -> Result<()> {
                             if let Some(detector) = activity_detector.as_ref() {
                                 pending_activities.push_back(PendingActivity {
                                     delivery_id: delivery_id.clone(),
-                                    event_id,
+                                    event_id: event_id.clone(),
                                     expected_echo: pv.expected_echo,
                                     verified_at: Instant::now(),
                                     output_buffer: String::new(),
@@ -1704,6 +1784,7 @@ pub(crate) async fn run_pty_worker(cmd: PtyCommand) -> Result<()> {
                                 });
                             }
                             pending_worker_delivery_ids.remove(&delivery_id);
+                            completed_worker_deliveries.insert(delivery_id, event_id);
                         }
 
                         if activity_detector.as_ref().is_some() {
@@ -2194,6 +2275,7 @@ pub(crate) async fn run_pty_worker(cmd: PtyCommand) -> Result<()> {
                                     }
                                 }
                                 pending_worker_delivery_ids.remove(&delivery_id);
+                                completed_worker_deliveries.insert(delivery_id, event_id);
                             }
                             // active_injection remains None: injection complete.
                         }
@@ -2291,6 +2373,7 @@ pub(crate) async fn run_pty_worker(cmd: PtyCommand) -> Result<()> {
                         // keep them out of the throttle's success signal.
                         throttle.record(DeliveryOutcome::Unverified);
                         pending_worker_delivery_ids.remove(&delivery_id);
+                        completed_worker_deliveries.insert(delivery_id, event_id);
                     } else {
                         i += 1;
                     }
@@ -2487,6 +2570,40 @@ pub(crate) async fn run_pty_worker(cmd: PtyCommand) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn completed_delivery_replay_retains_the_original_event_identity() {
+        let mut completed = CompletedWorkerDeliveries::default();
+        let delivery_id = DeliveryId::new("delivery-89");
+        let event_id = EventId::new("message-89");
+        completed.insert(delivery_id.clone(), event_id.clone());
+
+        assert_eq!(completed.get(&delivery_id), Some(&event_id));
+        assert_ne!(
+            completed.get(&delivery_id),
+            Some(&EventId::new("different-message")),
+            "delivery-id reuse must not acknowledge a different event"
+        );
+    }
+
+    #[test]
+    fn completed_delivery_replay_cache_is_bounded() {
+        let mut completed = CompletedWorkerDeliveries::default();
+        for sequence in 0..=CompletedWorkerDeliveries::CAPACITY {
+            completed.insert(
+                DeliveryId::new(format!("delivery-{sequence}")),
+                EventId::new(format!("message-{sequence}")),
+            );
+        }
+
+        assert!(completed.get(&DeliveryId::new("delivery-0")).is_none());
+        assert!(completed
+            .get(&DeliveryId::new(format!(
+                "delivery-{}",
+                CompletedWorkerDeliveries::CAPACITY
+            )))
+            .is_some());
+    }
 
     #[test]
     fn initial_chunks_preserve_utf8_and_whitespace() {

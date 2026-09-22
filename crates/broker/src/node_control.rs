@@ -1282,7 +1282,6 @@ impl FleetDeliveryBook {
             .map(|cursor| cursor.acked_up_to_seq.saturating_add(1))
     }
 
-    #[cfg(test)]
     pub(crate) fn received_up_to_seq(&self, agent_id: &str) -> u64 {
         self.agents
             .get(agent_id)

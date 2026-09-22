@@ -228,6 +228,34 @@ fn plan_fleet_delivery(decision: DeliveryDecision) -> FleetDeliveryPlan {
     }
 }
 
+fn has_local_delivery_custody(
+    deliver: &Deliver,
+    delivery_states: &HashMap<WorkerName, InboundDeliveryState>,
+    pending_deliveries: &HashMap<DeliveryId, PendingDelivery>,
+) -> bool {
+    let parked = delivery_states
+        .get(deliver.agent.as_str())
+        .is_some_and(|state| {
+            state.pending.iter().any(|message| {
+                message.relaycast_receipt.as_ref().is_some_and(|receipt| {
+                    receipt.agent_id.as_str() == deliver.agent_id
+                        && receipt.delivery_id.as_str() == deliver.delivery_id
+                        && receipt.msg_id.as_str() == deliver.msg_id
+                        && receipt.seq == deliver.seq
+                })
+            })
+        });
+    parked
+        || pending_deliveries.values().any(|pending| {
+            pending.withheld_fleet_ack.as_ref().is_some_and(|withheld| {
+                withheld.agent_id == deliver.agent_id
+                    && withheld.delivery_id == deliver.delivery_id
+                    && withheld.msg_id == deliver.msg_id
+                    && withheld.seq == deliver.seq
+            })
+        })
+}
+
 /// Parse the WS `terminal.set_delivery_mode` frame's optional `expected_mode`
 /// exactly like the HTTP delivery-mode route does — via
 /// [`InboundDeliveryMode::parse`], which trims whitespace and matches
@@ -882,7 +910,44 @@ impl BrokerRuntime {
         // `GET /api/node-delivery`. See `crate::node_delivery_probe`.
         self.node_delivery_probe
             .record_decision(&deliver, &decision);
-        let up_to_seq = match plan_fleet_delivery(decision) {
+        // `seen_msg_ids` proves this exact frame once reached broker custody;
+        // it does not prove that custody still exists or that the worker
+        // received it. If custody disappeared before cumulative ACK, treating
+        // Relaycast's replay as an ordinary duplicate leaves the cursor one
+        // sequence short forever and every parked successor unACKable. Recover
+        // only that narrow case: same msg/delivery/sequence, still above the
+        // ACK floor, and absent from both durable in-flight and manual queues.
+        // The PTY worker keeps a second completed-id fence, so a lost broker ACK
+        // is re-emitted without pasting the message twice.
+        let recover_unacknowledged_replay = matches!(
+            decision,
+            DeliveryDecision::Duplicate { up_to_seq }
+                if deliver.seq > 0
+                    && deliver.seq > up_to_seq
+                    && !has_local_delivery_custody(
+                        &deliver,
+                        &self.delivery_states,
+                        &self.pending_deliveries,
+                    )
+        );
+        if recover_unacknowledged_replay {
+            tracing::warn!(
+                target = "relay_broker::fleet",
+                agent = %deliver.agent,
+                agent_id = %deliver.agent_id,
+                delivery_id = %deliver.delivery_id,
+                msg_id = %deliver.msg_id,
+                seq = deliver.seq,
+                acked_up_to_seq = self.fleet_delivery_book.acked_up_to_seq(&deliver.agent_id),
+                "recovering an unacknowledged replay after local delivery custody disappeared"
+            );
+        }
+        let plan = if recover_unacknowledged_replay {
+            FleetDeliveryPlan::Surface
+        } else {
+            plan_fleet_delivery(decision)
+        };
+        let up_to_seq = match plan {
             FleetDeliveryPlan::Surface => match self.surface_fleet_deliver(&deliver).await {
                 Ok(FleetDeliverySurfaceOutcome::Acknowledge) => {
                     self.node_delivery_probe
@@ -1871,6 +1936,14 @@ pub(super) struct FlushPendingRelayResult {
     /// holds this worker's name. See the `Orphaned` arm of the flush loop.
     pub(super) dead_lettered: usize,
     pub(super) failure: Option<String>,
+    pub(super) blocked_reason_code: Option<&'static str>,
+    pub(super) head_sequence: Option<u64>,
+    pub(super) acked_up_to_sequence: Option<u64>,
+    pub(super) received_up_to_sequence: Option<u64>,
+    pub(super) next_ackable_sequence: Option<u64>,
+    pub(super) reconciliation_action: Option<&'static str>,
+    /// Internal lookup key for predecessor replay. Never serialized.
+    pub(super) blocked_agent_id: Option<String>,
 }
 
 /// Inject a worker's held queue in FIFO order. A failed item and every item
@@ -1926,10 +1999,23 @@ pub(super) async fn flush_pending_relay_messages(
         if let (Some(ReceiptAckability::Blocked), Some(receipt)) =
             (ackability, queued.relaycast_receipt.as_ref())
         {
+            let acked_up_to_sequence = fleet_delivery_book.acked_up_to_seq(&receipt.agent_id);
+            let received_up_to_sequence = fleet_delivery_book.received_up_to_seq(&receipt.agent_id);
+            let next_ackable_sequence = acked_up_to_sequence.saturating_add(1);
             result.failure = Some(format!(
-                "delivery sequence {} for '{}' is not the next ACKable receipt",
-                receipt.seq, receipt.agent
+                "delivery sequence {} for '{}' is blocked: ACK cursor is {}, received cursor is {}, next ACKable sequence is {}",
+                receipt.seq,
+                receipt.agent,
+                acked_up_to_sequence,
+                received_up_to_sequence,
+                next_ackable_sequence,
             ));
+            result.blocked_reason_code = Some("missing_predecessor_ack");
+            result.head_sequence = Some(receipt.seq);
+            result.acked_up_to_sequence = Some(acked_up_to_sequence);
+            result.received_up_to_sequence = Some(received_up_to_sequence);
+            result.next_ackable_sequence = Some(next_ackable_sequence);
+            result.blocked_agent_id = Some(receipt.agent_id.to_string());
             break;
         }
 
@@ -2036,6 +2122,102 @@ pub(super) async fn flush_pending_relay_messages(
     }
 
     result
+}
+
+/// Kick the missing predecessor back through the worker after a flush exposes
+/// a cumulative-ACK gap. The retry retains the original fleet delivery ID, so
+/// a worker that already completed it re-ACKs from its bounded completion
+/// cache without reinjection. If broker custody is already gone, Relaycast
+/// still owns the unACKed frame and its normal replay will rebuild custody.
+#[allow(clippy::too_many_arguments)]
+pub(super) async fn reconcile_blocked_flush_predecessor(
+    result: &FlushPendingRelayResult,
+    workers: &mut WorkerRegistry,
+    pending_deliveries: &mut HashMap<DeliveryId, PendingDelivery>,
+    sdk_out_tx: &mpsc::Sender<ProtocolEnvelope<Value>>,
+    dead_letters: &mut DeadLetterStore,
+    worker_name: &WorkerName,
+    retry_interval: Duration,
+) -> Option<&'static str> {
+    let agent_id = result.blocked_agent_id.as_deref()?;
+    let next_sequence = result.next_ackable_sequence?;
+    let predecessor = pending_deliveries
+        .iter()
+        .find_map(|(delivery_id, pending)| {
+            pending
+                .withheld_fleet_ack
+                .as_ref()
+                .filter(|deliver| deliver.agent_id == agent_id && deliver.seq == next_sequence)
+                .map(|_| {
+                    (
+                        delivery_id.clone(),
+                        pending.delivery.event_id.clone(),
+                        pending.attempts > 0,
+                    )
+                })
+        });
+    let Some((delivery_id, event_id, was_retry)) = predecessor else {
+        return Some("awaiting_relaycast_replay");
+    };
+
+    let outcome =
+        match retry_pending_delivery(&delivery_id, workers, pending_deliveries, retry_interval)
+            .await
+        {
+            Ok(outcome) => outcome,
+            Err(error) => {
+                tracing::warn!(
+                    target = "relay_broker::fleet",
+                    worker = %worker_name,
+                    delivery_id = %delivery_id,
+                    seq = next_sequence,
+                    error = %error,
+                    "failed to replay the predecessor needed to reconcile a manual-flush gap"
+                );
+                return Some("predecessor_retry_failed");
+            }
+        };
+    let terminal = matches!(outcome, DeliveryAttemptOutcome::Failed { .. });
+    if let Err(error) =
+        emit_delivery_attempt_outcome(sdk_out_tx, dead_letters, &delivery_id, was_retry, outcome)
+            .await
+    {
+        tracing::warn!(
+            target = "relay_broker::fleet",
+            worker = %worker_name,
+            delivery_id = %delivery_id,
+            error = %error,
+            "failed to emit predecessor replay outcome"
+        );
+    }
+    if terminal {
+        return Some("predecessor_dead_lettered_awaiting_relaycast_replay");
+    }
+
+    // A drive attach may also hold the PTY worker's injection queue. Release
+    // only this predecessor; later manual messages remain under operator
+    // control until the ACK cursor reconciles and the flush is retried.
+    if let Err(error) = workers
+        .send_to_worker(
+            worker_name,
+            "flush_injections",
+            None,
+            json!({ "event_id": event_id }),
+        )
+        .await
+    {
+        tracing::warn!(
+            target = "relay_broker::fleet",
+            worker = %worker_name,
+            delivery_id = %delivery_id,
+            seq = next_sequence,
+            error = %error,
+            "predecessor replay was queued but its targeted hold release failed"
+        );
+        return Some("predecessor_replayed_hold_release_failed");
+    }
+
+    Some("predecessor_replayed")
 }
 
 /// Publish a spawn's declared workforce metadata onto the freshly registered

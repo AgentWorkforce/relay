@@ -851,8 +851,16 @@ pub(crate) async fn queue_and_try_delivery_raw(
     withheld_fleet_ack: Option<crate::fleet_wire::Deliver>,
     withheld_fleet_ack_floor: Option<u64>,
 ) -> Result<DeliveryId> {
+    // Fleet delivery IDs are stable across Relaycast retries. Preserve that
+    // identity all the way into the worker so its completed-delivery cache can
+    // re-ACK a replay without pasting the instruction a second time. Local
+    // broker deliveries still receive a fresh generated ID.
+    let delivery_id = withheld_fleet_ack
+        .as_ref()
+        .map(|deliver| DeliveryId::new(deliver.delivery_id.clone()))
+        .unwrap_or_else(|| DeliveryId::new(format!("del_{}", Uuid::new_v4().simple())));
     let delivery = RelayDelivery {
-        delivery_id: DeliveryId::new(format!("del_{}", Uuid::new_v4().simple())),
+        delivery_id,
         event_id: EventId::new(event_id),
         workspace_id,
         workspace_alias,
