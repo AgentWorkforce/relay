@@ -806,7 +806,14 @@ describe('fleet command support', () => {
         invocationId: 'inv_targeted',
         actionName: 'spawn',
         node: { name: 'sf-mini' },
-        placement: { capability: 'spawn:codex', node: 'sf-mini', attempts: 1, queued: false },
+        placement: {
+          capability: 'spawn:codex',
+          node: 'sf-mini',
+          attempts: 1,
+          queued: false,
+          state: 'ready',
+          confirmed: true,
+        },
       })),
     };
     const createAgentRelay = vi.fn(() => ({ messaging: { placement } }));
@@ -924,8 +931,9 @@ describe('fleet command support', () => {
       })
     );
     expect(createFleetWorkspaceClient).not.toHaveBeenCalled();
+    expect(logs).toHaveLength(1);
     expect(JSON.parse(logs[0]!)).toMatchObject({
-      invocation: { invocationId: 'inv_targeted' },
+      invocation: { invocationId: 'inv_targeted', placement: { state: 'ready', confirmed: true } },
     });
   });
 
@@ -936,76 +944,81 @@ describe('fleet command support', () => {
   // evidence. With `--no-confirm`, the top-level invocation has no terminal
   // `status`, so a naive replacement would downgrade a confirmed SDK
   // `accepted` placement to `unconfirmed_may_be_running`.
-  it('preserves the SDK placement state and confirmed flag on a targeted --no-confirm spawn', async () => {
-    const placement = {
-      spawn: vi.fn(async () => ({
-        invocationId: 'inv_no_confirm',
-        actionName: 'spawn',
-        node: { name: 'sf-mini' },
-        placement: {
-          capability: 'spawn:codex',
-          node: 'sf-mini',
-          attempts: 1,
-          queued: false,
-          state: 'accepted',
-          confirmed: false,
+  it.each(['invoked', 'completed'])(
+    'preserves the SDK placement for a targeted --no-confirm %s ack',
+    async (status) => {
+      const placement = {
+        spawn: vi.fn(async () => ({
+          invocationId: 'inv_no_confirm',
+          status,
+          output: { spawned: true, ready: false },
+          actionName: 'spawn',
+          node: { name: 'sf-mini' },
+          placement: {
+            capability: 'spawn:codex',
+            node: 'sf-mini',
+            attempts: 1,
+            queued: false,
+            state: 'accepted',
+            confirmed: false,
+          },
+        })),
+      };
+      const createAgentRelay = vi.fn(() => ({ messaging: { placement } }));
+      const logs: string[] = [];
+      const program = new Command();
+      program.exitOverride();
+      registerFleetCommands(program, {
+        resolveSandboxRepository: () => undefined,
+        sdk: {
+          createAgentRelay: createAgentRelay as never,
+          createWorkspaceRelay: vi.fn() as never,
+          createWorkspace: vi.fn() as never,
+          log: (message: unknown) => logs.push(String(message)),
+          error: vi.fn(),
+          exit: vi.fn() as never,
         },
-      })),
-    };
-    const createAgentRelay = vi.fn(() => ({ messaging: { placement } }));
-    const logs: string[] = [];
-    const program = new Command();
-    program.exitOverride();
-    registerFleetCommands(program, {
-      resolveSandboxRepository: () => undefined,
-      sdk: {
-        createAgentRelay: createAgentRelay as never,
-        createWorkspaceRelay: vi.fn() as never,
-        createWorkspace: vi.fn() as never,
-        log: (message: unknown) => logs.push(String(message)),
-        error: vi.fn(),
-        exit: vi.fn() as never,
-      },
-      createFleetWorkspaceClient: vi.fn() as never,
-      log: () => undefined,
-      warn: () => undefined,
-      error: () => undefined,
-    });
+        createFleetWorkspaceClient: vi.fn() as never,
+        log: () => undefined,
+        warn: () => undefined,
+        error: () => undefined,
+      });
 
-    await program.parseAsync(
-      [
-        'fleet',
-        'spawn',
-        'codex',
-        '--name',
-        'api-worker',
-        '--task',
-        'ACK and wait',
-        '--target-node',
-        'sf-mini',
-        '--no-confirm',
-        '--workspace-key',
-        'rk_live_test',
-        '--token',
-        'at_live_lead',
-      ],
-      { from: 'user' }
-    );
+      await program.parseAsync(
+        [
+          'fleet',
+          'spawn',
+          'codex',
+          '--name',
+          'api-worker',
+          '--task',
+          'ACK and wait',
+          '--target-node',
+          'sf-mini',
+          '--no-confirm',
+          '--workspace-key',
+          'rk_live_test',
+          '--token',
+          'at_live_lead',
+        ],
+        { from: 'user' }
+      );
 
-    const printed = JSON.parse(logs[0]!);
-    // The SDK's own evidence (state: 'accepted', confirmed: false) must
-    // survive untouched...
-    expect(printed.invocation.placement).toMatchObject({
-      capability: 'spawn:codex',
-      node: 'sf-mini',
-      state: 'accepted',
-      confirmed: false,
-    });
-    // ...augmented with the normalized dispatch evidence and invocation id,
-    // not replaced by them.
-    expect(printed.invocation.placement.dispatchState).toBeDefined();
-    expect(printed.invocation.placement.state).not.toBe('unconfirmed_may_be_running');
-  });
+      const printed = JSON.parse(logs[0]!);
+      // The SDK's own evidence (state: 'accepted', confirmed: false) must
+      // survive untouched...
+      expect(printed.invocation.placement).toMatchObject({
+        capability: 'spawn:codex',
+        node: 'sf-mini',
+        state: 'accepted',
+        confirmed: false,
+      });
+      // ...augmented with the normalized dispatch evidence and invocation id,
+      // not replaced by them.
+      expect(printed.invocation.placement.dispatchState).toBeDefined();
+      expect(printed.invocation.placement.state).not.toBe('unconfirmed_may_be_running');
+    }
+  );
 
   it('terminates an accepted-but-unconfirmed live invocation without inviting a blind retry', async () => {
     const invocationId = 'inv_223936432626290688';
@@ -3467,11 +3480,18 @@ describe('fleet command support', () => {
     expect(call).not.toHaveProperty('confirmTimeoutMs');
   });
 
-  it('fleet spawn rejects a non-numeric --confirm-timeout', async () => {
-    const placement = { spawn: vi.fn() };
+  function confirmTimeoutHarness() {
+    const placement = {
+      spawn: vi.fn(async () => ({
+        invocationId: 'inv_timeout_floor',
+        actionName: 'spawn',
+        node: { name: 'sf-mini' },
+        placement: { capability: 'spawn:codex', node: 'sf-mini', attempts: 1, queued: false },
+      })),
+    };
+    const errors: string[] = [];
     const program = new Command();
     program.exitOverride();
-    const errors: unknown[] = [];
     registerFleetCommands(program, {
       resolveSandboxRepository: () => undefined,
       sdk: {
@@ -3479,7 +3499,7 @@ describe('fleet command support', () => {
         createWorkspaceRelay: vi.fn() as never,
         createWorkspace: vi.fn() as never,
         log: () => undefined,
-        error: (message: unknown) => errors.push(message),
+        error: (message: unknown) => errors.push(String(message)),
         exit: vi.fn() as never,
       },
       createFleetWorkspaceClient: vi.fn() as never,
@@ -3487,30 +3507,57 @@ describe('fleet command support', () => {
       warn: () => undefined,
       error: () => undefined,
     });
+    return { program, placement, errors };
+  }
 
-    await program.parseAsync(
-      [
-        'fleet',
-        'spawn',
-        'codex',
-        '--name',
-        'api-worker',
-        '--task',
-        'ACK and wait',
-        '--node',
-        'sf-mini',
-        '--confirm-timeout',
-        'soon',
-        '--workspace-key',
-        'rk_live_test',
-        '--token',
-        'at_live_lead',
-      ],
-      { from: 'user' }
-    );
+  function confirmTimeoutArgv(timeout: string): string[] {
+    return [
+      'fleet',
+      'spawn',
+      'codex',
+      '--name',
+      'api-worker',
+      '--task',
+      'ACK and wait',
+      '--node',
+      'sf-mini',
+      '--confirm-timeout',
+      timeout,
+      '--workspace-key',
+      'rk_live_test',
+      '--token',
+      'at_live_lead',
+    ];
+  }
+
+  // The floor and the non-numeric guard produce different errors, and each
+  // arm asserts the one it should get: a value that is simply not a number
+  // must not be reported as being below the floor.
+  it.each([
+    ['soon', 'must be a positive number of milliseconds'],
+    ['-5', 'must be a positive number of milliseconds'],
+    ['30000', 'must be at least 95000ms'],
+    ['94999', 'must be at least 95000ms'],
+  ])('fleet spawn rejects --confirm-timeout %s', async (timeout, expected) => {
+    const { program, placement, errors } = confirmTimeoutHarness();
+
+    await program.parseAsync(confirmTimeoutArgv(timeout), { from: 'user' });
 
     expect(placement.spawn).not.toHaveBeenCalled();
-    expect(String(errors.join('\n'))).toContain('--confirm-timeout');
+    expect(errors.join('\n')).toContain(expected);
+  });
+
+  // The first accepted value. The broker's own readiness window is 90000ms and
+  // starts after the launch work completes, so a budget at the floor is the
+  // smallest one that can still contain it.
+  it('fleet spawn accepts --confirm-timeout at the floor', async () => {
+    const { program, placement, errors } = confirmTimeoutHarness();
+
+    await program.parseAsync(confirmTimeoutArgv('95000'), { from: 'user' });
+
+    expect(errors).toEqual([]);
+    expect(placement.spawn).toHaveBeenCalledTimes(1);
+    expect(placement.spawn.mock.calls[0]![0]).toMatchObject({ confirm: true, confirmTimeoutMs: 95_000 });
   });
 
   describe('local default spawn', () => {

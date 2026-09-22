@@ -7,14 +7,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased - Major]
 
-### Fixed
+### Changed
 
-- `agent-relay fleet config|enable|disable|inherit` now exit successfully as hidden compatibility no-ops instead of failing on the removed workspace rollout API.
-- Broker `manual_flush` recovery now replays a missing cumulative-ACK predecessor without duplicating an already-completed PTY injection, restores it ahead of parked successors, and reports the head/ACK/received sequence gap plus the reconciliation action in `message flush` and `message auto` results.
+- Targeted `fleet spawn` now waits for harness readiness; the broker releases workers that miss its 90-second readiness window. Confirmed targeted spawns require `--confirm-timeout` of at least 95000ms.
 
 ### Removed
 
 - `@agent-relay/sdk`: removed `workspace.fleetNodes` and `RelayWorkspaceFleetNodesConfig`, whose underlying service API no longer exists.
+
+### Fixed
+
+- `agent-relay fleet config|enable|disable|inherit` now exit successfully as hidden compatibility no-ops instead of failing on the removed workspace rollout API.
+- Targeted `fleet spawn` requests explicit readiness proof, preventing healthy launches from being rejected for missing proof; unconfirmed launches report `ready:false` while obsolete handlers remain rejected.
+- `@agent-relay/sdk` `placement.spawn` only asks a node to verify readiness when it will wait for the answer, and confirms against the contract it requested, so `confirm` omitted no longer arms a 90-second readiness kill switch and `verifyReady: false` no longer fails a healthy launch.
+- Broker `manual_flush` recovery now replays a missing cumulative-ACK predecessor without duplicating an already-completed PTY injection, restores it ahead of parked successors, and reports the head/ACK/received sequence gap plus the reconciliation action in `message flush` and `message auto` results.
 
 ### Breaking Changes
 

@@ -1479,6 +1479,19 @@ mod tests {
     }
 
     #[test]
+    fn placement_spawn_requests_harness_readiness() {
+        // Literal SDK placementActionInput payload; persona stays engine-owned.
+        let mut payload = json!({"capability":"spawn:claude", "cli":"claude",
+            "node":"node-a", "target_node":"node-a", "name":"Probe", "verify_ready":true});
+        assert!(relaycast_spawn_verifies_ready(&payload));
+        payload.as_object_mut().unwrap().remove("verify_ready");
+        assert!(!relaycast_spawn_verifies_ready(&payload));
+        payload["capability"] = json!("spawn:persona");
+        payload["cli"] = json!("persona");
+        assert!(!relaycast_spawn_verifies_ready(&payload));
+    }
+
+    #[test]
     fn verified_spawn_contract_is_read_from_request_or_harness_metadata() {
         let verified = json!({
             "harness_config": {
