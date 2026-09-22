@@ -56,7 +56,7 @@ import path from 'node:path';
 
 import { specWorkflow, type V1StepOptions } from '../spec-builder.ts';
 // @ts-expect-error JavaScript module intentionally has no declaration file.
-import { PHASES } from '../../scripts/migrate/native-delivery-gates.mjs';
+import { PHASES, PARITY, unlaunchedCommand } from '../../scripts/migrate/native-delivery-gates.mjs';
 
 type PhaseConfig = {
   slug: string;
@@ -177,13 +177,17 @@ function gate(action: string, extra = ''): string {
  * did, so a red result flows into the repair owner built to answer it; the
  * verdict is journaled in `evidence/<name>.json` for the `*-final` gate.
  */
-const parityCommands: Record<string, string> = {
-  'parity-orch-to-worker': 'npx tsx tests/parity/orch-to-worker.ts',
-  'parity-multi-worker': 'npx tsx tests/parity/multi-worker.ts',
-  'parity-broadcast': 'npx tsx tests/parity/broadcast.ts',
-  'parity-continuity-handoff': 'npx tsx tests/parity/continuity-handoff.ts',
-  'parity-stability-soak': 'npx tsx tests/parity/stability-soak.ts',
-};
+/**
+ * Imported, never restated. `require-green`/`accept` compare each recorded
+ * evidence file against the command the contract names, so a second copy of
+ * these strings here would be a gate that fails on a typo rather than on a
+ * regression. Same reason `unlaunchedCommand` is imported below.
+ */
+const parityCommands = PARITY as Record<string, string>;
+
+function shellArg(value: string): string {
+  return `'${value.replaceAll("'", `'"'"'`)}'`;
+}
 
 function record(
   name: string,
@@ -191,8 +195,8 @@ function record(
   markers?: { expect?: string[]; forbid?: string[]; retryOnRed?: number }
 ): string {
   const encoded = Buffer.from(command, 'utf8').toString('base64');
-  const expect = markers?.expect?.length ? ` --expect ${markers.expect.join(',')}` : '';
-  const forbid = markers?.forbid?.length ? ` --forbid ${markers.forbid.join(',')}` : '';
+  const expect = markers?.expect?.length ? ` --expect ${shellArg(markers.expect.join(','))}` : '';
+  const forbid = markers?.forbid?.length ? ` --forbid ${shellArg(markers.forbid.join(','))}` : '';
   const retry = markers?.retryOnRed ? ` --retry-on-red ${markers.retryOnRed}` : '';
   return gate('record', `--name ${name}${expect}${forbid}${retry} --command-base64 ${encoded}`);
 }
@@ -622,7 +626,7 @@ if (CONFIG.rust) {
     'invariant-tests',
     record(
       'invariant-tests',
-      `${CARGO} test -p agent-relay-broker --test ${path
+      `${CARGO} test -p agent-relay-broker --features seam-probe --test ${path
         .basename(CONFIG.invariantTestFile ?? 'crates/broker/tests/delivery_seam_invariants.rs')
         .replace(/\.rs$/, '')}`,
       { forbid: ['0 passed'] }
@@ -651,7 +655,7 @@ if (CONFIG.rust) {
       record('rust-fmt', `${CARGO} fmt --all -- --check`),
       record('rust-clippy', `${CARGO} clippy --all-targets -- -D warnings`),
       record('rust-build', `${CARGO} build --release --bin agent-relay-broker`),
-      record('invariant-tests', `${CARGO} test -p agent-relay-broker`),
+      record('invariant-tests', `${CARGO} test -p agent-relay-broker --features seam-probe --test delivery_seam_invariants`),
     ].join('\n'),
     ['repair-rust'],
     5_400_000
@@ -757,14 +761,16 @@ det('parity-assert', gate('require-green', `--names ${parityNames.join(',')}`), 
 
 let evidenceReady = 'parity-assert';
 const nativeNames = [...Object.keys(CONFIG.evals ?? {}), ...Object.keys(CONFIG.e2e ?? {})];
+const nativeCommands = { ...(CONFIG.evals ?? {}), ...(CONFIG.e2e ?? {}) };
+const nativeRecord = (name: string): string =>
+  record(name, nativeCommands[name]!, {
+    ...(Object.hasOwn(CONFIG.evals ?? {}, name)
+      ? { expect: ['delivery=100%', 'scenarios='] }
+      : {}),
+    forbid: ['# SKIP', 'skipped'],
+  });
 if (nativeNames.length > 0) {
-  const commands = { ...(CONFIG.evals ?? {}), ...(CONFIG.e2e ?? {}) };
-  det(
-    'native-evidence',
-    nativeNames.map((name) => record(name, commands[name]!, { forbid: ['# SKIP'] })).join('\n'),
-    ['parity-assert'],
-    10_800_000
-  );
+  det('native-evidence', nativeNames.map(nativeRecord).join('\n'), ['parity-assert'], 10_800_000);
   agentStep({
     id: 'repair-native-evidence',
     agent: 'codex-fixer',
@@ -773,16 +779,21 @@ if (nativeNames.length > 0) {
     task: [
       ...HOUSE_RULES,
       `Read ${nativeNames.map((name) => `${ART}/evidence/${name}.json`).join(', ')}.`,
+      'A configured delivery-rate or scenario floor failure is a phase failure for this gate. The deterministic',
+      'native-evidence-final step reruns the real suites after this repair step, so',
+      'never rerun a green native suite from inside the agent step.',
       'These run against real CLIs (RELAY_INTEGRATION_REAL_CLI=1). A skipped case is a red case here:',
       'a suite that skipped is a suite that proved nothing.',
       'If a vendor CLI is genuinely unavailable or its credential is exhausted, that is an external',
       `blocker: write ${ART}/BLOCKED_NO_COMMIT.md naming the exact CLI, version and error, and stop.`,
+      'For Codex, do not equate the first PATH binary with the queue transport: the desktop app can',
+      'bundle a newer queue-capable codex, and the unlaunched-session resolver is authoritative.',
       'Do not stub the vendor to manufacture a pass.',
     ],
   });
   det(
     'native-evidence-final',
-    nativeNames.map((name) => record(name, commands[name]!, { forbid: ['# SKIP'] })).join('\n'),
+    nativeNames.map(nativeRecord).join('\n'),
     ['repair-native-evidence'],
     10_800_000
   );
@@ -795,7 +806,20 @@ if (nativeNames.length > 0) {
   evidenceReady = 'native-evidence-assert';
 }
 
-det('unlaunched-gate', recordedGate('unlaunched-gate', 'unlaunched-gate'), [evidenceReady], 900_000);
+const unlaunchedScenarioNames = Array.isArray(CONFIG.unlaunched)
+  ? CONFIG.unlaunched.map((cli) => `unlaunched-${cli}-delivery`)
+  : [];
+const unlaunchedScenarioRecord = (name: string): string => {
+  const cli = name.slice('unlaunched-'.length, -'-delivery'.length);
+  return record(name, unlaunchedCommand(cli) as string, { forbid: ['# SKIP'] });
+};
+const unlaunchedEvidenceBlock = (structuralName: string): string =>
+  [
+    ...unlaunchedScenarioNames.map(unlaunchedScenarioRecord),
+    recordedGate(structuralName, 'unlaunched-gate'),
+  ].join('\n');
+
+det('unlaunched-gate', unlaunchedEvidenceBlock('unlaunched-gate'), [evidenceReady], 3_600_000);
 agentStep({
   id: 'repair-unlaunched',
   agent: 'claude-fixer',
@@ -803,7 +827,10 @@ agentStep({
   retries: 2,
   task: [
     ...HOUSE_RULES,
-    `Read ${ART}/evidence/unlaunched-gate.json. If its verdict is green, DO NOTHING and say so.`,
+    `Read ${[
+      ...unlaunchedScenarioNames.map((name) => `${ART}/evidence/${name}.json`),
+      `${ART}/evidence/unlaunched-gate.json`,
+    ].join(', ')}. If every verdict is green, DO NOTHING and say so.`,
     'A phase with no native route yet reports `not-required`, and that is the correct answer for it —',
     'there is no unlaunched session to deliver into until a backend exists. Do not invent a scenario',
     'to satisfy a gate that is already satisfied.',
@@ -814,13 +841,13 @@ agentStep({
 });
 det(
   'unlaunched-gate-final',
-  recordedGate('unlaunched-gate-final', 'unlaunched-gate'),
+  unlaunchedEvidenceBlock('unlaunched-gate-final'),
   ['repair-unlaunched'],
-  900_000
+  3_600_000
 );
 det(
   'unlaunched-assert',
-  gate('require-green', '--names unlaunched-gate-final'),
+  gate('require-green', `--names ${['unlaunched-gate-final', ...unlaunchedScenarioNames].join(',')}`),
   ['unlaunched-gate-final'],
   300_000
 );
@@ -947,15 +974,14 @@ det(
           record('rust-fmt', `${CARGO} fmt --all -- --check`),
           record('rust-clippy', `${CARGO} clippy --all-targets -- -D warnings`),
           record('rust-build', `${CARGO} build --release --bin agent-relay-broker`),
-          record('invariant-tests', `${CARGO} test -p agent-relay-broker`),
+          record('invariant-tests', `${CARGO} test -p agent-relay-broker --features seam-probe --test delivery_seam_invariants`),
         ]
       : []),
     record('ts-typecheck', 'npm run typecheck'),
     record('unit-tests', VITEST),
     ...parityNames.map(parityRecord),
-    ...nativeNames.map((name) =>
-      record(name, { ...(CONFIG.evals ?? {}), ...(CONFIG.e2e ?? {}) }[name]!, { forbid: ['# SKIP'] })
-    ),
+    ...nativeNames.map(nativeRecord),
+    ...unlaunchedScenarioNames.map(unlaunchedScenarioRecord),
     recordedGate('edit-gate-final', 'edit-gate'),
     recordedGate('manifest-gate-final', 'manifest-gate'),
     recordedGate('targeted-gate-final', 'targeted-gate'),
@@ -996,7 +1022,7 @@ const signoffTask = (provider: 'claude' | 'codex'): string[] => [
   '  "parityAssessment": "non-empty",',
   '  "findings": [{ "id": "stable-id", "severity": "critical|high|medium|low", "issue": "...", "requiredFix": "..." }] }',
   'Use verdict pass only with an empty findings array.',
-  `Finish by printing NATIVE_DELIVERY_SIGNOFF provider=${provider}.`,
+  'The JSON artifact is the signoff result. No prose marker is required.',
 ];
 
 for (const provider of ['claude', 'codex'] as const) {
@@ -1007,14 +1033,16 @@ for (const provider of ['claude', 'codex'] as const) {
     retries: 1,
     recoveryMode: 'inspect',
     permissions: permissions(`${provider}-signoff`),
-    verification: { type: 'output_contains', value: `NATIVE_DELIVERY_SIGNOFF provider=${provider}` },
   });
 }
 
 // ─────────────────────────── 10. accept, then commit ───────────────────────────
 
 /**
- * Acceptance recomputes the verdict from evidence and both signoffs. The repair
+ * Acceptance recomputes the verdict from evidence and both signoff JSON files,
+ * including their schema, provider, sealed digest, verdict, and findings. The
+ * agent's stdout is deliberately not a gate: a reviewer that writes a valid
+ * artifact but omits a ceremonial marker must not burn its retry budget. The repair
  * loop ends here on purpose: a failed final gate is never handed back to a
  * reviewer, because that would mutate evidence after independent review.
  */

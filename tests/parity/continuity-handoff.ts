@@ -17,6 +17,7 @@ import {
 } from '../benchmarks/harness.js';
 
 const DELIVERY_TIMEOUT_MS = 15_000;
+const ECHO_CLI = "sh -c 'stty -echo; cat'";
 
 async function main(): Promise<void> {
   console.log('=== Parity Test: Continuity Handoff (Spawn/Release Cycle) ===\n');
@@ -34,7 +35,7 @@ async function main(): Promise<void> {
     console.log('1. First spawn cycle...');
     await client.spawnPty({
       name: agentName,
-      cli: 'cat',
+      cli: ECHO_CLI,
       channels: ['general'],
     });
     console.log(`   Spawned: ${agentName}`);
@@ -83,7 +84,7 @@ async function main(): Promise<void> {
     console.log('3. Re-spawning with same name...');
     await client.spawnPty({
       name: agentName,
-      cli: 'cat',
+      cli: ECHO_CLI,
       channels: ['general'],
     });
     console.log(`   Re-spawned: ${agentName}`);

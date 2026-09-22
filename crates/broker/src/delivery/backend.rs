@@ -2,6 +2,7 @@ use std::collections::{HashSet, VecDeque};
 use std::fmt;
 use std::future::Future;
 use std::pin::Pin;
+use std::time::{Duration, Instant};
 
 use crate::ids::{DeliveryId, WorkerName};
 use crate::protocol::RelayDelivery;
@@ -13,12 +14,31 @@ pub type DeliveryBackendFuture<'a, T> = Pin<Box<dyn Future<Output = T> + Send + 
 pub struct RouteId(String);
 
 impl RouteId {
+    /// The broker-owned PTY route. Named so the one place that has to reason
+    /// about "does this transport outlive the broker" cannot drift from the
+    /// string the PTY backend reports.
+    pub const PTY: &'static str = "pty";
+
     pub fn new(value: impl Into<String>) -> Self {
         Self(value.into())
     }
 
     pub fn as_str(&self) -> &str {
         &self.0
+    }
+
+    /// Whether a message this route accepted can still reach the recipient
+    /// after the broker process that wrote it is gone.
+    ///
+    /// The PTY route writes into a child the broker owns: the child dies with
+    /// the broker, so an un-acknowledged write provably never arrived and
+    /// redelivering it after a restart is correct. Every native route hands the
+    /// message to a durable store owned by the vendor's own session — Codex's
+    /// `queued_items` table, for instance — which outlives both the worker and
+    /// the broker. Redelivering there is a double delivery, so a restart must
+    /// remember it (seam rule 2).
+    pub fn survives_broker_restart(&self) -> bool {
+        self.0 != Self::PTY
     }
 }
 
@@ -201,12 +221,26 @@ pub enum SendStatus {
 }
 
 /// Result recorded for a send that was accepted by a specific route.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone)]
 pub struct SendReceipt {
     pub delivery_id: DeliveryId,
     pub route: RouteId,
     pub status: SendStatus,
+    recorded_at: Instant,
 }
+
+// `recorded_at` is internal settlement bookkeeping, not part of a receipt's
+// externally observable identity. Keep equality stable for callers and tests
+// that construct equivalent receipts at different instants.
+impl PartialEq for SendReceipt {
+    fn eq(&self, other: &Self) -> bool {
+        self.delivery_id == other.delivery_id
+            && self.route == other.route
+            && self.status == other.status
+    }
+}
+
+impl Eq for SendReceipt {}
 
 impl SendReceipt {
     pub fn new(delivery_id: DeliveryId, route: RouteId, status: SendStatus) -> Self {
@@ -214,7 +248,12 @@ impl SendReceipt {
             delivery_id,
             route,
             status,
+            recorded_at: Instant::now(),
         }
+    }
+
+    pub fn age(&self) -> Duration {
+        self.recorded_at.elapsed()
     }
 }
 
@@ -485,12 +524,68 @@ impl DeliverySeam {
         self.recorded_route(delivery_id).is_some() || self.evicted.contains(delivery_id)
     }
 
+    /// Re-seed a receipt for a delivery a PREVIOUS broker lifetime handed to a
+    /// route that outlives the broker.
+    ///
+    /// The seam's memory is process-local and starts empty, but "already handed
+    /// to a transport" is not a process-local fact for a native route: the
+    /// message sits in the vendor's own durable queue whether this broker is
+    /// running or not. Without this, a reloaded pending snapshot classifies
+    /// `Fresh` and the backend queues the same body a second time — rule 2,
+    /// broken by a restart rather than by a transport fault.
+    ///
+    /// Deliberately restores the receipt as `HandedOver` and not as an
+    /// acknowledgement: nothing was observed, and the settlement poll must
+    /// still run. `recorded_at` necessarily restarts from now — an `Instant`
+    /// has no meaning across processes — so the settlement window is measured
+    /// from the reload, not from the original write.
+    ///
+    /// Callers must only pass a route for which
+    /// [`RouteId::survives_broker_restart`] is true; a PTY receipt restored
+    /// here would strand a message the dead child never received.
+    pub fn restore_handed_over(&mut self, delivery_id: DeliveryId, route: RouteId) {
+        debug_assert!(
+            route.survives_broker_restart(),
+            "restoring a receipt for a route that died with the broker would strand the message"
+        );
+        if self.was_sent(&delivery_id) {
+            return;
+        }
+        self.record_receipt(SendReceipt::new(
+            delivery_id,
+            route,
+            SendStatus::HandedOver(HandoverState::HandedOver),
+        ));
+    }
+
+    /// Re-seed the tombstone for a delivery a previous broker lifetime handed
+    /// to a transport whose route is no longer known.
+    ///
+    /// Same fact as [`Self::restore_handed_over`] with the route missing, which
+    /// is the shape an eviction leaves behind. [`Self::was_sent`] answers true
+    /// and [`Self::send`] answers [`SendOutcome::Forgotten`], so the caller
+    /// settles in doubt instead of writing again.
+    pub fn restore_forgotten(&mut self, delivery_id: DeliveryId) {
+        if self.was_sent(&delivery_id) {
+            return;
+        }
+        self.evicted.insert(delivery_id);
+    }
+
     pub fn recorded_route(&self, delivery_id: &DeliveryId) -> Option<&RouteId> {
         self.receipts
             .iter()
             .rev()
             .find(|receipt| &receipt.delivery_id == delivery_id)
             .map(|receipt| &receipt.route)
+    }
+
+    pub fn recorded_age(&self, delivery_id: &DeliveryId) -> Option<Duration> {
+        self.receipts
+            .iter()
+            .rev()
+            .find(|receipt| &receipt.delivery_id == delivery_id)
+            .map(SendReceipt::age)
     }
 
     fn record_receipt(&mut self, receipt: SendReceipt) {
@@ -505,13 +600,14 @@ impl DeliverySeam {
         self.receipts.push_back(receipt);
     }
 
-    fn replace_receipt(&mut self, receipt: SendReceipt) {
+    fn replace_receipt(&mut self, mut receipt: SendReceipt) {
         if let Some(recorded) = self
             .receipts
             .iter_mut()
             .rev()
             .find(|recorded| recorded.delivery_id == receipt.delivery_id)
         {
+            receipt.recorded_at = recorded.recorded_at;
             *recorded = receipt;
         } else {
             // Defensive fallback: the seam is exclusively borrowed while a

@@ -116,12 +116,23 @@ pub(crate) enum DeliverDisposition {
     /// be visible. Silently advancing and telling nobody is the one option with
     /// nothing to recommend it.
     AdvancedPastUnobserved,
+    /// A worker teardown removed a pending delivery that had ALREADY been
+    /// handed to a transport, so the withheld ack could neither be released
+    /// (nothing was observed) nor safely allowed to drive a redelivery (the
+    /// message may already be sitting in the recipient's own durable queue).
+    ///
+    /// Distinct from `SurfaceFailed`: that frame never crossed a transport
+    /// boundary. This one did, and the dead letter it produces is marked
+    /// non-redeliverable for exactly that reason — so the count here is the
+    /// operator-visible record of an ack that will never be sent.
+    DroppedInDoubt,
 }
 
 impl DeliverDisposition {
     fn as_str(self) -> &'static str {
         match self {
             Self::AdvancedPastUnobserved => "advanced_past_unobserved",
+            Self::DroppedInDoubt => "dropped_in_doubt",
             Self::QueuedForInjection => "queued_for_injection",
             Self::SurfacedAndAcked => "surfaced_and_acked",
             Self::HeldForManualFlush => "held_for_manual_flush",
@@ -236,6 +247,7 @@ struct AgentStats {
     rejected_identity: u64,
     rejected_sequence_gap: u64,
     advanced_past_unobserved: u64,
+    dropped_in_doubt: u64,
     last_deliver_at_ms: u64,
     last_queued_for_injection_at_ms: u64,
     /// Strictly increasing rank of the last time this row was touched. See
@@ -265,6 +277,7 @@ impl AgentStats {
                 "rejected_identity": self.rejected_identity,
                 "rejected_sequence_gap": self.rejected_sequence_gap,
                 "advanced_past_unobserved": self.advanced_past_unobserved,
+                "dropped_in_doubt": self.dropped_in_doubt,
             },
             "last_deliver_at_ms": non_zero(self.last_deliver_at_ms),
             "last_queued_for_injection_at_ms": non_zero(self.last_queued_for_injection_at_ms),
@@ -294,6 +307,7 @@ struct Counters {
     rejected_identity: AtomicU64,
     rejected_sequence_gap: AtomicU64,
     advanced_past_unobserved: AtomicU64,
+    dropped_in_doubt: AtomicU64,
     connects: AtomicU64,
     disconnects: AtomicU64,
     /// Whether a node-control session is currently established.
@@ -481,6 +495,7 @@ impl NodeDeliveryProbe {
             DeliverDisposition::RejectedIdentity => &self.counters.rejected_identity,
             DeliverDisposition::RejectedSequenceGap => &self.counters.rejected_sequence_gap,
             DeliverDisposition::AdvancedPastUnobserved => &self.counters.advanced_past_unobserved,
+            DeliverDisposition::DroppedInDoubt => &self.counters.dropped_in_doubt,
         };
         counter.fetch_add(1, Ordering::Relaxed);
         let touch = self.next_agent_touch();
@@ -510,6 +525,7 @@ impl NodeDeliveryProbe {
                 DeliverDisposition::RejectedIdentity => stats.rejected_identity += 1,
                 DeliverDisposition::RejectedSequenceGap => stats.rejected_sequence_gap += 1,
                 DeliverDisposition::AdvancedPastUnobserved => stats.advanced_past_unobserved += 1,
+                DeliverDisposition::DroppedInDoubt => stats.dropped_in_doubt += 1,
             }
         }
     }
@@ -641,6 +657,7 @@ impl NodeDeliveryProbe {
                 "rejected_identity": load(&c.rejected_identity),
                 "rejected_sequence_gap": load(&c.rejected_sequence_gap),
                 "advanced_past_unobserved": load(&c.advanced_past_unobserved),
+                "dropped_in_doubt": load(&c.dropped_in_doubt),
             },
             "acks": {
                 "enqueued": load(&c.ack_enqueued),

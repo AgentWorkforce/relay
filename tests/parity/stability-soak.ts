@@ -19,6 +19,7 @@ import {
 const QUICK = process.argv.includes('--quick');
 const DURATION_MS = QUICK ? 15_000 : 60_000; // 15s quick, 60s full
 const INTERVAL_MS = 200; // 5 msgs/sec
+const ECHO_CLI = "sh -c 'stty -echo; cat'";
 
 async function main(): Promise<void> {
   const expectedMsgs = Math.floor(DURATION_MS / INTERVAL_MS);
@@ -44,7 +45,7 @@ async function main(): Promise<void> {
     console.log('1. Spawning worker...');
     await client.spawnPty({
       name: workerName,
-      cli: 'cat',
+      cli: ECHO_CLI,
       channels: ['general'],
     });
     await new Promise((r) => setTimeout(r, 500));

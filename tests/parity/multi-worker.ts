@@ -16,6 +16,7 @@ import {
 } from '../benchmarks/harness.js';
 
 const WORKER_COUNT = 3;
+const ECHO_CLI = "sh -c 'stty -echo; cat'";
 
 async function main(): Promise<void> {
   console.log('=== Parity Test: Multiple Workers Communication ===\n');
@@ -35,7 +36,7 @@ async function main(): Promise<void> {
       const name = randomName(`mw-${i}`);
       await client.spawnPty({
         name,
-        cli: 'cat',
+        cli: ECHO_CLI,
         channels: ['general'],
       });
       workers.push(name);

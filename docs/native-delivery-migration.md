@@ -151,6 +151,39 @@ to queued messages, so carry a marker in the message text and match on that.
 
 _Effort: medium, mostly discovery. Exit: parity + `eval:matrix` for codex._
 
+> **Revised after phase 1's signoff (read this before phase 2).**
+>
+> Two things the seam's four rules turn out to require from every route that
+> outlives the broker, both found by adversarial signoff after the phase was
+> otherwise green:
+>
+> 1. **"Already handed to a transport" is not a process-local fact.** The
+>    `DeliverySeam`'s receipt memory is rebuilt empty at startup and was
+>    consulted at exactly one disposal site. For a PTY child that was sound —
+>    the transport died with the broker, so an un-acked write provably never
+>    arrived. A native route breaks it: the message is durable in the vendor's
+>    own store and the session outlives both the worker and the broker, so a
+>    worker teardown or a restart that treats the delivery as never-arrived
+>    re-sends a landed message. Phase 1 persists the accepted route on the
+>    pending delivery, rehydrates the seam from that snapshot before the first
+>    maintenance tick, and routes every `take_pending_for_worker` site through
+>    the same `was_sent` test the retry-cap branch uses. **Phase 2's Claude
+>    routes have the same shape and inherit both requirements.**
+> 2. **Durable presence is not a read receipt.** Captured against
+>    `codex-cli 0.155.0-alpha.9.2`: `codex queue` writes a row to
+>    `queue_1.sqlite` and NOTHING to the thread rollout until a live turn
+>    consumes the item. So the queue store answers "delivered" and the rollout
+>    answers "read", and only the second may publish a Relaycast read receipt
+>    (rule 4). A negative filter — reject assistant/reasoning/summary records —
+>    cannot make that distinction; the matcher has to positively identify the
+>    record the vendor writes for a consumed user input. See decision D4 in the
+>    phase-1 artifact set.
+>
+> Mechanically: mutation transcripts are now recorded by
+> `scripts/migrate/mutation-proof.mjs` and carry the sha256 of every source
+> they guard, because phase 1's transcripts were recorded before a later repair
+> round rewrote the code they were proving and no gate could see it.
+
 ### Phase 2 — Claude Code
 
 Two targets that do not overlap: terminal sessions via the inbox socket, cloud

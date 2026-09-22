@@ -198,6 +198,28 @@
           "coversCategories": ["broker", "agent-management", "local-agents"]
         },
         {
+          "id": "unlaunched-codex-delivery",
+          "title": "A relay message reaches a bare codex session relay did not launch, exactly once",
+          "command": [
+            "npx",
+            "vitest",
+            "run",
+            "--config",
+            "tests/e2e/vitest.unlaunched.config.ts",
+            "tests/e2e/unlaunched/unlaunched-codex-delivery.test.ts"
+          ],
+          "timeoutSeconds": 900,
+          "prSetup": ["build-core", "build-broker"],
+          "environment": {
+            "AGENT_RELAY_BIN": "{{brokerBinary}}"
+          },
+          "forbidOutput": ["# SKIP", "skipped", "SKIP", "no tests"],
+          "evidence": "integration",
+          "coversCategories": ["broker"],
+          "coversFeatures": ["codex-queue-delivery"],
+          "issues": [1812, 1832]
+        },
+        {
           "id": "spawn-release-soak",
           "title": "Repeated spawn, task completion, release and same-name reclaim",
           "kind": "coverage-gap",

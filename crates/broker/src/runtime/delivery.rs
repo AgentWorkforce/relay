@@ -42,6 +42,145 @@ impl std::fmt::Display for TerminalInDoubtError {
 
 impl std::error::Error for TerminalInDoubtError {}
 
+/// What the [`DeliverySeam`](crate::delivery::DeliverySeam) knew about this
+/// delivery's transport when the pending snapshot was written.
+///
+/// The seam's receipt memory is process-local and starts empty, but for a
+/// native route "already handed to a transport" is not a process-local fact:
+/// the body sits in the vendor's own durable queue whether this broker is
+/// running or not. Carrying the route on the `PendingDelivery` is what lets a
+/// reloaded snapshot answer `AlreadySent` instead of `Fresh`, and what lets a
+/// teardown that happens with no seam in hand still tell a possible write from
+/// one that never started.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case", tag = "kind")]
+pub(crate) enum PersistedDeliveryRoute {
+    /// The seam recorded this route for the delivery.
+    Route { route: String },
+    /// The seam recorded a route and has since evicted the receipt, so the
+    /// route is unknown. NOT the same as never-sent (seam rule 2).
+    Forgotten,
+}
+
+/// Label used wherever a delivery is known to have been written but the route
+/// it took is no longer recoverable.
+pub(crate) const FORGOTTEN_ROUTE_LABEL: &str = "a route the seam has since forgotten";
+
+impl PersistedDeliveryRoute {
+    /// The route name, when one is still known.
+    pub(crate) fn route(&self) -> Option<&str> {
+        match self {
+            Self::Route { route } => Some(route.as_str()),
+            Self::Forgotten => None,
+        }
+    }
+
+    /// Operator-facing label for this record.
+    pub(crate) fn label(&self) -> &str {
+        self.route().unwrap_or(FORGOTTEN_ROUTE_LABEL)
+    }
+
+    /// Whether the message this record describes can still reach the recipient
+    /// after the broker that wrote it is gone.
+    ///
+    /// A forgotten route fails closed: not knowing where a message went is not
+    /// evidence it did not go.
+    pub(crate) fn survives_broker_restart(&self) -> bool {
+        match self {
+            Self::Route { route } => {
+                crate::delivery::RouteId::new(route.as_str()).survives_broker_restart()
+            }
+            Self::Forgotten => true,
+        }
+    }
+}
+
+/// The seam's current answer for one delivery, in persistable form.
+pub(crate) fn seam_send_record(
+    seam: &crate::delivery::DeliverySeam,
+    delivery_id: &DeliveryId,
+) -> Option<PersistedDeliveryRoute> {
+    if let Some(route) = seam.recorded_route(delivery_id) {
+        return Some(PersistedDeliveryRoute::Route {
+            route: route.as_str().to_string(),
+        });
+    }
+    seam.was_sent(delivery_id)
+        .then_some(PersistedDeliveryRoute::Forgotten)
+}
+
+/// Stamp the seam's answer onto a pending delivery, never downgrading a known
+/// route to `Forgotten` or to nothing. Eviction loses the route from the seam's
+/// bounded memory; it does not make a route the snapshot already recorded less
+/// true.
+pub(crate) fn record_sent_route(
+    pending: &mut PendingDelivery,
+    record: Option<PersistedDeliveryRoute>,
+) {
+    let Some(record) = record else { return };
+    if matches!(
+        pending.sent_route,
+        Some(PersistedDeliveryRoute::Route { .. })
+    ) {
+        return;
+    }
+    pending.sent_route = Some(record);
+}
+
+/// Re-seed a freshly built [`DeliverySeam`](crate::delivery::DeliverySeam) from
+/// a reloaded pending snapshot.
+///
+/// Only routes that outlive the broker are restored. A PTY receipt is
+/// deliberately NOT restored: that child died with the broker, so its un-acked
+/// write provably never arrived and redelivering it is the correct, and the
+/// pre-existing, behaviour. Restoring it would silently convert every
+/// interrupted PTY delivery into an in-doubt dead letter.
+pub(crate) fn rehydrate_delivery_seam(
+    seam: &mut crate::delivery::DeliverySeam,
+    deliveries: &HashMap<DeliveryId, PendingDelivery>,
+) -> usize {
+    let mut restored = 0usize;
+    for (delivery_id, pending) in deliveries {
+        let Some(record) = pending.sent_route.as_ref() else {
+            continue;
+        };
+        if !record.survives_broker_restart() {
+            continue;
+        }
+        match record.route() {
+            Some(route) => {
+                seam.restore_handed_over(delivery_id.clone(), crate::delivery::RouteId::new(route))
+            }
+            None => seam.restore_forgotten(delivery_id.clone()),
+        }
+        restored += 1;
+    }
+    restored
+}
+
+/// Whether this delivery was ever handed to a transport, and under what label.
+///
+/// `Some(label)` is the one answer that forbids treating the message as never
+/// having arrived. Three sources, all of which mean "a write may have
+/// happened": the seam still holds a receipt, the seam remembers evicting one,
+/// or the snapshot recorded a route in an earlier broker lifetime.
+pub(crate) fn handed_over_route_label(
+    seam: &crate::delivery::DeliverySeam,
+    pending: &PendingDelivery,
+) -> Option<String> {
+    let delivery_id = &pending.delivery.delivery_id;
+    if let Some(route) = seam.recorded_route(delivery_id) {
+        return Some(route.as_str().to_string());
+    }
+    if seam.was_sent(delivery_id) {
+        return Some(FORGOTTEN_ROUTE_LABEL.to_string());
+    }
+    pending
+        .sent_route
+        .as_ref()
+        .map(|record| record.label().to_string())
+}
+
 #[derive(Debug, Clone, PartialEq)]
 pub(crate) struct PendingDelivery {
     pub(super) worker_name: WorkerName,
@@ -72,6 +211,10 @@ pub(crate) struct PendingDelivery {
     /// restart cannot make a higher pending sequence look like a safe new
     /// baseline.
     pub(super) withheld_fleet_ack_floor: Option<u64>,
+    /// The route the seam handed this delivery to, if any. See
+    /// [`PersistedDeliveryRoute`]. `None` means no transport has ever been
+    /// offered this body.
+    pub(super) sent_route: Option<PersistedDeliveryRoute>,
 }
 
 /// Serializable snapshot of pending deliveries for crash recovery.
@@ -95,6 +238,13 @@ pub(crate) struct PersistedPendingDelivery {
     pub(super) withheld_fleet_ack: Option<crate::fleet_wire::Deliver>,
     #[serde(default)]
     pub(super) withheld_fleet_ack_floor: Option<u64>,
+    /// See [`PendingDelivery::sent_route`]. `#[serde(default)]` so a snapshot
+    /// written before this field existed loads as "no transport was ever
+    /// offered this body" — which is what those snapshots meant, because the
+    /// only route that existed when they were written was the PTY, and a PTY
+    /// write never survives the restart that produced the snapshot.
+    #[serde(default)]
+    pub(super) sent_route: Option<PersistedDeliveryRoute>,
 }
 
 /// Return the immutable fleet identity and the earliest sequence this pending
@@ -286,6 +436,7 @@ pub(crate) fn save_pending_deliveries(
             last_error: pd.last_error.clone(),
             withheld_fleet_ack: pd.withheld_fleet_ack.clone(),
             withheld_fleet_ack_floor: pd.withheld_fleet_ack_floor,
+            sent_route: pd.sent_route.clone(),
         })
         .collect();
     crate::util::fs::write_json_atomic(path, &persisted)
@@ -336,6 +487,11 @@ pub(crate) fn load_pending_deliveries(path: &Path) -> HashMap<DeliveryId, Pendin
                     // "nothing withheld" state those deliveries actually had.
                     withheld_fleet_ack: p.withheld_fleet_ack,
                     withheld_fleet_ack_floor: p.withheld_fleet_ack_floor,
+                    // Restored so the seam can be re-seeded before the first
+                    // maintenance tick. Without it a native delivery that was
+                    // already written into Codex's durable queue classifies
+                    // `Fresh` on reload and is queued a second time.
+                    sent_route: p.sent_route,
                 },
             )
         })
@@ -687,7 +843,7 @@ pub(crate) fn queue_inbound_for_delivery_mode(
     worker_name: &str,
     ctx: InboundContext<'_>,
 ) -> InboundQueueResult {
-    if !workers.has_worker(worker_name) {
+    if !workers.has_delivery_target(worker_name) {
         return InboundQueueResult {
             outcome: InboundQueueOutcome::WorkerMissing,
             evicted_from: None,
@@ -711,7 +867,25 @@ pub(crate) fn queue_inbound_for_delivery_mode(
             evicted_from: None,
         };
     }
-    let should_drain = state.should_drain_immediately();
+    // A native-only target must never park. The manual-flush drain is
+    // `try_inject_pending_relay_message_once`, which calls
+    // `WorkerRegistry::deliver` — a path that knows only broker-owned
+    // PTY/headless workers and answers pre-write "unknown worker" for an
+    // attached Codex session. A parked message would therefore fail on every
+    // flush, stay at the head of the FIFO, and block everything behind it:
+    // permanently undeliverable rather than held. `DrainNow` goes through the
+    // seam (`try_inject_pending_relay_message` → `retry_pending_delivery`),
+    // which is the only path that can select the codex queue route.
+    let native_only = workers.is_native_only_delivery_target(worker_name);
+    if native_only && state.mode == crate::types::InboundDeliveryMode::ManualFlush {
+        tracing::warn!(
+            target = "agent_relay::broker",
+            worker = %worker_name,
+            from = %ctx.from,
+            "draining inbound message for a native-only delivery target despite manual_flush:              the manual-flush drain cannot reach a native route"
+        );
+    }
+    let should_drain = native_only || state.should_drain_immediately();
     let queued_at_ms = chrono::Utc::now().timestamp_millis().max(0) as u64;
     let msg = PendingRelayMessage {
         from: ctx.from.to_string(),
@@ -994,6 +1168,7 @@ pub(crate) async fn insert_and_attempt_delivery(
             last_error: None,
             withheld_fleet_ack,
             withheld_fleet_ack_floor,
+            sent_route: None,
         },
     );
 
@@ -1063,16 +1238,25 @@ pub(crate) async fn retry_pending_delivery(
     // recording and bounded eviction inert.
     seam: &mut crate::delivery::DeliverySeam,
 ) -> Result<DeliveryAttemptOutcome> {
-    let pending = match pending_deliveries.get(delivery_id) {
+    let mut pending = match pending_deliveries.get(delivery_id) {
         Some(pending) => pending.clone(),
         None => return Ok(DeliveryAttemptOutcome::Noop),
     };
+    // Mirror whatever the seam already knows onto the entry before doing
+    // anything with it, so a snapshot written at any point below carries the
+    // route. A delivery reloaded from disk arrives with its route already
+    // stamped and the seam re-seeded from it, so the two agree.
+    let known_route = seam_send_record(seam, delivery_id);
+    record_sent_route(&mut pending, known_route.clone());
+    if let Some(current) = pending_deliveries.get_mut(delivery_id) {
+        record_sent_route(current, known_route);
+    }
 
     // A local queue can outlive its broker and worker. Check absence before
     // retry exhaustion, and give a respawned recipient a fresh handoff budget.
     // Explicit release still moves its pending deliveries to dead letters.
     if pending.delivery.event_id.as_str().starts_with("local_")
-        && !workers.has_worker(&pending.worker_name)
+        && !workers.has_delivery_target(&pending.worker_name)
     {
         if let Some(current) = pending_deliveries.get_mut(delivery_id) {
             current.failed_attempts = 0;
@@ -1098,18 +1282,16 @@ pub(crate) async fn retry_pending_delivery(
         // whose ack never arrives returns `AlreadySent` on every later tick,
         // counting `failed_attempts` up to the cap without re-writing. It then
         // arrived here and was dead-lettered as freely redeliverable.
-        if seam.was_sent(delivery_id) {
-            // `was_sent`, not `recorded_route`. A receipt that has aged out of
-            // the seam's bounded memory leaves `recorded_route` answering
-            // `None` — the same answer it gives for a delivery that never
-            // reached a transport. Branching on route presence sent an
-            // evicted-but-written delivery down the freely-redeliverable path,
-            // restoring the double delivery this branch exists to prevent,
-            // under exactly the sustained load that causes eviction.
-            let route = seam
-                .recorded_route(delivery_id)
-                .map(|route| route.as_str().to_string())
-                .unwrap_or_else(|| "a route the seam has since forgotten".to_string());
+        // `was_sent`/`sent_route`, not `recorded_route`. A receipt that has
+        // aged out of the seam's bounded memory leaves `recorded_route`
+        // answering `None` — the same answer it gives for a delivery that
+        // never reached a transport. Branching on route presence sent an
+        // evicted-but-written delivery down the freely-redeliverable path,
+        // restoring the double delivery this branch exists to prevent, under
+        // exactly the sustained load that causes eviction. The snapshotted
+        // `sent_route` carries the same fact across a broker restart, where
+        // the seam's own memory started empty.
+        if let Some(route) = handed_over_route_label(seam, &removed) {
             let last_error = removed.last_error.clone().unwrap_or_else(|| {
                 format!(
                     "handed over to {route} and never acknowledged within {MAX_DELIVERY_RETRIES} retries"
@@ -1130,7 +1312,7 @@ pub(crate) async fn retry_pending_delivery(
         });
     }
 
-    if !workers.has_worker(&pending.worker_name) {
+    if !workers.has_delivery_target(&pending.worker_name) {
         let removed = pending_deliveries.remove(delivery_id).unwrap_or(pending);
         return Ok(DeliveryAttemptOutcome::Failed {
             pending: Box::new(removed),
@@ -1147,10 +1329,44 @@ pub(crate) async fn retry_pending_delivery(
         return Ok(DeliveryAttemptOutcome::Noop);
     }
 
+    let pty_fallback_available = workers.workers.contains_key(&pending.worker_name);
+    let pty_worker_can_steer = workers
+        .workers
+        .get(&pending.worker_name)
+        .is_some_and(|handle| matches!(handle.spec.runtime, AgentRuntime::Pty));
+    let mut codex_backend =
+        crate::delivery::codex_queue::CodexQueueBackend::for_worker(workers, &pending.worker_name);
+    let codex_selectable = codex_backend.is_selectable();
     let mut pty_backend = crate::delivery::pty::PtyDeliveryBackend::new(workers);
     let request =
         crate::delivery::SendRequest::relay(pending.worker_name.clone(), pending.delivery.clone());
-    match seam.send(&mut [&mut pty_backend], request).await {
+    let steer_requires_pty = matches!(pending.delivery.injection_mode, MessageInjectionMode::Steer)
+        && pty_worker_can_steer;
+    let send_result = if steer_requires_pty {
+        seam.send(&mut [&mut pty_backend], request).await
+    } else if codex_selectable && pty_fallback_available {
+        seam.send(&mut [&mut codex_backend, &mut pty_backend], request)
+            .await
+    } else if codex_selectable {
+        // Attached Codex sessions have no broker-owned worker route. The seam
+        // still treats an unavailable queue capability as pre-write, so this
+        // remains a refusal rather than a retry through a guessed transport.
+        seam.send(&mut [&mut codex_backend], request).await
+    } else {
+        seam.send(&mut [&mut pty_backend], request).await
+    };
+    // The seam's answer is authoritative the instant `send` returns — including
+    // for a committed error, where the provisional in-doubt receipt is
+    // deliberately kept. Stamp it before any arm below removes the entry, so
+    // every `removed`/`pending` copy that leaves this function carries it and
+    // no disposal path has to ask the seam a second time.
+    let sent_route = seam_send_record(seam, delivery_id);
+    record_sent_route(&mut pending, sent_route.clone());
+    if let Some(current) = pending_deliveries.get_mut(delivery_id) {
+        record_sent_route(current, sent_route);
+    }
+
+    match send_result {
         Ok(crate::delivery::SendOutcome::AlreadySent(_)) => {
             // NOT `Noop`. `Noop` leaves `next_retry_at` untouched, so once the
             // seam outlives a single call — which is the whole point of hoisting
@@ -1190,12 +1406,21 @@ pub(crate) async fn retry_pending_delivery(
                 last_error: "delivery route is in doubt after possible write".to_string(),
             })
         }
-        Ok(crate::delivery::SendOutcome::Fresh(_)) => {
+        Ok(crate::delivery::SendOutcome::Fresh(receipt)) => {
             if let Some(current) = pending_deliveries.get_mut(delivery_id) {
                 current.attempts = current.attempts.saturating_add(1);
                 current.failed_attempts = 0;
-                current.next_retry_at = Instant::now()
-                    + delivery_ack_timeout(&current.delivery.injection_mode, retry_interval);
+                // Native routes settle by polling the recipient's durable
+                // record. Start that poll on the normal retry cadence instead
+                // of inheriting the PTY Wait-mode acknowledgement timeout
+                // (five minutes), which would leave a landed queue message
+                // pending long after it was visible in the Codex thread.
+                let settlement_delay = post_send_settlement_delay(
+                    receipt.route.as_str(),
+                    &current.delivery.injection_mode,
+                    retry_interval,
+                );
+                current.next_retry_at = Instant::now() + settlement_delay;
                 current.last_error = None;
                 return Ok(DeliveryAttemptOutcome::Attempted {
                     worker_name: current.worker_name.clone(),
@@ -1271,6 +1496,18 @@ pub(crate) fn delivery_ack_timeout(
         }
     };
     std::cmp::max(retry_interval, minimum)
+}
+
+fn post_send_settlement_delay(
+    route: &str,
+    injection_mode: &MessageInjectionMode,
+    retry_interval: Duration,
+) -> Duration {
+    if route == "pty" {
+        delivery_ack_timeout(injection_mode, retry_interval)
+    } else {
+        retry_interval
+    }
 }
 
 pub(crate) async fn emit_delivery_attempt_outcome(
@@ -1481,34 +1718,104 @@ pub(crate) async fn emit_dropped_delivery_failures(
     reason: &str,
 ) -> Result<()> {
     for pending in dropped {
-        if pending.withheld_fleet_ack.is_some() {
-            tracing::info!(
-                target = "relay_broker::fleet",
-                worker = %pending.worker_name,
-                delivery_id = %pending.delivery.delivery_id,
-                reason = reason,
-                "dropping withheld fleet delivery_ack for a delivery dropped from the pending map"
-            );
-        }
-        // Notify best-effort: a send failure must not `?`-abort the loop and
-        // strand the remaining dropped deliveries out of the dead-letter store.
-        // The DLQ capture below runs regardless of the send's outcome.
-        let _ = send_broker_event(
-            sdk_out_tx,
-            BrokerEvent::MessageDeliveryFailed {
-                name: pending.worker_name.clone(),
-                delivery_id: Some(pending.delivery.delivery_id.clone()),
-                event_id: Some(pending.delivery.event_id.clone()),
-                from: pending.delivery.from.clone(),
-                to: pending.delivery.target.clone(),
-                attempts: pending.attempts,
-                last_error: reason.to_string(),
-            },
-        )
-        .await;
-        dead_letter_pending_delivery(sdk_out_tx, dead_letters, pending, reason).await;
+        emit_dropped_delivery_failure(sdk_out_tx, dead_letters, pending, reason).await;
     }
     Ok(())
+}
+
+/// Worker-teardown disposal that keeps the seam's in-doubt semantics.
+///
+/// The four teardown sites (agent release over the HTTP API and over Relaycast,
+/// permanent worker death, unsupervised worker exit) used to dead-letter every
+/// pending delivery with a bare reason string. That carries no
+/// [`IN_DOUBT_REASON_PREFIX`](crate::runtime::dead_letter::IN_DOUBT_REASON_PREFIX),
+/// so [`is_auto_redeliverable`](crate::runtime::dead_letter::is_auto_redeliverable)
+/// answers true and an operator — or the engine, via the dropped withheld ack —
+/// re-sends it.
+///
+/// That was sound while every route was a PTY child that died with the worker:
+/// the transport was gone, so "dropped" really did mean "never arrived". A
+/// native route breaks the assumption. A `codex queue` message is a row in
+/// Codex's own `queued_items` table; the session is not a broker child and
+/// outlives both the worker and the broker, so the message may well be
+/// delivered after relay has torn its record of it down. Re-sending it then is
+/// the double delivery seam rule 2 exists to forbid, and
+/// `docs/native-delivery-migration.md` names a release blocker.
+///
+/// So teardown now asks the same question the retry-cap branch asks — did this
+/// delivery ever reach a transport — and dead-letters a yes under the in-doubt
+/// prefix, recording the withheld fleet ack's fate on the node delivery probe
+/// instead of dropping it with nothing but a log line.
+pub(crate) async fn dispose_pending_deliveries_for_teardown(
+    sdk_out_tx: &mpsc::Sender<ProtocolEnvelope<Value>>,
+    dead_letters: &mut DeadLetterStore,
+    seam: &crate::delivery::DeliverySeam,
+    node_delivery_probe: &crate::node_delivery_probe::NodeDeliveryProbe,
+    dropped: &[PendingDelivery],
+    reason: &str,
+) -> Result<()> {
+    for pending in dropped {
+        let Some(route) = handed_over_route_label(seam, pending) else {
+            emit_dropped_delivery_failure(sdk_out_tx, dead_letters, pending, reason).await;
+            continue;
+        };
+        if let Some(deliver) = pending.withheld_fleet_ack.as_ref() {
+            node_delivery_probe.record_disposition(
+                deliver,
+                crate::node_delivery_probe::DeliverDisposition::DroppedInDoubt,
+            );
+        }
+        let in_doubt_reason = format!(
+            "{}{reason} after the delivery was handed over to {route}",
+            crate::runtime::dead_letter::IN_DOUBT_REASON_PREFIX
+        );
+        tracing::warn!(
+            target = "agent_relay::broker",
+            worker = %pending.worker_name,
+            delivery_id = %pending.delivery.delivery_id,
+            event_id = %pending.delivery.event_id,
+            route = %route,
+            reason = %reason,
+            "worker teardown dropped a delivery that had already reached a transport; \
+             dead-lettered in doubt without auto-redelivery"
+        );
+        emit_dropped_delivery_failure(sdk_out_tx, dead_letters, pending, &in_doubt_reason).await;
+    }
+    Ok(())
+}
+
+async fn emit_dropped_delivery_failure(
+    sdk_out_tx: &mpsc::Sender<ProtocolEnvelope<Value>>,
+    dead_letters: &mut DeadLetterStore,
+    pending: &PendingDelivery,
+    reason: &str,
+) {
+    if pending.withheld_fleet_ack.is_some() {
+        tracing::info!(
+            target = "relay_broker::fleet",
+            worker = %pending.worker_name,
+            delivery_id = %pending.delivery.delivery_id,
+            reason = reason,
+            "dropping withheld fleet delivery_ack for a delivery dropped from the pending map"
+        );
+    }
+    // Notify best-effort: a send failure must not `?`-abort the loop and
+    // strand the remaining dropped deliveries out of the dead-letter store.
+    // The DLQ capture below runs regardless of the send's outcome.
+    let _ = send_broker_event(
+        sdk_out_tx,
+        BrokerEvent::MessageDeliveryFailed {
+            name: pending.worker_name.clone(),
+            delivery_id: Some(pending.delivery.delivery_id.clone()),
+            event_id: Some(pending.delivery.event_id.clone()),
+            from: pending.delivery.from.clone(),
+            to: pending.delivery.target.clone(),
+            attempts: pending.attempts,
+            last_error: reason.to_string(),
+        },
+    )
+    .await;
+    dead_letter_pending_delivery(sdk_out_tx, dead_letters, pending, reason).await;
 }
 
 /// Drain every in-flight worker request targeting `worker_name` and
@@ -1612,7 +1919,7 @@ mod reply_target_tests {
 
 #[cfg(test)]
 mod steer_timing_invariants {
-    use super::delivery_ack_timeout;
+    use super::{delivery_ack_timeout, post_send_settlement_delay};
     use crate::broker::delivery_verification::{max_verification_window, VERIFICATION_TICK};
     use crate::protocol::MessageInjectionMode;
     use std::time::Duration;
@@ -1634,6 +1941,23 @@ mod steer_timing_invariants {
              {:?} plus a tick {VERIFICATION_TICK:?}: a retry can fire while the worker is \
              still waiting for an echo",
             max_verification_window()
+        );
+    }
+
+    #[test]
+    fn native_routes_poll_without_inheriting_the_five_minute_wait_timeout() {
+        let retry_interval = Duration::from_secs(1);
+        assert_eq!(
+            post_send_settlement_delay(
+                "codex-queue:thread-1",
+                &MessageInjectionMode::Wait,
+                retry_interval,
+            ),
+            retry_interval,
+        );
+        assert_eq!(
+            post_send_settlement_delay("pty", &MessageInjectionMode::Wait, retry_interval),
+            super::WAIT_DELIVERY_ACK_TIMEOUT,
         );
     }
 }

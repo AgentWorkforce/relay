@@ -17,6 +17,7 @@ import {
 
 const AGENT_COUNT = 3;
 const TIMEOUT_MS = 15_000;
+const ECHO_CLI = "sh -c 'stty -echo; cat'";
 
 async function main(): Promise<void> {
   console.log('=== Parity Test: Broadcast Messages ===\n');
@@ -37,7 +38,7 @@ async function main(): Promise<void> {
       const name = randomName(`bcast-${i}`);
       await client.spawnPty({
         name,
-        cli: 'cat',
+        cli: ECHO_CLI,
         channels: ['general'],
       });
       agents.push(name);
