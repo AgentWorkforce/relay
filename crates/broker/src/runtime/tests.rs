@@ -1740,6 +1740,26 @@ async fn manual_flush_reconciles_an_unacknowledged_replay_without_loss_or_duplic
         "the replayed predecessor must be restored before its successor"
     );
 
+    let conflicting_with_custody = crate::fleet_wire::Deliver {
+        delivery_id: "yet-another-delivery-89".to_string(),
+        ..missing.clone()
+    };
+    fixture
+        .runtime
+        .handle_fleet_control_event(crate::node_control::FleetControlEvent::Message(
+            crate::fleet_wire::RelaycastToBroker::Deliver(conflicting_with_custody),
+        ))
+        .await;
+    assert_eq!(
+        fixture.runtime.delivery_states[&worker_name].pending_len(),
+        2,
+        "a conflicting delivery identity must also fail closed while exact custody exists"
+    );
+    assert!(
+        fixture.fleet_control_rx.try_recv().is_err(),
+        "the conflicting identity must remain unACKed while exact custody exists"
+    );
+
     fixture
         .runtime
         .handle_fleet_control_event(crate::node_control::FleetControlEvent::Message(
