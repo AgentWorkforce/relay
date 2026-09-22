@@ -6817,7 +6817,14 @@ class FleetBoard {
         // An unreachable endpoint prevents these compatibility probes from mutating
         // the active workspace and proves they need no working service connection.
         const result = await execute(
-          this.cliArgv('fleet', command, '--base-url', 'http://127.0.0.1:1', '--workspace-key', 'deprecated-noop'),
+          this.cliArgv(
+            'fleet',
+            command,
+            '--base-url',
+            'http://127.0.0.1:1',
+            '--workspace-key',
+            'deprecated-noop'
+          ),
           { timeoutMs: 45_000, maxCaptureBytes: 1024 * 1024 }
         );
         const payload = tryParseJson(result._rawStdout);

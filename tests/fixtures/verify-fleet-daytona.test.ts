@@ -2103,7 +2103,9 @@ describe('complete Daytona Fleet board', () => {
     const records = new Map<string, { exitCode: number; summary: string }>();
     await FleetBoard.prototype.fleetDeprecatedNoopsAndStatus.call({
       cliArgv: (...args: string[]) => [
-        process.execPath, path.resolve('packages/cli/dist/cli/index.js'), ...args,
+        process.execPath,
+        path.resolve('packages/cli/dist/cli/index.js'),
+        ...args,
       ],
       record: async (id: string, run: () => Promise<{ exitCode: number; summary: string }>) => {
         records.set(id, await run());

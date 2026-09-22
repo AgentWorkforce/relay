@@ -2157,9 +2157,7 @@
           "conflictsWith": [],
           "implied": null,
           "envVar": null,
-          "defaultValue": [
-            "general"
-          ],
+          "defaultValue": ["general"],
           "presetArg": null
         },
         {
@@ -2368,9 +2366,7 @@
           "conflictsWith": [],
           "implied": null,
           "envVar": null,
-          "defaultValue": [
-            "general"
-          ],
+          "defaultValue": ["general"],
           "presetArg": null
         },
         {

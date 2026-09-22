@@ -819,8 +819,7 @@
       }
     ],
     "node agent release": [],
-    "node agent set-model": [
-    ],
+    "node agent set-model": [],
     "node agent spawn": [
       {
         "option": "--channels",
