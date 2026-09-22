@@ -265,10 +265,7 @@ available via SDK subscriptions):
 #### When you coordinate across nodes rather than only the local broker, capabilities
 
 ```bash
-# Enable fleet nodes for the workspace FIRST — it is off by default, and a
-# node you bring up before enabling will not register/list
-agent-relay fleet enable
-agent-relay fleet config          # inspect workspace fleet config
+# Fleet nodes need no per-workspace enablement.
 agent-relay fleet status          # local broker status + this node's provider attachment
 
 # Bring this node up, serving its node definition (advertises its capabilities).

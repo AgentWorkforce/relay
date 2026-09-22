@@ -1010,10 +1010,10 @@ skip_check "cloud enroll"  "requires interactive browser auth"
 gated_check cloud "fleet nodes"              "relay fleet nodes"               "."
 gated_check cloud "fleet nodes list --pretty" \
   "relay fleet nodes list --pretty | grep -E '^(NODE|No fleet nodes found\.)'" "."
-gated_check cloud "fleet config"             "relay fleet config"              "."
-gated_check cloud "fleet inherit"            "relay fleet inherit --help"      "Usage"
-skip_check "fleet enable"  "mutates workspace cloud state"
-skip_check "fleet disable" "mutates workspace cloud state"
+run_check "fleet config"  "relay fleet config"  "deprecated"
+run_check "fleet inherit" "relay fleet inherit 2>&1" "no-op"
+run_check "fleet enable"  "relay fleet enable 2>&1"  "no-op"
+run_check "fleet disable" "relay fleet disable 2>&1" "no-op"
 
 # fleet spawn/release were undocumented in the manifest until this change and
 # are still unverified: spawning burns provider credits on a remote node.

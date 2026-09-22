@@ -30,8 +30,8 @@
  * The flag is still accepted on Node 24 and 26, so one invocation works
  * everywhere.
  *
- * Workspace-wide enable/disable/inherit probes are safety-skipped unless the
- * active workspace is disposable and VERIFY_FLEET_DISPOSABLE_WORKSPACE=1.
+ * Legacy fleet config/enable/disable/inherit probes verify deprecated no-ops.
+ * VERIFY_FLEET_DISPOSABLE_WORKSPACE=1 still requires a clean baseline.
  */
 
 import { randomBytes } from 'node:crypto';
