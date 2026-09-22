@@ -4280,8 +4280,7 @@ sleep 30
             vec!["-m=sonnet".to_string()],
         ] {
             assert_eq!(
-                resolve_model_flag_for_cli("claude", "claude", "worker", Some("opus"), &args)
-                    .await,
+                resolve_model_flag_for_cli("claude", "claude", "worker", Some("opus"), &args).await,
                 None
             );
         }
