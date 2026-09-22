@@ -1727,7 +1727,13 @@ fn handle_disconnected_command(
         Some(FleetControlCommand::RegisterAgent { reply, .. }) => {
             let _ = reply.send(Err(register_agent_error.to_string()));
         }
-        Some(FleetControlCommand::Send(_)) | Some(FleetControlCommand::HeartbeatNow) => {}
+        Some(FleetControlCommand::Send(message)) => {
+            if let BrokerToRelaycast::ActionResult(result) = &message {
+                tracing::warn!(invocation_id = %result.invocation_id, frame_kind = "action.result",
+                    "dropping fleet frame while disconnected");
+            }
+        }
+        Some(FleetControlCommand::HeartbeatNow) => {}
         Some(FleetControlCommand::Shutdown) | None => return DisconnectedCommandOutcome::Shutdown,
     }
     DisconnectedCommandOutcome::Handled
@@ -2258,6 +2264,10 @@ where
                 }
             }
             if sent.is_err() {
+                if let BrokerToRelaycast::ActionResult(result) = &message {
+                    tracing::warn!(invocation_id = %result.invocation_id, frame_kind = "action.result",
+                        "dropping fleet frame after wire send failure");
+                }
                 return Break(ControlRunResult::Disconnected {
                     application_ready: application_liveness.ready,
                 });

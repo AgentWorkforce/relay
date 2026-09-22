@@ -224,7 +224,7 @@ const STARTUP_READY_WARNING: Duration = Duration::from_secs(25);
 /// that never receives its task is a total loss, while a brief typed a little
 /// early is recoverable. Bounded below `WORKER_READY_DEADLINE` (90s) so the work
 /// is released before an unready harness is reaped.
-const STARTUP_READY_TIMEOUT: Duration = Duration::from_secs(60);
+pub(crate) const STARTUP_READY_TIMEOUT: Duration = Duration::from_secs(60);
 const STARTUP_BUFFER_MAX: usize = 12_000;
 const STARTUP_BUFFER_KEEP: usize = 8_000;
 const CODEX_STARTUP_SETTLE: Duration = Duration::from_secs(1);

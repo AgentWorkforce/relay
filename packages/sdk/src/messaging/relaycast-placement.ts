@@ -153,10 +153,11 @@ export function placementActionName(capability: string): string {
 
 export function placementActionInput(
   input: Record<string, unknown> | undefined,
-  placement: { capability: string; node?: string; repo?: string; ttlMs: number }
+  placement: { capability: string; node?: string; repo?: string; ttlMs: number; verifyReady?: boolean }
 ): Record<string, unknown> {
   const payload = { ...(input ?? {}) };
   payload.capability = placement.capability;
+  if (placement.verifyReady) payload.verify_ready = true;
   if (placement.node) {
     payload.node = placement.node;
     payload.target_node = placement.node;

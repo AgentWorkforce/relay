@@ -151,6 +151,7 @@ pub(super) fn close_terminal_sessions_for_worker(
 pub(super) struct PendingVerifiedSpawn {
     pub(super) invocation_id: String,
     pub(super) deadline: Instant,
+    pub(super) started: Instant,
     pub(super) generation: Uuid,
 }
 
@@ -1432,6 +1433,9 @@ impl BrokerRuntime {
     /// to this node). Replies with `action.result { output }` on success or
     /// `{ error }` on failure.
     async fn handle_fleet_action_spawn(&mut self, invoke: ActionInvoke) {
+        let started = Instant::now();
+        let verify_ready = super::relaycast_events::relaycast_spawn_verifies_ready(&invoke.input);
+        tracing::info!(invocation_id = %invoke.invocation_id, verify_ready, "fleet spawn received");
         let Some(name) = action_invoke_agent_name(&invoke) else {
             self.reply_action_error(&invoke.invocation_id, "spawn_missing_agent_name")
                 .await;
@@ -1538,7 +1542,8 @@ impl BrokerRuntime {
 
         self.publish_fleet_load(true).await;
 
-        let verify_ready = super::relaycast_events::relaycast_spawn_verifies_ready(&ws_value);
+        tracing::info!(invocation_id = %invoke.invocation_id, worker = %name, verify_ready,
+            elapsed_ms = started.elapsed().as_millis() as u64, "fleet spawn launch returned");
 
         let spawn_outcome =
             fleet_spawn_outcome(spawn_result, &name, self.workers.is_worker_live(&name));
@@ -1560,6 +1565,9 @@ impl BrokerRuntime {
                         (worker.ready_at.is_some(), worker.generation)
                     };
                     if already_ready {
+                        tracing::info!(invocation_id = %invoke.invocation_id, worker = %name,
+                            verify_ready, elapsed_ms = started.elapsed().as_millis() as u64,
+                            "sending verified fleet spawn result");
                         self.send_fleet_action_result(verified_spawn_ready_result(
                             invoke.invocation_id,
                             &name,
@@ -1571,6 +1579,7 @@ impl BrokerRuntime {
                             PendingVerifiedSpawn {
                                 invocation_id: invoke.invocation_id,
                                 deadline: Instant::now() + VERIFIED_SPAWN_READY_TIMEOUT,
+                                started,
                                 generation,
                             },
                         );
@@ -1749,6 +1758,7 @@ impl BrokerRuntime {
     }
 
     async fn send_fleet_action_result(&self, result: ActionResult) {
+        tracing::info!(invocation_id = %result.invocation_id, "sending fleet action result");
         let _ = self
             .fleet_control_tx
             .send(FleetControlCommand::Send(BrokerToRelaycast::ActionResult(
@@ -1929,6 +1939,7 @@ pub(super) fn confirm_pending_delivery_and_resolve_fleet_ack(
     ((!already_held).then_some(pending), resolved)
 }
 
+/// Every spawn success includes `ready`; true is reserved for proven harness readiness.
 fn fleet_spawn_action_result(
     invocation_id: &str,
     name: &WorkerName,
@@ -1936,7 +1947,7 @@ fn fleet_spawn_action_result(
 ) -> ActionResult {
     let result = match spawn_result {
         Ok(()) => ActionResultPayload::Output(ActionResultOutput {
-            output: json!({ "spawned": true, "name": name.as_str() }),
+            output: json!({ "spawned": true, "ready": false, "name": name.as_str() }),
         }),
         Err(error) => ActionResultPayload::Error(ActionResultError {
             error: format!("spawn_failed: {error:#}"),
@@ -3135,6 +3146,25 @@ mod tests {
                 "spawn_failed: agent '{name}' process exited during startup (exit status: 19); see worker log /tmp/{name}.log"
             )
         );
+    }
+
+    #[test]
+    fn spawn_success_always_declares_readiness() {
+        let name = WorkerName::from("Probe");
+        let unverified = fleet_spawn_action_result("inv-launch", &name, Ok(()));
+        let verified = verified_spawn_ready_result("inv-ready".into(), &name);
+        for (result, ready) in [(unverified, false), (verified, true)] {
+            let ActionResultPayload::Output(output) = result.result else {
+                panic!("live spawn must succeed");
+            };
+            assert_eq!(
+                output.output,
+                json!({"spawned": true, "ready": ready, "name": "Probe"})
+            );
+        }
+        // CLI/SDK default confirmation budget is 120s (fleet.ts / relaycast.ts).
+        assert!(crate::pty_worker::STARTUP_READY_TIMEOUT < VERIFIED_SPAWN_READY_TIMEOUT);
+        assert!(VERIFIED_SPAWN_READY_TIMEOUT < Duration::from_secs(120));
     }
 
     fn test_agent_spec(session_id: Option<&str>, harness_session_id: Option<&str>) -> AgentSpec {
