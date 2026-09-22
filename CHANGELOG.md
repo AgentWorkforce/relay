@@ -11,6 +11,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - `teams.json` agents accept a per-agent `model` field when `up --spawn` starts them; an explicit `--model` or `-m` inside `cli` still wins.
 
+### Deprecated
+
+- `@agent-relay/utils` model-mapping helpers (`mapModelToCli`, `getBaseCli`) are deprecated for removal in the next major release; use separate `cli` and `model` fields instead of non-executable colon syntax.
+
 ### Fixed
 
 - Broker `manual_flush` recovery now replays a missing cumulative-ACK predecessor without duplicating an already-completed PTY injection, restores it ahead of parked successors, and reports the head/ACK/received sequence gap plus the reconciliation action in `message flush` and `message auto` results.
