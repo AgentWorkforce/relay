@@ -98,6 +98,8 @@ pub(crate) enum DeliverDisposition {
     AckedWithoutSurfacing,
     /// Conflicting agent identity: dropped, ack withheld.
     RejectedIdentity,
+    /// A known message/sequence arrived under a different delivery ID.
+    RejectedReplayConflict,
     /// The book could not place the frame's sequence. Distinct from an
     /// identity reject: the agent never saw this message and the engine still
     /// owns it, so it must not be reported as the same condition.
@@ -113,6 +115,7 @@ impl DeliverDisposition {
             Self::SurfaceFailed => "surface_failed",
             Self::AckedWithoutSurfacing => "acked_without_surfacing",
             Self::RejectedIdentity => "rejected_identity",
+            Self::RejectedReplayConflict => "rejected_replay_conflict",
             Self::RejectedSequenceGap => "rejected_sequence_gap",
         }
     }
@@ -122,6 +125,7 @@ fn decision_label(decision: &DeliveryDecision) -> &'static str {
     match decision {
         DeliveryDecision::Deliver { .. } => "deliver",
         DeliveryDecision::Duplicate { .. } => "duplicate",
+        DeliveryDecision::ReplayConflict => "replay_conflict",
         DeliveryDecision::Stale { .. } => "stale",
         DeliveryDecision::Gap { .. } => "gap",
         DeliveryDecision::IdentityReject => "identity_reject",
@@ -210,6 +214,7 @@ struct AgentStats {
     delivers_seen: u64,
     decision_deliver: u64,
     decision_duplicate: u64,
+    decision_replay_conflict: u64,
     decision_stale: u64,
     decision_gap: u64,
     decision_identity_reject: u64,
@@ -219,6 +224,7 @@ struct AgentStats {
     surface_failed: u64,
     acked_without_surfacing: u64,
     rejected_identity: u64,
+    rejected_replay_conflict: u64,
     rejected_sequence_gap: u64,
     last_deliver_at_ms: u64,
     last_queued_for_injection_at_ms: u64,
@@ -236,6 +242,7 @@ impl AgentStats {
             "decisions": {
                 "deliver": self.decision_deliver,
                 "duplicate": self.decision_duplicate,
+                "replay_conflict": self.decision_replay_conflict,
                 "stale": self.decision_stale,
                 "gap": self.decision_gap,
                 "identity_reject": self.decision_identity_reject,
@@ -247,6 +254,7 @@ impl AgentStats {
                 "surface_failed": self.surface_failed,
                 "acked_without_surfacing": self.acked_without_surfacing,
                 "rejected_identity": self.rejected_identity,
+                "rejected_replay_conflict": self.rejected_replay_conflict,
                 "rejected_sequence_gap": self.rejected_sequence_gap,
             },
             "last_deliver_at_ms": non_zero(self.last_deliver_at_ms),
@@ -267,6 +275,7 @@ struct Counters {
     error: AtomicU64,
     decision_deliver: AtomicU64,
     decision_duplicate: AtomicU64,
+    decision_replay_conflict: AtomicU64,
     decision_stale: AtomicU64,
     decision_gap: AtomicU64,
     decision_identity_reject: AtomicU64,
@@ -276,6 +285,7 @@ struct Counters {
     surface_failed: AtomicU64,
     acked_without_surfacing: AtomicU64,
     rejected_identity: AtomicU64,
+    rejected_replay_conflict: AtomicU64,
     rejected_sequence_gap: AtomicU64,
     connects: AtomicU64,
     disconnects: AtomicU64,
@@ -404,6 +414,7 @@ impl NodeDeliveryProbe {
         let counter = match decision {
             DeliveryDecision::Deliver { .. } => &self.counters.decision_deliver,
             DeliveryDecision::Duplicate { .. } => &self.counters.decision_duplicate,
+            DeliveryDecision::ReplayConflict => &self.counters.decision_replay_conflict,
             DeliveryDecision::Stale { .. } => &self.counters.decision_stale,
             DeliveryDecision::Gap { .. } => &self.counters.decision_gap,
             DeliveryDecision::IdentityReject => &self.counters.decision_identity_reject,
@@ -447,6 +458,7 @@ impl NodeDeliveryProbe {
             match decision {
                 DeliveryDecision::Deliver { .. } => stats.decision_deliver += 1,
                 DeliveryDecision::Duplicate { .. } => stats.decision_duplicate += 1,
+                DeliveryDecision::ReplayConflict => stats.decision_replay_conflict += 1,
                 DeliveryDecision::Stale { .. } => stats.decision_stale += 1,
                 DeliveryDecision::Gap { .. } => stats.decision_gap += 1,
                 DeliveryDecision::IdentityReject => stats.decision_identity_reject += 1,
@@ -465,6 +477,7 @@ impl NodeDeliveryProbe {
             DeliverDisposition::SurfaceFailed => &self.counters.surface_failed,
             DeliverDisposition::AckedWithoutSurfacing => &self.counters.acked_without_surfacing,
             DeliverDisposition::RejectedIdentity => &self.counters.rejected_identity,
+            DeliverDisposition::RejectedReplayConflict => &self.counters.rejected_replay_conflict,
             DeliverDisposition::RejectedSequenceGap => &self.counters.rejected_sequence_gap,
         };
         counter.fetch_add(1, Ordering::Relaxed);
@@ -493,6 +506,7 @@ impl NodeDeliveryProbe {
                 DeliverDisposition::SurfaceFailed => stats.surface_failed += 1,
                 DeliverDisposition::AckedWithoutSurfacing => stats.acked_without_surfacing += 1,
                 DeliverDisposition::RejectedIdentity => stats.rejected_identity += 1,
+                DeliverDisposition::RejectedReplayConflict => stats.rejected_replay_conflict += 1,
                 DeliverDisposition::RejectedSequenceGap => stats.rejected_sequence_gap += 1,
             }
         }
@@ -613,6 +627,7 @@ impl NodeDeliveryProbe {
             "decisions": {
                 "deliver": load(&c.decision_deliver),
                 "duplicate": load(&c.decision_duplicate),
+                "replay_conflict": load(&c.decision_replay_conflict),
                 "stale": load(&c.decision_stale),
                 "gap": load(&c.decision_gap),
                 "identity_reject": load(&c.decision_identity_reject),
@@ -624,6 +639,7 @@ impl NodeDeliveryProbe {
                 "surface_failed": load(&c.surface_failed),
                 "acked_without_surfacing": load(&c.acked_without_surfacing),
                 "rejected_identity": load(&c.rejected_identity),
+                "rejected_replay_conflict": load(&c.rejected_replay_conflict),
                 "rejected_sequence_gap": load(&c.rejected_sequence_gap),
             },
             "acks": {

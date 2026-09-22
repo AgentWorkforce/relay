@@ -1703,6 +1703,26 @@ async fn manual_flush_reconciles_an_unacknowledged_replay_without_loss_or_duplic
         .delivery_states
         .insert(worker_name.clone(), state);
 
+    let conflicting = crate::fleet_wire::Deliver {
+        delivery_id: "different-delivery-89".to_string(),
+        ..missing.clone()
+    };
+    fixture
+        .runtime
+        .handle_fleet_control_event(crate::node_control::FleetControlEvent::Message(
+            crate::fleet_wire::RelaycastToBroker::Deliver(conflicting),
+        ))
+        .await;
+    assert_eq!(
+        fixture.runtime.delivery_states[&worker_name].pending_len(),
+        1,
+        "same message/sequence under a different delivery ID must not be resurfaced"
+    );
+    assert!(
+        fixture.fleet_control_rx.try_recv().is_err(),
+        "a conflicting delivery identity must fail closed without ACK"
+    );
+
     fixture
         .runtime
         .handle_fleet_control_event(crate::node_control::FleetControlEvent::Message(

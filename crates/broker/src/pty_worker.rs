@@ -64,7 +64,12 @@ struct PendingWorkerInjection {
 /// broker must retry the same delivery to repair its cumulative fleet cursor.
 /// Re-pasting it would duplicate a user-visible instruction, so the worker
 /// answers a matching retry with the original acknowledgement instead. The
-/// bounded FIFO matches the broker delivery book's recent-id horizon.
+/// bounded FIFO matches the broker delivery book's recent-id horizon. This is
+/// deliberately an in-process guarantee: a worker restart clears both PTY
+/// completion evidence and broker receipt history, so a post-restart Relaycast
+/// replay follows the ordinary at-least-once delivery path. Likewise, after
+/// 512 later completions the old identity is outside this fence. Recovery must
+/// never be presented as exactly-once across restart or eviction boundaries.
 #[derive(Debug, Default)]
 struct CompletedWorkerDeliveries {
     events: HashMap<DeliveryId, EventId>,
@@ -2603,6 +2608,20 @@ mod tests {
                 CompletedWorkerDeliveries::CAPACITY
             )))
             .is_some());
+    }
+
+    #[test]
+    fn completed_delivery_replay_cache_is_not_restart_durable() {
+        let mut before_restart = CompletedWorkerDeliveries::default();
+        let delivery_id = DeliveryId::new("delivery-89");
+        before_restart.insert(delivery_id.clone(), EventId::new("message-89"));
+        assert!(before_restart.get(&delivery_id).is_some());
+
+        let after_restart = CompletedWorkerDeliveries::default();
+        assert!(
+            after_restart.get(&delivery_id).is_none(),
+            "restart clears the volatile dedupe fence; callers must not claim cross-restart exactly-once"
+        );
     }
 
     #[test]

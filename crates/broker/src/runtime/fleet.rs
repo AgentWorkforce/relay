@@ -223,9 +223,9 @@ fn plan_fleet_delivery(decision: DeliveryDecision) -> FleetDeliveryPlan {
         // deliver and let the engine's own outstanding set drive redelivery.
         // The cursor deliberately stays put, so the redelivered missing frame
         // is still accepted and the sequence becomes contiguous again.
-        DeliveryDecision::Gap { .. } | DeliveryDecision::IdentityReject => {
-            FleetDeliveryPlan::RejectWithoutAck
-        }
+        DeliveryDecision::Gap { .. }
+        | DeliveryDecision::ReplayConflict
+        | DeliveryDecision::IdentityReject => FleetDeliveryPlan::RejectWithoutAck,
     }
 }
 
@@ -1020,7 +1020,7 @@ impl BrokerRuntime {
                 up_to_seq
             }
             FleetDeliveryPlan::RejectWithoutAck => {
-                // `Gap` and `IdentityReject` share this arm but are different
+                // Gap, replay conflict, and identity reject share this arm but are different
                 // diagnoses, so the endpoint must not collapse them: a gap
                 // means the book could not place a frame the agent never saw,
                 // an identity reject means the frame was addressed to a
@@ -1030,6 +1030,10 @@ impl BrokerRuntime {
                     DeliveryDecision::Gap { .. } => (
                         "sequence gap; frame not placeable",
                         DeliverDisposition::RejectedSequenceGap,
+                    ),
+                    DeliveryDecision::ReplayConflict => (
+                        "message replay changed delivery identity",
+                        DeliverDisposition::RejectedReplayConflict,
                     ),
                     _ => (
                         "conflicting agent identity",
