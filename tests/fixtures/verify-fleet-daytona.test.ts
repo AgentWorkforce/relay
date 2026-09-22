@@ -543,11 +543,8 @@ function completeEvidence(matrix: {
     },
     environment: {
       policyMutationRequested: true,
-      policyMutationAuthorized: true,
-      policyMutationPerformed: true,
       expectedWorkspaceId: 'workspace_fixture',
       controlPlaneClean: true,
-      policyRestoration: { status: 'pass' },
     },
     baseline: {
       agentCount: 0,
@@ -2067,6 +2064,12 @@ describe('complete Daytona Fleet board', () => {
     expect(actual.commands).toHaveLength(36);
     expect(actual.commands.filter(({ leaf }: { leaf: boolean }) => leaf)).toHaveLength(30);
     expect(inventorySha256(actual)).toMatch(/^[a-f0-9]{64}$/);
+    for (const verb of ['config', 'enable', 'disable', 'inherit']) {
+      expect(actual.commands.find(({ path }: { path: string }) => path === `fleet ${verb}`)).toMatchObject({
+        hidden: true,
+        leaf: true,
+      });
+    }
     expect(actual.commands.find(({ path }: { path: string }) => path === 'fleet serve')).toMatchObject({
       hidden: true,
       leaf: true,
@@ -2094,6 +2097,24 @@ describe('complete Daytona Fleet board', () => {
     const changedOption = structuredClone(actual);
     changedOption.commands.find(({ path }: { path: string }) => path === 'fleet spawn').options.pop();
     expect(() => compareFleetCliInventory(actual, changedOption)).toThrow('inventory changed');
+  }, 30_000);
+
+  it('runs deprecated fleet probes successfully without a workspace service', async () => {
+    const records = new Map<string, { exitCode: number; summary: string }>();
+    await FleetBoard.prototype.fleetDeprecatedNoopsAndStatus.call({
+      cliArgv: (...args: string[]) => [
+        process.execPath, path.resolve('packages/cli/dist/cli/index.js'), ...args,
+      ],
+      record: async (id: string, run: () => Promise<{ exitCode: number; summary: string }>) => {
+        records.set(id, await run());
+      },
+      availableBoardNodes: () => [],
+      derived: async () => undefined,
+    });
+    for (const verb of ['config', 'enable', 'disable', 'inherit']) {
+      expect(records.get(`fleet-${verb}`)).toMatchObject({ exitCode: 0 });
+      expect(records.get(`fleet-${verb}`)?.summary).toContain('notice=true outputValid=true');
+    }
   }, 30_000);
 
   it('rejects duplicate operations and an incomplete provider board', async () => {

@@ -9,7 +9,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- `agent-relay fleet config|enable|disable|inherit` now exit successfully as hidden compatibility no-ops instead of failing on the removed workspace rollout API.
 - Broker `manual_flush` recovery now replays a missing cumulative-ACK predecessor without duplicating an already-completed PTY injection, restores it ahead of parked successors, and reports the head/ACK/received sequence gap plus the reconciliation action in `message flush` and `message auto` results.
+
+### Removed
+
+- `@agent-relay/sdk`: removed `workspace.fleetNodes` and `RelayWorkspaceFleetNodesConfig`, whose underlying service API no longer exists.
+
+### Breaking Changes
+
+- SDK consumers must remove references to `workspace.fleetNodes` and `RelayWorkspaceFleetNodesConfig`.
+
+### Migration Guidance
+
+- Fleet nodes need no per-workspace enablement. Remove `fleet enable` from provisioning scripts; `fleet disable` no longer disables nodes.
 
 ## [12.4.1] - 2026-09-22
 

@@ -166,7 +166,7 @@
     {
       "path": "fleet config",
       "aliases": [],
-      "hidden": false,
+      "hidden": true,
       "leaf": true,
       "arguments": [],
       "options": [
@@ -243,7 +243,7 @@
     {
       "path": "fleet disable",
       "aliases": [],
-      "hidden": false,
+      "hidden": true,
       "leaf": true,
       "arguments": [],
       "options": [
@@ -320,7 +320,7 @@
     {
       "path": "fleet enable",
       "aliases": [],
-      "hidden": false,
+      "hidden": true,
       "leaf": true,
       "arguments": [],
       "options": [
@@ -397,7 +397,7 @@
     {
       "path": "fleet inherit",
       "aliases": [],
-      "hidden": false,
+      "hidden": true,
       "leaf": true,
       "arguments": [],
       "options": [
@@ -879,6 +879,23 @@
           "presetArg": null
         },
         {
+          "flags": "--unsubscribe-bindings",
+          "short": null,
+          "long": "--unsubscribe-bindings",
+          "mandatory": false,
+          "valueRequired": false,
+          "valueOptional": false,
+          "variadic": false,
+          "negate": false,
+          "hidden": false,
+          "choices": null,
+          "conflictsWith": [],
+          "implied": null,
+          "envVar": null,
+          "defaultValue": null,
+          "presetArg": null
+        },
+        {
           "flags": "--wk <key>",
           "short": null,
           "long": "--wk",
@@ -946,6 +963,23 @@
       ],
       "options": [
         {
+          "flags": "--auto-place",
+          "short": null,
+          "long": "--auto-place",
+          "mandatory": false,
+          "valueRequired": false,
+          "valueOptional": false,
+          "variadic": false,
+          "negate": false,
+          "hidden": false,
+          "choices": null,
+          "conflictsWith": [],
+          "implied": null,
+          "envVar": null,
+          "defaultValue": null,
+          "presetArg": null
+        },
+        {
           "flags": "--base-url <url>",
           "short": null,
           "long": "--base-url",
@@ -968,6 +1002,23 @@
           "long": "--channel",
           "mandatory": false,
           "valueRequired": true,
+          "valueOptional": false,
+          "variadic": false,
+          "negate": false,
+          "hidden": false,
+          "choices": null,
+          "conflictsWith": [],
+          "implied": null,
+          "envVar": null,
+          "defaultValue": null,
+          "presetArg": null
+        },
+        {
+          "flags": "--checkout",
+          "short": null,
+          "long": "--checkout",
+          "mandatory": false,
+          "valueRequired": false,
           "valueOptional": false,
           "variadic": false,
           "negate": false,
@@ -2106,30 +2157,15 @@
           "conflictsWith": [],
           "implied": null,
           "envVar": null,
-          "defaultValue": ["general"],
+          "defaultValue": [
+            "general"
+          ],
           "presetArg": null
         },
         {
           "flags": "--cwd <path>",
           "short": null,
           "long": "--cwd",
-          "mandatory": false,
-          "valueRequired": true,
-          "valueOptional": false,
-          "variadic": false,
-          "negate": false,
-          "hidden": false,
-          "choices": null,
-          "conflictsWith": [],
-          "implied": null,
-          "envVar": null,
-          "defaultValue": null,
-          "presetArg": null
-        },
-        {
-          "flags": "--endpoint <url>",
-          "short": null,
-          "long": "--endpoint",
           "mandatory": false,
           "valueRequired": true,
           "valueOptional": false,
@@ -2212,40 +2248,6 @@
           "presetArg": null
         },
         {
-          "flags": "--protocol <protocol>",
-          "short": null,
-          "long": "--protocol",
-          "mandatory": false,
-          "valueRequired": true,
-          "valueOptional": false,
-          "variadic": false,
-          "negate": false,
-          "hidden": false,
-          "choices": null,
-          "conflictsWith": [],
-          "implied": null,
-          "envVar": null,
-          "defaultValue": null,
-          "presetArg": null
-        },
-        {
-          "flags": "--release <policy>",
-          "short": null,
-          "long": "--release",
-          "mandatory": false,
-          "valueRequired": true,
-          "valueOptional": false,
-          "variadic": false,
-          "negate": false,
-          "hidden": false,
-          "choices": null,
-          "conflictsWith": [],
-          "implied": null,
-          "envVar": null,
-          "defaultValue": null,
-          "presetArg": null
-        },
-        {
           "flags": "--runtime <runtime>",
           "short": null,
           "long": "--runtime",
@@ -2260,23 +2262,6 @@
           "implied": null,
           "envVar": null,
           "defaultValue": "auto",
-          "presetArg": null
-        },
-        {
-          "flags": "--session-id <id>",
-          "short": null,
-          "long": "--session-id",
-          "mandatory": false,
-          "valueRequired": true,
-          "valueOptional": false,
-          "variadic": false,
-          "negate": false,
-          "hidden": false,
-          "choices": null,
-          "conflictsWith": [],
-          "implied": null,
-          "envVar": null,
-          "defaultValue": null,
           "presetArg": null
         },
         {
@@ -2352,25 +2337,7 @@
           "defaultValue": null
         }
       ],
-      "options": [
-        {
-          "flags": "--json",
-          "short": null,
-          "long": "--json",
-          "mandatory": false,
-          "valueRequired": false,
-          "valueOptional": false,
-          "variadic": false,
-          "negate": false,
-          "hidden": false,
-          "choices": null,
-          "conflictsWith": [],
-          "implied": null,
-          "envVar": null,
-          "defaultValue": null,
-          "presetArg": null
-        }
-      ]
+      "options": []
     },
     {
       "path": "node agent spawn",
@@ -2401,30 +2368,15 @@
           "conflictsWith": [],
           "implied": null,
           "envVar": null,
-          "defaultValue": ["general"],
+          "defaultValue": [
+            "general"
+          ],
           "presetArg": null
         },
         {
           "flags": "--cwd <path>",
           "short": null,
           "long": "--cwd",
-          "mandatory": false,
-          "valueRequired": true,
-          "valueOptional": false,
-          "variadic": false,
-          "negate": false,
-          "hidden": false,
-          "choices": null,
-          "conflictsWith": [],
-          "implied": null,
-          "envVar": null,
-          "defaultValue": null,
-          "presetArg": null
-        },
-        {
-          "flags": "--endpoint <url>",
-          "short": null,
-          "long": "--endpoint",
           "mandatory": false,
           "valueRequired": true,
           "valueOptional": false,
@@ -2490,40 +2442,6 @@
           "presetArg": null
         },
         {
-          "flags": "--protocol <protocol>",
-          "short": null,
-          "long": "--protocol",
-          "mandatory": false,
-          "valueRequired": true,
-          "valueOptional": false,
-          "variadic": false,
-          "negate": false,
-          "hidden": false,
-          "choices": null,
-          "conflictsWith": [],
-          "implied": null,
-          "envVar": null,
-          "defaultValue": null,
-          "presetArg": null
-        },
-        {
-          "flags": "--release <policy>",
-          "short": null,
-          "long": "--release",
-          "mandatory": false,
-          "valueRequired": true,
-          "valueOptional": false,
-          "variadic": false,
-          "negate": false,
-          "hidden": false,
-          "choices": null,
-          "conflictsWith": [],
-          "implied": null,
-          "envVar": null,
-          "defaultValue": null,
-          "presetArg": null
-        },
-        {
           "flags": "--runtime <runtime>",
           "short": null,
           "long": "--runtime",
@@ -2538,23 +2456,6 @@
           "implied": null,
           "envVar": null,
           "defaultValue": "auto",
-          "presetArg": null
-        },
-        {
-          "flags": "--session-id <id>",
-          "short": null,
-          "long": "--session-id",
-          "mandatory": false,
-          "valueRequired": true,
-          "valueOptional": false,
-          "variadic": false,
-          "negate": false,
-          "hidden": false,
-          "choices": null,
-          "conflictsWith": [],
-          "implied": null,
-          "envVar": null,
-          "defaultValue": null,
           "presetArg": null
         },
         {
@@ -2889,6 +2790,40 @@
           "long": "--config",
           "mandatory": false,
           "valueRequired": true,
+          "valueOptional": false,
+          "variadic": false,
+          "negate": false,
+          "hidden": false,
+          "choices": null,
+          "conflictsWith": [],
+          "implied": null,
+          "envVar": null,
+          "defaultValue": null,
+          "presetArg": null
+        },
+        {
+          "flags": "--force",
+          "short": null,
+          "long": "--force",
+          "mandatory": false,
+          "valueRequired": false,
+          "valueOptional": false,
+          "variadic": false,
+          "negate": false,
+          "hidden": false,
+          "choices": null,
+          "conflictsWith": [],
+          "implied": null,
+          "envVar": null,
+          "defaultValue": null,
+          "presetArg": null
+        },
+        {
+          "flags": "--local-only",
+          "short": null,
+          "long": "--local-only",
+          "mandatory": false,
+          "valueRequired": false,
           "valueOptional": false,
           "variadic": false,
           "negate": false,

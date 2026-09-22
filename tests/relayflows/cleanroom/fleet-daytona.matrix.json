@@ -8,7 +8,7 @@
   "requiredSnapshotRelayVersion": "11.10.3",
   "artifactRoot": ".workflow-artifacts/verify-fleet-daytona",
   "inventoryFile": "fleet-cli-inventory.json",
-  "inventorySha256": "27dd9c9fd15677894538893e54d4157521bd4562fce2e6c0a5cc404886a8d534",
+  "inventorySha256": "8bdc4be9341d4efb5a5e04ae8fe601fd30a9d664681b82ab2c4c729f46b4ac16",
   "commandSurface": {
     "fleet agent list": [
       "fleet-agent-list-json",
@@ -169,88 +169,88 @@
       {
         "option": "--base-url",
         "status": "skipped",
-        "reason": "The proof uses the credential-bound workspace endpoint; alternate endpoint selection is covered by CLI connection tests without changing the Daytona target."
+        "reason": "Legacy SDK options remain accepted and ignored; this compatibility command opens no connection."
       },
       {
         "option": "--token",
         "status": "skipped",
-        "reason": "Token argv would duplicate reveal-once credentials; the board proves redaction and uses the bound workspace key."
+        "reason": "Legacy SDK options remain accepted and ignored; this compatibility command opens no connection."
       },
       {
         "option": "--wk",
         "status": "skipped",
-        "reason": "The legacy --wk credential alias is covered by CLI connection tests; the board must not mint a second credential source."
+        "reason": "Legacy SDK options remain accepted and ignored; this compatibility command opens no connection."
       },
       {
         "option": "--workspace-key",
         "status": "skipped",
-        "reason": "The bound workspace key is injected only where the operation needs it; repeating it on every Fleet read would multiply secret-bearing argv."
+        "reason": "Legacy SDK options remain accepted and ignored; this compatibility command opens no connection."
       }
     ],
     "fleet disable": [
       {
         "option": "--base-url",
         "status": "skipped",
-        "reason": "The proof uses the credential-bound workspace endpoint; alternate endpoint selection is covered by CLI connection tests without changing the Daytona target."
+        "reason": "Legacy SDK options remain accepted and ignored; this compatibility command opens no connection."
       },
       {
         "option": "--token",
         "status": "skipped",
-        "reason": "Token argv would duplicate reveal-once credentials; the board proves redaction and uses the bound workspace key."
+        "reason": "Legacy SDK options remain accepted and ignored; this compatibility command opens no connection."
       },
       {
         "option": "--wk",
         "status": "skipped",
-        "reason": "The legacy --wk credential alias is covered by CLI connection tests; the board must not mint a second credential source."
+        "reason": "Legacy SDK options remain accepted and ignored; this compatibility command opens no connection."
       },
       {
         "option": "--workspace-key",
         "status": "skipped",
-        "reason": "The bound workspace key is injected only where the operation needs it; repeating it on every Fleet read would multiply secret-bearing argv."
+        "reason": "Legacy SDK options remain accepted and ignored; this compatibility command opens no connection."
       }
     ],
     "fleet enable": [
       {
         "option": "--base-url",
         "status": "skipped",
-        "reason": "The proof uses the credential-bound workspace endpoint; alternate endpoint selection is covered by CLI connection tests without changing the Daytona target."
+        "reason": "Legacy SDK options remain accepted and ignored; this compatibility command opens no connection."
       },
       {
         "option": "--token",
         "status": "skipped",
-        "reason": "Token argv would duplicate reveal-once credentials; the board proves redaction and uses the bound workspace key."
+        "reason": "Legacy SDK options remain accepted and ignored; this compatibility command opens no connection."
       },
       {
         "option": "--wk",
         "status": "skipped",
-        "reason": "The legacy --wk credential alias is covered by CLI connection tests; the board must not mint a second credential source."
+        "reason": "Legacy SDK options remain accepted and ignored; this compatibility command opens no connection."
       },
       {
         "option": "--workspace-key",
         "status": "skipped",
-        "reason": "The bound workspace key is injected only where the operation needs it; repeating it on every Fleet read would multiply secret-bearing argv."
+        "reason": "Legacy SDK options remain accepted and ignored; this compatibility command opens no connection."
       }
     ],
     "fleet inherit": [
       {
         "option": "--base-url",
         "status": "skipped",
-        "reason": "The proof uses the credential-bound workspace endpoint; alternate endpoint selection is covered by CLI connection tests without changing the Daytona target."
+        "reason": "Legacy SDK options remain accepted and ignored; this compatibility command opens no connection."
       },
       {
         "option": "--token",
         "status": "skipped",
-        "reason": "Token argv would duplicate reveal-once credentials; the board proves redaction and uses the bound workspace key."
+        "reason": "Legacy SDK options remain accepted and ignored; this compatibility command opens no connection."
       },
       {
         "option": "--wk",
         "status": "skipped",
-        "reason": "The legacy --wk credential alias is covered by CLI connection tests; the board must not mint a second credential source."
+        "reason": "Legacy SDK options remain accepted and ignored; this compatibility command opens no connection."
       },
       {
         "option": "--workspace-key",
         "status": "skipped",
-        "reason": "The bound workspace key is injected only where the operation needs it; repeating it on every Fleet read would multiply secret-bearing argv."
+        "reason": "Legacy SDK options remain accepted and ignored; this compatibility command opens no connection."
       }
     ],
     "fleet nodes": [
@@ -353,6 +353,11 @@
     ],
     "fleet release": [
       {
+        "option": "--unsubscribe-bindings",
+        "status": "skipped",
+        "reason": "Provider-binding retirement is covered by CLI release tests; this board creates no provider subscriptions."
+      },
+      {
         "option": "--base-url",
         "status": "skipped",
         "reason": "The proof uses the credential-bound workspace endpoint; alternate endpoint selection is covered by CLI connection tests without changing the Daytona target."
@@ -401,6 +406,16 @@
       }
     ],
     "fleet spawn": [
+      {
+        "option": "--auto-place",
+        "status": "skipped",
+        "reason": "Automatic placement is covered by CLI tests; this board pins exact owned nodes for cleanup."
+      },
+      {
+        "option": "--checkout",
+        "status": "skipped",
+        "reason": "Checkout placement is covered by CLI tests; this board uses its provisioned fixture checkout."
+      },
       {
         "option": "--base-url",
         "status": "skipped",
@@ -751,11 +766,6 @@
         "operationId": "node-agent-new-view"
       },
       {
-        "option": "--endpoint",
-        "status": "skipped",
-        "reason": "Headless AppServer endpoint options belong to node agent spawn, not the PTY/native agent new path."
-      },
-      {
         "option": "--exit-after-task",
         "status": "skipped",
         "reason": "agent new is the attachable PTY/native path; exit-after-task is exercised by node agent spawn."
@@ -774,16 +784,6 @@
         "option": "--name",
         "status": "supported",
         "operationId": "node-agent-new-view"
-      },
-      {
-        "option": "--protocol",
-        "status": "skipped",
-        "reason": "Headless AppServer protocol options belong to node agent spawn, not the PTY/native agent new path."
-      },
-      {
-        "option": "--release",
-        "status": "skipped",
-        "reason": "agent new cannot attach to headless AppServer workers; release policy is exercised by node agent spawn headless."
       },
       {
         "option": "--runtime",
@@ -808,11 +808,6 @@
         ]
       },
       {
-        "option": "--session-id",
-        "status": "skipped",
-        "reason": "Headless AppServer session options belong to node agent spawn, not the PTY/native agent new path."
-      },
-      {
         "option": "--spawn-mode",
         "status": "skipped",
         "reason": "agent new is the attachable PTY/native path; spawn-mode lifecycle is exercised by node agent spawn."
@@ -825,12 +820,6 @@
     ],
     "node agent release": [],
     "node agent set-model": [
-      {
-        "option": "--json",
-        "status": "supported",
-        "operationId": "node-agent-set-model",
-        "takesValue": false
-      }
     ],
     "node agent spawn": [
       {
@@ -842,11 +831,6 @@
         "option": "--cwd",
         "status": "supported",
         "operationId": "node-agent-spawn-codex-pty"
-      },
-      {
-        "option": "--endpoint",
-        "status": "supported",
-        "operationId": "node-agent-set-model-app-server-a"
       },
       {
         "option": "--exit-after-task",
@@ -865,24 +849,9 @@
         "operationId": "node-agent-spawn-codex-auto-a"
       },
       {
-        "option": "--protocol",
-        "status": "supported",
-        "operationId": "node-agent-set-model-app-server-a"
-      },
-      {
-        "option": "--release",
-        "status": "supported",
-        "operationId": "node-agent-set-model-app-server-a"
-      },
-      {
         "option": "--runtime",
         "status": "supported",
         "operationId": "node-agent-spawn-codex-pty"
-      },
-      {
-        "option": "--session-id",
-        "status": "supported",
-        "operationId": "node-agent-set-model-app-server-a"
       },
       {
         "option": "--spawn-mode",
@@ -1080,29 +1049,18 @@
         "teardownAssertion": "Final cleanup re-verifies the exact sandbox remains absent.",
         "retryAssertion": "Reconciliation is exact-name/id based and repeated deletion is idempotent."
       },
-      "fleet-policy-read": {
+      "fleet-deprecated-noop": {
         "candidateSurface": "operator-candidate",
         "executionScope": "ephemeral-workspace",
         "effectAssertions": [
-          "Fleet policy returns an explicit nullable override and boolean effective value."
+          "Exits 0 and prints a deprecation notice without workspace mutation; config emits a JSON deprecation object."
         ],
         "negativeAssertions": [
-          "Missing SDK support, malformed schema, or an unknown initial override fails."
+          "An unreachable endpoint must not cause a failure; the removed workspace API must not be called."
         ],
-        "lifecycleAssertion": "The policy read is bounded and timed.",
-        "teardownAssertion": "Read-only; the captured value becomes the exact restoration target for mutation probes.",
-        "retryAssertion": "A retry must converge on the same authoritative override."
-      },
-      "fleet-policy-mutation": {
-        "candidateSurface": "operator-candidate",
-        "executionScope": "ephemeral-workspace",
-        "effectAssertions": ["The authorized disposable workspace reads back the exact requested override."],
-        "negativeAssertions": [
-          "Wrong workspace identity, missing authorization, failed readback, or failed exact restoration cannot pass."
-        ],
-        "lifecycleAssertion": "Each mutation/readback and final restoration is bounded and timed.",
-        "teardownAssertion": "The original nullable override is restored in finally and independently verified.",
-        "retryAssertion": "Read-after-write makes repeated mutation idempotent and observable."
+        "lifecycleAssertion": "Each compatibility command is bounded and timed.",
+        "teardownAssertion": "No workspace state is changed and no restoration is required.",
+        "retryAssertion": "Repeated invocations are idempotent no-ops."
       },
       "node-read": {
         "candidateSurface": "daytona-candidate",
@@ -1281,10 +1239,10 @@
       "fleet-release": "release-process",
       "fleet-release-delete-agent": "release-process",
       "fleet-release-reclaims-owned-sandbox": "release-sandbox",
-      "fleet-config": "fleet-policy-read",
-      "fleet-enable": "fleet-policy-mutation",
-      "fleet-disable": "fleet-policy-mutation",
-      "fleet-inherit": "fleet-policy-mutation",
+      "fleet-config": "fleet-deprecated-noop",
+      "fleet-enable": "fleet-deprecated-noop",
+      "fleet-disable": "fleet-deprecated-noop",
+      "fleet-inherit": "fleet-deprecated-noop",
       "fleet-status": "node-read",
       "fleet-serve-migration": "expected-rejection",
       "fleet-serve-migration-default": "expected-rejection",
@@ -1532,24 +1490,21 @@
       "argvMustContain": ["--delete-agent"]
     },
     { "id": "fleet-release-reclaims-owned-sandbox", "group": "fleet", "expect": "success" },
-    { "id": "fleet-config", "group": "fleet-policy", "expect": "success" },
+    { "id": "fleet-config", "group": "fleet", "expect": "success" },
     {
       "id": "fleet-enable",
-      "group": "fleet-policy",
-      "expect": "success",
-      "destructiveScope": "workspace-policy"
+      "group": "fleet",
+      "expect": "success"
     },
     {
       "id": "fleet-disable",
-      "group": "fleet-policy",
-      "expect": "success",
-      "destructiveScope": "workspace-policy"
+      "group": "fleet",
+      "expect": "success"
     },
     {
       "id": "fleet-inherit",
-      "group": "fleet-policy",
-      "expect": "success",
-      "destructiveScope": "workspace-policy"
+      "group": "fleet",
+      "expect": "success"
     },
     { "id": "fleet-status", "group": "fleet", "expect": "success" },
     {

@@ -59,6 +59,9 @@ import {
   type SdkCommandDeps,
 } from '../lib/sdk-command.js';
 
+const FLEET_NODES_ALWAYS_ON_MESSAGE =
+  'Fleet nodes need no per-workspace enablement; this command is a no-op.';
+
 const SERVE_REPLACEMENT_MESSAGE =
   "'fleet serve' has been replaced. Run 'relay node up' (with an optional --config <file>); " +
   "for Cloud-managed nodes run 'relay cloud enroll --token <token>' first.";
@@ -1168,41 +1171,24 @@ export function registerFleetCommands(
     });
   });
 
-  addSdkOptions(group.command('config').description('Show workspace fleet node configuration')).action(
-    async (options: Record<string, unknown>) => {
-      await runSdk(deps.sdk, async () => {
-        const relay = deps.sdk.createWorkspaceRelay(sdkOptionsFromOpts(options));
-        printJson(deps.sdk, await relay.workspace.fleetNodes.get());
-      });
-    }
-  );
-
-  addSdkOptions(group.command('enable').description('Enable fleet nodes for the workspace')).action(
-    async (options: Record<string, unknown>) => {
-      await runSdk(deps.sdk, async () => {
-        const relay = deps.sdk.createWorkspaceRelay(sdkOptionsFromOpts(options));
-        printJson(deps.sdk, await relay.workspace.fleetNodes.set(true));
-      });
-    }
-  );
-
-  addSdkOptions(group.command('disable').description('Disable fleet nodes for the workspace')).action(
-    async (options: Record<string, unknown>) => {
-      await runSdk(deps.sdk, async () => {
-        const relay = deps.sdk.createWorkspaceRelay(sdkOptionsFromOpts(options));
-        printJson(deps.sdk, await relay.workspace.fleetNodes.set(false));
-      });
-    }
-  );
-
-  addSdkOptions(
-    group.command('inherit').description('Use the deployment default for workspace fleet nodes')
-  ).action(async (options: Record<string, unknown>) => {
-    await runSdk(deps.sdk, async () => {
-      const relay = deps.sdk.createWorkspaceRelay(sdkOptionsFromOpts(options));
-      printJson(deps.sdk, await relay.workspace.fleetNodes.inherit());
+  for (const command of ['config', 'enable', 'disable', 'inherit']) {
+    addSdkOptions(
+      group
+        .command(command, { hidden: true })
+        .description('Deprecated: fleet nodes need no per-workspace enablement')
+    ).action(() => {
+      deps.error(FLEET_NODES_ALWAYS_ON_MESSAGE);
+      if (command === 'disable') deps.error('Fleet nodes have not been disabled.');
+      if (command === 'config') {
+        printJson(deps.sdk, {
+          command: 'fleet config',
+          status: 'deprecated',
+          effect: 'none',
+          message: FLEET_NODES_ALWAYS_ON_MESSAGE,
+        });
+      }
     });
-  });
+  }
 
   addSdkOptions(
     group.command('status').description('Show local broker status and this node’s provider attachment')

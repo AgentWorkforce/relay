@@ -3372,7 +3372,7 @@ export function validateFleetEvidence(evidence, matrix) {
     }
   }
   const environment = assertObject(evidence.environment, 'evidence.environment');
-  for (const key of ['policyMutationRequested', 'policyMutationAuthorized', 'policyMutationPerformed']) {
+  for (const key of ['policyMutationRequested']) {
     if (typeof environment[key] !== 'boolean') throw new Error(`evidence environment.${key} is invalid`);
   }
   if (environment.controlPlaneClean !== true) {
@@ -3737,22 +3737,6 @@ export function validateFleetEvidence(evidence, matrix) {
       `cleanup cannot pass after release failure for ${failedReleaseAttempt.target ?? 'unknown target'}`
     );
   }
-  const mutationOperations = evidence.operations.filter(({ id }) =>
-    ['fleet-enable', 'fleet-disable', 'fleet-inherit'].includes(id)
-  );
-  if (mutationOperations.some(({ status }) => status !== 'safety-skipped')) {
-    if (
-      environment.policyMutationAuthorized !== true ||
-      environment.policyMutationPerformed !== true ||
-      !environment.expectedWorkspaceId ||
-      provenance.resolvedWorkspaceId !== environment.expectedWorkspaceId
-    ) {
-      throw new Error('workspace policy mutation was not bound to the explicitly expected workspace');
-    }
-    if (environment.policyRestoration?.status !== 'pass') {
-      throw new Error('workspace policy mutation was not restored to its exact initial override');
-    }
-  }
   validateCriticalLifecycleEvidence(evidence.criticalLifecycle, matrix, boardNodes, evidence.nonce);
   const derived = deriveFleetVerdict(evidence.operations, evidence.cleanup, evidence.criticalLifecycle);
   if (evidence.verdict !== derived) throw new Error(`evidence verdict must be ${derived}`);
@@ -3969,8 +3953,6 @@ class FleetBoard {
         policyMutationRequested: process.env.VERIFY_FLEET_DISPOSABLE_WORKSPACE === '1',
         expectedWorkspaceId: process.env.VERIFY_FLEET_EXPECTED_WORKSPACE_ID?.trim() || null,
         expectedRelayWorkspaceId: process.env.VERIFY_FLEET_EXPECTED_RELAY_WORKSPACE_ID?.trim() || null,
-        policyMutationAuthorized: false,
-        policyMutationPerformed: false,
         controlPlaneClean: false,
         releaseQualificationRequested: process.env.VERIFY_FLEET_RELEASE_QUALIFICATION === '1',
         expectedSnapshotId: process.env.VERIFY_FLEET_SNAPSHOT_ID?.trim() || null,
@@ -6829,106 +6811,31 @@ class FleetBoard {
     }
   }
 
-  async fleetPolicyAndStatus() {
-    let rawConfig;
-    const configOperation = await this.record('fleet-config', async () => {
-      rawConfig = await execute(this.cliArgv('fleet', 'config'), {
-        timeoutMs: 45_000,
-        maxCaptureBytes: 1024 * 1024,
-      });
-      const payload = tryParseJson(rawConfig._rawStdout);
-      const schemaValid =
-        payload &&
-        Object.prototype.hasOwnProperty.call(payload, 'override') &&
-        [true, false, null].includes(payload.override) &&
-        typeof payload.effective === 'boolean';
-      return {
-        ...stripPrivateExecution(rawConfig),
-        exitCode: rawConfig.exitCode === 0 && schemaValid ? 0 : 1,
-        summary: `schemaValid=${Boolean(schemaValid)} override=${String(payload?.override)} effective=${String(payload?.effective)}`,
-      };
-    });
-    const configPayload = rawConfig ? tryParseJson(rawConfig._rawStdout) : undefined;
-    const hasRestorableOverride =
-      configPayload &&
-      Object.prototype.hasOwnProperty.call(configPayload, 'override') &&
-      [true, false, null].includes(configPayload.override);
-    const initialOverride = hasRestorableOverride ? configPayload.override : undefined;
-    const expectedWorkspaceId = this.evidence.environment.expectedWorkspaceId;
-    const actualWorkspaceId = this.evidence.provenance?.resolvedWorkspaceId;
-    const requested = this.evidence.environment.policyMutationRequested;
-    const authorized =
-      requested &&
-      typeof expectedWorkspaceId === 'string' &&
-      expectedWorkspaceId.length > 0 &&
-      actualWorkspaceId === expectedWorkspaceId;
-    this.evidence.environment.policyMutationAuthorized = authorized;
-    this.evidence.environment.policyInitialOverride = hasRestorableOverride ? initialOverride : 'unknown';
-    await this.checkpoint();
-
-    if (!authorized || configOperation.status !== 'pass' || !hasRestorableOverride) {
-      const safetyReason = !requested
-        ? 'Set both VERIFY_FLEET_DISPOSABLE_WORKSPACE=1 and VERIFY_FLEET_EXPECTED_WORKSPACE_ID to authorize workspace policy mutation.'
-        : !expectedWorkspaceId
-          ? 'VERIFY_FLEET_EXPECTED_WORKSPACE_ID is required for workspace policy mutation.'
-          : actualWorkspaceId !== expectedWorkspaceId
-            ? `Active workspace ${actualWorkspaceId ?? 'unknown'} does not match the explicitly expected workspace.`
-            : 'fleet config did not return a restorable override, so mutation was not attempted.';
-      for (const id of ['fleet-enable', 'fleet-disable', 'fleet-inherit']) {
-        await this.derived(id, { safetyReason });
-      }
-    } else {
-      this.evidence.environment.policyMutationPerformed = true;
-      const runPolicy = async (id, action, expectedOverride) =>
-        this.record(id, async () => {
-          const mutation = await execute(this.cliArgv('fleet', action), { timeoutMs: 45_000 });
-          const readback = await execute(this.cliArgv('fleet', 'config'), {
-            timeoutMs: 45_000,
-            maxCaptureBytes: 1024 * 1024,
-          });
-          const payload = tryParseJson(readback._rawStdout);
-          const readbackMatches =
-            readback.exitCode === 0 &&
-            payload &&
-            Object.prototype.hasOwnProperty.call(payload, 'override') &&
-            payload.override === expectedOverride;
-          return {
-            ...stripPrivateExecution(mutation),
-            exitCode: mutation.exitCode === 0 && readbackMatches ? 0 : 1,
-            summary: `action=${action} expectedOverride=${String(expectedOverride)} observedOverride=${String(payload?.override)} readbackExit=${readback.exitCode}`,
-          };
-        });
-      try {
-        await runPolicy('fleet-enable', 'enable', true);
-        await runPolicy('fleet-disable', 'disable', false);
-        await runPolicy('fleet-inherit', 'inherit', null);
-      } finally {
-        const restoreArg =
-          initialOverride === true ? 'enable' : initialOverride === false ? 'disable' : 'inherit';
-        const restore = await execute(this.cliArgv('fleet', restoreArg), { timeoutMs: 45_000 });
-        const verify = await execute(this.cliArgv('fleet', 'config'), {
-          timeoutMs: 45_000,
-          maxCaptureBytes: 1024 * 1024,
-        });
-        const restoredPayload = tryParseJson(verify._rawStdout);
-        const restoredExactly =
-          verify.exitCode === 0 &&
-          restoredPayload &&
-          Object.prototype.hasOwnProperty.call(restoredPayload, 'override') &&
-          restoredPayload.override === initialOverride;
-        this.evidence.environment.policyRestoration = {
-          targetOverride: initialOverride,
-          command: restoreArg,
-          exitCode: restore.exitCode,
-          timedOut: restore.timedOut === true,
-          verificationExitCode: verify.exitCode,
-          restoredExactly: restoredExactly === true,
-          status:
-            restore.exitCode === 0 && restore.timedOut !== true && restoredExactly === true ? 'pass' : 'fail',
-          stderr: redactFleetEvidence(`${restore.stderr ?? ''}\n${verify.stderr ?? ''}`),
+  async fleetDeprecatedNoopsAndStatus() {
+    for (const command of ['config', 'enable', 'disable', 'inherit']) {
+      await this.record(`fleet-${command}`, async () => {
+        // An unreachable endpoint prevents these compatibility probes from mutating
+        // the active workspace and proves they need no working service connection.
+        const result = await execute(
+          this.cliArgv('fleet', command, '--base-url', 'http://127.0.0.1:1', '--workspace-key', 'deprecated-noop'),
+          { timeoutMs: 45_000, maxCaptureBytes: 1024 * 1024 }
+        );
+        const payload = tryParseJson(result._rawStdout);
+        const notice = result.stderr.includes(
+          'Fleet nodes need no per-workspace enablement; this command is a no-op.'
+        );
+        const outputValid =
+          command === 'config'
+            ? payload?.command === 'fleet config' &&
+              payload.status === 'deprecated' &&
+              payload.effect === 'none'
+            : result._rawStdout.trim() === '';
+        return {
+          ...stripPrivateExecution(result),
+          exitCode: result.exitCode === 0 && notice && outputValid ? 0 : 1,
+          summary: `deprecated no-op: notice=${notice} outputValid=${outputValid}; unreachable endpoint, no workspace mutation`,
         };
-        await this.checkpoint();
-      }
+      });
     }
     const statusNode = this.availableBoardNodes()[0];
     if (!statusNode?.id) {
@@ -7515,7 +7422,7 @@ class FleetBoard {
       await this.targetedFleetSpawns();
       await this.fleetProviderMatrix();
       await this.mountedSandboxCases();
-      await this.fleetPolicyAndStatus();
+      await this.fleetDeprecatedNoopsAndStatus();
       await this.nodeSpawnMatrix();
       await this.criticalLifecycleRepeatability();
       await this.nodeWorkflows();
