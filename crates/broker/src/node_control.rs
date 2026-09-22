@@ -603,6 +603,7 @@ pub(crate) enum FleetControlEvent {
 pub(crate) enum DeliveryDecision {
     Deliver { up_to_seq: u64 },
     Duplicate { up_to_seq: u64 },
+    ReplayConflict,
     Stale { up_to_seq: u64 },
     Gap { up_to_seq: u64 },
     IdentityReject,
@@ -616,27 +617,43 @@ pub(crate) enum DeliveryDecision {
 /// enough that legitimate same-frame retries are still recognized.
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
 struct SeenMsgIds {
-    set: HashSet<String>,
+    deliveries: HashMap<String, (String, u64)>,
     order: VecDeque<String>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum SeenMsgIdMatch {
+    Unseen,
+    Exact,
+    Conflict,
 }
 
 impl SeenMsgIds {
     const CAPACITY: usize = 512;
 
-    fn contains(&self, msg_id: &str) -> bool {
-        self.set.contains(msg_id)
+    fn classify(&self, msg_id: &str, delivery_id: &str, seq: u64) -> SeenMsgIdMatch {
+        match self.deliveries.get(msg_id) {
+            None => SeenMsgIdMatch::Unseen,
+            Some((seen_delivery_id, seen_seq))
+                if seen_delivery_id == delivery_id && *seen_seq == seq =>
+            {
+                SeenMsgIdMatch::Exact
+            }
+            Some(_) => SeenMsgIdMatch::Conflict,
+        }
     }
 
-    fn insert(&mut self, msg_id: &str) {
-        if self.set.contains(msg_id) {
+    fn insert(&mut self, msg_id: &str, delivery_id: &str, seq: u64) {
+        if self.deliveries.contains_key(msg_id) {
             return;
         }
         if self.order.len() >= Self::CAPACITY {
             if let Some(evicted) = self.order.pop_front() {
-                self.set.remove(&evicted);
+                self.deliveries.remove(&evicted);
             }
         }
-        self.set.insert(msg_id.to_string());
+        self.deliveries
+            .insert(msg_id.to_string(), (delivery_id.to_string(), seq));
         self.order.push_back(msg_id.to_string());
     }
 }
@@ -965,10 +982,18 @@ impl FleetDeliveryBook {
         // ack is monotonic, so re-acking up_to_seq for a seq-0 frame is a no-op).
         if deliver.seq == 0 {
             if let Some(cursor) = cursor {
-                if cursor.seen_msg_ids.contains(&deliver.msg_id) {
-                    return DeliveryDecision::Duplicate {
-                        up_to_seq: cursor.acked_up_to_seq,
-                    };
+                match cursor.seen_msg_ids.classify(
+                    &deliver.msg_id,
+                    &deliver.delivery_id,
+                    deliver.seq,
+                ) {
+                    SeenMsgIdMatch::Exact => {
+                        return DeliveryDecision::Duplicate {
+                            up_to_seq: cursor.acked_up_to_seq,
+                        };
+                    }
+                    SeenMsgIdMatch::Conflict => return DeliveryDecision::ReplayConflict,
+                    SeenMsgIdMatch::Unseen => {}
                 }
                 return DeliveryDecision::Deliver {
                     up_to_seq: cursor.acked_up_to_seq,
@@ -995,10 +1020,20 @@ impl FleetDeliveryBook {
             Some(cursor) if cursor.has_sequenced_position => cursor,
             awaiting => {
                 let acked_up_to_seq = awaiting.map_or(0, |cursor| cursor.acked_up_to_seq);
-                if awaiting.is_some_and(|cursor| cursor.seen_msg_ids.contains(&deliver.msg_id)) {
-                    return DeliveryDecision::Duplicate {
-                        up_to_seq: acked_up_to_seq,
-                    };
+                if let Some(cursor) = awaiting {
+                    match cursor.seen_msg_ids.classify(
+                        &deliver.msg_id,
+                        &deliver.delivery_id,
+                        deliver.seq,
+                    ) {
+                        SeenMsgIdMatch::Exact => {
+                            return DeliveryDecision::Duplicate {
+                                up_to_seq: acked_up_to_seq,
+                            };
+                        }
+                        SeenMsgIdMatch::Conflict => return DeliveryDecision::ReplayConflict,
+                        SeenMsgIdMatch::Unseen => {}
+                    }
                 }
                 let authoritative = self
                     .active_agent_bindings_by_name
@@ -1015,10 +1050,17 @@ impl FleetDeliveryBook {
                 };
             }
         };
-        if cursor.seen_msg_ids.contains(&deliver.msg_id) {
-            return DeliveryDecision::Duplicate {
-                up_to_seq: cursor.acked_up_to_seq,
-            };
+        match cursor
+            .seen_msg_ids
+            .classify(&deliver.msg_id, &deliver.delivery_id, deliver.seq)
+        {
+            SeenMsgIdMatch::Exact => {
+                return DeliveryDecision::Duplicate {
+                    up_to_seq: cursor.acked_up_to_seq,
+                };
+            }
+            SeenMsgIdMatch::Conflict => return DeliveryDecision::ReplayConflict,
+            SeenMsgIdMatch::Unseen => {}
         }
 
         if deliver.seq <= cursor.received_up_to_seq {
@@ -1108,7 +1150,9 @@ impl FleetDeliveryBook {
         // deduped purely by msg_id. They also leave the identity without a
         // sequenced position, so the next sequenced frame is still adopted.
         if deliver.seq == 0 {
-            cursor.seen_msg_ids.insert(&deliver.msg_id);
+            cursor
+                .seen_msg_ids
+                .insert(&deliver.msg_id, &deliver.delivery_id, deliver.seq);
             return cursor.received_up_to_seq;
         }
         if !cursor.has_sequenced_position {
@@ -1123,7 +1167,9 @@ impl FleetDeliveryBook {
             cursor.has_sequenced_position = true;
         }
         if deliver.seq == cursor.received_up_to_seq.saturating_add(1) {
-            cursor.seen_msg_ids.insert(&deliver.msg_id);
+            cursor
+                .seen_msg_ids
+                .insert(&deliver.msg_id, &deliver.delivery_id, deliver.seq);
             cursor.received_up_to_seq = deliver.seq;
         }
         cursor.received_up_to_seq
@@ -1137,7 +1183,11 @@ impl FleetDeliveryBook {
         let cursor = self.agents.get_mut(receipt.agent_id.as_str())?;
         cursor.agent_name = receipt.agent.to_string();
         if receipt.seq == 0 {
-            cursor.seen_msg_ids.insert(receipt.msg_id.as_str());
+            cursor.seen_msg_ids.insert(
+                receipt.msg_id.as_str(),
+                receipt.delivery_id.as_str(),
+                receipt.seq,
+            );
             return Some(cursor.acked_up_to_seq);
         }
         if receipt.seq != cursor.acked_up_to_seq.saturating_add(1)
@@ -1159,7 +1209,9 @@ impl FleetDeliveryBook {
         self.commit_received(deliver);
         let cursor = self.agents.get_mut(deliver.agent_id.as_str())?;
         if deliver.seq == 0 {
-            cursor.seen_msg_ids.insert(&deliver.msg_id);
+            cursor
+                .seen_msg_ids
+                .insert(&deliver.msg_id, &deliver.delivery_id, deliver.seq);
             return Some(cursor.acked_up_to_seq);
         }
         if deliver.seq <= cursor.acked_up_to_seq {
@@ -1282,7 +1334,6 @@ impl FleetDeliveryBook {
             .map(|cursor| cursor.acked_up_to_seq.saturating_add(1))
     }
 
-    #[cfg(test)]
     pub(crate) fn received_up_to_seq(&self, agent_id: &str) -> u64 {
         self.agents
             .get(agent_id)
@@ -3740,6 +3791,27 @@ mod tests {
     }
 
     #[test]
+    fn delivery_book_rejects_same_message_replayed_under_a_different_delivery_id() {
+        let mut book = FleetDeliveryBook::default();
+        seed_authoritative_cursor(&mut book, "agent-a", "agent-a-id", 88);
+        let original = test_delivery("agent-a", "agent-a-id", 89);
+        assert_eq!(book.commit_received(&original), 89);
+        assert_eq!(book.acked_up_to_seq("agent-a-id"), 88);
+
+        let conflicting = Deliver {
+            delivery_id: "different-delivery-89".to_string(),
+            ..original.clone()
+        };
+        assert_eq!(
+            book.observe(&conflicting),
+            DeliveryDecision::ReplayConflict,
+            "the same message/sequence must never recover through a new delivery identity"
+        );
+        assert_eq!(book.acked_up_to_seq("agent-a-id"), 88);
+        assert_eq!(book.received_up_to_seq("agent-a-id"), 89);
+    }
+
+    #[test]
     fn delivery_book_receives_multiple_sequences_without_acknowledging_them() {
         let mut book = FleetDeliveryBook::default();
         let first = Deliver {
@@ -3981,23 +4053,41 @@ mod tests {
     fn seen_msg_ids_evicts_oldest_when_capacity_exceeded() {
         let mut seen = SeenMsgIds::default();
         for i in 0..(SeenMsgIds::CAPACITY + 10) {
-            seen.insert(&format!("msg-{i}"));
+            seen.insert(&format!("msg-{i}"), &format!("delivery-{i}"), i as u64);
         }
         assert!(seen.order.len() <= SeenMsgIds::CAPACITY);
         // The 10 oldest entries were evicted.
-        assert!(!seen.contains("msg-0"));
-        assert!(!seen.contains("msg-9"));
+        assert_eq!(
+            seen.classify("msg-0", "delivery-0", 0),
+            SeenMsgIdMatch::Unseen
+        );
+        assert_eq!(
+            seen.classify("msg-9", "delivery-9", 9),
+            SeenMsgIdMatch::Unseen
+        );
         // The most recent entries are retained.
-        assert!(seen.contains(&format!("msg-{}", SeenMsgIds::CAPACITY + 9)));
+        let latest = SeenMsgIds::CAPACITY + 9;
+        assert_eq!(
+            seen.classify(
+                &format!("msg-{latest}"),
+                &format!("delivery-{latest}"),
+                latest as u64,
+            ),
+            SeenMsgIdMatch::Exact
+        );
     }
 
     #[test]
     fn seen_msg_ids_reinsert_is_idempotent() {
         let mut seen = SeenMsgIds::default();
-        seen.insert("dup");
-        seen.insert("dup");
+        seen.insert("dup", "delivery-1", 1);
+        seen.insert("dup", "delivery-1", 1);
         assert_eq!(seen.order.len(), 1);
-        assert!(seen.contains("dup"));
+        assert_eq!(seen.classify("dup", "delivery-1", 1), SeenMsgIdMatch::Exact);
+        assert_eq!(
+            seen.classify("dup", "delivery-2", 1),
+            SeenMsgIdMatch::Conflict
+        );
     }
 
     #[tokio::test]

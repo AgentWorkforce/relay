@@ -321,17 +321,51 @@ impl InboundDeliveryState {
         self.mode == mode && self.revision == revision
     }
 
+    fn fleet_predecessor_insertion_index(&self, msg: &PendingRelayMessage) -> Option<usize> {
+        msg.relaycast_receipt.as_ref().and_then(|receipt| {
+            self.pending.iter().position(|pending| {
+                pending.relaycast_receipt.as_ref().is_some_and(|candidate| {
+                    candidate.agent_id == receipt.agent_id && candidate.seq > receipt.seq
+                })
+            })
+        })
+    }
+
+    /// Whether a full queue may temporarily admit this missing fleet
+    /// predecessor without evicting an unACKed successor. Only one overflow
+    /// slot is allowed; after it is restored the now-ACKable head can drain.
+    pub(crate) fn can_restore_fleet_predecessor(&self, msg: &PendingRelayMessage) -> bool {
+        self.pending.len() == MAX_PENDING_PER_WORKER
+            && self.fleet_predecessor_insertion_index(msg).is_some()
+    }
+
     /// Push a pending message, evicting the oldest entry when the
-    /// per-worker cap would be exceeded. Returns whether an eviction
-    /// happened plus the evicted message's `from` field (for logging).
+    /// per-worker cap would be exceeded. A recovered fleet predecessor may
+    /// temporarily occupy one extra slot so repairing a full blocked queue
+    /// never requires losing one of its successors. Returns whether an
+    /// eviction happened plus the evicted message's `from` field.
     fn push_pending(&mut self, msg: PendingRelayMessage) -> Option<String> {
+        let insertion_index = self.fleet_predecessor_insertion_index(&msg);
         let mut evicted_from = None;
-        if self.pending.len() >= MAX_PENDING_PER_WORKER {
+        if self.pending.len() >= MAX_PENDING_PER_WORKER
+            && !(self.pending.len() == MAX_PENDING_PER_WORKER && insertion_index.is_some())
+        {
             if let Some(dropped) = self.pending.pop_front() {
                 evicted_from = Some(dropped.from);
             }
         }
-        self.pending.push_back(msg);
+        // A fleet redelivery can repair a received-but-unACKed hole after the
+        // broker lost local custody of the missing frame. Relaycast may replay
+        // that lower sequence after later frames are already parked in
+        // `manual_flush`; appending it would leave the queue permanently
+        // headed by an unACKable successor. Reinsert only relative to later
+        // receipts for the same immutable identity. Local messages and other
+        // identities keep their existing FIFO positions.
+        if let Some(index) = insertion_index {
+            self.pending.insert(index, msg);
+        } else {
+            self.pending.push_back(msg);
+        }
         evicted_from
     }
 
@@ -560,5 +594,40 @@ mod inbound_delivery_tests {
             InboundDeliveryMode::ManualFlush.as_wire_str(),
             "manual_flush"
         );
+    }
+
+    #[test]
+    fn replayed_fleet_predecessor_is_restored_ahead_of_parked_successors() {
+        let mut state = InboundDeliveryState::new(InboundDeliveryMode::ManualFlush);
+        let fleet_msg = |seq: u64| PendingRelayMessage {
+            from: "lead".to_string(),
+            body: format!("message {seq}"),
+            target: MessageTarget::new("worker"),
+            thread_id: None,
+            workspace_id: None,
+            workspace_alias: None,
+            priority: 2,
+            mode: MessageInjectionMode::Wait,
+            queued_at_ms: seq,
+            event_id: Some(EventId::new(format!("message-{seq}"))),
+            relaycast_receipt: Some(RelaycastDeliveryReceipt {
+                agent: WorkerName::new("worker"),
+                agent_id: AgentId::new("agent-worker"),
+                delivery_id: DeliveryId::new(format!("delivery-{seq}")),
+                msg_id: EventId::new(format!("message-{seq}")),
+                seq,
+            }),
+        };
+
+        state.accept_inbound(fleet_msg(90));
+        state.accept_inbound(fleet_msg(91));
+        state.accept_inbound(fleet_msg(89));
+
+        let sequences = state
+            .pending_snapshot()
+            .into_iter()
+            .map(|message| message.relaycast_receipt.unwrap().seq)
+            .collect::<Vec<_>>();
+        assert_eq!(sequences, vec![89, 90, 91]);
     }
 }

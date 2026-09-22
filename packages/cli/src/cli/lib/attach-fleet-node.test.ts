@@ -519,8 +519,16 @@ describe('startFleetNodeAttachProxy delivery-mode PUT lifecycle', () => {
             request_id: frame.request_id,
             mode: frame.mode,
             flushed: 0,
+            dead_lettered: 0,
             matched: true,
             revision: '2',
+            blocked_reason: 'sequence gap',
+            blocked_reason_code: 'missing_predecessor_ack',
+            head_sequence: 90,
+            acked_up_to_sequence: 88,
+            received_up_to_sequence: 90,
+            next_ackable_sequence: 89,
+            reconciliation_action: 'predecessor_replayed',
           })
         );
       }
@@ -528,7 +536,19 @@ describe('startFleetNodeAttachProxy delivery-mode PUT lifecycle', () => {
 
     const result = await putDeliveryMode(proxy, 'agent-a', 'manual_flush');
     expect(result.status).toBe(200);
-    expect(result.body).toMatchObject({ mode: 'manual_flush', matched: true, revision: '2' });
+    expect(result.body).toMatchObject({
+      mode: 'manual_flush',
+      dead_lettered: 0,
+      matched: true,
+      revision: '2',
+      blocked_reason: 'sequence gap',
+      blocked_reason_code: 'missing_predecessor_ack',
+      head_sequence: 90,
+      acked_up_to_sequence: 88,
+      received_up_to_sequence: 90,
+      next_ackable_sequence: 89,
+      reconciliation_action: 'predecessor_replayed',
+    });
   });
 
   it('waits for terminal.ready before forwarding the drive delivery-mode PUT', async () => {
@@ -1709,7 +1729,13 @@ describe('startFleetNodeAttachProxy flush route', () => {
             flushed: 2,
             dead_lettered: 1,
             held: 0,
-            blocked_reason: null,
+            blocked_reason: 'sequence gap',
+            blocked_reason_code: 'missing_predecessor_ack',
+            head_sequence: 90,
+            acked_up_to_sequence: 88,
+            received_up_to_sequence: 90,
+            next_ackable_sequence: 89,
+            reconciliation_action: 'predecessor_replayed',
           })
         );
       }
@@ -1721,7 +1747,13 @@ describe('startFleetNodeAttachProxy flush route', () => {
       flushed: 2,
       dead_lettered: 1,
       held: 0,
-      blocked_reason: null,
+      blocked_reason: 'sequence gap',
+      blocked_reason_code: 'missing_predecessor_ack',
+      head_sequence: 90,
+      acked_up_to_sequence: 88,
+      received_up_to_sequence: 90,
+      next_ackable_sequence: 89,
+      reconciliation_action: 'predecessor_replayed',
     });
     expect(forwarded).toHaveLength(1);
     expect(forwarded[0]?.session_id).toBe(SESSION_ID);

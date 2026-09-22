@@ -138,6 +138,7 @@ export interface SessionInfo {
 export interface SetInboundDeliveryModeResult {
   mode: InboundDeliveryMode;
   flushed: number;
+  deadLettered?: number;
   /**
    * `true` when the set was applied. `false` when an expected mode or revision
    * did not match, in which case `mode` reports the current unchanged mode.
@@ -146,6 +147,13 @@ export interface SetInboundDeliveryModeResult {
   matched: boolean;
   /** Monotonic broker generation after the set, or `null` on a legacy broker. */
   revision: string | null;
+  blockedReason?: string;
+  blockedReasonCode?: string;
+  headSequence?: number;
+  ackedUpToSequence?: number;
+  receivedUpToSequence?: number;
+  nextAckableSequence?: number;
+  reconciliationAction?: string;
 }
 
 /** Options for {@link HarnessDriverClient.setInboundDeliveryMode}. */
@@ -868,8 +876,16 @@ export class HarnessDriverClient {
     const result = await this.transport.request<{
       mode?: unknown;
       flushed?: unknown;
+      dead_lettered?: unknown;
       matched?: unknown;
       revision?: unknown;
+      blocked_reason?: unknown;
+      blocked_reason_code?: unknown;
+      head_sequence?: unknown;
+      acked_up_to_sequence?: unknown;
+      received_up_to_sequence?: unknown;
+      next_ackable_sequence?: unknown;
+      reconciliation_action?: unknown;
     }>(`/api/spawned/${encodeURIComponent(name)}/delivery-mode`, {
       method: 'PUT',
       body: JSON.stringify(body),
@@ -883,12 +899,30 @@ export class HarnessDriverClient {
     return {
       mode: result.mode,
       flushed: typeof result.flushed === 'number' ? result.flushed : 0,
+      ...(typeof result.dead_lettered === 'number' ? { deadLettered: result.dead_lettered } : {}),
       // A guarded call must fail closed when a legacy broker omits `matched`.
       matched:
         typeof result.matched === 'boolean'
           ? result.matched
           : options?.expectedMode === undefined && options?.expectedRevision === undefined,
       revision: typeof result.revision === 'string' && /^\d+$/.test(result.revision) ? result.revision : null,
+      ...(typeof result.blocked_reason === 'string' ? { blockedReason: result.blocked_reason } : {}),
+      ...(typeof result.blocked_reason_code === 'string'
+        ? { blockedReasonCode: result.blocked_reason_code }
+        : {}),
+      ...(typeof result.head_sequence === 'number' ? { headSequence: result.head_sequence } : {}),
+      ...(typeof result.acked_up_to_sequence === 'number'
+        ? { ackedUpToSequence: result.acked_up_to_sequence }
+        : {}),
+      ...(typeof result.received_up_to_sequence === 'number'
+        ? { receivedUpToSequence: result.received_up_to_sequence }
+        : {}),
+      ...(typeof result.next_ackable_sequence === 'number'
+        ? { nextAckableSequence: result.next_ackable_sequence }
+        : {}),
+      ...(typeof result.reconciliation_action === 'string'
+        ? { reconciliationAction: result.reconciliation_action }
+        : {}),
     };
   }
 
@@ -907,20 +941,51 @@ export class HarnessDriverClient {
    * `blockedReason` carry that distinction (see relay#1593). Older brokers omit
    * all three.
    */
-  async flushPending(
-    name: string
-  ): Promise<{ flushed: number; deadLettered?: number; held?: number; blockedReason?: string }> {
+  async flushPending(name: string): Promise<{
+    flushed: number;
+    deadLettered?: number;
+    held?: number;
+    blockedReason?: string;
+    blockedReasonCode?: string;
+    headSequence?: number;
+    ackedUpToSequence?: number;
+    receivedUpToSequence?: number;
+    nextAckableSequence?: number;
+    reconciliationAction?: string;
+  }> {
     const result = await this.transport.request<{
       flushed?: unknown;
       dead_lettered?: unknown;
       held?: unknown;
       blocked_reason?: unknown;
+      blocked_reason_code?: unknown;
+      head_sequence?: unknown;
+      acked_up_to_sequence?: unknown;
+      received_up_to_sequence?: unknown;
+      next_ackable_sequence?: unknown;
+      reconciliation_action?: unknown;
     }>(`/api/spawned/${encodeURIComponent(name)}/flush`, { method: 'POST' });
     return {
       flushed: typeof result.flushed === 'number' ? result.flushed : 0,
       ...(typeof result.dead_lettered === 'number' ? { deadLettered: result.dead_lettered } : {}),
       ...(typeof result.held === 'number' ? { held: result.held } : {}),
       ...(typeof result.blocked_reason === 'string' ? { blockedReason: result.blocked_reason } : {}),
+      ...(typeof result.blocked_reason_code === 'string'
+        ? { blockedReasonCode: result.blocked_reason_code }
+        : {}),
+      ...(typeof result.head_sequence === 'number' ? { headSequence: result.head_sequence } : {}),
+      ...(typeof result.acked_up_to_sequence === 'number'
+        ? { ackedUpToSequence: result.acked_up_to_sequence }
+        : {}),
+      ...(typeof result.received_up_to_sequence === 'number'
+        ? { receivedUpToSequence: result.received_up_to_sequence }
+        : {}),
+      ...(typeof result.next_ackable_sequence === 'number'
+        ? { nextAckableSequence: result.next_ackable_sequence }
+        : {}),
+      ...(typeof result.reconciliation_action === 'string'
+        ? { reconciliationAction: result.reconciliation_action }
+        : {}),
     };
   }
 

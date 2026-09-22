@@ -259,6 +259,24 @@ pub(crate) enum TerminalFromCloud {
     },
 }
 
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+pub(crate) struct TerminalDeliveryDiagnostics {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(crate) blocked_reason: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(crate) blocked_reason_code: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(crate) head_sequence: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(crate) acked_up_to_sequence: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(crate) received_up_to_sequence: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(crate) next_ackable_sequence: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(crate) reconciliation_action: Option<String>,
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "type")]
 pub(crate) enum TerminalToCloud {
@@ -333,8 +351,12 @@ pub(crate) enum TerminalToCloud {
         request_id: Option<String>,
         mode: InboundDeliveryMode,
         flushed: usize,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        dead_lettered: Option<usize>,
         matched: bool,
         revision: String,
+        #[serde(flatten)]
+        diagnostics: Box<TerminalDeliveryDiagnostics>,
     },
     /// Reply to `TerminalFromCloud::FlushPending`. Carries the same four
     /// fields as `POST /api/spawned/{name}/flush` so the CLI renders an
@@ -347,8 +369,8 @@ pub(crate) enum TerminalToCloud {
         flushed: usize,
         dead_lettered: usize,
         held: usize,
-        #[serde(skip_serializing_if = "Option::is_none")]
-        blocked_reason: Option<String>,
+        #[serde(flatten)]
+        diagnostics: Box<TerminalDeliveryDiagnostics>,
     },
 }
 
@@ -832,8 +854,9 @@ mod tests {
     use super::{
         enqueue_terminal_frame, reconnect_delay_with_jitter, request_terminal_reconnect,
         run_terminal_control_client, InboundDeliveryMode, TerminalControlCommand,
-        TerminalControlConfig, TerminalControlEvent, TerminalFrameEnqueue, TerminalFromCloud,
-        TerminalMode, TerminalToCloud, INITIAL_RECONNECT_DELAY, MAX_RECONNECT_DELAY,
+        TerminalControlConfig, TerminalControlEvent, TerminalDeliveryDiagnostics,
+        TerminalFrameEnqueue, TerminalFromCloud, TerminalMode, TerminalToCloud,
+        INITIAL_RECONNECT_DELAY, MAX_RECONNECT_DELAY,
     };
 
     #[tokio::test]
@@ -1139,8 +1162,18 @@ mod tests {
             request_id: Some("rid1".into()),
             mode: InboundDeliveryMode::AutoInject,
             flushed: 3,
+            dead_lettered: Some(0),
             matched: true,
             revision: "2".into(),
+            diagnostics: Box::new(TerminalDeliveryDiagnostics {
+                blocked_reason: Some("gap".into()),
+                blocked_reason_code: Some("missing_predecessor_ack".into()),
+                head_sequence: Some(90),
+                acked_up_to_sequence: Some(88),
+                received_up_to_sequence: Some(90),
+                next_ackable_sequence: Some(89),
+                reconciliation_action: Some("predecessor_replayed".into()),
+            }),
         })
         .unwrap();
         assert_eq!(reply["type"], "terminal.delivery_mode");
@@ -1149,6 +1182,9 @@ mod tests {
         assert_eq!(reply["flushed"], 3);
         assert_eq!(reply["matched"], true);
         assert_eq!(reply["revision"], "2");
+        assert_eq!(reply["blocked_reason_code"], "missing_predecessor_ack");
+        assert_eq!(reply["next_ackable_sequence"], 89);
+        assert_eq!(reply["reconciliation_action"], "predecessor_replayed");
 
         // node→client: reply without request_id omits the field
         let reply_no_rid = serde_json::to_value(TerminalToCloud::DeliveryMode {
@@ -1156,8 +1192,10 @@ mod tests {
             request_id: None,
             mode: InboundDeliveryMode::AutoInject,
             flushed: 0,
+            dead_lettered: None,
             matched: true,
             revision: "1".into(),
+            diagnostics: Box::default(),
         })
         .unwrap();
         assert!(reply_no_rid.get("request_id").is_none());
@@ -1168,8 +1206,10 @@ mod tests {
             request_id: None,
             mode: InboundDeliveryMode::ManualFlush,
             flushed: 0,
+            dead_lettered: None,
             matched: false,
             revision: "1".into(),
+            diagnostics: Box::default(),
         })
         .unwrap();
         assert_eq!(cas_miss["matched"], false);

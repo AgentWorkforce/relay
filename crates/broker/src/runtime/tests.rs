@@ -1548,11 +1548,344 @@ async fn manual_flush_still_stops_on_a_genuine_sequence_gap() {
         result.failure.is_some(),
         "an out-of-order receipt must still hold the queue"
     );
+    assert_eq!(result.blocked_reason_code, Some("missing_predecessor_ack"));
+    assert_eq!(result.head_sequence, Some(2));
+    assert_eq!(result.acked_up_to_sequence, Some(0));
+    assert_eq!(result.received_up_to_sequence, Some(2));
+    assert_eq!(result.next_ackable_sequence, Some(1));
     assert_eq!(delivery_states[&worker_name].pending_snapshot(), expected);
     assert_eq!(delivery_book.acked_up_to_seq("agent-worker-a"), 0);
     assert!(fleet_control_rx.try_recv().is_err());
 
     cleanup_worker_registry(workers).await;
+}
+
+/// A flush should actively replay a durable in-flight predecessor instead of
+/// merely reporting that every parked successor is blocked. The replay keeps
+/// both custody records intact until the worker confirms, then the same queue
+/// drains normally on the next flush.
+#[tokio::test]
+async fn manual_flush_replays_a_durable_predecessor_then_drains_without_loss() {
+    let worker_name = WorkerName::from("worker-a");
+    let mut workers = make_worker_registry_with_worker(&worker_name).await;
+    let first = fleet_deliver(1);
+    let second = fleet_deliver(2);
+    let mut state = InboundDeliveryState::new(InboundDeliveryMode::ManualFlush);
+    state.accept_inbound(held_fleet_message(&second));
+    let mut delivery_states = HashMap::from([(worker_name.clone(), state)]);
+    let mut delivery_book = FleetDeliveryBook::default();
+    delivery_book.commit_received(&first);
+    delivery_book.commit_received(&second);
+
+    let mut first_pending = pending_delivery(
+        worker_name.as_str(),
+        first.delivery_id.as_str(),
+        first.msg_id.as_str(),
+    );
+    first_pending.withheld_fleet_ack = Some(first.clone());
+    first_pending.withheld_fleet_ack_floor = Some(first.seq);
+    let mut pending_deliveries =
+        HashMap::from([(DeliveryId::from(&first.delivery_id), first_pending)]);
+    let (fleet_control_tx, mut fleet_control_rx) = mpsc::channel(4);
+    let (sdk_out_tx, mut sdk_out_rx) = mpsc::channel(16);
+    let _ = &mut sdk_out_rx;
+    let mut dead_letters = DeadLetterStore::new(Vec::new());
+    let mut obligation_store = crate::obligation::ObligationStore::default();
+    let probe = crate::node_delivery_probe::NodeDeliveryProbe::new();
+
+    let blocked = super::fleet::flush_pending_relay_messages(
+        &mut delivery_states,
+        &mut workers,
+        &mut delivery_book,
+        &fleet_control_tx,
+        &probe,
+        &sdk_out_tx,
+        &mut dead_letters,
+        &mut obligation_store,
+        &worker_name,
+        Duration::from_secs(1),
+    )
+    .await;
+    assert_eq!(blocked.next_ackable_sequence, Some(first.seq));
+
+    let action = super::fleet::reconcile_blocked_flush_predecessor(
+        &blocked,
+        &mut workers,
+        &mut pending_deliveries,
+        &sdk_out_tx,
+        &mut dead_letters,
+        &worker_name,
+        Duration::from_secs(1),
+    )
+    .await;
+    assert_eq!(action, Some("predecessor_replayed"));
+    assert_eq!(
+        pending_deliveries[&DeliveryId::from(&first.delivery_id)].attempts,
+        2,
+        "reconciliation must add exactly one replay attempt to the existing handoff"
+    );
+    assert_eq!(delivery_states[&worker_name].pending_len(), 1);
+    assert!(dead_letters.is_empty());
+
+    let (_, resolved) = super::fleet::confirm_pending_delivery_and_resolve_fleet_ack(
+        &mut pending_deliveries,
+        first.delivery_id.as_str(),
+        Some(first.msg_id.as_str()),
+        worker_name.as_str(),
+        "delivery_ack",
+        &mut delivery_book,
+    );
+    assert_eq!(resolved, Some((first.agent.clone(), first.seq)));
+    assert!(pending_deliveries.is_empty());
+
+    let drained = super::fleet::flush_pending_relay_messages(
+        &mut delivery_states,
+        &mut workers,
+        &mut delivery_book,
+        &fleet_control_tx,
+        &probe,
+        &sdk_out_tx,
+        &mut dead_letters,
+        &mut obligation_store,
+        &worker_name,
+        Duration::from_secs(1),
+    )
+    .await;
+    assert_eq!(drained.flushed, 1);
+    assert_eq!(drained.failure, None);
+    assert!(delivery_states[&worker_name].pending.is_empty());
+    match fleet_control_rx.recv().await {
+        Some(FleetControlCommand::Send(BrokerToRelaycast::DeliveryAck(ack))) => {
+            assert_eq!(ack.up_to_seq, second.seq);
+        }
+        other => panic!("expected successor ACK after reconciliation, got {other:?}"),
+    }
+
+    cleanup_worker_registry(workers).await;
+}
+
+/// relay#1837: if broker custody of an already-received predecessor vanished,
+/// Relaycast's exact replay must rebuild that custody ahead of later parked
+/// sequences. A further replay while custody exists must not queue or inject a
+/// second copy. Once restored, one flush delivers the complete contiguous
+/// prefix and advances ACKs without loss.
+#[tokio::test]
+async fn manual_flush_reconciles_an_unacknowledged_replay_without_loss_or_duplication() {
+    let worker_name = WorkerName::from("worker-a");
+    let workers = make_worker_registry_with_worker(&worker_name).await;
+    let mut fixture = worker_event_runtime_fixture(workers, HashMap::new());
+    let missing = fleet_deliver(89);
+    let successor = fleet_deliver(90);
+
+    fixture
+        .runtime
+        .fleet_delivery_book
+        .bind_authoritative_identity(&missing.agent, &missing.agent_id);
+    fixture.runtime.fleet_delivery_book.seed_cursor(
+        &missing.agent,
+        &missing.agent_id,
+        missing.seq - 1,
+    );
+    // Both frames reached the broker, but local custody for 89 disappeared
+    // before its ACK. Only 90 remains in the manual queue.
+    fixture
+        .runtime
+        .fleet_delivery_book
+        .commit_received(&missing);
+    fixture
+        .runtime
+        .fleet_delivery_book
+        .commit_received(&successor);
+    let mut state = InboundDeliveryState::new(InboundDeliveryMode::ManualFlush);
+    state.accept_inbound(held_fleet_message(&successor));
+    fixture
+        .runtime
+        .delivery_states
+        .insert(worker_name.clone(), state);
+
+    let conflicting = crate::fleet_wire::Deliver {
+        delivery_id: "different-delivery-89".to_string(),
+        ..missing.clone()
+    };
+    fixture
+        .runtime
+        .handle_fleet_control_event(crate::node_control::FleetControlEvent::Message(
+            crate::fleet_wire::RelaycastToBroker::Deliver(conflicting),
+        ))
+        .await;
+    assert_eq!(
+        fixture.runtime.delivery_states[&worker_name].pending_len(),
+        1,
+        "same message/sequence under a different delivery ID must not be resurfaced"
+    );
+    assert!(
+        fixture.fleet_control_rx.try_recv().is_err(),
+        "a conflicting delivery identity must fail closed without ACK"
+    );
+
+    fixture
+        .runtime
+        .handle_fleet_control_event(crate::node_control::FleetControlEvent::Message(
+            crate::fleet_wire::RelaycastToBroker::Deliver(missing.clone()),
+        ))
+        .await;
+    let sequences = fixture.runtime.delivery_states[&worker_name]
+        .pending_snapshot()
+        .into_iter()
+        .map(|message| message.relaycast_receipt.unwrap().seq)
+        .collect::<Vec<_>>();
+    assert_eq!(
+        sequences,
+        vec![89, 90],
+        "the replayed predecessor must be restored before its successor"
+    );
+
+    let conflicting_with_custody = crate::fleet_wire::Deliver {
+        delivery_id: "yet-another-delivery-89".to_string(),
+        ..missing.clone()
+    };
+    fixture
+        .runtime
+        .handle_fleet_control_event(crate::node_control::FleetControlEvent::Message(
+            crate::fleet_wire::RelaycastToBroker::Deliver(conflicting_with_custody),
+        ))
+        .await;
+    assert_eq!(
+        fixture.runtime.delivery_states[&worker_name].pending_len(),
+        2,
+        "a conflicting delivery identity must also fail closed while exact custody exists"
+    );
+    assert!(
+        fixture.fleet_control_rx.try_recv().is_err(),
+        "the conflicting identity must remain unACKed while exact custody exists"
+    );
+
+    fixture
+        .runtime
+        .handle_fleet_control_event(crate::node_control::FleetControlEvent::Message(
+            crate::fleet_wire::RelaycastToBroker::Deliver(missing.clone()),
+        ))
+        .await;
+    assert_eq!(
+        fixture.runtime.delivery_states[&worker_name].pending_len(),
+        2,
+        "a replay with live queue custody must not create a duplicate"
+    );
+    match fixture.fleet_control_rx.recv().await {
+        Some(FleetControlCommand::Send(BrokerToRelaycast::DeliveryAck(ack))) => {
+            assert_eq!(
+                ack.up_to_seq, 88,
+                "custody replay may only restate the safe floor"
+            );
+        }
+        other => panic!("expected safe-floor ACK for the custody replay, got {other:?}"),
+    }
+
+    let result = super::fleet::flush_pending_relay_messages(
+        &mut fixture.runtime.delivery_states,
+        &mut fixture.runtime.workers,
+        &mut fixture.runtime.fleet_delivery_book,
+        &fixture.runtime.fleet_control_tx,
+        &fixture.runtime.node_delivery_probe,
+        &fixture.runtime.sdk_out_tx,
+        &mut fixture.runtime.dead_letters,
+        &mut fixture.runtime.obligation_store,
+        &worker_name,
+        fixture.runtime.delivery_retry_interval,
+    )
+    .await;
+
+    assert_eq!(result.flushed, 2);
+    assert_eq!(result.failure, None);
+    assert!(fixture.runtime.delivery_states[&worker_name]
+        .pending_snapshot()
+        .is_empty());
+    assert_eq!(
+        fixture
+            .runtime
+            .fleet_delivery_book
+            .acked_up_to_seq(&missing.agent_id),
+        successor.seq
+    );
+    for expected_seq in [89, 90] {
+        match fixture.fleet_control_rx.recv().await {
+            Some(FleetControlCommand::Send(BrokerToRelaycast::DeliveryAck(ack))) => {
+                assert_eq!(ack.up_to_seq, expected_seq);
+            }
+            other => panic!("expected delivery ACK {expected_seq}, got {other:?}"),
+        }
+    }
+
+    cleanup_worker_registry(fixture.runtime.workers).await;
+}
+
+/// A blocked queue at its normal admission cap must still have one bounded
+/// recovery slot for the exact predecessor that makes its head drainable.
+/// Rejecting that replay would make capacity impossible to free without
+/// dropping an unACKed successor.
+#[tokio::test]
+async fn manual_flush_full_queue_admits_predecessor_without_losing_a_successor() {
+    let worker_name = WorkerName::from("worker-a");
+    let workers = make_worker_registry_with_worker(&worker_name).await;
+    let mut fixture = worker_event_runtime_fixture(workers, HashMap::new());
+    let missing = fleet_deliver(89);
+
+    fixture
+        .runtime
+        .fleet_delivery_book
+        .bind_authoritative_identity(&missing.agent, &missing.agent_id);
+    fixture.runtime.fleet_delivery_book.seed_cursor(
+        &missing.agent,
+        &missing.agent_id,
+        missing.seq - 1,
+    );
+    fixture
+        .runtime
+        .fleet_delivery_book
+        .commit_received(&missing);
+
+    let mut state = InboundDeliveryState::new(InboundDeliveryMode::ManualFlush);
+    let last_sequence = missing.seq + crate::types::MAX_PENDING_PER_WORKER as u64;
+    for sequence in (missing.seq + 1)..=last_sequence {
+        let successor = fleet_deliver(sequence);
+        fixture
+            .runtime
+            .fleet_delivery_book
+            .commit_received(&successor);
+        state.accept_inbound(held_fleet_message(&successor));
+    }
+    assert_eq!(state.pending_len(), crate::types::MAX_PENDING_PER_WORKER);
+    fixture
+        .runtime
+        .delivery_states
+        .insert(worker_name.clone(), state);
+
+    fixture
+        .runtime
+        .handle_fleet_control_event(crate::node_control::FleetControlEvent::Message(
+            crate::fleet_wire::RelaycastToBroker::Deliver(missing.clone()),
+        ))
+        .await;
+
+    let sequences = fixture.runtime.delivery_states[&worker_name]
+        .pending_snapshot()
+        .into_iter()
+        .map(|message| message.relaycast_receipt.unwrap().seq)
+        .collect::<Vec<_>>();
+    assert_eq!(
+        sequences.len(),
+        crate::types::MAX_PENDING_PER_WORKER + 1,
+        "only the bounded recovery slot may exceed the normal queue cap"
+    );
+    assert_eq!(sequences.first(), Some(&missing.seq));
+    assert_eq!(sequences.last(), Some(&last_sequence));
+    assert_eq!(
+        sequences,
+        (missing.seq..=last_sequence).collect::<Vec<_>>(),
+        "every parked successor must remain in order without loss"
+    );
+
+    cleanup_worker_registry(fixture.runtime.workers).await;
 }
 
 #[tokio::test]
@@ -2768,6 +3101,12 @@ async fn worker_confirmation_ack_diagnostics(closed: bool) {
     )
     .await
     .expect("a registered worker should accept the handoff");
+
+    assert_eq!(
+        delivery_id.as_str(),
+        deliver.delivery_id,
+        "fleet identity must reach the worker unchanged so a replay can be deduplicated"
+    );
 
     assert!(
         fixture
