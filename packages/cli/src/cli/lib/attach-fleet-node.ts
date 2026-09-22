@@ -65,7 +65,53 @@ type FleetSessionResponse = {
   error?: { code?: string; message?: string };
 };
 
-type TerminalFrame = Record<string, unknown> & { type?: string; session_id?: string };
+type TerminalFrame = Record<string, unknown> & {
+  type?: string;
+  session_id?: string;
+  blocked_reason_code?: unknown;
+  head_sequence?: unknown;
+  acked_up_to_sequence?: unknown;
+  received_up_to_sequence?: unknown;
+  next_ackable_sequence?: unknown;
+  reconciliation_action?: unknown;
+};
+
+type GapDiagnosticsResult = {
+  blocked_reason_code?: string;
+  head_sequence?: number;
+  acked_up_to_sequence?: number;
+  received_up_to_sequence?: number;
+  next_ackable_sequence?: number;
+  reconciliation_action?: string;
+};
+
+function gapDiagnosticsFromFrame(frame: {
+  blocked_reason_code?: unknown;
+  head_sequence?: unknown;
+  acked_up_to_sequence?: unknown;
+  received_up_to_sequence?: unknown;
+  next_ackable_sequence?: unknown;
+  reconciliation_action?: unknown;
+}): GapDiagnosticsResult {
+  return {
+    ...(typeof frame.blocked_reason_code === 'string'
+      ? { blocked_reason_code: frame.blocked_reason_code }
+      : {}),
+    ...(typeof frame.head_sequence === 'number' ? { head_sequence: frame.head_sequence } : {}),
+    ...(typeof frame.acked_up_to_sequence === 'number'
+      ? { acked_up_to_sequence: frame.acked_up_to_sequence }
+      : {}),
+    ...(typeof frame.received_up_to_sequence === 'number'
+      ? { received_up_to_sequence: frame.received_up_to_sequence }
+      : {}),
+    ...(typeof frame.next_ackable_sequence === 'number'
+      ? { next_ackable_sequence: frame.next_ackable_sequence }
+      : {}),
+    ...(typeof frame.reconciliation_action === 'string'
+      ? { reconciliation_action: frame.reconciliation_action }
+      : {}),
+  };
+}
 
 type TerminalReadiness = {
   generation: number;
@@ -610,8 +656,15 @@ export async function startFleetNodeAttachProxy(
   /** Locally-tracked delivery mode, kept in sync with each broker reply. */
   let loopbackDeliveryMode: 'manual_flush' | 'auto_inject' =
     options.mode === 'drive' ? 'manual_flush' : 'auto_inject';
-  type DeliveryModeResult = { mode: string; flushed: number; matched: boolean; revision: string };
-  type FlushResult = {
+  type DeliveryModeResult = GapDiagnosticsResult & {
+    mode: string;
+    flushed: number;
+    dead_lettered?: number;
+    matched: boolean;
+    revision: string;
+    blocked_reason?: string;
+  };
+  type FlushResult = GapDiagnosticsResult & {
     flushed: number;
     dead_lettered: number;
     held: number;
@@ -821,8 +874,11 @@ export async function startFleetNodeAttachProxy(
       json(response, 200, {
         mode: result.mode,
         flushed: result.flushed,
+        ...(result.dead_lettered !== undefined ? { dead_lettered: result.dead_lettered } : {}),
         matched: result.matched,
         revision: result.revision,
+        ...(result.blocked_reason !== undefined ? { blocked_reason: result.blocked_reason } : {}),
+        ...gapDiagnosticsFromFrame(result),
       });
       return;
     }
@@ -1287,8 +1343,11 @@ export async function startFleetNodeAttachProxy(
           pending.resolve({
             mode: typeof frame.mode === 'string' ? frame.mode : 'auto_inject',
             flushed: typeof frame.flushed === 'number' ? frame.flushed : 0,
+            ...(typeof frame.dead_lettered === 'number' ? { dead_lettered: frame.dead_lettered } : {}),
             matched: typeof frame.matched === 'boolean' ? frame.matched : true,
             revision: typeof frame.revision === 'string' ? frame.revision : '1',
+            ...(typeof frame.blocked_reason === 'string' ? { blocked_reason: frame.blocked_reason } : {}),
+            ...gapDiagnosticsFromFrame(frame),
           });
         }
       } else if (frame.type === 'terminal.flush_pending') {
@@ -1306,6 +1365,7 @@ export async function startFleetNodeAttachProxy(
             dead_lettered: typeof frame.dead_lettered === 'number' ? frame.dead_lettered : 0,
             held: typeof frame.held === 'number' ? frame.held : 0,
             blocked_reason: typeof frame.blocked_reason === 'string' ? frame.blocked_reason : null,
+            ...gapDiagnosticsFromFrame(frame),
           });
         }
       } else if (frame.type === 'terminal.error') {

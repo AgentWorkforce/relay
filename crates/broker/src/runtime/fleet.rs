@@ -10,7 +10,8 @@ use crate::{
     node_delivery_probe::DeliverDisposition,
     terminal_control::{
         request_terminal_reconnect, TerminalControlCommand, TerminalControlEvent,
-        TerminalFromCloud, TerminalMode, TerminalToCloud, TERMINAL_CLOSE_RESERVE,
+        TerminalDeliveryDiagnostics, TerminalFromCloud, TerminalMode, TerminalToCloud,
+        TERMINAL_CLOSE_RESERVE,
     },
     worker::LiveFleetInventoryCandidate,
 };
@@ -650,7 +651,15 @@ impl BrokerRuntime {
                             flushed: ok.flushed,
                             dead_lettered: ok.dead_lettered,
                             held: ok.held,
-                            blocked_reason: ok.blocked_reason,
+                            diagnostics: Box::new(TerminalDeliveryDiagnostics {
+                                blocked_reason: ok.blocked_reason,
+                                blocked_reason_code: ok.blocked_reason_code.map(str::to_string),
+                                head_sequence: ok.head_sequence,
+                                acked_up_to_sequence: ok.acked_up_to_sequence,
+                                received_up_to_sequence: ok.received_up_to_sequence,
+                                next_ackable_sequence: ok.next_ackable_sequence,
+                                reconciliation_action: ok.reconciliation_action.map(str::to_string),
+                            }),
                         });
                     }
                     Ok(Err(error @ DeliveryRouteError::CapabilityDisabled)) => {
@@ -761,8 +770,18 @@ impl BrokerRuntime {
                             request_id,
                             mode: ok.mode,
                             flushed: ok.flushed,
+                            dead_lettered: Some(ok.dead_lettered),
                             matched: ok.matched,
                             revision: ok.revision.to_string(),
+                            diagnostics: Box::new(TerminalDeliveryDiagnostics {
+                                blocked_reason: ok.blocked_reason,
+                                blocked_reason_code: ok.blocked_reason_code.map(str::to_string),
+                                head_sequence: ok.head_sequence,
+                                acked_up_to_sequence: ok.acked_up_to_sequence,
+                                received_up_to_sequence: ok.received_up_to_sequence,
+                                next_ackable_sequence: ok.next_ackable_sequence,
+                                reconciliation_action: ok.reconciliation_action.map(str::to_string),
+                            }),
                         });
                     }
                     Ok(Err(error @ DeliveryRouteError::CapabilityDisabled)) => {

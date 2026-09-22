@@ -1779,6 +1779,75 @@ async fn manual_flush_reconciles_an_unacknowledged_replay_without_loss_or_duplic
     cleanup_worker_registry(fixture.runtime.workers).await;
 }
 
+/// A blocked queue at its normal admission cap must still have one bounded
+/// recovery slot for the exact predecessor that makes its head drainable.
+/// Rejecting that replay would make capacity impossible to free without
+/// dropping an unACKed successor.
+#[tokio::test]
+async fn manual_flush_full_queue_admits_predecessor_without_losing_a_successor() {
+    let worker_name = WorkerName::from("worker-a");
+    let workers = make_worker_registry_with_worker(&worker_name).await;
+    let mut fixture = worker_event_runtime_fixture(workers, HashMap::new());
+    let missing = fleet_deliver(89);
+
+    fixture
+        .runtime
+        .fleet_delivery_book
+        .bind_authoritative_identity(&missing.agent, &missing.agent_id);
+    fixture.runtime.fleet_delivery_book.seed_cursor(
+        &missing.agent,
+        &missing.agent_id,
+        missing.seq - 1,
+    );
+    fixture
+        .runtime
+        .fleet_delivery_book
+        .commit_received(&missing);
+
+    let mut state = InboundDeliveryState::new(InboundDeliveryMode::ManualFlush);
+    let last_sequence = missing.seq + crate::types::MAX_PENDING_PER_WORKER as u64;
+    for sequence in (missing.seq + 1)..=last_sequence {
+        let successor = fleet_deliver(sequence);
+        fixture
+            .runtime
+            .fleet_delivery_book
+            .commit_received(&successor);
+        state.accept_inbound(held_fleet_message(&successor));
+    }
+    assert_eq!(state.pending_len(), crate::types::MAX_PENDING_PER_WORKER);
+    fixture
+        .runtime
+        .delivery_states
+        .insert(worker_name.clone(), state);
+
+    fixture
+        .runtime
+        .handle_fleet_control_event(crate::node_control::FleetControlEvent::Message(
+            crate::fleet_wire::RelaycastToBroker::Deliver(missing.clone()),
+        ))
+        .await;
+
+    let sequences = fixture.runtime.delivery_states[&worker_name]
+        .pending_snapshot()
+        .into_iter()
+        .map(|message| message.relaycast_receipt.unwrap().seq)
+        .collect::<Vec<_>>();
+    assert_eq!(
+        sequences.len(),
+        crate::types::MAX_PENDING_PER_WORKER + 1,
+        "only the bounded recovery slot may exceed the normal queue cap"
+    );
+    assert_eq!(sequences.first(), Some(&missing.seq));
+    assert_eq!(sequences.last(), Some(&last_sequence));
+    assert_eq!(
+        sequences,
+        (missing.seq..=last_sequence).collect::<Vec<_>>(),
+        "every parked successor must remain in order without loss"
+    );
+
+    cleanup_worker_registry(fixture.runtime.workers).await;
+}
+
 #[tokio::test]
 async fn manual_flush_failure_retains_failed_message_and_suffix_without_ack() {
     let worker_name = WorkerName::from("worker-a");

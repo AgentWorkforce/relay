@@ -650,21 +650,6 @@ pub(crate) fn queue_inbound_for_delivery_mode(
     let state = delivery_states
         .entry(WorkerName::from(worker_name))
         .or_default();
-    if state.pending.len() >= crate::types::MAX_PENDING_PER_WORKER {
-        tracing::warn!(
-            target = "agent_relay::broker",
-            worker = %worker_name,
-            from = %ctx.from,
-            mode = state.mode.as_wire_str(),
-            queue_len = state.pending.len(),
-            max_pending = crate::types::MAX_PENDING_PER_WORKER,
-            "pending queue full - rejecting newest message"
-        );
-        return InboundQueueResult {
-            outcome: InboundQueueOutcome::RejectedFull,
-            evicted_from: None,
-        };
-    }
     let should_drain = state.should_drain_immediately();
     let queued_at_ms = chrono::Utc::now().timestamp_millis().max(0) as u64;
     let msg = PendingRelayMessage {
@@ -680,6 +665,31 @@ pub(crate) fn queue_inbound_for_delivery_mode(
         event_id: ctx.event_id.map(EventId::from),
         relaycast_receipt: ctx.relaycast_receipt,
     };
+    let restoring_predecessor = state.can_restore_fleet_predecessor(&msg);
+    if state.pending.len() >= crate::types::MAX_PENDING_PER_WORKER && !restoring_predecessor {
+        tracing::warn!(
+            target = "agent_relay::broker",
+            worker = %worker_name,
+            from = %ctx.from,
+            mode = state.mode.as_wire_str(),
+            queue_len = state.pending.len(),
+            max_pending = crate::types::MAX_PENDING_PER_WORKER,
+            "pending queue full - rejecting newest message"
+        );
+        return InboundQueueResult {
+            outcome: InboundQueueOutcome::RejectedFull,
+            evicted_from: None,
+        };
+    }
+    if restoring_predecessor {
+        tracing::warn!(
+            target = "agent_relay::broker",
+            worker = %worker_name,
+            queue_len = state.pending.len(),
+            max_pending = crate::types::MAX_PENDING_PER_WORKER,
+            "temporarily exceeding the pending cap to restore a missing fleet predecessor"
+        );
+    }
     let evicted_from = match state.accept_inbound(msg) {
         InboundDeliveryDispatch::Queued { queue_len } => {
             tracing::debug!(
