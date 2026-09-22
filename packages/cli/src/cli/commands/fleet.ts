@@ -449,7 +449,7 @@ export function registerFleetCommands(
       )
       .option(
         '--confirm-timeout <ms>',
-        'How long a targeted spawn waits for the node to confirm the launch',
+        'How long a targeted spawn waits for harness readiness (minimum 90000ms)',
         '120000'
       )
   ).action(async (cli: string, options: Record<string, unknown>) => {
@@ -539,6 +539,10 @@ export function registerFleetCommands(
       );
       const confirmTimeoutText = optionalText(options.confirmTimeout, 'Confirm timeout') ?? '120000';
       const confirmTimeoutMs = Number(confirmTimeoutText);
+      // Broker VERIFIED_SPAWN_READY_TIMEOUT is 90s; default confirmation is 120s.
+      if ((targetNode || useSandbox) && options.confirm !== false && confirmTimeoutMs < 90_000) {
+        throw new Error('--confirm-timeout must be at least 90000ms for verified targeted spawns.');
+      }
       if (!Number.isFinite(confirmTimeoutMs) || confirmTimeoutMs <= 0) {
         throw new Error('--confirm-timeout must be a positive number of milliseconds.');
       }

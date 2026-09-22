@@ -647,8 +647,18 @@ export interface RelaySpawnPlacementInput {
    * invocation, and launches nothing — without this the ack is identical to a
    * real spawn. Defaults to `false` so plain dispatch keeps its semantics for
    * non-spawn capabilities; agent-spawning callers should set it.
+   * Confirmed spawn success requires spawned:true and ready:true. Without
+   * confirmation, terminal launch success still requires spawned:true and a
+   * boolean ready field; ready:false means accepted, not verified readiness.
    */
   confirm?: boolean;
+  /**
+   * Request proven harness readiness from the broker. Defaults to confirm !== false
+   * for spawn harnesses, and false for spawn:persona (engine-owned child input).
+   * Verified success carries spawned:true, ready:true. Unverified success carries
+   * spawned:true, ready:false; confirmation still requires ready:true.
+   */
+  verifyReady?: boolean;
   /**
    * How long to wait for that terminal result. Must exceed the node's own
    * readiness window (the broker's `verify_ready` mode holds the action open

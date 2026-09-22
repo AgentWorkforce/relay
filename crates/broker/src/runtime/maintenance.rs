@@ -234,7 +234,7 @@ impl BrokerRuntime {
             let owned = workers.owned_spawn_generations.get(name).cloned();
             let completion = super::fleet::verified_spawn_failed_result(
                 invocation_id.clone(),
-                "spawn_readiness_timeout",
+                "spawn_readiness_timeout: worker released after failing to reach harness readiness",
             );
             if let Some((_, http)) = owned {
                 super::identity_cleanup::schedule_identity_cleanup(

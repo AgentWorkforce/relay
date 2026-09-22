@@ -143,8 +143,24 @@ const CONFIRM_SUCCESS_STATUSES = new Set(['completed', 'succeeded', 'success']);
  */
 const CONFIRM_FAILURE_STATUSES = new Set(['failed', 'error', 'denied', 'cancelled', 'canceled']);
 
-function hasExplicitSpawnReadinessProof(value: { output?: Record<string, unknown> | null }): boolean {
+function hasSpawnReadinessProof(value: { output?: Record<string, unknown> | null }): boolean {
   return value.output?.spawned === true && value.output?.ready === true;
+}
+
+function hasSpawnLaunchProof(value: { output?: Record<string, unknown> | null }): boolean {
+  return value.output?.spawned === true && typeof value.output?.ready === 'boolean';
+}
+
+function spawnProofError(
+  node: string,
+  status: string,
+  action: string,
+  output?: Record<string, unknown> | null
+): string {
+  if (output?.spawned === true && typeof output.ready !== 'boolean') {
+    return `node '${node}' handler did not honour verify_ready: missing explicit spawned:true and ready:true proof; upgrade to a release containing Relay PR #1708`;
+  }
+  return `node '${node}' reported ${status} for ${action} without explicit spawned:true and ready:true proof`;
 }
 
 /** Distinguishes "the read outlived its budget" from any value a read returns. */
@@ -730,7 +746,12 @@ export class RelaycastMessagingClient implements RelayMessagingClient {
             // a node can die between this read and action invocation, after
             // which the engine treats it as a targeted queued placement.
             const clientMustTarget = Boolean(targetNode || repo || sandboxOnly);
+            // Persona resolves a nested child in the engine; its contract is unchanged.
+            const verifyReady =
+              input.verifyReady ??
+              (input.confirm !== false && capability.startsWith('spawn:') && capability !== 'spawn:persona');
             const actionInput = placementActionInput(input.input, {
+              verifyReady,
               capability,
               ...(clientMustTarget ? { node: decision.node.name } : {}),
               repo,
@@ -772,11 +793,13 @@ export class RelaycastMessagingClient implements RelayMessagingClient {
               capability.startsWith('spawn:') &&
               ackStatus &&
               CONFIRM_SUCCESS_STATUSES.has(ackStatus) &&
-              !hasExplicitSpawnReadinessProof({ output: ackOutput })
+              !(capability === 'spawn:persona'
+                ? hasSpawnReadinessProof({ output: ackOutput })
+                : hasSpawnLaunchProof({ output: ackOutput }))
             ) {
               throw new RelayPlacementError(
                 'spawn_failed',
-                `node '${placedNodeLabel}' reported ${ackStatus} for ${actionName} without explicit spawned:true and ready:true proof`,
+                spawnProofError(placedNodeLabel, ackStatus, actionName, ackOutput),
                 {
                   capability,
                   node: placedNodeLabel,
@@ -990,13 +1013,10 @@ export class RelaycastMessagingClient implements RelayMessagingClient {
             const invocation = outcome.value;
             const status = invocation?.status?.toLowerCase();
             if (status && CONFIRM_SUCCESS_STATUSES.has(status)) {
-              if (
-                errorContext.capability.startsWith('spawn:') &&
-                !hasExplicitSpawnReadinessProof(invocation)
-              ) {
+              if (errorContext.capability.startsWith('spawn:') && !hasSpawnReadinessProof(invocation)) {
                 throw new RelayPlacementError(
                   'spawn_failed',
-                  `node '${context.node}' reported ${status} for ${actionName} without explicit spawned:true and ready:true proof`,
+                  spawnProofError(context.node, status, actionName, invocation.output),
                   {
                     ...errorContext,
                     state: 'failed',

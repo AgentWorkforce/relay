@@ -193,7 +193,7 @@ describe('fleet spawn confirmation is observable from the requester (#1430)', ()
     expect((error as RelayPlacementError).state).toBe('failed');
     expect((error as RelayPlacementError).invocationId).toBe('inv-1430');
     expect((error as RelayPlacementError).dispatchState).toBe('dispatched');
-    expect((error as RelayPlacementError).message).toContain('spawned:true and ready:true proof');
+    expect((error as RelayPlacementError).message).toContain('verify_ready');
   });
 
   // VACUITY CONTROL — without `confirm` the invocation is never read back, so
@@ -316,5 +316,62 @@ describe('fleet spawn confirmation is observable from the requester (#1430)', ()
     expect((error as RelayPlacementError).code).toBe('spawn_unconfirmed');
     expect(call).toBeGreaterThan(1);
     expect((error as Error).message).not.toContain('transient socket reset');
+  });
+});
+
+describe('targeted spawn readiness contract', () => {
+  it('requests readiness from a healthy remote claude node within the default budget', async () => {
+    const { client, invoke } = createClient(async (_name, invocationId) => ({
+      invocation_id: invocationId,
+      status: 'completed',
+      output: { spawned: true, ready: invoke.mock.calls[0]?.[1]?.verify_ready === true },
+    }));
+    const started = Date.now();
+    const ack = await client.placement.spawn(spawnInput({ confirm: true }));
+    expect(ack.placement.state).toBe('ready');
+    expect(ack.placement.confirmed).toBe(true);
+    expect(Date.now() - started).toBeLessThan(120_000);
+    expect(invoke).toHaveBeenCalledTimes(1);
+  });
+
+  it.each([false, true])('accepts an explicit unverified launch ack with ready=%s', async (ready) => {
+    const { client, invoke, reader } = createClient();
+    invoke.mockResolvedValueOnce({
+      invocation_id: 'launch',
+      status: 'completed',
+      output: { spawned: true, ready },
+    } as never);
+    const ack = await client.placement.spawn(spawnInput({ confirm: false }));
+    expect(ack.placement).toMatchObject({ state: 'accepted', confirmed: false });
+    expect(invoke.mock.calls[0]?.[1]).not.toHaveProperty('verify_ready');
+    expect(reader).not.toHaveBeenCalled();
+  });
+
+  it('rejects an obsolete handler missing the ready boolean even without confirmation', async () => {
+    const { client, invoke } = createClient();
+    invoke.mockResolvedValueOnce({
+      invocation_id: 'old',
+      status: 'completed',
+      output: { spawned: true },
+    } as never);
+    await expect(client.placement.spawn(spawnInput({ confirm: false }))).rejects.toMatchObject({
+      code: 'spawn_failed',
+      message: expect.stringContaining('verify_ready'),
+    });
+  });
+
+  it('leaves persona verification unchanged', async () => {
+    const { client, invoke } = createClient(async () => ({
+      status: 'completed',
+      output: { spawned: true, ready: true },
+    }));
+    // Expose persona capacity only for this fixture.
+    LIVE_NODE.capabilities.push({ name: 'spawn:persona', kind: 'spawn' });
+    try {
+      await client.placement.spawn(spawnInput({ capability: 'spawn:persona', confirm: true }));
+      expect(invoke.mock.calls[0]?.[1]).not.toHaveProperty('verify_ready');
+    } finally {
+      LIVE_NODE.capabilities.pop();
+    }
   });
 });
