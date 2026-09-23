@@ -409,7 +409,7 @@ impl BrokerRuntime {
                         return;
                     }
                 };
-                let spec = match build_http_api_spawn_spec(
+                let mut spec = match build_http_api_spawn_spec(
                     name.clone(),
                     cli.clone(),
                     transport,
@@ -533,6 +533,28 @@ impl BrokerRuntime {
                 // so all task decoration must be complete before registration
                 // or spawn. This also lets the broker reject non-portable argv
                 // text before creating a remote worker identity.
+                // An inline `--model`/`-m` in the command or the arguments is
+                // what the harness actually runs: it reads argv and never sees
+                // `spec.model`. Resolve it before the skill prefix is chosen --
+                // repairing the metadata inside worker startup would be after
+                // this decision -- and keep the effective value on the spec so
+                // listings, spawn events and telemetry agree with the harness.
+                if let Some(inline) = crate::worker::model_override_from_args(&{
+                    let command = spec.cli.as_deref().unwrap_or(&cli);
+                    let mut tokens = shlex::split(command).unwrap_or_default();
+                    tokens.extend(spec.args.iter().cloned());
+                    tokens
+                }) {
+                    if spec.model.as_deref() != Some(inline) {
+                        tracing::debug!(
+                            agent = %name,
+                            pinned_model = ?spec.model,
+                            effective_model = %inline,
+                            "argv names a model; recording it as the effective model"
+                        );
+                        spec.model = Some(inline.to_string());
+                    }
+                }
                 if !skip_relay_prompt {
                     if let Some(prefix) = relay_skill_prefix(
                         spec.cli.as_deref().unwrap_or(&cli),

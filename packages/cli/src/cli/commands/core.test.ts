@@ -409,6 +409,42 @@ describe('registerCoreCommands', () => {
     });
   });
 
+  it.each([
+    ['claude', 'opus'],
+    ['codex', 'gpt-5.4'],
+    ['opencode', 'openai/gpt-5.2'],
+    ['claude --model sonnet', 'opus'],
+  ])('up forwards the model pin for %s to the broker', async (cli, model) => {
+    const relay = createRelayMock({
+      getStatus: vi.fn(async () => ({
+        agent_count: 0,
+        pending_delivery_count: 0,
+        node_connected: true,
+        node_delivery: { token_present: true, connected: true },
+      })),
+    });
+    const { program } = createHarness({
+      relay,
+      teamsConfig: {
+        team: 'platform',
+        autoSpawn: true,
+        agents: [{ name: 'WorkerA', cli, model, task: 'Ship tests' }],
+      },
+    });
+
+    const exitCode = await runCommand(program, ['up']);
+
+    expect(exitCode).toBeUndefined();
+    expect(relay.spawn).toHaveBeenCalledWith({
+      name: 'WorkerA',
+      cli,
+      model,
+      channels: ['general'],
+      task: 'Ship tests',
+      team: 'platform',
+    });
+  });
+
   it('up refuses auto-spawn when node delivery is down', async () => {
     let now = 0;
     const relay = createRelayMock({
