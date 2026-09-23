@@ -608,7 +608,7 @@ const FAILURE_TOKEN_RE = /^[A-Za-z0-9][A-Za-z0-9_.:-]{0,127}$/;
 const FAILURE_ID_RE = /^[A-Za-z0-9][A-Za-z0-9_-]{0,127}$/;
 const FAILURE_TIMESTAMP_RE = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d{1,9})?Z$/;
 const FAILURE_CREDENTIAL_PREFIX_RE =
-  /(?:rk_live_|rjt_live_|at_live_|nt_live_|ot_live_|cld_at_|rth_at_|ocl_node_enr_|br_|github_pat_|ghp_|gho_|ghu_|ghs_|ghr_)/;
+  /(?:rk_live_|rjt_live_|at_live_|nt_live_|ot_live_|sk_live_|cld_at_|rth_at_|ocl_node_enr_|br_|github_pat_|ghp_|gho_|ghu_|ghs_|ghr_)/;
 
 function isValidFailureTimestamp(value: string): boolean {
   const parsed = Date.parse(value);

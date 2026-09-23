@@ -25,7 +25,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
-- `agent-relay cloud status <runId>` now shows validated structural workflow failure details in human output when available.
+- `agent-relay cloud status <runId>` now shows a failed run's phase, code, dispatch type, occurrence time, and sandbox ID when available.
 - Integration subscription setup, listing and retirement use workspace authentication even when a spawned worker also has an agent token, preventing misleading “Workspace key required” failures.
 - A `teams.json` agent whose `cli` carries an inline `--model`/`-m` now records the model the harness actually runs. The inline override becomes the spawn's effective model before the relay skill prefix is chosen, so worker listings, spawn events, telemetry and small-model guidance describe the running model rather than the superseded pin.
 - `agent-relay fleet config|enable|disable|inherit` now exit successfully as hidden compatibility no-ops instead of failing on the removed workspace rollout API.

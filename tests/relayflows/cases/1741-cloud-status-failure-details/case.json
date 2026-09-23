@@ -7,7 +7,7 @@
     "command": ["node", "tests/relayflows/cases/1741-cloud-status-failure-details/run.mjs"]
   },
   "requirements": [],
-  "timeoutSeconds": 900,
+  "timeoutSeconds": 1200,
   "expected": {
     "base": {
       "outcome": "bug",

@@ -1098,6 +1098,24 @@ describe('registerCloudCommands', () => {
     ]);
   });
 
+  it('cloud status omits credential-like failure codes', async () => {
+    const { program, deps } = createHarness();
+    cloudMocks.getRunStatus.mockResolvedValueOnce({
+      runId: 'run-secret-code',
+      status: 'failed',
+      failure: { phase: 'bootstrap', code: 'sk_live_secret123' },
+    });
+
+    await program.parseAsync(['node', 'agent-relay', 'cloud', 'status', 'run-secret-code']);
+
+    expect(vi.mocked(deps.log).mock.calls.map(([line]) => line)).toEqual([
+      'Run: run-secret-code',
+      'Status: failed',
+      'Failure:',
+      '  Phase: bootstrap',
+    ]);
+  });
+
   it('cloud status omits malformed structure and never prints free-form failure content', async () => {
     const { program, deps } = createHarness();
     const sentinels = [

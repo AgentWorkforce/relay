@@ -128,11 +128,11 @@ try {
   if (arm === 'base' && baseObserved) {
     outcome = 'bug';
     signature = 'cloud_status_failure_details_missing';
-    details = 'The exact base CLI prints Run and Status but omits all structured Failure lines.';
+    details = 'The exact base checkout command handler prints Run and Status but omits all structured Failure lines.';
   } else if (arm === 'head' && headObserved) {
     outcome = 'fixed';
     signature = 'cloud_status_safe_failure_details_visible';
-    details = 'The exact head CLI prints Run, Status, and all five structural failure fields without unsafe sentinel content.';
+    details = 'The exact head checkout command handler prints Run, Status, and all five structural failure fields without unsafe sentinel content.';
   } else {
     throw new Error(`Unexpected ${arm} Cloud status observation: ${JSON.stringify(observation)}`);
   }
