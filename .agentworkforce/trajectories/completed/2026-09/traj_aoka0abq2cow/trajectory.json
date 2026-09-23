@@ -1,0 +1,69 @@
+{
+  "id": "traj_aoka0abq2cow",
+  "version": 1,
+  "task": {
+    "title": "Expose safe structured failure details in cloud status",
+    "source": {
+      "system": "plain",
+      "id": "#1741"
+    }
+  },
+  "status": "completed",
+  "startedAt": "2026-09-23T17:39:01.942Z",
+  "completedAt": "2026-09-23T18:12:27.828Z",
+  "agents": [
+    {
+      "name": "default",
+      "role": "lead",
+      "joinedAt": "2026-09-23T18:12:11.058Z"
+    }
+  ],
+  "chapters": [
+    {
+      "id": "chap_yyul02rabzkq",
+      "title": "Work",
+      "agentName": "default",
+      "startedAt": "2026-09-23T18:12:11.058Z",
+      "endedAt": "2026-09-23T18:12:27.828Z",
+      "events": [
+        {
+          "ts": 1790187131059,
+          "type": "decision",
+          "content": "Keep #1741 CLI-only and render only validated structural failure fields: Keep #1741 CLI-only and render only validated structural failure fields",
+          "raw": {
+            "question": "Keep #1741 CLI-only and render only validated structural failure fields",
+            "chosen": "Keep #1741 CLI-only and render only validated structural failure fields",
+            "alternatives": [],
+            "reasoning": "The status API already returns the raw object, so presentation belongs in cloud status; allowlisting avoids exposing arbitrary provider or agent content."
+          },
+          "significance": "high"
+        }
+      ]
+    }
+  ],
+  "retrospective": {
+    "summary": "Added safe structured workflow failure details to human cloud status, with regression coverage for malformed and sensitive content.",
+    "approach": "Standard approach",
+    "confidence": 0.95
+  },
+  "commits": [
+    "05badc8e751c10904b46a936f330affbc0c25d73",
+    "ca7e50c0b6ffd656b3e441997385a5eedf75d9ff",
+    "2f27a8c6672af5cb65bdf382ab6014ad5dfef202"
+  ],
+  "filesChanged": [
+    ".agentworkforce/trajectories/completed/2026-09/traj_aoka0abq2cow/summary.md",
+    ".agentworkforce/trajectories/completed/2026-09/traj_aoka0abq2cow/trajectory.json",
+    "CHANGELOG.md",
+    "packages/cli/src/cli/commands/cloud.test.ts",
+    "packages/cli/src/cli/commands/cloud.ts",
+    "tests/relayflows/cases/1741-cloud-status-failure-details/case.json",
+    "tests/relayflows/cases/1741-cloud-status-failure-details/run.mjs"
+  ],
+  "projectId": "AgentWorkforce/relay",
+  "tags": [],
+  "_trace": {
+    "startRef": "2d62c4b490173e4af3dfd8a62a2e063bdce21471",
+    "endRef": "2f27a8c6672af5cb65bdf382ab6014ad5dfef202"
+  }
+}

@@ -1,0 +1,21 @@
+{
+  "version": 1,
+  "id": "1741-cloud-status-failure-details",
+  "kind": "bugfix",
+  "title": "Show safe structured Cloud run failures in human status output",
+  "runner": {
+    "command": ["node", "tests/relayflows/cases/1741-cloud-status-failure-details/run.mjs"]
+  },
+  "requirements": [],
+  "timeoutSeconds": 1200,
+  "expected": {
+    "base": {
+      "outcome": "bug",
+      "signature": "cloud_status_failure_details_missing"
+    },
+    "head": {
+      "outcome": "fixed",
+      "signature": "cloud_status_safe_failure_details_visible"
+    }
+  }
+}

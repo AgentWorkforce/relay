@@ -1029,6 +1029,145 @@ describe('registerCloudCommands', () => {
     expect(deps.log).toHaveBeenCalledWith('  cloud: patch pending - run still active');
   });
 
+  it('cloud status renders valid structural failure details alongside existing status fields', async () => {
+    const { program, deps } = createHarness();
+    cloudMocks.getRunStatus.mockResolvedValueOnce({
+      runId: 'run-1',
+      status: 'failed',
+      sandboxId: 'top-level-sandbox',
+      updatedAt: '2026-09-23T12:00:00Z',
+      failure: {
+        phase: 'bootstrap',
+        code: 'asset_fetch_failed',
+        dispatchType: 'agent.v2',
+        occurredAt: '2026-09-23T12:00:01.123Z',
+        sandboxId: 'sbx_123',
+      },
+    });
+
+    await program.parseAsync(['node', 'agent-relay', 'cloud', 'status', 'run-1']);
+
+    expect(vi.mocked(deps.log).mock.calls.map(([line]) => line)).toEqual([
+      'Run: run-1',
+      'Status: failed',
+      'Sandbox: top-level-sandbox',
+      'Updated: 2026-09-23T12:00:00Z',
+      'Failure:',
+      '  Phase: bootstrap',
+      '  Code: asset_fetch_failed',
+      '  Dispatch: agent.v2',
+      '  Occurred: 2026-09-23T12:00:01.123Z',
+      '  Sandbox: sbx_123',
+    ]);
+  });
+
+  it('cloud status renders only the available valid failure fields', async () => {
+    const { program, deps } = createHarness();
+    cloudMocks.getRunStatus.mockResolvedValueOnce({
+      runId: 'run-2',
+      status: 'failed',
+      failure: { phase: 'dispatch', code: 'worker_unavailable' },
+    });
+
+    await program.parseAsync(['node', 'agent-relay', 'cloud', 'status', 'run-2']);
+
+    expect(vi.mocked(deps.log).mock.calls.map(([line]) => line)).toEqual([
+      'Run: run-2',
+      'Status: failed',
+      'Failure:',
+      '  Phase: dispatch',
+      '  Code: worker_unavailable',
+    ]);
+  });
+
+  it('cloud status omits an impossible occurredAt calendar date', async () => {
+    const { program, deps } = createHarness();
+    cloudMocks.getRunStatus.mockResolvedValueOnce({
+      runId: 'run-invalid-date',
+      status: 'failed',
+      failure: { phase: 'bootstrap', occurredAt: '2026-02-30T00:00:00Z' },
+    });
+
+    await program.parseAsync(['node', 'agent-relay', 'cloud', 'status', 'run-invalid-date']);
+
+    expect(vi.mocked(deps.log).mock.calls.map(([line]) => line)).toEqual([
+      'Run: run-invalid-date',
+      'Status: failed',
+      'Failure:',
+      '  Phase: bootstrap',
+    ]);
+  });
+
+  it('cloud status omits credential-like failure codes', async () => {
+    const { program, deps } = createHarness();
+    cloudMocks.getRunStatus.mockResolvedValueOnce({
+      runId: 'run-secret-code',
+      status: 'failed',
+      failure: { phase: 'bootstrap', code: 'sk_live_secret123' },
+    });
+
+    await program.parseAsync(['node', 'agent-relay', 'cloud', 'status', 'run-secret-code']);
+
+    expect(vi.mocked(deps.log).mock.calls.map(([line]) => line)).toEqual([
+      'Run: run-secret-code',
+      'Status: failed',
+      'Failure:',
+      '  Phase: bootstrap',
+    ]);
+  });
+
+  it('cloud status omits malformed structure and never prints free-form failure content', async () => {
+    const { program, deps } = createHarness();
+    const sentinels = [
+      'MESSAGE_SECRET_SENTINEL',
+      'CAUSE_SECRET_SENTINEL',
+      'CHAIN_SECRET_SENTINEL',
+      'NESTED_ERROR_SECRET_SENTINEL',
+      'SIGNED_URL_SECRET_SENTINEL',
+      'PROVIDER_OUTPUT_SECRET_SENTINEL',
+      'AGENT_OUTPUT_SECRET_SENTINEL',
+    ];
+    cloudMocks.getRunStatus.mockResolvedValueOnce({
+      runId: 'run-3',
+      status: 'failed',
+      failure: {
+        phase: 'bad phase',
+        code: 'ghp_secret123',
+        dispatchType: 42,
+        occurredAt: '2026-13-01T00:00:00Z',
+        sandboxId: 'sbx/invalid',
+        message: sentinels[0],
+        cause: sentinels[1],
+        causeChain: [sentinels[2]],
+        result: { error: sentinels[3] },
+        signedUrl: `https://cloud.test/?token=${sentinels[4]}`,
+        providerOutput: sentinels[5],
+        agentOutput: sentinels[6],
+      },
+    });
+
+    await program.parseAsync(['node', 'agent-relay', 'cloud', 'status', 'run-3']);
+
+    const output = vi.mocked(deps.log).mock.calls.flat().join('\n');
+    expect(output).toBe('Run: run-3\nStatus: failed');
+    for (const sentinel of sentinels) expect(output).not.toContain(sentinel);
+  });
+
+  it('cloud status --json preserves the complete status response', async () => {
+    const { program, deps } = createHarness();
+    const result = {
+      runId: 'run-4',
+      status: 'failed',
+      failure: { phase: 'bootstrap', message: 'JSON_MESSAGE_SENTINEL', cause: { detail: 'nested' } },
+      patches: { cloud: { pushError: { code: 'failed', message: 'patch detail' } } },
+    };
+    cloudMocks.getRunStatus.mockResolvedValueOnce(result);
+
+    await program.parseAsync(['node', 'agent-relay', 'cloud', 'status', 'run-4', '--json']);
+
+    expect(deps.log).toHaveBeenCalledExactlyOnceWith(JSON.stringify(result, null, 2));
+  });
+
   it('cloud enroll --workspace resolves a supported workspace selector before minting', async () => {
     const auth = {
       apiUrl: 'https://cloud.test',
