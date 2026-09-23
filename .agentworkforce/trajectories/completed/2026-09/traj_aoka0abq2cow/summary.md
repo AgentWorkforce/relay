@@ -30,3 +30,10 @@ Added safe structured workflow failure details to human cloud status, with regre
 *Agent: default*
 
 - Keep #1741 CLI-only and render only validated structural failure fields: Keep #1741 CLI-only and render only validated structural failure fields
+
+---
+
+## Artifacts
+
+**Commits:** 05badc8e751c10904b46a936f330affbc0c25d73, ca7e50c0b6ffd656b3e441997385a5eedf75d9ff, 2f27a8c6672af5cb65bdf382ab6014ad5dfef202
+**Files changed:** 7

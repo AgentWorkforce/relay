@@ -46,12 +46,24 @@
     "approach": "Standard approach",
     "confidence": 0.95
   },
-  "commits": [],
-  "filesChanged": [],
+  "commits": [
+    "05badc8e751c10904b46a936f330affbc0c25d73",
+    "ca7e50c0b6ffd656b3e441997385a5eedf75d9ff",
+    "2f27a8c6672af5cb65bdf382ab6014ad5dfef202"
+  ],
+  "filesChanged": [
+    ".agentworkforce/trajectories/completed/2026-09/traj_aoka0abq2cow/summary.md",
+    ".agentworkforce/trajectories/completed/2026-09/traj_aoka0abq2cow/trajectory.json",
+    "CHANGELOG.md",
+    "packages/cli/src/cli/commands/cloud.test.ts",
+    "packages/cli/src/cli/commands/cloud.ts",
+    "tests/relayflows/cases/1741-cloud-status-failure-details/case.json",
+    "tests/relayflows/cases/1741-cloud-status-failure-details/run.mjs"
+  ],
   "projectId": "AgentWorkforce/relay",
   "tags": [],
   "_trace": {
     "startRef": "2d62c4b490173e4af3dfd8a62a2e063bdce21471",
-    "endRef": "2d62c4b490173e4af3dfd8a62a2e063bdce21471"
+    "endRef": "2f27a8c6672af5cb65bdf382ab6014ad5dfef202"
   }
 }
