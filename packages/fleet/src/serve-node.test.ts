@@ -150,6 +150,26 @@ describe('serveNode', () => {
     await running.stop();
   });
 
+  it.each([true, false])(
+    'rejects unverified delegated output only when verifyReady=%s',
+    async (verifyReady) => {
+      const fetchMock = vi.fn(async () =>
+        Response.json({ data: { status: 'completed', output: { spawned: true, ready: false } } })
+      );
+      vi.stubGlobal('fetch', fetchMock);
+      const { running, sock, delegation } = await delegateForConfirmation(verifyReady);
+      sock.emit({ v: 1, id: delegation.id, type: 'reply', ok: true, data: { invocation_id: 'child' } });
+      await vi.waitFor(() => expect(sock.sentOfType('action.result')).toHaveLength(1));
+      const result = sock.sentOfType('action.result')[0]!;
+      if (verifyReady) expect(result.error).toBeTruthy();
+      else {
+        expect(fetchMock).not.toHaveBeenCalled();
+        expect(result.output).toMatchObject({ ready: false });
+      }
+      await running.stop();
+    }
+  );
+
   it.each(['pending', 'dispatched', 'invoked', 'running', 'read-timeout'])(
     'keeps confirming through %s without dispatching another child',
     async (state) => {

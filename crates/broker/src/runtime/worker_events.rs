@@ -1391,6 +1391,9 @@ impl BrokerRuntime {
                             .then(|| pending_verified_spawns.remove(&name))
                             .flatten();
                         if let Some(pending) = pending {
+                            tracing::info!(invocation_id = %pending.invocation_id, worker = %name,
+                                verify_ready = true, elapsed_ms = pending.started.elapsed().as_millis() as u64,
+                                "sending verified fleet spawn result");
                             let _ = fleet_control_tx
                                 .send(FleetControlCommand::Send(
                                     crate::fleet_wire::BrokerToRelaycast::ActionResult(

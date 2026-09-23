@@ -157,11 +157,11 @@ node scripts/verify-features/fleet-daytona.mjs cleanup \
   --nonce <run-nonce>
 ```
 
-`fleet enable`, `fleet disable`, and `fleet inherit` affect a whole workspace.
-They are evidence-visible safety skips unless the active workspace is disposable,
-`VERIFY_FLEET_DISPOSABLE_WORKSPACE=1` is set, and
-`VERIFY_FLEET_EXPECTED_WORKSPACE_ID` exactly matches the resolved Cloud workspace.
-The runner captures the initial override and restores it in `finally`. `node down
+`fleet config`, `fleet enable`, `fleet disable`, and `fleet inherit` are hidden
+compatibility no-ops. The runner checks successful exits and deprecation notices
+against an unreachable endpoint, with a JSON deprecation object for `fleet config`.
+They change no workspace state and need no restoration. Disposable-workspace and
+workspace-identity checks still apply to the campaign baseline. `node down
 --all` runs only inside an exact owned Daytona sandbox, never on the operator host.
 
 Each attempt is sealed under

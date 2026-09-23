@@ -59,6 +59,9 @@ import {
   type SdkCommandDeps,
 } from '../lib/sdk-command.js';
 
+const FLEET_NODES_ALWAYS_ON_MESSAGE =
+  'Fleet nodes need no per-workspace enablement; this command is a no-op.';
+
 const SERVE_REPLACEMENT_MESSAGE =
   "'fleet serve' has been replaced. Run 'relay node up' (with an optional --config <file>); " +
   "for Cloud-managed nodes run 'relay cloud enroll --token <token>' first.";
@@ -74,6 +77,21 @@ const FLEET_CLIS = new Set([
   'opencode',
   'devin',
 ]);
+/**
+ * Floor for `--confirm-timeout` on a verified targeted spawn.
+ *
+ * The broker holds a verified spawn open for its 90s
+ * `VERIFIED_SPAWN_READY_TIMEOUT` (`crates/broker/src/runtime/fleet.rs`), but
+ * starts that clock only after `spawn_worker_from_request` returns — i.e. after
+ * process creation, the stability window, agent registration and token minting.
+ * The requester's budget starts earlier, at the dispatch ack, so the two
+ * windows only nest when the requester's is strictly larger. The 5s margin
+ * covers the invoke round-trip, that launch work, and one
+ * `DEFAULT_CONFIRM_POLL_MS` (500ms) confirmation poll. Below this floor a worker
+ * the broker already released with `spawn_readiness_timeout` is reported as
+ * `spawn_unconfirmed` — the failure shape this confirmation exists to remove.
+ */
+const MIN_VERIFIED_CONFIRM_TIMEOUT_MS = 95_000;
 const CLOUD_SANDBOX_ID_PATTERN =
   /^sbx_[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
 
@@ -449,7 +467,7 @@ export function registerFleetCommands(
       )
       .option(
         '--confirm-timeout <ms>',
-        'How long a targeted spawn waits for the node to confirm the launch',
+        `How long a targeted spawn waits for harness readiness (minimum ${MIN_VERIFIED_CONFIRM_TIMEOUT_MS}ms)`,
         '120000'
       )
   ).action(async (cli: string, options: Record<string, unknown>) => {
@@ -541,6 +559,18 @@ export function registerFleetCommands(
       const confirmTimeoutMs = Number(confirmTimeoutText);
       if (!Number.isFinite(confirmTimeoutMs) || confirmTimeoutMs <= 0) {
         throw new Error('--confirm-timeout must be a positive number of milliseconds.');
+      }
+      // Checked after the numeric guard so a negative value reports what is
+      // actually wrong with it rather than the floor.
+      if (
+        (targetNode || useSandbox) &&
+        options.confirm !== false &&
+        confirmTimeoutMs < MIN_VERIFIED_CONFIRM_TIMEOUT_MS
+      ) {
+        throw new Error(
+          `--confirm-timeout must be at least ${MIN_VERIFIED_CONFIRM_TIMEOUT_MS}ms for verified targeted spawns; ` +
+            "the node's own readiness window is 90000ms and starts after the launch completes."
+        );
       }
 
       let sandbox: EnsureCloudFleetSandboxResult | undefined;
@@ -1168,41 +1198,24 @@ export function registerFleetCommands(
     });
   });
 
-  addSdkOptions(group.command('config').description('Show workspace fleet node configuration')).action(
-    async (options: Record<string, unknown>) => {
-      await runSdk(deps.sdk, async () => {
-        const relay = deps.sdk.createWorkspaceRelay(sdkOptionsFromOpts(options));
-        printJson(deps.sdk, await relay.workspace.fleetNodes.get());
-      });
-    }
-  );
-
-  addSdkOptions(group.command('enable').description('Enable fleet nodes for the workspace')).action(
-    async (options: Record<string, unknown>) => {
-      await runSdk(deps.sdk, async () => {
-        const relay = deps.sdk.createWorkspaceRelay(sdkOptionsFromOpts(options));
-        printJson(deps.sdk, await relay.workspace.fleetNodes.set(true));
-      });
-    }
-  );
-
-  addSdkOptions(group.command('disable').description('Disable fleet nodes for the workspace')).action(
-    async (options: Record<string, unknown>) => {
-      await runSdk(deps.sdk, async () => {
-        const relay = deps.sdk.createWorkspaceRelay(sdkOptionsFromOpts(options));
-        printJson(deps.sdk, await relay.workspace.fleetNodes.set(false));
-      });
-    }
-  );
-
-  addSdkOptions(
-    group.command('inherit').description('Use the deployment default for workspace fleet nodes')
-  ).action(async (options: Record<string, unknown>) => {
-    await runSdk(deps.sdk, async () => {
-      const relay = deps.sdk.createWorkspaceRelay(sdkOptionsFromOpts(options));
-      printJson(deps.sdk, await relay.workspace.fleetNodes.inherit());
+  for (const command of ['config', 'enable', 'disable', 'inherit']) {
+    addSdkOptions(
+      group
+        .command(command, { hidden: true })
+        .description('Deprecated: fleet nodes need no per-workspace enablement')
+    ).action(() => {
+      deps.error(FLEET_NODES_ALWAYS_ON_MESSAGE);
+      if (command === 'disable') deps.error('Fleet nodes have not been disabled.');
+      if (command === 'config') {
+        printJson(deps.sdk, {
+          command: 'fleet config',
+          status: 'deprecated',
+          effect: 'none',
+          message: FLEET_NODES_ALWAYS_ON_MESSAGE,
+        });
+      }
     });
-  });
+  }
 
   addSdkOptions(
     group.command('status').description('Show local broker status and this node’s provider attachment')

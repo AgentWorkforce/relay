@@ -136,10 +136,6 @@ describe('feature manifest contract', () => {
       'relay fleet nodes',
       'relay fleet spawn',
       'relay fleet release',
-      'relay fleet config',
-      'relay fleet enable',
-      'relay fleet disable',
-      'relay fleet inherit',
       'relay fleet status',
       // Mounted product surfaces. Each product's real tree lives in its own SDK
       // spec, so the manifest documents the group and the surface owns the rest.
