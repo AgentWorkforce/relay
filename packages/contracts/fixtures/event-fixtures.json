@@ -124,7 +124,7 @@
     {
       "kind": "delivery_unobserved",
       "eventId": "evt_0010b",
-      "seq": 111,
+      "seq": 112,
       "timestamp": "2026-02-23T00:00:09.500Z",
       "payload": {
         "deliveryId": "del_1",
@@ -146,7 +146,7 @@
     {
       "kind": "worker_error",
       "eventId": "evt_0012",
-      "seq": 112,
+      "seq": 113,
       "timestamp": "2026-02-23T00:00:11.000Z",
       "payload": {
         "name": "WorkerA",
@@ -157,7 +157,7 @@
     {
       "kind": "message_delivery_confirmed",
       "eventId": "evt_0013",
-      "seq": 113,
+      "seq": 114,
       "timestamp": "2026-02-23T00:00:12.000Z",
       "payload": {
         "deliveryId": "del_3",
@@ -169,7 +169,7 @@
     {
       "kind": "message_delivery_failed",
       "eventId": "evt_0014",
-      "seq": 114,
+      "seq": 115,
       "timestamp": "2026-02-23T00:00:13.000Z",
       "payload": {
         "deliveryId": "del_4",

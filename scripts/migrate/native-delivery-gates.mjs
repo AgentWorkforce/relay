@@ -756,7 +756,11 @@ async function record() {
    * consecutive standalone runs. Without a retry, that flake killed a run 35
    * steps deep whose real regression had just been fixed.
    */
-  const retries = Number(option('--retry-on-red', '0'));
+  const retriesRaw = option('--retry-on-red', '0');
+  if (!/^\d+$/.test(retriesRaw)) {
+    throw new Error(`--retry-on-red must be a non-negative integer, got ${JSON.stringify(retriesRaw)}`);
+  }
+  const retries = Number(retriesRaw);
   const startedAt = Date.now();
   let chunks = [];
   let exitCode = 0;
@@ -1126,10 +1130,13 @@ function seamRules() {
   }
 
   for (const symbol of config.untouched ?? []) {
-    const diff = execFileSync('git', ['diff', 'HEAD', '--unified=0', '--', 'crates/broker/src/snippets.rs'], {
-      encoding: 'utf8',
-    });
-    if (diff.includes(symbol)) problems.push(`${symbol} is declared out of scope but appears in the diff`);
+    for (const file of changedFiles()) {
+      if (!existsSync(file)) continue;
+      const source = readFileSync(file, 'utf8');
+      if (source.includes(symbol)) {
+        problems.push(`${symbol} is declared out of scope but appears in ${file}`);
+      }
+    }
   }
 
   /**

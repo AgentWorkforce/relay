@@ -1,6 +1,6 @@
 # Migration: native delivery
 
-Status: proposal. Nothing here is built in this repo yet.
+Status: phase 0 is implemented, but remains blocked by the recorded scope and evidence gates.
 
 ## What changes
 
