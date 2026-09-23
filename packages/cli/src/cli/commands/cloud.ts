@@ -603,6 +603,40 @@ function renderPatchPushResults(patches: unknown, log: (...args: unknown[]) => v
   }
 }
 
+// Match the bounded structural diagnostics accepted by scripts/pr-proof/run-cloud.mjs.
+const FAILURE_TOKEN_RE = /^[A-Za-z0-9][A-Za-z0-9_.:-]{0,127}$/;
+const FAILURE_ID_RE = /^[A-Za-z0-9][A-Za-z0-9_-]{0,127}$/;
+const FAILURE_TIMESTAMP_RE = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d{1,9})?Z$/;
+const FAILURE_CREDENTIAL_PREFIX_RE =
+  /(?:rk_live_|rjt_live_|at_live_|nt_live_|ot_live_|cld_at_|rth_at_|ocl_node_enr_|br_|github_pat_|ghp_|gho_|ghu_|ghs_|ghr_)/;
+
+function renderRunFailure(failure: unknown, log: (...args: unknown[]) => void): void {
+  if (!isObject(failure)) return;
+
+  const lines: string[] = [];
+  const add = (label: string, value: unknown, pattern: RegExp, timestamp = false) => {
+    if (
+      typeof value === 'string' &&
+      pattern.test(value) &&
+      !FAILURE_CREDENTIAL_PREFIX_RE.test(value) &&
+      (!timestamp || Number.isFinite(Date.parse(value)))
+    ) {
+      lines.push(`  ${label}: ${value}`);
+    }
+  };
+
+  add('Phase', failure.phase, FAILURE_TOKEN_RE);
+  add('Code', failure.code, FAILURE_TOKEN_RE);
+  add('Dispatch', failure.dispatchType, FAILURE_TOKEN_RE);
+  add('Occurred', failure.occurredAt, FAILURE_TIMESTAMP_RE, true);
+  add('Sandbox', failure.sandboxId, FAILURE_ID_RE);
+
+  if (lines.length > 0) {
+    log('Failure:');
+    for (const line of lines) log(line);
+  }
+}
+
 function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
@@ -1232,6 +1266,7 @@ export function registerCloudCommands(program: Command, overrides: Partial<Cloud
       if (typeof result.updatedAt === 'string') {
         deps.log(`Updated: ${result.updatedAt}`);
       }
+      renderRunFailure(result.failure, deps.log);
       renderPatchPushResults(result.patches, deps.log);
     });
 
