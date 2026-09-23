@@ -5,18 +5,40 @@ All notable changes to Agent Relay will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased - Minor]
+## [Unreleased - Major]
+
+### Added
+
+- `teams.json` agents accept a per-agent `model` field when `up --spawn` starts them; an explicit `--model` or `-m` inside `cli` still wins.
 
 ### Changed
 
 - Targeted `fleet spawn` now waits for harness readiness; the broker releases workers that miss its 90-second readiness window. Confirmed targeted spawns require `--confirm-timeout` of at least 95000ms.
 
+### Deprecated
+
+- `@agent-relay/utils` model-mapping helpers (`mapModelToCli`, `getBaseCli`) are deprecated for removal in the next major release; use separate `cli` and `model` fields instead of non-executable colon syntax.
+
+### Removed
+
+- `@agent-relay/sdk`: removed `workspace.fleetNodes` and `RelayWorkspaceFleetNodesConfig`, whose underlying service API no longer exists.
+
 ### Fixed
 
 - Integration subscription setup, listing and retirement use workspace authentication even when a spawned worker also has an agent token, preventing misleading “Workspace key required” failures.
+- A `teams.json` agent whose `cli` carries an inline `--model`/`-m` now records the model the harness actually runs. The inline override becomes the spawn's effective model before the relay skill prefix is chosen, so worker listings, spawn events, telemetry and small-model guidance describe the running model rather than the superseded pin.
+- `agent-relay fleet config|enable|disable|inherit` now exit successfully as hidden compatibility no-ops instead of failing on the removed workspace rollout API.
 - Targeted `fleet spawn` requests explicit readiness proof, preventing healthy launches from being rejected for missing proof; unconfirmed launches report `ready:false` while obsolete handlers remain rejected.
 - `@agent-relay/sdk` `placement.spawn` only asks a node to verify readiness when it will wait for the answer, and confirms against the contract it requested, so `confirm` omitted no longer arms a 90-second readiness kill switch and `verifyReady: false` no longer fails a healthy launch.
 - Broker `manual_flush` recovery now replays a missing cumulative-ACK predecessor without duplicating an already-completed PTY injection, restores it ahead of parked successors, and reports the head/ACK/received sequence gap plus the reconciliation action in `message flush` and `message auto` results.
+
+### Breaking Changes
+
+- SDK consumers must remove references to `workspace.fleetNodes` and `RelayWorkspaceFleetNodesConfig`.
+
+### Migration Guidance
+
+- Fleet nodes need no per-workspace enablement. Remove `fleet enable` from provisioning scripts; `fleet disable` no longer disables nodes.
 
 ## [12.4.1] - 2026-09-22
 

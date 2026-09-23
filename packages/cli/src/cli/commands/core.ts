@@ -33,6 +33,7 @@ export interface CoreTeamsConfig {
   agents: Array<{
     name: string;
     cli: string;
+    model?: string;
     task?: string;
   }>;
 }
@@ -48,6 +49,7 @@ export interface CoreRelay {
   spawn: (input: {
     name: string;
     cli: string;
+    model?: string;
     channels: string[];
     args?: string[];
     task?: string;

@@ -847,6 +847,10 @@ impl WorkerRegistry {
                 .await;
                 if let Some(ref model) = model_flag {
                     spec.model = Some(model.clone());
+                } else if let Some(inline) = model_override_from_args(&effective_args) {
+                    // Injection was suppressed because argv already names a
+                    // model; record what the harness will actually run.
+                    spec.model = Some(inline.to_string());
                 }
 
                 let startup_prompt = muse_startup_prompt(&cli_lower, initial_task.as_deref());
@@ -1103,6 +1107,8 @@ impl WorkerRegistry {
                     .await;
                     if let Some(ref model) = model_flag {
                         spec.model = Some(model.clone());
+                    } else if let Some(inline) = model_override_from_args(&effective_args) {
+                        spec.model = Some(inline.to_string());
                     }
 
                     let startup_prompt = muse_startup_prompt(&cli_lower, initial_task.as_deref());
@@ -1165,6 +1171,8 @@ impl WorkerRegistry {
                     .await;
                     if let Some(ref model) = model_arg {
                         spec.model = Some(model.clone());
+                    } else if let Some(inline) = model_override_from_args(&spec.args) {
+                        spec.model = Some(inline.to_string());
                     }
 
                     if model_arg.is_some() || !spec.args.is_empty() || !mcp_args.is_empty() {
@@ -2448,6 +2456,40 @@ fn cli_flag_present(args: &[String], flags: &[&str]) -> bool {
                     .is_some_and(|rest| rest.starts_with('='))
         })
     })
+}
+
+/// The model an inline `--model`/`-m` override names, if the arguments carry
+/// one with a value. The harness reads argv and never sees `spec.model`, so
+/// this is the model that actually runs, and it is what listings, spawn
+/// events, telemetry and relay-skill selection must describe.
+///
+/// Later occurrences win, matching how the harnesses themselves read argv.
+/// A bare `--model` with no value names nothing, so it yields `None` while
+/// still suppressing injection through `args_include_model_override`.
+pub(crate) fn model_override_from_args(args: &[String]) -> Option<&str> {
+    let mut found: Option<&str> = None;
+    let mut index = 0;
+    while index < args.len() {
+        let arg = args[index].as_str();
+        if let Some(value) = arg
+            .strip_prefix("--model=")
+            .or_else(|| arg.strip_prefix("-m="))
+        {
+            let value = value.trim();
+            if !value.is_empty() {
+                found = Some(value);
+            }
+        } else if arg == "--model" || arg == "-m" {
+            if let Some(value) = args.get(index + 1).map(|value| value.trim()) {
+                if !value.is_empty() {
+                    found = Some(value);
+                }
+                index += 1;
+            }
+        }
+        index += 1;
+    }
+    found
 }
 
 fn args_include_model_override(args: &[String]) -> bool {
@@ -4269,6 +4311,73 @@ sleep 30
             "--image".into(),
             "/tmp/review.png".into(),
         ]));
+    }
+
+    #[tokio::test]
+    async fn model_pin_yields_to_inline_model_overrides() {
+        for args in [
+            vec!["--model".to_string(), "sonnet".to_string()],
+            vec!["--model=sonnet".to_string()],
+            vec!["-m".to_string(), "sonnet".to_string()],
+            vec!["-m=sonnet".to_string()],
+        ] {
+            assert_eq!(
+                resolve_model_flag_for_cli("claude", "claude", "worker", Some("opus"), &args).await,
+                None
+            );
+        }
+        assert_eq!(
+            resolve_model_flag_for_cli("claude", "claude", "worker", Some("opus"), &[]).await,
+            Some("opus".to_string())
+        );
+    }
+
+    #[test]
+    fn model_override_from_args_reads_every_supported_form() {
+        for args in [
+            vec!["--model".to_string(), "haiku".to_string()],
+            vec!["--model=haiku".to_string()],
+            vec!["-m".to_string(), "haiku".to_string()],
+            vec!["-m=haiku".to_string()],
+        ] {
+            assert_eq!(model_override_from_args(&args), Some("haiku"), "{args:?}");
+            // The same arguments still suppress injection, so the harness is
+            // never handed two model flags.
+            assert!(args_include_model_override(&args), "{args:?}");
+        }
+        assert_eq!(model_override_from_args(&[]), None);
+        assert_eq!(model_override_from_args(&["--verbose".to_string()]), None);
+    }
+
+    #[test]
+    fn model_override_from_args_takes_the_last_one_and_ignores_a_valueless_flag() {
+        // argv semantics: a later flag wins.
+        assert_eq!(
+            model_override_from_args(&[
+                "--model".to_string(),
+                "haiku".to_string(),
+                "--model=sonnet".to_string(),
+            ]),
+            Some("sonnet")
+        );
+        // A trailing `--model` names nothing, so there is no effective model to
+        // record -- but injection stays suppressed.
+        let bare = vec!["--model".to_string()];
+        assert_eq!(model_override_from_args(&bare), None);
+        assert!(args_include_model_override(&bare));
+    }
+
+    #[tokio::test]
+    async fn an_inline_override_is_the_effective_model_the_pin_is_not() {
+        // `{"cli": "claude --model haiku", "model": "opus"}`: the harness runs
+        // haiku, so haiku is what the spec must carry. resolve_model_flag_for_cli
+        // returns None here precisely so no second flag is injected.
+        let args = vec!["--model".to_string(), "haiku".to_string()];
+        assert_eq!(
+            resolve_model_flag_for_cli("claude", "claude", "worker", Some("opus"), &args).await,
+            None
+        );
+        assert_eq!(model_override_from_args(&args), Some("haiku"));
     }
 
     #[test]

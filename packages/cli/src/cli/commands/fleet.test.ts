@@ -109,58 +109,64 @@ describe('spawn lifecycle receipts', () => {
 });
 
 describe('fleet command support', () => {
-  it.each([
-    ['config', 'get', undefined],
-    ['enable', 'set', true],
-    ['disable', 'set', false],
-    ['inherit', 'inherit', undefined],
-  ] as const)('fleet %s delegates to workspace fleet node config API', async (command, method, value) => {
-    const fleetNodes = {
-      get: vi.fn(async () => ({ enabled: false, defaultEnabled: false, override: null })),
-      set: vi.fn(async (enabled: boolean) => ({ enabled, defaultEnabled: false, override: enabled })),
-      inherit: vi.fn(async () => ({ enabled: false, defaultEnabled: false, override: null })),
-    };
-    const createWorkspaceRelay = vi.fn(() => ({ workspace: { fleetNodes } }));
-    const logs: string[] = [];
-    const program = new Command();
-    program.exitOverride();
-    registerFleetCommands(program, {
-      resolveSandboxRepository: () => undefined,
-      sdk: {
-        createAgentRelay: vi.fn() as never,
-        createWorkspaceRelay: createWorkspaceRelay as never,
-        createWorkspace: vi.fn() as never,
-        log: (message: unknown) => logs.push(String(message)),
-        error: vi.fn(),
-        exit: vi.fn(() => {
-          throw new Error('__exit__');
-        }) as never,
-      },
-      log: () => undefined,
-      warn: () => undefined,
-      error: () => undefined,
-    });
-
-    await program.parseAsync(
-      ['fleet', command, '--workspace-key', 'rk_live_test', '--base-url', 'https://relay.example'],
-      { from: 'user' }
-    );
-
-    expect(createWorkspaceRelay).toHaveBeenCalledWith({
-      workspaceKey: 'rk_live_test',
-      token: undefined,
-      baseUrl: 'https://relay.example',
-    });
-    if (method === 'set') {
-      expect(fleetNodes.set).toHaveBeenCalledWith(value);
-    } else {
-      expect(fleetNodes[method]).toHaveBeenCalledTimes(1);
+  it.each(['config', 'enable', 'disable', 'inherit'])(
+    'fleet %s is a hidden no-op without workspace access',
+    async (command) => {
+      const createWorkspaceRelay = vi.fn(() => {
+        throw new Error('workspace access forbidden');
+      });
+      const createFleetWorkspaceClient = vi.fn(() => {
+        throw new Error('fleet access forbidden');
+      });
+      const logs: string[] = [];
+      const errors: string[] = [];
+      const exit = vi.fn();
+      const program = new Command();
+      program.exitOverride();
+      registerFleetCommands(program, {
+        createFleetWorkspaceClient: createFleetWorkspaceClient as never,
+        sdk: {
+          createAgentRelay: vi.fn() as never,
+          createWorkspaceRelay: createWorkspaceRelay as never,
+          createWorkspace: vi.fn() as never,
+          log: (message: unknown) => logs.push(String(message)),
+          error: vi.fn(),
+          exit: exit as never,
+        },
+        log: () => undefined,
+        warn: () => undefined,
+        error: (message: string) => errors.push(message),
+        exit: exit as never,
+      });
+      // Both credential-free fresh workspaces and older scripts with SDK options work.
+      for (const options of [[], ['--workspace-key', 'rk_live_test', '--base-url', 'http://127.0.0.1:1']]) {
+        await program.parseAsync(['fleet', command, ...options], { from: 'user' });
+      }
+      expect(createWorkspaceRelay).not.toHaveBeenCalled();
+      expect(createFleetWorkspaceClient).not.toHaveBeenCalled();
+      expect(exit).not.toHaveBeenCalled();
+      expect(errors.join('\n')).toContain(
+        'Fleet nodes need no per-workspace enablement; this command is a no-op.'
+      );
+      expect(errors.join('\n')).not.toContain('requires @relaycast/sdk');
+      const group = program.commands.find((entry) => entry.name() === 'fleet')!;
+      expect(
+        (group.commands.find((entry) => entry.name() === command) as Command & { _hidden: boolean })._hidden
+      ).toBe(true);
+      expect(group.helpInformation()).not.toMatch(new RegExp(`\\b${command}\\b`));
+      if (command === 'config') {
+        expect(logs).toHaveLength(2);
+        for (const log of logs)
+          expect(JSON.parse(log)).toEqual({
+            command: 'fleet config',
+            status: 'deprecated',
+            effect: 'none',
+            message: 'Fleet nodes need no per-workspace enablement; this command is a no-op.',
+          });
+      } else expect(logs).toEqual([]);
+      if (command === 'disable') expect(errors.join('\n')).toContain('Fleet nodes have not been disabled.');
     }
-    expect(JSON.parse(logs[0]!)).toMatchObject({
-      enabled: method === 'set' ? value : false,
-      defaultEnabled: false,
-    });
-  });
+  );
 
   it('fleet nodes accepts --wk as an alias for --workspace-key', async () => {
     const nodes = { list: vi.fn(async () => []) };

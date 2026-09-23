@@ -41,12 +41,8 @@ const expectedLeafCommands = [
   'flows',
   // `session` (singular) is the hidden alias of `sessions`, so it is absent here.
   'sessions',
-  // fleet (serve is a hidden error stub, filtered out below)
+  // fleet (serve is a hidden error stub; config/enable/disable/inherit are hidden no-ops)
   'fleet agent list',
-  'fleet config',
-  'fleet disable',
-  'fleet enable',
-  'fleet inherit',
   'fleet nodes list',
   'fleet release',
   'fleet spawn',
