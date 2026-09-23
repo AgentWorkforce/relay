@@ -637,7 +637,7 @@ if (CONFIG.rust) {
     retries: 2,
     task: [
       ...HOUSE_RULES,
-      `Read ${ART}/evidence/rust-fmt.json, rust-clippy.json, rust-build.json and invariant-tests.json.`,
+      `Read ${ART}/evidence/rust-fmt.json, rust-clippy.json, rust-build.json, rust-tests.json and invariant-tests.json.`,
       'Green means do nothing. Red means fix the source and rerun until the recorder writes green.',
       'Note: five spawner::tests::broker_hook_* tests fail inside a relay PTY session because the',
       'wrapper injects GIT_CONFIG_COUNT/core.hooksPath. That is an environment artifact, not your',
@@ -651,14 +651,15 @@ if (CONFIG.rust) {
       record('rust-fmt', `${CARGO} fmt --all -- --check`),
       record('rust-clippy', `${CARGO} clippy --all-targets -- -D warnings`),
       record('rust-build', `${CARGO} build --release --bin agent-relay-broker`),
-      record('invariant-tests', `${CARGO} test -p agent-relay-broker`),
+      record('rust-tests', `${CARGO} test -p agent-relay-broker`),
+      record('invariant-tests', `${CARGO} test -p agent-relay-broker --test delivery_seam_invariants`),
     ].join('\n'),
     ['repair-rust'],
     5_400_000
   );
   det(
     'rust-assert',
-    gate('require-green', '--names rust-fmt,rust-clippy,rust-build,invariant-tests'),
+    gate('require-green', '--names rust-fmt,rust-clippy,rust-build,rust-tests,invariant-tests'),
     ['rust-final'],
     300_000
   );

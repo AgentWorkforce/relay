@@ -3676,13 +3676,14 @@ async fn wait_delivery_successful_handoffs_do_not_exhaust_failure_budget() {
     pending.attempts = MAX_DELIVERY_RETRIES - 1;
     pending.delivery.injection_mode = MessageInjectionMode::Wait;
     let mut pending_deliveries = HashMap::from([(pending.delivery.delivery_id.clone(), pending)]);
+    let mut seam = crate::delivery::DeliverySeam::new();
 
     let first = retry_pending_delivery(
         &DeliveryId::new("del_busy_wait"),
         &mut workers,
         &mut pending_deliveries,
         Duration::from_secs(1),
-        &mut crate::delivery::DeliverySeam::new(),
+        &mut seam,
     )
     .await
     .expect("live worker should accept the tenth handoff");
@@ -3694,26 +3695,23 @@ async fn wait_delivery_successful_handoffs_do_not_exhaust_failure_budget() {
         }
     ));
 
+    let before_retry = pending_deliveries["del_busy_wait"].next_retry_at;
     let second = retry_pending_delivery(
         &DeliveryId::new("del_busy_wait"),
         &mut workers,
         &mut pending_deliveries,
         Duration::from_secs(1),
-        &mut crate::delivery::DeliverySeam::new(),
+        &mut seam,
     )
     .await
     .expect("a successful handoff must remain redeliverable while its wait ack is pending");
 
-    assert!(matches!(
-        second,
-        DeliveryAttemptOutcome::Attempted {
-            attempts,
-            ..
-        } if attempts == MAX_DELIVERY_RETRIES + 1
-    ));
+    assert!(matches!(second, DeliveryAttemptOutcome::Noop));
     let pending = pending_deliveries
         .get("del_busy_wait")
         .expect("successful wait handoffs must not be dead-lettered");
+    assert_eq!(pending.failed_attempts, 1);
+    assert!(pending.next_retry_at > before_retry);
     assert!(
         pending.next_retry_at.duration_since(Instant::now()) > Duration::from_secs(60),
         "wait-mode acknowledgements need a minutes-scale verification window"

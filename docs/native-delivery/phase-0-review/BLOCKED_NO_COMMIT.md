@@ -19,7 +19,7 @@ while these recorded gates are red.
 - `evidence/edit-gate-fix-2.json`: `edit-gate` failed because valid fixes touched out-of-scope files: `crates/broker/src/node_control.rs`, `crates/broker/src/worker.rs`, `package.json`, `vitest.e2e.config.ts`.
 - `evidence/manifest-gate-fix-2.json`: `manifest-gate` failed because runtime files touched by valid fixes remain unrouted: `crates/broker/src/runtime/event_loop.rs`, `crates/broker/src/runtime/headless.rs`, `crates/broker/src/runtime/init.rs`.
 - `evidence/targeted-gate-fix-2.json`: `targeted-gate` failed because unmapped paths force full smoke: `crates/broker/src/node_control.rs`, `crates/broker/src/runtime/event_loop.rs`, `crates/broker/src/runtime/headless.rs`, `crates/broker/src/runtime/init.rs`, `crates/broker/src/worker.rs`, `package.json`.
-- `evidence/seam-rules-fix-2.json`: `seam-rules` failed because `mutation-proof.md` lacks per-invariant failing transcripts for `never_resends_on_doubt`, `records_route_for_each_send`, and `never_acks_without_observation` after the gate was tightened.
+- `evidence/seam-rules-fix-2.json` (recorded against the original `e1954da338e39080b0997036f059d6320b850d76` snapshot): `seam-rules` failed because `mutation-proof.md` lacked per-invariant failing transcripts for `never_resends_on_doubt`, `records_route_for_each_send`, and `never_acks_without_observation` after the gate was tightened.
 
 ## Why This Blocks
 
