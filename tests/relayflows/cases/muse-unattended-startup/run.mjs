@@ -179,7 +179,19 @@ sleep 60
       body: body === undefined ? undefined : JSON.stringify(body),
       signal: AbortSignal.timeout(10_000),
     });
-    return { status: response.status, body: await response.json() };
+    // The broker answers `Broker is starting, please retry` as plain text
+    // before its API is up -- exactly what the readiness probe below waits to
+    // stop seeing. Parsing unconditionally threw out of the probe instead of
+    // letting it retry, failing the case on a startup race. Keep the raw text
+    // as the body so an assertion message still shows what came back.
+    const text = await response.text();
+    let parsed;
+    try {
+      parsed = JSON.parse(text);
+    } catch {
+      parsed = text;
+    }
+    return { status: response.status, body: parsed };
   };
   await waitFor(
     () => api('GET', '/api/session').then(({ status }) => status === 200),
