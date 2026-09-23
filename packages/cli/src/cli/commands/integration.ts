@@ -1528,18 +1528,39 @@ async function runSubscribe(
   }
 }
 
+/** Subscription provisioning and retirement are workspace-owner operations, like
+ * their inbound-target and subscription-channel HTTP calls. Do not let the
+ * worker's ambient participant token override the selected workspace here. */
+function validateSubscriptionCredentials(options: SdkClientOptions): void {
+  if (options.token?.trim()) {
+    throw new Error(
+      'Integration subscription management requires a workspace key; use --workspace-key instead of --token.'
+    );
+  }
+}
+
+function createSubscriptionRelay(
+  deps: IntegrationCommandDependencies,
+  options: SdkClientOptions
+): AgentRelayAgent {
+  validateSubscriptionCredentials(options);
+  return deps.createWorkspaceRelay(options);
+}
+
 async function runSubscribeSetup(
   deps: IntegrationCommandDependencies,
   providerArg: string | undefined,
   opts: Record<string, unknown>,
   recipient: { launch?: RecipientLaunch; committed?: boolean }
 ): Promise<void> {
+  validateSubscriptionCredentials(sdkOptionsFromOpts(opts));
   await deps.relayfile.ensureCompatible();
 
   if (opts.list) {
     const local = await deps.resolveLocalRelayOptions();
     const relayOptions = sdkOptionsFromOpts(opts);
-    const relay = deps.createAgentRelay(
+    const relay = createSubscriptionRelay(
+      deps,
       local && !explicitWorkspaceKey(opts) ? localRetryOptions(relayOptions, local) : relayOptions
     );
     const [bindings, webhooks, subscriptions] = await Promise.all([
@@ -1572,7 +1593,7 @@ async function runSubscribeSetup(
   const relayOptions = sdkOptionsFromOpts(opts);
   const effectiveRelayOptions =
     local && !explicitWorkspaceKey(opts) ? localRetryOptions(relayOptions, local) : relayOptions;
-  const relay = deps.createAgentRelay(effectiveRelayOptions);
+  const relay = createSubscriptionRelay(deps, effectiveRelayOptions);
   const recipientName = agentName(to);
   if (opts.spawn && !recipientName) throw new Error('--spawn requires an explicit @agent recipient');
   if (recipientName && typeof opts.spawn === 'string') {
@@ -1861,12 +1882,13 @@ async function runUnsubscribeOwnedBy(
   owner: string,
   opts: Record<string, unknown>
 ): Promise<void> {
+  validateSubscriptionCredentials(sdkOptionsFromOpts(opts));
   await deps.relayfile.ensureCompatible();
   const local = await deps.resolveLocalRelayOptions();
   const relayOptions = sdkOptionsFromOpts(opts);
   const effectiveRelayOptions =
     local && !explicitWorkspaceKey(opts) ? localRetryOptions(relayOptions, local) : relayOptions;
-  const relay = deps.createAgentRelay(effectiveRelayOptions);
+  const relay = createSubscriptionRelay(deps, effectiveRelayOptions);
   const agents = await relay.agents.list();
   const agent = agents.find((item) => item.name === owner || `@${item.name}` === owner);
   if (!agent) {
@@ -1907,6 +1929,7 @@ async function runUnsubscribe(
   provider: string,
   opts: Record<string, unknown>
 ): Promise<void> {
+  validateSubscriptionCredentials(sdkOptionsFromOpts(opts));
   const ownedBy = typeof opts.ownedBy === 'string' ? opts.ownedBy.trim().replace(/^@/, '') : '';
   if (ownedBy) {
     await runUnsubscribeOwnedBy(deps, provider, ownedBy, opts);
@@ -1926,7 +1949,7 @@ async function runUnsubscribe(
   const relayOptions = sdkOptionsFromOpts(opts);
   const effectiveRelayOptions =
     local && !explicitWorkspaceKey(opts) ? localRetryOptions(relayOptions, local) : relayOptions;
-  const relay = deps.createAgentRelay(effectiveRelayOptions);
+  const relay = createSubscriptionRelay(deps, effectiveRelayOptions);
   const relayScope = relayCleanupScope(effectiveRelayOptions);
   const relayfileScope = relayfileCleanupScope();
 

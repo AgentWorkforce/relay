@@ -529,7 +529,7 @@ describe('SDK-backed CLI groups', () => {
     const program = new Command();
     program.exitOverride();
     registerIntegrationCommands(program, {
-      createAgentRelay: () => relay as never,
+      createWorkspaceRelay: () => relay as never,
       log,
       error,
       exit: exit as never,
@@ -617,7 +617,7 @@ describe('SDK-backed CLI groups', () => {
     const program = new Command();
     program.exitOverride();
     registerIntegrationCommands(program, {
-      createAgentRelay: () => relay as never,
+      createWorkspaceRelay: () => relay as never,
       log: vi.fn(),
       error: vi.fn(),
       exit: vi.fn() as never,
@@ -676,7 +676,7 @@ describe('SDK-backed CLI groups', () => {
     const program = new Command();
     program.exitOverride();
     registerIntegrationCommands(program, {
-      createAgentRelay: () => relay as never,
+      createWorkspaceRelay: () => relay as never,
       log,
       error,
       exit: exit as never,
@@ -728,7 +728,7 @@ describe('SDK-backed CLI groups', () => {
     const program = new Command();
     program.exitOverride();
     registerIntegrationCommands(program, {
-      createAgentRelay: () => relay as never,
+      createWorkspaceRelay: () => relay as never,
       log,
       error,
       exit: exit as never,
@@ -793,7 +793,7 @@ describe('SDK-backed CLI groups', () => {
     const program = new Command();
     program.exitOverride();
     registerIntegrationCommands(program, {
-      createAgentRelay: () => relay as never,
+      createWorkspaceRelay: () => relay as never,
       log,
       error,
       exit: exit as never,
