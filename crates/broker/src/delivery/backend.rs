@@ -332,10 +332,12 @@ pub struct DeliverySeam {
     /// backend a second time — the duplicate the guard exists to prevent,
     /// produced by the guard's own bound.
     evicted: HashSet<DeliveryId>,
+    evicted_order: VecDeque<DeliveryId>,
 }
 
 impl DeliverySeam {
     const MAX_RECEIPTS: usize = 4096;
+    const MAX_EVICTED: usize = 4096;
 
     pub fn new() -> Self {
         Self::default()
@@ -346,6 +348,17 @@ impl DeliverySeam {
     /// the day the bound changes.
     pub fn max_receipts() -> usize {
         Self::MAX_RECEIPTS
+    }
+
+    /// Conservatively restore a persisted hand-off before retry processing.
+    /// The route is intentionally opaque: after restart, a pending delivery
+    /// that crossed a write boundary must never be sent again.
+    pub fn restore_in_doubt(&mut self, delivery_id: DeliveryId) {
+        self.record_receipt(SendReceipt::new(
+            delivery_id,
+            RouteId::new("restored"),
+            SendStatus::InDoubt,
+        ));
     }
 
     /// Cancellation safety: record the selected route as in doubt before
@@ -498,7 +511,13 @@ impl DeliverySeam {
             if let Some(dropped) = self.receipts.pop_front() {
                 // Remember that we forgot. A later send for this id must not be
                 // treated as never-seen.
-                self.evicted.insert(dropped.delivery_id);
+                self.evicted.insert(dropped.delivery_id.clone());
+                self.evicted_order.push_back(dropped.delivery_id);
+                while self.evicted_order.len() > Self::MAX_EVICTED {
+                    if let Some(expired) = self.evicted_order.pop_front() {
+                        self.evicted.remove(&expired);
+                    }
+                }
             }
         }
         self.evicted.remove(&receipt.delivery_id);

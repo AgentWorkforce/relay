@@ -1132,6 +1132,16 @@ pub(crate) async fn retry_pending_delivery(
 
     if !workers.has_worker(&pending.worker_name) {
         let removed = pending_deliveries.remove(delivery_id).unwrap_or(pending);
+        if seam.was_sent(delivery_id) {
+            let route = seam
+                .recorded_route(delivery_id)
+                .map(|route| route.as_str().to_string())
+                .unwrap_or_else(|| "a route the seam has since forgotten".to_string());
+            return Ok(DeliveryAttemptOutcome::TerminalInDoubt {
+                pending: Box::new(removed),
+                last_error: format!("recipient gone after hand-off to {route}"),
+            });
+        }
         return Ok(DeliveryAttemptOutcome::Failed {
             pending: Box::new(removed),
             last_error: "recipient gone".to_string(),

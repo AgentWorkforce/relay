@@ -921,6 +921,22 @@ impl BrokerRuntime {
                                     "delivery_verified:unobserved",
                                 );
                                 if let Some(unobserved_pending) = unobserved.as_ref() {
+                                    // Preserve the full body and operator-visible
+                                    // evidence. The current entry has already been
+                                    // removed from pending, so prefix disposal can
+                                    // only see its siblings.
+                                    let reason = format!(
+                                        "{}delivery verification did not observe an echo: {}",
+                                        crate::runtime::dead_letter::IN_DOUBT_REASON_PREFIX,
+                                        verification,
+                                    );
+                                    crate::runtime::dead_letter::dead_letter_pending_delivery(
+                                        sdk_out_tx,
+                                        dead_letters,
+                                        unobserved_pending,
+                                        &reason,
+                                    )
+                                    .await;
                                     if !delivery_id.is_empty() {
                                         terminal_failed_deliveries
                                             .insert(DeliveryId::from(delivery_id));

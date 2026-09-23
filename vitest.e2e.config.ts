@@ -1,4 +1,4 @@
-import { defineConfig } from 'vitest/config';
+import { configDefaults, defineConfig } from 'vitest/config';
 import path from 'node:path';
 
 // E2E config for the live two-node fleet matrix. Kept separate from the unit
@@ -44,7 +44,9 @@ export default defineConfig({
     globals: true,
     environment: 'node',
     include: ['tests/e2e/**/*.test.ts'],
-    exclude: ['tests/e2e/unlaunched/**/*.test.ts'],
+    exclude: process.env.RELAY_INCLUDE_UNLAUNCHED
+      ? configDefaults.exclude
+      : [...configDefaults.exclude, 'tests/e2e/unlaunched/**/*.test.ts'],
     testTimeout: 60_000,
     hookTimeout: 90_000,
     teardownTimeout: 30_000,

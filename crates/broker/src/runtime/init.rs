@@ -843,6 +843,17 @@ pub(crate) async fn run_init(cmd: InitCommand, telemetry: TelemetryClient) -> Re
         obligation_store: crate::obligation::ObligationStore::default(),
     };
 
+    // Pending snapshots are written after a hand-off attempt. Restore a
+    // conservative in-doubt receipt before maintenance can run; an empty seam
+    // would classify a post-write delivery as fresh and inject it twice.
+    for pending in runtime.pending_deliveries.values() {
+        if pending.attempts > 0 {
+            runtime
+                .delivery_seam
+                .restore_in_doubt(pending.delivery.delivery_id.clone());
+        }
+    }
+
     crate::runtime::identity_cleanup::restore_identity_cleanups(&mut runtime)?;
     runtime.run().await
 }
