@@ -1080,6 +1080,24 @@ describe('registerCloudCommands', () => {
     ]);
   });
 
+  it('cloud status omits an impossible occurredAt calendar date', async () => {
+    const { program, deps } = createHarness();
+    cloudMocks.getRunStatus.mockResolvedValueOnce({
+      runId: 'run-invalid-date',
+      status: 'failed',
+      failure: { phase: 'bootstrap', occurredAt: '2026-02-30T00:00:00Z' },
+    });
+
+    await program.parseAsync(['node', 'agent-relay', 'cloud', 'status', 'run-invalid-date']);
+
+    expect(vi.mocked(deps.log).mock.calls.map(([line]) => line)).toEqual([
+      'Run: run-invalid-date',
+      'Status: failed',
+      'Failure:',
+      '  Phase: bootstrap',
+    ]);
+  });
+
   it('cloud status omits malformed structure and never prints free-form failure content', async () => {
     const { program, deps } = createHarness();
     const sentinels = [
