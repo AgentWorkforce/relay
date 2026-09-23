@@ -1,167 +1,157 @@
-name: Test Build Scripts
-
+name: Relay runner A/B benchmark
 on:
-  push:
-    paths:
-      - 'scripts/build-bun.sh'
-      - 'scripts/sign-macos-binary.sh'
-      - 'scripts/verify-macos-binary.sh'
-      - '.github/workflows/test-build.yml'
-  pull_request:
-    paths:
-      - 'scripts/build-bun.sh'
-      - 'scripts/sign-macos-binary.sh'
-      - 'scripts/verify-macos-binary.sh'
-      - '.github/workflows/test-build.yml'
   workflow_dispatch:
-
+    inputs:
+      trial:
+        description: Sequential paired cold-cache trial
+        required: true
+        type: choice
+        options: ['1', '2', '3']
+permissions:
+  contents: read
+concurrency:
+  group: relay-runner-ab-20260923
+  cancel-in-progress: false
 env:
-  AGENT_RELAY_TELEMETRY_DISABLED: 1
-
+  CI: 'true'
+  AGENT_RELAY_TELEMETRY_DISABLED: '1'
+  TURBO_TELEMETRY_DISABLED: '1'
+  DO_NOT_TRACK: '1'
+  NPM_CONFIG_FUND: 'false'
+  NPM_CONFIG_AUDIT: 'false'
+  SOURCE_SHA: 12ce64729df6b1c5fb18fb9d33a78dc9068fa65b
+  CARGO_INCREMENTAL: '0'
 jobs:
-  test-build-script:
-    name: Test build-bun.sh
-    runs-on: ${{ matrix.os }}
+  benchmark:
+    name: Trial ${{ inputs.trial }} / ${{ matrix.runner }}
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 75
     strategy:
       fail-fast: false
+      max-parallel: 2
       matrix:
-        os: [macos-latest, ubuntu-latest]
-
+        runner: [ubuntu-latest, starsling-ubuntu-24.04]
+    defaults:
+      run:
+        shell: bash
     steps:
-      - name: Checkout code
-        uses: actions/checkout@v4
-
-      - name: Setup Bun
-        uses: oven-sh/setup-bun@v2
+      - name: Checkout immutable source
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
         with:
-          bun-version: latest
-
-      - name: Setup Node.js
-        uses: actions/setup-node@v4
+          ref: 12ce64729df6b1c5fb18fb9d33a78dc9068fa65b
+          persist-credentials: false
+      - name: Establish isolated cold caches
+        run: |
+          test "$(git rev-parse HEAD)" = "$SOURCE_SHA"
+          test ! -d node_modules
+          test ! -d target
+          test ! -d .turbo
+          CACHE_ROOT=$(mktemp -d "$RUNNER_TEMP/relay-ab-cache.XXXXXX")
+          {
+            echo "NPM_CONFIG_CACHE=$CACHE_ROOT/npm"
+            echo "CARGO_HOME=$CACHE_ROOT/cargo"
+            echo "CARGO_TARGET_DIR=$GITHUB_WORKSPACE/target"
+            echo "AGENT_RELAY_VERSION=$(node -p "require('./package.json').version")"
+          } >> "$GITHUB_ENV"
+          mkdir -p benchmark-evidence
+      - name: Setup exact Node.js without cache restore
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
         with:
-          node-version: '22'
-          cache: 'npm'
-
-      - name: Install dependencies
-        run: npm ci
-
-      - name: Validate script syntax
-        run: bash -n scripts/build-bun.sh
-
-      - name: Run build script (current platform only)
-        run: |
-          # Only build for current platform to save time
-          bash scripts/build-bun.sh 2>&1 | tee build-output.txt
-
-      - name: Verify binaries created
-        run: |
-          echo "=== Checking .release directory ==="
-          ls -la .release/
-
-          # Check that at least the current platform binary exists
-          if ls .release/agent-relay-* &>/dev/null; then
-            echo "✓ Binaries created"
-          else
-            echo "✗ No binaries found"
-            exit 1
-          fi
-
-          # Check that compressed versions exist
-          if ls .release/*.gz &>/dev/null; then
-            echo "✓ Compressed binaries created"
-          else
-            echo "✗ No compressed binaries found"
-            exit 1
-          fi
-
-      - name: Verify binary works
-        run: |
-          BINARY=".release/agent-relay"
-          if [ -f "$BINARY" ]; then
-            if [ "$(uname -s)" = "Darwin" ]; then
-              if [ "$(uname -m)" = "arm64" ]; then
-                EXPECTED_ARCH="arm64"
-              else
-                EXPECTED_ARCH="x86_64"
-              fi
-              scripts/verify-macos-binary.sh "$BINARY" "$EXPECTED_ARCH" -- --version
-            else
-              chmod +x "$BINARY"
-              "$BINARY" --version
-            fi
-            echo "✓ Binary executes successfully"
-          fi
-
-      - name: Check compression ratio
-        run: |
-          for gz in .release/*.gz; do
-            if [ -f "$gz" ]; then
-              UNCOMPRESSED="${gz%.gz}"
-              if [ -f "$UNCOMPRESSED" ]; then
-                GZ_SIZE=$(stat -f%z "$gz" 2>/dev/null || stat -c%s "$gz")
-                UN_SIZE=$(stat -f%z "$UNCOMPRESSED" 2>/dev/null || stat -c%s "$UNCOMPRESSED")
-                RATIO=$(echo "scale=0; 100 - ($GZ_SIZE * 100 / $UN_SIZE)" | bc)
-                echo "$UNCOMPRESSED: ${RATIO}% compression"
-              fi
-            fi
-          done
-
-  test-build-edge-cases:
-    name: Test edge cases
-    runs-on: ubuntu-latest
-
-    steps:
-      - name: Checkout code
-        uses: actions/checkout@v4
-
-      - name: Setup Node.js
-        uses: actions/setup-node@v4
+          node-version: '22.22.2'
+      - name: Setup exact Rust without cache restore
+        uses: dtolnay/rust-toolchain@4360b52568e2003a75bf9bc1d59f33a8e3fc893c
         with:
-          node-version: '22'
-
-      - name: Test script without bun (should install)
+          toolchain: '1.98.1'
+          components: rustfmt
+      - name: Record sanitized environment
+        env:
+          BENCHMARK_RUNNER: ${{ matrix.runner }}
+          BENCHMARK_TRIAL: ${{ inputs.trial }}
         run: |
-          # Remove bun from PATH if present
-          export PATH=$(echo "$PATH" | tr ':' '\n' | grep -v bun | tr '\n' ':')
-
-          # Script should detect missing bun and suggest installation
-          # (We won't actually run it since it would install bun)
-          if grep -q "Bun not found" scripts/build-bun.sh; then
-            echo "✓ Script handles missing bun"
-          fi
-
-      - name: Test script variables
+          node <<'NODE'
+          const fs=require('node:fs'),os=require('node:os'),cp=require('node:child_process'),crypto=require('node:crypto');
+          const command=(name,args)=>cp.execFileSync(name,args,{encoding:'utf8'}).trim();
+          if(command('npm',['--version'])!=='10.9.7'||process.version!=='v22.22.2')throw new Error('Unexpected Node/npm version');
+          for(const name of ['NPM_TOKEN','NODE_AUTH_TOKEN','GH_TOKEN','GITHUB_TOKEN','AWS_ACCESS_KEY_ID','AWS_SECRET_ACCESS_KEY','OPENAI_API_KEY','ANTHROPIC_API_KEY','CLOUD_API_ACCESS_TOKEN'])if(process.env[name])throw new Error(`Unexpected credential variable present: ${name}`);
+          const record={sourceSha:process.env.SOURCE_SHA,workflowSha:process.env.GITHUB_SHA,runId:process.env.GITHUB_RUN_ID,runAttempt:process.env.GITHUB_RUN_ATTEMPT,label:process.env.BENCHMARK_RUNNER,trial:process.env.BENCHMARK_TRIAL,runnerName:process.env.RUNNER_NAME,runnerEnvironment:process.env.RUNNER_ENVIRONMENT,node:process.version,npm:command('npm',['--version']),rust:command('rustc',['--version']),cargo:command('cargo',['--version']),kernel:os.release(),arch:os.arch(),cpuCount:os.cpus().length,cpuModel:os.cpus()[0].model,memoryBytes:os.totalmem(),imageOS:process.env.ImageOS,imageVersion:process.env.ImageVersion,cachePolicy:'Fresh checkout, unique empty npm/Cargo caches, no Actions cache, no warm trials',lockfiles:Object.fromEntries(['package-lock.json','Cargo.lock'].map(p=>[p,crypto.createHash('sha256').update(fs.readFileSync(p)).digest('hex')]))};
+          fs.writeFileSync('benchmark-evidence/environment.json',JSON.stringify(record,null,2)+'\n');
+          console.log(JSON.stringify(record,null,2));
+          NODE
+      - name: Install locked npm dependencies
+        id: install
+        run: npm ci 2>&1 | tee benchmark-evidence/npm-ci.log
+      - name: Build release Rust broker
+        id: rustbuild
         run: |
-          # Verify version extraction works
-          VERSION=$(node -p "require('./package.json').version")
-          if [ -n "$VERSION" ]; then
-            echo "✓ Version extracted: $VERSION"
-          else
-            echo "✗ Failed to extract version"
-            exit 1
-          fi
-
-      - name: Validate targets array
+          cargo build --locked --release --bin agent-relay-broker 2>&1 | tee benchmark-evidence/rust-build.log
+          target/release/agent-relay-broker --version | tee benchmark-evidence/broker-version.txt
+      - name: Build all TypeScript packages
+        id: build
+        if: ${{ !cancelled() && steps.install.outcome == 'success' }}
+        run: npm run build:core 2>&1 | tee benchmark-evidence/typescript-build.log
+      - name: Typecheck
+        if: ${{ !cancelled() && steps.build.outcome == 'success' }}
+        run: npm run typecheck 2>&1 | tee benchmark-evidence/typecheck.log
+      - name: Lint
+        if: ${{ !cancelled() && steps.install.outcome == 'success' }}
+        run: npm run lint 2>&1 | tee benchmark-evidence/lint.log
+      - name: Check Rust formatting
+        if: ${{ !cancelled() && steps.install.outcome == 'success' }}
+        run: cargo fmt --all -- --check 2>&1 | tee benchmark-evidence/rust-format.log
+      - name: Subscription proof guards
+        if: ${{ !cancelled() && steps.install.outcome == 'success' }}
+        run: npm run test:subscriptions:proof 2>&1 | tee benchmark-evidence/subscription-proof.log
+      - name: Full root Vitest suite
+        if: ${{ !cancelled() && steps.build.outcome == 'success' }}
+        run: ./node_modules/.bin/vitest run --reporter=default --reporter=json --outputFile=benchmark-evidence/root-vitest.json 2>&1 | tee benchmark-evidence/root-vitest.log
+      - name: SDK tests omitted by root Vitest config
+        if: ${{ !cancelled() && steps.build.outcome == 'success' }}
+        run: npm --prefix packages/sdk test -- --reporter=default --reporter=json --outputFile=../../benchmark-evidence/sdk-vitest.json 2>&1 | tee benchmark-evidence/sdk-vitest.log
+      - name: Full Rust release test suite
+        if: ${{ !cancelled() && steps.rustbuild.outcome == 'success' }}
+        run: cargo test --locked --release 2>&1 | tee benchmark-evidence/rust-tests.log
+      - name: Prepare npm packages without publishing
+        if: ${{ !cancelled() && steps.build.outcome == 'success' }}
         run: |
-          # Extract and validate targets from script
-          grep -A5 'TARGETS=(' scripts/build-bun.sh | while read line; do
-            if echo "$line" | grep -q 'bun-'; then
-              echo "✓ Valid target: $line"
-            fi
-          done
-
-  summary:
-    name: Summary
-    needs: [test-build-script, test-build-edge-cases]
-    runs-on: ubuntu-latest
-    if: always()
-
-    steps:
-      - name: Summary
+          node <<'NODE'
+          const fs=require('node:fs'),cp=require('node:child_process');
+          const packages=['brand','cli-surface','cli','cloud','config','evals','fleet','harness-driver','harnesses','integration-prompts','policy','sdk','session','utils'];
+          const records=[];
+          for(const name of packages){
+            // Audited prepack scripts only rebuild TypeScript; no publish lifecycle is invoked.
+            const text=cp.execFileSync('npm',['pack','--dry-run','--json','--foreground-scripts=false'],{cwd:`packages/${name}`,encoding:'utf8',maxBuffer:16*1024*1024});
+            fs.writeFileSync(`benchmark-evidence/pack-${name}.json`,text);
+            const info=JSON.parse(text)[0];
+            records.push({package:name,name:info.name,version:info.version,files:info.files.map(f=>({path:f.path,size:f.size,mode:f.mode})).sort((a,b)=>a.path.localeCompare(b.path))});
+          }
+          fs.writeFileSync('benchmark-evidence/package-manifest.json',JSON.stringify(records,null,2)+'\n');
+          NODE
+      - name: Hash built package content
+        if: ${{ !cancelled() && steps.build.outcome == 'success' }}
         run: |
-          echo "## Build Script Test Results" >> $GITHUB_STEP_SUMMARY
-          echo "" >> $GITHUB_STEP_SUMMARY
-          echo "| Test | Status |" >> $GITHUB_STEP_SUMMARY
-          echo "|------|--------|" >> $GITHUB_STEP_SUMMARY
-          echo "| Build (macOS + Ubuntu) | ${{ needs.test-build-script.result == 'success' && '✅' || '❌' }} |" >> $GITHUB_STEP_SUMMARY
-          echo "| Edge cases | ${{ needs.test-build-edge-cases.result == 'success' && '✅' || '❌' }} |" >> $GITHUB_STEP_SUMMARY
+          node <<'NODE'
+          const fs=require('node:fs'),path=require('node:path'),crypto=require('node:crypto'),rows=[];
+          function walk(dir){for(const entry of fs.readdirSync(dir,{withFileTypes:true})){const p=path.join(dir,entry.name);if(entry.isDirectory())walk(p);else if(entry.isFile())rows.push(`${crypto.createHash('sha256').update(fs.readFileSync(p)).digest('hex')}  ${p}`);}}
+          for(const name of fs.readdirSync('packages')){const dir=`packages/${name}/dist`;if(fs.existsSync(dir))walk(dir);}
+          fs.writeFileSync('benchmark-evidence/package-content-sha256.txt',rows.sort().join('\n')+'\n');
+          NODE
+          sha256sum target/release/agent-relay-broker > benchmark-evidence/broker-sha256.txt
+          git diff --exit-code -- package-lock.json Cargo.lock
+      - name: Retain diagnostic and parity evidence
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: relay-ab-${{ inputs.trial }}-${{ matrix.runner }}-evidence
+          path: benchmark-evidence/
+          if-no-files-found: error
+          retention-days: 14
+      - name: Retain built broker and packages
+        if: ${{ !cancelled() && steps.build.outcome == 'success' && steps.rustbuild.outcome == 'success' }}
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: relay-ab-${{ inputs.trial }}-${{ matrix.runner }}-build
+          path: |
+            packages/*/dist/
+            target/release/agent-relay-broker
+          if-no-files-found: error
+          retention-days: 14
