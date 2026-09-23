@@ -1,6 +1,6 @@
 # Provider subscription workspace authentication and wake proof
 
-The resumed worker had real RELAY*WORKSPACE_KEY and RELAY_AGENT_TOKEN values.
+The resumed worker had real RELAY_WORKSPACE_KEY and RELAY_AGENT_TOKEN values.
 A temporary fetch diagnostic recorded GET https://cast.agentrelay.com/v1/agents
 returning 401, followed by "Workspace key required (rk_live*...)". Removing only
 RELAY_AGENT_TOKEN made the same request return 200. This was client credential
