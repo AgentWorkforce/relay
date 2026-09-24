@@ -165,7 +165,8 @@ const MUTATIONS = [
   {
     transcript: 'mutation-06-unreachable.txt',
     invariants: ['settle_distinguishes_absence_from_an_unreachable_route'],
-    summary: 'An unreachable recorded route reported `NoReceipt` — positive evidence of absence — instead of `RouteUnavailable`.',
+    summary:
+      'An unreachable recorded route reported `NoReceipt` — positive evidence of absence — instead of `RouteUnavailable`.',
     file: BACKEND,
     guards: [BACKEND, SEAM_TEST_FILE],
     find: '            return SettleOutcome::RouteUnavailable(route);',
@@ -272,7 +273,9 @@ const MUTATIONS = [
                 "Codex queue exited with status {}{}",`,
     replace: `            Err(DeliveryError::unavailable(format!(
                 "Codex queue exited with status {}{}",`,
-    command: libTest('delivery::codex_queue::tests::queue_process_failure_is_committed_and_does_not_fall_back'),
+    command: libTest(
+      'delivery::codex_queue::tests::queue_process_failure_is_committed_and_does_not_fall_back'
+    ),
   },
   {
     transcript: 'mutation-13-codex-handover.txt',
@@ -311,7 +314,9 @@ const MUTATIONS = [
                 SendStatus::InDoubt,
             ));`,
     replace: '            let _ = &route;',
-    command: libTest('delivery::codex_queue::tests::a_cancelled_queue_send_is_not_retried_on_the_codex_route'),
+    command: libTest(
+      'delivery::codex_queue::tests::a_cancelled_queue_send_is_not_retried_on_the_codex_route'
+    ),
   },
   {
     transcript: 'mutation-17-teardown-indoubt.txt',
@@ -322,7 +327,9 @@ const MUTATIONS = [
     guards: [RUNTIME_DELIVERY, RUNTIME_TESTS],
     find: '        let Some(route) = handed_over_route_label(seam, pending) else {',
     replace: '        let Some(route) = None::<String> else {',
-    command: libTest('runtime::tests::releasing_an_agent_with_a_handed_over_native_delivery_dead_letters_it_in_doubt'),
+    command: libTest(
+      'runtime::tests::releasing_an_agent_with_a_handed_over_native_delivery_dead_letters_it_in_doubt'
+    ),
   },
   {
     transcript: 'mutation-18-teardown-sites.txt',
@@ -355,7 +362,7 @@ const MUTATIONS = [
     transcript: 'mutation-19-restart-rehydrate.txt',
     invariants: ['a_restarted_broker_does_not_queue_a_handed_over_codex_delivery_again'],
     summary:
-      '`DeliverySeam::restore_handed_over` became a no-op, so a reloaded pending snapshot classified `Fresh` and the fake Codex recorded a SECOND `codex queue` write for a message already in Codex\'s durable queue.',
+      "`DeliverySeam::restore_handed_over` became a no-op, so a reloaded pending snapshot classified `Fresh` and the fake Codex recorded a SECOND `codex queue` write for a message already in Codex's durable queue.",
     file: BACKEND,
     guards: [BACKEND, RUNTIME_DELIVERY, RUNTIME_TESTS],
     find: `        if self.was_sent(&delivery_id) {
@@ -373,7 +380,7 @@ const MUTATIONS = [
     transcript: 'mutation-20-codex-settle-route.txt',
     invariants: ['settlement_uses_the_recorded_thread_route_and_never_another_codex'],
     summary:
-      'Settlement resolved through the first offered backend instead of the recorded route, seen through the REAL codex route: it read a different Codex thread\'s rollout.',
+      "Settlement resolved through the first offered backend instead of the recorded route, seen through the REAL codex route: it read a different Codex thread's rollout.",
     file: BACKEND,
     guards: [BACKEND, CODEX_QUEUE, RELAY_PTY_CODEX_SESSION],
     find: `        let Some(backend) = backends
@@ -385,7 +392,9 @@ const MUTATIONS = [
     replace: `        let Some(backend) = backends.iter_mut().next() else {
             return SettleOutcome::RouteUnavailable(route);
         };`,
-    command: libTest('delivery::codex_queue::tests::settlement_uses_the_recorded_thread_route_and_never_another_codex'),
+    command: libTest(
+      'delivery::codex_queue::tests::settlement_uses_the_recorded_thread_route_and_never_another_codex'
+    ),
   },
   {
     transcript: 'mutation-21-selection-guard.txt',
@@ -399,7 +408,9 @@ const MUTATIONS = [
         return None;
     }`,
     replace: '    let _ = normalize_cli_name(&command);',
-    command: libTest('delivery::codex_queue::tests::only_a_codex_worker_with_a_known_thread_selects_the_codex_queue_route'),
+    command: libTest(
+      'delivery::codex_queue::tests::only_a_codex_worker_with_a_known_thread_selects_the_codex_queue_route'
+    ),
   },
   {
     transcript: 'mutation-22-unselectable-prewrite.txt',
@@ -424,7 +435,7 @@ const MUTATIONS = [
     transcript: 'mutation-23-consumed-projection.txt',
     invariants: ['a_consumed_user_item_is_observed_in_both_real_projections'],
     summary:
-      'The positive user-input matcher stopped recognising Codex\'s two real consumed projections, so a genuinely consumed message never acknowledged.',
+      "The positive user-input matcher stopped recognising Codex's two real consumed projections, so a genuinely consumed message never acknowledged.",
     file: CODEX_THREAD,
     guards: [CODEX_THREAD],
     find: `fn node_is_user_input(node: &Value) -> bool {`,
@@ -432,7 +443,9 @@ const MUTATIONS = [
     if true {
         return false;
     }`,
-    command: libTest('delivery::codex_thread::tests::a_consumed_user_item_is_observed_in_both_real_projections'),
+    command: libTest(
+      'delivery::codex_thread::tests::a_consumed_user_item_is_observed_in_both_real_projections'
+    ),
   },
   {
     transcript: 'mutation-24-queued-not-consumed.txt',
@@ -456,7 +469,9 @@ const MUTATIONS = [
             return true;
         }`,
     replace: '        return true;',
-    command: libTest('delivery::codex_thread::tests::a_quoted_marker_in_a_non_user_record_is_not_an_acknowledgement'),
+    command: libTest(
+      'delivery::codex_thread::tests::a_quoted_marker_in_a_non_user_record_is_not_an_acknowledgement'
+    ),
   },
   {
     transcript: 'mutation-26-native-parks.txt',
@@ -533,10 +548,7 @@ function main() {
         originals.delete(entry.file);
       }
       const bites = /FAILED|panicked|assertion .*failed/.test(output);
-      writeFileSync(
-        path.join(evidence, entry.transcript),
-        `$ ${entry.command.join(' ')}\n\n${output}\n`
-      );
+      writeFileSync(path.join(evidence, entry.transcript), `$ ${entry.command.join(' ')}\n\n${output}\n`);
       results.push({ ...entry, bites });
       process.stdout.write(`${bites ? 'BITES ' : 'NO-BITE '} ${entry.transcript}\n`);
     }
@@ -603,10 +615,7 @@ function main() {
 function renderMarkdown(results) {
   const sections = [];
   for (const entry of results) {
-    const transcript = readFileSync(
-      path.join(arg('--art'), 'evidence', entry.transcript),
-      'utf8'
-    ).trim();
+    const transcript = readFileSync(path.join(arg('--art'), 'evidence', entry.transcript), 'utf8').trim();
     for (const invariant of entry.invariants) {
       sections.push(
         `### ${invariant}\n\n**Mutation:** ${entry.summary}\n\n` +

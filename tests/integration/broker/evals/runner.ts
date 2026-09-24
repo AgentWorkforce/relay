@@ -442,25 +442,20 @@ async function main(): Promise<void> {
     matrix.harnesses[label] = report.metrics;
     allReports.push({ harness: label, report });
     printMetrics(label, report.metrics);
-    if (report.metrics.scenariosTotal === 0 || report.metrics.scenariosPassed < report.metrics.scenariosTotal) {
+    if (
+      report.metrics.scenariosTotal === 0 ||
+      report.metrics.scenariosPassed < report.metrics.scenariosTotal
+    ) {
       anyScenarioFailure = true;
       console.error(
         `  scenarios failed: ${report.metrics.scenariosPassed}/${report.metrics.scenariosTotal} passed`
       );
     }
-    if (
-      flags.minScenarios !== undefined &&
-      report.metrics.scenariosPassed < flags.minScenarios
-    ) {
+    if (flags.minScenarios !== undefined && report.metrics.scenariosPassed < flags.minScenarios) {
       anyFloorFailure = true;
-      console.error(
-        `  scenario floor missed: ${report.metrics.scenariosPassed} < ${flags.minScenarios}`
-      );
+      console.error(`  scenario floor missed: ${report.metrics.scenariosPassed} < ${flags.minScenarios}`);
     }
-    if (
-      flags.minDeliveryRate !== undefined &&
-      report.metrics.deliverySuccessRate < flags.minDeliveryRate
-    ) {
+    if (flags.minDeliveryRate !== undefined && report.metrics.deliverySuccessRate < flags.minDeliveryRate) {
       anyFloorFailure = true;
       console.error(
         `  delivery floor missed: ${report.metrics.deliverySuccessRate} < ${flags.minDeliveryRate}`
@@ -504,10 +499,8 @@ async function main(): Promise<void> {
 
   const strictFailure =
     flags.requireAll && (anySkippedHarness || anyScenarioFailure || allReports.length === 0);
-  const floorWasRequested =
-    flags.minScenarios !== undefined || flags.minDeliveryRate !== undefined;
-  const floorFailure =
-    floorWasRequested && (anySkippedHarness || anyFloorFailure || allReports.length === 0);
+  const floorWasRequested = flags.minScenarios !== undefined || flags.minDeliveryRate !== undefined;
+  const floorFailure = floorWasRequested && (anySkippedHarness || anyFloorFailure || allReports.length === 0);
   process.exit(anyRegression || strictFailure || floorFailure ? 1 : 0);
 }
 
