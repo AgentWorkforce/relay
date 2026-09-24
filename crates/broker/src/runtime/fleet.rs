@@ -2244,6 +2244,7 @@ pub(super) async fn reconcile_blocked_flush_predecessor(
     dead_letters: &mut DeadLetterStore,
     worker_name: &WorkerName,
     retry_interval: Duration,
+    seam: &mut crate::delivery::DeliverySeam,
 ) -> Option<&'static str> {
     let agent_id = result.blocked_agent_id.as_deref()?;
     let next_sequence = result.next_ackable_sequence?;
@@ -2266,23 +2267,28 @@ pub(super) async fn reconcile_blocked_flush_predecessor(
         return Some("awaiting_relaycast_replay");
     };
 
-    let outcome =
-        match retry_pending_delivery(&delivery_id, workers, pending_deliveries, retry_interval)
-            .await
-        {
-            Ok(outcome) => outcome,
-            Err(error) => {
-                tracing::warn!(
-                    target = "relay_broker::fleet",
-                    worker = %worker_name,
-                    delivery_id = %delivery_id,
-                    seq = next_sequence,
-                    error = %error,
-                    "failed to replay the predecessor needed to reconcile a manual-flush gap"
-                );
-                return Some("predecessor_retry_failed");
-            }
-        };
+    let outcome = match retry_pending_delivery(
+        &delivery_id,
+        workers,
+        pending_deliveries,
+        retry_interval,
+        seam,
+    )
+    .await
+    {
+        Ok(outcome) => outcome,
+        Err(error) => {
+            tracing::warn!(
+                target = "relay_broker::fleet",
+                worker = %worker_name,
+                delivery_id = %delivery_id,
+                seq = next_sequence,
+                error = %error,
+                "failed to replay the predecessor needed to reconcile a manual-flush gap"
+            );
+            return Some("predecessor_retry_failed");
+        }
+    };
     let terminal = matches!(outcome, DeliveryAttemptOutcome::Failed { .. });
     if let Err(error) =
         emit_delivery_attempt_outcome(sdk_out_tx, dead_letters, &delivery_id, was_retry, outcome)

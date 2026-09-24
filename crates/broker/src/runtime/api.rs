@@ -2934,6 +2934,7 @@ impl BrokerRuntime {
                                 dead_letters,
                                 &name,
                                 delivery_retry_interval,
+                                delivery_seam,
                             )
                             .await;
                     }
@@ -3085,6 +3086,7 @@ impl BrokerRuntime {
                             dead_letters,
                             &name,
                             delivery_retry_interval,
+                            delivery_seam,
                         )
                         .await;
                     let flushed = flush_result.flushed;

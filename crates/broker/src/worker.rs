@@ -1113,7 +1113,6 @@ impl WorkerRegistry {
                     let is_gemini = cli_lower == "gemini";
                     let is_grok = cli_lower == "grok";
                     let muse_flag = muse_yolo_flag(&cli_lower, &effective_args);
-                    let trust_flag = muse_trust_flag(&cli_lower, &effective_args);
                     let mut codex_spawn_env = self.worker_env.clone();
                     codex_spawn_env.extend(harness_env.clone());
                     let mut codex_exact_queue_capable = false;

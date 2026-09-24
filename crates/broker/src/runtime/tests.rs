@@ -1702,6 +1702,7 @@ async fn manual_flush_replays_a_durable_predecessor_then_drains_without_loss() {
         &mut dead_letters,
         &worker_name,
         Duration::from_secs(1),
+        &mut crate::delivery::DeliverySeam::new(),
     )
     .await;
     assert_eq!(action, Some("predecessor_replayed"));

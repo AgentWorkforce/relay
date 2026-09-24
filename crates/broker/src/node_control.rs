@@ -1283,7 +1283,9 @@ impl FleetDeliveryBook {
                 ..AgentDeliveryCursor::default()
             });
         cursor.agent_name.clone_from(&deliver.agent);
-        cursor.seen_msg_ids.insert(&deliver.msg_id);
+        cursor
+            .seen_msg_ids
+            .insert(&deliver.msg_id, &deliver.delivery_id, deliver.seq);
     }
 
     pub(crate) fn abandon_unconfirmed_delivery(&mut self, deliver: &Deliver) -> Option<u64> {
