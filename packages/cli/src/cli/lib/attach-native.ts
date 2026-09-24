@@ -304,7 +304,16 @@ export async function isNativeHarness(
     env: process.env,
   });
   if (!connection) return false;
-  const client = createBrokerClient(connection, fetchFn);
-  const agent = (await client.listAgents()).find((candidate) => candidate.name === name);
-  return agent?.runtime_kind === 'native';
+  // This is a capability probe, not the attach itself: a rejection here
+  // (auth failure, network error, broker unreachable) must degrade to
+  // `false` so `runAttach` falls back to the non-native attach path
+  // instead of the whole attach aborting on a probe it never asked to be
+  // load-bearing (#1382).
+  try {
+    const client = createBrokerClient(connection, fetchFn);
+    const agent = (await client.listAgents()).find((candidate) => candidate.name === name);
+    return agent?.runtime_kind === 'native';
+  } catch {
+    return false;
+  }
 }
