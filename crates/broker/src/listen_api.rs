@@ -15,6 +15,9 @@ use crate::{
     ids::{
         ChannelName, DeliveryId, MessageTarget, ThreadId, WorkerName, WorkspaceAlias, WorkspaceId,
     },
+    native_delivery::{
+        NativeDeliveryError, NativeExistingSessionDelivery, NativeExistingSessionReconcile,
+    },
     protocol::{MessageInjectionMode, ResolvedHarnessConfig},
     relaycast::WorkspaceMembershipSummary,
     replay_buffer::ReplayBuffer,
@@ -81,6 +84,14 @@ pub enum ListenApiRequest {
     },
     List {
         reply: tokio::sync::oneshot::Sender<Result<Value, String>>,
+    },
+    DeliverNativeExistingSession {
+        delivery: NativeExistingSessionDelivery,
+        reply: tokio::sync::oneshot::Sender<Result<Value, NativeDeliveryError>>,
+    },
+    ReconcileNativeExistingSession {
+        delivery: NativeExistingSessionReconcile,
+        reply: tokio::sync::oneshot::Sender<Result<Value, NativeDeliveryError>>,
     },
     /// `GET /api/fleet-inventory` — snapshot of the in-process `fleet_inventory`
     /// map (what the broker last published to the engine via `inventory.sync`).
@@ -515,6 +526,14 @@ pub(crate) fn listen_api_router_with_auth(
         .route("/api/session", routing::get(listen_api_session))
         .route("/api/session/renew", routing::post(listen_api_renew_lease))
         .route("/api/spawn", routing::post(listen_api_spawn))
+        .route(
+            "/api/native-delivery/existing-session",
+            routing::post(listen_api_deliver_native_existing_session),
+        )
+        .route(
+            "/api/native-delivery/existing-session/reconcile",
+            routing::post(listen_api_reconcile_native_existing_session),
+        )
         .route("/api/spawned", routing::get(listen_api_list))
         .route(
             "/api/fleet-inventory",
@@ -1266,6 +1285,76 @@ async fn listen_api_list(
         Ok(Ok(val)) => axum::Json(val),
         _ => axum::Json(json!({ "success": false, "agents": [] })),
     }
+}
+
+async fn listen_api_deliver_native_existing_session(
+    axum::extract::State(state): axum::extract::State<ListenApiState>,
+    axum::Json(delivery): axum::Json<NativeExistingSessionDelivery>,
+) -> (axum::http::StatusCode, axum::Json<Value>) {
+    let (reply_tx, reply_rx) = tokio::sync::oneshot::channel();
+    if state
+        .tx
+        .send(ListenApiRequest::DeliverNativeExistingSession {
+            delivery,
+            reply: reply_tx,
+        })
+        .await
+        .is_err()
+    {
+        return internal_error();
+    }
+    match reply_rx.await {
+        Ok(Ok(value)) => (axum::http::StatusCode::OK, axum::Json(value)),
+        Ok(Err(error)) => native_delivery_error_to_response(&error),
+        Err(_) => internal_error(),
+    }
+}
+
+async fn listen_api_reconcile_native_existing_session(
+    axum::extract::State(state): axum::extract::State<ListenApiState>,
+    axum::Json(delivery): axum::Json<NativeExistingSessionReconcile>,
+) -> (axum::http::StatusCode, axum::Json<Value>) {
+    let (reply_tx, reply_rx) = tokio::sync::oneshot::channel();
+    if state
+        .tx
+        .send(ListenApiRequest::ReconcileNativeExistingSession {
+            delivery,
+            reply: reply_tx,
+        })
+        .await
+        .is_err()
+    {
+        return internal_error();
+    }
+    match reply_rx.await {
+        Ok(Ok(value)) => (axum::http::StatusCode::OK, axum::Json(value)),
+        Ok(Err(error)) => native_delivery_error_to_response(&error),
+        Err(_) => internal_error(),
+    }
+}
+
+fn native_delivery_error_to_response(
+    error: &NativeDeliveryError,
+) -> (axum::http::StatusCode, axum::Json<Value>) {
+    use axum::http::StatusCode;
+    let status = match error {
+        NativeDeliveryError::Invalid(_) => StatusCode::BAD_REQUEST,
+        NativeDeliveryError::Conflict | NativeDeliveryError::Unauthorized(_) => {
+            StatusCode::CONFLICT
+        }
+        NativeDeliveryError::ReceiptUnavailable(_) | NativeDeliveryError::InDoubt(_) => {
+            StatusCode::SERVICE_UNAVAILABLE
+        }
+    };
+    (
+        status,
+        axum::Json(json!({
+            "success": false,
+            "code": error.code(),
+            "error": error.to_string(),
+            "committed": error.committed(),
+        })),
+    )
 }
 
 async fn listen_api_fleet_inventory(
@@ -4233,6 +4322,120 @@ mod auth_tests {
         assert_eq!(body["agents"][0]["name"], "worker-a");
 
         list_replier.await.expect("list replier should complete");
+    }
+
+    #[tokio::test]
+    async fn native_existing_session_delivery_requires_the_api_key() {
+        let (router, _rx) = test_router(Some("secret"));
+        let response = router
+            .oneshot(
+                Request::builder()
+                    .uri("/api/native-delivery/existing-session")
+                    .method("POST")
+                    .header("content-type", "application/json")
+                    .body(Body::from(
+                        json!({
+                            "relayAgentName": "worker-a",
+                            "sessionId": "native-session-1",
+                            "deliveryId": "delivery-1",
+                            "lineageId": "lineage-1",
+                            "headSha": "a".repeat(40),
+                            "message": "continue"
+                        })
+                        .to_string(),
+                    ))
+                    .expect("request should build"),
+            )
+            .await
+            .expect("request should succeed");
+
+        assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+    }
+
+    #[tokio::test]
+    async fn native_existing_session_delivery_dispatches_typed_request_and_receipt() {
+        let (router, mut rx) = test_router(Some("secret"));
+        let replier = tokio::spawn(async move {
+            let Some(ListenApiRequest::DeliverNativeExistingSession { delivery, reply }) =
+                rx.recv().await
+            else {
+                panic!("expected native existing-session delivery");
+            };
+            assert_eq!(delivery.relay_agent_name, "worker-a");
+            assert_eq!(delivery.session_id, "native-session-1");
+            assert_eq!(delivery.delivery_id, "delivery-1");
+            let _ = reply.send(Ok(json!({
+                "receiptId": "ndr_receipt",
+                "status": "queued"
+            })));
+        });
+
+        let response = router
+            .oneshot(
+                Request::builder()
+                    .uri("/api/native-delivery/existing-session")
+                    .method("POST")
+                    .header("content-type", "application/json")
+                    .header("x-api-key", "secret")
+                    .body(Body::from(
+                        json!({
+                            "relayAgentName": "worker-a",
+                            "sessionId": "native-session-1",
+                            "deliveryId": "delivery-1",
+                            "lineageId": "lineage-1",
+                            "headSha": "a".repeat(40),
+                            "message": "continue"
+                        })
+                        .to_string(),
+                    ))
+                    .expect("request should build"),
+            )
+            .await
+            .expect("request should succeed");
+
+        assert_eq!(response.status(), StatusCode::OK);
+        assert_eq!(response_json(response).await["receiptId"], "ndr_receipt");
+        replier.await.expect("delivery replier should complete");
+    }
+
+    #[tokio::test]
+    async fn native_existing_session_reconcile_dispatches_without_a_message() {
+        let (router, mut rx) = test_router(Some("secret"));
+        let replier = tokio::spawn(async move {
+            let Some(ListenApiRequest::ReconcileNativeExistingSession { delivery, reply }) =
+                rx.recv().await
+            else {
+                panic!("expected native existing-session reconciliation");
+            };
+            assert_eq!(delivery.delivery_id, "delivery-1");
+            let _ = reply.send(Ok(json!({ "receiptId": null })));
+        });
+
+        let response = router
+            .oneshot(
+                Request::builder()
+                    .uri("/api/native-delivery/existing-session/reconcile")
+                    .method("POST")
+                    .header("content-type", "application/json")
+                    .header("x-api-key", "secret")
+                    .body(Body::from(
+                        json!({
+                            "relayAgentName": "worker-a",
+                            "sessionId": "native-session-1",
+                            "deliveryId": "delivery-1",
+                            "lineageId": "lineage-1",
+                            "headSha": "a".repeat(40)
+                        })
+                        .to_string(),
+                    ))
+                    .expect("request should build"),
+            )
+            .await
+            .expect("request should succeed");
+
+        assert_eq!(response.status(), StatusCode::OK);
+        assert!(response_json(response).await["receiptId"].is_null());
+        replier.await.expect("reconcile replier should complete");
     }
 
     #[tokio::test]

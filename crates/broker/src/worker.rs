@@ -483,6 +483,31 @@ impl WorkerRegistry {
         self.workers.contains_key(name)
     }
 
+    /// Authorize the exact broker-owned Codex native session used by the
+    /// Cloud Babysitter delivery lane. Name-only liveness is insufficient: a
+    /// released worker can be replaced under the same Relay identity, so the
+    /// session id and native active-input capability are checked together at
+    /// the final local hop.
+    pub(crate) fn authorize_native_existing_session(
+        &self,
+        name: &WorkerName,
+        session_id: &str,
+    ) -> Result<()> {
+        let handle = self
+            .workers
+            .get(name)
+            .with_context(|| format!("native_session_not_found: no live worker named '{name}'"))?;
+        anyhow::ensure!(
+            self.is_worker_live(name),
+            "native_session_not_live: worker '{name}' is not live"
+        );
+        anyhow::ensure!(
+            handle.ready_at.is_some(),
+            "native_session_not_ready: worker '{name}' has not proved readiness"
+        );
+        authorize_native_existing_session_spec(&handle.spec, session_id)
+    }
+
     /// True when a worker is registered AND its child process is still alive.
     /// Registration alone (`has_worker`) can lag a dead child until the periodic
     /// `reap_exited` sweep removes it, so callers that must not act on a
@@ -1913,6 +1938,51 @@ pub(crate) fn native_harness_metadata(spec: &AgentSpec) -> Option<(u64, Option<V
         })
         .cloned();
     Some((version, capabilities))
+}
+
+fn authorize_native_existing_session_spec(spec: &AgentSpec, session_id: &str) -> Result<()> {
+    let cli = spec
+        .cli
+        .as_deref()
+        .map(normalize_cli_name)
+        .unwrap_or_default()
+        .to_ascii_lowercase();
+    anyhow::ensure!(
+        cli == "codex" || cli == "codex.exe",
+        "native_session_unsupported_harness: only Codex native sessions are supported"
+    );
+    let actual_session = spec.session_id.as_deref().or_else(|| {
+        spec.harness_config
+            .as_ref()
+            .and_then(ResolvedHarnessConfig::session_id)
+    });
+    anyhow::ensure!(
+        actual_session == Some(session_id),
+        "native_session_mismatch: requested session does not match the live worker"
+    );
+    let (version, capabilities) = native_harness_metadata(spec).ok_or_else(|| {
+        anyhow::anyhow!(
+            "native_session_unsupported_transport: worker is not using the native harness protocol"
+        )
+    })?;
+    anyhow::ensure!(
+        version == 1,
+        "native_session_unsupported_protocol: expected native harness protocol version 1"
+    );
+    let active_input = capabilities
+        .as_ref()
+        .and_then(|value| {
+            value
+                .get("activeInput")
+                .or_else(|| value.get("active_input"))
+        })
+        .and_then(Value::as_bool)
+        .unwrap_or(false);
+    anyhow::ensure!(
+        active_input,
+        "native_session_input_unavailable: native session does not advertise active input"
+    );
+    Ok(())
 }
 
 fn release_policy_arg(policy: Option<&HarnessReleasePolicy>) -> &'static str {
@@ -3712,6 +3782,69 @@ sleep 30
         assert_eq!(
             capabilities.unwrap(),
             json!({"activeInput": true, "interrupt": true})
+        );
+    }
+
+    fn native_codex_authorization_spec() -> AgentSpec {
+        serde_json::from_value(json!({
+            "name": "garden-coder",
+            "runtime": "headless",
+            "cli": "codex",
+            "sessionId": "native-1",
+            "args": [],
+            "channels": [],
+            "harnessConfig": {
+                "runtime": "native",
+                "command": "node",
+                "args": ["/tmp/sidecar.js"],
+                "sessionId": "native-1",
+                "metadata": {
+                    "runtimeKind": "native",
+                    "nativeHarnessProtocolVersion": 1,
+                    "nativeHarnessCapabilities": {"activeInput": true}
+                }
+            }
+        }))
+        .expect("native Codex spec")
+    }
+
+    #[test]
+    fn native_existing_session_authorization_requires_exact_session_and_active_input() {
+        let spec = native_codex_authorization_spec();
+        authorize_native_existing_session_spec(&spec, "native-1")
+            .expect("exact native Codex session should authorize");
+
+        let mismatch = authorize_native_existing_session_spec(&spec, "replacement-session")
+            .expect_err("session substitution must fail")
+            .to_string();
+        assert!(mismatch.contains("native_session_mismatch"), "{mismatch}");
+
+        let mut no_input = spec.clone();
+        if let Some(ResolvedHarnessConfig::Native(config)) = no_input.harness_config.as_mut() {
+            config.metadata.as_mut().expect("metadata").insert(
+                "nativeHarnessCapabilities".to_string(),
+                json!({"activeInput": false}),
+            );
+        }
+        let unavailable = authorize_native_existing_session_spec(&no_input, "native-1")
+            .expect_err("inactive input must fail")
+            .to_string();
+        assert!(
+            unavailable.contains("native_session_input_unavailable"),
+            "{unavailable}"
+        );
+    }
+
+    #[test]
+    fn native_existing_session_authorization_rejects_non_codex_harnesses() {
+        let mut spec = native_codex_authorization_spec();
+        spec.cli = Some("claude".to_string());
+        let error = authorize_native_existing_session_spec(&spec, "native-1")
+            .expect_err("non-Codex native session must fail closed")
+            .to_string();
+        assert!(
+            error.contains("native_session_unsupported_harness"),
+            "{error}"
         );
     }
 

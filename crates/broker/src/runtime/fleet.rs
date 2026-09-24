@@ -1405,6 +1405,15 @@ impl BrokerRuntime {
             self.handle_task_invoke(invoke).await;
             return;
         }
+        if invoke.action == crate::native_delivery::NATIVE_EXISTING_SESSION_CAPABILITY {
+            self.handle_native_existing_session_invoke(invoke).await;
+            return;
+        }
+        if invoke.action == crate::native_delivery::NATIVE_EXISTING_SESSION_RECONCILE_CAPABILITY {
+            self.handle_native_existing_session_reconcile_invoke(invoke)
+                .await;
+            return;
+        }
         let action = invoke.action.as_str();
         if action == "spawn" || action.starts_with("spawn:") {
             self.handle_fleet_action_spawn(invoke).await;
@@ -1426,6 +1435,98 @@ impl BrokerRuntime {
         );
         self.send_fleet_action_result(handler_unavailable_result(&invoke.invocation_id))
             .await;
+    }
+
+    async fn handle_native_existing_session_invoke(&mut self, invoke: ActionInvoke) {
+        if !self.paths.persist {
+            self.reply_action_error(
+                &invoke.invocation_id,
+                "native_delivery_receipt_unavailable: persistent broker state is required; committed=false",
+            )
+            .await;
+            return;
+        }
+        let delivery = match serde_json::from_value(invoke.input) {
+            Ok(delivery) => delivery,
+            Err(error) => {
+                self.reply_action_error(
+                    &invoke.invocation_id,
+                    &format!("invalid_native_delivery: {error}"),
+                )
+                .await;
+                return;
+            }
+        };
+        match crate::native_delivery::deliver_authorized(
+            &mut self.workers,
+            &self.paths.native_delivery_receipts,
+            &delivery,
+        )
+        .await
+        {
+            Ok(outcome) => {
+                let status = match outcome.disposition {
+                    crate::native_delivery::NativeDeliveryDisposition::Queued => "queued",
+                    crate::native_delivery::NativeDeliveryDisposition::Duplicate => "duplicate",
+                };
+                self.reply_action_output(
+                    &invoke.invocation_id,
+                    json!({ "receiptId": outcome.receipt_id, "status": status }),
+                )
+                .await;
+            }
+            Err(error) => {
+                self.reply_action_error(
+                    &invoke.invocation_id,
+                    &format!("{}; committed={}", error, error.committed()),
+                )
+                .await;
+            }
+        }
+    }
+
+    async fn handle_native_existing_session_reconcile_invoke(&self, invoke: ActionInvoke) {
+        if !self.paths.persist {
+            self.reply_action_error(
+                &invoke.invocation_id,
+                "native_delivery_receipt_unavailable: persistent broker state is required; committed=false",
+            )
+            .await;
+            return;
+        }
+        let delivery = match serde_json::from_value(invoke.input) {
+            Ok(delivery) => delivery,
+            Err(error) => {
+                self.reply_action_error(
+                    &invoke.invocation_id,
+                    &format!("invalid_native_delivery: {error}"),
+                )
+                .await;
+                return;
+            }
+        };
+        match crate::native_delivery::reconcile_receipt(
+            &self.paths.native_delivery_receipts,
+            &delivery,
+        ) {
+            Ok(receipt) => {
+                self.reply_action_output(
+                    &invoke.invocation_id,
+                    match receipt {
+                        Some(receipt) => json!({ "receiptId": receipt.receipt_id() }),
+                        None => json!({ "receiptId": null }),
+                    },
+                )
+                .await;
+            }
+            Err(error) => {
+                self.reply_action_error(
+                    &invoke.invocation_id,
+                    &format!("{}; committed={}", error, error.committed()),
+                )
+                .await;
+            }
+        }
     }
 
     /// Run a `spawn` / `spawn:<harness>` node action by parsing the invoke input

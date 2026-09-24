@@ -330,6 +330,11 @@ pub(crate) async fn run_init(cmd: InitCommand, telemetry: TelemetryClient) -> Re
                 metadata: None,
             });
     }
+    // A unique ephemeral state directory cannot restore receipts after a
+    // broker restart, so it must never advertise the durable Cloud contract.
+    if paths.persist {
+        append_native_delivery_capabilities(&mut node_manifest);
+    }
     // Retain the node name for the runtime: the HTTP `bind_agent_to_node`
     // fallback (used when node-control `agent.register` is unavailable) binds
     // spawned agents to this node so they become `via_node` and node delivery
@@ -1005,6 +1010,39 @@ fn bootstrap_node_manifest(node_name: &str, node_id: &str, broker_version: &str)
     }
 }
 
+fn append_native_delivery_capabilities(manifest: &mut NodeManifest) {
+    manifest
+        .capabilities
+        .push(crate::protocol::NodeCapabilityManifest {
+            name: crate::native_delivery::NATIVE_EXISTING_SESSION_CAPABILITY.to_owned(),
+            kind: Some("action".to_owned()),
+            metadata: Some(HashMap::from([
+                ("contract".to_owned(), json!("deliverNativeExistingSession")),
+                ("contractVersion".to_owned(), json!(1)),
+                ("durableReceipts".to_owned(), json!(true)),
+                ("idempotencyField".to_owned(), json!("deliveryId")),
+                ("sessionAuthorization".to_owned(), json!("exact")),
+                (
+                    "reconcileAction".to_owned(),
+                    json!(crate::native_delivery::NATIVE_EXISTING_SESSION_RECONCILE_CAPABILITY),
+                ),
+            ])),
+        });
+    manifest
+        .capabilities
+        .push(crate::protocol::NodeCapabilityManifest {
+            name: crate::native_delivery::NATIVE_EXISTING_SESSION_RECONCILE_CAPABILITY.to_owned(),
+            kind: Some("action".to_owned()),
+            metadata: Some(HashMap::from([
+                (
+                    "contract".to_owned(),
+                    json!("reconcileNativeExistingSession"),
+                ),
+                ("contractVersion".to_owned(), json!(1)),
+            ])),
+        });
+}
+
 /// The harness names this broker can spawn, from `AGENT_RELAY_NODE_HARNESSES`
 /// (comma-separated, order-preserving, de-duplicated) or the built-in default.
 fn node_capacity_harnesses() -> Vec<String> {
@@ -1198,6 +1236,38 @@ mod tests {
         assert_eq!(manifest.name, "node-a");
         assert_eq!(manifest.node_id.as_deref(), Some("node_a"));
         assert_eq!(manifest.version.as_deref(), Some("relay-broker/9.1.1"));
+    }
+
+    #[test]
+    fn native_delivery_manifest_publishes_versioned_fail_closed_contract() {
+        let mut manifest = bootstrap_node_manifest("node-a", "node_a", "relay-broker/9.1.1");
+        append_native_delivery_capabilities(&mut manifest);
+
+        let delivery = manifest
+            .capabilities
+            .iter()
+            .find(|cap| cap.name == crate::native_delivery::NATIVE_EXISTING_SESSION_CAPABILITY)
+            .expect("native delivery action must be advertised");
+        assert_eq!(delivery.kind.as_deref(), Some("action"));
+        let metadata = delivery.metadata.as_ref().expect("contract metadata");
+        assert_eq!(
+            metadata.get("contract"),
+            Some(&json!("deliverNativeExistingSession"))
+        );
+        assert_eq!(metadata.get("contractVersion"), Some(&json!(1)));
+        assert_eq!(metadata.get("durableReceipts"), Some(&json!(true)));
+        assert_eq!(metadata.get("idempotencyField"), Some(&json!("deliveryId")));
+        assert_eq!(metadata.get("sessionAuthorization"), Some(&json!("exact")));
+        assert_eq!(
+            metadata.get("reconcileAction"),
+            Some(&json!(
+                crate::native_delivery::NATIVE_EXISTING_SESSION_RECONCILE_CAPABILITY
+            ))
+        );
+        assert!(manifest.capabilities.iter().any(|cap| {
+            cap.name == crate::native_delivery::NATIVE_EXISTING_SESSION_RECONCILE_CAPABILITY
+                && cap.kind.as_deref() == Some("action")
+        }));
     }
 
     #[test]
