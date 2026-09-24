@@ -256,8 +256,18 @@ pub(crate) struct BrokerRuntime {
     pub(super) dedup: DedupCache,
     pub(super) delivery_retry_interval: Duration,
     pub(super) pending_deliveries: PendingDeliveryStore,
+    /// The delivery-backend seam, owned for the broker's lifetime.
+    ///
+    /// Constructing one per attempt made its receipt memory always empty, so
+    /// `SendOutcome::AlreadySent` was unreachable, `recorded_route` had no
+    /// production caller, `settle` had none at all, and the receipt bound
+    /// bounded nothing — three of the four phase-0 contract rules were enforced
+    /// only inside `crates/broker/tests/delivery_seam_invariants.rs`, against a
+    /// scripted backend. Living here is what makes them apply to the running
+    /// broker.
+    pub(super) delivery_seam: crate::delivery::DeliverySeam,
     pub(super) dead_letters: DeadLetterStore,
-    pub(super) terminal_failed_deliveries: HashSet<DeliveryId>,
+    pub(super) terminal_failed_deliveries: TerminalDeliveryGuard,
     pub(super) pending_requests: HashMap<String, worker_request::PendingRequest>,
     /// Persona/capability spawns whose action result is held until the harness
     /// proves readiness with worker_ready. Keyed by the node-local worker name.
@@ -287,6 +297,46 @@ pub(crate) struct BrokerRuntime {
     pub(super) sigterm: tokio::signal::windows::CtrlShutdown,
     pub(super) telemetry: TelemetryClient,
     pub(super) obligation_store: crate::obligation::ObligationStore,
+}
+
+#[derive(Debug, Default)]
+pub(super) struct TerminalDeliveryGuard {
+    ids: HashSet<DeliveryId>,
+    order: VecDeque<DeliveryId>,
+}
+
+impl TerminalDeliveryGuard {
+    const CAPACITY: usize = 4096;
+
+    /// The bound, exposed so a test can exercise eviction without hardcoding a
+    /// number that would quietly stop testing eviction when the bound changes.
+    #[cfg(test)]
+    pub(super) fn capacity() -> usize {
+        Self::CAPACITY
+    }
+
+    pub(super) fn contains(&self, id: &str) -> bool {
+        self.ids.contains(id)
+    }
+
+    pub(super) fn insert(&mut self, id: DeliveryId) {
+        if self.ids.contains(&id) {
+            return;
+        }
+        while self.order.len() >= Self::CAPACITY {
+            if let Some(evicted) = self.order.pop_front() {
+                self.ids.remove(&evicted);
+            }
+        }
+        self.ids.insert(id.clone());
+        self.order.push_back(id);
+    }
+
+    pub(super) fn remove(&mut self, id: &DeliveryId) {
+        if self.ids.remove(id) {
+            self.order.retain(|candidate| candidate != id);
+        }
+    }
 }
 
 enum RuntimeEvent {
@@ -848,5 +898,43 @@ mod resize_owner_tests {
             owners.remove(&name);
         }
         assert_eq!(owners.get(&name).map(|o| o.session_id.as_str()), Some("s1"));
+    }
+}
+
+#[cfg(test)]
+mod terminal_guard_boundary_tests {
+    use super::TerminalDeliveryGuard;
+    use crate::ids::DeliveryId;
+
+    /// relay: F13 — the guard forgets at its bound, and that is a real limit
+    /// rather than an accident, so it should be written down.
+    ///
+    /// Its stated purpose is that a late `delivery_ack` "cannot resurrect and
+    /// confirm" a terminally-settled delivery. Past CAPACITY the oldest id is
+    /// evicted and that stops being unconditionally true. Today the consequence
+    /// is benign — the pending entry is already gone, so confirmation returns
+    /// nothing — but the guarantee is narrower than the comment claims, and
+    /// nothing said so.
+    ///
+    /// This pins the boundary. If the bound is ever relied on for correctness
+    /// rather than for noise suppression, this test is where that assumption
+    /// breaks first.
+    #[test]
+    fn the_terminal_guard_forgets_the_oldest_id_at_capacity() {
+        let mut guard = TerminalDeliveryGuard::default();
+        let first = DeliveryId::from("del_first");
+        guard.insert(first.clone());
+        assert!(guard.contains(first.as_str()));
+
+        for index in 0..TerminalDeliveryGuard::capacity() {
+            guard.insert(DeliveryId::from(format!("del_filler_{index}")));
+        }
+
+        assert!(
+            !guard.contains(first.as_str()),
+            "the guard still remembers the oldest id past its bound; if that becomes \
+             true the eviction policy changed and this test should be updated rather \
+             than deleted"
+        );
     }
 }

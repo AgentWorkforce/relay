@@ -406,6 +406,7 @@ impl BrokerRuntime {
                 last_error: None,
                 withheld_fleet_ack: None,
                 withheld_fleet_ack_floor: None,
+                sent_route: None,
             },
         );
         if let Err(error) = save_pending_deliveries(&self.paths.pending, &self.pending_deliveries) {

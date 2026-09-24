@@ -103,3 +103,8 @@ tests/integration/broker/evals-reports/
 # Per-harness runtime config written during eval/agent runs — contains live
 # workspace keys and agent tokens; must never be committed.
 /opencode.json
+
+# Relayflows v2 daemon runtime state (journals, sockets, locks)
+.relayflowd/
+.relayflowd-continuation/
+.relayflowd-phase1-signoff-repair/

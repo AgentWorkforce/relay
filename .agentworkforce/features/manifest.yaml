@@ -1,5 +1,5 @@
 version: '1.1'
-updated: '2026-07-30'
+updated: '2026-09-21'
 
 # Every user-facing feature in this repo, categorized and scored.
 #
@@ -99,6 +99,29 @@ categories:
         description: Requeue dead-letter messages through the normal delivery path
         location: packages/cli/src/cli/commands/core.ts
         verify_tier: 2
+
+      - id: delivery-backend-seam
+        name: Delivery Backend Seam
+        description: >-
+          Route-aware delivery seam the broker sends through: transport fallback
+          only before a write commits, no re-send of a send left in doubt, the
+          accepted route recorded and settled by its own rules, and no
+          acknowledgement reported that was not observed. The PTY injector is
+          its first backend.
+        location: crates/broker/src/delivery/, crates/broker/src/broker/delivery_verification.rs, crates/broker/src/lib.rs, crates/broker/src/pty_worker.rs, crates/broker/src/wrap.rs, crates/broker/src/runtime/, crates/broker/src/node_control.rs, crates/broker/src/node_delivery_probe.rs, crates/broker/src/worker.rs, crates/broker/tests/, packages/contracts/fixtures/event-fixtures.json, packages/harness-driver/src/protocol.ts, tests/benchmarks/harness.ts, tests/benchmarks/reliability.ts, tests/benchmarks/stress.ts, tests/e2e/unlaunched/, tests/fixtures/delivery-contract-evals.test.ts, tests/fixtures/targeted-feature-verification.test.ts, tests/integration/broker/cli-spawn.test.ts, tests/integration/broker/evals/delivery/observation-ledger.unit.test.ts, tests/integration/broker/infra-failures.test.ts, tests/integration/broker/stress.test.ts, tests/integration/broker/utils/assert-helpers.ts, tests/integration/broker/utils/obligation-conformance.ts, tests/parity/
+        verify_tier: 6
+
+      - id: codex-queue-delivery
+        name: Codex Queue Delivery
+        description: >-
+          Native Codex delivery over the public `codex queue` command. Relay
+          resolves the target thread id, carries a `relay-delivery-id` marker in
+          the message body because Codex assigns its own client id, and settles
+          only by observing that marker in the thread's own session file. A
+          capability probe decides selectability at send time, so an installed
+          Codex without `codex queue` falls back before any write.
+        location: crates/broker/src/delivery/codex_queue.rs, crates/broker/src/codex_thread.rs, crates/broker/src/listen_api.rs, crates/relay-pty/src/codex_session.rs, crates/broker/Cargo.toml, packages/cli/src/cli/agent-relay-mcp.ts, tests/e2e/unlaunched/, tests/fixtures/delivery-contract-evals.codex-queue.test.ts, tests/integration/broker/evals/runner.ts
+        verify_tier: 4
 
   agent-management:
     name: Agent Management

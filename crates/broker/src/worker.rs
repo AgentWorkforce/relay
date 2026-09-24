@@ -67,7 +67,7 @@ const WORKER_SPAWN_STABILITY_WINDOW: Duration = Duration::from_millis(250);
 /// up. Bounded so a wrapper stuck in uninterruptible sleep cannot stall the
 /// maintenance tick, which also drives delivery retries.
 const ORPHAN_REAP_TIMEOUT: Duration = Duration::from_secs(2);
-const WORKER_WRITE_QUEUE_CAPACITY: usize = 128;
+pub(crate) const WORKER_WRITE_QUEUE_CAPACITY: usize = 128;
 /// A full command queue means the worker is already backpressured. Do not
 /// retain another normal request indefinitely waiting for capacity.
 const WORKER_COMMAND_QUEUE_TIMEOUT: Duration = Duration::from_millis(250);
@@ -83,6 +83,39 @@ const WORKER_WRITE_TIMEOUT: Duration = Duration::from_secs(5);
 pub(crate) struct WorkerWriteCommand {
     frame: Vec<u8>,
     completion: Option<oneshot::Sender<std::result::Result<(), String>>>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
+pub(crate) enum WorkerDeliverError {
+    #[error("worker delivery failed before write: {0}")]
+    PreWrite(String),
+    #[error("worker delivery failed after possible write: {0}")]
+    Committed(String),
+}
+
+/// Prefix marking a command the writer drained from its queue WITHOUT ever
+/// attempting a write.
+///
+/// When one write fails, the writer completes every still-queued command with
+/// an error so no caller is left blocked behind a dead writer. Those commands
+/// provably never reached `stdin.write_all` — the queue holds up to
+/// `WORKER_WRITE_QUEUE_CAPACITY` of them — yet every completion error was
+/// mapped to `Committed`, i.e. "may have been written". A possible write is
+/// never retried and is not dead-lettered, so a single write fault silently
+/// discarded up to 127 messages that had not been sent at all.
+pub(crate) const UNWRITTEN_PREFIX: &str = "not-attempted: ";
+
+/// Classify a writer completion error by whether a write was ever attempted.
+///
+/// Extracted so the discrimination is testable on its own: the whole of this
+/// bug was one side of it being unreachable.
+pub(crate) fn classify_write_failure(reason: String) -> WorkerDeliverError {
+    match reason.strip_prefix(UNWRITTEN_PREFIX) {
+        // Provably never written: safe to retry, and must be dead-lettered on
+        // exhaustion rather than dropped.
+        Some(rest) => WorkerDeliverError::PreWrite(rest.to_string()),
+        None => WorkerDeliverError::Committed(reason),
+    }
 }
 
 /// Why a worker was reaped despite its wrapper process still being alive.
@@ -250,6 +283,9 @@ pub(crate) struct LiveFleetInventoryCandidate {
 
 pub(crate) struct WorkerRegistry {
     pub(crate) workers: HashMap<WorkerName, WorkerHandle>,
+    /// Existing Codex sessions attached by their own MCP process. These are
+    /// delivery targets, not broker-owned child processes.
+    native_codex_targets: HashMap<WorkerName, crate::delivery::codex_queue::CodexQueueTarget>,
     event_tx: mpsc::Sender<WorkerEvent>,
     worker_env: Vec<(String, String)>,
     worker_logs_dir: PathBuf,
@@ -326,8 +362,11 @@ pub(crate) fn spawn_worker_writer(
             // must not leave those callers blocked behind this dead writer.
             while let Ok(mut queued) = command_rx.try_recv() {
                 if let Some(completion) = queued.completion.take() {
+                    // Never handed to `stdin.write_all`: say so, so the caller
+                    // can retry and dead-letter instead of treating it as a
+                    // possible write.
                     let _ = completion.send(Err(format!(
-                        "worker command writer stopped after write failure: {error}"
+                        "{UNWRITTEN_PREFIX}worker command writer stopped after write failure: {error}"
                     )));
                 }
             }
@@ -362,6 +401,7 @@ impl WorkerRegistry {
 
         Self {
             workers: HashMap::new(),
+            native_codex_targets: HashMap::new(),
             event_tx,
             worker_env,
             worker_logs_dir,
@@ -405,7 +445,7 @@ impl WorkerRegistry {
     /// `pending_messages` comes from [`crate::runtime::pending_message_counts`];
     /// a worker missing from the map has nothing waiting.
     pub(crate) fn list(&self, pending_messages: &HashMap<WorkerName, usize>) -> Vec<Value> {
-        self.workers
+        let mut listed: Vec<Value> = self.workers
             .iter()
             .map(|(name, handle)| {
                 let native_harness = native_harness_metadata(&handle.spec);
@@ -435,7 +475,26 @@ impl WorkerRegistry {
                     "native_harness_capabilities": native_harness.and_then(|(_, capabilities)| capabilities),
                 })
             })
-            .collect()
+            .collect();
+        listed.extend(self.native_codex_targets.iter().map(|(name, target)| {
+            let ready = target.has_verified_rollout_path();
+            json!({
+                "name": name,
+                "runtime": "headless",
+                "provider": "codex",
+                "cli": "codex",
+                "sessionId": target.thread_id(),
+                "pid": Value::Null,
+                "workerPid": Value::Null,
+                "current_state": if ready { "attached" } else { "unverified" },
+                "ready": ready,
+                "pending_messages": pending_messages.get(name).copied().unwrap_or(0),
+                "runtime_kind": "native",
+                "native_harness_protocol_version": 1,
+                "native_harness_capabilities": {"delivery": "codex-queue", "ownsSession": false},
+            })
+        }));
+        listed
     }
 
     pub(crate) fn env_value(&self, key: &str) -> Option<&str> {
@@ -481,6 +540,53 @@ impl WorkerRegistry {
 
     pub(crate) fn has_worker(&self, name: &str) -> bool {
         self.workers.contains_key(name)
+    }
+
+    pub(crate) fn has_delivery_target(&self, name: &str) -> bool {
+        self.has_worker(name) || self.native_codex_targets.contains_key(name)
+    }
+
+    pub(crate) fn native_codex_target(
+        &self,
+        name: &str,
+    ) -> Option<&crate::delivery::codex_queue::CodexQueueTarget> {
+        self.native_codex_targets.get(name)
+    }
+
+    /// A delivery target relay can reach ONLY over a native route, because it
+    /// owns no PTY/headless worker process for that name.
+    ///
+    /// The manual-flush drain (`try_inject_pending_relay_message_once` →
+    /// [`WorkerRegistry::deliver`]) knows only broker-owned workers, so for one
+    /// of these it fails pre-write forever and the parked message can never
+    /// leave the head of the FIFO. Callers that decide whether a message may be
+    /// parked ask this first.
+    pub(crate) fn is_native_only_delivery_target(&self, name: &str) -> bool {
+        !self.has_worker(name) && self.native_codex_targets.contains_key(name)
+    }
+
+    pub(crate) fn attach_native_codex(
+        &mut self,
+        name: WorkerName,
+        target: crate::delivery::codex_queue::CodexQueueTarget,
+    ) -> Result<()> {
+        anyhow::ensure!(
+            !self.workers.contains_key(&name),
+            "agent '{name}' is already a broker-owned worker"
+        );
+        if let Some(existing) = self.native_codex_targets.get(&name) {
+            anyhow::ensure!(
+                existing.thread_id() == target.thread_id(),
+                "agent '{name}' is already attached to a different Codex thread"
+            );
+            return Ok(());
+        }
+        self.native_codex_targets.insert(name, target);
+        Ok(())
+    }
+
+    pub(crate) fn detach_native_codex(&mut self, name: &str) -> bool {
+        self.native_codex_targets.remove(name).is_some()
     }
 
     /// True when a worker is registered AND its child process is still alive.
@@ -690,9 +796,37 @@ impl WorkerRegistry {
 
                 let (resolved_cli, inline_cli_args) = parse_cli_command(&config.command)
                     .with_context(|| format!("invalid harness command '{}'", config.command))?;
-                let normalized_cli = normalize_cli_name(&resolved_cli);
                 let mut effective_args = inline_cli_args;
                 effective_args.extend(config.args.clone());
+                let normalized_cli = normalize_cli_name(&resolved_cli);
+                let cli_lower = normalized_cli.to_lowercase();
+                let mut codex_spawn_env = self.worker_env.clone();
+                codex_spawn_env.extend(harness_env.clone());
+                let mut codex_exact_queue_capable = false;
+                if cli_lower == "codex" {
+                    let queue_global_args =
+                        crate::delivery::codex_queue::codex_queue_global_args(&effective_args);
+                    if let Some(queue_cli) =
+                        crate::codex_session::resolve_queue_capable_codex_command(
+                            &resolved_cli,
+                            &queue_global_args,
+                            spec.cwd.as_deref().map(Path::new),
+                            &codex_spawn_env,
+                            false,
+                        )
+                        .await
+                    {
+                        codex_exact_queue_capable = true;
+                        if queue_cli != resolved_cli {
+                            tracing::warn!(
+                                worker = %spec.name,
+                                command = %queue_cli,
+                                "using alternate queue-capable Codex command for native delivery side-channel"
+                            );
+                            remember_codex_queue_command(&mut spec, queue_cli);
+                        }
+                    }
+                }
 
                 command.arg("pty");
                 command.arg("--agent-name").arg(&spec.name);
@@ -712,7 +846,6 @@ impl WorkerRegistry {
                 }
                 command.arg(&resolved_cli);
 
-                let cli_lower = normalized_cli.to_lowercase();
                 let is_claude = cli_lower == "claude" || cli_lower.starts_with("claude:");
                 let is_codex = cli_lower == "codex";
                 let is_gemini = cli_lower == "gemini";
@@ -748,7 +881,12 @@ impl WorkerRegistry {
                             | CodexSessionReference::AmbiguousVariadicImage
                             | CodexSessionReference::Unknown => {}
                             CodexSessionReference::None | CodexSessionReference::VariadicImage => {
-                                if codex_has_positional_arg(&effective_args) {
+                                if !codex_exact_queue_capable {
+                                    tracing::debug!(
+                                        worker = %spec.name,
+                                        "not pre-creating Codex session because the launched binary does not expose queue delivery"
+                                    );
+                                } else if codex_has_positional_arg(&effective_args) {
                                     tracing::debug!(
                                         worker = %spec.name,
                                         "not pre-creating Codex session because args contain a positional prompt or subcommand"
@@ -758,7 +896,7 @@ impl WorkerRegistry {
                                     match crate::codex_session::create_resumable_codex_thread(
                                         &resolved_cli,
                                         cwd,
-                                        &self.worker_env,
+                                        &codex_spawn_env,
                                         &effective_args,
                                         crate::util::version::broker_version(),
                                     )
@@ -947,9 +1085,10 @@ impl WorkerRegistry {
                     let cli = spec.cli.as_deref().context("pty runtime requires `cli`")?;
                     let (resolved_cli, inline_cli_args) = parse_cli_command(cli)
                         .with_context(|| format!("invalid CLI command '{cli}'"))?;
-                    let normalized_cli = normalize_cli_name(&resolved_cli);
                     let mut effective_args = inline_cli_args;
                     effective_args.extend(spec.args.clone());
+                    let normalized_cli = normalize_cli_name(&resolved_cli);
+                    let cli_lower = normalized_cli.to_lowercase();
 
                     command.arg("pty");
                     command.arg("--agent-name").arg(&spec.name);
@@ -969,12 +1108,28 @@ impl WorkerRegistry {
                     }
                     command.arg(&resolved_cli);
 
-                    let cli_lower = normalized_cli.to_lowercase();
                     let is_claude = cli_lower == "claude" || cli_lower.starts_with("claude:");
                     let is_codex = cli_lower == "codex";
                     let is_gemini = cli_lower == "gemini";
                     let is_grok = cli_lower == "grok";
                     let muse_flag = muse_yolo_flag(&cli_lower, &effective_args);
+                    let mut codex_spawn_env = self.worker_env.clone();
+                    codex_spawn_env.extend(harness_env.clone());
+                    let mut codex_exact_queue_capable = false;
+                    if cli_lower == "codex" {
+                        let queue_global_args =
+                            crate::delivery::codex_queue::codex_queue_global_args(&effective_args);
+                        codex_exact_queue_capable =
+                            crate::codex_session::resolve_queue_capable_codex_command(
+                                &resolved_cli,
+                                &queue_global_args,
+                                spec.cwd.as_deref().map(Path::new),
+                                &codex_spawn_env,
+                                false,
+                            )
+                            .await
+                            .is_some();
+                    }
                     if let Some(model) = apply_codex_model_arg_fallback(
                         &resolved_cli,
                         &cli_lower,
@@ -1006,7 +1161,12 @@ impl WorkerRegistry {
                                 | CodexSessionReference::Unknown => {}
                                 CodexSessionReference::None
                                 | CodexSessionReference::VariadicImage => {
-                                    if codex_has_positional_arg(&effective_args) {
+                                    if !codex_exact_queue_capable {
+                                        tracing::debug!(
+                                            worker = %spec.name,
+                                            "not pre-creating Codex session because the launched binary does not expose queue delivery"
+                                        );
+                                    } else if codex_has_positional_arg(&effective_args) {
                                         tracing::debug!(
                                             worker = %spec.name,
                                             "not pre-creating Codex session because args contain a positional prompt or subcommand"
@@ -1016,7 +1176,7 @@ impl WorkerRegistry {
                                         match crate::codex_session::create_resumable_codex_thread(
                                             &resolved_cli,
                                             cwd,
-                                            &self.worker_env,
+                                            &codex_spawn_env,
                                             &effective_args,
                                             crate::util::version::broker_version(),
                                         )
@@ -1500,13 +1660,26 @@ impl WorkerRegistry {
         request_id: Option<RequestId>,
         payload: Value,
     ) -> Result<()> {
+        self.send_to_worker_with_commit_boundary(name, msg_type, request_id, payload)
+            .await
+            .map_err(anyhow::Error::from)
+    }
+
+    pub(crate) async fn send_to_worker_with_commit_boundary(
+        &mut self,
+        name: &str,
+        msg_type: &str,
+        request_id: Option<RequestId>,
+        payload: Value,
+    ) -> std::result::Result<(), WorkerDeliverError> {
         let command_tx = self
             .workers
             .get(name)
-            .with_context(|| format!("unknown worker '{name}'"))?
+            .ok_or_else(|| WorkerDeliverError::PreWrite(format!("unknown worker '{name}'")))?
             .command_tx
             .clone();
-        let frame = encode_worker_frame(msg_type, request_id, payload)?;
+        let frame = encode_worker_frame(msg_type, request_id, payload)
+            .map_err(|error| WorkerDeliverError::PreWrite(error.to_string()))?;
         let (completion_tx, completion_rx) = oneshot::channel();
         timeout(
             WORKER_COMMAND_QUEUE_TIMEOUT,
@@ -1516,9 +1689,14 @@ impl WorkerRegistry {
             }),
         )
         .await
-        .map_err(|_| anyhow::anyhow!("worker command queue timed out for '{name}'"))?
-        .map_err(|_| anyhow::anyhow!("worker command writer is unavailable for '{name}'"))
-        .with_context(|| format!("failed writing frame to worker '{name}'"))?;
+        .map_err(|_| {
+            WorkerDeliverError::PreWrite(format!("worker command queue timed out for '{name}'"))
+        })?
+        .map_err(|_| {
+            WorkerDeliverError::PreWrite(format!(
+                "worker command writer is unavailable for '{name}'"
+            ))
+        })?;
         // Once a command enters the writer queue, do not return a timeout
         // before that sole writer resolves it. Reporting an accepted PTY
         // write as failed while it can still be emitted would invite callers
@@ -1528,11 +1706,11 @@ impl WorkerRegistry {
         completion_rx
             .await
             .map_err(|_| {
-                anyhow::anyhow!("worker command writer stopped before completing '{name}'")
-            })
-            .with_context(|| format!("failed writing frame to worker '{name}'"))?
-            .map_err(anyhow::Error::msg)
-            .with_context(|| format!("failed writing frame to worker '{name}'"))?;
+                WorkerDeliverError::Committed(format!(
+                    "worker command writer stopped before completing '{name}'"
+                ))
+            })?
+            .map_err(classify_write_failure)?;
 
         Ok(())
     }
@@ -1594,10 +1772,21 @@ impl WorkerRegistry {
     }
 
     pub(crate) async fn deliver(&mut self, name: &str, delivery: RelayDelivery) -> Result<()> {
-        anyhow::ensure!(
-            !self.initial_tasks.contains_key(name),
-            "worker initial task has not been queued"
-        );
+        self.deliver_with_commit_boundary(name, delivery)
+            .await
+            .map_err(anyhow::Error::from)
+    }
+
+    pub(crate) async fn deliver_with_commit_boundary(
+        &mut self,
+        name: &str,
+        delivery: RelayDelivery,
+    ) -> std::result::Result<(), WorkerDeliverError> {
+        if self.initial_tasks.contains_key(name) {
+            return Err(WorkerDeliverError::PreWrite(
+                "worker initial task has not been queued".to_string(),
+            ));
+        }
         tracing::debug!(
             target = "broker::deliver",
             worker = %name,
@@ -1606,7 +1795,9 @@ impl WorkerRegistry {
             event_id = %delivery.event_id,
             "delivering event to worker"
         );
-        self.send_to_worker(name, "deliver_relay", None, serde_json::to_value(delivery)?)
+        let payload = serde_json::to_value(delivery)
+            .map_err(|error| WorkerDeliverError::PreWrite(error.to_string()))?;
+        self.send_to_worker_with_commit_boundary(name, "deliver_relay", None, payload)
             .await
     }
 
@@ -1646,6 +1837,10 @@ impl WorkerRegistry {
         tracing::info!(target = "broker::release", name = %name, "releasing worker");
         self.initial_tasks.remove(name);
         self.argv_initial_tasks.remove(name);
+        if self.detach_native_codex(name) {
+            tracing::info!(target = "broker::release", name = %name, "native Codex target detached");
+            return Ok(());
+        }
         // An explicit release is terminal even when the process already exited
         // and disappeared from `workers`. Cancel any pending restart before
         // looking up the handle so maintenance cannot resurrect the released
@@ -2345,6 +2540,16 @@ fn codex_session_reference(args: &[String]) -> CodexSessionReference {
         index += 1;
     }
     CodexSessionReference::None
+}
+
+fn remember_codex_queue_command(spec: &mut AgentSpec, queue_command: String) {
+    let Some(ResolvedHarnessConfig::Pty(config)) = spec.harness_config.as_mut() else {
+        return;
+    };
+    config.metadata.get_or_insert_with(HashMap::new).insert(
+        "codex_queue_command".to_string(),
+        Value::String(queue_command),
+    );
 }
 
 fn codex_has_positional_arg(args: &[String]) -> bool {
@@ -3164,6 +3369,68 @@ sleep 30
     fn worker_registry_starts_empty() {
         let reg = make_registry(vec![]);
         assert!(reg.list(&HashMap::new()).is_empty());
+    }
+
+    #[test]
+    fn native_codex_attach_is_observable_and_release_detaches_it() {
+        let mut reg = make_registry(vec![]);
+        let rollout = tempfile::NamedTempFile::new().expect("rollout file");
+        let target = crate::delivery::codex_queue::CodexQueueTarget::new_for_test(
+            "codex",
+            Vec::new(),
+            None,
+            "thread-visible",
+            Some(rollout.path().to_path_buf()),
+        );
+
+        reg.attach_native_codex(WorkerName::from("native-visible"), target)
+            .expect("attach native Codex target");
+
+        let listed = reg.list(&HashMap::new());
+        let entry = listed
+            .iter()
+            .find(|entry| entry.get("name").and_then(Value::as_str) == Some("native-visible"))
+            .expect("attached target is listed");
+        assert_eq!(
+            entry.get("current_state").and_then(Value::as_str),
+            Some("attached")
+        );
+        assert_eq!(entry.get("ready").and_then(Value::as_bool), Some(true));
+
+        assert!(reg.detach_native_codex("native-visible"));
+        assert!(!reg.has_delivery_target("native-visible"));
+    }
+
+    #[test]
+    fn native_codex_attach_rejects_thread_reassignment() {
+        let mut reg = make_registry(vec![]);
+        let rollout = tempfile::NamedTempFile::new().expect("rollout file");
+        let first = crate::delivery::codex_queue::CodexQueueTarget::new_for_test(
+            "codex",
+            Vec::new(),
+            None,
+            "thread-one",
+            Some(rollout.path().to_path_buf()),
+        );
+        let second = crate::delivery::codex_queue::CodexQueueTarget::new_for_test(
+            "codex",
+            Vec::new(),
+            None,
+            "thread-two",
+            Some(rollout.path().to_path_buf()),
+        );
+
+        reg.attach_native_codex(WorkerName::from("native-visible"), first)
+            .expect("initial attach");
+        let error = reg
+            .attach_native_codex(WorkerName::from("native-visible"), second)
+            .expect_err("same name cannot be moved to a different thread")
+            .to_string();
+
+        assert!(
+            error.contains("already attached to a different Codex thread"),
+            "{error}"
+        );
     }
 
     #[cfg(unix)]
@@ -4598,6 +4865,40 @@ sleep 30
         registry.release("fenced-task").await.unwrap();
         assert!(
             matches!(event, WorkerEvent::Message { generation: observed, .. } if observed == generation)
+        );
+    }
+}
+
+#[cfg(test)]
+mod write_failure_classification_tests {
+    use super::{classify_write_failure, WorkerDeliverError, UNWRITTEN_PREFIX};
+
+    /// relay: F3 — a frame the writer never attempted must not be reported as
+    /// a possible write.
+    ///
+    /// When one write fails, the writer drains every still-queued command so no
+    /// caller blocks behind a dead writer. Those frames provably never reached
+    /// `stdin.write_all`, and the queue holds up to
+    /// `WORKER_WRITE_QUEUE_CAPACITY` of them. Mapping them all to `Committed`
+    /// made each one a possible write: never retried, and removed from the
+    /// pending map WITHOUT a dead letter. One write fault silently discarded
+    /// every message queued behind it.
+    #[test]
+    fn a_drained_command_is_pre_write_not_committed() {
+        let drained = classify_write_failure(format!(
+            "{UNWRITTEN_PREFIX}worker command writer stopped after write failure: broken pipe"
+        ));
+        assert!(
+            matches!(drained, WorkerDeliverError::PreWrite(_)),
+            "a command the writer never attempted was classified as a possible write, \
+             so it is dropped without a retry and without a dead letter"
+        );
+
+        let attempted = classify_write_failure("write timed out after 5s".to_string());
+        assert!(
+            matches!(attempted, WorkerDeliverError::Committed(_)),
+            "a write that was actually attempted must stay Committed: seam rule 1 \
+             forbids retrying it"
         );
     }
 }

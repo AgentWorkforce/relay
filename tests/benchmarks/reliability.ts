@@ -1,12 +1,24 @@
 /**
  * Reliability Benchmark
  *
- * Sends many messages and counts delivery_verified vs delivery_failed.
+ * Sends many messages and counts OBSERVED deliveries vs failures.
+ *
+ * Counting every `delivery_verified` as a success reported 100% reliability on
+ * messages that were all `timeout_fallback` — a delivery nobody saw land. The
+ * reliability number has to mean "observed", or it measures whether the broker
+ * emitted a frame rather than whether the message arrived.
  * Reports success rate.
  * Run: npx tsx tests/benchmarks/reliability.ts [--quick]
  */
 
-import { QUICK, startBroker, randomName, performance } from './harness.js';
+import {
+  QUICK,
+  startBroker,
+  randomName,
+  performance,
+  isObservedDelivery,
+  isUnobservedDelivery,
+} from './harness.js';
 import type { BrokerEvent } from '@agent-relay/sdk';
 
 const MESSAGE_COUNT = QUICK ? 50 : 500;
@@ -17,10 +29,12 @@ async function main(): Promise<void> {
   const receiver = randomName('reliability-recv');
 
   let verified = 0;
+  let unobserved = 0;
   let failed = 0;
 
   const unsub = client.onEvent((event: BrokerEvent) => {
-    if (event.kind === 'delivery_verified') verified++;
+    if (isObservedDelivery(event)) verified++;
+    else if (isUnobservedDelivery(event)) unobserved++;
     if (event.kind === 'delivery_failed') failed++;
   });
 
@@ -53,12 +67,15 @@ async function main(): Promise<void> {
     await new Promise((r) => setTimeout(r, 3000));
     const elapsed = performance.now() - start;
 
-    const total = verified + failed;
+    // An unobserved delivery settled without anyone seeing it land; it is not
+    // evidence of reliability and must not be excluded from the denominator.
+    const total = verified + unobserved + failed;
     const successRate = total > 0 ? (verified / total) * 100 : 0;
 
     console.log(`\n  Messages sent:      ${MESSAGE_COUNT}`);
     console.log(`  Delivery verified:  ${verified}`);
     console.log(`  Delivery failed:    ${failed}`);
+    console.log(`  Delivery unobserved:${String(unobserved).padStart(8)}`);
     console.log(`  Success rate:       ${successRate.toFixed(1)}%`);
     console.log(`  Total time:         ${elapsed.toFixed(0)} ms`);
     console.log('\nDONE');
