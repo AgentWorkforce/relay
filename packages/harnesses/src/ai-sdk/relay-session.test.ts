@@ -367,7 +367,16 @@ describe('RelayHarnessSession', () => {
     const receipts = resolve(queuePath, 'receipts');
     await writeFile(receipts, 'blocked');
     const events: string[] = [];
-    session.onEvent?.((event) => events.push(event.type));
+    let resolveAccepted!: () => void;
+    const accepted = new Promise<void>((resolveEvent) => {
+      resolveAccepted = resolveEvent;
+    });
+    session.onEvent?.((event) => {
+      events.push(event.type);
+      if (event.type === 'delivery.accepted' && event.deliveryId === 'retry-after-recovery') {
+        resolveAccepted();
+      }
+    });
 
     fixture.settle();
     await new Promise((resolveWait) => setTimeout(resolveWait, 0));
@@ -386,17 +395,13 @@ describe('RelayHarnessSession', () => {
     ).resolves.toMatchObject({ status: 'deferred' });
 
     await rm(receipts, { force: true });
-    const restarted = fakeHost();
-    const restartedSession = new RelayHarnessSession({
-      identity,
-      host: restarted.host as never,
-      deferredQueuePath: queuePath,
-    });
-    await restartedSession.restoreDeferredMessages();
-    expect(restarted.host.startTurn).toHaveBeenCalledWith(
+    await accepted;
+    expect(fixture.host.startTurn).toHaveBeenCalledWith(
       expect.stringContaining('"messageId":"retry-after-recovery"'),
       'retry-after-recovery'
     );
+    expect(events).toContain('delivery.accepted');
+    expect(events).not.toContain('delivery.failed');
   });
 
   it('publishes capabilities and releases once', async () => {

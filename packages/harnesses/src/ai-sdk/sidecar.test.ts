@@ -1,5 +1,5 @@
 import { createHash } from 'node:crypto';
-import { mkdtemp, stat } from 'node:fs/promises';
+import { mkdtemp, rm, stat, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { resolve } from 'node:path';
 import { PassThrough } from 'node:stream';
@@ -248,6 +248,74 @@ describe('AI SDK native harness sidecar', () => {
     expect(output.some((frame) => frame.type === 'worker_exited')).toBe(true);
     expect(fixture.session.doDestroy).toHaveBeenCalledTimes(1);
     await expect(stat(sessionStore)).rejects.toMatchObject({ code: 'ENOENT' });
+  });
+
+  it('reports worker exit when broker shutdown cleanup fails', async () => {
+    vi.stubEnv('RELAY_AGENT_TOKEN', 'at_live_native');
+    vi.stubEnv('RELAY_WORKSPACE_KEY', 'rk_live_native');
+    const fixture = fakeHarness();
+    vi.spyOn(aiSdkAdapterRegistry, 'require').mockReturnValue({
+      ...aiSdkAdapterRegistry.require('codex'),
+      createHarness: async () => fixture.harness,
+    });
+    const root = await mkdtemp(resolve(tmpdir(), 'relay-sidecar-shutdown-failure-'));
+    const runtimeRoot = resolve(root, 'runtime');
+    const sessionId = 'sidecar-session';
+    const sessionStore = resolve(
+      runtimeRoot,
+      'deferred-relay',
+      createHash('sha256').update(sessionId).digest('hex')
+    );
+    const input = new PassThrough();
+    const output: Array<Record<string, unknown>> = [];
+    const running = runAiSdkSidecar(
+      {
+        name: 'Worker',
+        harness: 'fake',
+        workspace: resolve(root, 'workspace'),
+        runtimeRoot,
+        sessionId,
+      },
+      { input, write: (line) => output.push(JSON.parse(line)) }
+    );
+    await waitFor(() => output.some((frame) => frame.type === 'agent_event'));
+    input.write(
+      `${JSON.stringify({
+        v: 2,
+        type: 'deliver_relay',
+        payload: {
+          delivery_id: 'active',
+          event_id: 'event-active',
+          from: 'Human',
+          target: 'Worker',
+          body: 'active',
+        },
+      })}\n`
+    );
+    await waitFor(() => hasDeliveryFrame(output, 'delivery_ack', 'active'));
+    input.write(
+      `${JSON.stringify({
+        v: 2,
+        type: 'deliver_relay',
+        payload: {
+          delivery_id: 'deferred',
+          event_id: 'event-deferred',
+          from: 'Human',
+          target: 'Worker',
+          body: 'later',
+          injection_mode: 'wait',
+        },
+      })}\n`
+    );
+    await waitFor(() => hasDeliveryFrame(output, 'delivery_queued', 'deferred'));
+    await rm(sessionStore, { recursive: true });
+    await writeFile(sessionStore, 'blocked');
+
+    input.write(`${JSON.stringify({ v: 2, type: 'shutdown_worker', payload: {} })}\n`);
+    await expect(running).rejects.toBeDefined();
+
+    expect(output).toContainEqual({ v: 2, type: 'worker_exited', payload: { code: 1 } });
+    expect(fixture.session.doDestroy).toHaveBeenCalledTimes(1);
   });
 
   it('speaks worker and native harness protocols with command deduplication', async () => {

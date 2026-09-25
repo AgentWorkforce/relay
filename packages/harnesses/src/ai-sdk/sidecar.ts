@@ -303,8 +303,13 @@ export async function runAiSdkSidecar(config: AiSdkSidecarConfig, io: AiSdkSidec
       continue;
     }
     if (frame.type === 'shutdown_worker') {
-      await relaySession.release('shutdown_worker');
-      await write({ v: 2, type: 'worker_exited', payload: { code: 0 } });
+      try {
+        await relaySession.release('shutdown_worker');
+        await write({ v: 2, type: 'worker_exited', payload: { code: 0 } });
+      } catch (error) {
+        await write({ v: 2, type: 'worker_exited', payload: { code: 1 } });
+        throw error;
+      }
       break;
     }
     if (!isCommandFrame(frame)) continue;

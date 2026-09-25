@@ -332,6 +332,8 @@ export class RelayHarnessSession implements AgentSession {
   #releaseCompleted = false;
   #hostDestroyed = false;
   #releaseEmitted = false;
+  #drainRetry?: ReturnType<typeof setTimeout>;
+  #drainRetryDelayMs = 100;
   #activity: AgentActivityState = createAgentActivityState();
 
   constructor(options: RelayHarnessSessionOptions) {
@@ -400,6 +402,23 @@ export class RelayHarnessSession implements AgentSession {
       this.#receipts.delete(oldest);
     }
     return receipt;
+  }
+
+  #scheduleDrainRetry(): void {
+    if (this.#released || this.#drainRetry) return;
+    const delay = this.#drainRetryDelayMs;
+    this.#drainRetryDelayMs = Math.min(delay * 2, 5_000);
+    this.#drainRetry = setTimeout(() => {
+      this.#drainRetry = undefined;
+      void this.#serialized(() => this.#drain()).catch(() => undefined);
+    }, delay);
+    this.#drainRetry.unref?.();
+  }
+
+  #resetDrainRetry(): void {
+    if (this.#drainRetry) clearTimeout(this.#drainRetry);
+    this.#drainRetry = undefined;
+    this.#drainRetryDelayMs = 100;
   }
 
   #durableReceipt(entry: DurableDeliveryEntry): MessageReceipt {
@@ -623,11 +642,13 @@ export class RelayHarnessSession implements AgentSession {
       // The durable queued entry is still authoritative. Without a durable
       // in-doubt marker it is unsafe to publish a terminal failure: a restart
       // could restore and accept the queued entry. Keep it live and retry the
-      // transition after a later idle boundary instead.
+      // transition with bounded backoff or when the broker redelivers it.
       this.#queue.unshift(queued);
       this.#remember(queued.key, this.#durableReceipt(queued));
+      this.#scheduleDrainRetry();
       return;
     }
+    this.#resetDrainRetry();
     let receipt: MessageReceipt;
     try {
       receipt = await this.#accept(queued.message, queued.context);
@@ -674,9 +695,16 @@ export class RelayHarnessSession implements AgentSession {
       }
       const key = context.idempotencyKey ?? message.id ?? context.id;
       const previous = this.#receipts.get(key);
-      if (previous) return previous;
+      if (previous) {
+        if (previous.status === 'deferred' && !this.host.hasActiveTurn) await this.#drain();
+        return this.#receipts.get(key) ?? previous;
+      }
       const active = this.#queue.find((entry) => entry.key === key);
-      if (active) return this.#remember(key, this.#durableReceipt(active));
+      if (active) {
+        const receipt = this.#remember(key, this.#durableReceipt(active));
+        if (!this.host.hasActiveTurn) await this.#drain();
+        return this.#receipts.get(key) ?? receipt;
+      }
       const durable = await this.#loadEntry(key);
       if (durable) return this.#remember(key, this.#durableReceipt(durable));
 
@@ -749,6 +777,7 @@ export class RelayHarnessSession implements AgentSession {
     return this.#serialized(async () => {
       if (this.#releaseCompleted) return;
       this.#released = true;
+      this.#resetDrainRetry();
       const queued = this.#queue.splice(0);
       let persistenceError: unknown;
       for (const entry of queued) {
