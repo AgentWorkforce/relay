@@ -1,5 +1,6 @@
 import { readFileSync } from 'node:fs';
 import path from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { DatabaseSync } from 'node:sqlite';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import {
@@ -31,7 +32,7 @@ const pre = preflight();
 const SANDBOX_UUID = '0b7c2f4e-5d1a-4c3b-9e8f-7a6b5c4d3e2f';
 const SANDBOX_NODE_NAME = `fleet-sandbox-${SANDBOX_UUID}`; // matches nodes/sandbox.ts
 const SANDBOX_NODE_ID = 'node_fleet_sandbox';
-const SANDBOX_NODE_FILE = path.join(path.dirname(new URL(import.meta.url).pathname), 'nodes', 'sandbox.ts');
+const SANDBOX_NODE_FILE = fileURLToPath(new URL('./nodes/sandbox.ts', import.meta.url));
 const AGENT = 'sbx-worker';
 const ADDRESS = `${AGENT}@${SANDBOX_NODE_NAME}`;
 
@@ -185,7 +186,8 @@ describe.skipIf(!pre.ok)('agent@machine addressing to a Cloud-shaped sandbox nod
     const retry = await sendTo(ADDRESS, 'once', key);
     expect(first.status).toBe(201);
     expect(retry.status).toBe(201);
-    expect(retry.body.data.id).toBe(first.body.data.id);
+    expect(first.body.data.message.id).toEqual(expect.any(String));
+    expect(retry.body.data.message.id).toBe(first.body.data.message.id);
   });
 
   it('rejects addresses that do not name where the agent runs', async () => {
