@@ -804,6 +804,11 @@ impl BrokerRuntime {
                                 name.as_str(),
                                 registration_metadata,
                             );
+                            super::fleet::spawn_session_metadata_publish(
+                                relaycast_http,
+                                name.as_str(),
+                                &effective_spec,
+                            );
                         }
                         if owns_identity {
                             if let Some(worker) = workers.workers.get(&name) {

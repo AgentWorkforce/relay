@@ -817,13 +817,52 @@ impl RelaycastHttpClient {
         if declared_metadata.is_empty() {
             return Ok(());
         }
+        self.merge_agent_metadata(name, declared_metadata).await
+    }
+
+    /// Publish the worker's provider session identity (`session_id`, and
+    /// `session_kind` when known) onto its already-registered agent, merged
+    /// over the metadata the engine already holds.
+    ///
+    /// `session_id` is the provider's own session id — the Claude Code session
+    /// UUID or the Codex thread id — which is also the id a recorded session
+    /// carries in relay history. Publishing it lets a dashboard showing that
+    /// session find the fleet worker's `@name` and message it. The keys match
+    /// the ones desktop session agents already publish.
+    ///
+    /// Best-effort like [`Self::publish_declared_metadata`]: callers log a
+    /// failure rather than failing the spawn.
+    pub async fn publish_session_metadata(
+        &self,
+        agent_name: &str,
+        session_id: &str,
+        session_kind: Option<&str>,
+    ) -> std::result::Result<(), RelaycastRegistrationError> {
+        let name = agent_name.trim();
+        if name.is_empty() {
+            return Err(RelaycastRegistrationError::InvalidAgentName);
+        }
+        let metadata = session_metadata_map(session_id, session_kind);
+        if metadata.is_empty() {
+            return Ok(());
+        }
+        self.merge_agent_metadata(name, metadata).await
+    }
+
+    /// `PATCH /v1/agents/:name` with only `metadata`, which the engine merges
+    /// over the record's existing metadata.
+    async fn merge_agent_metadata(
+        &self,
+        name: &str,
+        metadata: serde_json::Map<String, Value>,
+    ) -> std::result::Result<(), RelaycastRegistrationError> {
         let relay = self
             .relay_client()
             .ok_or_else(|| RelaycastRegistrationError::Transport {
                 agent_name: name.to_string(),
                 detail: "SDK relay client not initialized".to_string(),
             })?;
-        // Send ONLY the declared keys. `PATCH /v1/agents/:name` merges them over
+        // Send ONLY the given keys. `PATCH /v1/agents/:name` merges them over
         // the record's existing metadata server-side — verified in the engine at
         // both the ref fleet-e2e pins (v7.0.0, eb7563ff) and relaycast `main`
         // (`packages/engine/src/routes/agent.ts`:
@@ -839,7 +878,7 @@ impl RelaycastHttpClient {
             .update_agent(
                 name,
                 UpdateAgentRequest {
-                    metadata: Some(declared_metadata),
+                    metadata: Some(metadata),
                     ..Default::default()
                 },
             )
@@ -2567,6 +2606,29 @@ fn declared_metadata_map(declared: &AgentRegistrationMetadata) -> serde_json::Ma
     metadata
 }
 
+/// `session_id` (and `session_kind` when known), trimmed, with blanks omitted.
+///
+/// A blank session id yields an empty map: there is nothing to link, and an
+/// empty value would overwrite a session id the engine already holds.
+fn session_metadata_map(
+    session_id: &str,
+    session_kind: Option<&str>,
+) -> serde_json::Map<String, Value> {
+    let mut metadata = serde_json::Map::new();
+    let session_id = session_id.trim();
+    if session_id.is_empty() {
+        return metadata;
+    }
+    metadata.insert(
+        "session_id".to_string(),
+        Value::String(session_id.to_string()),
+    );
+    if let Some(kind) = session_kind.map(str::trim).filter(|kind| !kind.is_empty()) {
+        metadata.insert("session_kind".to_string(), Value::String(kind.to_string()));
+    }
+    metadata
+}
+
 /// Convert a terminal SDK error into the typed registration error, keeping
 /// the two facts the broker's retry loops need from the SDK layer: the
 /// server's `Retry-After` (so the broker paces on the same cadence the SDK
@@ -3705,6 +3767,101 @@ mod tests {
             .expect("an empty declaration is a no-op, not an error");
 
         any_read.assert_hits(0);
+        any_write.assert_hits(0);
+    }
+
+    /// The provider session id rides a merge-only PATCH carrying exactly
+    /// `session_id` and `session_kind`, so the engine-owned `fleet` placement
+    /// record and any declared keys survive untouched.
+    #[tokio::test]
+    async fn publish_session_metadata_sends_only_session_keys() {
+        let server = MockServer::start();
+        let read = server.mock(|when, then| {
+            when.method(GET).path("/v1/agents/worker-a");
+            then.status(500);
+        });
+        let update = server.mock(|when, then| {
+            when.method(PATCH)
+                .path("/v1/agents/worker-a")
+                .json_body(json!({
+                    "metadata": {
+                        "session_id": "0f5c8d3e-1b2a-4c5d-9e8f-7a6b5c4d3e2f",
+                        "session_kind": "claude-terminal"
+                    }
+                }));
+            then.status(200).json_body(json!({
+                "ok": true,
+                "data": {
+                    "id": "agent_worker_a",
+                    "name": "worker-a",
+                    "type": "agent",
+                    "status": "online",
+                    "persona": null,
+                    "metadata": {}
+                }
+            }));
+        });
+
+        let client = seeded_http_client(&server.base_url());
+        client
+            .publish_session_metadata(
+                "worker-a",
+                " 0f5c8d3e-1b2a-4c5d-9e8f-7a6b5c4d3e2f ",
+                Some("claude-terminal"),
+            )
+            .await
+            .expect("publishing session metadata should succeed");
+
+        read.assert_hits(0);
+        update.assert_hits(1);
+    }
+
+    /// Without a known kind only `session_id` is sent; a blank kind must not
+    /// overwrite one the engine already holds with an empty string.
+    #[tokio::test]
+    async fn publish_session_metadata_omits_blank_kind() {
+        let server = MockServer::start();
+        let update = server.mock(|when, then| {
+            when.method(PATCH)
+                .path("/v1/agents/worker-a")
+                .json_body(json!({ "metadata": { "session_id": "thread-123" } }));
+            then.status(200).json_body(json!({
+                "ok": true,
+                "data": {
+                    "id": "agent_worker_a",
+                    "name": "worker-a",
+                    "type": "agent",
+                    "status": "online",
+                    "persona": null,
+                    "metadata": {}
+                }
+            }));
+        });
+
+        let client = seeded_http_client(&server.base_url());
+        client
+            .publish_session_metadata("worker-a", "thread-123", Some("  "))
+            .await
+            .expect("publishing session metadata should succeed");
+
+        update.assert_hits(1);
+    }
+
+    /// Must-not-fire: a blank session id links nothing, so no request is made.
+    #[tokio::test]
+    async fn publish_session_metadata_makes_no_request_for_blank_session_id() {
+        let server = MockServer::start();
+        let any_write = server.mock(|when, then| {
+            when.method(PATCH).path("/v1/agents/worker-a");
+            then.status(500);
+        });
+
+        let client = seeded_http_client(&server.base_url());
+        client
+            .publish_session_metadata("worker-a", "   ", Some("codex"))
+            .await
+            .expect("a blank session id is a no-op, not an error");
+
         any_write.assert_hits(0);
     }
 

@@ -2294,6 +2294,84 @@ pub(super) fn spawn_declared_metadata_publish(
     });
 }
 
+/// The provider session a spawned worker runs, as published on its Relaycast
+/// agent: `(session_id, session_kind)`.
+///
+/// `session_id` is the id the worker's CLI records its session under — the
+/// Claude Code session UUID or the Codex thread id — resolved by
+/// `WorkerRegistry::spawn` before the process starts (and reported as
+/// `sessionId` by `GET /api/spawned`). `None` when the spawn has no session id,
+/// e.g. a CLI the broker cannot pre-assign one for.
+///
+/// `session_kind` names the CLI family, using the same values desktop session
+/// agents publish where they overlap: `claude-terminal` for an interactive
+/// (PTY) Claude Code session, `codex` for Codex. Other CLIs report their
+/// normalized CLI name (headless Claude reports `claude`).
+pub(super) fn worker_session_metadata(spec: &AgentSpec) -> Option<(String, Option<String>)> {
+    let session_id = spec
+        .session_id
+        .as_deref()
+        .map(str::trim)
+        .filter(|id| !id.is_empty())?
+        .to_string();
+    let cli = spec
+        .cli
+        .as_deref()
+        .and_then(|cli| cli.split_whitespace().next())
+        .map(|cli| crate::cli::command_parse::normalize_cli_name(cli).to_lowercase())
+        .or_else(|| {
+            spec.provider
+                .as_ref()
+                .map(|provider| super::headless::headless_provider_cli_name(provider).to_string())
+        });
+    let kind = cli.map(|cli| {
+        let family = cli.split(':').next().unwrap_or(&cli).to_string();
+        match family.as_str() {
+            "claude" if spec.runtime == AgentRuntime::Pty => "claude-terminal".to_string(),
+            _ => family,
+        }
+    });
+    Some((session_id, kind))
+}
+
+/// Publish a freshly spawned (or respawned) worker's provider session id onto
+/// its Relaycast agent, on its own task.
+///
+/// Called after every successful spawn of a worker that holds a hosted
+/// identity, so a respawn that resumes or starts a different session updates
+/// the published id. Detached and best-effort for the same reasons as
+/// [`spawn_declared_metadata_publish`]: a failure is logged, never fatal.
+pub(super) fn spawn_session_metadata_publish(
+    relaycast_http: &RelaycastHttpClient,
+    name: &str,
+    spec: &AgentSpec,
+) {
+    let Some((session_id, session_kind)) = worker_session_metadata(spec) else {
+        return;
+    };
+    let http = relaycast_http.clone();
+    let agent = name.to_string();
+    tokio::spawn(async move {
+        match http
+            .publish_session_metadata(&agent, &session_id, session_kind.as_deref())
+            .await
+        {
+            Ok(()) => tracing::debug!(
+                worker = %agent,
+                session_id = %session_id,
+                "published provider session id for spawned agent"
+            ),
+            Err(error) => tracing::error!(
+                worker = %agent,
+                session_id = %session_id,
+                error = %error,
+                "failed to publish provider session id; the agent is registered and running \
+                 but its session cannot be linked to it"
+            ),
+        }
+    });
+}
+
 /// Bind an agent to this node by sending node-control `agent.register` and
 /// awaiting the engine reply with the minted agent token. This is the single
 /// "register agent via node" step both the `/api/spawn` path and the node
@@ -4650,6 +4728,53 @@ mod tests {
 
         assert!(error.contains("agent_token_identity_mismatch"));
         assert_eq!(delivery_book.active_agent_id("worker-a"), None);
+    }
+
+    #[test]
+    fn worker_session_metadata_reports_provider_session_and_kind() {
+        let mut spec = test_agent_spec(Some(" thread-123 "), None);
+        assert_eq!(
+            worker_session_metadata(&spec),
+            Some(("thread-123".to_string(), Some("codex".to_string())))
+        );
+
+        spec.cli = Some("/usr/local/bin/claude --model opus".to_string());
+        assert_eq!(
+            worker_session_metadata(&spec),
+            Some((
+                "thread-123".to_string(),
+                Some("claude-terminal".to_string())
+            ))
+        );
+
+        spec.cli = Some("claude:opus".to_string());
+        spec.runtime = AgentRuntime::Headless;
+        assert_eq!(
+            worker_session_metadata(&spec),
+            Some(("thread-123".to_string(), Some("claude".to_string())))
+        );
+
+        spec.cli = None;
+        spec.provider = Some(ProtocolHeadlessProvider::Opencode);
+        assert_eq!(
+            worker_session_metadata(&spec),
+            Some(("thread-123".to_string(), Some("opencode".to_string())))
+        );
+
+        spec.provider = None;
+        assert_eq!(
+            worker_session_metadata(&spec),
+            Some(("thread-123".to_string(), None))
+        );
+    }
+
+    #[test]
+    fn worker_session_metadata_is_none_without_a_session_id() {
+        assert_eq!(worker_session_metadata(&test_agent_spec(None, None)), None);
+        assert_eq!(
+            worker_session_metadata(&test_agent_spec(Some("   "), None)),
+            None
+        );
     }
 
     #[tokio::test]

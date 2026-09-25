@@ -7946,6 +7946,18 @@ async fn assert_http_spawn_metadata_publication(supplied_token: bool, valid_cwd:
         then.status(200)
             .json_body(json!({"ok":true,"data":identity}));
     });
+    // The provider session id rides its own merge-only PATCH once the spawn
+    // has resolved it, so the dashboard can link the recorded session to this
+    // worker without disturbing the declared keys or the `fleet` record.
+    let session_metadata = server.mock(|when, then| {
+        when.method(PATCH)
+            .path("/v1/agents/metadata-worker")
+            .json_body(json!({"metadata":{
+                "session_id":"metadata-session", "session_kind":"cat"
+            }}));
+        then.status(200)
+            .json_body(json!({"ok":true,"data":identity}));
+    });
     let unexpected_cleanup = server.mock(|when, then| {
         when.method(POST).path("/v1/agents/release");
         then.status(500);
@@ -8015,20 +8027,22 @@ async fn assert_http_spawn_metadata_publication(supplied_token: bool, valid_cwd:
     if valid_cwd {
         assert_eq!(response.unwrap()["success"], true);
         let published = tokio::time::timeout(Duration::from_secs(2), async {
-            while metadata.hits() == 0 {
+            while metadata.hits() == 0 || session_metadata.hits() == 0 {
                 tokio::task::yield_now().await;
             }
         })
         .await;
         assert!(
             published.is_ok(),
-            "successful spawn did not publish declared metadata"
+            "successful spawn did not publish declared and session metadata"
         );
         metadata.assert_hits(1);
+        session_metadata.assert_hits(1);
     } else {
         assert!(response.unwrap_err().contains("cwd"));
         tokio::time::sleep(Duration::from_millis(100)).await;
         metadata.assert_hits(0);
+        session_metadata.assert_hits(0);
     }
     create.assert_hits(usize::from(!supplied_token));
     bind.assert_hits(usize::from(!supplied_token));
