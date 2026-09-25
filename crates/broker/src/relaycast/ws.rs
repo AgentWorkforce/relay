@@ -1,6 +1,6 @@
 use std::{
     collections::{BTreeSet, HashMap},
-    sync::atomic::{AtomicU32, Ordering},
+    sync::atomic::{AtomicU32, AtomicU64, Ordering},
     sync::{Arc, Mutex as StdMutex},
     time::{Duration, Instant},
 };
@@ -64,8 +64,59 @@ pub struct RelaycastHttpClient {
     /// cache-miss registrations from both taking the name over — the second
     /// response would invalidate the token handed to the first caller.
     takeover_locks: Arc<StdMutex<HashMap<String, Arc<tokio::sync::Mutex<()>>>>>,
+    /// One fence per agent name, ordering this broker's metadata PATCHes for
+    /// that name. See [`MetadataPublishFence`].
+    metadata_fences: Arc<StdMutex<HashMap<String, Arc<MetadataPublishFence>>>>,
     pub agent_name: String,
     pub default_cli: String,
+}
+
+/// Orders the metadata PATCHes this broker sends for one agent name.
+///
+/// The engine merges `PATCH /v1/agents/:name` by reading the stored metadata
+/// and writing the combined object back, with no per-agent lock or version
+/// check. Two of our PATCHes in flight at once for the same name (declared
+/// keys and the session id, both detached from the spawn) can therefore each
+/// read the pre-update record and the later write drops the other's keys.
+/// `lock` is held across every metadata PATCH for the name, so they land one
+/// after another.
+///
+/// `latest_session` fences session-id publishes to the most recent spawn of
+/// the name: every spawn claims a new sequence number before its publish task
+/// starts, and a publish whose number is no longer the latest is dropped, so a
+/// released worker's late publish cannot label a replacement that reuses its
+/// name with the old session.
+#[derive(Default)]
+struct MetadataPublishFence {
+    lock: tokio::sync::Mutex<()>,
+    latest_session: AtomicU64,
+}
+
+/// A spawn's claim on publishing its session id for an agent name, taken
+/// synchronously at spawn time by [`RelaycastHttpClient::claim_session_metadata`].
+/// A later claim for the same name supersedes it.
+pub struct SessionMetadataClaim {
+    agent_name: String,
+    fence: Arc<MetadataPublishFence>,
+    sequence: u64,
+}
+
+impl SessionMetadataClaim {
+    pub fn agent_name(&self) -> &str {
+        &self.agent_name
+    }
+}
+
+/// What [`RelaycastHttpClient::publish_session_metadata`] did.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SessionMetadataPublish {
+    /// The PATCH was sent and accepted.
+    Published,
+    /// The session id was blank; nothing was sent.
+    NothingToPublish,
+    /// A later spawn of the same name claimed the session metadata before this
+    /// publish ran; nothing was sent.
+    Superseded,
 }
 
 pub type RelaycastRegistrationError = AgentRegistrationError;
@@ -203,6 +254,7 @@ impl RelaycastHttpClient {
             relay: Arc::new(None),
             registration: Arc::new(None),
             takeover_locks: Arc::new(StdMutex::new(HashMap::new())),
+            metadata_fences: Arc::new(StdMutex::new(HashMap::new())),
             agent_name: agent_name.into(),
             default_cli: String::new(),
         }
@@ -229,6 +281,7 @@ impl RelaycastHttpClient {
             relay,
             registration,
             takeover_locks: Arc::new(StdMutex::new(HashMap::new())),
+            metadata_fences: Arc::new(StdMutex::new(HashMap::new())),
             agent_name: agent_name.into(),
             default_cli,
         }
@@ -817,13 +870,103 @@ impl RelaycastHttpClient {
         if declared_metadata.is_empty() {
             return Ok(());
         }
+        self.merge_agent_metadata(name, declared_metadata).await
+    }
+
+    /// Claim the right to publish a spawn's session id for `agent_name`.
+    ///
+    /// Call synchronously when the spawn succeeds, before detaching the
+    /// publish, so claims follow spawn order. The claim supersedes every
+    /// earlier one for the name, including a still-pending publish from a
+    /// released worker whose name this spawn reuses.
+    pub fn claim_session_metadata(
+        &self,
+        agent_name: &str,
+    ) -> std::result::Result<SessionMetadataClaim, RelaycastRegistrationError> {
+        let name = agent_name.trim();
+        if name.is_empty() {
+            return Err(RelaycastRegistrationError::InvalidAgentName);
+        }
+        let fence = self.metadata_fence(name);
+        let sequence = fence.latest_session.fetch_add(1, Ordering::SeqCst) + 1;
+        Ok(SessionMetadataClaim {
+            agent_name: name.to_string(),
+            fence,
+            sequence,
+        })
+    }
+
+    /// Publish the worker's provider session identity (`session_id`, and
+    /// `session_kind` when known) onto its already-registered agent, merged
+    /// over the metadata the engine already holds.
+    ///
+    /// `session_id` is the provider's own session id — the Claude Code session
+    /// UUID or the Codex thread id — which is also the id a recorded session
+    /// carries in relay history. Publishing it lets a dashboard showing that
+    /// session find the fleet worker's `@name` and message it. The keys match
+    /// the ones desktop session agents already publish.
+    ///
+    /// Nothing is sent when a later spawn of the same name has claimed the
+    /// session metadata since `claim` was taken; the check runs under the
+    /// name's metadata lock, so a superseded publish can never land after the
+    /// newer one.
+    ///
+    /// Best-effort like [`Self::publish_declared_metadata`]: callers log a
+    /// failure rather than failing the spawn.
+    pub async fn publish_session_metadata(
+        &self,
+        claim: &SessionMetadataClaim,
+        session_id: &str,
+        session_kind: Option<&str>,
+    ) -> std::result::Result<SessionMetadataPublish, RelaycastRegistrationError> {
+        let metadata = session_metadata_map(session_id, session_kind);
+        if metadata.is_empty() {
+            return Ok(SessionMetadataPublish::NothingToPublish);
+        }
+        let _guard = claim.fence.lock.lock().await;
+        if claim.fence.latest_session.load(Ordering::SeqCst) != claim.sequence {
+            return Ok(SessionMetadataPublish::Superseded);
+        }
+        self.patch_agent_metadata(&claim.agent_name, metadata)
+            .await?;
+        Ok(SessionMetadataPublish::Published)
+    }
+
+    fn metadata_fence(&self, name: &str) -> Arc<MetadataPublishFence> {
+        let mut fences = self
+            .metadata_fences
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        Arc::clone(fences.entry(name.to_string()).or_default())
+    }
+
+    /// [`Self::patch_agent_metadata`] under the name's metadata lock, so it
+    /// never overlaps another metadata PATCH this broker sends for the name.
+    async fn merge_agent_metadata(
+        &self,
+        name: &str,
+        metadata: serde_json::Map<String, Value>,
+    ) -> std::result::Result<(), RelaycastRegistrationError> {
+        let fence = self.metadata_fence(name);
+        let _guard = fence.lock.lock().await;
+        self.patch_agent_metadata(name, metadata).await
+    }
+
+    /// `PATCH /v1/agents/:name` with only `metadata`, which the engine merges
+    /// over the record's existing metadata. Callers hold the name's metadata
+    /// lock (see [`MetadataPublishFence`]).
+    async fn patch_agent_metadata(
+        &self,
+        name: &str,
+        metadata: serde_json::Map<String, Value>,
+    ) -> std::result::Result<(), RelaycastRegistrationError> {
         let relay = self
             .relay_client()
             .ok_or_else(|| RelaycastRegistrationError::Transport {
                 agent_name: name.to_string(),
                 detail: "SDK relay client not initialized".to_string(),
             })?;
-        // Send ONLY the declared keys. `PATCH /v1/agents/:name` merges them over
+        // Send ONLY the given keys. `PATCH /v1/agents/:name` merges them over
         // the record's existing metadata server-side — verified in the engine at
         // both the ref fleet-e2e pins (v7.0.0, eb7563ff) and relaycast `main`
         // (`packages/engine/src/routes/agent.ts`:
@@ -839,7 +982,7 @@ impl RelaycastHttpClient {
             .update_agent(
                 name,
                 UpdateAgentRequest {
-                    metadata: Some(declared_metadata),
+                    metadata: Some(metadata),
                     ..Default::default()
                 },
             )
@@ -2567,6 +2710,29 @@ fn declared_metadata_map(declared: &AgentRegistrationMetadata) -> serde_json::Ma
     metadata
 }
 
+/// `session_id` (and `session_kind` when known), trimmed, with blanks omitted.
+///
+/// A blank session id yields an empty map: there is nothing to link, and an
+/// empty value would overwrite a session id the engine already holds.
+fn session_metadata_map(
+    session_id: &str,
+    session_kind: Option<&str>,
+) -> serde_json::Map<String, Value> {
+    let mut metadata = serde_json::Map::new();
+    let session_id = session_id.trim();
+    if session_id.is_empty() {
+        return metadata;
+    }
+    metadata.insert(
+        "session_id".to_string(),
+        Value::String(session_id.to_string()),
+    );
+    if let Some(kind) = session_kind.map(str::trim).filter(|kind| !kind.is_empty()) {
+        metadata.insert("session_kind".to_string(), Value::String(kind.to_string()));
+    }
+    metadata
+}
+
 /// Convert a terminal SDK error into the typed registration error, keeping
 /// the two facts the broker's retry loops need from the SDK layer: the
 /// server's `Retry-After` (so the broker paces on the same cadence the SDK
@@ -2658,7 +2824,7 @@ mod tests {
         retry_workspace_busy_reconcile, with_registration_attempts, workspace_busy_reconcile_delay,
         workspace_busy_retry_allowed, ImpersonationAwareRegistrationError, MessageInjectionMode,
         RecipientReachability, RegRetryOutcome, RegisterIntent, RelaycastHttpClient,
-        RelaycastRegistrationError, MAX_AGENT_REGISTRATION_ELAPSED,
+        RelaycastRegistrationError, SessionMetadataPublish, MAX_AGENT_REGISTRATION_ELAPSED,
         MAX_AGENT_REGISTRATION_OUTER_TIMEOUT, MAX_AGENT_REGISTRATION_RETRY_DELAY,
         WORKSPACE_BUSY_ACTION_SAFETY_CAP, WORKSPACE_BUSY_CREATE_ONLY_SAFETY_CAP,
         WORKSPACE_BUSY_RECONCILE_BUDGET, WORKSPACE_BUSY_RECONCILE_SAFETY_CAP,
@@ -3706,6 +3872,236 @@ mod tests {
 
         any_read.assert_hits(0);
         any_write.assert_hits(0);
+    }
+
+    /// The provider session id rides a merge-only PATCH carrying exactly
+    /// `session_id` and `session_kind`, so the engine-owned `fleet` placement
+    /// record and any declared keys survive untouched.
+    #[tokio::test]
+    async fn publish_session_metadata_sends_only_session_keys() {
+        let server = MockServer::start();
+        let read = server.mock(|when, then| {
+            when.method(GET).path("/v1/agents/worker-a");
+            then.status(500);
+        });
+        let update = server.mock(|when, then| {
+            when.method(PATCH)
+                .path("/v1/agents/worker-a")
+                .json_body(json!({
+                    "metadata": {
+                        "session_id": "0f5c8d3e-1b2a-4c5d-9e8f-7a6b5c4d3e2f",
+                        "session_kind": "claude-terminal"
+                    }
+                }));
+            then.status(200).json_body(json!({
+                "ok": true,
+                "data": {
+                    "id": "agent_worker_a",
+                    "name": "worker-a",
+                    "type": "agent",
+                    "status": "online",
+                    "persona": null,
+                    "metadata": {}
+                }
+            }));
+        });
+
+        let client = seeded_http_client(&server.base_url());
+        let claim = client.claim_session_metadata("worker-a").unwrap();
+        let outcome = client
+            .publish_session_metadata(
+                &claim,
+                " 0f5c8d3e-1b2a-4c5d-9e8f-7a6b5c4d3e2f ",
+                Some("claude-terminal"),
+            )
+            .await
+            .expect("publishing session metadata should succeed");
+
+        assert_eq!(outcome, SessionMetadataPublish::Published);
+        read.assert_hits(0);
+        update.assert_hits(1);
+    }
+
+    /// Without a known kind only `session_id` is sent; a blank kind must not
+    /// overwrite one the engine already holds with an empty string.
+    #[tokio::test]
+    async fn publish_session_metadata_omits_blank_kind() {
+        let server = MockServer::start();
+        let update = server.mock(|when, then| {
+            when.method(PATCH)
+                .path("/v1/agents/worker-a")
+                .json_body(json!({ "metadata": { "session_id": "thread-123" } }));
+            then.status(200).json_body(json!({
+                "ok": true,
+                "data": {
+                    "id": "agent_worker_a",
+                    "name": "worker-a",
+                    "type": "agent",
+                    "status": "online",
+                    "persona": null,
+                    "metadata": {}
+                }
+            }));
+        });
+
+        let client = seeded_http_client(&server.base_url());
+        let claim = client.claim_session_metadata("worker-a").unwrap();
+        client
+            .publish_session_metadata(&claim, "thread-123", Some("  "))
+            .await
+            .expect("publishing session metadata should succeed");
+
+        update.assert_hits(1);
+    }
+
+    /// Must-not-fire: a blank session id links nothing, so no request is made.
+    #[tokio::test]
+    async fn publish_session_metadata_makes_no_request_for_blank_session_id() {
+        let server = MockServer::start();
+        let any_write = server.mock(|when, then| {
+            when.method(PATCH).path("/v1/agents/worker-a");
+            then.status(500);
+        });
+
+        let client = seeded_http_client(&server.base_url());
+        let claim = client.claim_session_metadata("worker-a").unwrap();
+        let outcome = client
+            .publish_session_metadata(&claim, "   ", Some("codex"))
+            .await
+            .expect("a blank session id is a no-op, not an error");
+
+        assert_eq!(outcome, SessionMetadataPublish::NothingToPublish);
+        any_write.assert_hits(0);
+    }
+
+    /// Must-not-fire: a released worker's publish that has not run by the time
+    /// a replacement reuses its name must not label the replacement with the
+    /// old session; only the replacement's session id is sent.
+    #[tokio::test]
+    async fn superseded_session_metadata_publish_sends_nothing() {
+        let server = MockServer::start();
+        let stale = server.mock(|when, then| {
+            when.method(PATCH)
+                .path("/v1/agents/worker-a")
+                .json_body(json!({ "metadata": { "session_id": "session-old" } }));
+            then.status(500);
+        });
+        let current = server.mock(|when, then| {
+            when.method(PATCH)
+                .path("/v1/agents/worker-a")
+                .json_body(json!({ "metadata": { "session_id": "session-new" } }));
+            then.status(200).json_body(json!({
+                "ok": true,
+                "data": {
+                    "id": "agent_worker_a",
+                    "name": "worker-a",
+                    "type": "agent",
+                    "status": "online",
+                    "persona": null,
+                    "metadata": {}
+                }
+            }));
+        });
+
+        let client = seeded_http_client(&server.base_url());
+        let old_claim = client.claim_session_metadata("worker-a").unwrap();
+        let new_claim = client.claim_session_metadata("worker-a").unwrap();
+
+        let new_outcome = client
+            .publish_session_metadata(&new_claim, "session-new", None)
+            .await
+            .expect("the latest claim publishes");
+        let old_outcome = client
+            .publish_session_metadata(&old_claim, "session-old", None)
+            .await
+            .expect("a superseded publish is a no-op, not an error");
+
+        assert_eq!(new_outcome, SessionMetadataPublish::Published);
+        assert_eq!(old_outcome, SessionMetadataPublish::Superseded);
+        current.assert_hits(1);
+        stale.assert_hits(0);
+    }
+
+    /// The engine merges metadata PATCHes with an unlocked read-modify-write,
+    /// so two of ours in flight for one name could each drop the other's keys.
+    /// A session publish issued while a declared-metadata PATCH is in flight
+    /// must wait for it to complete before sending.
+    #[tokio::test]
+    async fn metadata_publishes_for_one_name_do_not_overlap() {
+        let server = MockServer::start();
+        let agent_body = json!({
+            "ok": true,
+            "data": {
+                "id": "agent_worker_a",
+                "name": "worker-a",
+                "type": "agent",
+                "status": "online",
+                "persona": null,
+                "metadata": {}
+            }
+        });
+        let declared_body = agent_body.clone();
+        let declared = server.mock(move |when, then| {
+            when.method(PATCH)
+                .path("/v1/agents/worker-a")
+                .json_body(json!({ "metadata": { "role": "reviewer" } }));
+            then.status(200)
+                .delay(Duration::from_millis(600))
+                .json_body(declared_body);
+        });
+        let session = server.mock(move |when, then| {
+            when.method(PATCH)
+                .path("/v1/agents/worker-a")
+                .json_body(json!({ "metadata": { "session_id": "thread-123" } }));
+            then.status(200).json_body(agent_body);
+        });
+
+        let client = seeded_http_client(&server.base_url());
+        let declared_task = {
+            let client = client.clone();
+            tokio::spawn(async move {
+                let metadata = AgentRegistrationMetadata {
+                    role: Some("reviewer".to_string()),
+                    ..Default::default()
+                };
+                client
+                    .publish_declared_metadata("worker-a", &metadata)
+                    .await
+            })
+        };
+        while declared.hits() == 0 {
+            tokio::time::sleep(Duration::from_millis(5)).await;
+        }
+        let claim = client.claim_session_metadata("worker-a").unwrap();
+        let session_task = {
+            let client = client.clone();
+            tokio::spawn(async move {
+                client
+                    .publish_session_metadata(&claim, "thread-123", None)
+                    .await
+            })
+        };
+
+        tokio::time::sleep(Duration::from_millis(200)).await;
+        assert_eq!(
+            session.hits(),
+            0,
+            "session PATCH was sent while the declared PATCH was still in flight"
+        );
+
+        declared_task
+            .await
+            .unwrap()
+            .expect("declared publish succeeds");
+        assert_eq!(
+            session_task
+                .await
+                .unwrap()
+                .expect("session publish succeeds"),
+            SessionMetadataPublish::Published
+        );
+        declared.assert_hits(1);
+        session.assert_hits(1);
     }
 
     /// A presence update used to call POST /v1/agents/release with no reason.
