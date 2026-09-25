@@ -182,6 +182,115 @@ describe('AI SDK native harness sidecar', () => {
     await running;
   }, 15_000);
 
+  it('reports the final outcome of a deferred delivery restored after restart', async () => {
+    vi.stubEnv('RELAY_AGENT_TOKEN', 'at_live_native');
+    vi.stubEnv('RELAY_WORKSPACE_KEY', 'rk_live_native');
+    const original = fakeHarness();
+    const restarted = fakeHarness();
+    const createHarness = vi
+      .fn()
+      .mockResolvedValueOnce(original.harness)
+      .mockResolvedValueOnce(restarted.harness);
+    vi.spyOn(aiSdkAdapterRegistry, 'require').mockReturnValue({
+      ...aiSdkAdapterRegistry.require('codex'),
+      createHarness,
+    });
+    const root = await mkdtemp(resolve(tmpdir(), 'relay-sidecar-restored-outcome-'));
+    const config = {
+      name: 'Worker',
+      harness: 'fake',
+      workspace: resolve(root, 'workspace'),
+      runtimeRoot: resolve(root, 'runtime'),
+      sessionId: 'sidecar-session',
+    };
+
+    const firstInput = new PassThrough();
+    const firstOutput: Array<Record<string, unknown>> = [];
+    const firstRun = runAiSdkSidecar(config, {
+      input: firstInput,
+      write: (line) => firstOutput.push(JSON.parse(line)),
+    });
+    await waitFor(() => firstOutput.some((frame) => frame.type === 'agent_event'));
+    firstInput.write(
+      `${JSON.stringify({
+        v: 2,
+        type: 'deliver_relay',
+        payload: {
+          delivery_id: 'active',
+          event_id: 'event-active',
+          from: 'Human',
+          target: 'Worker',
+          body: 'active',
+        },
+      })}\n`
+    );
+    await waitFor(() => hasDeliveryFrame(firstOutput, 'delivery_ack', 'active'));
+    firstInput.write(
+      `${JSON.stringify({
+        v: 2,
+        type: 'deliver_relay',
+        payload: {
+          delivery_id: 'restored',
+          event_id: 'event-restored',
+          from: 'Human',
+          target: 'Worker',
+          body: 'after restart',
+          injection_mode: 'wait',
+        },
+      })}\n`
+    );
+    await waitFor(() => hasDeliveryFrame(firstOutput, 'delivery_queued', 'restored'));
+    firstInput.write(
+      `${JSON.stringify({
+        v: 2,
+        type: 'deliver_relay',
+        payload: {
+          delivery_id: 'restored-failed',
+          event_id: 'event-restored-failed',
+          from: 'Human',
+          target: 'Worker',
+          body: 'fail after restart',
+          injection_mode: 'wait',
+        },
+      })}\n`
+    );
+    await waitFor(() => hasDeliveryFrame(firstOutput, 'delivery_queued', 'restored-failed'));
+    firstInput.end();
+    await firstRun;
+
+    const restartedInput = new PassThrough();
+    const restartedOutput: Array<Record<string, unknown>> = [];
+    const restartedRun = runAiSdkSidecar(config, {
+      input: restartedInput,
+      write: (line) => restartedOutput.push(JSON.parse(line)),
+    });
+    await waitFor(() => hasDeliveryFrame(restartedOutput, 'delivery_ack', 'restored'));
+    expect(restartedOutput).toContainEqual({
+      v: 2,
+      type: 'delivery_ack',
+      payload: {
+        delivery_id: 'restored',
+        event_id: 'event-restored',
+        state: 'queued',
+      },
+    });
+    expect(restarted.session.doPromptTurn).toHaveBeenCalledTimes(1);
+    vi.mocked(restarted.session.doPromptTurn).mockRejectedValueOnce(new Error('restored acceptance failed'));
+    restarted.settle();
+    await waitFor(() => hasDeliveryFrame(restartedOutput, 'delivery_failed', 'restored-failed'));
+    expect(restartedOutput).toContainEqual({
+      v: 2,
+      type: 'delivery_failed',
+      payload: {
+        delivery_id: 'restored-failed',
+        event_id: 'event-restored-failed',
+        reason: 'restored acceptance failed',
+      },
+    });
+    restartedInput.end();
+    await restartedRun;
+  }, 15_000);
+
   it('retires durable delivery state on broker worker shutdown', async () => {
     vi.stubEnv('RELAY_AGENT_TOKEN', 'at_live_native');
     vi.stubEnv('RELAY_WORKSPACE_KEY', 'rk_live_native');

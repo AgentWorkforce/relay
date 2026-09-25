@@ -27,21 +27,34 @@ const MAX_MESSAGE_BYTES: usize = 128 * 1024;
 #[derive(Debug, Clone, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub(crate) struct NativeExistingSessionDelivery {
+    /// Broker-owned worker identity used for live-session authorization.
     pub(crate) relay_agent_name: String,
+    /// Broker-owned native session identity used for live-session authorization.
     pub(crate) session_id: String,
+    /// Caller-assigned idempotency key, durably bound to the complete request.
     pub(crate) delivery_id: String,
+    /// Caller assertion recorded for exact duplicate and reconciliation matching.
+    /// It is not an independent worker-authorization claim.
     pub(crate) lineage_id: String,
+    /// Caller assertion recorded for exact duplicate and reconciliation matching.
+    /// It is not an independent worker-authorization claim.
     pub(crate) head_sha: String,
+    /// Prompt content delivered to the authorized native session.
     pub(crate) message: String,
 }
 
 #[derive(Debug, Clone, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub(crate) struct NativeExistingSessionReconcile {
+    /// Worker identity bound into the original durable receipt.
     pub(crate) relay_agent_name: String,
+    /// Native session identity bound into the original durable receipt.
     pub(crate) session_id: String,
+    /// Idempotency key whose durable receipt is being queried.
     pub(crate) delivery_id: String,
+    /// Caller assertion that must exactly match the original receipt.
     pub(crate) lineage_id: String,
+    /// Caller assertion that must exactly match the original receipt.
     pub(crate) head_sha: String,
 }
 

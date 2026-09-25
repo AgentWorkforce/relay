@@ -178,23 +178,28 @@ export async function runAiSdkSidecar(config: AiSdkSidecarConfig, io: AiSdkSidec
     await publishEvent(event);
     if (event.type === 'delivery.accepted' && event.deliveryId) {
       const delivery = relayDeliveries.get(event.deliveryId);
-      if (!delivery) return;
       relayDeliveries.delete(event.deliveryId);
       await write({
         v: 2,
         type: 'delivery_ack',
-        payload: { delivery_id: event.deliveryId, event_id: delivery.eventId, state: 'queued' },
+        payload: {
+          delivery_id: event.deliveryId,
+          // Restored deferred entries complete before stdin can rebuild the
+          // volatile delivery map. The durable entry retains the originating
+          // message id, so it remains sufficient to report the final outcome.
+          event_id: delivery?.eventId ?? event.messageId,
+          state: 'queued',
+        },
       });
     } else if (event.type === 'delivery.failed' && event.deliveryId) {
       const delivery = relayDeliveries.get(event.deliveryId);
-      if (!delivery) return;
       relayDeliveries.delete(event.deliveryId);
       await write({
         v: 2,
         type: 'delivery_failed',
         payload: {
           delivery_id: event.deliveryId,
-          event_id: delivery.eventId,
+          event_id: delivery?.eventId ?? event.messageId,
           reason: event.reason,
         },
       });
