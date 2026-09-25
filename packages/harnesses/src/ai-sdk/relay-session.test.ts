@@ -153,13 +153,16 @@ describe('RelayHarnessSession', () => {
       identity,
       host: restarted.host as never,
       deferredQueuePath: queuePath,
+      maxDedupeEntries: 1,
     });
     await restartedSession.restoreDeferredMessages();
     expect(restarted.host.startTurn).toHaveBeenCalledWith(
       expect.stringContaining('"messageId":"durable"'),
       'durable'
     );
-    expect(JSON.parse(await readFile(queuePath, 'utf8')).entries).toEqual([]);
+    expect(JSON.parse(await readFile(queuePath, 'utf8')).entries).toMatchObject([
+      { key: 'durable', state: 'accepted' },
+    ]);
   });
 
   it('fails closed instead of replaying an in-flight deferred message after restart', async () => {
@@ -195,12 +198,85 @@ describe('RelayHarnessSession', () => {
     restartedSession.onEvent?.((event) => events.push(event));
     await restartedSession.restoreDeferredMessages();
     expect(restarted.host.startTurn).not.toHaveBeenCalled();
-    expect(JSON.parse(await readFile(queuePath, 'utf8')).entries).toEqual([]);
+    expect(JSON.parse(await readFile(queuePath, 'utf8')).entries).toMatchObject([
+      { key: 'ambiguous', state: 'in_doubt' },
+      { key: 'already-accepted', state: 'accepted' },
+    ]);
     expect(events).toEqual(
       expect.arrayContaining([
         expect.objectContaining({ type: 'delivery.failed', deliveryId: 'ambiguous', retryable: false }),
       ])
     );
+    await expect(
+      restartedSession.receiveMessage(message('ambiguous'), {
+        ...context('ambiguous', 'on-idle'),
+        idempotencyKey: 'ambiguous',
+      })
+    ).resolves.toMatchObject({ status: 'failed', retryable: false });
+    await expect(
+      restartedSession.receiveMessage(message('already-accepted'), {
+        ...context('already-accepted', 'on-idle'),
+        idempotencyKey: 'already-accepted',
+      })
+    ).resolves.toMatchObject({ status: 'accepted' });
+    expect(restarted.host.startTurn).not.toHaveBeenCalled();
+
+    const restartedAgain = fakeHost();
+    const restartedAgainSession = new RelayHarnessSession({
+      identity,
+      host: restartedAgain.host as never,
+      deferredQueuePath: queuePath,
+      maxDedupeEntries: 1,
+    });
+    await restartedAgainSession.restoreDeferredMessages();
+    await expect(
+      restartedAgainSession.receiveMessage(message('ambiguous'), {
+        ...context('ambiguous', 'on-idle'),
+        idempotencyKey: 'ambiguous',
+      })
+    ).resolves.toMatchObject({ status: 'failed', retryable: false });
+    await expect(
+      restartedAgainSession.receiveMessage(message('already-accepted'), {
+        ...context('already-accepted', 'on-idle'),
+        idempotencyKey: 'already-accepted',
+      })
+    ).resolves.toMatchObject({ status: 'accepted' });
+    expect(restartedAgain.host.startTurn).not.toHaveBeenCalled();
+  });
+
+  it('retains a failed in-flight deferred message as a non-retryable tombstone', async () => {
+    const root = await mkdtemp(resolve(tmpdir(), 'relay-deferred-failed-'));
+    const queuePath = resolve(root, 'queue.json');
+    const fixture = fakeHost();
+    const session = new RelayHarnessSession({
+      identity,
+      host: fixture.host as never,
+      deferredQueuePath: queuePath,
+    });
+    await session.receiveMessage(message('active'), context('active'));
+    await session.receiveMessage(message('ambiguous'), {
+      ...context('ambiguous', 'on-idle'),
+      idempotencyKey: 'ambiguous',
+    });
+    const failed = new Promise<void>((resolveFailed) => {
+      session.onEvent?.((event) => {
+        if (event.type === 'delivery.failed' && event.deliveryId === 'ambiguous') resolveFailed();
+      });
+    });
+    vi.mocked(fixture.host.startTurn).mockRejectedValueOnce(new Error('acceptance failed'));
+    fixture.settle();
+    await failed;
+
+    expect(JSON.parse(await readFile(queuePath, 'utf8')).entries).toMatchObject([
+      { key: 'ambiguous', state: 'in_doubt' },
+    ]);
+    await expect(
+      session.receiveMessage(message('ambiguous'), {
+        ...context('ambiguous', 'on-idle'),
+        idempotencyKey: 'ambiguous',
+      })
+    ).resolves.toMatchObject({ status: 'failed', retryable: false });
+    expect(fixture.host.startTurn).toHaveBeenCalledTimes(2);
   });
 
   it('publishes capabilities and releases once', async () => {

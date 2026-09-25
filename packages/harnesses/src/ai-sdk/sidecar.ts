@@ -251,7 +251,16 @@ export async function runAiSdkSidecar(config: AiSdkSidecarConfig, io: AiSdkSidec
           }
         );
         if (receipt.status === 'failed') throw new Error(receipt.reason);
-        if (receipt.status === 'accepted' || receipt.status === 'deferred') {
+        if (receipt.status === 'deferred') {
+          const pending = relayDeliveries.get(delivery.delivery_id);
+          if (pending) {
+            await write({
+              v: 2,
+              type: 'delivery_queued',
+              payload: { delivery_id: delivery.delivery_id, event_id: pending.eventId },
+            });
+          }
+        } else if (receipt.status === 'accepted') {
           const pending = relayDeliveries.get(delivery.delivery_id);
           if (pending) {
             relayDeliveries.delete(delivery.delivery_id);
@@ -261,7 +270,7 @@ export async function runAiSdkSidecar(config: AiSdkSidecarConfig, io: AiSdkSidec
               payload: {
                 delivery_id: delivery.delivery_id,
                 event_id: pending.eventId,
-                state: receipt.status === 'deferred' ? 'deferred' : 'queued',
+                state: 'queued',
               },
             });
           }

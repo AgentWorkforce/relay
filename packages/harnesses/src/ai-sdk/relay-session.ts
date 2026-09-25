@@ -386,6 +386,31 @@ export class RelayHarnessSession implements AgentSession {
     return receipt;
   }
 
+  #durableReceipt(entry: QueuedMessage): MessageReceipt {
+    if (entry.state === 'accepted') {
+      return {
+        status: 'accepted',
+        deliveryId: entry.context.id,
+        metadata: { restored: true },
+      };
+    }
+    if (entry.state === 'in_doubt') {
+      return {
+        status: 'failed',
+        deliveryId: entry.context.id,
+        reason: 'Deferred delivery was in progress when the native sidecar stopped',
+        retryable: false,
+      };
+    }
+    return {
+      status: 'deferred',
+      deliveryId: entry.context.id,
+      availableAt: new Date(Date.now() + 100).toISOString(),
+      reason: 'queued_until_idle',
+      metadata: { queued: true, restored: true },
+    };
+  }
+
   async #persistQueue(): Promise<void> {
     if (!this.#deferredQueuePath) return;
     const directoryPath = dirname(this.#deferredQueuePath);
@@ -444,20 +469,16 @@ export class RelayHarnessSession implements AgentSession {
         throw new Error('Invalid deferred Relay delivery entry');
       }
       if (entry.state === 'accepted') {
-        this.#remember(entry.key, {
-          status: 'accepted',
-          deliveryId: entry.context.id,
-          metadata: { restored: true },
-        });
+        const restored = entry as QueuedMessage;
+        this.#queue.push(restored);
+        this.#remember(restored.key, this.#durableReceipt(restored));
         continue;
       }
       if (entry.state === 'in_doubt') {
-        const receipt: MessageReceipt = {
-          status: 'failed',
-          deliveryId: entry.context.id,
-          reason: 'Deferred delivery was in progress when the native sidecar stopped',
-          retryable: false,
-        };
+        const restored = entry as QueuedMessage;
+        this.#queue.push(restored);
+        const receipt = this.#durableReceipt(restored);
+        if (receipt.status !== 'failed') throw new Error('Invalid in-doubt delivery receipt');
         this.#remember(entry.key, receipt);
         await this.#emit({
           type: 'delivery.failed',
@@ -470,13 +491,7 @@ export class RelayHarnessSession implements AgentSession {
       }
       const restored = entry as QueuedMessage;
       this.#queue.push(restored);
-      this.#remember(restored.key, {
-        status: 'deferred',
-        deliveryId: restored.context.id,
-        availableAt: new Date(Date.now() + 100).toISOString(),
-        reason: 'queued_until_idle',
-        metadata: { queued: true, restored: true },
-      });
+      this.#remember(restored.key, this.#durableReceipt(restored));
     }
     await this.#persistQueue();
     await this.#serialized(() => this.#drain());
@@ -494,38 +509,26 @@ export class RelayHarnessSession implements AgentSession {
 
   async #drain(): Promise<void> {
     if (this.#released || this.host.hasActiveTurn) return;
-    const queued = this.#queue[0];
+    const queued = this.#queue.find((entry) => entry.state === 'queued');
     if (!queued) return;
-    if (queued.state === 'accepted') {
-      this.#queue.shift();
-      await this.#persistQueue();
-      await this.#drain();
-      return;
-    }
     queued.state = 'in_doubt';
     await this.#persistQueue();
     try {
       const receipt = await this.#accept(queued.message, queued.context);
-      // Publish a durable terminal marker before removing the entry. If the
-      // process stops between these writes, restore discards the already
-      // accepted message instead of replaying it or reporting it as failed.
+      // Retain a durable terminal marker. A later restart or in-memory receipt
+      // eviction must still deduplicate the already accepted message.
       queued.state = 'accepted';
       await this.#persistQueue();
       this.#remember(queued.key, receipt);
-      this.#queue.shift();
-      await this.#persistQueue();
     } catch (error) {
-      // If acceptance succeeded but final queue cleanup failed, leave the
-      // accepted marker in memory and on disk. A later settle/restart can
-      // safely discard it without a second injection.
+      // If acceptance succeeded but persisting the accepted marker failed,
+      // retain the in-doubt marker. Replaying would risk a second injection.
       if (queued.state === 'accepted') return;
-      this.#queue.shift();
-      await this.#persistQueue();
       const receipt: MessageReceipt = {
         status: 'failed',
         deliveryId: queued.context.id,
         reason: error instanceof Error ? error.message : String(error),
-        retryable: true,
+        retryable: false,
       };
       this.#remember(queued.key, receipt);
       await this.#emit({
@@ -533,7 +536,7 @@ export class RelayHarnessSession implements AgentSession {
         messageId: queued.message.id,
         deliveryId: queued.context.id,
         reason: receipt.reason,
-        retryable: true,
+        retryable: false,
       });
       await this.#drain();
     }
@@ -547,11 +550,13 @@ export class RelayHarnessSession implements AgentSession {
       const key = context.idempotencyKey ?? message.id ?? context.id;
       const previous = this.#receipts.get(key);
       if (previous) return previous;
+      const durable = this.#queue.find((entry) => entry.key === key);
+      if (durable) return this.#remember(key, this.#durableReceipt(durable));
 
       const shouldQueue =
         this.host.hasActiveTurn && (context.mode === 'next-message' || context.mode === 'on-idle');
       if (shouldQueue) {
-        if (this.#queue.length >= this.#maxQueueSize) {
+        if (this.#queue.filter((entry) => entry.state === 'queued').length >= this.#maxQueueSize) {
           return this.#remember(key, {
             status: 'failed',
             deliveryId: context.id,

@@ -9,6 +9,7 @@ import { runAiSdkSidecar } from './sidecar.js';
 
 function fakeHarness() {
   const submitUserMessage = vi.fn(async () => undefined);
+  const turnResolvers: Array<() => void> = [];
   const session: HarnessV1Session = {
     sessionId: 'sidecar-session',
     isResume: false,
@@ -19,7 +20,7 @@ function fakeHarness() {
       emit({ type: 'tool-call', toolCallId: 'tool-1', toolName: 'read', input: '{}' });
       emit({ type: 'tool-approval-request', approvalId: 'approval-1', toolCallId: 'tool-1' });
       return {
-        done: new Promise<void>(() => undefined),
+        done: new Promise<void>((resolveTurn) => turnResolvers.push(resolveTurn)),
         submitToolResult: vi.fn(async () => undefined),
         submitUserMessage,
         submitToolApproval: vi.fn(async () => undefined),
@@ -38,11 +39,26 @@ function fakeHarness() {
     builtinTools: {},
     doStart: vi.fn(async () => session),
   };
-  return { harness, session, submitUserMessage };
+  return {
+    harness,
+    session,
+    submitUserMessage,
+    settle() {
+      turnResolvers.shift()?.();
+    },
+  };
+}
+
+function hasDeliveryFrame(output: Array<Record<string, unknown>>, type: string, deliveryId: string): boolean {
+  return output.some(
+    (frame) =>
+      frame.type === type &&
+      (frame.payload as Record<string, unknown> | undefined)?.delivery_id === deliveryId
+  );
 }
 
 async function waitFor(predicate: () => boolean) {
-  for (let attempts = 0; attempts < 100; attempts += 1) {
+  for (let attempts = 0; attempts < 400; attempts += 1) {
     if (predicate()) return;
     await new Promise((resolveWait) => setTimeout(resolveWait, 5));
   }
@@ -84,6 +100,66 @@ describe('AI SDK native harness sidecar', () => {
       )
     ).rejects.toThrow('A stable runtimeRoot is required for deferred delivery persistence');
   });
+
+  it('keeps wait deliveries pending until the deferred message is accepted', async () => {
+    vi.stubEnv('RELAY_AGENT_TOKEN', 'at_live_native');
+    vi.stubEnv('RELAY_WORKSPACE_KEY', 'rk_live_native');
+    const fixture = fakeHarness();
+    vi.spyOn(aiSdkAdapterRegistry, 'require').mockReturnValue({
+      ...aiSdkAdapterRegistry.require('codex'),
+      createHarness: async () => fixture.harness,
+    });
+    const root = await mkdtemp(resolve(tmpdir(), 'relay-sidecar-deferred-'));
+    const input = new PassThrough();
+    const output: Array<Record<string, unknown>> = [];
+    const running = runAiSdkSidecar(
+      {
+        name: 'Worker',
+        harness: 'fake',
+        workspace: resolve(root, 'workspace'),
+        runtimeRoot: resolve(root, 'runtime'),
+        sessionId: 'sidecar-session',
+      },
+      { input, write: (line) => output.push(JSON.parse(line)) }
+    );
+    await waitFor(() => output.some((frame) => frame.type === 'agent_event'));
+    input.write(`${JSON.stringify({ v: 2, type: 'init_worker', payload: { agent: {} } })}\n`);
+    input.write(
+      `${JSON.stringify({
+        v: 2,
+        type: 'deliver_relay',
+        payload: {
+          delivery_id: 'active',
+          event_id: 'event-active',
+          from: 'Human',
+          target: 'Worker',
+          body: 'active',
+        },
+      })}\n`
+    );
+    await waitFor(() => hasDeliveryFrame(output, 'delivery_ack', 'active'));
+    input.write(
+      `${JSON.stringify({
+        v: 2,
+        type: 'deliver_relay',
+        payload: {
+          delivery_id: 'deferred',
+          event_id: 'event-deferred',
+          from: 'Human',
+          target: 'Worker',
+          body: 'later',
+          injection_mode: 'wait',
+        },
+      })}\n`
+    );
+    await waitFor(() => hasDeliveryFrame(output, 'delivery_queued', 'deferred'));
+    expect(hasDeliveryFrame(output, 'delivery_ack', 'deferred')).toBe(false);
+
+    fixture.settle();
+    await waitFor(() => hasDeliveryFrame(output, 'delivery_ack', 'deferred'));
+    input.end();
+    await running;
+  }, 15_000);
 
   it('speaks worker and native harness protocols with command deduplication', async () => {
     vi.stubEnv('RELAY_AGENT_TOKEN', 'at_live_native');
