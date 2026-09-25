@@ -153,7 +153,14 @@ describe('RelayHarnessSession', () => {
       identity,
       host: restarted.host as never,
       deferredQueuePath: queuePath,
-      maxDedupeEntries: 1,
+    });
+    let stateAtAcceptance: string | undefined;
+    restartedSession.onEvent?.(async (event) => {
+      if (event.type !== 'delivery.accepted') return;
+      const persisted = JSON.parse(await readFile(queuePath, 'utf8')) as {
+        entries: Array<{ state: string }>;
+      };
+      stateAtAcceptance = persisted.entries[0]?.state;
     });
     await restartedSession.restoreDeferredMessages();
     expect(restarted.host.startTurn).toHaveBeenCalledWith(
@@ -163,6 +170,7 @@ describe('RelayHarnessSession', () => {
     expect(JSON.parse(await readFile(queuePath, 'utf8')).entries).toMatchObject([
       { key: 'durable', state: 'accepted' },
     ]);
+    expect(stateAtAcceptance).toBe('accepted');
   });
 
   it('fails closed instead of replaying an in-flight deferred message after restart', async () => {

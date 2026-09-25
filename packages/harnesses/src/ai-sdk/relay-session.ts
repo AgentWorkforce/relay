@@ -503,7 +503,6 @@ export class RelayHarnessSession implements AgentSession {
     else await this.host.startTurn(prompt, context.id);
     const receipt: MessageReceipt = { status: 'accepted', deliveryId: context.id };
     await this.#emit({ type: 'message.received', message });
-    await this.#emit({ type: 'delivery.accepted', messageId: message.id, deliveryId: context.id });
     return receipt;
   }
 
@@ -520,6 +519,11 @@ export class RelayHarnessSession implements AgentSession {
       queued.state = 'accepted';
       await this.#persistQueue();
       this.#remember(queued.key, receipt);
+      await this.#emit({
+        type: 'delivery.accepted',
+        messageId: queued.message.id,
+        deliveryId: queued.context.id,
+      });
     } catch (error) {
       // If acceptance succeeded but persisting the accepted marker failed,
       // retain the in-doubt marker. Replaying would risk a second injection.
@@ -586,7 +590,13 @@ export class RelayHarnessSession implements AgentSession {
       }
 
       try {
-        return this.#remember(key, await this.#accept(message, context));
+        const receipt = this.#remember(key, await this.#accept(message, context));
+        await this.#emit({
+          type: 'delivery.accepted',
+          messageId: message.id,
+          deliveryId: context.id,
+        });
+        return receipt;
       } catch (error) {
         return this.#remember(key, {
           status: 'failed',
