@@ -86,7 +86,9 @@ try {
         RELAY_BASE_URL: engine.baseUrl,
         RELAY_BROKER_API_KEY: 'br_fixture_native_delivery_proof',
         RELAY_NODE_ID: 'node-fixture-native-delivery-proof',
-        RELAY_NODE_TOKEN: 'nt_fixture_native_delivery_proof',
+        // The shared loopback engine fixture deliberately accepts one fixed
+        // credential so a case cannot weaken its authentication behavior.
+        RELAY_NODE_TOKEN: 'nt_fixture_task_proof',
         AGENT_RELAY_TELEMETRY_DISABLED: '1',
         AGENT_RELAY_NO_DEBUG_FILES: '1',
       },
