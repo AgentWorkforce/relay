@@ -465,6 +465,7 @@ export class RelayHarnessSession implements AgentSession {
       this.#remember(restored.key, {
         status: 'deferred',
         deliveryId: restored.context.id,
+        availableAt: new Date(Date.now() + 100).toISOString(),
         reason: 'queued_until_idle',
         metadata: { queued: true, restored: true },
       });
