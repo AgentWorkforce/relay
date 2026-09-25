@@ -19,7 +19,7 @@ import {
 } from './harness.js';
 
 /**
- * `agent@machine` addressing (relaycast `POST /v1/to/:address`) against a real
+ * `agent@machine` addressing (relaycast `POST /v1/dm` with `address`) against a real
  * engine and a real `relay node up` (Rust broker + sidecar) enrolled the way a
  * Cloud sandbox is: through `relay cloud enroll`, named `fleet-sandbox-<uuid>`,
  * carrying server-owned `cloud:*` tags, with no machine_id.
@@ -45,10 +45,10 @@ describe.skipIf(!pre.ok)('agent@machine addressing to a Cloud-shaped sandbox nod
   const auth = (token: string) => ({ authorization: `Bearer ${token}` });
 
   const sendTo = (address: string, text: string, headers: Record<string, string> = {}) =>
-    engine.fetchJson(`/v1/to/${encodeURIComponent(address)}`, {
+    engine.fetchJson('/v1/dm', {
       method: 'POST',
       headers: { 'content-type': 'application/json', ...auth(driverToken), ...headers },
-      body: JSON.stringify({ text }),
+      body: JSON.stringify({ address, text }),
     });
 
   const agentAddress = async (name: string) => {
