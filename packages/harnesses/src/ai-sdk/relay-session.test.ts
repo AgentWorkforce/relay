@@ -350,6 +350,55 @@ describe('RelayHarnessSession', () => {
     await session.release?.('retired');
   });
 
+  it('keeps a durable queued delivery live when the in-doubt tombstone cannot persist', async () => {
+    const root = await mkdtemp(resolve(tmpdir(), 'relay-deferred-reservation-failure-'));
+    const queuePath = resolve(root, 'queue');
+    const fixture = fakeHost();
+    const session = new RelayHarnessSession({
+      identity,
+      host: fixture.host as never,
+      deferredQueuePath: queuePath,
+    });
+    await session.receiveMessage(message('active'), context('active'));
+    await session.receiveMessage(message('retry-after-recovery'), {
+      ...context('retry-after-recovery', 'on-idle'),
+      idempotencyKey: 'retry-after-recovery',
+    });
+    const receipts = resolve(queuePath, 'receipts');
+    await writeFile(receipts, 'blocked');
+    const events: string[] = [];
+    session.onEvent?.((event) => events.push(event.type));
+
+    fixture.settle();
+    await new Promise((resolveWait) => setTimeout(resolveWait, 0));
+    expect(events).not.toContain('delivery.failed');
+    expect(fixture.host.startTurn).toHaveBeenCalledTimes(1);
+    const queuedFiles = (await readdir(resolve(queuePath, 'queue'))).filter((file) => file.endsWith('.json'));
+    expect(queuedFiles).toHaveLength(1);
+    expect(
+      JSON.parse(await readFile(resolve(queuePath, 'queue', queuedFiles[0]!), 'utf8')).entry
+    ).toMatchObject({ key: 'retry-after-recovery', state: 'queued' });
+    await expect(
+      session.receiveMessage(message('retry-after-recovery'), {
+        ...context('retry-after-recovery', 'on-idle'),
+        idempotencyKey: 'retry-after-recovery',
+      })
+    ).resolves.toMatchObject({ status: 'deferred' });
+
+    await rm(receipts, { force: true });
+    const restarted = fakeHost();
+    const restartedSession = new RelayHarnessSession({
+      identity,
+      host: restarted.host as never,
+      deferredQueuePath: queuePath,
+    });
+    await restartedSession.restoreDeferredMessages();
+    expect(restarted.host.startTurn).toHaveBeenCalledWith(
+      expect.stringContaining('"messageId":"retry-after-recovery"'),
+      'retry-after-recovery'
+    );
+  });
+
   it('publishes capabilities and releases once', async () => {
     const fixture = fakeHost();
     const session = new RelayHarnessSession({ identity, host: fixture.host as never });

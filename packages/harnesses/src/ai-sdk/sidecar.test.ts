@@ -1,4 +1,5 @@
-import { mkdtemp } from 'node:fs/promises';
+import { createHash } from 'node:crypto';
+import { mkdtemp, stat } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { resolve } from 'node:path';
 import { PassThrough } from 'node:stream';
@@ -180,6 +181,74 @@ describe('AI SDK native harness sidecar', () => {
     input.end();
     await running;
   }, 15_000);
+
+  it('retires durable delivery state on broker worker shutdown', async () => {
+    vi.stubEnv('RELAY_AGENT_TOKEN', 'at_live_native');
+    vi.stubEnv('RELAY_WORKSPACE_KEY', 'rk_live_native');
+    const fixture = fakeHarness();
+    vi.spyOn(aiSdkAdapterRegistry, 'require').mockReturnValue({
+      ...aiSdkAdapterRegistry.require('codex'),
+      createHarness: async () => fixture.harness,
+    });
+    const root = await mkdtemp(resolve(tmpdir(), 'relay-sidecar-shutdown-'));
+    const runtimeRoot = resolve(root, 'runtime');
+    const sessionId = 'sidecar-session';
+    const sessionStore = resolve(
+      runtimeRoot,
+      'deferred-relay',
+      createHash('sha256').update(sessionId).digest('hex')
+    );
+    const input = new PassThrough();
+    const output: Array<Record<string, unknown>> = [];
+    const running = runAiSdkSidecar(
+      {
+        name: 'Worker',
+        harness: 'fake',
+        workspace: resolve(root, 'workspace'),
+        runtimeRoot,
+        sessionId,
+      },
+      { input, write: (line) => output.push(JSON.parse(line)) }
+    );
+    await waitFor(() => output.some((frame) => frame.type === 'agent_event'));
+    input.write(
+      `${JSON.stringify({
+        v: 2,
+        type: 'deliver_relay',
+        payload: {
+          delivery_id: 'active',
+          event_id: 'event-active',
+          from: 'Human',
+          target: 'Worker',
+          body: 'active',
+        },
+      })}\n`
+    );
+    await waitFor(() => hasDeliveryFrame(output, 'delivery_ack', 'active'));
+    input.write(
+      `${JSON.stringify({
+        v: 2,
+        type: 'deliver_relay',
+        payload: {
+          delivery_id: 'deferred',
+          event_id: 'event-deferred',
+          from: 'Human',
+          target: 'Worker',
+          body: 'later',
+          injection_mode: 'wait',
+        },
+      })}\n`
+    );
+    await waitFor(() => hasDeliveryFrame(output, 'delivery_queued', 'deferred'));
+    await expect(stat(sessionStore)).resolves.toBeDefined();
+
+    input.write(`${JSON.stringify({ v: 2, type: 'shutdown_worker', payload: {} })}\n`);
+    await running;
+
+    expect(output.some((frame) => frame.type === 'worker_exited')).toBe(true);
+    expect(fixture.session.doDestroy).toHaveBeenCalledTimes(1);
+    await expect(stat(sessionStore)).rejects.toMatchObject({ code: 'ENOENT' });
+  });
 
   it('speaks worker and native harness protocols with command deduplication', async () => {
     vi.stubEnv('RELAY_AGENT_TOKEN', 'at_live_native');

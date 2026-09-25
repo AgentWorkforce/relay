@@ -303,7 +303,7 @@ export async function runAiSdkSidecar(config: AiSdkSidecarConfig, io: AiSdkSidec
       continue;
     }
     if (frame.type === 'shutdown_worker') {
-      await host.destroy();
+      await relaySession.release('shutdown_worker');
       await write({ v: 2, type: 'worker_exited', payload: { code: 0 } });
       break;
     }

@@ -619,21 +619,13 @@ export class RelayHarnessSession implements AgentSession {
     };
     try {
       await this.#persistEntry(inDoubt);
-    } catch (error) {
-      const receipt = this.#remember(queued.key, {
-        status: 'failed',
-        deliveryId: queued.context.id,
-        reason: `Could not durably reserve deferred Relay delivery: ${error instanceof Error ? error.message : String(error)}`,
-        retryable: false,
-      });
-      await this.#emit({
-        type: 'delivery.failed',
-        messageId: queued.message.id,
-        deliveryId: queued.context.id,
-        reason: receipt.status === 'failed' ? receipt.reason : 'Deferred delivery is in doubt',
-        retryable: false,
-      });
-      await this.#drain();
+    } catch {
+      // The durable queued entry is still authoritative. Without a durable
+      // in-doubt marker it is unsafe to publish a terminal failure: a restart
+      // could restore and accept the queued entry. Keep it live and retry the
+      // transition after a later idle boundary instead.
+      this.#queue.unshift(queued);
+      this.#remember(queued.key, this.#durableReceipt(queued));
       return;
     }
     let receipt: MessageReceipt;
