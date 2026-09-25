@@ -306,6 +306,50 @@ describe('RelayHarnessSession', () => {
     expect(await readEntries(queuePath)).toEqual([]);
   });
 
+  it('does not report failure after the host accepts when the terminal receipt cannot persist', async () => {
+    const root = await mkdtemp(resolve(tmpdir(), 'relay-deferred-accepted-persist-failure-'));
+    const queuePath = resolve(root, 'queue');
+    const fixture = fakeHost();
+    const session = new RelayHarnessSession({
+      identity,
+      host: fixture.host as never,
+      deferredQueuePath: queuePath,
+    });
+    await session.receiveMessage(message('active'), context('active'));
+    await session.receiveMessage(message('accepted'), {
+      ...context('accepted', 'on-idle'),
+      idempotencyKey: 'accepted',
+    });
+
+    const events: string[] = [];
+    let resolveAccepted!: () => void;
+    const accepted = new Promise<void>((resolveEvent) => {
+      resolveAccepted = resolveEvent;
+    });
+    session.onEvent?.(async (event) => {
+      events.push(event.type);
+      if (event.type === 'message.received' && event.message.id === 'accepted') {
+        const receipts = resolve(queuePath, 'receipts');
+        await rm(receipts, { recursive: true, force: true });
+        await writeFile(receipts, 'blocked');
+      }
+      if (event.type === 'delivery.accepted' && event.deliveryId === 'accepted') resolveAccepted();
+    });
+
+    fixture.settle();
+    await accepted;
+    expect(events).toContain('delivery.accepted');
+    expect(events).not.toContain('delivery.failed');
+    await expect(
+      session.receiveMessage(message('accepted'), {
+        ...context('accepted', 'on-idle'),
+        idempotencyKey: 'accepted',
+      })
+    ).resolves.toMatchObject({ status: 'accepted' });
+    expect(fixture.host.startTurn).toHaveBeenCalledTimes(2);
+    await session.release?.('retired');
+  });
+
   it('publishes capabilities and releases once', async () => {
     const fixture = fakeHost();
     const session = new RelayHarnessSession({ identity, host: fixture.host as never });

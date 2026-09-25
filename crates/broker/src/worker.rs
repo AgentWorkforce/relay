@@ -2070,6 +2070,11 @@ impl WorkerRegistry {
                         ),
                     }
                 }
+                self.fail_native_delivery_custody_generation(
+                    &name,
+                    generation,
+                    "native worker exited before confirming delivery custody",
+                );
                 self.workers.remove(&name);
                 self.initial_tasks.remove(&name);
                 self.argv_initial_tasks.remove(&name);
@@ -2094,6 +2099,11 @@ impl WorkerRegistry {
                     .workers
                     .get(&name)
                     .and_then(|handle| handle.exit_reason.clone());
+                self.fail_native_delivery_custody_generation(
+                    &name,
+                    generation,
+                    "native worker exited before confirming delivery custody",
+                );
                 self.workers.remove(&name);
                 self.initial_tasks.remove(&name);
                 self.argv_initial_tasks.remove(&name);
@@ -2108,6 +2118,11 @@ impl WorkerRegistry {
                     .workers
                     .get(&name)
                     .and_then(|handle| handle.exit_reason.clone());
+                self.fail_native_delivery_custody_generation(
+                    &name,
+                    generation,
+                    "native worker exited before confirming delivery custody",
+                );
                 self.workers.remove(&name);
                 self.initial_tasks.remove(&name);
                 self.argv_initial_tasks.remove(&name);
@@ -3206,6 +3221,29 @@ mod tests {
             .await
             .expect("delivery task should join")
             .expect("correlated sidecar confirmation should complete delivery");
+    }
+
+    #[tokio::test]
+    async fn native_delivery_custody_fails_when_worker_generation_exits() {
+        let name = WorkerName::from("native");
+        let generation = Uuid::new_v4();
+        let custody = NativeDeliveryCustodyHub::default();
+        let receiver = custody
+            .register(NativeDeliveryCustodyKey {
+                name: name.clone(),
+                generation,
+                delivery_id: DeliveryId::from("delivery-exit"),
+            })
+            .expect("custody waiter should register");
+
+        custody.fail_generation(&name, generation, "worker exited");
+        assert_eq!(
+            receiver
+                .await
+                .expect("exit should resolve custody waiter")
+                .expect_err("exit cannot confirm custody"),
+            "worker exited"
+        );
     }
 
     #[cfg(unix)]

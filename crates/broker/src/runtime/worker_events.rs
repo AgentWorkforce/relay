@@ -1867,6 +1867,11 @@ impl BrokerRuntime {
                             .and_then(|p| p.get("signal"))
                             .and_then(Value::as_str)
                             .map(String::from);
+                        workers.fail_native_delivery_custody_generation(
+                            &name,
+                            generation,
+                            "native worker reported exit before confirming delivery custody",
+                        );
                         tracing::info!(
                             agent = %name,
                             code = ?code,

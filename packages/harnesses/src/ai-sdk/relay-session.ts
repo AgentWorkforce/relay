@@ -636,16 +636,9 @@ export class RelayHarnessSession implements AgentSession {
       await this.#drain();
       return;
     }
+    let receipt: MessageReceipt;
     try {
-      const receipt = await this.#accept(queued.message, queued.context);
-      const accepted: DeliveryTombstone = { ...inDoubt, state: 'accepted' };
-      await this.#persistEntry(accepted);
-      this.#remember(queued.key, receipt);
-      await this.#emit({
-        type: 'delivery.accepted',
-        messageId: queued.message.id,
-        deliveryId: queued.context.id,
-      });
+      receipt = await this.#accept(queued.message, queued.context);
     } catch (error) {
       const receipt: MessageReceipt = {
         status: 'failed',
@@ -662,7 +655,24 @@ export class RelayHarnessSession implements AgentSession {
         retryable: false,
       });
       await this.#drain();
+      return;
     }
+
+    const accepted: DeliveryTombstone = { ...inDoubt, state: 'accepted' };
+    try {
+      await this.#persistEntry(accepted);
+    } catch {
+      // The host already accepted the message. The durable in-doubt marker is
+      // sufficient to prevent replay if the accepted transition cannot be
+      // published; do not report a false delivery failure for a turn that has
+      // started successfully.
+    }
+    this.#remember(queued.key, receipt);
+    await this.#emit({
+      type: 'delivery.accepted',
+      messageId: queued.message.id,
+      deliveryId: queued.context.id,
+    });
   }
 
   receiveMessage(message: RelayMessage, context: MessageContext): Promise<MessageReceipt> {
