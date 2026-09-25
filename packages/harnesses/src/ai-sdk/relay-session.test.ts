@@ -1,5 +1,5 @@
 import type { AgentIdentity, AgentSessionEvent, MessageContext, RelayMessage } from '@agent-relay/sdk';
-import { mkdtemp, readFile, writeFile } from 'node:fs/promises';
+import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { resolve } from 'node:path';
 import { describe, expect, it, vi } from 'vitest';
@@ -211,5 +211,28 @@ describe('RelayHarnessSession', () => {
     expect(events).toContain('observability.capabilities');
     await Promise.all([session.release?.('done'), session.release?.('again')]);
     expect(fixture.host.destroy).toHaveBeenCalledTimes(1);
+  });
+
+  it('destroys the host even when durable queue cleanup fails', async () => {
+    const root = await mkdtemp(resolve(tmpdir(), 'relay-release-failure-'));
+    const blockedDirectory = resolve(root, 'not-a-directory');
+    await writeFile(blockedDirectory, 'blocked');
+    const fixture = fakeHost();
+    const session = new RelayHarnessSession({
+      identity,
+      host: fixture.host as never,
+      deferredQueuePath: resolve(blockedDirectory, 'queue.json'),
+    });
+    const events: string[] = [];
+    session.onEvent?.((event) => events.push(event.type));
+
+    await expect(session.release?.('done')).rejects.toBeDefined();
+    expect(fixture.host.destroy).toHaveBeenCalledTimes(1);
+    expect(events).toContain('session.released');
+    await rm(blockedDirectory);
+    await mkdir(blockedDirectory);
+    await expect(session.release?.('retry')).resolves.toBeUndefined();
+    expect(fixture.host.destroy).toHaveBeenCalledTimes(1);
+    expect(events.filter((event) => event === 'session.released')).toHaveLength(1);
   });
 });

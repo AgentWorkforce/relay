@@ -108,6 +108,12 @@ function diagnosticPayload(diagnostic: HarnessV1Diagnostic) {
 }
 
 export async function runAiSdkSidecar(config: AiSdkSidecarConfig, io: AiSdkSidecarIo): Promise<void> {
+  if (!config.sessionId) {
+    throw new Error('A stable sessionId is required for deferred delivery persistence');
+  }
+  if (!config.runtimeRoot) {
+    throw new Error('A stable runtimeRoot is required for deferred delivery persistence');
+  }
   const entry = aiSdkAdapterRegistry.require(config.harness);
   const harness = await entry.createHarness(config.settings);
   const provider = new LocalHostSandboxProvider({
@@ -162,7 +168,7 @@ export async function runAiSdkSidecar(config: AiSdkSidecarConfig, io: AiSdkSidec
     } satisfies AgentIdentity,
     host,
     deferredQueuePath: resolve(
-      provider.runtimeRoot,
+      config.runtimeRoot,
       'deferred-relay',
       `${createHash('sha256').update(host.sessionId).digest('hex')}.json`
     ),

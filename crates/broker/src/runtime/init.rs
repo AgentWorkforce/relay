@@ -505,6 +505,7 @@ pub(crate) async fn run_init(cmd: InitCommand, telemetry: TelemetryClient) -> Re
         node_name: session_node_name,
         node_token: session_node_token,
         persist: paths.persist,
+        native_delivery_receipts: paths.native_delivery_receipts.clone(),
         node_delivery_probe: node_delivery_probe.clone(),
     });
     {

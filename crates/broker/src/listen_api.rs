@@ -6,6 +6,7 @@
 
 use std::{
     collections::HashMap,
+    path::PathBuf,
     sync::Arc,
     time::{Duration, Instant},
 };
@@ -426,6 +427,10 @@ struct ListenApiState {
     node_token: std::sync::Arc<std::sync::RwLock<Option<String>>>,
     /// Whether the broker is in persist mode
     persist: bool,
+    /// Direct receipt lookup used only when the runtime reply channel drops,
+    /// so the HTTP contract can distinguish pre-reservation failure from an
+    /// already committed or in-doubt delivery.
+    native_delivery_receipts: PathBuf,
     /// Node-control inbound introspection. Held directly (rather than reached
     /// through `tx`) so `GET /api/node-delivery` answers even when the runtime
     /// event loop is wedged — the case the endpoint exists to diagnose.
@@ -466,6 +471,7 @@ pub struct ListenApiConfig {
     pub node_name: String,
     pub node_token: std::sync::Arc<std::sync::RwLock<Option<String>>>,
     pub persist: bool,
+    pub native_delivery_receipts: PathBuf,
     /// Node-control inbound introspection, read directly by
     /// `GET /api/node-delivery`. See [`crate::node_delivery_probe`].
     pub node_delivery_probe: std::sync::Arc<crate::node_delivery_probe::NodeDeliveryProbe>,
@@ -511,6 +517,7 @@ pub(crate) fn listen_api_router_with_auth(
         node_name: config.node_name,
         node_token: config.node_token,
         persist: config.persist,
+        native_delivery_receipts: config.native_delivery_receipts,
         node_delivery_probe: config.node_delivery_probe,
         started_at: std::time::Instant::now(),
         input_serializers: Arc::new(tokio::sync::Mutex::new(HashMap::new())),
@@ -1292,6 +1299,7 @@ async fn listen_api_deliver_native_existing_session(
     axum::Json(delivery): axum::Json<NativeExistingSessionDelivery>,
 ) -> (axum::http::StatusCode, axum::Json<Value>) {
     let (reply_tx, reply_rx) = tokio::sync::oneshot::channel();
+    let dropped_reply_delivery = delivery.clone();
     if state
         .tx
         .send(ListenApiRequest::DeliverNativeExistingSession {
@@ -1306,9 +1314,42 @@ async fn listen_api_deliver_native_existing_session(
     match reply_rx.await {
         Ok(Ok(value)) => (axum::http::StatusCode::OK, axum::Json(value)),
         Ok(Err(error)) => native_delivery_error_to_response(&error),
-        Err(_) => native_delivery_error_to_response(&NativeDeliveryError::InDoubt(
-            "runtime reply dropped; delivery outcome is unknown and must be reconciled".to_string(),
-        )),
+        Err(_) if !state.persist => native_delivery_error_to_response(
+            &NativeDeliveryError::ReceiptUnavailable(
+                "runtime reply dropped before a durable receipt could be confirmed; retry the same deliveryId"
+                    .to_string(),
+            ),
+        ),
+        Err(_) => match tokio::task::spawn_blocking({
+            let receipt_root = state.native_delivery_receipts.clone();
+            move || crate::native_delivery::existing_outcome(&receipt_root, &dropped_reply_delivery)
+        })
+        .await
+        {
+            Err(error) => native_delivery_error_to_response(&NativeDeliveryError::InDoubt(
+                format!("runtime reply dropped and receipt lookup task failed: {error}"),
+            )),
+            Ok(Ok(Some(outcome))) => (
+                axum::http::StatusCode::OK,
+                axum::Json(json!({
+                    "receiptId": outcome.receipt_id,
+                    "status": "duplicate",
+                    "state": outcome.state.as_str(),
+                })),
+            ),
+            Ok(Ok(None)) => native_delivery_error_to_response(
+                &NativeDeliveryError::ReceiptUnavailable(
+                    "runtime reply dropped before durable reservation; retry the same deliveryId"
+                        .to_string(),
+                ),
+            ),
+            Ok(Err(NativeDeliveryError::ReceiptUnavailable(error))) => {
+                native_delivery_error_to_response(&NativeDeliveryError::InDoubt(format!(
+                    "runtime reply dropped and receipt lookup is unavailable: {error}"
+                )))
+            }
+            Ok(Err(error)) => native_delivery_error_to_response(&error),
+        },
     }
 }
 
@@ -4120,6 +4161,10 @@ mod auth_tests {
                     node_name: "test-node".to_string(),
                     node_token: std::sync::Arc::new(std::sync::RwLock::new(None)),
                     persist: false,
+                    native_delivery_receipts: std::env::temp_dir().join(format!(
+                        "agent-relay-listen-api-test-receipts-{}",
+                        uuid::Uuid::new_v4()
+                    )),
                     node_delivery_probe: node_delivery_probe.clone(),
                 },
                 broker_api_key.map(ToString::to_string),
@@ -4397,6 +4442,123 @@ mod auth_tests {
 
         assert_eq!(response.status(), StatusCode::OK);
         assert_eq!(response_json(response).await["receiptId"], "ndr_receipt");
+        replier.await.expect("delivery replier should complete");
+    }
+
+    #[tokio::test]
+    async fn dropped_native_delivery_reply_without_a_receipt_is_not_reported_committed() {
+        let (router, mut rx) = test_router(Some("secret"));
+        let replier = tokio::spawn(async move {
+            let Some(ListenApiRequest::DeliverNativeExistingSession { reply, .. }) =
+                rx.recv().await
+            else {
+                panic!("expected native existing-session delivery");
+            };
+            drop(reply);
+        });
+
+        let response = router
+            .oneshot(
+                Request::builder()
+                    .uri("/api/native-delivery/existing-session")
+                    .method("POST")
+                    .header("content-type", "application/json")
+                    .header("x-api-key", "secret")
+                    .body(Body::from(
+                        json!({
+                            "relayAgentName": "worker-a",
+                            "sessionId": "native-session-1",
+                            "deliveryId": "delivery-dropped-before-reservation",
+                            "lineageId": "lineage-1",
+                            "headSha": "a".repeat(40),
+                            "message": "continue"
+                        })
+                        .to_string(),
+                    ))
+                    .expect("request should build"),
+            )
+            .await
+            .expect("request should succeed");
+
+        assert_eq!(response.status(), StatusCode::SERVICE_UNAVAILABLE);
+        let body = response_json(response).await;
+        assert_eq!(body["committed"], false);
+        assert_eq!(body["code"], "native_delivery_receipt_unavailable");
+        replier.await.expect("delivery replier should complete");
+    }
+
+    #[tokio::test]
+    async fn dropped_native_delivery_reply_reconciles_an_in_doubt_receipt() {
+        let receipt_dir = tempfile::tempdir().expect("receipt root");
+        let receipt_path = receipt_dir.path().join("native-delivery-receipts");
+        let (tx, mut rx) = mpsc::channel(8);
+        let (events_tx, _events_rx) = broadcast::channel(8);
+        let router = listen_api_router_with_auth(
+            ListenApiConfig {
+                local_only: false,
+                tx,
+                events_tx,
+                replay_buffer: ReplayBuffer::new(DEFAULT_REPLAY_CAPACITY),
+                workspace_key: None,
+                relay_base_url: Some("https://relay.test".to_string()),
+                memberships: vec![],
+                default_workspace_id: None,
+                node_id: "node_test".to_string(),
+                node_name: "test-node".to_string(),
+                node_token: std::sync::Arc::new(std::sync::RwLock::new(None)),
+                persist: true,
+                native_delivery_receipts: receipt_path.clone(),
+                node_delivery_probe: std::sync::Arc::new(
+                    crate::node_delivery_probe::NodeDeliveryProbe::new(),
+                ),
+            },
+            Some("secret".to_string()),
+        );
+        let replier = tokio::spawn(async move {
+            let Some(ListenApiRequest::DeliverNativeExistingSession { delivery, reply }) =
+                rx.recv().await
+            else {
+                panic!("expected native existing-session delivery");
+            };
+            let result =
+                crate::native_delivery::reserve_and_deliver(&receipt_path, &delivery, |_| async {
+                    anyhow::bail!("fixture write failed")
+                })
+                .await;
+            assert!(matches!(
+                result,
+                Err(crate::native_delivery::NativeDeliveryError::InDoubt(_))
+            ));
+            drop(reply);
+        });
+
+        let response = router
+            .oneshot(
+                Request::builder()
+                    .uri("/api/native-delivery/existing-session")
+                    .method("POST")
+                    .header("content-type", "application/json")
+                    .header("x-api-key", "secret")
+                    .body(Body::from(
+                        json!({
+                            "relayAgentName": "worker-a",
+                            "sessionId": "native-session-1",
+                            "deliveryId": "delivery-dropped-after-reservation",
+                            "lineageId": "lineage-1",
+                            "headSha": "a".repeat(40),
+                            "message": "continue"
+                        })
+                        .to_string(),
+                    ))
+                    .expect("request should build"),
+            )
+            .await
+            .expect("request should succeed");
+
+        assert_eq!(response.status(), StatusCode::SERVICE_UNAVAILABLE);
+        let body = response_json(response).await;
+        assert_eq!(body["committed"], true);
+        assert_eq!(body["code"], "native_delivery_in_doubt");
         replier.await.expect("delivery replier should complete");
     }
 

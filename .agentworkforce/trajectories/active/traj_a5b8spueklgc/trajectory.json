@@ -47,6 +47,48 @@
             "reasoning": "Restarts can recover queued messages, never replay an ambiguous injection, and safely discard a message already accepted before queue cleanup"
           },
           "significance": "high"
+        },
+        {
+          "ts": 1790307646867,
+          "type": "decision",
+          "content": "Classify a dropped runtime reply by consulting the durable receipt outside the Tokio event loop: Classify a dropped runtime reply by consulting the durable receipt outside the Tokio event loop",
+          "raw": {
+            "question": "Classify a dropped runtime reply by consulting the durable receipt outside the Tokio event loop",
+            "chosen": "Classify a dropped runtime reply by consulting the durable receipt outside the Tokio event loop",
+            "alternatives": [
+              {
+                "option": "Always claim committed=true",
+                "reason": ""
+              },
+              {
+                "option": "Always claim committed=false",
+                "reason": ""
+              }
+            ],
+            "reasoning": "The oneshot can close both before and after reservation. An exact receipt distinguishes safely retryable uncommitted delivery from queued or in-doubt delivery without weakening fail-closed semantics."
+          },
+          "significance": "high"
+        },
+        {
+          "ts": 1790307660847,
+          "type": "decision",
+          "content": "Require stable native sidecar session and runtime roots and place launch state under the Agent Relay user data directory: Require stable native sidecar session and runtime roots and place launch state under the Agent Relay user data directory",
+          "raw": {
+            "question": "Require stable native sidecar session and runtime roots and place launch state under the Agent Relay user data directory",
+            "chosen": "Require stable native sidecar session and runtime roots and place launch state under the Agent Relay user data directory",
+            "alternatives": [
+              {
+                "option": "Keep the OS temp default with a suppression",
+                "reason": ""
+              },
+              {
+                "option": "Use a random root that loses restart discovery",
+                "reason": ""
+              }
+            ],
+            "reasoning": "Deferred receipts must survive restart, and a predictable shared OS-temp root permits path attacks. The stable user data root preserves durability while removing the CodeQL temp-path flow."
+          },
+          "significance": "high"
         }
       ]
     }

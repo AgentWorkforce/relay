@@ -55,6 +55,36 @@ afterEach(() => {
 });
 
 describe('AI SDK native harness sidecar', () => {
+  it('requires a stable session id for durable deferred delivery', async () => {
+    const root = await mkdtemp(resolve(tmpdir(), 'relay-sidecar-'));
+    await expect(
+      runAiSdkSidecar(
+        {
+          name: 'Worker',
+          harness: 'fake',
+          workspace: resolve(root, 'workspace'),
+          runtimeRoot: resolve(root, 'runtime'),
+        },
+        { input: new PassThrough(), write: () => undefined }
+      )
+    ).rejects.toThrow('A stable sessionId is required for deferred delivery persistence');
+  });
+
+  it('requires a stable runtime root for durable deferred delivery', async () => {
+    const root = await mkdtemp(resolve(tmpdir(), 'relay-sidecar-'));
+    await expect(
+      runAiSdkSidecar(
+        {
+          name: 'Worker',
+          harness: 'fake',
+          workspace: resolve(root, 'workspace'),
+          sessionId: 'sidecar-session',
+        },
+        { input: new PassThrough(), write: () => undefined }
+      )
+    ).rejects.toThrow('A stable runtimeRoot is required for deferred delivery persistence');
+  });
+
   it('speaks worker and native harness protocols with command deduplication', async () => {
     vi.stubEnv('RELAY_AGENT_TOKEN', 'at_live_native');
     vi.stubEnv('RELAY_WORKSPACE_KEY', 'rk_live_native');

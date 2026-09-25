@@ -1,4 +1,5 @@
 import { randomUUID } from 'node:crypto';
+import { homedir } from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
@@ -321,12 +322,17 @@ export function createNativeHarnessLaunch(
   const name = nextHarnessName(adapter.name, input.name);
   const cwd = path.resolve(input.cwd ?? process.cwd());
   const sessionId = `native-${randomUUID()}`;
+  const runtimeRoot = path.resolve(
+    process.env.AGENT_RELAY_DATA_DIR?.trim() || path.join(homedir(), '.agentworkforce', 'relay'),
+    'harness'
+  );
   const sidecarEntry = fileURLToPath(new URL('./ai-sdk/sidecar-main.js', import.meta.url));
   const sidecarConfig = {
     name,
     harness: adapter.name,
     workspace: cwd,
     sessionId,
+    runtimeRoot,
     settings: { ...(input.model ? { model: input.model } : {}) },
   };
   return {

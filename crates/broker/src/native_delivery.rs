@@ -259,7 +259,32 @@ fn save_receipt(root: &Path, receipt: &NativeDeliveryReceipt) -> Result<(), Nati
             "could not persist {}: {error}",
             path.display()
         ))
-    })
+    })?;
+    sync_receipt_directories(root)
+}
+
+#[cfg(unix)]
+fn sync_receipt_directories(root: &Path) -> Result<(), NativeDeliveryError> {
+    let sync_dir = |path: &Path| {
+        std::fs::File::open(path)
+            .and_then(|directory| directory.sync_all())
+            .map_err(|error| {
+                NativeDeliveryError::ReceiptUnavailable(format!(
+                    "could not sync receipt directory {}: {error}",
+                    path.display()
+                ))
+            })
+    };
+    sync_dir(root)?;
+    if let Some(parent) = root.parent().filter(|path| !path.as_os_str().is_empty()) {
+        sync_dir(parent)?;
+    }
+    Ok(())
+}
+
+#[cfg(not(unix))]
+fn sync_receipt_directories(_root: &Path) -> Result<(), NativeDeliveryError> {
+    Ok(())
 }
 
 /// Create a durable per-delivery reservation without replacing an existing
@@ -302,9 +327,7 @@ fn create_receipt(
             )))
         }
     }
-    if let Ok(dir) = std::fs::File::open(root) {
-        let _ = dir.sync_all();
-    }
+    sync_receipt_directories(root)?;
     Ok(true)
 }
 

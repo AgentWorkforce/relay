@@ -313,6 +313,9 @@ export class RelayHarnessSession implements AgentSession {
   readonly #listeners = new Set<(event: AgentSessionEvent) => void | Promise<void>>();
   #operation = Promise.resolve();
   #released = false;
+  #releaseCompleted = false;
+  #hostDestroyed = false;
+  #releaseEmitted = false;
   #activity: AgentActivityState = createAgentActivityState();
 
   constructor(options: RelayHarnessSessionOptions) {
@@ -407,7 +410,10 @@ export class RelayHarnessSession implements AgentSession {
         }
       }
     } finally {
-      await rm(temporaryDirectory, { recursive: true, force: true });
+      // Once rename succeeds, cleanup cannot revoke the published queue.
+      // Preserve any earlier write error, but do not turn an empty leftover
+      // temp directory into a false delivery failure.
+      await rm(temporaryDirectory, { recursive: true, force: true }).catch(() => undefined);
     }
   }
 
@@ -589,12 +595,37 @@ export class RelayHarnessSession implements AgentSession {
 
   async release(reason?: string): Promise<void> {
     return this.#serialized(async () => {
-      if (this.#released) return;
+      if (this.#releaseCompleted) return;
       this.#released = true;
       this.#queue.length = 0;
-      await this.#persistQueue();
-      await this.host.destroy();
-      await this.#emit({ type: 'session.released', reason });
+      let persistenceError: unknown;
+      try {
+        await this.#persistQueue();
+      } catch (error) {
+        persistenceError = error;
+      }
+      let destroyError: unknown;
+      if (!this.#hostDestroyed) {
+        try {
+          await this.host.destroy();
+          this.#hostDestroyed = true;
+        } catch (error) {
+          destroyError = error;
+        }
+      }
+      let emitError: unknown;
+      if (!this.#releaseEmitted) {
+        try {
+          await this.#emit({ type: 'session.released', reason });
+          this.#releaseEmitted = true;
+        } catch (error) {
+          emitError = error;
+        }
+      }
+      if (persistenceError) throw persistenceError;
+      if (destroyError) throw destroyError;
+      if (emitError) throw emitError;
+      this.#releaseCompleted = true;
     });
   }
 }
