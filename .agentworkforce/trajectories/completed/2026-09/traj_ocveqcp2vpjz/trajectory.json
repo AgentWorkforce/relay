@@ -1,0 +1,25 @@
+{
+  "id": "traj_ocveqcp2vpjz",
+  "version": 1,
+  "task": {
+    "title": "Fix PR #1825 CodeQL seal races"
+  },
+  "status": "completed",
+  "startedAt": "2026-09-21T05:25:27.398Z",
+  "completedAt": "2026-09-21T05:26:15.935Z",
+  "agents": [],
+  "chapters": [],
+  "retrospective": {
+    "summary": "Removed CodeQL-reported filesystem TOCTOU windows from native-delivery seal hashing by deriving size and digest from one read buffer and handling absent source paths from the read error.",
+    "approach": "Standard approach",
+    "confidence": 0.97
+  },
+  "commits": [],
+  "filesChanged": [],
+  "projectId": "AgentWorkforce/relay",
+  "tags": [],
+  "_trace": {
+    "startRef": "5c144ba53b6ac1b469a66bdd84c0b24280002e3f",
+    "endRef": "5c144ba53b6ac1b469a66bdd84c0b24280002e3f"
+  }
+}

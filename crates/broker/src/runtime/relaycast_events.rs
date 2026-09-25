@@ -274,8 +274,8 @@ pub(super) fn relaycast_spawn_verifies_ready(value: &Value) -> bool {
             .is_some_and(|config| harness_metadata_flag(config, "verify_ready", "verifyReady"))
 }
 
-/// Bind a freshly HTTP-registered agent to this broker's relaycast node so it
-/// becomes `locationType='via_node'`.
+/// Bind an existing Relaycast agent to this broker's node so it becomes
+/// `locationType='via_node'`.
 ///
 /// In node-only delivery the engine only delivers to `via_node` agents. The HTTP
 /// `register_agent_token` fallback (taken when node-control `agent.register` is
@@ -286,6 +286,7 @@ pub(super) async fn bind_http_registered_agent_to_node(
     relaycast_http: &RelaycastHttpClient,
     node_name: &str,
     agent_name: &str,
+    session_ref: Option<&str>,
 ) -> Option<String> {
     let Some(relay) = relaycast_http.relay_client() else {
         let message = format!(
@@ -297,7 +298,7 @@ pub(super) async fn bind_http_registered_agent_to_node(
     };
     let request = relaycast::BindAgentToNodeRequest {
         agent_name: agent_name.to_string(),
-        session_ref: None,
+        session_ref: session_ref.map(ToOwned::to_owned),
         priority: None,
     };
     match relay.bind_agent_to_node(node_name, request).await {
@@ -357,6 +358,12 @@ pub(super) async fn release_worker_locally(
     sdk_out_tx: &mpsc::Sender<ProtocolEnvelope<Value>>,
     pending_deliveries: &mut HashMap<DeliveryId, PendingDelivery>,
     dead_letters: &mut DeadLetterStore,
+    // Read-only: release disposes of pending deliveries and must be able to
+    // ask whether each one already reached a transport. Without the seam this
+    // path cannot tell a never-written message from one already sitting in
+    // Codex's durable queue, and dead-letters both as freely redeliverable.
+    delivery_seam: &crate::delivery::DeliverySeam,
+    node_delivery_probe: &crate::node_delivery_probe::NodeDeliveryProbe,
     pending_requests: &mut HashMap<String, worker_request::PendingRequest>,
     delivery_states: &mut HashMap<WorkerName, InboundDeliveryState>,
     agent_result_tokens: &mut HashMap<String, WorkerName>,
@@ -392,9 +399,11 @@ pub(super) async fn release_worker_locally(
                                 sdk_out_tx,
                                 json!({"kind":"delivery_dropped","name":name,"count":dropped.len(),"reason":"agent_released"}),
                             ).await;
-                let _ = emit_dropped_delivery_failures(
+                let _ = dispose_pending_deliveries_for_teardown(
                     sdk_out_tx,
                     dead_letters,
+                    delivery_seam,
+                    node_delivery_probe,
                     &dropped,
                     "agent_released",
                 )
@@ -773,6 +782,7 @@ pub(super) async fn spawn_worker_from_request(
                                 workspace_http,
                                 node_name,
                                 &name,
+                                session_ref.as_deref(),
                             )
                             .await;
                             if bind_warning.is_none() {
@@ -1137,6 +1147,8 @@ mod tests {
             ),
         ]);
         let (terminal_control_tx, mut terminal_control_rx) = mpsc::channel(8);
+        let delivery_seam = crate::delivery::DeliverySeam::new();
+        let node_delivery_probe = crate::node_delivery_probe::NodeDeliveryProbe::new();
 
         let outcome = release_worker_locally(
             released_agent.clone(),
@@ -1148,6 +1160,8 @@ mod tests {
             &sdk_out_tx,
             &mut pending_deliveries,
             &mut dead_letters,
+            &delivery_seam,
+            &node_delivery_probe,
             &mut pending_requests,
             &mut delivery_states,
             &mut agent_result_tokens,

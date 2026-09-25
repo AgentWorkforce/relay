@@ -6,10 +6,17 @@
  * Run: npx tsx tests/parity/multi-worker.ts
  */
 
-import { HarnessDriverClient, type BrokerEvent } from '@agent-relay/sdk';
-import { resolveBinaryPath, randomName } from '../benchmarks/harness.js';
+import { HarnessDriverClient, type BrokerEvent } from '@agent-relay/harness-driver';
+import {
+  brokerTestEnv,
+  isObservedDelivery,
+  isUnobservedDelivery,
+  resolveBinaryPath,
+  randomName,
+} from '../benchmarks/harness.js';
 
 const WORKER_COUNT = 3;
+const ECHO_CLI = "sh -c 'stty -echo; cat'";
 
 async function main(): Promise<void> {
   console.log('=== Parity Test: Multiple Workers Communication ===\n');
@@ -17,7 +24,7 @@ async function main(): Promise<void> {
   const client = await HarnessDriverClient.spawn({
     binaryPath: resolveBinaryPath(),
     channels: ['general'],
-    env: process.env,
+    env: brokerTestEnv(),
   });
 
   const workers: string[] = [];
@@ -29,7 +36,7 @@ async function main(): Promise<void> {
       const name = randomName(`mw-${i}`);
       await client.spawnPty({
         name,
-        cli: 'cat',
+        cli: ECHO_CLI,
         channels: ['general'],
       });
       workers.push(name);
@@ -60,10 +67,16 @@ async function main(): Promise<void> {
     // Step 3: Wait for delivery verification
     console.log('3. Waiting for delivery verifications...');
     let verified = 0;
+    let unobserved = 0;
     await new Promise<void>((resolve) => {
-      const timer = setTimeout(resolve, 5000);
+      const timer = setTimeout(() => {
+        unsub();
+        resolve();
+      }, 5000);
       const unsub = client.onEvent((event: BrokerEvent) => {
-        if (event.kind === 'delivery_verified') {
+        // Only an echo-observed delivery counts. See `isObservedDelivery`.
+        if (isUnobservedDelivery(event)) unobserved++;
+        if (isObservedDelivery(event)) {
           verified++;
           if (verified >= WORKER_COUNT) {
             clearTimeout(timer);
@@ -73,7 +86,8 @@ async function main(): Promise<void> {
         }
       });
     });
-    console.log(`   Deliveries verified: ${verified}/${WORKER_COUNT}\n`);
+    console.log(`   Deliveries verified (echo-observed): ${verified}/${WORKER_COUNT}`);
+    console.log(`   Deliveries unobserved (timeout fallback): ${unobserved}\n`);
 
     // Step 4: Send messages between workers (worker 0 → worker 1, worker 1 → worker 2)
     console.log('4. Testing inter-worker messages...');
@@ -93,7 +107,11 @@ async function main(): Promise<void> {
     await new Promise((r) => setTimeout(r, 1000));
 
     // Results
-    const passed = sendOk === WORKER_COUNT && verified === WORKER_COUNT && interOk === WORKER_COUNT - 1;
+    const passed =
+      sendOk === WORKER_COUNT &&
+      verified === WORKER_COUNT &&
+      unobserved === 0 &&
+      interOk === WORKER_COUNT - 1;
     console.log(
       passed ? '=== Multi-Worker Parity Test PASSED ===' : '=== Multi-Worker Parity Test FAILED ==='
     );

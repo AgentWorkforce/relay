@@ -13,6 +13,9 @@
  *   --group=messaging|lifecycle|phrasing|auto-routing|lead-delegation|lead-quality|cross-cli-spawn|task-exit|all  Scenario group (default: messaging)
  *   --repeat=N                          Repeat each scenario N times (default: 1; use 10 for reliability)
  *   --baseline=path.json                Compare against a prior report; exit 1 on regression
+ *   --require-all                       Exit 1 unless every requested scenario and harness ran and passed
+ *   --min-scenarios=N                   Exit 1 when a harness passes fewer than N scenarios
+ *   --min-delivery-rate=0..1            Exit 1 when a harness falls below this delivery rate
  *
  * Lifecycle eval quick-start (finds minimum onboarding for 10/10 reliability):
  *   RELAY_INTEGRATION_REAL_CLI=1 node dist/evals/runner.js \
@@ -104,10 +107,19 @@ interface Flags {
   group: ScenarioGroup;
   repeat: number;
   baseline?: string;
+  requireAll: boolean;
+  minScenarios?: number;
+  minDeliveryRate?: number;
 }
 
 function parseFlags(argv: string[]): Flags {
-  const flags: Flags = { harnesses: DEFAULT_HARNESSES, tier: 'realistic', group: 'messaging', repeat: 1 };
+  const flags: Flags = {
+    harnesses: DEFAULT_HARNESSES,
+    tier: 'realistic',
+    group: 'messaging',
+    repeat: 1,
+    requireAll: false,
+  };
   for (const arg of argv) {
     const [key, value] = arg.replace(/^--/, '').split('=');
     if (key === 'harness' && value) flags.harnesses = value.split(',').map((s) => s.trim());
@@ -130,6 +142,14 @@ function parseFlags(argv: string[]): Flags {
       flags.group = value as ScenarioGroup;
     else if (key === 'repeat' && value) flags.repeat = Math.max(1, Number(value) || 1);
     else if (key === 'baseline' && value) flags.baseline = value;
+    else if (key === 'require-all') flags.requireAll = true;
+    else if (key === 'min-scenarios' && value) {
+      const parsed = Number(value);
+      if (Number.isInteger(parsed) && parsed >= 0) flags.minScenarios = parsed;
+    } else if (key === 'min-delivery-rate' && value) {
+      const parsed = Number(value);
+      if (Number.isFinite(parsed) && parsed >= 0 && parsed <= 1) flags.minDeliveryRate = parsed;
+    }
   }
   return flags;
 }
@@ -219,11 +239,31 @@ async function runOnce(
   const harness = new BrokerHarness({ channels: scenario.channels, env });
   await harness.start();
   try {
+    await waitForNodeDelivery(harness, `${spec.cli} ${scenario.id}`);
     // Pass model in context so scenarios can forward it to spawnAgent (e.g. claude:haiku).
     return await scenario.run({ harness, cli: spec.cli, model: spec.model, suffix: uniqueSuffix(), sleep });
   } finally {
     await harness.stop().catch(() => {});
   }
+}
+
+async function waitForNodeDelivery(harness: BrokerHarness, label: string): Promise<void> {
+  const deadline = Date.now() + 45_000;
+  let last: unknown;
+  while (Date.now() < deadline) {
+    const status = await harness.client.getStatus();
+    const nodeDelivery = (status as { node_delivery?: { connected?: unknown }; node_connected?: unknown })
+      .node_delivery;
+    if (status.node_connected === true || nodeDelivery?.connected === true) {
+      return;
+    }
+    last = {
+      node_connected: status.node_connected,
+      node_delivery: nodeDelivery,
+    };
+    await sleep(500);
+  }
+  throw new Error(`node delivery did not become ready before ${label}; last status ${JSON.stringify(last)}`);
 }
 
 async function runHarness(
@@ -383,11 +423,15 @@ async function main(): Promise<void> {
 
   const allReports: Array<{ harness: string; report: EvalReport }> = [];
   let anyRegression = false;
+  let anySkippedHarness = false;
+  let anyScenarioFailure = false;
+  let anyFloorFailure = false;
 
   for (const harnessSpec of flags.harnesses) {
     const spec = parseHarnessSpec(harnessSpec);
     if (!isCliAvailable(spec.cli)) {
       console.log(`\n[${harnessSpec}] skipped — CLI not found on PATH`);
+      anySkippedHarness = true;
       continue;
     }
     const label = spec.model ? `${spec.cli}:${spec.model.split('/').pop()}` : spec.cli;
@@ -398,9 +442,27 @@ async function main(): Promise<void> {
     matrix.harnesses[label] = report.metrics;
     allReports.push({ harness: label, report });
     printMetrics(label, report.metrics);
+    if (
+      report.metrics.scenariosTotal === 0 ||
+      report.metrics.scenariosPassed < report.metrics.scenariosTotal
+    ) {
+      anyScenarioFailure = true;
+      console.error(
+        `  scenarios failed: ${report.metrics.scenariosPassed}/${report.metrics.scenariosTotal} passed`
+      );
+    }
+    if (flags.minScenarios !== undefined && report.metrics.scenariosPassed < flags.minScenarios) {
+      anyFloorFailure = true;
+      console.error(`  scenario floor missed: ${report.metrics.scenariosPassed} < ${flags.minScenarios}`);
+    }
+    if (flags.minDeliveryRate !== undefined && report.metrics.deliverySuccessRate < flags.minDeliveryRate) {
+      anyFloorFailure = true;
+      console.error(
+        `  delivery floor missed: ${report.metrics.deliverySuccessRate} < ${flags.minDeliveryRate}`
+      );
+    }
     console.log(`  report → ${file}`);
     console.log(`  html   → ${htmlFile}`);
-
     if (flags.baseline) {
       try {
         const deltas = compareReports(readReport(flags.baseline), report);
@@ -428,7 +490,18 @@ async function main(): Promise<void> {
     printLifecycleMatrix(allReports);
   }
 
-  process.exit(anyRegression ? 1 : 0);
+  if (anySkippedHarness) {
+    console.error('\nOne or more requested harnesses were skipped.');
+  }
+  if (allReports.length === 0) {
+    console.error('\nNo requested harness ran.');
+  }
+
+  const strictFailure =
+    flags.requireAll && (anySkippedHarness || anyScenarioFailure || allReports.length === 0);
+  const floorWasRequested = flags.minScenarios !== undefined || flags.minDeliveryRate !== undefined;
+  const floorFailure = floorWasRequested && (anySkippedHarness || anyFloorFailure || allReports.length === 0);
+  process.exit(anyRegression || strictFailure || floorFailure ? 1 : 0);
 }
 
 main().catch((err) => {

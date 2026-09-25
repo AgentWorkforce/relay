@@ -274,6 +274,22 @@ pub(crate) async fn run_headless_worker(cmd: HeadlessCommand) -> Result<()> {
                     }
                 };
 
+                // KNOWN VIOLATION of seam rule 4 ("never claim an
+                // acknowledgement you did not observe"), pre-dating the seam
+                // and deliberately left in place for phase 0. See relay#1831.
+                //
+                // A successful spawn is not an observation that the child read
+                // the message. The real observation is the clean exit below,
+                // which reports `verification: "process_exit"`.
+                //
+                // Removing this ack is not a local change: the broker withholds
+                // the engine-facing fleet ack until `delivery_ack` arrives, so
+                // acking only at exit would leave a long-running headless child
+                // unacked past the Steer ack timeout, and the retry would
+                // re-inject a message whose first copy is still running — the
+                // double delivery `STEER_ACK_SLACK` exists to prevent. Fixing
+                // it needs a separate confirmation path for routes whose
+                // observation arrives late, with its own evidence.
                 let _ = send_frame(
                     &out_tx,
                     "delivery_ack",
@@ -320,6 +336,7 @@ pub(crate) async fn run_headless_worker(cmd: HeadlessCommand) -> Result<()> {
                                 json!({
                                     "delivery_id": delivery_id,
                                     "event_id": event_id,
+                                    "verification": crate::broker::delivery_verification::PROCESS_EXIT_VERIFICATION,
                                 }),
                             )
                             .await;

@@ -1,0 +1,97 @@
+{
+  "id": "traj_ryl4jxq6yaqx",
+  "version": 1,
+  "task": {
+    "title": "Resume task from handoff-1825"
+  },
+  "status": "completed",
+  "startedAt": "2026-09-21T04:03:47.065Z",
+  "completedAt": "2026-09-21T04:58:11.661Z",
+  "agents": [
+    {
+      "name": "default",
+      "role": "lead",
+      "joinedAt": "2026-09-21T04:07:43.226Z"
+    }
+  ],
+  "chapters": [
+    {
+      "id": "chap_8j83n6hyc3zj",
+      "title": "Work",
+      "agentName": "default",
+      "startedAt": "2026-09-21T04:07:43.226Z",
+      "endedAt": "2026-09-21T04:58:11.661Z",
+      "events": [
+        {
+          "ts": 1789963663227,
+          "type": "decision",
+          "content": "Use provisional in-doubt receipt plus typed terminal timeout for F8: Use provisional in-doubt receipt plus typed terminal timeout for F8",
+          "raw": {
+            "question": "Use provisional in-doubt receipt plus typed terminal timeout for F8",
+            "chosen": "Use provisional in-doubt receipt plus typed terminal timeout for F8",
+            "alternatives": [],
+            "reasoning": "The outer retry deadline can cancel after writer-queue admission. Recording before await makes cancellation fail closed; marking the pending entry at the retry cap and returning TerminalInDoubt prevents a live retry. This may suppress a provably pre-write delivery if cancellation wins before the backend reports refusal, but it preserves rule 2: never resend on doubt."
+          },
+          "significance": "high"
+        },
+        {
+          "ts": 1789966682319,
+          "type": "decision",
+          "content": "Fail closed at the backend admission boundary and terminalize cursor-covered siblings: Fail closed at the backend admission boundary and terminalize cursor-covered siblings",
+          "raw": {
+            "question": "Fail closed at the backend admission boundary and terminalize cursor-covered siblings",
+            "chosen": "Fail closed at the backend admission boundary and terminalize cursor-covered siblings",
+            "alternatives": [],
+            "reasoning": "A cancelled PTY handoff may already have entered the sole writer queue, so retry safety requires a provisional in-doubt receipt; cursor advances must terminal-guard, emit failure, and dead-letter every removed sibling instead of silently retaining away operator evidence."
+          },
+          "significance": "high"
+        },
+        {
+          "ts": 1789966682612,
+          "type": "decision",
+          "content": "Keep acceptance honest about declared baseline failures: Keep acceptance honest about declared baseline failures",
+          "raw": {
+            "question": "Keep acceptance honest about declared baseline failures",
+            "chosen": "Keep acceptance honest about declared baseline failures",
+            "alternatives": [],
+            "reasoning": "The workflow already uses regression-gate for three unreachable full-suite failures, so final acceptance must apply the same classifier; full-package Cargo runs must not forbid legitimate zero-test auxiliary targets."
+          },
+          "significance": "high"
+        },
+        {
+          "ts": 1789966682903,
+          "type": "reflection",
+          "content": "Phase-0 seam hardening is implemented and independently scanned; all task-specific, Rust, typecheck, mutation, and live parity checks pass. Final workflow acceptance is intentionally blocked only on genuine Claude and Codex signoff artifacts.",
+          "raw": {
+            "focalPoints": [
+              "cancellation-safety",
+              "delivery-accounting",
+              "gate-integrity"
+            ],
+            "confidence": 0.92
+          },
+          "significance": "high",
+          "tags": [
+            "focal:cancellation-safety",
+            "focal:delivery-accounting",
+            "focal:gate-integrity",
+            "confidence:0.92"
+          ]
+        }
+      ]
+    }
+  ],
+  "retrospective": {
+    "summary": "Closed the phase-0 delivery seam cancellation race with provisional in-doubt receipts, terminalized and dead-lettered cursor-covered fleet siblings, strengthened per-delivery observation accounting and mutation proof, repaired migration evidence gates, and validated Rust/typecheck/parity/Veto review.",
+    "approach": "Standard approach",
+    "confidence": 0.92
+  },
+  "commits": [],
+  "filesChanged": [],
+  "projectId": "AgentWorkforce/relay",
+  "tags": [],
+  "_trace": {
+    "startRef": "748102e5569338effcbd586124a1511e1f8ef46c",
+    "endRef": "748102e5569338effcbd586124a1511e1f8ef46c"
+  }
+}

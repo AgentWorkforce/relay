@@ -1,0 +1,53 @@
+{
+  "id": "traj_d94tivzr50by",
+  "version": 1,
+  "task": {
+    "title": "Phase 0 seam: route phase-0 TS proof files in the feature manifest"
+  },
+  "status": "completed",
+  "startedAt": "2026-09-20T16:39:28.943Z",
+  "completedAt": "2026-09-20T16:39:29.570Z",
+  "agents": [
+    {
+      "name": "default",
+      "role": "lead",
+      "joinedAt": "2026-09-20T16:39:29.267Z"
+    }
+  ],
+  "chapters": [
+    {
+      "id": "chap_qw0sboz0o08e",
+      "title": "Work",
+      "agentName": "default",
+      "startedAt": "2026-09-20T16:39:29.267Z",
+      "endedAt": "2026-09-20T16:39:29.570Z",
+      "events": [
+        {
+          "ts": 1789922369268,
+          "type": "decision",
+          "content": "Routed tests/fixtures/delivery-contract-evals.test.ts and tests/fixtures/targeted-feature-verification.test.ts onto the existing delivery-backend-seam location list: Routed tests/fixtures/delivery-contract-evals.test.ts and tests/fixtures/targeted-feature-verification.test.ts onto the existing delivery-backend-seam location list",
+          "raw": {
+            "question": "Routed tests/fixtures/delivery-contract-evals.test.ts and tests/fixtures/targeted-feature-verification.test.ts onto the existing delivery-backend-seam location list",
+            "chosen": "Routed tests/fixtures/delivery-contract-evals.test.ts and tests/fixtures/targeted-feature-verification.test.ts onto the existing delivery-backend-seam location list",
+            "alternatives": [],
+            "reasoning": "The selector fails closed on unmapped runtime paths; both files are this phase's TypeScript-side proof of the seam (contract evals, and the assertions guarding the seam's own manifest row). The semantically tighter fix - adding the selector's unit-test fixture to SELF_CHECK_PATHS in scripts/verify-features/targeted-pr-plan.mjs - is outside the phase contract's edit scope and would fail edit-gate. No feature row was added or deleted."
+          },
+          "significance": "high"
+        }
+      ]
+    }
+  ],
+  "retrospective": {
+    "summary": "Manifest now routes every changed phase-0 runtime path; targeted-gate green with unmapped=0 (full-smoke remains, from the manifest self-check, which the gate expects). Verified by mutation: removing the two paths reproduces the original GATE_FAILED.",
+    "approach": "Standard approach",
+    "confidence": 0.9
+  },
+  "commits": [],
+  "filesChanged": [],
+  "projectId": "AgentWorkforce/relay",
+  "tags": [],
+  "_trace": {
+    "startRef": "e3bd628d06000ebd987ff05a53c88813d020d90e",
+    "endRef": "e3bd628d06000ebd987ff05a53c88813d020d90e"
+  }
+}

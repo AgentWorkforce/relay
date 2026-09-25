@@ -1,0 +1,25 @@
+{
+  "id": "traj_is38t089kq2s",
+  "version": 1,
+  "task": {
+    "title": "Fix PR #1825 CI type narrowing"
+  },
+  "status": "completed",
+  "startedAt": "2026-09-21T05:12:58.636Z",
+  "completedAt": "2026-09-21T05:14:23.266Z",
+  "agents": [],
+  "chapters": [],
+  "retrospective": {
+    "summary": "Fixed PR #1825 broker-test CI compilation by replacing assertion-library type narrowing with an explicit fail branch; exact compiler and observation-ledger tests pass.",
+    "approach": "Standard approach",
+    "confidence": 0.98
+  },
+  "commits": [],
+  "filesChanged": [],
+  "projectId": "AgentWorkforce/relay",
+  "tags": [],
+  "_trace": {
+    "startRef": "3097eff638443f6f8ce71f80a1070130cc86a2a9",
+    "endRef": "3097eff638443f6f8ce71f80a1070130cc86a2a9"
+  }
+}

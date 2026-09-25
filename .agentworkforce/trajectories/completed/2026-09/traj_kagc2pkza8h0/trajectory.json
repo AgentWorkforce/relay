@@ -1,0 +1,53 @@
+{
+  "id": "traj_kagc2pkza8h0",
+  "version": 1,
+  "task": {
+    "title": "Phase 0 native delivery seam"
+  },
+  "status": "completed",
+  "startedAt": "2026-09-20T17:40:50.226Z",
+  "completedAt": "2026-09-20T17:51:45.930Z",
+  "agents": [
+    {
+      "name": "default",
+      "role": "lead",
+      "joinedAt": "2026-09-20T17:51:40.051Z"
+    }
+  ],
+  "chapters": [
+    {
+      "id": "chap_o5af9xoywg8a",
+      "title": "Work",
+      "agentName": "default",
+      "startedAt": "2026-09-20T17:51:40.051Z",
+      "endedAt": "2026-09-20T17:51:45.930Z",
+      "events": [
+        {
+          "ts": 1789926700052,
+          "type": "reflection",
+          "content": "Phase 0 seam is implemented and locally gated; fixed parity harness imports/resolver/timeouts so contract parity commands run against the repo broker.",
+          "raw": {
+            "confidence": 0.86
+          },
+          "significance": "high",
+          "tags": [
+            "confidence:0.86"
+          ]
+        }
+      ]
+    }
+  ],
+  "retrospective": {
+    "summary": "Implemented and validated native-delivery phase 0 seam evidence: seam invariants are present and mutation-proofed, PTY backend is behind DeliveryBackend, manifest/targeted gates are green, and all contract parity commands pass after fixing their stale harness wiring to the repo broker.",
+    "approach": "Standard approach",
+    "confidence": 0.86
+  },
+  "commits": [],
+  "filesChanged": [],
+  "projectId": "AgentWorkforce/relay",
+  "tags": [],
+  "_trace": {
+    "startRef": "ff136a33ec0cedfb536e84058688f945026093b7",
+    "endRef": "ff136a33ec0cedfb536e84058688f945026093b7"
+  }
+}

@@ -7,8 +7,17 @@
  * Run: npx tsx tests/parity/continuity-handoff.ts
  */
 
-import { HarnessDriverClient, type BrokerEvent } from '@agent-relay/sdk';
-import { resolveBinaryPath, randomName } from '../benchmarks/harness.js';
+import { HarnessDriverClient, type BrokerEvent } from '@agent-relay/harness-driver';
+import {
+  brokerTestEnv,
+  isObservedDelivery,
+  isUnobservedDelivery,
+  resolveBinaryPath,
+  randomName,
+} from '../benchmarks/harness.js';
+
+const DELIVERY_TIMEOUT_MS = 15_000;
+const ECHO_CLI = "sh -c 'stty -echo; cat'";
 
 async function main(): Promise<void> {
   console.log('=== Parity Test: Continuity Handoff (Spawn/Release Cycle) ===\n');
@@ -16,7 +25,7 @@ async function main(): Promise<void> {
   const client = await HarnessDriverClient.spawn({
     binaryPath: resolveBinaryPath(),
     channels: ['general'],
-    env: process.env,
+    env: brokerTestEnv(),
   });
 
   const agentName = randomName('handoff');
@@ -26,7 +35,7 @@ async function main(): Promise<void> {
     console.log('1. First spawn cycle...');
     await client.spawnPty({
       name: agentName,
-      cli: 'cat',
+      cli: ECHO_CLI,
       channels: ['general'],
     });
     console.log(`   Spawned: ${agentName}`);
@@ -44,10 +53,16 @@ async function main(): Promise<void> {
 
     // Wait for delivery
     let verified1 = false;
+    let unobserved1 = false;
     await new Promise<void>((resolve) => {
-      const timer = setTimeout(resolve, 5000);
+      const timer = setTimeout(() => {
+        unsub();
+        resolve();
+      }, DELIVERY_TIMEOUT_MS);
       const unsub = client.onEvent((event: BrokerEvent) => {
-        if (event.kind === 'delivery_verified') {
+        // Only an echo-observed delivery counts. See `isObservedDelivery`.
+        if (isUnobservedDelivery(event)) unobserved1 = true;
+        if (isObservedDelivery(event)) {
           verified1 = true;
           clearTimeout(timer);
           unsub();
@@ -55,7 +70,8 @@ async function main(): Promise<void> {
         }
       });
     });
-    console.log(`   Delivery verified: ${verified1}\n`);
+    console.log(`   Delivery verified (echo-observed): ${verified1}`);
+    console.log(`   Delivery unobserved (timeout fallback): ${unobserved1}\n`);
 
     // Step 2: Release
     console.log('2. Releasing agent...');
@@ -68,7 +84,7 @@ async function main(): Promise<void> {
     console.log('3. Re-spawning with same name...');
     await client.spawnPty({
       name: agentName,
-      cli: 'cat',
+      cli: ECHO_CLI,
       channels: ['general'],
     });
     console.log(`   Re-spawned: ${agentName}`);
@@ -86,10 +102,16 @@ async function main(): Promise<void> {
 
     // Wait for delivery
     let verified2 = false;
+    let unobserved2 = false;
     await new Promise<void>((resolve) => {
-      const timer = setTimeout(resolve, 5000);
+      const timer = setTimeout(() => {
+        unsub();
+        resolve();
+      }, DELIVERY_TIMEOUT_MS);
       const unsub = client.onEvent((event: BrokerEvent) => {
-        if (event.kind === 'delivery_verified') {
+        // Only an echo-observed delivery counts. See `isObservedDelivery`.
+        if (isUnobservedDelivery(event)) unobserved2 = true;
+        if (isObservedDelivery(event)) {
           verified2 = true;
           clearTimeout(timer);
           unsub();
@@ -97,7 +119,8 @@ async function main(): Promise<void> {
         }
       });
     });
-    console.log(`   Delivery verified: ${verified2}\n`);
+    console.log(`   Delivery verified (echo-observed): ${verified2}`);
+    console.log(`   Delivery unobserved (timeout fallback): ${unobserved2}\n`);
 
     // Step 4: Final release
     console.log('4. Final release...');
@@ -105,7 +128,7 @@ async function main(): Promise<void> {
     console.log('   Released\n');
 
     // Results
-    const passed = send1Ok && verified1 && send2Ok && verified2;
+    const passed = send1Ok && verified1 && !unobserved1 && send2Ok && verified2 && !unobserved2;
     console.log(
       passed
         ? '=== Continuity Handoff Parity Test PASSED ==='

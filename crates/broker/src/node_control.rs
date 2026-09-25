@@ -1234,6 +1234,106 @@ impl FleetDeliveryBook {
         (cursor.acked_up_to_seq > before).then_some(cursor.acked_up_to_seq)
     }
 
+    /// Remove an unobserved delivery from the contiguous confirmation
+    /// requirement. This does not return an ACK to send immediately; it only
+    /// prevents one unverified PTY fallback from pinning every later confirmed
+    /// delivery across restarts.
+    /// Remove an unobserved delivery from the contiguous confirmation
+    /// requirement, returning the new cumulative ACK floor when the cursor
+    /// advanced.
+    ///
+    /// Returning the floor is load-bearing, not a convenience. Advancing the
+    /// cursor has consequences the BOOK cannot apply: siblings at or below the
+    /// new floor are sitting in `pending_deliveries` solely to carry a withheld
+    /// fleet ack (`runtime/fleet.rs:1825`) and must be purged, and the resolved
+    /// ack must be sent. `commit_confirmed_delivery` returns `Option<u64>` for
+    /// exactly this reason and its caller follows up with
+    /// `advance_pending_fleet_ack_floors` plus a sibling `retain`
+    /// (`runtime/fleet.rs:1816-1823`).
+    ///
+    /// This function previously returned `()`, so the advance was invisible to
+    /// its caller. The drain below then removed the entry that
+    /// `is_delivery_confirmation_held` uses to keep an out-of-order-confirmed
+    /// delivery out of the maintenance retry sweep
+    /// (`runtime/maintenance.rs:155-166`), while nothing purged it from
+    /// `pending_deliveries` — so an already-delivered, already-confirmed
+    /// message became retry-eligible and was re-injected. Permanently: every
+    /// later confirmation then returned `None` and re-inserted it.
+    /// Record a delivery's `msg_id` for duplicate detection WITHOUT touching
+    /// either sequence cursor.
+    ///
+    /// `commit_received` does two things: it marks the msg_id seen, and for an
+    /// identity's first sequenced frame it seeds `acked = received = seq - 1`.
+    /// The in-doubt path needs the first and must never do the second — seeding
+    /// a cursor origin from a delivery nobody observed is the hazard
+    /// [`Self::abandon_unconfirmed_delivery`] declines to create.
+    ///
+    /// Calling `commit_received` before `abandon_unconfirmed_delivery` defeats
+    /// that guard entirely: it sets `has_sequenced_position`, so the `seeded`
+    /// check then passes and the cursor advances from an origin the in-doubt
+    /// frame itself established. Use this instead where only the dedup marker
+    /// is wanted.
+    pub(crate) fn mark_delivery_seen(&mut self, deliver: &Deliver) {
+        self.mark_cursors_dirty();
+        let cursor = self
+            .agents
+            .entry(deliver.agent_id.clone())
+            .or_insert_with(|| AgentDeliveryCursor {
+                agent_name: deliver.agent.clone(),
+                ..AgentDeliveryCursor::default()
+            });
+        cursor.agent_name.clone_from(&deliver.agent);
+        cursor
+            .seen_msg_ids
+            .insert(&deliver.msg_id, &deliver.delivery_id, deliver.seq);
+    }
+
+    pub(crate) fn abandon_unconfirmed_delivery(&mut self, deliver: &Deliver) -> Option<u64> {
+        self.mark_cursors_dirty();
+        // An unobserved delivery is the worst possible source of truth for a
+        // cursor origin, so it must not establish one.
+        //
+        // `commit_received` seeds `acked = received = seq - 1` for an
+        // identity's first sequenced delivery, which is correct for a frame the
+        // agent actually received — a respawned agent resumes mid-stream and
+        // would otherwise read every message as a gap. After a restart with
+        // pending 5, 6, 7 re-injected and none confirmed, seeding from an
+        // abandoned 7 puts the cursor above two messages that were never
+        // delivered; the next genuine confirmation then emits a cumulative ack
+        // that retires all three at the engine, with no dead letter and no
+        // unread state.
+        //
+        // The confirm path guards this with a `restore_pending_agent` prologue
+        // (`runtime/fleet.rs:1791-1796`) whose doc states the asymmetry: the
+        // broker may retry an already-landed delivery, but it must never
+        // falsely ACK an undelivered lower one. This path has no such prologue,
+        // so it declines to seed at all.
+        let seeded = self
+            .agents
+            .get(deliver.agent_id.as_str())
+            .is_some_and(|cursor| cursor.has_sequenced_position);
+        if !seeded {
+            return None;
+        }
+        self.commit_received(deliver);
+        let cursor = self.agents.get_mut(deliver.agent_id.as_str())?;
+        if deliver.seq == 0 || deliver.seq <= cursor.acked_up_to_seq {
+            return None;
+        }
+        cursor.confirmed_delivery_seqs.insert(deliver.seq, ());
+        let before = cursor.acked_up_to_seq;
+        loop {
+            let next = cursor.acked_up_to_seq.saturating_add(1);
+            if next > cursor.received_up_to_seq
+                || cursor.confirmed_delivery_seqs.remove(&next).is_none()
+            {
+                break;
+            }
+            cursor.acked_up_to_seq = next;
+        }
+        (cursor.acked_up_to_seq > before).then_some(cursor.acked_up_to_seq)
+    }
+
     pub(crate) fn is_delivery_confirmation_held(&self, deliver: &Deliver) -> bool {
         deliver.seq > 0
             && self
@@ -3304,6 +3404,104 @@ mod tests {
         server.await.expect("test server should finish");
         assert_eq!(token, "nt_live_retry_success");
         assert_eq!(attempts.load(Ordering::SeqCst), 2);
+    }
+
+    /// relay: F1 — abandoning an unobserved delivery must not release the
+    /// retry hold on an already-confirmed successor.
+    ///
+    /// `confirmed_delivery_seqs` does double duty: it lets the cumulative
+    /// cursor advance across a contiguous confirmed prefix, AND it is the only
+    /// thing keeping an out-of-order-confirmed delivery out of the maintenance
+    /// retry sweep (`is_delivery_confirmation_held`, consumed at
+    /// `runtime/maintenance.rs:155-166`).
+    ///
+    /// The drain loop in `abandon_unconfirmed_delivery` removes entries for the
+    /// abandoned sequence AND every contiguous successor. For a successor that
+    /// was confirmed out of order — and is therefore sitting in
+    /// `pending_deliveries` solely to carry its withheld fleet ack
+    /// (`runtime/fleet.rs:1825`) — that makes an already-delivered message
+    /// retry-eligible, and it is re-injected.
+    ///
+    /// The two preconditions are correlated, not independent: the delivery that
+    /// fails to echo is exactly the one whose successor confirms first.
+    #[test]
+    fn abandoning_an_unobserved_delivery_keeps_a_confirmed_successor_held() {
+        let mut book = FleetDeliveryBook::default();
+        let four = deliver_frame_at("agent-a", "agent-a-id", 4);
+        let five = deliver_frame_at("agent-a", "agent-a-id", 5);
+
+        // Both surfaced to the agent.
+        book.commit_received(&four);
+        book.commit_received(&five);
+
+        // seq 5 echoes and confirms first. The cursor cannot advance past the
+        // gap at 4, so `commit_confirmed_delivery` reports no new ack and the
+        // pending entry is retained to carry the withheld one.
+        assert_eq!(book.commit_confirmed_delivery(&five), None);
+        assert!(
+            book.is_delivery_confirmation_held(&five),
+            "a confirmed-but-unackable delivery must be held out of the retry sweep"
+        );
+
+        // seq 4's echo never arrives; it settles unobserved. That advances the
+        // cursor across 4 AND the already-confirmed 5, which releases 5's retry
+        // hold — so the advance MUST be reported, or the caller cannot purge
+        // seq 5 from `pending_deliveries` and it is re-injected forever.
+        assert_eq!(
+            book.abandon_unconfirmed_delivery(&four),
+            Some(5),
+            "abandoning seq 4 advanced the cursor to 5 without reporting it: \
+             confirmed seq 5 loses its retry hold with nothing to purge it"
+        );
+    }
+
+    /// relay: F4 — an unobserved delivery must never establish the cursor
+    /// origin after a restart.
+    ///
+    /// `commit_received` seeds `acked = received = seq - 1` for the first
+    /// sequenced delivery of an identity, so an agent whose engine sequence
+    /// resumes mid-stream is not permanently short of its own cursor. That is
+    /// right for a delivery the agent actually received. It is catastrophic for
+    /// an abandoned one.
+    ///
+    /// Restart shape: pending 5, 6, 7 all re-injected, none confirmed, book
+    /// empty. If 7's window expires first, seeding from 7 puts the cursor at 7
+    /// — above two messages that were never delivered. The next genuine
+    /// confirmation emits a cumulative ack that retires all three at the
+    /// engine, with no dead letter and no unread state, and
+    /// `runtime/delivery.rs:107-111` says a cumulative ACK "proves every lower
+    /// sequence is complete".
+    #[test]
+    fn abandoning_after_restart_does_not_seed_the_cursor_from_the_abandoned_frame() {
+        let mut book = FleetDeliveryBook::default();
+
+        // Restart: nothing known about this agent yet.
+        let seven = deliver_frame_at("worker-a", "worker-a-id", 7);
+        let advanced = book.abandon_unconfirmed_delivery(&seven);
+
+        assert_eq!(
+            advanced, None,
+            "an unobserved delivery advanced the cumulative cursor on a cold book"
+        );
+        assert!(
+            book.acked_up_to_seq("worker-a-id") < 5,
+            "the cursor was seeded from an ABANDONED frame, so seq 5 and 6 — never \
+             delivered, never confirmed — now sit below it and the next cumulative \
+             ack claims them"
+        );
+    }
+
+    fn deliver_frame_at(agent: &str, agent_id: &str, seq: u64) -> Deliver {
+        Deliver {
+            v: FLEET_WIRE_VERSION,
+            agent: agent.to_string(),
+            agent_id: agent_id.to_string(),
+            delivery_id: format!("delivery-{seq}"),
+            msg_id: format!("msg-{seq}"),
+            seq,
+            mode: DeliveryMode::Wait,
+            payload: json!({"text": "x"}),
+        }
     }
 
     #[test]
@@ -6457,3 +6655,162 @@ mod tests {
 
 #[cfg(test)]
 mod registration_tests;
+
+#[cfg(test)]
+mod in_doubt_cursor_seeding_tests {
+    use super::*;
+
+    fn deliver(agent_id: &str, seq: u64, msg_id: &str) -> Deliver {
+        Deliver {
+            v: crate::fleet_wire::FLEET_WIRE_VERSION,
+            agent: agent_id.to_string(),
+            agent_id: agent_id.to_string(),
+            delivery_id: format!("del_{msg_id}"),
+            msg_id: msg_id.to_string(),
+            seq,
+            mode: crate::fleet_wire::DeliveryMode::Wait,
+            payload: serde_json::json!({}),
+        }
+    }
+
+    /// The in-doubt path must not establish a cursor origin, even indirectly.
+    ///
+    /// `abandon_unconfirmed_delivery` refuses to seed — but its caller in
+    /// `runtime/fleet.rs` used to call `commit_received` on the line above it,
+    /// which sets `has_sequenced_position`. The `seeded` check then passed
+    /// because the preceding line had just created the condition it tests, and
+    /// the cursor advanced from an origin an unobserved frame defined.
+    ///
+    /// `mark_delivery_seen` exists so the dedup marker can be recorded without
+    /// that side effect. This pins the distinction: after it, an unseeded
+    /// identity is still unseeded, and abandon still declines.
+    #[test]
+    fn marking_a_delivery_seen_does_not_seed_a_cursor_origin() {
+        let mut book = FleetDeliveryBook::default();
+        let frame = deliver("agent-1", 7, "msg-7");
+
+        book.mark_delivery_seen(&frame);
+
+        let cursor = book
+            .agents
+            .get("agent-1")
+            .expect("the identity should exist after marking");
+        assert!(
+            !cursor.has_sequenced_position,
+            "marking a delivery seen must not give the identity a sequenced position"
+        );
+        assert_eq!(cursor.acked_up_to_seq, 0, "no cursor origin may be taken");
+        assert_eq!(
+            cursor.received_up_to_seq, 0,
+            "no cursor origin may be taken"
+        );
+
+        assert_eq!(
+            book.abandon_unconfirmed_delivery(&frame),
+            None,
+            "an unseeded identity must still refuse to advance past an unobserved delivery"
+        );
+    }
+
+    /// The fleet call site must not re-create the hazard.
+    ///
+    /// The unit tests above prove `mark_delivery_seen` is safe and
+    /// `commit_received` is not. Neither can see which one `runtime/fleet.rs`
+    /// actually calls, and the bug was entirely in that choice — the guard was
+    /// correct and the call site defeated it from the line above.
+    ///
+    /// Extracts the enclosing `Err(error) =>` arm by balancing braces. Guarding
+    /// only the nested `if in_doubt` block is evadable by moving
+    /// `commit_received` one line above it — the exact location of the original
+    /// defect. Anti-vacuity checks pin the anchors and minimum span too.
+    #[test]
+    fn the_fleet_in_doubt_branch_does_not_seed_a_cursor_origin() {
+        let source = include_str!("runtime/fleet.rs");
+        let in_doubt = source
+            .find("if in_doubt {")
+            .expect("fleet.rs must still have an `if in_doubt` branch");
+        let needle = "Err(error) => {";
+        let open = source
+            .get(..in_doubt)
+            .and_then(|prefix| prefix.rfind(needle))
+            .map(|offset| offset + needle.len() - 1)
+            .expect("the in-doubt branch must remain inside an Err(error) arm");
+
+        let bytes = source.as_bytes();
+        let mut depth = 0usize;
+        let mut close = None;
+        for (index, byte) in bytes.iter().enumerate().skip(open) {
+            match byte {
+                b'{' => depth += 1,
+                b'}' => {
+                    depth -= 1;
+                    if depth == 0 {
+                        close = Some(index);
+                        break;
+                    }
+                }
+                _ => {}
+            }
+        }
+        let arm = &source[open..=close.expect("the Err(error) arm must be brace-balanced")];
+
+        // Compare against CODE, not prose. The branch carries a comment
+        // explaining why `commit_received` is wrong here, and a naive substring
+        // check matches its own explanation.
+        let code: String = arm
+            .lines()
+            .map(|line| line.split("//").next().unwrap_or(""))
+            .collect::<Vec<_>>()
+            .join("\n");
+
+        assert!(
+            code.lines().count() >= 35,
+            "extracted span is too short to cover the enclosing fleet error arm"
+        );
+        assert!(
+            code.contains("TerminalInDoubtError") && code.contains("if in_doubt"),
+            "extracted the wrong arm: it must classify the typed in-doubt error"
+        );
+        assert!(
+            code.contains("abandon_unconfirmed_delivery"),
+            "the in-doubt error arm must still abandon the delivery"
+        );
+        assert!(
+            code.contains("mark_delivery_seen"),
+            "the in_doubt branch must record the dedup marker, or the engine \
+             re-classifies its redelivery as Deliver and the broker re-injects"
+        );
+        assert!(
+            !code.contains("commit_received"),
+            "the fleet error arm calls commit_received around the in-doubt branch, which seeds \
+             acked = received = seq - 1 for an identity's first sequenced frame. \
+             That sets has_sequenced_position, so abandon_unconfirmed_delivery's \
+             refusal to establish a cursor origin from an unobserved delivery \
+             passes on a condition this branch just created. Use \
+             mark_delivery_seen instead."
+        );
+    }
+
+    /// The regression itself: `commit_received` first, then abandon, advances.
+    ///
+    /// Kept as an explicit contrast so the reason `mark_delivery_seen` exists
+    /// cannot be optimised away by someone reading only the call site.
+    #[test]
+    fn commit_received_before_abandon_would_seed_and_advance() {
+        let mut book = FleetDeliveryBook::default();
+        let frame = deliver("agent-2", 7, "msg-7");
+
+        book.commit_received(&frame);
+        assert!(
+            book.agents
+                .get("agent-2")
+                .is_some_and(|cursor| cursor.has_sequenced_position),
+            "commit_received seeds a sequenced position — this is the hazard"
+        );
+        assert_eq!(
+            book.abandon_unconfirmed_delivery(&frame),
+            Some(7),
+            "once seeded, abandon advances past a delivery nobody observed"
+        );
+    }
+}

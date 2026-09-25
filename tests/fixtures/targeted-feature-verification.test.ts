@@ -159,6 +159,50 @@ describe('targeted Flows v2 PR verification', () => {
     expect(result.scenarios.map(({ id }: { id: string }) => id)).toContain('sdk-harness-contracts');
   });
 
+  it('routes every native-delivery phase-0 runtime path instead of failing closed to smoke', () => {
+    // `docs/native-delivery-migration.md`: the selector fails closed, so a
+    // backend file that no manifest `location:` routes drops the whole
+    // migration PR into the complete smoke profile. Each phase-0 path must
+    // reach `delivery-backend-seam` on its own, and all of them together must
+    // still plan as targeted.
+    const phaseZeroPaths = [
+      'crates/broker/src/delivery/mod.rs',
+      'crates/broker/src/delivery/backend.rs',
+      'crates/broker/src/delivery/pty.rs',
+      'crates/broker/src/lib.rs',
+      'crates/broker/src/pty_worker.rs',
+      'crates/broker/src/runtime/delivery.rs',
+      'crates/broker/src/runtime/tests.rs',
+      'crates/broker/tests/delivery_seam_invariants.rs',
+    ];
+
+    for (const changedFile of phaseZeroPaths) {
+      const result = plan([changedFile]);
+      expect(result.mode, changedFile).toBe('targeted');
+      expect(result.unmatchedRuntimeFiles, changedFile).toEqual([]);
+      expect(result.selectedFeatures, changedFile).toContain('delivery-backend-seam');
+    }
+
+    const combined = plan(phaseZeroPaths);
+    expect(combined.mode).toBe('targeted');
+    expect(combined.unmatchedRuntimeFiles).toEqual([]);
+    expect(combined.selectedCategories).toContain('broker');
+    // Targeted means a handful of scenarios, not the 60-plus smoke profile.
+    expect(combined.scenarios.length).toBeLessThan(10);
+  });
+
+  it('keeps the delivery seam feature at the tier and criticality the migration requires', () => {
+    const manifest = parse(manifestText);
+    const broker = manifest.categories.broker;
+    const seam = broker.features.find(({ id }: { id: string }) => id === 'delivery-backend-seam');
+
+    expect(seam, 'delivery-backend-seam is not registered in the broker category').toBeDefined();
+    // The doc's words: delivery is critical, and PTY parity is tier 6.
+    expect(broker.criticality).toBe('critical');
+    expect(seam.verify_tier).toBe(6);
+    expect(String(seam.location)).toContain('crates/broker/src/delivery/');
+  });
+
   it('selects the Swift suite without unrelated plugin setup', () => {
     const result = plan(['packages/sdk-swift/Sources/AgentRelaySDK/AgentRelaySDK.swift']);
 

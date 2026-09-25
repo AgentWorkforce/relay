@@ -1,0 +1,250 @@
+# yaml-language-server: $schema=https://schema.relayflows.dev/v0.1/flows.schema.json
+# Adversarial re-review of the phase-0 delivery seam, plus a repo-wide sweep
+# for assertions that still encode the pre-seam contract.
+#
+# Three design decisions, which are the point rather than decoration:
+#
+# 1. NOTHING HERE MAY EDIT TRACKED FILES. Every agent produces a report. This
+#    branch's central finding is that gates go green on broken trees; an agent
+#    whose job is to make something pass is the wrong shape for measuring
+#    whether it passes. Enforced mechanically by the final step, not by asking.
+#
+# 2. THE REVIEW STEPS RUN IN PARALLEL AND SHARE NO STATE. Each depends only on
+#    setup, so one reviewer's reading cannot be disturbed by another's.
+#
+# 3. A REVIEW THAT FINDS PROBLEMS IS A SUCCESSFUL REVIEW. Findings live in
+#    artifacts, not in exit codes, so no step "fails" for reporting a defect
+#    and nothing is ever handed to a repair agent to be made green.
+version: '0.1.0'
+name: delivery-phase0-review
+
+steps:
+  - id: setup
+    type: deterministic
+    command: |
+      mkdir -p .review-out
+      git rev-parse --short HEAD | tee .review-out/00-head.txt
+      git log --oneline -25 > .review-out/00-commits.txt
+      # Baseline of what was already dirty BEFORE any agent ran. The read-only
+      # check below diffs against this rather than demanding a pristine tree,
+      # so a pre-existing local edit (e.g. a flows.json model allowlist needed
+      # to run at all) is tolerated while any NEW edit is still caught. This is
+      # deliberately not a blanket ignore: loosening a validator to silence one
+      # error is how a check stops measuring anything.
+      git status --porcelain | grep -v '^?? .review-out/' | sort > .review-out/00-baseline-status.txt || true
+      cat .review-out/00-baseline-status.txt
+
+  # ── Sweep ────────────────────────────────────────────────────────────────
+  # The failure this exists to catch: when three suites were migrated to the
+  # new delivery semantics, exactly the three files a review had NAMED were
+  # fixed and the repo was never searched. A fourth suite waited for a
+  # `delivery_ack` the worker no longer sends, so it failed every run — in a
+  # lane no gate executes.
+  - id: stale-assertion-sweep
+    type: agent
+    cli: claude
+    dependsOn: [setup]
+    permissions:
+      fileGlobs: ['.review-out/**']
+    instruction: |
+      Audit this repository for test assertions that still encode the PRE-SEAM
+      delivery contract. Do NOT edit any file outside `.review-out/`. Produce a
+      report only.
+
+      BACKGROUND. A PTY worker used to emit `delivery_ack` for every delivery,
+      including one whose echo was never observed. It no longer does. Today:
+        - OBSERVED   -> `delivery_verified` with verification `echo` or
+          `process_exit`, AND a `delivery_ack`.
+        - UNOBSERVED -> `delivery_verified` with verification `timeout_fallback`,
+          PLUS a `delivery_unobserved` event, and deliberately NO
+          `delivery_ack`. The rule is "never claim an acknowledgement you did
+          not observe."
+
+      YOUR JOB. Search the WHOLE repository — not only the files named here.
+      Start from every reference to `delivery_ack`, `delivery_verified`,
+      `delivery_unobserved` and `verification`, in every language (TypeScript,
+      JavaScript, Rust, Python, Swift, JSON fixtures, shell). Ignore anything
+      under a `dist/` directory: those are build outputs of sources you will
+      already have seen.
+
+      Classify each site as exactly one of:
+        A. BROKEN NOW — it forces an unobserved delivery (a sink that swallows
+           output, a harness that never echoes) and then requires an ack. Fails
+           every run. Highest value; list these first.
+        B. FALLBACK-SENSITIVE — waits on or counts acks on a path that usually
+           echoes. Passes today, fails whenever a verification window expires.
+        C. COUNTS VERIFIED AS SUCCESS — treats `delivery_verified` as a
+           delivery without reading `verification`, so a timeout fallback reads
+           as success.
+        D. FINE — echo path, ack legitimately expected.
+
+      Report ONLY A, B and C. For each: exact file:line, the assertion quoted,
+      its class, the concrete scenario producing the wrong outcome, and a
+      precise proposed replacement. A finding without a failure scenario is not
+      a finding — drop it.
+
+      Then state plainly whether any GATE runs the suites you flagged. Check
+      what the `npm run` scripts, `vitest.config.ts`, `vitest.e2e.config.ts`
+      and `tests/relayflows/cleanroom/relay.matrix.json` actually execute. A
+      broken test nothing runs and a broken test CI runs are different
+      severities.
+
+      Write to `.review-out/10-stale-assertions.md`.
+
+  # ── Adversarial review: three independent dimensions ─────────────────────
+  - id: review-semantics
+    type: agent
+    cli: claude
+    dependsOn: [setup]
+    permissions:
+      fileGlobs: ['.review-out/**']
+    instruction: |
+      Adversarially review the delivery seam. Be harsh. Do not praise. Do NOT
+      edit any file outside `.review-out/`.
+
+      The seam (`crates/broker/src/delivery/`) fronts the broker's PTY delivery
+      so native transports can join later. Four rules it must enforce:
+        1. Fall back to another transport ONLY on a strictly pre-write error. A
+           post-write failure must never be retried on another route — it
+           double-delivers.
+        2. Never re-send on doubt.
+        3. Record which route each send took, and settle by THAT route's rules.
+        4. Never claim an acknowledgement you did not observe.
+
+      Every deterministic gate on this branch has been green while it carried
+      two double-delivery defects. Green proves nothing here. Assume defects
+      exist.
+
+      Attack, in priority order:
+        - Construct a concrete sequence where one message is delivered TWICE.
+          Trace real call paths with file:line. Highest-value finding.
+        - Construct a sequence where a message is silently LOST: removed from
+          the pending map, never dead-lettered, no operator-visible record.
+        - The seam keeps bounded receipts plus an `evicted` tombstone set. Is
+          anything bounding the tombstones? Can an id be permanently blocked?
+        - Async cancellation: if a future is dropped mid-await, can a write
+          happen with no receipt recorded, or a receipt exist with no write?
+        - Restart: which delivery state survives a broker restart and which
+          does not? Does the surviving half falsely imply the lost half?
+
+      For each finding: severity (BLOCKER/HIGH/MEDIUM/LOW), file:line, the
+      exact sequence of events producing the bad outcome, and why existing
+      tests miss it. No concrete scenario = not a finding.
+
+      Write to `.review-out/20-semantics.md`.
+
+  - id: review-inert-tests
+    type: agent
+    cli: claude
+    dependsOn: [setup]
+    permissions:
+      fileGlobs: ['.review-out/**']
+    instruction: |
+      Audit this repository for tests that CANNOT FAIL. Be harsh. Do not
+      praise. Do NOT edit any file outside `.review-out/`.
+
+      This codebase has a documented, repeated history of exactly this.
+      Already found and fixed on this branch:
+        - a test asserting its own mock's configuration, where the production
+          code had no branch that could return anything else;
+        - four seam invariants that all passed with the production
+          classification inverted;
+        - four retry tests that all passed while a mutation made deliveries
+          retry FOREVER and never dead-letter, because every one pre-set the
+          attempt counter instead of reaching it;
+        - a call-site guard scanning 10 lines of a 38-line arm, so a regression
+          in the other 28 passed it and the whole 1,298-test suite.
+
+      Assume more exist. Focus on:
+        - `crates/broker/tests/delivery_seam_invariants.rs`
+        - the `real_route_invariants` module in `crates/broker/src/delivery/pty.rs`
+        - the tests in `crates/broker/src/broker/delivery_verification.rs`
+        - delivery/retry/dead-letter tests in `crates/broker/src/runtime/tests.rs`
+        - `tests/integration/broker/utils/assert-helpers.ts` and its vitest suite
+
+      For EACH test ask: which production symbol does it claim to guard, and is
+      there any input under which that code could give a different answer? Pay
+      particular attention to:
+        - tests comparing through a CONSTANT rather than a literal, so renaming
+          the constant's value changes the wire contract invisibly;
+        - source-scanning tests whose extracted window is smaller than the
+          hazard they guard;
+        - assertions implied by the line above them;
+        - helpers balancing COUNTS rather than correlating IDs, so two opposite
+          bugs cancel out;
+        - anything that would pass against an empty implementation.
+
+      You may READ anything. You must NOT mutate the tree to prove inertness.
+      Instead state precisely which mutation you would apply, at which
+      file:line, and what you predict would happen. Rank by how load-bearing
+      the untested invariant is.
+
+      Write to `.review-out/30-inert-tests.md`.
+
+  - id: review-contracts
+    type: agent
+    cli: claude
+    dependsOn: [setup]
+    permissions:
+      fileGlobs: ['.review-out/**']
+    instruction: |
+      Audit cross-language contract drift. Be harsh. Do NOT edit any file
+      outside `.review-out/`.
+
+      A new wire event `delivery_unobserved` was added, and `delivery_verified`
+      gained a `verification` field. Find EVERY consumer of broker events in
+      this repository and determine whether each handles them: TypeScript,
+      Rust, Python, Swift, JSON fixtures, CLI attach paths, the SDKs, and any
+      allow-list or exhaustive match. Search repo-wide; do not assume a short
+      list is complete.
+
+      Specifically:
+        - Does the Rust `BrokerEvent` enum have a variant for the new event?
+          `.claude/rules/rust.md` requires protocol types to match
+          `packages/harness-driver/src/protocol.ts`.
+        - Does the typed worker->broker frame carry `verification`? If serde
+          drops it, the field the whole seam rests on cannot round-trip.
+        - Do the TypeScript union, the Python kind list, the JSON fixtures and
+          the Rust emitter agree EXACTLY on field names, casing, and which
+          fields are optional? Name any field present in one, missing in
+          another.
+        - Are there allow-lists that silently drop an unknown kind instead of
+          failing loudly?
+        - Does any fixture claim to be a valid event but use wrong casing or a
+          colliding sequence number — and is that fixture consumed by anything
+          at all, or is it inert documentation?
+
+      For each: severity, file:line, the concrete consequence for a consumer,
+      and whether anything currently catches it.
+
+      Write to `.review-out/40-contracts.md`.
+
+  # ── Enforcement + collection ─────────────────────────────────────────────
+  # The read-only rule is enforced here, mechanically, rather than trusted.
+  # If any agent edited a tracked file, this step says so loudly and the run
+  # ends `step_failed` — the one thing that SHOULD fail a step, since it means
+  # a review modified what it was measuring.
+  - id: assert-nothing-was-edited
+    type: deterministic
+    dependsOn: [stale-assertion-sweep, review-semantics, review-inert-tests, review-contracts]
+    command: |
+      git status --porcelain | grep -v '^?? .review-out/' | sort > .review-out/98-final-status.txt || true
+      if ! diff -u .review-out/00-baseline-status.txt .review-out/98-final-status.txt; then
+        echo
+        echo "REVIEW MODIFIED THE TREE IT WAS MEASURING (diff above: - baseline, + now)."
+        exit 1
+      fi
+      echo "no tracked file changed during the review"
+
+  - id: collect
+    type: deterministic
+    dependsOn: [assert-nothing-was-edited]
+    command: |
+      printf '# Phase-0 delivery review\n\n' > .review-out/99-index.md
+      printf 'HEAD: %s\n\n' "$(cat .review-out/00-head.txt 2>/dev/null)" >> .review-out/99-index.md
+      for r in .review-out/*.md; do
+        [ -f "$r" ] || continue
+        printf '## %s — %s lines\n' "$(basename "$r")" "$(wc -l < "$r" | tr -d ' ')" >> .review-out/99-index.md
+      done
+      cat .review-out/99-index.md
+      ls -la .review-out

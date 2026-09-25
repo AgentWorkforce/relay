@@ -6,6 +6,19 @@
 // binary/library split; each annotated module has at least one genuinely
 // unused public-facing item that the compiler would otherwise warn about.
 
+/// The delivery seam.
+///
+/// Public only so `tests/delivery_seam_invariants.rs` — an integration test,
+/// which compiles as a separate crate — can reach `DeliverySeam` and the
+/// backend trait. No consumer outside this crate is meant to depend on it, and
+/// the seam's shape is expected to move as native routes land, so it is hidden
+/// from the rendered docs rather than advertised as API.
+///
+/// The invariants that need the real `PtyDeliveryBackend` (which stays
+/// `pub(crate)`) live in-crate in `delivery::pty`, where they can reach a real
+/// `WorkerRegistry`.
+#[doc(hidden)]
+pub mod delivery;
 mod devin;
 pub mod fleet_wire;
 pub mod ids;

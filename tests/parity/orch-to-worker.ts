@@ -7,8 +7,16 @@
  * Run: npx tsx tests/parity/orch-to-worker.ts
  */
 
-import { HarnessDriverClient, type BrokerEvent } from '@agent-relay/sdk';
-import { resolveBinaryPath, randomName } from '../benchmarks/harness.js';
+import { HarnessDriverClient, type BrokerEvent } from '@agent-relay/harness-driver';
+import {
+  brokerTestEnv,
+  isObservedDelivery,
+  isUnobservedDelivery,
+  resolveBinaryPath,
+  randomName,
+} from '../benchmarks/harness.js';
+
+const ECHO_CLI = "sh -c 'stty -echo; cat'";
 
 async function main(): Promise<void> {
   console.log('=== Parity Test: Orchestrator → Worker ===\n');
@@ -16,7 +24,7 @@ async function main(): Promise<void> {
   const client = await HarnessDriverClient.spawn({
     binaryPath: resolveBinaryPath(),
     channels: ['general'],
-    env: process.env,
+    env: brokerTestEnv(),
   });
 
   const workerName = randomName('o2w-recv');
@@ -26,7 +34,7 @@ async function main(): Promise<void> {
     console.log('1. Spawning worker...');
     await client.spawnPty({
       name: workerName,
-      cli: 'cat',
+      cli: ECHO_CLI,
       channels: ['general'],
     });
     console.log(`   Worker: ${workerName}\n`);
@@ -49,15 +57,24 @@ async function main(): Promise<void> {
     console.log('3. Waiting for delivery verification...');
     let deliveryVerified = false;
     let deliveryFailed = false;
+    let deliveryUnobserved = false;
 
     await new Promise<void>((resolve) => {
-      const timer = setTimeout(resolve, 10_000);
+      const timer = setTimeout(() => {
+        unsub();
+        resolve();
+      }, 10_000);
       const unsub = client.onEvent((event: BrokerEvent) => {
-        if (event.kind === 'delivery_verified') {
+        if (isObservedDelivery(event)) {
           deliveryVerified = true;
           clearTimeout(timer);
           unsub();
           resolve();
+        }
+        // An unobserved hand-off is not a delivery. Record it and keep waiting
+        // rather than treating it as either success or failure.
+        if (isUnobservedDelivery(event)) {
+          deliveryUnobserved = true;
         }
         if (event.kind === 'delivery_failed') {
           deliveryFailed = true;
@@ -68,7 +85,8 @@ async function main(): Promise<void> {
       });
     });
 
-    console.log(`   Delivery verified: ${deliveryVerified}`);
+    console.log(`   Delivery verified (echo-observed): ${deliveryVerified}`);
+    console.log(`   Delivery unobserved (timeout fallback): ${deliveryUnobserved}`);
     console.log(`   Delivery failed: ${deliveryFailed}\n`);
 
     // Step 4: Send multiple messages in sequence
@@ -87,7 +105,7 @@ async function main(): Promise<void> {
     await new Promise((r) => setTimeout(r, 2000));
 
     // Results
-    const passed = sendOk && deliveryVerified && seqOk === 5;
+    const passed = sendOk && deliveryVerified && !deliveryUnobserved && seqOk === 5;
     console.log(
       passed ? '=== Orch-to-Worker Parity Test PASSED ===' : '=== Orch-to-Worker Parity Test FAILED ==='
     );
