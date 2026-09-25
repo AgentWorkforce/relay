@@ -2656,12 +2656,8 @@ async fn codex_debug_models_output(resolved_cli: &str) -> std::io::Result<std::p
     let mut attempt: u32 = 0;
     loop {
         attempt += 1;
-        match Command::new(resolved_cli)
-            .arg("debug")
-            .arg("models")
-            .output()
-            .await
-        {
+        let mut command = crate::spawner::scrubbed_command(resolved_cli);
+        match command.arg("debug").arg("models").output().await {
             Err(err)
                 if err.kind() == std::io::ErrorKind::ExecutableFileBusy
                     && attempt < MAX_ATTEMPTS =>

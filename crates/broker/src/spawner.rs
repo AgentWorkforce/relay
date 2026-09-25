@@ -22,43 +22,15 @@ const RELAY_ATTEST_GIT_CONFIG_COUNT: &str = "RELAY_ATTEST_GIT_CONFIG_COUNT";
 const RELAY_ATTEST_GIT_CONFIG_INDEX: &str = "RELAY_ATTEST_GIT_CONFIG_INDEX";
 const RELAY_ATTEST_BROKER_HOOK_PATH: &str = "RELAY_ATTEST_BROKER_HOOK_PATH";
 
-/// Relay-owned credentials that an agent process must never pick up from the
-/// broker's own (inherited) environment. Agents otherwise inherit the broker's
-/// whole environment, which is intentional for PATH, HOME, model API keys and
-/// proxies, but these values belong to the broker, the node, or whoever
-/// launched the broker.
-///
-/// Every worker spawn strips this list first and then injects only what that
-/// worker is meant to hold: its own `RELAY_AGENT_TOKEN`, its own result
-/// callback token, and the workspace credentials the broker explicitly
-/// delegates to agents through its worker environment.
-pub(crate) const INHERITED_RELAY_CREDENTIAL_ENV_KEYS: &[&str] = &[
-    // The broker's local HTTP API key (set on the broker process at startup).
-    "RELAY_BROKER_API_KEY",
-    // The node's control-plane credential.
-    "RELAY_NODE_TOKEN",
-    // The broker's own registration identity proof.
-    "RELAY_AGENT_IDENTITY_KEY",
-    // Whoever launched the broker; each worker gets its own.
-    "RELAY_AGENT_TOKEN",
-    "AGENT_RELAY_RESULT_TOKEN",
-    // Workspace credentials. Re-added from the broker's explicit worker
-    // environment when the broker delegates them; never taken from ambient
-    // environment.
-    "RELAY_API_KEY",
-    "RELAY_WORKSPACE_KEY",
-    "AGENT_RELAY_WORKSPACE_KEY",
-    "RELAY_WORKSPACES_JSON",
-];
-
-/// Remove [`INHERITED_RELAY_CREDENTIAL_ENV_KEYS`] from a command's inherited
-/// environment. Call before applying the worker's own environment: a later
-/// `Command::env` for the same key still wins.
-pub(crate) fn remove_inherited_relay_credentials(command: &mut Command) {
-    for key in INHERITED_RELAY_CREDENTIAL_ENV_KEYS {
-        command.env_remove(key);
-    }
-}
+#[cfg(test)]
+pub(crate) use relay_pty::credentials::INHERITED_RELAY_CREDENTIAL_ENV_KEYS;
+/// Relay-owned credentials no spawned worker or spawn-time helper inherits
+/// from the broker's environment; see [`relay_pty::credentials`]. Every worker
+/// spawn strips this list first and then injects only what that worker is meant
+/// to hold: its own `RELAY_AGENT_TOKEN`, its own result callback token, and the
+/// workspace credentials the broker explicitly delegates to agents through its
+/// worker environment.
+pub(crate) use relay_pty::credentials::{remove_inherited_relay_credentials, scrubbed_command};
 
 /// Standard client-side git hooks (see githooks(5)). `core.hooksPath` is a
 /// single directory that replaces git's entire hook lookup, not just

@@ -1951,7 +1951,7 @@ fn grok_manual_mcp_add_cmd(cli: &str) -> String {
 
 async fn remove_grok_mcp_servers(exe: &str) {
     for server_name in [AGENT_RELAY_MCP_SERVER, LEGACY_RELAYCAST_SERVER] {
-        let mut cmd = Command::new(exe);
+        let mut cmd = crate::spawner::scrubbed_command(exe);
         cmd.args(["mcp", "remove", server_name])
             .stdin(Stdio::null())
             .stdout(Stdio::null())
@@ -1979,7 +1979,7 @@ async fn configure_grok_mcp(
 
     remove_grok_mcp_servers(&exe).await;
 
-    let mut mcp_cmd = Command::new(&exe);
+    let mut mcp_cmd = crate::spawner::scrubbed_command(&exe);
     mcp_cmd.args(grok_mcp_add_args(
         api_key,
         base_url,
@@ -2065,7 +2065,7 @@ async fn configure_gemini_droid_mcp(
 /// Remove all known relay MCP server names from the gemini/droid shared config.
 async fn remove_gemini_droid_mcp_servers(exe: &str) {
     for server_name in [AGENT_RELAY_MCP_SERVER, LEGACY_RELAYCAST_SERVER] {
-        let mut cmd = Command::new(exe);
+        let mut cmd = crate::spawner::scrubbed_command(exe);
         cmd.args(["mcp", "remove", server_name])
             .stdin(Stdio::null())
             .stdout(Stdio::null())
@@ -2132,7 +2132,7 @@ async fn spawn_mcp_add(
     cli: &str,
     manual_cmd: &str,
 ) -> Result<std::process::Output> {
-    let mut mcp_cmd = Command::new(exe);
+    let mut mcp_cmd = crate::spawner::scrubbed_command(exe);
     mcp_cmd
         .args(add_args)
         .stdin(Stdio::null())
