@@ -5,7 +5,11 @@ All notable changes to Agent Relay will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
+## [Unreleased - Patch]
+
+### Fixed
+
+- Broker: Muse workers now reuse the host Muse login (`$XDG_CONFIG_HOME/muse/auth.json`, or `RELAY_MUSE_SHARED_AUTH_PATH`) instead of prompting for provider auth under every new agent name; Relay MCP settings stay per-worker. Set `RELAY_MUSE_ISOLATED_AUTH=1` to keep a separate login per worker.
 
 ## [13.0.0] - 2026-09-30
 

@@ -1176,10 +1176,72 @@ fn restrict_muse_settings_file(path: &Path) -> io::Result<()> {
 }
 
 /// Env overrides that point one spawned Muse worker at its clean home:
-/// isolated settings scope, an isolated credential path (the shared user
-/// `auth.json` is never read or written), and launcher auto-update off so a
-/// spawn performs no network update checks or install-dir state writes.
+/// isolated settings scope, a per-worker credential path, and launcher
+/// auto-update off so a spawn performs no network update checks or
+/// install-dir state writes. Spawns use [`muse_clean_home_env_with_auth`] to
+/// share the host Muse login instead (see [`muse_shared_auth_path`]).
 pub fn muse_clean_home_env(clean_home: &Path) -> Vec<(String, String)> {
+    muse_clean_home_env_with_auth(clean_home, None)
+}
+
+/// Absolute path to the Muse `auth.json` every Muse worker shares, overriding
+/// the host default resolved by [`muse_shared_auth_path`].
+pub const MUSE_SHARED_AUTH_PATH_ENV: &str = "RELAY_MUSE_SHARED_AUTH_PATH";
+
+/// Set to `1`/`true` to give each Muse worker its own `auth.json` inside its
+/// clean home (one provider login per worker name), e.g. on multi-tenant hosts.
+pub const MUSE_ISOLATED_AUTH_ENV: &str = "RELAY_MUSE_ISOLATED_AUTH";
+
+/// Inputs for [`muse_shared_auth_path`], read from the broker's environment
+/// *before* the worker's `XDG_CONFIG_HOME` is redirected to its clean home.
+#[derive(Debug, Default, Clone, Copy)]
+pub struct MuseAuthEnv<'a> {
+    pub shared_auth_path: Option<&'a std::ffi::OsStr>,
+    pub isolated_auth: Option<&'a std::ffi::OsStr>,
+    pub xdg_config_home: Option<&'a std::ffi::OsStr>,
+    pub home: Option<&'a std::ffi::OsStr>,
+}
+
+/// The `auth.json` Muse workers share so one host login serves every worker,
+/// the same way Claude and Codex workers reuse the host login. Only the
+/// credential path is shared: `XDG_CONFIG_HOME` (and the Relay MCP
+/// `settings.json` holding per-worker Relay tokens) stays per-worker.
+///
+/// Resolution: `None` when isolation is requested; otherwise an absolute
+/// `RELAY_MUSE_SHARED_AUTH_PATH`; otherwise Muse's own default
+/// (`$XDG_CONFIG_HOME/muse/auth.json`, falling back to
+/// `$HOME/.config/muse/auth.json`). Empty or relative values are ignored, and
+/// `None` falls back to the per-worker credential path.
+pub fn muse_shared_auth_path(env: MuseAuthEnv<'_>) -> Option<PathBuf> {
+    fn absolute(raw: Option<&std::ffi::OsStr>) -> Option<PathBuf> {
+        raw.filter(|v| !v.is_empty())
+            .map(PathBuf::from)
+            .filter(|p| p.is_absolute())
+    }
+    let isolated = env
+        .isolated_auth
+        .and_then(|v| v.to_str())
+        .is_some_and(|v| matches!(v.trim().to_ascii_lowercase().as_str(), "1" | "true" | "yes"));
+    if isolated {
+        return None;
+    }
+    absolute(env.shared_auth_path)
+        .or_else(|| absolute(env.xdg_config_home).map(|d| d.join("muse").join("auth.json")))
+        .or_else(|| absolute(env.home).map(|h| h.join(".config").join("muse").join("auth.json")))
+}
+
+/// `MUSE_AUTH_PATH` for a worker: the shared path when resolved, otherwise
+/// `<clean_home>/muse/auth.json`.
+pub fn muse_auth_path(clean_home: &Path, shared_auth: Option<&Path>) -> PathBuf {
+    shared_auth
+        .map(Path::to_path_buf)
+        .unwrap_or_else(|| clean_home.join("muse").join("auth.json"))
+}
+
+pub fn muse_clean_home_env_with_auth(
+    clean_home: &Path,
+    shared_auth: Option<&Path>,
+) -> Vec<(String, String)> {
     vec![
         (
             "XDG_CONFIG_HOME".to_string(),
@@ -1187,9 +1249,7 @@ pub fn muse_clean_home_env(clean_home: &Path) -> Vec<(String, String)> {
         ),
         (
             "MUSE_AUTH_PATH".to_string(),
-            clean_home
-                .join("muse")
-                .join("auth.json")
+            muse_auth_path(clean_home, shared_auth)
                 .to_string_lossy()
                 .into_owned(),
         ),
@@ -2284,6 +2344,87 @@ mod tests {
             Some("/tmp/relay-muse-home/muse/auth.json")
         );
         assert_eq!(get("MUSE_NO_AUTO_UPDATE").as_deref(), Some("1"));
+    }
+
+    #[test]
+    fn muse_shared_auth_override_shares_only_the_credential_path() {
+        let home = std::path::Path::new("/tmp/relay-muse-home");
+        let shared = std::path::Path::new("/Users/op/.config/muse/auth.json");
+        let env = super::muse_clean_home_env_with_auth(home, Some(shared));
+        let get = |k: &str| env.iter().find(|(key, _)| key == k).map(|(_, v)| v.clone());
+        assert_eq!(
+            get("XDG_CONFIG_HOME").as_deref(),
+            Some("/tmp/relay-muse-home"),
+            "settings scope must stay per-worker"
+        );
+        assert_eq!(
+            get("MUSE_AUTH_PATH").as_deref(),
+            Some("/Users/op/.config/muse/auth.json")
+        );
+        assert_eq!(get("MUSE_NO_AUTO_UPDATE").as_deref(), Some("1"));
+    }
+
+    #[test]
+    fn muse_shared_auth_path_defaults_to_the_host_muse_login() {
+        use std::ffi::OsStr;
+        use std::path::PathBuf;
+        let env = super::MuseAuthEnv {
+            home: Some(OsStr::new("/Users/op")),
+            ..Default::default()
+        };
+        assert_eq!(
+            super::muse_shared_auth_path(env),
+            Some(PathBuf::from("/Users/op/.config/muse/auth.json"))
+        );
+        let env = super::MuseAuthEnv {
+            xdg_config_home: Some(OsStr::new("/xdg")),
+            ..env
+        };
+        assert_eq!(
+            super::muse_shared_auth_path(env),
+            Some(PathBuf::from("/xdg/muse/auth.json"))
+        );
+        let env = super::MuseAuthEnv {
+            shared_auth_path: Some(OsStr::new("/abs/auth.json")),
+            ..env
+        };
+        assert_eq!(
+            super::muse_shared_auth_path(env),
+            Some(PathBuf::from("/abs/auth.json"))
+        );
+    }
+
+    #[test]
+    fn muse_shared_auth_path_honours_isolation_opt_out() {
+        use std::ffi::OsStr;
+        for value in ["1", "true", "TRUE", "yes"] {
+            let env = super::MuseAuthEnv {
+                shared_auth_path: Some(OsStr::new("/abs/auth.json")),
+                isolated_auth: Some(OsStr::new(value)),
+                home: Some(OsStr::new("/Users/op")),
+                ..Default::default()
+            };
+            assert_eq!(super::muse_shared_auth_path(env), None, "{value:?}");
+        }
+        let env = super::MuseAuthEnv {
+            isolated_auth: Some(OsStr::new("0")),
+            home: Some(OsStr::new("/Users/op")),
+            ..Default::default()
+        };
+        assert!(super::muse_shared_auth_path(env).is_some());
+    }
+
+    #[test]
+    fn muse_shared_auth_path_ignores_empty_and_relative_values() {
+        use std::ffi::OsStr;
+        assert_eq!(super::muse_shared_auth_path(Default::default()), None);
+        let env = super::MuseAuthEnv {
+            shared_auth_path: Some(OsStr::new("")),
+            xdg_config_home: Some(OsStr::new("relative")),
+            home: Some(OsStr::new("also/relative")),
+            ..Default::default()
+        };
+        assert_eq!(super::muse_shared_auth_path(env), None);
     }
 
     #[test]
