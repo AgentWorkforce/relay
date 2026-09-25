@@ -327,7 +327,11 @@ fn create_receipt(
             )))
         }
     }
-    sync_receipt_directories(root)?;
+    // The reservation file is already visible after persist_noclobber. A
+    // directory-sync failure cannot be reported as uncommitted: retrying the
+    // worker write would violate at-most-once delivery if the entry survives.
+    sync_receipt_directories(root)
+        .map_err(|error| NativeDeliveryError::InDoubt(error.to_string()))?;
     Ok(true)
 }
 

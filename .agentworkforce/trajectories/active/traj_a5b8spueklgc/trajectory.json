@@ -89,6 +89,27 @@
             "reasoning": "Deferred receipts must survive restart, and a predictable shared OS-temp root permits path attacks. The stable user data root preserves durability while removing the CodeQL temp-path flow."
           },
           "significance": "high"
+        },
+        {
+          "ts": 1790308221641,
+          "type": "decision",
+          "content": "Report post-publish receipt directory sync failures as in-doubt: Report post-publish receipt directory sync failures as in-doubt",
+          "raw": {
+            "question": "Report post-publish receipt directory sync failures as in-doubt",
+            "chosen": "Report post-publish receipt directory sync failures as in-doubt",
+            "alternatives": [
+              {
+                "option": "Return ReceiptUnavailable after publish",
+                "reason": ""
+              },
+              {
+                "option": "Ignore directory fsync failures",
+                "reason": ""
+              }
+            ],
+            "reasoning": "persist_noclobber has already made the reservation visible, so committed=false would invite a retry that can conflict with at-most-once semantics. Strict fsync remains required, but failure is classified conservatively."
+          },
+          "significance": "high"
         }
       ]
     }
