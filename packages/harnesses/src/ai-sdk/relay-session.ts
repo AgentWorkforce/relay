@@ -1,6 +1,6 @@
 import { createAgentActivityState, reduceAgentActivity } from '@agent-relay/sdk';
-import { mkdir, open, readFile, rename, unlink } from 'node:fs/promises';
-import { dirname } from 'node:path';
+import { mkdir, mkdtemp, open, readFile, rename, rm } from 'node:fs/promises';
+import { dirname, resolve } from 'node:path';
 import type {
   AgentIdentity,
   AgentActivityState,
@@ -385,8 +385,10 @@ export class RelayHarnessSession implements AgentSession {
 
   async #persistQueue(): Promise<void> {
     if (!this.#deferredQueuePath) return;
-    await mkdir(dirname(this.#deferredQueuePath), { recursive: true });
-    const temporary = `${this.#deferredQueuePath}.${process.pid}.${Date.now()}.tmp`;
+    const directoryPath = dirname(this.#deferredQueuePath);
+    await mkdir(directoryPath, { recursive: true });
+    const temporaryDirectory = await mkdtemp(resolve(directoryPath, '.relay-deferred-'));
+    const temporary = resolve(temporaryDirectory, 'queue.json');
     try {
       const file = await open(temporary, 'wx', 0o600);
       try {
@@ -405,7 +407,7 @@ export class RelayHarnessSession implements AgentSession {
         }
       }
     } finally {
-      await unlink(temporary).catch(() => undefined);
+      await rm(temporaryDirectory, { recursive: true, force: true });
     }
   }
 
