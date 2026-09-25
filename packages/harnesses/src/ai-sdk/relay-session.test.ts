@@ -1,4 +1,7 @@
-import type { AgentIdentity, MessageContext, RelayMessage } from '@agent-relay/sdk';
+import type { AgentIdentity, AgentSessionEvent, MessageContext, RelayMessage } from '@agent-relay/sdk';
+import { mkdtemp, readFile, writeFile } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { resolve } from 'node:path';
 import { describe, expect, it, vi } from 'vitest';
 import { formatInboundRelayPrompt, RelayHarnessSession } from './relay-session.js';
 
@@ -126,6 +129,78 @@ describe('RelayHarnessSession', () => {
     fixture.settle();
     await new Promise((resolveWait) => setTimeout(resolveWait, 0));
     expect(fixture.host.startTurn).toHaveBeenLastCalledWith(expect.stringContaining('queued-2'), 'queued-2');
+  });
+
+  it('restores a durably deferred on-idle message after a sidecar restart', async () => {
+    const root = await mkdtemp(resolve(tmpdir(), 'relay-deferred-'));
+    const queuePath = resolve(root, 'queue.json');
+    const first = fakeHost();
+    const firstSession = new RelayHarnessSession({
+      identity,
+      host: first.host as never,
+      deferredQueuePath: queuePath,
+    });
+    await firstSession.receiveMessage(message('active'), context('active'));
+    await expect(
+      firstSession.receiveMessage(message('durable'), context('durable', 'on-idle'))
+    ).resolves.toMatchObject({ status: 'deferred' });
+    expect(JSON.parse(await readFile(queuePath, 'utf8')).entries).toMatchObject([
+      { key: 'durable', state: 'queued' },
+    ]);
+
+    const restarted = fakeHost();
+    const restartedSession = new RelayHarnessSession({
+      identity,
+      host: restarted.host as never,
+      deferredQueuePath: queuePath,
+    });
+    await restartedSession.restoreDeferredMessages();
+    expect(restarted.host.startTurn).toHaveBeenCalledWith(
+      expect.stringContaining('"messageId":"durable"'),
+      'durable'
+    );
+    expect(JSON.parse(await readFile(queuePath, 'utf8')).entries).toEqual([]);
+  });
+
+  it('fails closed instead of replaying an in-flight deferred message after restart', async () => {
+    const root = await mkdtemp(resolve(tmpdir(), 'relay-deferred-indoubt-'));
+    const queuePath = resolve(root, 'queue.json');
+    await writeFile(
+      queuePath,
+      JSON.stringify({
+        version: 1,
+        entries: [
+          {
+            message: message('ambiguous'),
+            context: context('ambiguous', 'on-idle'),
+            key: 'ambiguous',
+            state: 'in_doubt',
+          },
+          {
+            message: message('already-accepted'),
+            context: context('already-accepted', 'on-idle'),
+            key: 'already-accepted',
+            state: 'accepted',
+          },
+        ],
+      })
+    );
+    const restarted = fakeHost();
+    const restartedSession = new RelayHarnessSession({
+      identity,
+      host: restarted.host as never,
+      deferredQueuePath: queuePath,
+    });
+    const events: AgentSessionEvent[] = [];
+    restartedSession.onEvent?.((event) => events.push(event));
+    await restartedSession.restoreDeferredMessages();
+    expect(restarted.host.startTurn).not.toHaveBeenCalled();
+    expect(JSON.parse(await readFile(queuePath, 'utf8')).entries).toEqual([]);
+    expect(events).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ type: 'delivery.failed', deliveryId: 'ambiguous', retryable: false }),
+      ])
+    );
   });
 
   it('publishes capabilities and releases once', async () => {

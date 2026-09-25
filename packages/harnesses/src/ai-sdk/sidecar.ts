@@ -1,5 +1,6 @@
 import { createHash } from 'node:crypto';
 import { readFile } from 'node:fs/promises';
+import { resolve } from 'node:path';
 import { createInterface } from 'node:readline';
 import {
   NATIVE_HARNESS_PROTOCOL_VERSION,
@@ -160,6 +161,11 @@ export async function runAiSdkSidecar(config: AiSdkSidecarConfig, io: AiSdkSidec
       handle: config.name.toLowerCase().replaceAll(/[^a-z0-9_-]/g, '-'),
     } satisfies AgentIdentity,
     host,
+    deferredQueuePath: resolve(
+      provider.runtimeRoot,
+      'deferred-relay',
+      `${createHash('sha256').update(host.sessionId).digest('hex')}.json`
+    ),
   });
   const relayDeliveries = new Map<string, { eventId: string }>();
   relaySession.onEvent?.(async (event) => {
@@ -171,11 +177,12 @@ export async function runAiSdkSidecar(config: AiSdkSidecarConfig, io: AiSdkSidec
       await write({
         v: 2,
         type: 'delivery_ack',
-        payload: { delivery_id: event.deliveryId, event_id: delivery.eventId },
+        payload: { delivery_id: event.deliveryId, event_id: delivery.eventId, state: 'queued' },
       });
     }
   });
   await host.start();
+  await relaySession.restoreDeferredMessages();
 
   const maxCommandDedupeEntries = Math.max(1, config.maxCommandDedupeEntries ?? 10_000);
   const acknowledgements = new Map<string, { digest: string; acknowledgement: NativeHarnessCommandAck }>();
@@ -238,14 +245,18 @@ export async function runAiSdkSidecar(config: AiSdkSidecarConfig, io: AiSdkSidec
           }
         );
         if (receipt.status === 'failed') throw new Error(receipt.reason);
-        if (receipt.status === 'accepted') {
+        if (receipt.status === 'accepted' || receipt.status === 'deferred') {
           const pending = relayDeliveries.get(delivery.delivery_id);
           if (pending) {
             relayDeliveries.delete(delivery.delivery_id);
             await write({
               v: 2,
               type: 'delivery_ack',
-              payload: { delivery_id: delivery.delivery_id, event_id: pending.eventId },
+              payload: {
+                delivery_id: delivery.delivery_id,
+                event_id: pending.eventId,
+                state: receipt.status === 'deferred' ? 'deferred' : 'queued',
+              },
             });
           }
         }

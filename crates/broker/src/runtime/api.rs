@@ -1757,20 +1757,66 @@ impl BrokerRuntime {
                     ));
                     return;
                 }
-                let result = crate::native_delivery::deliver_authorized(
-                    workers,
+                match crate::native_delivery::existing_outcome(
                     &paths.native_delivery_receipts,
                     &delivery,
-                )
-                .await
-                .map(|outcome| {
-                    let status = match outcome.disposition {
-                        crate::native_delivery::NativeDeliveryDisposition::Queued => "queued",
-                        crate::native_delivery::NativeDeliveryDisposition::Duplicate => "duplicate",
+                ) {
+                    Ok(Some(outcome)) => {
+                        let status = match outcome.disposition {
+                            crate::native_delivery::NativeDeliveryDisposition::Queued => "queued",
+                            crate::native_delivery::NativeDeliveryDisposition::Duplicate => {
+                                "duplicate"
+                            }
+                        };
+                        let _ = reply.send(Ok(json!({
+                            "receiptId": outcome.receipt_id,
+                            "status": status,
+                            "state": outcome.state.as_str(),
+                        })));
+                        return;
+                    }
+                    Err(error) => {
+                        let _ = reply.send(Err(error));
+                        return;
+                    }
+                    Ok(None) => {}
+                }
+                let name = crate::native_delivery::worker_name(&delivery);
+                let sender =
+                    match workers.authorize_native_existing_session(&name, &delivery.session_id) {
+                        Ok(sender) => sender,
+                        Err(error) => {
+                            let _ = reply.send(Err(
+                                crate::native_delivery::NativeDeliveryError::Unauthorized(
+                                    error.to_string(),
+                                ),
+                            ));
+                            return;
+                        }
                     };
-                    json!({ "receiptId": outcome.receipt_id, "status": status })
+                let receipt_path = paths.native_delivery_receipts.clone();
+                tokio::spawn(async move {
+                    let result = crate::native_delivery::deliver_with_sender(
+                        sender,
+                        &receipt_path,
+                        &delivery,
+                    )
+                    .await
+                    .map(|outcome| {
+                        let status = match outcome.disposition {
+                            crate::native_delivery::NativeDeliveryDisposition::Queued => "queued",
+                            crate::native_delivery::NativeDeliveryDisposition::Duplicate => {
+                                "duplicate"
+                            }
+                        };
+                        json!({
+                            "receiptId": outcome.receipt_id,
+                            "status": status,
+                            "state": outcome.state.as_str(),
+                        })
+                    });
+                    let _ = reply.send(result);
                 });
-                let _ = reply.send(result);
             }
             ListenApiRequest::ReconcileNativeExistingSession { delivery, reply } => {
                 if !paths.persist {
@@ -1787,7 +1833,10 @@ impl BrokerRuntime {
                     &delivery,
                 )
                 .map(|receipt| match receipt {
-                    Some(receipt) => json!({ "receiptId": receipt.receipt_id() }),
+                    Some(receipt) => json!({
+                        "receiptId": receipt.receipt_id(),
+                        "state": receipt.state().as_str(),
+                    }),
                     None => json!({ "receiptId": null }),
                 });
                 let _ = reply.send(result);

@@ -4,7 +4,11 @@
 //! boundary is crossed, every retry with the same `delivery_id` is a read-only
 //! lookup: an interrupted or failed write is in doubt and is never replayed.
 
-use std::{collections::BTreeMap, future::Future, path::Path};
+use std::{
+    future::Future,
+    io::Write,
+    path::{Path, PathBuf},
+};
 
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
@@ -13,14 +17,12 @@ use thiserror::Error;
 use crate::{
     ids::{DeliveryId, EventId, MessageTarget, WorkerName},
     protocol::{MessageInjectionMode, RelayDelivery},
-    worker::WorkerRegistry,
 };
 
 pub(crate) const NATIVE_EXISTING_SESSION_CAPABILITY: &str = "relay:native-existing-session:v1";
 pub(crate) const NATIVE_EXISTING_SESSION_RECONCILE_CAPABILITY: &str =
     "relay:native-existing-session-reconcile:v1";
 const MAX_MESSAGE_BYTES: usize = 128 * 1024;
-const MAX_RECEIPTS: usize = 100_000;
 
 #[derive(Debug, Clone, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
@@ -45,12 +47,21 @@ pub(crate) struct NativeExistingSessionReconcile {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
-enum NativeReceiptState {
+pub(crate) enum NativeReceiptState {
     /// The durable cancellation boundary was crossed. The worker write may or
     /// may not have completed, so replay is forbidden.
     InDoubt,
     /// The worker's sole stdin writer confirmed the complete protocol frame.
     Queued,
+}
+
+impl NativeReceiptState {
+    pub(crate) fn as_str(self) -> &'static str {
+        match self {
+            Self::InDoubt => "in_doubt",
+            Self::Queued => "queued",
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -70,6 +81,10 @@ impl NativeDeliveryReceipt {
     pub(crate) fn receipt_id(&self) -> &str {
         &self.receipt_id
     }
+
+    pub(crate) fn state(&self) -> NativeReceiptState {
+        self.state
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -82,6 +97,7 @@ pub(crate) enum NativeDeliveryDisposition {
 pub(crate) struct NativeDeliveryOutcome {
     pub(crate) receipt_id: String,
     pub(crate) disposition: NativeDeliveryDisposition,
+    pub(crate) state: NativeReceiptState,
 }
 
 #[derive(Debug, Error)]
@@ -112,12 +128,6 @@ impl NativeDeliveryError {
             Self::InDoubt(_) => "native_delivery_in_doubt",
         }
     }
-}
-
-#[derive(Debug, Default, Serialize, Deserialize)]
-struct NativeDeliveryLedger {
-    #[serde(default)]
-    receipts: BTreeMap<String, NativeDeliveryReceipt>,
 }
 
 impl NativeExistingSessionDelivery {
@@ -218,17 +228,23 @@ fn digest(value: &impl Serialize) -> String {
     format!("{:x}", Sha256::digest(bytes))
 }
 
-fn load_ledger(path: &Path) -> Result<NativeDeliveryLedger, NativeDeliveryError> {
-    match std::fs::read(path) {
-        Ok(bytes) => serde_json::from_slice(&bytes).map_err(|error| {
+fn receipt_path(root: &Path, delivery_id: &str) -> PathBuf {
+    root.join(format!("{}.json", digest(&delivery_id)))
+}
+
+fn load_receipt(
+    root: &Path,
+    delivery_id: &str,
+) -> Result<Option<NativeDeliveryReceipt>, NativeDeliveryError> {
+    let path = receipt_path(root, delivery_id);
+    match std::fs::read(&path) {
+        Ok(bytes) => serde_json::from_slice(&bytes).map(Some).map_err(|error| {
             NativeDeliveryError::ReceiptUnavailable(format!(
                 "could not parse {}: {error}",
                 path.display()
             ))
         }),
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
-            Ok(NativeDeliveryLedger::default())
-        }
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(None),
         Err(error) => Err(NativeDeliveryError::ReceiptUnavailable(format!(
             "could not read {}: {error}",
             path.display()
@@ -236,13 +252,60 @@ fn load_ledger(path: &Path) -> Result<NativeDeliveryLedger, NativeDeliveryError>
     }
 }
 
-fn save_ledger(path: &Path, ledger: &NativeDeliveryLedger) -> Result<(), NativeDeliveryError> {
-    crate::util::fs::write_json_atomic(path, ledger).map_err(|error| {
+fn save_receipt(root: &Path, receipt: &NativeDeliveryReceipt) -> Result<(), NativeDeliveryError> {
+    let path = receipt_path(root, &receipt.delivery_id);
+    crate::util::fs::write_json_atomic(&path, receipt).map_err(|error| {
         NativeDeliveryError::ReceiptUnavailable(format!(
             "could not persist {}: {error}",
             path.display()
         ))
     })
+}
+
+/// Create a durable per-delivery reservation without replacing an existing
+/// receipt. One immutable file per delivery id avoids whole-ledger rewrites
+/// and preserves idempotency history without a fixed lifetime capacity cliff.
+fn create_receipt(
+    root: &Path,
+    receipt: &NativeDeliveryReceipt,
+) -> Result<bool, NativeDeliveryError> {
+    std::fs::create_dir_all(root).map_err(|error| {
+        NativeDeliveryError::ReceiptUnavailable(format!(
+            "could not create {}: {error}",
+            root.display()
+        ))
+    })?;
+    let path = receipt_path(root, &receipt.delivery_id);
+    let mut file = tempfile::NamedTempFile::new_in(root).map_err(|error| {
+        NativeDeliveryError::ReceiptUnavailable(format!(
+            "could not create receipt temporary file in {}: {error}",
+            root.display()
+        ))
+    })?;
+    let bytes = serde_json::to_vec(receipt).expect("native receipt is serializable");
+    file.write_all(&bytes)
+        .and_then(|()| file.as_file().sync_all())
+        .map_err(|error| {
+            NativeDeliveryError::ReceiptUnavailable(format!(
+                "could not prepare {}: {error}",
+                path.display()
+            ))
+        })?;
+    match file.persist_noclobber(&path) {
+        Ok(_) => {}
+        Err(error) if error.error.kind() == std::io::ErrorKind::AlreadyExists => return Ok(false),
+        Err(error) => {
+            return Err(NativeDeliveryError::ReceiptUnavailable(format!(
+                "could not reserve {}: {}",
+                path.display(),
+                error.error
+            )))
+        }
+    }
+    if let Ok(dir) = std::fs::File::open(root) {
+        let _ = dir.sync_all();
+    }
+    Ok(true)
 }
 
 /// Return the existing receipt for an exact duplicate. A delivery id reused
@@ -252,14 +315,38 @@ pub(crate) fn existing_receipt(
     input: &NativeExistingSessionDelivery,
 ) -> Result<Option<NativeDeliveryReceipt>, NativeDeliveryError> {
     input.validate()?;
-    let ledger = load_ledger(path)?;
-    let Some(receipt) = ledger.receipts.get(&input.delivery_id) else {
+    let Some(receipt) = load_receipt(path, &input.delivery_id)? else {
         return Ok(None);
     };
     if receipt.request_digest != input.request_digest() {
         return Err(NativeDeliveryError::Conflict);
     }
-    Ok(Some(receipt.clone()))
+    Ok(Some(receipt))
+}
+
+fn duplicate_outcome(
+    receipt: NativeDeliveryReceipt,
+) -> Result<NativeDeliveryOutcome, NativeDeliveryError> {
+    if receipt.state == NativeReceiptState::InDoubt {
+        return Err(NativeDeliveryError::InDoubt(format!(
+            "receipt {} remains in doubt; reconcile before proceeding",
+            receipt.receipt_id
+        )));
+    }
+    Ok(NativeDeliveryOutcome {
+        receipt_id: receipt.receipt_id,
+        disposition: NativeDeliveryDisposition::Duplicate,
+        state: receipt.state,
+    })
+}
+
+pub(crate) fn existing_outcome(
+    path: &Path,
+    input: &NativeExistingSessionDelivery,
+) -> Result<Option<NativeDeliveryOutcome>, NativeDeliveryError> {
+    existing_receipt(path, input)?
+        .map(duplicate_outcome)
+        .transpose()
 }
 
 /// Reserve an exact delivery durably, then perform its one permitted worker
@@ -274,42 +361,35 @@ where
     F: FnOnce(RelayDelivery) -> Fut,
     Fut: Future<Output = anyhow::Result<()>>,
 {
-    if let Some(receipt) = existing_receipt(path, input)? {
-        return Ok(NativeDeliveryOutcome {
-            receipt_id: receipt.receipt_id,
-            disposition: NativeDeliveryDisposition::Duplicate,
-        });
+    if let Some(outcome) = existing_outcome(path, input)? {
+        return Ok(outcome);
     }
 
-    let mut ledger = load_ledger(path)?;
-    if ledger.receipts.len() >= MAX_RECEIPTS {
-        return Err(NativeDeliveryError::ReceiptUnavailable(format!(
-            "native delivery receipt capacity ({MAX_RECEIPTS}) is exhausted"
-        )));
-    }
-    let receipt = input.receipt();
-    ledger
-        .receipts
-        .insert(input.delivery_id.clone(), receipt.clone());
+    let mut receipt = input.receipt();
     // This is the cancellation boundary. No worker write may occur unless this
     // exact reservation is durable on disk first.
-    save_ledger(path, &ledger)?;
+    if !create_receipt(path, &receipt)? {
+        let receipt = existing_receipt(path, input)?.ok_or_else(|| {
+            NativeDeliveryError::ReceiptUnavailable(
+                "concurrent receipt reservation was not readable".to_string(),
+            )
+        })?;
+        return duplicate_outcome(receipt);
+    }
 
     if let Err(error) = send(input.relay_delivery()).await {
         return Err(NativeDeliveryError::InDoubt(error.to_string()));
     }
 
-    let stored = ledger
-        .receipts
-        .get_mut(&input.delivery_id)
-        .expect("receipt inserted before worker write");
-    stored.state = NativeReceiptState::Queued;
+    receipt.state = NativeReceiptState::Queued;
     // Failure here is still in doubt: the durable write-ahead record remains
     // authoritative and a retry will return it without another worker write.
-    save_ledger(path, &ledger).map_err(|error| NativeDeliveryError::InDoubt(error.to_string()))?;
+    save_receipt(path, &receipt)
+        .map_err(|error| NativeDeliveryError::InDoubt(error.to_string()))?;
     Ok(NativeDeliveryOutcome {
         receipt_id: receipt.receipt_id,
         disposition: NativeDeliveryDisposition::Queued,
+        state: NativeReceiptState::Queued,
     })
 }
 
@@ -318,8 +398,7 @@ pub(crate) fn reconcile_receipt(
     input: &NativeExistingSessionReconcile,
 ) -> Result<Option<NativeDeliveryReceipt>, NativeDeliveryError> {
     input.validate()?;
-    let ledger = load_ledger(path)?;
-    let Some(receipt) = ledger.receipts.get(&input.delivery_id) else {
+    let Some(receipt) = load_receipt(path, &input.delivery_id)? else {
         return Ok(None);
     };
     if receipt.relay_agent_name != input.relay_agent_name
@@ -329,35 +408,19 @@ pub(crate) fn reconcile_receipt(
     {
         return Err(NativeDeliveryError::Conflict);
     }
-    Ok(Some(receipt.clone()))
+    Ok(Some(receipt))
 }
 
 pub(crate) fn worker_name(input: &NativeExistingSessionDelivery) -> WorkerName {
     WorkerName::new(input.relay_agent_name.clone())
 }
 
-/// Production bridge shared by the authenticated local listener and the
-/// Relaycast Fleet action. Authorization happens at the final broker hop, after
-/// exact-duplicate reconciliation but before the first durable reservation.
-pub(crate) async fn deliver_authorized(
-    workers: &mut WorkerRegistry,
+pub(crate) async fn deliver_with_sender(
+    sender: crate::worker::WorkerDeliverySender,
     path: &Path,
     input: &NativeExistingSessionDelivery,
 ) -> Result<NativeDeliveryOutcome, NativeDeliveryError> {
-    if let Some(receipt) = existing_receipt(path, input)? {
-        return Ok(NativeDeliveryOutcome {
-            receipt_id: receipt.receipt_id,
-            disposition: NativeDeliveryDisposition::Duplicate,
-        });
-    }
-    let name = worker_name(input);
-    workers
-        .authorize_native_existing_session(&name, &input.session_id)
-        .map_err(|error| NativeDeliveryError::Unauthorized(error.to_string()))?;
-    reserve_and_deliver(path, input, |delivery| {
-        workers.deliver(name.as_str(), delivery)
-    })
-    .await
+    reserve_and_deliver(path, input, |delivery| sender.deliver(delivery)).await
 }
 
 #[cfg(test)]
@@ -406,9 +469,24 @@ mod tests {
             async { Ok(()) }
         })
         .await
-        .expect("retry should reconcile the write-ahead receipt");
-        assert_eq!(retry.disposition, NativeDeliveryDisposition::Duplicate);
+        .expect_err("retry must preserve the in-doubt signal");
+        assert!(matches!(retry, NativeDeliveryError::InDoubt(_)));
         assert_eq!(writes.load(Ordering::SeqCst), 1);
+
+        let reconcile = NativeExistingSessionReconcile {
+            relay_agent_name: "garden-coder".to_string(),
+            session_id: "native-session-1".to_string(),
+            delivery_id: "bst_1".to_string(),
+            lineage_id: "lineage-1".to_string(),
+            head_sha: "a".repeat(40),
+        };
+        assert_eq!(
+            reconcile_receipt(&path, &reconcile)
+                .expect("reconcile")
+                .expect("receipt")
+                .state(),
+            NativeReceiptState::InDoubt
+        );
     }
 
     #[tokio::test]
@@ -424,11 +502,13 @@ mod tests {
         .await
         .expect("first delivery");
         assert_eq!(first.disposition, NativeDeliveryDisposition::Queued);
+        assert_eq!(first.state, NativeReceiptState::Queued);
 
         let duplicate = reserve_and_deliver(&path, &delivery("bst_2"), |_| async { Ok(()) })
             .await
             .expect("duplicate delivery");
         assert_eq!(duplicate.disposition, NativeDeliveryDisposition::Duplicate);
+        assert_eq!(duplicate.state, NativeReceiptState::Queued);
 
         let mut changed = delivery("bst_2");
         changed.message = "different authority".to_string();
@@ -481,5 +561,34 @@ mod tests {
             Err(NativeDeliveryError::Invalid(_))
         ));
         assert!(!path.exists());
+    }
+
+    #[tokio::test]
+    async fn concurrent_reservations_permit_only_one_worker_write() {
+        let dir = tempfile::tempdir().expect("receipt dir");
+        let path = Arc::new(dir.path().join("receipts"));
+        let input = Arc::new(delivery("bst_race"));
+        let writes = Arc::new(AtomicUsize::new(0));
+
+        let attempt = |path: Arc<std::path::PathBuf>,
+                       input: Arc<NativeExistingSessionDelivery>,
+                       writes: Arc<AtomicUsize>| async move {
+            reserve_and_deliver(path.as_path(), input.as_ref(), move |_| {
+                let writes = Arc::clone(&writes);
+                async move {
+                    writes.fetch_add(1, Ordering::SeqCst);
+                    tokio::task::yield_now().await;
+                    Ok(())
+                }
+            })
+            .await
+        };
+
+        let (left, right) = tokio::join!(
+            attempt(Arc::clone(&path), Arc::clone(&input), Arc::clone(&writes)),
+            attempt(path, input, Arc::clone(&writes)),
+        );
+        assert!(left.is_ok() || right.is_ok());
+        assert_eq!(writes.load(Ordering::SeqCst), 1);
     }
 }

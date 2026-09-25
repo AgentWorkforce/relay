@@ -266,6 +266,52 @@ pub(crate) struct WorkerRegistry {
     pub(crate) metrics: MetricsCollector,
 }
 
+/// Cloneable handle to one authorized worker generation's sole stdin writer.
+/// Native delivery tasks use this handle after leaving the broker actor so a
+/// stalled pipe cannot block unrelated runtime events.
+#[derive(Clone)]
+pub(crate) struct WorkerDeliverySender {
+    name: WorkerName,
+    generation: Uuid,
+    command_tx: mpsc::Sender<WorkerWriteCommand>,
+}
+
+impl WorkerDeliverySender {
+    pub(crate) async fn deliver(&self, delivery: RelayDelivery) -> Result<()> {
+        tracing::debug!(
+            target = "broker::deliver",
+            worker = %self.name,
+            generation = %self.generation,
+            from = %delivery.from,
+            target = %delivery.target,
+            event_id = %delivery.event_id,
+            "delivering event to authorized worker generation"
+        );
+        let frame = encode_worker_frame("deliver_relay", None, serde_json::to_value(delivery)?)?;
+        let (completion_tx, completion_rx) = oneshot::channel();
+        timeout(
+            WORKER_COMMAND_QUEUE_TIMEOUT,
+            self.command_tx.send(WorkerWriteCommand {
+                frame,
+                completion: Some(completion_tx),
+            }),
+        )
+        .await
+        .map_err(|_| anyhow::anyhow!("worker command queue timed out for '{}'", self.name))?
+        .map_err(|_| anyhow::anyhow!("worker command writer is unavailable for '{}'", self.name))?;
+        completion_rx
+            .await
+            .map_err(|_| {
+                anyhow::anyhow!(
+                    "worker command writer stopped before completing '{}'",
+                    self.name
+                )
+            })?
+            .map_err(anyhow::Error::msg)
+            .with_context(|| format!("failed writing frame to worker '{}'", self.name))
+    }
+}
+
 fn encode_worker_frame(
     msg_type: &str,
     request_id: Option<RequestId>,
@@ -489,23 +535,42 @@ impl WorkerRegistry {
     /// session id and native active-input capability are checked together at
     /// the final local hop.
     pub(crate) fn authorize_native_existing_session(
-        &self,
+        &mut self,
         name: &WorkerName,
         session_id: &str,
-    ) -> Result<()> {
+    ) -> Result<WorkerDeliverySender> {
         let handle = self
             .workers
-            .get(name)
+            .get_mut(name)
             .with_context(|| format!("native_session_not_found: no live worker named '{name}'"))?;
-        anyhow::ensure!(
-            self.is_worker_live(name),
-            "native_session_not_live: worker '{name}' is not live"
-        );
+        let live = match handle.child.try_wait() {
+            Ok(Some(_)) | Err(_) => false,
+            Ok(None) => {
+                #[cfg(unix)]
+                {
+                    handle.child.id().is_some_and(|pid| !pid_is_gone(pid))
+                }
+                #[cfg(not(unix))]
+                {
+                    handle.child.id().is_some()
+                }
+            }
+        };
+        anyhow::ensure!(live, "native_session_not_live: worker '{name}' is not live");
         anyhow::ensure!(
             handle.ready_at.is_some(),
             "native_session_not_ready: worker '{name}' has not proved readiness"
         );
-        authorize_native_existing_session_spec(&handle.spec, session_id)
+        authorize_native_existing_session_spec(&handle.spec, session_id)?;
+        anyhow::ensure!(
+            !self.initial_tasks.contains_key(name),
+            "native_session_not_ready: worker initial task has not been queued"
+        );
+        Ok(WorkerDeliverySender {
+            name: name.clone(),
+            generation: handle.generation,
+            command_tx: handle.command_tx.clone(),
+        })
     }
 
     /// True when a worker is registered AND its child process is still alive.
@@ -1941,12 +2006,14 @@ pub(crate) fn native_harness_metadata(spec: &AgentSpec) -> Option<(u64, Option<V
 }
 
 fn authorize_native_existing_session_spec(spec: &AgentSpec, session_id: &str) -> Result<()> {
-    let cli = spec
-        .cli
-        .as_deref()
-        .map(normalize_cli_name)
-        .unwrap_or_default()
-        .to_ascii_lowercase();
+    let cli = spec.cli.as_deref().map_or_else(
+        || Ok(String::new()),
+        |raw| {
+            let (command, _) =
+                parse_cli_command(raw).with_context(|| format!("invalid CLI command '{raw}'"))?;
+            Ok::<_, anyhow::Error>(normalize_cli_name(&command).to_ascii_lowercase())
+        },
+    )?;
     anyhow::ensure!(
         cli == "codex" || cli == "codex.exe",
         "native_session_unsupported_harness: only Codex native sessions are supported"
@@ -3810,9 +3877,13 @@ sleep 30
 
     #[test]
     fn native_existing_session_authorization_requires_exact_session_and_active_input() {
-        let spec = native_codex_authorization_spec();
+        let mut spec = native_codex_authorization_spec();
         authorize_native_existing_session_spec(&spec, "native-1")
             .expect("exact native Codex session should authorize");
+
+        spec.cli = Some("/usr/local/bin/codex --model o3".to_string());
+        authorize_native_existing_session_spec(&spec, "native-1")
+            .expect("inline Codex command should authorize by executable");
 
         let mismatch = authorize_native_existing_session_spec(&spec, "replacement-session")
             .expect_err("session substitution must fail")
@@ -3846,6 +3917,41 @@ sleep 30
             error.contains("native_session_unsupported_harness"),
             "{error}"
         );
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn native_existing_session_authorization_reaps_an_exited_worker() {
+        let mut registry = make_registry(vec![]);
+        let name = WorkerName::from("exited-native-worker");
+        let child = Command::new("true").spawn().expect("spawn exiting child");
+        let generation = Uuid::new_v4();
+        let (command_tx, _command_rx) = mpsc::channel(WORKER_WRITE_QUEUE_CAPACITY);
+        registry.workers.insert(
+            name.clone(),
+            WorkerHandle {
+                generation,
+                spec: native_codex_authorization_spec(),
+                parent: None,
+                workspace_id: None,
+                child,
+                command_tx,
+                harness_pid: None,
+                spawned_at: Instant::now(),
+                ready_at: Some(Instant::now()),
+                last_activity_at: Instant::now(),
+                context_budget_pct: None,
+                state: AgentWorkState::Idle,
+                exit_reason: None,
+            },
+        );
+        tokio::time::sleep(Duration::from_millis(50)).await;
+
+        let error = match registry.authorize_native_existing_session(&name, "native-1") {
+            Ok(_) => panic!("an exited child must fail before receipt reservation"),
+            Err(error) => error.to_string(),
+        };
+        assert!(error.contains("native_session_not_live"), "{error}");
     }
 
     #[test]

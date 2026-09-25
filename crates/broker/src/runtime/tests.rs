@@ -607,7 +607,7 @@ fn worker_event_runtime_fixture_with_relay(
         pending: temp_dir.path().join("pending.json"),
         dead_letters: temp_dir.path().join("dead-letters.json"),
         dedup: temp_dir.path().join("dedup.json"),
-        native_delivery_receipts: temp_dir.path().join("native-delivery-receipts.json"),
+        native_delivery_receipts: temp_dir.path().join("native-delivery-receipts"),
         _lock: None,
     };
     let default_workspace =

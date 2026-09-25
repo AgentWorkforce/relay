@@ -10,7 +10,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Added
 
 - `teams.json` agents accept a per-agent `model` field when `up --spawn` starts them; an explicit `--model` or `-m` inside `cli` still wins.
-- The broker exposes authenticated, versioned native existing-session delivery and reconciliation for Cloud Babysitter. It durably reserves each `deliveryId` before the sole worker write, returns stable receipts for exact duplicates, and rejects session substitution or unsupported native input without sending.
+- Persistent brokers expose authenticated, versioned native existing-session delivery and reconciliation for Cloud Babysitter. They durably reserve each `deliveryId` before the sole worker write, return stable receipts for exact duplicates, and reject session substitution or unsupported native input without sending.
 
 ### Changed
 

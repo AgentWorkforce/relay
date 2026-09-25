@@ -1457,23 +1457,25 @@ impl BrokerRuntime {
                 return;
             }
         };
-        match crate::native_delivery::deliver_authorized(
-            &mut self.workers,
+        match crate::native_delivery::existing_outcome(
             &self.paths.native_delivery_receipts,
             &delivery,
-        )
-        .await
-        {
-            Ok(outcome) => {
+        ) {
+            Ok(Some(outcome)) => {
                 let status = match outcome.disposition {
                     crate::native_delivery::NativeDeliveryDisposition::Queued => "queued",
                     crate::native_delivery::NativeDeliveryDisposition::Duplicate => "duplicate",
                 };
                 self.reply_action_output(
                     &invoke.invocation_id,
-                    json!({ "receiptId": outcome.receipt_id, "status": status }),
+                    json!({
+                        "receiptId": outcome.receipt_id,
+                        "status": status,
+                        "state": outcome.state.as_str(),
+                    }),
                 )
                 .await;
+                return;
             }
             Err(error) => {
                 self.reply_action_error(
@@ -1481,8 +1483,67 @@ impl BrokerRuntime {
                     &format!("{}; committed={}", error, error.committed()),
                 )
                 .await;
+                return;
             }
+            Ok(None) => {}
         }
+        let name = crate::native_delivery::worker_name(&delivery);
+        let sender = match self
+            .workers
+            .authorize_native_existing_session(&name, &delivery.session_id)
+        {
+            Ok(sender) => sender,
+            Err(error) => {
+                self.reply_action_error(
+                    &invoke.invocation_id,
+                    &format!("native_session_unauthorized: {error}; committed=false"),
+                )
+                .await;
+                return;
+            }
+        };
+        let receipt_path = self.paths.native_delivery_receipts.clone();
+        let invocation_id = invoke.invocation_id;
+        let control_tx = self.fleet_control_tx.clone();
+        tokio::spawn(async move {
+            let result =
+                crate::native_delivery::deliver_with_sender(sender, &receipt_path, &delivery).await;
+            let result = match result {
+                Ok(outcome) => {
+                    let status = match outcome.disposition {
+                        crate::native_delivery::NativeDeliveryDisposition::Queued => "queued",
+                        crate::native_delivery::NativeDeliveryDisposition::Duplicate => "duplicate",
+                    };
+                    ActionResult {
+                        task: None,
+                        v: FLEET_WIRE_VERSION,
+                        id: None,
+                        invocation_id,
+                        result: ActionResultPayload::Output(ActionResultOutput {
+                            output: json!({
+                                "receiptId": outcome.receipt_id,
+                                "status": status,
+                                "state": outcome.state.as_str(),
+                            }),
+                        }),
+                    }
+                }
+                Err(error) => ActionResult {
+                    task: None,
+                    v: FLEET_WIRE_VERSION,
+                    id: None,
+                    invocation_id,
+                    result: ActionResultPayload::Error(ActionResultError {
+                        error: format!("{}; committed={}", error, error.committed()),
+                    }),
+                },
+            };
+            let _ = control_tx
+                .send(FleetControlCommand::Send(BrokerToRelaycast::ActionResult(
+                    result,
+                )))
+                .await;
+        });
     }
 
     async fn handle_native_existing_session_reconcile_invoke(&self, invoke: ActionInvoke) {
@@ -1513,7 +1574,10 @@ impl BrokerRuntime {
                 self.reply_action_output(
                     &invoke.invocation_id,
                     match receipt {
-                        Some(receipt) => json!({ "receiptId": receipt.receipt_id() }),
+                        Some(receipt) => json!({
+                            "receiptId": receipt.receipt_id(),
+                            "state": receipt.state().as_str(),
+                        }),
                         None => json!({ "receiptId": null }),
                     },
                 )

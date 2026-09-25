@@ -1306,7 +1306,9 @@ async fn listen_api_deliver_native_existing_session(
     match reply_rx.await {
         Ok(Ok(value)) => (axum::http::StatusCode::OK, axum::Json(value)),
         Ok(Err(error)) => native_delivery_error_to_response(&error),
-        Err(_) => internal_error(),
+        Err(_) => native_delivery_error_to_response(&NativeDeliveryError::InDoubt(
+            "runtime reply dropped; delivery outcome is unknown and must be reconciled".to_string(),
+        )),
     }
 }
 

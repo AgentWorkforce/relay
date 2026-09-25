@@ -1,4 +1,6 @@
 import { createAgentActivityState, reduceAgentActivity } from '@agent-relay/sdk';
+import { mkdir, open, readFile, rename, unlink } from 'node:fs/promises';
+import { dirname } from 'node:path';
 import type {
   AgentIdentity,
   AgentActivityState,
@@ -18,12 +20,15 @@ export interface RelayHarnessSessionOptions {
   host: HarnessHost;
   maxQueueSize?: number;
   maxDedupeEntries?: number;
+  /** Durable queue used for on-idle messages accepted by a native sidecar. */
+  deferredQueuePath?: string;
 }
 
 interface QueuedMessage {
   message: RelayMessage;
   context: MessageContext;
   key: string;
+  state: 'queued' | 'in_doubt' | 'accepted';
 }
 
 function senderName(message: RelayMessage): string {
@@ -302,6 +307,7 @@ export class RelayHarnessSession implements AgentSession {
   readonly host: HarnessHost;
   readonly #maxQueueSize: number;
   readonly #maxDedupeEntries: number;
+  readonly #deferredQueuePath?: string;
   readonly #queue: QueuedMessage[] = [];
   readonly #receipts = new Map<string, MessageReceipt>();
   readonly #listeners = new Set<(event: AgentSessionEvent) => void | Promise<void>>();
@@ -314,6 +320,7 @@ export class RelayHarnessSession implements AgentSession {
     this.host = options.host;
     this.#maxQueueSize = options.maxQueueSize ?? 100;
     this.#maxDedupeEntries = options.maxDedupeEntries ?? 10_000;
+    this.#deferredQueuePath = options.deferredQueuePath;
     this.capabilities = {
       messaging: { receive: true },
       delivery: {
@@ -376,6 +383,96 @@ export class RelayHarnessSession implements AgentSession {
     return receipt;
   }
 
+  async #persistQueue(): Promise<void> {
+    if (!this.#deferredQueuePath) return;
+    await mkdir(dirname(this.#deferredQueuePath), { recursive: true });
+    const temporary = `${this.#deferredQueuePath}.${process.pid}.${Date.now()}.tmp`;
+    try {
+      const file = await open(temporary, 'wx', 0o600);
+      try {
+        await file.writeFile(JSON.stringify({ version: 1, entries: this.#queue }), 'utf8');
+        await file.sync();
+      } finally {
+        await file.close();
+      }
+      await rename(temporary, this.#deferredQueuePath);
+      if (process.platform !== 'win32') {
+        const directory = await open(dirname(this.#deferredQueuePath), 'r');
+        try {
+          await directory.sync();
+        } finally {
+          await directory.close();
+        }
+      }
+    } finally {
+      await unlink(temporary).catch(() => undefined);
+    }
+  }
+
+  /** Restore deferred messages after a sidecar restart before reading stdin. */
+  async restoreDeferredMessages(): Promise<void> {
+    if (!this.#deferredQueuePath) return;
+    let parsed: { version?: unknown; entries?: unknown };
+    try {
+      parsed = JSON.parse(await readFile(this.#deferredQueuePath, 'utf8')) as typeof parsed;
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code === 'ENOENT') return;
+      throw error;
+    }
+    if (parsed.version !== 1 || !Array.isArray(parsed.entries)) {
+      throw new Error('Invalid deferred Relay delivery queue');
+    }
+    for (const candidate of parsed.entries) {
+      if (!candidate || typeof candidate !== 'object') {
+        throw new Error('Invalid deferred Relay delivery entry');
+      }
+      const entry = candidate as Partial<QueuedMessage>;
+      if (
+        !entry.message ||
+        !entry.context ||
+        typeof entry.key !== 'string' ||
+        (entry.state !== 'queued' && entry.state !== 'in_doubt' && entry.state !== 'accepted')
+      ) {
+        throw new Error('Invalid deferred Relay delivery entry');
+      }
+      if (entry.state === 'accepted') {
+        this.#remember(entry.key, {
+          status: 'accepted',
+          deliveryId: entry.context.id,
+          metadata: { restored: true },
+        });
+        continue;
+      }
+      if (entry.state === 'in_doubt') {
+        const receipt: MessageReceipt = {
+          status: 'failed',
+          deliveryId: entry.context.id,
+          reason: 'Deferred delivery was in progress when the native sidecar stopped',
+          retryable: false,
+        };
+        this.#remember(entry.key, receipt);
+        await this.#emit({
+          type: 'delivery.failed',
+          messageId: entry.message.id,
+          deliveryId: entry.context.id,
+          reason: receipt.reason,
+          retryable: false,
+        });
+        continue;
+      }
+      const restored = entry as QueuedMessage;
+      this.#queue.push(restored);
+      this.#remember(restored.key, {
+        status: 'deferred',
+        deliveryId: restored.context.id,
+        reason: 'queued_until_idle',
+        metadata: { queued: true, restored: true },
+      });
+    }
+    await this.#persistQueue();
+    await this.#serialized(() => this.#drain());
+  }
+
   async #accept(message: RelayMessage, context: MessageContext): Promise<MessageReceipt> {
     const prompt = formatInboundRelayPrompt(message);
     if (this.host.hasActiveTurn) await this.host.submitUserMessage(prompt);
@@ -388,12 +485,33 @@ export class RelayHarnessSession implements AgentSession {
 
   async #drain(): Promise<void> {
     if (this.#released || this.host.hasActiveTurn) return;
-    const queued = this.#queue.shift();
+    const queued = this.#queue[0];
     if (!queued) return;
+    if (queued.state === 'accepted') {
+      this.#queue.shift();
+      await this.#persistQueue();
+      await this.#drain();
+      return;
+    }
+    queued.state = 'in_doubt';
+    await this.#persistQueue();
     try {
       const receipt = await this.#accept(queued.message, queued.context);
+      // Publish a durable terminal marker before removing the entry. If the
+      // process stops between these writes, restore discards the already
+      // accepted message instead of replaying it or reporting it as failed.
+      queued.state = 'accepted';
+      await this.#persistQueue();
       this.#remember(queued.key, receipt);
+      this.#queue.shift();
+      await this.#persistQueue();
     } catch (error) {
+      // If acceptance succeeded but final queue cleanup failed, leave the
+      // accepted marker in memory and on disk. A later settle/restart can
+      // safely discard it without a second injection.
+      if (queued.state === 'accepted') return;
+      this.#queue.shift();
+      await this.#persistQueue();
       const receipt: MessageReceipt = {
         status: 'failed',
         deliveryId: queued.context.id,
@@ -432,7 +550,18 @@ export class RelayHarnessSession implements AgentSession {
             retryable: true,
           });
         }
-        this.#queue.push({ message, context, key });
+        this.#queue.push({ message, context, key, state: 'queued' });
+        try {
+          await this.#persistQueue();
+        } catch (error) {
+          this.#queue.pop();
+          return this.#remember(key, {
+            status: 'failed',
+            deliveryId: context.id,
+            reason: `Could not durably queue Relay delivery: ${error instanceof Error ? error.message : String(error)}`,
+            retryable: true,
+          });
+        }
         return this.#remember(key, {
           status: 'deferred',
           deliveryId: context.id,
@@ -460,6 +589,7 @@ export class RelayHarnessSession implements AgentSession {
       if (this.#released) return;
       this.#released = true;
       this.#queue.length = 0;
+      await this.#persistQueue();
       await this.host.destroy();
       await this.#emit({ type: 'session.released', reason });
     });
