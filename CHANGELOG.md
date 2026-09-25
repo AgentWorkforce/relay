@@ -10,6 +10,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Added
 
 - `teams.json` agents accept a per-agent `model` field when `up --spawn` starts them; an explicit `--model` or `-m` inside `cli` still wins.
+- The cloud dashboard can link a recorded Claude Code or Codex session to the fleet worker running it, so you can message that worker from the session page. After each spawn and supervised restart, the broker records the worker's provider session as `session_id` and `session_kind` in its Relaycast agent metadata.
 
 ### Changed
 

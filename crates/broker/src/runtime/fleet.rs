@@ -8,6 +8,7 @@ use crate::{
     listen_api::{DeliveryRouteError, ListenApiRequest, SetInboundDeliveryModeOk},
     node_control::{delivery_ack, handler_unavailable_result, DeliveryDecision, ReceiptAckability},
     node_delivery_probe::DeliverDisposition,
+    relaycast::SessionMetadataPublish,
     terminal_control::{
         request_terminal_reconnect, TerminalControlCommand, TerminalControlEvent,
         TerminalDeliveryDiagnostics, TerminalFromCloud, TerminalMode, TerminalToCloud,
@@ -2317,8 +2318,10 @@ pub(super) fn worker_session_metadata(spec: &AgentSpec) -> Option<(String, Optio
     let cli = spec
         .cli
         .as_deref()
-        .and_then(|cli| cli.split_whitespace().next())
-        .map(|cli| crate::cli::command_parse::normalize_cli_name(cli).to_lowercase())
+        // Parse the executable the way worker startup does, so a quoted path
+        // with spaces (`"/opt/AI Tools/codex" --flag`) names `codex`.
+        .and_then(|cli| crate::cli::command_parse::parse_cli_command(cli).ok())
+        .map(|(command, _)| crate::cli::command_parse::normalize_cli_name(&command).to_lowercase())
         .or_else(|| {
             spec.provider
                 .as_ref()
@@ -2339,28 +2342,40 @@ pub(super) fn worker_session_metadata(spec: &AgentSpec) -> Option<(String, Optio
 ///
 /// Called after every successful spawn of a worker that holds a hosted
 /// identity, so a respawn that resumes or starts a different session updates
-/// the published id. Detached and best-effort for the same reasons as
+/// the published id. The session claim is taken here, synchronously and even
+/// when the spawn has no session id, so any publish still pending from an
+/// earlier worker of the same name is superseded and cannot label this one
+/// with the old session. Detached and best-effort for the same reasons as
 /// [`spawn_declared_metadata_publish`]: a failure is logged, never fatal.
 pub(super) fn spawn_session_metadata_publish(
     relaycast_http: &RelaycastHttpClient,
     name: &str,
     spec: &AgentSpec,
 ) {
+    let Ok(claim) = relaycast_http.claim_session_metadata(name) else {
+        return;
+    };
     let Some((session_id, session_kind)) = worker_session_metadata(spec) else {
         return;
     };
     let http = relaycast_http.clone();
-    let agent = name.to_string();
     tokio::spawn(async move {
+        let agent = claim.agent_name();
         match http
-            .publish_session_metadata(&agent, &session_id, session_kind.as_deref())
+            .publish_session_metadata(&claim, &session_id, session_kind.as_deref())
             .await
         {
-            Ok(()) => tracing::debug!(
+            Ok(SessionMetadataPublish::Published) => tracing::debug!(
                 worker = %agent,
                 session_id = %session_id,
                 "published provider session id for spawned agent"
             ),
+            Ok(SessionMetadataPublish::Superseded) => tracing::debug!(
+                worker = %agent,
+                session_id = %session_id,
+                "skipped provider session id publish; a later spawn of this name owns it"
+            ),
+            Ok(SessionMetadataPublish::NothingToPublish) => {}
             Err(error) => tracing::error!(
                 worker = %agent,
                 session_id = %session_id,
@@ -4745,6 +4760,14 @@ mod tests {
                 "thread-123".to_string(),
                 Some("claude-terminal".to_string())
             ))
+        );
+
+        // A quoted executable path with spaces names the binary, not the
+        // first whitespace-separated fragment of its directory.
+        spec.cli = Some("\"/opt/AI Tools/codex\" --full-auto".to_string());
+        assert_eq!(
+            worker_session_metadata(&spec),
+            Some(("thread-123".to_string(), Some("codex".to_string())))
         );
 
         spec.cli = Some("claude:opus".to_string());
