@@ -170,7 +170,7 @@ export async function runAiSdkSidecar(config: AiSdkSidecarConfig, io: AiSdkSidec
     deferredQueuePath: resolve(
       config.runtimeRoot,
       'deferred-relay',
-      `${createHash('sha256').update(host.sessionId).digest('hex')}.json`
+      createHash('sha256').update(host.sessionId).digest('hex')
     ),
   });
   const relayDeliveries = new Map<string, { eventId: string }>();
@@ -184,6 +184,19 @@ export async function runAiSdkSidecar(config: AiSdkSidecarConfig, io: AiSdkSidec
         v: 2,
         type: 'delivery_ack',
         payload: { delivery_id: event.deliveryId, event_id: delivery.eventId, state: 'queued' },
+      });
+    } else if (event.type === 'delivery.failed' && event.deliveryId) {
+      const delivery = relayDeliveries.get(event.deliveryId);
+      if (!delivery) return;
+      relayDeliveries.delete(event.deliveryId);
+      await write({
+        v: 2,
+        type: 'delivery_failed',
+        payload: {
+          delivery_id: event.deliveryId,
+          event_id: delivery.eventId,
+          reason: event.reason,
+        },
       });
     }
   });

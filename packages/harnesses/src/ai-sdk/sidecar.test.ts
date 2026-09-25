@@ -157,6 +157,26 @@ describe('AI SDK native harness sidecar', () => {
 
     fixture.settle();
     await waitFor(() => hasDeliveryFrame(output, 'delivery_ack', 'deferred'));
+
+    input.write(
+      `${JSON.stringify({
+        v: 2,
+        type: 'deliver_relay',
+        payload: {
+          delivery_id: 'deferred-failed',
+          event_id: 'event-deferred-failed',
+          from: 'Human',
+          target: 'Worker',
+          body: 'later failure',
+          injection_mode: 'wait',
+        },
+      })}\n`
+    );
+    await waitFor(() => hasDeliveryFrame(output, 'delivery_queued', 'deferred-failed'));
+    vi.mocked(fixture.session.doPromptTurn).mockRejectedValueOnce(new Error('acceptance failed'));
+    fixture.settle();
+    await waitFor(() => hasDeliveryFrame(output, 'delivery_failed', 'deferred-failed'));
+    expect(hasDeliveryFrame(output, 'delivery_ack', 'deferred-failed')).toBe(false);
     input.end();
     await running;
   }, 15_000);

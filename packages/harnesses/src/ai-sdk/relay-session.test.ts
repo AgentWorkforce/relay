@@ -1,5 +1,6 @@
-import type { AgentIdentity, AgentSessionEvent, MessageContext, RelayMessage } from '@agent-relay/sdk';
-import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
+import type { AgentIdentity, MessageContext, RelayMessage } from '@agent-relay/sdk';
+import { createHash } from 'node:crypto';
+import { mkdir, mkdtemp, readdir, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { resolve } from 'node:path';
 import { describe, expect, it, vi } from 'vitest';
@@ -18,6 +19,36 @@ function message(id: string, text = id, from = 'Human'): RelayMessage {
 
 function context(id: string, mode: MessageContext['mode'] = 'immediate'): MessageContext {
   return { id, mode, reason: 'message' };
+}
+
+async function readEntries(path: string): Promise<Array<Record<string, unknown>>> {
+  const entries: Array<Record<string, unknown>> = [];
+  for (const directory of ['queue', 'receipts']) {
+    const entryPath = resolve(path, directory);
+    let files: string[];
+    try {
+      files = (await readdir(entryPath)).filter((file) => file.endsWith('.json'));
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code === 'ENOENT') continue;
+      throw error;
+    }
+    for (const file of files) {
+      const envelope = JSON.parse(await readFile(resolve(entryPath, file), 'utf8')) as {
+        entry: Record<string, unknown>;
+      };
+      entries.push(envelope.entry);
+    }
+  }
+  return entries;
+}
+
+async function writeEntry(path: string, entry: Record<string, unknown>): Promise<void> {
+  const directory = entry.state === 'queued' ? 'queue' : 'receipts';
+  const entryPath = resolve(path, directory);
+  await mkdir(entryPath, { recursive: true });
+  const key = String(entry.key);
+  const file = `${createHash('sha256').update(key).digest('hex')}.json`;
+  await writeFile(resolve(entryPath, file), JSON.stringify({ version: 2, entry }));
 }
 
 function fakeHost() {
@@ -133,7 +164,7 @@ describe('RelayHarnessSession', () => {
 
   it('restores a durably deferred on-idle message after a sidecar restart', async () => {
     const root = await mkdtemp(resolve(tmpdir(), 'relay-deferred-'));
-    const queuePath = resolve(root, 'queue.json');
+    const queuePath = resolve(root, 'queue');
     const first = fakeHost();
     const firstSession = new RelayHarnessSession({
       identity,
@@ -144,8 +175,8 @@ describe('RelayHarnessSession', () => {
     await expect(
       firstSession.receiveMessage(message('durable'), context('durable', 'on-idle'))
     ).resolves.toMatchObject({ status: 'deferred' });
-    expect(JSON.parse(await readFile(queuePath, 'utf8')).entries).toMatchObject([
-      { key: 'durable', state: 'queued' },
+    expect(await readEntries(queuePath)).toMatchObject([
+      expect.objectContaining({ key: 'durable', state: 'queued' }),
     ]);
 
     const restarted = fakeHost();
@@ -157,62 +188,47 @@ describe('RelayHarnessSession', () => {
     let stateAtAcceptance: string | undefined;
     restartedSession.onEvent?.(async (event) => {
       if (event.type !== 'delivery.accepted') return;
-      const persisted = JSON.parse(await readFile(queuePath, 'utf8')) as {
-        entries: Array<{ state: string }>;
-      };
-      stateAtAcceptance = persisted.entries[0]?.state;
+      const persisted = await readEntries(queuePath);
+      stateAtAcceptance = persisted[0]?.state as string | undefined;
     });
     await restartedSession.restoreDeferredMessages();
     expect(restarted.host.startTurn).toHaveBeenCalledWith(
       expect.stringContaining('"messageId":"durable"'),
       'durable'
     );
-    expect(JSON.parse(await readFile(queuePath, 'utf8')).entries).toMatchObject([
-      { key: 'durable', state: 'accepted' },
+    expect(await readEntries(queuePath)).toMatchObject([
+      expect.objectContaining({ key: 'durable', state: 'accepted' }),
     ]);
     expect(stateAtAcceptance).toBe('accepted');
   });
 
   it('fails closed instead of replaying an in-flight deferred message after restart', async () => {
     const root = await mkdtemp(resolve(tmpdir(), 'relay-deferred-indoubt-'));
-    const queuePath = resolve(root, 'queue.json');
-    await writeFile(
-      queuePath,
-      JSON.stringify({
-        version: 1,
-        entries: [
-          {
-            message: message('ambiguous'),
-            context: context('ambiguous', 'on-idle'),
-            key: 'ambiguous',
-            state: 'in_doubt',
-          },
-          {
-            message: message('already-accepted'),
-            context: context('already-accepted', 'on-idle'),
-            key: 'already-accepted',
-            state: 'accepted',
-          },
-        ],
-      })
-    );
+    const queuePath = resolve(root, 'queue');
+    await writeEntry(queuePath, {
+      key: 'ambiguous',
+      deliveryId: 'ambiguous',
+      messageId: 'ambiguous',
+      state: 'in_doubt',
+    });
+    await writeEntry(queuePath, {
+      key: 'already-accepted',
+      deliveryId: 'already-accepted',
+      messageId: 'already-accepted',
+      state: 'accepted',
+    });
     const restarted = fakeHost();
     const restartedSession = new RelayHarnessSession({
       identity,
       host: restarted.host as never,
       deferredQueuePath: queuePath,
     });
-    const events: AgentSessionEvent[] = [];
-    restartedSession.onEvent?.((event) => events.push(event));
     await restartedSession.restoreDeferredMessages();
     expect(restarted.host.startTurn).not.toHaveBeenCalled();
-    expect(JSON.parse(await readFile(queuePath, 'utf8')).entries).toMatchObject([
-      { key: 'ambiguous', state: 'in_doubt' },
-      { key: 'already-accepted', state: 'accepted' },
-    ]);
-    expect(events).toEqual(
+    expect(await readEntries(queuePath)).toEqual(
       expect.arrayContaining([
-        expect.objectContaining({ type: 'delivery.failed', deliveryId: 'ambiguous', retryable: false }),
+        expect.objectContaining({ key: 'ambiguous', state: 'in_doubt' }),
+        expect.objectContaining({ key: 'already-accepted', state: 'accepted' }),
       ])
     );
     await expect(
@@ -254,7 +270,7 @@ describe('RelayHarnessSession', () => {
 
   it('retains a failed in-flight deferred message as a non-retryable tombstone', async () => {
     const root = await mkdtemp(resolve(tmpdir(), 'relay-deferred-failed-'));
-    const queuePath = resolve(root, 'queue.json');
+    const queuePath = resolve(root, 'queue');
     const fixture = fakeHost();
     const session = new RelayHarnessSession({
       identity,
@@ -275,9 +291,10 @@ describe('RelayHarnessSession', () => {
     fixture.settle();
     await failed;
 
-    expect(JSON.parse(await readFile(queuePath, 'utf8')).entries).toMatchObject([
-      { key: 'ambiguous', state: 'in_doubt' },
-    ]);
+    const tombstones = await readEntries(queuePath);
+    expect(tombstones).toMatchObject([expect.objectContaining({ key: 'ambiguous', state: 'in_doubt' })]);
+    expect(tombstones[0]).not.toHaveProperty('message');
+    expect(tombstones[0]).not.toHaveProperty('context');
     await expect(
       session.receiveMessage(message('ambiguous'), {
         ...context('ambiguous', 'on-idle'),
@@ -285,6 +302,8 @@ describe('RelayHarnessSession', () => {
       })
     ).resolves.toMatchObject({ status: 'failed', retryable: false });
     expect(fixture.host.startTurn).toHaveBeenCalledTimes(2);
+    await session.release?.('retired');
+    expect(await readEntries(queuePath)).toEqual([]);
   });
 
   it('publishes capabilities and releases once', async () => {
@@ -299,22 +318,25 @@ describe('RelayHarnessSession', () => {
 
   it('destroys the host even when durable queue cleanup fails', async () => {
     const root = await mkdtemp(resolve(tmpdir(), 'relay-release-failure-'));
-    const blockedDirectory = resolve(root, 'not-a-directory');
-    await writeFile(blockedDirectory, 'blocked');
+    const queuePath = resolve(root, 'queue');
     const fixture = fakeHost();
     const session = new RelayHarnessSession({
       identity,
       host: fixture.host as never,
-      deferredQueuePath: resolve(blockedDirectory, 'queue.json'),
+      deferredQueuePath: queuePath,
     });
     const events: string[] = [];
     session.onEvent?.((event) => events.push(event.type));
+    await session.receiveMessage(message('active'), context('active'));
+    await session.receiveMessage(message('queued'), context('queued', 'on-idle'));
+    await rm(queuePath, { recursive: true });
+    await writeFile(queuePath, 'blocked');
 
     await expect(session.release?.('done')).rejects.toBeDefined();
     expect(fixture.host.destroy).toHaveBeenCalledTimes(1);
     expect(events).toContain('session.released');
-    await rm(blockedDirectory);
-    await mkdir(blockedDirectory);
+    await rm(queuePath);
+    await mkdir(resolve(queuePath, 'queue'), { recursive: true });
     await expect(session.release?.('retry')).resolves.toBeUndefined();
     expect(fixture.host.destroy).toHaveBeenCalledTimes(1);
     expect(events.filter((event) => event === 'session.released')).toHaveLength(1);

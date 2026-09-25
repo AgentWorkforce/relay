@@ -2,11 +2,12 @@ use std::{
     collections::{HashMap, HashSet, VecDeque},
     path::{Path, PathBuf},
     process::Stdio,
+    sync::{Arc, Mutex},
     time::{Duration, Instant},
 };
 
 use crate::{
-    ids::{RequestId, WorkerName},
+    ids::{DeliveryId, RequestId, WorkerName},
     metrics::MetricsCollector,
     protocol::{
         AgentRuntime, AgentSpec, AppServerAuthType, AppServerHostOwnership, HarnessReleasePolicy,
@@ -75,6 +76,11 @@ const WORKER_COMMAND_QUEUE_TIMEOUT: Duration = Duration::from_millis(250);
 /// slow provider response. The sole stdin writer must still eventually fault
 /// rather than wedge the worker lane, but should tolerate that short stall.
 const WORKER_WRITE_TIMEOUT: Duration = Duration::from_secs(5);
+/// A native existing-session delivery is not durably queued merely because its
+/// frame reached the worker pipe. Wait for the sidecar's correlated
+/// `delivery_queued` or `delivery_ack`, which is emitted only after durable
+/// custody or immediate acceptance.
+const NATIVE_DELIVERY_CUSTODY_TIMEOUT: Duration = Duration::from_secs(10);
 
 /// A complete newline-delimited worker protocol frame. A dedicated task owns
 /// each worker's stdin and writes these frames in order, so cancelling a
@@ -264,6 +270,79 @@ pub(crate) struct WorkerRegistry {
     pub(crate) owned_cleanup_journal: Option<PathBuf>,
     pub(crate) supervisor: Supervisor,
     pub(crate) metrics: MetricsCollector,
+    native_delivery_custody: NativeDeliveryCustodyHub,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+struct NativeDeliveryCustodyKey {
+    name: WorkerName,
+    generation: Uuid,
+    delivery_id: DeliveryId,
+}
+
+type NativeDeliveryCustodyResult = std::result::Result<(), String>;
+
+/// Correlates the native delivery HTTP task with the sidecar protocol event
+/// that proves durable custody. The registry owns the hub and authorized
+/// senders hold clones, so a same-name replacement cannot satisfy a waiter for
+/// an older process generation.
+#[derive(Clone, Default)]
+struct NativeDeliveryCustodyHub {
+    waiters:
+        Arc<Mutex<HashMap<NativeDeliveryCustodyKey, oneshot::Sender<NativeDeliveryCustodyResult>>>>,
+}
+
+impl NativeDeliveryCustodyHub {
+    fn register(
+        &self,
+        key: NativeDeliveryCustodyKey,
+    ) -> Result<oneshot::Receiver<NativeDeliveryCustodyResult>> {
+        let (sender, receiver) = oneshot::channel();
+        let mut waiters = self
+            .waiters
+            .lock()
+            .map_err(|_| anyhow::anyhow!("native delivery custody registry is unavailable"))?;
+        anyhow::ensure!(
+            !waiters.contains_key(&key),
+            "native delivery custody is already pending for '{}'",
+            key.delivery_id
+        );
+        waiters.insert(key, sender);
+        Ok(receiver)
+    }
+
+    fn resolve(&self, key: &NativeDeliveryCustodyKey, result: NativeDeliveryCustodyResult) -> bool {
+        let sender = self
+            .waiters
+            .lock()
+            .ok()
+            .and_then(|mut waiters| waiters.remove(key));
+        sender.is_some_and(|sender| sender.send(result).is_ok())
+    }
+
+    fn cancel(&self, key: &NativeDeliveryCustodyKey) {
+        if let Ok(mut waiters) = self.waiters.lock() {
+            waiters.remove(key);
+        }
+    }
+
+    fn fail_generation(&self, name: &WorkerName, generation: Uuid, error: &str) {
+        let senders = if let Ok(mut waiters) = self.waiters.lock() {
+            let keys: Vec<_> = waiters
+                .keys()
+                .filter(|key| key.name == *name && key.generation == generation)
+                .cloned()
+                .collect();
+            keys.into_iter()
+                .filter_map(|key| waiters.remove(&key))
+                .collect::<Vec<_>>()
+        } else {
+            Vec::new()
+        };
+        for sender in senders {
+            let _ = sender.send(Err(error.to_string()));
+        }
+    }
 }
 
 /// Cloneable handle to one authorized worker generation's sole stdin writer.
@@ -274,6 +353,7 @@ pub(crate) struct WorkerDeliverySender {
     name: WorkerName,
     generation: Uuid,
     command_tx: mpsc::Sender<WorkerWriteCommand>,
+    custody: NativeDeliveryCustodyHub,
 }
 
 impl WorkerDeliverySender {
@@ -287,28 +367,63 @@ impl WorkerDeliverySender {
             event_id = %delivery.event_id,
             "delivering event to authorized worker generation"
         );
+        let delivery_id = delivery.delivery_id.clone();
         let frame = encode_worker_frame("deliver_relay", None, serde_json::to_value(delivery)?)?;
+        let custody_key = NativeDeliveryCustodyKey {
+            name: self.name.clone(),
+            generation: self.generation,
+            delivery_id,
+        };
+        let custody_rx = self.custody.register(custody_key.clone())?;
         let (completion_tx, completion_rx) = oneshot::channel();
-        timeout(
-            WORKER_COMMAND_QUEUE_TIMEOUT,
-            self.command_tx.send(WorkerWriteCommand {
-                frame,
-                completion: Some(completion_tx),
-            }),
-        )
-        .await
-        .map_err(|_| anyhow::anyhow!("worker command queue timed out for '{}'", self.name))?
-        .map_err(|_| anyhow::anyhow!("worker command writer is unavailable for '{}'", self.name))?;
-        completion_rx
+        let write_result: Result<()> = async {
+            timeout(
+                WORKER_COMMAND_QUEUE_TIMEOUT,
+                self.command_tx.send(WorkerWriteCommand {
+                    frame,
+                    completion: Some(completion_tx),
+                }),
+            )
             .await
+            .map_err(|_| anyhow::anyhow!("worker command queue timed out for '{}'", self.name))?
+            .map_err(|_| {
+                anyhow::anyhow!("worker command writer is unavailable for '{}'", self.name)
+            })?;
+            completion_rx
+                .await
+                .map_err(|_| {
+                    anyhow::anyhow!(
+                        "worker command writer stopped before completing '{}'",
+                        self.name
+                    )
+                })?
+                .map_err(anyhow::Error::msg)
+                .with_context(|| format!("failed writing frame to worker '{}'", self.name))
+        }
+        .await;
+        if let Err(error) = write_result {
+            self.custody.cancel(&custody_key);
+            return Err(error);
+        }
+
+        let custody_result = timeout(NATIVE_DELIVERY_CUSTODY_TIMEOUT, custody_rx).await;
+        if custody_result.is_err() {
+            self.custody.cancel(&custody_key);
+        }
+        custody_result
             .map_err(|_| {
                 anyhow::anyhow!(
-                    "worker command writer stopped before completing '{}'",
+                    "native delivery custody confirmation timed out for '{}'",
+                    self.name
+                )
+            })?
+            .map_err(|_| {
+                anyhow::anyhow!(
+                    "native delivery custody waiter stopped before confirmation for '{}'",
                     self.name
                 )
             })?
             .map_err(anyhow::Error::msg)
-            .with_context(|| format!("failed writing frame to worker '{}'", self.name))
     }
 }
 
@@ -420,6 +535,7 @@ impl WorkerRegistry {
             owned_cleanup_journal: None,
             supervisor: Supervisor::new(),
             metrics: MetricsCollector::new(broker_start),
+            native_delivery_custody: NativeDeliveryCustodyHub::default(),
         }
     }
 
@@ -570,7 +686,51 @@ impl WorkerRegistry {
             name: name.clone(),
             generation: handle.generation,
             command_tx: handle.command_tx.clone(),
+            custody: self.native_delivery_custody.clone(),
         })
+    }
+
+    pub(crate) fn confirm_native_delivery_custody(
+        &self,
+        name: &WorkerName,
+        generation: Uuid,
+        delivery_id: &str,
+    ) -> bool {
+        self.native_delivery_custody.resolve(
+            &NativeDeliveryCustodyKey {
+                name: name.clone(),
+                generation,
+                delivery_id: DeliveryId::from(delivery_id),
+            },
+            Ok(()),
+        )
+    }
+
+    pub(crate) fn fail_native_delivery_custody(
+        &self,
+        name: &WorkerName,
+        generation: Uuid,
+        delivery_id: &str,
+        error: &str,
+    ) -> bool {
+        self.native_delivery_custody.resolve(
+            &NativeDeliveryCustodyKey {
+                name: name.clone(),
+                generation,
+                delivery_id: DeliveryId::from(delivery_id),
+            },
+            Err(error.to_string()),
+        )
+    }
+
+    pub(crate) fn fail_native_delivery_custody_generation(
+        &self,
+        name: &WorkerName,
+        generation: Uuid,
+        error: &str,
+    ) {
+        self.native_delivery_custody
+            .fail_generation(name, generation, error);
     }
 
     /// True when a worker is registered AND its child process is still alive.
@@ -2992,6 +3152,60 @@ mod tests {
     fn make_registry(env: Vec<(String, String)>) -> WorkerRegistry {
         let (tx, _rx) = mpsc::channel::<WorkerEvent>(16);
         WorkerRegistry::new(tx, env, PathBuf::from("/tmp/worker-tests"), Instant::now())
+    }
+
+    #[tokio::test]
+    async fn native_delivery_waits_for_correlated_sidecar_custody() {
+        let name = WorkerName::from("native");
+        let generation = Uuid::new_v4();
+        let custody = NativeDeliveryCustodyHub::default();
+        let (command_tx, mut command_rx) = mpsc::channel(1);
+        let sender = WorkerDeliverySender {
+            name: name.clone(),
+            generation,
+            command_tx,
+            custody: custody.clone(),
+        };
+        let delivery_id = DeliveryId::from("delivery-1");
+        let delivery = RelayDelivery {
+            delivery_id: delivery_id.clone(),
+            event_id: "event-1".into(),
+            workspace_id: None,
+            workspace_alias: None,
+            from: "reviewer".to_string(),
+            target: "native".into(),
+            body: "status".to_string(),
+            thread_id: None,
+            priority: None,
+            injection_mode: Default::default(),
+        };
+
+        let delivery_task = tokio::spawn(async move { sender.deliver(delivery).await });
+        let mut command = command_rx.recv().await.expect("worker command");
+        command
+            .completion
+            .take()
+            .expect("write completion")
+            .send(Ok(()))
+            .expect("delivery task should await write completion");
+        tokio::task::yield_now().await;
+        assert!(
+            !delivery_task.is_finished(),
+            "pipe write alone must not claim durable custody"
+        );
+
+        assert!(custody.resolve(
+            &NativeDeliveryCustodyKey {
+                name,
+                generation,
+                delivery_id,
+            },
+            Ok(()),
+        ));
+        delivery_task
+            .await
+            .expect("delivery task should join")
+            .expect("correlated sidecar confirmation should complete delivery");
     }
 
     #[cfg(unix)]

@@ -51,7 +51,8 @@ pub(crate) enum NativeReceiptState {
     /// The durable cancellation boundary was crossed. The worker write may or
     /// may not have completed, so replay is forbidden.
     InDoubt,
-    /// The worker's sole stdin writer confirmed the complete protocol frame.
+    /// The sidecar confirmed durable queued custody or immediate acceptance of
+    /// the complete protocol frame.
     Queued,
 }
 
