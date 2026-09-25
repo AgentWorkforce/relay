@@ -247,16 +247,13 @@ async fn probe_agent_relay_mcp_command_with_timeout(
     command: &AgentRelayMcpCommand,
     timeout: Duration,
 ) -> io::Result<()> {
-    let mut child = Command::new(&command.command)
+    let mut probe = Command::new(&command.command);
+    // Tool discovery is local and must not rotate an agent identity or
+    // print credentials while diagnosing a broken MCP executable.
+    crate::spawner::remove_inherited_relay_credentials(&mut probe);
+    let mut child = probe
         .args(&command.args)
-        // Tool discovery is local and must not rotate an agent identity or
-        // print credentials while diagnosing a broken MCP executable.
         .env("RELAY_SKIP_BOOTSTRAP", "1")
-        .env_remove("RELAY_API_KEY")
-        .env_remove("RELAY_WORKSPACE_KEY")
-        .env_remove("AGENT_RELAY_WORKSPACE_KEY")
-        .env_remove("RELAY_AGENT_TOKEN")
-        .env_remove("RELAY_WORKSPACES_JSON")
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::null())

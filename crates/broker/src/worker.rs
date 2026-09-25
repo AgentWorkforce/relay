@@ -34,8 +34,9 @@ use crate::{
     runtime::headless_provider_cli_name,
     spawner::{
         add_broker_hooks_path, attestation_env_present, is_valid_attestation_value,
-        resolve_commit_hooks_dir, terminate_child, with_commit_attestation_env,
-        RELAY_ATTEST_AGENT_ID, RELAY_ATTEST_JTI, RELAY_ATTEST_SESSION_ID, RELAY_ATTEST_SPONSOR_ID,
+        remove_inherited_relay_credentials, resolve_commit_hooks_dir, terminate_child,
+        with_commit_attestation_env, RELAY_ATTEST_AGENT_ID, RELAY_ATTEST_JTI,
+        RELAY_ATTEST_SESSION_ID, RELAY_ATTEST_SPONSOR_ID,
     },
 };
 
@@ -1208,6 +1209,11 @@ impl WorkerRegistry {
             // attested child through Command's inherited environment.
             command.env_remove(key);
         }
+        // Every runtime (PTY, headless provider, app-server, native sidecar)
+        // reaches this point with a command that inherits the broker's
+        // environment. Drop relay-owned credentials from it; the worker's own
+        // credentials are injected below.
+        remove_inherited_relay_credentials(&mut command);
         child_env.retain(|(key, _)| {
             !matches!(
                 key.as_str(),
@@ -2911,6 +2917,69 @@ mod tests {
             channels: Vec::new(),
             restart_policy: None,
         }
+    }
+
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
+    #[tokio::test]
+    async fn spawned_worker_holds_only_its_own_and_delegated_relay_credentials() {
+        let dir = tempfile::tempdir().expect("worker cwd");
+        // Record only the NAMES of relay credential variables the worker sees.
+        let keys = crate::spawner::INHERITED_RELAY_CREDENTIAL_ENV_KEYS.join(" ");
+        let script = format!(
+            "for k in {keys}; do if printenv \"$k\" >/dev/null; then echo \"$k\"; fi; done > names.tmp && mv names.tmp names.txt; sleep 30"
+        );
+        let mut spec = sleeping_native_worker("credential-worker", None);
+        spec.harness_config = Some(ResolvedHarnessConfig::Native(NativeHarnessConfig {
+            command: "sh".to_string(),
+            args: vec!["-c".to_string(), script],
+            cwd: Some(dir.path().to_string_lossy().into_owned()),
+            env: None,
+            session_id: "session-credential-worker".to_string(),
+            metadata: None,
+        }));
+        // The broker explicitly delegates a workspace key through its worker
+        // environment; that delegation must survive the inherited scrub.
+        let mut registry = make_registry(vec![(
+            "RELAY_API_KEY".to_string(),
+            "rk_live_delegated".to_string(),
+        )]);
+
+        registry
+            .spawn(
+                spec,
+                None,
+                None,
+                Some("at_live_worker_own".to_string()),
+                false,
+                None,
+                None,
+                None,
+                None,
+            )
+            .await
+            .expect("credential worker should spawn");
+
+        let names_path = dir.path().join("names.txt");
+        let mut names = None;
+        for _ in 0..50 {
+            if let Ok(value) = std::fs::read_to_string(&names_path) {
+                names = Some(value);
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(100)).await;
+        }
+        registry
+            .release("credential-worker")
+            .await
+            .expect("release credential worker");
+
+        let mut observed: Vec<String> = names
+            .expect("worker recorded its credential names")
+            .lines()
+            .map(str::to_string)
+            .collect();
+        observed.sort();
+        assert_eq!(observed, vec!["RELAY_AGENT_TOKEN", "RELAY_API_KEY"]);
     }
 
     #[cfg(any(target_os = "linux", target_os = "macos"))]
