@@ -82,6 +82,17 @@ pub enum ListenApiRequest {
     List {
         reply: tokio::sync::oneshot::Sender<Result<Value, String>>,
     },
+    /// Bind a Codex thread that registered itself through MCP to this broker's
+    /// native queue delivery route. The broker verifies the supplied agent
+    /// token before publishing the target in its fleet inventory.
+    AttachNativeCodex {
+        name: WorkerName,
+        agent_token: String,
+        thread_id: String,
+        codex_home: Option<String>,
+        cwd: Option<String>,
+        reply: tokio::sync::oneshot::Sender<Result<Value, String>>,
+    },
     /// `GET /api/fleet-inventory` — snapshot of the in-process `fleet_inventory`
     /// map (what the broker last published to the engine via `inventory.sync`).
     /// Callers use this alongside `List` to detect the workers-vs-inventory
@@ -262,6 +273,16 @@ pub enum DeliveryRouteError {
     CapabilityDisabled,
     /// No worker with that name is currently registered with the broker.
     WorkerNotFound(WorkerName),
+    /// The name resolves only to a native delivery route (an attached Codex
+    /// thread), which relay reaches by handing the message to the vendor's own
+    /// durable queue rather than by writing into a broker-owned terminal.
+    ///
+    /// Manual flush is a PTY affordance: it parks a message so a human can
+    /// drive the terminal, and its drain writes through
+    /// `WorkerRegistry::deliver`. That drain cannot reach a native route, so a
+    /// message parked for one would never leave the queue. Refused here rather
+    /// than accepted into a queue nothing can empty.
+    ManualFlushUnsupportedForNativeRoute(WorkerName),
 }
 
 impl std::fmt::Display for DeliveryRouteError {
@@ -271,6 +292,11 @@ impl std::fmt::Display for DeliveryRouteError {
             DeliveryRouteError::WorkerNotFound(name) => {
                 write!(f, "agent_not_found: no worker named '{name}'")
             }
+            DeliveryRouteError::ManualFlushUnsupportedForNativeRoute(name) => write!(
+                f,
+                "manual_flush is not available for '{name}': it is reachable only over a native \
+                 delivery route, whose messages are handed to the agent's own durable queue"
+            ),
         }
     }
 }
@@ -515,6 +541,10 @@ pub(crate) fn listen_api_router_with_auth(
         .route("/api/session", routing::get(listen_api_session))
         .route("/api/session/renew", routing::post(listen_api_renew_lease))
         .route("/api/spawn", routing::post(listen_api_spawn))
+        .route(
+            "/api/native-delivery/codex/attach",
+            routing::post(listen_api_attach_native_codex),
+        )
         .route("/api/spawned", routing::get(listen_api_list))
         .route(
             "/api/fleet-inventory",
@@ -1247,6 +1277,72 @@ async fn listen_api_spawn(
             axum::http::StatusCode::INTERNAL_SERVER_ERROR,
             axum::Json(json!({ "success": false, "error": "internal reply dropped" })),
         ),
+    }
+}
+
+async fn listen_api_attach_native_codex(
+    axum::extract::State(state): axum::extract::State<ListenApiState>,
+    axum::Json(body): axum::Json<Value>,
+) -> (axum::http::StatusCode, axum::Json<Value>) {
+    fn required(body: &Value, snake: &str, camel: &str) -> Result<String, String> {
+        body.get(snake)
+            .or_else(|| body.get(camel))
+            .and_then(Value::as_str)
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .map(str::to_string)
+            .ok_or_else(|| format!("missing required field '{snake}'"))
+    }
+    fn optional(body: &Value, snake: &str, camel: &str) -> Option<String> {
+        body.get(snake)
+            .or_else(|| body.get(camel))
+            .and_then(Value::as_str)
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .map(str::to_string)
+    }
+
+    let parsed = (|| {
+        Ok::<_, String>((
+            required(&body, "name", "name")?,
+            required(&body, "agent_token", "agentToken")?,
+            required(&body, "thread_id", "threadId")?,
+            optional(&body, "codex_home", "codexHome"),
+            Some(required(&body, "cwd", "cwd")?),
+        ))
+    })();
+    let (name, agent_token, thread_id, codex_home, cwd) = match parsed {
+        Ok(values) => values,
+        Err(error) => {
+            return (
+                axum::http::StatusCode::BAD_REQUEST,
+                axum::Json(json!({"success": false, "error": error})),
+            )
+        }
+    };
+    let (reply_tx, reply_rx) = tokio::sync::oneshot::channel();
+    if state
+        .tx
+        .send(ListenApiRequest::AttachNativeCodex {
+            name: WorkerName::new(name),
+            agent_token,
+            thread_id,
+            codex_home,
+            cwd,
+            reply: reply_tx,
+        })
+        .await
+        .is_err()
+    {
+        return internal_error();
+    }
+    match reply_rx.await {
+        Ok(Ok(value)) => (axum::http::StatusCode::OK, axum::Json(value)),
+        Ok(Err(error)) => (
+            axum::http::StatusCode::BAD_REQUEST,
+            axum::Json(json!({"success": false, "error": error})),
+        ),
+        Err(_) => internal_error(),
     }
 }
 
@@ -2693,6 +2789,11 @@ fn delivery_route_error_to_response(
         DeliveryRouteError::WorkerNotFound(_) => api_error(
             axum::http::StatusCode::NOT_FOUND,
             "agent_not_found",
+            err.to_string(),
+        ),
+        DeliveryRouteError::ManualFlushUnsupportedForNativeRoute(_) => api_error(
+            axum::http::StatusCode::CONFLICT,
+            "manual_flush_unsupported",
             err.to_string(),
         ),
     }
@@ -4204,6 +4305,67 @@ mod auth_tests {
                     "statusCode": 401,
                 }
             })
+        );
+    }
+
+    #[tokio::test]
+    async fn native_codex_attach_requires_the_api_key_when_auth_enabled() {
+        let (router, _rx) = test_router(Some("secret"));
+        let response = router
+            .oneshot(
+                Request::builder()
+                    .uri("/api/native-delivery/codex/attach")
+                    .method("POST")
+                    .header("content-type", "application/json")
+                    .body(Body::from(
+                        json!({
+                            "name": "codex-a",
+                            "agent_token": "agent-token",
+                            "thread_id": "thread-1",
+                            "cwd": "/tmp",
+                        })
+                        .to_string(),
+                    ))
+                    .expect("request should build"),
+            )
+            .await
+            .expect("request should succeed");
+
+        assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+    }
+
+    #[tokio::test]
+    async fn native_codex_attach_rejects_missing_cwd_before_runtime_dispatch() {
+        let (router, mut rx) = test_router(Some("secret"));
+        let response = router
+            .oneshot(
+                Request::builder()
+                    .uri("/api/native-delivery/codex/attach")
+                    .method("POST")
+                    .header("content-type", "application/json")
+                    .header("x-api-key", "secret")
+                    .body(Body::from(
+                        json!({
+                            "name": "codex-a",
+                            "agent_token": "agent-token",
+                            "thread_id": "thread-1",
+                        })
+                        .to_string(),
+                    ))
+                    .expect("request should build"),
+            )
+            .await
+            .expect("request should succeed");
+
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+        let body = response_json(response).await;
+        assert_eq!(body["success"], false);
+        assert!(body["error"]
+            .as_str()
+            .is_some_and(|error| error.contains("missing required field 'cwd'")));
+        assert!(
+            rx.try_recv().is_err(),
+            "invalid attach requests must fail before runtime dispatch"
         );
     }
 

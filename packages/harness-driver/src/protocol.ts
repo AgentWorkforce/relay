@@ -618,6 +618,22 @@ export type BrokerEvent =
       reason?: string;
     }
   | {
+      /**
+       * The delivery was settled terminally WITHOUT an observation that it
+       * landed — the harness reported no echo and no clean process exit.
+       *
+       * Not a failure: the message may well have arrived. It is the seam's
+       * "uncertain" lifecycle state, and it is the one signal a consumer needs
+       * in order to avoid treating silence as success.
+       */
+      kind: 'delivery_unobserved';
+      name: string;
+      delivery_id: string;
+      event_id: string;
+      verification?: string;
+      reason?: string;
+    }
+  | {
       kind: 'delivery_failed';
       name: string;
       delivery_id: string;

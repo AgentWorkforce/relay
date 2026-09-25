@@ -679,6 +679,16 @@ impl BrokerRuntime {
                             request_id,
                         });
                     }
+                    Ok(Err(
+                        error @ DeliveryRouteError::ManualFlushUnsupportedForNativeRoute(_),
+                    )) => {
+                        self.send_terminal(TerminalToCloud::Error {
+                            session_id,
+                            code: "manual_flush_unsupported".into(),
+                            message: error.to_string(),
+                            request_id,
+                        });
+                    }
                     Err(_) => {
                         self.send_terminal(TerminalToCloud::Error {
                             session_id,
@@ -798,6 +808,16 @@ impl BrokerRuntime {
                             session_id,
                             code: "agent_not_found".into(),
                             message: format!("no worker named '{name}'"),
+                            request_id,
+                        });
+                    }
+                    Ok(Err(
+                        error @ DeliveryRouteError::ManualFlushUnsupportedForNativeRoute(_),
+                    )) => {
+                        self.send_terminal(TerminalToCloud::Error {
+                            session_id,
+                            code: "manual_flush_unsupported".into(),
+                            message: error.to_string(),
                             request_id,
                         });
                     }
@@ -1004,12 +1024,60 @@ impl BrokerRuntime {
                 Err(error) => {
                     self.node_delivery_probe
                         .record_disposition(&deliver, DeliverDisposition::SurfaceFailed);
+                    // A write that MAY have committed must be accounted for, not
+                    // merely dropped. Without `commit_received` the engine's
+                    // redelivery of this `msg_id` is classified `Deliver` rather
+                    // than `Duplicate` and the broker re-injects it — a post-write
+                    // failure retried on the same transport, which seam rule 1
+                    // forbids. Abandoning the withheld ack additionally keeps this
+                    // sequence from pinning the cumulative cursor.
+                    let in_doubt = error
+                        .downcast_ref::<crate::runtime::delivery::TerminalInDoubtError>()
+                        .is_some();
+                    if in_doubt {
+                        // Mark the msg_id seen so the engine's redelivery is
+                        // classified `Duplicate`, but do NOT use
+                        // `commit_received` for it. That seeds
+                        // `acked = received = seq - 1` for an identity's first
+                        // sequenced frame, which sets `has_sequenced_position`
+                        // and so defeats `abandon_unconfirmed_delivery`'s own
+                        // refusal to establish a cursor origin from a delivery
+                        // nobody observed — the guard passed because the line
+                        // above it had just created the condition it checks.
+                        self.fleet_delivery_book.mark_delivery_seen(&deliver);
+                        if let Some(up_to_seq) = self
+                            .fleet_delivery_book
+                            .abandon_unconfirmed_delivery(&deliver)
+                        {
+                            // F5's other half: this call site advanced silently
+                            // while `worker_events.rs` recorded the advance.
+                            // The disposal choke point records this delivery
+                            // together with every covered sibling; recording it
+                            // here too would double-count the current frame.
+                            crate::runtime::delivery::advance_pending_fleet_ack_floors(
+                                &mut self.pending_deliveries,
+                                &deliver.agent_id,
+                                up_to_seq,
+                            );
+                            let _ = dispose_pending_fleet_ack_prefix(
+                                &mut self.pending_deliveries,
+                                &mut self.terminal_failed_deliveries,
+                                &self.node_delivery_probe,
+                                &self.sdk_out_tx,
+                                &mut self.dead_letters,
+                                &deliver.agent_id,
+                                up_to_seq,
+                            )
+                            .await;
+                        }
+                    }
                     tracing::warn!(
                         target = "relay_broker::fleet",
                         agent = %deliver.agent,
                         delivery_id = %deliver.delivery_id,
                         msg_id = %deliver.msg_id,
                         error = %error,
+                        in_doubt,
                         "fleet delivery injection failed; withholding ack"
                     );
                     return;
@@ -1264,6 +1332,7 @@ impl BrokerRuntime {
                                 self.delivery_retry_interval,
                                 is_current.then(|| deliver.clone()),
                                 is_current.then_some(withheld_fleet_ack_floor).flatten(),
+                                &mut self.delivery_seam,
                             )
                             .await
                             {
@@ -1321,6 +1390,7 @@ impl BrokerRuntime {
                             self.delivery_retry_interval,
                             Some(deliver.clone()),
                             withheld_fleet_ack_floor,
+                            &mut self.delivery_seam,
                         )
                         .await
                         .map(|_delivery_id| FleetDeliverySurfaceOutcome::AcknowledgeAfterEcho)
@@ -1667,6 +1737,8 @@ impl BrokerRuntime {
             &self.sdk_out_tx,
             &mut self.pending_deliveries,
             &mut self.dead_letters,
+            &self.delivery_seam,
+            &self.node_delivery_probe,
             &mut self.pending_requests,
             &mut self.delivery_states,
             &mut self.agent_result_tokens,
@@ -2172,6 +2244,7 @@ pub(super) async fn reconcile_blocked_flush_predecessor(
     dead_letters: &mut DeadLetterStore,
     worker_name: &WorkerName,
     retry_interval: Duration,
+    seam: &mut crate::delivery::DeliverySeam,
 ) -> Option<&'static str> {
     let agent_id = result.blocked_agent_id.as_deref()?;
     let next_sequence = result.next_ackable_sequence?;
@@ -2194,23 +2267,28 @@ pub(super) async fn reconcile_blocked_flush_predecessor(
         return Some("awaiting_relaycast_replay");
     };
 
-    let outcome =
-        match retry_pending_delivery(&delivery_id, workers, pending_deliveries, retry_interval)
-            .await
-        {
-            Ok(outcome) => outcome,
-            Err(error) => {
-                tracing::warn!(
-                    target = "relay_broker::fleet",
-                    worker = %worker_name,
-                    delivery_id = %delivery_id,
-                    seq = next_sequence,
-                    error = %error,
-                    "failed to replay the predecessor needed to reconcile a manual-flush gap"
-                );
-                return Some("predecessor_retry_failed");
-            }
-        };
+    let outcome = match retry_pending_delivery(
+        &delivery_id,
+        workers,
+        pending_deliveries,
+        retry_interval,
+        seam,
+    )
+    .await
+    {
+        Ok(outcome) => outcome,
+        Err(error) => {
+            tracing::warn!(
+                target = "relay_broker::fleet",
+                worker = %worker_name,
+                delivery_id = %delivery_id,
+                seq = next_sequence,
+                error = %error,
+                "failed to replay the predecessor needed to reconcile a manual-flush gap"
+            );
+            return Some("predecessor_retry_failed");
+        }
+    };
     let terminal = matches!(outcome, DeliveryAttemptOutcome::Failed { .. });
     if let Err(error) =
         emit_delivery_attempt_outcome(sdk_out_tx, dead_letters, &delivery_id, was_retry, outcome)
@@ -3043,6 +3121,36 @@ mod tests {
     use super::*;
     use crate::protocol::PtyHarnessConfig;
     use httpmock::{Method::GET, Method::POST, MockServer};
+
+    /// relay: F2 — a possible write and a provably-failed one must not reach
+    /// the caller as the same shape.
+    ///
+    /// `handle_fleet_deliver`'s `Err` arm drops and withholds. That is right for
+    /// a pre-write failure and wrong for an in-doubt one: an in-doubt delivery
+    /// that is never recorded gets redelivered by the engine and re-injected by
+    /// the broker, retrying a possibly-committed write on the same transport,
+    /// which seam rule 1 forbids. The arm can only branch if the two outcomes
+    /// are distinguishable, so this pins the mapping that makes them so.
+    #[test]
+    fn a_possible_write_and_a_failed_write_map_to_different_errors() {
+        use crate::runtime::delivery::{
+            in_doubt_error, pre_write_failure_error, TerminalInDoubtError,
+        };
+
+        let in_doubt = in_doubt_error("writer faulted after admission".to_string());
+        let pre_write = pre_write_failure_error("worker handle missing".to_string());
+
+        assert!(
+            in_doubt.downcast_ref::<TerminalInDoubtError>().is_some(),
+            "an in-doubt failure reached the caller untyped, so the fleet Err arm \
+             cannot tell it from a pre-write failure and drops it unrecorded"
+        );
+        assert!(
+            pre_write.downcast_ref::<TerminalInDoubtError>().is_none(),
+            "a pre-write failure was typed as in-doubt: it would be accounted for as \
+             delivered when it provably never started"
+        );
+    }
 
     fn live_fleet_worker(
         name: &str,

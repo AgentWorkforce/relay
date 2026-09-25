@@ -6,11 +6,18 @@
  * Run: npx tsx tests/parity/broadcast.ts
  */
 
-import { HarnessDriverClient, type BrokerEvent } from '@agent-relay/sdk';
-import { resolveBinaryPath, randomName } from '../benchmarks/harness.js';
+import { HarnessDriverClient, type BrokerEvent } from '@agent-relay/harness-driver';
+import {
+  brokerTestEnv,
+  isObservedDelivery,
+  isUnobservedDelivery,
+  resolveBinaryPath,
+  randomName,
+} from '../benchmarks/harness.js';
 
 const AGENT_COUNT = 3;
 const TIMEOUT_MS = 15_000;
+const ECHO_CLI = "sh -c 'stty -echo; cat'";
 
 async function main(): Promise<void> {
   console.log('=== Parity Test: Broadcast Messages ===\n');
@@ -18,7 +25,7 @@ async function main(): Promise<void> {
   const client = await HarnessDriverClient.spawn({
     binaryPath: resolveBinaryPath(),
     channels: ['general'],
-    env: process.env,
+    env: brokerTestEnv(),
   });
 
   const agents: string[] = [];
@@ -31,7 +38,7 @@ async function main(): Promise<void> {
       const name = randomName(`bcast-${i}`);
       await client.spawnPty({
         name,
-        cli: 'cat',
+        cli: ECHO_CLI,
         channels: ['general'],
       });
       agents.push(name);
@@ -62,13 +69,19 @@ async function main(): Promise<void> {
     console.log('3. Waiting for delivery verification...');
     let verified = 0;
     let failed = 0;
+    let unobserved = 0;
 
     await new Promise<void>((resolve) => {
-      const timer = setTimeout(resolve, 5000);
+      const timer = setTimeout(() => {
+        unsub();
+        resolve();
+      }, TIMEOUT_MS);
       const unsub = client.onEvent((event: BrokerEvent) => {
-        if (event.kind === 'delivery_verified') verified++;
+        // Only an echo-observed delivery counts. See `isObservedDelivery`.
+        if (isObservedDelivery(event)) verified++;
+        if (isUnobservedDelivery(event)) unobserved++;
         if (event.kind === 'delivery_failed') failed++;
-        if (verified + failed >= AGENT_COUNT) {
+        if (verified + failed + unobserved >= AGENT_COUNT) {
           clearTimeout(timer);
           unsub();
           resolve();
@@ -76,7 +89,8 @@ async function main(): Promise<void> {
       });
     });
 
-    console.log(`   Verified: ${verified}/${AGENT_COUNT}`);
+    console.log(`   Verified (echo-observed): ${verified}/${AGENT_COUNT}`);
+    console.log(`   Unobserved (timeout fallback): ${unobserved}`);
     console.log(`   Failed: ${failed}\n`);
 
     // Step 4: Cross-agent messaging (agent A sends to agent B)
@@ -92,7 +106,7 @@ async function main(): Promise<void> {
     await new Promise((r) => setTimeout(r, 1000));
 
     // Results
-    const passed = verified === AGENT_COUNT && crossOk;
+    const passed = verified === AGENT_COUNT && unobserved === 0 && crossOk;
     console.log(passed ? '=== Broadcast Parity Test PASSED ===' : '=== Broadcast Parity Test FAILED ===');
     process.exit(passed ? 0 : 1);
   } finally {

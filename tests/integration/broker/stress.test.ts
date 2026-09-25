@@ -18,6 +18,7 @@ import test, { type TestContext } from 'node:test';
 import type { BrokerEvent } from '@agent-relay/harness-driver';
 import { BrokerHarness, checkPrerequisites, uniqueSuffix } from './utils/broker-harness.js';
 import {
+  assertDeliveryObservationLedger,
   assertNoDroppedDeliveries,
   assertNoDoubleDelivery,
   assertAgentExists,
@@ -112,11 +113,28 @@ test('stress: sustained 20 messages with 2s intervals', { timeout: 180_000 }, as
     await sleep(10_000);
 
     const events = harness.getEvents();
-    const acks = eventsForAgent(events, agentName, 'delivery_ack');
-    const verified = eventsForAgent(events, agentName, 'delivery_verified');
+    const { acks, verified, unobserved } = assertDeliveryObservationLedger(
+      events,
+      agentName,
+      'sustained load'
+    );
 
-    assert.ok(acks.length >= 18, `should have at least 18 delivery_ack events, got ${acks.length}`);
-    assert.equal(acks.length, verified.length, 'delivery_ack count should match delivery_verified count');
+    // Two separate claims, because one of them was quietly dropped before.
+    //
+    // Replacing the old ack floor with a `verified` floor looked like the same
+    // assertion adjusted for the new frames. It is not: `verified` counts every
+    // `delivery_verified`, `timeout_fallback` included. Twenty sends of which
+    // three echoed and seventeen fell back satisfies `verified >= 18` and the
+    // ledger balances, so the test reported "sustained load delivered" while
+    // 85% of the messages were never seen landing.
+    //
+    // Settlement and observation are different facts and each needs its own
+    // floor.
+    assert.ok(verified.length >= 18, `>= 18 of 20 deliveries must SETTLE, got ${verified.length}`);
+    assert.ok(
+      acks.length >= 18,
+      `>= 18 of 20 deliveries must be OBSERVED, got ${acks.length} ` + `(unobserved: ${unobserved.length})`
+    );
 
     assertNoDroppedDeliveries(events);
 

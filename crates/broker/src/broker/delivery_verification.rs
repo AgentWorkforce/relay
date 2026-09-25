@@ -8,7 +8,7 @@ use serde_json::{json, Value};
 
 use crate::{
     ids::{DeliveryId, EventId, MessageTarget, RequestId, WorkspaceAlias, WorkspaceId},
-    util::ansi::strip_ansi,
+    util::ansi::{floor_char_boundary, strip_ansi},
     worker::detection::ActivityDetector,
 };
 
@@ -100,6 +100,7 @@ pub(crate) const MAX_VERIFICATION_ATTEMPTS: usize = 1;
 
 /// Time window to wait for echo verification before accepting delivery.
 pub(crate) const VERIFICATION_WINDOW: std::time::Duration = std::time::Duration::from_secs(5);
+pub(crate) const VERIFICATION_TICK: std::time::Duration = std::time::Duration::from_millis(200);
 
 /// A pending delivery waiting for echo verification in PTY output.
 #[derive(Debug)]
@@ -192,15 +193,46 @@ impl VerificationOutput {
 
     /// Retained output read after the supplied producer sequence.
     pub(crate) fn since(&self, boundary: u64) -> Cow<'_, str> {
+        self.since_with_overlap(boundary, 0)
+    }
+
+    /// Retained output read after the supplied producer sequence, plus a
+    /// bounded suffix from the boundary segment.
+    ///
+    /// Unix PTY reads can straddle a verified-write admission: bytes already
+    /// readable before the write keep the boundary sequence, while bytes from
+    /// the just-submitted echo may be coalesced into the same kernel read or
+    /// the immediately following one. Echo verification needs enough context
+    /// to reconstruct a match that begins just before the fresh segment and
+    /// ends after it, without accepting a complete stale match. Callers pass
+    /// `expected.len() - 1`, so a full expected echo wholly before the boundary
+    /// is still one byte too long to match.
+    pub(crate) fn since_with_overlap(&self, boundary: u64, overlap_bytes: usize) -> Cow<'_, str> {
+        self.since_with_overlap_and_fresh_start(boundary, overlap_bytes)
+            .0
+    }
+
+    fn since_with_overlap_and_fresh_start(
+        &self,
+        boundary: u64,
+        overlap_bytes: usize,
+    ) -> (Cow<'_, str>, usize) {
         let Some(segment) = self
             .segments
             .iter()
             .find(|segment| segment.sequence > boundary)
         else {
-            return Cow::Borrowed("");
+            return (Cow::Borrowed(""), 0);
         };
-        let start = segment.start_offset.max(self.base_offset) - self.base_offset;
-        String::from_utf8_lossy(&self.buffer[start..])
+        let fresh_start = segment.start_offset.max(self.base_offset);
+        let start_offset = fresh_start
+            .saturating_sub(overlap_bytes)
+            .max(self.base_offset);
+        let start = start_offset - self.base_offset;
+        (
+            String::from_utf8_lossy(&self.buffer[start..]),
+            fresh_start.saturating_sub(start_offset),
+        )
     }
 
     pub(crate) fn retained(&self) -> Cow<'_, str> {
@@ -213,8 +245,15 @@ pub(crate) fn pending_verification_echo_seen(
     output: &VerificationOutput,
     verification: &PendingVerification,
 ) -> bool {
-    let observed = output.since(verification.output_boundary);
-    check_echo_in_output(&observed, &verification.expected_echo)
+    let fresh = output.since(verification.output_boundary);
+    if full_echo_match(&fresh, &verification.expected_echo) {
+        return true;
+    }
+    let (straddling, fresh_start) = output.since_with_overlap_and_fresh_start(
+        verification.output_boundary,
+        verification.expected_echo.len().saturating_sub(1),
+    );
+    full_echo_match_ending_after(&straddling, &verification.expected_echo, fresh_start)
 }
 
 /// Return a verification whose echo arrived before the PTY write ack was
@@ -280,10 +319,109 @@ pub(crate) fn queue_or_take_detected_activity(
     }
 }
 
+/// Value of the `verification` field on a `delivery_verified` frame that the
+/// worker emitted WITHOUT observing the echo. Shared with the broker runtime so
+/// both ends of the frame agree on the one string that means "unobserved".
+pub(crate) const TIMEOUT_FALLBACK_VERIFICATION: &str = "timeout_fallback";
+pub(crate) const ECHO_VERIFICATION: &str = "echo";
+
+/// A headless route's child consumed the message and exited cleanly. That IS an
+/// observation — the process read what it was given — so it must not be settled
+/// as unobserved.
+pub(crate) const PROCESS_EXIT_VERIFICATION: &str = "process_exit";
+
+/// Whether a `delivery_verified` frame's verification value counts as an
+/// observation that the delivery landed.
+///
+/// One predicate so the worker and the broker cannot drift. When "anything that
+/// is not echo is unobserved" was open-coded at the broker, the headless route
+/// — which reports `process_exit` — began emitting `delivery_unobserved` for
+/// deliveries it had already confirmed and read-acked, so consumers received
+/// two contradictory statements about one delivery id.
+pub(crate) fn is_observed(verification: &str) -> bool {
+    matches!(verification, ECHO_VERIFICATION | PROCESS_EXIT_VERIFICATION)
+}
+
+/// The longest verification window any harness may use.
+///
+/// The broker's Steer ack timeout must exceed this plus a tick, or its retry
+/// fires while the worker is still inside its echo window and re-injects a
+/// message whose first copy is still pending — a double delivery. Both sides
+/// derive from this rather than from two constants that happen to be ordered
+/// today.
+pub(crate) fn max_verification_window() -> std::time::Duration {
+    VERIFICATION_WINDOW
+}
+
+/// The frames a PTY worker may emit when an echo verification window expires.
+///
+/// Seam rule 4 (`docs/native-delivery-migration.md`): "Never claim an
+/// acknowledgement you did not observe." When this window expires the worker
+/// wrote the injection and never saw it echoed back, so the one frame this
+/// list must never contain is `delivery_ack`. The broker treats `delivery_ack`
+/// as proof of observation: it confirms the pending delivery, releases the
+/// withheld engine-facing fleet ack, emits `MessageDeliveryConfirmed` and marks
+/// the message read (`runtime/worker_events.rs`). Emitting it here published a
+/// delivery nobody ever saw land.
+///
+/// Returning the frame list from one function — rather than inlining
+/// `send_frame` calls in the worker's select loop — gives that invariant a
+/// place a test can hold it to; see the tests below.
+pub(crate) fn verification_timeout_frames(
+    delivery_id: &str,
+    event_id: &str,
+    window: Duration,
+) -> Vec<(&'static str, Value)> {
+    vec![(
+        "delivery_verified",
+        json!({
+            "delivery_id": delivery_id,
+            "event_id": event_id,
+            "verification": TIMEOUT_FALLBACK_VERIFICATION,
+            "reason": format!("echo not detected within {}s window", window.as_secs()),
+        }),
+    )]
+}
+
 /// Check if the expected echo string appears in PTY output (after stripping ANSI).
+#[cfg(test)]
 pub(crate) fn check_echo_in_output(output: &str, expected: &str) -> bool {
+    full_echo_match(output, expected)
+}
+
+fn full_echo_match(output: &str, expected: &str) -> bool {
+    full_echo_match_ending_after(output, expected, 0)
+}
+
+fn full_echo_match_ending_after(output: &str, expected: &str, min_end: usize) -> bool {
     let clean = strip_ansi(output);
-    clean.contains(expected)
+    let clean_min_end =
+        strip_ansi(&output[..floor_char_boundary(output, min_end.min(output.len()))]).len();
+    if contains_match_ending_after(&clean, expected, clean_min_end) {
+        return true;
+    }
+    let normalize = |value: &str| value.replace("\r\n", "\n");
+    let clean_min_end = normalize(&clean[..floor_char_boundary(&clean, clean_min_end)]).len();
+    let clean = normalize(&clean);
+    let expected = normalize(expected);
+    if contains_match_ending_after(&clean, &expected, clean_min_end) {
+        return true;
+    }
+    // PTYs can report visual soft wraps as line feeds when a long logical line
+    // crosses the terminal width. The delivery still landed if the full
+    // character sequence appears with only those line feeds inserted.
+    let without_lf = |value: &str| value.chars().filter(|ch| *ch != '\n').collect::<String>();
+    let clean_min_end = without_lf(&clean[..floor_char_boundary(&clean, clean_min_end)]).len();
+    contains_match_ending_after(&without_lf(&clean), &without_lf(&expected), clean_min_end)
+}
+
+fn contains_match_ending_after(haystack: &str, needle: &str, min_end: usize) -> bool {
+    if needle.is_empty() {
+        return false;
+    }
+    haystack
+        .match_indices(needle)
+        .any(|(start, _)| start.saturating_add(needle.len()) > min_end)
 }
 
 pub(crate) fn current_timestamp_ms() -> u64 {
@@ -345,6 +483,69 @@ mod tests {
     }
 
     #[test]
+    fn verification_timeout_never_emits_a_delivery_ack() {
+        let frames = verification_timeout_frames("del_1", "evt_1", VERIFICATION_WINDOW);
+
+        assert!(
+            frames.iter().all(|(kind, _)| *kind != "delivery_ack"),
+            "a verification timeout never observed the delivery, so it must not \
+             emit the frame the broker reads as an observed acknowledgement: {:?}",
+            frames.iter().map(|(kind, _)| *kind).collect::<Vec<_>>()
+        );
+    }
+
+    #[test]
+    fn verification_timeout_reports_an_explicitly_unverified_delivery() {
+        let frames = verification_timeout_frames("del_1", "evt_1", VERIFICATION_WINDOW);
+
+        assert_eq!(frames.len(), 1);
+        let (kind, payload) = &frames[0];
+        assert_eq!(*kind, "delivery_verified");
+        assert_eq!(payload["delivery_id"], "del_1");
+        assert_eq!(payload["event_id"], "evt_1");
+        assert_eq!(payload["verification"], TIMEOUT_FALLBACK_VERIFICATION);
+        assert_eq!(payload["reason"], "echo not detected within 5s window");
+    }
+
+    #[test]
+    fn check_echo_normalizes_terminal_crlf() {
+        let output = "<system-reminder>\r\nRelay message from Alice [evt_1]: hello world\r\n";
+        let expected = "<system-reminder>\nRelay message from Alice [evt_1]: hello world\n";
+
+        assert!(check_echo_in_output(output, expected));
+    }
+
+    #[test]
+    fn check_echo_tolerates_terminal_soft_wraps() {
+        let output = "Relay message from Alice [workspace-1234567890 / evt_12345678901234\n567890]: hello world";
+        let expected =
+            "Relay message from Alice [workspace-1234567890 / evt_12345678901234567890]: hello world";
+
+        assert!(check_echo_in_output(output, expected));
+    }
+
+    #[test]
+    fn check_echo_rejects_interleaved_reminder_even_with_intact_relay_line() {
+        let expected = "<system-reminder>\nAgent Relay MCP tools are available for replies.\n</system-reminder>\nRelay message from Alice [evt_1]: hello world";
+        let output = "<system-reminder>\nAgent Relay MCP tools are available for replies.\nRelay message from Alice [evt_1]: hello world";
+
+        assert!(!check_echo_in_output(output, expected));
+    }
+
+    #[test]
+    fn check_echo_rejects_partial_wrapped_injection() {
+        let expected = "<system-reminder>\nAgent Relay MCP tools are available for replies.\n</system-reminder>\nRelay message from Alice [evt_1]: hello world";
+        let output = "<system-reminder>\nAgent Relay MCP tools are available for replies.\n</system-reminder>\nRelay message from Alice [evt_1]: hello";
+
+        assert!(!check_echo_in_output(output, expected));
+    }
+
+    #[test]
+    fn check_echo_does_not_turn_bare_cr_into_line_break() {
+        assert!(!check_echo_in_output("foo\rbar", "foo\nbar"));
+    }
+
+    #[test]
     fn check_echo_no_match() {
         let output = "some unrelated output\nprompt> ";
         assert!(!check_echo_in_output(
@@ -401,6 +602,74 @@ mod tests {
     }
 
     #[test]
+    fn normalized_full_echo_cannot_match_stale_overlap() {
+        let expected = format!(
+            "<system-reminder>\nAgent Relay MCP tools are available for replies.\n</system-reminder>\n{}",
+            "Relay message from Alice [evt_repeat]: same body"
+        );
+        let mut output = VerificationOutput::default();
+        output.push_str(&expected.replace('\n', ""));
+        let output_boundary = output.boundary();
+        let verification = PendingVerification {
+            delivery_id: "delivery-repeat".into(),
+            event_id: "evt-repeat".into(),
+            expected_echo: expected,
+            output_boundary,
+            injected_at: Instant::now(),
+            attempts: 1,
+            max_attempts: 1,
+            request_id: None,
+            workspace_id: None,
+            workspace_alias: None,
+            from: "Alice".to_string(),
+            body: "same body".to_string(),
+            target: "Worker".into(),
+        };
+
+        output.push_str("\nfresh prompt only\n");
+        assert!(
+            !pending_verification_echo_seen(&output, &verification),
+            "a stale normalized echo inside the overlap must not verify a later write"
+        );
+        output.push_str(&verification.expected_echo);
+        assert!(
+            pending_verification_echo_seen(&output, &verification),
+            "a full echo observed after the submission boundary still verifies"
+        );
+    }
+
+    #[test]
+    fn relay_line_alone_never_verifies_a_wrapped_injection() {
+        let relay_line = "Relay message from Alice [evt_real]: same body";
+        let expected = format!(
+            "<system-reminder>\nAgent Relay MCP tools are available for replies.\n</system-reminder>\n{relay_line}"
+        );
+        let mut output = VerificationOutput::default();
+        let output_boundary = output.boundary();
+        let verification = PendingVerification {
+            delivery_id: "delivery-real".into(),
+            event_id: "evt-real".into(),
+            expected_echo: expected,
+            output_boundary,
+            injected_at: Instant::now(),
+            attempts: 1,
+            max_attempts: 1,
+            request_id: None,
+            workspace_id: None,
+            workspace_alias: None,
+            from: "Alice".to_string(),
+            body: "same body".to_string(),
+            target: "Worker".into(),
+        };
+
+        output.push_str(relay_line);
+        assert!(
+            !pending_verification_echo_seen(&output, &verification),
+            "real harnesses must echo the full submitted payload, not only the Relay line"
+        );
+    }
+
+    #[test]
     fn verification_ignores_matching_output_queued_before_write_submission() {
         let expected = "Relay message from Alice [evt-queued]: same body";
         let mut output = VerificationOutput::default();
@@ -436,6 +705,44 @@ mod tests {
         assert!(
             pending_verification_echo_seen(&output, &verification),
             "the same echo read after write submission must verify"
+        );
+    }
+
+    #[test]
+    fn verification_reconstructs_echo_split_across_the_boundary() {
+        let expected =
+            "Relay message from Alice [workspace-1234567890 / evt-1234567890]: wrapped body";
+        let split_at = expected
+            .find("evt-")
+            .expect("expected text contains split marker")
+            + 4;
+        let mut output = VerificationOutput::default();
+        output.push_output(1, &expected.as_bytes()[..split_at]);
+        let output_boundary = output.boundary();
+        let verification = PendingVerification {
+            delivery_id: "delivery-split".into(),
+            event_id: "evt-split".into(),
+            expected_echo: expected.to_string(),
+            output_boundary,
+            injected_at: Instant::now(),
+            attempts: 1,
+            max_attempts: 1,
+            request_id: None,
+            workspace_id: None,
+            workspace_alias: None,
+            from: "Alice".to_string(),
+            body: "wrapped body".to_string(),
+            target: "Worker".into(),
+        };
+
+        assert!(
+            !pending_verification_echo_seen(&output, &verification),
+            "a complete pre-boundary echo must not verify"
+        );
+        output.push_output(2, &expected.as_bytes()[split_at..]);
+        assert!(
+            pending_verification_echo_seen(&output, &verification),
+            "a match that starts in the boundary segment and finishes after it must verify"
         );
     }
 
@@ -648,5 +955,182 @@ mod tests {
         throttle.record(DeliveryOutcome::Success);
         throttle.record(DeliveryOutcome::Success);
         assert_eq!(throttle.delay(), Duration::from_millis(100));
+    }
+}
+
+#[cfg(test)]
+mod observation_predicate_tests {
+    use super::{is_observed, ECHO_VERIFICATION, PROCESS_EXIT_VERIFICATION};
+
+    /// Pin the three `verification` values as WIRE STRINGS, not as symbols.
+    ///
+    /// Every other test compares through the constant, so renaming the
+    /// constant's value renamed the wire contract and left the whole suite
+    /// green — 25 tests here and 9 in vitest. The TypeScript side spells these
+    /// out literally (`tests/integration/broker/utils/assert-helpers.ts`,
+    /// `tests/benchmarks/harness.ts`) and the Rust build never sees that file,
+    /// so a rename here silently desynchronises the two sides of the wire.
+    ///
+    /// These assertions are deliberately literal. If one fails, the fix is to
+    /// update every consumer listed above, not to update this test.
+    #[test]
+    fn the_verification_wire_values_are_fixed_strings() {
+        assert_eq!(ECHO_VERIFICATION, "echo");
+        assert_eq!(PROCESS_EXIT_VERIFICATION, "process_exit");
+        assert_eq!(super::TIMEOUT_FALLBACK_VERIFICATION, "timeout_fallback");
+
+        // These TypeScript consumers cannot import a Rust constant, so make
+        // their duplicated wire sets part of this Rust contract test. Without
+        // this cross-language assertion either side can rename a value and
+        // silently change observed/unobserved accounting.
+        for (file, source) in [
+            (
+                "tests/integration/broker/utils/assert-helpers.ts",
+                include_str!("../../../../tests/integration/broker/utils/assert-helpers.ts"),
+            ),
+            (
+                "tests/benchmarks/harness.ts",
+                include_str!("../../../../tests/benchmarks/harness.ts"),
+            ),
+        ] {
+            assert!(
+                source.contains("new Set(['echo', 'process_exit'])"),
+                "{file} must mirror Rust's observed verification wire values"
+            );
+        }
+    }
+
+    /// The emitters must go through the constants, or pinning the constants
+    /// proves nothing about what actually goes on the wire.
+    ///
+    /// `headless.rs` emitted the literal `"process_exit"` while the predicate
+    /// read the constant, so renaming only that constant reclassified every
+    /// headless delivery as unobserved with the entire suite green.
+    #[test]
+    fn the_verification_emitters_use_the_constants_not_literals() {
+        for (file, source) in [
+            ("pty_worker.rs", include_str!("../pty_worker.rs")),
+            (
+                "runtime/headless.rs",
+                include_str!("../runtime/headless.rs"),
+            ),
+            (
+                "runtime/worker_events.rs",
+                include_str!("../runtime/worker_events.rs"),
+            ),
+        ] {
+            for literal in [
+                "\"verification\": \"echo\"",
+                "\"verification\": \"process_exit\"",
+                "\"verification\": \"timeout_fallback\"",
+            ] {
+                assert!(
+                    !source.contains(literal),
+                    "{file} emits {literal} as a literal. Use the constant in \
+                     broker::delivery_verification, or a rename of the constant \
+                     desynchronises the emitter from the predicate that reads it."
+                );
+            }
+        }
+    }
+
+    /// relay: F7 — a headless child that consumed the message and exited
+    /// cleanly IS an observation.
+    ///
+    /// Open-coding "anything that is not echo is unobserved" at the broker made
+    /// the headless route emit `delivery_unobserved` for deliveries it had
+    /// already confirmed and read-acked, so consumers received two
+    /// contradictory statements about one delivery id.
+    #[test]
+    fn process_exit_counts_as_an_observation() {
+        assert!(is_observed(ECHO_VERIFICATION));
+        assert!(
+            is_observed(PROCESS_EXIT_VERIFICATION),
+            "a child that consumed the message and exited cleanly was settled as \
+             unobserved, contradicting the confirmation already sent for it"
+        );
+        assert!(!is_observed("timeout_fallback"));
+        assert!(!is_observed(""));
+    }
+}
+
+#[cfg(test)]
+mod timeout_arm_call_site_tests {
+    /// relay: F10 — guard the invariant at the CALL SITE, not at the helper.
+    ///
+    /// `verification_timeout_frames` exists so the "never emit `delivery_ack`
+    /// on an echo timeout" rule has somewhere a test can hold it. The tests
+    /// beside it assert properties of the vector it returns — and cannot fail
+    /// for the thing that matters. Nothing links the helper to the worker's
+    /// select loop, so an edit that adds `send_frame(&out_tx, "delivery_ack",
+    /// ...)` back into the timeout arm, right beside the loop consuming these
+    /// frames, leaves every one of them green.
+    ///
+    /// Emitting an ack there is rule 4 at its sharpest: the echo never arrived,
+    /// so the broker would confirm, clear the pending delivery, release the
+    /// withheld engine ack and mark the message read, all on the strength of a
+    /// timeout. This reads the call site itself, which is crude and is the
+    /// only version of this test that can fail for the right reason.
+    #[test]
+    fn the_verification_timeout_arm_never_sends_a_delivery_ack() {
+        let source = include_str!("../pty_worker.rs");
+
+        // Extract the WHOLE arm by balancing braces from its opening
+        // condition, rather than scanning a window around the call.
+        //
+        // The previous version anchored with `rfind("verification window")`,
+        // which matched a `tracing::info!` string two lines above the call and
+        // guarded 10 lines of a 38-line arm. A `delivery_ack` added anywhere in
+        // the first 23 lines — which is where a reader naturally puts one,
+        // right after `let event_id = ...` — passed this test and the entire
+        // 1,298-test suite. A guard that covers a quarter of the hazard is a
+        // guard that reports a fact it never checked.
+        let condition =
+            "if pending_verifications[i].injected_at.elapsed() >= verification_window {";
+        let open = source
+            .find(condition)
+            .map(|offset| offset + condition.len() - 1)
+            .expect("the verification-timeout arm must still open with its elapsed() condition");
+
+        let bytes = source.as_bytes();
+        let mut depth = 0usize;
+        let mut close = None;
+        for (index, byte) in bytes.iter().enumerate().skip(open) {
+            match byte {
+                b'{' => depth += 1,
+                b'}' => {
+                    depth -= 1;
+                    if depth == 0 {
+                        close = Some(index);
+                        break;
+                    }
+                }
+                _ => {}
+            }
+        }
+        let close = close.expect("the verification-timeout arm must be brace-balanced");
+        let arm = &source[open..=close];
+
+        // Guard the guard: if the extracted span ever stops containing the
+        // call this arm exists for, the extraction broke and the assertion
+        // below would pass vacuously on an empty or wrong span.
+        assert!(
+            arm.contains("verification_timeout_frames("),
+            "extracted arm no longer contains the verification_timeout_frames call, \
+             so this test is measuring the wrong span"
+        );
+        assert!(
+            arm.lines().count() > 20,
+            "extracted arm is only {} lines, which is too short to be the whole arm; \
+             the brace balance broke",
+            arm.lines().count()
+        );
+
+        assert!(
+            !arm.contains("\"delivery_ack\""),
+            "the verification-timeout arm emits a delivery_ack. The echo never arrived, \
+             so the broker will confirm the delivery, clear it, release the withheld \
+             engine ack and mark it read — claiming an acknowledgement nobody observed."
+        );
     }
 }

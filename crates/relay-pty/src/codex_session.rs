@@ -5,7 +5,13 @@
 //! that a later PTY spawn can `codex resume` into, so the session survives
 //! agent restarts.
 
-use std::{path::Path, process::Stdio, time::Duration};
+use std::{
+    collections::HashMap,
+    path::Path,
+    process::Stdio,
+    sync::{Mutex, OnceLock},
+    time::{Duration, Instant},
+};
 
 use anyhow::{bail, Context, Result};
 use serde_json::{json, Value};
@@ -16,6 +22,160 @@ use tokio::{
 };
 
 const CODEX_BOOTSTRAP_TIMEOUT: Duration = Duration::from_secs(15);
+const CODEX_QUEUE_PROBE_TIMEOUT: Duration = Duration::from_secs(1);
+const CODEX_QUEUE_PROBE_TTL: Duration = Duration::from_secs(60);
+const CODEX_QUEUE_FALLBACKS: [&str; 3] = [
+    "/Applications/ChatGPT.app/Contents/Resources/codex",
+    "/opt/homebrew/bin/codex",
+    "/usr/local/bin/codex",
+];
+
+#[derive(Debug, Clone)]
+struct QueueProbeCacheEntry {
+    resolved: Option<String>,
+    observed_at: Instant,
+}
+
+static CODEX_QUEUE_PROBE_CACHE: OnceLock<Mutex<HashMap<String, QueueProbeCacheEntry>>> =
+    OnceLock::new();
+
+/// Resolve a Codex executable that exposes `codex queue`.
+///
+/// A bare `codex` can lag behind the desktop app bundle on macOS, so PATH is
+/// only the first candidate. Explicit paths stay explicit: if the caller named
+/// one, do not silently replace it with a different installation.
+pub async fn resolve_queue_capable_codex_command(
+    primary: &str,
+    global_args: &[String],
+    cwd: Option<&Path>,
+    env: &[(String, String)],
+    allow_bundle_fallbacks: bool,
+) -> Option<String> {
+    let cache_key =
+        codex_queue_probe_cache_key(primary, global_args, cwd, env, allow_bundle_fallbacks);
+    if let Some(entry) = CODEX_QUEUE_PROBE_CACHE
+        .get_or_init(|| Mutex::new(HashMap::new()))
+        .lock()
+        .ok()
+        .and_then(|cache| cache.get(&cache_key).cloned())
+    {
+        if entry.observed_at.elapsed() <= CODEX_QUEUE_PROBE_TTL {
+            return entry.resolved;
+        }
+    }
+
+    let mut resolved = None;
+    for candidate in codex_queue_command_candidates(primary, allow_bundle_fallbacks) {
+        if codex_command_has_queue(&candidate, global_args, cwd, env).await {
+            resolved = Some(candidate);
+            break;
+        }
+    }
+    if let Ok(mut cache) = CODEX_QUEUE_PROBE_CACHE
+        .get_or_init(|| Mutex::new(HashMap::new()))
+        .lock()
+    {
+        cache.insert(
+            cache_key,
+            QueueProbeCacheEntry {
+                resolved: resolved.clone(),
+                observed_at: Instant::now(),
+            },
+        );
+    }
+    resolved
+}
+
+fn codex_queue_probe_cache_key(
+    primary: &str,
+    global_args: &[String],
+    cwd: Option<&Path>,
+    env: &[(String, String)],
+    allow_bundle_fallbacks: bool,
+) -> String {
+    let primary_fingerprint = explicit_command_fingerprint(primary);
+    let codex_home = env
+        .iter()
+        .rev()
+        .find(|(key, _)| key == "CODEX_HOME")
+        .map(|(_, value)| value.as_str())
+        .unwrap_or("");
+    format!(
+        "{primary}\nprimary_fingerprint={primary_fingerprint}\nargs={}\ncwd={}\nCODEX_HOME={codex_home}\nbundle_fallbacks={allow_bundle_fallbacks}",
+        global_args.join("\u{1f}"),
+        cwd.map(|path| path.display().to_string())
+            .unwrap_or_default()
+    )
+}
+
+fn explicit_command_fingerprint(command: &str) -> String {
+    let path = Path::new(command);
+    if path.components().count() == 1 {
+        return String::new();
+    }
+    let Ok(metadata) = std::fs::metadata(path) else {
+        return "missing".to_string();
+    };
+    let modified = metadata
+        .modified()
+        .ok()
+        .and_then(|time| time.duration_since(std::time::UNIX_EPOCH).ok())
+        .map(|duration| duration.as_nanos().to_string())
+        .unwrap_or_else(|| "unknown".to_string());
+    format!("len={};modified={modified}", metadata.len())
+}
+
+pub fn codex_queue_command_candidates(primary: &str, allow_bundle_fallbacks: bool) -> Vec<String> {
+    let mut candidates = vec![primary.to_string()];
+    if allow_bundle_fallbacks && is_bare_codex_command(primary) {
+        for fallback in CODEX_QUEUE_FALLBACKS {
+            if Path::new(fallback).is_file() && !candidates.iter().any(|item| item == fallback) {
+                candidates.push(fallback.to_string());
+            }
+        }
+    }
+    candidates
+}
+
+async fn codex_command_has_queue(
+    command: &str,
+    global_args: &[String],
+    cwd: Option<&Path>,
+    env: &[(String, String)],
+) -> bool {
+    let mut probe = Command::new(command);
+    probe
+        .args(global_args)
+        .arg("queue")
+        .arg("--help")
+        .stdin(Stdio::null())
+        .kill_on_drop(true);
+    if let Some(cwd) = cwd {
+        probe.current_dir(cwd);
+    }
+    for (key, value) in env {
+        probe.env(key, value);
+    }
+    let Ok(Ok(output)) = timeout(CODEX_QUEUE_PROBE_TIMEOUT, probe.output()).await else {
+        return false;
+    };
+    if !output.status.success() {
+        return false;
+    }
+    let mut help = output.stdout;
+    help.extend_from_slice(&output.stderr);
+    let help = String::from_utf8_lossy(&help);
+    help.contains("--thread") && help.contains("--message")
+}
+
+fn is_bare_codex_command(command: &str) -> bool {
+    let path = Path::new(command);
+    path.components().count() == 1
+        && path
+            .file_name()
+            .and_then(|name| name.to_str())
+            .is_some_and(|name| name == "codex" || name == "codex.exe")
+}
 
 /// Create a resumable Codex thread and return its id.
 ///
@@ -49,6 +209,11 @@ async fn create_resumable_codex_thread_inner(
     let thread_cwd = cwd.canonicalize().unwrap_or_else(|_| cwd.to_path_buf());
     let mut command = crate::credentials::scrubbed_command(codex_bin);
     command
+        // These are top-level Codex flags. They must precede the subcommand:
+        // `codex app-server --dangerously-...` is rejected by clap, while
+        // `codex --dangerously-... app-server` preserves the PTY launch's
+        // config/profile context and starts normally.
+        .args(codex_app_server_passthrough_args(cli_args))
         .arg("app-server")
         .arg("--listen")
         .arg("stdio://")
@@ -57,9 +222,6 @@ async fn create_resumable_codex_thread_inner(
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
-    for arg in codex_app_server_passthrough_args(cli_args) {
-        command.arg(arg);
-    }
     for (key, value) in env {
         command.env(key, value);
     }
@@ -281,7 +443,7 @@ mod tests {
         std::fs::write(
             &fake_codex,
             r#"#!/bin/sh
-if [ "$1" != "app-server" ]; then
+if [ "$1" != "--dangerously-bypass-approvals-and-sandbox" ] || [ "$2" != "app-server" ]; then
   exit 2
 fi
 read line
@@ -304,7 +466,7 @@ while read line; do :; done
             fake_codex.to_str().expect("utf-8 fake codex path"),
             dir.path(),
             &[],
-            &[],
+            &["--dangerously-bypass-approvals-and-sandbox".to_string()],
             "0.0.0-test",
         )
         .await
@@ -344,5 +506,23 @@ while read line; do :; done
                 "--full-auto".to_string(),
             ]
         );
+    }
+
+    #[test]
+    fn queue_candidates_try_app_bundle_for_bare_codex_only() {
+        let bare = codex_queue_command_candidates("codex", true);
+        assert_eq!(bare.first().map(String::as_str), Some("codex"));
+        assert!(
+            bare.iter()
+                .any(|candidate| candidate == "/Applications/ChatGPT.app/Contents/Resources/codex")
+                || !Path::new("/Applications/ChatGPT.app/Contents/Resources/codex").is_file(),
+            "the desktop app codex should be considered when it exists"
+        );
+
+        let exact_bare = codex_queue_command_candidates("codex", false);
+        assert_eq!(exact_bare, vec!["codex".to_string()]);
+
+        let explicit = codex_queue_command_candidates("/custom/bin/codex", true);
+        assert_eq!(explicit, vec!["/custom/bin/codex".to_string()]);
     }
 }

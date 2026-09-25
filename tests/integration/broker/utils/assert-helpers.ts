@@ -188,3 +188,92 @@ export function eventsForAgent(events: BrokerEvent[], name: string, kind?: strin
     (e) => 'name' in e && (e as BrokerEvent & { name: string }).name === name && (!kind || e.kind === kind)
   );
 }
+
+// ── Observation accounting ───────────────────────────────────────────────────
+
+/**
+ * The `verification` values that mean the broker actually observed the
+ * delivery land, mirroring `is_observed` in
+ * `crates/broker/src/broker/delivery_verification.rs`.
+ *
+ * `echo` — the worker saw the injection echoed back by the child.
+ * `process_exit` — a headless child consumed the message and exited cleanly.
+ *
+ * Anything else (today: `timeout_fallback`) is a delivery the worker wrote and
+ * never saw land. Seam rule 4 forbids claiming an acknowledgement nobody
+ * observed, so those deliveries carry NO `delivery_ack`.
+ */
+const OBSERVED_VERIFICATIONS = new Set(['echo', 'process_exit']);
+
+export function isObservedVerification(event: BrokerEvent): boolean {
+  const { verification } = event as BrokerEvent & { verification?: string };
+  // A frame with no `verification` predates the field; treat it as observed so
+  // this helper cannot retroactively fail older recordings.
+  return verification === undefined || OBSERVED_VERIFICATIONS.has(verification);
+}
+
+/**
+ * Assert the delivery-observation ledger balances for one agent.
+ *
+ * The pre-seam invariant was `delivery_ack.length === delivery_verified.length`.
+ * That equality is now wrong by construction: an unobserved delivery emits
+ * `delivery_verified` (verification `timeout_fallback`) plus
+ * `delivery_unobserved`, and deliberately no `delivery_ack`.
+ *
+ * The invariant that survives is a per-delivery accounting identity — every
+ * verified delivery is EITHER observed and acked with the same `delivery_id`,
+ * OR unobserved and reported as such with the same `delivery_id`. Aggregate
+ * counts are insufficient: an extra ack for one delivery can otherwise hide a
+ * missing ack for another.
+ */
+export function assertDeliveryObservationLedger(
+  events: BrokerEvent[],
+  name: string,
+  message?: string
+): { acks: BrokerEvent[]; verified: BrokerEvent[]; unobserved: BrokerEvent[] } {
+  const acks = eventsForAgent(events, name, 'delivery_ack');
+  const verified = eventsForAgent(events, name, 'delivery_verified');
+  const unobserved = eventsForAgent(events, name, 'delivery_unobserved');
+
+  const observedVerified = verified.filter(isObservedVerification);
+  const unobservedVerified = verified.filter((e) => !isObservedVerification(e));
+  const prefix = message ? `${message}: ` : '';
+
+  assert.ok(
+    verified.length > 0,
+    `${prefix}delivery observation ledger is empty; no delivery_verified event was exercised`
+  );
+
+  const deliveryId = (event: BrokerEvent): string => {
+    const id = (event as BrokerEvent & { delivery_id?: unknown }).delivery_id;
+    if (typeof id !== 'string') {
+      assert.fail(`${prefix}${event.kind} must carry a delivery_id`);
+    }
+    assert.ok(id.length > 0, `${prefix}${event.kind} must carry a non-empty delivery_id`);
+    return id;
+  };
+  const ids = new Set([...acks, ...verified, ...unobserved].map(deliveryId));
+
+  for (const id of ids) {
+    const acksForId = acks.filter((event) => deliveryId(event) === id);
+    const observedForId = observedVerified.filter((event) => deliveryId(event) === id);
+    const unobservedVerifiedForId = unobservedVerified.filter((event) => deliveryId(event) === id);
+    const unobservedForId = unobserved.filter((event) => deliveryId(event) === id);
+
+    assert.equal(
+      acksForId.length,
+      observedForId.length,
+      `${prefix}every OBSERVED delivery_verified must have a delivery_ack for delivery_id=${id} ` +
+        `(acks=${acksForId.length}, observed verified=${observedForId.length})`
+    );
+    assert.equal(
+      unobservedForId.length,
+      unobservedVerifiedForId.length,
+      `${prefix}every UNOBSERVED delivery_verified must be reported as delivery_unobserved ` +
+        `for delivery_id=${id} (delivery_unobserved=${unobservedForId.length}, ` +
+        `unobserved verified=${unobservedVerifiedForId.length})`
+    );
+  }
+
+  return { acks, verified, unobserved };
+}

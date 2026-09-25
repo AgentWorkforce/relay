@@ -12,6 +12,7 @@
     "agent_context_low",
     "agent_blocked_on_send",
     "delivery_verified",
+    "delivery_unobserved",
     "delivery_failed",
     "message_delivery_confirmed",
     "message_delivery_failed",
@@ -118,6 +119,17 @@
       "payload": {
         "deliveryId": "del_1",
         "name": "WorkerA"
+      }
+    },
+    {
+      "kind": "delivery_unobserved",
+      "eventId": "evt_0010b",
+      "seq": 111,
+      "timestamp": "2026-02-23T00:00:09.500Z",
+      "payload": {
+        "deliveryId": "del_1",
+        "name": "WorkerA",
+        "verification": "timeout_fallback"
       }
     },
     {

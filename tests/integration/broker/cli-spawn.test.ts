@@ -23,7 +23,11 @@ import test, { type TestContext } from 'node:test';
 
 import type { BrokerEvent } from '@agent-relay/harness-driver';
 import { BrokerHarness, checkPrerequisites, uniqueSuffix } from './utils/broker-harness.js';
-import { assertAgentExists, assertNoDroppedDeliveries } from './utils/assert-helpers.js';
+import {
+  assertAgentExists,
+  assertNoDroppedDeliveries,
+  isObservedVerification,
+} from './utils/assert-helpers.js';
 import { skipIfNotRealCli, skipIfCliMissing, sleep } from './utils/cli-helpers.js';
 
 function skipIfMissing(t: TestContext): boolean {
@@ -313,18 +317,36 @@ test('cli-spawn: delivery pipeline — full event sequence', { timeout: 60_000 }
     const kinds = deliveryEvents.map((e) => e.kind);
     assert.ok(kinds.includes('delivery_queued'), 'should have delivery_queued');
     assert.ok(kinds.includes('delivery_injected'), 'should have delivery_injected');
-    assert.ok(kinds.includes('delivery_ack'), 'should have delivery_ack');
     assert.ok(kinds.includes('delivery_verified'), 'should have delivery_verified');
 
-    // Verify ordering
     const queuedIdx = kinds.indexOf('delivery_queued');
     const injectedIdx = kinds.indexOf('delivery_injected');
-    const ackIdx = kinds.indexOf('delivery_ack');
     const verifiedIdx = kinds.indexOf('delivery_verified');
 
     assert.ok(queuedIdx < injectedIdx, 'queued should come before injected');
-    assert.ok(injectedIdx < ackIdx, 'injected should come before ack');
-    assert.ok(ackIdx < verifiedIdx, 'ack should come before verified');
+    assert.ok(injectedIdx < verifiedIdx, 'injected should come before verified');
+
+    // Whether a `delivery_ack` exists depends on whether the worker OBSERVED
+    // the injection land. An echo/process_exit verification is an observation
+    // and must be acked; a timeout_fallback is not, and seam rule 4 forbids
+    // acking it. Branching here keeps the arm sensitive to a dropped ack on the
+    // observed path instead of demanding an ack the broker must not send.
+    const verifiedEvent = deliveryEvents[verifiedIdx];
+    if (isObservedVerification(verifiedEvent)) {
+      assert.ok(kinds.includes('delivery_ack'), 'an observed delivery should have delivery_ack');
+      const ackIdx = kinds.indexOf('delivery_ack');
+      assert.ok(injectedIdx < ackIdx, 'injected should come before ack');
+      assert.ok(ackIdx < verifiedIdx, 'ack should come before verified');
+    } else {
+      assert.ok(
+        kinds.includes('delivery_unobserved'),
+        'an unobserved delivery should be reported as delivery_unobserved'
+      );
+      assert.ok(
+        !kinds.includes('delivery_ack'),
+        'an unobserved delivery must NOT claim a delivery_ack (seam rule 4)'
+      );
+    }
 
     await harness.releaseAgent(agentName);
   } finally {

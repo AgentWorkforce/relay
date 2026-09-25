@@ -31,6 +31,10 @@ const PTY_INPUT_ACK_TIMEOUT: std::time::Duration = std::time::Duration::from_sec
 /// Never let the runtime actor wait on its completion without a deadline.
 const DEFAULT_SET_MODEL_TIMEOUT: Duration = Duration::from_secs(5);
 
+fn canonical_or_self(path: &std::path::Path) -> std::path::PathBuf {
+    path.canonicalize().unwrap_or_else(|_| path.to_path_buf())
+}
+
 fn set_model_write_timeout(timeout_ms: Option<u64>) -> Duration {
     timeout_ms
         .map(Duration::from_millis)
@@ -340,6 +344,7 @@ impl BrokerRuntime {
         let agent_spawn_count = &mut self.agent_spawn_count;
         let pending_deliveries = &mut self.pending_deliveries;
         let dead_letters = &mut self.dead_letters;
+        let delivery_seam = &mut self.delivery_seam;
         let obligation_store = &mut self.obligation_store;
         let pending_requests = &mut self.pending_requests;
         let resize_owners = &mut self.resize_owners;
@@ -584,9 +589,10 @@ impl BrokerRuntime {
                     return;
                 }
                 let mut preregistration_warning: Option<String> = None;
-                // Caller-supplied agent_token is authoritative. In fleet mode it
-                // was minted by the node control connection, and the worker must
-                // receive that exact token before its harness starts.
+                // A caller-supplied agent_token is authoritative, but it may
+                // belong to a session that registered itself over HTTP rather
+                // than one minted by this node. Resolve it first, then bind that
+                // exact identity to this node before admitting the handle.
                 //
                 // Otherwise create a fresh identity over HTTP, then bind it to
                 // this node. The minted token is injected as RELAY_AGENT_TOKEN
@@ -598,6 +604,8 @@ impl BrokerRuntime {
                     None
                 } else if let Some(token) = agent_token {
                     seed_supplied_agent_token(relaycast_http, &name, &token);
+                    let already_node_bound =
+                        fleet_delivery_book.active_agent_id(name.as_str()).is_some();
                     match super::fleet::resolve_fleet_agent_token_identity(
                         relaycast_http,
                         fleet_delivery_book,
@@ -607,6 +615,19 @@ impl BrokerRuntime {
                     .await
                     {
                         Ok(registration) => {
+                            if !already_node_bound {
+                                if let Some(warning) =
+                                    super::relaycast_events::bind_http_registered_agent_to_node(
+                                        relaycast_http,
+                                        fleet_node_name,
+                                        &name,
+                                        session_ref.as_deref(),
+                                    )
+                                    .await
+                                {
+                                    preregistration_warning = Some(warning);
+                                }
+                            }
                             fleet_registration = Some((registration, None, session_ref.clone()));
                         }
                         Err(error) => {
@@ -635,6 +656,7 @@ impl BrokerRuntime {
                                     relaycast_http,
                                     fleet_node_name,
                                     &name,
+                                    session_ref.as_deref(),
                                 )
                                 .await;
                             if let Some(warning) = bind_warning {
@@ -1197,9 +1219,11 @@ impl BrokerRuntime {
                                             sdk_out_tx,
                                             json!({"kind":"delivery_dropped","name":&name,"count":dropped.len(),"reason":"agent_released"}),
                                         ).await;
-                            let _ = emit_dropped_delivery_failures(
+                            let _ = dispose_pending_deliveries_for_teardown(
                                 sdk_out_tx,
                                 dead_letters,
+                                delivery_seam,
+                                &self.node_delivery_probe,
                                 &dropped,
                                 "agent_released",
                             )
@@ -1742,6 +1766,166 @@ impl BrokerRuntime {
                     actor_ms = %request_start.elapsed().as_millis(),
                     "HTTP API send runtime actor released"
                 );
+            }
+            ListenApiRequest::AttachNativeCodex {
+                name,
+                agent_token,
+                thread_id,
+                codex_home,
+                cwd,
+                reply,
+            } => {
+                if local_only {
+                    let _ = reply.send(Err(
+                        "native Codex attach requires an active Relaycast fleet connection"
+                            .to_string(),
+                    ));
+                    return;
+                }
+                let absolute_path = |label: &str, value: Option<String>| {
+                    value
+                        .map(PathBuf::from)
+                        .map(|path| {
+                            if path.is_absolute() {
+                                Ok(path)
+                            } else {
+                                Err(format!("{label} must be an absolute path"))
+                            }
+                        })
+                        .transpose()
+                };
+                let codex_home = match absolute_path("codex_home", codex_home) {
+                    Ok(path) => path,
+                    Err(error) => {
+                        let _ = reply.send(Err(error));
+                        return;
+                    }
+                };
+                let cwd = match absolute_path("cwd", cwd) {
+                    Ok(Some(path)) => path,
+                    Ok(None) => {
+                        let _ = reply.send(Err("cwd is required".to_string()));
+                        return;
+                    }
+                    Err(error) => {
+                        let _ = reply.send(Err(error));
+                        return;
+                    }
+                };
+                let thread_record = match crate::delivery::codex_thread::lookup_thread_record(
+                    &thread_id,
+                    codex_home.as_deref(),
+                )
+                .await
+                {
+                    Ok(Some(record)) => record,
+                    Ok(None) => {
+                        let _ = reply.send(Err(
+                            "Codex thread id was not found in the selected Codex state".to_string(),
+                        ));
+                        return;
+                    }
+                    Err(error) => {
+                        let _ =
+                            reply.send(Err(format!("could not verify Codex thread id: {error}")));
+                        return;
+                    }
+                };
+                let Some(record_cwd) = thread_record.cwd.as_ref() else {
+                    let _ = reply.send(Err(
+                        "Codex thread record does not include a cwd to verify".to_string()
+                    ));
+                    return;
+                };
+                if canonical_or_self(record_cwd) != canonical_or_self(&cwd) {
+                    let _ = reply.send(Err(
+                        "Codex thread cwd does not match the registering MCP session".to_string(),
+                    ));
+                    return;
+                }
+                let Some(rollout_path) = thread_record.rollout_path else {
+                    let _ = reply.send(Err(
+                        "Codex thread record does not include a rollout path".to_string()
+                    ));
+                    return;
+                };
+                let target = match crate::delivery::codex_queue::CodexQueueTarget::attached(
+                    thread_id.clone(),
+                    codex_home,
+                    rollout_path,
+                    Some(cwd),
+                ) {
+                    Ok(target) => target,
+                    Err(error) => {
+                        let _ = reply.send(Err(error));
+                        return;
+                    }
+                };
+                let already_node_bound =
+                    fleet_delivery_book.active_agent_id(name.as_str()).is_some();
+                let identity = match super::fleet::resolve_fleet_agent_token_identity(
+                    relaycast_http,
+                    fleet_delivery_book,
+                    &name,
+                    &agent_token,
+                )
+                .await
+                {
+                    Ok(identity) => identity,
+                    Err(error) => {
+                        let _ = reply.send(Err(format!(
+                            "could not verify the self-registered Codex identity: {error}"
+                        )));
+                        return;
+                    }
+                };
+                if !already_node_bound {
+                    if let Some(warning) =
+                        super::relaycast_events::bind_http_registered_agent_to_node(
+                            relaycast_http,
+                            fleet_node_name,
+                            &name,
+                            Some(&thread_id),
+                        )
+                        .await
+                    {
+                        let _ = reply.send(Err(format!(
+                            "could not bind the self-registered Codex identity to this broker: {warning}"
+                        )));
+                        return;
+                    }
+                }
+                if let Err(error) = workers.attach_native_codex(name.clone(), target) {
+                    let _ = reply.send(Err(error.to_string()));
+                    return;
+                }
+                super::fleet::record_fleet_inventory_agent(
+                    fleet_control_tx,
+                    fleet_inventory,
+                    &identity,
+                    None,
+                    Some(thread_id.clone()),
+                )
+                .await;
+                super::fleet::publish_fleet_load_snapshot(
+                    fleet_control_tx,
+                    fleet_inventory.len() as u32,
+                    fleet_inventory
+                        .values()
+                        .map(|agent| agent.name.clone())
+                        .collect(),
+                    fleet_max_agents,
+                    fleet_handlers_live,
+                    true,
+                )
+                .await;
+                let _ = reply.send(Ok(json!({
+                    "success": true,
+                    "name": name,
+                    "thread_id": thread_id,
+                    "route": "codex-queue",
+                    "owns_session": false,
+                })));
             }
             ListenApiRequest::List { reply } => {
                 let counts =
@@ -2320,6 +2504,18 @@ impl BrokerRuntime {
                     let Some(entry) = dead_letters.get(&delivery_id) else {
                         continue;
                     };
+                    // An in-doubt entry is retained so the message is not lost,
+                    // but its write may already have committed — redelivering it
+                    // is exactly the double delivery seam rule 1 forbids. It is
+                    // visible and inspectable here; it is not auto-redeliverable.
+                    if !crate::runtime::dead_letter::is_auto_redeliverable(&entry.reason) {
+                        skipped.push(json!({
+                            "delivery_id": delivery_id,
+                            "worker_name": entry.worker_name,
+                            "reason": "delivery is in doubt; redelivering may duplicate",
+                        }));
+                        continue;
+                    }
                     // Leave entries for recipients that are not running in the
                     // queue — requeueing them would only bounce straight back
                     // here with `recipient gone` on the next maintenance tick.
@@ -2621,7 +2817,17 @@ impl BrokerRuntime {
                 expected_revision,
                 reply,
             } => {
-                if !workers.has_worker(&name) {
+                // A native-only target has no broker-owned terminal to hold a
+                // message in front of, and the manual-flush drain cannot reach
+                // its route. Refuse by intent, so the queue can never
+                // accumulate messages the flush path could not deliver.
+                if workers.is_native_only_delivery_target(&name)
+                    && mode == InboundDeliveryMode::ManualFlush
+                {
+                    let _ = reply.send(Err(
+                        DeliveryRouteError::ManualFlushUnsupportedForNativeRoute(name),
+                    ));
+                } else if !workers.has_worker(&name) {
                     let _ = reply.send(Err(DeliveryRouteError::WorkerNotFound(name)));
                 } else {
                     // Compare-and-set guard: when the caller supplied an
@@ -2728,6 +2934,7 @@ impl BrokerRuntime {
                                 dead_letters,
                                 &name,
                                 delivery_retry_interval,
+                                delivery_seam,
                             )
                             .await;
                     }
@@ -2879,6 +3086,7 @@ impl BrokerRuntime {
                             dead_letters,
                             &name,
                             delivery_retry_interval,
+                            delivery_seam,
                         )
                         .await;
                     let flushed = flush_result.flushed;

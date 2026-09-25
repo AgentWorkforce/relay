@@ -41,6 +41,10 @@ describe('fleet CLI lifecycle routing', () => {
     relayHome = fs.mkdtempSync(path.join(os.tmpdir(), 'relay-fleet-lifecycle-home-'));
     vi.stubEnv('AGENT_RELAY_PROJECT', projectRoot);
     vi.stubEnv('AGENT_RELAY_HOME', relayHome);
+    // This scenario proves that the persisted Cloud target wins after spawn.
+    // A developer's ambient credential must not silently turn it into a test
+    // of the process-wide default workspace instead.
+    vi.stubEnv('RELAY_API_KEY', '');
     const dataDir = path.join(projectRoot, '.agentworkforce', 'relay');
     writeProjectWorkspaceKey(dataDir, 'rk_live_workspace', { workspaceId: TARGET.workspaceId });
 

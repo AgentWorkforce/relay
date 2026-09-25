@@ -8,9 +8,17 @@ autobins = false
 name = "relay_broker"
 path = "src/lib.rs"
 
+[features]
+default = ["seam-probe"]
+seam-probe = []
+
 [[bin]]
 name = "agent-relay-broker"
 path = "src/main.rs"
+
+[[test]]
+name = "delivery_seam_invariants"
+required-features = ["seam-probe"]
 
 [dependencies]
 anyhow = "1.0"
