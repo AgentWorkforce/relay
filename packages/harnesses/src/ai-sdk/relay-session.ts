@@ -1,4 +1,7 @@
 import { createAgentActivityState, reduceAgentActivity } from '@agent-relay/sdk';
+import { createHash } from 'node:crypto';
+import { mkdir, mkdtemp, open, readdir, readFile, rename, rm, stat } from 'node:fs/promises';
+import { dirname, resolve } from 'node:path';
 import type {
   AgentIdentity,
   AgentActivityState,
@@ -18,12 +21,29 @@ export interface RelayHarnessSessionOptions {
   host: HarnessHost;
   maxQueueSize?: number;
   maxDedupeEntries?: number;
+  /** Durable queue used for on-idle messages accepted by a native sidecar. */
+  deferredQueuePath?: string;
 }
 
 interface QueuedMessage {
   message: RelayMessage;
   context: MessageContext;
   key: string;
+  state: 'queued';
+  order: number;
+}
+
+interface DeliveryTombstone {
+  key: string;
+  deliveryId: string;
+  messageId: string;
+  state: 'in_doubt' | 'accepted';
+}
+
+type DurableDeliveryEntry = QueuedMessage | DeliveryTombstone;
+
+function durableEntryId(key: string): string {
+  return createHash('sha256').update(key).digest('hex');
 }
 
 function senderName(message: RelayMessage): string {
@@ -302,11 +322,18 @@ export class RelayHarnessSession implements AgentSession {
   readonly host: HarnessHost;
   readonly #maxQueueSize: number;
   readonly #maxDedupeEntries: number;
+  readonly #deferredQueuePath?: string;
   readonly #queue: QueuedMessage[] = [];
   readonly #receipts = new Map<string, MessageReceipt>();
   readonly #listeners = new Set<(event: AgentSessionEvent) => void | Promise<void>>();
   #operation = Promise.resolve();
+  #nextQueueOrder = 0;
   #released = false;
+  #releaseCompleted = false;
+  #hostDestroyed = false;
+  #releaseEmitted = false;
+  #drainRetry?: ReturnType<typeof setTimeout>;
+  #drainRetryDelayMs = 100;
   #activity: AgentActivityState = createAgentActivityState();
 
   constructor(options: RelayHarnessSessionOptions) {
@@ -314,6 +341,7 @@ export class RelayHarnessSession implements AgentSession {
     this.host = options.host;
     this.#maxQueueSize = options.maxQueueSize ?? 100;
     this.#maxDedupeEntries = options.maxDedupeEntries ?? 10_000;
+    this.#deferredQueuePath = options.deferredQueuePath;
     this.capabilities = {
       messaging: { receive: true },
       delivery: {
@@ -376,13 +404,225 @@ export class RelayHarnessSession implements AgentSession {
     return receipt;
   }
 
+  #scheduleDrainRetry(): void {
+    if (this.#released || this.#drainRetry) return;
+    const delay = this.#drainRetryDelayMs;
+    this.#drainRetryDelayMs = Math.min(delay * 2, 5_000);
+    this.#drainRetry = setTimeout(() => {
+      this.#drainRetry = undefined;
+      void this.#serialized(() => this.#drain()).catch(() => undefined);
+    }, delay);
+    this.#drainRetry.unref?.();
+  }
+
+  #resetDrainRetry(): void {
+    if (this.#drainRetry) clearTimeout(this.#drainRetry);
+    this.#drainRetry = undefined;
+    this.#drainRetryDelayMs = 100;
+  }
+
+  #durableReceipt(entry: DurableDeliveryEntry): MessageReceipt {
+    if (entry.state === 'queued') {
+      return {
+        status: 'deferred',
+        deliveryId: entry.context.id,
+        availableAt: new Date(Date.now() + 100).toISOString(),
+        reason: 'queued_until_idle',
+        metadata: { queued: true, restored: true },
+      };
+    }
+    if (entry.state === 'accepted') {
+      return {
+        status: 'accepted',
+        deliveryId: entry.deliveryId,
+        metadata: { restored: true },
+      };
+    }
+    return {
+      status: 'failed',
+      deliveryId: entry.deliveryId,
+      reason: 'Deferred delivery was in progress when the native sidecar stopped',
+      retryable: false,
+    };
+  }
+
+  #entryDirectory(state: DurableDeliveryEntry['state']): string | undefined {
+    if (!this.#deferredQueuePath) return undefined;
+    return resolve(this.#deferredQueuePath, state === 'queued' ? 'queue' : 'receipts');
+  }
+
+  #entryPath(key: string, state: DurableDeliveryEntry['state']): string | undefined {
+    const directory = this.#entryDirectory(state);
+    return directory ? resolve(directory, `${durableEntryId(key)}.json`) : undefined;
+  }
+
+  async #syncEntryDirectories(directory: string): Promise<void> {
+    if (!this.#deferredQueuePath || process.platform === 'win32') return;
+    const parent = dirname(this.#deferredQueuePath);
+    // The sidecar path is runtimeRoot/deferred-relay/<session hash>. Syncing
+    // every newly-created directory level makes a first-use persist durable as
+    // well as the entry rename itself.
+    for (const path of [directory, this.#deferredQueuePath, parent, dirname(parent)]) {
+      const directory = await open(path, 'r');
+      try {
+        await directory.sync();
+      } finally {
+        await directory.close();
+      }
+    }
+  }
+
+  async #persistEntry(entry: DurableDeliveryEntry): Promise<void> {
+    const directory = this.#entryDirectory(entry.state);
+    const destination = this.#entryPath(entry.key, entry.state);
+    if (!directory || !destination || !this.#deferredQueuePath) return;
+    await mkdir(directory, { recursive: true });
+    const temporaryDirectory = await mkdtemp(resolve(directory, '.relay-deferred-'));
+    const temporary = resolve(temporaryDirectory, 'entry.json');
+    try {
+      const file = await open(temporary, 'wx', 0o600);
+      try {
+        await file.writeFile(JSON.stringify({ version: 2, entry }), 'utf8');
+        await file.sync();
+      } finally {
+        await file.close();
+      }
+      await rename(temporary, destination);
+      await this.#syncEntryDirectories(directory);
+      if (entry.state !== 'queued') {
+        const queued = this.#entryPath(entry.key, 'queued');
+        if (queued) {
+          // The compact terminal receipt is authoritative once published.
+          // Cleanup cannot revoke it, and restore checks receipts before live
+          // queue entries, so a cleanup failure must not reverse the result.
+          await rm(queued, { force: true }).catch(() => undefined);
+          const queueDirectory = this.#entryDirectory('queued');
+          if (queueDirectory) {
+            await this.#syncEntryDirectories(queueDirectory).catch(() => undefined);
+          }
+        }
+      }
+    } finally {
+      await rm(temporaryDirectory, { recursive: true, force: true }).catch(() => undefined);
+    }
+  }
+
+  #parseEntry(value: unknown): DurableDeliveryEntry {
+    if (!value || typeof value !== 'object') throw new Error('Invalid deferred Relay delivery entry');
+    const envelope = value as { version?: unknown; entry?: unknown };
+    if (envelope.version !== 2 || !envelope.entry || typeof envelope.entry !== 'object') {
+      throw new Error('Invalid deferred Relay delivery entry');
+    }
+    const entry = envelope.entry as {
+      key?: unknown;
+      state?: unknown;
+      message?: unknown;
+      context?: unknown;
+      order?: unknown;
+      deliveryId?: unknown;
+      messageId?: unknown;
+    };
+    if (typeof entry.key !== 'string') throw new Error('Invalid deferred Relay delivery entry');
+    if (entry.state === 'queued') {
+      if (!entry.message || !entry.context || typeof entry.order !== 'number') {
+        throw new Error('Invalid deferred Relay delivery entry');
+      }
+      return entry as QueuedMessage;
+    }
+    if (
+      (entry.state === 'accepted' || entry.state === 'in_doubt') &&
+      typeof entry.deliveryId === 'string' &&
+      typeof entry.messageId === 'string'
+    ) {
+      return entry as DeliveryTombstone;
+    }
+    throw new Error('Invalid deferred Relay delivery entry');
+  }
+
+  async #loadEntry(key: string): Promise<DurableDeliveryEntry | undefined> {
+    for (const state of ['accepted', 'queued'] as const) {
+      const path = this.#entryPath(key, state);
+      if (!path) return undefined;
+      try {
+        const entry = this.#parseEntry(JSON.parse(await readFile(path, 'utf8')));
+        if (entry.key !== key) throw new Error('Deferred Relay delivery key does not match its index');
+        return entry;
+      } catch (error) {
+        if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error;
+      }
+    }
+    return undefined;
+  }
+
+  async #removeEntry(key: string): Promise<void> {
+    const path = this.#entryPath(key, 'queued');
+    const directory = this.#entryDirectory('queued');
+    if (!path || !directory) return;
+    await rm(path, { force: true });
+    await this.#syncEntryDirectories(directory);
+  }
+
+  async #removeDurableSession(): Promise<void> {
+    if (!this.#deferredQueuePath) return;
+    try {
+      await stat(this.#deferredQueuePath);
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code === 'ENOENT') return;
+      throw error;
+    }
+    await rm(this.#deferredQueuePath, { recursive: true, force: true });
+    if (process.platform === 'win32') return;
+    const parent = dirname(this.#deferredQueuePath);
+    for (const path of [parent, dirname(parent)]) {
+      const directory = await open(path, 'r');
+      try {
+        await directory.sync();
+      } finally {
+        await directory.close();
+      }
+    }
+  }
+
+  /** Restore deferred messages after a sidecar restart before reading stdin. */
+  async restoreDeferredMessages(): Promise<void> {
+    if (!this.#deferredQueuePath) return;
+    const queueDirectory = this.#entryDirectory('queued');
+    if (!queueDirectory) return;
+    let files: string[];
+    try {
+      files = await readdir(queueDirectory);
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code === 'ENOENT') return;
+      throw error;
+    }
+    let cleanedStaleEntry = false;
+    for (const file of files.filter((candidate) => candidate.endsWith('.json'))) {
+      const entry = this.#parseEntry(JSON.parse(await readFile(resolve(queueDirectory, file), 'utf8')));
+      if (file !== `${durableEntryId(entry.key)}.json`) {
+        throw new Error('Deferred Relay delivery key does not match its index');
+      }
+      if (entry.state !== 'queued') throw new Error('Invalid queued Relay delivery entry');
+      const current = await this.#loadEntry(entry.key);
+      if (current?.state !== 'queued') {
+        await rm(resolve(queueDirectory, file), { force: true }).catch(() => undefined);
+        cleanedStaleEntry = true;
+        continue;
+      }
+      this.#queue.push(current);
+      this.#nextQueueOrder = Math.max(this.#nextQueueOrder, current.order + 1);
+      this.#remember(current.key, this.#durableReceipt(current));
+    }
+    if (cleanedStaleEntry) await this.#syncEntryDirectories(queueDirectory).catch(() => undefined);
+    this.#queue.sort((left, right) => left.order - right.order || left.key.localeCompare(right.key));
+    await this.#serialized(() => this.#drain());
+  }
+
   async #accept(message: RelayMessage, context: MessageContext): Promise<MessageReceipt> {
     const prompt = formatInboundRelayPrompt(message);
     if (this.host.hasActiveTurn) await this.host.submitUserMessage(prompt);
     else await this.host.startTurn(prompt, context.id);
     const receipt: MessageReceipt = { status: 'accepted', deliveryId: context.id };
     await this.#emit({ type: 'message.received', message });
-    await this.#emit({ type: 'delivery.accepted', messageId: message.id, deliveryId: context.id });
     return receipt;
   }
 
@@ -390,15 +630,34 @@ export class RelayHarnessSession implements AgentSession {
     if (this.#released || this.host.hasActiveTurn) return;
     const queued = this.#queue.shift();
     if (!queued) return;
+    const inDoubt: DeliveryTombstone = {
+      key: queued.key,
+      deliveryId: queued.context.id,
+      messageId: queued.message.id,
+      state: 'in_doubt',
+    };
     try {
-      const receipt = await this.#accept(queued.message, queued.context);
-      this.#remember(queued.key, receipt);
+      await this.#persistEntry(inDoubt);
+    } catch {
+      // The durable queued entry is still authoritative. Without a durable
+      // in-doubt marker it is unsafe to publish a terminal failure: a restart
+      // could restore and accept the queued entry. Keep it live and retry the
+      // transition with bounded backoff or when the broker redelivers it.
+      this.#queue.unshift(queued);
+      this.#remember(queued.key, this.#durableReceipt(queued));
+      this.#scheduleDrainRetry();
+      return;
+    }
+    this.#resetDrainRetry();
+    let receipt: MessageReceipt;
+    try {
+      receipt = await this.#accept(queued.message, queued.context);
     } catch (error) {
       const receipt: MessageReceipt = {
         status: 'failed',
         deliveryId: queued.context.id,
         reason: error instanceof Error ? error.message : String(error),
-        retryable: true,
+        retryable: false,
       };
       this.#remember(queued.key, receipt);
       await this.#emit({
@@ -406,10 +665,27 @@ export class RelayHarnessSession implements AgentSession {
         messageId: queued.message.id,
         deliveryId: queued.context.id,
         reason: receipt.reason,
-        retryable: true,
+        retryable: false,
       });
       await this.#drain();
+      return;
     }
+
+    const accepted: DeliveryTombstone = { ...inDoubt, state: 'accepted' };
+    try {
+      await this.#persistEntry(accepted);
+    } catch {
+      // The host already accepted the message. The durable in-doubt marker is
+      // sufficient to prevent replay if the accepted transition cannot be
+      // published; do not report a false delivery failure for a turn that has
+      // started successfully.
+    }
+    this.#remember(queued.key, receipt);
+    await this.#emit({
+      type: 'delivery.accepted',
+      messageId: queued.message.id,
+      deliveryId: queued.context.id,
+    });
   }
 
   receiveMessage(message: RelayMessage, context: MessageContext): Promise<MessageReceipt> {
@@ -419,7 +695,18 @@ export class RelayHarnessSession implements AgentSession {
       }
       const key = context.idempotencyKey ?? message.id ?? context.id;
       const previous = this.#receipts.get(key);
-      if (previous) return previous;
+      if (previous) {
+        if (previous.status === 'deferred' && !this.host.hasActiveTurn) await this.#drain();
+        return this.#receipts.get(key) ?? previous;
+      }
+      const active = this.#queue.find((entry) => entry.key === key);
+      if (active) {
+        const receipt = this.#remember(key, this.#durableReceipt(active));
+        if (!this.host.hasActiveTurn) await this.#drain();
+        return this.#receipts.get(key) ?? receipt;
+      }
+      const durable = await this.#loadEntry(key);
+      if (durable) return this.#remember(key, this.#durableReceipt(durable));
 
       const shouldQueue =
         this.host.hasActiveTurn && (context.mode === 'next-message' || context.mode === 'on-idle');
@@ -432,7 +719,32 @@ export class RelayHarnessSession implements AgentSession {
             retryable: true,
           });
         }
-        this.#queue.push({ message, context, key });
+        const queued: QueuedMessage = {
+          message,
+          context,
+          key,
+          state: 'queued',
+          order: this.#nextQueueOrder++,
+        };
+        this.#queue.push(queued);
+        try {
+          await this.#persistEntry(queued);
+        } catch (error) {
+          this.#queue.pop();
+          const inDoubt: DeliveryTombstone = {
+            key,
+            deliveryId: context.id,
+            messageId: message.id,
+            state: 'in_doubt',
+          };
+          await this.#persistEntry(inDoubt).catch(() => undefined);
+          return this.#remember(key, {
+            status: 'failed',
+            deliveryId: context.id,
+            reason: `Could not durably queue Relay delivery: ${error instanceof Error ? error.message : String(error)}`,
+            retryable: false,
+          });
+        }
         return this.#remember(key, {
           status: 'deferred',
           deliveryId: context.id,
@@ -443,7 +755,13 @@ export class RelayHarnessSession implements AgentSession {
       }
 
       try {
-        return this.#remember(key, await this.#accept(message, context));
+        const receipt = this.#remember(key, await this.#accept(message, context));
+        await this.#emit({
+          type: 'delivery.accepted',
+          messageId: message.id,
+          deliveryId: context.id,
+        });
+        return receipt;
       } catch (error) {
         return this.#remember(key, {
           status: 'failed',
@@ -457,11 +775,48 @@ export class RelayHarnessSession implements AgentSession {
 
   async release(reason?: string): Promise<void> {
     return this.#serialized(async () => {
-      if (this.#released) return;
+      if (this.#releaseCompleted) return;
       this.#released = true;
-      this.#queue.length = 0;
-      await this.host.destroy();
-      await this.#emit({ type: 'session.released', reason });
+      this.#resetDrainRetry();
+      const queued = this.#queue.splice(0);
+      let persistenceError: unknown;
+      for (const entry of queued) {
+        try {
+          await this.#removeEntry(entry.key);
+        } catch (error) {
+          persistenceError ??= error;
+          this.#queue.push(entry);
+        }
+      }
+      if (!persistenceError) {
+        try {
+          await this.#removeDurableSession();
+        } catch (error) {
+          persistenceError = error;
+        }
+      }
+      let destroyError: unknown;
+      if (!this.#hostDestroyed) {
+        try {
+          await this.host.destroy();
+          this.#hostDestroyed = true;
+        } catch (error) {
+          destroyError = error;
+        }
+      }
+      let emitError: unknown;
+      if (!this.#releaseEmitted) {
+        try {
+          await this.#emit({ type: 'session.released', reason });
+          this.#releaseEmitted = true;
+        } catch (error) {
+          emitError = error;
+        }
+      }
+      if (persistenceError) throw persistenceError;
+      if (destroyError) throw destroyError;
+      if (emitError) throw emitError;
+      this.#releaseCompleted = true;
     });
   }
 }

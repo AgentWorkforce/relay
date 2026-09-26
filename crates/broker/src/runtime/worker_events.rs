@@ -651,6 +651,11 @@ impl BrokerRuntime {
                     error = %error,
                     "worker command writer failed; closing attached terminals and resetting worker"
                 );
+                workers.fail_native_delivery_custody_generation(
+                    &name,
+                    generation,
+                    &format!("worker command writer failed: {error}"),
+                );
                 let session_ids: Vec<String> = terminal_sessions
                     .iter()
                     .filter(|(_, session)| session.agent == name)
@@ -693,6 +698,36 @@ impl BrokerRuntime {
                     return;
                 }
                 if let Some(msg_type) = value.get("type").and_then(Value::as_str) {
+                    if let Some(payload) = value.get("payload") {
+                        let delivery_id = payload
+                            .get("delivery_id")
+                            .and_then(Value::as_str)
+                            .unwrap_or("");
+                        if !delivery_id.is_empty() {
+                            match msg_type {
+                                "delivery_queued" | "delivery_ack" => {
+                                    workers.confirm_native_delivery_custody(
+                                        &name,
+                                        generation,
+                                        delivery_id,
+                                    );
+                                }
+                                "delivery_failed" => {
+                                    let reason = payload
+                                        .get("reason")
+                                        .and_then(Value::as_str)
+                                        .unwrap_or("native sidecar rejected delivery");
+                                    workers.fail_native_delivery_custody(
+                                        &name,
+                                        generation,
+                                        delivery_id,
+                                        reason,
+                                    );
+                                }
+                                _ => {}
+                            }
+                        }
+                    }
                     if msg_type == "delivery_ack" {
                         if let Some(payload) = value.get("payload") {
                             let delivery_id = payload
@@ -1832,6 +1867,11 @@ impl BrokerRuntime {
                             .and_then(|p| p.get("signal"))
                             .and_then(Value::as_str)
                             .map(String::from);
+                        workers.fail_native_delivery_custody_generation(
+                            &name,
+                            generation,
+                            "native worker reported exit before confirming delivery custody",
+                        );
                         tracing::info!(
                             agent = %name,
                             code = ?code,
