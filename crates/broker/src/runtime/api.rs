@@ -1757,64 +1757,22 @@ impl BrokerRuntime {
                     ));
                     return;
                 }
-                match crate::native_delivery::existing_outcome(
-                    &paths.native_delivery_receipts,
-                    &delivery,
-                ) {
-                    Ok(Some(outcome)) => {
-                        let status = match outcome.disposition {
-                            crate::native_delivery::NativeDeliveryDisposition::Queued => "queued",
-                            crate::native_delivery::NativeDeliveryDisposition::Duplicate => {
-                                "duplicate"
-                            }
-                        };
-                        let _ = reply.send(Ok(json!({
-                            "receiptId": outcome.receipt_id,
-                            "status": status,
-                            "state": outcome.state.as_str(),
-                        })));
-                        return;
-                    }
-                    Err(error) => {
-                        let _ = reply.send(Err(error));
-                        return;
-                    }
-                    Ok(None) => {}
-                }
+                // Authorization reads only in-memory worker state. Receipt
+                // lookup, reservation, and fsyncs run in the spawned task on
+                // the blocking pool so they never stall this runtime actor.
                 let name = crate::native_delivery::worker_name(&delivery);
-                let sender =
-                    match workers.authorize_native_existing_session(&name, &delivery.session_id) {
-                        Ok(sender) => sender,
-                        Err(error) => {
-                            let _ = reply.send(Err(
-                                crate::native_delivery::NativeDeliveryError::Unauthorized(
-                                    error.to_string(),
-                                ),
-                            ));
-                            return;
-                        }
-                    };
+                let authorization = workers
+                    .authorize_native_existing_session(&name, &delivery.session_id)
+                    .map_err(|error| error.to_string());
                 let receipt_path = paths.native_delivery_receipts.clone();
                 tokio::spawn(async move {
-                    let result = crate::native_delivery::deliver_with_sender(
-                        sender,
-                        &receipt_path,
-                        &delivery,
+                    let result = crate::native_delivery::deliver_authorized(
+                        receipt_path,
+                        delivery,
+                        authorization,
                     )
                     .await
-                    .map(|outcome| {
-                        let status = match outcome.disposition {
-                            crate::native_delivery::NativeDeliveryDisposition::Queued => "queued",
-                            crate::native_delivery::NativeDeliveryDisposition::Duplicate => {
-                                "duplicate"
-                            }
-                        };
-                        json!({
-                            "receiptId": outcome.receipt_id,
-                            "status": status,
-                            "state": outcome.state.as_str(),
-                        })
-                    });
+                    .map(|outcome| outcome.to_json());
                     let _ = reply.send(result);
                 });
             }
@@ -1828,18 +1786,14 @@ impl BrokerRuntime {
                     ));
                     return;
                 }
-                let result = crate::native_delivery::reconcile_receipt(
-                    &paths.native_delivery_receipts,
-                    &delivery,
-                )
-                .map(|receipt| match receipt {
-                    Some(receipt) => json!({
-                        "receiptId": receipt.receipt_id(),
-                        "state": receipt.state().as_str(),
-                    }),
-                    None => json!({ "receiptId": null }),
+                let receipt_path = paths.native_delivery_receipts.clone();
+                tokio::spawn(async move {
+                    let result =
+                        crate::native_delivery::reconcile_receipt_async(receipt_path, delivery)
+                            .await
+                            .map(crate::native_delivery::reconcile_json);
+                    let _ = reply.send(result);
                 });
-                let _ = reply.send(result);
             }
             ListenApiRequest::FleetInventory { reply } => {
                 // Report the in-process `fleet_inventory` map: the same

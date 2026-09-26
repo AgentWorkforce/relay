@@ -1457,92 +1457,23 @@ impl BrokerRuntime {
                 return;
             }
         };
-        match crate::native_delivery::existing_outcome(
-            &self.paths.native_delivery_receipts,
-            &delivery,
-        ) {
-            Ok(Some(outcome)) => {
-                let status = match outcome.disposition {
-                    crate::native_delivery::NativeDeliveryDisposition::Queued => "queued",
-                    crate::native_delivery::NativeDeliveryDisposition::Duplicate => "duplicate",
-                };
-                self.reply_action_output(
-                    &invoke.invocation_id,
-                    json!({
-                        "receiptId": outcome.receipt_id,
-                        "status": status,
-                        "state": outcome.state.as_str(),
-                    }),
-                )
-                .await;
-                return;
-            }
-            Err(error) => {
-                self.reply_action_error(
-                    &invoke.invocation_id,
-                    &format!("{}; committed={}", error, error.committed()),
-                )
-                .await;
-                return;
-            }
-            Ok(None) => {}
-        }
+        // Authorization reads only in-memory worker state. Receipt lookup,
+        // reservation, and fsyncs run in the spawned task on the blocking pool
+        // so they never stall the fleet actor.
         let name = crate::native_delivery::worker_name(&delivery);
-        let sender = match self
+        let authorization = self
             .workers
             .authorize_native_existing_session(&name, &delivery.session_id)
-        {
-            Ok(sender) => sender,
-            Err(error) => {
-                self.reply_action_error(
-                    &invoke.invocation_id,
-                    &format!("native_session_unauthorized: {error}; committed=false"),
-                )
-                .await;
-                return;
-            }
-        };
+            .map_err(|error| error.to_string());
         let receipt_path = self.paths.native_delivery_receipts.clone();
         let invocation_id = invoke.invocation_id;
         let control_tx = self.fleet_control_tx.clone();
         tokio::spawn(async move {
             let result =
-                crate::native_delivery::deliver_with_sender(sender, &receipt_path, &delivery).await;
-            let result = match result {
-                Ok(outcome) => {
-                    let status = match outcome.disposition {
-                        crate::native_delivery::NativeDeliveryDisposition::Queued => "queued",
-                        crate::native_delivery::NativeDeliveryDisposition::Duplicate => "duplicate",
-                    };
-                    ActionResult {
-                        task: None,
-                        v: FLEET_WIRE_VERSION,
-                        id: None,
-                        invocation_id,
-                        result: ActionResultPayload::Output(ActionResultOutput {
-                            output: json!({
-                                "receiptId": outcome.receipt_id,
-                                "status": status,
-                                "state": outcome.state.as_str(),
-                            }),
-                        }),
-                    }
-                }
-                Err(error) => ActionResult {
-                    task: None,
-                    v: FLEET_WIRE_VERSION,
-                    id: None,
-                    invocation_id,
-                    result: ActionResultPayload::Error(ActionResultError {
-                        error: format!("{}; committed={}", error, error.committed()),
-                    }),
-                },
-            };
-            let _ = control_tx
-                .send(FleetControlCommand::Send(BrokerToRelaycast::ActionResult(
-                    result,
-                )))
-                .await;
+                crate::native_delivery::deliver_authorized(receipt_path, delivery, authorization)
+                    .await
+                    .map(|outcome| outcome.to_json());
+            send_native_action_result(&control_tx, invocation_id, result).await;
         });
     }
 
@@ -1566,31 +1497,15 @@ impl BrokerRuntime {
                 return;
             }
         };
-        match crate::native_delivery::reconcile_receipt(
-            &self.paths.native_delivery_receipts,
-            &delivery,
-        ) {
-            Ok(receipt) => {
-                self.reply_action_output(
-                    &invoke.invocation_id,
-                    match receipt {
-                        Some(receipt) => json!({
-                            "receiptId": receipt.receipt_id(),
-                            "state": receipt.state().as_str(),
-                        }),
-                        None => json!({ "receiptId": null }),
-                    },
-                )
-                .await;
-            }
-            Err(error) => {
-                self.reply_action_error(
-                    &invoke.invocation_id,
-                    &format!("{}; committed={}", error, error.committed()),
-                )
-                .await;
-            }
-        }
+        let receipt_path = self.paths.native_delivery_receipts.clone();
+        let invocation_id = invoke.invocation_id;
+        let control_tx = self.fleet_control_tx.clone();
+        tokio::spawn(async move {
+            let result = crate::native_delivery::reconcile_receipt_async(receipt_path, delivery)
+                .await
+                .map(crate::native_delivery::reconcile_json);
+            send_native_action_result(&control_tx, invocation_id, result).await;
+        });
     }
 
     /// Run a `spawn` / `spawn:<harness>` node action by parsing the invoke input
@@ -2143,6 +2058,31 @@ pub(super) struct FlushPendingRelayResult {
     pub(super) reconciliation_action: Option<&'static str>,
     /// Internal lookup key for predecessor replay. Never serialized.
     pub(super) blocked_agent_id: Option<String>,
+}
+
+/// Reply to a native existing-session Fleet action from a spawned task.
+async fn send_native_action_result(
+    control_tx: &mpsc::Sender<FleetControlCommand>,
+    invocation_id: String,
+    result: Result<Value, crate::native_delivery::NativeDeliveryError>,
+) {
+    let result = match result {
+        Ok(output) => ActionResultPayload::Output(ActionResultOutput { output }),
+        Err(error) => ActionResultPayload::Error(ActionResultError {
+            error: format!("{}; committed={}", error, error.committed()),
+        }),
+    };
+    let _ = control_tx
+        .send(FleetControlCommand::Send(BrokerToRelaycast::ActionResult(
+            ActionResult {
+                task: None,
+                v: FLEET_WIRE_VERSION,
+                id: None,
+                invocation_id,
+                result,
+            },
+        )))
+        .await;
 }
 
 /// Inject a worker's held queue in FIFO order. A failed item and every item

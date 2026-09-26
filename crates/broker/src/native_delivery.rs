@@ -114,6 +114,20 @@ pub(crate) struct NativeDeliveryOutcome {
     pub(crate) state: NativeReceiptState,
 }
 
+impl NativeDeliveryOutcome {
+    pub(crate) fn to_json(&self) -> serde_json::Value {
+        let status = match self.disposition {
+            NativeDeliveryDisposition::Queued => "queued",
+            NativeDeliveryDisposition::Duplicate => "duplicate",
+        };
+        serde_json::json!({
+            "receiptId": self.receipt_id,
+            "status": status,
+            "state": self.state.as_str(),
+        })
+    }
+}
+
 #[derive(Debug, Error)]
 pub(crate) enum NativeDeliveryError {
     #[error("invalid_native_delivery: {0}")]
@@ -169,9 +183,17 @@ impl NativeExistingSessionDelivery {
         Ok(())
     }
 
+    /// Broker-namespaced identity for this delivery. It is the receipt id and
+    /// the worker-wire `delivery_id`, so custody can only be confirmed by the
+    /// sidecar's acknowledgement of this exact native delivery, never by an
+    /// ordinary delivery whose externally chosen id equals the caller's key.
+    fn receipt_id(&self) -> String {
+        format!("ndr_{}", digest(&self.delivery_id))
+    }
+
     pub(crate) fn relay_delivery(&self) -> RelayDelivery {
         RelayDelivery {
-            delivery_id: DeliveryId::new(self.delivery_id.clone()),
+            delivery_id: DeliveryId::new(self.receipt_id()),
             event_id: EventId::new(self.delivery_id.clone()),
             workspace_id: None,
             workspace_alias: None,
@@ -199,7 +221,7 @@ impl NativeExistingSessionDelivery {
 
     fn receipt(&self) -> NativeDeliveryReceipt {
         NativeDeliveryReceipt {
-            receipt_id: format!("ndr_{}", digest(&self.delivery_id)),
+            receipt_id: self.receipt_id(),
             delivery_id: self.delivery_id.clone(),
             relay_agent_name: self.relay_agent_name.clone(),
             session_id: self.session_id.clone(),
@@ -390,6 +412,32 @@ pub(crate) fn existing_outcome(
         .transpose()
 }
 
+/// Run receipt filesystem work on the blocking pool so directory and file
+/// fsyncs never stall the broker runtime actor or a tokio worker thread. A
+/// join failure after a reservation may have been published is in doubt.
+async fn run_blocking<T, F>(committed: bool, work: F) -> Result<T, NativeDeliveryError>
+where
+    T: Send + 'static,
+    F: FnOnce() -> Result<T, NativeDeliveryError> + Send + 'static,
+{
+    tokio::task::spawn_blocking(work).await.map_err(|error| {
+        let message = format!("native receipt task failed: {error}");
+        if committed {
+            NativeDeliveryError::InDoubt(message)
+        } else {
+            NativeDeliveryError::ReceiptUnavailable(message)
+        }
+    })?
+}
+
+/// Look up an exact duplicate without blocking the async runtime.
+pub(crate) async fn existing_outcome_async(
+    path: PathBuf,
+    input: NativeExistingSessionDelivery,
+) -> Result<Option<NativeDeliveryOutcome>, NativeDeliveryError> {
+    run_blocking(false, move || existing_outcome(&path, &input)).await
+}
+
 /// Reserve an exact delivery durably, then perform its one permitted worker
 /// write. The reservation remains `in_doubt` after every post-reservation
 /// failure so a caller can reconcile but can never cause a second write.
@@ -402,15 +450,27 @@ where
     F: FnOnce(RelayDelivery) -> Fut,
     Fut: Future<Output = anyhow::Result<()>>,
 {
-    if let Some(outcome) = existing_outcome(path, input)? {
+    if let Some(outcome) = existing_outcome_async(path.to_path_buf(), input.clone()).await? {
         return Ok(outcome);
     }
 
-    let mut receipt = input.receipt();
+    let receipt = input.receipt();
     // This is the cancellation boundary. No worker write may occur unless this
     // exact reservation is durable on disk first.
-    if !create_receipt(path, &receipt)? {
-        let receipt = existing_receipt(path, input)?.ok_or_else(|| {
+    let reserved = run_blocking(true, {
+        let root = path.to_path_buf();
+        let receipt = receipt.clone();
+        move || create_receipt(&root, &receipt)
+    })
+    .await?;
+    if !reserved {
+        let receipt = run_blocking(false, {
+            let root = path.to_path_buf();
+            let input = input.clone();
+            move || existing_receipt(&root, &input)
+        })
+        .await?
+        .ok_or_else(|| {
             NativeDeliveryError::ReceiptUnavailable(
                 "concurrent receipt reservation was not readable".to_string(),
             )
@@ -422,13 +482,22 @@ where
         return Err(NativeDeliveryError::InDoubt(error.to_string()));
     }
 
+    let mut receipt = receipt;
     receipt.state = NativeReceiptState::Queued;
+    let receipt_id = receipt.receipt_id.clone();
     // Failure here is still in doubt: the durable write-ahead record remains
     // authoritative and a retry will return it without another worker write.
-    save_receipt(path, &receipt)
-        .map_err(|error| NativeDeliveryError::InDoubt(error.to_string()))?;
+    run_blocking(true, {
+        let root = path.to_path_buf();
+        move || save_receipt(&root, &receipt)
+    })
+    .await
+    .map_err(|error| match error {
+        NativeDeliveryError::InDoubt(_) => error,
+        other => NativeDeliveryError::InDoubt(other.to_string()),
+    })?;
     Ok(NativeDeliveryOutcome {
-        receipt_id: receipt.receipt_id,
+        receipt_id,
         disposition: NativeDeliveryDisposition::Queued,
         state: NativeReceiptState::Queued,
     })
@@ -456,12 +525,41 @@ pub(crate) fn worker_name(input: &NativeExistingSessionDelivery) -> WorkerName {
     WorkerName::new(input.relay_agent_name.clone())
 }
 
-pub(crate) async fn deliver_with_sender(
-    sender: crate::worker::WorkerDeliverySender,
-    path: &Path,
-    input: &NativeExistingSessionDelivery,
+/// Deliver with a live-session authorization captured by the runtime actor.
+/// An exact duplicate is answered from its durable receipt even when the
+/// worker has since exited; only a new reservation requires authorization.
+pub(crate) async fn deliver_authorized(
+    path: PathBuf,
+    input: NativeExistingSessionDelivery,
+    authorization: Result<crate::worker::WorkerDeliverySender, String>,
 ) -> Result<NativeDeliveryOutcome, NativeDeliveryError> {
-    reserve_and_deliver(path, input, |delivery| sender.deliver(delivery)).await
+    if let Some(outcome) = existing_outcome_async(path.clone(), input.clone()).await? {
+        return Ok(outcome);
+    }
+    let sender = authorization.map_err(NativeDeliveryError::Unauthorized)?;
+    reserve_and_deliver(&path, &input, |delivery| async move {
+        sender.deliver(delivery).await
+    })
+    .await
+}
+
+/// Reconcile an exact receipt without blocking the async runtime.
+pub(crate) async fn reconcile_receipt_async(
+    path: PathBuf,
+    input: NativeExistingSessionReconcile,
+) -> Result<Option<NativeDeliveryReceipt>, NativeDeliveryError> {
+    run_blocking(false, move || reconcile_receipt(&path, &input)).await
+}
+
+/// Response body for a reconciliation lookup.
+pub(crate) fn reconcile_json(receipt: Option<NativeDeliveryReceipt>) -> serde_json::Value {
+    match receipt {
+        Some(receipt) => serde_json::json!({
+            "receiptId": receipt.receipt_id(),
+            "state": receipt.state().as_str(),
+        }),
+        None => serde_json::json!({ "receiptId": null }),
+    }
 }
 
 #[cfg(test)]
@@ -482,6 +580,32 @@ mod tests {
             head_sha: "a".repeat(40),
             message: "Review the exact live head".to_string(),
         }
+    }
+
+    #[tokio::test]
+    async fn worker_wire_delivery_id_is_namespaced_by_the_receipt() {
+        // The custody waiter is keyed by the wire delivery id. A caller key
+        // that equals an ordinary broker/engine delivery id (for example
+        // `del_42`) must not let that delivery's ACK confirm native custody.
+        let dir = tempfile::tempdir().expect("receipt dir");
+        let path = dir.path().join("receipts");
+        let wire = Arc::new(std::sync::Mutex::new(None));
+        let captured = Arc::clone(&wire);
+        let outcome = reserve_and_deliver(&path, &delivery("del_42"), move |delivery| {
+            *captured.lock().expect("capture") = Some(delivery);
+            async { Ok(()) }
+        })
+        .await
+        .expect("delivery");
+        let wire = wire.lock().expect("capture").take().expect("worker write");
+        assert_ne!(wire.delivery_id.as_str(), "del_42");
+        assert_eq!(wire.delivery_id.as_str(), outcome.receipt_id);
+        assert!(outcome.receipt_id.starts_with("ndr_"));
+        assert_eq!(
+            wire.event_id.as_str(),
+            "del_42",
+            "the caller key remains the correlated event id"
+        );
     }
 
     #[tokio::test]
