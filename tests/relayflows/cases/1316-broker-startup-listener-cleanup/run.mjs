@@ -50,11 +50,6 @@ const buildPath = path.join(target, '.relayflow-1316-build');
 try {
   // Build the target's own production module. No head-only test is imported.
   run(
-    'npm',
-    ['ci', '--ignore-scripts', '--workspace', 'packages/harness-driver', '--include-workspace-root=false'],
-    target
-  );
-  run(
     'node',
     [
       path.join(harness, 'node_modules/typescript/bin/tsc'),
