@@ -65,7 +65,7 @@ export async function createRuntimeClient(options: CreateRuntimeClientOptions): 
   const {
     cwd,
     channels = ['general'],
-    binaryPath = process.env.AGENT_RELAY_BIN,
+    binaryPath,
     binaryArgs,
     brokerName,
     env = process.env,

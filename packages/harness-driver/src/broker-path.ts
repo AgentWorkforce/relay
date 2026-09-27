@@ -7,7 +7,7 @@
  */
 
 import { existsSync, realpathSync } from 'node:fs';
-import { join, dirname, resolve } from 'node:path';
+import { basename, join, dirname, resolve } from 'node:path';
 import { execFileSync } from 'node:child_process';
 import { createRequire } from 'node:module';
 import { homedir } from 'node:os';
@@ -240,10 +240,19 @@ function getSourceCheckoutBinaryPaths(ext: string): string[] {
  */
 export function getBrokerBinaryPath(): string | null {
   const ext = process.platform === 'win32' ? '.exe' : '';
-  const override = process.env.BROKER_BINARY_PATH ?? process.env.AGENT_RELAY_BIN;
+  const overrideName = process.env.BROKER_BINARY_PATH ? 'BROKER_BINARY_PATH' : 'AGENT_RELAY_BIN';
+  const override = process.env[overrideName];
 
   if (override) {
     const resolvedOverride = resolve(override);
+    const binaryName = basename(resolvedOverride)
+      .toLowerCase()
+      .replace(/\.exe$/u, '');
+    if (binaryName !== BROKER_NAME && !binaryName.startsWith(`${BROKER_NAME}-`)) {
+      throw new Error(
+        `${overrideName} must point to an agent-relay-broker executable, not the Agent Relay CLI. Check the override path.`
+      );
+    }
     if (existsSync(resolvedOverride)) {
       return resolvedOverride;
     }

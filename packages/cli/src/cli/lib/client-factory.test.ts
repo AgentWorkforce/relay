@@ -66,8 +66,8 @@ describe('client-factory', () => {
     delete process.env.AGENT_RELAY_BIN;
   });
 
-  it('builds HarnessDriverClient with defaults', async () => {
-    process.env.AGENT_RELAY_BIN = '/tmp/agent-relay-broker';
+  it('lets the broker resolver handle environment overrides', async () => {
+    process.env.AGENT_RELAY_BIN = '/tmp/agent-relay';
 
     await createRuntimeClient({ cwd: '/tmp/project' });
 
@@ -75,7 +75,7 @@ describe('client-factory', () => {
       expect.objectContaining({
         cwd: '/tmp/project',
         channels: ['general'],
-        binaryPath: '/tmp/agent-relay-broker',
+        binaryPath: undefined,
       })
     );
     expect(connectSpy).not.toHaveBeenCalled();
