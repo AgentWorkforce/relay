@@ -82,18 +82,14 @@ describe('broker binary path resolution', () => {
   it('refuses a CLI executable in the legacy override instead of trying to spawn it as broker', async () => {
     process.env.AGENT_RELAY_BIN = makeExecutable('agent-relay');
     const { getBrokerBinaryPath } = await loadBrokerPathModule();
-    expect(() => getBrokerBinaryPath()).toThrow(
-      /AGENT_RELAY_BIN must point to an agent-relay-broker executable/u
-    );
+    expect(() => getBrokerBinaryPath()).toThrow(/AGENT_RELAY_BIN points to the Agent Relay CLI/u);
   });
 
   it('refuses a CLI executable in the preferred override without falling back', async () => {
     process.env.BROKER_BINARY_PATH = makeExecutable('agent-relay');
     process.env.AGENT_RELAY_BIN = makeExecutable('agent-relay-broker');
     const { getBrokerBinaryPath } = await loadBrokerPathModule();
-    expect(() => getBrokerBinaryPath()).toThrow(
-      /BROKER_BINARY_PATH must point to an agent-relay-broker executable/u
-    );
+    expect(() => getBrokerBinaryPath()).toThrow(/BROKER_BINARY_PATH points to the Agent Relay CLI/u);
   });
 
   it('refuses a broker-named symlink that resolves to the CLI', async () => {

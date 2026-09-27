@@ -248,10 +248,8 @@ export function getBrokerBinaryPath(): string | null {
     const binaryName = basename(resolvedOverride)
       .toLowerCase()
       .replace(/\.exe$/u, '');
-    if (binaryName !== BROKER_NAME && !binaryName.startsWith(`${BROKER_NAME}-`)) {
-      throw new Error(
-        `${overrideName} must point to an agent-relay-broker executable, not the Agent Relay CLI. Check the override path.`
-      );
+    if (binaryName === 'agent-relay') {
+      throw new Error(`${overrideName} points to the Agent Relay CLI, not a broker executable.`);
     }
     if (existsSync(resolvedOverride)) {
       // A legacy shim can be named like the broker while linking to the CLI.
@@ -259,7 +257,7 @@ export function getBrokerBinaryPath(): string | null {
       const targetName = basename(realpathSync(resolvedOverride))
         .toLowerCase()
         .replace(/\.exe$/u, '');
-      if (targetName !== BROKER_NAME && !targetName.startsWith(`${BROKER_NAME}-`)) {
+      if (targetName === 'agent-relay') {
         throw new Error(`${overrideName} resolves to the Agent Relay CLI, not a broker executable.`);
       }
       return resolvedOverride;

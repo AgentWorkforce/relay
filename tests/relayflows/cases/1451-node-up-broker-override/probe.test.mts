@@ -28,7 +28,7 @@ it('does not route the old CLI binary into a broker spawn', async () => {
   } else {
     expect(forwarded.binaryPath).toBeUndefined();
     process.env.BROKER_BINARY_PATH = cli;
-    expect(() => getBrokerBinaryPath()).toThrow(/BROKER_BINARY_PATH must point to an agent-relay-broker executable/u);
+    expect(() => getBrokerBinaryPath()).toThrow(/BROKER_BINARY_PATH points to the Agent Relay CLI/u);
     console.log('PROOF:rejects_cli_override');
   }
 });
