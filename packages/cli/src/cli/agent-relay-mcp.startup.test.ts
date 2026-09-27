@@ -2154,6 +2154,39 @@ describe('Relaycast MCP bootstrap registration errors', () => {
     );
   });
 
+  it('redacts a credential-shaped configured agent name on an upstream failure', async () => {
+    const { mod, mocks } = await loadAgentRelayMcpModule();
+    mocks.behavior.registerImpl = vi.fn(async () => {
+      throw new Error('upstream failure');
+    });
+    await expect(
+      mod.startAgentRelayMcpStdio({ apiKey: 'rk_live_workspace', agentName: 'worker-rk_live_private' })
+    ).rejects.toThrow(
+      'Relaycast MCP bootstrap registration for [redacted] failed: Registration failed before the MCP server could connect.'
+    );
+    expect(mocks.serverInstances).toHaveLength(0);
+  });
+
+  it('redacts a credential-shaped agent name inside timeout recovery guidance', async () => {
+    const { mod, mocks } = await loadAgentRelayMcpModule();
+    const { AgentRegistrationTimeoutError } = await import('./lib/agent-registration.js');
+    mocks.behavior.registerImpl = vi.fn(async () => {
+      throw new AgentRegistrationTimeoutError(
+        'Agent registration or token rotation for "worker-rk_live_private" did not complete within 15000ms.'
+      );
+    });
+    let failure: unknown;
+    try {
+      await mod.startAgentRelayMcpStdio({ apiKey: 'rk_live_workspace', agentName: 'worker-rk_live_private' });
+    } catch (error) {
+      failure = error;
+    }
+    expect((failure as Error).message).toBe(
+      'Relaycast MCP bootstrap registration for [redacted] failed: Agent registration timed out; the request outcome is unknown.'
+    );
+    expect((failure as Error).message).not.toContain('rk_live_private');
+  });
+
   it('does not expose transport headers on an untyped bootstrap exception', async () => {
     const { mod, mocks } = await loadAgentRelayMcpModule();
     mocks.behavior.registerImpl = vi.fn(async () => {

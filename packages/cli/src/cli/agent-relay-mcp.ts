@@ -1765,8 +1765,26 @@ function isRelaycastAgentToken(token: string | undefined): token is string {
   return typeof token === 'string' && token.startsWith('at_live_');
 }
 
-function bootstrapRegistrationDetail(error: unknown): string {
-  if (error instanceof AgentRegistrationTimeoutError) return error.message;
+function bootstrapAgentName(name: string): string {
+  // This is operator-controlled config, not a guaranteed non-secret value.
+  // Bound it to ordinary agent-name characters and reject credential-shaped
+  // substrings before it reaches the entrypoint's stderr.
+  if (
+    name.length > 128 ||
+    !/^[a-z0-9][a-z0-9._-]*$/i.test(name) ||
+    /(?:rk_live_|at_live_|nt_live_|Bearer|ghp_|github_pat_|sk-)/i.test(name)
+  ) {
+    return '[redacted]';
+  }
+  return JSON.stringify(name);
+}
+
+function bootstrapRegistrationDetail(error: unknown, name: string): string {
+  if (error instanceof AgentRegistrationTimeoutError) {
+    return bootstrapAgentName(name) === '[redacted]'
+      ? 'Agent registration timed out; the request outcome is unknown.'
+      : error.message;
+  }
   if (!(error instanceof RelayError)) return 'Registration failed before the MCP server could connect.';
   // Only bounded typed metadata is safe here. Even typed upstream messages
   // and causes can include credentials or request headers.
@@ -1808,7 +1826,7 @@ export async function resolveStdioBootstrapOptions(
     // The cause may include headers and credentials; deliberately do not attach it.
     // eslint-disable-next-line preserve-caught-error
     throw new Error(
-      `Relaycast MCP bootstrap registration for ${JSON.stringify(options.agentName)} failed: ${bootstrapRegistrationDetail(error)}`
+      `Relaycast MCP bootstrap registration for ${bootstrapAgentName(options.agentName)} failed: ${bootstrapRegistrationDetail(error, options.agentName)}`
     );
   }
   return {
