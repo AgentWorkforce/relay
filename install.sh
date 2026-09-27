@@ -624,9 +624,18 @@ install_from_source() {
     # that artifact into both paths used by the CLI and PATH lookup.
     if [ -x "$INSTALL_DIR/target/release/agent-relay-broker" ]; then
         mkdir -p "$INSTALL_DIR/bin" "$BIN_DIR"
-        cp "$INSTALL_DIR/target/release/agent-relay-broker" "$INSTALL_DIR/bin/agent-relay-broker"
-        cp "$INSTALL_DIR/target/release/agent-relay-broker" "$BIN_DIR/agent-relay-broker"
-        chmod +x "$INSTALL_DIR/bin/agent-relay-broker" "$BIN_DIR/agent-relay-broker"
+        # A plain local Cargo build reports the crate version (3.0.0), not
+        # the release version. Use it only if it was built with the release
+        # version embedded; otherwise download the matching release artifact.
+        local built_broker_version=""
+        built_broker_version=$("$INSTALL_DIR/target/release/agent-relay-broker" --version 2>/dev/null || true)
+        if [ "$built_broker_version" = "agent-relay-broker $VERSION" ] || [ "$built_broker_version" = "agent-relay-broker v$VERSION" ]; then
+            cp "$INSTALL_DIR/target/release/agent-relay-broker" "$INSTALL_DIR/bin/agent-relay-broker"
+            cp "$INSTALL_DIR/target/release/agent-relay-broker" "$BIN_DIR/agent-relay-broker"
+            chmod +x "$INSTALL_DIR/bin/agent-relay-broker" "$BIN_DIR/agent-relay-broker"
+        else
+            download_broker_binary || true
+        fi
     else
         # A build without Rust may still use the release broker artifact.
         download_broker_binary || true

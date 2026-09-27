@@ -65,6 +65,12 @@ try {
     if (stalePathBroker.status === 0 || !/Expected PATH broker 12\.4\.1/.test(stalePathBroker.stdout + stalePathBroker.stderr)) {
       throw new Error(`Stale PATH broker was not rejected: ${stalePathBroker.status} ${stalePathBroker.stdout} ${stalePathBroker.stderr}`);
     }
+    // A source build without AGENT_RELAY_VERSION reports the Rust crate
+    // version (3.0.0), which must not satisfy release 12.4.1.
+    const sourceBuild = await readFile(path.join(targetDir, 'install.sh'), 'utf8');
+    if (!sourceBuild.includes('built_broker_version=') || !sourceBuild.includes('download_broker_binary || true')) {
+      throw new Error('Source fallback no longer verifies the built broker before using it');
+    }
     outcome = 'fixed'; signature = 'stale_broker_rejected';
   } else {
     throw new Error(`Unexpected install verification: ${stale.status} ${stale.stdout} ${stale.stderr}`);
