@@ -238,6 +238,18 @@ function getSourceCheckoutBinaryPaths(ext: string): string[] {
  *
  * @returns Absolute path to the broker binary, or null if not found
  */
+
+/** Recognize the published CLI entrypoint without executing an override. */
+function isCliExecutablePath(candidate: string): boolean {
+  const normalized = candidate
+    .replace(/\\/gu, '/')
+    .toLowerCase()
+    .replace(/\.exe$/u, '');
+  return (
+    basename(normalized) === 'agent-relay' || /(?:^|\/)agent-relay\/dist\/cli\/index\.js$/u.test(normalized)
+  );
+}
+
 export function getBrokerBinaryPath(): string | null {
   const ext = process.platform === 'win32' ? '.exe' : '';
   const overrideName = process.env.BROKER_BINARY_PATH ? 'BROKER_BINARY_PATH' : 'AGENT_RELAY_BIN';
@@ -245,19 +257,13 @@ export function getBrokerBinaryPath(): string | null {
 
   if (override) {
     const resolvedOverride = resolve(override);
-    const binaryName = basename(resolvedOverride)
-      .toLowerCase()
-      .replace(/\.exe$/u, '');
-    if (binaryName === 'agent-relay') {
+    if (isCliExecutablePath(resolvedOverride)) {
       throw new Error(`${overrideName} points to the Agent Relay CLI, not a broker executable.`);
     }
     if (existsSync(resolvedOverride)) {
       // A legacy shim can be named like the broker while linking to the CLI.
       // Check the resolved target too, without executing an arbitrary override.
-      const targetName = basename(realpathSync(resolvedOverride))
-        .toLowerCase()
-        .replace(/\.exe$/u, '');
-      if (targetName === 'agent-relay') {
+      if (isCliExecutablePath(realpathSync(resolvedOverride))) {
         throw new Error(`${overrideName} resolves to the Agent Relay CLI, not a broker executable.`);
       }
       return resolvedOverride;
