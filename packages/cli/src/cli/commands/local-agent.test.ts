@@ -1002,6 +1002,31 @@ describe('local agent subtree', () => {
     expect(client.release).toHaveBeenCalledWith('lead');
   });
 
+  it.each([
+    ['--state-dir', '/tmp/isolated-relay-state'],
+    ['--broker-url', 'http://127.0.0.1:3890'],
+  ])(
+    'release connects to the explicitly selected broker via %s outside the broker project',
+    async (flag, value) => {
+      const release = vi.fn(async () => undefined);
+      const disconnect = vi.fn();
+      const connectLocal = vi.fn(async () => ({ release, disconnect }) as never);
+      const connect = vi.fn();
+      const { program, log } = harness({ cwd: () => '/tmp/unrelated-project', connectLocal, connect });
+      const flags =
+        flag === '--broker-url' ? [flag, value, '--api-key', 'selected-broker-key'] : [flag, value];
+      await program.parseAsync(['local', 'agent', 'release', 'worker', ...flags], { from: 'user' });
+      expect(connect).not.toHaveBeenCalled();
+      expect(connectLocal).toHaveBeenCalledWith('/tmp/unrelated-project', {
+        brokerUrl: flag === '--broker-url' ? value : undefined,
+        apiKey: flag === '--broker-url' ? 'selected-broker-key' : undefined,
+        stateDir: flag === '--state-dir' ? value : undefined,
+      });
+      expect(release).toHaveBeenCalledWith('worker');
+      expect(log).toHaveBeenCalledWith('Released worker.');
+    }
+  );
+
   it('set-model forwards name and model to client.setModel', async () => {
     const { program, client } = harness();
     await program.parseAsync(['local', 'agent', 'set-model', 'lead', 'opus'], { from: 'user' });
