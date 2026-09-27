@@ -40,6 +40,16 @@ export function isProcessRunning(pid: number): boolean {
   }
 }
 
+/** Keep process errors observable for the whole managed broker lifetime.
+ * The startup waiter removes its temporary listener after the API URL arrives,
+ * but `kill()` can still emit an error during timeout or shutdown.
+ */
+export function observeBrokerProcessErrors(child: ChildProcess, stderrLines: string[]): void {
+  child.on('error', (error: Error) => {
+    pushBufferedLine(stderrLines, `Broker process error: ${error.message}`);
+  });
+}
+
 export async function waitForApiUrl(
   child: ChildProcess,
   timeoutMs: number,
@@ -90,12 +100,13 @@ export async function waitForApiUrl(
     };
     const timer = setTimeout(() => {
       if (!finish()) return;
-      child.kill('SIGTERM');
-      reject(
-        new Error(
-          formatBrokerStartupError(`Broker did not report API port within ${timeoutMs}ms`, child, debug)
-        )
-      );
+      let reason = `Broker did not report API port within ${timeoutMs}ms`;
+      try {
+        if (!child.kill('SIGTERM')) reason += '; SIGTERM was not delivered';
+      } catch (error) {
+        reason += `; SIGTERM failed: ${error instanceof Error ? error.message : String(error)}`;
+      }
+      reject(new Error(formatBrokerStartupError(reason, child, debug)));
     }, timeoutMs);
     child.once('exit', onExit);
     child.once('error', onError);

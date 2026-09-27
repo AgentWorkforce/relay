@@ -9,6 +9,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import {
   isProcessRunning,
+  observeBrokerProcessErrors,
   terminateFailedBrokerSpawn,
   waitForApiUrl,
   waitForExit,
@@ -76,6 +77,53 @@ describe('waitForApiUrl listener cleanup', () => {
     await expect(pending).rejects.toThrow(/Failed to start broker: spawn failed/);
     expect(child.listenerCount('exit')).toBe(0);
     expect(child.listenerCount('error')).toBe(0);
+    stdout.destroy();
+  });
+
+  it('keeps an observer for process errors after startup', async () => {
+    const { child, stdout, debug } = startupChild();
+    observeBrokerProcessErrors(child, debug.stderrLines);
+    const pending = waitForApiUrl(child, 100, debug);
+    await vi.waitFor(() => expect(child.listenerCount('error')).toBe(2));
+    stdout.write('API listening on http://127.0.0.1:4282\n');
+    await expect(pending).resolves.toBe('http://127.0.0.1:4282');
+    expect(child.listenerCount('error')).toBe(1);
+    child.emit('error', new Error('late signal failure'));
+    expect(debug.stderrLines).toContain('Broker process error: late signal failure');
+    stdout.destroy();
+  });
+
+  it('handles an error emitted synchronously by the timeout signal', async () => {
+    const { child, stdout, debug } = startupChild();
+    observeBrokerProcessErrors(child, debug.stderrLines);
+    Object.assign(child, {
+      kill: () => {
+        child.emit('error', new Error('signal rejected'));
+        return false;
+      },
+    });
+    await expect(waitForApiUrl(child, 10, debug)).rejects.toThrow(/SIGTERM was not delivered/);
+    expect(debug.stderrLines).toContain('Broker process error: signal rejected');
+    expect(child.listenerCount('error')).toBe(1);
+    stdout.destroy();
+  });
+
+  it('reports a failed timeout signal without leaving the promise pending', async () => {
+    const { child, stdout, debug } = startupChild();
+    Object.assign(child, {
+      kill: () => {
+        throw new Error('operation not permitted');
+      },
+    });
+    await expect(waitForApiUrl(child, 10, debug)).rejects.toThrow(/SIGTERM failed: operation not permitted/);
+    expect(child.listenerCount('error')).toBe(0);
+    stdout.destroy();
+  });
+
+  it('reports when the timeout signal is not delivered', async () => {
+    const { child, stdout, debug } = startupChild();
+    Object.assign(child, { kill: () => false });
+    await expect(waitForApiUrl(child, 10, debug)).rejects.toThrow(/SIGTERM was not delivered/);
     stdout.destroy();
   });
 
