@@ -19,7 +19,7 @@ if (!fileURLToPath(import.meta.url).startsWith(`${harness}${path.sep}`)) {
 const script = String.raw`import { EventEmitter } from 'node:events';
 import { PassThrough } from 'node:stream';
 import { writeFile } from 'node:fs/promises';
-import { waitForApiUrl } from './packages/harness-driver/dist/broker-process.js';
+import { waitForApiUrl } from './.relayflow-1316-build/broker-process.js';
 
 const debug = { binaryPath: 'broker', args: [], cwd: '/tmp', stdoutLines: [], stderrLines: [] };
 function child() {
@@ -46,6 +46,7 @@ await writeFile(process.env.RELAY_PR1316_OBSERVATION_PATH, JSON.stringify({ valu
 `;
 const scriptPath = path.join(target, '.relayflow-1316-probe.mjs');
 const observationPath = path.join(target, '.relayflow-1316-observation.json');
+const buildPath = path.join(target, '.relayflow-1316-build');
 try {
   // Build the target's own production module. No head-only test is imported.
   run(
@@ -57,8 +58,18 @@ try {
     'node',
     [
       path.join(harness, 'node_modules/typescript/bin/tsc'),
-      '-p',
-      path.join(target, 'packages/harness-driver/tsconfig.json'),
+      '--target',
+      'es2022',
+      '--module',
+      'nodenext',
+      '--moduleResolution',
+      'nodenext',
+      '--skipLibCheck',
+      '--types',
+      'node',
+      '--outDir',
+      buildPath,
+      path.join(target, 'packages/harness-driver/src/broker-process.ts'),
     ],
     target
   );
@@ -96,7 +107,9 @@ try {
     }) + '\n'
   );
 } finally {
-  await Promise.all([scriptPath, observationPath].map((file) => rm(file, { force: true })));
+  await Promise.all(
+    [scriptPath, observationPath, buildPath].map((file) => rm(file, { force: true, recursive: true }))
+  );
 }
 function required(name) {
   const value = process.env[name]?.trim();
