@@ -31,13 +31,13 @@ function child() {
 }
 const success = child();
 const url = waitForApiUrl(success, 1000, debug);
-success.stdout.write('API listening on http://127.0.0.1:4282\\n');
+setImmediate(() => success.stdout.write('API listening on http://127.0.0.1:4282\\n'));
 const value = await url;
 const successListeners = [success.listenerCount('exit'), success.listenerCount('error')];
 success.stdout.destroy();
 const failed = child();
 const pending = waitForApiUrl(failed, 1000, debug);
-failed.emit('exit', 3, null);
+setImmediate(() => failed.emit('exit', 3, null));
 let failure = '';
 try { await pending; } catch (error) { failure = error.message; }
 const failureListeners = [failed.listenerCount('exit'), failed.listenerCount('error')];
