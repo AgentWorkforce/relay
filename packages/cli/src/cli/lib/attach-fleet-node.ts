@@ -124,6 +124,8 @@ type TerminalReadiness = {
 export interface FleetNodeAttachOptions {
   agent: string;
   node: string;
+  /** CLI-supplied name or id, retained for diagnostics after name resolution. */
+  nodeRef?: string;
   mode: AttachMode;
   env?: NodeJS.ProcessEnv;
   baseUrl?: string;
@@ -539,7 +541,7 @@ export async function startFleetNodeAttachProxy(
     const upstream = failure?.message ? ` Upstream message ${diagnosticValue(failure.message)}.` : '';
     throw new FleetNodeAttachError(
       `Error: ${failure ? terminalSessionFailureSummary(failure) : 'Terminal-session request failed'}.` +
-        `${upstream} Node ref ${diagnosticValue(options.node.trim())}, resolved node id unavailable (session creation did not complete);` +
+        `${upstream} Node ref ${diagnosticValue((options.nodeRef ?? options.node).trim())}, resolved node id ${options.nodeRef ? diagnosticValue(options.node.trim()) : 'unavailable'} (session creation did not complete);` +
         ` endpoint ${diagnosticValue(diagnosticEndpoint(sessionEndpoint))};${status}${code}` +
         ` timeout ${sessionRequestTimeoutMs}ms per attempt; overall budget ${sessionRequestTotalTimeoutMs}ms;` +
         ` attempts ${sessionRequestAttempts} (${retryNote}).`,
@@ -1264,8 +1266,8 @@ export async function startFleetNodeAttachProxy(
         readinessExpired = true;
         if (!terminalEverReady) {
           failRemote(
-            `terminal transport connected but did not become ready (node ref ${diagnosticValue(options.node.trim())},` +
-              ` resolved node id ${diagnosticValue(resolvedNodeId ?? 'unavailable')}, endpoint ${diagnosticValue(remoteEndpoint())},` +
+            `terminal transport connected but did not become ready (node ref ${diagnosticValue((options.nodeRef ?? options.node).trim())},` +
+              ` resolved node id ${diagnosticValue(resolvedNodeId ?? options.node.trim())}, endpoint ${diagnosticValue(remoteEndpoint())},` +
               ` readiness timeout ${terminalReadyTimeoutMs}ms, attempts 1; not retried because no terminal session became ready)`
           );
           return;
@@ -1417,8 +1419,8 @@ export async function startFleetNodeAttachProxy(
       // the close handler retains the bounded resume/backoff behaviour.
       if (remote === socket && readiness === activeReadiness && !readiness.settled && !terminalEverReady) {
         failRemote(
-          `terminal transport could not connect to the fleet node (node ref ${diagnosticValue(options.node.trim())},` +
-            ` resolved node id ${diagnosticValue(resolvedNodeId ?? 'unavailable')}, endpoint ${diagnosticValue(remoteEndpoint())},` +
+          `terminal transport could not connect to the fleet node (node ref ${diagnosticValue((options.nodeRef ?? options.node).trim())},` +
+            ` resolved node id ${diagnosticValue(resolvedNodeId ?? options.node.trim())}, endpoint ${diagnosticValue(remoteEndpoint())},` +
             ` handshake budget ${terminalHandshakeTimeoutMs}ms, attempts 1; not retried because no terminal session became ready)`
         );
       }
@@ -1450,8 +1452,8 @@ export async function startFleetNodeAttachProxy(
           reconnectMaxDelayMs
         );
         const message =
-          `terminal transport could not reconnect to the fleet node (node ref ${diagnosticValue(options.node.trim())},` +
-          ` resolved node id ${diagnosticValue(resolvedNodeId ?? 'unavailable')}, endpoint ${diagnosticValue(remoteEndpoint())},` +
+          `terminal transport could not reconnect to the fleet node (node ref ${diagnosticValue((options.nodeRef ?? options.node).trim())},` +
+          ` resolved node id ${diagnosticValue(resolvedNodeId ?? options.node.trim())}, endpoint ${diagnosticValue(remoteEndpoint())},` +
           ` handshake timeout ${terminalHandshakeTimeoutMs}ms, readiness timeout ${terminalReadyTimeoutMs}ms,` +
           ` attempts ${reconnectAttempts},` +
           ` backoff budget ${backoffBudgetMs}ms)`;
@@ -1498,8 +1500,8 @@ export async function startFleetNodeAttachProxy(
                   );
             endTerminal(
               new FleetNodeAttachError(
-                `terminal transport could not replace an expired terminal session (node ref ${diagnosticValue(options.node.trim())},` +
-                  ` resolved node id ${diagnosticValue(resolvedNodeId ?? 'unavailable')}, endpoint ${diagnosticValue(remoteEndpoint())})`,
+                `terminal transport could not replace an expired terminal session (node ref ${diagnosticValue((options.nodeRef ?? options.node).trim())},` +
+                  ` resolved node id ${diagnosticValue(resolvedNodeId ?? options.node.trim())}, endpoint ${diagnosticValue(remoteEndpoint())})`,
                 replacementError.code
               )
             );

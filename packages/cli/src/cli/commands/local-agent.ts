@@ -28,6 +28,7 @@ import { connectProjectBrokerClient } from '../lib/project-broker-client.js';
 import { describeError } from '../lib/describe-error.js';
 import { defaultExit } from '../lib/exit.js';
 import { resolveFleetAttachTarget, type FleetAttachResolution } from '../lib/fleet-attach-target.js';
+import { resolveFleetNodeId } from '../lib/resolve-fleet-node-id.js';
 import { redeemJoinTicket } from '../lib/join-ticket.js';
 import { describeClearedEnrollment, persistWorkspaceSession } from '../lib/workspace-session.js';
 
@@ -107,9 +108,11 @@ export async function attachFleetNode(
   node: string,
   options: FleetNodeAttachCliOptions
 ): Promise<number> {
+  const nodeId = await resolveFleetNodeId(node, options);
   const proxy = await startFleetNodeAttachProxy({
     agent: name,
-    node,
+    node: nodeId,
+    nodeRef: node,
     mode,
     ...(options.baseUrl === undefined ? {} : { baseUrl: options.baseUrl }),
     ...(options.workspaceKey === undefined ? {} : { workspaceKey: options.workspaceKey }),
@@ -736,9 +739,15 @@ async function withDeliveryModeClient<T>(
   // created inside, and closed in `finally` only if it was created.
   let proxy: Awaited<ReturnType<typeof startFleetNodeAttachProxy>> | undefined;
   try {
+    const nodeId = await resolveFleetNodeId(node, {
+      env: deps.env,
+      ...(targetBaseUrl ? { baseUrl: targetBaseUrl } : {}),
+      ...(workspaceKey ? { workspaceKey } : {}),
+    });
     proxy = await startFleetNodeAttachProxy({
       agent: name,
-      node,
+      node: nodeId,
+      nodeRef: node,
       mode: sessionMode,
       env: deps.env,
       fetch: deps.fetch,
