@@ -53,7 +53,15 @@ try {
     ['ci', '--ignore-scripts', '--workspace', 'packages/harness-driver', '--include-workspace-root=false'],
     target
   );
-  run('npm', ['run', 'build:harness-driver'], target);
+  run(
+    'node',
+    [
+      path.join(harness, 'node_modules/typescript/bin/tsc'),
+      '-p',
+      path.join(target, 'packages/harness-driver/tsconfig.json'),
+    ],
+    target
+  );
   await writeFile(scriptPath, script);
   run('node', [scriptPath], target, { RELAY_PR1316_OBSERVATION_PATH: observationPath });
   const { value, failure, successListeners, failureListeners } = JSON.parse(
