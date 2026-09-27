@@ -32,13 +32,15 @@ try {
   // Simulate a successful CLI upgrade followed by a broker download failure.
   // The old executable still exists at the managed broker path.
   await makeExecutable(brokerPath, 'agent-relay-broker 12.3.1');
+  const pathBroker = path.join(binDir, 'agent-relay-broker');
+  await makeExecutable(pathBroker, 'agent-relay-broker 12.3.1');
   const source = await readFile(path.join(targetDir, 'install.sh'), 'utf8');
   if (!source.trimEnd().endsWith('main "$@"')) throw new Error('Installer entrypoint changed');
   const library = path.join(scratch, 'install-functions.sh');
   await writeFile(library, source.replace(/main "\$@"\s*$/, ''));
   const probe = `source "$1"; VERSION=12.4.1; INSTALL_DIR="$2"; BIN_DIR="$3"; ORIGINAL_PATH="$PATH"; verify_installation`;
   const run = () => spawnSync('bash', ['-c', probe, 'probe', library, installDir, binDir], {
-    encoding: 'utf8', timeout: 10_000, env: { ...process.env, AGENT_RELAY_TELEMETRY_DISABLED: '1' },
+    encoding: 'utf8', timeout: 10_000, env: { ...process.env, AGENT_RELAY_TELEMETRY_DISABLED: '1', AGENT_RELAY_VERSION: '12.4.1' },
   });
   const stale = run();
   if (stale.error || stale.signal) throw new Error(`Probe failed: ${stale.error ?? stale.signal}`);
@@ -47,6 +49,7 @@ try {
     outcome = 'bug'; signature = 'stale_broker_accepted';
   } else if (stale.status !== 0 && /Expected broker 12\.4\.1/.test(stale.stdout + stale.stderr)) {
     await makeExecutable(brokerPath, 'agent-relay-broker 12.4.1');
+    await makeExecutable(pathBroker, 'agent-relay-broker 12.4.1');
     const current = run();
     if (current.status !== 0 || !current.stdout.includes('installed successfully')) {
       throw new Error(`Current broker was rejected: ${current.stdout} ${current.stderr}`);
@@ -55,6 +58,12 @@ try {
     const staleCli = run();
     if (staleCli.status === 0 || !/Expected CLI 12\.4\.1/.test(staleCli.stdout + staleCli.stderr)) {
       throw new Error(`Stale CLI was not rejected: ${staleCli.status} ${staleCli.stdout} ${staleCli.stderr}`);
+    }
+    await makeExecutable(cliPath, 'agent-relay 12.4.1');
+    await makeExecutable(pathBroker, 'agent-relay-broker 12.3.1');
+    const stalePathBroker = run();
+    if (stalePathBroker.status === 0 || !/Expected PATH broker 12\.4\.1/.test(stalePathBroker.stdout + stalePathBroker.stderr)) {
+      throw new Error(`Stale PATH broker was not rejected: ${stalePathBroker.status} ${stalePathBroker.stdout} ${stalePathBroker.stderr}`);
     }
     outcome = 'fixed'; signature = 'stale_broker_rejected';
   } else {

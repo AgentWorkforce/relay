@@ -620,6 +620,18 @@ install_from_source() {
     info "Building..."
     npm run build
 
+    # Source builds put the broker under target/release, not bin/. Install
+    # that artifact into both paths used by the CLI and PATH lookup.
+    if [ -x "$INSTALL_DIR/target/release/agent-relay-broker" ]; then
+        mkdir -p "$INSTALL_DIR/bin" "$BIN_DIR"
+        cp "$INSTALL_DIR/target/release/agent-relay-broker" "$INSTALL_DIR/bin/agent-relay-broker"
+        cp "$INSTALL_DIR/target/release/agent-relay-broker" "$BIN_DIR/agent-relay-broker"
+        chmod +x "$INSTALL_DIR/bin/agent-relay-broker" "$BIN_DIR/agent-relay-broker"
+    else
+        # A build without Rust may still use the release broker artifact.
+        download_broker_binary || true
+    fi
+
     # Create wrapper script
     install_node_launcher "$INSTALL_DIR"
     prepend_bin_dir_to_path
@@ -668,7 +680,21 @@ verify_installation() {
         *) error "Installation verification failed. Expected broker $VERSION, got $broker_version" ;;
     esac
 
-    if [ -x "$installed_path" ] && installed_version=$("$installed_path" --version 2>/dev/null); then
+    # Broker discovery may choose the PATH copy before the managed path.
+    # Both must be present and match, even if copying the download failed.
+    local path_broker="$BIN_DIR/agent-relay-broker"
+    local path_broker_version=""
+    if [ ! -x "$path_broker" ] || ! path_broker_version=$("$path_broker" --version 2>/dev/null); then
+        error "Installation verification failed. Broker binary is missing or unusable at $path_broker"
+    fi
+    case "$path_broker_version" in
+        "agent-relay-broker $VERSION"|"agent-relay-broker v$VERSION") ;;
+        *) error "Installation verification failed. Expected PATH broker $VERSION, got $path_broker_version" ;;
+    esac
+
+    # The Node CLI otherwise echoes AGENT_RELAY_VERSION ahead of its real
+    # installed package version. Clear that override only for the probe.
+    if [ -x "$installed_path" ] && installed_version=$(AGENT_RELAY_VERSION= "$installed_path" --version 2>/dev/null); then
         case "$installed_version" in
             "$VERSION"|"v$VERSION"|"agent-relay $VERSION"|"agent-relay v$VERSION") ;;
             *) error "Installation verification failed. Expected CLI $VERSION, got $installed_version" ;;
