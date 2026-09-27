@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import { mkdtemp, mkdir, rm, writeFile } from 'node:fs/promises';
+import { mkdtemp, mkdir, rm, symlink, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { test } from 'vitest';
@@ -367,3 +367,69 @@ test('globToScopes normalizes and de-duplicates globs', () => {
     'relayfile:fs:write:/docs/**',
   ]);
 });
+
+test.skipIf(process.platform === 'win32')(
+  'symlinks use target rules and remain in exactly one permission partition',
+  async () => {
+    const workspace = await createWorkspace({
+      'docs/guide.md': '# guide',
+      'private/key.txt': 'inside secret',
+      'source/code.ts': 'source',
+    });
+    const outside = await createWorkspace({ 'outside.txt': 'external secret' });
+    try {
+      await mkdir(path.join(workspace.dir, 'links'), { recursive: true });
+      await symlink(path.join(outside.dir, 'outside.txt'), path.join(workspace.dir, 'docs', 'external.md'));
+      await symlink(
+        path.join(outside.dir, 'outside.txt'),
+        path.join(workspace.dir, 'links', 'external-write.md')
+      );
+      await symlink(
+        path.join(workspace.dir, 'private', 'key.txt'),
+        path.join(workspace.dir, 'docs', 'inside.md')
+      );
+      await symlink(
+        path.join(workspace.dir, 'source', 'code.ts'),
+        path.join(workspace.dir, 'links', 'code.ts')
+      );
+      await symlink(
+        path.join(workspace.dir, 'private'),
+        path.join(workspace.dir, 'docs', 'private-dir'),
+        'dir'
+      );
+      await symlink(path.join(workspace.dir, 'gone'), path.join(workspace.dir, 'docs', 'dangling.md'));
+      await symlink(outside.dir, path.join(workspace.dir, 'links', 'external-dir'), 'dir');
+
+      const compiled = compileAgentScopes({
+        agentName: 'builder',
+        workspace: 'relay-test',
+        projectDir: workspace.dir,
+        permissions: {
+          access: 'restricted',
+          inherit: false,
+          files: { read: ['docs/**', 'source/**'], write: ['links/**'], deny: ['private/**'] },
+        },
+      });
+      assert.deepEqual(compiled.readonlyPaths, ['docs/guide.md', 'links/code.ts', 'source/code.ts']);
+      assert.deepEqual(compiled.readwritePaths, []);
+      assert.deepEqual(compiled.deniedPaths, [
+        'docs/dangling.md',
+        'docs/external.md',
+        'docs/inside.md',
+        'docs/private-dir',
+        'links/external-dir',
+        'links/external-write.md',
+        'private/key.txt',
+      ]);
+      assert.deepEqual(compiled.acl['/docs'], ['read']);
+      assert.deepEqual(compiled.acl['/private'], ['deny:agent:builder']);
+      assert.equal(compiled.scopes.includes('relayfile:fs:read:/docs/external.md'), false);
+      const classified = [...compiled.readonlyPaths, ...compiled.readwritePaths, ...compiled.deniedPaths];
+      assert.equal(classified.length, 10);
+      assert.equal(new Set(classified).size, classified.length);
+    } finally {
+      await workspace.cleanup();
+      await outside.cleanup();
+    }
+  }
+);

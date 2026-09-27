@@ -1,5 +1,5 @@
 import ignore, { type Ignore } from 'ignore';
-import { existsSync, readdirSync, readFileSync } from 'node:fs';
+import { existsSync, lstatSync, readdirSync, readFileSync, realpathSync } from 'node:fs';
 import path from 'node:path';
 import type { AgentPreset } from './permissions.js';
 
@@ -369,12 +369,42 @@ export function compileAgentPermissions(input: CompileInput): CompiledAgentPermi
   const readwritePaths: string[] = [];
   const deniedPaths: string[] = [];
 
+  const realProjectDir = realpathSync(projectDir);
   for (const relativePath of walkProjectFiles(projectDir)) {
-    const dotDenied = inherited && matchesAny(relativePath, dotDenyMatcher);
-    const dotReadonly = inherited && !dotDenied && matchesAny(relativePath, dotReadonlyMatcher);
-    const yamlRead = matchesAny(relativePath, fileReadMatcher);
-    const yamlWrite = matchesAny(relativePath, fileWriteMatcher);
-    const yamlDeny = matchesAny(relativePath, fileDenyMatcher);
+    let rulePath = relativePath;
+    const fullPath = path.join(projectDir, relativePath);
+    // Keep the original path in the plan, but grant a link only according to
+    // its real target. External and dangling links stay visible as denied.
+    if (lstatSync(fullPath).isSymbolicLink()) {
+      try {
+        const realTarget = realpathSync(fullPath);
+        const targetRelative = path.relative(realProjectDir, realTarget);
+        if (
+          targetRelative === '' ||
+          targetRelative === '..' ||
+          targetRelative.startsWith(`..${path.sep}`) ||
+          path.isAbsolute(targetRelative)
+        ) {
+          deniedPaths.push(relativePath);
+          continue;
+        }
+        rulePath = normalizeRelativePath(targetRelative);
+      } catch (error) {
+        if (
+          (error as NodeJS.ErrnoException).code !== 'ENOENT' &&
+          (error as NodeJS.ErrnoException).code !== 'ELOOP'
+        ) {
+          throw error;
+        }
+        deniedPaths.push(relativePath);
+        continue;
+      }
+    }
+    const dotDenied = inherited && matchesAny(rulePath, dotDenyMatcher);
+    const dotReadonly = inherited && !dotDenied && matchesAny(rulePath, dotReadonlyMatcher);
+    const yamlRead = matchesAny(rulePath, fileReadMatcher);
+    const yamlWrite = matchesAny(rulePath, fileWriteMatcher);
+    const yamlDeny = matchesAny(rulePath, fileDenyMatcher);
     const explicitYamlGrant = yamlRead || yamlWrite;
 
     if (yamlDeny) {
@@ -387,8 +417,8 @@ export function compileAgentPermissions(input: CompileInput): CompiledAgentPermi
       continue;
     }
 
-    const presetRead = matchesAny(relativePath, presetReadMatcher);
-    const presetWrite = matchesAny(relativePath, presetWriteMatcher);
+    const presetRead = matchesAny(rulePath, presetReadMatcher);
+    const presetWrite = matchesAny(rulePath, presetWriteMatcher);
 
     const canRead = explicitYamlGrant || presetRead || presetWrite;
     let canWrite = yamlWrite || presetWrite;
