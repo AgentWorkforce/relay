@@ -190,11 +190,12 @@ function readString(obj: unknown, key: string): string | undefined {
  * Resolve the broker connection to use for `view`, in priority order:
  *
  *  1. `--broker-url` / `--api-key` CLI flags
- *  2. `RELAY_BROKER_URL` / `RELAY_BROKER_API_KEY` environment variables
- *  3. `<state-dir>/connection.json` (default `.agentworkforce/relay/connection.json`)
+ *  2. An explicit `--state-dir` selects its connection.json
+ *  3. `RELAY_BROKER_URL` / `RELAY_BROKER_API_KEY` environment variables
+ *  4. The default `<state-dir>/connection.json` (`.agentworkforce/relay/connection.json`)
  *
- * Matches the resolution order used by `agent-relay-broker dump-pty` so users
- * don't have to learn two patterns.
+ * Keep this in step with the native attach probe: view must connect to the
+ * same broker whose worker type was probed.
  */
 export function resolveViewBrokerConnection(
   options: { brokerUrl?: string; apiKey?: string; stateDir?: string; requestTimeoutMs?: number },
@@ -214,12 +215,15 @@ export function resolveViewBrokerConnection(
     return readString(connectionFile, 'api_key');
   };
 
-  const url = explicitUrl ?? envUrl ?? fileUrl;
+  const selectedFile = options.stateDir !== undefined && !explicitUrl;
+  const url = selectedFile ? fileUrl : (explicitUrl ?? envUrl ?? fileUrl);
   if (!url) return null;
 
   return {
     url: url.replace(/\/+$/, ''),
-    apiKey: resolveApiKey(),
+    apiKey: selectedFile
+      ? (trimOrUndefined(options.apiKey) ?? readString(connectionFile, 'api_key'))
+      : resolveApiKey(),
     ...(options.requestTimeoutMs === undefined ? {} : { requestTimeoutMs: options.requestTimeoutMs }),
   };
 }
