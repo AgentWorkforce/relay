@@ -333,7 +333,8 @@ async function loadAgentRelayMcpModule(options: LoadOptions = {}) {
       },
     };
   });
-  vi.doMock('@relaycast/sdk', () => ({
+  vi.doMock('@relaycast/sdk', async (importOriginal) => ({
+    ...(await importOriginal<typeof import('@relaycast/sdk')>()),
     RelayCast,
     SDK_VERSION: 'test-sdk-version',
   }));
@@ -2093,6 +2094,81 @@ describe('resolveStdioBootstrapOptions', () => {
       type: 'agent',
     });
     expect(result.agentToken).toBe('at_live_minted');
+  });
+});
+
+describe('Relaycast MCP bootstrap registration errors', () => {
+  it('attributes typed failure using bounded code and status without exposing its message or cause', async () => {
+    const { mod, mocks } = await loadAgentRelayMcpModule();
+    const { RelayError } = await import('@agent-relay/sdk');
+    mocks.behavior.registerImpl = vi.fn(async () => {
+      throw new RelayError('transport_error', 'Authorization: Bearer rk_live_private', {
+        statusCode: 500,
+        rawCode: 'internal_error',
+        cause: new Error('Authorization: Bearer rk_live_private'),
+      });
+    });
+    let failure: unknown;
+    try {
+      await mod.startAgentRelayMcpStdio({ apiKey: 'rk_live_private', agentName: 'WorkerA' });
+    } catch (error) {
+      failure = error;
+    }
+    expect(failure).toBeInstanceOf(Error);
+    expect((failure as Error).message).toBe(
+      'Relaycast MCP bootstrap registration for "WorkerA" failed: transport_error (HTTP 500)'
+    );
+    expect((failure as Error).message).not.toContain('rk_live_private');
+    expect((failure as Error).cause).toBeUndefined();
+    expect(mocks.serverInstances).toHaveLength(0);
+  });
+
+  it('preserves the bounded timeout recovery guidance', async () => {
+    const { mod, mocks } = await loadAgentRelayMcpModule();
+    const { AgentRegistrationTimeoutError } = await import('./lib/agent-registration.js');
+    mocks.behavior.registerImpl = vi.fn(async () => {
+      throw new AgentRegistrationTimeoutError(
+        'Agent registration or token rotation for "WorkerA" did not complete within 15000ms. The request outcome is unknown.'
+      );
+    });
+    await expect(
+      mod.startAgentRelayMcpStdio({ apiKey: 'rk_live_private', agentName: 'WorkerA' })
+    ).rejects.toThrow('The request outcome is unknown.');
+    expect(mocks.serverInstances).toHaveLength(0);
+  });
+
+  it('rejects a credential-bearing code rather than printing it', async () => {
+    const { mod, mocks } = await loadAgentRelayMcpModule();
+    const { RelayError } = await import('@agent-relay/sdk');
+    mocks.behavior.registerImpl = vi.fn(async () => {
+      throw new RelayError('Bearer rk_live_private', 'Internal server error', { statusCode: 500 });
+    });
+    let failure: unknown;
+    try {
+      await mod.startAgentRelayMcpStdio({ apiKey: 'rk_live_private', agentName: 'WorkerA' });
+    } catch (error) {
+      failure = error;
+    }
+    expect((failure as Error).message).toBe(
+      'Relaycast MCP bootstrap registration for "WorkerA" failed: registration_error (HTTP 500)'
+    );
+  });
+
+  it('does not expose transport headers on an untyped bootstrap exception', async () => {
+    const { mod, mocks } = await loadAgentRelayMcpModule();
+    mocks.behavior.registerImpl = vi.fn(async () => {
+      throw new Error('Authorization: Bearer rk_live_private');
+    });
+    let failure: unknown;
+    try {
+      await mod.startAgentRelayMcpStdio({ apiKey: 'rk_live_private', agentName: 'WorkerA' });
+    } catch (error) {
+      failure = error;
+    }
+    expect(failure).toBeInstanceOf(Error);
+    expect((failure as Error).message).toContain('Relaycast MCP bootstrap registration for "WorkerA" failed');
+    expect((failure as Error).message).not.toContain('rk_live_private');
+    expect(mocks.serverInstances).toHaveLength(0);
   });
 });
 

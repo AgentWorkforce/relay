@@ -25,6 +25,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- MCP startup now identifies the configured agent when Relaycast bootstrap registration fails, while preserving typed status and keeping untyped transport details out of stderr.
 - Broker-spawned workers no longer inherit the broker's own credentials from its environment; each worker receives only its own agent token and the workspace credentials the broker delegates to it.
 - Integration subscription setup, listing and retirement use workspace authentication even when a spawned worker also has an agent token, preventing misleading “Workspace key required” failures.
 - A `teams.json` agent whose `cli` carries an inline `--model`/`-m` now records the model the harness actually runs. The inline override becomes the spawn's effective model before the relay skill prefix is chosen, so worker listings, spawn events, telemetry and small-model guidance describe the running model rather than the superseded pin.

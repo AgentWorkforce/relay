@@ -1,0 +1,15 @@
+{
+  "version": 1,
+  "id": "1614-mcp-bootstrap-registration-error",
+  "kind": "bugfix",
+  "title": "Attribute MCP bootstrap registration errors to the configured agent",
+  "runner": {
+    "command": ["node", "tests/relayflows/cases/1614-mcp-bootstrap-registration-error/run.mjs"]
+  },
+  "requirements": [],
+  "timeoutSeconds": 900,
+  "expected": {
+    "base": { "outcome": "bug", "signature": "mcp_bootstrap_registration_error_unattributed" },
+    "head": { "outcome": "fixed", "signature": "mcp_bootstrap_registration_error_attributed" }
+  }
+}

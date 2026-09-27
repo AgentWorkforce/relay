@@ -14,6 +14,7 @@ import {
 } from '@modelcontextprotocol/sdk/types.js';
 import {
   AgentRelay,
+  RelayError,
   RELAYCAST_SDK_VERSION,
   createAgentClient,
   createObserverToken,
@@ -25,6 +26,7 @@ import {
 import { z } from 'zod';
 import { declaredWorkforceMetadata } from './lib/registration-metadata.js';
 import {
+  AgentRegistrationTimeoutError,
   DEFAULT_AGENT_REGISTRATION_TIMEOUT_MS,
   withAgentRegistrationDeadline,
   withDeadline,
@@ -1763,6 +1765,20 @@ function isRelaycastAgentToken(token: string | undefined): token is string {
   return typeof token === 'string' && token.startsWith('at_live_');
 }
 
+function bootstrapRegistrationDetail(error: unknown): string {
+  if (error instanceof AgentRegistrationTimeoutError) return error.message;
+  if (!(error instanceof RelayError)) return 'Registration failed before the MCP server could connect.';
+  // Only bounded typed metadata is safe here. Even typed upstream messages
+  // and causes can include credentials or request headers.
+  const code = /^[a-z][a-z0-9_]{0,63}$/i.test(error.code) ? error.code : 'registration_error';
+  const statusCode = error.statusCode;
+  const status =
+    typeof statusCode === 'number' && Number.isInteger(statusCode) && statusCode >= 100 && statusCode <= 599
+      ? ` (HTTP ${statusCode})`
+      : '';
+  return `${code}${status}`;
+}
+
 export async function resolveStdioBootstrapOptions(
   options: AgentRelayMcpServerOptions
 ): Promise<AgentRelayMcpServerOptions> {
@@ -1778,14 +1794,23 @@ export async function resolveStdioBootstrapOptions(
 
   const relay = createWorkspaceClient({ workspaceKey, baseUrl: options.baseUrl });
 
-  const registered = await withAgentRegistrationDeadline(
-    () =>
-      relay.agents.registerOrRotate({
-        name: options.agentName!,
-        type: options.agentType,
-      }),
-    options.agentName
-  );
+  let registered: Awaited<ReturnType<typeof relay.agents.registerOrRotate>>;
+  try {
+    registered = await withAgentRegistrationDeadline(
+      () =>
+        relay.agents.registerOrRotate({
+          name: options.agentName!,
+          type: options.agentType,
+        }),
+      options.agentName
+    );
+  } catch (error) {
+    // The cause may include headers and credentials; deliberately do not attach it.
+    // eslint-disable-next-line preserve-caught-error
+    throw new Error(
+      `Relaycast MCP bootstrap registration for ${JSON.stringify(options.agentName)} failed: ${bootstrapRegistrationDetail(error)}`
+    );
+  }
   return {
     ...options,
     agentToken: registered.token,
