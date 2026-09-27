@@ -31,7 +31,7 @@ function child() {
 }
 const success = child();
 const url = waitForApiUrl(success, 1000, debug);
-setImmediate(() => success.stdout.write('API listening on http://127.0.0.1:4282\\n'));
+setImmediate(() => success.stdout.write('API listening on http://127.0.0.1:4282' + String.fromCharCode(10)));
 const value = await url;
 const successListeners = [success.listenerCount('exit'), success.listenerCount('error')];
 success.stdout.destroy();
