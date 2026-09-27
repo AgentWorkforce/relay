@@ -652,8 +652,27 @@ verify_installation() {
     local installed_path="$BIN_DIR/agent-relay"
     local installed_version=""
     local original_path_command=""
+    local broker_path="$INSTALL_DIR/bin/agent-relay-broker"
+    local broker_version=""
+
+    # The CLI and broker are one release. A failed broker download must not
+    # leave a previous broker behind while the installer reports success.
+    if [ ! -x "$broker_path" ]; then
+        error "Installation verification failed. Broker binary is missing at $broker_path"
+    fi
+    if ! broker_version=$("$broker_path" --version 2>/dev/null); then
+        error "Installation verification failed. Broker binary at $broker_path cannot report its version"
+    fi
+    case "$broker_version" in
+        "agent-relay-broker $VERSION"|"agent-relay-broker v$VERSION") ;;
+        *) error "Installation verification failed. Expected broker $VERSION, got $broker_version" ;;
+    esac
 
     if [ -x "$installed_path" ] && installed_version=$("$installed_path" --version 2>/dev/null); then
+        case "$installed_version" in
+            "$VERSION"|"v$VERSION"|"agent-relay $VERSION"|"agent-relay v$VERSION") ;;
+            *) error "Installation verification failed. Expected CLI $VERSION, got $installed_version" ;;
+        esac
         success "agent-relay $installed_version installed successfully at $installed_path"
 
         original_path_command=$(resolve_command_in_path agent-relay "$ORIGINAL_PATH")
@@ -667,12 +686,6 @@ verify_installation() {
         elif [[ ":$ORIGINAL_PATH:" != *":$BIN_DIR:"* ]]; then
             setup_path "$ORIGINAL_PATH"
         fi
-        return 0
-    fi
-
-    if command -v agent-relay &> /dev/null; then
-        installed_version=$(agent-relay --version 2>/dev/null || echo "unknown")
-        success "agent-relay $installed_version installed successfully!"
         return 0
     fi
 
