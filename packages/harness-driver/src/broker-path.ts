@@ -254,6 +254,14 @@ export function getBrokerBinaryPath(): string | null {
       );
     }
     if (existsSync(resolvedOverride)) {
+      // A legacy shim can be named like the broker while linking to the CLI.
+      // Check the resolved target too, without executing an arbitrary override.
+      const targetName = basename(realpathSync(resolvedOverride))
+        .toLowerCase()
+        .replace(/\.exe$/u, '');
+      if (targetName !== BROKER_NAME && !targetName.startsWith(`${BROKER_NAME}-`)) {
+        throw new Error(`${overrideName} resolves to the Agent Relay CLI, not a broker executable.`);
+      }
       return resolvedOverride;
     }
   }

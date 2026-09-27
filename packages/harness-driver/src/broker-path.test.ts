@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { chmodSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { chmodSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 
@@ -94,6 +94,15 @@ describe('broker binary path resolution', () => {
     expect(() => getBrokerBinaryPath()).toThrow(
       /BROKER_BINARY_PATH must point to an agent-relay-broker executable/u
     );
+  });
+
+  it('refuses a broker-named symlink that resolves to the CLI', async () => {
+    const cli = makeExecutable('agent-relay');
+    const link = path.join(path.dirname(cli), 'agent-relay-broker');
+    symlinkSync(cli, link);
+    process.env.AGENT_RELAY_BIN = link;
+    const { getBrokerBinaryPath } = await loadBrokerPathModule();
+    expect(() => getBrokerBinaryPath()).toThrow(/resolves to the Agent Relay CLI/u);
   });
 
   it('resolves the broker from the platform optional dependency package', async () => {
