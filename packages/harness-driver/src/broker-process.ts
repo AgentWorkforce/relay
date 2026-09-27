@@ -7,6 +7,7 @@
  * connection/API surface while the OS-process plumbing lives on its own.
  */
 import type { ChildProcess } from 'node:child_process';
+import { createInterface } from 'node:readline';
 
 export interface BrokerExitInfo {
   /** Exit code, or null when the process was killed by signal. */
@@ -55,8 +56,6 @@ export async function waitForApiUrl(
   timeoutMs: number,
   debug: BrokerStartupDebugContext
 ): Promise<string> {
-  const { createInterface } = await import('node:readline');
-
   return new Promise<string>((resolve, reject) => {
     if (!child.stdout) {
       reject(new Error('Broker stdout not available'));

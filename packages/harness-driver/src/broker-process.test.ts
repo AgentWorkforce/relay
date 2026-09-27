@@ -80,6 +80,32 @@ describe('waitForApiUrl listener cleanup', () => {
     stdout.destroy();
   });
 
+  it('installs its startup error listener synchronously', async () => {
+    const { child, stdout, debug } = startupChild();
+    const pending = waitForApiUrl(child, 100, debug);
+    expect(child.listenerCount('error')).toBe(1);
+    child.emit('error', new Error('immediate spawn failure'));
+    await expect(pending).rejects.toThrow(/Failed to start broker: immediate spawn failure/);
+    stdout.destroy();
+  });
+
+  it('rejects a real failed spawn before the startup timeout', async () => {
+    const { spawn } = await import('node:child_process');
+    const child = spawn('/definitely-missing-agent-relay-broker', [], { stdio: ['ignore', 'pipe', 'pipe'] });
+    const debug = {
+      binaryPath: '/definitely-missing-agent-relay-broker',
+      args: [],
+      cwd: '/tmp',
+      stdoutLines: [],
+      stderrLines: [],
+    };
+    observeBrokerProcessErrors(child, debug.stderrLines);
+    await expect(waitForApiUrl(child, 5000, debug)).rejects.toThrow(
+      /Failed to start broker: spawn \/definitely-missing-agent-relay-broker ENOENT/
+    );
+    expect(debug.stderrLines.some((line) => line.includes('ENOENT'))).toBe(true);
+  });
+
   it('keeps an observer for process errors after startup', async () => {
     const { child, stdout, debug } = startupChild();
     observeBrokerProcessErrors(child, debug.stderrLines);
