@@ -41,8 +41,9 @@ RELAY_WORKSPACE_KEY=rk_live_... \
 
 For Claude Code, use `--harness claude` and a `CLAUDE_CODE_SESSION_ID`. The
 listener uses Codex's public `codex queue` command or Claude Code's first-party
-cross-session inbox, keeps a durable exactly-once ledger, drains missed
-deliveries after reconnect, and exits cleanly on Ctrl-C/SIGTERM.
+cross-session inbox, keeps a durable at-most-once ledger (in-doubt deliveries
+are not resent), drains missed deliveries after reconnect, and exits cleanly
+on Ctrl-C/SIGTERM.
 
 Configuration may be supplied by flags or environment:
 
@@ -55,10 +56,11 @@ Configuration may be supplied by flags or environment:
 | `--harness`       | `RELAY_ON_RELAY_HARNESS`    | `auto`, `codex`, or `claude`     |
 | `--session-id`    | `RELAY_ON_RELAY_SESSION_ID` | Target coding-session UUID       |
 
-When reusing `RELAY_AGENT_TOKEN`, `--name` must match the token's identity. If
-neither token nor flag is supplied, the CLI uses its normal active-workspace
-resolution. The listener stays in the foreground for the lifetime of the
-coding session.
+When reusing `RELAY_AGENT_TOKEN`, `--name` must match the token's identity. A
+new registration refuses to rotate an existing agent's credentials; pass that
+agent's token to reconnect it. If neither token nor workspace-key flag is
+supplied, the CLI uses its normal active-workspace resolution. The listener
+stays in the foreground for the lifetime of the coding session.
 
 ## This machine's node
 

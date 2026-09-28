@@ -1,6 +1,6 @@
 import { spawn } from 'node:child_process';
 import { createHash, randomUUID } from 'node:crypto';
-import { chmod, mkdir, readFile, readdir, rename, stat, writeFile } from 'node:fs/promises';
+import { mkdir, readFile, readdir, rename, writeFile } from 'node:fs/promises';
 import net from 'node:net';
 import os from 'node:os';
 import path from 'node:path';
@@ -17,8 +17,8 @@ const REGISTER_TIMEOUT_MS = 20_000;
 const REQUEST_TIMEOUT_MS = 20_000;
 const MAX_BACKOFF_MS = 30_000;
 const MAX_LINE_BYTES = 1_000_000;
-const MAX_REMEMBERED_DELIVERIES = 1_000;
-const INJECTED_REASONS = new Set(['dm', 'mention', 'thread-reply']);
+const MAX_CODEX_MESSAGE_BYTES = 120_000;
+const INJECTED_REASONS = new Set(['dm', 'mention', 'thread_reply', 'thread-reply']);
 
 export type OnRelayHarness = 'codex' | 'claude';
 
@@ -36,6 +36,7 @@ export interface DeliveryMessage {
 export interface DeliveryItem {
   id: string;
   state: string;
+  availableAt?: string;
   message: DeliveryMessage;
   metadata?: Record<string, unknown>;
 }
@@ -45,6 +46,7 @@ export interface DeliveryRelay {
     list(input?: { agentName?: string; limit?: number }): Promise<{ items: DeliveryItem[] }>;
     ack(input: { inboxItemId: string; state?: 'delivered' | 'read' }): Promise<unknown>;
     fail(input: { inboxItemId: string; error: string; retry?: boolean }): Promise<unknown>;
+    defer(input: { inboxItemId: string; availableAt: string; reason?: string }): Promise<unknown>;
   };
 }
 
@@ -64,6 +66,7 @@ export interface NodeIdentity {
 export type InjectionOutcome =
   | { kind: 'injected' }
   | { kind: 'retry'; reason: string }
+  | { kind: 'rejected'; reason: string }
   | { kind: 'in-doubt'; reason: string };
 
 export type DeliveryInjector = (input: {
@@ -73,8 +76,9 @@ export type DeliveryInjector = (input: {
 }) => Promise<InjectionOutcome>;
 
 interface LedgerEntry {
-  state: 'injecting' | 'injected' | 'in-doubt';
+  state: 'injecting' | 'injected' | 'in-doubt' | 'rejected';
   updatedAt: string;
+  reason?: string;
 }
 
 interface LedgerFile {
@@ -455,7 +459,7 @@ function safeErrorMessage(error: unknown): string {
 }
 
 export class DeliveryLedger {
-  private readonly entries = new Map<string, LedgerEntry>();
+  private entries = new Map<string, LedgerEntry>();
 
   constructor(readonly filePath: string) {}
 
@@ -482,10 +486,14 @@ export class DeliveryLedger {
       const state = entry.state;
       const updatedAt = entry.updatedAt;
       if (
-        (state === 'injecting' || state === 'injected' || state === 'in-doubt') &&
+        (state === 'injecting' || state === 'injected' || state === 'in-doubt' || state === 'rejected') &&
         typeof updatedAt === 'string'
       ) {
-        this.entries.set(id, { state, updatedAt });
+        this.entries.set(id, {
+          state,
+          updatedAt,
+          ...(typeof entry.reason === 'string' ? { reason: entry.reason } : {}),
+        });
       }
     }
   }
@@ -494,36 +502,39 @@ export class DeliveryLedger {
     return this.entries.get(id)?.state;
   }
 
-  async record(id: string, state: LedgerEntry['state']): Promise<void> {
-    this.entries.set(id, { state, updatedAt: new Date().toISOString() });
-    this.prune();
-    await this.save();
+  reason(id: string): string | undefined {
+    return this.entries.get(id)?.reason;
+  }
+
+  async record(id: string, state: LedgerEntry['state'], reason?: string): Promise<void> {
+    const next = new Map(this.entries);
+    next.set(id, {
+      state,
+      updatedAt: new Date().toISOString(),
+      ...(reason ? { reason: reason.slice(0, 500) } : {}),
+    });
+    await this.save(next);
+    this.entries = next;
   }
 
   async forget(id: string): Promise<void> {
-    if (!this.entries.delete(id)) return;
-    await this.save();
+    if (!this.entries.has(id)) return;
+    const next = new Map(this.entries);
+    next.delete(id);
+    await this.save(next);
+    this.entries = next;
   }
 
-  private prune(): void {
-    if (this.entries.size <= MAX_REMEMBERED_DELIVERIES) return;
-    const ordered = [...this.entries.entries()].sort((a, b) => a[1].updatedAt.localeCompare(b[1].updatedAt));
-    for (const [id] of ordered.slice(0, ordered.length - MAX_REMEMBERED_DELIVERIES)) {
-      this.entries.delete(id);
-    }
-  }
-
-  private async save(): Promise<void> {
+  private async save(entries: Map<string, LedgerEntry>): Promise<void> {
     await mkdir(path.dirname(this.filePath), { recursive: true, mode: 0o700 });
     const temporary = `${this.filePath}.${process.pid}.${randomUUID()}.tmp`;
-    const deliveries = Object.fromEntries(this.entries);
+    const deliveries = Object.fromEntries(entries);
     await writeFile(
       temporary,
       `${JSON.stringify({ version: 1, deliveries } satisfies LedgerFile, null, 2)}\n`,
       { encoding: 'utf8', mode: 0o600, flag: 'wx' }
     );
     await rename(temporary, this.filePath);
-    await chmod(this.filePath, 0o600);
   }
 }
 
@@ -604,19 +615,28 @@ export class DeliveryDrainer {
     });
     for (const item of result.items) {
       if (this.options.signal?.aborted) return;
-      if (item.state !== 'queued' && item.state !== 'delivered') continue;
-      await this.handle(item);
+      if (item.state === 'deferred' && Date.parse(item.availableAt ?? '') > Date.now()) continue;
+      if (item.state !== 'queued' && item.state !== 'delivered' && item.state !== 'deferred') continue;
+      try {
+        await this.handle(item);
+      } catch (error) {
+        this.options.warn?.(`Delivery ${item.id} could not be handled: ${safeErrorMessage(error)}`);
+      }
     }
   }
 
   private async handle(item: DeliveryItem): Promise<void> {
     const remembered = this.options.ledger.get(item.id);
     if (remembered === 'injected') {
-      await this.ack(item.id);
+      if (await this.ack(item.id)) await this.options.ledger.forget(item.id);
       return;
     }
     if (remembered === 'injecting' || remembered === 'in-doubt') {
       await this.failInDoubt(item.id);
+      return;
+    }
+    if (remembered === 'rejected') {
+      await this.failRejected(item.id, this.options.ledger.reason(item.id) ?? 'delivery rejected');
       return;
     }
     if ((this.retryAfter.get(item.id) ?? 0) > Date.now()) return;
@@ -625,7 +645,7 @@ export class DeliveryDrainer {
       await this.ack(item.id);
       return;
     }
-    if (item.message.from.name === this.options.agentName) {
+    if (item.message.from.name?.trim().replace(/^@/, '').toLowerCase() === this.options.agentName) {
       await this.ack(item.id);
       return;
     }
@@ -647,12 +667,11 @@ export class DeliveryDrainer {
       this.attempts.delete(item.id);
       this.retryAfter.delete(item.id);
       await this.options.ledger.record(item.id, 'injected');
-      try {
-        await this.ack(item.id);
-      } catch {
+      if (!(await this.ack(item.id))) {
         this.options.warn?.(`Injected delivery ${item.id}; acknowledgement will retry.`);
         return;
       }
+      await this.options.ledger.forget(item.id);
       this.options.log?.(`Injected delivery ${item.id} from @${item.message.from.name ?? 'unknown'}.`);
       return;
     }
@@ -664,23 +683,56 @@ export class DeliveryDrainer {
       this.options.warn?.(`Delivery ${item.id} may have arrived and will not be resent.`);
       return;
     }
+    if (outcome.kind === 'rejected') {
+      this.attempts.delete(item.id);
+      this.retryAfter.delete(item.id);
+      await this.options.ledger.record(item.id, 'rejected', outcome.reason);
+      await this.failRejected(item.id, outcome.reason);
+      this.options.warn?.(`Delivery ${item.id} was rejected (${outcome.reason}).`);
+      return;
+    }
     await this.options.ledger.forget(item.id);
     const attempt = (this.attempts.get(item.id) ?? 0) + 1;
     this.attempts.set(item.id, attempt);
-    this.retryAfter.set(item.id, Date.now() + Math.min(30_000, 3_000 * 2 ** (attempt - 1)));
+    const availableAt = Date.now() + Math.min(30_000, 3_000 * 2 ** (attempt - 1));
+    this.retryAfter.set(item.id, availableAt);
+    try {
+      await this.options.relay.inbox.defer({
+        inboxItemId: item.id,
+        availableAt: new Date(availableAt).toISOString(),
+        reason: outcome.reason.slice(0, 500),
+      });
+    } catch {
+      // The local timer still throttles this item. A later queue poll retries it.
+    }
     this.options.warn?.(`Could not inject delivery ${item.id}; retrying (${outcome.reason}).`);
   }
 
-  private async ack(id: string): Promise<void> {
-    await this.options.relay.inbox.ack({ inboxItemId: id, state: 'read' });
+  private async ack(id: string): Promise<boolean> {
+    try {
+      await this.options.relay.inbox.ack({ inboxItemId: id, state: 'read' });
+      return true;
+    } catch {
+      return false;
+    }
   }
 
   private async failInDoubt(id: string, reason = 'in doubt, not resent'): Promise<void> {
     try {
       await this.options.relay.inbox.fail({ inboxItemId: id, error: reason.slice(0, 500), retry: false });
+      await this.options.ledger.forget(id);
     } catch {
       // The durable ledger is the duplicate guard; a future drain retries this
       // terminal transition without repeating the external injection.
+    }
+  }
+
+  private async failRejected(id: string, reason: string): Promise<void> {
+    try {
+      await this.options.relay.inbox.fail({ inboxItemId: id, error: reason.slice(0, 500), retry: false });
+      await this.options.ledger.forget(id);
+    } catch {
+      // Keep the terminal record until Relaycast confirms the failure.
     }
   }
 }
@@ -787,6 +839,7 @@ interface CommandResult {
   code: number | null;
   stdout: string;
   timedOut: boolean;
+  errorCode?: string;
 }
 
 function runBoundedCommand(
@@ -796,6 +849,12 @@ function runBoundedCommand(
   env: NodeJS.ProcessEnv
 ): Promise<CommandResult> {
   return new Promise((resolve) => {
+    let settled = false;
+    const finish = (result: CommandResult) => {
+      if (settled) return;
+      settled = true;
+      resolve(result);
+    };
     let child;
     try {
       child = spawn(command, args, {
@@ -803,8 +862,13 @@ function runBoundedCommand(
         cwd: os.tmpdir(),
         stdio: ['ignore', 'pipe', 'pipe'],
       });
-    } catch {
-      resolve({ code: null, stdout: '', timedOut: false });
+    } catch (error) {
+      finish({
+        code: null,
+        stdout: '',
+        timedOut: false,
+        errorCode: (error as NodeJS.ErrnoException).code,
+      });
       return;
     }
     let stdout = '';
@@ -820,13 +884,13 @@ function runBoundedCommand(
       child.kill('SIGTERM');
       setTimeout(() => child.kill('SIGKILL'), 1_000).unref();
     }, timeoutMs);
-    child.once('error', () => {
+    child.once('error', (error) => {
       clearTimeout(timer);
-      resolve({ code: null, stdout, timedOut });
+      finish({ code: null, stdout, timedOut, errorCode: (error as NodeJS.ErrnoException).code });
     });
     child.once('close', (code) => {
       clearTimeout(timer);
-      resolve({ code, stdout, timedOut });
+      finish({ code, stdout, timedOut });
     });
   });
 }
@@ -836,6 +900,9 @@ export async function injectCodex(
   env: NodeJS.ProcessEnv = process.env
 ): Promise<InjectionOutcome> {
   if (!isUuid(input.sessionId)) return { kind: 'retry', reason: 'invalid Codex thread id' };
+  if (Buffer.byteLength(input.text) > MAX_CODEX_MESSAGE_BYTES) {
+    return { kind: 'rejected', reason: 'message exceeds the portable codex queue argument limit' };
+  }
   const command = nonEmpty(env.RELAY_CODEX_BIN) ?? 'codex';
   const result = await runBoundedCommand(
     command,
@@ -844,7 +911,10 @@ export async function injectCodex(
     env
   );
   if (result.timedOut) return { kind: 'in-doubt', reason: 'codex queue timed out' };
-  if (result.code === 0 && result.stdout.includes('Queued message ')) return { kind: 'injected' };
+  if (result.code === 0) return { kind: 'injected' };
+  if (result.errorCode === 'E2BIG') {
+    return { kind: 'rejected', reason: 'message exceeds the portable codex queue argument limit' };
+  }
   return { kind: 'retry', reason: result.code === null ? 'codex is not installed' : 'codex queue refused' };
 }
 
@@ -950,8 +1020,8 @@ async function claudePeerToken(
       const token = stringField(record, 'peerToken');
       if (!token) continue;
       if (
-        record.procStart === undefined ||
-        session.procStart === undefined ||
+        record.procStart !== undefined &&
+        session.procStart !== undefined &&
         String(record.procStart) === session.procStart
       ) {
         return token;
@@ -995,7 +1065,7 @@ export async function injectClaudeTerminal(
   try {
     frames = claudePeerFrames(token, input.messageId, input.text);
   } catch (error) {
-    return { kind: 'retry', reason: safeErrorMessage(error) };
+    return { kind: 'rejected', reason: safeErrorMessage(error) };
   }
   return new Promise((resolve) => {
     let connected = false;
@@ -1019,6 +1089,8 @@ export async function injectClaudeTerminal(
     socket.once('connect', () => {
       connected = true;
       writing = true;
+      // Peer protocol 1 has no acceptance receipt. Match relay-desktop: a
+      // completed write means the turn was handed to Claude Code's inbox.
       socket.end(frames, 'utf8', () => finish({ kind: 'injected' }));
     });
     socket.once('error', () => {
@@ -1039,26 +1111,24 @@ async function discoverCurrentClaudeSession(): Promise<string | undefined> {
   } catch {
     return undefined;
   }
-  const ancestors = await ancestorPids(process.ppid);
-  const candidates: Array<{ record: ClaudeSessionRecord; modified: number }> = [];
+  const ancestors = [...(await ancestorPids(process.ppid))];
+  const candidates: ClaudeSessionRecord[] = [];
   for (const file of files) {
     if (!file.endsWith('.json')) continue;
     const fullPath = path.join(registryDir, file);
     try {
       const record = parseClaudeSession(await readFile(fullPath, 'utf8'));
       if (!record || !processAlive(record.pid)) continue;
-      candidates.push({ record, modified: (await stat(fullPath)).mtimeMs });
+      candidates.push(record);
     } catch {
       continue;
     }
   }
-  const owned = candidates.filter(({ record }) => ancestors.has(record.pid));
-  if (owned.length === 1) return owned[0].record.sessionId;
-  if (owned.length > 1) {
-    owned.sort((a, b) => b.modified - a.modified);
-    return owned[0].record.sessionId;
-  }
-  return candidates.length === 1 ? candidates[0].record.sessionId : undefined;
+  const owned = candidates
+    .map((record) => ({ record, distance: ancestors.indexOf(record.pid) }))
+    .filter(({ distance }) => distance >= 0)
+    .sort((a, b) => a.distance - b.distance);
+  return owned[0]?.record.sessionId;
 }
 
 async function ancestorPids(startPid: number): Promise<Set<number>> {

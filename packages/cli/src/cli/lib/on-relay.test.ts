@@ -1,4 +1,4 @@
-import { mkdtemp, readFile, rm } from 'node:fs/promises';
+import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { EventEmitter } from 'node:events';
 import os from 'node:os';
 import path from 'node:path';
@@ -11,6 +11,8 @@ import {
   claudePeerFrames,
   DeliveryDrainer,
   DeliveryLedger,
+  injectClaudeTerminal,
+  injectCodex,
   labeledDeliveryText,
   messageReference,
   mintNodeToken,
@@ -212,7 +214,7 @@ function delivery(overrides: Partial<DeliveryItem> = {}): DeliveryItem {
   };
 }
 
-describe('durable exactly-once drain', () => {
+describe('durable at-most-once drain', () => {
   it('persists injection before ACK and retries a lost ACK without reinjecting', async () => {
     const directory = await temporaryDirectory();
     const filePath = path.join(directory, 'ledger.json');
@@ -222,9 +224,10 @@ describe('durable exactly-once drain', () => {
     const list = vi.fn(async () => ({ items: [item] }));
     const ack = vi.fn().mockRejectedValueOnce(new Error('network down')).mockResolvedValueOnce({});
     const fail = vi.fn(async () => ({}));
+    const defer = vi.fn(async () => ({}));
     const injector = vi.fn(async () => ({ kind: 'injected' as const }));
     const drainer = new DeliveryDrainer({
-      relay: { inbox: { list, ack, fail } },
+      relay: { inbox: { list, ack, fail, defer } },
       ledger,
       injector,
       agentName: 'reviewer',
@@ -237,11 +240,11 @@ describe('durable exactly-once drain', () => {
     expect(injector).toHaveBeenCalledOnce();
     expect(ack).toHaveBeenCalledTimes(2);
     expect(fail).not.toHaveBeenCalled();
-    expect(ledger.get('del_1')).toBe('injected');
+    expect(ledger.get('del_1')).toBeUndefined();
     const persisted = JSON.parse(await readFile(filePath, 'utf8')) as {
       deliveries: Record<string, { state: string }>;
     };
-    expect(persisted.deliveries.del_1.state).toBe('injected');
+    expect(persisted.deliveries.del_1).toBeUndefined();
   });
 
   it('never resends an in-flight delivery recovered after a crash', async () => {
@@ -250,9 +253,10 @@ describe('durable exactly-once drain', () => {
     await ledger.record('del_1', 'injecting');
     const ack = vi.fn(async () => ({}));
     const fail = vi.fn(async () => ({}));
+    const defer = vi.fn(async () => ({}));
     const injector = vi.fn(async () => ({ kind: 'injected' as const }));
     const drainer = new DeliveryDrainer({
-      relay: { inbox: { list: async () => ({ items: [delivery()] }), ack, fail } },
+      relay: { inbox: { list: async () => ({ items: [delivery()] }), ack, fail, defer } },
       ledger,
       injector,
       agentName: 'reviewer',
@@ -281,6 +285,7 @@ describe('durable exactly-once drain', () => {
           list: async () => ({ items: [delivery({ metadata: { reason: 'channel' } })] }),
           ack,
           fail: async () => ({}),
+          defer: async () => ({}),
         },
       },
       ledger,
@@ -291,6 +296,168 @@ describe('durable exactly-once drain', () => {
     await drainer.drainOnce();
     expect(injector).not.toHaveBeenCalled();
     expect(ack).toHaveBeenCalledOnce();
+  });
+
+  it('injects the canonical thread_reply delivery reason', async () => {
+    const directory = await temporaryDirectory();
+    const injector = vi.fn(async () => ({ kind: 'injected' as const }));
+    const ack = vi.fn(async () => ({}));
+    const drainer = new DeliveryDrainer({
+      relay: {
+        inbox: {
+          list: async () => ({ items: [delivery({ metadata: { reason: 'thread_reply' } })] }),
+          ack,
+          fail: async () => ({}),
+          defer: async () => ({}),
+        },
+      },
+      ledger: new DeliveryLedger(path.join(directory, 'ledger.json')),
+      injector,
+      agentName: 'reviewer',
+      sessionId: '11111111-1111-4111-8111-111111111111',
+    });
+    await drainer.drainOnce();
+    expect(injector).toHaveBeenCalledOnce();
+    expect(ack).toHaveBeenCalledOnce();
+  });
+
+  it('continues a batch when one acknowledgement fails', async () => {
+    const directory = await temporaryDirectory();
+    const first = delivery({ id: 'del_1', metadata: { reason: 'channel' } });
+    const second = delivery({ id: 'del_2', metadata: { reason: 'channel' } });
+    const ack = vi.fn().mockRejectedValueOnce(new Error('offline')).mockResolvedValueOnce({});
+    const drainer = new DeliveryDrainer({
+      relay: {
+        inbox: {
+          list: async () => ({ items: [first, second] }),
+          ack,
+          fail: async () => ({}),
+          defer: async () => ({}),
+        },
+      },
+      ledger: new DeliveryLedger(path.join(directory, 'ledger.json')),
+      injector: vi.fn(async () => ({ kind: 'injected' as const })),
+      agentName: 'reviewer',
+      sessionId: '11111111-1111-4111-8111-111111111111',
+    });
+    await drainer.drainOnce();
+    expect(ack).toHaveBeenCalledTimes(2);
+  });
+
+  it('defers a retrying item so it cannot pin the finite inbox page', async () => {
+    const directory = await temporaryDirectory();
+    const defer = vi.fn(async () => ({}));
+    const drainer = new DeliveryDrainer({
+      relay: {
+        inbox: {
+          list: async () => ({ items: [delivery()] }),
+          ack: async () => ({}),
+          fail: async () => ({}),
+          defer,
+        },
+      },
+      ledger: new DeliveryLedger(path.join(directory, 'ledger.json')),
+      injector: vi.fn(async () => ({ kind: 'retry' as const, reason: 'session busy' })),
+      agentName: 'reviewer',
+      sessionId: '11111111-1111-4111-8111-111111111111',
+    });
+    await drainer.drainOnce();
+    expect(defer).toHaveBeenCalledWith(
+      expect.objectContaining({ inboxItemId: 'del_1', reason: 'session busy' })
+    );
+  });
+
+  it('terminally fails a deterministic rejection and clears its barrier', async () => {
+    const directory = await temporaryDirectory();
+    const ledger = new DeliveryLedger(path.join(directory, 'ledger.json'));
+    const fail = vi.fn(async () => ({}));
+    const drainer = new DeliveryDrainer({
+      relay: {
+        inbox: {
+          list: async () => ({ items: [delivery()] }),
+          ack: async () => ({}),
+          fail,
+          defer: async () => ({}),
+        },
+      },
+      ledger,
+      injector: vi.fn(async () => ({ kind: 'rejected' as const, reason: 'too large' })),
+      agentName: 'reviewer',
+      sessionId: '11111111-1111-4111-8111-111111111111',
+    });
+    await drainer.drainOnce();
+    expect(fail).toHaveBeenCalledWith({ inboxItemId: 'del_1', error: 'too large', retry: false });
+    expect(ledger.get('del_1')).toBeUndefined();
+  });
+
+  it('does not commit an in-memory barrier when persistence fails', async () => {
+    const directory = await temporaryDirectory();
+    const blockedParent = path.join(directory, 'not-a-directory');
+    await writeFile(blockedParent, 'blocked');
+    const ledger = new DeliveryLedger(path.join(blockedParent, 'ledger.json'));
+    await expect(ledger.record('del_1', 'injecting')).rejects.toThrow();
+    expect(ledger.get('del_1')).toBeUndefined();
+  });
+
+  it('suppresses normalized self-sent deliveries', async () => {
+    const directory = await temporaryDirectory();
+    const injector = vi.fn(async () => ({ kind: 'injected' as const }));
+    const ack = vi.fn(async () => ({}));
+    const drainer = new DeliveryDrainer({
+      relay: {
+        inbox: {
+          list: async () => ({
+            items: [delivery({ message: { id: 'msg_1', text: 'echo', from: { name: '@Reviewer' } } })],
+          }),
+          ack,
+          fail: async () => ({}),
+          defer: async () => ({}),
+        },
+      },
+      ledger: new DeliveryLedger(path.join(directory, 'ledger.json')),
+      injector,
+      agentName: 'reviewer',
+      sessionId: '11111111-1111-4111-8111-111111111111',
+    });
+    await drainer.drainOnce();
+    expect(injector).not.toHaveBeenCalled();
+    expect(ack).toHaveBeenCalledOnce();
+  });
+});
+
+describe('Codex injection', () => {
+  it('rejects messages too large for a portable argv entry before spawning', async () => {
+    await expect(
+      injectCodex({
+        text: 'x'.repeat(120_001),
+        messageId: 'msg_1',
+        sessionId: '11111111-1111-4111-8111-111111111111',
+      })
+    ).resolves.toEqual(expect.objectContaining({ kind: 'rejected' }));
+  });
+});
+
+describe('Claude injection', () => {
+  it('refuses a peer key that is not bound to the live process instance', async () => {
+    const registryDir = await temporaryDirectory();
+    const sessionId = '22222222-2222-4222-8222-222222222222';
+    await writeFile(
+      path.join(registryDir, 'session.json'),
+      JSON.stringify({
+        sessionId,
+        pid: process.pid,
+        messagingSocketPath: path.join(registryDir, 'session.sock'),
+        peerProtocol: 1,
+      })
+    );
+    await writeFile(
+      path.join(registryDir, `${process.pid}.stale.key`),
+      JSON.stringify({ peerToken: 'stale-token' })
+    );
+
+    await expect(
+      injectClaudeTerminal({ text: 'hello', messageId: 'msg_1', sessionId }, { registryDir, env: {} })
+    ).resolves.toEqual({ kind: 'retry', reason: 'Claude Code inbox key is unavailable' });
   });
 });
 

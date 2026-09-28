@@ -14,6 +14,7 @@ function registeredClient(name = 'reviewer') {
       list: vi.fn(async () => ({ items: [] })),
       ack: vi.fn(async () => ({})),
       fail: vi.fn(async () => ({})),
+      defer: vi.fn(async () => ({})),
     },
   };
 }
@@ -65,7 +66,7 @@ describe('on-relay command', () => {
         type: 'agent',
         metadata: expect.objectContaining({ harness: 'codex', session_id: SESSION_ID, runtime: 'headless' }),
       }),
-      { strict: false }
+      { strict: true }
     );
     expect(listen).toHaveBeenCalledWith(
       expect.objectContaining({

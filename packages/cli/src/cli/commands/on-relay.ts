@@ -92,7 +92,7 @@ async function prepareIdentity(
         surface: 'agent-relay-on-relay',
       },
     },
-    { strict: false }
+    { strict: true }
   );
   if (Array.isArray(registered) || !registered.token) {
     throw new Error('Relaycast did not return an agent token.');
