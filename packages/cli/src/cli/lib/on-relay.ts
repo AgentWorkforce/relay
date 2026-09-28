@@ -20,7 +20,9 @@ const MAX_LINE_BYTES = 1_000_000;
 const MAX_CODEX_MESSAGE_BYTES = 120_000;
 const LEDGER_LOCK_TIMEOUT_MS = 5_000;
 const LEDGER_LOCK_RETRY_MS = 100;
-const LEDGER_LOCK_STALE_MS = 30_000;
+// Keep this below the acquisition timeout so one attempt can reclaim a lock
+// whose owner died after creating its marker.
+const LEDGER_LOCK_STALE_MS = 4_000;
 const INJECTED_REASONS = new Set(['dm', 'mention', 'thread_reply', 'thread-reply']);
 
 export type OnRelayHarness = 'codex' | 'claude';

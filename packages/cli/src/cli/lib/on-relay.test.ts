@@ -1,4 +1,4 @@
-import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
+import { mkdir, mkdtemp, readFile, rm, utimes, writeFile } from 'node:fs/promises';
 import { EventEmitter } from 'node:events';
 import os from 'node:os';
 import path from 'node:path';
@@ -222,6 +222,24 @@ function delivery(overrides: Partial<DeliveryItem> = {}): DeliveryItem {
 }
 
 describe('durable at-most-once drain', () => {
+  it('reclaims an abandoned ledger lock before the acquisition timeout', async () => {
+    const directory = await temporaryDirectory();
+    const filePath = path.join(directory, 'ledger.json');
+    const lockDirectory = `${filePath}.lock`;
+    const token = 'abandoned-owner';
+    await mkdir(lockDirectory);
+    await writeFile(
+      path.join(lockDirectory, token),
+      JSON.stringify({ version: 1, pid: 2_147_483_647, token })
+    );
+    const staleTime = new Date(Date.now() - 5_000);
+    await utimes(lockDirectory, staleTime, staleTime);
+
+    const action = vi.fn(async () => 'recovered');
+    await expect(new DeliveryLedger(filePath).exclusive(action)).resolves.toBe('recovered');
+    expect(action).toHaveBeenCalledOnce();
+  });
+
   it('fails listener startup when the ledger lock cannot be created', async () => {
     const directory = await temporaryDirectory();
     const blockedParent = path.join(directory, 'not-a-directory');

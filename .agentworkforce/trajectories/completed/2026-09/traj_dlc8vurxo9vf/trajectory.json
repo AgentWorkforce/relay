@@ -1,0 +1,57 @@
+{
+  "id": "traj_dlc8vurxo9vf",
+  "version": 1,
+  "task": {
+    "title": "Resolve final stale lock review for PR #1864",
+    "source": {
+      "system": "plain",
+      "id": "AgentWorkforce/relay#1864"
+    }
+  },
+  "status": "completed",
+  "startedAt": "2026-09-28T07:40:26.906Z",
+  "completedAt": "2026-09-28T07:40:27.711Z",
+  "agents": [
+    {
+      "name": "default",
+      "role": "lead",
+      "joinedAt": "2026-09-28T07:40:27.311Z"
+    }
+  ],
+  "chapters": [
+    {
+      "id": "chap_u9iloqt1e94d",
+      "title": "Work",
+      "agentName": "default",
+      "startedAt": "2026-09-28T07:40:27.311Z",
+      "endedAt": "2026-09-28T07:40:27.711Z",
+      "events": [
+        {
+          "ts": 1790581227312,
+          "type": "decision",
+          "content": "Keep stale detection inside the five-second acquisition budget: Keep stale detection inside the five-second acquisition budget",
+          "raw": {
+            "question": "Keep stale detection inside the five-second acquisition budget",
+            "chosen": "Keep stale detection inside the five-second acquisition budget",
+            "alternatives": [],
+            "reasoning": "A four-second stale grace protects normal lock creation while allowing the same bounded acquisition attempt to reclaim a dead owner."
+          },
+          "significance": "high"
+        }
+      ]
+    }
+  ],
+  "retrospective": {
+    "summary": "Fixed stale on-relay lock recovery and added a regression test for abandoned owners.",
+    "approach": "Standard approach",
+    "confidence": 0.96
+  },
+  "commits": [],
+  "filesChanged": [],
+  "projectId": "AgentWorkforce/relay",
+  "tags": [],
+  "_trace": {
+    "startRef": "e11ae60df0ed79e6bafb0adfdd8352376a5f4bf4",
+    "endRef": "e11ae60df0ed79e6bafb0adfdd8352376a5f4bf4"
+  }
+}
