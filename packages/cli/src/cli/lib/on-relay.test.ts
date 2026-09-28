@@ -1,12 +1,11 @@
 import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
-import { mkdtempSync, writeFileSync } from 'node:fs';
 import { EventEmitter } from 'node:events';
 import os from 'node:os';
 import path from 'node:path';
 
 import WebSocket from 'ws';
 
-import { afterAll, afterEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import {
   claudePeerFrames,
@@ -30,40 +29,6 @@ import {
 
 const temporaryDirectories: string[] = [];
 
-// Plain Node-only CI does not build or install a broker binary. Exercise the
-// same journal-lock handshake and cross-process exclusion with a scripted
-// helper, matching the established integration-cleanup-journal test fixture.
-const originalBrokerBinaryPath = process.env.BROKER_BINARY_PATH;
-const lockHelperDirectory = mkdtempSync(path.join(os.tmpdir(), 'on-relay-lock-helper-'));
-const lockHelperPath = path.join(lockHelperDirectory, 'fake-broker.cjs');
-writeFileSync(
-  lockHelperPath,
-  `#!/usr/bin/env node
-const fs = require('fs');
-const args = process.argv;
-const lock = args[args.indexOf('--file') + 1];
-const timeoutMs = Number(args[args.indexOf('--timeout-ms') + 1] || 5000);
-const mutex = lock + '.test-mutex';
-const deadline = Date.now() + timeoutMs;
-(function acquire() {
-  try {
-    fs.mkdirSync(mutex);
-  } catch {
-    if (Date.now() >= deadline) process.exit(4);
-    return setTimeout(acquire, 10);
-  }
-  process.on('exit', () => {
-    try { fs.rmdirSync(mutex); } catch {}
-  });
-  process.stdout.write('locked\\n');
-  process.stdin.resume();
-  process.stdin.on('end', () => process.exit(0));
-})();
-`,
-  { mode: 0o755 }
-);
-process.env.BROKER_BINARY_PATH = lockHelperPath;
-
 async function temporaryDirectory(): Promise<string> {
   const directory = await mkdtemp(path.join(os.tmpdir(), 'on-relay-test-'));
   temporaryDirectories.push(directory);
@@ -72,23 +37,6 @@ async function temporaryDirectory(): Promise<string> {
 
 const passthroughTestLock = async <T>(action: () => Promise<T>): Promise<T> => action();
 
-function serializedTestLock(): <T>(action: () => Promise<T>) => Promise<T> {
-  let tail = Promise.resolve();
-  return async <T>(action: () => Promise<T>): Promise<T> => {
-    let release!: () => void;
-    const previous = tail;
-    tail = new Promise<void>((resolve) => {
-      release = resolve;
-    });
-    await previous;
-    try {
-      return await action();
-    } finally {
-      release();
-    }
-  };
-}
-
 function testLedger(filePath: string, lock = passthroughTestLock): DeliveryLedger {
   return new DeliveryLedger(filePath, lock);
 }
@@ -96,12 +44,6 @@ function testLedger(filePath: string, lock = passthroughTestLock): DeliveryLedge
 afterEach(async () => {
   vi.restoreAllMocks();
   await Promise.all(temporaryDirectories.splice(0).map((directory) => rm(directory, { recursive: true })));
-});
-
-afterAll(async () => {
-  if (originalBrokerBinaryPath === undefined) delete process.env.BROKER_BINARY_PATH;
-  else process.env.BROKER_BINARY_PATH = originalBrokerBinaryPath;
-  await rm(lockHelperDirectory, { recursive: true });
 });
 
 describe('on-relay target resolution', () => {
@@ -282,7 +224,6 @@ describe('durable at-most-once drain', () => {
   it('serializes listing through acknowledgement for listeners sharing a ledger', async () => {
     const directory = await temporaryDirectory();
     const filePath = path.join(directory, 'ledger.json');
-    const lock = serializedTestLock();
     let queued = true;
     const list = vi.fn(async () => ({ items: queued ? [delivery()] : [] }));
     const ack = vi.fn(async () => {
@@ -298,11 +239,11 @@ describe('durable at-most-once drain', () => {
     };
     const first = new DeliveryDrainer({
       ...options,
-      ledger: testLedger(filePath, lock),
+      ledger: new DeliveryLedger(filePath),
     });
     const second = new DeliveryDrainer({
       ...options,
-      ledger: testLedger(filePath, lock),
+      ledger: new DeliveryLedger(filePath),
     });
 
     await Promise.all([first.drainOnce(), second.drainOnce()]);

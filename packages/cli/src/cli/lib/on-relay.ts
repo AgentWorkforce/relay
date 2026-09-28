@@ -1,6 +1,6 @@
 import { spawn } from 'node:child_process';
 import { createHash, randomUUID } from 'node:crypto';
-import { mkdir, readFile, readdir, rename, writeFile } from 'node:fs/promises';
+import { mkdir, readFile, readdir, rename, rm, rmdir, stat, writeFile } from 'node:fs/promises';
 import net from 'node:net';
 import os from 'node:os';
 import path from 'node:path';
@@ -8,7 +8,6 @@ import path from 'node:path';
 import WebSocket, { type RawData } from 'ws';
 
 import type { AgentRelayAgent } from '@agent-relay/sdk';
-import { formatBrokerNotFoundError, getBrokerBinaryPath } from '@agent-relay/harness-driver/broker-path';
 
 const DEFAULT_BASE_URL = 'https://cast.agentrelay.com';
 const HEARTBEAT_INTERVAL_MS = 15_000;
@@ -20,6 +19,8 @@ const MAX_BACKOFF_MS = 30_000;
 const MAX_LINE_BYTES = 1_000_000;
 const MAX_CODEX_MESSAGE_BYTES = 120_000;
 const LEDGER_LOCK_TIMEOUT_MS = 5_000;
+const LEDGER_LOCK_RETRY_MS = 100;
+const LEDGER_LOCK_STALE_MS = 30_000;
 const INJECTED_REASONS = new Set(['dm', 'mention', 'thread_reply', 'thread-reply']);
 
 export type OnRelayHarness = 'codex' | 'claude';
@@ -460,125 +461,127 @@ function safeErrorMessage(error: unknown): string {
   return error instanceof Error ? error.message : 'unknown error';
 }
 
-/**
- * Hold the broker's cross-platform kernel lock for one complete delivery drain.
- * The stable lock file is never unlinked, so every listener for this ledger
- * contends on the same inode and the kernel releases ownership after a crash.
- */
-async function withKernelLedgerLock<T>(ledgerFile: string, action: () => Promise<T>): Promise<T> {
-  await mkdir(path.dirname(ledgerFile), { recursive: true, mode: 0o700 });
-  const binary = getBrokerBinaryPath();
-  if (!binary) throw new Error(formatBrokerNotFoundError());
-  const lockFile = `${ledgerFile}.lock`;
-  const child = spawn(
-    binary,
-    [
-      'journal-lock',
-      '--file',
-      lockFile,
-      '--journal-file',
-      ledgerFile,
-      '--timeout-ms',
-      String(LEDGER_LOCK_TIMEOUT_MS),
-    ],
-    { stdio: ['pipe', 'pipe', 'ignore'] }
-  );
-  const exit = new Promise<number | null>((resolve) => {
-    child.once('exit', (code) => resolve(code));
-    child.once('error', () => resolve(null));
-  });
-  let exited = false;
-  void exit.then(() => {
-    exited = true;
-  });
+type DeliveryLedgerLock = <T>(action: () => Promise<T>) => Promise<T>;
 
-  await new Promise<void>((resolve, reject) => {
-    let settled = false;
-    let buffer = '';
-    const settle = (operation: () => void) => {
-      if (settled) return;
-      settled = true;
-      clearTimeout(deadline);
-      operation();
-    };
-    const deadline = setTimeout(() => {
-      settle(() => {
-        child.kill('SIGKILL');
-        reject(new Error(`The on-relay ledger lock did not respond for ${lockFile}.`));
-      });
-    }, LEDGER_LOCK_TIMEOUT_MS + 2_000);
-    child.stdout!.on('data', (chunk: Buffer) => {
-      buffer += chunk.toString('utf8');
-      const newline = buffer.indexOf('\n');
-      if (newline < 0) return;
-      if (buffer.slice(0, newline) === 'locked') {
-        settle(resolve);
-      } else {
-        settle(() => {
-          child.kill('SIGKILL');
-          reject(new Error(`The on-relay ledger lock returned an invalid handshake for ${lockFile}.`));
-        });
-      }
-    });
-    child.once('error', (error) => {
-      settle(() => reject(new Error(`Could not start the on-relay ledger lock: ${safeErrorMessage(error)}`)));
-    });
-    void exit.then((code) => {
-      settle(() => {
-        if (code === 4) {
-          reject(new Error(`Timed out waiting for another on-relay listener using ${lockFile}.`));
-        } else if (code === 3) {
-          reject(new Error(`The on-relay ledger lock has an unrecognized format: ${lockFile}.`));
-        } else if (code === 2) {
-          reject(
-            new Error(`The broker binary does not support the on-relay ledger lock; upgrade agent-relay.`)
-          );
-        } else {
-          reject(new Error(`The on-relay ledger lock exited before acquisition (${code ?? 'unknown'}).`));
-        }
-      });
-    });
-  });
+interface LedgerLockOwner {
+  version: 1;
+  pid: number;
+  token: string;
+}
 
-  const release = async (): Promise<void> => {
-    if (exited) {
-      const code = await exit;
-      if (code !== 0) throw new Error(`The on-relay ledger lock was lost before release.`);
-      return;
+async function inspectLedgerLock(lockDirectory: string): Promise<{
+  entries: string[];
+  ownerIsAlive: boolean;
+}> {
+  const entries = await readdir(lockDirectory);
+  let ownerIsAlive = false;
+  for (const entry of entries) {
+    let owner: Partial<LedgerLockOwner>;
+    try {
+      owner = JSON.parse(await readFile(path.join(lockDirectory, entry), 'utf8')) as Partial<LedgerLockOwner>;
+    } catch {
+      continue;
     }
-    await new Promise<void>((resolve) => {
-      let settled = false;
-      const finish = () => {
-        if (settled) return;
-        settled = true;
-        resolve();
-      };
-      child.stdin!.once('error', finish);
-      void exit.then(finish);
-      try {
-        child.stdin!.end(finish);
-      } catch {
-        finish();
-      }
-    });
-    const code = await exit;
-    if (code !== 0) throw new Error(`The on-relay ledger lock was lost before release.`);
-  };
-
-  try {
-    const result = await action();
-    await release();
-    return result;
-  } catch (error) {
-    await release().catch(() => {});
-    throw error;
+    if (
+      owner.version === 1 &&
+      typeof owner.pid === 'number' &&
+      Number.isInteger(owner.pid) &&
+      owner.pid > 0 &&
+      typeof owner.token === 'string' &&
+      owner.token === entry &&
+      processAlive(owner.pid)
+    ) {
+      ownerIsAlive = true;
+    }
   }
+  return { entries, ownerIsAlive };
+}
+
+/**
+ * Serialize listeners that share a ledger using the repo's portable
+ * lock-directory pattern. Unique owner markers make stale cleanup safe when
+ * another process races to replace the lock; a live PID is never reclaimed.
+ */
+async function withPortableLedgerLock<T>(ledgerFile: string, action: () => Promise<T>): Promise<T> {
+  await mkdir(path.dirname(ledgerFile), { recursive: true, mode: 0o700 });
+  const lockDirectory = `${ledgerFile}.lock`;
+  const token = randomUUID();
+  const ownerPath = path.join(lockDirectory, token);
+  const startedAt = Date.now();
+
+  while (true) {
+    try {
+      await mkdir(lockDirectory, { mode: 0o700 });
+      try {
+        await writeFile(
+          ownerPath,
+          JSON.stringify({ version: 1, pid: process.pid, token } satisfies LedgerLockOwner),
+          { encoding: 'utf8', mode: 0o600, flag: 'wx' }
+        );
+      } catch (error) {
+        await rm(ownerPath, { force: true });
+        await rmdir(lockDirectory).catch(() => {});
+        throw error;
+      }
+      break;
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== 'EEXIST') throw error;
+    }
+
+    try {
+      if (Date.now() - (await stat(lockDirectory)).mtimeMs >= LEDGER_LOCK_STALE_MS) {
+        const observed = await inspectLedgerLock(lockDirectory);
+        if (!observed.ownerIsAlive) {
+          for (const entry of observed.entries) {
+            await rm(path.join(lockDirectory, entry), { force: true });
+          }
+          await rmdir(lockDirectory).catch((error) => {
+            const code = (error as NodeJS.ErrnoException).code;
+            if (code !== 'ENOENT' && code !== 'ENOTEMPTY') throw error;
+          });
+          continue;
+        }
+      }
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code === 'ENOENT') continue;
+      throw error;
+    }
+    if (Date.now() - startedAt >= LEDGER_LOCK_TIMEOUT_MS) {
+      throw new Error(`Timed out waiting for another on-relay listener using ${lockDirectory}.`);
+    }
+    await new Promise((resolve) => setTimeout(resolve, LEDGER_LOCK_RETRY_MS));
+  }
+
+  let outcome: { ok: true; value: T } | { ok: false; error: unknown };
+  try {
+    outcome = { ok: true, value: await action() };
+  } catch (error) {
+    outcome = { ok: false, error };
+  }
+  let releaseError: unknown;
+  try {
+    await rm(ownerPath, { force: true });
+  } catch (error) {
+    releaseError = error;
+  }
+  try {
+    await rmdir(lockDirectory);
+  } catch (error) {
+    const code = (error as NodeJS.ErrnoException).code;
+    if (code !== 'ENOENT' && code !== 'ENOTEMPTY' && releaseError === undefined) releaseError = error;
+  }
+  if (!outcome.ok) throw outcome.error;
+  if (releaseError !== undefined) throw releaseError;
+  return outcome.value;
 }
 
 export class DeliveryLedger {
   private entries = new Map<string, LedgerEntry>();
 
-  constructor(readonly filePath: string) {}
+  constructor(
+    readonly filePath: string,
+    private readonly lock: DeliveryLedgerLock = (action) => withPortableLedgerLock(filePath, action)
+  ) {}
 
   async load(): Promise<void> {
     let raw: string;
@@ -621,7 +624,7 @@ export class DeliveryLedger {
   }
 
   async exclusive<T>(action: () => Promise<T>): Promise<T> {
-    return withKernelLedgerLock(this.filePath, async () => {
+    return this.lock(async () => {
       await this.load();
       return action();
     });
