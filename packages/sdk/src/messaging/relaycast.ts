@@ -1417,18 +1417,45 @@ export class RelaycastMessagingClient implements RelayMessagingClient {
       wake();
     };
 
-    // Register the event listener before seeding so accepted deliveries that
-    // land mid-seed are not missed; `seen` deduplicates the overlap.
+    let refreshRequested = false;
+    let refreshPromise: Promise<void> | undefined;
     const inFlight = new Set<string>();
-    agent.connect();
+    const refreshDeliveries = (): Promise<void> => {
+      refreshRequested = true;
+      refreshPromise ??= (async () => {
+        while (refreshRequested && !stopped) {
+          refreshRequested = false;
+          try {
+            for (const raw of await agent.deliveries()) {
+              push(normalizeInboxItem(raw, recipient));
+            }
+          } catch {
+            // A transient list failure must not tear down the realtime stream.
+            // Reconnects and accepted-delivery events request another refresh.
+          }
+        }
+      })().finally(() => {
+        refreshPromise = undefined;
+      });
+      return refreshPromise;
+    };
+
+    // Register event listeners before connecting/seeding so synchronous
+    // connection events and deliveries that land mid-seed are not missed.
     const observeConnection = <T extends unknown[]>(
       subscribe: ((handler: (...args: T) => void) => () => void) | undefined,
-      state: Parameters<NonNullable<InboxSubscribeInput['onConnectionState']>>[0]
+      state: Parameters<NonNullable<InboxSubscribeInput['onConnectionState']>>[0],
+      onState?: () => void
     ): void => {
-      if (!subscribe || !input?.onConnectionState) return;
-      connectionStops.push(subscribe(() => input.onConnectionState?.(state)));
+      if (!subscribe || (!input?.onConnectionState && !onState)) return;
+      connectionStops.push(
+        subscribe(() => {
+          input?.onConnectionState?.(state);
+          onState?.();
+        })
+      );
     };
-    observeConnection(agent.on.connected?.bind(agent.on), 'connected');
+    observeConnection(agent.on.connected?.bind(agent.on), 'connected', () => void refreshDeliveries());
     observeConnection(agent.on.disconnected?.bind(agent.on), 'disconnected');
     observeConnection(agent.on.error?.bind(agent.on), 'error');
     observeConnection(agent.on.reconnecting?.bind(agent.on), 'reconnecting');
@@ -1441,26 +1468,13 @@ export class RelaycastMessagingClient implements RelayMessagingClient {
       inFlight.add(deliveryId);
       // The accepted event carries ids only; re-list the non-terminal queue
       // to pick up the delivery row with its embedded message payload.
-      void agent
-        .deliveries()
-        .then((deliveries) => {
-          const match = deliveries.find((raw) => readStr(asRecord(raw), 'id') === deliveryId);
-          if (match) push(normalizeInboxItem(match, recipient));
-        })
-        .catch(() => {
-          // The delivery already transitioned or the list failed transiently;
-          // it will be replayed by the next non-terminal listing.
-        })
-        .finally(() => {
-          inFlight.delete(deliveryId);
-        });
+      void refreshDeliveries().finally(() => inFlight.delete(deliveryId));
     });
     signal?.addEventListener('abort', stop, { once: true });
+    agent.connect();
 
     try {
-      for (const raw of await agent.deliveries()) {
-        push(normalizeInboxItem(raw, recipient));
-      }
+      await refreshDeliveries();
       while (!stopped) {
         const next = queue.shift();
         if (next) {

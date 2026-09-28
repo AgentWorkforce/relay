@@ -532,7 +532,10 @@ export async function runDurableSessionDelivery(options: RunDurableSessionDelive
       signal: options.signal,
       disconnectOnClose: true,
       onConnectionState: (state) => {
-        if (state === 'connected') options.log?.('Realtime delivery listener connected.');
+        if (state === 'connected') {
+          options.log?.('Realtime delivery listener connected.');
+          requestDrain();
+        }
         if (state === 'error' || state === 'permanentlyDisconnected') {
           options.warn?.(`Realtime delivery listener ${state}.`);
         }

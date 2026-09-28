@@ -1,0 +1,57 @@
+{
+  "id": "traj_ztcinmzizuxe",
+  "version": 1,
+  "task": {
+    "title": "Address PR 1864 final subscription lifecycle review findings",
+    "source": {
+      "system": "plain",
+      "id": "AgentWorkforce/relay#1864"
+    }
+  },
+  "status": "completed",
+  "startedAt": "2026-09-28T09:24:15.698Z",
+  "completedAt": "2026-09-28T09:24:16.339Z",
+  "agents": [
+    {
+      "name": "default",
+      "role": "lead",
+      "joinedAt": "2026-09-28T09:24:16.034Z"
+    }
+  ],
+  "chapters": [
+    {
+      "id": "chap_82lxstrbckm0",
+      "title": "Work",
+      "agentName": "default",
+      "startedAt": "2026-09-28T09:24:16.034Z",
+      "endedAt": "2026-09-28T09:24:16.339Z",
+      "events": [
+        {
+          "ts": 1790587456035,
+          "type": "decision",
+          "content": "Keep seed-list failures non-terminal and refresh the SDK durable stream on every connected event: Keep seed-list failures non-terminal and refresh the SDK durable stream on every connected event",
+          "raw": {
+            "question": "Keep seed-list failures non-terminal and refresh the SDK durable stream on every connected event",
+            "chosen": "Keep seed-list failures non-terminal and refresh the SDK durable stream on every connected event",
+            "alternatives": [],
+            "reasoning": "This preserves listener availability and immediate reconnect catch-up while keeping all Relaycast transport behavior inside @agent-relay/sdk."
+          },
+          "significance": "high"
+        }
+      ]
+    }
+  ],
+  "retrospective": {
+    "summary": "Made SDK inbox subscription seeding resilient to transient failures, refreshed delivery state on reconnect, triggered immediate CLI drain on connection, and added regression coverage.",
+    "approach": "Standard approach",
+    "confidence": 0.94
+  },
+  "commits": [],
+  "filesChanged": [],
+  "projectId": "AgentWorkforce/relay",
+  "tags": [],
+  "_trace": {
+    "startRef": "7102ca0d2ccd9c5199459a29de408381fcf15219",
+    "endRef": "7102ca0d2ccd9c5199459a29de408381fcf15219"
+  }
+}

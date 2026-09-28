@@ -494,6 +494,72 @@ describe('DeliveryRunner', () => {
     expect(agent.disconnect).toHaveBeenCalledOnce();
     expect(connectedHandlers).toHaveLength(0);
   });
+
+  it('survives a failed seed and refreshes the durable queue on reconnect', async () => {
+    const connectedHandlers = new Set<() => void>();
+    const reconnectedDelivery = {
+      id: 'del_reconnected',
+      messageId: 'm-reconnected',
+      channelId: 'ch-1',
+      agentId: 'agent-1',
+      status: 'accepted',
+      mode: 'wait',
+      reason: 'dm',
+      priority: 'normal',
+      availableAt: null,
+      message: {
+        id: 'm-reconnected',
+        channelId: 'ch-1',
+        agentId: 'agent-9',
+        agentName: 'Lead',
+        text: 'reconnected payload',
+        threadId: null,
+        createdAt: '2026-06-09T10:00:00.000Z',
+      },
+    };
+    const agent = {
+      connect: vi.fn(),
+      disconnect: vi.fn(async () => {}),
+      on: {
+        any: vi.fn(() => () => {}),
+        connected: vi.fn((handler: () => void) => {
+          connectedHandlers.add(handler);
+          return () => connectedHandlers.delete(handler);
+        }),
+      },
+      deliveries: vi
+        .fn<() => Promise<unknown[]>>()
+        .mockRejectedValueOnce(new Error('temporary list failure'))
+        .mockResolvedValueOnce([reconnectedDelivery]),
+      ackDelivery: vi.fn(),
+      failDelivery: vi.fn(),
+      deferDelivery: vi.fn(),
+    };
+    const messaging = new RelaycastMessagingClient({
+      relaycast: {} as never,
+      agentClient: agent as never,
+    });
+    const controller = new AbortController();
+    const iterator = messaging.inbox
+      .subscribe({ signal: controller.signal, disconnectOnClose: true })
+      [Symbol.asyncIterator]();
+
+    const next = iterator.next();
+    await vi.waitFor(() => expect(agent.deliveries).toHaveBeenCalledOnce());
+    await vi.waitFor(() => expect(connectedHandlers).toHaveLength(1));
+    for (const handler of connectedHandlers) handler();
+    await vi.waitFor(() => expect(agent.deliveries).toHaveBeenCalledTimes(2));
+
+    await expect(next).resolves.toEqual(
+      expect.objectContaining({
+        done: false,
+        value: expect.objectContaining({ id: 'del_reconnected' }),
+      })
+    );
+    controller.abort();
+    await expect(iterator.next()).resolves.toEqual({ done: true, value: undefined });
+    expect(agent.disconnect).toHaveBeenCalledOnce();
+  });
 });
 
 function makeDeliveryAdapter(result: InjectionResult): AgentDeliveryAdapter {
