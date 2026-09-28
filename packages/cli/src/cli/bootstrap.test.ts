@@ -34,6 +34,7 @@ const expectedLeafCommands = [
   'uninstall',
   'telemetry',
   'mcp',
+  'on-relay',
   // Mounted product surfaces. They are commander leaves on purpose: each
   // product's real command tree lives in its own SDK spec and is rendered by
   // the surface mounter, so commander only ever sees the group.
@@ -218,6 +219,7 @@ describe('bootstrap CLI', () => {
         'cloud',
         'workspace',
         'agent',
+        'on-relay',
         'channel',
         'message',
         'integration',

@@ -49,6 +49,7 @@ import { registerCapabilitiesCommands } from './commands/capabilities.js';
 import { registerFleetCommands } from './commands/fleet.js';
 import { registerSkillsCommands } from './commands/skills.js';
 import { registerProductSurfaceCommands } from './commands/product-surfaces.js';
+import { registerOnRelayCommand } from './commands/on-relay.js';
 
 dotenvConfig({ quiet: true });
 
@@ -425,6 +426,7 @@ export function createProgram(options: { name?: string } = {}): Command {
   registerIntegrationCommands(program);
   registerCapabilitiesCommands(program);
   registerSkillsCommands(program);
+  registerOnRelayCommand(program, { version: VERSION });
   // The other Relay products, mounted from their own SDKs: `file` (relayfile),
   // `flows` (relayflows), `sessions` (relayhistory). Each product ships its own
   // command tree; nothing about those commands is reimplemented here. Loading

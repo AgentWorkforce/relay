@@ -1,0 +1,101 @@
+{
+  "id": "traj_q1lur98kayz5",
+  "version": 1,
+  "task": {
+    "title": "Implement headless on-relay listener for #1863 Part A",
+    "source": {
+      "system": "plain",
+      "id": "AgentWorkforce/relay#1863"
+    }
+  },
+  "status": "completed",
+  "startedAt": "2026-09-28T06:11:17.346Z",
+  "completedAt": "2026-09-28T06:15:17.089Z",
+  "agents": [
+    {
+      "name": "default",
+      "role": "lead",
+      "joinedAt": "2026-09-28T06:11:17.500Z"
+    }
+  ],
+  "chapters": [
+    {
+      "id": "chap_2ek3ss58ckyk",
+      "title": "Work",
+      "agentName": "default",
+      "startedAt": "2026-09-28T06:11:17.500Z",
+      "endedAt": "2026-09-28T06:15:17.089Z",
+      "events": [
+        {
+          "ts": 1790575877501,
+          "type": "decision",
+          "content": "Expose a top-level on-relay command through the existing agent-relay npm bin: Expose a top-level on-relay command through the existing agent-relay npm bin",
+          "raw": {
+            "question": "Expose a top-level on-relay command through the existing agent-relay npm bin",
+            "chosen": "Expose a top-level on-relay command through the existing agent-relay npm bin",
+            "alternatives": [],
+            "reasoning": "npx agent-relay@latest on-relay is the smallest public surface consistent with the current CLI package and needs no second package or binary"
+          },
+          "significance": "high"
+        },
+        {
+          "ts": 1790575877626,
+          "type": "decision",
+          "content": "Use the Agent Relay SDK for registration and durable delivery transitions, with a ported direct-node WebSocket: Use the Agent Relay SDK for registration and durable delivery transitions, with a ported direct-node WebSocket",
+          "raw": {
+            "question": "Use the Agent Relay SDK for registration and durable delivery transitions, with a ported direct-node WebSocket",
+            "chosen": "Use the Agent Relay SDK for registration and durable delivery transitions, with a ported direct-node WebSocket",
+            "alternatives": [],
+            "reasoning": "The SDK already owns Relaycast request normalization, while its realtime agent client auto-acks delivery frames before local injection; the desktop protocol requires HTTP ack only after durable injection"
+          },
+          "significance": "high"
+        },
+        {
+          "ts": 1790575877752,
+          "type": "decision",
+          "content": "Persist an in-flight delivery barrier before invoking Codex or Claude: Persist an in-flight delivery barrier before invoking Codex or Claude",
+          "raw": {
+            "question": "Persist an in-flight delivery barrier before invoking Codex or Claude",
+            "chosen": "Persist an in-flight delivery barrier before invoking Codex or Claude",
+            "alternatives": [],
+            "reasoning": "A crash or ambiguous write must never run the teammate's prompt twice; recovered in-flight deliveries are terminally failed as in doubt instead of resent"
+          },
+          "significance": "high"
+        },
+        {
+          "ts": 1790576116871,
+          "type": "reflection",
+          "content": "Headless listener, durable exactly-once ledger, SDK registration/draining, direct node socket, and first-party Codex/Claude injection are implemented. Focused tests/build/package validation pass; full monorepo suite has 13 unrelated baseline/environment failures among 3,567 tests.",
+          "raw": {
+            "focalPoints": [
+              "delivery-durability",
+              "harness-injection",
+              "validation"
+            ],
+            "confidence": 0.9
+          },
+          "significance": "high",
+          "tags": [
+            "focal:delivery-durability",
+            "focal:harness-injection",
+            "focal:validation",
+            "confidence:0.9"
+          ]
+        }
+      ]
+    }
+  ],
+  "retrospective": {
+    "summary": "Added the npx-runnable agent-relay on-relay command with Relaycast registration, direct-node listening, durable exactly-once delivery draining, Codex/Claude injection, docs, and tests.",
+    "approach": "Standard approach",
+    "confidence": 0.9
+  },
+  "commits": [],
+  "filesChanged": [],
+  "projectId": "AgentWorkforce/relay",
+  "tags": [],
+  "_trace": {
+    "startRef": "635cfacd78000b2c023d51bd587ed1ea6a5601db",
+    "endRef": "635cfacd78000b2c023d51bd587ed1ea6a5601db"
+  }
+}
