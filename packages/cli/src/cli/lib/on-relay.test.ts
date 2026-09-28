@@ -1,11 +1,12 @@
 import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
+import { mkdtempSync, writeFileSync } from 'node:fs';
 import { EventEmitter } from 'node:events';
 import os from 'node:os';
 import path from 'node:path';
 
 import WebSocket from 'ws';
 
-import { afterEach, describe, expect, it, vi } from 'vitest';
+import { afterAll, afterEach, describe, expect, it, vi } from 'vitest';
 
 import {
   claudePeerFrames,
@@ -29,15 +30,78 @@ import {
 
 const temporaryDirectories: string[] = [];
 
+// Plain Node-only CI does not build or install a broker binary. Exercise the
+// same journal-lock handshake and cross-process exclusion with a scripted
+// helper, matching the established integration-cleanup-journal test fixture.
+const originalBrokerBinaryPath = process.env.BROKER_BINARY_PATH;
+const lockHelperDirectory = mkdtempSync(path.join(os.tmpdir(), 'on-relay-lock-helper-'));
+const lockHelperPath = path.join(lockHelperDirectory, 'fake-broker.cjs');
+writeFileSync(
+  lockHelperPath,
+  `#!/usr/bin/env node
+const fs = require('fs');
+const args = process.argv;
+const lock = args[args.indexOf('--file') + 1];
+const timeoutMs = Number(args[args.indexOf('--timeout-ms') + 1] || 5000);
+const mutex = lock + '.test-mutex';
+const deadline = Date.now() + timeoutMs;
+(function acquire() {
+  try {
+    fs.mkdirSync(mutex);
+  } catch {
+    if (Date.now() >= deadline) process.exit(4);
+    return setTimeout(acquire, 10);
+  }
+  process.on('exit', () => {
+    try { fs.rmdirSync(mutex); } catch {}
+  });
+  process.stdout.write('locked\\n');
+  process.stdin.resume();
+  process.stdin.on('end', () => process.exit(0));
+})();
+`,
+  { mode: 0o755 }
+);
+process.env.BROKER_BINARY_PATH = lockHelperPath;
+
 async function temporaryDirectory(): Promise<string> {
   const directory = await mkdtemp(path.join(os.tmpdir(), 'on-relay-test-'));
   temporaryDirectories.push(directory);
   return directory;
 }
 
+const passthroughTestLock = async <T>(action: () => Promise<T>): Promise<T> => action();
+
+function serializedTestLock(): <T>(action: () => Promise<T>) => Promise<T> {
+  let tail = Promise.resolve();
+  return async <T>(action: () => Promise<T>): Promise<T> => {
+    let release!: () => void;
+    const previous = tail;
+    tail = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    await previous;
+    try {
+      return await action();
+    } finally {
+      release();
+    }
+  };
+}
+
+function testLedger(filePath: string, lock = passthroughTestLock): DeliveryLedger {
+  return new DeliveryLedger(filePath, lock);
+}
+
 afterEach(async () => {
   vi.restoreAllMocks();
   await Promise.all(temporaryDirectories.splice(0).map((directory) => rm(directory, { recursive: true })));
+});
+
+afterAll(async () => {
+  if (originalBrokerBinaryPath === undefined) delete process.env.BROKER_BINARY_PATH;
+  else process.env.BROKER_BINARY_PATH = originalBrokerBinaryPath;
+  await rm(lockHelperDirectory, { recursive: true });
 });
 
 describe('on-relay target resolution', () => {
@@ -218,6 +282,7 @@ describe('durable at-most-once drain', () => {
   it('serializes listing through acknowledgement for listeners sharing a ledger', async () => {
     const directory = await temporaryDirectory();
     const filePath = path.join(directory, 'ledger.json');
+    const lock = serializedTestLock();
     let queued = true;
     const list = vi.fn(async () => ({ items: queued ? [delivery()] : [] }));
     const ack = vi.fn(async () => {
@@ -233,11 +298,11 @@ describe('durable at-most-once drain', () => {
     };
     const first = new DeliveryDrainer({
       ...options,
-      ledger: new DeliveryLedger(filePath),
+      ledger: testLedger(filePath, lock),
     });
     const second = new DeliveryDrainer({
       ...options,
-      ledger: new DeliveryLedger(filePath),
+      ledger: testLedger(filePath, lock),
     });
 
     await Promise.all([first.drainOnce(), second.drainOnce()]);
@@ -266,7 +331,7 @@ describe('durable at-most-once drain', () => {
           defer: async () => ({}),
         },
       },
-      ledger: new DeliveryLedger(path.join(directory, 'ledger.json')),
+      ledger: testLedger(path.join(directory, 'ledger.json')),
       injector,
       agentName: 'reviewer',
       sessionId: '11111111-1111-4111-8111-111111111111',
@@ -281,7 +346,7 @@ describe('durable at-most-once drain', () => {
   it('persists injection before ACK and retries a lost ACK without reinjecting', async () => {
     const directory = await temporaryDirectory();
     const filePath = path.join(directory, 'ledger.json');
-    const ledger = new DeliveryLedger(filePath);
+    const ledger = testLedger(filePath);
     await ledger.load();
     const item = delivery();
     const list = vi.fn(async () => ({ items: [item] }));
@@ -312,7 +377,7 @@ describe('durable at-most-once drain', () => {
 
   it('never resends an in-flight delivery recovered after a crash', async () => {
     const directory = await temporaryDirectory();
-    const ledger = new DeliveryLedger(path.join(directory, 'ledger.json'));
+    const ledger = testLedger(path.join(directory, 'ledger.json'));
     await ledger.record('del_1', 'injecting');
     const ack = vi.fn(async () => ({}));
     const fail = vi.fn(async () => ({}));
@@ -339,7 +404,7 @@ describe('durable at-most-once drain', () => {
 
   it('acks non-addressed deliveries without turning them into prompts', async () => {
     const directory = await temporaryDirectory();
-    const ledger = new DeliveryLedger(path.join(directory, 'ledger.json'));
+    const ledger = testLedger(path.join(directory, 'ledger.json'));
     const ack = vi.fn(async () => ({}));
     const injector = vi.fn(async () => ({ kind: 'injected' as const }));
     const drainer = new DeliveryDrainer({
@@ -374,7 +439,7 @@ describe('durable at-most-once drain', () => {
           defer: async () => ({}),
         },
       },
-      ledger: new DeliveryLedger(path.join(directory, 'ledger.json')),
+      ledger: testLedger(path.join(directory, 'ledger.json')),
       injector,
       agentName: 'reviewer',
       sessionId: '11111111-1111-4111-8111-111111111111',
@@ -398,7 +463,7 @@ describe('durable at-most-once drain', () => {
           defer: async () => ({}),
         },
       },
-      ledger: new DeliveryLedger(path.join(directory, 'ledger.json')),
+      ledger: testLedger(path.join(directory, 'ledger.json')),
       injector: vi.fn(async () => ({ kind: 'injected' as const })),
       agentName: 'reviewer',
       sessionId: '11111111-1111-4111-8111-111111111111',
@@ -419,7 +484,7 @@ describe('durable at-most-once drain', () => {
           defer,
         },
       },
-      ledger: new DeliveryLedger(path.join(directory, 'ledger.json')),
+      ledger: testLedger(path.join(directory, 'ledger.json')),
       injector: vi.fn(async () => ({ kind: 'retry' as const, reason: 'session busy' })),
       agentName: 'reviewer',
       sessionId: '11111111-1111-4111-8111-111111111111',
@@ -432,7 +497,7 @@ describe('durable at-most-once drain', () => {
 
   it('terminally fails a deterministic rejection and clears its barrier', async () => {
     const directory = await temporaryDirectory();
-    const ledger = new DeliveryLedger(path.join(directory, 'ledger.json'));
+    const ledger = testLedger(path.join(directory, 'ledger.json'));
     const fail = vi.fn(async () => ({}));
     const drainer = new DeliveryDrainer({
       relay: {
@@ -457,7 +522,7 @@ describe('durable at-most-once drain', () => {
     const directory = await temporaryDirectory();
     const blockedParent = path.join(directory, 'not-a-directory');
     await writeFile(blockedParent, 'blocked');
-    const ledger = new DeliveryLedger(path.join(blockedParent, 'ledger.json'));
+    const ledger = testLedger(path.join(blockedParent, 'ledger.json'));
     await expect(ledger.record('del_1', 'injecting')).rejects.toThrow();
     expect(ledger.get('del_1')).toBeUndefined();
   });
@@ -477,7 +542,7 @@ describe('durable at-most-once drain', () => {
           defer: async () => ({}),
         },
       },
-      ledger: new DeliveryLedger(path.join(directory, 'ledger.json')),
+      ledger: testLedger(path.join(directory, 'ledger.json')),
       injector,
       agentName: 'reviewer',
       sessionId: '11111111-1111-4111-8111-111111111111',
