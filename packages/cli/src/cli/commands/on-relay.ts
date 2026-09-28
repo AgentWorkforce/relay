@@ -23,7 +23,6 @@ import {
 
 export interface OnRelayCommandDependencies extends SdkCommandDeps {
   env: NodeJS.ProcessEnv;
-  version: string;
   detectHarness: () => string;
   listen: typeof runOnRelayListener;
 }
@@ -32,7 +31,6 @@ function withDefaults(overrides: Partial<OnRelayCommandDependencies> = {}): OnRe
   return {
     ...withSdkDefaults(overrides),
     env: process.env,
-    version: process.env.AGENT_RELAY_CLI_VERSION ?? 'unknown',
     detectHarness: () => detectOrchestratorHarness(),
     listen: runOnRelayListener,
     ...overrides,
@@ -57,16 +55,14 @@ async function prepareIdentity(
   target: OnRelayTarget,
   options: Record<string, unknown>,
   deps: OnRelayCommandDependencies
-): Promise<{ identity: OnRelayIdentity; baseUrl: string }> {
+): Promise<OnRelayIdentity> {
   const sdkOptions = sdkOptionsFromOpts(options);
   sdkOptions.env = deps.env;
   const token = resolveAgentToken(sdkOptions);
   if (token && option(options, 'workspaceKey')) {
     throw new Error('Pass either --workspace-key or --token, not both.');
   }
-  const baseUrl = validateOnRelayBaseUrl(
-    resolveBaseUrl({ ...sdkOptions, ignorePersistedRelaycastTarget: Boolean(token) })
-  );
+  validateOnRelayBaseUrl(resolveBaseUrl({ ...sdkOptions, ignorePersistedRelaycastTarget: Boolean(token) }));
 
   if (token) {
     const relay = deps.createAgentRelay(sdkOptions);
@@ -74,10 +70,7 @@ async function prepareIdentity(
     if (normalizeAgentName(me.name) !== name) {
       throw new Error(`The supplied agent token belongs to @${me.name}, not @${name}.`);
     }
-    return {
-      baseUrl,
-      identity: { id: me.id, name, token, relay: asDeliveryRelay(relay) },
-    };
+    return { id: me.id, name, relay: asDeliveryRelay(relay) };
   }
 
   const workspaceRelay = deps.createWorkspaceRelay(sdkOptions);
@@ -98,13 +91,9 @@ async function prepareIdentity(
     throw new Error('Relaycast did not return an agent token.');
   }
   return {
-    baseUrl,
-    identity: {
-      id: registered.id,
-      name: normalizeAgentName(registered.name),
-      token: registered.token,
-      relay: asDeliveryRelay(registered as unknown as AgentRelayAgent),
-    },
+    id: registered.id,
+    name: normalizeAgentName(registered.name),
+    relay: asDeliveryRelay(registered as unknown as AgentRelayAgent),
   };
 }
 
@@ -133,7 +122,7 @@ export function registerOnRelayCommand(
         env: deps.env,
         detectedHarness: deps.detectHarness(),
       });
-      const { identity, baseUrl } = await prepareIdentity(name, target, options, deps);
+      const identity = await prepareIdentity(name, target, options, deps);
       const controller = new AbortController();
       const shutdown = () => controller.abort();
       process.once('SIGINT', shutdown);
@@ -143,9 +132,7 @@ export function registerOnRelayCommand(
         await deps.listen({
           identity,
           target,
-          baseUrl,
           stateFile: option(options, 'stateFile') ?? envValue(deps.env, 'RELAY_ON_RELAY_STATE_FILE'),
-          version: deps.version,
           signal: controller.signal,
           log: (message) => deps.log(message),
           warn: (message) => deps.error(message),

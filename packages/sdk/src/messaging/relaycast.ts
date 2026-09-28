@@ -1394,6 +1394,7 @@ export class RelaycastMessagingClient implements RelayMessagingClient {
     const signal = input?.signal;
     if (signal?.aborted) return;
     const recipient = definedOptions({ recipientName: input?.agentName });
+    const connectionStops: Array<() => void> = [];
 
     const seen = new Set<string>();
     const queue: InboxItem[] = [];
@@ -1420,6 +1421,18 @@ export class RelaycastMessagingClient implements RelayMessagingClient {
     // land mid-seed are not missed; `seen` deduplicates the overlap.
     const inFlight = new Set<string>();
     agent.connect();
+    const observeConnection = <T extends unknown[]>(
+      subscribe: ((handler: (...args: T) => void) => () => void) | undefined,
+      state: Parameters<NonNullable<InboxSubscribeInput['onConnectionState']>>[0]
+    ): void => {
+      if (!subscribe || !input?.onConnectionState) return;
+      connectionStops.push(subscribe(() => input.onConnectionState?.(state)));
+    };
+    observeConnection(agent.on.connected?.bind(agent.on), 'connected');
+    observeConnection(agent.on.disconnected?.bind(agent.on), 'disconnected');
+    observeConnection(agent.on.error?.bind(agent.on), 'error');
+    observeConnection(agent.on.reconnecting?.bind(agent.on), 'reconnecting');
+    observeConnection(agent.on.permanentlyDisconnected?.bind(agent.on), 'permanentlyDisconnected');
     const unsubscribe = agent.on.any((event) => {
       const record = asRecord(event);
       if (record.type !== 'delivery.accepted') return;
@@ -1461,7 +1474,11 @@ export class RelaycastMessagingClient implements RelayMessagingClient {
     } finally {
       stopped = true;
       unsubscribe();
+      for (const stopConnection of connectionStops) stopConnection();
       signal?.removeEventListener('abort', stop);
+      if (input?.disconnectOnClose) {
+        await agent.disconnect().catch(() => {});
+      }
     }
   }
 

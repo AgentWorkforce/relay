@@ -759,7 +759,22 @@ export interface InboxListResult {
 export interface InboxSubscribeInput {
   agentName?: string;
   signal?: AbortSignal;
+  /**
+   * Close the agent transport when iteration stops. Use this when the
+   * subscription owns a dedicated agent client rather than sharing it with
+   * other SDK consumers.
+   */
+  disconnectOnClose?: boolean;
+  /** Observe the direct-node connection lifecycle without owning its socket. */
+  onConnectionState?: (state: InboxConnectionState) => void;
 }
+
+export type InboxConnectionState =
+  | 'connected'
+  | 'disconnected'
+  | 'reconnecting'
+  | 'permanentlyDisconnected'
+  | 'error';
 
 export interface InboxAckInput {
   inboxItemId: string;

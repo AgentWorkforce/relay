@@ -195,6 +195,11 @@ export type RelaycastAgentLike = {
   on: {
     any(handler: (event: unknown) => void): () => void;
     actionInvoked?(handler: (event: unknown) => void): () => void;
+    connected?(handler: () => void): () => void;
+    disconnected?(handler: () => void): () => void;
+    error?(handler: () => void): () => void;
+    reconnecting?(handler: (attempt: number) => void): () => void;
+    permanentlyDisconnected?(handler: (attempt: number) => void): () => void;
   };
 };
 

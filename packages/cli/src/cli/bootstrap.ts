@@ -426,7 +426,7 @@ export function createProgram(options: { name?: string } = {}): Command {
   registerIntegrationCommands(program);
   registerCapabilitiesCommands(program);
   registerSkillsCommands(program);
-  registerOnRelayCommand(program, { version: VERSION });
+  registerOnRelayCommand(program);
   // The other Relay products, mounted from their own SDKs: `file` (relayfile),
   // `flows` (relayflows), `sessions` (relayhistory). Each product ships its own
   // command tree; nothing about those commands is reimplemented here. Loading

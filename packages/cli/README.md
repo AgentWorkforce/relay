@@ -45,6 +45,13 @@ cross-session inbox, keeps a durable at-most-once ledger (in-doubt deliveries
 are not resent), drains missed deliveries after reconnect, and exits cleanly
 on Ctrl-C/SIGTERM.
 
+`@agent-relay/sdk` owns the full Relaycast transport: registration, direct-node
+token exchange and WebSocket lifecycle, presence heartbeats, reconnect, durable
+delivery streaming, and delivery transitions. The CLI only adapts a delivery
+to the local coding session and records the pre-injection/in-doubt barrier.
+Those reusable pieces are exported as `createHarnessInjector` and
+`runDurableSessionDelivery` for other local surfaces.
+
 Configuration may be supplied by flags or environment:
 
 | Flag              | Environment                 | Purpose                          |

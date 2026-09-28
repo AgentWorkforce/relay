@@ -1,9 +1,6 @@
 import { mkdir, mkdtemp, readFile, rm, utimes, writeFile } from 'node:fs/promises';
-import { EventEmitter } from 'node:events';
 import os from 'node:os';
 import path from 'node:path';
-
-import WebSocket from 'ws';
 
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
@@ -15,15 +12,9 @@ import {
   injectCodex,
   labeledDeliveryText,
   messageReference,
-  mintNodeToken,
-  nodeHeartbeatFrame,
-  nodeRegisterFrame,
-  nodeSocketUrl,
   normalizeAgentName,
-  reconnectBackoffMs,
   resolveOnRelayTarget,
   runOnRelayListener,
-  runPushChannel,
   validateOnRelayBaseUrl,
   type DeliveryItem,
 } from './on-relay.js';
@@ -90,115 +81,6 @@ describe('on-relay protocol helpers', () => {
     expect(() => validateOnRelayBaseUrl('https://example.com/path')).toThrow(/HTTPS origin/);
   });
 
-  it('mints the direct node token without changing the protocol path', async () => {
-    const fetchImpl = vi.fn(async (url: string | URL | Request, init?: RequestInit) => {
-      expect(String(url)).toBe('https://cast.agentrelay.com/v1/agent/node-token');
-      expect(init?.method).toBe('POST');
-      expect((init?.headers as Record<string, string>).authorization).toBe('Bearer at_live_secret');
-      return new Response(
-        JSON.stringify({ data: { node_id: 'node_1', node_name: 'agent-1', token: 'nt_live_secret' } }),
-        { status: 200, headers: { 'content-type': 'application/json' } }
-      );
-    });
-    await expect(
-      mintNodeToken({
-        baseUrl: 'https://cast.agentrelay.com',
-        agentToken: 'at_live_secret',
-        fetchImpl: fetchImpl as typeof fetch,
-      })
-    ).resolves.toEqual({ nodeId: 'node_1', nodeName: 'agent-1', token: 'nt_live_secret' });
-  });
-
-  it('ports the desktop register, heartbeat, socket and jitter shapes', () => {
-    const node = { nodeId: 'node_1', nodeName: 'agent-1', token: 'nt_live_secret' };
-    expect(nodeRegisterFrame(node, '12.5.0', 'register-1')).toMatchObject({
-      v: 1,
-      id: 'register-1',
-      type: 'node.register',
-      node_id: 'node_1',
-      name: 'agent-1',
-      max_agents: 1,
-      resume_cursor: null,
-    });
-    expect(nodeHeartbeatFrame(node, '12.5.0')).toMatchObject({
-      v: 1,
-      type: 'node.heartbeat',
-      active_agents: 1,
-      handlers_live: false,
-    });
-    expect(nodeSocketUrl('https://cast.agentrelay.com', node.token, '12.5.0')).toContain(
-      'wss://cast.agentrelay.com/v1/node/ws?token=nt_live_secret'
-    );
-    expect(reconnectBackoffMs(1, () => 0)).toBe(1_000);
-    expect(reconnectBackoffMs(20, () => 1)).toBe(30_000);
-  });
-
-  it('registers the direct node socket and shuts it down cleanly', async () => {
-    class FakeSocket extends EventEmitter {
-      readyState = WebSocket.CONNECTING;
-      sent: string[] = [];
-
-      constructor() {
-        super();
-        queueMicrotask(() => {
-          this.readyState = WebSocket.OPEN;
-          this.emit('open');
-        });
-      }
-
-      send(value: string) {
-        this.sent.push(value);
-        const frame = JSON.parse(value) as { type: string; id?: string };
-        if (frame.type === 'node.register') {
-          queueMicrotask(() =>
-            this.emit('message', Buffer.from(JSON.stringify({ type: 'reply', id: frame.id })))
-          );
-        }
-      }
-
-      close() {
-        this.readyState = WebSocket.CLOSED;
-        queueMicrotask(() => this.emit('close'));
-      }
-
-      terminate() {
-        this.close();
-      }
-    }
-
-    const sockets: FakeSocket[] = [];
-    const controller = new AbortController();
-    const fetchImpl = vi.fn(
-      async () =>
-        new Response(
-          JSON.stringify({ data: { node_id: 'node_1', node_name: 'agent-1', token: 'nt_live_secret' } }),
-          { status: 200, headers: { 'content-type': 'application/json' } }
-        )
-    );
-    await runPushChannel({
-      baseUrl: 'https://cast.agentrelay.com',
-      agentToken: 'at_live_secret',
-      version: '12.5.0',
-      signal: controller.signal,
-      fetchImpl: fetchImpl as typeof fetch,
-      websocketFactory: (() => {
-        const socket = new FakeSocket();
-        sockets.push(socket);
-        return socket as unknown as WebSocket;
-      }) as (url: string) => WebSocket,
-      onWake: vi.fn(),
-      onState: (state) => {
-        if (state === 'live') controller.abort();
-      },
-    });
-    expect(fetchImpl).toHaveBeenCalledOnce();
-    expect(sockets).toHaveLength(1);
-    expect(sockets[0].sent.map((value) => JSON.parse(value))).toEqual([
-      expect.objectContaining({ type: 'node.register', node_id: 'node_1', name: 'agent-1' }),
-    ]);
-    expect(sockets[0].readyState).toBe(WebSocket.CLOSED);
-  });
-
   it('frames Claude Code peer-protocol auth and one labeled user turn', () => {
     const frames = claudePeerFrames('peer-secret', 'msg_1', 'hello').trim().split('\n');
     expect(JSON.parse(frames[0])).toEqual({ type: 'auth', token: 'peer-secret' });
@@ -211,13 +93,29 @@ describe('on-relay protocol helpers', () => {
   });
 });
 
-function delivery(overrides: Partial<DeliveryItem> = {}): DeliveryItem {
-  return {
+type DeliveryOverrides = Omit<Partial<DeliveryItem>, 'message'> & {
+  message?: Pick<DeliveryItem['message'], 'id' | 'text' | 'from'>;
+};
+
+function delivery(overrides: DeliveryOverrides = {}): DeliveryItem {
+  const base: DeliveryItem = {
     id: 'del_1',
+    recipient: { name: 'reviewer' },
     state: 'queued',
-    message: { id: 'msg_1', text: 'Please review this.', from: { name: 'alice' } },
+    attempts: 0,
+    message: {
+      id: 'msg_1',
+      text: 'Please review this.',
+      from: { name: 'alice' },
+      target: { kind: 'agent', agentName: 'reviewer' },
+      createdAt: '2026-09-28T00:00:00.000Z',
+    },
     metadata: { reason: 'dm' },
+  };
+  return {
+    ...base,
     ...overrides,
+    message: overrides.message ? { ...base.message, ...overrides.message } : base.message,
   };
 }
 
@@ -251,10 +149,17 @@ describe('durable at-most-once drain', () => {
         identity: {
           id: 'agent_1',
           name: 'reviewer',
-          token: 'at_live_test',
           relay: {
+            capabilities: {
+              serverDeliveryState: true,
+              durableDelivery: true,
+              durableAck: true,
+              durableFail: true,
+              durableDefer: true,
+            },
             inbox: {
               list: async () => ({ items: [] }),
+              subscribe: async function* () {},
               ack: async () => ({}),
               fail: async () => ({}),
               defer: async () => ({}),
@@ -262,13 +167,58 @@ describe('durable at-most-once drain', () => {
           },
         },
         target: { harness: 'codex', sessionId: '11111111-1111-4111-8111-111111111111' },
-        baseUrl: 'https://cast.agentrelay.com',
         stateFile: path.join(blockedParent, 'ledger.json'),
-        version: 'test',
         signal: controller.signal,
         injector: async () => ({ kind: 'injected' }),
       })
     ).rejects.toThrow();
+  });
+
+  it('delegates realtime, reconnect, heartbeat, and shutdown ownership to the SDK stream', async () => {
+    const directory = await temporaryDirectory();
+    const controller = new AbortController();
+    const log = vi.fn();
+    const subscribe = vi.fn(async function* (input?: {
+      disconnectOnClose?: boolean;
+      onConnectionState?: (state: 'connected') => void;
+    }) {
+      input?.onConnectionState?.('connected');
+      controller.abort();
+      yield* [] as DeliveryItem[];
+    });
+
+    await runOnRelayListener({
+      identity: {
+        id: 'agent_1',
+        name: 'reviewer',
+        relay: {
+          capabilities: {
+            serverDeliveryState: true,
+            durableDelivery: true,
+            durableAck: true,
+            durableFail: true,
+            durableDefer: true,
+          },
+          inbox: {
+            list: async () => ({ items: [] }),
+            subscribe,
+            ack: async () => ({}),
+            fail: async () => ({}),
+            defer: async () => ({}),
+          },
+        },
+      },
+      target: { harness: 'codex', sessionId: '11111111-1111-4111-8111-111111111111' },
+      stateFile: path.join(directory, 'ledger.json'),
+      signal: controller.signal,
+      injector: async () => ({ kind: 'injected' }),
+      log,
+    });
+
+    expect(subscribe).toHaveBeenCalledWith(
+      expect.objectContaining({ agentName: 'reviewer', disconnectOnClose: true })
+    );
+    expect(log).toHaveBeenCalledWith('Realtime delivery listener connected.');
   });
 
   it('serializes listing through acknowledgement for listeners sharing a ledger', async () => {

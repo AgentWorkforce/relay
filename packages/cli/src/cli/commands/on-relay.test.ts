@@ -6,15 +6,27 @@ import { registerOnRelayCommand } from './on-relay.js';
 const SESSION_ID = '11111111-1111-4111-8111-111111111111';
 
 function registeredClient(name = 'reviewer') {
+  const inbox = {
+    list: vi.fn(async () => ({ items: [] })),
+    subscribe: vi.fn(async function* () {}),
+    ack: vi.fn(async () => ({})),
+    fail: vi.fn(async () => ({})),
+    defer: vi.fn(async () => ({})),
+  };
   return {
     id: 'agent_1',
     name,
     token: 'at_live_secret',
-    inbox: {
-      list: vi.fn(async () => ({ items: [] })),
-      ack: vi.fn(async () => ({})),
-      fail: vi.fn(async () => ({})),
-      defer: vi.fn(async () => ({})),
+    inbox,
+    messaging: {
+      capabilities: {
+        serverDeliveryState: true,
+        durableDelivery: true,
+        durableAck: true,
+        durableFail: true,
+        durableDefer: true,
+      },
+      inbox,
     },
   };
 }
@@ -30,7 +42,6 @@ describe('on-relay command', () => {
     program.exitOverride();
     registerOnRelayCommand(program, {
       env: {},
-      version: '12.5.0',
       detectHarness: () => 'unknown',
       createWorkspaceRelay: createWorkspaceRelay as never,
       createAgentRelay: vi.fn() as never,
@@ -70,10 +81,8 @@ describe('on-relay command', () => {
     );
     expect(listen).toHaveBeenCalledWith(
       expect.objectContaining({
-        identity: expect.objectContaining({ id: 'agent_1', name: 'reviewer', token: 'at_live_secret' }),
+        identity: expect.objectContaining({ id: 'agent_1', name: 'reviewer' }),
         target: { harness: 'codex', sessionId: SESSION_ID },
-        baseUrl: 'http://localhost:4100',
-        version: '12.5.0',
       })
     );
     expect(log).toHaveBeenCalledWith(`On relay as @reviewer (codex session ${SESSION_ID}).`);
@@ -83,7 +92,8 @@ describe('on-relay command', () => {
   it('reuses an agent token only when it belongs to the requested name', async () => {
     const tokenClient = {
       agents: { me: vi.fn(async () => ({ id: 'agent_2', name: 'reviewer' })) },
-      inbox: registeredClient().inbox,
+      ...registeredClient(),
+      id: 'agent_2',
     };
     const createAgentRelay = vi.fn(() => tokenClient);
     const listen = vi.fn(async () => {});
@@ -91,7 +101,6 @@ describe('on-relay command', () => {
     program.exitOverride();
     registerOnRelayCommand(program, {
       env: {},
-      version: '12.5.0',
       detectHarness: () => 'codex',
       createWorkspaceRelay: vi.fn() as never,
       createAgentRelay: createAgentRelay as never,

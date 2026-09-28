@@ -452,6 +452,48 @@ describe('DeliveryRunner', () => {
     expect(agent.failDelivery).not.toHaveBeenCalled();
     expect(agent.deferDelivery).not.toHaveBeenCalled();
   });
+
+  it('can own and observe the direct-node subscription lifecycle', async () => {
+    const connectedHandlers = new Set<() => void>();
+    const agent = {
+      connect: vi.fn(),
+      disconnect: vi.fn(async () => {}),
+      on: {
+        any: vi.fn(() => () => {}),
+        connected: vi.fn((handler: () => void) => {
+          connectedHandlers.add(handler);
+          return () => connectedHandlers.delete(handler);
+        }),
+      },
+      deliveries: vi.fn(async () => []),
+      ackDelivery: vi.fn(),
+      failDelivery: vi.fn(),
+      deferDelivery: vi.fn(),
+    };
+    const messaging = new RelaycastMessagingClient({
+      relaycast: {} as never,
+      agentClient: agent as never,
+    });
+    const controller = new AbortController();
+    const states: string[] = [];
+    const iterator = messaging.inbox
+      .subscribe({
+        signal: controller.signal,
+        disconnectOnClose: true,
+        onConnectionState: (state) => states.push(state),
+      })
+      [Symbol.asyncIterator]();
+
+    const next = iterator.next();
+    await vi.waitFor(() => expect(agent.connect).toHaveBeenCalledOnce());
+    for (const handler of connectedHandlers) handler();
+    controller.abort();
+    await expect(next).resolves.toEqual({ done: true, value: undefined });
+
+    expect(states).toEqual(['connected']);
+    expect(agent.disconnect).toHaveBeenCalledOnce();
+    expect(connectedHandlers).toHaveLength(0);
+  });
 });
 
 function makeDeliveryAdapter(result: InjectionResult): AgentDeliveryAdapter {
