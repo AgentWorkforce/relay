@@ -215,6 +215,69 @@ function delivery(overrides: Partial<DeliveryItem> = {}): DeliveryItem {
 }
 
 describe('durable at-most-once drain', () => {
+  it('serializes listing through acknowledgement for listeners sharing a ledger', async () => {
+    const directory = await temporaryDirectory();
+    const filePath = path.join(directory, 'ledger.json');
+    let queued = true;
+    const list = vi.fn(async () => ({ items: queued ? [delivery()] : [] }));
+    const ack = vi.fn(async () => {
+      queued = false;
+    });
+    const injector = vi.fn(async () => ({ kind: 'injected' as const }));
+    const relay = { inbox: { list, ack, fail: async () => ({}), defer: async () => ({}) } };
+    const options = {
+      relay,
+      injector,
+      agentName: 'reviewer',
+      sessionId: '11111111-1111-4111-8111-111111111111',
+    };
+    const first = new DeliveryDrainer({
+      ...options,
+      ledger: new DeliveryLedger(filePath),
+    });
+    const second = new DeliveryDrainer({
+      ...options,
+      ledger: new DeliveryLedger(filePath),
+    });
+
+    await Promise.all([first.drainOnce(), second.drainOnce()]);
+
+    expect(list).toHaveBeenCalledTimes(2);
+    expect(injector).toHaveBeenCalledOnce();
+    expect(ack).toHaveBeenCalledOnce();
+  });
+
+  it('does not handle future or malformed scheduled deliveries', async () => {
+    const directory = await temporaryDirectory();
+    const injector = vi.fn(async () => ({ kind: 'injected' as const }));
+    const ack = vi.fn(async () => ({}));
+    const drainer = new DeliveryDrainer({
+      relay: {
+        inbox: {
+          list: async () => ({
+            items: [
+              delivery({ id: 'queued-future', availableAt: '2999-01-01T00:00:00.000Z' }),
+              delivery({ id: 'deferred-invalid', state: 'deferred', availableAt: 'not-a-date' }),
+              delivery({ id: 'deferred-missing', state: 'deferred', availableAt: undefined }),
+            ],
+          }),
+          ack,
+          fail: async () => ({}),
+          defer: async () => ({}),
+        },
+      },
+      ledger: new DeliveryLedger(path.join(directory, 'ledger.json')),
+      injector,
+      agentName: 'reviewer',
+      sessionId: '11111111-1111-4111-8111-111111111111',
+    });
+
+    await drainer.drainOnce();
+
+    expect(injector).not.toHaveBeenCalled();
+    expect(ack).not.toHaveBeenCalled();
+  });
+
   it('persists injection before ACK and retries a lost ACK without reinjecting', async () => {
     const directory = await temporaryDirectory();
     const filePath = path.join(directory, 'ledger.json');

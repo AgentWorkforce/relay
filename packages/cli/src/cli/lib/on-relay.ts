@@ -8,6 +8,7 @@ import path from 'node:path';
 import WebSocket, { type RawData } from 'ws';
 
 import type { AgentRelayAgent } from '@agent-relay/sdk';
+import { formatBrokerNotFoundError, getBrokerBinaryPath } from '@agent-relay/harness-driver/broker-path';
 
 const DEFAULT_BASE_URL = 'https://cast.agentrelay.com';
 const HEARTBEAT_INTERVAL_MS = 15_000;
@@ -18,6 +19,7 @@ const REQUEST_TIMEOUT_MS = 20_000;
 const MAX_BACKOFF_MS = 30_000;
 const MAX_LINE_BYTES = 1_000_000;
 const MAX_CODEX_MESSAGE_BYTES = 120_000;
+const LEDGER_LOCK_TIMEOUT_MS = 5_000;
 const INJECTED_REASONS = new Set(['dm', 'mention', 'thread_reply', 'thread-reply']);
 
 export type OnRelayHarness = 'codex' | 'claude';
@@ -458,6 +460,121 @@ function safeErrorMessage(error: unknown): string {
   return error instanceof Error ? error.message : 'unknown error';
 }
 
+/**
+ * Hold the broker's cross-platform kernel lock for one complete delivery drain.
+ * The stable lock file is never unlinked, so every listener for this ledger
+ * contends on the same inode and the kernel releases ownership after a crash.
+ */
+async function withKernelLedgerLock<T>(ledgerFile: string, action: () => Promise<T>): Promise<T> {
+  await mkdir(path.dirname(ledgerFile), { recursive: true, mode: 0o700 });
+  const binary = getBrokerBinaryPath();
+  if (!binary) throw new Error(formatBrokerNotFoundError());
+  const lockFile = `${ledgerFile}.lock`;
+  const child = spawn(
+    binary,
+    [
+      'journal-lock',
+      '--file',
+      lockFile,
+      '--journal-file',
+      ledgerFile,
+      '--timeout-ms',
+      String(LEDGER_LOCK_TIMEOUT_MS),
+    ],
+    { stdio: ['pipe', 'pipe', 'ignore'] }
+  );
+  const exit = new Promise<number | null>((resolve) => {
+    child.once('exit', (code) => resolve(code));
+    child.once('error', () => resolve(null));
+  });
+  let exited = false;
+  void exit.then(() => {
+    exited = true;
+  });
+
+  await new Promise<void>((resolve, reject) => {
+    let settled = false;
+    let buffer = '';
+    const settle = (operation: () => void) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(deadline);
+      operation();
+    };
+    const deadline = setTimeout(() => {
+      settle(() => {
+        child.kill('SIGKILL');
+        reject(new Error(`The on-relay ledger lock did not respond for ${lockFile}.`));
+      });
+    }, LEDGER_LOCK_TIMEOUT_MS + 2_000);
+    child.stdout!.on('data', (chunk: Buffer) => {
+      buffer += chunk.toString('utf8');
+      const newline = buffer.indexOf('\n');
+      if (newline < 0) return;
+      if (buffer.slice(0, newline) === 'locked') {
+        settle(resolve);
+      } else {
+        settle(() => {
+          child.kill('SIGKILL');
+          reject(new Error(`The on-relay ledger lock returned an invalid handshake for ${lockFile}.`));
+        });
+      }
+    });
+    child.once('error', (error) => {
+      settle(() => reject(new Error(`Could not start the on-relay ledger lock: ${safeErrorMessage(error)}`)));
+    });
+    void exit.then((code) => {
+      settle(() => {
+        if (code === 4) {
+          reject(new Error(`Timed out waiting for another on-relay listener using ${lockFile}.`));
+        } else if (code === 3) {
+          reject(new Error(`The on-relay ledger lock has an unrecognized format: ${lockFile}.`));
+        } else if (code === 2) {
+          reject(
+            new Error(`The broker binary does not support the on-relay ledger lock; upgrade agent-relay.`)
+          );
+        } else {
+          reject(new Error(`The on-relay ledger lock exited before acquisition (${code ?? 'unknown'}).`));
+        }
+      });
+    });
+  });
+
+  const release = async (): Promise<void> => {
+    if (exited) {
+      const code = await exit;
+      if (code !== 0) throw new Error(`The on-relay ledger lock was lost before release.`);
+      return;
+    }
+    await new Promise<void>((resolve) => {
+      let settled = false;
+      const finish = () => {
+        if (settled) return;
+        settled = true;
+        resolve();
+      };
+      child.stdin!.once('error', finish);
+      void exit.then(finish);
+      try {
+        child.stdin!.end(finish);
+      } catch {
+        finish();
+      }
+    });
+    const code = await exit;
+    if (code !== 0) throw new Error(`The on-relay ledger lock was lost before release.`);
+  };
+
+  try {
+    const result = await action();
+    await release();
+    return result;
+  } catch (error) {
+    await release().catch(() => {});
+    throw error;
+  }
+}
+
 export class DeliveryLedger {
   private entries = new Map<string, LedgerEntry>();
 
@@ -468,7 +585,10 @@ export class DeliveryLedger {
     try {
       raw = await readFile(this.filePath, 'utf8');
     } catch (error) {
-      if ((error as NodeJS.ErrnoException).code === 'ENOENT') return;
+      if ((error as NodeJS.ErrnoException).code === 'ENOENT') {
+        this.entries = new Map();
+        return;
+      }
       throw error;
     }
     let decoded: unknown;
@@ -481,6 +601,7 @@ export class DeliveryLedger {
     if (record.version !== 1) {
       throw new Error(`The on-relay delivery ledger has an unsupported version: ${this.filePath}`);
     }
+    const entries = new Map<string, LedgerEntry>();
     for (const [id, value] of Object.entries(asRecord(record.deliveries))) {
       const entry = asRecord(value);
       const state = entry.state;
@@ -489,13 +610,21 @@ export class DeliveryLedger {
         (state === 'injecting' || state === 'injected' || state === 'in-doubt' || state === 'rejected') &&
         typeof updatedAt === 'string'
       ) {
-        this.entries.set(id, {
+        entries.set(id, {
           state,
           updatedAt,
           ...(typeof entry.reason === 'string' ? { reason: entry.reason } : {}),
         });
       }
     }
+    this.entries = entries;
+  }
+
+  async exclusive<T>(action: () => Promise<T>): Promise<T> {
+    return withKernelLedgerLock(this.filePath, async () => {
+      await this.load();
+      return action();
+    });
   }
 
   get(id: string): LedgerEntry['state'] | undefined {
@@ -609,20 +738,28 @@ export class DeliveryDrainer {
   }
 
   async drainOnce(): Promise<void> {
-    const result = await this.options.relay.inbox.list({
-      agentName: this.options.agentName,
-      limit: 50,
-    });
-    for (const item of result.items) {
-      if (this.options.signal?.aborted) return;
-      if (item.state === 'deferred' && Date.parse(item.availableAt ?? '') > Date.now()) continue;
-      if (item.state !== 'queued' && item.state !== 'delivered' && item.state !== 'deferred') continue;
-      try {
-        await this.handle(item);
-      } catch (error) {
-        this.options.warn?.(`Delivery ${item.id} could not be handled: ${safeErrorMessage(error)}`);
+    await this.options.ledger.exclusive(async () => {
+      const result = await this.options.relay.inbox.list({
+        agentName: this.options.agentName,
+        limit: 50,
+      });
+      for (const item of result.items) {
+        if (this.options.signal?.aborted) return;
+        const availableAt = item.availableAt === undefined ? undefined : Date.parse(item.availableAt);
+        if (
+          (item.state === 'deferred' && availableAt === undefined) ||
+          (availableAt !== undefined && (!Number.isFinite(availableAt) || availableAt > Date.now()))
+        ) {
+          continue;
+        }
+        if (item.state !== 'queued' && item.state !== 'delivered' && item.state !== 'deferred') continue;
+        try {
+          await this.handle(item);
+        } catch (error) {
+          this.options.warn?.(`Delivery ${item.id} could not be handled: ${safeErrorMessage(error)}`);
+        }
       }
-    }
+    });
   }
 
   private async handle(item: DeliveryItem): Promise<void> {
