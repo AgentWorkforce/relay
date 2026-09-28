@@ -1,6 +1,6 @@
 import { spawn } from 'node:child_process';
 import { createHash, randomUUID } from 'node:crypto';
-import { mkdir, readFile, readdir, rename, rm, rmdir, stat, writeFile } from 'node:fs/promises';
+import { lstat, mkdir, readFile, readdir, rename, rm, rmdir, writeFile } from 'node:fs/promises';
 import net from 'node:net';
 import os from 'node:os';
 import path from 'node:path';
@@ -463,16 +463,32 @@ function safeErrorMessage(error: unknown): string {
 
 type DeliveryLedgerLock = <T>(action: () => Promise<T>) => Promise<T>;
 
+class LedgerLockBusyError extends Error {
+  constructor(lockDirectory: string) {
+    super(`Timed out waiting for another on-relay listener using ${lockDirectory}.`);
+    this.name = 'LedgerLockBusyError';
+  }
+}
+
 interface LedgerLockOwner {
   version: 1;
   pid: number;
   token: string;
 }
 
+async function assertLedgerLockDirectory(lockDirectory: string) {
+  const info = await lstat(lockDirectory);
+  if (!info.isDirectory()) {
+    throw new Error(`The on-relay ledger lock is not a directory: ${lockDirectory}.`);
+  }
+  return info;
+}
+
 async function inspectLedgerLock(lockDirectory: string): Promise<{
   entries: string[];
   ownerIsAlive: boolean;
 }> {
+  await assertLedgerLockDirectory(lockDirectory);
   const entries = await readdir(lockDirectory);
   let ownerIsAlive = false;
   for (const entry of entries) {
@@ -529,10 +545,11 @@ async function withPortableLedgerLock<T>(ledgerFile: string, action: () => Promi
     }
 
     try {
-      if (Date.now() - (await stat(lockDirectory)).mtimeMs >= LEDGER_LOCK_STALE_MS) {
+      if (Date.now() - (await assertLedgerLockDirectory(lockDirectory)).mtimeMs >= LEDGER_LOCK_STALE_MS) {
         const observed = await inspectLedgerLock(lockDirectory);
         if (!observed.ownerIsAlive) {
           for (const entry of observed.entries) {
+            await assertLedgerLockDirectory(lockDirectory);
             await rm(path.join(lockDirectory, entry), { force: true });
           }
           await rmdir(lockDirectory).catch((error) => {
@@ -547,7 +564,7 @@ async function withPortableLedgerLock<T>(ledgerFile: string, action: () => Promi
       throw error;
     }
     if (Date.now() - startedAt >= LEDGER_LOCK_TIMEOUT_MS) {
-      throw new Error(`Timed out waiting for another on-relay listener using ${lockDirectory}.`);
+      throw new LedgerLockBusyError(lockDirectory);
     }
     await new Promise((resolve) => setTimeout(resolve, LEDGER_LOCK_RETRY_MS));
   }
@@ -897,7 +914,12 @@ export async function runOnRelayListener(options: RunOnRelayListenerOptions): Pr
   const ledger = new DeliveryLedger(
     options.stateFile ?? defaultOnRelayStateFile(options.identity.name, options.identity.id)
   );
-  await ledger.load();
+  try {
+    await ledger.exclusive(async () => {});
+  } catch (error) {
+    // Contention proves the lock is usable; the regular drain loop will retry.
+    if (!(error instanceof LedgerLockBusyError)) throw error;
+  }
   const injector =
     options.injector ??
     createHarnessInjector({ harness: options.target.harness, sessionId: options.target.sessionId });
@@ -913,9 +935,10 @@ export async function runOnRelayListener(options: RunOnRelayListenerOptions): Pr
   });
 
   const requestDrain = () => {
-    void drainer
-      .request()
-      .catch((error) => options.warn?.(`Delivery queue unavailable: ${safeErrorMessage(error)}`));
+    void drainer.request().catch((error) => {
+      if (error instanceof LedgerLockBusyError) return;
+      options.warn?.(`Delivery queue unavailable: ${safeErrorMessage(error)}`);
+    });
   };
   requestDrain();
   const polling = setInterval(requestDrain, options.pollIntervalMs ?? SAFETY_POLL_INTERVAL_MS);

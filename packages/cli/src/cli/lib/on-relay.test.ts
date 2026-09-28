@@ -22,6 +22,7 @@ import {
   normalizeAgentName,
   reconnectBackoffMs,
   resolveOnRelayTarget,
+  runOnRelayListener,
   runPushChannel,
   validateOnRelayBaseUrl,
   type DeliveryItem,
@@ -221,6 +222,37 @@ function delivery(overrides: Partial<DeliveryItem> = {}): DeliveryItem {
 }
 
 describe('durable at-most-once drain', () => {
+  it('fails listener startup when the ledger lock cannot be created', async () => {
+    const directory = await temporaryDirectory();
+    const blockedParent = path.join(directory, 'not-a-directory');
+    await writeFile(blockedParent, 'blocked');
+    const controller = new AbortController();
+
+    await expect(
+      runOnRelayListener({
+        identity: {
+          id: 'agent_1',
+          name: 'reviewer',
+          token: 'at_live_test',
+          relay: {
+            inbox: {
+              list: async () => ({ items: [] }),
+              ack: async () => ({}),
+              fail: async () => ({}),
+              defer: async () => ({}),
+            },
+          },
+        },
+        target: { harness: 'codex', sessionId: '11111111-1111-4111-8111-111111111111' },
+        baseUrl: 'https://cast.agentrelay.com',
+        stateFile: path.join(blockedParent, 'ledger.json'),
+        version: 'test',
+        signal: controller.signal,
+        injector: async () => ({ kind: 'injected' }),
+      })
+    ).rejects.toThrow();
+  });
+
   it('serializes listing through acknowledgement for listeners sharing a ledger', async () => {
     const directory = await temporaryDirectory();
     const filePath = path.join(directory, 'ledger.json');

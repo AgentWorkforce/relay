@@ -1,0 +1,255 @@
+{
+  "version": "1.0.0",
+  "id": "6704e160-c200-4a68-b31c-79cf82ff424a",
+  "timestamp": "2026-09-28T07:18:22.266Z",
+  "trajectory": "traj_unqxdkgnv4jg",
+  "files": [
+    {
+      "path": "CHANGELOG.md",
+      "conversations": [
+        {
+          "contributor": {
+            "type": "ai"
+          },
+          "ranges": [
+            {
+              "start_line": 9,
+              "end_line": 15,
+              "revision": "e9df0bdc09414ef1996d36fa2e6d592021351fb8"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "path": "packages/cli/README.md",
+      "conversations": [
+        {
+          "contributor": {
+            "type": "ai"
+          },
+          "ranges": [
+            {
+              "start_line": 41,
+              "end_line": 49,
+              "revision": "e9df0bdc09414ef1996d36fa2e6d592021351fb8"
+            },
+            {
+              "start_line": 56,
+              "end_line": 66,
+              "revision": "e9df0bdc09414ef1996d36fa2e6d592021351fb8"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "path": "packages/cli/src/cli/commands/on-relay.test.ts",
+      "conversations": [
+        {
+          "contributor": {
+            "type": "ai"
+          },
+          "ranges": [
+            {
+              "start_line": 14,
+              "end_line": 20,
+              "revision": "e9df0bdc09414ef1996d36fa2e6d592021351fb8"
+            },
+            {
+              "start_line": 66,
+              "end_line": 72,
+              "revision": "e9df0bdc09414ef1996d36fa2e6d592021351fb8"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "path": "packages/cli/src/cli/commands/on-relay.ts",
+      "conversations": [
+        {
+          "contributor": {
+            "type": "ai"
+          },
+          "ranges": [
+            {
+              "start_line": 92,
+              "end_line": 98,
+              "revision": "e9df0bdc09414ef1996d36fa2e6d592021351fb8"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "path": "packages/cli/src/cli/lib/on-relay.test.ts",
+      "conversations": [
+        {
+          "contributor": {
+            "type": "ai"
+          },
+          "ranges": [
+            {
+              "start_line": 1,
+              "end_line": 4,
+              "revision": "e9df0bdc09414ef1996d36fa2e6d592021351fb8"
+            },
+            {
+              "start_line": 11,
+              "end_line": 18,
+              "revision": "e9df0bdc09414ef1996d36fa2e6d592021351fb8"
+            },
+            {
+              "start_line": 35,
+              "end_line": 46,
+              "revision": "e9df0bdc09414ef1996d36fa2e6d592021351fb8"
+            },
+            {
+              "start_line": 220,
+              "end_line": 302,
+              "revision": "e9df0bdc09414ef1996d36fa2e6d592021351fb8"
+            },
+            {
+              "start_line": 309,
+              "end_line": 331,
+              "revision": "e9df0bdc09414ef1996d36fa2e6d592021351fb8"
+            },
+            {
+              "start_line": 345,
+              "end_line": 351,
+              "revision": "e9df0bdc09414ef1996d36fa2e6d592021351fb8"
+            },
+            {
+              "start_line": 354,
+              "end_line": 489,
+              "revision": "e9df0bdc09414ef1996d36fa2e6d592021351fb8"
+            },
+            {
+              "start_line": 494,
+              "end_line": 535,
+              "revision": "e9df0bdc09414ef1996d36fa2e6d592021351fb8"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "path": "packages/cli/src/cli/lib/on-relay.ts",
+      "conversations": [
+        {
+          "contributor": {
+            "type": "ai"
+          },
+          "ranges": [
+            {
+              "start_line": 1,
+              "end_line": 6,
+              "revision": "e9df0bdc09414ef1996d36fa2e6d592021351fb8"
+            },
+            {
+              "start_line": 17,
+              "end_line": 27,
+              "revision": "e9df0bdc09414ef1996d36fa2e6d592021351fb8"
+            },
+            {
+              "start_line": 39,
+              "end_line": 45,
+              "revision": "e9df0bdc09414ef1996d36fa2e6d592021351fb8"
+            },
+            {
+              "start_line": 49,
+              "end_line": 55,
+              "revision": "e9df0bdc09414ef1996d36fa2e6d592021351fb8"
+            },
+            {
+              "start_line": 69,
+              "end_line": 75,
+              "revision": "e9df0bdc09414ef1996d36fa2e6d592021351fb8"
+            },
+            {
+              "start_line": 79,
+              "end_line": 87,
+              "revision": "e9df0bdc09414ef1996d36fa2e6d592021351fb8"
+            },
+            {
+              "start_line": 461,
+              "end_line": 597,
+              "revision": "e9df0bdc09414ef1996d36fa2e6d592021351fb8"
+            },
+            {
+              "start_line": 604,
+              "end_line": 672,
+              "revision": "e9df0bdc09414ef1996d36fa2e6d592021351fb8"
+            },
+            {
+              "start_line": 741,
+              "end_line": 791,
+              "revision": "e9df0bdc09414ef1996d36fa2e6d592021351fb8"
+            },
+            {
+              "start_line": 807,
+              "end_line": 817,
+              "revision": "e9df0bdc09414ef1996d36fa2e6d592021351fb8"
+            },
+            {
+              "start_line": 823,
+              "end_line": 880,
+              "revision": "e9df0bdc09414ef1996d36fa2e6d592021351fb8"
+            },
+            {
+              "start_line": 979,
+              "end_line": 985,
+              "revision": "e9df0bdc09414ef1996d36fa2e6d592021351fb8"
+            },
+            {
+              "start_line": 989,
+              "end_line": 1000,
+              "revision": "e9df0bdc09414ef1996d36fa2e6d592021351fb8"
+            },
+            {
+              "start_line": 1002,
+              "end_line": 1014,
+              "revision": "e9df0bdc09414ef1996d36fa2e6d592021351fb8"
+            },
+            {
+              "start_line": 1024,
+              "end_line": 1036,
+              "revision": "e9df0bdc09414ef1996d36fa2e6d592021351fb8"
+            },
+            {
+              "start_line": 1040,
+              "end_line": 1048,
+              "revision": "e9df0bdc09414ef1996d36fa2e6d592021351fb8"
+            },
+            {
+              "start_line": 1051,
+              "end_line": 1060,
+              "revision": "e9df0bdc09414ef1996d36fa2e6d592021351fb8"
+            },
+            {
+              "start_line": 1160,
+              "end_line": 1167,
+              "revision": "e9df0bdc09414ef1996d36fa2e6d592021351fb8"
+            },
+            {
+              "start_line": 1205,
+              "end_line": 1211,
+              "revision": "e9df0bdc09414ef1996d36fa2e6d592021351fb8"
+            },
+            {
+              "start_line": 1229,
+              "end_line": 1236,
+              "revision": "e9df0bdc09414ef1996d36fa2e6d592021351fb8"
+            },
+            {
+              "start_line": 1251,
+              "end_line": 1274,
+              "revision": "e9df0bdc09414ef1996d36fa2e6d592021351fb8"
+            }
+          ]
+        }
+      ]
+    }
+  ]
+}
