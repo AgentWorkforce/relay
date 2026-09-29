@@ -199,10 +199,21 @@ describe('createAgentClient', () => {
     });
     expect(instance.as).toHaveBeenCalledWith('at_live_test', { autoHeartbeatMs: false });
 
-    const agent = relaycastMocks.agentClients[0] as { send: ReturnType<typeof vi.fn> };
+    const agent = relaycastMocks.agentClients[0] as {
+      send: ReturnType<typeof vi.fn>;
+      dm: ReturnType<typeof vi.fn>;
+    };
     const sent = await client.send('general', 'hello', { mode: 'wait' });
+    const direct = await client.dm('chief', 'retry-safe', { idempotencyKey: 'dm-logical-1' });
     expect(agent.send).toHaveBeenCalledWith('general', 'hello', { mode: 'wait' });
+    expect(agent.dm).toHaveBeenCalledWith('chief', 'retry-safe', {
+      idempotencyKey: 'dm-logical-1',
+    });
     expect(sent).toEqual({ raw: true, args: ['general', 'hello', { mode: 'wait' }] });
+    expect(direct).toEqual({
+      raw: true,
+      args: ['chief', 'retry-safe', { idempotencyKey: 'dm-logical-1' }],
+    });
   });
 
   it('honors an explicit heartbeat interval', () => {

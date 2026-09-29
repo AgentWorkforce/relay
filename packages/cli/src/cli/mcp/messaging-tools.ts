@@ -374,6 +374,7 @@ export function registerMessagingTools(
           mode,
           attachments,
           data: replayMessageMetadata(),
+          idempotencyKey: idempotency_key,
         });
         const receipt = compactDirectMessageReceipt(
           directMessageReceipt(message, to, mode, resolvedRecipient)

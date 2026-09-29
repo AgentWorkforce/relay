@@ -122,6 +122,7 @@ export interface RelayAgentThinClient {
       mode?: RelayMessageMode;
       attachments?: string[];
       data?: Record<string, unknown> | null;
+      idempotencyKey?: string;
     }
   ): Promise<unknown>;
   readonly dms: {
