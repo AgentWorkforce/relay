@@ -247,6 +247,10 @@ Static `use` cycles are refused and runtime child depth is capped at three.
 
 ### Put a local composed run on the Cloud dashboard
 
+These mirror commands require `relayflows` / `@relayflows/sdk` 2.0.35 or
+newer. This repository's pinned 2.0.20 CLI supports neither `--cloud-mirror`
+nor `FLOWS_CLOUD_MIRROR`, so upgrade the CLI before using either form.
+
 ```sh
 flows run --cloud-mirror release.flow.ts --input '{"issue":123}'
 
