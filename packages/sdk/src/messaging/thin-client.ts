@@ -115,6 +115,10 @@ export interface RelayAgentThinClient {
     options?: { data?: Record<string, unknown> | null }
   ): Promise<unknown>;
   thread(messageId: string, options?: { limit?: number }): Promise<unknown>;
+  /**
+   * Sends a direct message. An explicit idempotency key is forwarded to the
+   * service so callers can safely retry after an indeterminate response.
+   */
   dm(
     to: string,
     text: string,

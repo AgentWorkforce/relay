@@ -17,6 +17,7 @@ test('one logical MCP send creates one upstream direct message across server ret
   const created: Array<{ id: string; key?: string }> = [];
   const byKey = new Map<string, { id: string }>();
 
+  /** Runs the production tool through a new process-local replay boundary. */
   const runInFreshMcpServer = async (requestId: number) => {
     const server = new ProbeServer();
     const client = {

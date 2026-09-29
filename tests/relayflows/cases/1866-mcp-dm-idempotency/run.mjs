@@ -15,6 +15,7 @@ if ((arm !== 'base' && arm !== 'head') || !targetDir || !resultPath) {
   throw new Error('RelayFlow proof environment is incomplete');
 }
 
+/** Returns whether the target checkout already has the requested dependency. */
 async function pathExists(candidate) {
   try {
     await access(candidate);
@@ -24,6 +25,7 @@ async function pathExists(candidate) {
   }
 }
 
+/** Runs one proof setup or assertion command and fails closed on any error. */
 function run(command, args, cwd) {
   const result = spawnSync(command, args, {
     cwd,
