@@ -118,7 +118,7 @@ Usage notes:
 
 <skill activation="lazy">
 <name>writing-relayflows</name>
-<description>Use when authoring a Relayflows flow (@relayflows/surface / @relayflows/sdk, the v2 journal-based engine, CLI `flows`) in TypeScript or YAML/JSON. Covers the run/llm/agent ladder, human/dispatch/done, verification gates, cli/model resolution, flows.json, and flows check/run/resume refusal shapes. Not for the older @relayflows/core WorkflowBuilder (chained .pattern(&apos;dag&apos;)/.agent()/.step() calls) — see writing-agent-relay-workflows / migrating-persona-to-relayflow instead.</description>
+<description>Use when authoring a Relayflows flow (@relayflows/surface / @relayflows/sdk, the v2 journal-based engine, CLI `flows`) in TypeScript or YAML/JSON. Covers the run/llm/agent ladder, direct child-flow composition with use/dispatch, Cloud dashboard mirroring, verification gates, cli/model resolution, flows.json, and flows check/run/resume refusal shapes. Not for the older @relayflows/core WorkflowBuilder (chained .pattern(&apos;dag&apos;)/.agent()/.step() calls) — see writing-agent-relay-workflows / migrating-persona-to-relayflow instead.</description>
 <path>.openskills/writing-relayflows/SKILL.md</path>
 </skill>
 

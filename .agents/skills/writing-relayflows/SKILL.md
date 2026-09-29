@@ -1,6 +1,6 @@
 ---
 name: writing-relayflows
-description: Use when authoring a Relayflows flow (@relayflows/surface / @relayflows/sdk, the journal-based v2 engine — the CLI is `flows`, package versions 2.0.x) in TypeScript or YAML/JSON. Covers the three-rung ladder (run/llm/agent), the resident verbs (human/dispatch/done), verification gates, TypeScript vs YAML authoring, per-step cli/model selection and its resolution order, flows.json, and `flows check`/`run`/`resume` with their real refusal shapes and exit codes. Not for the older, unrelated `@relayflows/core` WorkflowBuilder engine (`.pattern('dag')`/.agent()/.step() chains) that `writing-agent-relay-workflows` and `migrating-persona-to-relayflow` cover — that's a different product despite the similar name.
+description: Use when authoring a Relayflows flow (@relayflows/surface / @relayflows/sdk, the journal-based v2 engine — the CLI is `flows`, package versions 2.0.x) in TypeScript or YAML/JSON. Covers the three-rung ladder (run/llm/agent), resident verbs, direct child-flow composition with use/dispatch, Cloud dashboard mirroring, verification gates, cli/model selection, flows.json, and `flows check`/`run`/`resume`. Not for the older, unrelated `@relayflows/core` WorkflowBuilder engine (`.pattern('dag')`/.agent()/.step() chains) that `writing-agent-relay-workflows` and `migrating-persona-to-relayflow` cover — that's a different product despite the similar name.
 ---
 
 ### Overview
@@ -85,6 +85,12 @@ export interface AgentOptions {
   model?: string;
 }
 
+export interface DispatchResult {
+  name: string;
+  completionReason: 'success';
+  completionDetail?: string;
+}
+
 export interface Ctx {
   run(command: string): Step<string>;
   llm(strings: TemplateStringsArray, ...values: unknown[]): Step<string>;
@@ -93,8 +99,8 @@ export interface Ctx {
     options: { output: Record<string, unknown>; cli?: string; model?: string }
   ): Step<unknown>;
   agent(name: string, options: AgentOptions): Step<AgentResult>;
-  human(question: string, options: { to: string }): Promise<boolean>;
-  dispatch<T>(flow: string, input: unknown): Promise<T>;
+  human(question: string, options: { to: string }): Step<boolean>;
+  dispatch(flow: string, input: unknown): Step<DispatchResult>;
   done(reason: RunCompletionReason): void;
   cloud: CloudHelper;
   slack: SlackHelper;
@@ -183,26 +189,81 @@ REFUSED [cli_unresolved] Step "greeter" has no CLI at step, flow, or project lev
 { "cli": "claude", "executors": ["cron"], "models": ["claude-sonnet-4-6"] }
 ```
 
-### Human approval and dispatch (TypeScript resident verbs)
+### Human approval and direct child flows (TypeScript resident verbs)
 
 #### ```ts
 
 ```ts
+// release.flow.ts
 import { flow } from '@relayflows/surface';
 
-export default flow('ship-feature', async (f) => {
-  const plan = await f.agent('planner', {
-    task: 'Research and plan: add OAuth2 support',
-    workspace: 'acme/api: readonly', // compiles to relayauth path scopes
+export default flow(
+  'release',
+  {
+    use: ['./implement.flow.ts'], // static allowlist of direct children
+    budget: { tokens: 50_000 }, // the root owns the whole tree's ceiling
+  },
+  async (f, input: { issue: number }) => {
+    const ok = await f.human(`Ship issue ${input.issue}?`, { to: 'khaliq' });
+    if (!ok) return f.done('canceled');
+
+    const child = await f.dispatch('implement', { issue: input.issue });
+    await f.run('printf %s publish');
+    f.done(child.completionReason);
+  }
+);
+```
+
+```ts
+// implement.flow.ts
+import { flow } from '@relayflows/surface';
+
+export default flow('implement', async (f, input: { issue: number }) => {
+  await f.agent('implementer', {
+    task: `Implement issue ${input.issue}`,
+    cli: 'claude',
+    model: 'claude-sonnet-4-6',
   });
-
-  const ok = await f.human(`Ship this?\n${plan.summary}`, { to: 'khaliq' });
-  if (!ok) return f.done('canceled');
-
-  const pr = await f.dispatch('garden/implement', plan); // hands off to a child flow
   f.done('success');
 });
 ```
+
+`f.dispatch(name, input)` can call only a **direct** child whose relative
+`.flow.ts` path appears in the current flow's static `use` header. The name is
+the child's declared `flow(...)` name, not its path. Missing files, duplicate
+or ambiguous names, cycles, and calls to undeclared or transitive-only children
+are refused before the child body can widen the graph.
+
+The child is part of the same durable run tree: it shares the root's budget and
+worker-capacity pool, its step IDs are qualified, and the dispatch receipt joins
+the child leaves back to the next parent operation. Resume replays those durable
+identities instead of repeating completed effects. A non-success child rejects
+the dispatch; success returns `{ name, completionReason: 'success',
+completionDetail? }`.
+
+Authority only narrows down the tree. A child cannot declare another budget,
+call `f.human`, or require a helper/MCP capability its parent did not grant.
+Static `use` cycles are refused and runtime child depth is capped at three.
+
+### Put a local composed run on the Cloud dashboard
+
+```sh
+flows run --cloud-mirror release.flow.ts --input '{"issue":123}'
+
+# Equivalent opt-in for every run in the current shell:
+FLOWS_CLOUD_MIRROR=1 flows run release.flow.ts --input '{"issue":123}'
+```
+
+`--cloud-mirror` keeps execution and the authoritative journal local, while
+projecting the root, qualified child steps, dependency edges, dispatch
+receipts, transcripts, source, log, and final output into one connected Cloud
+dashboard run. Internal completion receipts remain journal evidence but are
+not rendered as work nodes. The normal observer link is separate and does not
+put the run in Cloud history.
+
+Mirroring is explicit because it uploads flow source, transcripts, and output;
+a prior Cloud login never enables it automatically. A mirror outage can make
+the dashboard projection incomplete, but cannot fail the underlying run.
 
 ### Running it: `flows check` / `run` / `resume`
 
@@ -210,15 +271,17 @@ export default flow('ship-feature', async (f) => {
 
 ```
 flows check [--json] <flow.yaml|spec.json>
-flows run [--json] [--no-spawn] [--no-observer-link] [--data-dir <dir>] [--local-agent] <flow.yaml|spec.json>
-flows run [--json] [--no-spawn] [--no-observer-link] [--data-dir <dir>] [--local-agent] <flow.ts> --input <inline-json-or-file>
-flows resume [--json] [--no-spawn] [--no-observer-link] [--data-dir <dir>] <run-id>
+flows run [--json] [--no-spawn] [--no-observer-link] [--cloud-mirror] [--data-dir <dir>] [--local-agent] <flow.yaml|spec.json>
+flows run [--json] [--no-spawn] [--no-observer-link] [--cloud-mirror] [--data-dir <dir>] [--local-agent] <flow.ts> --input <inline-json-or-file>
+flows resume [--json] [--no-spawn] [--no-observer-link] [--cloud-mirror] [--data-dir <dir>] <run-id>
 ```
 
 ### Common mistakes
 
 - **Forgetting `version` in a YAML/JSON `FlowSpec`.** It's required, not optional — `flows check` refuses a spec without it.
-- **Adding `agents:` to a TypeScript `flow()` header.** `FlowHeader` has no such field; it throws `TypeError: flow header has unknown fields: agents` at authoring time. Named-agent maps + `agent:` selector are YAML/JSON-only (flows#300 tracks TypeScript composition via `use:`, not yet shipped).
+- **Adding `agents:` to a TypeScript `flow()` header.** `FlowHeader` has no such field; it throws `TypeError: flow header has unknown fields: agents` at authoring time. Named-agent maps + `agent:` selector are YAML/JSON-only; TypeScript composition uses static `use:` plus `f.dispatch(...)` instead.
+- **Dispatching a file path or a transitive child.** `f.dispatch` takes the declared name of a direct child in `use`, not a path and not any descendant visible elsewhere in the graph.
+- **Assuming the observer link also creates a dashboard run.** Add `--cloud-mirror` (or affirmatively set `FLOWS_CLOUD_MIRROR=1`) when the source, transcripts, output, and complete parent/child graph should be stored in Cloud.
 - **Assuming `flows.json`'s `models` sets a default model.** It only validates models already declared elsewhere; it never selects one.
 - **Not awaiting a step, or manually `.then()`-chaining one.** Both are refused (`unawaited_step` / `unsupported_verb`) rather than silently ignored — the executor closes every root operation's lifecycle explicitly.
 - **Running a `.flow.ts` without `--input`.** Required even for flows that don't use their input argument.
@@ -226,7 +289,7 @@ flows resume [--json] [--no-spawn] [--no-observer-link] [--data-dir <dir>] <run-
 
 ### What this skill does NOT cover
 
-- **Named-agent maps in TypeScript** (`agents: { reviewer: { cli, model } }` + reuse across steps by name) — YAML/JSON only today. Tracked for TS composition via `use:` at [flows#300](https://github.com/AgentWorkforce/flows/issues/300).
+- **Named-agent maps in TypeScript** (`agents: { reviewer: { cli, model } }` + reuse across steps by name) — YAML/JSON only today. TypeScript's `use:` imports complete child flows, not named-agent definitions.
 - **`recoveryMode`, `permissions`, `surfaces`, `budget`, `memory`** on agent steps — real YAML/JSON fields with no TypeScript equivalent. Author that step in YAML and reach it from TypeScript with `f.dispatch` if you need them.
 - **Cloud execution** (`flows run --cloud`), **triggers/webhooks**, **memory retrieval**, and the **`f.mcp`**/**`f.slack`** helper namespaces — each is its own surface with its own gotchas; see the [Relayflows product docs](https://agentrelay.com/docs/relayflows) for what's shipped versus designed-but-not-yet-implemented.
 - The **older `@relayflows/core` `WorkflowBuilder`** engine — see `writing-agent-relay-workflows` and `migrating-persona-to-relayflow` in this repo.
@@ -239,13 +302,15 @@ flows resume [--json] [--no-spawn] [--no-observer-link] [--data-dir <dir>] <run-
 | `f.llm(...)` / `type: llm`               | both           | bare model call, no workspace                                  |
 | `f.agent(name, opts)` / `type: agent`    | both           | harnessed coding agent, returns `{summary, artifacts}`         |
 | `f.human(question, {to})`                | TS only        | durable approval; YAML has no equivalent yet                   |
-| `f.dispatch(flow, input)`                | TS only        | hand off to a named child flow                                 |
+| `use: ['./child.flow.ts']`               | TS only        | static allowlist of direct child flows                         |
+| `f.dispatch(flow, input)`                | TS only        | run a declared direct child in the same durable tree           |
 | `f.done(reason)` / —                     | TS / kernel    | one of `success \| step_failed \| canceled \| budget_exceeded` |
 | `options.cli` / `step.cli`               | both           | per-call/step CLI override (TS: flows#310)                     |
 | `options.model` / `step.model`           | both           | per-call/step model; no flow/project default                   |
 | `agent: <name>` + `agents: {...}`        | YAML/JSON only | named cli/model pair, reused by selector                       |
 | `flows check <file>`                     | CLI            | pure validate + preflight, no daemon                           |
 | `flows run <file> [--input ...]`         | CLI            | actually executes; `.flow.ts` needs `--input`                  |
+| `flows run --cloud-mirror ...`           | CLI            | opt in to one connected local-run graph on the Cloud dashboard |
 | `flows resume <run-id>`                  | CLI            | resume a parked/crashed run                                    |
 
 ### Verified against

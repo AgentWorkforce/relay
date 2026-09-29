@@ -14,6 +14,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Changed
 
 - Targeted `fleet spawn` now waits for harness readiness; the broker releases workers that miss its 90-second readiness window. Confirmed targeted spawns require `--confirm-timeout` of at least 95000ms.
+- The `writing-relayflows` skill now documents static `use`/`f.dispatch` child-flow composition, its authority limits, and `--cloud-mirror` for a connected parent/child graph on the Cloud dashboard.
 
 ### Deprecated
 
