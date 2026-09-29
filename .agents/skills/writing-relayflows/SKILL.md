@@ -109,8 +109,6 @@ export interface Ctx {
 
 ### The real step shapes (YAML/JSON, `packages/sdk/src/spec.ts`)
 
-#### ```ts
-
 ```ts
 interface DeterministicStepSpec {
   type: 'deterministic';
@@ -191,7 +189,9 @@ REFUSED [cli_unresolved] Step "greeter" has no CLI at step, flow, or project lev
 
 ### Human approval and direct child flows (TypeScript resident verbs)
 
-#### ```ts
+Child-flow composition requires `relayflows` / `@relayflows/sdk` 2.0.35 or
+newer. This repository currently locks 2.0.20, whose CLI refuses `use` as an
+unsupported header, so upgrade the CLI before running this example.
 
 ```ts
 // release.flow.ts
