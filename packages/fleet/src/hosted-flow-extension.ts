@@ -15,12 +15,13 @@ const SHA_1 = /^[a-f0-9]{40}$/u;
 const SHA_256 = /^[a-f0-9]{64}$/u;
 const IDENTIFIER = /^[^\x00-\x1f\x7f]{1,512}$/u;
 const RECEIPT_FILENAME = 'hosted-flow-extension-receipts.json';
+const uuidSchema = z.string().uuid();
 
 const providerBindingSchema = z
   .object({
-    providerBindingId: z.string().regex(IDENTIFIER),
+    providerBindingId: uuidSchema,
     listenerAuthorityId: z.string().regex(IDENTIFIER),
-    receiptJournalId: z.string().regex(IDENTIFIER),
+    receiptJournalId: uuidSchema,
   })
   .strict();
 
@@ -582,13 +583,17 @@ function validateProviderOptions(options: HostedFlowExtensionProviderOptions): v
   for (const [field, value] of [
     ['nodeId', options.nodeId],
     ['relayWorkspaceId', options.relayWorkspaceId],
-    ['providerBindingId', options.providerBindingId],
     ['listenerAuthorityId', options.listenerAuthority.id],
-    ['receiptJournalId', options.receiptJournalId],
   ] as const) {
     if (!IDENTIFIER.test(value) || value.trim() !== value) {
       throw new Error(`hosted_flow_invalid_${field}`);
     }
+  }
+  if (!uuidSchema.safeParse(options.providerBindingId).success) {
+    throw new Error('hosted_flow_invalid_providerBindingId');
+  }
+  if (!uuidSchema.safeParse(options.receiptJournalId).success) {
+    throw new Error('hosted_flow_invalid_receiptJournalId');
   }
   if (!SHA_256.test(options.runtimeAttestationSha256)) {
     throw new Error('hosted_flow_invalid_runtime_attestation');

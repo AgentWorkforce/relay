@@ -21,9 +21,9 @@ const SHA_1 = '1'.repeat(40);
 const SHA_256 = '2'.repeat(64);
 const MANIFEST_SHA_256 = '3'.repeat(64);
 const ATTESTATION_SHA_256 = '4'.repeat(64);
-const PROVIDER_ID = 'hosted-provider-1';
+const PROVIDER_ID = '0199a4de-d383-7d45-97b8-3e5d7cab166d';
 const LISTENER_AUTHORITY_ID = 'cloud-flow-listeners:v1';
-const RECEIPT_JOURNAL_ID = 'hosted-journal-1';
+const RECEIPT_JOURNAL_ID = '0199a4de-d383-7d45-97b8-3e5d7cab166e';
 
 describe('hosted Flow extension provider', () => {
   let directory: string;
@@ -130,7 +130,7 @@ describe('hosted Flow extension provider', () => {
     await expect(
       prepareHostedFlowExtensionCapabilities(
         providerOptions(successRunner(), queuedFetch('native-receipt-2'), {
-          receiptJournalId: 'different-journal',
+          receiptJournalId: '0199a4de-d383-7d45-97b8-3e5d7cab166f',
         })
       )
     ).rejects.toThrow('hosted_flow_receipt_ledger_invalid');
@@ -233,7 +233,7 @@ describe('hosted Flow extension provider', () => {
           ...input(),
           providerBinding: {
             ...input().providerBinding,
-            receiptJournalId: 'different-journal',
+            receiptJournalId: '0199a4de-d383-7d45-97b8-3e5d7cab166f',
           },
         },
         context()
