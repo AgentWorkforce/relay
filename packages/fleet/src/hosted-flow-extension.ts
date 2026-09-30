@@ -16,6 +16,14 @@ const SHA_256 = /^[a-f0-9]{64}$/u;
 const IDENTIFIER = /^[^\x00-\x1f\x7f]{1,512}$/u;
 const RECEIPT_FILENAME = 'hosted-flow-extension-receipts.json';
 
+const providerBindingSchema = z
+  .object({
+    providerBindingId: z.string().regex(IDENTIFIER),
+    listenerAuthorityId: z.string().regex(IDENTIFIER),
+    receiptJournalId: z.string().regex(IDENTIFIER),
+  })
+  .strict();
+
 const targetSchema = z
   .object({
     relayWorkspaceId: z.string().regex(IDENTIFIER),
@@ -37,6 +45,7 @@ const hostedInputSchema = z
     deliveryId: z.string().regex(IDENTIFIER),
     workspaceId: z.string().regex(IDENTIFIER),
     listenerAgentId: z.string().regex(IDENTIFIER),
+    providerBinding: providerBindingSchema,
     eventEnvelope: z.record(z.string(), z.unknown()),
     lineageId: z.string().regex(IDENTIFIER),
     owner: z.string().regex(IDENTIFIER),
@@ -91,11 +100,15 @@ const reconcileSchema = z
   .object({
     deliveryId: z.string().regex(IDENTIFIER),
     inputSha256: z.string().regex(SHA_256),
+    listenerAgentId: z.string().regex(IDENTIFIER),
+    providerBinding: providerBindingSchema,
   })
   .strict();
 
 export type HostedFlowExtensionInput = z.infer<typeof hostedInputSchema>;
 export type HostedFlowExtensionTarget = z.infer<typeof targetSchema>;
+export type HostedFlowExtensionProviderBinding = z.infer<typeof providerBindingSchema>;
+export type HostedFlowExtensionReconcileInput = z.infer<typeof reconcileSchema>;
 
 export interface HostedFlowExtensionReceipt {
   readonly status: 'completed';
@@ -105,6 +118,9 @@ export interface HostedFlowExtensionReceipt {
   readonly deliveryId: string;
   readonly workspaceId: string;
   readonly listenerAgentId: string;
+  readonly providerBindingId: string;
+  readonly listenerAuthorityId: string;
+  readonly receiptJournalId: string;
   readonly eventEnvelopeSha256: string;
   readonly artifactRef: string;
   readonly artifactDigest: string;
@@ -146,7 +162,15 @@ export type HostedFlowExtensionRunner = (
 export interface HostedFlowExtensionProviderOptions {
   readonly nodeId: string;
   readonly relayWorkspaceId: string;
-  readonly listenerAgentId: string;
+  /** Stable identity of this logical provider deployment. */
+  readonly providerBindingId: string;
+  /** Stable identity of the policy that authorizes Cloud Flow listeners. */
+  readonly listenerAuthority: Readonly<{
+    id: string;
+    authorize(agentId: string): boolean | Promise<boolean>;
+  }>;
+  /** Stable identity of the durable receipt journal shared by execute and reconcile. */
+  readonly receiptJournalId: string;
   readonly runtimeAttestationSha256: string;
   readonly flowPath: string;
   readonly artifact: Readonly<{
@@ -177,15 +201,20 @@ export interface HostedFlowExtensionReadiness {
 }
 
 type ReceiptEntry =
-  | { inputSha256: string; runId: string; state: 'reserved' }
+  | { inputSha256: string; listenerAgentId: string; runId: string; state: 'reserved' }
   | {
       inputSha256: string;
+      listenerAgentId: string;
       runId: string;
       state: 'completed';
       receipt: HostedFlowExtensionReceipt;
     };
 
-type ReceiptLedger = { version: 1; deliveries: Record<string, ReceiptEntry> };
+type ReceiptLedger = {
+  version: 1;
+  receiptJournalId: string;
+  deliveries: Record<string, ReceiptEntry>;
+};
 
 function canonicalize(value: unknown): string {
   if (value === null || typeof value !== 'object') return JSON.stringify(value) ?? 'null';
@@ -220,17 +249,42 @@ function assertExactInput(input: HostedFlowExtensionInput): void {
   }
 }
 
-function assertAuthority(
+async function assertCallerAuthority(
+  listenerAgentId: string,
+  providerBinding: HostedFlowExtensionInput['providerBinding'],
+  context: FleetActionContext,
+  options: HostedFlowExtensionProviderOptions
+): Promise<void> {
+  if (!context.callerAgentId) {
+    throw new Error('hosted_flow_caller_unauthorized');
+  }
+  if (listenerAgentId !== context.callerAgentId) {
+    throw new Error('hosted_flow_listener_mismatch');
+  }
+  if (
+    providerBinding.providerBindingId !== options.providerBindingId ||
+    providerBinding.listenerAuthorityId !== options.listenerAuthority.id ||
+    providerBinding.receiptJournalId !== options.receiptJournalId
+  ) {
+    throw new Error('hosted_flow_provider_binding_mismatch');
+  }
+  let authorized = false;
+  try {
+    authorized = await options.listenerAuthority.authorize(context.callerAgentId);
+  } catch {
+    authorized = false;
+  }
+  if (!authorized) {
+    throw new Error('hosted_flow_caller_unauthorized');
+  }
+}
+
+async function assertExecutionAuthority(
   input: HostedFlowExtensionInput,
   context: FleetActionContext,
   options: HostedFlowExtensionProviderOptions
-): void {
-  if (!context.callerAgentId || context.callerAgentId !== options.listenerAgentId) {
-    throw new Error('hosted_flow_caller_unauthorized');
-  }
-  if (input.listenerAgentId !== context.callerAgentId) {
-    throw new Error('hosted_flow_listener_mismatch');
-  }
+): Promise<void> {
+  await assertCallerAuthority(input.listenerAgentId, input.providerBinding, context, options);
   if (
     input.target.nodeId !== options.nodeId ||
     input.target.relayWorkspaceId !== options.relayWorkspaceId ||
@@ -258,16 +312,21 @@ async function durableWrite(path: string, value: ReceiptLedger): Promise<void> {
   }
 }
 
-async function readLedger(path: string): Promise<ReceiptLedger> {
+async function readLedger(path: string, receiptJournalId: string): Promise<ReceiptLedger> {
   try {
     const parsed = JSON.parse(await readFile(path, 'utf8')) as ReceiptLedger;
-    if (parsed.version !== 1 || !parsed.deliveries || typeof parsed.deliveries !== 'object') {
+    if (
+      parsed.version !== 1 ||
+      parsed.receiptJournalId !== receiptJournalId ||
+      !parsed.deliveries ||
+      typeof parsed.deliveries !== 'object'
+    ) {
       throw new Error('hosted_flow_receipt_ledger_invalid');
     }
     return parsed;
   } catch (error) {
     if ((error as NodeJS.ErrnoException).code === 'ENOENT') {
-      return { version: 1, deliveries: {} };
+      return { version: 1, receiptJournalId, deliveries: {} };
     }
     throw error;
   }
@@ -278,14 +337,19 @@ class DurableReceiptLedger {
   private readonly lockPath: string;
   private tail: Promise<void> = Promise.resolve();
 
-  constructor(directory: string) {
+  constructor(
+    directory: string,
+    private readonly receiptJournalId: string
+  ) {
     this.path = join(directory, RECEIPT_FILENAME);
     this.lockPath = `${this.path}.lock`;
   }
 
   async initialize(): Promise<void> {
     await mkdir(dirname(this.path), { recursive: true, mode: 0o700 });
-    await readLedger(this.path);
+    await this.locked(async (ledger) => {
+      await durableWrite(this.path, ledger);
+    });
   }
 
   private async acquireLock() {
@@ -320,7 +384,7 @@ class DurableReceiptLedger {
       lock = await this.acquireLock();
       await lock.writeFile(`${process.pid}\n`, 'utf8');
       await lock.sync();
-      return await operation(await readLedger(this.path));
+      return await operation(await readLedger(this.path, this.receiptJournalId));
     } finally {
       if (lock) {
         await lock.close();
@@ -332,19 +396,23 @@ class DurableReceiptLedger {
 
   async reserve(
     deliveryId: string,
-    inputSha256: string
+    inputSha256: string,
+    listenerAgentId: string
   ): Promise<{ runId: string; receipt?: HostedFlowExtensionReceipt }> {
     return this.locked(async (ledger) => {
       const existing = ledger.deliveries[deliveryId];
       if (existing && existing.inputSha256 !== inputSha256) {
         throw new Error('hosted_flow_delivery_conflict');
       }
+      if (existing && existing.listenerAgentId !== listenerAgentId) {
+        throw new Error('hosted_flow_delivery_caller_conflict');
+      }
       if (existing?.state === 'completed') {
         return { runId: existing.runId, receipt: existing.receipt };
       }
       if (existing) return { runId: existing.runId };
       const runId = `hfr_${sha256({ deliveryId, inputSha256 })}`;
-      ledger.deliveries[deliveryId] = { inputSha256, runId, state: 'reserved' };
+      ledger.deliveries[deliveryId] = { inputSha256, listenerAgentId, runId, state: 'reserved' };
       await durableWrite(this.path, ledger);
       return { runId };
     });
@@ -363,6 +431,7 @@ class DurableReceiptLedger {
       if (existing.state === 'completed') return existing.receipt;
       ledger.deliveries[deliveryId] = {
         inputSha256,
+        listenerAgentId: existing.listenerAgentId,
         runId: existing.runId,
         state: 'completed',
         receipt,
@@ -374,12 +443,16 @@ class DurableReceiptLedger {
 
   async reconcile(
     deliveryId: string,
-    inputSha256: string
+    inputSha256: string,
+    listenerAgentId: string
   ): Promise<{ status: 'pending' } | HostedFlowExtensionReceipt> {
-    const ledger = await readLedger(this.path);
+    const ledger = await readLedger(this.path, this.receiptJournalId);
     const existing = ledger.deliveries[deliveryId];
     if (!existing) return { status: 'pending' };
     if (existing.inputSha256 !== inputSha256) throw new Error('hosted_flow_delivery_conflict');
+    if (existing.listenerAgentId !== listenerAgentId) {
+      throw new Error('hosted_flow_delivery_caller_conflict');
+    }
     return existing.state === 'completed' ? existing.receipt : { status: 'pending' };
   }
 }
@@ -478,6 +551,9 @@ function receipt(
     deliveryId: input.deliveryId,
     workspaceId: input.workspaceId,
     listenerAgentId: input.listenerAgentId,
+    providerBindingId: input.providerBinding.providerBindingId,
+    listenerAuthorityId: input.providerBinding.listenerAuthorityId,
+    receiptJournalId: input.providerBinding.receiptJournalId,
     eventEnvelopeSha256: sha256(input.eventEnvelope),
     artifactRef: options.artifact.ref,
     artifactDigest: options.artifact.digest,
@@ -506,7 +582,9 @@ function validateProviderOptions(options: HostedFlowExtensionProviderOptions): v
   for (const [field, value] of [
     ['nodeId', options.nodeId],
     ['relayWorkspaceId', options.relayWorkspaceId],
-    ['listenerAgentId', options.listenerAgentId],
+    ['providerBindingId', options.providerBindingId],
+    ['listenerAuthorityId', options.listenerAuthority.id],
+    ['receiptJournalId', options.receiptJournalId],
   ] as const) {
     if (!IDENTIFIER.test(value) || value.trim() !== value) {
       throw new Error(`hosted_flow_invalid_${field}`);
@@ -581,7 +659,7 @@ export async function prepareHostedFlowExtensionCapabilities(
   const bubblewrapPath = options.bubblewrapPath ?? '/usr/bin/bwrap';
   const nodePath = options.nodePath ?? process.execPath;
   const prlimitPath = options.prlimitPath ?? '/usr/bin/prlimit';
-  const ledger = new DurableReceiptLedger(options.stateDirectory);
+  const ledger = new DurableReceiptLedger(options.stateDirectory, options.receiptJournalId);
   await ledger.initialize();
   const inFlight = new Map<string, { inputSha256: string; promise: Promise<HostedFlowExtensionReceipt> }>();
 
@@ -605,11 +683,14 @@ export async function prepareHostedFlowExtensionCapabilities(
       artifactRef: options.artifact.ref,
       artifactDigest: options.artifact.digest,
       manifestSha256: options.artifact.manifestSha256,
+      providerBindingId: options.providerBindingId,
+      listenerAuthorityId: options.listenerAuthority.id,
+      receiptJournalId: options.receiptJournalId,
     },
     handler: async (rawInput, context) => {
       const input = hostedInputSchema.parse(rawInput);
       assertExactInput(input);
-      assertAuthority(input, context, options);
+      await assertExecutionAuthority(input, context, options);
       const inputSha256 = sha256(input);
       const active = inFlight.get(input.deliveryId);
       if (active) {
@@ -619,7 +700,7 @@ export async function prepareHostedFlowExtensionCapabilities(
         return active.promise;
       }
       const promise = (async () => {
-        const reserved = await ledger.reserve(input.deliveryId, inputSha256);
+        const reserved = await ledger.reserve(input.deliveryId, inputSha256, input.listenerAgentId);
         if (reserved.receipt) return reserved.receipt;
 
         let nativeReceiptId: string | undefined;
@@ -666,13 +747,14 @@ export async function prepareHostedFlowExtensionCapabilities(
       'relay.action-caller': 'v1',
       contract: 'reconcileHostedFlowExtension',
       contractVersion: 1,
+      providerBindingId: options.providerBindingId,
+      listenerAuthorityId: options.listenerAuthority.id,
+      receiptJournalId: options.receiptJournalId,
     },
     handler: async (rawInput, context) => {
       const input = reconcileSchema.parse(rawInput);
-      if (!context.callerAgentId || context.callerAgentId !== options.listenerAgentId) {
-        throw new Error('hosted_flow_caller_unauthorized');
-      }
-      return ledger.reconcile(input.deliveryId, input.inputSha256);
+      await assertCallerAuthority(input.listenerAgentId, input.providerBinding, context, options);
+      return ledger.reconcile(input.deliveryId, input.inputSha256, input.listenerAgentId);
     },
   };
 

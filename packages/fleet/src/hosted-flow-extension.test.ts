@@ -21,6 +21,9 @@ const SHA_1 = '1'.repeat(40);
 const SHA_256 = '2'.repeat(64);
 const MANIFEST_SHA_256 = '3'.repeat(64);
 const ATTESTATION_SHA_256 = '4'.repeat(64);
+const PROVIDER_ID = 'hosted-provider-1';
+const LISTENER_AUTHORITY_ID = 'cloud-flow-listeners:v1';
+const RECEIPT_JOURNAL_ID = 'hosted-journal-1';
 
 describe('hosted Flow extension provider', () => {
   let directory: string;
@@ -62,7 +65,12 @@ describe('hosted Flow extension provider', () => {
       nativeDeliveryReceiptId: 'native-receipt-1',
       eventEnvelopeSha256: expect.stringMatching(/^[a-f0-9]{64}$/),
     });
-    expect(Object.keys(result)).toHaveLength(27);
+    expect(result).toMatchObject({
+      providerBindingId: PROVIDER_ID,
+      listenerAuthorityId: LISTENER_AUTHORITY_ID,
+      receiptJournalId: RECEIPT_JOURNAL_ID,
+    });
+    expect(Object.keys(result)).toHaveLength(30);
     expect(runner).toHaveBeenCalledTimes(1);
     expect(fetch).toHaveBeenCalledTimes(1);
     const nativeRequest = JSON.parse(
@@ -87,10 +95,45 @@ describe('hosted Flow extension provider', () => {
     const reconcile = restarted[HOSTED_FLOW_EXTENSION_RECONCILE_CAPABILITY] as FleetCapability;
     await expect(
       reconcile.handler(
-        { deliveryId: input().deliveryId, inputSha256: hostedFlowExtensionInputSha256(input()) },
+        {
+          deliveryId: input().deliveryId,
+          inputSha256: hostedFlowExtensionInputSha256(input()),
+          listenerAgentId: input().listenerAgentId,
+          providerBinding: input().providerBinding,
+        },
         context()
       )
     ).resolves.toEqual(result);
+  });
+
+  it('publishes one immutable provider and receipt-journal binding on both actions', async () => {
+    const capabilities = await prepareHostedFlowExtensionCapabilities(
+      providerOptions(successRunner(), queuedFetch('native-receipt-1'))
+    );
+    const executeCapability = capabilities[HOSTED_FLOW_EXTENSION_CAPABILITY] as FleetCapability;
+    const reconcileCapability = capabilities[HOSTED_FLOW_EXTENSION_RECONCILE_CAPABILITY] as FleetCapability;
+    const binding = {
+      providerBindingId: PROVIDER_ID,
+      listenerAuthorityId: LISTENER_AUTHORITY_ID,
+      receiptJournalId: RECEIPT_JOURNAL_ID,
+    };
+    expect(executeCapability.metadata).toMatchObject(binding);
+    expect(reconcileCapability.metadata).toMatchObject(binding);
+    expect(executeCapability.metadata?.['relay.action-caller']).toBe('v1');
+    expect(reconcileCapability.metadata?.['relay.action-caller']).toBe('v1');
+  });
+
+  it('refuses to attach a different journal identity to existing durable state', async () => {
+    await prepareHostedFlowExtensionCapabilities(
+      providerOptions(successRunner(), queuedFetch('native-receipt-1'))
+    );
+    await expect(
+      prepareHostedFlowExtensionCapabilities(
+        providerOptions(successRunner(), queuedFetch('native-receipt-2'), {
+          receiptJournalId: 'different-journal',
+        })
+      )
+    ).rejects.toThrow('hosted_flow_receipt_ledger_invalid');
   });
 
   it('conflicts when a delivery id is reused for changed authority-bound input', async () => {
@@ -146,9 +189,69 @@ describe('hosted Flow extension provider', () => {
       'hosted_flow_caller_unauthorized'
     );
     await expect(execute(capabilities, input(), context('agt_attacker'))).rejects.toThrow(
-      'hosted_flow_caller_unauthorized'
+      'hosted_flow_listener_mismatch'
     );
     expect(runner).not.toHaveBeenCalled();
+  });
+
+  it('supports independently provisioned listeners through the provider authority policy', async () => {
+    const listenerAgentId = 'agt_second_listener';
+    const runner = vi.fn<HostedFlowExtensionRunner>(async (options) => {
+      const invocation = capabilityInvocation(input({ listenerAgentId }));
+      await options.babysitterTurn.queue(invocation.request, invocation.authority);
+      return { completionReason: 'success', capabilityCalls: 1 };
+    });
+    const capabilities = await prepareHostedFlowExtensionCapabilities(
+      providerOptions(runner, queuedFetch('native-receipt-2'), {
+        listenerAuthority: {
+          id: LISTENER_AUTHORITY_ID,
+          authorize: async (agentId) => ['agt_listener', listenerAgentId].includes(agentId),
+        },
+      })
+    );
+
+    await expect(
+      execute(capabilities, input({ listenerAgentId }), context(listenerAgentId))
+    ).resolves.toMatchObject({ listenerAgentId });
+  });
+
+  it('rejects provider binding substitution and cross-listener reconciliation', async () => {
+    const capabilities = await prepareHostedFlowExtensionCapabilities(
+      providerOptions(successRunner(), queuedFetch('native-receipt-1'), {
+        listenerAuthority: {
+          id: LISTENER_AUTHORITY_ID,
+          authorize: async (agentId) => ['agt_listener', 'agt_second_listener'].includes(agentId),
+        },
+      })
+    );
+    const exactInput = input();
+    await execute(capabilities, exactInput, context());
+    await expect(
+      execute(
+        capabilities,
+        {
+          ...input(),
+          providerBinding: {
+            ...input().providerBinding,
+            receiptJournalId: 'different-journal',
+          },
+        },
+        context()
+      )
+    ).rejects.toThrow('hosted_flow_provider_binding_mismatch');
+
+    const reconcile = capabilities[HOSTED_FLOW_EXTENSION_RECONCILE_CAPABILITY] as FleetCapability;
+    await expect(
+      reconcile.handler(
+        {
+          deliveryId: exactInput.deliveryId,
+          inputSha256: hostedFlowExtensionInputSha256(exactInput),
+          listenerAgentId: 'agt_second_listener',
+          providerBinding: exactInput.providerBinding,
+        },
+        context('agt_second_listener')
+      )
+    ).rejects.toThrow('hosted_flow_delivery_caller_conflict');
   });
 
   it('fails closed when the Flow calls its sole capability twice', async () => {
@@ -195,7 +298,12 @@ describe('hosted Flow extension provider', () => {
     return {
       nodeId: 'node-1',
       relayWorkspaceId: 'workspace-relay-1',
-      listenerAgentId: 'agt_listener',
+      providerBindingId: PROVIDER_ID,
+      listenerAuthority: {
+        id: LISTENER_AUTHORITY_ID,
+        authorize: async (agentId) => agentId === 'agt_listener',
+      },
+      receiptJournalId: RECEIPT_JOURNAL_ID,
       runtimeAttestationSha256: ATTESTATION_SHA_256,
       flowPath,
       artifact: {
@@ -217,11 +325,16 @@ describe('hosted Flow extension provider', () => {
   }
 });
 
-function input(): HostedFlowExtensionInput {
+function input(overrides: Partial<HostedFlowExtensionInput> = {}): HostedFlowExtensionInput {
   return {
     deliveryId: 'delivery-1',
     workspaceId: 'cloud-workspace-1',
     listenerAgentId: 'agt_listener',
+    providerBinding: {
+      providerBindingId: PROVIDER_ID,
+      listenerAuthorityId: LISTENER_AUTHORITY_ID,
+      receiptJournalId: RECEIPT_JOURNAL_ID,
+    },
     eventEnvelope: { action: 'labeled', label: 'babysit' },
     lineageId: 'lineage-1',
     owner: 'AgentWorkforce',
@@ -260,6 +373,7 @@ function input(): HostedFlowExtensionInput {
       headSha: SHA_1,
       message: 'Continue the Babysitter turn.',
     },
+    ...overrides,
   };
 }
 
