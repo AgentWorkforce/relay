@@ -574,6 +574,21 @@ function parseWithSchema<T>(schema: ZodLikeSchema<T>, input: unknown): T {
 }
 
 export { serveNode, startServeNode } from './serve-node.js';
+export {
+  HOSTED_FLOW_EXTENSION_CAPABILITY,
+  HOSTED_FLOW_EXTENSION_RECONCILE_CAPABILITY,
+  NATIVE_EXISTING_SESSION_CAPABILITY,
+  hostedFlowExtensionInputSha256,
+  inspectHostedFlowExtensionReadiness,
+  prepareHostedFlowExtensionCapabilities,
+  type HostedFlowExtensionInput,
+  type HostedFlowExtensionProviderOptions,
+  type HostedFlowExtensionReadiness,
+  type HostedFlowExtensionReceipt,
+  type HostedFlowExtensionRunner,
+  type HostedFlowExtensionRunnerOptions,
+  type HostedFlowExtensionTarget,
+} from './hosted-flow-extension.js';
 export type {
   NodeEngineConnection,
   FleetTriggerSyncTrigger,
