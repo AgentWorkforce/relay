@@ -4,8 +4,9 @@
   "task": {
     "title": "Address Devin feedback: consumer install of CLI 13 vs @relayflows/sdk peers"
   },
-  "status": "active",
+  "status": "completed",
   "startedAt": "2026-09-30T16:54:05.130Z",
+  "completedAt": "2026-09-30T16:55:52.189Z",
   "agents": [
     {
       "name": "default",
@@ -19,6 +20,7 @@
       "title": "Work",
       "agentName": "default",
       "startedAt": "2026-09-30T16:55:11.642Z",
+      "endedAt": "2026-09-30T16:55:52.189Z",
       "events": [
         {
           "ts": 1790787311642,
@@ -35,12 +37,28 @@
       ]
     }
   ],
-  "commits": [],
-  "filesChanged": [],
+  "retrospective": {
+    "summary": "Addressed Devin feedback: pin published CLI to peer-safe @relayflows/sdk@2.0.22 and add next-major consumer install proof. Kept monorepo publish override as defense in depth.",
+    "approach": "Standard approach",
+    "confidence": 0.88
+  },
+  "commits": [
+    "67fd39736"
+  ],
+  "filesChanged": [
+    ".agentworkforce/trajectories/active/traj_5rzoroz2bfcy/trajectory.json",
+    ".github/workflows/publish.yml",
+    "package-lock.json",
+    "package.json",
+    "packages/cli/package.json",
+    "packages/cli/src/cli/commands/product-surfaces.ts",
+    "packages/cli/src/cli/relayflows-peer-compat.test.ts"
+  ],
   "projectId": "AgentWorkforce/relay",
   "tags": [],
   "_trace": {
     "startRef": "308fc595e7cf14bde2ec523d99f356adab005fc6",
-    "endRef": "308fc595e7cf14bde2ec523d99f356adab005fc6"
+    "endRef": "67fd397362d4ebf9ee1d30f6fbcc5a5cdfdc438a",
+    "traceId": "d3e5e4a5-72a7-4cfc-a631-7e6ba8fc9b02"
   }
 }
