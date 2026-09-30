@@ -278,7 +278,9 @@ describe('serveNode', () => {
     const register = sock.lastRegister();
     expect(register).toMatchObject({ type: 'node.register', name: 'data-pipeline', node_id: 'node_a' });
     expect(register.provider).toMatchObject({ name: 'data-pipeline' });
-    expect(register.capabilities).toEqual([{ name: 'run-etl', kind: 'action' }]);
+    expect(register.capabilities).toEqual([
+      { name: 'run-etl', kind: 'action', metadata: { 'relay.action-caller': 'v1' } },
+    ]);
 
     sock.emit(acceptAll(register));
     await flush();
@@ -559,7 +561,9 @@ describe('serveNode', () => {
     sock.open();
     const register = sock.lastRegister();
     // The spawn definition registers as an invokable (shadow) action.
-    expect(register.capabilities).toEqual([{ name: 'spawn:codex', kind: 'action' }]);
+    expect(register.capabilities).toEqual([
+      { name: 'spawn:codex', kind: 'action', metadata: { 'relay.action-caller': 'v1' } },
+    ]);
     sock.emit(acceptAll(register));
     await flush();
 
