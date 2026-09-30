@@ -417,12 +417,13 @@ jobs:
             const rootPkg = JSON.parse(fs.readFileSync('package.json', 'utf8'));
             rewriteInternalRefs(rootPkg);
 
-            // @relayflows/sdk declares optional peers @agent-relay/sdk and
-            // @agent-relay/harness-driver with a major-capped range (currently
-            // >=12.3.1 <13). A major bump in this monorepo otherwise fails the
-            // post-bump clean reinstall with ERESOLVE even though those peers
-            // are optional. Pin them through overrides to the version we are
-            // about to publish so npm accepts the workspace packages.
+            // Defense in depth for the post-bump clean reinstall: if a
+            // @relayflows/sdk range ever floats onto a release whose optional
+            // @agent-relay/* peers exclude this major (e.g. >=12.3.1 <13), npm
+            // ERESOLVEs even though those peers are optional. The published
+            // CLI must also pin a peer-safe @relayflows/sdk (see packages/cli);
+            // this override only covers the private monorepo install and does
+            // not travel with the npm package.
             rootPkg.overrides = rootPkg.overrides || {};
             const relayflowsOverride = rootPkg.overrides['@relayflows/sdk'];
             rootPkg.overrides['@relayflows/sdk'] = {

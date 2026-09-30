@@ -1,0 +1,46 @@
+{
+  "id": "traj_5rzoroz2bfcy",
+  "version": 1,
+  "task": {
+    "title": "Address Devin feedback: consumer install of CLI 13 vs @relayflows/sdk peers"
+  },
+  "status": "active",
+  "startedAt": "2026-09-30T16:54:05.130Z",
+  "agents": [
+    {
+      "name": "default",
+      "role": "lead",
+      "joinedAt": "2026-09-30T16:55:11.642Z"
+    }
+  ],
+  "chapters": [
+    {
+      "id": "chap_2r6br8c8v613",
+      "title": "Work",
+      "agentName": "default",
+      "startedAt": "2026-09-30T16:55:11.642Z",
+      "events": [
+        {
+          "ts": 1790787311642,
+          "type": "decision",
+          "content": "Pin published CLI to @relayflows/sdk@2.0.22 and keep monorepo override: Pin published CLI to @relayflows/sdk@2.0.22 and keep monorepo override",
+          "raw": {
+            "question": "Pin published CLI to @relayflows/sdk@2.0.22 and keep monorepo override",
+            "chosen": "Pin published CLI to @relayflows/sdk@2.0.22 and keep monorepo override",
+            "alternatives": [],
+            "reasoning": "Devin correctly noted the root override does not travel with agent-relay. No @relayflows/sdk release yet accepts SDK 13 peers (flows push denied), so pin the last peer-free release (2.0.22) and prove next-major consumer install in vitest."
+          },
+          "significance": "high"
+        }
+      ]
+    }
+  ],
+  "commits": [],
+  "filesChanged": [],
+  "projectId": "AgentWorkforce/relay",
+  "tags": [],
+  "_trace": {
+    "startRef": "308fc595e7cf14bde2ec523d99f356adab005fc6",
+    "endRef": "308fc595e7cf14bde2ec523d99f356adab005fc6"
+  }
+}
