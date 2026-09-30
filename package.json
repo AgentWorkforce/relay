@@ -143,7 +143,7 @@
     "@relaycast/sdk": "^8.0.7",
     "@relayfile/adapter-github": "0.5.9",
     "@relayfile/relay-helpers": "^0.4.6",
-    "@relayflows/sdk": "^2.0.20",
+    "@relayflows/sdk": "2.0.22",
     "@testing-library/jest-dom": "^6.9.1",
     "@types/better-sqlite3": "^7.6.13",
     "@types/node": "^22.19.3",

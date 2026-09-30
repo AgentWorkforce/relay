@@ -1,0 +1,108 @@
+{
+  "version": "1.0.0",
+  "id": "3fea77a9-97d5-45b6-93ea-ad67509a9da9",
+  "timestamp": "2026-09-30T16:44:08.187Z",
+  "trajectory": "traj_z5fhvr8k2p9f",
+  "files": [
+    {
+      "path": ".agentworkforce/trajectories/active/traj_z5fhvr8k2p9f/trajectory.json",
+      "conversations": [
+        {
+          "contributor": {
+            "type": "ai"
+          },
+          "ranges": [
+            {
+              "start_line": 1,
+              "end_line": 46,
+              "revision": "2bee676c1beed2f04cc511dcda65b7bc66601cee"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "path": ".agentworkforce/trajectories/completed/2026-09/traj_a5b8spueklgc/summary.md",
+      "conversations": [
+        {
+          "contributor": {
+            "type": "ai"
+          },
+          "ranges": [
+            {
+              "start_line": 1,
+              "end_line": 52,
+              "revision": "2bee676c1beed2f04cc511dcda65b7bc66601cee"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "path": ".agentworkforce/trajectories/completed/2026-09/traj_a5b8spueklgc/trajectory.json",
+      "conversations": [
+        {
+          "contributor": {
+            "type": "ai"
+          },
+          "ranges": [
+            {
+              "start_line": 8,
+              "end_line": 16,
+              "revision": "2bee676c1beed2f04cc511dcda65b7bc66601cee"
+            },
+            {
+              "start_line": 24,
+              "end_line": 30,
+              "revision": "2bee676c1beed2f04cc511dcda65b7bc66601cee"
+            },
+            {
+              "start_line": 112,
+              "end_line": 135,
+              "revision": "2bee676c1beed2f04cc511dcda65b7bc66601cee"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "path": ".github/workflows/publish.yml",
+      "conversations": [
+        {
+          "contributor": {
+            "type": "ai"
+          },
+          "ranges": [
+            {
+              "start_line": 416,
+              "end_line": 438,
+              "revision": "2bee676c1beed2f04cc511dcda65b7bc66601cee"
+            },
+            {
+              "start_line": 465,
+              "end_line": 474,
+              "revision": "2bee676c1beed2f04cc511dcda65b7bc66601cee"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "path": "packages/cli/src/cli/publish-workflow.test.ts",
+      "conversations": [
+        {
+          "contributor": {
+            "type": "ai"
+          },
+          "ranges": [
+            {
+              "start_line": 109,
+              "end_line": 128,
+              "revision": "2bee676c1beed2f04cc511dcda65b7bc66601cee"
+            }
+          ]
+        }
+      ]
+    }
+  ]
+}

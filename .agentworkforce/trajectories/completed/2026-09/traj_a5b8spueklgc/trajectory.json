@@ -8,8 +8,9 @@
       "id": "AgentWorkforce/relay#1851"
     }
   },
-  "status": "active",
+  "status": "abandoned",
   "startedAt": "2026-09-25T01:22:49.708Z",
+  "completedAt": "2026-09-30T16:43:42.650Z",
   "agents": [
     {
       "name": "default",
@@ -23,6 +24,7 @@
       "title": "Work",
       "agentName": "default",
       "startedAt": "2026-09-25T02:50:08.242Z",
+      "endedAt": "2026-09-30T16:43:42.650Z",
       "events": [
         {
           "ts": 1790304608243,
@@ -109,6 +111,24 @@
             ],
             "reasoning": "persist_noclobber has already made the reservation visible, so committed=false would invite a retry that can conflict with at-most-once semantics. Strict fsync remains required, but failure is classified conservatively."
           },
+          "significance": "high"
+        },
+        {
+          "ts": 1790786618825,
+          "type": "decision",
+          "content": "Pin @relayflows/sdk optional peers via npm overrides during publish version bump: Pin @relayflows/sdk optional peers via npm overrides during publish version bump",
+          "raw": {
+            "question": "Pin @relayflows/sdk optional peers via npm overrides during publish version bump",
+            "chosen": "Pin @relayflows/sdk optional peers via npm overrides during publish version bump",
+            "alternatives": [],
+            "reasoning": "Publish major to 13.0.0 failed ERESOLVE because @relayflows/sdk@2.0.36 peerOptional caps @agent-relay/sdk at <13. Override forces workspace versions so clean reinstall after bump succeeds without waiting on a flows peer-range release."
+          },
+          "significance": "high"
+        },
+        {
+          "ts": 1790786622650,
+          "type": "note",
+          "content": "Abandoned: Stale trajectory from prior PR #1851 work; starting fresh for publish peer fix",
           "significance": "high"
         }
       ]

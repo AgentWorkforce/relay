@@ -416,6 +416,24 @@ jobs:
             // Update root package internal dependencies
             const rootPkg = JSON.parse(fs.readFileSync('package.json', 'utf8'));
             rewriteInternalRefs(rootPkg);
+
+            // Defense in depth for the post-bump clean reinstall: if a
+            // @relayflows/sdk range ever floats onto a release whose optional
+            // @agent-relay/* peers exclude this major (e.g. >=12.3.1 <13), npm
+            // ERESOLVEs even though those peers are optional. The published
+            // CLI must also pin a peer-safe @relayflows/sdk (see packages/cli);
+            // this override only covers the private monorepo install and does
+            // not travel with the npm package.
+            rootPkg.overrides = rootPkg.overrides || {};
+            const relayflowsOverride = rootPkg.overrides['@relayflows/sdk'];
+            rootPkg.overrides['@relayflows/sdk'] = {
+              ...(relayflowsOverride && typeof relayflowsOverride === 'object'
+                ? relayflowsOverride
+                : {}),
+              '@agent-relay/sdk': version,
+              '@agent-relay/harness-driver': version,
+            };
+
             fs.writeFileSync('package.json', JSON.stringify(rootPkg, null, 2) + '\n');
 
             // Update all sub-packages: version + internal dependencies
@@ -448,6 +466,10 @@ jobs:
         run: npm install -g npm@11.19.1
 
       - name: Clean reinstall after version bump
+        # Relies on the @relayflows/sdk peer override written during Version all
+        # packages: without it, a major bump ERESOLVEs against that package's
+        # optional @agent-relay/* peer range (e.g. >=12.3.1 <13) once the
+        # lockfile is deleted and npm re-resolves ^2.0.20 to a current 2.0.x.
         run: |
           # Clear npm cache and node_modules to ensure fresh platform-specific deps
           npm cache clean --force
