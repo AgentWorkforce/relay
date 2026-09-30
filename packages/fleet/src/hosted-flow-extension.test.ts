@@ -25,7 +25,7 @@ const PROVIDER_ID = '0199a4de-d383-7d45-97b8-3e5d7cab166d';
 const LISTENER_AUTHORITY_ID = 'cloud-flow-listeners:v1';
 const RECEIPT_JOURNAL_ID = '0199a4de-d383-7d45-97b8-3e5d7cab166e';
 
-describe('hosted Flow extension provider', () => {
+describe.skipIf(process.platform !== 'linux')('hosted Flow extension provider', () => {
   let directory: string;
   let flowPath: string;
 
@@ -335,6 +335,14 @@ describe('hosted Flow extension provider', () => {
       ...overrides,
     };
   }
+});
+
+describe.runIf(process.platform !== 'linux')('hosted Flow extension platform guard', () => {
+  it('fails closed before inspecting provider options', async () => {
+    await expect(
+      inspectHostedFlowExtensionReadiness({} as HostedFlowExtensionProviderOptions)
+    ).rejects.toThrow('hosted_flow_linux_required');
+  });
 });
 
 function input(overrides: Partial<HostedFlowExtensionInput> = {}): HostedFlowExtensionInput {
