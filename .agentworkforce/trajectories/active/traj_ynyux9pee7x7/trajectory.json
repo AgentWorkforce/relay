@@ -1,0 +1,46 @@
+{
+  "id": "traj_ynyux9pee7x7",
+  "version": 1,
+  "task": {
+    "title": "Recover Relay v13 publish by asserting authenticated action caller capability metadata"
+  },
+  "status": "active",
+  "startedAt": "2026-09-30T20:17:05.124Z",
+  "agents": [
+    {
+      "name": "default",
+      "role": "lead",
+      "joinedAt": "2026-09-30T20:18:03.957Z"
+    }
+  ],
+  "chapters": [
+    {
+      "id": "chap_mqkenmqbows7",
+      "title": "Work",
+      "agentName": "default",
+      "startedAt": "2026-09-30T20:18:03.957Z",
+      "events": [
+        {
+          "ts": 1790799483961,
+          "type": "decision",
+          "content": "Refresh only Relaycast SDK/types lock entries to 8.14.0 and explicitly assert authenticated caller metadata: Refresh only Relaycast SDK/types lock entries to 8.14.0 and explicitly assert authenticated caller metadata",
+          "raw": {
+            "question": "Refresh only Relaycast SDK/types lock entries to 8.14.0 and explicitly assert authenticated caller metadata",
+            "chosen": "Refresh only Relaycast SDK/types lock entries to 8.14.0 and explicitly assert authenticated caller metadata",
+            "alternatives": [],
+            "reasoning": "npm ci pinned SDK 8.0.7 without metadata while Publish Package freshly resolves 8.14.0 with relay.action-caller=v1. Align CI with release resolution without weakening assertions or changing production code."
+          },
+          "significance": "high"
+        }
+      ]
+    }
+  ],
+  "commits": [],
+  "filesChanged": [],
+  "projectId": "AgentWorkforce/relay",
+  "tags": [],
+  "_trace": {
+    "startRef": "17ba41369dc50340a8303ce054e8eb15d180873c",
+    "endRef": "17ba41369dc50340a8303ce054e8eb15d180873c"
+  }
+}
