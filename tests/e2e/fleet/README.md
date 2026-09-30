@@ -31,6 +31,11 @@ omitted/null heartbeat-load compatibility added in relaycast#307.
 | delivery seq/dedup      | per-agent deliveries carry strictly monotonic `agent_seq` (no duplicates); a resync from a mid-cursor replays only the tail (`gap_detected: false`, no duplicate seqs) — the exactly-once cursor the node-restart reconcile relies on |
 | mailbox TTL             | an undelivered message dead-letters after a short TTL **and the sender is notified** (`delivery.failed` naming the target)                                                                                                            |
 
+`worker-env.test.ts` boots a single `env-probe` node and asserts that a spawned
+worker sees only its own `RELAY_AGENT_TOKEN` plus the workspace credentials the
+broker delegates — never the broker API key, node token, or broker identity key.
+The probe records variable names only, never values.
+
 ### Coverage notes (intentionally not re-asserted here)
 
 - **overflow reject-new**: `belowDepthCapSql` rejects new deliveries past the per-agent

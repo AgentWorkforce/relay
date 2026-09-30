@@ -11,6 +11,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - `teams.json` agents accept a per-agent `model` field when `up --spawn` starts them; an explicit `--model` or `-m` inside `cli` still wins.
 - The cloud dashboard can link a recorded Claude Code or Codex session to the fleet worker running it, so you can message that worker from the session page. After each spawn and supervised restart, the broker records the worker's provider session as `session_id` and `session_kind` in its Relaycast agent metadata.
+- Persistent brokers expose authenticated, versioned native existing-session delivery and reconciliation for Cloud Babysitter. They durably reserve each `deliveryId` before the sole worker write, return stable receipts for exact duplicates, and reject session substitution or unsupported native input without sending.
 
 ### Changed
 
@@ -26,6 +27,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- Broker-spawned workers no longer inherit the broker's own credentials from its environment; each worker receives only its own agent token and the workspace credentials the broker delegates to it.
 - Integration subscription setup, listing and retirement use workspace authentication even when a spawned worker also has an agent token, preventing misleading “Workspace key required” failures.
 - A `teams.json` agent whose `cli` carries an inline `--model`/`-m` now records the model the harness actually runs. The inline override becomes the spawn's effective model before the relay skill prefix is chosen, so worker listings, spawn events, telemetry and small-model guidance describe the running model rather than the superseded pin.
 - `agent-relay fleet config|enable|disable|inherit` now exit successfully as hidden compatibility no-ops instead of failing on the removed workspace rollout API.
