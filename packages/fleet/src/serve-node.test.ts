@@ -289,21 +289,22 @@ describe('serveNode', () => {
     const node = defineNode({
       name: 'hosted-extension',
       capabilities: {
-        'relay:hosted-flow-extension:v1': action(
-          { metadata: { 'relay.action-caller': 'v1' } },
-          async () => ({ ok: true }),
-        ),
+        'relay:hosted-flow-extension:v1': action({ metadata: { 'relay.action-caller': 'v1' } }, async () => ({
+          ok: true,
+        })),
       },
     });
     const running = startServeNode({ definition: node, connection, reconnect: false });
     const sock = socket();
     sock.open();
 
-    expect(sock.lastRegister().capabilities).toEqual([{
-      name: 'relay:hosted-flow-extension:v1',
-      kind: 'action',
-      metadata: { 'relay.action-caller': 'v1' },
-    }]);
+    expect(sock.lastRegister().capabilities).toEqual([
+      {
+        name: 'relay:hosted-flow-extension:v1',
+        kind: 'action',
+        metadata: { 'relay.action-caller': 'v1' },
+      },
+    ]);
 
     sock.emit(acceptAll(sock.lastRegister()));
     await flush();
@@ -584,11 +585,13 @@ describe('serveNode', () => {
     sock.open();
     const register = sock.lastRegister();
     // The spawn definition registers as an invokable (shadow) action.
-    expect(register.capabilities).toEqual([{
-      name: 'spawn:codex',
-      kind: 'action',
-      metadata: { cli: 'codex', runtime: 'pty' },
-    }]);
+    expect(register.capabilities).toEqual([
+      {
+        name: 'spawn:codex',
+        kind: 'action',
+        metadata: { cli: 'codex', runtime: 'pty' },
+      },
+    ]);
     sock.emit(acceptAll(register));
     await flush();
 

@@ -222,7 +222,7 @@ export async function serveNode(options: ServeNodeOptions): Promise<void> {
     client.capability(
       name,
       { kind: 'action', ...(metadata ? { metadata } : {}) },
-      adaptHandler(options, name, logger),
+      adaptHandler(options, name, logger)
     );
   }
 
@@ -339,12 +339,8 @@ function makeContext(
       ...(options.maxAgentsOverride !== undefined ? { maxAgents: options.maxAgentsOverride } : {}),
     },
     invocationId: nodeCtx.invocationId,
-    ...(authenticatedCaller.callerAgentId
-      ? { callerAgentId: authenticatedCaller.callerAgentId }
-      : {}),
-    ...(authenticatedCaller.callerAgentName
-      ? { callerAgentName: authenticatedCaller.callerAgentName }
-      : {}),
+    ...(authenticatedCaller.callerAgentId ? { callerAgentId: authenticatedCaller.callerAgentId } : {}),
+    ...(authenticatedCaller.callerAgentName ? { callerAgentName: authenticatedCaller.callerAgentName } : {}),
     relay: {
       sendMessage: (message: FleetRelaySendMessageInput) =>
         nodeCtx.sendMessage({
