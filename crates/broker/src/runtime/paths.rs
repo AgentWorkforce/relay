@@ -10,6 +10,12 @@ pub(crate) struct RuntimePaths {
     /// Inbound-event dedup cache snapshot, so a restart that replays the
     /// persisted pending file cannot re-inject duplicates.
     pub(super) dedup: PathBuf,
+    /// Directory of per-delivery write-ahead receipts for the native
+    /// existing-session delivery lane.
+    /// These are persisted independently from ordinary inbox deliveries because
+    /// a transport timeout after a native session write must never authorize a
+    /// resend on broker restart.
+    pub(super) native_delivery_receipts: PathBuf,
     /// Held for process lifetime to prevent concurrent broker instances (persist mode only).
     #[allow(dead_code)]
     pub(super) _lock: Option<std::fs::File>,
@@ -82,6 +88,7 @@ pub(crate) fn ensure_ephemeral_paths(_cwd: &Path, broker_name: &str) -> Result<R
         pending: root.join("pending.json"),
         dead_letters: root.join("dead-letters.json"),
         dedup: root.join("dedup.json"),
+        native_delivery_receipts: root.join("native-delivery-receipts"),
         _lock: None,
     })
 }
@@ -151,6 +158,8 @@ pub(crate) fn ensure_runtime_paths(
                         pending: root.join(format!("pending-{safe_name}.json")),
                         dead_letters: root.join(format!("dead-letters-{safe_name}.json")),
                         dedup: root.join(format!("dedup-{safe_name}.json")),
+                        native_delivery_receipts: root
+                            .join(format!("native-delivery-receipts-{safe_name}")),
                         _lock: Some(lock_file),
                     });
                 } else {
@@ -189,6 +198,8 @@ pub(crate) fn ensure_runtime_paths(
                 pending: root.join(format!("pending-{safe_name}.json")),
                 dead_letters: root.join(format!("dead-letters-{safe_name}.json")),
                 dedup: root.join(format!("dedup-{safe_name}.json")),
+                native_delivery_receipts: root
+                    .join(format!("native-delivery-receipts-{safe_name}")),
                 _lock: Some(lock_file),
             });
         }
@@ -202,6 +213,7 @@ pub(crate) fn ensure_runtime_paths(
         pending: root.join(format!("pending-{safe_name}.json")),
         dead_letters: root.join(format!("dead-letters-{safe_name}.json")),
         dedup: root.join(format!("dedup-{safe_name}.json")),
+        native_delivery_receipts: root.join(format!("native-delivery-receipts-{safe_name}")),
         _lock: Some(lock_file),
     })
 }

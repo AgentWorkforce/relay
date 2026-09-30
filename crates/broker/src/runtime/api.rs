@@ -1748,6 +1748,53 @@ impl BrokerRuntime {
                     super::delivery::pending_message_counts(delivery_states, pending_deliveries);
                 let _ = reply.send(Ok(json!({ "agents": workers.list(&counts) })));
             }
+            ListenApiRequest::DeliverNativeExistingSession { delivery, reply } => {
+                if !paths.persist {
+                    let _ = reply.send(Err(
+                        crate::native_delivery::NativeDeliveryError::ReceiptUnavailable(
+                            "persistent broker state is required for native delivery".to_string(),
+                        ),
+                    ));
+                    return;
+                }
+                // Authorization reads only in-memory worker state. Receipt
+                // lookup, reservation, and fsyncs run in the spawned task on
+                // the blocking pool so they never stall this runtime actor.
+                let name = crate::native_delivery::worker_name(&delivery);
+                let authorization = workers
+                    .authorize_native_existing_session(&name, &delivery.session_id)
+                    .map_err(|error| error.to_string());
+                let receipt_path = paths.native_delivery_receipts.clone();
+                tokio::spawn(async move {
+                    let result = crate::native_delivery::deliver_authorized(
+                        receipt_path,
+                        delivery,
+                        authorization,
+                    )
+                    .await
+                    .map(|outcome| outcome.to_json());
+                    let _ = reply.send(result);
+                });
+            }
+            ListenApiRequest::ReconcileNativeExistingSession { delivery, reply } => {
+                if !paths.persist {
+                    let _ = reply.send(Err(
+                        crate::native_delivery::NativeDeliveryError::ReceiptUnavailable(
+                            "persistent broker state is required for native reconciliation"
+                                .to_string(),
+                        ),
+                    ));
+                    return;
+                }
+                let receipt_path = paths.native_delivery_receipts.clone();
+                tokio::spawn(async move {
+                    let result =
+                        crate::native_delivery::reconcile_receipt_async(receipt_path, delivery)
+                            .await
+                            .map(crate::native_delivery::reconcile_json);
+                    let _ = reply.send(result);
+                });
+            }
             ListenApiRequest::FleetInventory { reply } => {
                 // Report the in-process `fleet_inventory` map: the same
                 // snapshot the broker publishes to the engine via

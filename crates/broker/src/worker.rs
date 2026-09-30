@@ -2,11 +2,12 @@ use std::{
     collections::{HashMap, HashSet, VecDeque},
     path::{Path, PathBuf},
     process::Stdio,
+    sync::{Arc, Mutex},
     time::{Duration, Instant},
 };
 
 use crate::{
-    ids::{RequestId, WorkerName},
+    ids::{DeliveryId, RequestId, WorkerName},
     metrics::MetricsCollector,
     protocol::{
         AgentRuntime, AgentSpec, AppServerAuthType, AppServerHostOwnership, HarnessReleasePolicy,
@@ -76,6 +77,11 @@ const WORKER_COMMAND_QUEUE_TIMEOUT: Duration = Duration::from_millis(250);
 /// slow provider response. The sole stdin writer must still eventually fault
 /// rather than wedge the worker lane, but should tolerate that short stall.
 const WORKER_WRITE_TIMEOUT: Duration = Duration::from_secs(5);
+/// A native existing-session delivery is not durably queued merely because its
+/// frame reached the worker pipe. Wait for the sidecar's correlated
+/// `delivery_queued` or `delivery_ack`, which is emitted only after durable
+/// custody or immediate acceptance.
+const NATIVE_DELIVERY_CUSTODY_TIMEOUT: Duration = Duration::from_secs(10);
 
 /// A complete newline-delimited worker protocol frame. A dedicated task owns
 /// each worker's stdin and writes these frames in order, so cancelling a
@@ -265,6 +271,189 @@ pub(crate) struct WorkerRegistry {
     pub(crate) owned_cleanup_journal: Option<PathBuf>,
     pub(crate) supervisor: Supervisor,
     pub(crate) metrics: MetricsCollector,
+    native_delivery_custody: NativeDeliveryCustodyHub,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+struct NativeDeliveryCustodyKey {
+    name: WorkerName,
+    generation: Uuid,
+    delivery_id: DeliveryId,
+}
+
+type NativeDeliveryCustodyResult = std::result::Result<(), String>;
+
+/// Correlates the native delivery HTTP task with the sidecar protocol event
+/// that proves durable custody. The registry owns the hub and authorized
+/// senders hold clones, so a same-name replacement cannot satisfy a waiter for
+/// an older process generation.
+#[derive(Clone, Default)]
+struct NativeDeliveryCustodyHub {
+    waiters:
+        Arc<Mutex<HashMap<NativeDeliveryCustodyKey, oneshot::Sender<NativeDeliveryCustodyResult>>>>,
+}
+
+impl NativeDeliveryCustodyHub {
+    fn register(
+        &self,
+        key: NativeDeliveryCustodyKey,
+    ) -> Result<oneshot::Receiver<NativeDeliveryCustodyResult>> {
+        let (sender, receiver) = oneshot::channel();
+        let mut waiters = self
+            .waiters
+            .lock()
+            .map_err(|_| anyhow::anyhow!("native delivery custody registry is unavailable"))?;
+        anyhow::ensure!(
+            !waiters.contains_key(&key),
+            "native delivery custody is already pending for '{}'",
+            key.delivery_id
+        );
+        waiters.insert(key, sender);
+        Ok(receiver)
+    }
+
+    fn resolve(&self, key: &NativeDeliveryCustodyKey, result: NativeDeliveryCustodyResult) -> bool {
+        let sender = self
+            .waiters
+            .lock()
+            .ok()
+            .and_then(|mut waiters| waiters.remove(key));
+        sender.is_some_and(|sender| sender.send(result).is_ok())
+    }
+
+    fn cancel(&self, key: &NativeDeliveryCustodyKey) {
+        if let Ok(mut waiters) = self.waiters.lock() {
+            waiters.remove(key);
+        }
+    }
+
+    fn fail_generation(&self, name: &WorkerName, generation: Uuid, error: &str) {
+        let senders = if let Ok(mut waiters) = self.waiters.lock() {
+            let keys: Vec<_> = waiters
+                .keys()
+                .filter(|key| key.name == *name && key.generation == generation)
+                .cloned()
+                .collect();
+            keys.into_iter()
+                .filter_map(|key| waiters.remove(&key))
+                .collect::<Vec<_>>()
+        } else {
+            Vec::new()
+        };
+        for sender in senders {
+            let _ = sender.send(Err(error.to_string()));
+        }
+    }
+}
+
+struct NativeDeliveryCustodyRegistration {
+    custody: NativeDeliveryCustodyHub,
+    key: Option<NativeDeliveryCustodyKey>,
+}
+
+impl NativeDeliveryCustodyRegistration {
+    fn new(custody: NativeDeliveryCustodyHub, key: NativeDeliveryCustodyKey) -> Self {
+        Self {
+            custody,
+            key: Some(key),
+        }
+    }
+
+    fn disarm(&mut self) {
+        self.key = None;
+    }
+}
+
+impl Drop for NativeDeliveryCustodyRegistration {
+    fn drop(&mut self) {
+        if let Some(key) = self.key.take() {
+            self.custody.cancel(&key);
+        }
+    }
+}
+
+/// Cloneable handle to one authorized worker generation's sole stdin writer.
+/// Native delivery tasks use this handle after leaving the broker actor so a
+/// stalled pipe cannot block unrelated runtime events.
+#[derive(Clone)]
+pub(crate) struct WorkerDeliverySender {
+    name: WorkerName,
+    generation: Uuid,
+    command_tx: mpsc::Sender<WorkerWriteCommand>,
+    custody: NativeDeliveryCustodyHub,
+}
+
+impl WorkerDeliverySender {
+    pub(crate) async fn deliver(&self, delivery: RelayDelivery) -> Result<()> {
+        tracing::debug!(
+            target = "broker::deliver",
+            worker = %self.name,
+            generation = %self.generation,
+            from = %delivery.from,
+            target = %delivery.target,
+            event_id = %delivery.event_id,
+            "delivering event to authorized worker generation"
+        );
+        let delivery_id = delivery.delivery_id.clone();
+        let frame = encode_worker_frame("deliver_relay", None, serde_json::to_value(delivery)?)?;
+        let custody_key = NativeDeliveryCustodyKey {
+            name: self.name.clone(),
+            generation: self.generation,
+            delivery_id,
+        };
+        let custody_rx = self.custody.register(custody_key.clone())?;
+        let mut custody_registration =
+            NativeDeliveryCustodyRegistration::new(self.custody.clone(), custody_key);
+        let (completion_tx, completion_rx) = oneshot::channel();
+        let write_result: Result<()> = async {
+            timeout(
+                WORKER_COMMAND_QUEUE_TIMEOUT,
+                self.command_tx.send(WorkerWriteCommand {
+                    frame,
+                    completion: Some(completion_tx),
+                }),
+            )
+            .await
+            .map_err(|_| anyhow::anyhow!("worker command queue timed out for '{}'", self.name))?
+            .map_err(|_| {
+                anyhow::anyhow!("worker command writer is unavailable for '{}'", self.name)
+            })?;
+            completion_rx
+                .await
+                .map_err(|_| {
+                    anyhow::anyhow!(
+                        "worker command writer stopped before completing '{}'",
+                        self.name
+                    )
+                })?
+                .map_err(anyhow::Error::msg)
+                .with_context(|| format!("failed writing frame to worker '{}'", self.name))
+        }
+        .await;
+        write_result?;
+
+        let custody_result = timeout(NATIVE_DELIVERY_CUSTODY_TIMEOUT, custody_rx).await;
+        if custody_result.is_ok() {
+            // Resolution removes the waiter from the hub. A timeout or a
+            // cancelled delivery future leaves the guard armed so Drop removes
+            // the registration and an exact retry can register immediately.
+            custody_registration.disarm();
+        }
+        custody_result
+            .map_err(|_| {
+                anyhow::anyhow!(
+                    "native delivery custody confirmation timed out for '{}'",
+                    self.name
+                )
+            })?
+            .map_err(|_| {
+                anyhow::anyhow!(
+                    "native delivery custody waiter stopped before confirmation for '{}'",
+                    self.name
+                )
+            })?
+            .map_err(anyhow::Error::msg)
+    }
 }
 
 fn encode_worker_frame(
@@ -375,6 +564,7 @@ impl WorkerRegistry {
             owned_cleanup_journal: None,
             supervisor: Supervisor::new(),
             metrics: MetricsCollector::new(broker_start),
+            native_delivery_custody: NativeDeliveryCustodyHub::default(),
         }
     }
 
@@ -482,6 +672,94 @@ impl WorkerRegistry {
 
     pub(crate) fn has_worker(&self, name: &str) -> bool {
         self.workers.contains_key(name)
+    }
+
+    /// Authorize the exact broker-owned Codex native session used by the
+    /// Cloud Babysitter delivery lane. Name-only liveness is insufficient: a
+    /// released worker can be replaced under the same Relay identity, so the
+    /// session id and native active-input capability are checked together at
+    /// the final local hop.
+    pub(crate) fn authorize_native_existing_session(
+        &mut self,
+        name: &WorkerName,
+        session_id: &str,
+    ) -> Result<WorkerDeliverySender> {
+        let handle = self
+            .workers
+            .get_mut(name)
+            .with_context(|| format!("native_session_not_found: no live worker named '{name}'"))?;
+        let live = match handle.child.try_wait() {
+            Ok(Some(_)) | Err(_) => false,
+            Ok(None) => {
+                #[cfg(unix)]
+                {
+                    handle.child.id().is_some_and(|pid| !pid_is_gone(pid))
+                }
+                #[cfg(not(unix))]
+                {
+                    handle.child.id().is_some()
+                }
+            }
+        };
+        anyhow::ensure!(live, "native_session_not_live: worker '{name}' is not live");
+        anyhow::ensure!(
+            handle.ready_at.is_some(),
+            "native_session_not_ready: worker '{name}' has not proved readiness"
+        );
+        authorize_native_existing_session_spec(&handle.spec, session_id)?;
+        anyhow::ensure!(
+            !self.initial_tasks.contains_key(name),
+            "native_session_not_ready: worker initial task has not been queued"
+        );
+        Ok(WorkerDeliverySender {
+            name: name.clone(),
+            generation: handle.generation,
+            command_tx: handle.command_tx.clone(),
+            custody: self.native_delivery_custody.clone(),
+        })
+    }
+
+    pub(crate) fn confirm_native_delivery_custody(
+        &self,
+        name: &WorkerName,
+        generation: Uuid,
+        delivery_id: &str,
+    ) -> bool {
+        self.native_delivery_custody.resolve(
+            &NativeDeliveryCustodyKey {
+                name: name.clone(),
+                generation,
+                delivery_id: DeliveryId::from(delivery_id),
+            },
+            Ok(()),
+        )
+    }
+
+    pub(crate) fn fail_native_delivery_custody(
+        &self,
+        name: &WorkerName,
+        generation: Uuid,
+        delivery_id: &str,
+        error: &str,
+    ) -> bool {
+        self.native_delivery_custody.resolve(
+            &NativeDeliveryCustodyKey {
+                name: name.clone(),
+                generation,
+                delivery_id: DeliveryId::from(delivery_id),
+            },
+            Err(error.to_string()),
+        )
+    }
+
+    pub(crate) fn fail_native_delivery_custody_generation(
+        &self,
+        name: &WorkerName,
+        generation: Uuid,
+        error: &str,
+    ) {
+        self.native_delivery_custody
+            .fail_generation(name, generation, error);
     }
 
     /// True when a worker is registered AND its child process is still alive.
@@ -1657,10 +1935,20 @@ impl WorkerRegistry {
         // looking up the handle so maintenance cannot resurrect the released
         // name after the API has acknowledged teardown.
         self.supervisor.unregister(name);
+        let generation = self
+            .workers
+            .get(name)
+            .with_context(|| format!("unknown worker '{name}'"))?
+            .generation;
+        self.fail_native_delivery_custody_generation(
+            &WorkerName::from(name),
+            generation,
+            "native worker was released before confirming delivery custody",
+        );
         let mut handle = self
             .workers
             .remove(name)
-            .with_context(|| format!("unknown worker '{name}'"))?;
+            .expect("worker generation was checked before release");
         let release_grace = release_grace_for_spec(&handle.spec);
 
         let shutdown_frame = ProtocolEnvelope {
@@ -1826,6 +2114,11 @@ impl WorkerRegistry {
                         ),
                     }
                 }
+                self.fail_native_delivery_custody_generation(
+                    &name,
+                    generation,
+                    "native worker exited before confirming delivery custody",
+                );
                 self.workers.remove(&name);
                 self.initial_tasks.remove(&name);
                 self.argv_initial_tasks.remove(&name);
@@ -1850,6 +2143,11 @@ impl WorkerRegistry {
                     .workers
                     .get(&name)
                     .and_then(|handle| handle.exit_reason.clone());
+                self.fail_native_delivery_custody_generation(
+                    &name,
+                    generation,
+                    "native worker exited before confirming delivery custody",
+                );
                 self.workers.remove(&name);
                 self.initial_tasks.remove(&name);
                 self.argv_initial_tasks.remove(&name);
@@ -1864,6 +2162,11 @@ impl WorkerRegistry {
                     .workers
                     .get(&name)
                     .and_then(|handle| handle.exit_reason.clone());
+                self.fail_native_delivery_custody_generation(
+                    &name,
+                    generation,
+                    "native worker exited before confirming delivery custody",
+                );
                 self.workers.remove(&name);
                 self.initial_tasks.remove(&name);
                 self.argv_initial_tasks.remove(&name);
@@ -1919,6 +2222,53 @@ pub(crate) fn native_harness_metadata(spec: &AgentSpec) -> Option<(u64, Option<V
         })
         .cloned();
     Some((version, capabilities))
+}
+
+fn authorize_native_existing_session_spec(spec: &AgentSpec, session_id: &str) -> Result<()> {
+    let cli = spec.cli.as_deref().map_or_else(
+        || Ok(String::new()),
+        |raw| {
+            let (command, _) =
+                parse_cli_command(raw).with_context(|| format!("invalid CLI command '{raw}'"))?;
+            Ok::<_, anyhow::Error>(normalize_cli_name(&command).to_ascii_lowercase())
+        },
+    )?;
+    anyhow::ensure!(
+        cli == "codex" || cli == "codex.exe",
+        "native_session_unsupported_harness: only Codex native sessions are supported"
+    );
+    let actual_session = spec.session_id.as_deref().or_else(|| {
+        spec.harness_config
+            .as_ref()
+            .and_then(ResolvedHarnessConfig::session_id)
+    });
+    anyhow::ensure!(
+        actual_session == Some(session_id),
+        "native_session_mismatch: requested session does not match the live worker"
+    );
+    let (version, capabilities) = native_harness_metadata(spec).ok_or_else(|| {
+        anyhow::anyhow!(
+            "native_session_unsupported_transport: worker is not using the native harness protocol"
+        )
+    })?;
+    anyhow::ensure!(
+        version == 1,
+        "native_session_unsupported_protocol: expected native harness protocol version 1"
+    );
+    let active_input = capabilities
+        .as_ref()
+        .and_then(|value| {
+            value
+                .get("activeInput")
+                .or_else(|| value.get("active_input"))
+        })
+        .and_then(Value::as_bool)
+        .unwrap_or(false);
+    anyhow::ensure!(
+        active_input,
+        "native_session_input_unavailable: native session does not advertise active input"
+    );
+    Ok(())
 }
 
 fn release_policy_arg(policy: Option<&HarnessReleasePolicy>) -> &'static str {
@@ -2859,6 +3209,139 @@ mod tests {
         WorkerRegistry::new(tx, env, PathBuf::from("/tmp/worker-tests"), Instant::now())
     }
 
+    #[tokio::test]
+    async fn native_delivery_waits_for_correlated_sidecar_custody() {
+        let name = WorkerName::from("native");
+        let generation = Uuid::new_v4();
+        let custody = NativeDeliveryCustodyHub::default();
+        let (command_tx, mut command_rx) = mpsc::channel(1);
+        let sender = WorkerDeliverySender {
+            name: name.clone(),
+            generation,
+            command_tx,
+            custody: custody.clone(),
+        };
+        let delivery_id = DeliveryId::from("delivery-1");
+        let delivery = RelayDelivery {
+            delivery_id: delivery_id.clone(),
+            event_id: "event-1".into(),
+            workspace_id: None,
+            workspace_alias: None,
+            from: "reviewer".to_string(),
+            target: "native".into(),
+            body: "status".to_string(),
+            thread_id: None,
+            priority: None,
+            injection_mode: Default::default(),
+        };
+
+        let delivery_task = tokio::spawn(async move { sender.deliver(delivery).await });
+        let mut command = command_rx.recv().await.expect("worker command");
+        command
+            .completion
+            .take()
+            .expect("write completion")
+            .send(Ok(()))
+            .expect("delivery task should await write completion");
+        tokio::task::yield_now().await;
+        assert!(
+            !delivery_task.is_finished(),
+            "pipe write alone must not claim durable custody"
+        );
+
+        assert!(custody.resolve(
+            &NativeDeliveryCustodyKey {
+                name,
+                generation,
+                delivery_id,
+            },
+            Ok(()),
+        ));
+        delivery_task
+            .await
+            .expect("delivery task should join")
+            .expect("correlated sidecar confirmation should complete delivery");
+    }
+
+    #[tokio::test]
+    async fn cancelled_native_delivery_removes_its_custody_waiter() {
+        let name = WorkerName::from("native");
+        let generation = Uuid::new_v4();
+        let custody = NativeDeliveryCustodyHub::default();
+        let (command_tx, mut command_rx) = mpsc::channel(1);
+        let sender = WorkerDeliverySender {
+            name: name.clone(),
+            generation,
+            command_tx,
+            custody: custody.clone(),
+        };
+        let delivery_id = DeliveryId::from("delivery-cancelled");
+        let custody_key = NativeDeliveryCustodyKey {
+            name,
+            generation,
+            delivery_id: delivery_id.clone(),
+        };
+        let delivery = RelayDelivery {
+            delivery_id,
+            event_id: "event-cancelled".into(),
+            workspace_id: None,
+            workspace_alias: None,
+            from: "reviewer".to_string(),
+            target: "native".into(),
+            body: "status".to_string(),
+            thread_id: None,
+            priority: None,
+            injection_mode: Default::default(),
+        };
+
+        let delivery_task = tokio::spawn(async move { sender.deliver(delivery).await });
+        let mut command = command_rx.recv().await.expect("worker command");
+        command
+            .completion
+            .take()
+            .expect("write completion")
+            .send(Ok(()))
+            .expect("delivery task should await custody");
+        tokio::task::yield_now().await;
+        delivery_task.abort();
+        assert!(delivery_task
+            .await
+            .expect_err("delivery should be cancelled")
+            .is_cancelled());
+
+        let replacement = custody
+            .register(custody_key.clone())
+            .expect("cancelled delivery must not block an exact retry");
+        custody.cancel(&custody_key);
+        assert!(
+            replacement.await.is_err(),
+            "cancelling the replacement waiter should close its receiver"
+        );
+    }
+
+    #[tokio::test]
+    async fn native_delivery_custody_fails_when_worker_generation_exits() {
+        let name = WorkerName::from("native");
+        let generation = Uuid::new_v4();
+        let custody = NativeDeliveryCustodyHub::default();
+        let receiver = custody
+            .register(NativeDeliveryCustodyKey {
+                name: name.clone(),
+                generation,
+                delivery_id: DeliveryId::from("delivery-exit"),
+            })
+            .expect("custody waiter should register");
+
+        custody.fail_generation(&name, generation, "worker exited");
+        assert_eq!(
+            receiver
+                .await
+                .expect("exit should resolve custody waiter")
+                .expect_err("exit cannot confirm custody"),
+            "worker exited"
+        );
+    }
+
     #[cfg(unix)]
     fn git(repo: &Path, args: &[&str]) -> std::process::Output {
         std::process::Command::new("git")
@@ -3684,6 +4167,49 @@ sleep 30
         assert!(reg.supervisor.pending_restarts().is_empty());
     }
 
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
+    #[tokio::test]
+    async fn release_fails_native_delivery_custody_waiters_before_removal() {
+        let mut registry = make_registry(Vec::new());
+        let name = "released-native-worker";
+        registry
+            .spawn(
+                sleeping_native_worker(name, None),
+                None,
+                None,
+                None,
+                true,
+                None,
+                None,
+                None,
+                None,
+            )
+            .await
+            .expect("native worker should spawn");
+        let generation = registry
+            .workers
+            .get(name)
+            .expect("spawned worker")
+            .generation;
+        let receiver = registry
+            .native_delivery_custody
+            .register(NativeDeliveryCustodyKey {
+                name: WorkerName::from(name),
+                generation,
+                delivery_id: DeliveryId::from("delivery-release"),
+            })
+            .expect("custody waiter should register");
+
+        registry.release(name).await.expect("worker should release");
+        assert_eq!(
+            receiver
+                .await
+                .expect("release should resolve custody waiter")
+                .expect_err("release cannot confirm custody"),
+            "native worker was released before confirming delivery custody"
+        );
+    }
+
     #[test]
     fn worker_log_path_rejects_path_traversal() {
         let reg = make_registry(vec![]);
@@ -3778,6 +4304,108 @@ sleep 30
             capabilities.unwrap(),
             json!({"activeInput": true, "interrupt": true})
         );
+    }
+
+    fn native_codex_authorization_spec() -> AgentSpec {
+        serde_json::from_value(json!({
+            "name": "garden-coder",
+            "runtime": "headless",
+            "cli": "codex",
+            "sessionId": "native-1",
+            "args": [],
+            "channels": [],
+            "harnessConfig": {
+                "runtime": "native",
+                "command": "node",
+                "args": ["/tmp/sidecar.js"],
+                "sessionId": "native-1",
+                "metadata": {
+                    "runtimeKind": "native",
+                    "nativeHarnessProtocolVersion": 1,
+                    "nativeHarnessCapabilities": {"activeInput": true}
+                }
+            }
+        }))
+        .expect("native Codex spec")
+    }
+
+    #[test]
+    fn native_existing_session_authorization_requires_exact_session_and_active_input() {
+        let mut spec = native_codex_authorization_spec();
+        authorize_native_existing_session_spec(&spec, "native-1")
+            .expect("exact native Codex session should authorize");
+
+        spec.cli = Some("/usr/local/bin/codex --model o3".to_string());
+        authorize_native_existing_session_spec(&spec, "native-1")
+            .expect("inline Codex command should authorize by executable");
+
+        let mismatch = authorize_native_existing_session_spec(&spec, "replacement-session")
+            .expect_err("session substitution must fail")
+            .to_string();
+        assert!(mismatch.contains("native_session_mismatch"), "{mismatch}");
+
+        let mut no_input = spec.clone();
+        if let Some(ResolvedHarnessConfig::Native(config)) = no_input.harness_config.as_mut() {
+            config.metadata.as_mut().expect("metadata").insert(
+                "nativeHarnessCapabilities".to_string(),
+                json!({"activeInput": false}),
+            );
+        }
+        let unavailable = authorize_native_existing_session_spec(&no_input, "native-1")
+            .expect_err("inactive input must fail")
+            .to_string();
+        assert!(
+            unavailable.contains("native_session_input_unavailable"),
+            "{unavailable}"
+        );
+    }
+
+    #[test]
+    fn native_existing_session_authorization_rejects_non_codex_harnesses() {
+        let mut spec = native_codex_authorization_spec();
+        spec.cli = Some("claude".to_string());
+        let error = authorize_native_existing_session_spec(&spec, "native-1")
+            .expect_err("non-Codex native session must fail closed")
+            .to_string();
+        assert!(
+            error.contains("native_session_unsupported_harness"),
+            "{error}"
+        );
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn native_existing_session_authorization_reaps_an_exited_worker() {
+        let mut registry = make_registry(vec![]);
+        let name = WorkerName::from("exited-native-worker");
+        let child = Command::new("true").spawn().expect("spawn exiting child");
+        let generation = Uuid::new_v4();
+        let (command_tx, _command_rx) = mpsc::channel(WORKER_WRITE_QUEUE_CAPACITY);
+        registry.workers.insert(
+            name.clone(),
+            WorkerHandle {
+                generation,
+                spec: native_codex_authorization_spec(),
+                parent: None,
+                workspace_id: None,
+                child,
+                command_tx,
+                harness_pid: None,
+                spawned_at: Instant::now(),
+                ready_at: Some(Instant::now()),
+                last_activity_at: Instant::now(),
+                context_budget_pct: None,
+                state: AgentWorkState::Idle,
+                exit_reason: None,
+            },
+        );
+        tokio::time::sleep(Duration::from_millis(50)).await;
+
+        let error = match registry.authorize_native_existing_session(&name, "native-1") {
+            Ok(_) => panic!("an exited child must fail before receipt reservation"),
+            Err(error) => error.to_string(),
+        };
+        assert!(error.contains("native_session_not_live"), "{error}");
     }
 
     #[test]
