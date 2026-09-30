@@ -580,6 +580,13 @@ function receipt(
 
 function validateProviderOptions(options: HostedFlowExtensionProviderOptions): void {
   if (process.platform !== 'linux') throw new Error('hosted_flow_linux_required');
+  if (
+    !options.listenerAuthority ||
+    typeof options.listenerAuthority.id !== 'string' ||
+    typeof options.listenerAuthority.authorize !== 'function'
+  ) {
+    throw new Error('hosted_flow_invalid_listener_authority');
+  }
   for (const [field, value] of [
     ['nodeId', options.nodeId],
     ['relayWorkspaceId', options.relayWorkspaceId],

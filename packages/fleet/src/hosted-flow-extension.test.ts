@@ -52,6 +52,15 @@ describe('hosted Flow extension provider', () => {
     await expect(prepareHostedFlowExtensionCapabilities(options)).rejects.toThrow(/hosted_flow_unavailable/);
   });
 
+  it('refuses to advertise without a callable listener authority policy', async () => {
+    const options = providerOptions(successRunner(), vi.fn(), {
+      listenerAuthority: { id: LISTENER_AUTHORITY_ID } as never,
+    });
+    await expect(inspectHostedFlowExtensionReadiness(options)).rejects.toThrow(
+      'hosted_flow_invalid_listener_authority'
+    );
+  });
+
   it('runs one pinned capability, queues exact native delivery, and durably replays', async () => {
     const runner = successRunner();
     const fetch = queuedFetch('native-receipt-1');
