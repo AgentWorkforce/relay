@@ -116,6 +116,9 @@ describe('hosted Flow extension provider', () => {
       providerBindingId: PROVIDER_ID,
       listenerAuthorityId: LISTENER_AUTHORITY_ID,
       receiptJournalId: RECEIPT_JOURNAL_ID,
+      relayWorkspaceId: 'workspace-relay-1',
+      nodeId: 'node-1',
+      runtimeAttestationSha256: ATTESTATION_SHA_256,
     };
     expect(executeCapability.metadata).toMatchObject(binding);
     expect(reconcileCapability.metadata).toMatchObject(binding);

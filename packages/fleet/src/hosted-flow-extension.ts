@@ -691,6 +691,9 @@ export async function prepareHostedFlowExtensionCapabilities(
       providerBindingId: options.providerBindingId,
       listenerAuthorityId: options.listenerAuthority.id,
       receiptJournalId: options.receiptJournalId,
+      relayWorkspaceId: options.relayWorkspaceId,
+      nodeId: options.nodeId,
+      runtimeAttestationSha256: options.runtimeAttestationSha256,
     },
     handler: async (rawInput, context) => {
       const input = hostedInputSchema.parse(rawInput);
@@ -755,6 +758,9 @@ export async function prepareHostedFlowExtensionCapabilities(
       providerBindingId: options.providerBindingId,
       listenerAuthorityId: options.listenerAuthority.id,
       receiptJournalId: options.receiptJournalId,
+      relayWorkspaceId: options.relayWorkspaceId,
+      nodeId: options.nodeId,
+      runtimeAttestationSha256: options.runtimeAttestationSha256,
     },
     handler: async (rawInput, context) => {
       const input = reconcileSchema.parse(rawInput);
