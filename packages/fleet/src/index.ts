@@ -68,6 +68,10 @@ export interface FleetActionContext {
   node: FleetNodeInfo;
   relay: FleetScopedRelayClient;
   invocationId?: string;
+  /** Authenticated Relaycast agent identity that invoked this action. */
+  callerAgentId?: string;
+  /** Informational current name for the authenticated caller. */
+  callerAgentName?: string;
   spawnAgent(input: FleetSpawnAgentInput): Promise<unknown>;
 }
 

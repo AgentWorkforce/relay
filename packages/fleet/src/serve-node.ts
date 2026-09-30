@@ -211,13 +211,19 @@ export async function serveNode(options: ServeNodeOptions): Promise<void> {
     // Both `action` and `spawn` definitions materialize as invokable `action`
     // capabilities: a `spawn:<harness>` definition shadows the node's native
     // capacity, delegating through `ctx.spawnAgent`.
-    const kind = options.definition.capabilities[name]?.kind;
+    const capability = options.definition.capabilities[name];
+    const kind = capability?.kind;
+    const metadata = typeof capability === 'function' ? undefined : capability?.metadata;
     logger.debug(`Capability "${name}" registered`, {
       node: nodeName,
       capability: name,
       ...(kind ? { kind } : {}),
     });
-    client.capability(name, { kind: 'action' }, adaptHandler(options, name, logger));
+    client.capability(
+      name,
+      { kind: 'action', ...(metadata ? { metadata } : {}) },
+      adaptHandler(options, name, logger),
+    );
   }
 
   const abort = () => {
@@ -308,6 +314,13 @@ function makeContext(
   nodeCtx: NodeHandlerContext,
   capabilityName: string
 ): FleetActionContext {
+  // Added by Relaycast's authenticated action-caller v1 extension. Keep the
+  // compatibility cast local until every supported SDK release carries these
+  // optional fields in NodeHandlerContext.
+  const authenticatedCaller = nodeCtx as NodeHandlerContext & {
+    callerAgentId?: string;
+    callerAgentName?: string;
+  };
   const info = nodeInfo(options.definition);
   const fromDefault = options.nameOverride ?? options.definition.name;
   // A `spawn:<harness>` shadow delegates to that harness's native capacity. The
@@ -326,6 +339,12 @@ function makeContext(
       ...(options.maxAgentsOverride !== undefined ? { maxAgents: options.maxAgentsOverride } : {}),
     },
     invocationId: nodeCtx.invocationId,
+    ...(authenticatedCaller.callerAgentId
+      ? { callerAgentId: authenticatedCaller.callerAgentId }
+      : {}),
+    ...(authenticatedCaller.callerAgentName
+      ? { callerAgentName: authenticatedCaller.callerAgentName }
+      : {}),
     relay: {
       sendMessage: (message: FleetRelaySendMessageInput) =>
         nodeCtx.sendMessage({

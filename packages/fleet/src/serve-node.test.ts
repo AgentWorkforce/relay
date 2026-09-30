@@ -285,6 +285,31 @@ describe('serveNode', () => {
     await running.stop();
   });
 
+  it('forwards action metadata needed for authenticated caller negotiation', async () => {
+    const node = defineNode({
+      name: 'hosted-extension',
+      capabilities: {
+        'relay:hosted-flow-extension:v1': action(
+          { metadata: { 'relay.action-caller': 'v1' } },
+          async () => ({ ok: true }),
+        ),
+      },
+    });
+    const running = startServeNode({ definition: node, connection, reconnect: false });
+    const sock = socket();
+    sock.open();
+
+    expect(sock.lastRegister().capabilities).toEqual([{
+      name: 'relay:hosted-flow-extension:v1',
+      kind: 'action',
+      metadata: { 'relay.action-caller': 'v1' },
+    }]);
+
+    sock.emit(acceptAll(sock.lastRegister()));
+    await flush();
+    await running.stop();
+  });
+
   it('reports the definition maxAgents in the register frame', async () => {
     const node = defineNode({
       name: 'sf-frame',
@@ -559,7 +584,11 @@ describe('serveNode', () => {
     sock.open();
     const register = sock.lastRegister();
     // The spawn definition registers as an invokable (shadow) action.
-    expect(register.capabilities).toEqual([{ name: 'spawn:codex', kind: 'action' }]);
+    expect(register.capabilities).toEqual([{
+      name: 'spawn:codex',
+      kind: 'action',
+      metadata: { cli: 'codex', runtime: 'pty' },
+    }]);
     sock.emit(acceptAll(register));
     await flush();
 
