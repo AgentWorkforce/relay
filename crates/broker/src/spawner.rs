@@ -22,6 +22,16 @@ const RELAY_ATTEST_GIT_CONFIG_COUNT: &str = "RELAY_ATTEST_GIT_CONFIG_COUNT";
 const RELAY_ATTEST_GIT_CONFIG_INDEX: &str = "RELAY_ATTEST_GIT_CONFIG_INDEX";
 const RELAY_ATTEST_BROKER_HOOK_PATH: &str = "RELAY_ATTEST_BROKER_HOOK_PATH";
 
+#[cfg(test)]
+pub(crate) use relay_pty::credentials::INHERITED_RELAY_CREDENTIAL_ENV_KEYS;
+/// Relay-owned credentials no spawned worker or spawn-time helper inherits
+/// from the broker's environment; see [`relay_pty::credentials`]. Every worker
+/// spawn strips this list first and then injects only what that worker is meant
+/// to hold: its own `RELAY_AGENT_TOKEN`, its own result callback token, and the
+/// workspace credentials the broker explicitly delegates to agents through its
+/// worker environment.
+pub(crate) use relay_pty::credentials::{remove_inherited_relay_credentials, scrubbed_command};
+
 /// Standard client-side git hooks (see githooks(5)). `core.hooksPath` is a
 /// single directory that replaces git's entire hook lookup, not just
 /// `prepare-commit-msg` — so the broker must install a forwarder under every
@@ -372,6 +382,7 @@ impl Spawner {
             .stdout(Stdio::inherit())
             .stderr(Stdio::inherit());
 
+        remove_inherited_relay_credentials(&mut cmd);
         let mut child_env = env_vars.to_vec();
         if attestation_env_present(&child_env) {
             match self.commit_hooks_dir() {
@@ -577,10 +588,63 @@ mod tests {
 
     use super::{
         add_broker_hooks_path, attestation_env_present, git_config_count_with_inherited,
-        spawn_env_vars, terminate_child, with_commit_attestation_env, write_broker_git_hooks,
-        Spawner, RELAY_ATTEST_AGENT_ID, RELAY_ATTEST_JTI, RELAY_ATTEST_SESSION_ID,
-        RELAY_ATTEST_SPONSOR_ID,
+        remove_inherited_relay_credentials, spawn_env_vars, terminate_child,
+        with_commit_attestation_env, write_broker_git_hooks, Spawner,
+        INHERITED_RELAY_CREDENTIAL_ENV_KEYS, RELAY_ATTEST_AGENT_ID, RELAY_ATTEST_JTI,
+        RELAY_ATTEST_SESSION_ID, RELAY_ATTEST_SPONSOR_ID,
     };
+
+    #[test]
+    fn inherited_relay_credentials_cover_broker_node_and_workspace_secrets() {
+        for key in [
+            "RELAY_BROKER_API_KEY",
+            "RELAY_NODE_TOKEN",
+            "RELAY_AGENT_IDENTITY_KEY",
+            "RELAY_AGENT_TOKEN",
+            "AGENT_RELAY_RESULT_TOKEN",
+            "RELAY_API_KEY",
+            "RELAY_WORKSPACE_KEY",
+            "AGENT_RELAY_WORKSPACE_KEY",
+            "RELAY_WORKSPACES_JSON",
+        ] {
+            assert!(
+                INHERITED_RELAY_CREDENTIAL_ENV_KEYS.contains(&key),
+                "{key} must be stripped from worker environments"
+            );
+        }
+    }
+
+    #[test]
+    fn remove_inherited_relay_credentials_strips_every_key_and_later_env_wins() {
+        let mut command = Command::new("true");
+        remove_inherited_relay_credentials(&mut command);
+        command.env("RELAY_AGENT_TOKEN", "worker-own-token");
+
+        let envs: std::collections::HashMap<String, Option<String>> = command
+            .as_std()
+            .get_envs()
+            .map(|(key, value)| {
+                (
+                    key.to_string_lossy().into_owned(),
+                    value.map(|v| v.to_string_lossy().into_owned()),
+                )
+            })
+            .collect();
+        for key in INHERITED_RELAY_CREDENTIAL_ENV_KEYS {
+            if *key == "RELAY_AGENT_TOKEN" {
+                continue;
+            }
+            assert_eq!(envs.get(*key), Some(&None), "{key} should be removed");
+        }
+        assert_eq!(
+            envs.get("RELAY_AGENT_TOKEN"),
+            Some(&Some("worker-own-token".to_string())),
+            "a worker's own token set after the scrub must survive"
+        );
+        // Non-relay environment is left to normal inheritance.
+        assert!(!envs.contains_key("PATH"));
+        assert!(!envs.contains_key("ANTHROPIC_API_KEY"));
+    }
 
     fn git(repo: &Path, args: &[&str], env: &[(String, String)]) -> std::process::Output {
         StdCommand::new("git")

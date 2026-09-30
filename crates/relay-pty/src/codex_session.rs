@@ -11,7 +11,7 @@ use anyhow::{bail, Context, Result};
 use serde_json::{json, Value};
 use tokio::{
     io::{AsyncBufReadExt, AsyncWriteExt, BufReader, Lines},
-    process::{ChildStdin, ChildStdout, Command},
+    process::{ChildStdin, ChildStdout},
     time::timeout,
 };
 
@@ -47,7 +47,7 @@ async fn create_resumable_codex_thread_inner(
     client_version: &str,
 ) -> Result<String> {
     let thread_cwd = cwd.canonicalize().unwrap_or_else(|_| cwd.to_path_buf());
-    let mut command = Command::new(codex_bin);
+    let mut command = crate::credentials::scrubbed_command(codex_bin);
     command
         .arg("app-server")
         .arg("--listen")
