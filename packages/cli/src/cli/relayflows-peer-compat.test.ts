@@ -60,41 +60,47 @@ describe('published CLI @relayflows/sdk peer compatibility', () => {
     expect(pin).toMatch(/^\d+\.\d+\.\d+$/);
   });
 
-  it('installs cleanly beside workspace packages at the next major', () => {
-    const cli = readCliPackage();
-    const pin = cli.dependencies?.['@relayflows/sdk'];
-    expect(pin).toBeTruthy();
-    const next = nextMajor(cli.version);
+  // Fresh registry install of @relayflows/sdk routinely exceeds vitest's 5s
+  // default under CI load; keep the proof but budget for a cold npm resolve.
+  it(
+    'installs cleanly beside workspace packages at the next major',
+    () => {
+      const cli = readCliPackage();
+      const pin = cli.dependencies?.['@relayflows/sdk'];
+      expect(pin).toBeTruthy();
+      const next = nextMajor(cli.version);
 
-    const root = mkdtempSync(path.join(tmpdir(), 'relayflows-peer-compat-'));
-    try {
-      writeWorkspacePackage(root, 'sdk', next);
-      writeWorkspacePackage(root, 'harness-driver', next);
+      const root = mkdtempSync(path.join(tmpdir(), 'relayflows-peer-compat-'));
+      try {
+        writeWorkspacePackage(root, 'sdk', next);
+        writeWorkspacePackage(root, 'harness-driver', next);
 
-      writeFileSync(
-        path.join(root, 'package.json'),
-        JSON.stringify(
-          {
-            name: 'relayflows-peer-compat-consumer',
-            private: true,
-            dependencies: {
-              '@agent-relay/sdk': 'file:pkgs/sdk',
-              '@agent-relay/harness-driver': 'file:pkgs/harness-driver',
-              '@relayflows/sdk': pin,
+        writeFileSync(
+          path.join(root, 'package.json'),
+          JSON.stringify(
+            {
+              name: 'relayflows-peer-compat-consumer',
+              private: true,
+              dependencies: {
+                '@agent-relay/sdk': 'file:pkgs/sdk',
+                '@agent-relay/harness-driver': 'file:pkgs/harness-driver',
+                '@relayflows/sdk': pin,
+              },
             },
-          },
-          null,
-          2
-        )
-      );
+            null,
+            2
+          )
+        );
 
-      execFileSync('npm', ['install', '--no-fund', '--no-audit'], {
-        cwd: root,
-        encoding: 'utf8',
-        stdio: ['ignore', 'pipe', 'pipe'],
-      });
-    } finally {
-      rmSync(root, { recursive: true, force: true });
-    }
-  });
+        execFileSync('npm', ['install', '--no-fund', '--no-audit'], {
+          cwd: root,
+          encoding: 'utf8',
+          stdio: ['ignore', 'pipe', 'pipe'],
+        });
+      } finally {
+        rmSync(root, { recursive: true, force: true });
+      }
+    },
+    60_000
+  );
 });
