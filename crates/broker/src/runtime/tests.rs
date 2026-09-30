@@ -728,6 +728,7 @@ fn native_existing_session_request() -> crate::native_delivery::NativeExistingSe
         lineage_id: "lineage-1".to_string(),
         head_sha: "a".repeat(40),
         message: "continue".to_string(),
+        authority: None,
     }
 }
 

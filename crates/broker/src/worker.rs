@@ -719,6 +719,23 @@ impl WorkerRegistry {
         })
     }
 
+    /// Authorize a delivery against the exact live worker generation. This
+    /// check runs in the owning runtime actor turn with the session checks
+    /// above, so a same-name restart cannot pass a separate stale preflight.
+    pub(crate) fn authorize_native_existing_session_exact(
+        &mut self,
+        name: &WorkerName,
+        session_id: &str,
+        expected_generation: Uuid,
+    ) -> Result<WorkerDeliverySender> {
+        let sender = self.authorize_native_existing_session(name, session_id)?;
+        anyhow::ensure!(
+            sender.generation == expected_generation,
+            "native_session_generation_mismatch: worker '{name}' generation does not match"
+        );
+        Ok(sender)
+    }
+
     pub(crate) fn confirm_native_delivery_custody(
         &self,
         name: &WorkerName,
@@ -4406,6 +4423,61 @@ sleep 30
             Err(error) => error.to_string(),
         };
         assert!(error.contains("native_session_not_live"), "{error}");
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn native_existing_session_authorization_requires_the_exact_generation() {
+        let mut registry = make_registry(vec![]);
+        let name = WorkerName::from("exact-native-worker");
+        let child = Command::new("sleep")
+            .arg("10")
+            .spawn()
+            .expect("spawn live child");
+        let generation = Uuid::new_v4();
+        let (command_tx, _command_rx) = mpsc::channel(WORKER_WRITE_QUEUE_CAPACITY);
+        registry.workers.insert(
+            name.clone(),
+            WorkerHandle {
+                generation,
+                spec: native_codex_authorization_spec(),
+                parent: None,
+                workspace_id: None,
+                child,
+                command_tx,
+                harness_pid: None,
+                spawned_at: Instant::now(),
+                ready_at: Some(Instant::now()),
+                last_activity_at: Instant::now(),
+                context_budget_pct: None,
+                state: AgentWorkState::Idle,
+                exit_reason: None,
+            },
+        );
+
+        let error = match registry.authorize_native_existing_session_exact(
+            &name,
+            "native-1",
+            Uuid::new_v4(),
+        ) {
+            Ok(_) => panic!("replacement generation must fail closed"),
+            Err(error) => error.to_string(),
+        };
+        assert!(
+            error.contains("native_session_generation_mismatch"),
+            "{error}"
+        );
+        assert_eq!(
+            registry
+                .authorize_native_existing_session_exact(&name, "native-1", generation)
+                .expect("exact generation")
+                .generation,
+            generation
+        );
+
+        let handle = registry.workers.get_mut(&name).expect("worker handle");
+        let _ = handle.child.kill().await;
+        let _ = handle.child.wait().await;
     }
 
     #[test]

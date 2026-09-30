@@ -18,6 +18,7 @@ use crate::{
     },
     native_delivery::{
         NativeDeliveryError, NativeExistingSessionDelivery, NativeExistingSessionReconcile,
+        TargetedNativeExistingSessionDelivery,
     },
     protocol::{MessageInjectionMode, ResolvedHarnessConfig},
     relaycast::WorkspaceMembershipSummary,
@@ -88,6 +89,10 @@ pub enum ListenApiRequest {
     },
     DeliverNativeExistingSession {
         delivery: NativeExistingSessionDelivery,
+        reply: tokio::sync::oneshot::Sender<Result<Value, NativeDeliveryError>>,
+    },
+    DeliverTargetedNativeExistingSession {
+        delivery: TargetedNativeExistingSessionDelivery,
         reply: tokio::sync::oneshot::Sender<Result<Value, NativeDeliveryError>>,
     },
     ReconcileNativeExistingSession {
@@ -536,6 +541,10 @@ pub(crate) fn listen_api_router_with_auth(
         .route(
             "/api/native-delivery/existing-session",
             routing::post(listen_api_deliver_native_existing_session),
+        )
+        .route(
+            "/api/native-delivery/targeted-existing-session",
+            routing::post(listen_api_deliver_targeted_native_existing_session),
         )
         .route(
             "/api/native-delivery/existing-session/reconcile",
@@ -1346,6 +1355,82 @@ async fn listen_api_deliver_native_existing_session(
             Ok(Err(NativeDeliveryError::ReceiptUnavailable(error))) => {
                 native_delivery_error_to_response(&NativeDeliveryError::InDoubt(format!(
                     "runtime reply dropped and receipt lookup is unavailable: {error}"
+                )))
+            }
+            Ok(Err(error)) => native_delivery_error_to_response(&error),
+        },
+    }
+}
+
+async fn listen_api_deliver_targeted_native_existing_session(
+    axum::extract::State(state): axum::extract::State<ListenApiState>,
+    axum::Json(targeted): axum::Json<TargetedNativeExistingSessionDelivery>,
+) -> (axum::http::StatusCode, axum::Json<Value>) {
+    if let Err(error) = targeted.validate() {
+        return native_delivery_error_to_response(&error);
+    }
+    if targeted.target.node_id != state.node_id {
+        return native_delivery_error_to_response(&NativeDeliveryError::Unauthorized(
+            "native_target_node_mismatch: target does not name this broker node".to_string(),
+        ));
+    }
+    if state.default_workspace_id.as_ref().map(WorkspaceId::as_str)
+        != Some(targeted.target.relay_workspace_id.as_str())
+    {
+        return native_delivery_error_to_response(&NativeDeliveryError::Unauthorized(
+            "native_target_workspace_mismatch: target does not name this broker workspace"
+                .to_string(),
+        ));
+    }
+    let mut dropped_reply_delivery = targeted.delivery.clone();
+    dropped_reply_delivery.authority = Some(targeted.target.clone());
+    let (reply_tx, reply_rx) = tokio::sync::oneshot::channel();
+    if state
+        .tx
+        .send(ListenApiRequest::DeliverTargetedNativeExistingSession {
+            delivery: targeted,
+            reply: reply_tx,
+        })
+        .await
+        .is_err()
+    {
+        return internal_error();
+    }
+    match reply_rx.await {
+        Ok(Ok(value)) => (axum::http::StatusCode::OK, axum::Json(value)),
+        Ok(Err(error)) => native_delivery_error_to_response(&error),
+        Err(_) if !state.persist => native_delivery_error_to_response(
+            &NativeDeliveryError::ReceiptUnavailable(
+                "runtime reply dropped before a durable targeted receipt could be confirmed; retry the same deliveryId"
+                    .to_string(),
+            ),
+        ),
+        Err(_) => match tokio::task::spawn_blocking({
+            let receipt_root = state.native_delivery_receipts.clone();
+            move || crate::native_delivery::existing_outcome(&receipt_root, &dropped_reply_delivery)
+        })
+        .await
+        {
+            Err(error) => native_delivery_error_to_response(&NativeDeliveryError::InDoubt(
+                format!("runtime reply dropped and targeted receipt lookup task failed: {error}"),
+            )),
+            Ok(Ok(Some(outcome))) => (
+                axum::http::StatusCode::OK,
+                axum::Json(json!({
+                    "receiptId": outcome.receipt_id,
+                    "status": "duplicate",
+                    "state": outcome.state.as_str(),
+                })),
+            ),
+            Ok(Ok(None)) => native_delivery_error_to_response(
+                &NativeDeliveryError::ReceiptUnavailable(
+                    "runtime reply dropped before durable targeted reservation; retry the same deliveryId"
+                        .to_string(),
+                ),
+            ),
+            Ok(Err(NativeDeliveryError::ReceiptUnavailable(error))) => {
+                native_delivery_error_to_response(&NativeDeliveryError::InDoubt(format!(
+                    "runtime reply dropped and targeted receipt lookup is unavailable: {error}"
                 )))
             }
             Ok(Err(error)) => native_delivery_error_to_response(&error),
@@ -4174,6 +4259,38 @@ mod auth_tests {
         )
     }
 
+    fn test_targeted_native_router(
+        broker_api_key: Option<&str>,
+    ) -> (axum::Router, mpsc::Receiver<ListenApiRequest>) {
+        let (tx, rx) = mpsc::channel(8);
+        let (events_tx, _events_rx) = broadcast::channel(8);
+        let router = listen_api_router_with_auth(
+            ListenApiConfig {
+                local_only: false,
+                tx,
+                events_tx,
+                replay_buffer: ReplayBuffer::new(DEFAULT_REPLAY_CAPACITY),
+                workspace_key: None,
+                relay_base_url: Some("https://relay.test".to_string()),
+                memberships: vec![],
+                default_workspace_id: Some(WorkspaceId::from("ws_test")),
+                node_id: "node_test".to_string(),
+                node_name: "test-node".to_string(),
+                node_token: std::sync::Arc::new(std::sync::RwLock::new(None)),
+                persist: true,
+                native_delivery_receipts: std::env::temp_dir().join(format!(
+                    "agent-relay-targeted-native-test-receipts-{}",
+                    uuid::Uuid::new_v4()
+                )),
+                node_delivery_probe: std::sync::Arc::new(
+                    crate::node_delivery_probe::NodeDeliveryProbe::new(),
+                ),
+            },
+            broker_api_key.map(ToString::to_string),
+        );
+        (router, rx)
+    }
+
     /// The report names every agent on the broker and their delivery cursors.
     /// That is operational detail, not public data, so the route must sit
     /// behind the same API-key gate as the rest of `/api/*` — only `/health`
@@ -4442,6 +4559,112 @@ mod auth_tests {
 
         assert_eq!(response.status(), StatusCode::OK);
         assert_eq!(response_json(response).await["receiptId"], "ndr_receipt");
+        replier.await.expect("delivery replier should complete");
+    }
+
+    #[tokio::test]
+    async fn targeted_native_delivery_rejects_the_wrong_local_authority() {
+        let (router, mut rx) = test_targeted_native_router(Some("secret"));
+        for (workspace_id, node_id) in [("ws_test", "node_other"), ("ws_other", "node_test")] {
+            let response = router
+                .clone()
+                .oneshot(
+                    Request::builder()
+                        .uri("/api/native-delivery/targeted-existing-session")
+                        .method("POST")
+                        .header("content-type", "application/json")
+                        .header("x-api-key", "secret")
+                        .body(Body::from(
+                            json!({
+                                "target": {
+                                    "relayWorkspaceId": workspace_id,
+                                    "nodeId": node_id,
+                                    "agentId": "agent_exact",
+                                    "workerGeneration": uuid::Uuid::new_v4().to_string()
+                                },
+                                "delivery": {
+                                    "relayAgentName": "worker-a",
+                                    "sessionId": "native-session-1",
+                                    "deliveryId": "delivery-targeted",
+                                    "lineageId": "lineage-1",
+                                    "headSha": "a".repeat(40),
+                                    "message": "continue"
+                                }
+                            })
+                            .to_string(),
+                        ))
+                        .expect("request should build"),
+                )
+                .await
+                .expect("request should succeed");
+            assert_eq!(response.status(), StatusCode::CONFLICT);
+            assert_eq!(
+                response_json(response).await["code"],
+                "native_session_unauthorized"
+            );
+        }
+        assert!(
+            rx.try_recv().is_err(),
+            "invalid authority must not dispatch"
+        );
+    }
+
+    #[tokio::test]
+    async fn targeted_native_delivery_dispatches_the_exact_target() {
+        let (router, mut rx) = test_targeted_native_router(Some("secret"));
+        let generation = uuid::Uuid::new_v4().to_string();
+        let expected_generation = generation.clone();
+        let replier = tokio::spawn(async move {
+            let Some(ListenApiRequest::DeliverTargetedNativeExistingSession { delivery, reply }) =
+                rx.recv().await
+            else {
+                panic!("expected targeted native delivery");
+            };
+            assert_eq!(delivery.target.relay_workspace_id, "ws_test");
+            assert_eq!(delivery.target.node_id, "node_test");
+            assert_eq!(delivery.target.agent_id, "agent_exact");
+            assert_eq!(delivery.target.worker_generation, expected_generation);
+            assert_eq!(delivery.delivery.relay_agent_name, "worker-a");
+            assert!(delivery.delivery.authority.is_none());
+            let _ = reply.send(Ok(json!({
+                "receiptId": "ndr_targeted",
+                "status": "queued"
+            })));
+        });
+
+        let response = router
+            .oneshot(
+                Request::builder()
+                    .uri("/api/native-delivery/targeted-existing-session")
+                    .method("POST")
+                    .header("content-type", "application/json")
+                    .header("x-api-key", "secret")
+                    .body(Body::from(
+                        json!({
+                            "target": {
+                                "relayWorkspaceId": "ws_test",
+                                "nodeId": "node_test",
+                                "agentId": "agent_exact",
+                                "workerGeneration": generation
+                            },
+                            "delivery": {
+                                "relayAgentName": "worker-a",
+                                "sessionId": "native-session-1",
+                                "deliveryId": "delivery-targeted",
+                                "lineageId": "lineage-1",
+                                "headSha": "a".repeat(40),
+                                "message": "continue"
+                            }
+                        })
+                        .to_string(),
+                    ))
+                    .expect("request should build"),
+            )
+            .await
+            .expect("request should succeed");
+
+        assert_eq!(response.status(), StatusCode::OK);
+        assert_eq!(response_json(response).await["receiptId"], "ndr_targeted");
         replier.await.expect("delivery replier should complete");
     }
 

@@ -41,6 +41,10 @@ pub(crate) struct NativeExistingSessionDelivery {
     pub(crate) head_sha: String,
     /// Prompt content delivered to the authorized native session.
     pub(crate) message: String,
+    /// Broker-attested exact target, injected only by the authenticated local
+    /// targeted route and included in the durable idempotency digest.
+    #[serde(default, skip_deserializing, skip_serializing_if = "Option::is_none")]
+    pub(crate) authority: Option<NativeExistingSessionTarget>,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -56,6 +60,42 @@ pub(crate) struct NativeExistingSessionReconcile {
     pub(crate) lineage_id: String,
     /// Caller assertion that must exactly match the original receipt.
     pub(crate) head_sha: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub(crate) struct NativeExistingSessionTarget {
+    pub(crate) relay_workspace_id: String,
+    pub(crate) node_id: String,
+    pub(crate) agent_id: String,
+    pub(crate) worker_generation: String,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub(crate) struct TargetedNativeExistingSessionDelivery {
+    pub(crate) target: NativeExistingSessionTarget,
+    pub(crate) delivery: NativeExistingSessionDelivery,
+}
+
+impl NativeExistingSessionTarget {
+    pub(crate) fn validate(&self) -> Result<(), NativeDeliveryError> {
+        validate_identifier(&self.relay_workspace_id, "relayWorkspaceId")?;
+        validate_identifier(&self.node_id, "nodeId")?;
+        validate_identifier(&self.agent_id, "agentId")?;
+        validate_identifier(&self.worker_generation, "workerGeneration")?;
+        uuid::Uuid::parse_str(&self.worker_generation).map_err(|_| {
+            NativeDeliveryError::Invalid("workerGeneration must be a UUID".to_string())
+        })?;
+        Ok(())
+    }
+}
+
+impl TargetedNativeExistingSessionDelivery {
+    pub(crate) fn validate(&self) -> Result<(), NativeDeliveryError> {
+        self.target.validate()?;
+        self.delivery.validate()
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -180,6 +220,9 @@ impl NativeExistingSessionDelivery {
                 "message exceeds the {MAX_MESSAGE_BYTES}-byte limit"
             )));
         }
+        if let Some(authority) = &self.authority {
+            authority.validate()?;
+        }
         Ok(())
     }
 
@@ -216,6 +259,7 @@ impl NativeExistingSessionDelivery {
             self.lineage_id,
             self.head_sha,
             self.message,
+            self.authority,
         ]))
     }
 
@@ -579,6 +623,7 @@ mod tests {
             lineage_id: "lineage-1".to_string(),
             head_sha: "a".repeat(40),
             message: "Review the exact live head".to_string(),
+            authority: None,
         }
     }
 
@@ -682,6 +727,41 @@ mod tests {
             Err(NativeDeliveryError::Conflict)
         ));
         assert_eq!(writes.load(Ordering::SeqCst), 1);
+    }
+
+    #[tokio::test]
+    async fn exact_target_is_part_of_the_durable_idempotency_binding() {
+        let dir = tempfile::tempdir().expect("receipt dir");
+        let path = dir.path().join("receipts.json");
+        let mut first = delivery("bst_targeted");
+        first.authority = Some(NativeExistingSessionTarget {
+            relay_workspace_id: "ws_exact".to_string(),
+            node_id: "node_exact".to_string(),
+            agent_id: "agent_exact".to_string(),
+            worker_generation: uuid::Uuid::new_v4().to_string(),
+        });
+
+        reserve_and_deliver(&path, &first, |_| async { Ok(()) })
+            .await
+            .expect("targeted delivery");
+        assert_eq!(
+            reserve_and_deliver(&path, &first, |_| async { Ok(()) })
+                .await
+                .expect("exact retry")
+                .disposition,
+            NativeDeliveryDisposition::Duplicate
+        );
+
+        let mut changed = first;
+        changed
+            .authority
+            .as_mut()
+            .expect("authority")
+            .worker_generation = uuid::Uuid::new_v4().to_string();
+        assert!(matches!(
+            reserve_and_deliver(&path, &changed, |_| async { Ok(()) }).await,
+            Err(NativeDeliveryError::Conflict)
+        ));
     }
 
     #[tokio::test]

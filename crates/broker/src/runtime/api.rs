@@ -1776,6 +1776,56 @@ impl BrokerRuntime {
                     let _ = reply.send(result);
                 });
             }
+            ListenApiRequest::DeliverTargetedNativeExistingSession { delivery, reply } => {
+                if !paths.persist {
+                    let _ = reply.send(Err(
+                        crate::native_delivery::NativeDeliveryError::ReceiptUnavailable(
+                            "persistent broker state is required for targeted native delivery"
+                                .to_string(),
+                        ),
+                    ));
+                    return;
+                }
+                // The inventory identity and worker generation are checked in
+                // this one runtime-actor turn. A restart or identity rebind
+                // cannot interleave between these checks and sender capture.
+                let name = crate::native_delivery::worker_name(&delivery.delivery);
+                let authorization = match fleet_inventory.get(&name) {
+                    Some(inventory) if inventory.agent_id == delivery.target.agent_id => {
+                        match Uuid::parse_str(&delivery.target.worker_generation) {
+                            Ok(generation) => workers
+                                .authorize_native_existing_session_exact(
+                                    &name,
+                                    &delivery.delivery.session_id,
+                                    generation,
+                                )
+                                .map_err(|error| error.to_string()),
+                            Err(error) => Err(format!(
+                                "native_session_generation_invalid: {error}"
+                            )),
+                        }
+                    }
+                    Some(_) => Err(format!(
+                        "native_session_agent_mismatch: worker '{name}' agent id does not match"
+                    )),
+                    None => Err(format!(
+                        "native_session_agent_not_found: worker '{name}' has no live inventory identity"
+                    )),
+                };
+                let receipt_path = paths.native_delivery_receipts.clone();
+                let mut native_delivery = delivery.delivery;
+                native_delivery.authority = Some(delivery.target);
+                tokio::spawn(async move {
+                    let result = crate::native_delivery::deliver_authorized(
+                        receipt_path,
+                        native_delivery,
+                        authorization,
+                    )
+                    .await
+                    .map(|outcome| outcome.to_json());
+                    let _ = reply.send(result);
+                });
+            }
             ListenApiRequest::ReconcileNativeExistingSession { delivery, reply } => {
                 if !paths.persist {
                     let _ = reply.send(Err(
