@@ -1,0 +1,57 @@
+{
+  "id": "traj_degjzqu0skub",
+  "version": 1,
+  "task": {
+    "title": "Forward MCP DM idempotency across process boundaries",
+    "source": {
+      "system": "plain",
+      "id": "1874"
+    }
+  },
+  "status": "completed",
+  "startedAt": "2026-10-01T20:40:14.887Z",
+  "completedAt": "2026-10-01T20:41:58.282Z",
+  "agents": [
+    {
+      "name": "default",
+      "role": "lead",
+      "joinedAt": "2026-10-01T20:40:15.338Z"
+    }
+  ],
+  "chapters": [
+    {
+      "id": "chap_7inqsnzzfjjh",
+      "title": "Work",
+      "agentName": "default",
+      "startedAt": "2026-10-01T20:40:15.338Z",
+      "endedAt": "2026-10-01T20:41:58.282Z",
+      "events": [
+        {
+          "ts": 1790887215339,
+          "type": "decision",
+          "content": "Forward only explicit DM keys, matching relaycast-client.ts; keep unkeyed sends distinct: Forward only explicit DM keys, matching relaycast-client.ts; keep unkeyed sends distinct",
+          "raw": {
+            "question": "Forward only explicit DM keys, matching relaycast-client.ts; keep unkeyed sends distinct",
+            "chosen": "Forward only explicit DM keys, matching relaycast-client.ts; keep unkeyed sends distinct",
+            "alternatives": [],
+            "reasoning": "Re-land the focused production fix from PR 1866. Rebuild the proof with separate processes and a real SDK HTTP path; derive outcomes from observations instead of the arm."
+          },
+          "significance": "high"
+        }
+      ]
+    }
+  ],
+  "retrospective": {
+    "summary": "Forwarded explicit MCP DM keys through raw and session-stamped SDK clients. Protocol/startup 67 tests, SDK 180 tests, six type tests, typecheck and lint pass. Base proof creates two keyed rows; patched proof returns one row and identical receipts; unkeyed sends stay distinct. Two unrelated suite failures reproduce on base, and supplied plan files fail formatting. No live recipient injection check.",
+    "approach": "Standard approach",
+    "confidence": 0.9
+  },
+  "commits": [],
+  "filesChanged": [],
+  "projectId": "AgentWorkforce/relay",
+  "tags": [],
+  "_trace": {
+    "startRef": "35e7cdedad77fb6c5d4c2a15f0ee4537cb0f4b3b",
+    "endRef": "35e7cdedad77fb6c5d4c2a15f0ee4537cb0f4b3b"
+  }
+}

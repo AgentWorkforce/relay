@@ -3,6 +3,8 @@ import { InMemoryTransport } from '@modelcontextprotocol/sdk/inMemory.js';
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
+import { McpRequestReplay } from './request-replay.js';
+
 import { registerMessagingTools } from './messaging-tools.js';
 
 describe('messaging delivery receipts over MCP', () => {
@@ -12,6 +14,57 @@ describe('messaging delivery receipts over MCP', () => {
 
   afterEach(() => {
     vi.unstubAllEnvs();
+  });
+
+  it('reuses keyed receipts across two replay boundaries while unkeyed identical sends stay distinct', async () => {
+    const rows: { id: string; conversationId: string }[] = [];
+    const keyed = new Map<string, (typeof rows)[number]>();
+    const dm = vi.fn(async (_to: string, _text: string, options: { idempotencyKey?: string }) => {
+      const key = options.idempotencyKey;
+      if (key && keyed.has(key)) return keyed.get(key)!;
+      const row = { id: `msg_${rows.length + 1}`, conversationId: 'dm_chief' };
+      rows.push(row);
+      if (key) keyed.set(key, row);
+      return row;
+    });
+    async function send(idempotencyKey?: string) {
+      const server = new McpServer({ name: 'boundary-test', version: '1.0.0' });
+      registerMessagingTools(
+        server,
+        () => ({ dm }) as never,
+        async () => [{ name: 'chief' }],
+        new McpRequestReplay()
+      );
+      const client = new Client({ name: 'boundary-client', version: '1.0.0' });
+      const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
+      try {
+        await server.connect(serverTransport);
+        await client.connect(clientTransport);
+        const result = await client.callTool({
+          name: 'send_dm',
+          arguments: {
+            to: 'chief',
+            text: 'same text',
+            ...(idempotencyKey ? { idempotency_key: idempotencyKey } : {}),
+          },
+        });
+        expect(result.isError).not.toBe(true);
+        return result.structuredContent;
+      } finally {
+        await client.close();
+        await server.close();
+      }
+    }
+    const first = await send('logical-send');
+    const retry = await send('logical-send');
+    expect(rows).toHaveLength(1);
+    expect(first).toMatchObject({ id: 'msg_1', conversationId: 'dm_chief' });
+    expect(retry).toEqual(first);
+    expect(dm).toHaveBeenCalledTimes(2);
+    const unkeyedFirst = await send();
+    const unkeyedSecond = await send();
+    expect(rows).toHaveLength(3);
+    expect(unkeyedFirst?.id).not.toBe(unkeyedSecond?.id);
   });
 
   it('exposes enqueue state on send and an explicit signal for an empty reader list', async () => {

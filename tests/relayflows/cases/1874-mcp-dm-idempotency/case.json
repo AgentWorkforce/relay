@@ -1,0 +1,13 @@
+{
+  "version": 1,
+  "id": "1874-mcp-dm-idempotency",
+  "kind": "bugfix",
+  "title": "Preserve DM idempotency across fresh MCP processes",
+  "requirements": [],
+  "runner": { "command": ["node", "tests/relayflows/cases/1874-mcp-dm-idempotency/run.mjs"] },
+  "timeoutSeconds": 1200,
+  "expected": {
+    "base": { "outcome": "bug", "signature": "mcp_retry_creates_two_direct_messages" },
+    "head": { "outcome": "fixed", "signature": "mcp_retry_reuses_one_direct_message" }
+  }
+}

@@ -371,6 +371,7 @@ export function registerMessagingTools(
         const agents = await listAgentsForRecipientResolution?.();
         const resolvedRecipient = agents ? resolveExactAgentName(agents, to) : undefined;
         const message = await getAgentClient(as).dm(to, text, {
+          idempotencyKey: idempotency_key,
           mode,
           attachments,
           data: replayMessageMetadata(),

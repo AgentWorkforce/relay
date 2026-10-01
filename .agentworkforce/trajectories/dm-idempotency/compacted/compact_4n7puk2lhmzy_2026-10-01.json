@@ -1,0 +1,37 @@
+{
+  "id": "compact_4n7puk2lhmzy",
+  "version": 1,
+  "type": "compacted",
+  "compactedAt": "2026-10-01T20:41:58.659Z",
+  "sourceTrajectories": [
+    "traj_degjzqu0skub"
+  ],
+  "dateRange": {
+    "start": "2026-10-01T20:40:14.887Z",
+    "end": "2026-10-01T20:41:58.282Z"
+  },
+  "summary": {
+    "totalDecisions": 1,
+    "totalEvents": 1,
+    "uniqueAgents": [
+      "default"
+    ]
+  },
+  "decisionGroups": [
+    {
+      "category": "api",
+      "decisions": [
+        {
+          "question": "Forward only explicit DM keys, matching relaycast-client.ts; keep unkeyed sends distinct",
+          "chosen": "Forward only explicit DM keys, matching relaycast-client.ts; keep unkeyed sends distinct",
+          "reasoning": "Re-land the focused production fix from PR 1866. Rebuild the proof with separate processes and a real SDK HTTP path; derive outcomes from observations instead of the arm.",
+          "fromTrajectory": "traj_degjzqu0skub"
+        }
+      ]
+    }
+  ],
+  "keyLearnings": [],
+  "keyFindings": [],
+  "filesAffected": [],
+  "commits": []
+}
