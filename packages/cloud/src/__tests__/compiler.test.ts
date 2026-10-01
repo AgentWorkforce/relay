@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import { mkdtemp, mkdir, rm, symlink, writeFile } from 'node:fs/promises';
+import { chmod, mkdtemp, mkdir, rm, symlink, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { test } from 'vitest';
@@ -428,6 +428,37 @@ test.skipIf(process.platform === 'win32')(
       assert.equal(classified.length, 10);
       assert.equal(new Set(classified).size, classified.length);
     } finally {
+      await workspace.cleanup();
+      await outside.cleanup();
+    }
+  }
+);
+
+test.skipIf(process.platform === 'win32' || process.getuid?.() === 0)(
+  'an unreadable symlink target is denied without dropping normal grants',
+  async () => {
+    const workspace = await createWorkspace({ 'a.txt': 'a', 'b.txt': 'b' });
+    const outside = await createWorkspace({ 'locked/secret.txt': 'secret' });
+    const locked = path.join(outside.dir, 'locked');
+    try {
+      await symlink(path.join(locked, 'secret.txt'), path.join(workspace.dir, 'locked-link'));
+      await chmod(locked, 0o000);
+      const compiled = compileAgentScopes({
+        agentName: 'builder',
+        workspace: 'relay-test',
+        projectDir: workspace.dir,
+        permissions: { access: 'readwrite' },
+      });
+      assert.deepEqual(compiled.deniedPaths, ['locked-link']);
+      assert.deepEqual(compiled.readwritePaths, ['a.txt', 'b.txt']);
+      assert.deepEqual(compiled.scopes, [
+        'relayfile:fs:read:/a.txt',
+        'relayfile:fs:read:/b.txt',
+        'relayfile:fs:write:/a.txt',
+        'relayfile:fs:write:/b.txt',
+      ]);
+    } finally {
+      await chmod(locked, 0o755);
       await workspace.cleanup();
       await outside.cleanup();
     }

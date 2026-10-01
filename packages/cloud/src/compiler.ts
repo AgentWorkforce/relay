@@ -391,8 +391,9 @@ export function compileAgentPermissions(input: CompileInput): CompiledAgentPermi
         rulePath = normalizeRelativePath(targetRelative);
       } catch (error) {
         if (
-          (error as NodeJS.ErrnoException).code !== 'ENOENT' &&
-          (error as NodeJS.ErrnoException).code !== 'ELOOP'
+          !['ENOENT', 'ELOOP', 'EACCES', 'EPERM', 'ENOTDIR'].includes(
+            (error as NodeJS.ErrnoException).code ?? ''
+          )
         ) {
           throw error;
         }
