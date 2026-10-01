@@ -394,6 +394,14 @@ export function compileAgentPermissions(input: CompileInput): CompiledAgentPermi
           continue;
         }
         const directorySuffix = lstatSync(realTarget).isDirectory() ? '/' : '';
+        // Match the walk's exclusion at every directory depth, including a
+        // skipped directory itself when the link points to a directory.
+        const targetDirectories = targetRelative.split(path.sep);
+        if (!directorySuffix) targetDirectories.pop();
+        if (targetDirectories.some((component) => SKIPPED_DIRS.has(component))) {
+          deniedPaths.push(relativePath);
+          continue;
+        }
         rulePath = normalizeRelativePath(targetRelative) + directorySuffix;
         linkRulePath = relativePath + directorySuffix;
       } catch (error) {

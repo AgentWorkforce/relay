@@ -9,7 +9,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
-- Cloud file permissions deny external, broken, and inaccessible symlinks and preserve restrictions on both links and their targets without dropping grants for other files.
+- Cloud file permissions deny external, broken, and inaccessible symlinks and links into excluded directories and preserve restrictions on both links and their targets without dropping grants for other files.
 - Broker: Muse workers now reuse the host Muse login (`RELAY_MUSE_SHARED_AUTH_PATH`, the host's `MUSE_AUTH_PATH`, `$XDG_CONFIG_HOME/muse/auth.json`, or `$HOME/.config/muse/auth.json`) instead of prompting for provider auth under every new agent name; Relay MCP settings stay per-worker. Multi-tenant hosts should set `RELAY_MUSE_ISOLATED_AUTH=1` before upgrading to keep a separate login per worker.
 
 ## [13.0.0] - 2026-09-30

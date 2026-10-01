@@ -530,7 +530,9 @@ test.skipIf(process.platform === 'win32')(
       await symlink('private', path.join(workspace.dir, 'target-link'), 'dir');
       await symlink('public', path.join(workspace.dir, 'blocked-link'), 'dir');
       for (const rules of [{ files: { deny: ['private/', 'blocked-link/'] } }, {}]) {
-        await writeFile(path.join(workspace.dir, '.agentignore'), 'private/\nblocked-link/\n');
+        if (!('files' in rules)) {
+          await writeFile(path.join(workspace.dir, '.agentignore'), 'private/\nblocked-link/\n');
+        }
         const compiled = compileAgentScopes({
           agentName: 'builder',
           workspace: 'relay-test',
@@ -540,6 +542,53 @@ test.skipIf(process.platform === 'win32')(
         assert.equal(compiled.deniedPaths.includes('target-link'), true);
         assert.equal(compiled.deniedPaths.includes('blocked-link'), true);
         assert.equal(compiled.readwritePaths.includes('public/a.txt'), true);
+      }
+    } finally {
+      await workspace.cleanup();
+    }
+  }
+);
+
+test.skipIf(process.platform === 'win32')(
+  'symlinks cannot grant access to directories excluded by the project walk',
+  async () => {
+    const workspace = await createWorkspace({
+      '.git/config': 'git config',
+      '.relay/state.json': 'relay state',
+      'node_modules/pkg/index.js': 'dependency',
+      'nested/node_modules/pkg/index.js': 'nested dependency',
+      'public.txt': 'public',
+    });
+    try {
+      const targets = [
+        '.git/config',
+        '.relay/state.json',
+        'node_modules/pkg/index.js',
+        'nested/node_modules/pkg/index.js',
+        '.git',
+        '.relay',
+        'node_modules',
+      ];
+      for (const [index, target] of targets.entries()) {
+        await symlink(target, path.join(workspace.dir, `link-${index}`), index >= 4 ? 'dir' : 'file');
+      }
+      for (const access of ['readwrite', 'full'] as const) {
+        const compiled = compileAgentScopes({
+          agentName: 'builder',
+          workspace: 'relay-test',
+          projectDir: workspace.dir,
+          permissions: { access },
+        });
+        assert.deepEqual(
+          compiled.deniedPaths,
+          targets.map((_, index) => `link-${index}`)
+        );
+        assert.deepEqual(compiled.readwritePaths, ['public.txt']);
+        assert.deepEqual(compiled.readonlyPaths, []);
+        assert.equal(
+          compiled.scopes.some((scope) => scope.includes('/link-')),
+          false
+        );
       }
     } finally {
       await workspace.cleanup();
