@@ -1188,8 +1188,11 @@ pub fn muse_clean_home_env(clean_home: &Path) -> Vec<(String, String)> {
 /// the host default resolved by [`muse_shared_auth_path`].
 pub const MUSE_SHARED_AUTH_PATH_ENV: &str = "RELAY_MUSE_SHARED_AUTH_PATH";
 
-/// Set to `1`/`true` to give each Muse worker its own `auth.json` inside its
-/// clean home (one provider login per worker name), e.g. on multi-tenant hosts.
+/// Gives each Muse worker its own `auth.json` inside its clean home (one
+/// provider login per worker name), e.g. on multi-tenant hosts. Fails closed:
+/// any non-empty value enables isolation except `0`, `false`, `no` or `off`
+/// (trimmed, case-insensitive); unset or empty keeps the shared login, and a
+/// non-UTF-8 value enables isolation.
 pub const MUSE_ISOLATED_AUTH_ENV: &str = "RELAY_MUSE_ISOLATED_AUTH";
 
 /// Inputs for [`muse_shared_auth_path`], read from the broker's environment
@@ -1224,10 +1227,13 @@ pub fn muse_shared_auth_path(env: MuseAuthEnv<'_>) -> Option<PathBuf> {
             .map(PathBuf::from)
             .filter(|p| p.is_absolute())
     }
-    let isolated = env
-        .isolated_auth
-        .and_then(|v| v.to_str())
-        .is_some_and(|v| matches!(v.trim().to_ascii_lowercase().as_str(), "1" | "true" | "yes"));
+    let isolated = env.isolated_auth.is_some_and(|raw| match raw.to_str() {
+        Some(v) => {
+            let v = v.trim().to_ascii_lowercase();
+            !v.is_empty() && !matches!(v.as_str(), "0" | "false" | "no" | "off")
+        }
+        None => true,
+    });
     if isolated {
         return None;
     }
@@ -2375,64 +2381,74 @@ mod tests {
         assert_eq!(get("MUSE_NO_AUTO_UPDATE").as_deref(), Some("1"));
     }
 
+    /// Absolute fixture paths that are absolute on every platform: Windows
+    /// needs a drive prefix for `Path::is_absolute`.
+    fn abs_path(unix: &str) -> std::path::PathBuf {
+        if cfg!(windows) {
+            std::path::PathBuf::from(format!("C:{unix}"))
+        } else {
+            std::path::PathBuf::from(unix)
+        }
+    }
+
+    fn abs_os(unix: &str) -> &'static std::ffi::OsStr {
+        Box::leak(abs_path(unix).into_os_string().into_boxed_os_str())
+    }
+
     #[test]
     fn muse_shared_auth_path_defaults_to_the_host_muse_login() {
-        use std::ffi::OsStr;
-        use std::path::PathBuf;
         let env = super::MuseAuthEnv {
-            home: Some(OsStr::new("/Users/op")),
+            home: Some(abs_os("/Users/op")),
             ..Default::default()
         };
         assert_eq!(
             super::muse_shared_auth_path(env),
-            Some(PathBuf::from("/Users/op/.config/muse/auth.json"))
+            Some(abs_path("/Users/op/.config/muse/auth.json"))
         );
         let env = super::MuseAuthEnv {
-            xdg_config_home: Some(OsStr::new("/xdg")),
+            xdg_config_home: Some(abs_os("/xdg")),
             ..env
         };
         assert_eq!(
             super::muse_shared_auth_path(env),
-            Some(PathBuf::from("/xdg/muse/auth.json"))
+            Some(abs_path("/xdg/muse/auth.json"))
         );
         let env = super::MuseAuthEnv {
-            muse_auth_path: Some(OsStr::new("/host/muse-auth.json")),
+            muse_auth_path: Some(abs_os("/host/muse-auth.json")),
             ..env
         };
         assert_eq!(
             super::muse_shared_auth_path(env),
-            Some(PathBuf::from("/host/muse-auth.json")),
+            Some(abs_path("/host/muse-auth.json")),
             "a host-relocated Muse login wins over the XDG default"
         );
         let env = super::MuseAuthEnv {
-            shared_auth_path: Some(OsStr::new("/abs/auth.json")),
+            shared_auth_path: Some(abs_os("/abs/auth.json")),
             ..env
         };
         assert_eq!(
             super::muse_shared_auth_path(env),
-            Some(PathBuf::from("/abs/auth.json"))
+            Some(abs_path("/abs/auth.json"))
         );
     }
 
     #[test]
     fn muse_shared_auth_path_falls_back_to_userprofile_without_home() {
-        use std::ffi::OsStr;
-        use std::path::PathBuf;
         let env = super::MuseAuthEnv {
-            userprofile: Some(OsStr::new("/profiles/op")),
+            userprofile: Some(abs_os("/profiles/op")),
             ..Default::default()
         };
         assert_eq!(
             super::muse_shared_auth_path(env),
-            Some(PathBuf::from("/profiles/op/.config/muse/auth.json"))
+            Some(abs_path("/profiles/op/.config/muse/auth.json"))
         );
         let env = super::MuseAuthEnv {
-            home: Some(OsStr::new("/Users/op")),
+            home: Some(abs_os("/Users/op")),
             ..env
         };
         assert_eq!(
             super::muse_shared_auth_path(env),
-            Some(PathBuf::from("/Users/op/.config/muse/auth.json")),
+            Some(abs_path("/Users/op/.config/muse/auth.json")),
             "HOME wins when both are set"
         );
     }
@@ -2440,21 +2456,39 @@ mod tests {
     #[test]
     fn muse_shared_auth_path_honours_isolation_opt_out() {
         use std::ffi::OsStr;
-        for value in ["1", "true", "TRUE", "yes"] {
+        let base = super::MuseAuthEnv {
+            shared_auth_path: Some(abs_os("/abs/auth.json")),
+            home: Some(abs_os("/Users/op")),
+            ..Default::default()
+        };
+        // Fails closed: anything that is not an explicit "off" isolates.
+        for value in ["1", "true", "TRUE", "yes", "on", "enabled", " 1 "] {
             let env = super::MuseAuthEnv {
-                shared_auth_path: Some(OsStr::new("/abs/auth.json")),
                 isolated_auth: Some(OsStr::new(value)),
-                home: Some(OsStr::new("/Users/op")),
-                ..Default::default()
+                ..base
             };
             assert_eq!(super::muse_shared_auth_path(env), None, "{value:?}");
         }
-        let env = super::MuseAuthEnv {
-            isolated_auth: Some(OsStr::new("0")),
-            home: Some(OsStr::new("/Users/op")),
-            ..Default::default()
-        };
-        assert!(super::muse_shared_auth_path(env).is_some());
+        for value in ["", "0", "false", "No", " off "] {
+            let env = super::MuseAuthEnv {
+                isolated_auth: Some(OsStr::new(value)),
+                ..base
+            };
+            assert!(super::muse_shared_auth_path(env).is_some(), "{value:?}");
+        }
+        #[cfg(unix)]
+        {
+            use std::os::unix::ffi::OsStrExt;
+            let env = super::MuseAuthEnv {
+                isolated_auth: Some(OsStr::from_bytes(b"\xff")),
+                ..base
+            };
+            assert_eq!(
+                super::muse_shared_auth_path(env),
+                None,
+                "non-UTF-8 isolates"
+            );
+        }
     }
 
     #[test]
