@@ -1,0 +1,21 @@
+{
+  "version": 1,
+  "id": "agent-worktree-merge",
+  "kind": "feature",
+  "title": "Per-agent git worktrees with node agent diff and merge",
+  "runner": {
+    "command": ["node", "tests/relayflows/cases/agent-worktree-merge/run.mjs"]
+  },
+  "requirements": [],
+  "timeoutSeconds": 900,
+  "expected": {
+    "base": {
+      "outcome": "absent",
+      "signature": "agent_worktree_commands_missing"
+    },
+    "head": {
+      "outcome": "fixed",
+      "signature": "agent_worktrees_isolate_diff_and_merge_with_conflicts"
+    }
+  }
+}

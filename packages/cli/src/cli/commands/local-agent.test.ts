@@ -1,3 +1,4 @@
+import { execFileSync } from 'node:child_process';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
@@ -1199,5 +1200,99 @@ describe('local agent subtree', () => {
     expect(log).toHaveBeenCalledWith(
       JSON.stringify({ name: 'claude', mode: 'auto_inject', flushed: 0 }, null, 2)
     );
+  });
+});
+
+describe('local agent worktrees', () => {
+  function gitRepo(): string {
+    const repo = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'local-agent-worktree-')));
+    const git = (args: string[]) => execFileSync('git', args, { cwd: repo, encoding: 'utf8' });
+    git(['init', '-q', '-b', 'main']);
+    git(['config', 'user.name', 'Test User']);
+    git(['config', 'user.email', 'test@example.invalid']);
+    fs.writeFileSync(path.join(repo, 'page.html'), '<h1>My Tasks</h1>\n');
+    git(['add', '-A']);
+    git(['commit', '-q', '-m', 'initial']);
+    return repo;
+  }
+
+  it('spawn --worktree starts the agent inside its own checkout', async () => {
+    const repo = gitRepo();
+    const { program, client, log } = harness({ cwd: () => repo });
+
+    await program.parseAsync(['local', 'agent', 'spawn', 'claude', '--name', 'auth', '--worktree'], {
+      from: 'user',
+    });
+
+    const worktreePath = path.join(repo, '.agentworkforce', 'relay', 'worktrees', 'auth');
+    expect(client.spawnPty).toHaveBeenCalledWith(
+      expect.objectContaining({ name: 'auth', cwd: worktreePath })
+    );
+    expect(log).toHaveBeenCalledWith(expect.stringContaining('Branch:   relay/auth'));
+    fs.rmSync(repo, { recursive: true, force: true });
+  });
+
+  it('spawn --worktree removes the new checkout when the spawn fails', async () => {
+    const repo = gitRepo();
+    const { program, client, error } = harness({ cwd: () => repo });
+    client.spawnPty.mockRejectedValueOnce(new Error('process exited during startup'));
+
+    await program.parseAsync(['local', 'agent', 'spawn', 'claude', '--name', 'auth', '--worktree'], {
+      from: 'user',
+    });
+
+    expect(error).toHaveBeenCalledWith('process exited during startup');
+    expect(fs.existsSync(path.join(repo, '.agentworkforce', 'relay', 'worktrees', 'auth'))).toBe(false);
+    expect(execFileSync('git', ['branch', '--list', 'relay/auth'], { cwd: repo, encoding: 'utf8' })).toBe('');
+    fs.rmSync(repo, { recursive: true, force: true });
+  });
+
+  it('merge --resolve spawns a resolver in the main checkout naming the conflicting agents', async () => {
+    const repo = gitRepo();
+    const { program, client, log, exit } = harness({ cwd: () => repo });
+    for (const name of ['alpha', 'beta']) {
+      await program.parseAsync(['local', 'agent', 'spawn', 'claude', '--name', name, '--worktree'], {
+        from: 'user',
+      });
+      const checkout = path.join(repo, '.agentworkforce', 'relay', 'worktrees', name);
+      fs.writeFileSync(path.join(checkout, 'page.html'), `<h1>${name}</h1>\n`);
+    }
+    await program.parseAsync(['local', 'agent', 'merge', 'alpha'], { from: 'user' });
+    expect(log).toHaveBeenCalledWith(expect.stringContaining('Merged relay/alpha'));
+
+    await program.parseAsync(['local', 'agent', 'merge', 'beta', '--resolve'], { from: 'user' });
+
+    expect(exit).not.toHaveBeenCalled();
+    expect(client.spawnPty).toHaveBeenLastCalledWith(
+      expect.objectContaining({
+        name: 'resolve-beta',
+        cli: 'claude',
+        cwd: repo,
+        task: expect.stringContaining(
+          'The changes came from these relay agents: beta, alpha.'
+        ) as unknown as string,
+      })
+    );
+    fs.rmSync(repo, { recursive: true, force: true });
+  });
+
+  it('release keeps a checkout with unmerged work and explains how to merge or discard it', async () => {
+    const repo = gitRepo();
+    const { program, client, log } = harness({ cwd: () => repo });
+    await program.parseAsync(['local', 'agent', 'spawn', 'claude', '--name', 'auth', '--worktree'], {
+      from: 'user',
+    });
+    const checkout = path.join(repo, '.agentworkforce', 'relay', 'worktrees', 'auth');
+    fs.writeFileSync(path.join(checkout, 'page.html'), '<h1>Auth</h1>\n');
+
+    await program.parseAsync(['local', 'agent', 'release', 'auth'], { from: 'user' });
+    expect(client.release).toHaveBeenCalledWith('auth');
+    expect(log).toHaveBeenCalledWith(expect.stringContaining('Kept the worktree for auth'));
+    expect(fs.existsSync(checkout)).toBe(true);
+
+    await program.parseAsync(['local', 'agent', 'release', 'auth', '--discard-worktree'], { from: 'user' });
+    expect(log).toHaveBeenCalledWith('Removed the worktree and branch relay/auth for auth.');
+    expect(fs.existsSync(checkout)).toBe(false);
+    fs.rmSync(repo, { recursive: true, force: true });
   });
 });

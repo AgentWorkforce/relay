@@ -5,7 +5,11 @@ All notable changes to Agent Relay will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
+## [Unreleased - Minor]
+
+### Added
+
+- `node agent spawn --worktree` (and `node agent new --worktree`) gives each agent its own git checkout on branch `relay/<name>`, so parallel agents never overwrite each other's files. `node agent diff <name>` shows that agent's changes, `node agent merge <name>` merges them into your branch and stops on same-line clashes as a normal git conflict, and `merge --resolve` spawns an agent that settles the conflict, asks the agents involved why they made their changes, and asks you when it is a judgment call. `node agent release` deletes a merged checkout and keeps one with unmerged work (`--discard-worktree` throws it away).
 
 ## [13.0.0] - 2026-09-30
 

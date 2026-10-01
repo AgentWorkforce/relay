@@ -8,6 +8,18 @@ import type { HarnessRuntime } from '@agent-relay/harnesses';
 import { stripAnsiFast } from '@agent-relay/utils';
 
 import { classifyTask, composeTeam, buildDirectorPrompt } from '../../auto/index.js';
+import {
+  cleanupAgentWorktree,
+  createAgentWorktree,
+  defaultGitRunner,
+  diffAgentWorktree,
+  findAgentWorktree,
+  mergeAgentWorktree,
+  removeFreshWorktree,
+  validateWorktreeAgentName,
+  type CreatedWorktree,
+  type GitRunner,
+} from '../lib/agent-worktree.js';
 import { createBrokerClient } from '../lib/attach-broker.js';
 import { attachDrive } from '../lib/attach-drive.js';
 import type { AttachMode } from '../lib/attach-mode.js';
@@ -206,6 +218,8 @@ export interface LocalAgentDependencies {
   error: (...args: unknown[]) => void;
   exit: ExitFn;
   now: () => Date;
+  git: GitRunner;
+  stdoutIsTTY: () => boolean;
 }
 
 function withDefaults(overrides: Partial<LocalAgentDependencies> = {}): LocalAgentDependencies {
@@ -226,6 +240,8 @@ function withDefaults(overrides: Partial<LocalAgentDependencies> = {}): LocalAge
     error: (...args: unknown[]) => console.error(...args),
     exit: defaultExit,
     now: () => new Date(),
+    git: defaultGitRunner,
+    stdoutIsTTY: () => Boolean(process.stdout.isTTY),
     ...overrides,
   } as LocalAgentDependencies;
   deps.connectLocal ??= async (_cwd: string, options: LocalAgentMessageBrokerOptions) => {
@@ -774,6 +790,96 @@ async function withDeliveryModeClient<T>(
   }
 }
 
+/** Run a git-only command (no broker needed), reporting failures like `run`. */
+function runGitCommand(deps: LocalAgentDependencies, fn: () => void): void {
+  try {
+    fn();
+  } catch (err) {
+    deps.error(err instanceof Error ? err.message : String(err));
+    deps.exit(1);
+  }
+}
+
+/**
+ * Spawn through `spawn`, first giving the agent its own worktree when asked.
+ * A worktree created for a spawn that then fails is removed again, so a typo
+ * in the provider name does not leave a stray branch behind.
+ */
+async function spawnMaybeInWorktree(
+  deps: LocalAgentDependencies,
+  options: { name: string; cwd: string; worktree: boolean },
+  spawn: (cwd: string) => Promise<void>
+): Promise<CreatedWorktree | undefined> {
+  if (!options.worktree) {
+    await spawn(options.cwd);
+    return undefined;
+  }
+  const worktree = createAgentWorktree(options.cwd, options.name, deps.git);
+  try {
+    await spawn(worktree.path);
+  } catch (err) {
+    if (worktree.created) removeFreshWorktree(worktree, deps.git);
+    throw err;
+  }
+  return worktree;
+}
+
+function describeWorktree(name: string, worktree: CreatedWorktree): string {
+  const lines = [
+    `  ${worktree.created ? 'Own copy' : 'Reusing its copy'}: ${worktree.path}`,
+    `  Branch:   ${worktree.branch}`,
+    `  See its changes: agent-relay node agent diff ${name}`,
+    `  Merge them in:   agent-relay node agent merge ${name}`,
+  ];
+  if (worktree.mainCheckoutDirty && worktree.created) {
+    lines.push(
+      `  Note: your uncommitted changes in ${worktree.root} are not in ${name}'s copy; it starts from your last commit.`
+    );
+  }
+  return lines.join('\n');
+}
+
+/** Names of relay agents whose merged commits touched `files` since `branch` forked. */
+function agentsWhoTouched(
+  deps: LocalAgentDependencies,
+  root: string,
+  branch: string,
+  files: string[]
+): string[] {
+  const result = deps.git(['log', '--format=%an', `${branch}..HEAD`, '--', ...files], root);
+  if (result.status !== 0) return [];
+  const names = new Set<string>();
+  for (const author of result.stdout.split('\n')) {
+    const match = author.match(/^(.+) \(relay agent\)$/);
+    if (match) names.add(match[1]!);
+  }
+  return [...names];
+}
+
+/** The instructions a resolver agent gets when a merge stops on conflicts. */
+export function buildResolverTask(input: {
+  agent: string;
+  branch: string;
+  root: string;
+  conflicts: string[];
+  otherAgents: string[];
+}): string {
+  const authors = [input.agent, ...input.otherAgents.filter((name) => name !== input.agent)];
+  return [
+    `You are resolving a git merge conflict in ${input.root}.`,
+    `The work of relay agent "${input.agent}" (branch ${input.branch}) is being merged into the current branch, and git stopped because both sides changed the same lines in:`,
+    ...input.conflicts.map((file) => `  - ${file}`),
+    '',
+    'Steps:',
+    '1. Open each file and read both sides of every conflict (between <<<<<<< and >>>>>>>). Use `git log -p --merge -- <file>` to see why each side changed.',
+    `2. The changes came from these relay agents: ${authors.join(', ')}. If one of them is still running and the intent is unclear, ask it directly with a DM (send_dm) and wait for the answer.`,
+    '3. Where one choice is clearly right (for example one side is a fix and the other is unrelated, or both changes can be kept together), edit the file to the correct result and remove the conflict markers.',
+    '4. If choosing needs a product decision you cannot infer from the code, the agents or the history, do NOT guess. Post a one-line question in #general, then ask the user here in this terminal and wait for their reply.',
+    '5. Only edit the conflicted lines. When no conflict markers remain, run `git add` on each file and then `git commit --no-edit` to finish the merge.',
+    '6. Finish by posting a short summary in #general of what you chose for each conflict and why.',
+  ].join('\n');
+}
+
 export function registerLocalAgentCommands(
   group: Command,
   overrides: Partial<LocalAgentDependencies> = {}
@@ -817,6 +923,10 @@ export function registerLocalAgentCommands(
     .option('--cwd <path>', 'Working directory for the spawned agent')
     .option('--spawn-mode <mode>', 'Spawn lifecycle: interactive | task-exit', 'interactive')
     .option('--exit-after-task', 'Exit the spawned agent after it completes the injected task')
+    .option(
+      '--worktree',
+      'Give the agent its own git checkout on branch relay/<name> so parallel agents never edit the same files'
+    )
     .action(async (provider: string, opts: Record<string, unknown>) => {
       const runtime = resolveRuntimeOption(deps, provider, opts.runtime);
       const spawnMode = parseSpawnModeOption(deps, opts.spawnMode);
@@ -837,19 +947,29 @@ export function registerLocalAgentCommands(
           opts.task as string | undefined,
           opts.model as string | undefined
         );
-        await spawnAgentWithClient(client, {
-          name: resolved.name,
-          cli: provider,
-          channels: (opts.channels as string[] | undefined) ?? ['general'],
-          task: resolved.task,
-          model: resolved.model,
-          cwd: (opts.cwd as string | undefined) ?? deps.cwd(),
-          spawnMode,
-          exitAfterTask: opts.exitAfterTask as boolean | undefined,
-          runtime: runtime.requested,
-        });
+        const worktree = await spawnMaybeInWorktree(
+          deps,
+          {
+            name: resolved.name,
+            cwd: (opts.cwd as string | undefined) ?? deps.cwd(),
+            worktree: Boolean(opts.worktree),
+          },
+          (cwd) =>
+            spawnAgentWithClient(client, {
+              name: resolved.name,
+              cli: provider,
+              channels: (opts.channels as string[] | undefined) ?? ['general'],
+              task: resolved.task,
+              model: resolved.model,
+              cwd,
+              spawnMode,
+              exitAfterTask: opts.exitAfterTask as boolean | undefined,
+              runtime: runtime.requested,
+            })
+        );
         const autoNote = opts.model === 'auto' ? ' (auto-routed)' : '';
         deps.log(`Spawned ${resolved.name} (${provider}, ${runtime.selected})${autoNote}.`);
+        if (worktree) deps.log(describeWorktree(resolved.name, worktree));
       });
     });
 
@@ -869,6 +989,10 @@ export function registerLocalAgentCommands(
     .option('--cwd <path>', 'Working directory for the spawned agent')
     .option('--spawn-mode <mode>', 'Spawn lifecycle: interactive | task-exit', 'interactive')
     .option('--exit-after-task', 'Exit the spawned agent after it completes the injected task')
+    .option(
+      '--worktree',
+      'Give the agent its own git checkout on branch relay/<name> so parallel agents never edit the same files'
+    )
     .action(async (provider: string, options: Record<string, unknown>) => {
       const mode = (options.mode as string) ?? 'drive';
       if (mode !== 'drive' && mode !== 'view' && mode !== 'passthrough') {
@@ -896,21 +1020,31 @@ export function registerLocalAgentCommands(
         options.model as string | undefined
       );
       await run(deps, async (client) => {
-        await spawnAgentWithClient(client, {
-          name: resolved.name,
-          cli: provider,
-          channels: (options.channels as string[] | undefined) ?? ['general'],
-          task: resolved.task,
-          model: resolved.model,
-          cwd: (options.cwd as string | undefined) ?? deps.cwd(),
-          spawnMode,
-          exitAfterTask: options.exitAfterTask as boolean | undefined,
-          runtime: runtime.requested,
-        });
+        const worktree = await spawnMaybeInWorktree(
+          deps,
+          {
+            name: resolved.name,
+            cwd: (options.cwd as string | undefined) ?? deps.cwd(),
+            worktree: Boolean(options.worktree),
+          },
+          (cwd) =>
+            spawnAgentWithClient(client, {
+              name: resolved.name,
+              cli: provider,
+              channels: (options.channels as string[] | undefined) ?? ['general'],
+              task: resolved.task,
+              model: resolved.model,
+              cwd,
+              spawnMode,
+              exitAfterTask: options.exitAfterTask as boolean | undefined,
+              runtime: runtime.requested,
+            })
+        );
         const autoNote = options.model === 'auto' ? ' (auto-routed)' : '';
         deps.log(
           `Spawned ${resolved.name} (${provider}, ${runtime.selected}). Attaching (${mode})${autoNote}…`
         );
+        if (worktree) deps.log(describeWorktree(resolved.name, worktree));
       });
       // `new` spawns and attaches on the same default local broker — broker
       // override flags belong on the standalone `attach` command.
@@ -924,10 +1058,115 @@ export function registerLocalAgentCommands(
     .command('release')
     .description('Release an agent (graceful stop)')
     .argument('<name>', 'Agent name')
-    .action(async (name: string) => {
+    .option(
+      '--discard-worktree',
+      "Also delete the agent's worktree and branch, even if its work was never merged"
+    )
+    .action(async (name: string, opts: { discardWorktree?: boolean }) => {
       await run(deps, async (client) => {
         await client.release(name);
         deps.log(`Released ${name}.`);
+        const worktree = findAgentWorktree(deps.cwd(), name, deps.git);
+        if (!worktree) return;
+        const cleanup = cleanupAgentWorktree(worktree, { discard: opts.discardWorktree }, deps.git);
+        if (cleanup.status === 'removed') {
+          deps.log(`Removed the worktree and branch ${worktree.branch} for ${name}.`);
+        } else {
+          const why =
+            cleanup.reason === 'uncommitted' ? 'has uncommitted changes' : 'has work that is not merged';
+          deps.log(
+            `Kept the worktree for ${name} because it ${why}: ${cleanup.path}\n` +
+              `  Merge it:   agent-relay node agent merge ${name}\n` +
+              `  Throw away: agent-relay node agent release ${name} --discard-worktree`
+          );
+        }
+      });
+    });
+
+  agent
+    .command('diff')
+    .description('Show what an agent spawned with --worktree has changed, including uncommitted edits')
+    .argument('<name>', 'Agent name')
+    .option('--stat', 'Only list changed files and line counts')
+    .action((name: string, opts: { stat?: boolean }) => {
+      runGitCommand(deps, () => {
+        const diff = diffAgentWorktree(
+          deps.cwd(),
+          name,
+          { stat: opts.stat, color: deps.stdoutIsTTY() },
+          deps.git
+        );
+        deps.log(diff.trim().length > 0 ? diff.replace(/\n$/, '') : `${name} has not changed anything yet.`);
+      });
+    });
+
+  agent
+    .command('merge')
+    .description("Merge an agent's worktree branch into your current branch")
+    .argument('<name>', 'Agent name')
+    .option(
+      '--resolve',
+      'If the merge conflicts, spawn an agent to resolve it (asks you when it is a judgment call)'
+    )
+    .option('--resolver <provider>', 'CLI provider for the resolver agent', 'claude')
+    .action(async (name: string, opts: { resolve?: boolean; resolver: string }) => {
+      let result: ReturnType<typeof mergeAgentWorktree> | undefined;
+      runGitCommand(deps, () => {
+        result = mergeAgentWorktree(deps.cwd(), name, deps.git);
+      });
+      if (!result) return;
+      if (result.status === 'nothing-to-merge') {
+        deps.log(`Nothing to merge: ${name} has no changes that aren't already in your branch.`);
+        return;
+      }
+      const savedNote = result.committedPending
+        ? ` (saved uncommitted edits from ${name} as a commit first)`
+        : '';
+      if (result.status === 'merged') {
+        deps.log(
+          `Merged ${result.branch} into your branch${savedNote}. ${result.files.length} file(s) changed:\n` +
+            result.files.map((file) => `  ${file}`).join('\n')
+        );
+        return;
+      }
+
+      deps.log(
+        `Conflict: ${name} and your branch both changed the same lines in:\n` +
+          result.conflicts.map((file) => `  ${file}`).join('\n') +
+          `\nYour checkout ${result.root} is paused mid-merge${savedNote}.`
+      );
+      if (!opts.resolve) {
+        deps.log(
+          `Let an agent resolve it: agent-relay node agent merge ${name} --resolve\n` +
+            'Resolve it yourself:    fix the marked lines, `git add` the files, then `git commit`\n' +
+            'Cancel the merge:       git merge --abort'
+        );
+        deps.exit(1);
+        return;
+      }
+
+      const resolverName = `resolve-${name}`;
+      const conflict = result;
+      await run(deps, async (client) => {
+        validateWorktreeAgentName(resolverName);
+        await spawnAgentWithClient(client, {
+          name: resolverName,
+          cli: opts.resolver,
+          channels: ['general'],
+          task: buildResolverTask({
+            agent: name,
+            branch: conflict.branch,
+            root: conflict.root,
+            conflicts: conflict.conflicts,
+            otherAgents: agentsWhoTouched(deps, conflict.root, conflict.branch, conflict.conflicts),
+          }),
+          cwd: conflict.root,
+        });
+        deps.log(
+          `Spawned ${resolverName} (${opts.resolver}) to resolve the conflict.\n` +
+            `  It can ask ${name} and other agents why they made their changes.\n` +
+            `  If it needs a decision from you, it will ask in its terminal: agent-relay node agent attach ${resolverName} --mode drive`
+        );
       });
     });
 
