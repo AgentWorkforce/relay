@@ -9,7 +9,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
-- Fleet spawn treats completed invocations without readiness proof as unconfirmed while preserving explicit `spawned:false` failures.
+- `@agent-relay/sdk` `placement.spawn` and `fleet serve-node` report completed invocations without readiness proof as unconfirmed (`spawn_unconfirmed`, `unconfirmed_may_be_running`) while preserving explicit `spawned:false` failures.
 
 ## [13.0.0] - 2026-09-30
 

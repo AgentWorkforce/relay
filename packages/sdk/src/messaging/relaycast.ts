@@ -834,11 +834,11 @@ export class RelaycastMessagingClient implements RelayMessagingClient {
             }
             const ackOutput = (ack as unknown as { output?: Record<string, unknown> | null }).output;
             if (
-              !input.confirm &&
               capability.startsWith('spawn:') &&
               ackStatus &&
               CONFIRM_SUCCESS_STATUSES.has(ackStatus) &&
-              !hasSpawnProof({ output: ackOutput }, requireReadiness)
+              (ackOutput?.spawned === false ||
+                (!input.confirm && !hasSpawnProof({ output: ackOutput }, requireReadiness)))
             ) {
               const code = spawnProofFailureCode(ackOutput);
               throw new RelayPlacementError(

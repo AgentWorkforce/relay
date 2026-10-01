@@ -850,6 +850,31 @@ describe('RelaycastMessagingClient placement', () => {
       expect((error as Error).message).toContain('explicit spawned:true and ready:true proof');
     });
 
+    it('keeps explicit spawned:false as a hard failure even when confirmation was requested', async () => {
+      const { client, invoke, getInvocation } = createClient([LIVE_NODE_A]);
+      invoke.mockResolvedValueOnce({
+        invocation_id: 'inv-explicit-no-spawn',
+        action_name: 'spawn',
+        status: 'completed',
+        output: { spawned: false },
+      } as never);
+
+      const error = await client.placement
+        .spawn({
+          capability: 'spawn:claude',
+          node: 'node-a',
+          confirm: true,
+          input: { name: 'worker-explicit-no-spawn' },
+        })
+        .catch((caught: unknown) => caught);
+
+      expect(error).toBeInstanceOf(RelayPlacementError);
+      expect((error as RelayPlacementError).code).toBe('spawn_failed');
+      expect((error as RelayPlacementError).state).toBe('failed');
+      expect((error as RelayPlacementError).invocationId).toBe('inv-explicit-no-spawn');
+      expect(getInvocation).not.toHaveBeenCalled();
+    });
+
     // The sf-mini reproduction: capacity advertised, invocation accepted, no
     // process, and no result ever reported. This must fail, not succeed.
     it('fails with spawn_unconfirmed when the node accepts but never reports a result', async () => {
