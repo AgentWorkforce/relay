@@ -23,7 +23,9 @@ export const defaultGitRunner: GitRunner = (args, cwd, env) => {
   const result = spawnSync('git', args, {
     cwd,
     encoding: 'utf8',
-    env: env ? { ...process.env, ...env } : process.env,
+    // Pin git's messages to English: conflict and "would be overwritten"
+    // output is parsed below and must not change with the user's locale.
+    env: { ...process.env, ...env, LC_ALL: 'C' },
     maxBuffer: 64 * 1024 * 1024,
   });
   if (result.error) throw new Error(`Could not run git: ${result.error.message}`);
@@ -35,10 +37,13 @@ export const WORKTREES_DIR = path.join('.agentworkforce', 'relay', 'worktrees');
 
 const BRANCH_PREFIX = 'relay/';
 /**
- * Relay's own state (connection files, workspace keys) lives in .agentworkforce/
- * and must never be counted as, or committed with, an agent's work.
+ * Relay's runtime state (connection files, workspace keys, these worktrees)
+ * lives in .agentworkforce/relay/ and must never be counted as, or committed
+ * with, an agent's work. The rest of .agentworkforce/ (trajectories, agent
+ * definitions) can be tracked project files and stays part of the work.
  */
-const WORK_PATHSPEC = ['--', '.', ':(exclude).agentworkforce'];
+const RELAY_STATE_DIR = '.agentworkforce/relay';
+const WORK_PATHSPEC = ['--', '.', `:(exclude)${RELAY_STATE_DIR}`];
 const NAME_PATTERN = /^[A-Za-z0-9][A-Za-z0-9._-]*$/;
 
 export interface AgentWorktree {
@@ -46,7 +51,10 @@ export interface AgentWorktree {
   root: string;
   /** The agent's own checkout. */
   path: string;
+  /** The branch the agent was given: `relay/<name>`. */
   branch: string;
+  /** What the checkout has checked out now; undefined when HEAD is detached. */
+  currentBranch?: string;
 }
 
 export function agentBranch(name: string): string {
@@ -120,8 +128,13 @@ export function findAgentWorktree(
   const root = entries[0]?.path;
   if (!root) return undefined;
   const branch = agentBranch(name);
-  const entry = entries.slice(1).find((candidate) => candidate.branch === branch);
-  return entry ? { root, path: entry.path, branch } : undefined;
+  // Match on the directory, not the branch: an agent that switches branches or
+  // detaches HEAD inside its checkout must still be found.
+  const expectedPath = path.join(root, WORKTREES_DIR, name);
+  const entry =
+    entries.slice(1).find((candidate) => candidate.path === expectedPath) ??
+    entries.slice(1).find((candidate) => candidate.branch === branch);
+  return entry ? { root, path: entry.path, branch, currentBranch: entry.branch } : undefined;
 }
 
 function requireAgentWorktree(cwd: string, name: string, runner: GitRunner): AgentWorktree {
@@ -131,12 +144,21 @@ function requireAgentWorktree(cwd: string, name: string, runner: GitRunner): Age
       `Agent "${name}" has no worktree in this repository. Only agents spawned with --worktree have one.`
     );
   }
+  if (worktree.currentBranch !== worktree.branch) {
+    const now = worktree.currentBranch ? `branch ${worktree.currentBranch}` : 'a detached commit';
+    throw new Error(
+      `${name}'s checkout is on ${now} instead of ${worktree.branch}. ` +
+        `Switch it back first: git -C ${worktree.path} switch ${worktree.branch}`
+    );
+  }
   return worktree;
 }
 
 export interface CreatedWorktree extends AgentWorktree {
   /** False when an existing checkout for this agent was reused. */
   created: boolean;
+  /** True only when this call created `relay/<name>`; an existing branch is never deleted on rollback. */
+  branchCreated: boolean;
   /** True when the main checkout has uncommitted changes the agent will not see. */
   mainCheckoutDirty: boolean;
 }
@@ -159,7 +181,7 @@ export function createAgentWorktree(
   const mainCheckoutDirty = git(runner, ['status', '--porcelain', ...WORK_PATHSPEC], root).trim().length > 0;
 
   const existing = findAgentWorktree(root, name, runner);
-  if (existing) return { ...existing, created: false, mainCheckoutDirty };
+  if (existing) return { ...existing, created: false, branchCreated: false, mainCheckoutDirty };
 
   const dir = path.join(root, WORKTREES_DIR);
   mkdirSync(dir, { recursive: true });
@@ -183,13 +205,26 @@ export function createAgentWorktree(
       : ['worktree', 'add', '-b', branch, worktreePath, 'HEAD'],
     root
   );
-  return { root, path: worktreePath, branch, created: true, mainCheckoutDirty };
+  return {
+    root,
+    path: worktreePath,
+    branch,
+    currentBranch: branch,
+    created: true,
+    branchCreated: !branchExists,
+    mainCheckoutDirty,
+  };
 }
 
-/** Remove a worktree this process just created (used when the spawn itself fails). */
-export function removeFreshWorktree(worktree: AgentWorktree, runner: GitRunner = defaultGitRunner): void {
+/**
+ * Undo a checkout this process just created (used when the spawn itself
+ * fails). The branch is deleted only if this call created it, so a branch
+ * holding earlier unmerged work survives a failed re-spawn.
+ */
+export function removeFreshWorktree(worktree: CreatedWorktree, runner: GitRunner = defaultGitRunner): void {
+  if (!worktree.created) return;
   runner(['worktree', 'remove', '--force', worktree.path], worktree.root);
-  runner(['branch', '-D', worktree.branch], worktree.root);
+  if (worktree.branchCreated) runner(['branch', '-D', worktree.branch], worktree.root);
 }
 
 /** The commit the agent's branch started from, relative to the main checkout. */
@@ -219,6 +254,8 @@ export function diffAgentWorktree(
     );
     if (existsSync(realIndex)) copyFileSync(realIndex, indexPath);
     const env = { GIT_INDEX_FILE: indexPath };
+    // Drop anything already staged under relay state, then stage the rest.
+    git(runner, ['reset', '-q', base, '--', RELAY_STATE_DIR], worktree.path, env);
     git(runner, ['add', '-A', ...WORK_PATHSPEC], worktree.path, env);
     return git(
       runner,
@@ -241,14 +278,23 @@ export function diffAgentWorktree(
 function commitPendingWork(runner: GitRunner, worktree: AgentWorktree, name: string): boolean {
   if (git(runner, ['status', '--porcelain', ...WORK_PATHSPEC], worktree.path).trim().length === 0)
     return false;
+  // Unstage relay state the agent may have staged itself, so the commit below
+  // (which takes the whole index) can never include it.
+  git(runner, ['reset', '-q', 'HEAD', '--', RELAY_STATE_DIR], worktree.path);
   git(runner, ['add', '-A', ...WORK_PATHSPEC], worktree.path);
-  // Fall back to a committer identity when the user never configured one, so
-  // a missing `user.email` does not strand the agent's work.
-  const hasIdentity = succeeds(runner, ['config', 'user.email'], worktree.path);
+  if (succeeds(runner, ['diff', '--cached', '--quiet'], worktree.path)) return false;
+  // Fill in whichever committer field the user never configured, so a missing
+  // identity does not strand the agent's work.
+  const fallbackIdentity = [
+    ...(succeeds(runner, ['config', 'user.name'], worktree.path) ? [] : ['-c', 'user.name=agent-relay']),
+    ...(succeeds(runner, ['config', 'user.email'], worktree.path)
+      ? []
+      : ['-c', 'user.email=agent-relay@localhost']),
+  ];
   git(
     runner,
     [
-      ...(hasIdentity ? [] : ['-c', 'user.name=agent-relay', '-c', 'user.email=agent-relay@localhost']),
+      ...fallbackIdentity,
       'commit',
       '--no-verify',
       '--author',
@@ -327,7 +373,7 @@ export function mergeAgentWorktree(
 
 export type CleanupResult =
   | { status: 'removed'; path: string }
-  | { status: 'kept'; path: string; reason: 'uncommitted' | 'unmerged' };
+  | { status: 'kept'; path: string; reason: 'uncommitted' | 'unmerged' | 'other-branch' };
 
 /**
  * After an agent is released, delete its checkout and branch when nothing
@@ -340,6 +386,9 @@ export function cleanupAgentWorktree(
   runner: GitRunner = defaultGitRunner
 ): CleanupResult {
   if (!options.discard) {
+    if (worktree.currentBranch !== worktree.branch) {
+      return { status: 'kept', path: worktree.path, reason: 'other-branch' };
+    }
     if (git(runner, ['status', '--porcelain', ...WORK_PATHSPEC], worktree.path).trim().length > 0) {
       return { status: 'kept', path: worktree.path, reason: 'uncommitted' };
     }

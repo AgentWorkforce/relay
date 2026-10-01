@@ -16,6 +16,7 @@ import {
   findAgentWorktree,
   mergeAgentWorktree,
   removeFreshWorktree,
+  resolveMainCheckout,
   validateWorktreeAgentName,
   type CreatedWorktree,
   type GitRunner,
@@ -824,12 +825,28 @@ async function spawnMaybeInWorktree(
   return worktree;
 }
 
-function describeWorktree(name: string, worktree: CreatedWorktree): string {
+/**
+ * ` --cwd <root>` when the worktree belongs to a different repository than the
+ * one the user is standing in, so printed follow-up commands work verbatim.
+ */
+function cwdFlag(deps: LocalAgentDependencies, root: string): string {
+  try {
+    if (resolveMainCheckout(deps.cwd(), deps.git) === root) return '';
+  } catch {
+    // Not inside a git repository: the flag is required.
+  }
+  return ` --cwd ${root}`;
+}
+
+const WORKTREE_CWD_OPTION_HELP = "Repository the agent's worktree belongs to (default: current directory)";
+
+function describeWorktree(deps: LocalAgentDependencies, name: string, worktree: CreatedWorktree): string {
+  const flag = cwdFlag(deps, worktree.root);
   const lines = [
     `  ${worktree.created ? 'Own copy' : 'Reusing its copy'}: ${worktree.path}`,
     `  Branch:   ${worktree.branch}`,
-    `  See its changes: agent-relay node agent diff ${name}`,
-    `  Merge them in:   agent-relay node agent merge ${name}`,
+    `  See its changes: agent-relay node agent diff ${name}${flag}`,
+    `  Merge them in:   agent-relay node agent merge ${name}${flag}`,
   ];
   if (worktree.mainCheckoutDirty && worktree.created) {
     lines.push(
@@ -969,7 +986,7 @@ export function registerLocalAgentCommands(
         );
         const autoNote = opts.model === 'auto' ? ' (auto-routed)' : '';
         deps.log(`Spawned ${resolved.name} (${provider}, ${runtime.selected})${autoNote}.`);
-        if (worktree) deps.log(describeWorktree(resolved.name, worktree));
+        if (worktree) deps.log(describeWorktree(deps, resolved.name, worktree));
       });
     });
 
@@ -1044,7 +1061,7 @@ export function registerLocalAgentCommands(
         deps.log(
           `Spawned ${resolved.name} (${provider}, ${runtime.selected}). Attaching (${mode})${autoNote}…`
         );
-        if (worktree) deps.log(describeWorktree(resolved.name, worktree));
+        if (worktree) deps.log(describeWorktree(deps, resolved.name, worktree));
       });
       // `new` spawns and attaches on the same default local broker — broker
       // override flags belong on the standalone `attach` command.
@@ -1062,22 +1079,27 @@ export function registerLocalAgentCommands(
       '--discard-worktree',
       "Also delete the agent's worktree and branch, even if its work was never merged"
     )
-    .action(async (name: string, opts: { discardWorktree?: boolean }) => {
+    .option('--cwd <path>', WORKTREE_CWD_OPTION_HELP)
+    .action(async (name: string, opts: { discardWorktree?: boolean; cwd?: string }) => {
       await run(deps, async (client) => {
         await client.release(name);
         deps.log(`Released ${name}.`);
-        const worktree = findAgentWorktree(deps.cwd(), name, deps.git);
+        const worktree = findAgentWorktree(opts.cwd ?? deps.cwd(), name, deps.git);
         if (!worktree) return;
         const cleanup = cleanupAgentWorktree(worktree, { discard: opts.discardWorktree }, deps.git);
         if (cleanup.status === 'removed') {
           deps.log(`Removed the worktree and branch ${worktree.branch} for ${name}.`);
         } else {
-          const why =
-            cleanup.reason === 'uncommitted' ? 'has uncommitted changes' : 'has work that is not merged';
+          const why = {
+            uncommitted: 'has uncommitted changes',
+            unmerged: 'has work that is not merged',
+            'other-branch': `is no longer on ${worktree.branch}`,
+          }[cleanup.reason];
+          const flag = cwdFlag(deps, worktree.root);
           deps.log(
             `Kept the worktree for ${name} because it ${why}: ${cleanup.path}\n` +
-              `  Merge it:   agent-relay node agent merge ${name}\n` +
-              `  Throw away: agent-relay node agent release ${name} --discard-worktree`
+              `  Merge it:   agent-relay node agent merge ${name}${flag}\n` +
+              `  Throw away: agent-relay node agent release ${name} --discard-worktree${flag}`
           );
         }
       });
@@ -1088,10 +1110,11 @@ export function registerLocalAgentCommands(
     .description('Show what an agent spawned with --worktree has changed, including uncommitted edits')
     .argument('<name>', 'Agent name')
     .option('--stat', 'Only list changed files and line counts')
-    .action((name: string, opts: { stat?: boolean }) => {
+    .option('--cwd <path>', WORKTREE_CWD_OPTION_HELP)
+    .action((name: string, opts: { stat?: boolean; cwd?: string }) => {
       runGitCommand(deps, () => {
         const diff = diffAgentWorktree(
-          deps.cwd(),
+          opts.cwd ?? deps.cwd(),
           name,
           { stat: opts.stat, color: deps.stdoutIsTTY() },
           deps.git
@@ -1109,10 +1132,11 @@ export function registerLocalAgentCommands(
       'If the merge conflicts, spawn an agent to resolve it (asks you when it is a judgment call)'
     )
     .option('--resolver <provider>', 'CLI provider for the resolver agent', 'claude')
-    .action(async (name: string, opts: { resolve?: boolean; resolver: string }) => {
+    .option('--cwd <path>', WORKTREE_CWD_OPTION_HELP)
+    .action(async (name: string, opts: { resolve?: boolean; resolver: string; cwd?: string }) => {
       let result: ReturnType<typeof mergeAgentWorktree> | undefined;
       runGitCommand(deps, () => {
-        result = mergeAgentWorktree(deps.cwd(), name, deps.git);
+        result = mergeAgentWorktree(opts.cwd ?? deps.cwd(), name, deps.git);
       });
       if (!result) return;
       if (result.status === 'nothing-to-merge') {
@@ -1137,7 +1161,7 @@ export function registerLocalAgentCommands(
       );
       if (!opts.resolve) {
         deps.log(
-          `Let an agent resolve it: agent-relay node agent merge ${name} --resolve\n` +
+          `Let an agent resolve it: agent-relay node agent merge ${name} --resolve${cwdFlag(deps, result.root)}\n` +
             'Resolve it yourself:    fix the marked lines, `git add` the files, then `git commit`\n' +
             'Cancel the merge:       git merge --abort'
         );

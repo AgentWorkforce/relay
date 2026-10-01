@@ -19,8 +19,9 @@ import {
 let parent: string;
 let repo: string;
 
+// Pin git's output language so assertions on its text hold in any locale.
 function git(args: string[], cwd = repo): string {
-  return execFileSync('git', args, { cwd, encoding: 'utf8' });
+  return execFileSync('git', args, { cwd, encoding: 'utf8', env: { ...process.env, LC_ALL: 'C' } });
 }
 
 function write(dir: string, file: string, contents: string): void {
@@ -102,6 +103,34 @@ describe('createAgentWorktree', () => {
     expect(fs.existsSync(worktree.path)).toBe(false);
     expect(git(['branch', '--list', 'relay/alpha'])).toBe('');
   });
+
+  it('removeFreshWorktree keeps a pre-existing branch and its unmerged commits', () => {
+    const first = createAgentWorktree(repo, 'alpha');
+    write(first.path, 'work.txt', 'unmerged work\n');
+    git(['add', '-A'], first.path);
+    git(['commit', '-qm', 'unmerged'], first.path);
+    git(['worktree', 'remove', first.path]);
+
+    const respawn = createAgentWorktree(repo, 'alpha');
+    expect(respawn).toMatchObject({ created: true, branchCreated: false });
+    removeFreshWorktree(respawn);
+
+    expect(fs.existsSync(respawn.path)).toBe(false);
+    expect(git(['log', '-1', '--format=%s', 'relay/alpha']).trim()).toBe('unmerged');
+  });
+
+  it('still finds a checkout whose agent switched branches, and refuses to diff or merge it', () => {
+    const worktree = createAgentWorktree(repo, 'alpha');
+    git(['switch', '-q', '-c', 'side'], worktree.path);
+
+    expect(findAgentWorktree(repo, 'alpha')).toMatchObject({ path: worktree.path, currentBranch: 'side' });
+    expect(createAgentWorktree(repo, 'alpha').created).toBe(false);
+    expect(() => mergeAgentWorktree(repo, 'alpha')).toThrow(/on branch side instead of relay\/alpha/);
+    expect(cleanupAgentWorktree(findAgentWorktree(repo, 'alpha')!)).toMatchObject({
+      status: 'kept',
+      reason: 'other-branch',
+    });
+  });
 });
 
 describe('diffAgentWorktree', () => {
@@ -121,11 +150,33 @@ describe('diffAgentWorktree', () => {
     expect(diffAgentWorktree(repo, 'alpha', { stat: true })).toMatch(/2 files changed/);
   });
 
-  it('never includes relay state written into the agent checkout', () => {
+  it('never includes relay state written or staged in the agent checkout', () => {
     const worktree = createAgentWorktree(repo, 'alpha');
-    fs.mkdirSync(path.join(worktree.path, '.agentworkforce'));
-    write(path.join(worktree.path, '.agentworkforce'), 'workspace-key.json', '{"key":"secret"}');
+    const stateDir = path.join(worktree.path, '.agentworkforce', 'relay');
+    fs.mkdirSync(stateDir, { recursive: true });
+    write(stateDir, 'workspace-key.json', '{"key":"secret"}');
     expect(diffAgentWorktree(repo, 'alpha')).toBe('');
+
+    git(['add', '-f', '.agentworkforce/relay/workspace-key.json'], worktree.path);
+    write(worktree.path, 'page.html', '<h1>Alpha</h1>\n<p>body</p>\n');
+    expect(diffAgentWorktree(repo, 'alpha')).not.toContain('secret');
+
+    mergeAgentWorktree(repo, 'alpha');
+    expect(git(['show', '--name-only', '--format=', 'relay/alpha']).trim()).toBe('page.html');
+  });
+
+  it('keeps tracked .agentworkforce project files (like trajectories) as part of the work', () => {
+    fs.mkdirSync(path.join(repo, '.agentworkforce', 'trajectories'), { recursive: true });
+    write(path.join(repo, '.agentworkforce', 'trajectories'), 'log.md', 'v1\n');
+    git(['add', '-A']);
+    git(['commit', '-qm', 'track trajectories']);
+    const worktree = createAgentWorktree(repo, 'alpha');
+    write(path.join(worktree.path, '.agentworkforce', 'trajectories'), 'log.md', 'v2\n');
+
+    expect(diffAgentWorktree(repo, 'alpha')).toContain('+v2');
+    expect(cleanupAgentWorktree(worktree)).toMatchObject({ status: 'kept', reason: 'uncommitted' });
+    expect(mergeAgentWorktree(repo, 'alpha').status).toBe('merged');
+    expect(read(path.join(repo, '.agentworkforce', 'trajectories'), 'log.md')).toBe('v2\n');
   });
 
   it('explains when an agent has no worktree', () => {
