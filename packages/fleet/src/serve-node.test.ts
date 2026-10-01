@@ -545,9 +545,7 @@ describe('serveNode', () => {
   it('returns a completed spawn with missing readiness proof for caller reconciliation', async () => {
     vi.stubGlobal(
       'fetch',
-      vi.fn(async () =>
-        Response.json({ data: { status: 'completed', output: { spawned: true, name: 'worker' } } })
-      )
+      vi.fn(async () => Response.json({ data: { status: 'completed' } }))
     );
     const definition = defineNode({
       name: 'p',
@@ -569,9 +567,7 @@ describe('serveNode', () => {
     const [delegation] = sock.sentOfType('node.spawn');
     sock.emit({ v: 1, id: delegation.id, type: 'reply', ok: true, data: { invocation_id: 'child' } });
     await vi.waitFor(() => expect(sock.sentOfType('action.result')).toHaveLength(1));
-    expect(sock.sentOfType('action.result')[0]).toMatchObject({
-      output: { spawned: true, name: 'worker' },
-    });
+    expect(sock.sentOfType('action.result')[0]).toMatchObject({ output: {} });
     expect(sock.sentOfType('action.result')[0]?.error).toBeUndefined();
     await running.stop();
   });

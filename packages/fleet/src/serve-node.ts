@@ -400,7 +400,10 @@ export async function waitForDelegatedSpawn(options: ServeNodeOptions, placement
           // so the caller can report an unconfirmed spawn and avoid blindly
           // launching a duplicate. The placement layer still requires the
           // explicit proof before it reports the worker as ready.
-          return invocation.output;
+          // The provider wire requires an output or an error for action.result.
+          // Older completed invocations can omit output entirely; preserve the
+          // completed-but-unproven state with a serializable empty result.
+          return invocation.output ?? {};
         }
         if (['failed', 'denied', 'cancelled'].includes(invocation?.status ?? '')) {
           throw new Error(`spawn_failed: ${invocationId}: ${invocation?.error ?? invocation?.status}`);
