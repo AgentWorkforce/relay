@@ -184,15 +184,15 @@ function spawnProofError(
 }
 
 /** Missing readiness fields do not prove that the node failed to launch. */
-function spawnProofFailureCode(output: Record<string, unknown> | null | undefined):
-  | 'spawn_failed'
-  | 'spawn_unconfirmed' {
+function spawnProofFailureCode(
+  output: Record<string, unknown> | null | undefined
+): 'spawn_failed' | 'spawn_unconfirmed' {
   return output?.spawned === false ? 'spawn_failed' : 'spawn_unconfirmed';
 }
 
-function spawnProofFailureState(code: 'spawn_failed' | 'spawn_unconfirmed'):
-  | 'failed'
-  | 'unconfirmed_may_be_running' {
+function spawnProofFailureState(
+  code: 'spawn_failed' | 'spawn_unconfirmed'
+): 'failed' | 'unconfirmed_may_be_running' {
   return code === 'spawn_failed' ? 'failed' : 'unconfirmed_may_be_running';
 }
 

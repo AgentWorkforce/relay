@@ -393,9 +393,7 @@ export async function waitForDelegatedSpawn(options: ServeNodeOptions, placement
         const invocation = body?.data;
         if (invocation?.status === 'completed') {
           if (invocation.output?.spawned === false) {
-            throw new Error(
-              `spawn_failed: ${invocationId} completed with explicit spawned:false`
-            );
+            throw new Error(`spawn_failed: ${invocationId} completed with explicit spawned:false`);
           }
           // A terminal success without the newer proof fields is ambiguous,
           // not evidence that the worker failed. Preserve the broker's output
