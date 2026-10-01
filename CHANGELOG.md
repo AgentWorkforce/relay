@@ -9,7 +9,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
-- Broker: Muse workers now reuse the host Muse login (`RELAY_MUSE_SHARED_AUTH_PATH`, the host's `MUSE_AUTH_PATH`, or `$XDG_CONFIG_HOME/muse/auth.json`) instead of prompting for provider auth under every new agent name; Relay MCP settings stay per-worker. Set `RELAY_MUSE_ISOLATED_AUTH=1` to keep a separate login per worker.
+- Broker: Muse workers now reuse the host Muse login (`RELAY_MUSE_SHARED_AUTH_PATH`, the host's `MUSE_AUTH_PATH`, or `$XDG_CONFIG_HOME/muse/auth.json`) instead of prompting for provider auth under every new agent name; Relay MCP settings stay per-worker. Multi-tenant hosts should set `RELAY_MUSE_ISOLATED_AUTH=1` before upgrading to keep a separate login per worker.
 
 ## [13.0.0] - 2026-09-30
 

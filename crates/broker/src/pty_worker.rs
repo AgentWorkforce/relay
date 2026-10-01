@@ -865,6 +865,16 @@ pub(crate) async fn run_pty_worker(cmd: PtyCommand) -> Result<()> {
             let xdg_config_home = std::env::var_os("XDG_CONFIG_HOME");
             let user_home = std::env::var_os("HOME");
             let user_profile = std::env::var_os("USERPROFILE");
+            if let Some(raw) = shared_auth_path
+                .as_deref()
+                .filter(|v| !v.is_empty() && !Path::new(v).is_absolute())
+            {
+                tracing::warn!(
+                    value = %raw.to_string_lossy(),
+                    "ignoring non-absolute {} (no ~ or relative expansion); using the default Muse login path",
+                    crate::snippets::MUSE_SHARED_AUTH_PATH_ENV
+                );
+            }
             let shared_auth =
                 crate::snippets::muse_shared_auth_path(crate::snippets::MuseAuthEnv {
                     shared_auth_path: shared_auth_path.as_deref(),
