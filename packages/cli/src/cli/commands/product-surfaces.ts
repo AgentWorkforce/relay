@@ -122,7 +122,12 @@ export const PRODUCT_SURFACES: readonly ProductSurfaceDefinition[] = [
  */
 export const SURFACE_PACKAGES: Readonly<Record<string, SurfacePackage>> = {
   '@relayfile/sdk/relay-cli': { name: '@relayfile/sdk', range: '^0.10.64' },
-  '@relayflows/sdk/relay-cli': { name: '@relayflows/sdk', range: '^2.0.19' },
+  // Exact pin: @relayflows/sdk >=2.0.23 declares optional peers
+  // `@agent-relay/sdk` / `harness-driver` capped at `<13`. A caret here floats
+  // consumers (and publish's lockfile-less reinstall) onto that range and
+  // ERESOLVEs once this monorepo ships 13.x. Stay on the last peer-free release
+  // until flows publishes a peer range that includes the next major.
+  '@relayflows/sdk/relay-cli': { name: '@relayflows/sdk', range: '2.0.22' },
   'ai-hist/relay-cli': {
     name: 'ai-hist',
     range: '^0.18.1',

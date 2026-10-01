@@ -857,15 +857,40 @@ pub(crate) async fn run_pty_worker(cmd: PtyCommand) -> Result<()> {
         // provisioned, but re-check the executable identity defensively: a
         // stray flag must never redirect another CLI's config scope.
         if crate::snippets::is_muse_executable(&resolved_cli) {
-            #[allow(deprecated)]
-            std::env::set_var("XDG_CONFIG_HOME", home);
-            #[allow(deprecated)]
-            std::env::set_var(
-                "MUSE_AUTH_PATH",
-                Path::new(home).join("muse").join("auth.json"),
-            );
-            #[allow(deprecated)]
-            std::env::set_var("MUSE_NO_AUTO_UPDATE", "1");
+            // Resolve before redirecting XDG_CONFIG_HOME: the shared login
+            // lives in the host's own Muse config scope.
+            let shared_auth_path = std::env::var_os(crate::snippets::MUSE_SHARED_AUTH_PATH_ENV);
+            let isolated_auth = std::env::var_os(crate::snippets::MUSE_ISOLATED_AUTH_ENV);
+            let host_muse_auth_path = std::env::var_os("MUSE_AUTH_PATH");
+            let xdg_config_home = std::env::var_os("XDG_CONFIG_HOME");
+            let user_home = std::env::var_os("HOME");
+            let user_profile = std::env::var_os("USERPROFILE");
+            if let Some(raw) = shared_auth_path
+                .as_deref()
+                .filter(|v| !v.is_empty() && !Path::new(v).is_absolute())
+            {
+                tracing::warn!(
+                    value = %raw.to_string_lossy(),
+                    "ignoring non-absolute {} (no ~ or relative expansion); using the default Muse login path",
+                    crate::snippets::MUSE_SHARED_AUTH_PATH_ENV
+                );
+            }
+            let shared_auth =
+                crate::snippets::muse_shared_auth_path(crate::snippets::MuseAuthEnv {
+                    shared_auth_path: shared_auth_path.as_deref(),
+                    isolated_auth: isolated_auth.as_deref(),
+                    muse_auth_path: host_muse_auth_path.as_deref(),
+                    xdg_config_home: xdg_config_home.as_deref(),
+                    home: user_home.as_deref(),
+                    userprofile: user_profile.as_deref(),
+                });
+            for (key, value) in crate::snippets::muse_clean_home_env_with_auth(
+                Path::new(home),
+                shared_auth.as_deref(),
+            ) {
+                #[allow(deprecated)]
+                std::env::set_var(key, value);
+            }
         }
     }
     let mut effective_args = inline_cli_args;

@@ -607,6 +607,7 @@ fn worker_event_runtime_fixture_with_relay(
         pending: temp_dir.path().join("pending.json"),
         dead_letters: temp_dir.path().join("dead-letters.json"),
         dedup: temp_dir.path().join("dedup.json"),
+        native_delivery_receipts: temp_dir.path().join("native-delivery-receipts"),
         _lock: None,
     };
     let default_workspace =
@@ -717,6 +718,112 @@ fn worker_event_runtime_fixture_with_relay(
         _sdk_out_rx: sdk_out_rx,
         _temp_dir: temp_dir,
     }
+}
+
+fn native_existing_session_request() -> crate::native_delivery::NativeExistingSessionDelivery {
+    crate::native_delivery::NativeExistingSessionDelivery {
+        relay_agent_name: "missing-worker".to_string(),
+        session_id: "native-session-1".to_string(),
+        delivery_id: "delivery-1".to_string(),
+        lineage_id: "lineage-1".to_string(),
+        head_sha: "a".repeat(40),
+        message: "continue".to_string(),
+    }
+}
+
+fn empty_worker_registry() -> WorkerRegistry {
+    let (events, _event_rx) = mpsc::channel(4);
+    WorkerRegistry::new(events, vec![], std::env::temp_dir(), Instant::now())
+}
+
+#[tokio::test]
+async fn native_delivery_runtime_requires_persistence_and_authorizes_before_receipt() {
+    use tokio::sync::oneshot;
+
+    let mut ephemeral = worker_event_runtime_fixture(empty_worker_registry(), HashMap::new());
+    let ephemeral_receipts = ephemeral.runtime.paths.native_delivery_receipts.clone();
+    let (reply, result) = oneshot::channel();
+    ephemeral
+        .runtime
+        .handle_api_request(ListenApiRequest::DeliverNativeExistingSession {
+            delivery: native_existing_session_request(),
+            reply,
+        })
+        .await;
+    assert!(matches!(
+        result.await.expect("runtime reply"),
+        Err(crate::native_delivery::NativeDeliveryError::ReceiptUnavailable(_))
+    ));
+    assert!(!ephemeral_receipts.exists());
+
+    let mut persistent = worker_event_runtime_fixture(empty_worker_registry(), HashMap::new());
+    persistent.runtime.paths.persist = true;
+    let persistent_receipts = persistent.runtime.paths.native_delivery_receipts.clone();
+    let (reply, result) = oneshot::channel();
+    persistent
+        .runtime
+        .handle_api_request(ListenApiRequest::DeliverNativeExistingSession {
+            delivery: native_existing_session_request(),
+            reply,
+        })
+        .await;
+    assert!(matches!(
+        result.await.expect("runtime reply"),
+        Err(crate::native_delivery::NativeDeliveryError::Unauthorized(_))
+    ));
+    assert!(
+        !persistent_receipts.exists(),
+        "authorization must precede the write-ahead reservation"
+    );
+}
+
+#[tokio::test]
+async fn native_delivery_runtime_answers_exact_duplicate_after_worker_exit() {
+    use tokio::sync::oneshot;
+
+    let mut fixture = worker_event_runtime_fixture(empty_worker_registry(), HashMap::new());
+    fixture.runtime.paths.persist = true;
+    let receipts = fixture.runtime.paths.native_delivery_receipts.clone();
+    let queued = crate::native_delivery::reserve_and_deliver(
+        &receipts,
+        &native_existing_session_request(),
+        |_| async { Ok(()) },
+    )
+    .await
+    .expect("original delivery");
+
+    // The worker no longer exists, so authorization fails; the durable
+    // receipt must still answer the exact retry without a worker write.
+    let (reply, result) = oneshot::channel();
+    fixture
+        .runtime
+        .handle_api_request(ListenApiRequest::DeliverNativeExistingSession {
+            delivery: native_existing_session_request(),
+            reply,
+        })
+        .await;
+    let duplicate = result
+        .await
+        .expect("runtime reply")
+        .expect("exact duplicate");
+    assert_eq!(duplicate["status"], "duplicate");
+    assert_eq!(duplicate["state"], "queued");
+    assert_eq!(duplicate["receiptId"], queued.receipt_id);
+
+    let (reply, result) = oneshot::channel();
+    let mut reconcile = native_existing_session_request();
+    reconcile.message = "changed".to_string();
+    fixture
+        .runtime
+        .handle_api_request(ListenApiRequest::DeliverNativeExistingSession {
+            delivery: reconcile,
+            reply,
+        })
+        .await;
+    assert!(matches!(
+        result.await.expect("runtime reply"),
+        Err(crate::native_delivery::NativeDeliveryError::Conflict)
+    ));
 }
 
 fn delivery_lifecycle_worker_event(
@@ -4714,6 +4821,7 @@ async fn api_spawn_retries_overload_and_only_safe_mode_falls_back() {
             node_name: "test-node".to_string(),
             node_token: std::sync::Arc::new(std::sync::RwLock::new(None)),
             persist: false,
+            native_delivery_receipts: fixture.runtime.paths.native_delivery_receipts.clone(),
             node_delivery_probe: std::sync::Arc::new(
                 crate::node_delivery_probe::NodeDeliveryProbe::new(),
             ),

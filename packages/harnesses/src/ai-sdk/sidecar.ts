@@ -1,5 +1,6 @@
 import { createHash } from 'node:crypto';
 import { readFile } from 'node:fs/promises';
+import { resolve } from 'node:path';
 import { createInterface } from 'node:readline';
 import {
   NATIVE_HARNESS_PROTOCOL_VERSION,
@@ -107,6 +108,12 @@ function diagnosticPayload(diagnostic: HarnessV1Diagnostic) {
 }
 
 export async function runAiSdkSidecar(config: AiSdkSidecarConfig, io: AiSdkSidecarIo): Promise<void> {
+  if (!config.sessionId) {
+    throw new Error('A stable sessionId is required for deferred delivery persistence');
+  }
+  if (!config.runtimeRoot) {
+    throw new Error('A stable runtimeRoot is required for deferred delivery persistence');
+  }
   const entry = aiSdkAdapterRegistry.require(config.harness);
   const harness = await entry.createHarness(config.settings);
   const provider = new LocalHostSandboxProvider({
@@ -160,22 +167,46 @@ export async function runAiSdkSidecar(config: AiSdkSidecarConfig, io: AiSdkSidec
       handle: config.name.toLowerCase().replaceAll(/[^a-z0-9_-]/g, '-'),
     } satisfies AgentIdentity,
     host,
+    deferredQueuePath: resolve(
+      config.runtimeRoot,
+      'deferred-relay',
+      createHash('sha256').update(host.sessionId).digest('hex')
+    ),
   });
   const relayDeliveries = new Map<string, { eventId: string }>();
   relaySession.onEvent?.(async (event) => {
     await publishEvent(event);
     if (event.type === 'delivery.accepted' && event.deliveryId) {
       const delivery = relayDeliveries.get(event.deliveryId);
-      if (!delivery) return;
       relayDeliveries.delete(event.deliveryId);
       await write({
         v: 2,
         type: 'delivery_ack',
-        payload: { delivery_id: event.deliveryId, event_id: delivery.eventId },
+        payload: {
+          delivery_id: event.deliveryId,
+          // Restored deferred entries complete before stdin can rebuild the
+          // volatile delivery map. The durable entry retains the originating
+          // message id, so it remains sufficient to report the final outcome.
+          event_id: delivery?.eventId ?? event.messageId,
+          state: 'queued',
+        },
+      });
+    } else if (event.type === 'delivery.failed' && event.deliveryId) {
+      const delivery = relayDeliveries.get(event.deliveryId);
+      relayDeliveries.delete(event.deliveryId);
+      await write({
+        v: 2,
+        type: 'delivery_failed',
+        payload: {
+          delivery_id: event.deliveryId,
+          event_id: delivery?.eventId ?? event.messageId,
+          reason: event.reason,
+        },
       });
     }
   });
   await host.start();
+  await relaySession.restoreDeferredMessages();
 
   const maxCommandDedupeEntries = Math.max(1, config.maxCommandDedupeEntries ?? 10_000);
   const acknowledgements = new Map<string, { digest: string; acknowledgement: NativeHarnessCommandAck }>();
@@ -238,14 +269,27 @@ export async function runAiSdkSidecar(config: AiSdkSidecarConfig, io: AiSdkSidec
           }
         );
         if (receipt.status === 'failed') throw new Error(receipt.reason);
-        if (receipt.status === 'accepted') {
+        if (receipt.status === 'deferred') {
+          const pending = relayDeliveries.get(delivery.delivery_id);
+          if (pending) {
+            await write({
+              v: 2,
+              type: 'delivery_queued',
+              payload: { delivery_id: delivery.delivery_id, event_id: pending.eventId },
+            });
+          }
+        } else if (receipt.status === 'accepted') {
           const pending = relayDeliveries.get(delivery.delivery_id);
           if (pending) {
             relayDeliveries.delete(delivery.delivery_id);
             await write({
               v: 2,
               type: 'delivery_ack',
-              payload: { delivery_id: delivery.delivery_id, event_id: pending.eventId },
+              payload: {
+                delivery_id: delivery.delivery_id,
+                event_id: pending.eventId,
+                state: 'queued',
+              },
             });
           }
         }
@@ -264,8 +308,13 @@ export async function runAiSdkSidecar(config: AiSdkSidecarConfig, io: AiSdkSidec
       continue;
     }
     if (frame.type === 'shutdown_worker') {
-      await host.destroy();
-      await write({ v: 2, type: 'worker_exited', payload: { code: 0 } });
+      try {
+        await relaySession.release('shutdown_worker');
+        await write({ v: 2, type: 'worker_exited', payload: { code: 0 } });
+      } catch (error) {
+        await write({ v: 2, type: 'worker_exited', payload: { code: 1 } });
+        throw error;
+      }
       break;
     }
     if (!isCommandFrame(frame)) continue;

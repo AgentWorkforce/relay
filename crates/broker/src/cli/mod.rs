@@ -507,8 +507,11 @@ pub(crate) struct PtyCommand {
     pub(crate) agent_name: Option<String>,
 
     /// Isolated Muse config home for this worker (path only, never a
-    /// secret): the worker points `XDG_CONFIG_HOME` (plus `MUSE_AUTH_PATH`
-    /// and `MUSE_NO_AUTO_UPDATE`) at it before spawning Muse.
+    /// secret): the worker points `XDG_CONFIG_HOME` and `MUSE_NO_AUTO_UPDATE`
+    /// at it before spawning Muse. `MUSE_AUTH_PATH` points at an absolute
+    /// `RELAY_MUSE_SHARED_AUTH_PATH` when set, otherwise at the host Muse
+    /// login; it falls back to `<config_home>/muse/auth.json` when
+    /// `RELAY_MUSE_ISOLATED_AUTH=1` or no absolute host login path resolves.
     #[arg(long)]
     pub(crate) muse_config_home: Option<String>,
 

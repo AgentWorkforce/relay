@@ -1,4 +1,8 @@
 import type { AgentIdentity, MessageContext, RelayMessage } from '@agent-relay/sdk';
+import { createHash } from 'node:crypto';
+import { mkdir, mkdtemp, readdir, readFile, rm, writeFile } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { resolve } from 'node:path';
 import { describe, expect, it, vi } from 'vitest';
 import { formatInboundRelayPrompt, RelayHarnessSession } from './relay-session.js';
 
@@ -15,6 +19,36 @@ function message(id: string, text = id, from = 'Human'): RelayMessage {
 
 function context(id: string, mode: MessageContext['mode'] = 'immediate'): MessageContext {
   return { id, mode, reason: 'message' };
+}
+
+async function readEntries(path: string): Promise<Array<Record<string, unknown>>> {
+  const entries: Array<Record<string, unknown>> = [];
+  for (const directory of ['queue', 'receipts']) {
+    const entryPath = resolve(path, directory);
+    let files: string[];
+    try {
+      files = (await readdir(entryPath)).filter((file) => file.endsWith('.json'));
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code === 'ENOENT') continue;
+      throw error;
+    }
+    for (const file of files) {
+      const envelope = JSON.parse(await readFile(resolve(entryPath, file), 'utf8')) as {
+        entry: Record<string, unknown>;
+      };
+      entries.push(envelope.entry);
+    }
+  }
+  return entries;
+}
+
+async function writeEntry(path: string, entry: Record<string, unknown>): Promise<void> {
+  const directory = entry.state === 'queued' ? 'queue' : 'receipts';
+  const entryPath = resolve(path, directory);
+  await mkdir(entryPath, { recursive: true });
+  const key = String(entry.key);
+  const file = `${createHash('sha256').update(key).digest('hex')}.json`;
+  await writeFile(resolve(entryPath, file), JSON.stringify({ version: 2, entry }));
 }
 
 function fakeHost() {
@@ -128,6 +162,248 @@ describe('RelayHarnessSession', () => {
     expect(fixture.host.startTurn).toHaveBeenLastCalledWith(expect.stringContaining('queued-2'), 'queued-2');
   });
 
+  it('restores a durably deferred on-idle message after a sidecar restart', async () => {
+    const root = await mkdtemp(resolve(tmpdir(), 'relay-deferred-'));
+    const queuePath = resolve(root, 'queue');
+    const first = fakeHost();
+    const firstSession = new RelayHarnessSession({
+      identity,
+      host: first.host as never,
+      deferredQueuePath: queuePath,
+    });
+    await firstSession.receiveMessage(message('active'), context('active'));
+    await expect(
+      firstSession.receiveMessage(message('durable'), context('durable', 'on-idle'))
+    ).resolves.toMatchObject({ status: 'deferred' });
+    expect(await readEntries(queuePath)).toMatchObject([
+      expect.objectContaining({ key: 'durable', state: 'queued' }),
+    ]);
+
+    const restarted = fakeHost();
+    const restartedSession = new RelayHarnessSession({
+      identity,
+      host: restarted.host as never,
+      deferredQueuePath: queuePath,
+    });
+    let stateAtAcceptance: string | undefined;
+    restartedSession.onEvent?.(async (event) => {
+      if (event.type !== 'delivery.accepted') return;
+      const persisted = await readEntries(queuePath);
+      stateAtAcceptance = persisted[0]?.state as string | undefined;
+    });
+    await restartedSession.restoreDeferredMessages();
+    expect(restarted.host.startTurn).toHaveBeenCalledWith(
+      expect.stringContaining('"messageId":"durable"'),
+      'durable'
+    );
+    expect(await readEntries(queuePath)).toMatchObject([
+      expect.objectContaining({ key: 'durable', state: 'accepted' }),
+    ]);
+    expect(stateAtAcceptance).toBe('accepted');
+  });
+
+  it('fails closed instead of replaying an in-flight deferred message after restart', async () => {
+    const root = await mkdtemp(resolve(tmpdir(), 'relay-deferred-indoubt-'));
+    const queuePath = resolve(root, 'queue');
+    await writeEntry(queuePath, {
+      key: 'ambiguous',
+      deliveryId: 'ambiguous',
+      messageId: 'ambiguous',
+      state: 'in_doubt',
+    });
+    await writeEntry(queuePath, {
+      key: 'already-accepted',
+      deliveryId: 'already-accepted',
+      messageId: 'already-accepted',
+      state: 'accepted',
+    });
+    const restarted = fakeHost();
+    const restartedSession = new RelayHarnessSession({
+      identity,
+      host: restarted.host as never,
+      deferredQueuePath: queuePath,
+    });
+    await restartedSession.restoreDeferredMessages();
+    expect(restarted.host.startTurn).not.toHaveBeenCalled();
+    expect(await readEntries(queuePath)).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ key: 'ambiguous', state: 'in_doubt' }),
+        expect.objectContaining({ key: 'already-accepted', state: 'accepted' }),
+      ])
+    );
+    await expect(
+      restartedSession.receiveMessage(message('ambiguous'), {
+        ...context('ambiguous', 'on-idle'),
+        idempotencyKey: 'ambiguous',
+      })
+    ).resolves.toMatchObject({ status: 'failed', retryable: false });
+    await expect(
+      restartedSession.receiveMessage(message('already-accepted'), {
+        ...context('already-accepted', 'on-idle'),
+        idempotencyKey: 'already-accepted',
+      })
+    ).resolves.toMatchObject({ status: 'accepted' });
+    expect(restarted.host.startTurn).not.toHaveBeenCalled();
+
+    const restartedAgain = fakeHost();
+    const restartedAgainSession = new RelayHarnessSession({
+      identity,
+      host: restartedAgain.host as never,
+      deferredQueuePath: queuePath,
+      maxDedupeEntries: 1,
+    });
+    await restartedAgainSession.restoreDeferredMessages();
+    await expect(
+      restartedAgainSession.receiveMessage(message('ambiguous'), {
+        ...context('ambiguous', 'on-idle'),
+        idempotencyKey: 'ambiguous',
+      })
+    ).resolves.toMatchObject({ status: 'failed', retryable: false });
+    await expect(
+      restartedAgainSession.receiveMessage(message('already-accepted'), {
+        ...context('already-accepted', 'on-idle'),
+        idempotencyKey: 'already-accepted',
+      })
+    ).resolves.toMatchObject({ status: 'accepted' });
+    expect(restartedAgain.host.startTurn).not.toHaveBeenCalled();
+  });
+
+  it('retains a failed in-flight deferred message as a non-retryable tombstone', async () => {
+    const root = await mkdtemp(resolve(tmpdir(), 'relay-deferred-failed-'));
+    const queuePath = resolve(root, 'queue');
+    const fixture = fakeHost();
+    const session = new RelayHarnessSession({
+      identity,
+      host: fixture.host as never,
+      deferredQueuePath: queuePath,
+    });
+    await session.receiveMessage(message('active'), context('active'));
+    await session.receiveMessage(message('ambiguous'), {
+      ...context('ambiguous', 'on-idle'),
+      idempotencyKey: 'ambiguous',
+    });
+    const failed = new Promise<void>((resolveFailed) => {
+      session.onEvent?.((event) => {
+        if (event.type === 'delivery.failed' && event.deliveryId === 'ambiguous') resolveFailed();
+      });
+    });
+    vi.mocked(fixture.host.startTurn).mockRejectedValueOnce(new Error('acceptance failed'));
+    fixture.settle();
+    await failed;
+
+    const tombstones = await readEntries(queuePath);
+    expect(tombstones).toMatchObject([expect.objectContaining({ key: 'ambiguous', state: 'in_doubt' })]);
+    expect(tombstones[0]).not.toHaveProperty('message');
+    expect(tombstones[0]).not.toHaveProperty('context');
+    await expect(
+      session.receiveMessage(message('ambiguous'), {
+        ...context('ambiguous', 'on-idle'),
+        idempotencyKey: 'ambiguous',
+      })
+    ).resolves.toMatchObject({ status: 'failed', retryable: false });
+    expect(fixture.host.startTurn).toHaveBeenCalledTimes(2);
+    await session.release?.('retired');
+    expect(await readEntries(queuePath)).toEqual([]);
+  });
+
+  it('does not report failure after the host accepts when the terminal receipt cannot persist', async () => {
+    const root = await mkdtemp(resolve(tmpdir(), 'relay-deferred-accepted-persist-failure-'));
+    const queuePath = resolve(root, 'queue');
+    const fixture = fakeHost();
+    const session = new RelayHarnessSession({
+      identity,
+      host: fixture.host as never,
+      deferredQueuePath: queuePath,
+    });
+    await session.receiveMessage(message('active'), context('active'));
+    await session.receiveMessage(message('accepted'), {
+      ...context('accepted', 'on-idle'),
+      idempotencyKey: 'accepted',
+    });
+
+    const events: string[] = [];
+    let resolveAccepted!: () => void;
+    const accepted = new Promise<void>((resolveEvent) => {
+      resolveAccepted = resolveEvent;
+    });
+    session.onEvent?.(async (event) => {
+      events.push(event.type);
+      if (event.type === 'message.received' && event.message.id === 'accepted') {
+        const receipts = resolve(queuePath, 'receipts');
+        await rm(receipts, { recursive: true, force: true });
+        await writeFile(receipts, 'blocked');
+      }
+      if (event.type === 'delivery.accepted' && event.deliveryId === 'accepted') resolveAccepted();
+    });
+
+    fixture.settle();
+    await accepted;
+    expect(events).toContain('delivery.accepted');
+    expect(events).not.toContain('delivery.failed');
+    await expect(
+      session.receiveMessage(message('accepted'), {
+        ...context('accepted', 'on-idle'),
+        idempotencyKey: 'accepted',
+      })
+    ).resolves.toMatchObject({ status: 'accepted' });
+    expect(fixture.host.startTurn).toHaveBeenCalledTimes(2);
+    await session.release?.('retired');
+  });
+
+  it('keeps a durable queued delivery live when the in-doubt tombstone cannot persist', async () => {
+    const root = await mkdtemp(resolve(tmpdir(), 'relay-deferred-reservation-failure-'));
+    const queuePath = resolve(root, 'queue');
+    const fixture = fakeHost();
+    const session = new RelayHarnessSession({
+      identity,
+      host: fixture.host as never,
+      deferredQueuePath: queuePath,
+    });
+    await session.receiveMessage(message('active'), context('active'));
+    await session.receiveMessage(message('retry-after-recovery'), {
+      ...context('retry-after-recovery', 'on-idle'),
+      idempotencyKey: 'retry-after-recovery',
+    });
+    const receipts = resolve(queuePath, 'receipts');
+    await writeFile(receipts, 'blocked');
+    const events: string[] = [];
+    let resolveAccepted!: () => void;
+    const accepted = new Promise<void>((resolveEvent) => {
+      resolveAccepted = resolveEvent;
+    });
+    session.onEvent?.((event) => {
+      events.push(event.type);
+      if (event.type === 'delivery.accepted' && event.deliveryId === 'retry-after-recovery') {
+        resolveAccepted();
+      }
+    });
+
+    fixture.settle();
+    await new Promise((resolveWait) => setTimeout(resolveWait, 0));
+    expect(events).not.toContain('delivery.failed');
+    expect(fixture.host.startTurn).toHaveBeenCalledTimes(1);
+    const queuedFiles = (await readdir(resolve(queuePath, 'queue'))).filter((file) => file.endsWith('.json'));
+    expect(queuedFiles).toHaveLength(1);
+    expect(
+      JSON.parse(await readFile(resolve(queuePath, 'queue', queuedFiles[0]!), 'utf8')).entry
+    ).toMatchObject({ key: 'retry-after-recovery', state: 'queued' });
+    await expect(
+      session.receiveMessage(message('retry-after-recovery'), {
+        ...context('retry-after-recovery', 'on-idle'),
+        idempotencyKey: 'retry-after-recovery',
+      })
+    ).resolves.toMatchObject({ status: 'deferred' });
+
+    await rm(receipts, { force: true });
+    await accepted;
+    expect(fixture.host.startTurn).toHaveBeenCalledWith(
+      expect.stringContaining('"messageId":"retry-after-recovery"'),
+      'retry-after-recovery'
+    );
+    expect(events).toContain('delivery.accepted');
+    expect(events).not.toContain('delivery.failed');
+  });
+
   it('publishes capabilities and releases once', async () => {
     const fixture = fakeHost();
     const session = new RelayHarnessSession({ identity, host: fixture.host as never });
@@ -136,5 +412,31 @@ describe('RelayHarnessSession', () => {
     expect(events).toContain('observability.capabilities');
     await Promise.all([session.release?.('done'), session.release?.('again')]);
     expect(fixture.host.destroy).toHaveBeenCalledTimes(1);
+  });
+
+  it('destroys the host even when durable queue cleanup fails', async () => {
+    const root = await mkdtemp(resolve(tmpdir(), 'relay-release-failure-'));
+    const queuePath = resolve(root, 'queue');
+    const fixture = fakeHost();
+    const session = new RelayHarnessSession({
+      identity,
+      host: fixture.host as never,
+      deferredQueuePath: queuePath,
+    });
+    const events: string[] = [];
+    session.onEvent?.((event) => events.push(event.type));
+    await session.receiveMessage(message('active'), context('active'));
+    await session.receiveMessage(message('queued'), context('queued', 'on-idle'));
+    await rm(queuePath, { recursive: true });
+    await writeFile(queuePath, 'blocked');
+
+    await expect(session.release?.('done')).rejects.toBeDefined();
+    expect(fixture.host.destroy).toHaveBeenCalledTimes(1);
+    expect(events).toContain('session.released');
+    await rm(queuePath);
+    await mkdir(resolve(queuePath, 'queue'), { recursive: true });
+    await expect(session.release?.('retry')).resolves.toBeUndefined();
+    expect(fixture.host.destroy).toHaveBeenCalledTimes(1);
+    expect(events.filter((event) => event === 'session.released')).toHaveLength(1);
   });
 });
