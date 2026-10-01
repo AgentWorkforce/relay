@@ -1191,8 +1191,8 @@ pub const MUSE_SHARED_AUTH_PATH_ENV: &str = "RELAY_MUSE_SHARED_AUTH_PATH";
 /// Gives each Muse worker its own `auth.json` inside its clean home (one
 /// provider login per worker name), e.g. on multi-tenant hosts. Fails closed:
 /// any non-empty value enables isolation except `0`, `false`, `no` or `off`
-/// (trimmed, case-insensitive); unset or empty keeps the shared login, and a
-/// non-UTF-8 value enables isolation.
+/// (trimmed, case-insensitive), so a whitespace-only value also isolates;
+/// unset or empty keeps the shared login, and a non-UTF-8 value isolates.
 pub const MUSE_ISOLATED_AUTH_ENV: &str = "RELAY_MUSE_ISOLATED_AUTH";
 
 /// Inputs for [`muse_shared_auth_path`], read from the broker's environment
@@ -1228,9 +1228,14 @@ pub fn muse_shared_auth_path(env: MuseAuthEnv<'_>) -> Option<PathBuf> {
             .filter(|p| p.is_absolute())
     }
     let isolated = env.isolated_auth.is_some_and(|raw| match raw.to_str() {
+        // Check emptiness before trimming: a whitespace-only value is a
+        // non-empty setting and must isolate, not fall back to sharing.
         Some(v) => {
-            let v = v.trim().to_ascii_lowercase();
-            !v.is_empty() && !matches!(v.as_str(), "0" | "false" | "no" | "off")
+            !v.is_empty()
+                && !matches!(
+                    v.trim().to_ascii_lowercase().as_str(),
+                    "0" | "false" | "no" | "off"
+                )
         }
         None => true,
     });
@@ -2462,7 +2467,9 @@ mod tests {
             ..Default::default()
         };
         // Fails closed: anything that is not an explicit "off" isolates.
-        for value in ["1", "true", "TRUE", "yes", "on", "enabled", " 1 "] {
+        for value in [
+            "1", "true", "TRUE", "yes", "on", "enabled", " 1 ", " ", "\t",
+        ] {
             let env = super::MuseAuthEnv {
                 isolated_auth: Some(OsStr::new(value)),
                 ..base
