@@ -183,6 +183,19 @@ function spawnProofError(
   } proof`;
 }
 
+/** Missing readiness fields do not prove that the node failed to launch. */
+function spawnProofFailureCode(output: Record<string, unknown> | null | undefined):
+  | 'spawn_failed'
+  | 'spawn_unconfirmed' {
+  return output?.spawned === false ? 'spawn_failed' : 'spawn_unconfirmed';
+}
+
+function spawnProofFailureState(code: 'spawn_failed' | 'spawn_unconfirmed'):
+  | 'failed'
+  | 'unconfirmed_may_be_running' {
+  return code === 'spawn_failed' ? 'failed' : 'unconfirmed_may_be_running';
+}
+
 /** Distinguishes "the read outlived its budget" from any value a read returns. */
 const READ_TIMED_OUT = Symbol('relay.confirm.readTimedOut');
 
@@ -827,15 +840,16 @@ export class RelaycastMessagingClient implements RelayMessagingClient {
               CONFIRM_SUCCESS_STATUSES.has(ackStatus) &&
               !hasSpawnProof({ output: ackOutput }, requireReadiness)
             ) {
+              const code = spawnProofFailureCode(ackOutput);
               throw new RelayPlacementError(
-                'spawn_failed',
+                code,
                 spawnProofError(placedNodeLabel, ackStatus, actionName, ackOutput, requireReadiness),
                 {
                   capability,
                   node: placedNodeLabel,
                   repo,
                   attempts,
-                  state: 'failed',
+                  state: spawnProofFailureState(code),
                   dispatchState: resolveDispatchState(ack),
                   invocationId: ack.invocationId,
                   receipt: ack as unknown as Record<string, unknown>,
@@ -1055,12 +1069,13 @@ export class RelaycastMessagingClient implements RelayMessagingClient {
                 errorContext.capability.startsWith('spawn:') &&
                 !hasSpawnProof(invocation, requireReadiness)
               ) {
+                const code = spawnProofFailureCode(invocation.output);
                 throw new RelayPlacementError(
-                  'spawn_failed',
+                  code,
                   spawnProofError(context.node, status, actionName, invocation.output, requireReadiness),
                   {
                     ...errorContext,
-                    state: 'failed',
+                    state: spawnProofFailureState(code),
                     invocationId,
                     dispatchState,
                     receipt: invocation as unknown as Record<string, unknown>,

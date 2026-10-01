@@ -176,7 +176,7 @@ describe('fleet spawn confirmation is observable from the requester (#1430)', ()
     expect(ack.confirmation?.status).toBe('completed');
   });
 
-  it('fails a completed invocation that omits readiness proof', async () => {
+  it('keeps a completed invocation that omits readiness proof unconfirmed', async () => {
     const { client } = createClient(async (name, invocationId) => ({
       invocation_id: invocationId,
       action_name: name,
@@ -189,8 +189,8 @@ describe('fleet spawn confirmation is observable from the requester (#1430)', ()
       .catch((caught: unknown) => caught);
 
     expect(error).toBeInstanceOf(RelayPlacementError);
-    expect((error as RelayPlacementError).code).toBe('spawn_failed');
-    expect((error as RelayPlacementError).state).toBe('failed');
+    expect((error as RelayPlacementError).code).toBe('spawn_unconfirmed');
+    expect((error as RelayPlacementError).state).toBe('unconfirmed_may_be_running');
     expect((error as RelayPlacementError).invocationId).toBe('inv-1430');
     expect((error as RelayPlacementError).dispatchState).toBe('dispatched');
     expect((error as RelayPlacementError).message).toContain('verify_ready');
@@ -385,7 +385,7 @@ describe('targeted spawn readiness contract', () => {
     expect(ack.placement).toMatchObject({ state: 'accepted', confirmed: true });
   });
 
-  it('still rejects a confirmed readiness request that reports ready:false', async () => {
+  it('keeps a confirmed readiness request with ready:false unconfirmed', async () => {
     const { client } = createClient(async (_name, invocationId) => ({
       invocation_id: invocationId,
       status: 'completed',
@@ -394,7 +394,8 @@ describe('targeted spawn readiness contract', () => {
     await expect(
       client.placement.spawn(spawnInput({ confirm: true, confirmPollIntervalMs: 10 }))
     ).rejects.toMatchObject({
-      code: 'spawn_failed',
+      code: 'spawn_unconfirmed',
+      state: 'unconfirmed_may_be_running',
       message: expect.stringContaining('without explicit spawned:true and ready:true proof'),
     });
   });
@@ -408,7 +409,7 @@ describe('targeted spawn readiness contract', () => {
     } as never);
     const error = await client.placement.spawn(spawnInput({ confirm: false })).catch((e: unknown) => e);
     expect(error).toBeInstanceOf(RelayPlacementError);
-    expect((error as RelayPlacementError).code).toBe('spawn_failed');
+    expect((error as RelayPlacementError).code).toBe('spawn_unconfirmed');
     expect((error as Error).message).toContain('without an explicit ready boolean');
     // This path never sent verify_ready, so naming it would send the next
     // investigation to the wrong layer — which is how #1430 was first misread.
@@ -424,7 +425,8 @@ describe('targeted spawn readiness contract', () => {
     await expect(
       client.placement.spawn(spawnInput({ confirm: true, confirmPollIntervalMs: 10 }))
     ).rejects.toMatchObject({
-      code: 'spawn_failed',
+      code: 'spawn_unconfirmed',
+      state: 'unconfirmed_may_be_running',
       message: expect.stringContaining('did not honour verify_ready'),
     });
   });
@@ -457,7 +459,8 @@ describe('targeted spawn readiness contract', () => {
           spawnInput({ capability: 'spawn:persona', confirm: true, confirmPollIntervalMs: 10 })
         )
       ).rejects.toMatchObject({
-        code: 'spawn_failed',
+        code: 'spawn_unconfirmed',
+        state: 'unconfirmed_may_be_running',
         message: expect.stringContaining('without explicit spawned:true and ready:true proof'),
       });
     } finally {

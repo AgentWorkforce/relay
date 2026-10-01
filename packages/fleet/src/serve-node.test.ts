@@ -151,7 +151,7 @@ describe('serveNode', () => {
   });
 
   it.each([true, false])(
-    'rejects unverified delegated output only when verifyReady=%s',
+    'preserves ambiguous delegated spawn output when verifyReady=%s',
     async (verifyReady) => {
       const fetchMock = vi.fn(async () =>
         Response.json({ data: { status: 'completed', output: { spawned: true, ready: false } } })
@@ -161,7 +161,8 @@ describe('serveNode', () => {
       sock.emit({ v: 1, id: delegation.id, type: 'reply', ok: true, data: { invocation_id: 'child' } });
       await vi.waitFor(() => expect(sock.sentOfType('action.result')).toHaveLength(1));
       const result = sock.sentOfType('action.result')[0]!;
-      if (verifyReady) expect(result.error).toBeTruthy();
+      expect(result.error).toBeUndefined();
+      if (verifyReady) expect(result.output).toMatchObject({ spawned: true, ready: false });
       else {
         expect(fetchMock).not.toHaveBeenCalled();
         expect(result.output).toMatchObject({ ready: false });
@@ -505,9 +506,9 @@ describe('serveNode', () => {
 
   it.each([
     {
-      data: { status: 'completed', output: { spawned: true } },
+      data: { status: 'completed', output: { spawned: false } },
       http: 200,
-      error: 'spawn_readiness_unconfirmed',
+      error: 'explicit spawned:false',
     },
     { data: { status: 'cancelled' }, http: 200, error: 'cancelled' },
     { data: { status: 'unknown' }, http: 200, error: 'spawn_confirmation_invalid' },
@@ -538,6 +539,32 @@ describe('serveNode', () => {
     sock.emit({ v: 1, id: delegation.id, type: 'reply', ok: true, data: { invocation_id: 'child' } });
     await vi.waitFor(() => expect(sock.sentOfType('action.result')).toHaveLength(1));
     expect(sock.sentOfType('action.result')[0]?.error).toContain(error);
+    await running.stop();
+  });
+
+  it('returns a completed spawn with missing readiness proof for caller reconciliation', async () => {
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async () => Response.json({ data: { status: 'completed', output: { spawned: true, name: 'worker' } } }))
+    );
+    const definition = defineNode({
+      name: 'p',
+      capabilities: { 'spawn:pool': spawn({ runtime: 'pty', command: 'node' }) },
+    });
+    const running = startServeNode({ definition, connection, reconnect: false });
+    const sock = socket();
+    sock.open();
+    sock.emit(acceptAll(sock.lastRegister()));
+    await flush();
+    sock.emit({ v: 1, type: 'action.invoke', invocation_id: 'outer', action: 'spawn:pool', input: { name: 'worker' } });
+    await flush();
+    const [delegation] = sock.sentOfType('node.spawn');
+    sock.emit({ v: 1, id: delegation.id, type: 'reply', ok: true, data: { invocation_id: 'child' } });
+    await vi.waitFor(() => expect(sock.sentOfType('action.result')).toHaveLength(1));
+    expect(sock.sentOfType('action.result')[0]).toMatchObject({
+      output: { spawned: true, name: 'worker' },
+    });
+    expect(sock.sentOfType('action.result')[0]?.error).toBeUndefined();
     await running.stop();
   });
 
