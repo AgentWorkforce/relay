@@ -434,6 +434,60 @@ test.skipIf(process.platform === 'win32')(
   }
 );
 
+test.skipIf(process.platform === 'win32')(
+  'a deny on the symlink path is preserved when its target is readable',
+  async () => {
+    const workspace = await createWorkspace({ 'docs/public.md': 'public' });
+    try {
+      await mkdir(path.join(workspace.dir, 'private'));
+      await symlink('../docs/public.md', path.join(workspace.dir, 'private', 'shortcut.md'));
+      const compiled = compileAgentScopes({
+        agentName: 'builder',
+        workspace: 'relay-test',
+        projectDir: workspace.dir,
+        permissions: {
+          access: 'restricted',
+          inherit: false,
+          files: { read: ['docs/**'], deny: ['private/**'] },
+        },
+      });
+      assert.deepEqual(compiled.readonlyPaths, ['docs/public.md']);
+      assert.deepEqual(compiled.readwritePaths, []);
+      assert.deepEqual(compiled.deniedPaths, ['private/shortcut.md']);
+      assert.deepEqual(compiled.scopes, ['relayfile:fs:read:/docs/public.md']);
+    } finally {
+      await workspace.cleanup();
+    }
+  }
+);
+
+test.skipIf(process.platform === 'win32')(
+  'a readonly dotfile rule on the symlink path is preserved when its target is writable',
+  async () => {
+    const workspace = await createWorkspace({
+      '.agentreadonly': 'links/**\n',
+      'source/code.ts': 'source',
+    });
+    try {
+      await mkdir(path.join(workspace.dir, 'links'));
+      await symlink('../source/code.ts', path.join(workspace.dir, 'links', 'code.ts'));
+      const compiled = compileAgentScopes({
+        agentName: 'builder',
+        workspace: 'relay-test',
+        projectDir: workspace.dir,
+        permissions: { access: 'readwrite' },
+      });
+      assert.equal(compiled.readwritePaths.includes('source/code.ts'), true);
+      assert.equal(compiled.readonlyPaths.includes('links/code.ts'), true);
+      assert.equal(compiled.readwritePaths.includes('links/code.ts'), false);
+      assert.equal(compiled.scopes.includes('relayfile:fs:read:/links/code.ts'), true);
+      assert.equal(compiled.scopes.includes('relayfile:fs:write:/links/code.ts'), false);
+    } finally {
+      await workspace.cleanup();
+    }
+  }
+);
+
 test.skipIf(process.platform === 'win32' || process.getuid?.() === 0)(
   'an unreadable symlink target is denied without dropping normal grants',
   async () => {
