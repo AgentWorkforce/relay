@@ -9,7 +9,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
-- MCP `send_dm` now forwards its explicit idempotency key to Relaycast, so a retry remains a single direct message even when it outlives the process-local replay cache.
+- MCP `send_dm` now forwards its explicit idempotency key to Relaycast, so a retry remains a single direct message even when it outlives the process-local replay cache. The key is trimmed to match Relaycast's own normalization, and a whitespace-only key is rejected instead of silently splitting the retry into a second message.
 
 - Broker: Muse workers now reuse the host Muse login (`RELAY_MUSE_SHARED_AUTH_PATH`, the host's `MUSE_AUTH_PATH`, `$XDG_CONFIG_HOME/muse/auth.json`, or `$HOME/.config/muse/auth.json`) instead of prompting for provider auth under every new agent name; Relay MCP settings stay per-worker. Multi-tenant hosts should set `RELAY_MUSE_ISOLATED_AUTH=1` before upgrading to keep a separate login per worker.
 

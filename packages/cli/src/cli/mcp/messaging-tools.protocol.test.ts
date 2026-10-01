@@ -67,6 +67,43 @@ describe('messaging delivery receipts over MCP', () => {
     expect(unkeyedFirst?.id).not.toBe(unkeyedSecond?.id);
   });
 
+  it('rejects a whitespace-only idempotency key before sending and forwards it trimmed', async () => {
+    const dm = vi.fn(async () => ({ id: 'msg_1', conversationId: 'dm_chief' }));
+    const server = new McpServer({ name: 'idempotency-key-test', version: '1.0.0' });
+    registerMessagingTools(
+      server,
+      () => ({ dm }) as never,
+      async () => [{ name: 'chief' }],
+      new McpRequestReplay()
+    );
+    const client = new Client({ name: 'idempotency-key-client', version: '1.0.0' });
+    const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
+    try {
+      await server.connect(serverTransport);
+      await client.connect(clientTransport);
+      const rejected = await client.callTool({
+        name: 'send_dm',
+        arguments: { to: 'chief', text: 'same text', idempotency_key: '   ' },
+      });
+      expect(rejected.isError).toBe(true);
+      expect(JSON.stringify(rejected.content)).toContain('idempotency_key');
+      expect(dm).not.toHaveBeenCalled();
+      const result = await client.callTool({
+        name: 'send_dm',
+        arguments: { to: 'chief', text: 'same text', idempotency_key: '  logical-send  ' },
+      });
+      expect(result.isError).not.toBe(true);
+      expect(dm).toHaveBeenCalledWith(
+        'chief',
+        'same text',
+        expect.objectContaining({ idempotencyKey: 'logical-send' })
+      );
+    } finally {
+      await client.close();
+      await server.close();
+    }
+  });
+
   it('exposes enqueue state on send and an explicit signal for an empty reader list', async () => {
     const dm = vi.fn(async () => ({ id: 'msg_1', text: 'hello' }));
     const readers = vi.fn(async () => []);
