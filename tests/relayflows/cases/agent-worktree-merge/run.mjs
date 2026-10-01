@@ -19,7 +19,7 @@
  */
 import { execFileSync, spawn, spawnSync } from 'node:child_process';
 import { existsSync } from 'node:fs';
-import { mkdtemp, mkdir, readFile, rm, writeFile } from 'node:fs/promises';
+import { mkdtemp, mkdir, readFile, realpath, rm, writeFile } from 'node:fs/promises';
 import http from 'node:http';
 import os from 'node:os';
 import path from 'node:path';
@@ -56,7 +56,8 @@ if (!isWithin(harnessDir, runnerPath)) {
 }
 
 const cliEntry = path.join(targetDir, 'packages/cli/dist/cli/index.js');
-const repoParent = await mkdtemp(path.join(os.tmpdir(), 'relayflow-agent-worktree-'));
+// Resolve symlinks (macOS /var -> /private/var) so paths match what git reports.
+const repoParent = await realpath(await mkdtemp(path.join(os.tmpdir(), 'relayflow-agent-worktree-')));
 const repo = path.join(repoParent, 'project');
 /** Every /api/spawn body the stand-in broker received, in order. */
 const spawnRequests = [];
