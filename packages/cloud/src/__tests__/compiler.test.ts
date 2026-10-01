@@ -522,6 +522,85 @@ test.skipIf(process.platform === 'win32')(
   }
 );
 
+test.skipIf(process.platform === 'win32')(
+  'directory symlinks preserve directory-only denies on both paths',
+  async () => {
+    const workspace = await createWorkspace({ 'private/key.txt': 'secret', 'public/a.txt': 'public' });
+    try {
+      await symlink('private', path.join(workspace.dir, 'target-link'), 'dir');
+      await symlink('public', path.join(workspace.dir, 'blocked-link'), 'dir');
+      for (const rules of [{ files: { deny: ['private/', 'blocked-link/'] } }, {}]) {
+        await writeFile(path.join(workspace.dir, '.agentignore'), 'private/\nblocked-link/\n');
+        const compiled = compileAgentScopes({
+          agentName: 'builder',
+          workspace: 'relay-test',
+          projectDir: workspace.dir,
+          permissions: { access: 'readwrite', ...rules },
+        });
+        assert.equal(compiled.deniedPaths.includes('target-link'), true);
+        assert.equal(compiled.deniedPaths.includes('blocked-link'), true);
+        assert.equal(compiled.readwritePaths.includes('public/a.txt'), true);
+      }
+    } finally {
+      await workspace.cleanup();
+    }
+  }
+);
+
+test.skipIf(process.platform === 'win32')(
+  'target YAML grants override target dotfile restrictions independently of link grants',
+  async () => {
+    const workspace = await createWorkspace({
+      '.agentignore': 'blocked/**\n',
+      '.agentreadonly': 'readonly/**\n',
+      'blocked/a.txt': 'a',
+      'readonly/b.txt': 'b',
+    });
+    try {
+      await symlink('blocked/a.txt', path.join(workspace.dir, 'denied-link'));
+      await symlink('readonly/b.txt', path.join(workspace.dir, 'readonly-link'));
+      const compile = (write: string[]) =>
+        compileAgentScopes({
+          agentName: 'builder',
+          workspace: 'relay-test',
+          projectDir: workspace.dir,
+          permissions: { access: 'readwrite', files: { write } },
+        });
+      const linksOnly = compile(['denied-link', 'readonly-link']);
+      assert.equal(linksOnly.deniedPaths.includes('denied-link'), true);
+      assert.equal(linksOnly.readonlyPaths.includes('readonly-link'), true);
+      const targetsOnly = compile(['blocked/**', 'readonly/**']);
+      assert.equal(targetsOnly.readwritePaths.includes('denied-link'), true);
+      assert.equal(targetsOnly.readwritePaths.includes('readonly-link'), true);
+    } finally {
+      await workspace.cleanup();
+    }
+  }
+);
+
+test.skipIf(process.platform === 'win32')(
+  'an exact write grant cannot grant a dangling link or ENOTDIR target',
+  async () => {
+    const workspace = await createWorkspace({ 'file.txt': 'file' });
+    try {
+      await symlink('missing', path.join(workspace.dir, 'dangling'));
+      await symlink('file.txt/child', path.join(workspace.dir, 'invalid'));
+      const compiled = compileAgentScopes({
+        agentName: 'builder',
+        workspace: 'relay-test',
+        projectDir: workspace.dir,
+        permissions: { access: 'restricted', inherit: false, files: { write: ['dangling', 'invalid'] } },
+      });
+      assert.deepEqual(compiled.scopes, []);
+      assert.deepEqual(compiled.readwritePaths, []);
+      assert.equal(compiled.deniedPaths.includes('dangling'), true);
+      assert.equal(compiled.deniedPaths.includes('invalid'), true);
+    } finally {
+      await workspace.cleanup();
+    }
+  }
+);
+
 test.skipIf(process.platform === 'win32' || process.getuid?.() === 0)(
   'an unreadable symlink target is denied without dropping normal grants',
   async () => {

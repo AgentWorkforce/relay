@@ -47,7 +47,11 @@ try {
     agentName: 'proof-agent',
     workspace: 'proof',
     projectDir: project,
-    permissions: { access: 'restricted', inherit: false, files: { read: ['docs/**'], deny: ['private/**'] } },
+    permissions: {
+      access: 'restricted',
+      inherit: false,
+      files: { read: ['docs/**'], write: ['docs/**'], deny: ['private/**'] },
+    },
   };
   const probe = `import { compileAgentScopes } from ${JSON.stringify(path.join(targetDir, 'packages/cloud/src/compiler.ts'))};
 const result = compileAgentScopes(${JSON.stringify(input)});
@@ -68,10 +72,10 @@ console.log(JSON.stringify({ readonly: result.readonlyPaths, write: result.readw
   if (paths.length !== 5 || new Set(paths).size !== 5)
     throw new Error(`Partition invalid: ${JSON.stringify(observation)}`);
   const baseObserved =
-    observation.readonly.includes('docs/outside.md') &&
-    observation.readonly.includes('docs/inside.md') &&
-    observation.readonly.includes('docs/dangling.md') &&
-    observation.readonly.includes('docs/external-dir');
+    observation.write.includes('docs/outside.md') &&
+    observation.write.includes('docs/inside.md') &&
+    observation.write.includes('docs/dangling.md') &&
+    observation.write.includes('docs/external-dir');
   const headObserved =
     observation.readonly.length === 0 &&
     observation.write.length === 0 &&

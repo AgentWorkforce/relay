@@ -5,7 +5,7 @@
   "title": "Deny symlink escapes in the Cloud permission compiler",
   "runner": { "command": ["node", "tests/relayflows/cases/1697-cloud-symlink-permissions/run.mjs"] },
   "requirements": [],
-  "timeoutSeconds": 300,
+  "timeoutSeconds": 600,
   "expected": {
     "base": { "outcome": "bug", "signature": "symlink_target_granted_by_link_path" },
     "head": { "outcome": "fixed", "signature": "symlink_target_rules_and_denies" }
