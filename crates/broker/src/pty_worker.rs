@@ -861,12 +861,14 @@ pub(crate) async fn run_pty_worker(cmd: PtyCommand) -> Result<()> {
             // lives in the host's own Muse config scope.
             let shared_auth_path = std::env::var_os(crate::snippets::MUSE_SHARED_AUTH_PATH_ENV);
             let isolated_auth = std::env::var_os(crate::snippets::MUSE_ISOLATED_AUTH_ENV);
+            let host_muse_auth_path = std::env::var_os("MUSE_AUTH_PATH");
             let xdg_config_home = std::env::var_os("XDG_CONFIG_HOME");
             let user_home = std::env::var_os("HOME");
             let shared_auth =
                 crate::snippets::muse_shared_auth_path(crate::snippets::MuseAuthEnv {
                     shared_auth_path: shared_auth_path.as_deref(),
                     isolated_auth: isolated_auth.as_deref(),
+                    muse_auth_path: host_muse_auth_path.as_deref(),
                     xdg_config_home: xdg_config_home.as_deref(),
                     home: user_home.as_deref(),
                 });

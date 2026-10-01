@@ -1198,6 +1198,8 @@ pub const MUSE_ISOLATED_AUTH_ENV: &str = "RELAY_MUSE_ISOLATED_AUTH";
 pub struct MuseAuthEnv<'a> {
     pub shared_auth_path: Option<&'a std::ffi::OsStr>,
     pub isolated_auth: Option<&'a std::ffi::OsStr>,
+    /// The host's own `MUSE_AUTH_PATH`, when the operator relocated the login.
+    pub muse_auth_path: Option<&'a std::ffi::OsStr>,
     pub xdg_config_home: Option<&'a std::ffi::OsStr>,
     pub home: Option<&'a std::ffi::OsStr>,
 }
@@ -1208,7 +1210,8 @@ pub struct MuseAuthEnv<'a> {
 /// `settings.json` holding per-worker Relay tokens) stays per-worker.
 ///
 /// Resolution: `None` when isolation is requested; otherwise an absolute
-/// `RELAY_MUSE_SHARED_AUTH_PATH`; otherwise Muse's own default
+/// `RELAY_MUSE_SHARED_AUTH_PATH`; otherwise the host's absolute
+/// `MUSE_AUTH_PATH`; otherwise Muse's own default
 /// (`$XDG_CONFIG_HOME/muse/auth.json`, falling back to
 /// `$HOME/.config/muse/auth.json`). Empty or relative values are ignored, and
 /// `None` falls back to the per-worker credential path.
@@ -1226,6 +1229,7 @@ pub fn muse_shared_auth_path(env: MuseAuthEnv<'_>) -> Option<PathBuf> {
         return None;
     }
     absolute(env.shared_auth_path)
+        .or_else(|| absolute(env.muse_auth_path))
         .or_else(|| absolute(env.xdg_config_home).map(|d| d.join("muse").join("auth.json")))
         .or_else(|| absolute(env.home).map(|h| h.join(".config").join("muse").join("auth.json")))
 }
@@ -2385,6 +2389,15 @@ mod tests {
             Some(PathBuf::from("/xdg/muse/auth.json"))
         );
         let env = super::MuseAuthEnv {
+            muse_auth_path: Some(OsStr::new("/host/muse-auth.json")),
+            ..env
+        };
+        assert_eq!(
+            super::muse_shared_auth_path(env),
+            Some(PathBuf::from("/host/muse-auth.json")),
+            "a host-relocated Muse login wins over the XDG default"
+        );
+        let env = super::MuseAuthEnv {
             shared_auth_path: Some(OsStr::new("/abs/auth.json")),
             ..env
         };
@@ -2420,6 +2433,7 @@ mod tests {
         assert_eq!(super::muse_shared_auth_path(Default::default()), None);
         let env = super::MuseAuthEnv {
             shared_auth_path: Some(OsStr::new("")),
+            muse_auth_path: Some(OsStr::new("muse/auth.json")),
             xdg_config_home: Some(OsStr::new("relative")),
             home: Some(OsStr::new("also/relative")),
             ..Default::default()
