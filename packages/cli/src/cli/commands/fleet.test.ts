@@ -104,7 +104,7 @@ describe('spawn lifecycle receipts', () => {
     ).toMatchObject({ state: 'ready', dispatchState: 'dispatched' });
     expect(
       spawnPlacementReceipt({ invocation_id: 'inv_completed_without_proof', status: 'completed' })
-    ).toMatchObject({ state: 'failed', dispatchState: 'dispatched' });
+    ).toMatchObject({ state: 'unconfirmed_may_be_running', dispatchState: 'dispatched' });
   });
 });
 
@@ -2414,7 +2414,7 @@ describe('fleet command support', () => {
           },
         })) as never,
         createWorkspace: vi.fn() as never,
-        log: vi.fn(),
+        log: (...args: unknown[]) => logs.push(...args),
         error: (...args: unknown[]) => errors.push(args.join(' ')),
         exit: (() => {
           throw new Error('__exit__');
@@ -3828,13 +3828,14 @@ describe('fleet command support', () => {
     expect(errors.join('\n')).toContain('"invocationId":"inv_auto_failed"');
   });
 
-  it('fleet spawn rejects a terminal completed result without launch/readiness proof', async () => {
+  it('fleet spawn keeps a terminal completed result without launch/readiness proof unconfirmed', async () => {
     const spawn = vi.fn(async () => ({
       invocation_id: 'inv_auto_unproven',
       status: 'completed',
       output: { spawned: true, ready: false },
     }));
     const errors: string[] = [];
+    const logs: unknown[] = [];
     const program = new Command();
     program.exitOverride();
     registerFleetCommands(program, {
@@ -3843,7 +3844,7 @@ describe('fleet command support', () => {
         createAgentRelay: vi.fn() as never,
         createWorkspaceRelay: vi.fn() as never,
         createWorkspace: vi.fn() as never,
-        log: vi.fn(),
+        log: (...args: unknown[]) => logs.push(...args),
         error: (message: unknown) => errors.push(String(message)),
         exit: vi.fn(() => {
           throw new Error('__exit__');
@@ -3867,11 +3868,11 @@ describe('fleet command support', () => {
         ],
         { from: 'user' }
       )
-    ).rejects.toThrow('__exit__');
+    ).resolves.toBe(program);
 
-    expect(errors.join('\n')).toContain('"code":"spawn_failed"');
-    expect(errors.join('\n')).toContain('"state":"failed"');
-    expect(errors.join('\n')).toContain('"invocationId":"inv_auto_unproven"');
+    expect(errors).toEqual([]);
+    expect(logs.join('\n')).toContain('"state": "unconfirmed_may_be_running"');
+    expect(logs.join('\n')).toContain('"invocationId": "inv_auto_unproven"');
   });
 
   it('fleet spawn mints and removes a temporary launcher for tokenless targeted placement', async () => {
