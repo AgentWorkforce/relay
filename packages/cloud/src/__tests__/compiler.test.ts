@@ -488,6 +488,40 @@ test.skipIf(process.platform === 'win32')(
   }
 );
 
+test.skipIf(process.platform === 'win32')(
+  'YAML overrides of dotfile restrictions apply independently to link and target paths',
+  async () => {
+    const workspace = await createWorkspace({
+      '.agentignore': 'blocked/**\n',
+      '.agentreadonly': 'links/**\n',
+      'source/code.ts': 'source',
+    });
+    try {
+      await mkdir(path.join(workspace.dir, 'blocked'));
+      await mkdir(path.join(workspace.dir, 'links'));
+      await symlink('../source/code.ts', path.join(workspace.dir, 'blocked', 'code.ts'));
+      await symlink('../source/code.ts', path.join(workspace.dir, 'links', 'code.ts'));
+      const compile = (write: string[]) =>
+        compileAgentScopes({
+          agentName: 'builder',
+          workspace: 'relay-test',
+          projectDir: workspace.dir,
+          permissions: { access: 'readwrite', files: { write } },
+        });
+      const targetGrant = compile(['source/**']);
+      assert.equal(targetGrant.deniedPaths.includes('blocked/code.ts'), true);
+      assert.equal(targetGrant.readonlyPaths.includes('links/code.ts'), true);
+      const linkGrant = compile(['links/**']);
+      assert.equal(linkGrant.readwritePaths.includes('links/code.ts'), true);
+      const bothGrants = compile(['source/**', 'blocked/**', 'links/**']);
+      assert.equal(bothGrants.readwritePaths.includes('blocked/code.ts'), true);
+      assert.equal(bothGrants.readwritePaths.includes('links/code.ts'), true);
+    } finally {
+      await workspace.cleanup();
+    }
+  }
+);
+
 test.skipIf(process.platform === 'win32' || process.getuid?.() === 0)(
   'an unreadable symlink target is denied without dropping normal grants',
   async () => {

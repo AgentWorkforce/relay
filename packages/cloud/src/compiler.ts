@@ -401,19 +401,27 @@ export function compileAgentPermissions(input: CompileInput): CompiledAgentPermi
         continue;
       }
     }
-    const dotDenied = inherited && matchesAny(rulePath, dotDenyMatcher);
-    const dotReadonly = inherited && !dotDenied && matchesAny(rulePath, dotReadonlyMatcher);
+    // Evaluate restrictions independently at the link and target. YAML
+    // overrides of dotfile restrictions apply only to the same path, so a
+    // grant on the target cannot erase a restriction on the link (or vice versa).
+    const restrictionPaths = [...new Set([relativePath, rulePath])];
+    const pathDenied = restrictionPaths.some((candidate) => {
+      if (matchesAny(candidate, fileDenyMatcher)) return true;
+      const yamlGrant = matchesAny(candidate, fileReadMatcher) || matchesAny(candidate, fileWriteMatcher);
+      return inherited && matchesAny(candidate, dotDenyMatcher) && !yamlGrant;
+    });
+    const pathReadonly = restrictionPaths.some(
+      (candidate) =>
+        inherited &&
+        !matchesAny(candidate, dotDenyMatcher) &&
+        matchesAny(candidate, dotReadonlyMatcher) &&
+        !matchesAny(candidate, fileWriteMatcher)
+    );
     const yamlRead = matchesAny(rulePath, fileReadMatcher);
     const yamlWrite = matchesAny(rulePath, fileWriteMatcher);
-    const yamlDeny = matchesAny(rulePath, fileDenyMatcher);
     const explicitYamlGrant = yamlRead || yamlWrite;
 
-    if (yamlDeny) {
-      deniedPaths.push(relativePath);
-      continue;
-    }
-
-    if (dotDenied && !explicitYamlGrant) {
+    if (pathDenied) {
       deniedPaths.push(relativePath);
       continue;
     }
@@ -424,7 +432,7 @@ export function compileAgentPermissions(input: CompileInput): CompiledAgentPermi
     const canRead = explicitYamlGrant || presetRead || presetWrite;
     let canWrite = yamlWrite || presetWrite;
 
-    if (dotReadonly && !yamlWrite) {
+    if (pathReadonly) {
       canWrite = false;
     }
 
