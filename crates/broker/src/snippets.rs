@@ -1202,6 +1202,8 @@ pub struct MuseAuthEnv<'a> {
     pub muse_auth_path: Option<&'a std::ffi::OsStr>,
     pub xdg_config_home: Option<&'a std::ffi::OsStr>,
     pub home: Option<&'a std::ffi::OsStr>,
+    /// Windows user home, used when `HOME` is unset (as elsewhere in the broker).
+    pub userprofile: Option<&'a std::ffi::OsStr>,
 }
 
 /// The `auth.json` Muse workers share so one host login serves every worker,
@@ -1213,7 +1215,8 @@ pub struct MuseAuthEnv<'a> {
 /// `RELAY_MUSE_SHARED_AUTH_PATH`; otherwise the host's absolute
 /// `MUSE_AUTH_PATH`; otherwise Muse's own default
 /// (`$XDG_CONFIG_HOME/muse/auth.json`, falling back to
-/// `$HOME/.config/muse/auth.json`). Empty or relative values are ignored, and
+/// `$HOME/.config/muse/auth.json`, with `%USERPROFILE%` standing in for an
+/// unset `HOME`). Empty or relative values are ignored, and
 /// `None` falls back to the per-worker credential path.
 pub fn muse_shared_auth_path(env: MuseAuthEnv<'_>) -> Option<PathBuf> {
     fn absolute(raw: Option<&std::ffi::OsStr>) -> Option<PathBuf> {
@@ -1231,7 +1234,11 @@ pub fn muse_shared_auth_path(env: MuseAuthEnv<'_>) -> Option<PathBuf> {
     absolute(env.shared_auth_path)
         .or_else(|| absolute(env.muse_auth_path))
         .or_else(|| absolute(env.xdg_config_home).map(|d| d.join("muse").join("auth.json")))
-        .or_else(|| absolute(env.home).map(|h| h.join(".config").join("muse").join("auth.json")))
+        .or_else(|| {
+            absolute(env.home)
+                .or_else(|| absolute(env.userprofile))
+                .map(|h| h.join(".config").join("muse").join("auth.json"))
+        })
 }
 
 /// `MUSE_AUTH_PATH` for a worker: the shared path when resolved, otherwise
@@ -2404,6 +2411,29 @@ mod tests {
         assert_eq!(
             super::muse_shared_auth_path(env),
             Some(PathBuf::from("/abs/auth.json"))
+        );
+    }
+
+    #[test]
+    fn muse_shared_auth_path_falls_back_to_userprofile_without_home() {
+        use std::ffi::OsStr;
+        use std::path::PathBuf;
+        let env = super::MuseAuthEnv {
+            userprofile: Some(OsStr::new("/profiles/op")),
+            ..Default::default()
+        };
+        assert_eq!(
+            super::muse_shared_auth_path(env),
+            Some(PathBuf::from("/profiles/op/.config/muse/auth.json"))
+        );
+        let env = super::MuseAuthEnv {
+            home: Some(OsStr::new("/Users/op")),
+            ..env
+        };
+        assert_eq!(
+            super::muse_shared_auth_path(env),
+            Some(PathBuf::from("/Users/op/.config/muse/auth.json")),
+            "HOME wins when both are set"
         );
     }
 

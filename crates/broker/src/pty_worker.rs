@@ -864,6 +864,7 @@ pub(crate) async fn run_pty_worker(cmd: PtyCommand) -> Result<()> {
             let host_muse_auth_path = std::env::var_os("MUSE_AUTH_PATH");
             let xdg_config_home = std::env::var_os("XDG_CONFIG_HOME");
             let user_home = std::env::var_os("HOME");
+            let user_profile = std::env::var_os("USERPROFILE");
             let shared_auth =
                 crate::snippets::muse_shared_auth_path(crate::snippets::MuseAuthEnv {
                     shared_auth_path: shared_auth_path.as_deref(),
@@ -871,6 +872,7 @@ pub(crate) async fn run_pty_worker(cmd: PtyCommand) -> Result<()> {
                     muse_auth_path: host_muse_auth_path.as_deref(),
                     xdg_config_home: xdg_config_home.as_deref(),
                     home: user_home.as_deref(),
+                    userprofile: user_profile.as_deref(),
                 });
             for (key, value) in crate::snippets::muse_clean_home_env_with_auth(
                 Path::new(home),
