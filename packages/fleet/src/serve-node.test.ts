@@ -513,7 +513,7 @@ describe('serveNode', () => {
     { data: { status: 'cancelled' }, http: 200, error: 'cancelled' },
     { data: { status: 'unknown' }, http: 200, error: 'spawn_confirmation_invalid' },
     { data: {}, http: 403, error: 'engine must support node-owned spawn status reads' },
-  ])('rejects an unproven delegated result: $error', async ({ data, http, error }) => {
+  ])('rejects a terminal failed or invalid delegated result: $error', async ({ data, http, error }) => {
     vi.stubGlobal(
       'fetch',
       vi.fn(async () => Response.json({ data }, { status: http }))

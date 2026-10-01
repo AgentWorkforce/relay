@@ -9,7 +9,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
-- Fleet spawn reports completed invocations without explicit readiness proof as unconfirmed, since the worker may already be running.
+- Fleet spawn treats completed invocations without readiness proof as unconfirmed while preserving explicit `spawned:false` failures.
 
 ## [13.0.0] - 2026-09-30
 
