@@ -33,6 +33,16 @@ const child = spawn(binary, ['mcp'], { env, stdio: ['pipe', 'pipe', 'pipe'] });
 let stdout = '';
 let stderr = '';
 let responseCount = 0;
+let startupError;
+let resolveStartupError;
+const startupErrorPromise = new Promise((resolve) => {
+  resolveStartupError = resolve;
+});
+
+child.on('error', (error) => {
+  startupError = error;
+  resolveStartupError();
+});
 
 child.stdout.setEncoding('utf8');
 child.stdout.on('data', (chunk) => {
@@ -61,23 +71,31 @@ const delay = (milliseconds) => new Promise((resolve) => setTimeout(resolve, mil
 try {
   // Both buggy startup paths perform the optional Cloud discovery first. Give
   // them time to attach to stdin before sending exactly one JSON-RPC request.
-  await delay(4_000);
-  child.stdin.write(
-    `${JSON.stringify({
-      jsonrpc: '2.0',
-      id: 'single-dispatch-probe',
-      method: 'initialize',
-      params: {
-        protocolVersion: '2025-06-18',
-        capabilities: {},
-        clientInfo: { name: 'standalone-single-dispatch-check', version: '1' },
-      },
-    })}\n`
-  );
-  await delay(2_000);
+  await Promise.race([delay(4_000), startupErrorPromise]);
+  if (!startupError) {
+    child.stdin.write(
+      `${JSON.stringify({
+        jsonrpc: '2.0',
+        id: 'single-dispatch-probe',
+        method: 'initialize',
+        params: {
+          protocolVersion: '2025-06-18',
+          capabilities: {},
+          clientInfo: { name: 'standalone-single-dispatch-check', version: '1' },
+        },
+      })}\n`
+    );
+    await Promise.race([delay(2_000), startupErrorPromise]);
+  }
 } finally {
   child.kill('SIGTERM');
   fs.rmSync(isolatedHome, { recursive: true, force: true });
+}
+
+if (startupError) {
+  const safeMessage = startupError.message.replace(/(?:at_live_|rk_live_)[A-Za-z0-9_-]+/g, '[REDACTED]');
+  process.stderr.write(`Failed to start ${binary}: ${safeMessage}\n`);
+  process.exit(1);
 }
 
 if (responseCount !== 1) {
