@@ -27,7 +27,8 @@ app keeps its existing app update path.
   ID before swapping it into `~/.local/lib/agent-relay/current` and starting
   it headless. A clean Mac does not install the GUI app. If an app is already
   installed but its probe needs updating, the existing signed DMG path updates
-  that app.
+  that app. An app in `/Applications` that this user cannot replace requires
+  an administrator update or moving the app to `~/Applications`.
 - For Claude Code, starting the probe sets `"crossSessionInbound": "accept"`
   in `~/.claude/settings.json` so replies can be injected into the live
   session. The command never signs the user in.

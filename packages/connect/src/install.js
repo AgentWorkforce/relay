@@ -16,7 +16,7 @@ import {
   writeFile,
 } from 'node:fs/promises';
 import os from 'node:os';
-import { basename, join, relative } from 'node:path';
+import { basename, dirname, join, relative } from 'node:path';
 import { requestJson } from './http.js';
 
 const RELEASE = 'https://github.com/AgentWorkforce/relay-desktop-releases/releases/latest/download';
@@ -391,9 +391,12 @@ async function installHeadless({
     const archive = join(tmpDir, asset);
     // The Mac archive needs only its signed helper. Extracting a named member
     // prevents any additional archive entries from writing into this HOME.
-    await run('tar', platform === 'darwin'
-      ? ['-xzf', archive, '-C', stagedDir, 'agent_relay/helpers/agent-relay-probe']
-      : ['-xzf', archive, '-C', stagedDir]);
+    await run(
+      'tar',
+      platform === 'darwin'
+        ? ['-xzf', archive, '-C', stagedDir, 'agent_relay/helpers/agent-relay-probe']
+        : ['-xzf', archive, '-C', stagedDir]
+    );
 
     const stagedProbe = await findProbe(stagedDir);
     if (!stagedProbe) throw new InstallError(`agent-relay-probe not found or not executable in ${asset}.`);
@@ -650,7 +653,17 @@ export async function installMac({
   appPath = null,
   wait = waitForLiveSocket,
   require = requireCommands,
+  accessPath = access,
 }) {
+  if (appPath) {
+    try {
+      await accessPath(dirname(appPath), constants.W_OK);
+    } catch {
+      throw new InstallError(
+        `Cannot replace Agent Relay at ${appPath}; ask an administrator to update it or move the app to ~/Applications.`
+      );
+    }
+  }
   await require(['codesign', 'curl', 'ditto', 'hdiutil', 'open', 'osascript', 'pgrep', 'shasum']);
   const asset = getMacAppAsset(arch);
   const tmpDir = await mkdtemp(join(os.tmpdir(), 'agent-relay-connect-'));
@@ -739,6 +752,17 @@ export async function findInstalledMacApp(home = os.homedir()) {
   return null;
 }
 
+export async function hasStandaloneMacProbe(home = os.homedir()) {
+  const link = join(home, '.local/bin/agent-relay-probe');
+  try {
+    const target = await readlink(link);
+    return target.startsWith(`${join(home, '.local/lib/agent-relay')}/`);
+  } catch (error) {
+    if (error?.code === 'ENOENT' || error?.code === 'EINVAL') return false;
+    throw new InstallError(`Could not inspect the standalone Agent Relay probe: ${error.message}`);
+  }
+}
+
 export async function ensureProbe({
   home = os.homedir(),
   platform = process.platform,
@@ -755,16 +779,13 @@ export async function ensureProbe({
   installMacProbeFn = installMacProbe,
   installMacFn = installMac,
   installedMacApp = findInstalledMacApp,
+  standaloneMacProbe = hasStandaloneMacProbe,
   acquire = acquireInstallLock,
 } = {}) {
   const existing = await findRecoveringProbe({ home, find, run, active, now, sleep });
   if (existing?.supported !== false) {
     if (existing) return { ...existing, installed: false };
   } else if (platform === 'linux') {
-    requireSupportedProbe(existing);
-  } else if (platform === 'darwin' && !(await installedMacApp(home))) {
-    // An old standalone core still owns the per-home socket. Never start a
-    // second core against that pointer; the user must stop or update it.
     requireSupportedProbe(existing);
   }
 
@@ -774,21 +795,24 @@ export async function ensureProbe({
 
   const installLock = await acquire({ home, platform, now, sleep });
   try {
+    const appPath = platform === 'darwin' ? await installedMacApp(home) : null;
     const afterLock = await find(home, 1_000);
     if (afterLock?.supported !== false) {
       if (afterLock) return { ...afterLock, installed: false };
     } else if (platform === 'linux') {
       requireSupportedProbe(afterLock);
-    } else if (platform === 'darwin' && !(await installedMacApp(home))) {
+    } else if (platform === 'darwin' && (!appPath || (await standaloneMacProbe(home)))) {
+      // An old standalone core may still own the socket even if the app is
+      // installed. Updating the app would leave that core running beside it.
       requireSupportedProbe(afterLock);
     }
 
-    const appPath = platform === 'darwin' ? await installedMacApp(home) : null;
-    const result = platform === 'linux'
-      ? await installLinuxFn({ home, arch, run, start, wait })
-      : appPath
-        ? await installMacFn({ home, arch, run, warn, wait, appPath })
-        : await installMacProbeFn({ home, arch, run, start, wait });
+    const result =
+      platform === 'linux'
+        ? await installLinuxFn({ home, arch, run, start, wait })
+        : appPath
+          ? await installMacFn({ home, arch, run, warn, wait, appPath })
+          : await installMacProbeFn({ home, arch, run, start, wait });
     return { ...result, installed: true };
   } finally {
     await installLock.release();

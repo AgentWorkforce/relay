@@ -26,6 +26,7 @@ import {
   findRecoveringProbe,
   getMacAppAsset,
   getPlatformAsset,
+  hasStandaloneMacProbe,
   installMac,
   installMacProbe,
   installLinux,
@@ -384,13 +385,70 @@ describe('probe installer', () => {
   });
 
   it('refuses to start a second standalone core beside an old live Mac probe', async () => {
-    await expect(ensureProbe({
-      home: '/tmp/old-standalone-mac',
-      platform: 'darwin',
-      find: async () => ({ version: '2026.10.3', supported: false }),
-      installedMacApp: async () => null,
-      installMacProbeFn: async () => { throw new Error('must not install'); },
-    })).rejects.toMatchObject({ code: 'probe_too_old' });
+    await expect(
+      ensureProbe({
+        home: '/tmp/old-standalone-mac',
+        platform: 'darwin',
+        find: async () => ({ version: '2026.10.3', supported: false }),
+        installedMacApp: async () => null,
+        installMacProbeFn: async () => {
+          throw new Error('must not install');
+        },
+      })
+    ).rejects.toMatchObject({ code: 'probe_too_old' });
+  });
+
+  it('refuses an old standalone core even when the GUI app is installed', async () => {
+    let appLookups = 0;
+    await expect(
+      ensureProbe({
+        home: '/tmp/old-standalone-with-app',
+        platform: 'darwin',
+        find: async () => ({ version: '2026.10.3', supported: false }),
+        installedMacApp: async () => {
+          appLookups += 1;
+          return '/Applications/Agent Relay.app';
+        },
+        standaloneMacProbe: async () => true,
+        acquire: async () => ({ release: async () => {} }),
+        installMacFn: async () => {
+          throw new Error('must not install');
+        },
+      })
+    ).rejects.toMatchObject({ code: 'probe_too_old' });
+    expect(appLookups).toBe(1);
+  });
+
+  it('recognizes the standalone symlink made by this installer', async () => {
+    const home = await mkdtemp(join(os.tmpdir(), 'connect-standalone-link-test-'));
+    cleanups.push(async () => rm(home, { recursive: true, force: true }));
+    expect(await hasStandaloneMacProbe(home)).toBe(false);
+    await mkdir(join(home, '.local/bin'), { recursive: true });
+    await symlink(
+      join(home, '.local/lib/agent-relay/current/agent_relay/helpers/agent-relay-probe'),
+      join(home, '.local/bin/agent-relay-probe')
+    );
+    expect(await hasStandaloneMacProbe(home)).toBe(true);
+  });
+
+  it('explains when the installed system app cannot be replaced', async () => {
+    await expect(
+      installMac({
+        home: '/tmp/non-admin-mac',
+        arch: 'arm64',
+        appPath: '/Applications/Agent Relay.app',
+        accessPath: async () => {
+          throw new Error('permission denied');
+        },
+        require: async () => {
+          throw new Error('must not download');
+        },
+        run: async () => {
+          throw new Error('must not run');
+        },
+        warn: () => {},
+      })
+    ).rejects.toThrow('ask an administrator to update it or move the app to ~/Applications');
   });
 
   it('gives status, send, and leave the same distinct old-probe error', async () => {
@@ -487,7 +545,10 @@ describe('probe installer', () => {
       return { code: 0, stdout: '', stderr: '' };
     };
     const result = await installMacProbe({
-      home, arch: 'arm64', run, require: async () => {},
+      home,
+      arch: 'arm64',
+      run,
+      require: async () => {},
       start: async () => ({ pid: undefined, unref() {} }),
       wait: async () => ({ socketPath: '/tmp/mac-probe.sock', status: { ok: true } }),
     });
@@ -496,16 +557,21 @@ describe('probe installer', () => {
     expect(commands[0][1].at(-1)).toContain('AgentRelay-macOS-arm64-probe.tar.gz');
     expect(commands[3][1].at(-1)).toBe('agent_relay/helpers/agent-relay-probe');
     expect(commands[4][1].slice(0, 3)).toEqual([
-      '--verify', '--strict',
+      '--verify',
+      '--strict',
       '-R=anchor apple generic and certificate 1[field.1.2.840.113635.100.6.2.6] exists and certificate leaf[field.1.2.840.113635.100.6.1.13] exists and certificate leaf[subject.OU] = "QUJ7SA6X8X"',
     ]);
-    await expect(readFile(join(home, '.local/lib/agent-relay/current/agent_relay/helpers/agent-relay-probe'), 'utf8')).resolves.toBe('#!/bin/sh\n');
+    await expect(
+      readFile(join(home, '.local/lib/agent-relay/current/agent_relay/helpers/agent-relay-probe'), 'utf8')
+    ).resolves.toBe('#!/bin/sh\n');
   });
 
   it('rejects an unsigned extracted Mac helper before swapping or starting it', async () => {
-    await expect(verifyMacProbeSignature('/tmp/agent-relay-probe', async () => {
-      throw new Error('signature mismatch');
-    })).rejects.toThrow('Agent Relay probe is not signed by Agent Workforce');
+    await expect(
+      verifyMacProbeSignature('/tmp/agent-relay-probe', async () => {
+        throw new Error('signature mismatch');
+      })
+    ).rejects.toThrow('Agent Relay probe is not signed by Agent Workforce');
   });
 
   it('restores the previous macOS app when the verified replacement cannot be installed', async () => {
@@ -593,6 +659,7 @@ describe('probe installer', () => {
         run,
         warn: () => {},
         appPath: app,
+        accessPath: async () => {},
         require: async () => {},
         wait: async () => {
           throw new Error('replacement never became ready');
