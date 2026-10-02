@@ -961,6 +961,7 @@ jobs:
           # cli-surface has no dependencies of its own, but the CLI pins it at
           # an exact version, so it must land before publish-main.
           - cli-surface
+          - connect
           - policy
           - utils
           - sdk
