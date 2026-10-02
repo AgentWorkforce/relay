@@ -37,7 +37,8 @@ async function gitHead(repoRoot) {
 
 const INSTALL_FINGERPRINT = 'node_modules/.package-lock.json';
 // The targeted plan gives each corpus command its timeout plus 30s of slack,
-// capped at 720s (targeted-pr-plan.mjs). The restore must finish inside that.
+// capped at 720s (targeted-pr-plan.mjs), and targeted-command.mjs enforces
+// exactly that. The restore must finish inside it.
 const PLAN_MAX_COMMAND_SECONDS = 720;
 const PLAN_COMMAND_SLACK_SECONDS = 30;
 const RESTORE_SAFETY_MARGIN_MS = 10_000;
@@ -66,10 +67,9 @@ async function installFingerprint(repoRoot) {
  */
 async function restoreInstallIfChanged(repoRoot, before, caseId, timeoutSeconds) {
   if ((await installFingerprint(repoRoot)) === before) return;
+  // targeted-command.mjs kills the command at the plan's bounded timeout.
   const commandBudgetMs =
-    (Math.min(timeoutSeconds + PLAN_COMMAND_SLACK_SECONDS, PLAN_MAX_COMMAND_SECONDS) +
-      PLAN_COMMAND_SLACK_SECONDS) *
-    1_000;
+    Math.min(timeoutSeconds + PLAN_COMMAND_SLACK_SECONDS, PLAN_MAX_COMMAND_SECONDS) * 1_000;
   const remainingMs = commandBudgetMs - (Date.now() - startedAt) - RESTORE_SAFETY_MARGIN_MS;
   if (remainingMs < MIN_RESTORE_MS) {
     throw new Error(
