@@ -14,6 +14,8 @@ If an existing socket or Relay process may be restarting, the command retries
 liveness for up to 15 seconds. When no eligible probe is available, it
 downloads the current release from `AgentWorkforce/relay-desktop-releases`,
 verifies the adjacent SHA-256 file, and starts the probe without signing in.
+A responsive old Linux probe instead fails with an update-required error so the
+CLI never starts a second headless probe beside it.
 
 - Linux x64 and arm64 use the relocatable tarball under
   `~/.local/lib/agent-relay/current`, a symlink at

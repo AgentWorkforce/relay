@@ -1,6 +1,20 @@
 import { spawn } from 'node:child_process';
+import { randomUUID } from 'node:crypto';
 import { constants } from 'node:fs';
-import { access, mkdir, mkdtemp, open, readdir, rename, rm, stat, symlink } from 'node:fs/promises';
+import {
+  access,
+  mkdir,
+  mkdtemp,
+  open,
+  readFile,
+  readlink,
+  readdir,
+  rename,
+  rm,
+  stat,
+  symlink,
+  writeFile,
+} from 'node:fs/promises';
 import os from 'node:os';
 import { basename, join, relative } from 'node:path';
 import { requestJson } from './http.js';
@@ -9,7 +23,7 @@ const RELEASE = 'https://github.com/AgentWorkforce/relay-desktop-releases/releas
 const MINIMUM_PROBE_VERSION = '2026.10.4';
 const RECOVERY_TIMEOUT_MS = 15_000;
 const INSTALL_LOCK_TIMEOUT_MS = 90_000;
-const INSTALL_LOCK_STALE_MS = 5 * 60_000;
+const INSTALL_LOCK_STALE_MS = 15 * 60_000;
 const MAC_SIGNING_REQUIREMENT =
   'anchor apple generic and certificate 1[field.1.2.840.113635.100.6.2.6] exists and certificate leaf[field.1.2.840.113635.100.6.1.13] exists and certificate leaf[subject.OU] = "QUJ7SA6X8X"';
 
@@ -133,6 +147,8 @@ async function readPointer(home) {
   const pointerPath = join(home, '.agentworkforce/desktop/relay-socket');
   let pointerHandle;
   try {
+    // This opens an existing pointer read-only; test homes may reside under os.tmpdir().
+    // codeql[js/insecure-temporary-file]
     pointerHandle = await open(pointerPath, constants.O_RDONLY | constants.O_NONBLOCK);
     const pointerInfo = await pointerHandle.stat();
     const uid = process.getuid?.();
@@ -347,6 +363,7 @@ export async function installLinux({
   let primaryError;
   let pointerOwnedByRun = false;
   let linkCreatedByRun = false;
+  let previousLinkTarget;
   const installRoot = join(home, '.local/lib/agent-relay');
   const installDir = join(installRoot, 'current');
   const stagedDir = join(installRoot, 'current.new');
@@ -369,6 +386,11 @@ export async function installLinux({
     const pointer = join(desktopDir, 'relay-socket');
     await mkdir(binDir, { recursive: true });
     await mkdir(desktopDir, { recursive: true });
+    try {
+      previousLinkTarget = await readlink(link);
+    } catch (error) {
+      if (error?.code !== 'ENOENT' && error?.code !== 'EINVAL') throw error;
+    }
     await rm(link, { force: true });
     await symlink(probe, link);
     linkCreatedByRun = true;
@@ -405,11 +427,17 @@ export async function installLinux({
     if (!ready) {
       try {
         await finishSwap(installDir, swap, false);
-        if (linkCreatedByRun && !swap?.backedUp) {
-          await rm(join(home, '.local/bin/agent-relay-probe'), { force: true });
-        }
       } catch (error) {
         restoreError = error;
+      }
+      if (linkCreatedByRun) {
+        const link = join(home, '.local/bin/agent-relay-probe');
+        try {
+          await rm(link, { force: true });
+          if (previousLinkTarget) await symlink(previousLinkTarget, link);
+        } catch (error) {
+          restoreError ??= error;
+        }
       }
     }
     await rm(stagedDir, { recursive: true, force: true });
@@ -424,6 +452,24 @@ export async function installLinux({
 async function processRunning(run) {
   const result = await run('pgrep', ['-x', 'RelayDesktop'], { allowFailure: true });
   return result.code === 0;
+}
+
+export async function quitRelayDesktop(
+  run,
+  {
+    closeMessage = 'Close any open Agent Relay sheet or dialog, quit the app, and retry.',
+    timeoutMessage = 'Agent Relay is still running; quit it and retry.',
+  } = {}
+) {
+  if (!(await processRunning(run))) return;
+  try {
+    await run('osascript', ['-e', 'tell application "Agent Relay" to quit']);
+  } catch {
+    throw new InstallError(closeMessage, 3);
+  }
+  const deadline = Date.now() + 30_000;
+  while ((await processRunning(run)) && Date.now() < deadline) await delay(1_000);
+  if (await processRunning(run)) throw new InstallError(timeoutMessage, 3);
 }
 
 async function relayProcessRunning(run = runCommand) {
@@ -492,26 +538,54 @@ export async function acquireInstallLock({
   const lockRoot =
     platform === 'linux' ? join(home, '.local/lib/agent-relay') : join(home, '.agentworkforce/desktop');
   const lockPath = join(lockRoot, 'connect-install.lock');
+  const ownerPath = join(lockPath, 'owner');
   await mkdir(lockRoot, { recursive: true });
   const deadline = now() + timeoutMs;
 
   while (true) {
+    let acquired = false;
     try {
-      await mkdir(lockPath);
-      return {
-        path: lockPath,
-        release: async () => rm(lockPath, { recursive: true, force: true }),
-      };
+      await mkdir(lockPath, { mode: 0o700 });
+      acquired = true;
     } catch (error) {
       if (error?.code !== 'EEXIST') {
         throw new InstallError(`Could not acquire the Agent Relay install lock: ${error.message}`);
       }
     }
 
+    if (acquired) {
+      const token = randomUUID();
+      try {
+        await writeFile(ownerPath, token, { flag: 'wx', mode: 0o600 });
+      } catch (error) {
+        await rm(lockPath, { recursive: true, force: true }).catch(() => {});
+        throw new InstallError(`Could not initialize the Agent Relay install lock: ${error.message}`);
+      }
+      return {
+        path: lockPath,
+        release: async () => {
+          try {
+            if ((await readFile(ownerPath, 'utf8')) !== token) return;
+          } catch (error) {
+            if (error?.code === 'ENOENT') return;
+            throw error;
+          }
+          await rm(lockPath, { recursive: true, force: true });
+        },
+      };
+    }
+
     try {
       const info = await stat(lockPath);
       if (now() - info.mtimeMs > staleMs) {
-        await rm(lockPath, { recursive: true, force: true });
+        const graveyard = `${lockPath}.stale-${process.pid}-${randomUUID()}`;
+        try {
+          await rename(lockPath, graveyard);
+        } catch (error) {
+          if (error?.code === 'ENOENT') continue;
+          throw error;
+        }
+        await rm(graveyard, { recursive: true, force: true });
         continue;
       }
     } catch (error) {
@@ -535,8 +609,15 @@ export async function swapMacApp(app, staged, { move = rename, remove = rm } = {
   return await swapWithBackup(app, staged, { move, remove });
 }
 
-async function installMac({ home, arch, run, warn }) {
-  await requireCommands(['codesign', 'curl', 'ditto', 'hdiutil', 'open', 'osascript', 'pgrep', 'shasum']);
+export async function installMac({
+  home,
+  arch,
+  run,
+  warn,
+  wait = waitForLiveSocket,
+  require = requireCommands,
+}) {
+  await require(['codesign', 'curl', 'ditto', 'hdiutil', 'open', 'osascript', 'pgrep', 'shasum']);
   const asset = getPlatformAsset('darwin', arch);
   const tmpDir = await mkdtemp(join(os.tmpdir(), 'agent-relay-connect-'));
   let volume = '';
@@ -545,6 +626,7 @@ async function installMac({ home, arch, run, warn }) {
   let appSwap;
   let ready = false;
   let primaryError;
+  let rollbackError;
   try {
     await downloadAndVerify('darwin', tmpDir, asset, run);
     const attached = await run('hdiutil', ['attach', '-nobrowse', '-readonly', join(tmpDir, asset)], {
@@ -555,18 +637,7 @@ async function installMac({ home, arch, run, warn }) {
     volume = volumeIndex >= 0 ? volumeLine.slice(volumeIndex).trim() : '';
     if (!volume) throw new InstallError('Could not identify the mounted Agent Relay disk image.');
 
-    if (await processRunning(run)) {
-      try {
-        await run('osascript', ['-e', 'tell application "Agent Relay" to quit']);
-      } catch {
-        throw new InstallError('Close any open Agent Relay sheet or dialog, quit the app, and retry.', 3);
-      }
-      const deadline = Date.now() + 30_000;
-      while ((await processRunning(run)) && Date.now() < deadline) await delay(1_000);
-      if (await processRunning(run)) {
-        throw new InstallError('Agent Relay is still running; quit it and retry.', 3);
-      }
-    }
+    await quitRelayDesktop(run);
 
     app = '/Applications/Agent Relay.app';
     try {
@@ -589,7 +660,7 @@ async function installMac({ home, arch, run, warn }) {
 
     // Do not delete the existing pointer on macOS: RelayDesktop may reuse it.
     await run(stage[2][0], stage[2][1]);
-    const result = await waitForLiveSocket({ home });
+    const result = await wait({ home });
     ready = true;
     await finishSwap(app, appSwap, true);
     return result;
@@ -599,10 +670,15 @@ async function installMac({ home, arch, run, warn }) {
   } finally {
     if (!ready && appSwap) {
       try {
+        const rollbackMessage = `Could not stop the replacement Agent Relay app; leaving ${app} in place and preserving ${appSwap.backup}. Quit RelayDesktop and retry.`;
+        await quitRelayDesktop(run, {
+          closeMessage: rollbackMessage,
+          timeoutMessage: rollbackMessage,
+        });
         await finishSwap(app, appSwap, false);
       } catch (restoreError) {
-        if (primaryError instanceof Error) primaryError.cause ??= restoreError;
-        else throw restoreError;
+        if (primaryError instanceof Error) restoreError.cause ??= primaryError;
+        rollbackError = restoreError;
       }
     }
     if (volume) {
@@ -610,6 +686,7 @@ async function installMac({ home, arch, run, warn }) {
     }
     if (staged) await rm(staged, { recursive: true, force: true });
     await rm(tmpDir, { recursive: true, force: true });
+    if (rollbackError) throw rollbackError;
   }
 }
 
@@ -652,7 +729,7 @@ export async function ensureProbe({
     const result =
       platform === 'linux'
         ? await installLinuxFn({ home, arch, run, start, wait })
-        : await installMacFn({ home, arch, run, warn });
+        : await installMacFn({ home, arch, run, warn, wait });
     return { ...result, installed: true };
   } finally {
     await installLock.release();

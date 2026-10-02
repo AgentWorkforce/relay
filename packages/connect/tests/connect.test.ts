@@ -1,7 +1,18 @@
 import http from 'node:http';
 import { spawn } from 'node:child_process';
 import { EventEmitter } from 'node:events';
-import { chmod, mkdir, mkdtemp, readFile, rm, symlink, utimes, writeFile } from 'node:fs/promises';
+import {
+  chmod,
+  mkdir,
+  mkdtemp,
+  readFile,
+  readlink,
+  rename,
+  rm,
+  symlink,
+  utimes,
+  writeFile,
+} from 'node:fs/promises';
 import os from 'node:os';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -14,9 +25,11 @@ import {
   findLiveSocket,
   findRecoveringProbe,
   getPlatformAsset,
+  installMac,
   installLinux,
   macStageCommands,
   probeVersionSupported,
+  quitRelayDesktop,
   requireExistingProbe,
   startDetachedProbe,
   swapMacApp,
@@ -470,6 +483,70 @@ describe('probe installer', () => {
     await expect(exercise(false)).resolves.toBeInstanceOf(Set);
   });
 
+  it('quits the launched macOS app before restoring the previous app after readiness failure', async () => {
+    const root = await mkdtemp(join(os.tmpdir(), 'connect-mac-rollback-test-'));
+    cleanups.push(async () => rm(root, { recursive: true, force: true }));
+    const home = join(root, 'home');
+    const app = join(home, 'Applications/Agent Relay.app');
+    await mkdir(app, { recursive: true });
+    await writeFile(join(app, 'marker'), 'previous');
+    let opened = false;
+    let quit = false;
+    const run = async (file: string, args: string[]) => {
+      if (file === 'hdiutil' && args[0] === 'attach') {
+        return { code: 0, stdout: '/dev/disk9\tApple_HFS\t/Volumes/Agent Relay Test\n', stderr: '' };
+      }
+      if (file === 'ditto') {
+        await mkdir(args[1], { recursive: true });
+        await writeFile(join(args[1], 'marker'), 'replacement');
+      } else if (file === 'open') {
+        opened = true;
+      } else if (file === 'pgrep') {
+        return { code: opened && !quit ? 0 : 1, stdout: '', stderr: '' };
+      } else if (file === 'osascript') {
+        quit = true;
+      }
+      return { code: 0, stdout: '', stderr: '' };
+    };
+
+    await expect(
+      installMac({
+        home,
+        arch: 'arm64',
+        run,
+        warn: () => {},
+        require: async () => {},
+        wait: async () => {
+          throw new Error('replacement never became ready');
+        },
+      })
+    ).rejects.toThrow('replacement never became ready');
+    expect({ opened, quit }).toEqual({ opened: true, quit: true });
+    expect(await readFile(join(app, 'marker'), 'utf8')).toBe('previous');
+    await expect(readFile(`${app}.old`)).rejects.toMatchObject({ code: 'ENOENT' });
+  });
+
+  it('reports both macOS app paths and preserves them when rollback cannot stop the app', async () => {
+    const app = '/Applications/Agent Relay.app';
+    const backup = `${app}.old`;
+    let pgrepCalls = 0;
+    await expect(
+      quitRelayDesktop(
+        async (file: string) => {
+          if (file === 'pgrep') {
+            pgrepCalls += 1;
+            return { code: 0, stdout: '', stderr: '' };
+          }
+          throw new Error('quit refused');
+        },
+        {
+          closeMessage: `Could not stop the replacement Agent Relay app; leaving ${app} in place and preserving ${backup}. Quit RelayDesktop and retry.`,
+        }
+      )
+    ).rejects.toThrow(`leaving ${app} in place and preserving ${backup}`);
+    expect(pgrepCalls).toBe(1);
+  });
+
   it('surfaces a detached probe launch error as an InstallError', async () => {
     const child = new EventEmitter();
     const starting = startDetachedProbe('/missing/agent-relay-probe', 2, () => {
@@ -594,18 +671,32 @@ describe('probe installer', () => {
     expect(installCalls).toBe(0);
   });
 
-  it('reclaims an install lock older than five minutes', async () => {
+  it('reclaims an install lock older than fifteen minutes', async () => {
     const root = await mkdtemp(join(os.tmpdir(), 'connect-stale-lock-test-'));
     cleanups.push(async () => rm(root, { recursive: true, force: true }));
     const home = join(root, 'home');
     const lockPath = join(home, '.local/lib/agent-relay/connect-install.lock');
     await mkdir(lockPath, { recursive: true });
-    const old = new Date(Date.now() - 6 * 60_000);
+    const old = new Date(Date.now() - 16 * 60_000);
     await utimes(lockPath, old, old);
 
     const lock = await acquireInstallLock({ home, platform: 'linux' });
     expect(lock.path).toBe(lockPath);
     await lock.release();
+  });
+
+  it('releases only the install lock owned by that holder', async () => {
+    const root = await mkdtemp(join(os.tmpdir(), 'connect-owned-lock-test-'));
+    cleanups.push(async () => rm(root, { recursive: true, force: true }));
+    const home = join(root, 'home');
+    const first = await acquireInstallLock({ home, platform: 'linux' });
+    const displaced = `${first.path}.displaced`;
+    await rename(first.path, displaced);
+    const second = await acquireInstallLock({ home, platform: 'linux' });
+
+    await first.release();
+    expect(await readFile(join(second.path, 'owner'), 'utf8')).not.toBe('');
+    await second.release();
   });
 
   it('times out after 90 seconds when another installer keeps a fresh lock', async () => {
@@ -747,6 +838,44 @@ describe('probe installer', () => {
     ).rejects.toThrow('probe never became ready');
     await expect(readFile(current)).rejects.toMatchObject({ code: 'ENOENT' });
     await expect(readFile(link)).rejects.toMatchObject({ code: 'ENOENT' });
+  });
+
+  it('restores the previous Linux probe symlink when an upgrade rolls back', async () => {
+    const root = await mkdtemp(join(os.tmpdir(), 'connect-linux-link-rollback-test-'));
+    cleanups.push(async () => rm(root, { recursive: true, force: true }));
+    const home = join(root, 'home');
+    const current = join(home, '.local/lib/agent-relay/current');
+    const previousProbe = join(current, 'old-layout/agent_relay/helpers/agent-relay-probe');
+    const link = join(home, '.local/bin/agent-relay-probe');
+    await mkdir(join(previousProbe, '..'), { recursive: true });
+    await mkdir(join(link, '..'), { recursive: true });
+    await writeFile(previousProbe, '#!/bin/sh\n');
+    await chmod(previousProbe, 0o755);
+    await symlink(previousProbe, link);
+    const run = async (file: string, args: string[]) => {
+      if (file === 'tar') {
+        const destination = args[args.indexOf('-C') + 1];
+        const probe = join(destination, 'new-layout/agent_relay/helpers/agent-relay-probe');
+        await mkdir(join(probe, '..'), { recursive: true });
+        await writeFile(probe, '#!/bin/sh\n');
+        await chmod(probe, 0o755);
+      }
+      return { code: 0, stdout: '', stderr: '' };
+    };
+
+    await expect(
+      installLinux({
+        home,
+        arch: 'x64',
+        run,
+        start: async () => ({ pid: undefined, unref() {} }),
+        wait: async () => {
+          throw new Error('new probe did not become ready');
+        },
+      })
+    ).rejects.toThrow('new probe did not become ready');
+    expect(await readlink(link)).toBe(previousProbe);
+    expect(await readFile(previousProbe, 'utf8')).toBe('#!/bin/sh\n');
   });
 
   it('keeps the startup failure primary when restoring the previous Linux install also fails', async () => {
