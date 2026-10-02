@@ -37,9 +37,9 @@ export class InstallError extends Error {
 }
 
 export class OutdatedProbeError extends InstallError {
-  constructor(version, minimum = MINIMUM_PROBE_VERSION) {
+  constructor(version, minimum = MINIMUM_PROBE_VERSION, nextStep = 'update it and retry.') {
     super(
-      `Agent Relay ${version || 'unknown'} is too old for Relay Connect (needs ${minimum} or newer); update it and retry.`,
+      `Agent Relay ${version || 'unknown'} is too old for Relay Connect (needs ${minimum} or newer); ${nextStep}`,
       9
     );
     this.name = 'OutdatedProbeError';
@@ -626,7 +626,9 @@ export async function acquireInstallLock({
 
 function requireSupportedProbe(existing, platform = process.platform) {
   if (existing && !probeSupportedOnPlatform(existing, platform)) {
-    throw new OutdatedProbeError(existing.version, minimumProbeVersion(platform));
+    const nextStep =
+      platform === 'darwin' ? 'run `npx -y @agent-relay/connect install` and retry.' : 'update it and retry.';
+    throw new OutdatedProbeError(existing.version, minimumProbeVersion(platform), nextStep);
   }
   return existing;
 }

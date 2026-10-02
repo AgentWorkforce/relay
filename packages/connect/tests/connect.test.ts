@@ -375,6 +375,21 @@ describe('probe installer', () => {
     expect(installs).toBe(0);
   });
 
+  it('names the install command for existing macOS 2026.10.4 status calls', async () => {
+    await expect(
+      requireExistingProbe({
+        home: '/tmp/old-mac-status',
+        platform: 'darwin',
+        find: async () => ({
+          socketPath: '/tmp/old.sock',
+          status: { ok: true, data: { version: '2026.10.4' } },
+          version: '2026.10.4',
+          supported: true,
+        }),
+      })
+    ).rejects.toThrow('run `npx -y @agent-relay/connect install` and retry.');
+  });
+
   it('advises an update when a Linux 2026.10.4 probe cannot identify the session', () => {
     const probe = { version: '2026.10.4' };
     const rejection = { error: { code: 'not_a_relay_session' } };
@@ -386,7 +401,7 @@ describe('probe installer', () => {
     expect(linuxProbeSessionUpdateHint(probe, { error: { code: 'connect_not_joined' } }, 'linux')).toBeNull();
   });
 
-  it('prints the Linux update advice for join and status rejections', async () => {
+  it('prints the Linux update advice for session route rejections', async () => {
     if (process.platform !== 'linux') return;
     const { home } = await listen((request, response) => {
       if (request.url === '/setup/status') {
@@ -395,14 +410,19 @@ describe('probe installer', () => {
         json(response, { ok: false, error: { code: 'not_a_relay_session' } }, 403);
       }
     });
-    for (const args of [['join', 'connect-test'], ['status']]) {
-      expect(await runCli(home, args)).toEqual({
+    for (const [args, input] of [
+      [['join', 'connect-test'], ''],
+      [['send'], 'hello'],
+      [['status'], ''],
+      [['leave'], ''],
+    ] as Array<[string[], string]>) {
+      expect(await runCli(home, args, input)).toEqual({
         code: 6,
         stdout: '',
         stderr:
           'Agent Relay 2026.10.4 could not identify this session. If this is a live Claude Code or Codex session, update the running Agent Relay probe to 2026.10.5 or newer; otherwise run this from a live session.\n',
       });
-      const structured = await runCli(home, [...args, '--json']);
+      const structured = await runCli(home, [...args, '--json'], input);
       expect(structured.code).toBe(6);
       expect(structured.stderr).toBe('');
       expect(JSON.parse(structured.stdout)).toMatchObject({
@@ -431,7 +451,10 @@ describe('probe installer', () => {
       expect(result).toEqual({
         code: 9,
         stdout: '',
-        stderr: `Agent Relay 2026.10.3 is too old for Relay Connect (needs 2026.10.${process.platform === 'darwin' ? '5' : '4'} or newer); update it and retry.\n`,
+        stderr:
+          process.platform === 'darwin'
+            ? 'Agent Relay 2026.10.3 is too old for Relay Connect (needs 2026.10.5 or newer); run `npx -y @agent-relay/connect install` and retry.\n'
+            : 'Agent Relay 2026.10.3 is too old for Relay Connect (needs 2026.10.4 or newer); update it and retry.\n',
       });
     }
   });

@@ -249,12 +249,13 @@ async function run(options) {
     const message = await stdinText();
     if (!message) throw new UsageError('send requires message text on stdin.');
     const suffix = options.to ? `?to=${encodeURIComponent(options.to)}` : '';
-    const response = requireOk(
+    const response = requireSessionOk(
       await requestJson(probe.socketPath, {
         method: 'POST',
         path: `/connect/send${suffix}`,
         body: message,
-      })
+      }),
+      probe
     );
     if (options.json) printJson(response);
     else {
@@ -274,7 +275,10 @@ async function run(options) {
     return;
   }
 
-  const response = requireOk(await requestJson(probe.socketPath, { method: 'POST', path: '/connect/leave' }));
+  const response = requireSessionOk(
+    await requestJson(probe.socketPath, { method: 'POST', path: '/connect/leave' }),
+    probe
+  );
   if (options.json) printJson(response);
   else process.stdout.write(`Left Relay Connect ${safeText(response.data?.connect_id)}.\n`);
 }

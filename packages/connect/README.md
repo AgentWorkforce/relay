@@ -17,8 +17,8 @@ downloads the current release from `AgentWorkforce/relay-desktop-releases`,
 verifies the adjacent SHA-256 file, and starts the probe without signing in.
 A responsive old Linux probe instead fails with an update-required error so the
 CLI never starts a second headless probe beside it.
-If a Linux 2026.10.4 probe cannot identify the calling session during join or
-status, the CLI tells the user to update Agent Relay rather than retrying the
+If a Linux 2026.10.4 probe cannot identify the calling session during join,
+send, status, or leave, the CLI tells the user to update Agent Relay rather than retrying the
 same request. A live Linux headless probe cannot be replaced by this CLI while
 it is running; update the running service separately.
 
