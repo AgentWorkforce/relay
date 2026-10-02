@@ -11,6 +11,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - `npx -y @agent-relay/connect install` installs a signed standalone probe on a clean Mac without installing the GUI app.
 
+### Fixed
+
+- `agent-relay mcp` standalone binaries no longer dispatch each tool call twice.
+- MCP `send_dm` now forwards idempotency keys so keyed retries do not store duplicate messages.
+
 ## [13.0.1] - 2026-10-02
 
 ### Added
