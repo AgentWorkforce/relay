@@ -7,8 +7,10 @@ or a preinstalled skill:
 Run this for me: `npx -y @agent-relay/connect join <link>`
 ```
 
-The command reuses a live Agent Relay Desktop probe when one is available. If
-there is no live probe, it downloads the current release from
+The command reuses a live Agent Relay Desktop probe at version 2026.10.4 or
+newer when its pointer and socket are owned by the current user and the pointer
+is not group- or world-writable. If there is no eligible live probe, it retries
+the liveness check, then downloads the current release from
 `AgentWorkforce/relay-desktop-releases`, verifies the adjacent SHA-256 file,
 and starts the probe without signing in.
 

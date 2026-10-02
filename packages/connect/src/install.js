@@ -2,10 +2,11 @@ import { spawn } from 'node:child_process';
 import { constants } from 'node:fs';
 import { access, mkdir, mkdtemp, open, readFile, readdir, rename, rm, stat, symlink } from 'node:fs/promises';
 import os from 'node:os';
-import { basename, join } from 'node:path';
+import { basename, join, relative } from 'node:path';
 import { requestJson } from './http.js';
 
 const RELEASE = 'https://github.com/AgentWorkforce/relay-desktop-releases/releases/latest/download';
+const MINIMUM_PROBE_VERSION = '2026.10.4';
 
 export class InstallError extends Error {
   constructor(message, exitCode = 1) {
@@ -48,7 +49,6 @@ export function macStageCommands({ volume, staged, app }) {
   return [
     ['ditto', [`${volume}/Agent Relay.app`, staged]],
     ['codesign', ['--verify', '--deep', '--strict', staged]],
-    ['mv', [staged, app]],
     ['open', [app]],
   ];
 }
@@ -106,12 +106,53 @@ async function requireCommands(commands) {
 }
 
 async function readPointer(home) {
+  const pointerPath = join(home, '.agentworkforce/desktop/relay-socket');
   try {
-    const value = await readFile(join(home, '.agentworkforce/desktop/relay-socket'), 'utf8');
-    return value.split(/\r?\n/, 1)[0].trim();
-  } catch {
+    const pointerInfo = await stat(pointerPath);
+    const uid = process.getuid?.();
+    if (uid !== undefined && pointerInfo.uid !== uid) {
+      throw new InstallError('Refusing an Agent Relay socket pointer not owned by the current user.');
+    }
+    if ((pointerInfo.mode & 0o022) !== 0) {
+      throw new InstallError('Refusing a group- or world-writable Agent Relay socket pointer.');
+    }
+
+    const value = await readFile(pointerPath, 'utf8');
+    const socketPath = value.split(/\r?\n/, 1)[0].trim();
+    if (!socketPath) return '';
+    try {
+      const socketInfo = await stat(socketPath);
+      if (uid !== undefined && socketInfo.uid !== uid) {
+        throw new InstallError('Refusing an Agent Relay socket not owned by the current user.');
+      }
+    } catch (error) {
+      if (error instanceof InstallError) throw error;
+      if (error?.code !== 'ENOENT') {
+        throw new InstallError(`Could not inspect the Agent Relay socket: ${error.message}`);
+      }
+    }
+    return socketPath;
+  } catch (error) {
+    if (error instanceof InstallError) throw error;
+    if (error?.code !== 'ENOENT') {
+      throw new InstallError(`Could not inspect the Agent Relay socket pointer: ${error.message}`);
+    }
     return '';
   }
+}
+
+export function probeVersionSupported(version, minimum = MINIMUM_PROBE_VERSION) {
+  const parse = (value) => {
+    const match = /^v?(\d+)\.(\d+)\.(\d+)(?:\D.*)?$/.exec(value || '');
+    return match ? match.slice(1).map(Number) : null;
+  };
+  const actual = parse(version);
+  const required = parse(minimum);
+  if (!actual || !required) return false;
+  for (let index = 0; index < required.length; index += 1) {
+    if (actual[index] !== required[index]) return actual[index] > required[index];
+  }
+  return true;
 }
 
 async function liveStatus(socketPath, timeoutMs = 5_000) {
@@ -123,11 +164,12 @@ async function liveStatus(socketPath, timeoutMs = 5_000) {
       path: '/setup/status',
       timeoutMs,
     });
-    if (response?.ok !== true || typeof response?.data?.version !== 'string' || !response.data.version) {
+    if (response?.ok !== true || !probeVersionSupported(response?.data?.version)) {
       return null;
     }
     return response;
-  } catch {
+  } catch (error) {
+    if (error instanceof InstallError) throw error;
     return null;
   }
 }
@@ -187,20 +229,88 @@ async function downloadAndVerify(platform, tmpDir, asset, run) {
   await verifyChecksum(platform, tmpDir, asset, run);
 }
 
-async function installLinux({ home, arch, run }) {
+export async function startDetachedProbe(link, logFd, spawnProcess = spawn) {
+  const child = spawnProcess(link, ['relay', 'serve', '--headless'], {
+    detached: true,
+    stdio: ['ignore', logFd, logFd],
+  });
+  await new Promise((resolve, reject) => {
+    child.once('spawn', resolve);
+    child.once('error', (error) => {
+      reject(new InstallError(`Could not start agent-relay-probe: ${error.message}`));
+    });
+  });
+  return child;
+}
+
+async function swapWithBackup(destination, staged, { move = rename, remove = rm } = {}) {
+  const backup = `${destination}.old`;
+  await remove(backup, { recursive: true, force: true });
+  let backedUp = false;
+  try {
+    await move(destination, backup);
+    backedUp = true;
+  } catch (error) {
+    if (error?.code !== 'ENOENT') {
+      throw new InstallError(`Could not preserve the existing installation: ${error.message}`);
+    }
+  }
+
+  try {
+    await move(staged, destination);
+  } catch (error) {
+    if (backedUp) {
+      try {
+        await move(backup, destination);
+      } catch (restoreError) {
+        throw new InstallError(
+          `Could not install the replacement or restore the previous installation: ${restoreError.message}`
+        );
+      }
+    }
+    throw new InstallError(`Could not install the replacement: ${error.message}`);
+  }
+  return { backup, backedUp };
+}
+
+async function restoreBackup(destination, swap, { move = rename, remove = rm } = {}) {
+  if (!swap?.backedUp) return;
+  await remove(destination, { recursive: true, force: true });
+  try {
+    await move(swap.backup, destination);
+  } catch (error) {
+    throw new InstallError(`Could not restore the previous installation: ${error.message}`);
+  }
+}
+
+export async function installLinux({
+  home,
+  arch,
+  run,
+  start = startDetachedProbe,
+  wait = waitForLiveSocket,
+}) {
   await requireCommands(['curl', 'sha256sum', 'tar']);
   const asset = getPlatformAsset('linux', arch);
   const tmpDir = await mkdtemp(join(os.tmpdir(), 'agent-relay-connect-'));
   let child;
   let ready = false;
+  let swap;
+  const installRoot = join(home, '.local/lib/agent-relay');
+  const installDir = join(installRoot, 'current');
+  const stagedDir = join(installRoot, 'current.new');
   try {
     await downloadAndVerify('linux', tmpDir, asset, run);
-    const installDir = join(home, '.local/lib/agent-relay/current');
-    await mkdir(installDir, { recursive: true });
-    await run('tar', ['-xzf', join(tmpDir, asset), '-C', installDir]);
+    await mkdir(installRoot, { recursive: true });
+    await rm(stagedDir, { recursive: true, force: true });
+    await mkdir(stagedDir, { recursive: true });
+    await run('tar', ['-xzf', join(tmpDir, asset), '-C', stagedDir]);
 
-    const probe = await findProbe(installDir);
-    if (!probe) throw new InstallError(`agent-relay-probe not found or not executable in ${asset}.`);
+    const stagedProbe = await findProbe(stagedDir);
+    if (!stagedProbe) throw new InstallError(`agent-relay-probe not found or not executable in ${asset}.`);
+    const probeRelativePath = relative(stagedDir, stagedProbe);
+    swap = await swapWithBackup(installDir, stagedDir);
+    const probe = join(installDir, probeRelativePath);
 
     const binDir = join(home, '.local/bin');
     const desktopDir = join(home, '.agentworkforce/desktop');
@@ -214,17 +324,15 @@ async function installLinux({ home, arch, run }) {
 
     const logHandle = await open(join(desktopDir, 'headless.log'), 'a', 0o600);
     try {
-      child = spawn(link, ['relay', 'serve', '--headless'], {
-        detached: true,
-        stdio: ['ignore', logHandle.fd, logHandle.fd],
-      });
+      child = await start(link, logHandle.fd);
       child.unref();
     } finally {
       await logHandle.close();
     }
 
-    const result = await waitForLiveSocket({ home });
+    const result = await wait({ home });
     ready = true;
+    if (swap.backedUp) await rm(swap.backup, { recursive: true, force: true });
     return result;
   } finally {
     if (!ready && child?.pid) {
@@ -234,7 +342,18 @@ async function installLinux({ home, arch, run }) {
         // The failed probe may already have exited.
       }
     }
+    if (!ready) await rm(join(home, '.agentworkforce/desktop/relay-socket'), { force: true });
+    let restoreError;
+    if (!ready) {
+      try {
+        await restoreBackup(installDir, swap);
+      } catch (error) {
+        restoreError = error;
+      }
+    }
+    await rm(stagedDir, { recursive: true, force: true });
     await rm(tmpDir, { recursive: true, force: true });
+    if (restoreError) throw restoreError;
   }
 }
 
@@ -243,21 +362,17 @@ async function processRunning(run) {
   return result.code === 0;
 }
 
+export async function swapMacApp(app, staged, { move = rename, remove = rm } = {}) {
+  const swap = await swapWithBackup(app, staged, { move, remove });
+  if (swap.backedUp) await remove(swap.backup, { recursive: true, force: true });
+}
+
 async function installMac({ home, arch, run, warn }) {
-  await requireCommands([
-    'codesign',
-    'curl',
-    'ditto',
-    'hdiutil',
-    'mv',
-    'open',
-    'osascript',
-    'pgrep',
-    'shasum',
-  ]);
+  await requireCommands(['codesign', 'curl', 'ditto', 'hdiutil', 'open', 'osascript', 'pgrep', 'shasum']);
   const asset = getPlatformAsset('darwin', arch);
   const tmpDir = await mkdtemp(join(os.tmpdir(), 'agent-relay-connect-'));
   let volume = '';
+  let staged = '';
   try {
     await downloadAndVerify('darwin', tmpDir, asset, run);
     const attached = await run('hdiutil', ['attach', '-nobrowse', '-readonly', join(tmpDir, asset)], {
@@ -291,23 +406,23 @@ async function installMac({ home, arch, run, warn }) {
       warn(`Using the untested per-user Applications fallback: ${app}`);
     }
 
-    const staged = `${app}.new`;
+    staged = `${app}.new`;
     await rm(staged, { recursive: true, force: true });
     const stage = macStageCommands({ volume, staged, app });
     await run(stage[0][0], stage[0][1]);
     await run('hdiutil', ['detach', volume]);
     volume = '';
     await run(stage[1][0], stage[1][1]);
-    await rm(app, { recursive: true, force: true });
-    await rename(staged, app);
+    await swapMacApp(app, staged);
 
     // Do not delete the existing pointer on macOS: RelayDesktop may reuse it.
-    await run(stage[3][0], stage[3][1]);
+    await run(stage[2][0], stage[2][1]);
     return await waitForLiveSocket({ home });
   } finally {
     if (volume) {
       await run('hdiutil', ['detach', volume], { allowFailure: true }).catch(() => {});
     }
+    if (staged) await rm(staged, { recursive: true, force: true });
     await rm(tmpDir, { recursive: true, force: true });
   }
 }
@@ -318,13 +433,20 @@ export async function ensureProbe({
   arch = process.arch,
   run = runCommand,
   warn = (message) => process.stderr.write(`${message}\n`),
+  find = findLiveSocket,
+  sleep = delay,
+  start = startDetachedProbe,
+  wait = waitForLiveSocket,
 } = {}) {
-  const existing = await findLiveSocket(home);
-  if (existing) return { ...existing, installed: false };
+  for (let attempt = 0; attempt < 3; attempt += 1) {
+    const existing = await find(home);
+    if (existing) return { ...existing, installed: false };
+    if (attempt < 2) await sleep(250);
+  }
 
   const result =
     platform === 'linux'
-      ? await installLinux({ home, arch, run })
+      ? await installLinux({ home, arch, run, start, wait })
       : platform === 'darwin'
         ? await installMac({ home, arch, run, warn })
         : (() => {

@@ -208,14 +208,19 @@ async function run(options) {
     if (response.data?.role !== 'host') {
       const agentName = response.data?.agent_name;
       const host = response.data?.host?.agent_name;
-      if (!agentName || !host) throw new Error('Join response did not identify this agent and its host.');
-      requireOk(
-        await requestJson(probe.socketPath, {
-          method: 'POST',
-          path: `/connect/send?to=${encodeURIComponent(host)}`,
-          body: `${agentName} joined this Relay Connect and is ready to help.`,
-        })
-      );
+      try {
+        if (!agentName || !host) throw new Error('Join response did not identify this agent and its host.');
+        requireOk(
+          await requestJson(probe.socketPath, {
+            method: 'POST',
+            path: `/connect/send?to=${encodeURIComponent(host)}`,
+            body: `${agentName} joined this Relay Connect and is ready to help.`,
+          })
+        );
+      } catch (error) {
+        const warning = errorDetails(error).message;
+        process.stderr.write(`Joined, but could not notify the host: ${warning}\n`);
+      }
     }
 
     if (options.json) printJson(response);
