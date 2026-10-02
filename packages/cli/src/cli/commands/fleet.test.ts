@@ -1184,6 +1184,7 @@ describe('fleet command support', () => {
     expect(ensureInput).toEqual({
       workspaceId: 'rw_abc',
       requiredCapability: 'spawn:codex',
+      preparationMode: 'async-v1',
       maxAgents: 1,
       mountRelayfile: true,
       relayfilePaths: ['/live-review/run-123/**'],
@@ -1257,6 +1258,7 @@ describe('fleet command support', () => {
       workerCwd: '/srv/agent-workforce/cloud/packages/web',
     };
     const events: string[] = [];
+    const warnings: string[] = [];
     const materializeCloudRelayfileRepository = vi.fn(async () => {
       events.push('materialize');
       return {
@@ -1322,7 +1324,7 @@ describe('fleet command support', () => {
       deleteCloudFleetSandbox: vi.fn(async () => undefined),
       createFleetWorkspaceClient: vi.fn() as never,
       log: () => undefined,
-      warn: () => undefined,
+      warn: (message) => warnings.push(message),
       error: () => undefined,
     });
 
@@ -1361,9 +1363,20 @@ describe('fleet command support', () => {
           '/.skills/**',
           '/memory/**',
         ],
-      })
+      }),
+      expect.objectContaining({ onPreparationProgress: expect.any(Function) })
     );
     const ensureInput = ensureCloudFleetSandbox.mock.calls[0]?.[0] as Record<string, unknown>;
+    const ensureOptions = ensureCloudFleetSandbox.mock.calls[0]?.[1];
+    ensureOptions?.onPreparationProgress?.({
+      sandboxId: REPLAY_SANDBOX_ID,
+      state: 'pending',
+      phase: 'relayfile_mount_bootstrap',
+      generation: 2,
+    });
+    expect(warnings).toEqual([
+      'Cloud sandbox preparation: relayfile_mount_bootstrap (pending, generation 2).',
+    ]);
     expect(ensureInput.repos).toBeUndefined();
     expect(ensureInput.repoRevisions).toBeUndefined();
     expect(placement.spawn).toHaveBeenCalledWith(
@@ -1761,7 +1774,12 @@ describe('fleet command support', () => {
 
     expect(resolveWorkspaceByKey).toHaveBeenCalledWith('rk_live_pinned');
     expect(ensureCloudFleetSandbox).toHaveBeenCalledWith(
-      expect.objectContaining({ workspaceId: 'cloud-pinned', workloadProfile: 'long-running-agent' })
+      expect.objectContaining({
+        workspaceId: 'cloud-pinned',
+        workloadProfile: 'long-running-agent',
+        preparationMode: 'async-v1',
+      }),
+      expect.objectContaining({ onPreparationProgress: expect.any(Function) })
     );
     expect(createWorkspaceRelay).toHaveBeenCalledWith(
       expect.objectContaining({
@@ -2461,7 +2479,9 @@ describe('fleet command support', () => {
     expect(ensureCloudFleetSandbox).toHaveBeenCalledWith(
       expect.objectContaining({
         workloadProfile: 'long-running-agent',
-      })
+        preparationMode: 'async-v1',
+      }),
+      expect.objectContaining({ onPreparationProgress: expect.any(Function) })
     );
     expect(deleteCloudFleetSandbox).not.toHaveBeenCalled();
   });
@@ -2670,7 +2690,8 @@ describe('fleet command support', () => {
       { from: 'user' }
     );
     expect(ensureCloudFleetSandbox).toHaveBeenCalledWith(
-      expect.objectContaining({ workspaceId: 'rw_captured' })
+      expect.objectContaining({ workspaceId: 'rw_captured', preparationMode: 'async-v1' }),
+      expect.objectContaining({ onPreparationProgress: expect.any(Function) })
     );
   });
 
@@ -2736,7 +2757,8 @@ describe('fleet command support', () => {
     );
 
     expect(ensureCloudFleetSandbox).toHaveBeenCalledWith(
-      expect.objectContaining({ workspaceId: cloudWorkspaceId })
+      expect.objectContaining({ workspaceId: cloudWorkspaceId, preparationMode: 'async-v1' }),
+      expect.objectContaining({ onPreparationProgress: expect.any(Function) })
     );
     expect(createWorkspaceRelay).toHaveBeenCalledWith({
       projectRoot: process.cwd(),
@@ -2903,6 +2925,10 @@ describe('fleet command support', () => {
       /^sbx_[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/
     );
     expect(ensureInput?.name).toBe(`fleet-sandbox-${ensureInput?.sandboxId?.slice('sbx_'.length)}`);
+    expect(ensureInput?.preparationMode).toBe('async-v1');
+    expect(ensureCloudFleetSandbox.mock.calls[0]?.[1]).toEqual({
+      onPreparationProgress: expect.any(Function),
+    });
   });
 
   it('rejects a replay sandbox name that does not match its identity', async () => {
