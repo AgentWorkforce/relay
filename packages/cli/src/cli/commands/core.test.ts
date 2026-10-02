@@ -1722,6 +1722,39 @@ describe('registerCoreCommands', () => {
     expect([...running]).toEqual([]);
   });
 
+  it('down --force ignores a node-dir identity whose pid was reused by another process', async () => {
+    const nodeDir = '/srv/reused-pid-node';
+    const stateDir = `${nodeDir}/state`;
+    const running = new Set([222, 333]);
+    const nested = identityCommand(222, `${stateDir}/broker-nested.lock`);
+    const old = identityCommand(333, `${nodeDir}/broker-old.lock`);
+    let pidReused = false;
+    const execCommand = vi.fn(async (command: string) => {
+      if (!command.includes('-p 333 ')) return nested(command);
+      // After the record was written, pid 333 belongs to a different process.
+      if (pidReused && command.includes('lstart'))
+        return { stdout: 'Fri Oct  2 09:00:00 2026\n', stderr: '' };
+      return old(command);
+    });
+    const killImpl = vi.fn((pid: number, signal?: NodeJS.Signals | number) => {
+      if (signal === 0) {
+        if (!running.has(pid)) throw new Error('not running');
+        return;
+      }
+      running.delete(pid);
+    });
+    const { program, deps } = createHarness({ execCommand, killImpl });
+    await persistBrokerIdentity({ ...deps.getProjectPaths(), dataDir: nodeDir }, 333, 'old', deps);
+    await persistBrokerIdentity({ ...deps.getProjectPaths(), dataDir: stateDir }, 222, 'nested', deps);
+    pidReused = true;
+
+    await runCommand(program, ['down', '--force', '--state-dir', nodeDir]);
+
+    expect(killImpl).toHaveBeenCalledWith(222, 'SIGTERM');
+    expect(killImpl).not.toHaveBeenCalledWith(333, 'SIGTERM');
+    expect([...running]).toEqual([333]);
+  });
+
   it('down still verifies records written under the project by earlier releases', async () => {
     const stateDir = '/srv/legacy-node/state';
     let running = true;

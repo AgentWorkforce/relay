@@ -2517,22 +2517,24 @@ async function reportNodeClaimsElsewhere(paths: CoreProjectPaths, deps: CoreDepe
  * directory too when the nested one holds the broker (relay#1575).
  *
  * Evidence is ranked, checking the exact directory before `state/` at each
- * rank: a `connection.json`, then an identity record naming a live process,
- * then any broker lock or record. Leftover files in the node directory
+ * rank: a `connection.json`, then an identity record verified against its
+ * running process (start time, executable and held lock, as `down` requires
+ * before signalling), then any broker lock or record. Leftover files in the node directory
  * therefore cannot shadow a running nested broker, and `down --force` can
  * still recover a broker whose connection file is gone.
  */
-function resolveExistingStateDir(stateDir: string, deps: CoreDependencies): string {
+async function resolveExistingStateDir(stateDir: string, deps: CoreDependencies): Promise<string> {
   const exact = path.resolve(stateDir);
   const candidates = [exact, path.join(exact, 'state')];
-  const ranks: Array<(dir: string) => boolean> = [
+  const ranks: Array<(dir: string) => boolean | Promise<boolean>> = [
     (dir) => deps.fs.existsSync(path.join(dir, CONNECTION_FILENAME)),
-    (dir) => hasLiveBrokerIdentity(dir, deps),
+    (dir) => hasVerifiedBrokerIdentity(dir, deps),
     (dir) => hasBrokerStateFiles(dir, deps),
   ];
   for (const matches of ranks) {
-    const found = candidates.find(matches);
-    if (found) return found;
+    for (const candidate of candidates) {
+      if (await matches(candidate)) return candidate;
+    }
   }
   return exact;
 }
@@ -2551,24 +2553,23 @@ function hasBrokerStateFiles(dir: string, deps: CoreDependencies): boolean {
   return brokerStateFiles(dir, deps).length > 0;
 }
 
-/** An identity record whose pid is still running marks the directory of a live broker. */
-function hasLiveBrokerIdentity(dir: string, deps: CoreDependencies): boolean {
-  return brokerStateFiles(dir, deps).some((file) => {
-    if (!file.startsWith('broker-identity-')) return false;
-    try {
-      const record = JSON.parse(deps.fs.readFileSync(path.join(dir, file), 'utf-8')) as { pid?: unknown };
-      return typeof record.pid === 'number' && record.pid > 0 && isProcessRunning(record.pid, deps);
-    } catch {
-      return false;
-    }
-  });
+/**
+ * Whether `dir` holds an identity record that still matches its process. A
+ * bare pid check would trust a stale record whose pid has been reused.
+ */
+async function hasVerifiedBrokerIdentity(dir: string, deps: CoreDependencies): Promise<boolean> {
+  const paths = { ...deps.getProjectPaths(), dataDir: dir };
+  for (const identity of readBrokerIdentities(paths, deps) ?? []) {
+    if (await matchesBrokerIdentity(identity, paths, deps)) return true;
+  }
+  return false;
 }
 
 // eslint-disable-next-line complexity, max-depth
 export async function runDownCommand(options: DownOptions, deps: CoreDependencies): Promise<void> {
   const paths = deps.getProjectPaths();
   if (options.stateDir) {
-    paths.dataDir = resolveExistingStateDir(options.stateDir, deps);
+    paths.dataDir = await resolveExistingStateDir(options.stateDir, deps);
   }
   const timeout = Number.parseInt(options.timeout ?? '5000', 10) || 5000;
 
@@ -2748,7 +2749,7 @@ export async function runStatusCommand(
 ): Promise<void> {
   const paths = deps.getProjectPaths();
   if (options?.stateDir) {
-    paths.dataDir = resolveExistingStateDir(options.stateDir, deps);
+    paths.dataDir = await resolveExistingStateDir(options.stateDir, deps);
   }
   const waitMs = parseWaitForMs(options?.waitFor, deps);
   if (waitMs === null) {
