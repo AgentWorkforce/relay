@@ -134,6 +134,26 @@ describe('Cloud fleet sandbox client', () => {
       .mockResolvedValueOnce({
         response: Response.json({
           ok: true,
+          wait: {
+            reason: 'waiting_on_output_lock',
+            ownerJobId: 'older-clone-job',
+            ownerStatus: 'running',
+            ownerStartedAt: '2026-10-02T10:00:00.000Z',
+            ownerUpdatedAt: '2026-10-02T10:01:02.000Z',
+            leaseExpiresAt: '2026-10-02T10:16:02.000Z',
+          },
+          job: {
+            owner: 'AgentWorkforce',
+            repo: 'cloud',
+            ref: revision,
+            status: 'queued',
+          },
+        }),
+        auth: refreshedAuth,
+      })
+      .mockResolvedValueOnce({
+        response: Response.json({
+          ok: true,
           job: {
             owner: 'AgentWorkforce',
             repo: 'cloud',
@@ -156,7 +176,9 @@ describe('Cloud fleet sandbox client', () => {
         auth: refreshedAuth,
       });
 
-    const onProgress = vi.fn();
+    const onProgress = vi.fn(() => {
+      throw new Error('progress observer failed');
+    });
     await expect(
       materializeCloudRelayfileRepository(
         {

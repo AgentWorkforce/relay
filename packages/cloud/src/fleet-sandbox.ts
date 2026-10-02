@@ -961,14 +961,23 @@ export async function materializeCloudRelayfileRepository(
       waitedMs: Math.max(0, now - materializationStartedAt),
       ...(wait ? { wait } : {}),
     };
-    const progressSignature = JSON.stringify([progress.status, progress.wait]);
+    const progressSignature = JSON.stringify([
+      progress.status,
+      progress.wait?.reason,
+      progress.wait?.ownerJobId,
+      progress.wait?.ownerStatus,
+    ]);
     if (
       options.onProgress &&
       (progressSignature !== lastProgressSignature || now - lastProgressAt >= CLOUD_CLONE_PROGRESS_REPEAT_MS)
     ) {
-      options.onProgress(progress);
       lastProgressSignature = progressSignature;
       lastProgressAt = now;
+      try {
+        options.onProgress(progress);
+      } catch {
+        // Progress is advisory; an observer must not abort a healthy materialization.
+      }
     }
     await waitForDelay(pollIntervalMs, signal);
   }
