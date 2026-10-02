@@ -1755,6 +1755,36 @@ describe('registerCoreCommands', () => {
     expect([...running]).toEqual([333]);
   });
 
+  it('down --force ignores a node-dir connection file whose pid was reused by another process', async () => {
+    const nodeDir = '/srv/reused-conn-node';
+    const stateDir = `${nodeDir}/state`;
+    const running = new Set([222, 333]);
+    const killImpl = vi.fn((pid: number, signal?: NodeJS.Signals | number) => {
+      if (signal === 0) {
+        if (!running.has(pid)) throw new Error('not running');
+        return;
+      }
+      running.delete(pid);
+    });
+    // The stale node-dir file names pid 333, which now belongs to an unrelated process.
+    const fs = createFsMock({
+      [`${nodeDir}/connection.json`]: connectionFile(333),
+      [`${stateDir}/connection.json`]: connectionFile(222),
+    });
+    const { program, deps } = createHarness({
+      fs,
+      execCommand: identityCommand(222, `${stateDir}/broker-nested.lock`),
+      killImpl,
+    });
+    await persistBrokerIdentity({ ...deps.getProjectPaths(), dataDir: stateDir }, 222, 'nested', deps);
+
+    await runCommand(program, ['down', '--force', '--state-dir', nodeDir]);
+
+    expect(killImpl).toHaveBeenCalledWith(222, 'SIGTERM');
+    expect(killImpl).not.toHaveBeenCalledWith(333, 'SIGTERM');
+    expect([...running]).toEqual([333]);
+  });
+
   it('down still verifies records written under the project by earlier releases', async () => {
     const stateDir = '/srv/legacy-node/state';
     let running = true;
