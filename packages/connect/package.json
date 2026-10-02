@@ -1,0 +1,34 @@
+{
+  "name": "@agent-relay/connect",
+  "version": "13.0.1",
+  "description": "Accountless Relay Connect hand-over for Claude Code and Codex",
+  "type": "module",
+  "bin": {
+    "connect": "dist/cli.js"
+  },
+  "files": [
+    "dist",
+    "README.md"
+  ],
+  "scripts": {
+    "build": "node scripts/build.mjs",
+    "clean": "node scripts/clean.mjs",
+    "prepack": "npm run build",
+    "test": "vitest run --root ../.. packages/connect/tests"
+  },
+  "engines": {
+    "node": ">=18.0.0"
+  },
+  "publishConfig": {
+    "access": "public"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/AgentWorkforce/relay.git",
+    "directory": "packages/connect"
+  },
+  "license": "Apache-2.0",
+  "devDependencies": {
+    "vitest": "^4.1.0"
+  }
+}

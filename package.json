@@ -1,6 +1,6 @@
 {
   "name": "@agent-relay/monorepo",
-  "version": "13.0.0",
+  "version": "13.0.1",
   "private": true,
   "description": "Agent Relay monorepo",
   "type": "module",
@@ -10,11 +10,12 @@
   "scripts": {
     "typecheck": "npm run build:session && npm run build:config && npm run build:cloud && npm run build:utils && npm run build:policy && npm run build:sdk && npm run build:harness-driver && npm run build:harnesses && npm run build:fleet && npm run build:cli-surface && cd packages/cli && npx tsc --noEmit",
     "build": "npm run clean && npm run build:rust && npm run build:core",
-    "build:core": "npm run build:session && npm run build:config && npm run build:cloud && npm run build:utils && npm run build:policy && npm run build:sdk && npm run build:harness-driver && npm run build:harnesses && npm run build:integration-prompts && npm run build:evals && npm run build:fleet && npm run build:cli-surface && npm run build:cli",
+    "build:core": "npm run build:session && npm run build:config && npm run build:cloud && npm run build:utils && npm run build:policy && npm run build:sdk && npm run build:harness-driver && npm run build:harnesses && npm run build:integration-prompts && npm run build:evals && npm run build:fleet && npm run build:cli-surface && npm run build:connect && npm run build:cli",
     "build:packages": "npm run build:core",
     "build:packages:watch": "echo 'Package watch build was removed with the simplified core surface. Use package-specific watch commands instead.'",
     "build:cli": "npm --prefix packages/cli run build",
     "build:cloud": "npm --prefix packages/cloud run build",
+    "build:connect": "npm --prefix packages/connect run build",
     "build:policy": "npm --prefix packages/policy run build",
     "build:utils": "npm --prefix packages/utils run build",
     "build:config": "npm --prefix packages/config run build",
@@ -185,8 +186,8 @@
     "smol-toml": "^1.7.1",
     "tar": "^7.5.22",
     "@relayflows/sdk": {
-      "@agent-relay/sdk": "13.0.0",
-      "@agent-relay/harness-driver": "13.0.0"
+      "@agent-relay/sdk": "13.0.1",
+      "@agent-relay/harness-driver": "13.0.1"
     }
   }
 }

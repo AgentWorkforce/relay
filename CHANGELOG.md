@@ -19,6 +19,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `node down --force --state-dir <dir>` can verify and stop brokers started from another working directory.
 - `node status` and `node down` name a missing broker identity record and how to create one.
 
+## [13.0.1] - 2026-10-02
+
+### Added
+
+- `@agent-relay/connect` provides the accountless `npx -y @agent-relay/connect join <link>` hand-over between a host and an agent session, plus `install` to bootstrap the desktop probe and `send`, `status`, and `leave` to run the session.
+
+### Fixed
+
 - Broker: Muse workers now reuse the host Muse login (`RELAY_MUSE_SHARED_AUTH_PATH`, the host's `MUSE_AUTH_PATH`, `$XDG_CONFIG_HOME/muse/auth.json`, or `$HOME/.config/muse/auth.json`) instead of prompting for provider auth under every new agent name; Relay MCP settings stay per-worker. Multi-tenant hosts should set `RELAY_MUSE_ISOLATED_AUTH=1` before upgrading to keep a separate login per worker.
 
 ## [13.0.0] - 2026-09-30
