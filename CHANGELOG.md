@@ -9,8 +9,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
-- `agent-relay mcp` standalone binaries now start one stdio server per process, preventing one tool call from dispatching twice.
-- Direct-message idempotency keys are forwarded so keyed retries do not store duplicate messages.
+- `agent-relay mcp` standalone binaries no longer dispatch each tool call twice.
+- MCP `send_dm` now forwards idempotency keys so keyed retries do not store duplicate messages.
 
 ## [13.0.1] - 2026-10-02
 
