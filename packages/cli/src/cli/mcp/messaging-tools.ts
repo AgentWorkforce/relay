@@ -350,11 +350,15 @@ export function registerMessagingTools(
         attachments: z.array(z.string()).optional().describe('File attachment IDs'),
         idempotency_key: z
           .string()
+          // Relaycast trims this key upstream, so trim before both the local
+          // replay cache and the forwarded call to keep one logical send on one
+          // key; a whitespace-only key would otherwise become an unkeyed send.
+          .trim()
           .min(1)
           .max(255)
           .optional()
           .describe(
-            'Stable key for retrying this same message after a lost response; use a new key for a new message.'
+            'Stable key for retrying this same message after a lost response; use a new key for a new message. Surrounding whitespace is trimmed and a whitespace-only key is rejected.'
           ),
         ...identityOverrideInputShape,
       },
@@ -371,6 +375,7 @@ export function registerMessagingTools(
         const agents = await listAgentsForRecipientResolution?.();
         const resolvedRecipient = agents ? resolveExactAgentName(agents, to) : undefined;
         const message = await getAgentClient(as).dm(to, text, {
+          idempotencyKey: idempotency_key,
           mode,
           attachments,
           data: replayMessageMetadata(),
