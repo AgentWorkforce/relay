@@ -38,7 +38,6 @@ import {
   swapMacApp,
   verifyChecksum,
   verifyMacSignature,
-  verifyMacProbeSignature,
   waitForLiveSocket,
 } from '../src/install.js';
 import { requestJson } from '../src/http.js';
@@ -567,11 +566,40 @@ describe('probe installer', () => {
   });
 
   it('rejects an unsigned extracted Mac helper before swapping or starting it', async () => {
+    const root = await mkdtemp(join(os.tmpdir(), 'connect-unsigned-mac-probe-test-'));
+    cleanups.push(async () => rm(root, { recursive: true, force: true }));
+    const home = join(root, 'home');
+    let started = false;
+    const run = async (file: string, args: string[]) => {
+      if (file === 'tar') {
+        const destination = args[args.indexOf('-C') + 1];
+        const probe = join(destination, 'agent_relay/helpers/agent-relay-probe');
+        await mkdir(join(probe, '..'), { recursive: true });
+        await writeFile(probe, '#!/bin/sh\n');
+        await chmod(probe, 0o755);
+      }
+      if (file === 'codesign') throw new Error('signature mismatch');
+      return { code: 0, stdout: '', stderr: '' };
+    };
     await expect(
-      verifyMacProbeSignature('/tmp/agent-relay-probe', async () => {
-        throw new Error('signature mismatch');
+      installMacProbe({
+        home,
+        arch: 'arm64',
+        run,
+        require: async () => {},
+        start: async () => {
+          started = true;
+          throw new Error('must not start');
+        },
+        wait: async () => {
+          throw new Error('must not wait');
+        },
       })
     ).rejects.toThrow('Agent Relay probe is not signed by Agent Workforce');
+    expect(started).toBe(false);
+    await expect(
+      readFile(join(home, '.local/lib/agent-relay/current/agent_relay/helpers/agent-relay-probe'))
+    ).rejects.toMatchObject({ code: 'ENOENT' });
   });
 
   it('restores the previous macOS app when the verified replacement cannot be installed', async () => {

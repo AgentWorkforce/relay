@@ -22,9 +22,9 @@ app keeps its existing app update path.
   `~/.local/lib/agent-relay/current`, a symlink at
   `~/.local/bin/agent-relay-probe`, and a detached headless process. No `sudo`
   is used.
-- macOS x64 and arm64 use a signed, notarized standalone probe tarball. The
-  installer verifies its SHA-256 and the extracted binary's pinned Developer
-  ID before swapping it into `~/.local/lib/agent-relay/current` and starting
+- macOS x64 and arm64 use a standalone probe tarball notarized by the
+  publisher. The installer verifies its SHA-256 and the extracted binary's
+  pinned Developer ID before swapping it into `~/.local/lib/agent-relay/current` and starting
   it headless. A clean Mac does not install the GUI app. If an app is already
   installed but its probe needs updating, the existing signed DMG path updates
   that app. An app in `/Applications` that this user cannot replace requires

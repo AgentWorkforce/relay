@@ -9,7 +9,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
-- `@agent-relay/connect` installs a signed standalone macOS probe for a clean Mac, without installing the GUI app.
+- `npx -y @agent-relay/connect install` installs a signed standalone probe on a clean Mac without installing the GUI app.
 
 ## [13.0.1] - 2026-10-02
 
