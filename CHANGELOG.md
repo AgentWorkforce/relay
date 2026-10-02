@@ -9,7 +9,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
-- `@agent-relay/connect join` returns as soon as the probe admits the participant instead of waiting for a redundant host notification, and timed-out joins clearly instruct the caller to retry safely.
+- `@agent-relay/connect join` returns as soon as the probe admits the participant instead of waiting for a redundant host notification, and timed-out or still-pending joins clearly instruct the caller to retry the same request safely.
 
 ## [13.0.1] - 2026-10-02
 

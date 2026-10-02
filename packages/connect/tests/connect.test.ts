@@ -217,18 +217,22 @@ describe('@agent-relay/connect CLI', () => {
     expect(sendRequests).toBe(0);
   });
 
-  it('maps a retry-safe join timeout', async () => {
-    const { home } = await listen((request, response) => {
+  it('maps retry-safe join timeout and pending-operation errors', async () => {
+    const { home } = await listen((request, response, body) => {
       if (request.url === '/setup/status') {
         json(response, { ok: true, data: { version: '2026.10.4' } });
       } else if (request.url === '/connect/join') {
+        const pending = JSON.parse(body).link === 'connect-pending';
         json(
           response,
           {
             ok: false,
-            error: { code: 'connect_join_timeout', message: 'safe to retry' },
+            error: {
+              code: pending ? 'connect_join_pending' : 'connect_join_timeout',
+              message: 'safe to retry',
+            },
           },
-          504
+          pending ? 409 : 504
         );
       }
     });
@@ -238,6 +242,12 @@ describe('@agent-relay/connect CLI', () => {
       code: 8,
       stdout: '',
       stderr: 'Relay Connect join timed out; retry the same join safely.\n',
+    });
+    const pending = await runCli(home, ['join', 'connect-pending']);
+    expect(pending).toEqual({
+      code: 8,
+      stdout: '',
+      stderr: 'A previous join may still have completed; retry with the same link and options.\n',
     });
   });
 

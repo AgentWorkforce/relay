@@ -101,6 +101,10 @@ function errorDetails(error) {
     connect_unavailable: ['Relay Connect cloud service is unavailable; retry once.', 8],
     connect_not_joined: ['This agent session has not joined a Relay Connect.', 4],
     connect_already_joined: ['This agent session is already in a different Relay Connect.', 5],
+    connect_join_pending: [
+      'A previous join may still have completed; retry with the same link and options.',
+      8,
+    ],
     connect_join_timeout: ['Relay Connect join timed out; retry the same join safely.', 8],
     connect_unreachable: ['Relay Connect cannot reach Cloud or Relaycast; retry once.', 8],
     agent_token_invalid: ['Relay Connect is over; run leave once to clear the local registration.', 3],
