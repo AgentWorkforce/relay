@@ -2515,12 +2515,23 @@ async function reportNodeClaimsElsewhere(paths: CoreProjectPaths, deps: CoreDepe
 /**
  * Resolve `--state-dir` for commands that inspect an existing broker. A fleet
  * node directory holds its broker state in `state/`, so accept the node
- * directory too when only the nested connection file exists (relay#1575).
+ * directory too when only the nested one holds broker state (relay#1575).
+ * Lock and identity files count as evidence alongside connection.json so
+ * `down --force` can still recover a broker whose connection file is gone.
  */
 function resolveExistingStateDir(stateDir: string, deps: CoreDependencies): string {
-  return resolveConnectionStateDir(stateDir, (dir) =>
-    deps.fs.existsSync(path.join(dir, CONNECTION_FILENAME))
-  );
+  return resolveConnectionStateDir(stateDir, (dir) => hasBrokerStateEvidence(dir, deps));
+}
+
+function hasBrokerStateEvidence(dir: string, deps: CoreDependencies): boolean {
+  if (deps.fs.existsSync(path.join(dir, CONNECTION_FILENAME))) return true;
+  try {
+    return deps.fs
+      .readdirSync(dir)
+      .some((file) => file.startsWith('broker-') && (file.endsWith('.lock') || file.endsWith('.json')));
+  } catch {
+    return false;
+  }
 }
 
 // eslint-disable-next-line complexity, max-depth

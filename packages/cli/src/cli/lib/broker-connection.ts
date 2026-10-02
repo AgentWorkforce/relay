@@ -127,9 +127,11 @@ export function resolveBrokerConnection(
     // The caller named this broker's state directory: its connection file is
     // the only source for both URL and key, so env vars pointing at another
     // broker cannot pair that broker's URL or key with this one.
+    // Select by file presence, not validity: a malformed exact file must fail
+    // here rather than silently redirect to a nested broker.
     const stateDir = resolveConnectionStateDir(
       explicitStateDir,
-      (dir) => readString(deps.readConnectionFile(dir), 'url') !== undefined
+      (dir) => fs.existsSync(path.join(dir, 'connection.json')) || deps.readConnectionFile(dir) !== null
     );
     const connectionFile = deps.readConnectionFile(stateDir);
     const fileUrl = readString(connectionFile, 'url');

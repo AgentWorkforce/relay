@@ -1649,6 +1649,28 @@ describe('registerCoreCommands', () => {
     }
   );
 
+  it('down --force via the node directory recovers a nested broker whose connection file is gone', async () => {
+    const stateDir = '/srv/orphan-node/state';
+    const running = new Set([222, 333]);
+    const execCommand = identityCommand(222, `${stateDir}/broker-orphan.lock`);
+    const killImpl = vi.fn((pid: number, signal?: NodeJS.Signals | number) => {
+      if (signal === 0) {
+        if (!running.has(pid)) throw new Error('not running');
+        return;
+      }
+      running.delete(pid);
+    });
+    const { program, deps } = createHarness({ execCommand, killImpl });
+    const paths = { ...deps.getProjectPaths(), dataDir: stateDir };
+    await persistBrokerIdentity(paths, 222, 'orphan', deps);
+    expect(deps.fs.existsSync(`${stateDir}/connection.json`)).toBe(false);
+
+    await runCommand(program, ['down', '--force', '--state-dir', '/srv/orphan-node']);
+
+    expect(killImpl).toHaveBeenCalledWith(222, 'SIGTERM');
+    expect([...running]).toEqual([333]);
+  });
+
   it('down still verifies records written under the project by earlier releases', async () => {
     const stateDir = '/srv/legacy-node/state';
     let running = true;

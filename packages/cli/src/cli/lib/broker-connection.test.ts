@@ -159,6 +159,24 @@ describe('explicit --state-dir selection', () => {
   });
 });
 
+describe('malformed exact connection file', () => {
+  it('fails instead of falling back to a nested broker', () => {
+    const nodeDir = fs.mkdtempSync(path.join(os.tmpdir(), 'relay-node-dir-'));
+    try {
+      fs.mkdirSync(path.join(nodeDir, 'state'));
+      fs.writeFileSync(path.join(nodeDir, 'connection.json'), '{not json');
+      fs.writeFileSync(
+        path.join(nodeDir, 'state', 'connection.json'),
+        JSON.stringify({ url: 'http://127.0.0.1:4555', api_key: 'nested' })
+      );
+      const deps = makeDeps({ readConnectionFile: readConnectionFileFromDisk });
+      expect(resolveBrokerConnection({ stateDir: nodeDir }, deps)).toBeNull();
+    } finally {
+      fs.rmSync(nodeDir, { recursive: true, force: true });
+    }
+  });
+});
+
 describe('describeMissingBrokerConnection', () => {
   it('names the --state-dir paths that were searched', () => {
     expect(describeMissingBrokerConnection({ stateDir: '/srv/node' }, makeDeps())).toBe(
