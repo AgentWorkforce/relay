@@ -2517,9 +2517,10 @@ async function reportNodeClaimsElsewhere(paths: CoreProjectPaths, deps: CoreDepe
  * directory too when the nested one holds the broker (relay#1575).
  *
  * Evidence is ranked, checking the exact directory before `state/` at each
- * rank: a `connection.json`, then an identity record verified against its
- * running process (start time, executable and held lock, as `down` requires
- * before signalling), then any broker lock or record. Leftover files in the node directory
+ * rank: a `connection.json` whose pid is running, then an identity record
+ * verified against its running process (start time, executable and held
+ * lock, as `down` requires before signalling), then any `connection.json`,
+ * then any broker lock or record. Leftover files in the node directory
  * therefore cannot shadow a running nested broker, and `down --force` can
  * still recover a broker whose connection file is gone.
  */
@@ -2527,8 +2528,9 @@ async function resolveExistingStateDir(stateDir: string, deps: CoreDependencies)
   const exact = path.resolve(stateDir);
   const candidates = [exact, path.join(exact, 'state')];
   const ranks: Array<(dir: string) => boolean | Promise<boolean>> = [
-    (dir) => deps.fs.existsSync(path.join(dir, CONNECTION_FILENAME)),
+    (dir) => hasLiveConnection(dir, deps),
     (dir) => hasVerifiedBrokerIdentity(dir, deps),
+    (dir) => deps.fs.existsSync(path.join(dir, CONNECTION_FILENAME)),
     (dir) => hasBrokerStateFiles(dir, deps),
   ];
   for (const matches of ranks) {
@@ -2551,6 +2553,12 @@ function brokerStateFiles(dir: string, deps: CoreDependencies): string[] {
 
 function hasBrokerStateFiles(dir: string, deps: CoreDependencies): boolean {
   return brokerStateFiles(dir, deps).length > 0;
+}
+
+/** A connection file only proves a live broker while its pid is running. */
+function hasLiveConnection(dir: string, deps: CoreDependencies): boolean {
+  const pid = readBrokerConnectionFromFs(deps.fs, dir)?.pid;
+  return typeof pid === 'number' && pid > 0 && isProcessRunning(pid, deps);
 }
 
 /**

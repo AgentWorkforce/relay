@@ -2434,6 +2434,25 @@ describe('registerCoreCommands', () => {
     expect(deps.log).toHaveBeenCalledWith('PID: 4242');
   });
 
+  it('status --state-dir prefers a live nested broker over a stale connection file in the node directory', async () => {
+    const nodeDir = '/srv/stale-conn-node';
+    const fs = createFsMock({
+      [`${nodeDir}/connection.json`]: connectionFile(999),
+      [`${nodeDir}/state/connection.json`]: connectionFile(4242),
+    });
+    sdkStatusClient.getStatus.mockResolvedValueOnce({ agent_count: 1, pending_delivery_count: 0 });
+    sdkStatusClient.getSession.mockResolvedValueOnce({ workspace_key: 'rk_live_teststatus123' });
+    const killImpl = vi.fn((pid: number, signal?: NodeJS.Signals | number) => {
+      if (signal === 0 && pid === 999) throw new Error('not running');
+    });
+    const { program, deps } = createHarness({ fs, killImpl });
+
+    expect(await runCommand(program, ['status', '--state-dir', nodeDir])).toBeUndefined();
+
+    expect(deps.log).toHaveBeenCalledWith('Status: RUNNING');
+    expect(deps.log).toHaveBeenCalledWith('PID: 4242');
+  });
+
   it('status checks broker status and prints metrics', async () => {
     const connectionPath = '/tmp/project/.agentworkforce/relay/connection.json';
     const fs = createFsMock({
