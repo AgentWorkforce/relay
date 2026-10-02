@@ -222,7 +222,7 @@ export function linuxProbeSessionUpdateHint(probe, response, platform = process.
     probeVersionSupported(probe?.version, MINIMUM_MAC_PROBE_VERSION)
   )
     return null;
-  return `Agent Relay ${probe.version} could not identify this session; update Agent Relay to ${MINIMUM_MAC_PROBE_VERSION} or newer and retry.`;
+  return `Agent Relay ${probe.version} could not identify this session. If this is a live Claude Code or Codex session, update the running Agent Relay probe to ${MINIMUM_MAC_PROBE_VERSION} or newer; otherwise run this from a live session.`;
 }
 
 async function liveStatus(socketPath, timeoutMs = 5_000) {

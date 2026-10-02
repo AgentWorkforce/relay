@@ -379,7 +379,7 @@ describe('probe installer', () => {
     const probe = { version: '2026.10.4' };
     const rejection = { error: { code: 'not_a_relay_session' } };
     expect(linuxProbeSessionUpdateHint(probe, rejection, 'linux')).toBe(
-      'Agent Relay 2026.10.4 could not identify this session; update Agent Relay to 2026.10.5 or newer and retry.'
+      'Agent Relay 2026.10.4 could not identify this session. If this is a live Claude Code or Codex session, update the running Agent Relay probe to 2026.10.5 or newer; otherwise run this from a live session.'
     );
     expect(linuxProbeSessionUpdateHint(probe, rejection, 'darwin')).toBeNull();
     expect(linuxProbeSessionUpdateHint({ version: '2026.10.5' }, rejection, 'linux')).toBeNull();
@@ -400,7 +400,18 @@ describe('probe installer', () => {
         code: 6,
         stdout: '',
         stderr:
-          'Agent Relay 2026.10.4 could not identify this session; update Agent Relay to 2026.10.5 or newer and retry.\n',
+          'Agent Relay 2026.10.4 could not identify this session. If this is a live Claude Code or Codex session, update the running Agent Relay probe to 2026.10.5 or newer; otherwise run this from a live session.\n',
+      });
+      const structured = await runCli(home, [...args, '--json']);
+      expect(structured.code).toBe(6);
+      expect(structured.stderr).toBe('');
+      expect(JSON.parse(structured.stdout)).toMatchObject({
+        ok: false,
+        error: {
+          code: 'not_a_relay_session',
+          message:
+            'Agent Relay 2026.10.4 could not identify this session. If this is a live Claude Code or Codex session, update the running Agent Relay probe to 2026.10.5 or newer; otherwise run this from a live session.',
+        },
       });
     }
   });

@@ -133,7 +133,12 @@ async function requireExistingProbe() {
 
 function requireSessionOk(response, probe) {
   const hint = linuxProbeSessionUpdateHint(probe, response);
-  if (hint) throw new InstallError(hint, 6);
+  if (hint) {
+    const error = new InstallError(hint, 6);
+    error.code = 'probe_update_required';
+    error.response = { ...response, error: { ...response.error, message: hint } };
+    throw error;
+  }
   return requireOk(response);
 }
 

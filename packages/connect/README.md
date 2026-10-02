@@ -19,7 +19,8 @@ A responsive old Linux probe instead fails with an update-required error so the
 CLI never starts a second headless probe beside it.
 If a Linux 2026.10.4 probe cannot identify the calling session during join or
 status, the CLI tells the user to update Agent Relay rather than retrying the
-same request.
+same request. A live Linux headless probe cannot be replaced by this CLI while
+it is running; update the running service separately.
 
 - Linux x64 and arm64 use the relocatable tarball under
   `~/.local/lib/agent-relay/current`, a symlink at
