@@ -102,8 +102,11 @@ describe('resolveBrokerConnection', () => {
 });
 
 describe('explicit --state-dir selection', () => {
+  // Fixture keys go through path.resolve, as the resolver does, so they match on every platform.
+  const nodeDir = path.resolve('/srv/node');
+  const nodeStateDir = path.join(nodeDir, 'state');
   const files: Record<string, unknown> = {
-    '/srv/node/state': { url: 'http://node-host:4100/', api_key: 'node-key' },
+    [nodeStateDir]: { url: 'http://node-host:4100/', api_key: 'node-key' },
   };
   const readConnectionFile = vi.fn((dir: string) => files[dir] ?? null);
 
@@ -112,7 +115,7 @@ describe('explicit --state-dir selection', () => {
       env: { RELAY_BROKER_URL: 'http://other:1', RELAY_BROKER_API_KEY: 'other-key' },
       readConnectionFile,
     });
-    expect(resolveBrokerConnection({ stateDir: '/srv/node/state' }, deps)).toEqual({
+    expect(resolveBrokerConnection({ stateDir: nodeStateDir }, deps)).toEqual({
       url: 'http://node-host:4100',
       apiKey: 'node-key',
     });
@@ -120,19 +123,27 @@ describe('explicit --state-dir selection', () => {
 
   it('never falls back to env when the named state dir has no broker', () => {
     const deps = makeDeps({ env: { RELAY_BROKER_URL: 'http://other:1' }, readConnectionFile });
-    expect(resolveBrokerConnection({ stateDir: '/srv/missing' }, deps)).toBeNull();
+    expect(resolveBrokerConnection({ stateDir: path.resolve('/srv/missing') }, deps)).toBeNull();
   });
 
   it('still lets --api-key override the connection file key', () => {
     const deps = makeDeps({ readConnectionFile });
-    expect(resolveBrokerConnection({ stateDir: '/srv/node/state', apiKey: 'flag-key' }, deps)?.apiKey).toBe(
+    expect(resolveBrokerConnection({ stateDir: nodeStateDir, apiKey: 'flag-key' }, deps)?.apiKey).toBe(
       'flag-key'
     );
   });
 
+  it('pairs --broker-url with the named state dir key, not the env key', () => {
+    const deps = makeDeps({ env: { RELAY_BROKER_API_KEY: 'other-key' }, readConnectionFile });
+    expect(resolveBrokerConnection({ stateDir: nodeDir, brokerUrl: 'http://tunnel:9000' }, deps)).toEqual({
+      url: 'http://tunnel:9000',
+      apiKey: 'node-key',
+    });
+  });
+
   it('accepts a fleet node directory whose broker state lives in state/ (relay#1575)', () => {
     const deps = makeDeps({ readConnectionFile });
-    expect(resolveBrokerConnection({ stateDir: '/srv/node' }, deps)?.url).toBe('http://node-host:4100');
+    expect(resolveBrokerConnection({ stateDir: nodeDir }, deps)?.url).toBe('http://node-host:4100');
   });
 
   it('reads the nested state/connection.json from disk and prefers an exact match', () => {
@@ -179,14 +190,17 @@ describe('malformed exact connection file', () => {
 
 describe('describeMissingBrokerConnection', () => {
   it('names the --state-dir paths that were searched', () => {
-    expect(describeMissingBrokerConnection({ stateDir: '/srv/node' }, makeDeps())).toBe(
-      'Error: no broker connection at /srv/node/connection.json (from --state-dir; also checked /srv/node/state/connection.json). Pass the same --state-dir the broker was started with.'
+    const nodeDir = path.resolve('/srv/node');
+    expect(describeMissingBrokerConnection({ stateDir: nodeDir }, makeDeps())).toBe(
+      `Error: no broker connection at ${path.join(nodeDir, 'connection.json')} (from --state-dir; also checked ${path.join(nodeDir, 'state', 'connection.json')}). Pass the same --state-dir the broker was started with.`
     );
   });
 
   it('labels the project default and points at --state-dir', () => {
     const message = describeMissingBrokerConnection({}, makeDeps());
-    expect(message).toContain('/tmp/fake/.agentworkforce/relay/connection.json (project default)');
+    expect(message).toContain(
+      `${path.join('/tmp/fake/.agentworkforce/relay', 'connection.json')} (project default)`
+    );
     expect(message).toContain('If the broker was started with --state-dir, pass the same --state-dir here');
   });
 });

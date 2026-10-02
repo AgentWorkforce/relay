@@ -356,11 +356,16 @@ export function removeBrokerIdentity(
   identity: BrokerProcessIdentity,
   deps: IdentityDependencies
 ): void {
-  const current = findBrokerIdentityRecord(paths, deps, identity.brokerName);
-  if (!current || JSON.stringify(current.identity) !== JSON.stringify(identity)) return;
-  try {
-    deps.fs.unlinkSync(current.filename);
-  } catch {
-    /* Best effort. */
+  // Remove every location holding this exact record so a legacy copy cannot
+  // outlive the process it describes.
+  for (const directory of identityDirectories(paths, deps)) {
+    const filename = identityFilename(directory, paths, deps, identity.brokerName);
+    const current = readBrokerIdentityFile(filename, paths, deps, identity.brokerName);
+    if (!current || JSON.stringify(current) !== JSON.stringify(identity)) continue;
+    try {
+      deps.fs.unlinkSync(filename);
+    } catch {
+      /* Best effort. */
+    }
   }
 }

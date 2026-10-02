@@ -5,16 +5,17 @@
  * subcommands must reach a broker started with `--state-dir` from an unrelated
  * working directory.
  *
- * The exact-head harness injects a Vitest probe into each exact target checkout.
- * The probe drives the production Commander registration and the real
- * HarnessDriverClient against a loopback fixture broker whose connection.json
- * lives in a fleet-node style `<node>/state/` directory. A decoy broker named by
- * RELAY_BROKER_URL must never be contacted when --state-dir is explicit.
+ * Each exact target checkout is built, and its real `agent-relay` binary is run
+ * from an unrelated directory against a loopback fixture broker whose
+ * connection.json lives in a fleet-node style `<node>/state/` directory. A
+ * decoy broker named by RELAY_BROKER_URL must never be contacted when
+ * --state-dir is explicit.
  */
 
-import { execFileSync, spawnSync } from 'node:child_process';
-import { randomUUID } from 'node:crypto';
-import { lstat, mkdir, open, readFile, rename, rm, writeFile } from 'node:fs/promises';
+import { execFileSync, spawn, spawnSync } from 'node:child_process';
+import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
+import http from 'node:http';
+import os from 'node:os';
 import path from 'node:path';
 import process from 'node:process';
 import { fileURLToPath } from 'node:url';
@@ -46,26 +47,94 @@ if (!isWithin(harnessDir, runnerPath)) {
   throw new Error('The RelayFlow runner must execute from the exact-head harness checkout.');
 }
 
-const probePath = path.join(targetDir, 'packages/cli/src/cli/.relayflow-1446-state-dir.test.ts');
-const configPath = path.join(targetDir, '.relayflow-1446-state-dir.vitest.config.mjs');
-const observationPath = path.join(targetDir, '.relayflow-1446-state-dir-observation.json');
+const cliEntry = path.join(targetDir, 'packages/cli/dist/cli/index.js');
 
-const probeSource = String.raw`import fs from 'node:fs';
-import { writeFile } from 'node:fs/promises';
-import http from 'node:http';
-import os from 'node:os';
-import path from 'node:path';
+run('npm', ['ci', '--ignore-scripts'], targetDir, 'workspace dependency installation');
+run('npm', ['run', 'build:core'], targetDir, 'workspace package build');
 
-import { Command } from 'commander';
-import { test } from 'vitest';
+const requests = [];
+const broker = await startBroker('node', requests);
+const decoy = await startBroker('decoy', requests);
+const root = await mkdtemp(path.join(os.tmpdir(), 'relayflow-1446-'));
+try {
+  const nodeDir = path.join(root, 'sf-mini-node');
+  const stateDir = path.join(nodeDir, 'state');
+  const unrelatedCwd = path.join(root, 'elsewhere');
+  const home = path.join(root, 'home');
+  await mkdir(stateDir, { recursive: true });
+  await mkdir(path.join(unrelatedCwd, '.git'), { recursive: true });
+  await mkdir(home, { recursive: true });
+  await writeFile(
+    path.join(stateDir, 'connection.json'),
+    JSON.stringify({
+      url: `http://127.0.0.1:${broker.address().port}`,
+      api_key: 'proof-node-key',
+      pid: process.pid,
+    })
+  );
+  // The real CLI binary, from an unrelated checkout, with ambient env naming a decoy broker.
+  const env = {
+    PATH: process.env.PATH ?? '',
+    HOME: home,
+    AGENT_RELAY_TELEMETRY_DISABLED: '1',
+    DO_NOT_TRACK: '1',
+    RELAY_BROKER_URL: `http://127.0.0.1:${decoy.address().port}`,
+    RELAY_BROKER_API_KEY: 'decoy-key',
+  };
+  const list = await runCli(['node', 'agent', 'list', '--state-dir', stateDir], unrelatedCwd, env);
+  const release = await runCli(
+    ['node', 'agent', 'release', 'worker', '--state-dir', nodeDir],
+    unrelatedCwd,
+    env
+  );
+  const observation = { list, release, requests };
+  console.log('State-dir broker selection observation:', JSON.stringify(observation));
 
-import { registerLocalAgentCommands } from './commands/local-agent.js';
+  const rejected = (result) => result.code !== 0 && /unknown option '--state-dir'/.test(result.stderr);
+  const baseObserved = rejected(list) && rejected(release) && requests.length === 0;
+  const nodeRequests = requests.filter((request) => request.broker === 'node');
+  const headObserved =
+    list.code === 0 &&
+    release.code === 0 &&
+    list.stdout.includes('"worker"') &&
+    release.stdout.includes('Released worker.') &&
+    requests.every((request) => request.broker === 'node' && request.apiKey === 'proof-node-key') &&
+    nodeRequests.some((request) => request.method === 'GET' && request.url === '/api/spawned') &&
+    nodeRequests.some((request) => request.method === 'DELETE' && request.url === '/api/spawned/worker');
 
-const observationPath = process.env.RELAY_PR1446_OBSERVATION_PATH;
+  let outcome;
+  let signature;
+  let details;
+  if (baseObserved) {
+    outcome = 'bug';
+    signature = 'node_agent_state_dir_rejected';
+    details =
+      "The exact base agent-relay binary rejects --state-dir on node agent list and release with unknown option '--state-dir', so a broker started with --state-dir cannot be managed from another directory.";
+  } else if (headObserved) {
+    outcome = 'fixed';
+    signature = 'node_agent_state_dir_targets_broker';
+    details =
+      'The exact head agent-relay binary lists and releases through the broker named by --state-dir (both the state dir and its fleet node parent) from an unrelated cwd, authenticating with that broker key and never contacting the RELAY_BROKER_URL decoy.';
+  } else {
+    throw new Error(`Unexpected state-dir broker selection observation: ${JSON.stringify(observation)}.`);
+  }
 
-function startBroker(label, requests) {
+  await mkdir(path.dirname(resultPath), { recursive: true });
+  await writeFile(
+    resultPath,
+    `${JSON.stringify({ version: 1, caseId: CASE_ID, arm, outcome, signature, details }, null, 2)}\n`,
+    'utf8'
+  );
+} finally {
+  broker.close();
+  decoy.close();
+  await rm(root, { recursive: true, force: true });
+}
+
+/** Loopback fixture broker answering the two endpoints list and release use. */
+function startBroker(label, log) {
   const server = http.createServer((req, res) => {
-    requests.push({ broker: label, method: req.method, url: req.url, apiKey: req.headers['x-api-key'] ?? null });
+    log.push({ broker: label, method: req.method, url: req.url, apiKey: req.headers['x-api-key'] ?? null });
     res.setHeader('content-type', 'application/json');
     if (req.method === 'GET' && req.url === '/api/spawned') {
       res.end(JSON.stringify({ agents: [{ name: 'worker' }] }));
@@ -78,130 +147,28 @@ function startBroker(label, requests) {
     res.statusCode = 404;
     res.end(JSON.stringify({ error: 'not found' }));
   });
-  return new Promise((resolve) => {
-    server.listen(0, '127.0.0.1', () => resolve(server));
-  });
+  return new Promise((resolve) => server.listen(0, '127.0.0.1', () => resolve(server)));
 }
 
-async function invoke(argv, cwd, env) {
-  const logs = [];
-  const errors = [];
-  const program = new Command();
-  program.exitOverride();
-  registerLocalAgentCommands(program.command('node'), {
-    cwd: () => cwd,
-    env,
-    log: (...args) => logs.push(args.join(' ')),
-    error: (...args) => errors.push(args.join(' ')),
-    exit: (code) => {
-      throw new Error('cli exit ' + code);
-    },
+/** Run the built CLI asynchronously so the in-process fixture brokers can answer it. */
+function runCli(args, cwd, env) {
+  return new Promise((resolve, reject) => {
+    const child = spawn(process.execPath, [cliEntry, ...args], {
+      cwd,
+      env,
+      stdio: ['ignore', 'pipe', 'pipe'],
+    });
+    let stdout = '';
+    let stderr = '';
+    child.stdout.on('data', (chunk) => (stdout += chunk));
+    child.stderr.on('data', (chunk) => (stderr += chunk));
+    const timer = setTimeout(() => child.kill('SIGKILL'), COMMAND_TIMEOUT_MS);
+    child.on('error', reject);
+    child.on('close', (code) => {
+      clearTimeout(timer);
+      resolve({ code, stdout: stdout.slice(-4000), stderr: stderr.slice(-4000) });
+    });
   });
-  let error = null;
-  try {
-    await program.parseAsync(argv, { from: 'user' });
-  } catch (caught) {
-    error = caught instanceof Error ? caught.message : String(caught);
-  }
-  return { logs, errors, error };
-}
-
-test('observe node agent --state-dir broker selection', async () => {
-  const requests = [];
-  const broker = await startBroker('node', requests);
-  const decoy = await startBroker('decoy', requests);
-  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'relayflow-1446-'));
-  const nodeDir = path.join(root, 'sf-mini-node');
-  const stateDir = path.join(nodeDir, 'state');
-  const unrelatedCwd = path.join(root, 'elsewhere');
-  fs.mkdirSync(stateDir, { recursive: true });
-  fs.mkdirSync(path.join(unrelatedCwd, '.git'), { recursive: true });
-  fs.writeFileSync(
-    path.join(stateDir, 'connection.json'),
-    JSON.stringify({ url: 'http://127.0.0.1:' + broker.address().port, api_key: 'proof-node-key', pid: process.pid })
-  );
-  const env = {
-    RELAY_BROKER_URL: 'http://127.0.0.1:' + decoy.address().port,
-    RELAY_BROKER_API_KEY: 'decoy-key',
-  };
-  try {
-    const list = await invoke(['node', 'agent', 'list', '--state-dir', stateDir], unrelatedCwd, env);
-    const release = await invoke(['node', 'agent', 'release', 'worker', '--state-dir', nodeDir], unrelatedCwd, env);
-    await writeFile(observationPath, JSON.stringify({ list, release, requests }), 'utf8');
-  } finally {
-    broker.close();
-    decoy.close();
-    fs.rmSync(root, { recursive: true, force: true });
-  }
-});
-`;
-
-const configSource = `export default {
-  test: {
-    environment: 'node',
-    include: ['packages/cli/src/cli/.relayflow-1446-state-dir.test.ts'],
-    setupFiles: [],
-  },
-};\n`;
-
-try {
-  run('npm', ['ci', '--ignore-scripts'], targetDir, 'workspace dependency installation');
-  run('npm', ['run', 'build:core'], targetDir, 'workspace package build');
-  await writeGeneratedFile(probePath, probeSource);
-  await writeGeneratedFile(configPath, configSource);
-  run(
-    'npm',
-    ['exec', '--', 'vitest', 'run', '--config', path.relative(targetDir, configPath)],
-    targetDir,
-    'state-dir broker selection probe',
-    { RELAY_PR1446_OBSERVATION_PATH: observationPath }
-  );
-
-  const observation = JSON.parse(await readFile(observationPath, 'utf8'));
-  console.log('State-dir broker selection observation:', JSON.stringify(observation));
-  const { list, release, requests } = observation;
-  const rejected = (result) =>
-    typeof result?.error === 'string' && /unknown option '--state-dir'/.test(result.error);
-  const baseObserved = rejected(list) && rejected(release) && requests.length === 0;
-  const nodeRequests = requests.filter((request) => request.broker === 'node');
-  const headObserved =
-    list?.error === null &&
-    release?.error === null &&
-    list.errors.length === 0 &&
-    release.errors.length === 0 &&
-    list.logs.some((line) => line.includes('"worker"')) &&
-    release.logs.includes('Released worker.') &&
-    requests.every((request) => request.broker === 'node' && request.apiKey === 'proof-node-key') &&
-    nodeRequests.some((request) => request.method === 'GET' && request.url === '/api/spawned') &&
-    nodeRequests.some((request) => request.method === 'DELETE' && request.url === '/api/spawned/worker');
-
-  let outcome;
-  let signature;
-  let details;
-  if (baseObserved) {
-    outcome = 'bug';
-    signature = 'node_agent_state_dir_rejected';
-    details =
-      "The exact base CLI rejects --state-dir on node agent list and release with unknown option '--state-dir', so a broker started with --state-dir cannot be managed from another directory.";
-  } else if (headObserved) {
-    outcome = 'fixed';
-    signature = 'node_agent_state_dir_targets_broker';
-    details =
-      'The exact head CLI lists and releases through the broker named by --state-dir (both the state dir and its fleet node parent) from an unrelated cwd, authenticating with that broker key and never contacting the RELAY_BROKER_URL decoy.';
-  } else {
-    throw new Error(`Unexpected state-dir broker selection observation: ${JSON.stringify(observation)}.`);
-  }
-
-  await mkdir(path.dirname(resultPath), { recursive: true });
-  await writeFile(
-    resultPath,
-    `${JSON.stringify({ version: 1, caseId: CASE_ID, arm, outcome, signature, details }, null, 2)}\n`,
-    'utf8'
-  );
-} finally {
-  await rm(probePath, { force: true });
-  await rm(configPath, { force: true });
-  await rm(observationPath, { force: true });
 }
 
 function requiredValue(name) {
@@ -220,25 +187,6 @@ function isWithin(directory, candidate) {
     relative === '' ||
     (!relative.startsWith(`..${path.sep}`) && relative !== '..' && !path.isAbsolute(relative))
   );
-}
-
-async function writeGeneratedFile(targetPath, source) {
-  try {
-    const existing = await lstat(targetPath);
-    if (!existing.isFile()) throw new Error(`Refusing to replace non-file ${targetPath}.`);
-  } catch (error) {
-    if (error?.code !== 'ENOENT') throw error;
-  }
-
-  const temporaryPath = `${targetPath}.tmp-${process.pid}-${randomUUID()}`;
-  try {
-    const handle = await open(temporaryPath, 'wx', 0o600);
-    await handle.writeFile(source, 'utf8');
-    await handle.close();
-    await rename(temporaryPath, targetPath);
-  } finally {
-    await rm(temporaryPath, { force: true });
-  }
 }
 
 function run(command, args, cwd, label, extraEnv = {}) {

@@ -502,7 +502,8 @@ export function formatPrettyAgentStatusList(agents: AgentDeliveryStatus[], now: 
 
 /**
  * Whether the caller chose a broker explicitly (`--broker-url` / `--api-key` /
- * `--state-dir`, or `RELAY_BROKER_URL`). Without one, commands keep using the
+ * `--state-dir`, or `RELAY_BROKER_URL` / `RELAY_BROKER_API_KEY`), matching the
+ * selection `attach` and `message` honour. Without one, commands keep using the
  * enclosing project's broker.
  */
 function hasExplicitBrokerSelection(
@@ -513,7 +514,8 @@ function hasExplicitBrokerSelection(
     options.brokerUrl?.trim() ||
     options.apiKey?.trim() ||
     options.stateDir?.trim() ||
-    deps.env.RELAY_BROKER_URL?.trim()
+    deps.env.RELAY_BROKER_URL?.trim() ||
+    deps.env.RELAY_BROKER_API_KEY?.trim()
   );
 }
 

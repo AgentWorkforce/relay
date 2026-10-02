@@ -1256,10 +1256,11 @@ describe('explicit broker selection on every node agent subcommand (relay#1446, 
     expect(log).toHaveBeenCalledWith('Released worker.');
   });
 
-  it('RELAY_BROKER_URL selects the broker for flag-free release', async () => {
-    const { program, connect, connectLocal, local } = selectionHarness({
-      RELAY_BROKER_URL: 'http://127.0.0.1:4100',
-    });
+  it.each([
+    ['RELAY_BROKER_URL', 'http://127.0.0.1:4100'],
+    ['RELAY_BROKER_API_KEY', 'env-key'],
+  ])('%s selects the broker for flag-free release', async (name, value) => {
+    const { program, connect, connectLocal, local } = selectionHarness({ [name]: value });
     await program.parseAsync(['local', 'agent', 'release', 'worker'], { from: 'user' });
     expect(connect).not.toHaveBeenCalled();
     expect(connectLocal).toHaveBeenCalled();
@@ -1274,7 +1275,11 @@ describe('explicit broker selection on every node agent subcommand (relay#1446, 
         from: 'user',
       }
     );
-    expect(connectLocal).toHaveBeenCalled();
+    expect(connectLocal).toHaveBeenCalledWith('/tmp/project', {
+      brokerUrl: undefined,
+      apiKey: undefined,
+      stateDir,
+    });
     expect(local.spawnPty).toHaveBeenCalled();
     expect(attach).toHaveBeenCalledWith(
       'worker',

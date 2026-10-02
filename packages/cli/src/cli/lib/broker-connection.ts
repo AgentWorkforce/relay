@@ -123,10 +123,11 @@ export function resolveBrokerConnection(
   });
 
   const explicitStateDir = trimOrUndefined(options.stateDir);
-  if (explicitStateDir && !explicitUrl) {
+  if (explicitStateDir) {
     // The caller named this broker's state directory: its connection file is
-    // the only source for both URL and key, so env vars pointing at another
-    // broker cannot pair that broker's URL or key with this one.
+    // the only source for the URL (unless --broker-url overrides it) and the
+    // key, so env vars pointing at another broker cannot pair that broker's
+    // URL or key with this one.
     // Select by file presence, not validity: a malformed exact file must fail
     // here rather than silently redirect to a nested broker.
     const stateDir = resolveConnectionStateDir(
@@ -134,14 +135,13 @@ export function resolveBrokerConnection(
       (dir) => fs.existsSync(path.join(dir, 'connection.json')) || deps.readConnectionFile(dir) !== null
     );
     const connectionFile = deps.readConnectionFile(stateDir);
-    const fileUrl = readString(connectionFile, 'url');
-    if (!fileUrl) return null;
-    return finish(fileUrl, explicitKey ?? readString(connectionFile, 'api_key'));
+    const url = explicitUrl ?? readString(connectionFile, 'url');
+    if (!url) return null;
+    return finish(url, explicitKey ?? readString(connectionFile, 'api_key'));
   }
 
   const envUrl = trimOrUndefined(deps.env.RELAY_BROKER_URL);
-  const stateDir = explicitStateDir ? path.resolve(explicitStateDir) : deps.getDefaultStateDir();
-  const connectionFile = deps.readConnectionFile(stateDir);
+  const connectionFile = deps.readConnectionFile(deps.getDefaultStateDir());
   const fileUrl = readString(connectionFile, 'url');
 
   const url = explicitUrl ?? envUrl ?? fileUrl;
