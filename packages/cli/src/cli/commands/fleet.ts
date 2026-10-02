@@ -94,6 +94,7 @@ const FLEET_CLIS = new Set([
 const MIN_VERIFIED_CONFIRM_TIMEOUT_MS = 95_000;
 const CLOUD_SANDBOX_ID_PATTERN =
   /^sbx_[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
+const MAX_OWNED_SANDBOX_RESUME_ATTEMPTS = 3;
 
 function spawnInvocationWithPlacement(invocation: Record<string, unknown>): Record<string, unknown> {
   return { ...invocation, placement: spawnPlacementReceipt(invocation) };
@@ -236,6 +237,30 @@ export interface FleetCommandDependencies {
   error: (...args: unknown[]) => void;
   exit: (code: number) => never;
   retireOwnedBindings: typeof retireOwnedIntegrationBindings;
+}
+
+async function ensureOwnedCloudFleetSandbox(
+  deps: Pick<FleetCommandDependencies, 'ensureCloudFleetSandbox' | 'warn'>,
+  input: Parameters<typeof ensureCloudFleetSandbox>[0],
+  ownedSandboxId: string | undefined
+): Promise<EnsureCloudFleetSandboxResult> {
+  for (let resumeAttempt = 0; ; resumeAttempt += 1) {
+    try {
+      return await deps.ensureCloudFleetSandbox(input);
+    } catch (error) {
+      if (
+        ownedSandboxId === undefined ||
+        !(error instanceof CloudFleetSandboxProvisionError) ||
+        !error.outcomeUnknown ||
+        resumeAttempt >= MAX_OWNED_SANDBOX_RESUME_ATTEMPTS
+      ) {
+        throw error;
+      }
+      deps.warn(
+        `Cloud interrupted preparation of caller-owned sandbox '${ownedSandboxId}'; resuming the same sandbox (${resumeAttempt + 1}/${MAX_OWNED_SANDBOX_RESUME_ATTEMPTS}).`
+      );
+    }
+  }
 }
 
 function withFleetDefaults(overrides: Partial<FleetCommandDependencies> = {}): FleetCommandDependencies {
@@ -714,7 +739,7 @@ export function registerFleetCommands(
             ? 'long-running-agent'
             : 'standard-long-running-agent';
         try {
-          sandbox = await deps.ensureCloudFleetSandbox({
+          sandbox = await ensureOwnedCloudFleetSandbox(deps, {
             workspaceId: relayWorkspaceId,
             requiredCapability: `spawn:${cli}`,
             maxAgents: 1,
@@ -734,7 +759,7 @@ export function registerFleetCommands(
             ...(checkoutRepository && sandboxRepository
               ? { repoRevisions: { [sandboxRepository.repository]: sandboxRepository.revision } }
               : {}),
-          });
+          }, shouldCleanupSandbox ? sandboxId : undefined);
           assertSandboxRepositoryRevision(sandbox, checkoutRepository ? sandboxRepository : undefined);
         } catch (error) {
           if (

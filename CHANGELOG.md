@@ -5,7 +5,11 @@ All notable changes to Agent Relay will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
+## [Unreleased - Patch]
+
+### Fixed
+
+- `fleet spawn --sandbox` automatically resumes its own sandbox after an interrupted Cloud provisioning response, preserving one sandbox identity instead of requiring a manual `--sandbox-id` replay.
 
 ## [13.0.1] - 2026-10-02
 

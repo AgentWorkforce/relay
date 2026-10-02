@@ -1245,7 +1245,7 @@ describe('fleet command support', () => {
     });
   });
 
-  it('plain --sandbox materializes the inferred repository through Relayfile and starts in its live relative cwd', async () => {
+  it('plain --sandbox resumes an interrupted owned provision and starts in its live relative cwd', async () => {
     vi.stubEnv('RELAY_AGENT_TOKEN', undefined);
     const revision = '0123456789abcdef0123456789abcdef01234567';
     const repositorySelection = {
@@ -1269,8 +1269,17 @@ describe('fleet command support', () => {
         sentinelPath: '/github/repos/AgentWorkforce/cloud/.relayfile/clone.json',
       };
     });
-    const ensureCloudFleetSandbox = vi.fn(async () => {
+    const ensureCloudFleetSandbox = vi.fn(async (input: { sandboxId?: string; name?: string }) => {
       events.push('ensure');
+      if (ensureCloudFleetSandbox.mock.calls.length === 1) {
+        throw new CloudFleetSandboxProvisionError('gateway timed out', {
+          cloudWorkspaceId: 'cloud-workspace',
+          sandboxId: input.sandboxId,
+          nodeName: input.name,
+          providerId: 'agent37',
+          outcomeUnknown: true,
+        });
+      }
       return {
         outcome: 'provisioned' as const,
         providerId: 'agent37' as const,
@@ -1346,7 +1355,7 @@ describe('fleet command support', () => {
       { from: 'user' }
     );
 
-    expect(events).toEqual(['materialize', 'ensure', 'spawn']);
+    expect(events).toEqual(['materialize', 'ensure', 'ensure', 'spawn']);
     expect(materializeCloudRelayfileRepository).toHaveBeenCalledWith({
       workspaceId: 'rw_abc',
       repository: 'AgentWorkforce/cloud',
@@ -1363,6 +1372,11 @@ describe('fleet command support', () => {
         ],
       })
     );
+    expect(ensureCloudFleetSandbox).toHaveBeenCalledTimes(2);
+    expect(ensureCloudFleetSandbox.mock.calls[1]?.[0]).toMatchObject({
+      sandboxId: ensureCloudFleetSandbox.mock.calls[0]?.[0].sandboxId,
+      name: ensureCloudFleetSandbox.mock.calls[0]?.[0].name,
+    });
     const ensureInput = ensureCloudFleetSandbox.mock.calls[0]?.[0] as Record<string, unknown>;
     expect(ensureInput.repos).toBeUndefined();
     expect(ensureInput.repoRevisions).toBeUndefined();
