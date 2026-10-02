@@ -57,7 +57,6 @@ import {
   type NodeClaim,
 } from './node-claim.js';
 import { maskSecret } from './redact.js';
-import { resolveConnectionStateDir } from './broker-connection.js';
 import { startReflexCapture, type RunningReflexCapture } from './reflex-capture.js';
 import {
   readProjectWorkspaceSession,
@@ -2515,30 +2514,54 @@ async function reportNodeClaimsElsewhere(paths: CoreProjectPaths, deps: CoreDepe
 /**
  * Resolve `--state-dir` for commands that inspect an existing broker. A fleet
  * node directory holds its broker state in `state/`, so accept the node
- * directory too when only the nested one holds broker state (relay#1575).
- * A live connection file is the strongest evidence and is checked in both
- * places first, so leftover lock or identity files in the exact directory
- * cannot shadow a running nested broker. Lock and identity files still count
- * when neither has a connection file, so `down --force` can recover a broker
- * whose connection file is gone.
+ * directory too when the nested one holds the broker (relay#1575).
+ *
+ * Evidence is ranked, checking the exact directory before `state/` at each
+ * rank: a `connection.json`, then an identity record naming a live process,
+ * then any broker lock or record. Leftover files in the node directory
+ * therefore cannot shadow a running nested broker, and `down --force` can
+ * still recover a broker whose connection file is gone.
  */
 function resolveExistingStateDir(stateDir: string, deps: CoreDependencies): string {
   const exact = path.resolve(stateDir);
-  const nested = path.join(exact, 'state');
-  const hasConnection = (dir: string) => deps.fs.existsSync(path.join(dir, CONNECTION_FILENAME));
-  if (hasConnection(exact)) return exact;
-  if (hasConnection(nested)) return nested;
-  return resolveConnectionStateDir(exact, (dir) => hasBrokerStateFiles(dir, deps));
+  const candidates = [exact, path.join(exact, 'state')];
+  const ranks: Array<(dir: string) => boolean> = [
+    (dir) => deps.fs.existsSync(path.join(dir, CONNECTION_FILENAME)),
+    (dir) => hasLiveBrokerIdentity(dir, deps),
+    (dir) => hasBrokerStateFiles(dir, deps),
+  ];
+  for (const matches of ranks) {
+    const found = candidates.find(matches);
+    if (found) return found;
+  }
+  return exact;
 }
 
-function hasBrokerStateFiles(dir: string, deps: CoreDependencies): boolean {
+function brokerStateFiles(dir: string, deps: CoreDependencies): string[] {
   try {
     return deps.fs
       .readdirSync(dir)
-      .some((file) => file.startsWith('broker-') && (file.endsWith('.lock') || file.endsWith('.json')));
+      .filter((file) => file.startsWith('broker-') && (file.endsWith('.lock') || file.endsWith('.json')));
   } catch {
-    return false;
+    return [];
   }
+}
+
+function hasBrokerStateFiles(dir: string, deps: CoreDependencies): boolean {
+  return brokerStateFiles(dir, deps).length > 0;
+}
+
+/** An identity record whose pid is still running marks the directory of a live broker. */
+function hasLiveBrokerIdentity(dir: string, deps: CoreDependencies): boolean {
+  return brokerStateFiles(dir, deps).some((file) => {
+    if (!file.startsWith('broker-identity-')) return false;
+    try {
+      const record = JSON.parse(deps.fs.readFileSync(path.join(dir, file), 'utf-8')) as { pid?: unknown };
+      return typeof record.pid === 'number' && record.pid > 0 && isProcessRunning(record.pid, deps);
+    } catch {
+      return false;
+    }
+  });
 }
 
 // eslint-disable-next-line complexity, max-depth

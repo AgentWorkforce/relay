@@ -1699,6 +1699,29 @@ describe('registerCoreCommands', () => {
     expect(fs.existsSync(`${stateDir}/connection.json`)).toBe(false);
   });
 
+  it('down --force ignores stale lock files in the node directory when the nested broker is live', async () => {
+    const nodeDir = '/srv/stale-lock-node';
+    const stateDir = `${nodeDir}/state`;
+    const running = new Set([222]);
+    const execCommand = identityCommand(222, `${stateDir}/broker-nested.lock`);
+    const killImpl = vi.fn((pid: number, signal?: NodeJS.Signals | number) => {
+      if (signal === 0) {
+        if (!running.has(pid)) throw new Error('not running');
+        return;
+      }
+      running.delete(pid);
+    });
+    const fs = createFsMock({ [`${nodeDir}/broker-old.lock`]: '' });
+    const { program, deps } = createHarness({ fs, execCommand, killImpl });
+    await persistBrokerIdentity({ ...deps.getProjectPaths(), dataDir: stateDir }, 222, 'nested', deps);
+    expect(fs.existsSync(`${stateDir}/connection.json`)).toBe(false);
+
+    await runCommand(program, ['down', '--force', '--state-dir', nodeDir]);
+
+    expect(killImpl).toHaveBeenCalledWith(222, 'SIGTERM');
+    expect([...running]).toEqual([]);
+  });
+
   it('down still verifies records written under the project by earlier releases', async () => {
     const stateDir = '/srv/legacy-node/state';
     let running = true;
