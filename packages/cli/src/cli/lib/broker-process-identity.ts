@@ -241,6 +241,7 @@ export async function persistBrokerIdentity(
     deps.fs.mkdirSync(path.dirname(filename), { recursive: true });
     deps.fs.writeFileSync(temporary, `${JSON.stringify(record)}\n`, 'utf-8');
     deps.fs.renameSync(temporary, filename);
+    removeSupersededIdentities(paths, filename, brokerName, deps);
     return record;
   } catch {
     // A failed write never grants fallback ownership of an unrecorded process.
@@ -249,6 +250,29 @@ export async function persistBrokerIdentity(
       deps.fs.unlinkSync(temporary);
     } catch {
       /* Already renamed or unavailable. */
+    }
+  }
+}
+
+/**
+ * The new record proves this launch holds the broker lock, so any record for
+ * the same state dir and name in an older location describes a dead launch.
+ * Left in place it would resurface once the new record is removed and keep
+ * cleanup from deleting the stopped broker's connection file.
+ */
+function removeSupersededIdentities(
+  paths: CoreProjectPaths,
+  current: string,
+  brokerName: string,
+  deps: IdentityDependencies
+): void {
+  for (const directory of identityDirectories(paths, deps)) {
+    const filename = identityFilename(directory, paths, deps, brokerName);
+    if (filename === current) continue;
+    try {
+      deps.fs.unlinkSync(filename);
+    } catch {
+      /* Absent or unavailable. */
     }
   }
 }

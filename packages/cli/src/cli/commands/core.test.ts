@@ -1671,6 +1671,34 @@ describe('registerCoreCommands', () => {
     expect([...running]).toEqual([333]);
   });
 
+  it('a new launch supersedes a stale record left by an earlier release', async () => {
+    const stateDir = '/srv/upgraded-node/state';
+    let running = true;
+    const fs = createFsMock({ [`${stateDir}/connection.json`]: connectionFile(222) });
+    const { program, deps } = createHarness({
+      fs,
+      execCommand: identityCommand(222, `${stateDir}/broker-upgraded.lock`),
+      killImpl: vi.fn((_pid, signal) => {
+        if (signal === 'SIGTERM') running = false;
+        if (signal === 0 && !running) throw new Error('not running');
+      }),
+    });
+    const paths = { ...deps.getProjectPaths(), dataDir: stateDir };
+    await persistBrokerIdentity(paths, 222, 'upgraded', deps);
+    const current = brokerIdentityPath(paths, deps, 'upgraded');
+    const legacy = nodePath.join(paths.projectRoot, '.agentworkforce', 'relay', nodePath.basename(current));
+    // A record an earlier release left for a previous launch of this broker.
+    fs.writeFileSync(legacy, fs.readFileSync(current, 'utf-8').replace('"pid":222', '"pid":111'));
+
+    await persistBrokerIdentity(paths, 222, 'upgraded', deps);
+    expect(fs.existsSync(legacy)).toBe(false);
+
+    await runCommand(program, ['down', '--force', '--state-dir', stateDir]);
+    expect(deps.log).toHaveBeenCalledWith('Stopped');
+    expect(readBrokerIdentities(paths, deps)).toEqual([]);
+    expect(fs.existsSync(`${stateDir}/connection.json`)).toBe(false);
+  });
+
   it('down still verifies records written under the project by earlier releases', async () => {
     const stateDir = '/srv/legacy-node/state';
     let running = true;
