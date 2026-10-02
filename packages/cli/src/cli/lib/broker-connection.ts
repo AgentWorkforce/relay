@@ -2,12 +2,15 @@
  * Shared broker-connection discovery for the attach-style CLI verbs
  * (`view`, `drive`, `passthrough`).
  *
- * Resolution order matches `agent-relay-broker dump-pty` so users don't
- * have to learn two patterns:
+ * Resolution order:
  *
  *   1. `--broker-url` / `--api-key` CLI flags
- *   2. `RELAY_BROKER_URL` / `RELAY_BROKER_API_KEY` environment variables
- *   3. `<state-dir>/connection.json` (default `.agentworkforce/relay/connection.json`)
+ *   2. `--state-dir <dir>` — that broker's `connection.json`, and nothing else
+ *   3. `RELAY_BROKER_URL` / `RELAY_BROKER_API_KEY` environment variables
+ *   4. The project default `.agentworkforce/relay/connection.json`
+ *
+ * An explicit `--state-dir` names one broker on purpose, so ambient env vars
+ * must not silently redirect it to another one (relay#1822).
  */
 
 import fs from 'node:fs';
@@ -50,6 +53,27 @@ export function readConnectionFileFromDisk(stateDir: string): unknown {
   }
 }
 
+/**
+ * Locate the directory that actually holds a broker's `connection.json` for
+ * a caller-supplied `--state-dir`.
+ *
+ * The broker writes `<state-dir>/connection.json`, but fleet nodes keep their
+ * broker state in a `state/` child of the node directory
+ * (`~/.agentworkforce/relay/<host>-node/state`), so operators routinely pass
+ * the node directory instead. Accept that parent form as a fallback so the
+ * same path a node was configured with reaches it (relay#1575). The exact
+ * directory always wins when it has a connection file.
+ */
+export function resolveConnectionStateDir(
+  stateDir: string,
+  hasConnectionFile: (dir: string) => boolean = (dir) => fs.existsSync(path.join(dir, 'connection.json'))
+): string {
+  const resolved = path.resolve(stateDir);
+  if (hasConnectionFile(resolved)) return resolved;
+  const nested = path.join(resolved, 'state');
+  return hasConnectionFile(nested) ? nested : resolved;
+}
+
 /** Default state-directory: `.agentworkforce/relay/` under the resolved project root. */
 export function defaultStateDir(): string {
   const projectRoot = getProjectPaths().projectRoot;
@@ -90,24 +114,64 @@ export function resolveBrokerConnection(
   deps: BrokerConnectionDeps
 ): BrokerConnection | null {
   const explicitUrl = trimOrUndefined(options.brokerUrl);
+  const explicitKey = trimOrUndefined(options.apiKey);
+  const envKey = trimOrUndefined(deps.env.RELAY_BROKER_API_KEY);
+  const finish = (url: string, apiKey: string | undefined): BrokerConnection => ({
+    url: url.replace(/\/+$/, ''),
+    apiKey,
+    ...(options.requestTimeoutMs === undefined ? {} : { requestTimeoutMs: options.requestTimeoutMs }),
+  });
+
+  const explicitStateDir = trimOrUndefined(options.stateDir);
+  if (explicitStateDir && !explicitUrl) {
+    // The caller named this broker's state directory: its connection file is
+    // the only source for both URL and key, so env vars pointing at another
+    // broker cannot pair that broker's URL or key with this one.
+    const stateDir = resolveConnectionStateDir(
+      explicitStateDir,
+      (dir) => readString(deps.readConnectionFile(dir), 'url') !== undefined
+    );
+    const connectionFile = deps.readConnectionFile(stateDir);
+    const fileUrl = readString(connectionFile, 'url');
+    if (!fileUrl) return null;
+    return finish(fileUrl, explicitKey ?? readString(connectionFile, 'api_key'));
+  }
+
   const envUrl = trimOrUndefined(deps.env.RELAY_BROKER_URL);
-  const stateDir = options.stateDir ? path.resolve(options.stateDir) : deps.getDefaultStateDir();
+  const stateDir = explicitStateDir ? path.resolve(explicitStateDir) : deps.getDefaultStateDir();
   const connectionFile = deps.readConnectionFile(stateDir);
   const fileUrl = readString(connectionFile, 'url');
 
   const url = explicitUrl ?? envUrl ?? fileUrl;
   if (!url) return null;
 
-  const explicitKey = trimOrUndefined(options.apiKey);
-  const envKey = trimOrUndefined(deps.env.RELAY_BROKER_API_KEY);
   const fileKey = readString(connectionFile, 'api_key');
-  const apiKey = explicitKey ?? envKey ?? fileKey;
+  return finish(url, explicitKey ?? envKey ?? fileKey);
+}
 
-  return {
-    url: url.replace(/\/+$/, ''),
-    apiKey,
-    ...(options.requestTimeoutMs === undefined ? {} : { requestTimeoutMs: options.requestTimeoutMs }),
-  };
+/**
+ * Explain a failed {@link resolveBrokerConnection} lookup by naming the path
+ * that was searched and which input chose it. "No broker" and "looked in the
+ * wrong place" have different remedies — only one warrants a restart.
+ */
+export function describeMissingBrokerConnection(
+  options: Pick<BrokerConnectionOptions, 'stateDir'>,
+  deps: Pick<BrokerConnectionDeps, 'getDefaultStateDir'>
+): string {
+  const explicitStateDir = trimOrUndefined(options.stateDir);
+  if (explicitStateDir) {
+    const resolved = path.resolve(explicitStateDir);
+    return (
+      `Error: no broker connection at ${path.join(resolved, 'connection.json')} (from --state-dir; ` +
+      `also checked ${path.join(resolved, 'state', 'connection.json')}). ` +
+      'Pass the same --state-dir the broker was started with.'
+    );
+  }
+  return (
+    `Error: no broker connection at ${path.join(deps.getDefaultStateDir(), 'connection.json')} (project default). ` +
+    'If the broker was started with --state-dir, pass the same --state-dir here, ' +
+    'or pass --broker-url / set RELAY_BROKER_URL.'
+  );
 }
 
 /** Convert an `http(s)://host:port` base URL to the matching `ws(s)://…/ws`. */

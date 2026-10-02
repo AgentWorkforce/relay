@@ -1201,3 +1201,137 @@ describe('local agent subtree', () => {
     );
   });
 });
+
+describe('explicit broker selection on every node agent subcommand (relay#1446, relay#1822)', () => {
+  const stateDir = '/Users/op/.agentworkforce/relay/finn-mini-node/state';
+
+  function selectionHarness(env: NodeJS.ProcessEnv = {}) {
+    const connect = vi.fn(async () => {
+      throw new Error('project broker must not be used');
+    });
+    const local = {
+      listAgents: vi.fn(async () => [{ name: 'worker' }]),
+      spawnPty: vi.fn(async () => undefined),
+      release: vi.fn(async () => undefined),
+      setModel: vi.fn(async () => ({ name: 'worker', model: 'opus', success: true })),
+      disconnect: vi.fn(),
+    };
+    const connectLocal = vi.fn(async () => local as never);
+    const h = harness({ connect, connectLocal, env });
+    return { ...h, connect, connectLocal, local };
+  }
+
+  it.each([
+    [['list'], 'listAgents'],
+    [['spawn', 'codex', '--name', 'worker'], 'spawnPty'],
+    [['release', 'worker'], 'release'],
+    [['set-model', 'worker', 'opus'], 'setModel'],
+  ] as const)('%j --state-dir targets that broker, not the project default', async (args, method) => {
+    const { program, connect, connectLocal, local, exit } = selectionHarness();
+    await program.parseAsync(['local', 'agent', ...args, '--state-dir', stateDir], { from: 'user' });
+    expect(connect).not.toHaveBeenCalled();
+    expect(connectLocal).toHaveBeenCalledWith('/tmp/project', {
+      brokerUrl: undefined,
+      apiKey: undefined,
+      stateDir,
+    });
+    expect(local[method]).toHaveBeenCalled();
+    expect(local.disconnect).toHaveBeenCalled();
+    expect(exit).not.toHaveBeenCalled();
+  });
+
+  it('release accepts --broker-url / --api-key outside any broker project', async () => {
+    const { program, connect, connectLocal, local, log } = selectionHarness();
+    await program.parseAsync(
+      ['local', 'agent', 'release', 'worker', '--broker-url', 'http://127.0.0.1:4100', '--api-key', 'k'],
+      { from: 'user' }
+    );
+    expect(connect).not.toHaveBeenCalled();
+    expect(connectLocal).toHaveBeenCalledWith('/tmp/project', {
+      brokerUrl: 'http://127.0.0.1:4100',
+      apiKey: 'k',
+      stateDir: undefined,
+    });
+    expect(local.release).toHaveBeenCalledWith('worker');
+    expect(log).toHaveBeenCalledWith('Released worker.');
+  });
+
+  it('RELAY_BROKER_URL selects the broker for flag-free release', async () => {
+    const { program, connect, connectLocal, local } = selectionHarness({
+      RELAY_BROKER_URL: 'http://127.0.0.1:4100',
+    });
+    await program.parseAsync(['local', 'agent', 'release', 'worker'], { from: 'user' });
+    expect(connect).not.toHaveBeenCalled();
+    expect(connectLocal).toHaveBeenCalled();
+    expect(local.release).toHaveBeenCalledWith('worker');
+  });
+
+  it('new spawns and attaches on the same explicitly selected broker', async () => {
+    const { program, connectLocal, local, attach } = selectionHarness();
+    await program.parseAsync(
+      ['local', 'agent', 'new', 'codex', '--name', 'worker', '--state-dir', stateDir],
+      {
+        from: 'user',
+      }
+    );
+    expect(connectLocal).toHaveBeenCalled();
+    expect(local.spawnPty).toHaveBeenCalled();
+    expect(attach).toHaveBeenCalledWith(
+      'worker',
+      'drive',
+      expect.objectContaining({ stateDir, brokerUrl: undefined, apiKey: undefined })
+    );
+  });
+
+  it('flag-free commands keep using the enclosing project broker', async () => {
+    const connectLocal = vi.fn();
+    const { program, client } = harness({ connectLocal, env: {} });
+    await program.parseAsync(['local', 'agent', 'release', 'lead'], { from: 'user' });
+    expect(connectLocal).not.toHaveBeenCalled();
+    expect(client.release).toHaveBeenCalledWith('lead');
+  });
+
+  it('a missing --state-dir connection names the searched path and ignores ambient env', async () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'relay-state-dir-miss-'));
+    const { program, error, exit } = harness({
+      env: { RELAY_BROKER_URL: 'http://127.0.0.1:9', RELAY_BROKER_API_KEY: 'other-broker' },
+    });
+    try {
+      await program.parseAsync(['local', 'agent', 'list', '--state-dir', root], { from: 'user' });
+      expect(exit).toHaveBeenCalledWith(1);
+      expect(error).toHaveBeenCalledWith(
+        `Error: no broker connection at ${path.join(root, 'connection.json')} (from --state-dir; also checked ${path.join(root, 'state', 'connection.json')}). Pass the same --state-dir the broker was started with.`
+      );
+    } finally {
+      fs.rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it('flag-free "no broker" errors say the default path was searched and how to target a --state-dir broker', async () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'relay-no-broker-'));
+    fs.mkdirSync(path.join(root, '.git'));
+    harnessConnectMock.mockImplementationOnce(() => {
+      throw new Error(
+        `No running broker found (${root}/.agentworkforce/relay/connection.json does not exist).`
+      );
+    });
+    const error = vi.fn();
+    const exit = vi.fn();
+    const program = new Command();
+    registerLocalAgentCommands(program.command('local'), {
+      cwd: () => root,
+      env: {},
+      error,
+      exit: exit as never,
+    });
+    try {
+      await program.parseAsync(['local', 'agent', 'list'], { from: 'user' });
+      expect(exit).toHaveBeenCalledWith(1);
+      expect(error).toHaveBeenCalledWith(
+        expect.stringContaining('If the broker was started with --state-dir, pass the same --state-dir here')
+      );
+    } finally {
+      fs.rmSync(root, { recursive: true, force: true });
+    }
+  });
+});

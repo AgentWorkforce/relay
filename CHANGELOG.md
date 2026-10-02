@@ -5,9 +5,17 @@ All notable changes to Agent Relay will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased - Patch]
+## [Unreleased - Minor]
+
+### Added
+
+- `node agent list|spawn|new|release|set-model` and `node tail` accept `--state-dir`, `--broker-url`, and `--api-key` (or `RELAY_BROKER_URL`), so brokers started with `node up --state-dir` — such as fleet nodes — can be managed from any directory.
 
 ### Fixed
+
+- `--state-dir` on `node agent` commands, `node status`, and `node down` also accepts a fleet node directory whose broker state lives in `state/`, and an explicit `--state-dir` is no longer overridden by ambient `RELAY_BROKER_URL` / `RELAY_BROKER_API_KEY`.
+- "No broker connection" errors name the path searched and whether it was the project default or `--state-dir`, instead of implying a running broker is down.
+- `node down --force --state-dir <dir>` can verify and stop brokers started from another working directory: identity records now live in the broker state dir (records written by earlier releases are still read). `node status` and `node down` name a missing identity record and how to create one.
 
 - Broker: Muse workers now reuse the host Muse login (`RELAY_MUSE_SHARED_AUTH_PATH`, the host's `MUSE_AUTH_PATH`, `$XDG_CONFIG_HOME/muse/auth.json`, or `$HOME/.config/muse/auth.json`) instead of prompting for provider auth under every new agent name; Relay MCP settings stay per-worker. Multi-tenant hosts should set `RELAY_MUSE_ISOLATED_AUTH=1` before upgrading to keep a separate login per worker.
 

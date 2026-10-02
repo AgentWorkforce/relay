@@ -45,6 +45,8 @@ agent-relay node agent attach <name> --mode view
 agent-relay node agent release <name>
 ```
 
+Every `node agent` subcommand (and `node tail`) accepts `--state-dir <dir>`, `--broker-url <url>`, and `--api-key <key>` to target a broker other than the current project's — for example a fleet node started with `node up --state-dir`. `--state-dir` may name the broker state dir or a fleet node directory whose broker state lives in `state/`. An explicit `--state-dir` reads only that broker's `connection.json`, ignoring `RELAY_BROKER_URL` / `RELAY_BROKER_API_KEY`; without flags, a nonblank `RELAY_BROKER_URL` selects the broker, otherwise the enclosing project's broker is used.
+
 `node agent spawn` and `node agent new` accept `--runtime auto|native|pty`. `auto` is the default and keeps experimental dual-runtime adapters on PTY. Claude Code, Codex, and OpenCode support explicit native or PTY selection; Pi and Deep Agents are experimental native-only harnesses and require `--runtime native`.
 
 For AI SDK native harnesses, attach renders structured activity, text, tools, approvals, files, usage, and lifecycle events. Add `--json` for NDJSON, `--reasoning` for reasoning events, or `--diagnostics` for sidecar diagnostics. Native harness `drive` is line-oriented and acknowledged; native harness `passthrough` is unsupported because no terminal stream exists. PTY attach behavior is unchanged.

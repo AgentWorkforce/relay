@@ -15,12 +15,16 @@ export type BrokerProcessIdentity = {
 
 type IdentityDependencies = Pick<CoreDependencies, 'execCommand' | 'fs' | 'pid'>;
 
-function stateDirectory(paths: CoreProjectPaths, deps?: IdentityDependencies): string {
+function canonicalDirectory(directory: string, deps?: IdentityDependencies): string {
   try {
-    return (deps?.fs.realpathSync ?? fs.realpathSync)(paths.dataDir);
+    return (deps?.fs.realpathSync ?? fs.realpathSync)(directory);
   } catch {
-    return path.resolve(paths.dataDir);
+    return path.resolve(directory);
   }
+}
+
+function stateDirectory(paths: CoreProjectPaths, deps?: IdentityDependencies): string {
+  return canonicalDirectory(paths.dataDir, deps);
 }
 
 function identityPrefix(paths: CoreProjectPaths, deps?: IdentityDependencies): string {
@@ -28,18 +32,43 @@ function identityPrefix(paths: CoreProjectPaths, deps?: IdentityDependencies): s
   return `broker-identity-${scope}`;
 }
 
+/**
+ * Directory holding identity records: the broker's own state directory, so
+ * `node down --state-dir <dir>` finds the record from any working directory
+ * (relay#1820). For the default state dir this is the project data dir.
+ */
+export function brokerIdentityDirectory(paths: CoreProjectPaths, deps?: IdentityDependencies): string {
+  return stateDirectory(paths, deps);
+}
+
+/**
+ * Directories searched for identity records, newest layout first. Earlier
+ * releases wrote every record under the invoking project's data dir even when
+ * `--state-dir` redirected broker state; keep reading there so brokers started
+ * by those releases stay verifiable.
+ */
+function identityDirectories(paths: CoreProjectPaths, deps?: IdentityDependencies): string[] {
+  const primary = brokerIdentityDirectory(paths, deps);
+  const legacy = canonicalDirectory(path.join(paths.projectRoot, '.agentworkforce', 'relay'), deps);
+  return primary === legacy ? [primary] : [primary, legacy];
+}
+
+function identityFilename(
+  directory: string,
+  paths: CoreProjectPaths,
+  deps: IdentityDependencies | undefined,
+  brokerName: string
+): string {
+  const name = createHash('sha256').update(brokerName).digest('hex');
+  return path.join(directory, `${identityPrefix(paths, deps)}-${name}.json`);
+}
+
 export function brokerIdentityPath(
   paths: CoreProjectPaths,
   deps?: IdentityDependencies,
   brokerName = path.basename(paths.projectRoot) || 'project'
 ): string {
-  const name = createHash('sha256').update(brokerName).digest('hex');
-  return path.join(
-    paths.projectRoot,
-    '.agentworkforce',
-    'relay',
-    `${identityPrefix(paths, deps)}-${name}.json`
-  );
+  return identityFilename(brokerIdentityDirectory(paths, deps), paths, deps, brokerName);
 }
 
 function normalizedStart(value: string): string | null {
@@ -86,15 +115,36 @@ export async function readBrokerProcessIdentity(
   }
 }
 
+/** Locate the record for `brokerName`, preferring the state-dir location over the legacy one. */
+function findBrokerIdentityRecord(
+  paths: CoreProjectPaths,
+  deps: IdentityDependencies,
+  brokerName: string
+): { identity: BrokerProcessIdentity; filename: string } | null {
+  for (const directory of identityDirectories(paths, deps)) {
+    const filename = identityFilename(directory, paths, deps, brokerName);
+    const identity = readBrokerIdentityFile(filename, paths, deps, brokerName);
+    if (identity) return { identity, filename };
+  }
+  return null;
+}
+
 export function readBrokerIdentity(
   paths: CoreProjectPaths,
   deps: IdentityDependencies,
   brokerName = path.basename(paths.projectRoot) || 'project'
 ): BrokerProcessIdentity | null {
+  return findBrokerIdentityRecord(paths, deps, brokerName)?.identity ?? null;
+}
+
+function readBrokerIdentityFile(
+  filename: string,
+  paths: CoreProjectPaths,
+  deps: IdentityDependencies,
+  brokerName: string
+): BrokerProcessIdentity | null {
   try {
-    const value = JSON.parse(
-      deps.fs.readFileSync(brokerIdentityPath(paths, deps, brokerName), 'utf-8')
-    ) as BrokerProcessIdentity;
+    const value = JSON.parse(deps.fs.readFileSync(filename, 'utf-8')) as BrokerProcessIdentity;
     if (
       !value ||
       value.version !== 1 ||
@@ -126,34 +176,38 @@ export function readBrokerIdentities(
   paths: CoreProjectPaths,
   deps: IdentityDependencies
 ): BrokerProcessIdentity[] | null {
-  const directory = path.join(paths.projectRoot, '.agentworkforce', 'relay');
-  let filenames: string[];
-  try {
-    filenames = deps.fs.readdirSync(directory);
-  } catch (error) {
-    return (error as NodeJS.ErrnoException)?.code === 'ENOENT' ? [] : null;
-  }
-  try {
-    const prefix = identityPrefix(paths, deps);
-    const records: BrokerProcessIdentity[] = [];
-    for (const filename of filenames) {
-      if (!filename.startsWith(prefix)) continue;
-      if (!new RegExp(`^${prefix}-[a-f0-9]{64}\\.json$`).test(filename)) return null;
-      const raw = JSON.parse(deps.fs.readFileSync(path.join(directory, filename), 'utf-8'));
-      if (typeof raw?.brokerName !== 'string') return null;
-      const identity = readBrokerIdentity(paths, deps, raw.brokerName);
-      if (
-        !identity ||
-        brokerIdentityPath(paths, deps, identity.brokerName) !== path.join(directory, filename)
-      )
-        return null;
-      records.push(identity);
+  const records: BrokerProcessIdentity[] = [];
+  const seen = new Set<string>();
+  for (const directory of identityDirectories(paths, deps)) {
+    let filenames: string[];
+    try {
+      filenames = deps.fs.readdirSync(directory);
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException)?.code === 'ENOENT') continue;
+      return null;
     }
-    return records;
-  } catch {
-    // A listed record disappearing is an uncertain snapshot, not legacy state.
-    return null;
+    try {
+      const prefix = identityPrefix(paths, deps);
+      for (const filename of filenames) {
+        if (!filename.startsWith(prefix)) continue;
+        if (!new RegExp(`^${prefix}-[a-f0-9]{64}\\.json$`).test(filename)) return null;
+        const filepath = path.join(directory, filename);
+        const raw = JSON.parse(deps.fs.readFileSync(filepath, 'utf-8'));
+        if (typeof raw?.brokerName !== 'string') return null;
+        const identity = readBrokerIdentityFile(filepath, paths, deps, raw.brokerName);
+        if (!identity || identityFilename(directory, paths, deps, identity.brokerName) !== filepath)
+          return null;
+        // The state-dir record shadows a legacy record for the same broker name.
+        if (seen.has(identity.brokerName)) continue;
+        seen.add(identity.brokerName);
+        records.push(identity);
+      }
+    } catch {
+      // A listed record disappearing is an uncertain snapshot, not legacy state.
+      return null;
+    }
   }
+  return records;
 }
 
 export async function persistBrokerIdentity(
@@ -278,10 +332,10 @@ export function removeBrokerIdentity(
   identity: BrokerProcessIdentity,
   deps: IdentityDependencies
 ): void {
-  const current = readBrokerIdentity(paths, deps, identity.brokerName);
-  if (!current || JSON.stringify(current) !== JSON.stringify(identity)) return;
+  const current = findBrokerIdentityRecord(paths, deps, identity.brokerName);
+  if (!current || JSON.stringify(current.identity) !== JSON.stringify(identity)) return;
   try {
-    deps.fs.unlinkSync(brokerIdentityPath(paths, deps, identity.brokerName));
+    deps.fs.unlinkSync(current.filename);
   } catch {
     /* Best effort. */
   }

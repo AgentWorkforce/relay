@@ -19,6 +19,7 @@ import { attachView } from '../lib/attach-view.js';
 import { createBackpressureAwareWriter } from '../lib/attach.js';
 import {
   defaultStateDir,
+  describeMissingBrokerConnection,
   readConnectionFileFromDisk,
   resolveBrokerConnection,
   type BrokerConnectionOptions,
@@ -210,7 +211,20 @@ export interface LocalAgentDependencies {
 
 function withDefaults(overrides: Partial<LocalAgentDependencies> = {}): LocalAgentDependencies {
   const deps = {
-    connect: async (cwd: string) => connectProjectBrokerClient(findProjectRoot(cwd)),
+    connect: async (cwd: string) => {
+      try {
+        return connectProjectBrokerClient(findProjectRoot(cwd));
+      } catch (err) {
+        const message = err instanceof Error ? err.message : String(err);
+        if (!message.startsWith('No running broker found')) throw err;
+        // The project file is only the default; a broker started with
+        // --state-dir is alive elsewhere. Say so instead of implying it is down.
+        throw new Error(
+          `${message}\nThat is the project default location. If the broker was started with --state-dir, ` +
+            'pass the same --state-dir here (or --broker-url / RELAY_BROKER_URL).'
+        );
+      }
+    },
     cwd: () => process.cwd(),
     readConnectionFile: readConnectionFileFromDisk,
     getDefaultStateDir: defaultStateDir,
@@ -235,10 +249,7 @@ function withDefaults(overrides: Partial<LocalAgentDependencies> = {}): LocalAge
       env: deps.env,
     });
     if (!connection) {
-      throw new Error(
-        'Error: could not locate broker connection. Pass --broker-url, set RELAY_BROKER_URL, ' +
-          'or run from a directory containing .agentworkforce/relay/connection.json.'
-      );
+      throw new Error(describeMissingBrokerConnection(options, deps));
     }
     return createBrokerClient(connection, deps.fetch);
   };
@@ -489,13 +500,33 @@ export function formatPrettyAgentStatusList(agents: AgentDeliveryStatus[], now: 
   ]);
 }
 
+/**
+ * Whether the caller chose a broker explicitly (`--broker-url` / `--api-key` /
+ * `--state-dir`, or `RELAY_BROKER_URL`). Without one, commands keep using the
+ * enclosing project's broker.
+ */
+function hasExplicitBrokerSelection(
+  deps: Pick<LocalAgentDependencies, 'env'>,
+  options: LocalAgentMessageBrokerOptions
+): boolean {
+  return Boolean(
+    options.brokerUrl?.trim() ||
+    options.apiKey?.trim() ||
+    options.stateDir?.trim() ||
+    deps.env.RELAY_BROKER_URL?.trim()
+  );
+}
+
 async function run(
   deps: LocalAgentDependencies,
-  fn: (client: HarnessDriverClient) => Promise<void>
+  fn: (client: HarnessDriverClient) => Promise<void>,
+  brokerOptions: LocalAgentMessageBrokerOptions = {}
 ): Promise<void> {
   let client: HarnessDriverClient | undefined;
   try {
-    client = await deps.connect(deps.cwd());
+    client = hasExplicitBrokerSelection(deps, brokerOptions)
+      ? await deps.connectLocal(deps.cwd(), brokerOptions)
+      : await deps.connect(deps.cwd());
     await fn(client);
   } catch (err) {
     deps.error(err instanceof Error ? err.message : String(err));
@@ -781,13 +812,16 @@ export function registerLocalAgentCommands(
   const deps = withDefaults(overrides);
   const agent = group.command('agent').description('Inspect and manage broker-spawned agents');
 
-  agent
-    .command('list')
-    .description('List agents running on the local broker')
-    .option('--pretty', 'Show a compact human-readable list')
-    .option('--status', 'Include each agent inbound delivery mode and pending-queue contents (relay#1387)')
-    .action(async (opts: { pretty?: boolean; status?: boolean }) => {
-      await run(deps, async (client) => {
+  addBrokerOptions(
+    agent
+      .command('list')
+      .description('List agents running on the local broker')
+      .option('--pretty', 'Show a compact human-readable list')
+      .option('--status', 'Include each agent inbound delivery mode and pending-queue contents (relay#1387)')
+  ).action(async (opts: { pretty?: boolean; status?: boolean } & Record<string, unknown>) => {
+    await run(
+      deps,
+      async (client) => {
         const agents = await client.listAgents();
         if (opts.status) {
           const withStatus = await withDeliveryStatus(client, agents);
@@ -799,11 +833,12 @@ export function registerLocalAgentCommands(
           return;
         }
         deps.log(opts.pretty ? formatPrettyAgentList(agents, deps.now()) : JSON.stringify(agents, null, 2));
-      });
-    });
+      },
+      brokerOptionsFromOpts(opts)
+    );
+  });
 
-  agent
-    .command('spawn')
+  addBrokerOptions(agent.command('spawn'))
     .description('Spawn an agent with the given provider CLI')
     .argument(
       '<provider>',
@@ -829,32 +864,35 @@ export function registerLocalAgentCommands(
         })
       )
         return;
-      await run(deps, async (client) => {
-        const baseName = (opts.name as string | undefined) ?? provider;
-        const resolved = resolveAutoSpawn(
-          provider,
-          baseName,
-          opts.task as string | undefined,
-          opts.model as string | undefined
-        );
-        await spawnAgentWithClient(client, {
-          name: resolved.name,
-          cli: provider,
-          channels: (opts.channels as string[] | undefined) ?? ['general'],
-          task: resolved.task,
-          model: resolved.model,
-          cwd: (opts.cwd as string | undefined) ?? deps.cwd(),
-          spawnMode,
-          exitAfterTask: opts.exitAfterTask as boolean | undefined,
-          runtime: runtime.requested,
-        });
-        const autoNote = opts.model === 'auto' ? ' (auto-routed)' : '';
-        deps.log(`Spawned ${resolved.name} (${provider}, ${runtime.selected})${autoNote}.`);
-      });
+      await run(
+        deps,
+        async (client) => {
+          const baseName = (opts.name as string | undefined) ?? provider;
+          const resolved = resolveAutoSpawn(
+            provider,
+            baseName,
+            opts.task as string | undefined,
+            opts.model as string | undefined
+          );
+          await spawnAgentWithClient(client, {
+            name: resolved.name,
+            cli: provider,
+            channels: (opts.channels as string[] | undefined) ?? ['general'],
+            task: resolved.task,
+            model: resolved.model,
+            cwd: (opts.cwd as string | undefined) ?? deps.cwd(),
+            spawnMode,
+            exitAfterTask: opts.exitAfterTask as boolean | undefined,
+            runtime: runtime.requested,
+          });
+          const autoNote = opts.model === 'auto' ? ' (auto-routed)' : '';
+          deps.log(`Spawned ${resolved.name} (${provider}, ${runtime.selected})${autoNote}.`);
+        },
+        brokerOptionsFromOpts(opts)
+      );
     });
 
-  agent
-    .command('new')
+  addBrokerOptions(agent.command('new'))
     .description('Spawn an agent and attach to it')
     .argument(
       '<provider>',
@@ -888,6 +926,7 @@ export function registerLocalAgentCommands(
         })
       )
         return;
+      const brokerOptions = brokerOptionsFromOpts(options);
       const baseName = (options.name as string | undefined) ?? provider;
       const resolved = resolveAutoSpawn(
         provider,
@@ -895,52 +934,61 @@ export function registerLocalAgentCommands(
         options.task as string | undefined,
         options.model as string | undefined
       );
-      await run(deps, async (client) => {
-        await spawnAgentWithClient(client, {
-          name: resolved.name,
-          cli: provider,
-          channels: (options.channels as string[] | undefined) ?? ['general'],
-          task: resolved.task,
-          model: resolved.model,
-          cwd: (options.cwd as string | undefined) ?? deps.cwd(),
-          spawnMode,
-          exitAfterTask: options.exitAfterTask as boolean | undefined,
-          runtime: runtime.requested,
-        });
-        const autoNote = options.model === 'auto' ? ' (auto-routed)' : '';
-        deps.log(
-          `Spawned ${resolved.name} (${provider}, ${runtime.selected}). Attaching (${mode})${autoNote}…`
-        );
-      });
-      // `new` spawns and attaches on the same default local broker — broker
-      // override flags belong on the standalone `attach` command.
-      const code = await deps.attach(resolved.name, mode as AttachMode, {});
+      await run(
+        deps,
+        async (client) => {
+          await spawnAgentWithClient(client, {
+            name: resolved.name,
+            cli: provider,
+            channels: (options.channels as string[] | undefined) ?? ['general'],
+            task: resolved.task,
+            model: resolved.model,
+            cwd: (options.cwd as string | undefined) ?? deps.cwd(),
+            spawnMode,
+            exitAfterTask: options.exitAfterTask as boolean | undefined,
+            runtime: runtime.requested,
+          });
+          const autoNote = options.model === 'auto' ? ' (auto-routed)' : '';
+          deps.log(
+            `Spawned ${resolved.name} (${provider}, ${runtime.selected}). Attaching (${mode})${autoNote}…`
+          );
+        },
+        brokerOptions
+      );
+      // Attach to the same broker the agent was just spawned on.
+      const code = await deps.attach(resolved.name, mode as AttachMode, brokerOptions);
       if (code !== 0) {
         deps.exit(code);
       }
     });
 
-  agent
-    .command('release')
+  addBrokerOptions(agent.command('release'))
     .description('Release an agent (graceful stop)')
     .argument('<name>', 'Agent name')
-    .action(async (name: string) => {
-      await run(deps, async (client) => {
-        await client.release(name);
-        deps.log(`Released ${name}.`);
-      });
+    .action(async (name: string, opts: Record<string, unknown>) => {
+      await run(
+        deps,
+        async (client) => {
+          await client.release(name);
+          deps.log(`Released ${name}.`);
+        },
+        brokerOptionsFromOpts(opts)
+      );
     });
 
-  agent
-    .command('set-model')
+  addBrokerOptions(agent.command('set-model'))
     .description("Switch a running agent's model (sends `/model` to its TUI; best-effort)")
     .argument('<name>', 'Agent name')
     .argument('<model>', 'Model identifier to switch to')
-    .action(async (name: string, model: string) => {
-      await run(deps, async (client) => {
-        await client.setModel(name, model);
-        deps.log(`Sent \`/model ${model}\` to ${name} (best-effort — the agent's TUI applies it).`);
-      });
+    .action(async (name: string, model: string, opts: Record<string, unknown>) => {
+      await run(
+        deps,
+        async (client) => {
+          await client.setModel(name, model);
+          deps.log(`Sent \`/model ${model}\` to ${name} (best-effort — the agent's TUI applies it).`);
+        },
+        brokerOptionsFromOpts(opts)
+      );
     });
 
   agent
@@ -1145,26 +1193,29 @@ export function registerLocalAgentCommands(
     if (result !== undefined) deps.log(JSON.stringify({ name, ...result }, null, 2));
   });
 
-  group
-    .command('tail')
+  addBrokerOptions(group.command('tail'))
     .description('Stream broker events (optionally filtered to one agent)')
     .option('--agent <name>', "Filter to a single agent's output stream")
-    .action(async (options: { agent?: string }) => {
-      await run(deps, async (client) => {
-        if (options.agent) {
-          for await (const chunk of client.subscribeWorkerStream(options.agent)) {
-            process.stdout.write(chunk);
+    .action(async (options: { agent?: string } & Record<string, unknown>) => {
+      await run(
+        deps,
+        async (client) => {
+          if (options.agent) {
+            for await (const chunk of client.subscribeWorkerStream(options.agent)) {
+              process.stdout.write(chunk);
+            }
+            return;
           }
-          return;
-        }
-        client.connectEvents();
-        await new Promise<void>((resolve) => {
-          client.onEvent((event) => {
-            deps.log(JSON.stringify(event));
+          client.connectEvents();
+          await new Promise<void>((resolve) => {
+            client.onEvent((event) => {
+              deps.log(JSON.stringify(event));
+            });
+            // Ctrl+C ends a streaming tail cleanly (exit 0, no error output).
+            process.once('SIGINT', () => resolve());
           });
-          // Ctrl+C ends a streaming tail cleanly (exit 0, no error output).
-          process.once('SIGINT', () => resolve());
-        });
-      });
+        },
+        brokerOptionsFromOpts(options)
+      );
     });
 }
