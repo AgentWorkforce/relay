@@ -418,6 +418,23 @@ describe('probe installer', () => {
     expect(appLookups).toBe(1);
   });
 
+  it('retains an unsupported probe observed before a short post-lock miss', async () => {
+    let looks = 0;
+    await expect(
+      ensureProbe({
+        home: '/tmp/old-standalone-short-miss',
+        platform: 'darwin',
+        find: async () => (++looks === 1 ? { version: '2026.10.3', supported: false } : null),
+        installedMacApp: async () => null,
+        acquire: async () => ({ release: async () => {} }),
+        installMacProbeFn: async () => {
+          throw new Error('must not install');
+        },
+      })
+    ).rejects.toMatchObject({ code: 'probe_too_old' });
+    expect(looks).toBe(2);
+  });
+
   it('recognizes the standalone symlink made by this installer', async () => {
     const home = await mkdtemp(join(os.tmpdir(), 'connect-standalone-link-test-'));
     cleanups.push(async () => rm(home, { recursive: true, force: true }));
@@ -428,6 +445,11 @@ describe('probe installer', () => {
       join(home, '.local/bin/agent-relay-probe')
     );
     expect(await hasStandaloneMacProbe(home)).toBe(true);
+    await rm(join(home, '.local/bin/agent-relay-probe'));
+    await writeFile(join(home, '.local/bin/agent-relay-probe'), 'copied binary');
+    await expect(hasStandaloneMacProbe(home)).rejects.toThrow(
+      'Could not inspect the standalone Agent Relay probe'
+    );
   });
 
   it('explains when the installed system app cannot be replaced', async () => {

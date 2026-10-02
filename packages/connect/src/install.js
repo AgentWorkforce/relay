@@ -758,7 +758,7 @@ export async function hasStandaloneMacProbe(home = os.homedir()) {
     const target = await readlink(link);
     return target.startsWith(`${join(home, '.local/lib/agent-relay')}/`);
   } catch (error) {
-    if (error?.code === 'ENOENT' || error?.code === 'EINVAL') return false;
+    if (error?.code === 'ENOENT') return false;
     throw new InstallError(`Could not inspect the standalone Agent Relay probe: ${error.message}`);
   }
 }
@@ -799,12 +799,17 @@ export async function ensureProbe({
     const afterLock = await find(home, 1_000);
     if (afterLock?.supported !== false) {
       if (afterLock) return { ...afterLock, installed: false };
-    } else if (platform === 'linux') {
-      requireSupportedProbe(afterLock);
-    } else if (platform === 'darwin' && (!appPath || (await standaloneMacProbe(home)))) {
+    }
+    // A short lookup can miss a core observed immediately before the lock.
+    // Keep that unsupported observation until the guarded install decision.
+    const unsupported =
+      afterLock?.supported === false ? afterLock : existing?.supported === false ? existing : null;
+    if (platform === 'linux') {
+      requireSupportedProbe(unsupported);
+    } else if (platform === 'darwin' && unsupported && (!appPath || (await standaloneMacProbe(home)))) {
       // An old standalone core may still own the socket even if the app is
       // installed. Updating the app would leave that core running beside it.
-      requireSupportedProbe(afterLock);
+      requireSupportedProbe(unsupported);
     }
 
     const result =
