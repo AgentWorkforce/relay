@@ -24,8 +24,10 @@ import {
   finishSwap,
   findLiveSocket,
   findRecoveringProbe,
+  getMacAppAsset,
   getPlatformAsset,
   installMac,
+  installMacProbe,
   installLinux,
   macStageCommands,
   probeVersionSupported,
@@ -35,6 +37,7 @@ import {
   swapMacApp,
   verifyChecksum,
   verifyMacSignature,
+  verifyMacProbeSignature,
   waitForLiveSocket,
 } from '../src/install.js';
 import { requestJson } from '../src/http.js';
@@ -278,8 +281,9 @@ describe('probe installer', () => {
   it('selects release assets for every supported platform and architecture', () => {
     expect(getPlatformAsset('linux', 'x64')).toBe('AgentRelay-Linux-x64.tar.gz');
     expect(getPlatformAsset('linux', 'arm64')).toBe('AgentRelay-Linux-arm64.tar.gz');
-    expect(getPlatformAsset('darwin', 'x64')).toBe('AgentRelay-macOS-x64.dmg');
-    expect(getPlatformAsset('darwin', 'arm64')).toBe('AgentRelay-macOS-arm64.dmg');
+    expect(getPlatformAsset('darwin', 'x64')).toBe('AgentRelay-macOS-x64-probe.tar.gz');
+    expect(getPlatformAsset('darwin', 'arm64')).toBe('AgentRelay-macOS-arm64-probe.tar.gz');
+    expect(getMacAppAsset('arm64')).toBe('AgentRelay-macOS-arm64.dmg');
     expect(() => getPlatformAsset('linux', 'riscv64')).toThrow('Unsupported Linux architecture');
     expect(() => getPlatformAsset('win32', 'x64')).toThrow('Unsupported platform');
   });
@@ -335,6 +339,7 @@ describe('probe installer', () => {
     const result = await ensureProbe({
       home: '/tmp/old-mac-probe',
       platform: 'darwin',
+      installedMacApp: async () => '/Applications/Agent Relay.app',
       find: async () => ({
         socketPath: '/tmp/old.sock',
         status: { ok: true, data: { version: '2026.10.3' } },
@@ -352,6 +357,40 @@ describe('probe installer', () => {
     });
     expect(installs).toBe(1);
     expect(result).toMatchObject({ socketPath: '/tmp/new.sock', installed: true });
+  });
+
+  it('chooses a standalone probe for a clean Mac and the app updater for an installed app', async () => {
+    for (const app of [null, '/Applications/Agent Relay.app']) {
+      const calls: string[] = [];
+      const result = await ensureProbe({
+        home: '/tmp/clean-mac',
+        platform: 'darwin',
+        find: async () => null,
+        active: async () => false,
+        installedMacApp: async () => app,
+        acquire: async () => ({ release: async () => {} }),
+        installMacProbeFn: async () => {
+          calls.push('probe');
+          return { socketPath: '/tmp/probe.sock', status: { ok: true } };
+        },
+        installMacFn: async () => {
+          calls.push('app');
+          return { socketPath: '/tmp/app.sock', status: { ok: true } };
+        },
+      });
+      expect(calls).toEqual([app ? 'app' : 'probe']);
+      expect(result.installed).toBe(true);
+    }
+  });
+
+  it('refuses to start a second standalone core beside an old live Mac probe', async () => {
+    await expect(ensureProbe({
+      home: '/tmp/old-standalone-mac',
+      platform: 'darwin',
+      find: async () => ({ version: '2026.10.3', supported: false }),
+      installedMacApp: async () => null,
+      installMacProbeFn: async () => { throw new Error('must not install'); },
+    })).rejects.toMatchObject({ code: 'probe_too_old' });
   });
 
   it('gives status, send, and leave the same distinct old-probe error', async () => {
@@ -429,6 +468,44 @@ describe('probe installer', () => {
         throw new Error('requirement failed');
       })
     ).rejects.toThrow('Agent Relay download is not signed by Agent Workforce; refusing installation.');
+  });
+
+  it('verifies the extracted Mac helper against the pinned Developer ID before it can start', async () => {
+    const root = await mkdtemp(join(os.tmpdir(), 'connect-mac-probe-test-'));
+    cleanups.push(async () => rm(root, { recursive: true, force: true }));
+    const home = join(root, 'home');
+    const commands: Array<[string, string[]]> = [];
+    const run = async (file: string, args: string[]) => {
+      commands.push([file, args]);
+      if (file === 'tar') {
+        const destination = args[args.indexOf('-C') + 1];
+        const probe = join(destination, 'agent_relay/helpers/agent-relay-probe');
+        await mkdir(join(probe, '..'), { recursive: true });
+        await writeFile(probe, '#!/bin/sh\n');
+        await chmod(probe, 0o755);
+      }
+      return { code: 0, stdout: '', stderr: '' };
+    };
+    const result = await installMacProbe({
+      home, arch: 'arm64', run, require: async () => {},
+      start: async () => ({ pid: undefined, unref() {} }),
+      wait: async () => ({ socketPath: '/tmp/mac-probe.sock', status: { ok: true } }),
+    });
+    expect(result.socketPath).toBe('/tmp/mac-probe.sock');
+    expect(commands.map(([file]) => file)).toEqual(['curl', 'curl', 'shasum', 'tar', 'codesign']);
+    expect(commands[0][1].at(-1)).toContain('AgentRelay-macOS-arm64-probe.tar.gz');
+    expect(commands[3][1].at(-1)).toBe('agent_relay/helpers/agent-relay-probe');
+    expect(commands[4][1].slice(0, 3)).toEqual([
+      '--verify', '--strict',
+      '-R=anchor apple generic and certificate 1[field.1.2.840.113635.100.6.2.6] exists and certificate leaf[field.1.2.840.113635.100.6.1.13] exists and certificate leaf[subject.OU] = "QUJ7SA6X8X"',
+    ]);
+    await expect(readFile(join(home, '.local/lib/agent-relay/current/agent_relay/helpers/agent-relay-probe'), 'utf8')).resolves.toBe('#!/bin/sh\n');
+  });
+
+  it('rejects an unsigned extracted Mac helper before swapping or starting it', async () => {
+    await expect(verifyMacProbeSignature('/tmp/agent-relay-probe', async () => {
+      throw new Error('signature mismatch');
+    })).rejects.toThrow('Agent Relay probe is not signed by Agent Workforce');
   });
 
   it('restores the previous macOS app when the verified replacement cannot be installed', async () => {
@@ -515,6 +592,7 @@ describe('probe installer', () => {
         arch: 'arm64',
         run,
         warn: () => {},
+        appPath: app,
         require: async () => {},
         wait: async () => {
           throw new Error('replacement never became ready');
