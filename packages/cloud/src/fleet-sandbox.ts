@@ -871,8 +871,34 @@ function readAsyncPreparationEnvelope(
   return envelope;
 }
 
+function isLegacyEnsureOutcome(payload: unknown): boolean {
+  if (!isObject(payload)) return false;
+  return ['provisioned', 'reused', 'provisioning_timeout'].includes(readString(payload, 'outcome') ?? '');
+}
+
+function rejectsAsyncPreparationMode(response: Response, payload: unknown): boolean {
+  if (response.status !== 400 || !isObject(payload)) return false;
+  const diagnostic = [
+    readString(payload, 'code'),
+    readString(payload, 'error'),
+    readString(payload, 'message'),
+  ]
+    .filter((value): value is string => value !== undefined)
+    .join(' ')
+    .toLowerCase();
+  return diagnostic.includes('preparationmode') || diagnostic.includes('preparation_mode');
+}
+
 function asyncPreparationRequestSignal(overall: AbortSignal): AbortSignal {
   return AbortSignal.any([overall, AbortSignal.timeout(ASYNC_PREPARATION_REQUEST_TIMEOUT_MS)]);
+}
+
+function asyncPreparationInitialRequestSignal(overall: AbortSignal): AbortSignal {
+  // Until every Cloud deployment understands async-v1, the first request may
+  // be handled synchronously by an older server. Preserve the legacy client's
+  // 480-second response window for that one capability probe; every status or
+  // advance request remains capped at 110 seconds.
+  return AbortSignal.any([overall, AbortSignal.timeout(DEFAULT_ENSURE_TIMEOUT_MS)]);
 }
 
 /**
@@ -1052,7 +1078,7 @@ export async function ensureCloudFleetSandbox(
     asyncPreparation ? DEFAULT_ASYNC_PREPARATION_TIMEOUT_MS : DEFAULT_ENSURE_TIMEOUT_MS
   );
   let activeAuth = resolved.auth;
-  const ensureBody = JSON.stringify({
+  const ensureRequest = {
     workspaceId: resolved.cloudWorkspaceId,
     requiredCapability,
     ...(asyncPreparation ? { preparationMode: 'async-v1' } : {}),
@@ -1067,7 +1093,8 @@ export async function ensureCloudFleetSandbox(
     ...(input.waitTimeoutMs !== undefined ? { waitTimeoutMs: input.waitTimeoutMs } : {}),
     ...(input.repos !== undefined && input.repos.length > 0 ? { repos: [...input.repos] } : {}),
     ...(repoRevisions === undefined ? {} : { repoRevisions }),
-  });
+  };
+  const ensureBody = JSON.stringify(ensureRequest);
 
   let sawAcceptedPreparation = false;
   let lastProgressSignature: string | undefined;
@@ -1249,7 +1276,7 @@ export async function ensureCloudFleetSandbox(
       '/api/v1/fleet/nodes/sandbox/ensure',
       {
         method: 'POST',
-        signal: asyncPreparation ? asyncPreparationRequestSignal(signal) : signal,
+        signal: asyncPreparation ? asyncPreparationInitialRequestSignal(signal) : signal,
         body: ensureBody,
       },
       { interactive: false }
@@ -1303,8 +1330,43 @@ export async function ensureCloudFleetSandbox(
       }
     );
   }
-  const payload = await readJson(response);
-  if (asyncPreparation) {
+  let payload = await readJson(response);
+  let legacyCompatibilityResponse = asyncPreparation && response.ok && isLegacyEnsureOutcome(payload);
+  if (asyncPreparation && rejectsAsyncPreparationMode(response, payload)) {
+    try {
+      const retried = await authorizedApiFetch(
+        activeAuth,
+        '/api/v1/fleet/nodes/sandbox/ensure',
+        {
+          method: 'POST',
+          signal: asyncPreparationInitialRequestSignal(signal),
+          body: JSON.stringify({ ...ensureRequest, preparationMode: undefined }),
+        },
+        { interactive: false }
+      );
+      activeAuth = retried.auth;
+      response = retried.response;
+      payload = await readJson(response);
+      legacyCompatibilityResponse = true;
+    } catch (error) {
+      throw new CloudFleetSandboxProvisionError(
+        redactCredentialValues(
+          `Cloud fleet sandbox compatibility request ended without a complete response: ${
+            error instanceof Error ? error.message : String(error)
+          }`
+        ),
+        {
+          cloudWorkspaceId: resolved.cloudWorkspaceId,
+          sandboxId: sandboxIdentity.sandboxId,
+          ...(sandboxIdentity.name === undefined ? {} : { nodeName: sandboxIdentity.name }),
+          ...(requestedProviderId === undefined ? {} : { providerId: requestedProviderId }),
+          outcomeUnknown: true,
+          cause: error,
+        }
+      );
+    }
+  }
+  if (asyncPreparation && !legacyCompatibilityResponse) {
     let envelope: AsyncPreparationEnvelope | null;
     try {
       envelope = readAsyncPreparationEnvelope(payload, sandboxIdentity.sandboxId!);

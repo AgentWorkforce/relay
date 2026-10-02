@@ -496,6 +496,127 @@ describe('Cloud fleet sandbox client', () => {
     ]);
   });
 
+  it('accepts a synchronous 201 result when an older Cloud ignores async preparation mode', async () => {
+    mocks.authorizedApiFetch
+      .mockResolvedValueOnce({
+        response: Response.json({ cloudWorkspaceId: CLOUD_WORKSPACE_ID }),
+        auth,
+      })
+      .mockResolvedValueOnce({
+        response: Response.json(
+          {
+            outcome: 'provisioned',
+            nodeId: 'node-from-old-cloud',
+            nodeName: SANDBOX_NAME,
+            sandboxId: SANDBOX_ID,
+            providerSandboxId: 'provider-from-old-cloud',
+            relayWorkspaceId: 'rw_abc',
+            relaycastTarget: RELAYCAST_TARGET,
+            relayfileMounted: true,
+            relayfileMountPath: '/workspace',
+            providerId: 'agent37',
+          },
+          { status: 201 }
+        ),
+        auth,
+      });
+
+    await expect(
+      ensureCloudFleetSandbox({
+        workspaceId: 'rw_abc',
+        name: SANDBOX_NAME,
+        sandboxId: SANDBOX_ID,
+        requiredCapability: 'spawn:codex',
+        forceProvision: true,
+        preparationMode: 'async-v1',
+      })
+    ).resolves.toMatchObject({
+      outcome: 'provisioned',
+      nodeId: 'node-from-old-cloud',
+      sandboxId: SANDBOX_ID,
+    });
+
+    expect(mocks.authorizedApiFetch).toHaveBeenCalledTimes(2);
+    expect(JSON.parse(String(mocks.authorizedApiFetch.mock.calls[1]?.[2]?.body))).toMatchObject({
+      preparationMode: 'async-v1',
+      sandboxId: SANDBOX_ID,
+    });
+  });
+
+  it('retries synchronously when an older Cloud rejects the async preparation field', async () => {
+    mocks.authorizedApiFetch
+      .mockResolvedValueOnce({
+        response: Response.json({ cloudWorkspaceId: CLOUD_WORKSPACE_ID }),
+        auth,
+      })
+      .mockResolvedValueOnce({
+        response: Response.json({ error: 'Unrecognized key: preparationMode' }, { status: 400 }),
+        auth,
+      })
+      .mockResolvedValueOnce({
+        response: Response.json(
+          {
+            outcome: 'provisioned',
+            nodeId: 'node-after-compatibility-retry',
+            nodeName: SANDBOX_NAME,
+            sandboxId: SANDBOX_ID,
+            providerSandboxId: 'provider-after-compatibility-retry',
+            relayWorkspaceId: 'rw_abc',
+            relaycastTarget: RELAYCAST_TARGET,
+            relayfileMounted: true,
+            providerId: 'agent37',
+          },
+          { status: 201 }
+        ),
+        auth,
+      });
+
+    await expect(
+      ensureCloudFleetSandbox({
+        workspaceId: 'rw_abc',
+        name: SANDBOX_NAME,
+        sandboxId: SANDBOX_ID,
+        requiredCapability: 'spawn:codex',
+        forceProvision: true,
+        preparationMode: 'async-v1',
+      })
+    ).resolves.toMatchObject({
+      outcome: 'provisioned',
+      nodeId: 'node-after-compatibility-retry',
+      sandboxId: SANDBOX_ID,
+    });
+
+    const ensureRequests = mocks.authorizedApiFetch.mock.calls.slice(1);
+    expect(ensureRequests).toHaveLength(2);
+    expect(JSON.parse(String(ensureRequests[0]?.[2]?.body))).toHaveProperty('preparationMode', 'async-v1');
+    expect(JSON.parse(String(ensureRequests[1]?.[2]?.body))).not.toHaveProperty('preparationMode');
+  });
+
+  it('does not replay ensure for an unrelated 400 response', async () => {
+    mocks.authorizedApiFetch
+      .mockResolvedValueOnce({
+        response: Response.json({ cloudWorkspaceId: CLOUD_WORKSPACE_ID }),
+        auth,
+      })
+      .mockResolvedValueOnce({
+        response: Response.json({ error: 'Repository revision is invalid' }, { status: 400 }),
+        auth,
+      });
+
+    await expect(
+      ensureCloudFleetSandbox({
+        workspaceId: 'rw_abc',
+        name: SANDBOX_NAME,
+        sandboxId: SANDBOX_ID,
+        requiredCapability: 'spawn:codex',
+        forceProvision: true,
+        preparationMode: 'async-v1',
+      })
+    ).rejects.toThrow('Repository revision is invalid');
+
+    expect(mocks.authorizedApiFetch).toHaveBeenCalledTimes(2);
+  });
+
   it('retries an accepted async preparation after rate limiting through durable status', async () => {
     mocks.authorizedApiFetch
       .mockResolvedValueOnce({
