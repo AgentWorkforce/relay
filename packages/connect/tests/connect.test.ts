@@ -247,7 +247,7 @@ describe('@agent-relay/connect CLI', () => {
     expect(pending).toEqual({
       code: 8,
       stdout: '',
-      stderr: 'A previous join may still have completed; retry with the same link and options.\n',
+      stderr: 'A previous join has an unknown outcome; retry with the same link and options.\n',
     });
   });
 

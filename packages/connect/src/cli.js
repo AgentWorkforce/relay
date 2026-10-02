@@ -102,7 +102,7 @@ function errorDetails(error) {
     connect_not_joined: ['This agent session has not joined a Relay Connect.', 4],
     connect_already_joined: ['This agent session is already in a different Relay Connect.', 5],
     connect_join_pending: [
-      'A previous join may still have completed; retry with the same link and options.',
+      'A previous join has an unknown outcome; retry with the same link and options.',
       8,
     ],
     connect_join_timeout: ['Relay Connect join timed out; retry the same join safely.', 8],
