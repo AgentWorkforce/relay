@@ -24,6 +24,7 @@ import {
 } from '@agent-relay/sdk';
 import { z } from 'zod';
 import { declaredWorkforceMetadata } from './lib/registration-metadata.js';
+import { isBundledBunEntrypointPath } from './lib/agent-relay-mcp-command.js';
 import {
   DEFAULT_AGENT_REGISTRATION_TIMEOUT_MS,
   withAgentRegistrationDeadline,
@@ -496,6 +497,11 @@ export function normalizeBaseUrl(baseUrl?: string): string | undefined {
 function isEntrypoint(): boolean {
   const invocationPath = process.argv[1];
   if (!invocationPath) return false;
+  // `bun build --compile` folds this importable module into the CLI entrypoint,
+  // and both modules observe the same virtual import.meta.url. Treating this
+  // module as an entrypoint in that environment starts a second stdio server;
+  // the CLI's `mcp` command owns startup for the compiled executable.
+  if (isBundledBunEntrypointPath(invocationPath)) return false;
   try {
     return fs.realpathSync(invocationPath) === fs.realpathSync(fileURLToPath(import.meta.url));
   } catch {

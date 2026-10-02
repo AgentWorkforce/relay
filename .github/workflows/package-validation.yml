@@ -351,6 +351,9 @@ jobs:
           scripts/verify-macos-binary.sh "release-binaries/${OUTPUT}" "$EXPECTED_ARCH" -- --version
           echo "STANDALONE_CLI=$PWD/release-binaries/${OUTPUT}" >> "$GITHUB_ENV"
 
+      - name: Verify standalone MCP dispatches each request once
+        run: node scripts/verify-standalone-mcp-single-dispatch.mjs "$STANDALONE_CLI"
+
       - name: Smoke standalone lifecycle
         env:
           AGENT_RELAY_STARTUP_DEBUG: 1

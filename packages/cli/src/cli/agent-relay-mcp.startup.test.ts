@@ -545,6 +545,9 @@ describe('agent-relay-mcp startup helpers', () => {
 
     expect(retry).toEqual(first);
     expect(mocks.agentClients.reduce((count, client) => count + client.dm.mock.calls.length, 0)).toBe(1);
+    expect(mocks.agentClients.flatMap((client) => client.dm.mock.calls)).toEqual([
+      [input.to, input.text, expect.objectContaining({ idempotencyKey: input.idempotency_key })],
+    ]);
   });
 
   it('parses startup options and helper flags from the environment', async () => {
