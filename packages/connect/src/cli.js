@@ -2,7 +2,12 @@
 
 import { readFile } from 'node:fs/promises';
 import os from 'node:os';
-import { ensureProbe, InstallError, requireExistingProbe as findExistingProbe } from './install.js';
+import {
+  ensureProbe,
+  InstallError,
+  linuxProbeSessionUpdateHint,
+  requireExistingProbe as findExistingProbe,
+} from './install.js';
 import { requestJson, requireOk, SocketResponseError } from './http.js';
 
 const USAGE = `Usage:
@@ -126,6 +131,12 @@ async function requireExistingProbe() {
   return existing;
 }
 
+function requireSessionOk(response, probe) {
+  const hint = linuxProbeSessionUpdateHint(probe, response);
+  if (hint) throw new InstallError(hint, 6);
+  return requireOk(response);
+}
+
 function joinSummary(response) {
   const data = response.data || {};
   const hostAgent = safeText(data.host?.agent_name);
@@ -195,13 +206,14 @@ async function run(options) {
       if (!claim) throw new UsageError('--host-claim-stdin requires a claim on stdin.');
       body.host_claim = claim;
     }
-    const response = requireOk(
+    const response = requireSessionOk(
       await requestJson(probe.socketPath, {
         method: 'POST',
         path: '/connect/join',
         body: JSON.stringify(body),
         headers: { 'content-type': 'application/json' },
-      })
+      }),
+      probe
     );
     delete body.host_claim;
 
@@ -248,7 +260,10 @@ async function run(options) {
   }
 
   if (options.command === 'status') {
-    const response = requireOk(await requestJson(probe.socketPath, { path: '/connect/status' }));
+    const response = requireSessionOk(
+      await requestJson(probe.socketPath, { path: '/connect/status' }),
+      probe
+    );
     if (options.json) printJson(response);
     else process.stdout.write(`${statusSummary(response)}\n`);
     return;

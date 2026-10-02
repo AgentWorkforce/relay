@@ -27,6 +27,7 @@ import {
   getPlatformAsset,
   installMac,
   installLinux,
+  linuxProbeSessionUpdateHint,
   macStageCommands,
   probeVersionSupported,
   quitRelayDesktop,
@@ -107,7 +108,7 @@ describe('@agent-relay/connect CLI', () => {
     const hellos: string[] = [];
     const { home } = await listen((request, response, body) => {
       if (request.url === '/setup/status') {
-        json(response, { ok: true, data: { version: '2026.10.4' } });
+        json(response, { ok: true, data: { version: '2026.10.5' } });
       } else if (request.url === '/connect/join') {
         expect(request.headers['content-type']).toBe('application/json');
         joins.push(JSON.parse(body));
@@ -160,7 +161,7 @@ describe('@agent-relay/connect CLI', () => {
     const sent: Array<{ url: string; body: string }> = [];
     const { home } = await listen((request, response, body) => {
       if (request.url === '/setup/status') {
-        json(response, { ok: true, data: { version: '2026.10.4' } });
+        json(response, { ok: true, data: { version: '2026.10.5' } });
       } else if (request.url?.startsWith('/connect/send')) {
         sent.push({ url: request.url, body });
         json(response, { ok: true, data: { sent: [{ to: 'host agent', message_id: 'm1' }] } });
@@ -195,7 +196,7 @@ describe('@agent-relay/connect CLI', () => {
     let sendRequests = 0;
     const { home } = await listen((request, response) => {
       if (request.url === '/setup/status') {
-        json(response, { ok: true, data: { version: '2026.10.4' } });
+        json(response, { ok: true, data: { version: '2026.10.5' } });
       } else if (request.url === '/connect/join') {
         json(response, {
           ok: true,
@@ -223,7 +224,7 @@ describe('@agent-relay/connect CLI', () => {
   it('keeps a completed join successful when the host hello fails', async () => {
     const { home } = await listen((request, response) => {
       if (request.url === '/setup/status') {
-        json(response, { ok: true, data: { version: '2026.10.4' } });
+        json(response, { ok: true, data: { version: '2026.10.5' } });
       } else if (request.url === '/connect/join') {
         json(response, {
           ok: true,
@@ -255,7 +256,7 @@ describe('@agent-relay/connect CLI', () => {
   it('maps socket errors and preserves their code in JSON mode', async () => {
     const { home } = await listen((request, response) => {
       if (request.url === '/setup/status') {
-        json(response, { ok: true, data: { version: '2026.10.4' } });
+        json(response, { ok: true, data: { version: '2026.10.5' } });
       } else {
         json(response, { ok: false, error: { code: 'connect_expired', message: 'expired upstream' } }, 410);
       }
@@ -337,21 +338,71 @@ describe('probe installer', () => {
       platform: 'darwin',
       find: async () => ({
         socketPath: '/tmp/old.sock',
-        status: { ok: true, data: { version: '2026.10.3' } },
-        version: '2026.10.3',
-        supported: false,
+        status: { ok: true, data: { version: '2026.10.4' } },
+        version: '2026.10.4',
+        supported: true,
       }),
       installMacFn: async () => {
         installs += 1;
         return {
           socketPath: '/tmp/new.sock',
-          status: { ok: true, data: { version: '2026.10.4' } },
+          status: { ok: true, data: { version: '2026.10.5' } },
         };
       },
       acquire: async () => ({ release: async () => {} }),
     });
     expect(installs).toBe(1);
     expect(result).toMatchObject({ socketPath: '/tmp/new.sock', installed: true });
+  });
+
+  it('accepts a live Linux 2026.10.4 probe without starting another one', async () => {
+    let installs = 0;
+    const result = await ensureProbe({
+      home: '/tmp/current-linux-probe',
+      platform: 'linux',
+      find: async () => ({
+        socketPath: '/tmp/current.sock',
+        status: { ok: true, data: { version: '2026.10.4' } },
+        version: '2026.10.4',
+        supported: true,
+      }),
+      installLinuxFn: async () => {
+        installs += 1;
+        throw new Error('must not install');
+      },
+    });
+    expect(result).toMatchObject({ socketPath: '/tmp/current.sock', installed: false });
+    expect(installs).toBe(0);
+  });
+
+  it('advises an update when a Linux 2026.10.4 probe cannot identify the session', () => {
+    const probe = { version: '2026.10.4' };
+    const rejection = { error: { code: 'not_a_relay_session' } };
+    expect(linuxProbeSessionUpdateHint(probe, rejection, 'linux')).toBe(
+      'Agent Relay 2026.10.4 could not identify this session; update Agent Relay to 2026.10.5 or newer and retry.'
+    );
+    expect(linuxProbeSessionUpdateHint(probe, rejection, 'darwin')).toBeNull();
+    expect(linuxProbeSessionUpdateHint({ version: '2026.10.5' }, rejection, 'linux')).toBeNull();
+    expect(linuxProbeSessionUpdateHint(probe, { error: { code: 'connect_not_joined' } }, 'linux')).toBeNull();
+  });
+
+  it('prints the Linux update advice for join and status rejections', async () => {
+    if (process.platform !== 'linux') return;
+    const { home } = await listen((request, response) => {
+      if (request.url === '/setup/status') {
+        json(response, { ok: true, data: { version: '2026.10.4' } });
+      } else {
+        json(response, { ok: false, error: { code: 'not_a_relay_session' } }, 403);
+      }
+    });
+    for (const args of [['join', 'connect-test'], ['status']]) {
+      expect(await runCli(home, args)).toEqual({
+        code: 6,
+        stdout: '',
+        stderr:
+          'Agent Relay 2026.10.4 could not identify this session; update Agent Relay to 2026.10.5 or newer and retry.\n',
+      });
+    }
   });
 
   it('gives status, send, and leave the same distinct old-probe error', async () => {
@@ -369,8 +420,7 @@ describe('probe installer', () => {
       expect(result).toEqual({
         code: 9,
         stdout: '',
-        stderr:
-          'Agent Relay 2026.10.3 is too old for Relay Connect (needs 2026.10.4 or newer); update it and retry.\n',
+        stderr: `Agent Relay 2026.10.3 is too old for Relay Connect (needs 2026.10.${process.platform === 'darwin' ? '5' : '4'} or newer); update it and retry.\n`,
       });
     }
   });
@@ -566,7 +616,7 @@ describe('probe installer', () => {
         return attempts === 3
           ? {
               socketPath: '/tmp/relay.sock',
-              status: { ok: true, data: { version: '2026.10.4' } },
+              status: { ok: true, data: { version: '2026.10.5' } },
             }
           : null;
       },
@@ -644,8 +694,8 @@ describe('probe installer', () => {
         return findCalls >= 2
           ? {
               socketPath: '/tmp/ready-after-lock.sock',
-              status: { ok: true, data: { version: '2026.10.4' } },
-              version: '2026.10.4',
+              status: { ok: true, data: { version: '2026.10.5' } },
+              version: '2026.10.5',
               supported: true,
             }
           : null;
@@ -728,8 +778,8 @@ describe('probe installer', () => {
         return attempts === 5
           ? {
               socketPath: '/tmp/recovered.sock',
-              status: { ok: true, data: { version: '2026.10.4' } },
-              version: '2026.10.4',
+              status: { ok: true, data: { version: '2026.10.5' } },
+              version: '2026.10.5',
               supported: true,
             }
           : null;
@@ -774,7 +824,7 @@ describe('probe installer', () => {
       },
       wait: async () => ({
         socketPath: '/tmp/relay.sock',
-        status: { ok: true, data: { version: '2026.10.4' } },
+        status: { ok: true, data: { version: '2026.10.5' } },
       }),
     });
 
@@ -918,7 +968,7 @@ describe('probe installer', () => {
   it('rejects an unsafe socket pointer before sending a request', async () => {
     const { home } = await listen((request, response) => {
       if (request.url === '/setup/status') {
-        json(response, { ok: true, data: { version: '2026.10.4' } });
+        json(response, { ok: true, data: { version: '2026.10.5' } });
       }
     });
     await chmod(join(home, '.agentworkforce/desktop/relay-socket'), 0o666);
@@ -928,7 +978,7 @@ describe('probe installer', () => {
   it('rejects a non-regular socket pointer before reading it', async () => {
     const { home } = await listen((request, response) => {
       if (request.url === '/setup/status') {
-        json(response, { ok: true, data: { version: '2026.10.4' } });
+        json(response, { ok: true, data: { version: '2026.10.5' } });
       }
     });
     const pointer = join(home, '.agentworkforce/desktop/relay-socket');
@@ -959,6 +1009,21 @@ describe('probe installer', () => {
       })
     ).rejects.toThrow('Timed out waiting');
     expect(clock).toBe(3_000);
+  });
+
+  it('waits for the macOS 2026.10.5 core after an app update', async () => {
+    let checks = 0;
+    const result = await waitForLiveSocket({
+      home: '/tmp/mac-update-home',
+      minimumVersion: '2026.10.5',
+      timeoutMs: 3_000,
+      now: () => checks * 1_000,
+      sleep: async () => {},
+      pointer: async () => '/tmp/relay.sock',
+      check: async () => ({ ok: true, data: { version: ++checks === 1 ? '2026.10.4' : '2026.10.5' } }),
+    });
+    expect(result.status.data.version).toBe('2026.10.5');
+    expect(checks).toBe(2);
   });
 
   it('enforces a timeout on each Unix-socket request', async () => {
