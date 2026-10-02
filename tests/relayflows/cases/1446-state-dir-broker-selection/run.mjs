@@ -22,6 +22,7 @@ import { fileURLToPath } from 'node:url';
 
 const CASE_ID = '1446-state-dir-broker-selection';
 const COMMAND_TIMEOUT_MS = 5 * 60 * 1000;
+const CLI_OPERATION_TIMEOUT_MS = 15 * 1000;
 
 const targetDir = requiredDirectory('RELAY_PR_PROOF_TARGET_DIR');
 const harnessDir = requiredDirectory('RELAY_PR_PROOF_HARNESS_DIR');
@@ -162,7 +163,8 @@ function runCli(args, cwd, env) {
     let stderr = '';
     child.stdout.on('data', (chunk) => (stdout += chunk));
     child.stderr.on('data', (chunk) => (stderr += chunk));
-    const timer = setTimeout(() => child.kill('SIGKILL'), COMMAND_TIMEOUT_MS);
+    // Bounded like any normal RelayFlow operation; the fixture answers immediately.
+    const timer = setTimeout(() => child.kill('SIGKILL'), CLI_OPERATION_TIMEOUT_MS);
     child.on('error', reject);
     child.on('close', (code) => {
       clearTimeout(timer);

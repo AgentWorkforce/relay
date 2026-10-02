@@ -1305,7 +1305,7 @@ describe('explicit broker selection on every node agent subcommand (relay#1446, 
       await program.parseAsync(['local', 'agent', 'list', '--state-dir', root], { from: 'user' });
       expect(exit).toHaveBeenCalledWith(1);
       expect(error).toHaveBeenCalledWith(
-        `Error: no broker connection at ${path.join(root, 'connection.json')} (from --state-dir; also checked ${path.join(root, 'state', 'connection.json')}). Pass the same --state-dir the broker was started with.`
+        `Error: no broker connection at ${path.join(root, 'connection.json')} or ${path.join(root, 'state', 'connection.json')} (from --state-dir). Pass the same --state-dir the broker was started with.`
       );
     } finally {
       fs.rmSync(root, { recursive: true, force: true });

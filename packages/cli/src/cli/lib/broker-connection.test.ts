@@ -190,10 +190,22 @@ describe('malformed exact connection file', () => {
 
 describe('describeMissingBrokerConnection', () => {
   it('names the --state-dir paths that were searched', () => {
-    const nodeDir = path.resolve('/srv/node');
+    const nodeDir = path.resolve('/srv/node-that-does-not-exist');
     expect(describeMissingBrokerConnection({ stateDir: nodeDir }, makeDeps())).toBe(
-      `Error: no broker connection at ${path.join(nodeDir, 'connection.json')} (from --state-dir; also checked ${path.join(nodeDir, 'state', 'connection.json')}). Pass the same --state-dir the broker was started with.`
+      `Error: no broker connection at ${path.join(nodeDir, 'connection.json')} or ${path.join(nodeDir, 'state', 'connection.json')} (from --state-dir). Pass the same --state-dir the broker was started with.`
     );
+  });
+
+  it('names the unusable exact file instead of claiming the nested one was read', () => {
+    const nodeDir = fs.mkdtempSync(path.join(os.tmpdir(), 'relay-node-dir-'));
+    try {
+      fs.writeFileSync(path.join(nodeDir, 'connection.json'), '{not json');
+      expect(describeMissingBrokerConnection({ stateDir: nodeDir }, makeDeps())).toBe(
+        `Error: unusable broker connection file ${path.join(nodeDir, 'connection.json')} (from --state-dir): it is malformed or has no url.`
+      );
+    } finally {
+      fs.rmSync(nodeDir, { recursive: true, force: true });
+    }
   });
 
   it('labels the project default and points at --state-dir', () => {

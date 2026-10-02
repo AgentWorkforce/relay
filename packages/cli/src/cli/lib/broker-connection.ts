@@ -163,9 +163,18 @@ export function describeMissingBrokerConnection(
   const explicitStateDir = trimOrUndefined(options.stateDir);
   if (explicitStateDir) {
     const resolved = path.resolve(explicitStateDir);
+    const exact = path.join(resolved, 'connection.json');
+    // Report only what resolution actually read: an existing exact file stops
+    // the nested fallback, so it is the file at fault.
+    if (fs.existsSync(exact)) {
+      return `Error: unusable broker connection file ${exact} (from --state-dir): it is malformed or has no url.`;
+    }
+    const nested = path.join(resolved, 'state', 'connection.json');
+    if (fs.existsSync(nested)) {
+      return `Error: unusable broker connection file ${nested} (from --state-dir): it is malformed or has no url.`;
+    }
     return (
-      `Error: no broker connection at ${path.join(resolved, 'connection.json')} (from --state-dir; ` +
-      `also checked ${path.join(resolved, 'state', 'connection.json')}). ` +
+      `Error: no broker connection at ${exact} or ${nested} (from --state-dir). ` +
       'Pass the same --state-dir the broker was started with.'
     );
   }

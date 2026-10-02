@@ -2362,6 +2362,22 @@ describe('registerCoreCommands', () => {
     );
   });
 
+  it('status --state-dir prefers a live nested broker over stale lock files in the node directory', async () => {
+    const nodeDir = '/srv/stale-node';
+    const fs = createFsMock({
+      [`${nodeDir}/broker-old.lock`]: '',
+      [`${nodeDir}/state/connection.json`]: connectionFile(4242),
+    });
+    sdkStatusClient.getStatus.mockResolvedValueOnce({ agent_count: 1, pending_delivery_count: 0 });
+    sdkStatusClient.getSession.mockResolvedValueOnce({ workspace_key: 'rk_live_teststatus123' });
+    const { program, deps } = createHarness({ fs });
+
+    expect(await runCommand(program, ['status', '--state-dir', nodeDir])).toBeUndefined();
+
+    expect(deps.log).toHaveBeenCalledWith('Status: RUNNING');
+    expect(deps.log).toHaveBeenCalledWith('PID: 4242');
+  });
+
   it('status checks broker status and prints metrics', async () => {
     const connectionPath = '/tmp/project/.agentworkforce/relay/connection.json';
     const fs = createFsMock({

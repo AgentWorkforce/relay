@@ -10,7 +10,7 @@ import { redactCredentialValues } from '@agent-relay/cloud/redact';
 import type { CoreDependencies, CoreProjectPaths, CoreRelay, SpawnedProcess } from '../commands/core.js';
 import {
   brokerIdentityDirectory,
-  brokerIdentityPath,
+  locateBrokerIdentityFile,
   matchesBrokerIdentity,
   persistBrokerIdentity,
   readBrokerIdentities,
@@ -1095,7 +1095,7 @@ async function killOrphanedBrokerProcesses(
       if (options?.matchBrokerName) {
         result.matchedCount++;
         deps.warn(
-          `Recorded broker has already exited; its identity was retained because no matched exit was observed. Verify ownership before removing ${brokerIdentityPath(paths, deps, identity.brokerName)} and restarting.`
+          `Recorded broker has already exited; its identity was retained because no matched exit was observed. Verify ownership before removing ${locateBrokerIdentityFile(paths, deps, identity.brokerName)} and restarting.`
         );
       }
       continue;
@@ -1116,7 +1116,7 @@ async function stopRecordedBroker(
   // escalation after a wait. Never rediscover ownership from rendered argv.
   if (!(await matchesBrokerIdentity(identity, paths, deps))) {
     deps.warn(
-      `Broker identity could not be verified (pid: ${identity.pid}). State retained; verify process ownership before stopping it manually. If the recorded broker has exited, remove its stale identity file: ${brokerIdentityPath(paths, deps, identity.brokerName)}`
+      `Broker identity could not be verified (pid: ${identity.pid}). State retained; verify process ownership before stopping it manually. If the recorded broker has exited, remove its stale identity file: ${locateBrokerIdentityFile(paths, deps, identity.brokerName)}`
     );
     return false;
   }
@@ -2516,15 +2516,22 @@ async function reportNodeClaimsElsewhere(paths: CoreProjectPaths, deps: CoreDepe
  * Resolve `--state-dir` for commands that inspect an existing broker. A fleet
  * node directory holds its broker state in `state/`, so accept the node
  * directory too when only the nested one holds broker state (relay#1575).
- * Lock and identity files count as evidence alongside connection.json so
- * `down --force` can still recover a broker whose connection file is gone.
+ * A live connection file is the strongest evidence and is checked in both
+ * places first, so leftover lock or identity files in the exact directory
+ * cannot shadow a running nested broker. Lock and identity files still count
+ * when neither has a connection file, so `down --force` can recover a broker
+ * whose connection file is gone.
  */
 function resolveExistingStateDir(stateDir: string, deps: CoreDependencies): string {
-  return resolveConnectionStateDir(stateDir, (dir) => hasBrokerStateEvidence(dir, deps));
+  const exact = path.resolve(stateDir);
+  const nested = path.join(exact, 'state');
+  const hasConnection = (dir: string) => deps.fs.existsSync(path.join(dir, CONNECTION_FILENAME));
+  if (hasConnection(exact)) return exact;
+  if (hasConnection(nested)) return nested;
+  return resolveConnectionStateDir(exact, (dir) => hasBrokerStateFiles(dir, deps));
 }
 
-function hasBrokerStateEvidence(dir: string, deps: CoreDependencies): boolean {
-  if (deps.fs.existsSync(path.join(dir, CONNECTION_FILENAME))) return true;
+function hasBrokerStateFiles(dir: string, deps: CoreDependencies): boolean {
   try {
     return deps.fs
       .readdirSync(dir)

@@ -129,6 +129,17 @@ function findBrokerIdentityRecord(
   return null;
 }
 
+/** The file holding the record for `brokerName`, falling back to where a new record would be written. */
+export function locateBrokerIdentityFile(
+  paths: CoreProjectPaths,
+  deps: IdentityDependencies,
+  brokerName: string
+): string {
+  return (
+    findBrokerIdentityRecord(paths, deps, brokerName)?.filename ?? brokerIdentityPath(paths, deps, brokerName)
+  );
+}
+
 export function readBrokerIdentity(
   paths: CoreProjectPaths,
   deps: IdentityDependencies,
