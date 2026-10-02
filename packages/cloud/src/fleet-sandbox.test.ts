@@ -114,11 +114,19 @@ describe('Cloud fleet sandbox client', () => {
       .mockResolvedValueOnce({
         response: Response.json({
           ok: true,
+          wait: {
+            reason: 'waiting_on_output_lock',
+            ownerJobId: 'older-clone-job',
+            ownerStatus: 'running',
+            ownerStartedAt: '2026-10-02T10:00:00.000Z',
+            ownerUpdatedAt: '2026-10-02T10:01:00.000Z',
+            leaseExpiresAt: '2026-10-02T10:16:00.000Z',
+          },
           job: {
             owner: 'AgentWorkforce',
             repo: 'cloud',
             ref: revision,
-            status: 'running',
+            status: 'queued',
           },
         }),
         auth: refreshedAuth,
@@ -148,6 +156,7 @@ describe('Cloud fleet sandbox client', () => {
         auth: refreshedAuth,
       });
 
+    const onProgress = vi.fn();
     await expect(
       materializeCloudRelayfileRepository(
         {
@@ -155,7 +164,7 @@ describe('Cloud fleet sandbox client', () => {
           repository: 'AgentWorkforce/cloud',
           revision,
         },
-        { pollIntervalMs: 1 }
+        { pollIntervalMs: 1, onProgress }
       )
     ).resolves.toEqual({
       cloudWorkspaceId: CLOUD_WORKSPACE_ID,
@@ -178,6 +187,19 @@ describe('Cloud fleet sandbox client', () => {
       sourceProfile: 'complete-v1',
     });
     expect(JSON.stringify(requestCall)).not.toContain('githubToken');
+    expect(onProgress).toHaveBeenCalledTimes(1);
+    expect(onProgress).toHaveBeenCalledWith({
+      status: 'queued',
+      waitedMs: expect.any(Number),
+      wait: {
+        reason: 'waiting_on_output_lock',
+        ownerJobId: 'older-clone-job',
+        ownerStatus: 'running',
+        ownerStartedAt: '2026-10-02T10:00:00.000Z',
+        ownerUpdatedAt: '2026-10-02T10:01:00.000Z',
+        leaseExpiresAt: '2026-10-02T10:16:00.000Z',
+      },
+    });
   });
 
   it('rejects a completed clone that did not produce the requested live Relayfile revision', async () => {
