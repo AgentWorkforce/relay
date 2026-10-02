@@ -46,6 +46,7 @@ let stdoutBuffer = '';
 let stdoutDiagnostic = '';
 let stderrDiagnostic = '';
 let startupError;
+let stdinError;
 let exitResult;
 
 const delay = (milliseconds) => new Promise((resolve) => setTimeout(resolve, milliseconds));
@@ -68,6 +69,10 @@ const exited = new Promise((resolve) => {
 
 child.on('error', (error) => {
   startupError = error;
+  notifyWaiters();
+});
+child.stdin.on('error', (error) => {
+  stdinError = error;
   notifyWaiters();
 });
 child.stdout.setEncoding('utf8');
@@ -123,6 +128,9 @@ function waitForResponse(id, milliseconds) {
       } else if (startupError) {
         cleanup();
         reject(startupError);
+      } else if (stdinError) {
+        cleanup();
+        reject(stdinError);
       } else if (exitResult) {
         cleanup();
         reject(
