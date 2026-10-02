@@ -5,7 +5,11 @@ All notable changes to Agent Relay will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
+## [Unreleased - Patch]
+
+### Fixed
+
+- `@agent-relay/connect join` returns as soon as the probe admits the participant instead of waiting for a redundant host notification, and timed-out joins clearly instruct the caller to retry safely.
 
 ## [13.0.1] - 2026-10-02
 
