@@ -35,6 +35,39 @@ async function gitHead(repoRoot) {
   return result.stdout.trim();
 }
 
+const INSTALL_FINGERPRINT = 'node_modules/.package-lock.json';
+const RESTORE_TIMEOUT_MS = 15 * 60 * 1_000;
+
+/** npm rewrites its hidden lockfile whenever an install changes the tree. */
+async function installFingerprint(repoRoot) {
+  try {
+    return await readFile(path.join(repoRoot, INSTALL_FINGERPRINT), 'utf8');
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Corpus cases share one checkout. A case that reinstalls a subset of the
+ * workspace (for example `npm ci --workspace …`) prunes dependencies every
+ * later case needs, so restore the full install whenever a case changed it.
+ */
+async function restoreInstallIfChanged(repoRoot, before, caseId) {
+  if ((await installFingerprint(repoRoot)) === before) return;
+  console.log(`TARGETED_RELAYFLOW_CASE_RESTORE case=${caseId} reason=dependency_tree_changed`);
+  const result = await runTargetedProcess(['npm', 'ci', '--ignore-scripts', '--no-audit', '--no-fund'], {
+    cwd: repoRoot,
+    env: process.env,
+    timeoutMs: RESTORE_TIMEOUT_MS,
+    maxOutputBytes: MAX_OUTPUT_BYTES,
+  });
+  if (result.timedOut || result.aborted || result.outputLimitExceeded || result.exitCode !== 0) {
+    throw new Error(
+      `Restoring dependencies after RelayFlow case ${caseId} failed: ${(result.stderr ?? '').trim()}`
+    );
+  }
+}
+
 async function main() {
   const caseId = requiredOption('--case');
   const timeoutSeconds = Number(requiredOption('--timeout-seconds'));
@@ -60,6 +93,7 @@ async function main() {
 
   const temporaryDirectory = await mkdtemp(path.join(os.tmpdir(), `relay-targeted-${caseId}-`));
   const resultPath = path.join(temporaryDirectory, 'observation.json');
+  const installBefore = await installFingerprint(repoRoot);
   try {
     const result = await runTargetedProcess(manifest.runner.command, {
       cwd: repoRoot,
@@ -98,6 +132,7 @@ async function main() {
     );
   } finally {
     await rm(temporaryDirectory, { recursive: true, force: true });
+    await restoreInstallIfChanged(repoRoot, installBefore, caseId);
   }
 }
 
