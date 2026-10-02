@@ -287,6 +287,10 @@ jobs:
           fi
           echo "OK: ssh2 is bundled (ssh-userauth symbol present)"
 
+      - name: Verify standalone MCP dispatches each request once
+        if: matrix.target == 'bun-linux-x64'
+        run: node scripts/verify-standalone-mcp-single-dispatch.mjs "release-binaries/${{ matrix.binary_name }}"
+
       - name: Sign macOS binary
         if: startsWith(matrix.target, 'bun-darwin-')
         run: scripts/sign-macos-binary.sh release-binaries/${{ matrix.binary_name }}
