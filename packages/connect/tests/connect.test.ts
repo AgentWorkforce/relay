@@ -10,10 +10,12 @@ import {
   downloadCommands,
   ensureProbe,
   findLiveSocket,
+  findRecoveringProbe,
   getPlatformAsset,
   installLinux,
   macStageCommands,
   probeVersionSupported,
+  requireExistingProbe,
   startDetachedProbe,
   swapMacApp,
   verifyChecksum,
@@ -274,13 +276,86 @@ describe('probe installer', () => {
     expect(probeVersionSupported('unknown')).toBe(false);
   });
 
-  it('does not reuse a responsive probe older than 2026.10.4', async () => {
+  it('reports a responsive probe older than 2026.10.4 distinctly', async () => {
     const { home } = await listen((request, response) => {
       if (request.url === '/setup/status') {
         json(response, { ok: true, data: { version: '2026.10.3' } });
       }
     });
-    await expect(findLiveSocket(home)).resolves.toBeNull();
+    await expect(findLiveSocket(home)).resolves.toMatchObject({
+      version: '2026.10.3',
+      supported: false,
+    });
+  });
+
+  it('fails on an old Linux probe without starting a second probe', async () => {
+    let installs = 0;
+    await expect(
+      ensureProbe({
+        home: '/tmp/old-linux-probe',
+        platform: 'linux',
+        find: async () => ({
+          socketPath: '/tmp/old.sock',
+          status: { ok: true, data: { version: '2026.10.3' } },
+          version: '2026.10.3',
+          supported: false,
+        }),
+        installLinuxFn: async () => {
+          installs += 1;
+          throw new Error('must not install');
+        },
+      })
+    ).rejects.toMatchObject({
+      code: 'probe_too_old',
+      exitCode: 9,
+      message:
+        'Agent Relay 2026.10.3 is too old for Relay Connect (needs 2026.10.4 or newer); update it and retry.',
+    });
+    expect(installs).toBe(0);
+  });
+
+  it('updates an old macOS probe rather than reusing it', async () => {
+    let installs = 0;
+    const result = await ensureProbe({
+      home: '/tmp/old-mac-probe',
+      platform: 'darwin',
+      find: async () => ({
+        socketPath: '/tmp/old.sock',
+        status: { ok: true, data: { version: '2026.10.3' } },
+        version: '2026.10.3',
+        supported: false,
+      }),
+      installMacFn: async () => {
+        installs += 1;
+        return {
+          socketPath: '/tmp/new.sock',
+          status: { ok: true, data: { version: '2026.10.4' } },
+        };
+      },
+    });
+    expect(installs).toBe(1);
+    expect(result).toMatchObject({ socketPath: '/tmp/new.sock', installed: true });
+  });
+
+  it('gives status, send, and leave the same distinct old-probe error', async () => {
+    const { home } = await listen((request, response) => {
+      if (request.url === '/setup/status') {
+        json(response, { ok: true, data: { version: '2026.10.3' } });
+      }
+    });
+    for (const [args, input] of [
+      [['status'], ''],
+      [['send'], 'hello'],
+      [['leave'], ''],
+    ] as Array<[string[], string]>) {
+      const result = await runCli(home, args, input);
+      expect(result).toEqual({
+        code: 9,
+        stdout: '',
+        stderr:
+          'Agent Relay 2026.10.3 is too old for Relay Connect (needs 2026.10.4 or newer); update it and retry.\n',
+      });
+    }
   });
 
   it('constructs the verified checksum and macOS staging commands', () => {
@@ -371,12 +446,73 @@ describe('probe installer', () => {
             }
           : null;
       },
+      active: async () => true,
       sleep: async () => {
         sleeps += 1;
       },
     });
     expect(result).toMatchObject({ socketPath: '/tmp/relay.sock', installed: false });
     expect({ attempts, sleeps }).toEqual({ attempts: 3, sleeps: 2 });
+  });
+
+  it('waits the full 15-second recovery window when a probe may be restarting', async () => {
+    let clock = 0;
+    let attempts = 0;
+    const result = await findRecoveringProbe({
+      home: '/tmp/restarting-probe',
+      find: async () => {
+        attempts += 1;
+        return null;
+      },
+      active: async () => true,
+      now: () => clock,
+      sleep: async (milliseconds) => {
+        clock += milliseconds;
+      },
+    });
+    expect(result).toBeNull();
+    expect(clock).toBe(15_000);
+    expect(attempts).toBeGreaterThan(3);
+  });
+
+  it('does not wait when the pointer names nothing and no probe process is running', async () => {
+    let sleeps = 0;
+    const result = await findRecoveringProbe({
+      home: '/tmp/absent-probe',
+      find: async () => null,
+      active: async () => false,
+      sleep: async () => {
+        sleeps += 1;
+      },
+    });
+    expect(result).toBeNull();
+    expect(sleeps).toBe(0);
+  });
+
+  it('applies the recovery window when an existing probe is required', async () => {
+    let clock = 0;
+    let attempts = 0;
+    const existing = await requireExistingProbe({
+      home: '/tmp/recovering-required-probe',
+      find: async () => {
+        attempts += 1;
+        return attempts === 5
+          ? {
+              socketPath: '/tmp/recovered.sock',
+              status: { ok: true, data: { version: '2026.10.4' } },
+              version: '2026.10.4',
+              supported: true,
+            }
+          : null;
+      },
+      active: async () => true,
+      now: () => clock,
+      sleep: async (milliseconds) => {
+        clock += milliseconds;
+      },
+    });
+    expect(existing?.socketPath).toBe('/tmp/recovered.sock');
+    expect(clock).toBe(1_000);
   });
 
   it('extracts Linux into a fresh sibling and swaps only the verified tree into current', async () => {

@@ -2,7 +2,7 @@
 
 import { readFile } from 'node:fs/promises';
 import os from 'node:os';
-import { findLiveSocket, ensureProbe, InstallError } from './install.js';
+import { ensureProbe, InstallError, requireExistingProbe as findExistingProbe } from './install.js';
 import { requestJson, requireOk, SocketResponseError } from './http.js';
 
 const USAGE = `Usage:
@@ -120,7 +120,7 @@ function errorDetails(error) {
 }
 
 async function requireExistingProbe() {
-  const existing = await findLiveSocket(os.homedir());
+  const existing = await findExistingProbe({ home: os.homedir() });
   if (!existing)
     throw new InstallError('No live Agent Relay probe; run `npx -y @agent-relay/connect install`.');
   return existing;

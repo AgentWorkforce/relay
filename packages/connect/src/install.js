@@ -1,18 +1,30 @@
 import { spawn } from 'node:child_process';
 import { constants } from 'node:fs';
-import { access, mkdir, mkdtemp, open, readFile, readdir, rename, rm, stat, symlink } from 'node:fs/promises';
+import { access, mkdir, mkdtemp, open, readdir, rename, rm, stat, symlink } from 'node:fs/promises';
 import os from 'node:os';
 import { basename, join, relative } from 'node:path';
 import { requestJson } from './http.js';
 
 const RELEASE = 'https://github.com/AgentWorkforce/relay-desktop-releases/releases/latest/download';
 const MINIMUM_PROBE_VERSION = '2026.10.4';
+const RECOVERY_TIMEOUT_MS = 15_000;
 
 export class InstallError extends Error {
   constructor(message, exitCode = 1) {
     super(message);
     this.name = 'InstallError';
     this.exitCode = exitCode;
+  }
+}
+
+export class OutdatedProbeError extends InstallError {
+  constructor(version) {
+    super(
+      `Agent Relay ${version || 'unknown'} is too old for Relay Connect (needs ${MINIMUM_PROBE_VERSION} or newer); update it and retry.`,
+      9
+    );
+    this.name = 'OutdatedProbeError';
+    this.code = 'probe_too_old';
   }
 }
 
@@ -107,8 +119,10 @@ async function requireCommands(commands) {
 
 async function readPointer(home) {
   const pointerPath = join(home, '.agentworkforce/desktop/relay-socket');
+  let pointerHandle;
   try {
-    const pointerInfo = await stat(pointerPath);
+    pointerHandle = await open(pointerPath, 'r');
+    const pointerInfo = await pointerHandle.stat();
     const uid = process.getuid?.();
     if (uid !== undefined && pointerInfo.uid !== uid) {
       throw new InstallError('Refusing an Agent Relay socket pointer not owned by the current user.');
@@ -117,7 +131,7 @@ async function readPointer(home) {
       throw new InstallError('Refusing a group- or world-writable Agent Relay socket pointer.');
     }
 
-    const value = await readFile(pointerPath, 'utf8');
+    const value = await pointerHandle.readFile('utf8');
     const socketPath = value.split(/\r?\n/, 1)[0].trim();
     if (!socketPath) return '';
     try {
@@ -138,6 +152,8 @@ async function readPointer(home) {
       throw new InstallError(`Could not inspect the Agent Relay socket pointer: ${error.message}`);
     }
     return '';
+  } finally {
+    await pointerHandle?.close().catch(() => {});
   }
 }
 
@@ -164,10 +180,7 @@ async function liveStatus(socketPath, timeoutMs = 5_000) {
       path: '/setup/status',
       timeoutMs,
     });
-    if (response?.ok !== true || !probeVersionSupported(response?.data?.version)) {
-      return null;
-    }
-    return response;
+    return response?.ok === true ? response : null;
   } catch (error) {
     if (error instanceof InstallError) throw error;
     return null;
@@ -177,7 +190,14 @@ async function liveStatus(socketPath, timeoutMs = 5_000) {
 export async function findLiveSocket(home = os.homedir(), timeoutMs = 5_000) {
   const socketPath = await readPointer(home);
   const status = await liveStatus(socketPath, timeoutMs);
-  return status ? { socketPath, status } : null;
+  if (!status) return null;
+  const version = status?.data?.version;
+  return {
+    socketPath,
+    status,
+    version,
+    supported: probeVersionSupported(version),
+  };
 }
 
 const delay = (milliseconds) => new Promise((resolve) => setTimeout(resolve, milliseconds));
@@ -196,7 +216,7 @@ export async function waitForLiveSocket({
     const socketPath = await pointer(home);
     const remaining = Math.max(1, deadline - now());
     const status = await check(socketPath, Math.min(perRequestTimeoutMs, remaining));
-    if (status) return { socketPath, status };
+    if (status && probeVersionSupported(status?.data?.version)) return { socketPath, status };
     const sleepFor = Math.min(1_000, Math.max(0, deadline - now()));
     if (sleepFor > 0) await sleep(sleepFor);
   }
@@ -362,6 +382,66 @@ async function processRunning(run) {
   return result.code === 0;
 }
 
+async function relayProcessRunning(run = runCommand) {
+  const checks = [
+    ['-x', 'RelayDesktop'],
+    ['-f', 'agent-relay-probe.*relay[[:space:]]+serve'],
+  ];
+  for (const args of checks) {
+    try {
+      const result = await run('pgrep', args, { allowFailure: true });
+      if (result.code === 0) return true;
+    } catch {
+      // A live pointer is sufficient when pgrep is unavailable.
+    }
+  }
+  return false;
+}
+
+async function pointerNamesSocket(home) {
+  const socketPath = await readPointer(home);
+  if (!socketPath) return false;
+  try {
+    return (await stat(socketPath)).isSocket();
+  } catch (error) {
+    if (error?.code === 'ENOENT') return false;
+    throw new InstallError(`Could not inspect the Agent Relay socket: ${error.message}`);
+  }
+}
+
+export async function findRecoveringProbe({
+  home = os.homedir(),
+  find = findLiveSocket,
+  run = runCommand,
+  active,
+  now = Date.now,
+  sleep = delay,
+  timeoutMs = RECOVERY_TIMEOUT_MS,
+} = {}) {
+  const deadline = now() + timeoutMs;
+  let existing = await find(home, Math.min(1_000, timeoutMs));
+  if (existing) return existing;
+
+  const mayRecover = active
+    ? await active(home)
+    : (await pointerNamesSocket(home)) || (await relayProcessRunning(run));
+  if (!mayRecover) return null;
+
+  while (now() < deadline) {
+    const sleepFor = Math.min(250, Math.max(0, deadline - now()));
+    if (sleepFor > 0) await sleep(sleepFor);
+    const remaining = Math.max(1, deadline - now());
+    existing = await find(home, Math.min(1_000, remaining));
+    if (existing) return existing;
+  }
+  return null;
+}
+
+function requireSupportedProbe(existing) {
+  if (existing && existing.supported === false) throw new OutdatedProbeError(existing.version);
+  return existing;
+}
+
 export async function swapMacApp(app, staged, { move = rename, remove = rm } = {}) {
   const swap = await swapWithBackup(app, staged, { move, remove });
   if (swap.backedUp) await remove(swap.backup, { recursive: true, force: true });
@@ -434,23 +514,32 @@ export async function ensureProbe({
   run = runCommand,
   warn = (message) => process.stderr.write(`${message}\n`),
   find = findLiveSocket,
+  active,
+  now = Date.now,
   sleep = delay,
   start = startDetachedProbe,
   wait = waitForLiveSocket,
+  installLinuxFn = installLinux,
+  installMacFn = installMac,
 } = {}) {
-  for (let attempt = 0; attempt < 3; attempt += 1) {
-    const existing = await find(home);
+  const existing = await findRecoveringProbe({ home, find, run, active, now, sleep });
+  if (existing?.supported !== false) {
     if (existing) return { ...existing, installed: false };
-    if (attempt < 2) await sleep(250);
+  } else if (platform === 'linux') {
+    requireSupportedProbe(existing);
   }
 
   const result =
     platform === 'linux'
-      ? await installLinux({ home, arch, run, start, wait })
+      ? await installLinuxFn({ home, arch, run, start, wait })
       : platform === 'darwin'
-        ? await installMac({ home, arch, run, warn })
+        ? await installMacFn({ home, arch, run, warn })
         : (() => {
             throw new InstallError(`Unsupported platform: ${platform}`, 2);
           })();
   return { ...result, installed: true };
+}
+
+export async function requireExistingProbe(options = {}) {
+  return requireSupportedProbe(await findRecoveringProbe(options));
 }

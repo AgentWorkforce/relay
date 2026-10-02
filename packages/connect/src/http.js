@@ -20,6 +20,8 @@ export function requestJson(
       headers['content-length'] = Buffer.byteLength(body);
     }
 
+    // socketPath is a validated same-user Unix socket destination, not outbound request data.
+    // codeql[js/file-access-to-http]
     const request = http.request({ socketPath, method, path, headers }, (response) => {
       const chunks = [];
       response.on('data', (chunk) => chunks.push(chunk));
