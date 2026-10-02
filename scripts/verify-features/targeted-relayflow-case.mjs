@@ -94,6 +94,7 @@ async function main() {
   const temporaryDirectory = await mkdtemp(path.join(os.tmpdir(), `relay-targeted-${caseId}-`));
   const resultPath = path.join(temporaryDirectory, 'observation.json');
   const installBefore = await installFingerprint(repoRoot);
+  let caseFailed = false;
   try {
     const result = await runTargetedProcess(manifest.runner.command, {
       cwd: repoRoot,
@@ -130,9 +131,18 @@ async function main() {
     console.log(
       `TARGETED_RELAYFLOW_CASE_PASS case=${caseId} signature=${observation.signature} sha=${headSha}`
     );
+  } catch (error) {
+    caseFailed = true;
+    throw error;
   } finally {
     await rm(temporaryDirectory, { recursive: true, force: true });
-    await restoreInstallIfChanged(repoRoot, installBefore, caseId);
+    try {
+      await restoreInstallIfChanged(repoRoot, installBefore, caseId);
+    } catch (restoreError) {
+      // The case's own failure is the proof result; never let cleanup mask it.
+      if (!caseFailed) throw restoreError;
+      console.error(restoreError instanceof Error ? restoreError.message : String(restoreError));
+    }
   }
 }
 
