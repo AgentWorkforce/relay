@@ -8,6 +8,10 @@ import { requestJson } from './http.js';
 const RELEASE = 'https://github.com/AgentWorkforce/relay-desktop-releases/releases/latest/download';
 const MINIMUM_PROBE_VERSION = '2026.10.4';
 const RECOVERY_TIMEOUT_MS = 15_000;
+const INSTALL_LOCK_TIMEOUT_MS = 90_000;
+const INSTALL_LOCK_STALE_MS = 5 * 60_000;
+const MAC_SIGNING_REQUIREMENT =
+  'anchor apple generic and certificate 1[field.1.2.840.113635.100.6.2.6] exists and certificate leaf[field.1.2.840.113635.100.6.1.13] exists and certificate leaf[subject.OU] = "QUJ7SA6X8X"';
 
 export class InstallError extends Error {
   constructor(message, exitCode = 1) {
@@ -60,9 +64,17 @@ export function downloadCommands(platform, tmpDir, asset) {
 export function macStageCommands({ volume, staged, app }) {
   return [
     ['ditto', [`${volume}/Agent Relay.app`, staged]],
-    ['codesign', ['--verify', '--deep', '--strict', staged]],
+    ['codesign', ['--verify', '--deep', '--strict', `-R=${MAC_SIGNING_REQUIREMENT}`, staged]],
     ['open', [app]],
   ];
+}
+
+export async function verifyMacSignature(staged, run = runCommand) {
+  try {
+    await run('codesign', ['--verify', '--deep', '--strict', `-R=${MAC_SIGNING_REQUIREMENT}`, staged]);
+  } catch {
+    throw new InstallError('Agent Relay download is not signed by Agent Workforce; refusing installation.');
+  }
 }
 
 export async function runCommand(file, args, { cwd, capture = false, allowFailure = false } = {}) {
@@ -121,9 +133,12 @@ async function readPointer(home) {
   const pointerPath = join(home, '.agentworkforce/desktop/relay-socket');
   let pointerHandle;
   try {
-    pointerHandle = await open(pointerPath, 'r');
+    pointerHandle = await open(pointerPath, constants.O_RDONLY | constants.O_NONBLOCK);
     const pointerInfo = await pointerHandle.stat();
     const uid = process.getuid?.();
+    if (!pointerInfo.isFile()) {
+      throw new InstallError('Refusing a non-regular Agent Relay socket pointer.');
+    }
     if (uid !== undefined && pointerInfo.uid !== uid) {
       throw new InstallError('Refusing an Agent Relay socket pointer not owned by the current user.');
     }
@@ -220,7 +235,7 @@ export async function waitForLiveSocket({
     const sleepFor = Math.min(1_000, Math.max(0, deadline - now()));
     if (sleepFor > 0) await sleep(sleepFor);
   }
-  throw new InstallError('Timed out waiting for the Agent Relay probe after 60 seconds.');
+  throw new InstallError(`Timed out waiting for the Agent Relay probe after ${timeoutMs} ms.`);
 }
 
 async function findProbe(directory) {
@@ -294,12 +309,25 @@ async function swapWithBackup(destination, staged, { move = rename, remove = rm 
 }
 
 async function restoreBackup(destination, swap, { move = rename, remove = rm } = {}) {
-  if (!swap?.backedUp) return;
+  if (!swap) return;
   await remove(destination, { recursive: true, force: true });
+  if (!swap.backedUp) return;
   try {
     await move(swap.backup, destination);
   } catch (error) {
     throw new InstallError(`Could not restore the previous installation: ${error.message}`);
+  }
+}
+
+export async function finishSwap(destination, swap, ready, options = {}) {
+  if (!swap) return;
+  if (!ready) {
+    await restoreBackup(destination, swap, options);
+    return;
+  }
+  if (swap.backedUp) {
+    const remove = options.remove || rm;
+    await remove(swap.backup, { recursive: true, force: true });
   }
 }
 
@@ -316,6 +344,9 @@ export async function installLinux({
   let child;
   let ready = false;
   let swap;
+  let primaryError;
+  let pointerOwnedByRun = false;
+  let linkCreatedByRun = false;
   const installRoot = join(home, '.local/lib/agent-relay');
   const installDir = join(installRoot, 'current');
   const stagedDir = join(installRoot, 'current.new');
@@ -340,7 +371,9 @@ export async function installLinux({
     await mkdir(desktopDir, { recursive: true });
     await rm(link, { force: true });
     await symlink(probe, link);
+    linkCreatedByRun = true;
     await rm(pointer, { force: true });
+    pointerOwnedByRun = true;
 
     const logHandle = await open(join(desktopDir, 'headless.log'), 'a', 0o600);
     try {
@@ -352,8 +385,11 @@ export async function installLinux({
 
     const result = await wait({ home });
     ready = true;
-    if (swap.backedUp) await rm(swap.backup, { recursive: true, force: true });
+    await finishSwap(installDir, swap, true);
     return result;
+  } catch (error) {
+    primaryError = error;
+    throw error;
   } finally {
     if (!ready && child?.pid) {
       try {
@@ -362,18 +398,26 @@ export async function installLinux({
         // The failed probe may already have exited.
       }
     }
-    if (!ready) await rm(join(home, '.agentworkforce/desktop/relay-socket'), { force: true });
+    if (!ready && pointerOwnedByRun) {
+      await rm(join(home, '.agentworkforce/desktop/relay-socket'), { force: true });
+    }
     let restoreError;
     if (!ready) {
       try {
-        await restoreBackup(installDir, swap);
+        await finishSwap(installDir, swap, false);
+        if (linkCreatedByRun && !swap?.backedUp) {
+          await rm(join(home, '.local/bin/agent-relay-probe'), { force: true });
+        }
       } catch (error) {
         restoreError = error;
       }
     }
     await rm(stagedDir, { recursive: true, force: true });
     await rm(tmpDir, { recursive: true, force: true });
-    if (restoreError) throw restoreError;
+    if (restoreError) {
+      if (primaryError instanceof Error) primaryError.cause ??= restoreError;
+      else throw restoreError;
+    }
   }
 }
 
@@ -437,14 +481,58 @@ export async function findRecoveringProbe({
   return null;
 }
 
+export async function acquireInstallLock({
+  home = os.homedir(),
+  platform = process.platform,
+  now = Date.now,
+  sleep = delay,
+  timeoutMs = INSTALL_LOCK_TIMEOUT_MS,
+  staleMs = INSTALL_LOCK_STALE_MS,
+} = {}) {
+  const lockRoot =
+    platform === 'linux' ? join(home, '.local/lib/agent-relay') : join(home, '.agentworkforce/desktop');
+  const lockPath = join(lockRoot, 'connect-install.lock');
+  await mkdir(lockRoot, { recursive: true });
+  const deadline = now() + timeoutMs;
+
+  while (true) {
+    try {
+      await mkdir(lockPath);
+      return {
+        path: lockPath,
+        release: async () => rm(lockPath, { recursive: true, force: true }),
+      };
+    } catch (error) {
+      if (error?.code !== 'EEXIST') {
+        throw new InstallError(`Could not acquire the Agent Relay install lock: ${error.message}`);
+      }
+    }
+
+    try {
+      const info = await stat(lockPath);
+      if (now() - info.mtimeMs > staleMs) {
+        await rm(lockPath, { recursive: true, force: true });
+        continue;
+      }
+    } catch (error) {
+      if (error?.code === 'ENOENT') continue;
+      throw new InstallError(`Could not inspect the Agent Relay install lock: ${error.message}`);
+    }
+
+    if (now() >= deadline) {
+      throw new InstallError(`Timed out waiting for another Agent Relay installation after ${timeoutMs} ms.`);
+    }
+    await sleep(Math.min(250, Math.max(1, deadline - now())));
+  }
+}
+
 function requireSupportedProbe(existing) {
   if (existing && existing.supported === false) throw new OutdatedProbeError(existing.version);
   return existing;
 }
 
 export async function swapMacApp(app, staged, { move = rename, remove = rm } = {}) {
-  const swap = await swapWithBackup(app, staged, { move, remove });
-  if (swap.backedUp) await remove(swap.backup, { recursive: true, force: true });
+  return await swapWithBackup(app, staged, { move, remove });
 }
 
 async function installMac({ home, arch, run, warn }) {
@@ -453,6 +541,10 @@ async function installMac({ home, arch, run, warn }) {
   const tmpDir = await mkdtemp(join(os.tmpdir(), 'agent-relay-connect-'));
   let volume = '';
   let staged = '';
+  let app = '';
+  let appSwap;
+  let ready = false;
+  let primaryError;
   try {
     await downloadAndVerify('darwin', tmpDir, asset, run);
     const attached = await run('hdiutil', ['attach', '-nobrowse', '-readonly', join(tmpDir, asset)], {
@@ -476,7 +568,7 @@ async function installMac({ home, arch, run, warn }) {
       }
     }
 
-    let app = '/Applications/Agent Relay.app';
+    app = '/Applications/Agent Relay.app';
     try {
       await access('/Applications', constants.W_OK);
     } catch {
@@ -492,13 +584,27 @@ async function installMac({ home, arch, run, warn }) {
     await run(stage[0][0], stage[0][1]);
     await run('hdiutil', ['detach', volume]);
     volume = '';
-    await run(stage[1][0], stage[1][1]);
-    await swapMacApp(app, staged);
+    await verifyMacSignature(staged, run);
+    appSwap = await swapMacApp(app, staged);
 
     // Do not delete the existing pointer on macOS: RelayDesktop may reuse it.
     await run(stage[2][0], stage[2][1]);
-    return await waitForLiveSocket({ home });
+    const result = await waitForLiveSocket({ home });
+    ready = true;
+    await finishSwap(app, appSwap, true);
+    return result;
+  } catch (error) {
+    primaryError = error;
+    throw error;
   } finally {
+    if (!ready && appSwap) {
+      try {
+        await finishSwap(app, appSwap, false);
+      } catch (restoreError) {
+        if (primaryError instanceof Error) primaryError.cause ??= restoreError;
+        else throw restoreError;
+      }
+    }
     if (volume) {
       await run('hdiutil', ['detach', volume], { allowFailure: true }).catch(() => {});
     }
@@ -521,6 +627,7 @@ export async function ensureProbe({
   wait = waitForLiveSocket,
   installLinuxFn = installLinux,
   installMacFn = installMac,
+  acquire = acquireInstallLock,
 } = {}) {
   const existing = await findRecoveringProbe({ home, find, run, active, now, sleep });
   if (existing?.supported !== false) {
@@ -529,15 +636,27 @@ export async function ensureProbe({
     requireSupportedProbe(existing);
   }
 
-  const result =
-    platform === 'linux'
-      ? await installLinuxFn({ home, arch, run, start, wait })
-      : platform === 'darwin'
-        ? await installMacFn({ home, arch, run, warn })
-        : (() => {
-            throw new InstallError(`Unsupported platform: ${platform}`, 2);
-          })();
-  return { ...result, installed: true };
+  if (platform !== 'linux' && platform !== 'darwin') {
+    throw new InstallError(`Unsupported platform: ${platform}`, 2);
+  }
+
+  const installLock = await acquire({ home, platform, now, sleep });
+  try {
+    const afterLock = await find(home, 1_000);
+    if (afterLock?.supported !== false) {
+      if (afterLock) return { ...afterLock, installed: false };
+    } else if (platform === 'linux') {
+      requireSupportedProbe(afterLock);
+    }
+
+    const result =
+      platform === 'linux'
+        ? await installLinuxFn({ home, arch, run, start, wait })
+        : await installMacFn({ home, arch, run, warn });
+    return { ...result, installed: true };
+  } finally {
+    await installLock.release();
+  }
 }
 
 export async function requireExistingProbe(options = {}) {

@@ -1,14 +1,16 @@
 import http from 'node:http';
 import { spawn } from 'node:child_process';
 import { EventEmitter } from 'node:events';
-import { chmod, mkdir, mkdtemp, readFile, rm, symlink, writeFile } from 'node:fs/promises';
+import { chmod, mkdir, mkdtemp, readFile, rm, symlink, utimes, writeFile } from 'node:fs/promises';
 import os from 'node:os';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { afterEach, describe, expect, it } from 'vitest';
 import {
+  acquireInstallLock,
   downloadCommands,
   ensureProbe,
+  finishSwap,
   findLiveSocket,
   findRecoveringProbe,
   getPlatformAsset,
@@ -19,6 +21,7 @@ import {
   startDetachedProbe,
   swapMacApp,
   verifyChecksum,
+  verifyMacSignature,
   waitForLiveSocket,
 } from '../src/install.js';
 import { requestJson } from '../src/http.js';
@@ -332,6 +335,7 @@ describe('probe installer', () => {
           status: { ok: true, data: { version: '2026.10.4' } },
         };
       },
+      acquire: async () => ({ release: async () => {} }),
     });
     expect(installs).toBe(1);
     expect(result).toMatchObject({ socketPath: '/tmp/new.sock', installed: true });
@@ -392,9 +396,26 @@ describe('probe installer', () => {
       })
     ).toEqual([
       ['ditto', ['/Volumes/Agent Relay/Agent Relay.app', '/Applications/Agent Relay.app.new']],
-      ['codesign', ['--verify', '--deep', '--strict', '/Applications/Agent Relay.app.new']],
+      [
+        'codesign',
+        [
+          '--verify',
+          '--deep',
+          '--strict',
+          '-R=anchor apple generic and certificate 1[field.1.2.840.113635.100.6.2.6] exists and certificate leaf[field.1.2.840.113635.100.6.1.13] exists and certificate leaf[subject.OU] = "QUJ7SA6X8X"',
+          '/Applications/Agent Relay.app.new',
+        ],
+      ],
       ['open', ['/Applications/Agent Relay.app']],
     ]);
+  });
+
+  it('fails closed with a clear error when the macOS signer does not match', async () => {
+    await expect(
+      verifyMacSignature('/Applications/Agent Relay.app.new', async () => {
+        throw new Error('requirement failed');
+      })
+    ).rejects.toThrow('Agent Relay download is not signed by Agent Workforce; refusing installation.');
   });
 
   it('restores the previous macOS app when the verified replacement cannot be installed', async () => {
@@ -421,6 +442,32 @@ describe('probe installer', () => {
     expect(paths.has(app)).toBe(true);
     expect(paths.has(backup)).toBe(false);
     expect(paths.has(staged)).toBe(true);
+  });
+
+  it('keeps the previous macOS app until readiness and can commit or restore the swap', async () => {
+    const exercise = async (ready: boolean) => {
+      const app = '/Applications/Agent Relay.app';
+      const staged = `${app}.new`;
+      const backup = `${app}.old`;
+      const paths = new Set([app, staged]);
+      const move = async (source: string, destination: string) => {
+        paths.delete(source);
+        paths.add(destination);
+      };
+      const remove = async (path: string) => {
+        paths.delete(path);
+      };
+      const swap = await swapMacApp(app, staged, { move, remove });
+      expect(paths.has(app)).toBe(true);
+      expect(paths.has(backup)).toBe(true);
+      await finishSwap(app, swap, ready, { move, remove });
+      expect(paths.has(app)).toBe(true);
+      expect(paths.has(backup)).toBe(false);
+      return paths;
+    };
+
+    await expect(exercise(true)).resolves.toBeInstanceOf(Set);
+    await expect(exercise(false)).resolves.toBeInstanceOf(Set);
   });
 
   it('surfaces a detached probe launch error as an InstallError', async () => {
@@ -476,17 +523,108 @@ describe('probe installer', () => {
   });
 
   it('does not wait when the pointer names nothing and no probe process is running', async () => {
+    const root = await mkdtemp(join(os.tmpdir(), 'connect-absent-probe-test-'));
+    cleanups.push(async () => rm(root, { recursive: true, force: true }));
+    const home = join(root, 'home');
+    await mkdir(home);
     let sleeps = 0;
+    const pgrepCalls: string[][] = [];
     const result = await findRecoveringProbe({
-      home: '/tmp/absent-probe',
+      home,
       find: async () => null,
-      active: async () => false,
+      run: async (file: string, args: string[]) => {
+        expect(file).toBe('pgrep');
+        pgrepCalls.push(args);
+        return { code: 1, stdout: '', stderr: '' };
+      },
       sleep: async () => {
         sleeps += 1;
       },
     });
     expect(result).toBeNull();
     expect(sleeps).toBe(0);
+    expect(pgrepCalls).toEqual([
+      ['-x', 'RelayDesktop'],
+      ['-f', 'agent-relay-probe.*relay[[:space:]]+serve'],
+    ]);
+  });
+
+  it('serializes installers and rechecks for a live probe after acquiring the lock', async () => {
+    const root = await mkdtemp(join(os.tmpdir(), 'connect-install-lock-test-'));
+    cleanups.push(async () => rm(root, { recursive: true, force: true }));
+    const home = join(root, 'home');
+    await mkdir(home);
+    const held = await acquireInstallLock({ home, platform: 'linux' });
+    let clock = Date.now();
+    let findCalls = 0;
+    let installCalls = 0;
+    let released = false;
+    const result = await ensureProbe({
+      home,
+      platform: 'linux',
+      find: async () => {
+        findCalls += 1;
+        return findCalls >= 2
+          ? {
+              socketPath: '/tmp/ready-after-lock.sock',
+              status: { ok: true, data: { version: '2026.10.4' } },
+              version: '2026.10.4',
+              supported: true,
+            }
+          : null;
+      },
+      active: async () => false,
+      now: () => clock,
+      sleep: async (milliseconds) => {
+        clock += milliseconds;
+        if (!released) {
+          released = true;
+          await held.release();
+        }
+      },
+      installLinuxFn: async () => {
+        installCalls += 1;
+        throw new Error('must not install after another installer became ready');
+      },
+    });
+    expect(result).toMatchObject({
+      socketPath: '/tmp/ready-after-lock.sock',
+      installed: false,
+    });
+    expect(installCalls).toBe(0);
+  });
+
+  it('reclaims an install lock older than five minutes', async () => {
+    const root = await mkdtemp(join(os.tmpdir(), 'connect-stale-lock-test-'));
+    cleanups.push(async () => rm(root, { recursive: true, force: true }));
+    const home = join(root, 'home');
+    const lockPath = join(home, '.local/lib/agent-relay/connect-install.lock');
+    await mkdir(lockPath, { recursive: true });
+    const old = new Date(Date.now() - 6 * 60_000);
+    await utimes(lockPath, old, old);
+
+    const lock = await acquireInstallLock({ home, platform: 'linux' });
+    expect(lock.path).toBe(lockPath);
+    await lock.release();
+  });
+
+  it('times out after 90 seconds when another installer keeps a fresh lock', async () => {
+    const root = await mkdtemp(join(os.tmpdir(), 'connect-busy-lock-test-'));
+    cleanups.push(async () => rm(root, { recursive: true, force: true }));
+    const home = join(root, 'home');
+    const held = await acquireInstallLock({ home, platform: 'darwin' });
+    let clock = Date.now();
+    await expect(
+      acquireInstallLock({
+        home,
+        platform: 'darwin',
+        now: () => clock,
+        sleep: async (milliseconds) => {
+          clock += milliseconds;
+        },
+      })
+    ).rejects.toThrow('after 90000 ms');
+    await held.release();
   });
 
   it('applies the recovery window when an existing probe is required', async () => {
@@ -558,6 +696,96 @@ describe('probe installer', () => {
     await expect(readFile(`${current}.new`)).rejects.toMatchObject({ code: 'ENOENT' });
   });
 
+  it('preserves a pre-existing Linux pointer when failure happens before replacement', async () => {
+    const root = await mkdtemp(join(os.tmpdir(), 'connect-linux-pointer-test-'));
+    cleanups.push(async () => rm(root, { recursive: true, force: true }));
+    const home = join(root, 'home');
+    const pointer = join(home, '.agentworkforce/desktop/relay-socket');
+    await mkdir(join(pointer, '..'), { recursive: true });
+    await writeFile(pointer, '/tmp/existing-relay.sock\n');
+
+    await expect(
+      installLinux({
+        home,
+        arch: 'x64',
+        run: async (file: string) => {
+          if (file === 'sha256sum') throw new Error('checksum mismatch');
+          return { code: 0, stdout: '', stderr: '' };
+        },
+      })
+    ).rejects.toThrow('checksum verification failed');
+    expect(await readFile(pointer, 'utf8')).toBe('/tmp/existing-relay.sock\n');
+  });
+
+  it('removes a half-applied fresh Linux install when probe startup never becomes ready', async () => {
+    const root = await mkdtemp(join(os.tmpdir(), 'connect-linux-failed-fresh-test-'));
+    cleanups.push(async () => rm(root, { recursive: true, force: true }));
+    const home = join(root, 'home');
+    const current = join(home, '.local/lib/agent-relay/current');
+    const link = join(home, '.local/bin/agent-relay-probe');
+    const run = async (file: string, args: string[]) => {
+      if (file === 'tar') {
+        const destination = args[args.indexOf('-C') + 1];
+        const probe = join(destination, 'release/agent_relay/helpers/agent-relay-probe');
+        await mkdir(join(probe, '..'), { recursive: true });
+        await writeFile(probe, '#!/bin/sh\n');
+        await chmod(probe, 0o755);
+      }
+      return { code: 0, stdout: '', stderr: '' };
+    };
+
+    await expect(
+      installLinux({
+        home,
+        arch: 'x64',
+        run,
+        start: async () => ({ pid: undefined, unref() {} }),
+        wait: async () => {
+          throw new Error('probe never became ready');
+        },
+      })
+    ).rejects.toThrow('probe never became ready');
+    await expect(readFile(current)).rejects.toMatchObject({ code: 'ENOENT' });
+    await expect(readFile(link)).rejects.toMatchObject({ code: 'ENOENT' });
+  });
+
+  it('keeps the startup failure primary when restoring the previous Linux install also fails', async () => {
+    const root = await mkdtemp(join(os.tmpdir(), 'connect-linux-restore-error-test-'));
+    cleanups.push(async () => rm(root, { recursive: true, force: true }));
+    const home = join(root, 'home');
+    const current = join(home, '.local/lib/agent-relay/current');
+    await mkdir(current, { recursive: true });
+    await writeFile(join(current, 'previous'), 'old');
+    const run = async (file: string, args: string[]) => {
+      if (file === 'tar') {
+        const destination = args[args.indexOf('-C') + 1];
+        const probe = join(destination, 'release/agent_relay/helpers/agent-relay-probe');
+        await mkdir(join(probe, '..'), { recursive: true });
+        await writeFile(probe, '#!/bin/sh\n');
+        await chmod(probe, 0o755);
+      }
+      return { code: 0, stdout: '', stderr: '' };
+    };
+
+    let failure: Error | undefined;
+    try {
+      await installLinux({
+        home,
+        arch: 'x64',
+        run,
+        start: async () => ({ pid: undefined, unref() {} }),
+        wait: async () => {
+          await rm(`${current}.old`, { recursive: true, force: true });
+          throw new Error('primary readiness failure');
+        },
+      });
+    } catch (error) {
+      failure = error as Error;
+    }
+    expect(failure?.message).toBe('primary readiness failure');
+    expect((failure?.cause as Error)?.message).toContain('Could not restore the previous installation');
+  });
+
   it('rejects an unsafe socket pointer before sending a request', async () => {
     const { home } = await listen((request, response) => {
       if (request.url === '/setup/status') {
@@ -566,6 +794,18 @@ describe('probe installer', () => {
     });
     await chmod(join(home, '.agentworkforce/desktop/relay-socket'), 0o666);
     await expect(findLiveSocket(home)).rejects.toThrow('group- or world-writable');
+  });
+
+  it('rejects a non-regular socket pointer before reading it', async () => {
+    const { home } = await listen((request, response) => {
+      if (request.url === '/setup/status') {
+        json(response, { ok: true, data: { version: '2026.10.4' } });
+      }
+    });
+    const pointer = join(home, '.agentworkforce/desktop/relay-socket');
+    await rm(pointer);
+    await mkdir(pointer);
+    await expect(findLiveSocket(home)).rejects.toThrow('non-regular');
   });
 
   it('fails closed when checksum verification fails', async () => {

@@ -9,10 +9,11 @@ Run this for me: `npx -y @agent-relay/connect join <link>`
 
 The command reuses a live Agent Relay Desktop probe at version 2026.10.4 or
 newer when its pointer and socket are owned by the current user and the pointer
-is not group- or world-writable. If there is no eligible live probe, it retries
-the liveness check, then downloads the current release from
-`AgentWorkforce/relay-desktop-releases`, verifies the adjacent SHA-256 file,
-and starts the probe without signing in.
+is not group- or world-writable. Unsafe pointer or socket metadata fails closed.
+If an existing socket or Relay process may be restarting, the command retries
+liveness for up to 15 seconds. When no eligible probe is available, it
+downloads the current release from `AgentWorkforce/relay-desktop-releases`,
+verifies the adjacent SHA-256 file, and starts the probe without signing in.
 
 - Linux x64 and arm64 use the relocatable tarball under
   `~/.local/lib/agent-relay/current`, a symlink at

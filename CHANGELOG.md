@@ -9,7 +9,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
-- `@agent-relay/connect` provides the one-command, accountless `npx -y @agent-relay/connect join <link>` hand-over, including checksum-verified desktop probe bootstrap and socket-backed join, send, status, and leave commands.
+- `@agent-relay/connect` provides the accountless `npx -y @agent-relay/connect join <link>` hand-over between a host and an agent session, plus `install` to bootstrap the desktop probe and `send`, `status`, and `leave` to run the session.
 
 ### Fixed
 
