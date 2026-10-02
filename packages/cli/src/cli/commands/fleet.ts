@@ -739,27 +739,31 @@ export function registerFleetCommands(
             ? 'long-running-agent'
             : 'standard-long-running-agent';
         try {
-          sandbox = await ensureOwnedCloudFleetSandbox(deps, {
-            workspaceId: relayWorkspaceId,
-            requiredCapability: `spawn:${cli}`,
-            maxAgents: 1,
-            mountRelayfile: mountSandboxRelayfile,
-            ...(liveRepository
-              ? { relayfilePaths: liveRelayfileMountPaths(liveRepository, sandboxRelayfilePaths) }
-              : sandboxRelayfilePaths === undefined
-                ? {}
-                : { relayfilePaths: sandboxRelayfilePaths }),
-            ...(sandboxId === undefined ? {} : { sandboxId }),
-            forceProvision: true,
-            ...(sandboxProvider === undefined ? {} : { providerId: sandboxProvider }),
-            workloadProfile,
-            waitTimeoutMs: 90_000,
-            ...(effectiveSandboxName === undefined ? {} : { name: effectiveSandboxName }),
-            ...(checkoutRepository && sandboxRepository ? { repos: [sandboxRepository.repository] } : {}),
-            ...(checkoutRepository && sandboxRepository
-              ? { repoRevisions: { [sandboxRepository.repository]: sandboxRepository.revision } }
-              : {}),
-          }, shouldCleanupSandbox ? sandboxId : undefined);
+          sandbox = await ensureOwnedCloudFleetSandbox(
+            deps,
+            {
+              workspaceId: relayWorkspaceId,
+              requiredCapability: `spawn:${cli}`,
+              maxAgents: 1,
+              mountRelayfile: mountSandboxRelayfile,
+              ...(liveRepository
+                ? { relayfilePaths: liveRelayfileMountPaths(liveRepository, sandboxRelayfilePaths) }
+                : sandboxRelayfilePaths === undefined
+                  ? {}
+                  : { relayfilePaths: sandboxRelayfilePaths }),
+              ...(sandboxId === undefined ? {} : { sandboxId }),
+              forceProvision: true,
+              ...(sandboxProvider === undefined ? {} : { providerId: sandboxProvider }),
+              workloadProfile,
+              waitTimeoutMs: 90_000,
+              ...(effectiveSandboxName === undefined ? {} : { name: effectiveSandboxName }),
+              ...(checkoutRepository && sandboxRepository ? { repos: [sandboxRepository.repository] } : {}),
+              ...(checkoutRepository && sandboxRepository
+                ? { repoRevisions: { [sandboxRepository.repository]: sandboxRepository.revision } }
+                : {}),
+            },
+            shouldCleanupSandbox ? sandboxId : undefined
+          );
           assertSandboxRepositoryRevision(sandbox, checkoutRepository ? sandboxRepository : undefined);
         } catch (error) {
           if (
