@@ -311,7 +311,7 @@ jobs:
 
       - name: Run shellcheck
         run: |
-          shellcheck -e SC2034,SC2086 install.sh || true
+          shellcheck -e SC2034,SC2086 install.sh scripts/test-install-atomic.sh || true
           echo "✓ Shellcheck completed"
 
       - name: Test all helper functions exist

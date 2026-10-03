@@ -227,6 +227,8 @@ TEMP_FILES=""
 SMOKE_PID=""
 SMOKE_DIR=""
 KEEP_PREV=0
+HAD_PREV_LAST=0     # set by install_binary_atomic: did THIS call make a .prev backup?
+CLI_HAD_PREV=0
 LAUNCHER_BACKUP=""
 RELEASE_JSON=""
 RELEASE_JSON_STATE=""   # "", "ok" or "failed"
@@ -309,26 +311,81 @@ load_release_metadata() {
     return 0
 }
 
+# Structural parser (no jq): reads release JSON on stdin and prints the
+# lowercase hex sha256 of asset $1. It walks the JSON character by character,
+# tracks object/array depth and string state, and only looks at the DIRECT
+# properties (name, digest) of each object in the top-level "assets" array, so
+# nested objects (uploader, author, ...) with their own "name" keys, braces
+# inside strings, and any key order are all handled.
+parse_asset_digest_awk() {
+    awk -v asset="$1" 'BEGIN { RS = "\001" }
+    {
+        s = $0; n = length(s)
+        depth = 0; instr = 0; inassets = 0; ad = 0
+        for (i = 1; i <= n; i++) {
+            c = substr(s, i, 1)
+            if (instr) {
+                if (c == "\\") { i++; tok = tok substr(s, i, 1); continue }
+                if (c == "\"") {
+                    instr = 0
+                    j = i + 1
+                    while (j <= n && substr(s, j, 1) ~ /[ \t\r\n]/) j++
+                    if (substr(s, j, 1) == ":") { key[depth] = tok; haskey[depth] = 1 }
+                    else if (haskey[depth]) {
+                        k = key[depth]
+                        if (inassets && depth == ad + 1) {
+                            if (k == "name") cname = tok
+                            else if (k == "digest") cdig = tok
+                        }
+                        haskey[depth] = 0
+                    }
+                    tok = ""
+                }
+                else tok = tok c
+                continue
+            }
+            if (c == "\"") { instr = 1; tok = ""; continue }
+            if (c == "{" || c == "[") {
+                if (c == "[" && depth == 1 && haskey[1] && key[1] == "assets") { inassets = 1; ad = depth + 1 }
+                depth++
+                haskey[depth] = 0
+                if (inassets && depth == ad + 1) { cname = ""; cdig = "" }
+                continue
+            }
+            if (c == "}" || c == "]") {
+                if (inassets && c == "}" && depth == ad + 1 && cname == asset && cdig ~ /^sha256:[0-9a-fA-F]+$/) {
+                    d = substr(cdig, 8); print tolower(d); exit
+                }
+                if (inassets && c == "]" && depth == ad) inassets = 0
+                haskey[depth] = 0
+                depth--
+                haskey[depth] = 0
+                continue
+            }
+            if (c ~ /[ \t\r\n,:]/) continue
+            # bare literal (number, true, false, null): value of the current key
+            haskey[depth] = 0
+        }
+    }'
+}
+
+parse_asset_digest_jq() {
+    jq -r --arg n "$1" '[.assets[]? | select(.name == $n) | .digest // empty][0] // empty' 2>/dev/null \
+        | sed -n 's/^sha256:\([0-9a-fA-F][0-9a-fA-F]*\)$/\1/p' | tr 'A-F' 'a-f'
+}
+
 # Print the published sha256 (lowercase hex) of release asset $1, or nothing if
-# the release lists no digest for it. Pure sed/awk, no jq.
+# the release lists no digest for it. Uses jq when installed, otherwise the
+# structural awk parser above (both are tested against the same fixtures).
 fetch_asset_expected_sha256() {
     local asset="$1"
     load_release_metadata
     [ "$RELEASE_JSON_STATE" = "ok" ] || return 0
-    printf '%s' "$RELEASE_JSON" | tr ',' '\n' | awk -v asset="$asset" '
-        /"name"[[:space:]]*:/ {
-            v = $0
-            sub(/^.*"name"[[:space:]]*:[[:space:]]*"/, "", v)
-            sub(/".*$/, "", v)
-            found = (v == asset)
-        }
-        found && /"digest"[[:space:]]*:[[:space:]]*"sha256:[0-9a-fA-F]+"/ {
-            v = $0
-            sub(/^.*"sha256:/, "", v)
-            sub(/".*$/, "", v)
-            print tolower(v)
-            exit
-        }'
+    if has_command jq; then
+        printf '%s' "$RELEASE_JSON" | parse_asset_digest_jq "$asset"
+    else
+        printf '%s' "$RELEASE_JSON" | parse_asset_digest_awk "$asset"
+    fi
 }
 
 # Compare file $2 with the digest the release publishes for asset $1.
@@ -552,7 +609,7 @@ install_binary_atomic() {
     local prev="${dest}.prev"
     local had_prev=0 signed_hash installed_hash
 
-    rm -f "$prev"   # never trust a stale backup
+    HAD_PREV_LAST=0
 
     chmod +x "$tmp" || { rm -f "$tmp"; return 1; }
     if [ "$sign" = "sign" ] && ! prepare_downloaded_binary "$tmp"; then
@@ -571,8 +628,14 @@ install_binary_atomic() {
         warn "No SHA-256 tool found; skipping the post-install read-back check for $dest"
     fi
 
+    local rotated=0
     if [ -e "$dest" ] || [ -L "$dest" ]; then
-        rm -f "$prev"
+        # An existing backup (e.g. from an interrupted earlier upgrade) is only
+        # touched now that the new binary is verified and about to be committed,
+        # and it is rotated to .prev.1 rather than deleted.
+        if [ -e "$prev" ] || [ -L "$prev" ]; then
+            mv -f "$prev" "${prev}.1" && rotated=1
+        fi
         if [ -L "$dest" ]; then
             cp -pP "$dest" "$prev" 2>/dev/null && had_prev=1
         else
@@ -580,6 +643,7 @@ install_binary_atomic() {
         fi
         if [ "$had_prev" -ne 1 ]; then
             warn "Could not keep a backup of $dest; leaving it untouched"
+            [ "$rotated" -eq 1 ] && mv -f "${prev}.1" "$prev"
             rm -f "$tmp"
             return 1
         fi
@@ -588,7 +652,10 @@ install_binary_atomic() {
     if ! mv -f "$tmp" "$dest"; then
         warn "Could not move the new binary into place at $dest"
         rm -f "$tmp"
-        [ "$had_prev" -eq 1 ] && rm -f "$prev"
+        if [ "$had_prev" -eq 1 ]; then
+            rm -f "$prev"
+            [ "$rotated" -eq 1 ] && mv -f "${prev}.1" "$prev"
+        fi
         return 1
     fi
 
@@ -598,6 +665,7 @@ install_binary_atomic() {
             warn "Installed $dest does not match the verified file (expected $signed_hash, got ${installed_hash:-unreadable}); restoring the previous binary"
             if [ "$had_prev" -eq 1 ]; then
                 mv -f "$prev" "$dest"
+                [ "$rotated" -eq 1 ] && mv -f "${prev}.1" "$prev"
             else
                 rm -f "$dest"
             fi
@@ -605,6 +673,7 @@ install_binary_atomic() {
         fi
     fi
 
+    HAD_PREV_LAST="$had_prev"
     # KEEP_PREV=1 lets a caller (the standalone CLI) roll back later if a
     # dependent step fails; the caller then owns removing the backup.
     if [ "$had_prev" -eq 1 ] && [ "${KEEP_PREV:-0}" != "1" ]; then
@@ -663,24 +732,25 @@ download_broker_binary() {
     # it if that copy fails, so the broker is never left half upgraded.
     local saved_keep="$KEEP_PREV"
     local prev="${target_path}.prev"
+    local made_prev=0
     KEEP_PREV=1
     if install_binary_atomic "$FETCHED_TMP" "$target_path" check_broker_binary; then
+        made_prev="$HAD_PREV_LAST"
         KEEP_PREV="$saved_keep"
         # Also install to BIN_DIR so it's discoverable on PATH
         if copy_binary_atomic "$target_path" "$BIN_DIR/agent-relay-broker"; then
-            rm -f "$prev"
+            [ "$made_prev" -eq 1 ] && rm -f "$prev"
             success "Downloaded broker binary (workflow agent spawning)"
             return 0
         fi
         warn "Could not install the broker into $BIN_DIR; restoring the previous broker in $INSTALL_DIR/bin"
-        if [ -e "$prev" ]; then
+        if [ "$made_prev" -eq 1 ]; then
             mv -f "$prev" "$target_path"
         else
             rm -f "$target_path"
         fi
     fi
     KEEP_PREV="$saved_keep"
-    rm -f "$prev"
     warn "broker binary failed verification"
     return 2
 }
@@ -699,7 +769,7 @@ abort_standalone_install() {
         old_broker="$("$broker" --version 2>/dev/null | head -n 1)"
         [ -n "$old_broker" ] || old_broker="unknown version"
     fi
-    if [ -e "$prev" ]; then
+    if [ "$CLI_HAD_PREV" -eq 1 ] && [ -e "$prev" ]; then
         mv -f "$prev" "$cli"
         outcome="the previous CLI ($("$cli" --version 2>/dev/null | head -n 1)) was restored"
     else
@@ -1153,7 +1223,9 @@ main() {
     fi
     KEEP_PREV=1
     local standalone_ok=0
+    HAD_PREV_LAST=0
     download_standalone_binary && standalone_ok=1
+    CLI_HAD_PREV="$HAD_PREV_LAST"
     KEEP_PREV=0
     if [ "$standalone_ok" -eq 1 ]; then
         INSTALL_METHOD="binary"
@@ -1164,7 +1236,7 @@ main() {
         if [ "$broker_rc" -eq 2 ]; then
             abort_standalone_install
         fi
-        rm -f "$INSTALL_DIR/bin/agent-relay.prev"
+        [ "$CLI_HAD_PREV" -eq 1 ] && rm -f "$INSTALL_DIR/bin/agent-relay.prev"
         [ -n "$LAUNCHER_BACKUP" ] && rm -f "$LAUNCHER_BACKUP"
         LAUNCHER_BACKUP=""
         # Install ACP bridge for Zed editor (requires Node.js)

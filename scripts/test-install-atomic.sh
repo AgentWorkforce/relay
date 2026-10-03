@@ -64,9 +64,9 @@ case "$1" in
   init)
 BODY
         case "$mode" in
-            ok)    echo '    sleep 30; exit 0 ;;' ;;
+            ok)    echo '    exec sleep 30 ;;' ;;
             crash) echo '    kill -ILL $$ ;;' ;;
-            env)   echo '    if env | grep -q "secret"; then exit 3; fi; sleep 30 ;;' ;;
+            env)   echo '    if env | grep -q "secret"; then exit 3; fi; exec sleep 30 ;;' ;;
         esac
         echo '  *) exit 2 ;;'
         echo 'esac'
@@ -170,6 +170,46 @@ check "unknown asset yields nothing" test -z "$(fetch_asset_expected_sha256 nope
 check "other asset digest not confused" \
     test "$(fetch_asset_expected_sha256 other-asset)" = "1111111111111111111111111111111111111111111111111111111111111111"
 
+echo "== digest parsing: real GitHub release shape and nested names =="
+
+# parse_with <jq|nojq> <asset>: run fetch_asset_expected_sha256 with or without jq
+parse_with() {
+    local mode="$1" asset="$2"
+    if [ "$mode" = nojq ]; then
+        eval 'has_command() { [ "$1" != jq ] && command -v "$1" >/dev/null 2>&1; }'
+    fi
+    fetch_asset_expected_sha256 "$asset"
+    eval 'has_command() { command -v "$1" >/dev/null 2>&1; }'
+}
+REAL_FIXTURE="$ROOT/scripts/fixtures/release-v12.4.0.json"
+for mode in jq nojq; do
+    [ "$mode" = jq ] && ! command -v jq >/dev/null 2>&1 && { echo "[skip] jq not installed"; continue; }
+    RELEASE_JSON="$(cat "$REAL_FIXTURE")"; RELEASE_JSON_STATE=ok
+    ok=1; count=0
+    while IFS=' ' read -r name digest; do
+        count=$((count + 1))
+        [ "$(parse_with "$mode" "$name")" = "$digest" ] || { ok=0; echo "       mismatch for $name"; }
+    done <<EOT
+$(sed -n 's/^      "name": "\([^"]*\)",$/\1/p;s/^      "digest": "sha256:\([0-9a-f]*\)".*/\1/p' "$REAL_FIXTURE" | paste -d' ' - -)
+EOT
+    check "real v12.4.0 release JSON: every asset digest parsed ($mode, $count assets)" test "$ok" -eq 1 -a "$count" -ge 4
+    check "real release JSON: unknown asset yields nothing ($mode)" test -z "$(parse_with "$mode" nope)"
+
+    # nested "name" keys before the digest (uploader/author/license-like objects), digest before name, tricky strings
+    RELEASE_JSON='{"name":"v9","author":{"name":"Release Bot","login":"x"},"assets":[
+      {"name":"asset-a","label":"name","uploader":{"login":"u","name":"Builder"},"labels":[{"name":"x"}],"digest":"sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","size":1},
+      {"digest":"sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb","uploader":{"name":"asset-a"},"name":"asset-b"},
+      {"name":"asset-c","note":"has \"quote\" and }","digest":null}
+    ],"zipball_url":"x","digest":"sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"}'
+    RELEASE_JSON_STATE=ok
+    check "nested name before digest still finds the digest ($mode)" \
+        test "$(parse_with "$mode" asset-a)" = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+    check "digest listed before name is found ($mode)" \
+        test "$(parse_with "$mode" asset-b)" = "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+    check "null digest and nested value do not leak into another asset ($mode)" test -z "$(parse_with "$mode" asset-c)"
+    check "top-level digest-looking keys are not an asset digest ($mode)" test -z "$(parse_with "$mode" v9)"
+done
+
 # ---------------------------------------------------------------------------
 echo "== (a) good file installs; previous kept as .prev until verified =="
 
@@ -257,7 +297,7 @@ cat > "$WORK/telbroker" <<'TEL'
 case "$1" in --help) exit 0 ;; esac
 # crash unless the user opted out (stands in for the telemetry code path)
 if [ -z "$AGENT_RELAY_TELEMETRY_DISABLED$DO_NOT_TRACK" ]; then kill -ILL $$; fi
-sleep 30
+exec sleep 30
 TEL
 chmod +x "$WORK/telbroker"
 smoke_test_broker "$WORK/telbroker"; rc=$?
@@ -396,6 +436,29 @@ e2e_setup crash no no
 run_main; rc=$?
 check "fresh install + rejected broker: exits non-zero" test "$rc" -ne 0
 check "fresh install + rejected broker: new CLI removed" test ! -e "$INSTALL_DIR/bin/agent-relay" -a ! -e "$BIN_DIR/agent-relay"
+
+echo "== an existing .prev survives until the new binary is verified =="
+reset_release
+D="$(newdir)"; DEST="$D/tool"
+make_fake_broker "$DEST" ok current
+make_fake_broker "$D/tool.prev" ok oldest
+OLDEST="$(sha256_of "$D/tool.prev")"
+make_fake_broker "$D/new" crash broken
+install_binary_atomic "$D/new" "$DEST" check_broker_binary; rc=$?
+check "failed verification: install rejected" test "$rc" -ne 0
+check "failed verification: existing .prev intact" test "$(sha256_of "$D/tool.prev")" = "$OLDEST"
+make_fake_broker "$D/new2" ok newer
+install_binary_atomic "$D/new2" "$DEST" check_broker_binary; rc=$?
+check "successful install over an existing .prev" test "$rc" -eq 0
+check "the older .prev is rotated to .prev.1, not lost" test "$(sha256_of "$D/tool.prev.1")" = "$OLDEST"
+
+echo "== a stale CLI .prev is not mistaken for this run's backup =="
+e2e_setup crash no no
+make_fake_cli "$INSTALL_DIR/bin/agent-relay.prev" "0.0.1"
+run_main; rc=$?
+check "stale .prev: installer exits non-zero" test "$rc" -ne 0
+check "stale .prev: not resurrected as the CLI" test ! -e "$INSTALL_DIR/bin/agent-relay"
+check "stale .prev: left untouched" test -e "$INSTALL_DIR/bin/agent-relay.prev"
 
 echo "== broker copy into BIN_DIR fails after the INSTALL_DIR install committed =="
 e2e_setup ok yes
