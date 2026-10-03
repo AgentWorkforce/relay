@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { chmodSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { chmodSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 
@@ -60,8 +60,8 @@ describe('broker binary path resolution', () => {
   });
 
   it('prefers BROKER_BINARY_PATH over AGENT_RELAY_BIN', async () => {
-    const brokerBinaryPath = makeExecutable('broker-override');
-    const agentRelayBin = makeExecutable('agent-relay-bin');
+    const brokerBinaryPath = makeExecutable('agent-relay-broker-custom');
+    const agentRelayBin = makeExecutable('agent-relay-broker');
     process.env.BROKER_BINARY_PATH = brokerBinaryPath;
     process.env.AGENT_RELAY_BIN = agentRelayBin;
 
@@ -71,12 +71,58 @@ describe('broker binary path resolution', () => {
   });
 
   it('uses AGENT_RELAY_BIN when BROKER_BINARY_PATH is not set', async () => {
-    const agentRelayBin = makeExecutable('agent-relay-bin');
+    const agentRelayBin = makeExecutable('agent-relay-broker');
     process.env.AGENT_RELAY_BIN = agentRelayBin;
 
     const { getBrokerBinaryPath } = await loadBrokerPathModule();
 
     expect(getBrokerBinaryPath()).toBe(path.resolve(agentRelayBin));
+  });
+
+  it('refuses a CLI executable in the legacy override instead of trying to spawn it as broker', async () => {
+    process.env.AGENT_RELAY_BIN = makeExecutable('agent-relay');
+    const { getBrokerBinaryPath } = await loadBrokerPathModule();
+    expect(() => getBrokerBinaryPath()).toThrow(/AGENT_RELAY_BIN points to the Agent Relay CLI/u);
+  });
+
+  it('refuses a CLI executable in the preferred override without falling back', async () => {
+    process.env.BROKER_BINARY_PATH = makeExecutable('agent-relay');
+    process.env.AGENT_RELAY_BIN = makeExecutable('agent-relay-broker');
+    const { getBrokerBinaryPath } = await loadBrokerPathModule();
+    expect(() => getBrokerBinaryPath()).toThrow(/BROKER_BINARY_PATH points to the Agent Relay CLI/u);
+  });
+
+  it('refuses a broker-named symlink that resolves to the CLI', async () => {
+    const cli = makeExecutable('agent-relay');
+    const link = path.join(path.dirname(cli), 'agent-relay-broker');
+    symlinkSync(cli, link);
+    process.env.AGENT_RELAY_BIN = link;
+    const { getBrokerBinaryPath } = await loadBrokerPathModule();
+    expect(() => getBrokerBinaryPath()).toThrow(/resolves to the Agent Relay CLI/u);
+  });
+
+  it('refuses the published CLI entrypoint even when its basename is index.js', async () => {
+    const dir = makeTempDir();
+    const cli = path.join(dir, 'agent-relay', 'dist', 'cli', 'index.js');
+    const fs = await import('node:fs');
+    fs.mkdirSync(path.dirname(cli), { recursive: true });
+    writeFileSync(cli, '#!/usr/bin/env node\n');
+    process.env.AGENT_RELAY_BIN = cli;
+    const { getBrokerBinaryPath } = await loadBrokerPathModule();
+    expect(() => getBrokerBinaryPath()).toThrow(/AGENT_RELAY_BIN points to the Agent Relay CLI/u);
+  });
+
+  it('refuses a broker-named symlink to the published CLI entrypoint', async () => {
+    const dir = makeTempDir();
+    const cli = path.join(dir, 'agent-relay', 'dist', 'cli', 'index.js');
+    const fs = await import('node:fs');
+    fs.mkdirSync(path.dirname(cli), { recursive: true });
+    writeFileSync(cli, '#!/usr/bin/env node\n');
+    const link = path.join(dir, 'agent-relay-broker');
+    symlinkSync(cli, link);
+    process.env.AGENT_RELAY_BIN = link;
+    const { getBrokerBinaryPath } = await loadBrokerPathModule();
+    expect(() => getBrokerBinaryPath()).toThrow(/resolves to the Agent Relay CLI/u);
   });
 
   it('resolves the broker from the platform optional dependency package', async () => {

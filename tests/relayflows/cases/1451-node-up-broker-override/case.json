@@ -1,0 +1,13 @@
+{
+  "version": 1,
+  "id": "1451-node-up-broker-override",
+  "kind": "bugfix",
+  "title": "Node startup refuses a legacy CLI path as a broker binary",
+  "runner": { "command": ["node", "tests/relayflows/cases/1451-node-up-broker-override/run.mjs"] },
+  "requirements": [],
+  "timeoutSeconds": 240,
+  "expected": {
+    "base": { "outcome": "bug", "signature": "spawns_cli_override" },
+    "head": { "outcome": "fixed", "signature": "rejects_cli_override" }
+  }
+}
