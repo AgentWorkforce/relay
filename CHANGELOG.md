@@ -18,6 +18,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - "No broker connection" errors name the path searched and whether it was the project default or `--state-dir`, instead of implying a running broker is down.
 - `node down --force --state-dir <dir>` can verify and stop brokers started from another working directory.
 - `node status` and `node down` name a missing broker identity record and how to create one.
+- `install.sh` installs binaries atomically and verifies them: downloads go to a temp file next to the destination, are checked against the release's SHA-256 digest (warning when none is published) and, on macOS, the shipped code signature, then must pass a real broker `init` smoke test before an atomic rename. The previous binary is restored if the installed bytes do not match, and a rejected broker rolls the CLI back instead of leaving a CLI/broker version mismatch. A running broker is no longer overwritten in place or re-signed, which could leave a corrupt binary that crashed with SIGILL.
 
 ## [13.1.0] - 2026-10-03
 

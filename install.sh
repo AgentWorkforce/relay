@@ -225,7 +225,9 @@ check_node() {
 
 TEMP_FILES=""
 SMOKE_PID=""
+SMOKE_DIR=""
 KEEP_PREV=0
+LAUNCHER_BACKUP=""
 RELEASE_JSON=""
 RELEASE_JSON_STATE=""   # "", "ok" or "failed"
 
@@ -240,6 +242,10 @@ cleanup_temp_files() {
         kill -9 "$SMOKE_PID" 2>/dev/null || true
         SMOKE_PID=""
     fi
+    if [ -n "$SMOKE_DIR" ]; then
+        rm -rf "$SMOKE_DIR" 2>/dev/null
+        SMOKE_DIR=""
+    fi
     [ -n "$TEMP_FILES" ] || return 0
     while IFS= read -r f; do
         [ -n "$f" ] && rm -f "$f" 2>/dev/null
@@ -251,14 +257,16 @@ EOT
 }
 
 # Create a temp file in DIR (same filesystem as the destination, so that a
-# rename is atomic). Prints the path.
+# rename is atomic). The path is returned in MADE_TEMP, NOT on stdout: it must
+# run in the caller's shell so that register_temp updates the TEMP_FILES that
+# the EXIT/INT/TERM cleanup reads (a $(...) subshell would lose the entry).
+MADE_TEMP=""
 make_temp_file() {
     local dir="$1"
     local label="$2"
-    local path
-    path=$(mktemp "$dir/.${label}.XXXXXX") || return 1
-    register_temp "$path"
-    printf '%s\n' "$path"
+    MADE_TEMP=""
+    MADE_TEMP=$(mktemp "$dir/.${label}.XXXXXX") || return 1
+    register_temp "$MADE_TEMP"
 }
 
 # SHA-256 of a file (or of stdin when no file is given). Prints the lowercase
@@ -364,7 +372,8 @@ fetch_release_asset() {
     local dl out rc
 
     FETCHED_TMP=""
-    dl=$(make_temp_file "$dir" "download") || return 1
+    make_temp_file "$dir" "download" || return 1
+    dl="$MADE_TEMP"
     if ! curl -fsSL "$url" -o "$dl" 2>/dev/null; then
         rm -f "$dl"
         return 1
@@ -387,7 +396,8 @@ fetch_release_asset() {
 
     if [ "$mode" = "gz" ]; then
         local h_file h_stream
-        out=$(make_temp_file "$dir" "decoded") || { rm -f "$dl"; return 1; }
+        make_temp_file "$dir" "decoded" || { rm -f "$dl"; return 1; }
+        out="$MADE_TEMP"
         if ! gunzip -c "$dl" > "$out" 2>/dev/null; then
             rm -f "$dl" "$out"
             return 1
@@ -427,6 +437,7 @@ smoke_test_broker_run() {
         warn "smoke test: could not create a temp dir"
         return 1
     }
+    SMOKE_DIR="$tmp"
     mkdir -p "$tmp/home" "$tmp/state"
 
     # Telemetry: the damaged page from #1885 was reachable from the telemetry
@@ -608,7 +619,8 @@ copy_binary_atomic() {
     local dest="$2"
     local tmp src_hash tmp_hash
 
-    tmp=$(make_temp_file "$(dirname "$dest")" "copy") || return 1
+    make_temp_file "$(dirname "$dest")" "copy" || return 1
+    tmp="$MADE_TEMP"
     if ! cp "$src" "$tmp"; then
         rm -f "$tmp"
         return 1
@@ -646,13 +658,29 @@ download_broker_binary() {
         return 2
     fi
 
+    # Two destinations (INSTALL_DIR and BIN_DIR) must commit together: keep the
+    # INSTALL_DIR backup until the BIN_DIR copy has also succeeded, and restore
+    # it if that copy fails, so the broker is never left half upgraded.
+    local saved_keep="$KEEP_PREV"
+    local prev="${target_path}.prev"
+    KEEP_PREV=1
     if install_binary_atomic "$FETCHED_TMP" "$target_path" check_broker_binary; then
+        KEEP_PREV="$saved_keep"
         # Also install to BIN_DIR so it's discoverable on PATH
         if copy_binary_atomic "$target_path" "$BIN_DIR/agent-relay-broker"; then
+            rm -f "$prev"
             success "Downloaded broker binary (workflow agent spawning)"
             return 0
         fi
+        warn "Could not install the broker into $BIN_DIR; restoring the previous broker in $INSTALL_DIR/bin"
+        if [ -e "$prev" ]; then
+            mv -f "$prev" "$target_path"
+        else
+            rm -f "$target_path"
+        fi
     fi
+    KEEP_PREV="$saved_keep"
+    rm -f "$prev"
     warn "broker binary failed verification"
     return 2
 }
@@ -675,8 +703,17 @@ abort_standalone_install() {
         mv -f "$prev" "$cli"
         outcome="the previous CLI ($("$cli" --version 2>/dev/null | head -n 1)) was restored"
     else
-        rm -f "$cli" "$BIN_DIR/agent-relay"
+        rm -f "$cli"
         outcome="the new CLI was removed (there was no previous install)"
+    fi
+    # The launcher is restored independently of the standalone binary: a
+    # launcher from an earlier npm/source install must survive byte-identical.
+    if [ -n "$LAUNCHER_BACKUP" ] && [ -e "$LAUNCHER_BACKUP" ]; then
+        mv -f "$LAUNCHER_BACKUP" "$BIN_DIR/agent-relay"
+        LAUNCHER_BACKUP=""
+        outcome="${outcome}; the existing $BIN_DIR/agent-relay launcher was restored"
+    else
+        rm -f "$BIN_DIR/agent-relay"
     fi
     error "The v${VERSION} broker was rejected (integrity or smoke test failed), so the v${VERSION} CLI was NOT kept: ${outcome}. The existing broker (${old_broker}) is untouched. Nothing was upgraded; re-run the installer, or set AGENT_RELAY_VERSION to a known-good version."
 }
@@ -1084,6 +1121,8 @@ main() {
 
     # Remove any leftover temp files on exit
     trap cleanup_temp_files EXIT
+    trap 'cleanup_temp_files; trap - EXIT; exit 130' INT
+    trap 'cleanup_temp_files; trap - EXIT; exit 143' TERM HUP
 
     # Initialize telemetry
     generate_install_id
@@ -1100,6 +1139,18 @@ main() {
     # 3. source (fallback)
 
     # Try standalone binary first - works without Node.js
+    # Back up an existing launcher first: the standalone step overwrites it and
+    # a later broker rejection must be able to put it back unchanged.
+    LAUNCHER_BACKUP=""
+    if [ -e "$BIN_DIR/agent-relay" ] || [ -L "$BIN_DIR/agent-relay" ]; then
+        mkdir -p "$BIN_DIR"
+        make_temp_file "$BIN_DIR" "launcher" && \
+            if cp -pP "$BIN_DIR/agent-relay" "$MADE_TEMP" 2>/dev/null; then
+                LAUNCHER_BACKUP="$MADE_TEMP"
+            else
+                rm -f "$MADE_TEMP"
+            fi
+    fi
     KEEP_PREV=1
     local standalone_ok=0
     download_standalone_binary && standalone_ok=1
@@ -1114,10 +1165,16 @@ main() {
             abort_standalone_install
         fi
         rm -f "$INSTALL_DIR/bin/agent-relay.prev"
+        [ -n "$LAUNCHER_BACKUP" ] && rm -f "$LAUNCHER_BACKUP"
+        LAUNCHER_BACKUP=""
         # Install ACP bridge for Zed editor (requires Node.js)
         install_acp_bridge || true
         verify_installation && print_usage && track_event "install_completed" && exit 0
     fi
+
+    # Standalone path not taken: the launcher was never replaced
+    [ -n "$LAUNCHER_BACKUP" ] && rm -f "$LAUNCHER_BACKUP"
+    LAUNCHER_BACKUP=""
 
     # Fall back to npm if Node.js is available
     if [ -n "$STANDALONE_FAILURE_REASON" ]; then

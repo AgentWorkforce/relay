@@ -397,6 +397,66 @@ run_main; rc=$?
 check "fresh install + rejected broker: exits non-zero" test "$rc" -ne 0
 check "fresh install + rejected broker: new CLI removed" test ! -e "$INSTALL_DIR/bin/agent-relay" -a ! -e "$BIN_DIR/agent-relay"
 
+echo "== broker copy into BIN_DIR fails after the INSTALL_DIR install committed =="
+e2e_setup ok yes
+orig_copy="$(declare -f copy_binary_atomic)"
+copy_binary_atomic() { echo "[test] simulated full/unwritable BIN_DIR" >> "$LOG"; return 1; }
+run_main; rc=$?
+eval "$orig_copy"
+check "second-destination failure: exits non-zero" test "$rc" -ne 0
+check "second-destination failure: INSTALL_DIR broker is the OLD one again (no skew)" \
+    test "$(sha256_of "$INSTALL_DIR/bin/agent-relay-broker")" = "$OLD_BROKER_HASH"
+check "second-destination failure: CLI restored" test "$("$INSTALL_DIR/bin/agent-relay" --version)" = "1.0.0"
+check "second-destination failure: no .prev/temp files" \
+    test -z "$(find "$INSTALL_DIR" "$BIN_DIR" -name '*.prev' -o -name '.*.??????' | head -1)"
+
+e2e_setup ok yes no
+orig_copy="$(declare -f copy_binary_atomic)"
+copy_binary_atomic() { return 1; }
+run_main; rc=$?
+eval "$orig_copy"
+check "fresh install, second copy fails: exits non-zero and leaves no new broker" test "$rc" -ne 0 -a ! -e "$INSTALL_DIR/bin/agent-relay-broker.prev"
+
+echo "== a pre-existing launcher survives a rejected broker =="
+e2e_setup crash no no
+rm -f "$INSTALL_DIR/bin/agent-relay-broker"
+printf '#!/bin/bash\n# npm launcher\nexec node /somewhere "$@"\n' > "$BIN_DIR/agent-relay"; chmod +x "$BIN_DIR/agent-relay"
+cp -p "$BIN_DIR/agent-relay" "$WORK/launcher.orig"
+run_main; rc=$?
+check "launcher case: exits non-zero" test "$rc" -ne 0
+check "launcher case: pre-existing launcher byte-identical" cmp -s "$BIN_DIR/agent-relay" "$WORK/launcher.orig"
+check "launcher case: no new standalone CLI left" test ! -e "$INSTALL_DIR/bin/agent-relay"
+check "launcher case: no backup/temp files left" test -z "$(find "$BIN_DIR" "$INSTALL_DIR" -name '.*.??????' -o -name '*.prev' | head -1)"
+
+e2e_setup crash no yes
+printf '#!/bin/bash\n# older launcher\nexec "%s/bin/agent-relay" "$@"\n' "$INSTALL_DIR" > "$BIN_DIR/agent-relay"; chmod +x "$BIN_DIR/agent-relay"
+cp -p "$BIN_DIR/agent-relay" "$WORK/launcher.orig"
+run_main; rc=$?
+check "launcher + previous CLI: launcher byte-identical after rollback" cmp -s "$BIN_DIR/agent-relay" "$WORK/launcher.orig"
+
+echo "== interrupted install cleans its temp files =="
+for sig in INT TERM; do
+    reset_release
+    I="$(newdir)"; B="$(newdir)"; SHIM="$(newdir)"
+    cat > "$SHIM/curl" <<'SHIMEOF'
+#!/bin/bash
+# fail the release API; for an asset download write a partial file, then signal the installer
+out=""; url=""; prev=""
+for a in "$@"; do [ "$prev" = "-o" ] && out="$a"; case "$a" in http*) url="$a" ;; esac; prev="$a"; done
+case "$url" in
+  https://api.github.com/*) exit 22 ;;
+  *) [ -n "$out" ] && echo partial > "$out"; kill -$SHIM_SIGNAL "$PPID"; sleep 1; exit 0 ;;
+esac
+SHIMEOF
+    chmod +x "$SHIM/curl"
+    ( cd "$ROOT" && env -u AGENT_RELAY_INSTALL_SOURCE_ONLY PATH="$SHIM:$PATH" SHIM_SIGNAL="$sig" HOME="$HOME" AGENT_RELAY_VERSION=1.2.3 \
+        AGENT_RELAY_INSTALL_DIR="$I" AGENT_RELAY_BIN_DIR="$B" AGENT_RELAY_TELEMETRY_DISABLED=1 \
+        bash install.sh ) > "$WORK/int.out" 2>&1; rc=$?
+    check "$sig during download: installer stopped" test "$rc" -ne 0
+    check "$sig during download: no .download/.decoded/.copy temp files left" \
+        test -z "$(find "$I" "$B" -type f -name '.*.??????' | head -1)"
+done
+
 # ---------------------------------------------------------------------------
 if [ -n "${AGENT_RELAY_TEST_BROKER:-}" ]; then
     echo "== real broker binary (pristine published build) =="
