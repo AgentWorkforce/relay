@@ -11,6 +11,7 @@ import {
   resolveWorkspaceByKey,
   type CloudFleetSandboxProviderId,
   type CloudRelayfileRepositoryMaterialization,
+  type EnsureCloudFleetSandboxInput,
   type EnsureCloudFleetSandboxResult,
 } from '@agent-relay/cloud';
 import { HarnessDriverClient } from '@agent-relay/harness-driver';
@@ -713,10 +714,13 @@ export function registerFleetCommands(
           sandboxProvider === undefined || sandboxProvider === 'agent37'
             ? 'long-running-agent'
             : 'standard-long-running-agent';
+        const useAsyncPreparation =
+          sandboxId !== undefined && (sandboxProvider === undefined || sandboxProvider === 'agent37');
         try {
-          sandbox = await deps.ensureCloudFleetSandbox({
+          const ensureInput: EnsureCloudFleetSandboxInput = {
             workspaceId: relayWorkspaceId,
             requiredCapability: `spawn:${cli}`,
+            ...(useAsyncPreparation ? { preparationMode: 'async-v1' as const } : {}),
             maxAgents: 1,
             mountRelayfile: mountSandboxRelayfile,
             ...(liveRepository
@@ -734,7 +738,16 @@ export function registerFleetCommands(
             ...(checkoutRepository && sandboxRepository
               ? { repoRevisions: { [sandboxRepository.repository]: sandboxRepository.revision } }
               : {}),
-          });
+          };
+          sandbox = useAsyncPreparation
+            ? await deps.ensureCloudFleetSandbox(ensureInput, {
+                onPreparationProgress: (progress) => {
+                  deps.warn(
+                    `Cloud sandbox preparation: ${progress.phase} (${progress.state}, generation ${progress.generation}).`
+                  );
+                },
+              })
+            : await deps.ensureCloudFleetSandbox(ensureInput);
           assertSandboxRepositoryRevision(sandbox, checkoutRepository ? sandboxRepository : undefined);
         } catch (error) {
           if (

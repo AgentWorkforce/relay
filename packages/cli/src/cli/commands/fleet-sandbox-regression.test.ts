@@ -174,7 +174,10 @@ describe('fleet sandbox command regressions', () => {
 
     expect(resolveRepository).toHaveBeenCalledWith(outsideGit, undefined);
     expect(materialize).not.toHaveBeenCalled();
-    expect(ensure).toHaveBeenCalledWith(expect.objectContaining({ mountRelayfile: true }));
+    expect(ensure).toHaveBeenCalledWith(
+      expect.objectContaining({ mountRelayfile: true }),
+      expect.objectContaining({ onPreparationProgress: expect.any(Function) })
+    );
     expect((ensure.mock.calls[0]?.[0] as Record<string, unknown>).relayfilePaths).toBeUndefined();
     expect(placement).toHaveBeenCalledWith(
       expect.objectContaining({ input: expect.objectContaining({ worker_cwd: '/workspace' }) })
@@ -257,7 +260,8 @@ describe('fleet sandbox command regressions', () => {
         sandboxId: REPLAY_SANDBOX_ID,
         name: REPLAY_SANDBOX_NAME,
         mountRelayfile: true,
-      })
+      }),
+      expect.objectContaining({ onPreparationProgress: expect.any(Function) })
     );
     const ensureInput = ensure.mock.calls[0]?.[0] as Record<string, unknown>;
     expect(ensureInput.repos).toBeUndefined();
@@ -324,7 +328,8 @@ describe('fleet sandbox command regressions', () => {
       expect.objectContaining({
         repos: [selection.repository],
         repoRevisions: { [selection.repository]: REVISION },
-      })
+      }),
+      expect.objectContaining({ onPreparationProgress: expect.any(Function) })
     );
   });
 });

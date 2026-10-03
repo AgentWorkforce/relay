@@ -102,6 +102,7 @@ export {
   type CloudFleetSandboxWorkloadProfile,
   type DeleteCloudFleetSandboxInput,
   type CloudFleetSandboxRequestOptions,
+  type CloudFleetSandboxPreparationProgress,
   type CloudFleetRelaycastRoute,
   type CloudFleetRelaycastTarget,
 } from './fleet-sandbox.js';

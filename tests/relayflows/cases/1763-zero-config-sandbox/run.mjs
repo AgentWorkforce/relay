@@ -43,11 +43,21 @@ test('fleet sandbox CLI materializes exact source through a scoped live Relayfil
   if (!output) throw new Error('Missing observation path.');
   const requests = [];
   mocks.ensureCloudSession.mockResolvedValue({ auth, client: {} });
-  mocks.authorizedApiFetch.mockImplementation(async (_auth, _path, request) => {
+  mocks.authorizedApiFetch.mockImplementation(async (_auth, requestPath, request) => {
     const body = request?.body ? JSON.parse(request.body) : null;
     requests.push({ body });
     if (requests.length === 1) return { response: Response.json({ cloudWorkspaceId: '50587328-441d-4acb-b8f3-dbe1b3c5de99' }), auth };
-    return { response: Response.json({ outcome: 'provisioned', cloudWorkspaceId: '50587328-441d-4acb-b8f3-dbe1b3c5de99', nodeId: 'node-proof', nodeName: body?.name ?? 'sandbox-proof', sandboxId: body?.sandboxId ?? 'sbx_123e4567-e89b-42d3-a456-426614174000', relayWorkspaceId: 'rw-proof', relayfileMounted: true, providerId: 'agent37', relaycastTarget: { route: 'agent37-isolated', baseUrl: 'https://agent37-cast.agentrelay.com', workspaceId: 'rw-proof', relaycastApiKey: 'rk_live_probe' }, repoRevisions: body?.repoRevisions ?? undefined }, { status: 201 }), auth };
+    const ensureBody = requests[1]?.body ?? {};
+    const sandboxId = ensureBody.sandboxId ?? 'sbx_123e4567-e89b-42d3-a456-426614174000';
+    const result = { outcome: 'provisioned', cloudWorkspaceId: '50587328-441d-4acb-b8f3-dbe1b3c5de99', nodeId: 'node-proof', nodeName: ensureBody.name ?? 'sandbox-proof', sandboxId, providerSandboxId: 'provider-proof', relayWorkspaceId: 'rw-proof', relayfileMounted: true, providerId: 'agent37', relaycastTarget: { route: 'agent37-isolated', baseUrl: 'https://agent37-cast.agentrelay.com', workspaceId: 'rw-proof', relaycastApiKey: 'rk_live_probe' }, repoRevisions: ensureBody.repoRevisions ?? undefined };
+    if (${JSON.stringify(arm)} === 'head') {
+      if (requestPath === '/api/v1/fleet/nodes/sandbox/ensure' && request?.method === 'POST') return { response: Response.json({ version: 1, mode: 'async-v1', sandboxId, state: 'pending', phase: 'provider_allocation', generation: 0 }, { status: 202 }), auth };
+      const preparationPath = '/api/v1/fleet/nodes/sandbox/' + encodeURIComponent(sandboxId) + '/preparation';
+      if (requestPath === preparationPath + '?workspaceId=50587328-441d-4acb-b8f3-dbe1b3c5de99' && request?.method === 'GET') return { response: Response.json({ version: 1, mode: 'async-v1', sandboxId, state: 'pending', phase: 'agent_relay_cli_bootstrap', generation: 1 }, { status: 202 }), auth };
+      if (requestPath === preparationPath && request?.method === 'POST') return { response: Response.json({ version: 1, mode: 'async-v1', sandboxId, state: 'ready', phase: 'broker_visible', generation: 2, result }), auth };
+      throw new Error('Unexpected async preparation request: ' + request?.method + ' ' + requestPath);
+    }
+    return { response: Response.json(result, { status: 201 }), auth };
   });
   const logs = [], warnings = [], deletes = [], releases = [], materializations = [], spawnInputs = [];
   const program = new Command(); program.exitOverride();
