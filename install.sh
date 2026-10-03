@@ -151,8 +151,8 @@ record_standalone_failure() {
     local message="$1"
     STANDALONE_FAILURE_REASON="$message"
     warn "$message"
-    safe_remove_path "$BIN_DIR/agent-relay"
-    safe_remove_path "$INSTALL_DIR/bin/agent-relay"
+    # The rejected binary only ever existed as a temp file, so any previously
+    # installed binary and launcher are still intact and are left alone.
 }
 
 # Detect OS and architecture
@@ -210,37 +210,418 @@ check_node() {
     return 1
 }
 
+# ---------------------------------------------------------------------------
+# Atomic, verified binary installation
+#
+# Rules (see https://github.com/AgentWorkforce/relay/issues/1885):
+#   * Never write to, sign or smoke-test a live destination path. Everything
+#     happens on a temp file in the destination directory; the final step is an
+#     atomic rename. A process running the old binary keeps its old inode.
+#   * Compare the downloaded bytes with the SHA-256 GitHub publishes per asset.
+#   * Re-hash after the rename and restore the previous binary on mismatch.
+#   * Run the broker for real (`init`) before accepting it; `--help` alone
+#     cannot see a damaged code page.
+# ---------------------------------------------------------------------------
+
+TEMP_FILES=""
+RELEASE_JSON=""
+RELEASE_JSON_STATE=""   # "", "ok" or "failed"
+
+register_temp() {
+    TEMP_FILES="${TEMP_FILES}${TEMP_FILES:+
+}$1"
+}
+
+cleanup_temp_files() {
+    local f
+    [ -n "$TEMP_FILES" ] || return 0
+    while IFS= read -r f; do
+        [ -n "$f" ] && rm -f "$f" 2>/dev/null
+    done <<EOT
+$TEMP_FILES
+EOT
+    TEMP_FILES=""
+    return 0
+}
+
+# Create a temp file in DIR (same filesystem as the destination, so that a
+# rename is atomic). Prints the path.
+make_temp_file() {
+    local dir="$1"
+    local label="$2"
+    local path
+    path=$(mktemp "$dir/.${label}.XXXXXX") || return 1
+    register_temp "$path"
+    printf '%s\n' "$path"
+}
+
+# SHA-256 of a file (or of stdin when no file is given). Prints the lowercase
+# hex digest; returns 1 when no hashing tool is available.
+sha256_of() {
+    local out=""
+    if command -v shasum >/dev/null 2>&1; then
+        out=$(shasum -a 256 "$@" 2>/dev/null) || return 1
+    elif command -v sha256sum >/dev/null 2>&1; then
+        out=$(sha256sum "$@" 2>/dev/null) || return 1
+    elif command -v openssl >/dev/null 2>&1; then
+        # Output looks like "SHA256(file)= <hex>" or "(stdin)= <hex>"
+        out=$(openssl dgst -sha256 "$@" 2>/dev/null | awk '{print $NF}') || return 1
+    else
+        return 1
+    fi
+    out=$(printf '%s' "$out" | awk '{print tolower($1)}')
+    [ -n "$out" ] || return 1
+    printf '%s\n' "$out"
+}
+
+# Fetch (once) the release metadata for v$VERSION. Sets RELEASE_JSON and
+# RELEASE_JSON_STATE in the current shell; never aborts the install.
+load_release_metadata() {
+    [ -z "$RELEASE_JSON_STATE" ] || return 0
+    local url="https://api.github.com/repos/$REPO_RELAY/releases/tags/v${VERSION}"
+    local json=""
+    if [ -n "${GITHUB_TOKEN:-}" ]; then
+        json=$(curl -fsSL -H "Authorization: token $GITHUB_TOKEN" "$url" 2>/dev/null) || json=""
+    else
+        json=$(curl -fsSL "$url" 2>/dev/null) || json=""
+    fi
+    if [ -n "$json" ]; then
+        RELEASE_JSON="$json"
+        RELEASE_JSON_STATE="ok"
+    else
+        RELEASE_JSON=""
+        RELEASE_JSON_STATE="failed"
+    fi
+    return 0
+}
+
+# Print the published sha256 (lowercase hex) of release asset $1, or nothing if
+# the release lists no digest for it. Pure sed/awk, no jq.
+fetch_asset_expected_sha256() {
+    local asset="$1"
+    load_release_metadata
+    [ "$RELEASE_JSON_STATE" = "ok" ] || return 0
+    printf '%s' "$RELEASE_JSON" | tr ',' '\n' | awk -v asset="$asset" '
+        /"name"[[:space:]]*:/ {
+            v = $0
+            sub(/^.*"name"[[:space:]]*:[[:space:]]*"/, "", v)
+            sub(/".*$/, "", v)
+            found = (v == asset)
+        }
+        found && /"digest"[[:space:]]*:[[:space:]]*"sha256:[0-9a-fA-F]+"/ {
+            v = $0
+            sub(/^.*"sha256:/, "", v)
+            sub(/".*$/, "", v)
+            print tolower(v)
+            exit
+        }'
+}
+
+# Compare file $2 with the digest the release publishes for asset $1.
+# 0 = verified, 1 = MISMATCH (reject), 2 = could not verify (warned, continue).
+verify_asset_digest() {
+    local asset="$1"
+    local file="$2"
+    local expected actual
+
+    load_release_metadata
+    expected=$(fetch_asset_expected_sha256 "$asset")
+    if [ -z "$expected" ]; then
+        if [ "$RELEASE_JSON_STATE" = "failed" ]; then
+            warn "Could not fetch release metadata from the GitHub API (rate limit or network); cannot verify the SHA-256 of $asset. Continuing with the smoke test only."
+        else
+            warn "Release v${VERSION} publishes no SHA-256 digest for $asset; cannot verify its integrity. Continuing with the smoke test only."
+        fi
+        return 2
+    fi
+    if ! actual=$(sha256_of "$file"); then
+        warn "No SHA-256 tool found (shasum, sha256sum or openssl); cannot verify $asset. Continuing with the smoke test only."
+        return 2
+    fi
+    if [ "$actual" != "$expected" ]; then
+        warn "SHA-256 mismatch for $asset: expected $expected, got $actual. Refusing to install it."
+        return 1
+    fi
+    info "Verified SHA-256 of $asset ($expected)"
+    return 0
+}
+
+# Download release asset $1 into a fresh temp file in directory $2. $3 is "raw"
+# or "gz" (gunzip into a second temp file). On success FETCHED_TMP holds a
+# digest-verified, not yet signed file. Returns 0 on success, 1 when the asset
+# is unavailable or undecodable, 2 on an integrity failure.
+fetch_release_asset() {
+    local asset="$1"
+    local dir="$2"
+    local mode="${3:-raw}"
+    local url="https://github.com/$REPO_RELAY/releases/download/v${VERSION}/${asset}"
+    local dl out rc
+
+    FETCHED_TMP=""
+    dl=$(make_temp_file "$dir" "download") || return 1
+    if ! curl -fsSL "$url" -o "$dl" 2>/dev/null; then
+        rm -f "$dl"
+        return 1
+    fi
+
+    if [ "$mode" = "gz" ]; then
+        # Reject error pages that are not gzip data
+        if ! head -c 2 "$dl" 2>/dev/null | od -An -tx1 | tr -d ' \n' | grep -q "^1f8b"; then
+            rm -f "$dl"
+            return 1
+        fi
+    fi
+
+    rc=0
+    verify_asset_digest "$asset" "$dl" || rc=$?
+    if [ "$rc" -eq 1 ]; then
+        rm -f "$dl"
+        return 2
+    fi
+
+    if [ "$mode" = "gz" ]; then
+        local h_file h_stream
+        out=$(make_temp_file "$dir" "decoded") || { rm -f "$dl"; return 1; }
+        if ! gunzip -c "$dl" > "$out" 2>/dev/null; then
+            rm -f "$dl" "$out"
+            return 1
+        fi
+        # The bytes on disk must equal a clean second decode of the same archive.
+        h_file=$(sha256_of "$out" || true)
+        h_stream=$(gunzip -c "$dl" 2>/dev/null | sha256_of || true)
+        rm -f "$dl"
+        if [ -n "$h_file" ] && [ "$h_file" != "$h_stream" ]; then
+            warn "Decompressed $asset differs from a clean decode; refusing to install it."
+            rm -f "$out"
+            return 2
+        fi
+        dl="$out"
+    fi
+
+    FETCHED_TMP="$dl"
+    return 0
+}
+
+# Run the broker for real: `init` in a throwaway state dir and temp HOME with a
+# scrubbed environment (no RELAY_*/AGENT_RELAY_* credentials). It must still be
+# alive after a few seconds (or exit 0). Any crash or signal rejects it.
+smoke_test_broker() {
+    # stderr is silenced so bash does not print "Terminated"/"Illegal
+    # instruction" job notices for the process we deliberately run and kill;
+    # the outcome is reported through info/warn (stdout).
+    smoke_test_broker_run "$@" 2>/dev/null
+}
+
+smoke_test_broker_run() {
+    local bin="$1"
+    local seconds="${AGENT_RELAY_SMOKE_SECONDS:-4}"
+    local tmp pid rc=0 i=0 alive=1
+
+    tmp=$(mktemp -d "${TMPDIR:-/tmp}/agent-relay-smoke.XXXXXX") || {
+        warn "smoke test: could not create a temp dir"
+        return 1
+    }
+    mkdir -p "$tmp/home" "$tmp/state"
+
+    # The code page that crashed in #1885 sits on the telemetry path, so the
+    # smoke test must NOT opt out of telemetry on the user's behalf. It only
+    # forwards an opt-out the user already made.
+    local optout_a="" optout_b=""
+    if ! telemetry_enabled; then
+        optout_a="AGENT_RELAY_TELEMETRY_DISABLED=1"
+        optout_b="DO_NOT_TRACK=1"
+    fi
+
+    (
+        cd "$tmp" || exit 126
+        exec env -i HOME="$tmp/home" PATH="/usr/bin:/bin" TMPDIR="$tmp" \
+            ${optout_a:+"$optout_a"} ${optout_b:+"$optout_b"} \
+            "$bin" init --local-only --state-dir "$tmp/state" \
+            < /dev/null > "$tmp/out.log" 2>&1
+    ) &
+    pid=$!
+
+    while [ "$i" -lt "$seconds" ]; do
+        sleep 1
+        i=$((i + 1))
+        if ! kill -0 "$pid" 2>/dev/null; then
+            alive=0
+            break
+        fi
+    done
+
+    if [ "$alive" -eq 1 ]; then
+        kill "$pid" 2>/dev/null || true
+        i=0
+        while kill -0 "$pid" 2>/dev/null && [ "$i" -lt 5 ]; do
+            sleep 1
+            i=$((i + 1))
+        done
+        kill -9 "$pid" 2>/dev/null || true
+        { wait "$pid"; } 2>/dev/null || true
+        rm -rf "$tmp"
+        info "Broker smoke test passed (init stayed up ${seconds}s)"
+        return 0
+    fi
+
+    { wait "$pid"; } 2>/dev/null || rc=$?
+    if [ "$rc" -eq 0 ]; then
+        rm -rf "$tmp"
+        info "Broker smoke test passed (init exited 0)"
+        return 0
+    fi
+
+    local detail=""
+    if [ "$rc" -gt 128 ]; then
+        detail=" (signal $((rc - 128)))"
+    fi
+    warn "Broker smoke test FAILED: init exited with status $rc${detail}"
+    tail -n 5 "$tmp/out.log" 2>/dev/null | sed 's/^/    /' || true
+    rm -rf "$tmp"
+    return 1
+}
+
+# Checks used with install_binary_atomic.
+check_broker_binary() {
+    "$1" --help >/dev/null 2>&1 || { warn "broker binary failed --help"; return 1; }
+    smoke_test_broker "$1"
+}
+
+check_cli_binary() {
+    local log
+    log=$(mktemp "${TMPDIR:-/tmp}/agent-relay-verify.XXXXXX") || return 1
+    if "$1" --version >"$log" 2>&1; then
+        rm -f "$log"
+        return 0
+    fi
+    CLI_CHECK_OUTPUT=$(head -n 1 "$log" 2>/dev/null || true)
+    rm -f "$log"
+    return 1
+}
+
+check_help_binary() {
+    "$1" --help >/dev/null 2>&1
+}
+
+# Install prepared temp file $1 (in the destination directory) as $2.
+#   $3  check function run on the TEMP file (default: none)
+#   $4  "sign" (default) to strip quarantine / sign the temp file, "nosign" when
+#       the file was already signed and verified (a plain copy)
+# The destination is only touched by one atomic `mv -f`. The previous binary is
+# kept as "$2.prev" until the installed bytes are re-hashed and match; on any
+# failure it is restored and 1 is returned. The temp file is always consumed.
+install_binary_atomic() {
+    local tmp="$1"
+    local dest="$2"
+    local check_fn="${3:-true}"
+    local sign="${4:-sign}"
+    local prev="${dest}.prev"
+    local had_prev=0 signed_hash installed_hash
+
+    chmod +x "$tmp" || { rm -f "$tmp"; return 1; }
+    if [ "$sign" = "sign" ]; then
+        strip_quarantine "$tmp"
+    fi
+
+    if ! "$check_fn" "$tmp"; then
+        warn "Verification of the new binary failed; $dest left untouched"
+        rm -f "$tmp"
+        return 1
+    fi
+
+    if ! signed_hash=$(sha256_of "$tmp"); then
+        signed_hash=""
+        warn "No SHA-256 tool found; skipping the post-install read-back check for $dest"
+    fi
+
+    if [ -e "$dest" ] || [ -L "$dest" ]; then
+        rm -f "$prev"
+        if [ -L "$dest" ]; then
+            cp -pP "$dest" "$prev" 2>/dev/null && had_prev=1
+        else
+            { ln "$dest" "$prev" 2>/dev/null || cp -p "$dest" "$prev" 2>/dev/null; } && had_prev=1
+        fi
+        if [ "$had_prev" -ne 1 ]; then
+            warn "Could not keep a backup of $dest; leaving it untouched"
+            rm -f "$tmp"
+            return 1
+        fi
+    fi
+
+    if ! mv -f "$tmp" "$dest"; then
+        warn "Could not move the new binary into place at $dest"
+        rm -f "$tmp"
+        [ "$had_prev" -eq 1 ] && rm -f "$prev"
+        return 1
+    fi
+
+    if [ -n "$signed_hash" ]; then
+        installed_hash=$(sha256_of "$dest" || true)
+        if [ "$installed_hash" != "$signed_hash" ]; then
+            warn "Installed $dest does not match the verified file (expected $signed_hash, got ${installed_hash:-unreadable}); restoring the previous binary"
+            if [ "$had_prev" -eq 1 ]; then
+                mv -f "$prev" "$dest"
+            else
+                rm -f "$dest"
+            fi
+            return 1
+        fi
+    fi
+
+    [ "$had_prev" -eq 1 ] && rm -f "$prev"
+    return 0
+}
+
+# Copy an already verified+signed binary $1 to $2 through the same atomic path.
+copy_binary_atomic() {
+    local src="$1"
+    local dest="$2"
+    local tmp src_hash tmp_hash
+
+    tmp=$(make_temp_file "$(dirname "$dest")" "copy") || return 1
+    if ! cp "$src" "$tmp"; then
+        rm -f "$tmp"
+        return 1
+    fi
+    src_hash=$(sha256_of "$src" || true)
+    tmp_hash=$(sha256_of "$tmp" || true)
+    if [ "$src_hash" != "$tmp_hash" ]; then
+        warn "Copy of $src to $dest is corrupt; not installing it"
+        rm -f "$tmp"
+        return 1
+    fi
+    install_binary_atomic "$tmp" "$dest" true nosign
+}
+
 # Download broker binary (Rust broker for workflow/SDK agent spawning)
 download_broker_binary() {
     step "Downloading broker binary..."
 
     local binary_name="agent-relay-broker-${PLATFORM}"
-    local download_url="https://github.com/$REPO_RELAY/releases/download/v${VERSION}/${binary_name}"
     local target_path="$INSTALL_DIR/bin/agent-relay-broker"
+    local rc=0
 
     mkdir -p "$INSTALL_DIR/bin"
     mkdir -p "$BIN_DIR"
 
-    if curl -fsSL "$download_url" -o "$target_path" 2>/dev/null; then
-        chmod +x "$target_path"
-        strip_quarantine "$target_path"
-        # Verify binary works (Rust clap binary supports --help)
-        if "$target_path" --help &>/dev/null; then
-            # Also install to BIN_DIR so it's discoverable on PATH
-            safe_remove_path "$BIN_DIR/agent-relay-broker"
-            cp "$target_path" "$BIN_DIR/agent-relay-broker"
-            chmod +x "$BIN_DIR/agent-relay-broker"
-            success "Downloaded broker binary (workflow agent spawning)"
-            return 0
-        else
-            warn "broker binary failed verification"
-            rm -f "$target_path"
-            return 1
-        fi
-    else
+    fetch_release_asset "$binary_name" "$INSTALL_DIR/bin" raw || rc=$?
+    if [ "$rc" -eq 1 ]; then
         warn "No prebuilt broker binary for $PLATFORM"
         return 1
+    elif [ "$rc" -ne 0 ]; then
+        warn "broker binary failed integrity verification"
+        return 1
     fi
+
+    if install_binary_atomic "$FETCHED_TMP" "$target_path" check_broker_binary; then
+        # Also install to BIN_DIR so it's discoverable on PATH
+        if copy_binary_atomic "$target_path" "$BIN_DIR/agent-relay-broker"; then
+            success "Downloaded broker binary (workflow agent spawning)"
+            return 0
+        fi
+    fi
+    warn "broker binary failed verification"
+    return 1
 }
 
 # Check if a command exists
@@ -267,71 +648,35 @@ download_relay_acp() {
     step "Downloading relay-acp binary (Zed editor integration)..."
 
     local binary_name="relay-acp-${PLATFORM}"
-    local compressed_url="https://github.com/$REPO_RELAY/releases/download/v${VERSION}/${binary_name}.gz"
-    local uncompressed_url="https://github.com/$REPO_RELAY/releases/download/v${VERSION}/${binary_name}"
     local target_path="$BIN_DIR/relay-acp"
-    local temp_file="/tmp/relay-acp-download-$$"
+    local file_size
 
     mkdir -p "$BIN_DIR"
 
-    # Setup cleanup trap for temp files
-    trap 'rm -f "${temp_file}.gz" "${temp_file}"' EXIT
-
     # Try compressed binary first
     if has_command gunzip; then
-        if curl -fsSL "$compressed_url" -o "${temp_file}.gz" 2>/dev/null; then
-            local is_gzip=false
-            if has_command file; then
-                file "${temp_file}.gz" 2>/dev/null | grep -q "gzip" && is_gzip=true
-            else
-                head -c 2 "${temp_file}.gz" 2>/dev/null | od -An -tx1 | grep -q "1f 8b" && is_gzip=true
+        if fetch_release_asset "${binary_name}.gz" "$BIN_DIR" gz; then
+            if install_binary_atomic "$FETCHED_TMP" "$target_path" check_help_binary; then
+                success "Downloaded relay-acp binary (Zed ACP bridge)"
+                return 0
             fi
-
-            if [ "$is_gzip" = true ]; then
-                if gunzip -c "${temp_file}.gz" > "$target_path" 2>/dev/null; then
-                    rm -f "${temp_file}.gz"
-                    chmod +x "$target_path"
-                    strip_quarantine "$target_path"
-
-                    if "$target_path" --help &>/dev/null; then
-                        success "Downloaded relay-acp binary (Zed ACP bridge)"
-                        trap - EXIT
-                        return 0
-                    else
-                        warn "relay-acp binary failed verification, trying uncompressed..."
-                        rm -f "$target_path"
-                    fi
-                else
-                    rm -f "${temp_file}.gz" "$target_path"
-                fi
-            else
-                rm -f "${temp_file}.gz"
-            fi
+            warn "relay-acp binary failed verification, trying uncompressed..."
         fi
     fi
 
     # Fall back to uncompressed binary
-    if curl -fsSL "$uncompressed_url" -o "$target_path" 2>/dev/null; then
-        local file_size
-        file_size=$(stat -f%z "$target_path" 2>/dev/null || stat -c%s "$target_path" 2>/dev/null || echo "0")
-
+    if fetch_release_asset "$binary_name" "$BIN_DIR" raw; then
+        file_size=$(stat -f%z "$FETCHED_TMP" 2>/dev/null || stat -c%s "$FETCHED_TMP" 2>/dev/null || echo "0")
         if [ "$file_size" -gt 1000000 ]; then
-            chmod +x "$target_path"
-            strip_quarantine "$target_path"
-
-            if "$target_path" --help &>/dev/null; then
+            if install_binary_atomic "$FETCHED_TMP" "$target_path" check_help_binary; then
                 success "Downloaded relay-acp binary (Zed ACP bridge)"
-                trap - EXIT
                 return 0
-            else
-                rm -f "$target_path"
             fi
         else
-            rm -f "$target_path"
+            rm -f "$FETCHED_TMP"
         fi
     fi
 
-    trap - EXIT
     info "No relay-acp binary available for $PLATFORM"
     return 1
 }
@@ -375,63 +720,27 @@ download_standalone_binary() {
     step "Checking for standalone binary..."
 
     local binary_name="agent-relay-${PLATFORM}"
-    local compressed_url="https://github.com/$REPO_RELAY/releases/download/v${VERSION}/${binary_name}.gz"
-    local uncompressed_url="https://github.com/$REPO_RELAY/releases/download/v${VERSION}/${binary_name}"
     local target_path="$INSTALL_DIR/bin/agent-relay"
-    local temp_file="/tmp/agent-relay-download-$$"
-    local verify_log="/tmp/agent-relay-verify-$$.log"
+    local file_size verify_output
 
     mkdir -p "$INSTALL_DIR/bin"
     mkdir -p "$BIN_DIR"
-    safe_remove_path "$target_path"
-
-    # Setup cleanup trap for temp files
-    trap 'rm -f "${temp_file}.gz" "${temp_file}" "${verify_log}"' EXIT
 
     # Try compressed binary first (faster download, ~60-70% smaller)
     # Only if gunzip is available
     if has_command gunzip; then
-        if curl -fsSL "$compressed_url" -o "${temp_file}.gz" 2>/dev/null; then
-            # Check if we got a valid gzip file (not an error page)
-            # Use file command if available, otherwise check magic bytes
-            local is_gzip=false
-            if has_command file; then
-                file "${temp_file}.gz" 2>/dev/null | grep -q "gzip" && is_gzip=true
-            else
-                # Check gzip magic bytes (1f 8b)
-                head -c 2 "${temp_file}.gz" 2>/dev/null | od -An -tx1 | grep -q "1f 8b" && is_gzip=true
+        if fetch_release_asset "${binary_name}.gz" "$INSTALL_DIR/bin" gz; then
+            CLI_CHECK_OUTPUT=""
+            if install_binary_atomic "$FETCHED_TMP" "$target_path" check_cli_binary; then
+                install_binary_launcher "$target_path"
+                prepend_bin_dir_to_path
+                success "Downloaded standalone agent-relay binary"
+                return 0
             fi
-
-            if [ "$is_gzip" = true ]; then
-                # Decompress
-                if gunzip -c "${temp_file}.gz" > "$target_path" 2>/dev/null; then
-                    rm -f "${temp_file}.gz"
-                    chmod +x "$target_path"
-                    strip_quarantine "$target_path"
-
-                    # Verify the binary works
-                    if "$target_path" --version >"$verify_log" 2>&1; then
-                        install_binary_launcher "$target_path"
-                        prepend_bin_dir_to_path
-                        success "Downloaded standalone agent-relay binary"
-                        trap - EXIT  # Clear trap
-                        return 0
-                    else
-                        local verify_output=""
-                        verify_output=$(head -n 1 "$verify_log" 2>/dev/null || true)
-                        record_standalone_failure "Standalone binary verification failed for $target_path${verify_output:+: $verify_output}. Trying uncompressed binary..."
-                    fi
-                else
-                    warn "Decompression failed, trying uncompressed binary..."
-                    rm -f "${temp_file}.gz" "$target_path"
-                fi
-            else
-                info "Compressed binary not available, trying uncompressed..."
-                rm -f "${temp_file}.gz"
-            fi
+            verify_output="$CLI_CHECK_OUTPUT"
+            record_standalone_failure "Standalone binary verification failed for $target_path${verify_output:+: $verify_output}. Trying uncompressed binary..."
         else
             info "Compressed binary not available, trying uncompressed..."
-            rm -f "${temp_file}.gz"
         fi
     else
         info "gunzip not available, trying uncompressed binary..."
@@ -440,34 +749,26 @@ download_standalone_binary() {
     # Fall back to uncompressed binary
     info "Downloading standalone binary..."
 
-    if curl -fsSL "$uncompressed_url" -o "$target_path" 2>/dev/null; then
+    if fetch_release_asset "$binary_name" "$INSTALL_DIR/bin" raw; then
         # Check file size - error pages are typically small (<1MB)
-        local file_size
-        file_size=$(stat -f%z "$target_path" 2>/dev/null || stat -c%s "$target_path" 2>/dev/null || echo "0")
+        file_size=$(stat -f%z "$FETCHED_TMP" 2>/dev/null || stat -c%s "$FETCHED_TMP" 2>/dev/null || echo "0")
 
         if [ "$file_size" -gt 1000000 ]; then
-            chmod +x "$target_path"
-            strip_quarantine "$target_path"
-
-            # Verify the binary works
-            if "$target_path" --version >"$verify_log" 2>&1; then
+            CLI_CHECK_OUTPUT=""
+            if install_binary_atomic "$FETCHED_TMP" "$target_path" check_cli_binary; then
                 install_binary_launcher "$target_path"
                 prepend_bin_dir_to_path
                 success "Downloaded standalone agent-relay binary (no Node.js required!)"
-                trap - EXIT  # Clear trap
                 return 0
-            else
-                local verify_output=""
-                verify_output=$(head -n 1 "$verify_log" 2>/dev/null || true)
-                record_standalone_failure "Standalone binary verification failed for $target_path${verify_output:+: $verify_output}"
             fi
+            verify_output="$CLI_CHECK_OUTPUT"
+            record_standalone_failure "Standalone binary verification failed for $target_path${verify_output:+: $verify_output}"
         else
             info "Uncompressed binary not available (file too small: ${file_size} bytes)"
-            rm -f "$target_path"
+            rm -f "$FETCHED_TMP"
         fi
     fi
 
-    trap - EXIT  # Clear trap
     info "No standalone binary available for $PLATFORM, falling back to npm"
     return 1
 }
@@ -703,6 +1004,9 @@ main() {
     echo -e "${YELLOW}${BOLD}⚡ Agent Relay${NC} Installer"
     echo ""
 
+    # Remove any leftover temp files on exit
+    trap cleanup_temp_files EXIT
+
     # Initialize telemetry
     generate_install_id
 
@@ -729,7 +1033,7 @@ main() {
 
     # Fall back to npm if Node.js is available
     if [ -n "$STANDALONE_FAILURE_REASON" ]; then
-        info "Falling back to npm/source install after standalone verification cleanup."
+        info "Falling back to npm/source install after standalone verification failed."
     fi
 
     if check_node; then
@@ -741,7 +1045,7 @@ main() {
     else
         echo ""
         if [ -n "$STANDALONE_FAILURE_REASON" ]; then
-            warn "Standalone install was cleaned up after verification failed."
+            warn "Standalone install was rejected after verification failed (any previous install was left untouched)."
             echo "  $STANDALONE_FAILURE_REASON"
             echo "  Install Node.js 22+ to use the npm fallback, then rerun this installer."
             echo ""
@@ -793,6 +1097,11 @@ main() {
         exit 1
     fi
 }
+
+# Allow tests to source the functions without running the installer
+if [ "${AGENT_RELAY_INSTALL_SOURCE_ONLY:-}" = "1" ]; then
+    return 0 2>/dev/null || exit 0
+fi
 
 # Handle command line arguments
 case "${1:-}" in
