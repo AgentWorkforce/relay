@@ -72,6 +72,7 @@ import {
   cloneBrokerExitInfo,
   drainBrokerStdioAfterStartup,
   formatBrokerStartupError,
+  observeBrokerProcessErrors,
   isProcessRunning,
   pushBufferedLine,
   terminateFailedBrokerSpawn,
@@ -407,6 +408,11 @@ export class HarnessDriverClient {
       // Inherited descriptors land on fd 3 upward, after the three stdio slots.
       stdio: ['ignore', 'pipe', 'pipe', ...(options?.inheritFds ?? [])],
     });
+
+    // A managed broker can emit an error after startup's temporary listener is
+    // removed, or while a timeout signal is being sent. Keep this listener for
+    // the child lifetime; the startup waiter still rejects on its own errors.
+    observeBrokerProcessErrors(child, stderrLines);
 
     // Every failure below leaves a broker child already running, and none of
     // them return a client the caller could shut down: reap it here, with its

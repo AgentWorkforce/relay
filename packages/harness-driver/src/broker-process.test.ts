@@ -1,12 +1,19 @@
 import type { ChildProcess } from 'node:child_process';
 import { EventEmitter } from 'node:events';
+import { PassThrough } from 'node:stream';
 import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
-import { isProcessRunning, terminateFailedBrokerSpawn, waitForExit } from './broker-process.js';
+import {
+  isProcessRunning,
+  observeBrokerProcessErrors,
+  terminateFailedBrokerSpawn,
+  waitForApiUrl,
+  waitForExit,
+} from './broker-process.js';
 import { HarnessDriverClient } from './client.js';
 
 /**
@@ -30,6 +37,132 @@ function stubChild(options: { dieOnKill?: boolean } = {}): ChildProcess & {
   });
   return emitter;
 }
+
+describe('waitForApiUrl listener cleanup', () => {
+  function startupChild() {
+    const child = stubChild();
+    const stdout = new PassThrough();
+    Object.assign(child, { stdout });
+    const debug = { binaryPath: 'broker', args: [], cwd: '/tmp', stdoutLines: [], stderrLines: [] };
+    return { child, stdout, debug };
+  }
+
+  it('removes startup exit and error listeners when the API URL is reported', async () => {
+    const { child, stdout, debug } = startupChild();
+    const pending = waitForApiUrl(child, 100, debug);
+    await vi.waitFor(() => expect(child.listenerCount('exit')).toBe(1));
+    stdout.write('API listening on http://127.0.0.1:4282\n');
+    await expect(pending).resolves.toBe('http://127.0.0.1:4282');
+    expect(child.listenerCount('exit')).toBe(0);
+    expect(child.listenerCount('error')).toBe(0);
+    stdout.destroy();
+  });
+
+  it('removes both startup listeners after a child exit', async () => {
+    const { child, stdout, debug } = startupChild();
+    const pending = waitForApiUrl(child, 100, debug);
+    await vi.waitFor(() => expect(child.listenerCount('exit')).toBe(1));
+    child.emit('exit', 2, null);
+    await expect(pending).rejects.toThrow(/exited with code 2/);
+    expect(child.listenerCount('exit')).toBe(0);
+    expect(child.listenerCount('error')).toBe(0);
+    stdout.destroy();
+  });
+
+  it('removes both startup listeners after a spawn error', async () => {
+    const { child, stdout, debug } = startupChild();
+    const pending = waitForApiUrl(child, 100, debug);
+    await vi.waitFor(() => expect(child.listenerCount('error')).toBe(1));
+    child.emit('error', new Error('spawn failed'));
+    await expect(pending).rejects.toThrow(/Failed to start broker: spawn failed/);
+    expect(child.listenerCount('exit')).toBe(0);
+    expect(child.listenerCount('error')).toBe(0);
+    stdout.destroy();
+  });
+
+  it('installs its startup error listener synchronously', async () => {
+    const { child, stdout, debug } = startupChild();
+    const pending = waitForApiUrl(child, 100, debug);
+    expect(child.listenerCount('error')).toBe(1);
+    child.emit('error', new Error('immediate spawn failure'));
+    await expect(pending).rejects.toThrow(/Failed to start broker: immediate spawn failure/);
+    stdout.destroy();
+  });
+
+  it('rejects a real failed spawn before the startup timeout', async () => {
+    const { spawn } = await import('node:child_process');
+    const child = spawn('/definitely-missing-agent-relay-broker', [], { stdio: ['ignore', 'pipe', 'pipe'] });
+    const debug = {
+      binaryPath: '/definitely-missing-agent-relay-broker',
+      args: [],
+      cwd: '/tmp',
+      stdoutLines: [],
+      stderrLines: [],
+    };
+    observeBrokerProcessErrors(child, debug.stderrLines);
+    await expect(waitForApiUrl(child, 5000, debug)).rejects.toThrow(
+      /Failed to start broker: spawn \/definitely-missing-agent-relay-broker ENOENT/
+    );
+    expect(debug.stderrLines.some((line) => line.includes('ENOENT'))).toBe(true);
+  });
+
+  it('keeps an observer for process errors after startup', async () => {
+    const { child, stdout, debug } = startupChild();
+    observeBrokerProcessErrors(child, debug.stderrLines);
+    const pending = waitForApiUrl(child, 100, debug);
+    await vi.waitFor(() => expect(child.listenerCount('error')).toBe(2));
+    stdout.write('API listening on http://127.0.0.1:4282\n');
+    await expect(pending).resolves.toBe('http://127.0.0.1:4282');
+    expect(child.listenerCount('error')).toBe(1);
+    child.emit('error', new Error('late signal failure'));
+    expect(debug.stderrLines).toContain('Broker process error: late signal failure');
+    stdout.destroy();
+  });
+
+  it('handles an error emitted synchronously by the timeout signal', async () => {
+    const { child, stdout, debug } = startupChild();
+    observeBrokerProcessErrors(child, debug.stderrLines);
+    Object.assign(child, {
+      kill: () => {
+        child.emit('error', new Error('signal rejected'));
+        return false;
+      },
+    });
+    await expect(waitForApiUrl(child, 10, debug)).rejects.toThrow(/SIGTERM was not delivered/);
+    expect(debug.stderrLines).toContain('Broker process error: signal rejected');
+    expect(child.listenerCount('error')).toBe(1);
+    stdout.destroy();
+  });
+
+  it('reports a failed timeout signal without leaving the promise pending', async () => {
+    const { child, stdout, debug } = startupChild();
+    Object.assign(child, {
+      kill: () => {
+        throw new Error('operation not permitted');
+      },
+    });
+    await expect(waitForApiUrl(child, 10, debug)).rejects.toThrow(/SIGTERM failed: operation not permitted/);
+    expect(child.listenerCount('error')).toBe(0);
+    stdout.destroy();
+  });
+
+  it('reports when the timeout signal is not delivered', async () => {
+    const { child, stdout, debug } = startupChild();
+    Object.assign(child, { kill: () => false });
+    await expect(waitForApiUrl(child, 10, debug)).rejects.toThrow(/SIGTERM was not delivered/);
+    stdout.destroy();
+  });
+
+  it('removes both startup listeners and signals on timeout', async () => {
+    const { child, stdout, debug } = startupChild();
+    const pending = waitForApiUrl(child, 10, debug);
+    await expect(pending).rejects.toThrow(/did not report API port/);
+    expect(child.killed).toEqual(['SIGTERM']);
+    expect(child.listenerCount('exit')).toBe(0);
+    expect(child.listenerCount('error')).toBe(0);
+    stdout.destroy();
+  });
+});
 
 describe('waitForExit', () => {
   it('reports an exit it observed', async () => {

@@ -7,6 +7,7 @@
  * connection/API surface while the OS-process plumbing lives on its own.
  */
 import type { ChildProcess } from 'node:child_process';
+import { createInterface } from 'node:readline';
 
 export interface BrokerExitInfo {
   /** Exit code, or null when the process was killed by signal. */
@@ -40,13 +41,21 @@ export function isProcessRunning(pid: number): boolean {
   }
 }
 
+/** Keep process errors observable for the whole managed broker lifetime.
+ * The startup waiter removes its temporary listener after the API URL arrives,
+ * but `kill()` can still emit an error during timeout or shutdown.
+ */
+export function observeBrokerProcessErrors(child: ChildProcess, stderrLines: string[]): void {
+  child.on('error', (error: Error) => {
+    pushBufferedLine(stderrLines, `Broker process error: ${error.message}`);
+  });
+}
+
 export async function waitForApiUrl(
   child: ChildProcess,
   timeoutMs: number,
   debug: BrokerStartupDebugContext
 ): Promise<string> {
-  const { createInterface } = await import('node:readline');
-
   return new Promise<string>((resolve, reject) => {
     if (!child.stdout) {
       reject(new Error('Broker stdout not available'));
@@ -55,58 +64,52 @@ export async function waitForApiUrl(
 
     let resolved = false;
     const rl = createInterface({ input: child.stdout });
-
-    const timer = setTimeout(() => {
-      if (!resolved) {
-        resolved = true;
-        rl.close();
-        child.kill('SIGTERM');
-        reject(
-          new Error(
-            formatBrokerStartupError(`Broker did not report API port within ${timeoutMs}ms`, child, debug)
+    const finish = (): boolean => {
+      if (resolved) return false;
+      resolved = true;
+      clearTimeout(timer);
+      rl.removeListener('line', onLine);
+      rl.close();
+      child.removeListener('exit', onExit);
+      child.removeListener('error', onError);
+      return true;
+    };
+    const onExit = (code: number | null): void => {
+      if (!finish()) return;
+      reject(
+        new Error(
+          formatBrokerStartupError(
+            `Broker process exited with code ${code} before becoming ready`,
+            child,
+            debug
           )
-        );
-      }
-    }, timeoutMs);
-
-    child.on('exit', (code) => {
-      if (!resolved) {
-        resolved = true;
-        clearTimeout(timer);
-        rl.close();
-        reject(
-          new Error(
-            formatBrokerStartupError(
-              `Broker process exited with code ${code} before becoming ready`,
-              child,
-              debug
-            )
-          )
-        );
-      }
-    });
-
-    child.on('error', (err) => {
-      if (!resolved) {
-        resolved = true;
-        clearTimeout(timer);
-        rl.close();
-        reject(new Error(formatBrokerStartupError(`Failed to start broker: ${err.message}`, child, debug)));
-      }
-    });
-
-    rl.on('line', (line) => {
+        )
+      );
+    };
+    const onError = (err: Error): void => {
+      if (!finish()) return;
+      reject(new Error(formatBrokerStartupError(`Failed to start broker: ${err.message}`, child, debug)));
+    };
+    const onLine = (line: string): void => {
       if (resolved) return;
       pushBufferedLine(debug.stdoutLines, line);
-
       const match = line.match(/API listening on (https?:\/\/[^\s]+)/);
-      if (match) {
-        resolved = true;
-        clearTimeout(timer);
-        rl.close();
-        resolve(match[1]);
+      if (!match || !finish()) return;
+      resolve(match[1]);
+    };
+    const timer = setTimeout(() => {
+      if (!finish()) return;
+      let reason = `Broker did not report API port within ${timeoutMs}ms`;
+      try {
+        if (!child.kill('SIGTERM')) reason += '; SIGTERM was not delivered';
+      } catch (error) {
+        reason += `; SIGTERM failed: ${error instanceof Error ? error.message : String(error)}`;
       }
-    });
+      reject(new Error(formatBrokerStartupError(reason, child, debug)));
+    }, timeoutMs);
+    child.once('exit', onExit);
+    child.once('error', onError);
+    rl.on('line', onLine);
   });
 }
 

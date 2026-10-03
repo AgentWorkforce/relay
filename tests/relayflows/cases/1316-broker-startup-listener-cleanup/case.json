@@ -1,0 +1,13 @@
+{
+  "version": 1,
+  "id": "1316-broker-startup-listener-cleanup",
+  "kind": "bugfix",
+  "title": "Release broker startup listeners after the API URL settles",
+  "runner": { "command": ["node", "tests/relayflows/cases/1316-broker-startup-listener-cleanup/run.mjs"] },
+  "requirements": [],
+  "timeoutSeconds": 600,
+  "expected": {
+    "base": { "outcome": "bug", "signature": "broker_startup_listeners_remain_attached" },
+    "head": { "outcome": "fixed", "signature": "broker_startup_listeners_removed" }
+  }
+}
