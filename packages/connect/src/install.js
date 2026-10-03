@@ -21,6 +21,7 @@ import { requestJson } from './http.js';
 
 const RELEASE = 'https://github.com/AgentWorkforce/relay-desktop-releases/releases/latest/download';
 const MINIMUM_PROBE_VERSION = '2026.10.4';
+const MINIMUM_MAC_PROBE_VERSION = '2026.10.5';
 const RECOVERY_TIMEOUT_MS = 15_000;
 const INSTALL_LOCK_TIMEOUT_MS = 90_000;
 const INSTALL_LOCK_STALE_MS = 15 * 60_000;
@@ -36,9 +37,9 @@ export class InstallError extends Error {
 }
 
 export class OutdatedProbeError extends InstallError {
-  constructor(version) {
+  constructor(version, minimum = MINIMUM_PROBE_VERSION, nextStep = 'update it and retry.') {
     super(
-      `Agent Relay ${version || 'unknown'} is too old for Relay Connect (needs ${MINIMUM_PROBE_VERSION} or newer); update it and retry.`,
+      `Agent Relay ${version || 'unknown'} is too old for Relay Connect (needs ${minimum} or newer); ${nextStep}`,
       9
     );
     this.name = 'OutdatedProbeError';
@@ -202,6 +203,28 @@ export function probeVersionSupported(version, minimum = MINIMUM_PROBE_VERSION) 
   return true;
 }
 
+function minimumProbeVersion(platform) {
+  return platform === 'darwin' ? MINIMUM_MAC_PROBE_VERSION : MINIMUM_PROBE_VERSION;
+}
+
+function probeSupportedOnPlatform(existing, platform) {
+  if (!existing) return false;
+  return existing.version
+    ? probeVersionSupported(existing.version, minimumProbeVersion(platform))
+    : existing.supported !== false;
+}
+
+export function linuxProbeSessionUpdateHint(probe, response, platform = process.platform) {
+  if (
+    platform !== 'linux' ||
+    response?.error?.code !== 'not_a_relay_session' ||
+    !probeVersionSupported(probe?.version) ||
+    probeVersionSupported(probe?.version, MINIMUM_MAC_PROBE_VERSION)
+  )
+    return null;
+  return `Agent Relay ${probe.version} could not identify this session. If this is a live Claude Code or Codex session, update the running Agent Relay probe to ${MINIMUM_MAC_PROBE_VERSION} or newer; otherwise run this from a live session.`;
+}
+
 async function liveStatus(socketPath, timeoutMs = 5_000) {
   if (!socketPath) return null;
   try {
@@ -241,13 +264,14 @@ export async function waitForLiveSocket({
   sleep = delay,
   pointer = readPointer,
   check = liveStatus,
+  minimumVersion = MINIMUM_PROBE_VERSION,
 } = {}) {
   const deadline = now() + timeoutMs;
   while (now() < deadline) {
     const socketPath = await pointer(home);
     const remaining = Math.max(1, deadline - now());
     const status = await check(socketPath, Math.min(perRequestTimeoutMs, remaining));
-    if (status && probeVersionSupported(status?.data?.version)) return { socketPath, status };
+    if (status && probeVersionSupported(status?.data?.version, minimumVersion)) return { socketPath, status };
     const sleepFor = Math.min(1_000, Math.max(0, deadline - now()));
     if (sleepFor > 0) await sleep(sleepFor);
   }
@@ -600,8 +624,12 @@ export async function acquireInstallLock({
   }
 }
 
-function requireSupportedProbe(existing) {
-  if (existing && existing.supported === false) throw new OutdatedProbeError(existing.version);
+function requireSupportedProbe(existing, platform = process.platform) {
+  if (existing && !probeSupportedOnPlatform(existing, platform)) {
+    const nextStep =
+      platform === 'darwin' ? 'run `npx -y @agent-relay/connect install` and retry.' : 'update it and retry.';
+    throw new OutdatedProbeError(existing.version, minimumProbeVersion(platform), nextStep);
+  }
   return existing;
 }
 
@@ -660,7 +688,7 @@ export async function installMac({
 
     // Do not delete the existing pointer on macOS: RelayDesktop may reuse it.
     await run(stage[2][0], stage[2][1]);
-    const result = await wait({ home });
+    const result = await wait({ home, minimumVersion: MINIMUM_MAC_PROBE_VERSION });
     ready = true;
     await finishSwap(app, appSwap, true);
     return result;
@@ -707,10 +735,10 @@ export async function ensureProbe({
   acquire = acquireInstallLock,
 } = {}) {
   const existing = await findRecoveringProbe({ home, find, run, active, now, sleep });
-  if (existing?.supported !== false) {
-    if (existing) return { ...existing, installed: false };
-  } else if (platform === 'linux') {
-    requireSupportedProbe(existing);
+  if (probeSupportedOnPlatform(existing, platform)) {
+    return { ...existing, installed: false };
+  } else if (existing && platform === 'linux') {
+    requireSupportedProbe(existing, platform);
   }
 
   if (platform !== 'linux' && platform !== 'darwin') {
@@ -720,10 +748,10 @@ export async function ensureProbe({
   const installLock = await acquire({ home, platform, now, sleep });
   try {
     const afterLock = await find(home, 1_000);
-    if (afterLock?.supported !== false) {
-      if (afterLock) return { ...afterLock, installed: false };
-    } else if (platform === 'linux') {
-      requireSupportedProbe(afterLock);
+    if (probeSupportedOnPlatform(afterLock, platform)) {
+      return { ...afterLock, installed: false };
+    } else if (afterLock && platform === 'linux') {
+      requireSupportedProbe(afterLock, platform);
     }
 
     const result =
@@ -737,5 +765,5 @@ export async function ensureProbe({
 }
 
 export async function requireExistingProbe(options = {}) {
-  return requireSupportedProbe(await findRecoveringProbe(options));
+  return requireSupportedProbe(await findRecoveringProbe(options), options.platform || process.platform);
 }
