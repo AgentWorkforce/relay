@@ -107,6 +107,8 @@ describe('install.sh', () => {
     });
 
     it('copies to BIN_DIR through the atomic path, not a bare cp', () => {
+      expect(body).toMatch(/local d1="\$target_path"/);
+      expect(body).toMatch(/local d2="\$BIN_DIR\/agent-relay-broker"/);
       expect(body).toMatch(/copy_binary_atomic "\$d1" "\$d2"/);
       expect(body).not.toMatch(/^\s*cp /m);
     });
