@@ -1,0 +1,20 @@
+{
+  "version": 1,
+  "id": "1382-broker-atomic-credential-pairing",
+  "kind": "bugfix",
+  "title": "Resolve broker URL and API key as an atomic pair; degrade the native-harness probe on failure",
+  "runner": {
+    "command": ["node", "tests/relayflows/cases/1382-broker-atomic-credential-pairing/run.mjs"]
+  },
+  "timeoutSeconds": 300,
+  "expected": {
+    "base": {
+      "outcome": "bug",
+      "signature": "cross_wired_credential_pair_and_probe_abort"
+    },
+    "head": {
+      "outcome": "fixed",
+      "signature": "atomic_credential_pair_and_probe_degrades"
+    }
+  }
+}
