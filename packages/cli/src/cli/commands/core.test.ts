@@ -1136,7 +1136,9 @@ describe('registerCoreCommands', () => {
     const paths = { ...deps.getProjectPaths(), dataDir: stateDir };
     await persistBrokerIdentity(paths, 222, 'custom-node', deps);
     const filename = brokerIdentityPath(paths, deps, 'custom-node');
-    expect(filename).toMatch(/^\/tmp\/project\/\.agentworkforce\/relay\/broker-identity-/);
+    // Records live in the broker state dir, so `down --state-dir` finds them from any cwd.
+    expect(nodePath.dirname(filename)).toBe(stateDir);
+    expect(nodePath.basename(filename)).toMatch(/^broker-identity-/);
     expect(deps.fs.existsSync(filename)).toBe(true);
     const stateArg =
       stateDir === nodePath.resolve('nested/candidate-state') ? 'nested/candidate-state' : stateDir;
@@ -1614,6 +1616,213 @@ describe('registerCoreCommands', () => {
     );
     await runCommand(program, ['down', '--force', '--state-dir', '/tmp/project/canonical']);
     expect(deps.killProcess).toHaveBeenCalledWith(222, 'SIGTERM');
+  });
+
+  it.each([
+    ['the state dir itself', '/srv/dogpatch-node/state'],
+    ['the fleet node directory (relay#1575)', '/srv/dogpatch-node'],
+  ])(
+    'down --force verifies a broker started from another cwd via %s (relay#1820)',
+    async (_label, stateArg) => {
+      const stateDir = '/srv/dogpatch-node/state';
+      let running = true;
+      const fs = createFsMock({ [`${stateDir}/connection.json`]: connectionFile(222) });
+      const { program, deps } = createHarness({
+        fs,
+        execCommand: identityCommand(222, `${stateDir}/broker-dogpatch-mini.lock`),
+        killImpl: vi.fn((_pid, signal) => {
+          if (signal === 'SIGTERM') running = false;
+          if (signal === 0 && !running) throw new Error('not running');
+        }),
+      });
+      // `node up` ran under launchd with a different working directory, so its
+      // project root differs from the operator's.
+      const launchPaths = { ...deps.getProjectPaths(), projectRoot: '/Users/op', dataDir: stateDir };
+      expect(await persistBrokerIdentity(launchPaths, 222, 'dogpatch-mini', deps)).toBeDefined();
+      expect(nodePath.dirname(brokerIdentityPath(launchPaths, deps, 'dogpatch-mini'))).toBe(stateDir);
+
+      await runCommand(program, ['down', '--force', '--state-dir', stateArg]);
+
+      expect(deps.killProcess).toHaveBeenCalledWith(222, 'SIGTERM');
+      expect(deps.log).toHaveBeenCalledWith('Stopped');
+      expect(fs.existsSync(brokerIdentityPath(launchPaths, deps, 'dogpatch-mini'))).toBe(false);
+    }
+  );
+
+  it('down --force via the node directory recovers a nested broker whose connection file is gone', async () => {
+    const stateDir = '/srv/orphan-node/state';
+    const running = new Set([222, 333]);
+    const execCommand = identityCommand(222, `${stateDir}/broker-orphan.lock`);
+    const killImpl = vi.fn((pid: number, signal?: NodeJS.Signals | number) => {
+      if (signal === 0) {
+        if (!running.has(pid)) throw new Error('not running');
+        return;
+      }
+      running.delete(pid);
+    });
+    const { program, deps } = createHarness({ execCommand, killImpl });
+    const paths = { ...deps.getProjectPaths(), dataDir: stateDir };
+    await persistBrokerIdentity(paths, 222, 'orphan', deps);
+    expect(deps.fs.existsSync(`${stateDir}/connection.json`)).toBe(false);
+
+    await runCommand(program, ['down', '--force', '--state-dir', '/srv/orphan-node']);
+
+    expect(killImpl).toHaveBeenCalledWith(222, 'SIGTERM');
+    expect([...running]).toEqual([333]);
+  });
+
+  it('a new launch supersedes a stale record left by an earlier release', async () => {
+    const stateDir = '/srv/upgraded-node/state';
+    let running = true;
+    const fs = createFsMock({ [`${stateDir}/connection.json`]: connectionFile(222) });
+    const { program, deps } = createHarness({
+      fs,
+      execCommand: identityCommand(222, `${stateDir}/broker-upgraded.lock`),
+      killImpl: vi.fn((_pid, signal) => {
+        if (signal === 'SIGTERM') running = false;
+        if (signal === 0 && !running) throw new Error('not running');
+      }),
+    });
+    const paths = { ...deps.getProjectPaths(), dataDir: stateDir };
+    await persistBrokerIdentity(paths, 222, 'upgraded', deps);
+    const current = brokerIdentityPath(paths, deps, 'upgraded');
+    const legacy = nodePath.join(paths.projectRoot, '.agentworkforce', 'relay', nodePath.basename(current));
+    // A record an earlier release left for a previous launch of this broker.
+    fs.writeFileSync(legacy, fs.readFileSync(current, 'utf-8').replace('"pid":222', '"pid":111'));
+
+    await persistBrokerIdentity(paths, 222, 'upgraded', deps);
+    expect(fs.existsSync(legacy)).toBe(false);
+
+    await runCommand(program, ['down', '--force', '--state-dir', stateDir]);
+    expect(deps.log).toHaveBeenCalledWith('Stopped');
+    expect(readBrokerIdentities(paths, deps)).toEqual([]);
+    expect(fs.existsSync(`${stateDir}/connection.json`)).toBe(false);
+  });
+
+  it('down --force ignores stale lock files in the node directory when the nested broker is live', async () => {
+    const nodeDir = '/srv/stale-lock-node';
+    const stateDir = `${nodeDir}/state`;
+    const running = new Set([222]);
+    const execCommand = identityCommand(222, `${stateDir}/broker-nested.lock`);
+    const killImpl = vi.fn((pid: number, signal?: NodeJS.Signals | number) => {
+      if (signal === 0) {
+        if (!running.has(pid)) throw new Error('not running');
+        return;
+      }
+      running.delete(pid);
+    });
+    const fs = createFsMock({ [`${nodeDir}/broker-old.lock`]: '' });
+    const { program, deps } = createHarness({ fs, execCommand, killImpl });
+    await persistBrokerIdentity({ ...deps.getProjectPaths(), dataDir: stateDir }, 222, 'nested', deps);
+    expect(fs.existsSync(`${stateDir}/connection.json`)).toBe(false);
+
+    await runCommand(program, ['down', '--force', '--state-dir', nodeDir]);
+
+    expect(killImpl).toHaveBeenCalledWith(222, 'SIGTERM');
+    expect([...running]).toEqual([]);
+  });
+
+  it('down --force ignores a node-dir identity whose pid was reused by another process', async () => {
+    const nodeDir = '/srv/reused-pid-node';
+    const stateDir = `${nodeDir}/state`;
+    const running = new Set([222, 333]);
+    const nested = identityCommand(222, `${stateDir}/broker-nested.lock`);
+    const old = identityCommand(333, `${nodeDir}/broker-old.lock`);
+    let pidReused = false;
+    const execCommand = vi.fn(async (command: string) => {
+      if (!command.includes('-p 333 ')) return nested(command);
+      // After the record was written, pid 333 belongs to a different process.
+      if (pidReused && command.includes('lstart'))
+        return { stdout: 'Fri Oct  2 09:00:00 2026\n', stderr: '' };
+      return old(command);
+    });
+    const killImpl = vi.fn((pid: number, signal?: NodeJS.Signals | number) => {
+      if (signal === 0) {
+        if (!running.has(pid)) throw new Error('not running');
+        return;
+      }
+      running.delete(pid);
+    });
+    const { program, deps } = createHarness({ execCommand, killImpl });
+    await persistBrokerIdentity({ ...deps.getProjectPaths(), dataDir: nodeDir }, 333, 'old', deps);
+    await persistBrokerIdentity({ ...deps.getProjectPaths(), dataDir: stateDir }, 222, 'nested', deps);
+    pidReused = true;
+
+    await runCommand(program, ['down', '--force', '--state-dir', nodeDir]);
+
+    expect(killImpl).toHaveBeenCalledWith(222, 'SIGTERM');
+    expect(killImpl).not.toHaveBeenCalledWith(333, 'SIGTERM');
+    expect([...running]).toEqual([333]);
+  });
+
+  it('down --force ignores a node-dir connection file whose pid was reused by another process', async () => {
+    const nodeDir = '/srv/reused-conn-node';
+    const stateDir = `${nodeDir}/state`;
+    const running = new Set([222, 333]);
+    const killImpl = vi.fn((pid: number, signal?: NodeJS.Signals | number) => {
+      if (signal === 0) {
+        if (!running.has(pid)) throw new Error('not running');
+        return;
+      }
+      running.delete(pid);
+    });
+    // The stale node-dir file names pid 333, which now belongs to an unrelated process.
+    const fs = createFsMock({
+      [`${nodeDir}/connection.json`]: connectionFile(333),
+      [`${stateDir}/connection.json`]: connectionFile(222),
+    });
+    const { program, deps } = createHarness({
+      fs,
+      execCommand: identityCommand(222, `${stateDir}/broker-nested.lock`),
+      killImpl,
+    });
+    await persistBrokerIdentity({ ...deps.getProjectPaths(), dataDir: stateDir }, 222, 'nested', deps);
+
+    await runCommand(program, ['down', '--force', '--state-dir', nodeDir]);
+
+    expect(killImpl).toHaveBeenCalledWith(222, 'SIGTERM');
+    expect(killImpl).not.toHaveBeenCalledWith(333, 'SIGTERM');
+    expect([...running]).toEqual([333]);
+  });
+
+  it('down still verifies records written under the project by earlier releases', async () => {
+    const stateDir = '/srv/legacy-node/state';
+    let running = true;
+    const fs = createFsMock({ [`${stateDir}/connection.json`]: connectionFile(222) });
+    const { program, deps } = createHarness({
+      fs,
+      execCommand: identityCommand(222, `${stateDir}/broker-legacy.lock`),
+      killImpl: vi.fn((_pid, signal) => {
+        if (signal === 'SIGTERM') running = false;
+        if (signal === 0 && !running) throw new Error('not running');
+      }),
+    });
+    const paths = { ...deps.getProjectPaths(), dataDir: stateDir };
+    await persistBrokerIdentity(paths, 222, 'legacy', deps);
+    // Move the record to where earlier releases wrote it.
+    const current = brokerIdentityPath(paths, deps, 'legacy');
+    const legacy = nodePath.join(paths.projectRoot, '.agentworkforce', 'relay', nodePath.basename(current));
+    fs.writeFileSync(legacy, fs.readFileSync(current, 'utf-8'));
+    fs.unlinkSync(current);
+
+    await runCommand(program, ['down', '--force', '--state-dir', stateDir]);
+
+    expect(deps.killProcess).toHaveBeenCalledWith(222, 'SIGTERM');
+    expect(fs.existsSync(legacy)).toBe(false);
+  });
+
+  it('down names the missing identity record and the migration path', async () => {
+    const stateDir = '/srv/direct-init/state';
+    const fs = createFsMock({ [`${stateDir}/connection.json`]: connectionFile(3030) });
+    const { program, deps } = createHarness({ fs });
+    expect(await runCommand(program, ['down', '--force', '--state-dir', stateDir])).toBe(1);
+    expect(vi.mocked(deps.killProcess).mock.calls.filter(([, signal]) => signal !== 0)).toEqual([]);
+    expect(deps.error).toHaveBeenCalledWith(
+      expect.stringContaining(`No identity record for the running broker (pid: 3030) in ${stateDir}`)
+    );
+    expect(deps.error).toHaveBeenCalledWith(
+      expect.stringContaining(`agent-relay node up --state-dir ${stateDir}`)
+    );
   });
 
   it('different names retain independent records and forced cleanup verifies each', async () => {
@@ -2221,6 +2430,57 @@ describe('registerCoreCommands', () => {
 
     expect(exitCode).toBeUndefined();
     expect(deps.log).toHaveBeenCalledWith('Not running');
+  });
+
+  it('status --state-dir accepts a fleet node directory and flags a missing identity record', async () => {
+    const stateDir = '/srv/sf-mini-node/state';
+    const fs = createFsMock({ [`${stateDir}/connection.json`]: connectionFile(4242) });
+    sdkStatusClient.getStatus.mockResolvedValueOnce({ agent_count: 1, pending_delivery_count: 0 });
+    sdkStatusClient.getSession.mockResolvedValueOnce({ workspace_key: 'rk_live_teststatus123' });
+    const { program, deps } = createHarness({ fs });
+
+    expect(await runCommand(program, ['status', '--state-dir', '/srv/sf-mini-node'])).toBeUndefined();
+
+    expect(deps.log).toHaveBeenCalledWith('Status: RUNNING');
+    expect(deps.log).toHaveBeenCalledWith('PID: 4242');
+    expect(deps.warn).toHaveBeenCalledWith(
+      expect.stringContaining(`Restart it once with \`agent-relay node up --state-dir ${stateDir}\``)
+    );
+  });
+
+  it('status --state-dir prefers a live nested broker over stale lock files in the node directory', async () => {
+    const nodeDir = '/srv/stale-node';
+    const fs = createFsMock({
+      [`${nodeDir}/broker-old.lock`]: '',
+      [`${nodeDir}/state/connection.json`]: connectionFile(4242),
+    });
+    sdkStatusClient.getStatus.mockResolvedValueOnce({ agent_count: 1, pending_delivery_count: 0 });
+    sdkStatusClient.getSession.mockResolvedValueOnce({ workspace_key: 'rk_live_teststatus123' });
+    const { program, deps } = createHarness({ fs });
+
+    expect(await runCommand(program, ['status', '--state-dir', nodeDir])).toBeUndefined();
+
+    expect(deps.log).toHaveBeenCalledWith('Status: RUNNING');
+    expect(deps.log).toHaveBeenCalledWith('PID: 4242');
+  });
+
+  it('status --state-dir prefers a live nested broker over a stale connection file in the node directory', async () => {
+    const nodeDir = '/srv/stale-conn-node';
+    const fs = createFsMock({
+      [`${nodeDir}/connection.json`]: connectionFile(999),
+      [`${nodeDir}/state/connection.json`]: connectionFile(4242),
+    });
+    sdkStatusClient.getStatus.mockResolvedValueOnce({ agent_count: 1, pending_delivery_count: 0 });
+    sdkStatusClient.getSession.mockResolvedValueOnce({ workspace_key: 'rk_live_teststatus123' });
+    const killImpl = vi.fn((pid: number, signal?: NodeJS.Signals | number) => {
+      if (signal === 0 && pid === 999) throw new Error('not running');
+    });
+    const { program, deps } = createHarness({ fs, killImpl });
+
+    expect(await runCommand(program, ['status', '--state-dir', nodeDir])).toBeUndefined();
+
+    expect(deps.log).toHaveBeenCalledWith('Status: RUNNING');
+    expect(deps.log).toHaveBeenCalledWith('PID: 4242');
   });
 
   it('status checks broker status and prints metrics', async () => {

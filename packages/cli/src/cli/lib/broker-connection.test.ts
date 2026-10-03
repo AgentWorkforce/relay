@@ -1,6 +1,17 @@
+import fs from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
+
 import { describe, expect, it, vi } from 'vitest';
 
-import { resolveBrokerConnection, toWsUrl, type BrokerConnectionDeps } from './broker-connection.js';
+import {
+  describeMissingBrokerConnection,
+  readConnectionFileFromDisk,
+  resolveBrokerConnection,
+  resolveConnectionStateDir,
+  toWsUrl,
+  type BrokerConnectionDeps,
+} from './broker-connection.js';
 
 function makeDeps(overrides: Partial<BrokerConnectionDeps> = {}): BrokerConnectionDeps {
   return {
@@ -87,6 +98,127 @@ describe('resolveBrokerConnection', () => {
     });
     const conn = resolveBrokerConnection({}, deps);
     expect(conn?.apiKey).toBe('file-key');
+  });
+});
+
+describe('explicit --state-dir selection', () => {
+  // Fixture keys go through path.resolve, as the resolver does, so they match on every platform.
+  const nodeDir = path.resolve('/srv/node');
+  const nodeStateDir = path.join(nodeDir, 'state');
+  const files: Record<string, unknown> = {
+    [nodeStateDir]: { url: 'http://node-host:4100/', api_key: 'node-key' },
+  };
+  const readConnectionFile = vi.fn((dir: string) => files[dir] ?? null);
+
+  it('wins over ambient RELAY_BROKER_URL / RELAY_BROKER_API_KEY (relay#1822)', () => {
+    const deps = makeDeps({
+      env: { RELAY_BROKER_URL: 'http://other:1', RELAY_BROKER_API_KEY: 'other-key' },
+      readConnectionFile,
+    });
+    expect(resolveBrokerConnection({ stateDir: nodeStateDir }, deps)).toEqual({
+      url: 'http://node-host:4100',
+      apiKey: 'node-key',
+    });
+  });
+
+  it('never falls back to env when the named state dir has no broker', () => {
+    const deps = makeDeps({ env: { RELAY_BROKER_URL: 'http://other:1' }, readConnectionFile });
+    expect(resolveBrokerConnection({ stateDir: path.resolve('/srv/missing') }, deps)).toBeNull();
+  });
+
+  it('still lets --api-key override the connection file key', () => {
+    const deps = makeDeps({ readConnectionFile });
+    expect(resolveBrokerConnection({ stateDir: nodeStateDir, apiKey: 'flag-key' }, deps)?.apiKey).toBe(
+      'flag-key'
+    );
+  });
+
+  it('pairs --broker-url with the named state dir key, not the env key', () => {
+    const deps = makeDeps({ env: { RELAY_BROKER_API_KEY: 'other-key' }, readConnectionFile });
+    expect(resolveBrokerConnection({ stateDir: nodeDir, brokerUrl: 'http://tunnel:9000' }, deps)).toEqual({
+      url: 'http://tunnel:9000',
+      apiKey: 'node-key',
+    });
+  });
+
+  it('accepts a fleet node directory whose broker state lives in state/ (relay#1575)', () => {
+    const deps = makeDeps({ readConnectionFile });
+    expect(resolveBrokerConnection({ stateDir: nodeDir }, deps)?.url).toBe('http://node-host:4100');
+  });
+
+  it('reads the nested state/connection.json from disk and prefers an exact match', () => {
+    const nodeDir = fs.mkdtempSync(path.join(os.tmpdir(), 'relay-node-dir-'));
+    try {
+      fs.mkdirSync(path.join(nodeDir, 'state'));
+      fs.writeFileSync(
+        path.join(nodeDir, 'state', 'connection.json'),
+        JSON.stringify({ url: 'http://127.0.0.1:4555', api_key: 'nested' })
+      );
+      const deps = makeDeps({ readConnectionFile: readConnectionFileFromDisk });
+      expect(resolveConnectionStateDir(nodeDir)).toBe(path.join(nodeDir, 'state'));
+      expect(resolveBrokerConnection({ stateDir: nodeDir }, deps)?.apiKey).toBe('nested');
+
+      fs.writeFileSync(
+        path.join(nodeDir, 'connection.json'),
+        JSON.stringify({ url: 'http://127.0.0.1:4666', api_key: 'exact' })
+      );
+      expect(resolveConnectionStateDir(nodeDir)).toBe(nodeDir);
+      expect(resolveBrokerConnection({ stateDir: nodeDir }, deps)?.apiKey).toBe('exact');
+    } finally {
+      fs.rmSync(nodeDir, { recursive: true, force: true });
+    }
+  });
+});
+
+describe('malformed exact connection file', () => {
+  it('fails instead of falling back to a nested broker', () => {
+    const nodeDir = fs.mkdtempSync(path.join(os.tmpdir(), 'relay-node-dir-'));
+    try {
+      fs.mkdirSync(path.join(nodeDir, 'state'));
+      fs.writeFileSync(path.join(nodeDir, 'connection.json'), '{not json');
+      fs.writeFileSync(
+        path.join(nodeDir, 'state', 'connection.json'),
+        JSON.stringify({ url: 'http://127.0.0.1:4555', api_key: 'nested' })
+      );
+      const deps = makeDeps({ readConnectionFile: readConnectionFileFromDisk });
+      expect(resolveBrokerConnection({ stateDir: nodeDir }, deps)).toBeNull();
+    } finally {
+      fs.rmSync(nodeDir, { recursive: true, force: true });
+    }
+  });
+});
+
+describe('describeMissingBrokerConnection', () => {
+  it('names the --state-dir paths that were searched', () => {
+    // An isolated empty directory: the message depends on what exists on disk.
+    const nodeDir = fs.mkdtempSync(path.join(os.tmpdir(), 'relay-empty-node-'));
+    try {
+      expect(describeMissingBrokerConnection({ stateDir: nodeDir }, makeDeps())).toBe(
+        `Error: no broker connection at ${path.join(nodeDir, 'connection.json')} or ${path.join(nodeDir, 'state', 'connection.json')} (from --state-dir). Pass the same --state-dir the broker was started with.`
+      );
+    } finally {
+      fs.rmSync(nodeDir, { recursive: true, force: true });
+    }
+  });
+
+  it('names the unusable exact file instead of claiming the nested one was read', () => {
+    const nodeDir = fs.mkdtempSync(path.join(os.tmpdir(), 'relay-node-dir-'));
+    try {
+      fs.writeFileSync(path.join(nodeDir, 'connection.json'), '{not json');
+      expect(describeMissingBrokerConnection({ stateDir: nodeDir }, makeDeps())).toBe(
+        `Error: unusable broker connection file ${path.join(nodeDir, 'connection.json')} (from --state-dir): it is malformed or has no url.`
+      );
+    } finally {
+      fs.rmSync(nodeDir, { recursive: true, force: true });
+    }
+  });
+
+  it('labels the project default and points at --state-dir', () => {
+    const message = describeMissingBrokerConnection({}, makeDeps());
+    expect(message).toContain(
+      `${path.join('/tmp/fake/.agentworkforce/relay', 'connection.json')} (project default)`
+    );
+    expect(message).toContain('If the broker was started with --state-dir, pass the same --state-dir here');
   });
 });
 
