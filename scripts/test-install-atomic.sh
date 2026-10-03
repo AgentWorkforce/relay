@@ -640,6 +640,22 @@ check "TERM after commit: CLI is the new one (not rolled back)" test "$("$INSTAL
 check "TERM after commit: BOTH broker locations are the new broker" \
     test "$(sha256_of "$INSTALL_DIR/bin/agent-relay-broker")" = "$NEW_B" -a "$(sha256_of "$BIN_DIR/agent-relay-broker")" = "$NEW_B"
 
+# (4) during the read-back hash of a just-renamed destination (CLI, then broker)
+for victim in agent-relay agent-relay-broker; do
+    sig_setup ok; old_bin_broker
+    rm -f "$WORK/sig-once"
+    sha256_of() {
+        if [ "$1" = "$INSTALL_DIR/bin/$victim" ] && [ ! -e "$WORK/sig-once" ]; then
+            : > "$WORK/sig-once"; kill -TERM "$(cat "$WORK/main.pid")"; sleep 1
+        fi
+        real_sha256_of "$@"
+    }
+    sig_main_pid; rc=$?
+    sha256_of() { real_sha256_of "$@"; }
+    sig_assert "TERM during the read-back hash of $victim"
+    check "TERM during the read-back hash of $victim: BOTH broker locations are the old broker" both_brokers_old
+done
+
 echo "== version probes cannot abort a rollback under inherited pipefail =="
 sig_setup crash
 printf '#!/bin/bash\nexit 1\n' > "$INSTALL_DIR/bin/agent-relay"; chmod +x "$INSTALL_DIR/bin/agent-relay"   # old CLI whose --version fails

@@ -51,7 +51,7 @@ describe('install.sh', () => {
     });
 
     it('fails closed when codesign is missing and no digest was verified', () => {
-      const missing = body.match(/if ! has_command codesign; then([\s\S]*?)\n    fi\n/);
+      const missing = body.match(/if ! has_command codesign; then([\s\S]*?)\n {4}fi\n/);
       expect(missing).not.toBeNull();
       expect(missing![1]).toMatch(/DIGEST_VERIFIED/);
       expect(missing![1]).toMatch(/return 1/);
