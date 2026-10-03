@@ -603,6 +603,7 @@ describe('probe installer', () => {
     cleanups.push(async () => rm(root, { recursive: true, force: true }));
     const home = join(root, 'home');
     const commands: Array<[string, string[]]> = [];
+    let minimumVersion: string | undefined;
     const run = async (file: string, args: string[]) => {
       commands.push([file, args]);
       if (file === 'tar') {
@@ -620,9 +621,13 @@ describe('probe installer', () => {
       run,
       require: async () => {},
       start: async () => ({ pid: undefined, unref() {} }),
-      wait: async () => ({ socketPath: '/tmp/mac-probe.sock', status: { ok: true } }),
+      wait: async (options: { minimumVersion?: string }) => {
+        minimumVersion = options.minimumVersion;
+        return { socketPath: '/tmp/mac-probe.sock', status: { ok: true } };
+      },
     });
     expect(result.socketPath).toBe('/tmp/mac-probe.sock');
+    expect(minimumVersion).toBe('2026.10.5');
     expect(commands.map(([file]) => file)).toEqual(['curl', 'curl', 'shasum', 'tar', 'codesign']);
     expect(commands[0][1].at(-1)).toContain('AgentRelay-macOS-arm64-probe.tar.gz');
     expect(commands[3][1].at(-1)).toBe('agent_relay/helpers/agent-relay-probe');

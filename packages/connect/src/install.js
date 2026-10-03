@@ -457,7 +457,7 @@ async function installHeadless({
       await logHandle.close();
     }
 
-    const result = await wait({ home });
+    const result = await wait({ home, minimumVersion: minimumProbeVersion(platform) });
     ready = true;
     await finishSwap(installDir, swap, true);
     return result;
