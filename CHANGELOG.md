@@ -11,6 +11,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - `agent-relay mcp` standalone binaries no longer dispatch each tool call twice.
 - MCP `send_dm` now forwards idempotency keys so keyed retries do not store duplicate messages.
+- `@agent-relay/connect join` returns as soon as the probe admits the participant.
+- Timed-out or still-pending `@agent-relay/connect join` calls exit with status 8 and instruct the caller to retry the same request.
 
 ## [13.0.1] - 2026-10-02
 

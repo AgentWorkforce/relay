@@ -102,7 +102,7 @@ async function runCli(home: string, args: string[], input = '') {
 }
 
 describe('@agent-relay/connect CLI', () => {
-  it('joins through a fake socket, keeps the host claim private, sends one hello, and is repeatable', async () => {
+  it('joins through a fake socket, keeps the host claim private, and makes no blocking follow-up send', async () => {
     const joins: Array<Record<string, string>> = [];
     const hellos: string[] = [];
     const { home } = await listen((request, response, body) => {
@@ -123,9 +123,9 @@ describe('@agent-relay/connect CLI', () => {
             participants: [],
           },
         });
-      } else if (request.url === '/connect/send?to=host-agent') {
+      } else if (request.url?.startsWith('/connect/send')) {
         hellos.push(body);
-        json(response, { ok: true, data: { sent: [{ to: 'host-agent', message_id: 'message-1' }] } });
+        json(response, { ok: false, error: { code: 'unexpected_send' } }, 500);
       } else {
         json(response, { ok: false, error: { code: 'unexpected', message: request.url } }, 404);
       }
@@ -150,10 +150,7 @@ describe('@agent-relay/connect CLI', () => {
       { link: 'connect-1', name: 'guest-one', host_claim: claim },
       { link: 'connect-1' },
     ]);
-    expect(hellos).toEqual([
-      'guest-one joined this Relay Connect and is ready to help.',
-      'guest-one joined this Relay Connect and is ready to help.',
-    ]);
+    expect(hellos).toEqual([]);
   });
 
   it('wraps send, status, and leave routes', async () => {
@@ -220,36 +217,38 @@ describe('@agent-relay/connect CLI', () => {
     expect(sendRequests).toBe(0);
   });
 
-  it('keeps a completed join successful when the host hello fails', async () => {
-    const { home } = await listen((request, response) => {
+  it('maps retry-safe join timeout and pending-operation errors', async () => {
+    const { home } = await listen((request, response, body) => {
       if (request.url === '/setup/status') {
         json(response, { ok: true, data: { version: '2026.10.4' } });
       } else if (request.url === '/connect/join') {
-        json(response, {
-          ok: true,
-          data: {
-            connect_id: 'connect-joined',
-            agent_name: 'guest-joined',
-            role: 'guest',
-            task: 'Keep the join result',
-            expires_at: 'later',
-            host: { agent_name: 'host-left' },
+        const pending = JSON.parse(body).link === 'connect-pending';
+        json(
+          response,
+          {
+            ok: false,
+            error: {
+              code: pending ? 'connect_join_pending' : 'connect_join_timeout',
+              message: 'safe to retry',
+            },
           },
-        });
-      } else if (request.url === '/connect/send?to=host-left') {
-        json(response, {
-          ok: false,
-          error: { code: 'connect_unreachable', message: 'host unavailable' },
-        });
+          pending ? 409 : 504
+        );
       }
     });
 
-    const joined = await runCli(home, ['join', 'connect-joined', '--json']);
-    expect(joined.code).toBe(0);
-    expect(JSON.parse(joined.stdout).data.connect_id).toBe('connect-joined');
-    expect(joined.stderr).toBe(
-      'Joined, but could not notify the host: Relay Connect cannot reach Cloud or Relaycast; retry once.\n'
-    );
+    const joined = await runCli(home, ['join', 'connect-timed-out']);
+    expect(joined).toEqual({
+      code: 8,
+      stdout: '',
+      stderr: 'Relay Connect join timed out; retry the same join safely.\n',
+    });
+    const pending = await runCli(home, ['join', 'connect-pending']);
+    expect(pending).toEqual({
+      code: 8,
+      stdout: '',
+      stderr: 'A previous join has an unknown outcome; retry with the same link and options.\n',
+    });
   });
 
   it('maps socket errors and preserves their code in JSON mode', async () => {
