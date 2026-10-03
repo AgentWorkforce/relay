@@ -45,6 +45,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- `node agent release` now accepts `--broker-url`, `--api-key`, and `--state-dir` so operators can release workers from an isolated broker outside its project directory. An explicit `--state-dir` uses that broker’s connection file ahead of ambient broker URL and API key settings, so release cannot stop a same-named worker on the wrong broker.
+
 - Broker-spawned workers no longer inherit the broker's own credentials from its environment; each worker receives only its own agent token and the workspace credentials the broker delegates to it.
 - Integration subscription setup, listing and retirement use workspace authentication even when a spawned worker also has an agent token, preventing misleading “Workspace key required” failures.
 - A `teams.json` agent whose `cli` carries an inline `--model`/`-m` now records the model the harness actually runs. The inline override becomes the spawn's effective model before the relay skill prefix is chosen, so worker listings, spawn events, telemetry and small-model guidance describe the running model rather than the superseded pin.

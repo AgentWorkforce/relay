@@ -6,8 +6,9 @@
  * have to learn two patterns:
  *
  *   1. `--broker-url` / `--api-key` CLI flags
- *   2. `RELAY_BROKER_URL` / `RELAY_BROKER_API_KEY` environment variables
- *   3. `<state-dir>/connection.json` (default `.agentworkforce/relay/connection.json`)
+ *   2. An explicit `--state-dir` selects its connection.json, before ambient broker settings
+ *   3. `RELAY_BROKER_URL` / `RELAY_BROKER_API_KEY` environment variables
+ *   4. The default `<state-dir>/connection.json` (`.agentworkforce/relay/connection.json`)
  */
 
 import fs from 'node:fs';
@@ -95,13 +96,16 @@ export function resolveBrokerConnection(
   const connectionFile = deps.readConnectionFile(stateDir);
   const fileUrl = readString(connectionFile, 'url');
 
-  const url = explicitUrl ?? envUrl ?? fileUrl;
+  // An explicit state directory selects a broker. Do not let ambient credentials
+  // for another broker override its connection file, especially for release.
+  const selectedFile = options.stateDir !== undefined && !explicitUrl;
+  const url = selectedFile ? fileUrl : (explicitUrl ?? envUrl ?? fileUrl);
   if (!url) return null;
 
   const explicitKey = trimOrUndefined(options.apiKey);
   const envKey = trimOrUndefined(deps.env.RELAY_BROKER_API_KEY);
   const fileKey = readString(connectionFile, 'api_key');
-  const apiKey = explicitKey ?? envKey ?? fileKey;
+  const apiKey = selectedFile ? (explicitKey ?? fileKey) : (explicitKey ?? envKey ?? fileKey);
 
   return {
     url: url.replace(/\/+$/, ''),

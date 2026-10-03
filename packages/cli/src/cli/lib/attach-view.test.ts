@@ -343,6 +343,38 @@ describe('resolveViewBrokerConnection', () => {
     expect(conn).toEqual({ url: 'http://env-host:1234', apiKey: 'env-key' });
   });
 
+  it('uses the explicit state directory for view, not an ambient broker', () => {
+    const { deps } = createHarness({
+      env: { RELAY_BROKER_URL: 'http://env-host:1234', RELAY_BROKER_API_KEY: 'env-key' },
+      connectionFile: { url: 'http://selected-host:5678/', api_key: 'selected-key' },
+    });
+
+    expect(resolveViewBrokerConnection({ stateDir: '/tmp/selected-state' }, deps)).toEqual({
+      url: 'http://selected-host:5678',
+      apiKey: 'selected-key',
+    });
+    expect(
+      resolveViewBrokerConnection({ stateDir: '/tmp/selected-state', apiKey: 'flag-key' }, deps)
+    ).toEqual({
+      url: 'http://selected-host:5678',
+      apiKey: 'flag-key',
+    });
+    expect(
+      resolveViewBrokerConnection({ stateDir: '/tmp/selected-state', brokerUrl: 'http://flag-host' }, deps)
+    ).toEqual({
+      url: 'http://flag-host',
+      apiKey: 'env-key',
+    });
+  });
+
+  it('fails closed when the selected state directory has no connection file', () => {
+    const { deps } = createHarness({
+      env: { RELAY_BROKER_URL: 'http://env-host:1234', RELAY_BROKER_API_KEY: 'env-key' },
+      connectionFile: null,
+    });
+    expect(resolveViewBrokerConnection({ stateDir: '/tmp/missing-state' }, deps)).toBeNull();
+  });
+
   it('falls through blank URL and API-key candidates', () => {
     const { deps } = createHarness({
       env: { RELAY_BROKER_URL: '   ', RELAY_BROKER_API_KEY: '   ' },

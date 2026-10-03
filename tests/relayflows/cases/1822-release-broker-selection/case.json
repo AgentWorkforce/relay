@@ -1,0 +1,13 @@
+{
+  "version": 1,
+  "id": "1822-release-broker-selection",
+  "kind": "bugfix",
+  "title": "Release targets an explicitly selected broker outside its project directory",
+  "runner": { "command": ["node", "tests/relayflows/cases/1822-release-broker-selection/run.mjs"] },
+  "requirements": [],
+  "timeoutSeconds": 240,
+  "expected": {
+    "base": { "outcome": "bug", "signature": "release_cannot_select_broker" },
+    "head": { "outcome": "fixed", "signature": "release_targets_selected_broker" }
+  }
+}

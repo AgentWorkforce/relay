@@ -38,6 +38,24 @@ describe('resolveBrokerConnection', () => {
     expect(conn).toEqual({ url: 'http://file-host:5678', apiKey: 'file-key' });
   });
 
+  it('uses an explicit state-dir connection rather than ambient broker URL and key', () => {
+    const deps = makeDeps({
+      env: { RELAY_BROKER_URL: 'http://unrelated:3889', RELAY_BROKER_API_KEY: 'unrelated-key' },
+      readConnectionFile: vi.fn(() => ({ url: 'http://selected:3889', api_key: 'selected-key' })),
+    });
+    expect(resolveBrokerConnection({ stateDir: '/tmp/selected-state' }, deps)).toEqual({
+      url: 'http://selected:3889',
+      apiKey: 'selected-key',
+    });
+  });
+
+  it('fails closed when the explicitly selected state dir has no connection file', () => {
+    const deps = makeDeps({
+      env: { RELAY_BROKER_URL: 'http://unrelated:3889', RELAY_BROKER_API_KEY: 'unrelated-key' },
+    });
+    expect(resolveBrokerConnection({ stateDir: '/tmp/missing-state' }, deps)).toBeNull();
+  });
+
   it('returns null when no source provides a URL', () => {
     expect(resolveBrokerConnection({}, makeDeps())).toBeNull();
   });

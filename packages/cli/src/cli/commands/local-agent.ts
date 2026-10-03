@@ -924,11 +924,21 @@ export function registerLocalAgentCommands(
     .command('release')
     .description('Release an agent (graceful stop)')
     .argument('<name>', 'Agent name')
-    .action(async (name: string) => {
-      await run(deps, async (client) => {
-        await client.release(name);
-        deps.log(`Released ${name}.`);
-      });
+    .option('--broker-url <url>', 'Broker base URL (overrides RELAY_BROKER_URL and connection.json)')
+    .option('--api-key <key>', 'Broker API key (overrides RELAY_BROKER_API_KEY and connection.json)')
+    .option('--state-dir <dir>', 'Directory containing connection.json (default: .agentworkforce/relay/)')
+    .action(async (name: string, opts: Record<string, unknown>) => {
+      if (opts.brokerUrl !== undefined || opts.apiKey !== undefined || opts.stateDir !== undefined) {
+        await runLocalBroker(deps, brokerOptionsFromOpts(opts), async (client) => {
+          await client.release(name);
+          deps.log(`Released ${name}.`);
+        });
+      } else {
+        await run(deps, async (client) => {
+          await client.release(name);
+          deps.log(`Released ${name}.`);
+        });
+      }
     });
 
   agent
