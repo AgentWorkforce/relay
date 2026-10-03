@@ -77,7 +77,7 @@ describe('install.sh', () => {
 
     it('keeps a backup and verifies the installed bytes by hash after the rename', () => {
       const rename = at(body, /mv -f "\$tmp" "\$dest"/);
-      expect(at(body, /prev="\$\{dest\}\.prev"/)).toBeGreaterThanOrEqual(0);
+      expect(at(body, /prev="\$\{dest\}\$\{BACKUP_SUFFIX:-\.prev\}"/)).toBeGreaterThanOrEqual(0);
       expect(at(body, /sha256_of "\$dest"/)).toBeGreaterThan(rename);
       expect(body).toMatch(/mv -f "\$prev" "\$dest"/);
     });
@@ -94,7 +94,7 @@ describe('install.sh', () => {
 
     it('fetches into a temp file, then installs atomically with the smoke-test check', () => {
       const fetch = at(body, /fetch_release_asset /);
-      const install = at(body, /install_binary_atomic "\$FETCHED_TMP" "\$target_path" check_broker_binary/);
+      const install = at(body, /install_binary_atomic "\$FETCHED_TMP" "\$d1" check_broker_binary/);
       expect(fetch).toBeGreaterThanOrEqual(0);
       expect(install).toBeGreaterThan(fetch);
     });
@@ -107,8 +107,26 @@ describe('install.sh', () => {
     });
 
     it('copies to BIN_DIR through the atomic path, not a bare cp', () => {
-      expect(body).toMatch(/copy_binary_atomic "\$target_path" "\$BIN_DIR\/agent-relay-broker"/);
+      expect(body).toMatch(/copy_binary_atomic "\$d1" "\$d2"/);
       expect(body).not.toMatch(/^\s*cp /m);
+    });
+  });
+
+  describe('install transaction', () => {
+    it('signal handler snapshots the transaction once and undoes both brokers and the CLI', () => {
+      const body = fnBody('handle_signal');
+      expect(body).toMatch(/local st="\$TXN_STATE"/);
+      expect(body).toMatch(/undo_brokers/);
+      expect(body).toMatch(/undo_cli/);
+      expect(body).toMatch(/cleanup_temp_files/);
+    });
+
+    it('commits with a single TXN_STATE assignment before any backup cleanup', () => {
+      const body = fnBody('main');
+      const commit = at(body, /# COMMIT[\s\S]*?TXN_STATE=""/);
+      const cleanup = at(body, /cleanup_broker_backups/);
+      expect(commit).toBeGreaterThanOrEqual(0);
+      expect(cleanup).toBeGreaterThan(commit);
     });
   });
 

@@ -18,7 +18,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - "No broker connection" errors name the path searched and whether it was the project default or `--state-dir`, instead of implying a running broker is down.
 - `node down --force --state-dir <dir>` can verify and stop brokers started from another working directory.
 - `node status` and `node down` name a missing broker identity record and how to create one.
-- `install.sh` now verifies what it downloads and installs it atomically: updating over a running broker no longer breaks it, and a corrupt or failed update rolls back to your existing install instead of leaving it broken.
+- `install.sh` now verifies what it downloads and installs it atomically, so updating over a running broker no longer breaks it. A corrupt or failed update is rejected; the standalone installer then rolls back to your existing install, while an npm install reports the rejection without rolling back.
 
 ## [13.1.0] - 2026-10-03
 

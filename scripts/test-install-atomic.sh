@@ -500,7 +500,7 @@ check "second-destination failure: INSTALL_DIR broker is the OLD one again (no s
     test "$(sha256_of "$INSTALL_DIR/bin/agent-relay-broker")" = "$OLD_BROKER_HASH"
 check "second-destination failure: CLI restored" test "$("$INSTALL_DIR/bin/agent-relay" --version)" = "1.0.0"
 check "second-destination failure: no .prev/temp files" \
-    test -z "$(find "$INSTALL_DIR" "$BIN_DIR" -name '*.prev' -o -name '.*.??????' | head -1)"
+    test -z "$(find "$INSTALL_DIR" "$BIN_DIR" -name '*.prev*' -o -name '.*.??????' | head -1)"
 
 e2e_setup ok yes no
 orig_copy="$(declare -f copy_binary_atomic)"
@@ -518,7 +518,7 @@ run_main; rc=$?
 check "launcher case: exits non-zero" test "$rc" -ne 0
 check "launcher case: pre-existing launcher byte-identical" cmp -s "$BIN_DIR/agent-relay" "$WORK/launcher.orig"
 check "launcher case: no new standalone CLI left" test ! -e "$INSTALL_DIR/bin/agent-relay"
-check "launcher case: no backup/temp files left" test -z "$(find "$BIN_DIR" "$INSTALL_DIR" -name '.*.??????' -o -name '*.prev' | head -1)"
+check "launcher case: no backup/temp files left" test -z "$(find "$BIN_DIR" "$INSTALL_DIR" -name '.*.??????' -o -name '*.prev*' | head -1)"
 
 e2e_setup crash no yes
 printf '#!/bin/bash\n# older launcher\nexec "%s/bin/agent-relay" "$@"\n' "$INSTALL_DIR" > "$BIN_DIR/agent-relay"; chmod +x "$BIN_DIR/agent-relay"
@@ -581,7 +581,7 @@ sig_assert() { # sig_assert <label>
     check "$1: previous CLI restored" test "$("$INSTALL_DIR/bin/agent-relay" --version)" = "1.0.0"
     check "$1: old broker untouched" test "$(sha256_of "$INSTALL_DIR/bin/agent-relay-broker")" = "$OLD_BROKER_HASH"
     check "$1: launcher byte-identical" cmp -s "$BIN_DIR/agent-relay" "$WORK/launcher.orig"
-    check "$1: no .prev/temp files left" test -z "$(find "$INSTALL_DIR" "$BIN_DIR" -type f \( -name '.*.??????' -o -name '*.prev' \) | head -1)"
+    check "$1: no .prev/temp files left" test -z "$(find "$INSTALL_DIR" "$BIN_DIR" -type f \( -name '.*.??????' -o -name '*.prev*' \) | head -1)"
 }
 for sig in TERM INT HUP; do
     sig_setup ok; run_installer_shim "$sig"; rc=$?
@@ -598,14 +598,47 @@ chmod +x "$FIX/asset/agent-relay-broker-$REAL_PLATFORM"
 run_installer_shim none; rc=$?
 sig_assert "TERM during the broker smoke test"
 
-# signal after the INSTALL_DIR broker committed but before the BIN_DIR copy finished
-sig_setup ok
+# Signal windows around the two broker destinations. The transaction (CLI + launcher + both
+# broker copies) either rolls back completely or is fully committed, never mixed.
+old_bin_broker() { # an OLD broker also exists on PATH (BIN_DIR)
+    cp -p "$INSTALL_DIR/bin/agent-relay-broker" "$BIN_DIR/agent-relay-broker"
+}
+sig_main_pid() { ( sh -c 'echo $PPID' > "$WORK/main.pid"; export AGENT_RELAY_TELEMETRY_DISABLED=1; main ) > "$WORK/main.out" 2>&1; }
+both_brokers_old() {
+    test "$(sha256_of "$INSTALL_DIR/bin/agent-relay-broker")" = "$OLD_BROKER_HASH" \
+        -a "$(sha256_of "$BIN_DIR/agent-relay-broker")" = "$OLD_BROKER_HASH"
+}
+
+# (1) after the first copy, before the second
+sig_setup ok; old_bin_broker
 orig_copy="$(declare -f copy_binary_atomic)"
 # (bash 3.2 has no $BASHPID: a child sh reports its parent, the subshell running main)
 copy_binary_atomic() { kill -TERM "$(cat "$WORK/main.pid")"; sleep 1; return 0; }
-( sh -c 'echo $PPID' > "$WORK/main.pid"; export AGENT_RELAY_TELEMETRY_DISABLED=1; main ) > "$WORK/main.out" 2>&1; rc=$?
+sig_main_pid; rc=$?
 eval "$orig_copy"
 sig_assert "TERM between the two broker copies"
+check "TERM between the two broker copies: BOTH broker locations are the old broker" both_brokers_old
+
+# (2) after the second copy committed, before the install committed
+sig_setup ok; old_bin_broker
+orig_copy="$(declare -f copy_binary_atomic)"
+eval "$(printf '%s\n' "$orig_copy" | sed '1s/copy_binary_atomic/real_copy_binary_atomic/')"
+copy_binary_atomic() { real_copy_binary_atomic "$@" || return 1; kill -TERM "$(cat "$WORK/main.pid")"; sleep 1; return 0; }
+sig_main_pid; rc=$?
+eval "$orig_copy"
+sig_assert "TERM right after the second copy committed"
+check "TERM right after the second copy committed: BOTH broker locations are the old broker" both_brokers_old
+
+# (3) after the whole install committed (during the ACP bridge step): fully NEW, nothing rolled back
+sig_setup ok; old_bin_broker
+orig_acp="$(declare -f install_acp_bridge)"
+install_acp_bridge() { kill -TERM "$(cat "$WORK/main.pid")"; sleep 1; return 0; }
+sig_main_pid; rc=$?
+eval "$orig_acp"
+NEW_B="$(sha256_of "$FIX/asset/agent-relay-broker-$REAL_PLATFORM")"
+check "TERM after commit: CLI is the new one (not rolled back)" test "$("$INSTALL_DIR/bin/agent-relay" --version)" = "9.9.9"
+check "TERM after commit: BOTH broker locations are the new broker" \
+    test "$(sha256_of "$INSTALL_DIR/bin/agent-relay-broker")" = "$NEW_B" -a "$(sha256_of "$BIN_DIR/agent-relay-broker")" = "$NEW_B"
 
 echo "== version probes cannot abort a rollback under inherited pipefail =="
 sig_setup crash
@@ -615,7 +648,8 @@ printf '#!/bin/bash\nexit 1\n' > "$INSTALL_DIR/bin/agent-relay-broker"; chmod +x
 OLD_BROKER_HASH="$(sha256_of "$INSTALL_DIR/bin/agent-relay-broker")"
 INSTALLER_SHELLOPTS=pipefail run_installer_shim none; rc=$?
 INSTALLER_SHELLOPTS=
-check "pipefail: installer stopped with the rejection" test "$rc" -ne 0 && contains "$(cat "$WORK/sig.out")" "was rejected"
+check "pipefail: installer stopped" test "$rc" -ne 0
+check "pipefail: rejection reason is reported" contains "$(cat "$WORK/sig.out")" "was rejected"
 check "pipefail: previous CLI restored" cmp -s "$INSTALL_DIR/bin/agent-relay" "$WORK/oldcli.orig"
 check "pipefail: launcher byte-identical" cmp -s "$BIN_DIR/agent-relay" "$WORK/launcher.orig"
 check "pipefail: old broker untouched" test "$(sha256_of "$INSTALL_DIR/bin/agent-relay-broker")" = "$OLD_BROKER_HASH"
@@ -671,6 +705,11 @@ B
 chmod +x "$WORK/late-crash"
 AGENT_RELAY_SMOKE_SECONDS=0 smoke_test_broker "$WORK/late-crash"; rc=$?
 check "SMOKE_SECONDS=0 cannot make a crashing broker pass vacuously" test "$rc" -ne 0
+printf '#!/bin/bash\ncase "$1" in --help) exit 0 ;; init) kill -ILL $$ ;; esac\n' > "$WORK/fast-crash"; chmod +x "$WORK/fast-crash"
+warn() { echo "[warn] $1"; }
+out="$(AGENT_RELAY_SMOKE_SECONDS=abc smoke_test_broker "$WORK/fast-crash" 2>&1)"
+warn() { echo "[warn] $1" >> "$LOG"; }
+check "invalid AGENT_RELAY_SMOKE_SECONDS warning is visible through smoke_test_broker" contains "$out" "Ignoring invalid AGENT_RELAY_SMOKE_SECONDS"
 
 # ---------------------------------------------------------------------------
 if [ -n "${AGENT_RELAY_TEST_BROKER:-}" ]; then

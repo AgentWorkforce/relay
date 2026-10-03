@@ -228,12 +228,19 @@ SMOKE_PID=""
 SMOKE_DIR=""
 KEEP_PREV=0
 DIGEST_VERIFIED=0   # set by verify_asset_digest when the last fetched asset matched its published digest
-STANDALONE_TXN=0    # 1 while a newly installed CLI is waiting for the broker step to commit
-BROKER_STAGED=0     # 1 while the new INSTALL_DIR broker is installed but the BIN_DIR copy is not done
-BROKER_STAGED_TARGET=""
-BROKER_STAGED_HAD_PREV=0
-HAD_PREV_LAST=0     # set by install_binary_atomic: did THIS call make a .prev backup?
-CLI_HAD_PREV=0
+# One transaction covers the standalone CLI, the launcher and both broker
+# copies. TXN_STATE lists the armed components ("cli", "broker"); the install
+# commits with a SINGLE assignment (TXN_STATE=""), so an interrupt either rolls
+# every component back or finds nothing to roll back, never a mixture.
+TXN_STATE=""
+TXN_SUFFIX=".prev.$$"   # run-unique backup suffix: a stale .prev from an older run is never mistaken for ours
+BACKUP_SUFFIX=""        # empty = default ".prev"; the transactional installs set TXN_SUFFIX
+BROKER_D1=""
+BROKER_D2=""
+BROKER_PRE1=0
+BROKER_PRE2=0
+CLI_PRE=0
+LAUNCHER_PRE=0
 LAUNCHER_BACKUP=""
 RELEASE_JSON=""
 RELEASE_JSON_STATE=""   # "", "ok" or "failed"
@@ -489,7 +496,11 @@ smoke_test_broker() {
     # stderr is silenced so bash does not print "Terminated"/"Illegal
     # instruction" job notices for the process we deliberately run and kill;
     # the outcome is reported through info/warn (stdout).
-    smoke_test_broker_run "$@" 2>/dev/null
+    # Resolve the duration here, outside the silenced call, so an invalid
+    # AGENT_RELAY_SMOKE_SECONDS warning (stderr) is actually shown.
+    local seconds
+    seconds=$(resolve_smoke_seconds)
+    smoke_test_broker_run "$1" "$seconds" 2>/dev/null
 }
 
 # AGENT_RELAY_SMOKE_SECONDS must be a positive integer; anything else (0,
@@ -519,8 +530,7 @@ resolve_smoke_seconds() {
 
 smoke_test_broker_run() {
     local bin="$1"
-    local seconds
-    seconds=$(resolve_smoke_seconds)
+    local seconds="$2"
     local tmp pid rc=0 i=0 alive=1
 
     tmp=$(mktemp -d "${TMPDIR:-/tmp}/agent-relay-smoke.XXXXXX") || {
@@ -645,10 +655,9 @@ install_binary_atomic() {
     local dest="$2"
     local check_fn="${3:-true}"
     local sign="${4:-sign}"
-    local prev="${dest}.prev"
+    local prev="${dest}${BACKUP_SUFFIX:-.prev}"
     local had_prev=0 signed_hash installed_hash
 
-    HAD_PREV_LAST=0
 
     chmod +x "$tmp" || { rm -f "$tmp"; return 1; }
     if [ "$sign" = "sign" ] && ! prepare_downloaded_binary "$tmp"; then
@@ -680,7 +689,6 @@ install_binary_atomic() {
         else
             { ln "$dest" "$prev" 2>/dev/null || cp -p "$dest" "$prev" 2>/dev/null; } && had_prev=1
         fi
-        HAD_PREV_LAST="$had_prev"
         if [ "$had_prev" -ne 1 ]; then
             warn "Could not keep a backup of $dest; leaving it untouched"
             [ "$rotated" -eq 1 ] && mv -f "${prev}.1" "$prev"
@@ -713,8 +721,7 @@ install_binary_atomic() {
         fi
     fi
 
-    HAD_PREV_LAST="$had_prev"
-    # KEEP_PREV=1 lets a caller (the standalone CLI) roll back later if a
+    # KEEP_PREV=1 lets a caller (the transactional install) roll back later if a
     # dependent step fails; the caller then owns removing the backup.
     if [ "$had_prev" -eq 1 ] && [ "${KEEP_PREV:-0}" != "1" ]; then
         rm -f "$prev"
@@ -767,31 +774,35 @@ download_broker_binary() {
         return 2
     fi
 
-    # Two destinations (INSTALL_DIR and BIN_DIR) must commit together: keep the
-    # INSTALL_DIR backup until the BIN_DIR copy has also succeeded, and restore
-    # it if that copy fails, so the broker is never left half upgraded.
-    local saved_keep="$KEEP_PREV"
-    local prev="${target_path}.prev"
-    local made_prev=0
+    # Two destinations (INSTALL_DIR and BIN_DIR) commit together as part of the
+    # install transaction: both keep a run-unique backup until the whole install
+    # commits, and undo_brokers() restores BOTH (idempotently) on failure or
+    # interrupt. The transaction is armed before any destination is touched.
+    local d1="$target_path"
+    local d2="$BIN_DIR/agent-relay-broker"
+    BROKER_D1="$d1"; BROKER_D2="$d2"
+    BROKER_PRE1=0; BROKER_PRE2=0
+    if [ -e "$d1" ] || [ -L "$d1" ]; then BROKER_PRE1=1; fi
+    if [ -e "$d2" ] || [ -L "$d2" ]; then BROKER_PRE2=1; fi
+    local saved_keep="$KEEP_PREV" saved_suffix="$BACKUP_SUFFIX"
+    TXN_STATE="${TXN_STATE:+$TXN_STATE }broker"
     KEEP_PREV=1
-    if install_binary_atomic "$FETCHED_TMP" "$target_path" check_broker_binary; then
-        made_prev="$HAD_PREV_LAST"
-        KEEP_PREV="$saved_keep"
-        # Armed until both destinations committed, so an interrupt can undo it
-        BROKER_STAGED=1
-        BROKER_STAGED_TARGET="$target_path"
-        BROKER_STAGED_HAD_PREV="$made_prev"
-        # Also install to BIN_DIR so it's discoverable on PATH
-        if copy_binary_atomic "$target_path" "$BIN_DIR/agent-relay-broker"; then
-            [ "$made_prev" -eq 1 ] && rm -f "$prev"
-            BROKER_STAGED=0
-            success "Downloaded broker binary (workflow agent spawning)"
-            return 0
+    BACKUP_SUFFIX="$TXN_SUFFIX"
+    if install_binary_atomic "$FETCHED_TMP" "$d1" check_broker_binary \
+        && copy_binary_atomic "$d1" "$d2"; then
+        KEEP_PREV="$saved_keep"; BACKUP_SUFFIX="$saved_suffix"
+        if [ "$TXN_STATE" = "broker" ]; then
+            # standalone-less (npm) install: this is the whole transaction
+            TXN_STATE=""
+            cleanup_broker_backups
         fi
-        warn "Could not install the broker into $BIN_DIR; restoring the previous broker in $INSTALL_DIR/bin"
-        restore_staged_broker
+        success "Downloaded broker binary (workflow agent spawning)"
+        return 0
     fi
-    KEEP_PREV="$saved_keep"
+    KEEP_PREV="$saved_keep"; BACKUP_SUFFIX="$saved_suffix"
+    warn "Could not install the verified broker into both $INSTALL_DIR/bin and $BIN_DIR; restoring the previous broker"
+    undo_brokers
+    if [ "$TXN_STATE" = "broker" ]; then TXN_STATE=""; else TXN_STATE="${TXN_STATE% broker}"; fi
     warn "broker binary failed verification"
     return 2
 }
@@ -807,58 +818,71 @@ abort_standalone_install() {
         old_broker="$( { "$broker" --version 2>/dev/null || true; } | head -n 1)"
         [ -n "$old_broker" ] || old_broker="unknown version"
     fi
-    rollback_standalone
+    undo_brokers
+    undo_cli
+    TXN_STATE=""
     error "The v${VERSION} broker was rejected (integrity or smoke test failed), so the v${VERSION} CLI was NOT kept: ${ROLLBACK_OUTCOME}. The existing broker (${old_broker}) is untouched. Nothing was upgraded; re-run the installer, or set AGENT_RELAY_VERSION to a known-good version."
 }
 
-# Put the previous INSTALL_DIR broker back (or remove a first-time one) after
-# the BIN_DIR copy failed or the install was interrupted.
-restore_staged_broker() {
-    [ "$BROKER_STAGED" = "1" ] || return 0
-    local target="$BROKER_STAGED_TARGET"
-    local prev="${target}.prev"
-    if [ "$BROKER_STAGED_HAD_PREV" -eq 1 ] && [ -e "$prev" ]; then
-        mv -f "$prev" "$target"
-    else
-        rm -f "$target"
+# Idempotent undo of one destination: put this run's backup back; a destination
+# that did not exist before is removed; otherwise leave it alone.
+undo_destination() { # undo_destination <dest> <existed-before: 0|1>
+    local dest="$1" pre="$2" backup="$1${TXN_SUFFIX}"
+    if [ -e "$backup" ] || [ -L "$backup" ]; then
+        mv -f "$backup" "$dest"
+    elif [ "$pre" -eq 0 ]; then
+        rm -f "$dest"
     fi
-    BROKER_STAGED=0
 }
 
-# Undo a staged standalone CLI install: restore (or remove) the CLI binary and
-# restore the launcher independently of it. Sets ROLLBACK_OUTCOME.
+undo_brokers() {
+    [ -n "$BROKER_D1" ] || return 0
+    undo_destination "$BROKER_D1" "$BROKER_PRE1"
+    undo_destination "$BROKER_D2" "$BROKER_PRE2"
+}
+
+cleanup_broker_backups() {
+    [ -n "$BROKER_D1" ] || return 0
+    rm -f "${BROKER_D1}${TXN_SUFFIX}" "${BROKER_D2}${TXN_SUFFIX}"
+}
+
+# Undo the standalone CLI install: restore (or remove) the CLI binary and the
+# launcher independently. Sets ROLLBACK_OUTCOME.
 ROLLBACK_OUTCOME=""
-rollback_standalone() {
+undo_cli() {
     local cli="$INSTALL_DIR/bin/agent-relay"
-    local prev="${cli}.prev"
-    if [ "$CLI_HAD_PREV" -eq 1 ] && [ -e "$prev" ]; then
-        mv -f "$prev" "$cli"
-        # version probes must never abort a rollback (set -e + inherited pipefail)
+    local launcher="$BIN_DIR/agent-relay"
+    undo_destination "$cli" "$CLI_PRE"
+    if [ "$CLI_PRE" -eq 1 ]; then
         ROLLBACK_OUTCOME="the previous CLI ($( { "$cli" --version 2>/dev/null || true; } | head -n 1)) was restored"
     else
-        rm -f "$cli"
         ROLLBACK_OUTCOME="the new CLI was removed (there was no previous install)"
     fi
     # A launcher from an earlier npm/source install must survive byte-identical.
     if [ -n "$LAUNCHER_BACKUP" ] && [ -e "$LAUNCHER_BACKUP" ]; then
-        mv -f "$LAUNCHER_BACKUP" "$BIN_DIR/agent-relay"
+        mv -f "$LAUNCHER_BACKUP" "$launcher"
         LAUNCHER_BACKUP=""
-        ROLLBACK_OUTCOME="${ROLLBACK_OUTCOME}; the existing $BIN_DIR/agent-relay launcher was restored"
-    else
-        rm -f "$BIN_DIR/agent-relay"
+        ROLLBACK_OUTCOME="${ROLLBACK_OUTCOME}; the existing $launcher launcher was restored"
+    elif [ "$LAUNCHER_PRE" -eq 0 ]; then
+        rm -f "$launcher"
     fi
-    STANDALONE_TXN=0
 }
 
-# INT/TERM/HUP: undo whatever is staged, then clean up and exit.
+# INT/TERM/HUP: undo whatever is armed, then clean up and exit. TXN_STATE is
+# read once, so a commit (TXN_STATE="") either happened before this point
+# (nothing is rolled back) or did not (everything is).
 handle_signal() {
     trap '' INT TERM HUP
     local code="$1"
-    restore_staged_broker
-    if [ "$STANDALONE_TXN" = "1" ]; then
-        rollback_standalone
-        warn "Interrupted: ${ROLLBACK_OUTCOME}."
-    fi
+    local st="$TXN_STATE"
+    TXN_STATE=""
+    case " $st " in *" broker "*) undo_brokers ;; esac
+    case " $st " in
+        *" cli "*)
+            undo_cli
+            warn "Interrupted: ${ROLLBACK_OUTCOME}."
+            ;;
+    esac
     cleanup_temp_files
     trap - EXIT
     exit "$code"
@@ -1000,8 +1024,6 @@ download_standalone_binary() {
         if fetch_release_asset "${binary_name}.gz" "$INSTALL_DIR/bin" gz; then
             CLI_CHECK_OUTPUT=""
             if install_binary_atomic "$FETCHED_TMP" "$target_path" check_cli_binary; then
-                CLI_HAD_PREV="$HAD_PREV_LAST"
-                STANDALONE_TXN=1
                 install_binary_launcher "$target_path"
                 prepend_bin_dir_to_path
                 success "Downloaded standalone agent-relay binary"
@@ -1026,8 +1048,6 @@ download_standalone_binary() {
         if [ "$file_size" -gt 1000000 ]; then
             CLI_CHECK_OUTPUT=""
             if install_binary_atomic "$FETCHED_TMP" "$target_path" check_cli_binary; then
-                CLI_HAD_PREV="$HAD_PREV_LAST"
-                STANDALONE_TXN=1
                 install_binary_launcher "$target_path"
                 prepend_bin_dir_to_path
                 success "Downloaded standalone agent-relay binary (no Node.js required!)"
@@ -1304,20 +1324,28 @@ main() {
     # Back up an existing launcher first: the standalone step overwrites it and
     # a later broker rejection must be able to put it back unchanged.
     LAUNCHER_BACKUP=""
+    LAUNCHER_PRE=0
     if [ -e "$BIN_DIR/agent-relay" ] || [ -L "$BIN_DIR/agent-relay" ]; then
+        LAUNCHER_PRE=1
         mkdir -p "$BIN_DIR"
-        make_temp_file "$BIN_DIR" "launcher" && \
+        if make_temp_file "$BIN_DIR" "launcher"; then
             if cp -pP "$BIN_DIR/agent-relay" "$MADE_TEMP" 2>/dev/null; then
                 LAUNCHER_BACKUP="$MADE_TEMP"
             else
                 rm -f "$MADE_TEMP"
             fi
+        fi
     fi
+    CLI_PRE=0
+    if [ -e "$INSTALL_DIR/bin/agent-relay" ] || [ -L "$INSTALL_DIR/bin/agent-relay" ]; then CLI_PRE=1; fi
+    # Arm the transaction BEFORE the CLI is touched; every undo step is idempotent.
+    TXN_STATE="cli"
     KEEP_PREV=1
+    BACKUP_SUFFIX="$TXN_SUFFIX"
     local standalone_ok=0
-    HAD_PREV_LAST=0
     download_standalone_binary && standalone_ok=1
     KEEP_PREV=0
+    BACKUP_SUFFIX=""
     if [ "$standalone_ok" -eq 1 ]; then
         INSTALL_METHOD="binary"
         # Download broker binary for workflow/SDK agent spawning. A rejected
@@ -1327,8 +1355,10 @@ main() {
         if [ "$broker_rc" -eq 2 ]; then
             abort_standalone_install
         fi
-        STANDALONE_TXN=0
-        [ "$CLI_HAD_PREV" -eq 1 ] && rm -f "$INSTALL_DIR/bin/agent-relay.prev"
+        # COMMIT: one assignment; everything after this is cleanup of backups.
+        TXN_STATE=""
+        rm -f "$INSTALL_DIR/bin/agent-relay${TXN_SUFFIX}"
+        cleanup_broker_backups
         [ -n "$LAUNCHER_BACKUP" ] && rm -f "$LAUNCHER_BACKUP"
         LAUNCHER_BACKUP=""
         # Install ACP bridge for Zed editor (requires Node.js)
@@ -1336,7 +1366,8 @@ main() {
         verify_installation && print_usage && track_event "install_completed" && exit 0
     fi
 
-    # Standalone path not taken: the launcher was never replaced
+    # Standalone path not taken: nothing was replaced, disarm and drop the backup
+    TXN_STATE=""
     [ -n "$LAUNCHER_BACKUP" ] && rm -f "$LAUNCHER_BACKUP"
     LAUNCHER_BACKUP=""
 
