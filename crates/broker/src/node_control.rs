@@ -1991,6 +1991,7 @@ struct PendingInventorySync {
     frame: InventorySync,
     retry_attempts: u32,
     retry_at: Option<Instant>,
+    superseded: bool,
 }
 
 struct ApplicationLiveness {
@@ -2016,12 +2017,14 @@ impl ApplicationLiveness {
         // apply after a later inventory update removed or changed an agent.
         for pending in &mut self.pending_inventory_syncs {
             pending.retry_at = None;
+            pending.superseded = true;
         }
         self.pending_inventory_syncs
             .push_back(PendingInventorySync {
                 frame,
                 retry_attempts: 0,
                 retry_at: None,
+                superseded: false,
             });
     }
 
@@ -2054,11 +2057,23 @@ impl ApplicationLiveness {
         true
     }
 
+    fn discard_superseded(&mut self, id: &str) -> bool {
+        let Some(index) = self
+            .pending_inventory_syncs
+            .iter()
+            .position(|pending| pending.superseded && pending.frame.id.as_deref() == Some(id))
+        else {
+            return false;
+        };
+        self.pending_inventory_syncs.remove(index);
+        true
+    }
+
     fn schedule_d1_pressure_retry(&mut self, id: &str, now: Instant) -> Option<Duration> {
         let pending = self
             .pending_inventory_syncs
             .iter_mut()
-            .find(|pending| pending.frame.id.as_deref() == Some(id))?;
+            .find(|pending| !pending.superseded && pending.frame.id.as_deref() == Some(id))?;
         pending.retry_attempts = pending.retry_attempts.saturating_add(1);
         let delay = d1_pressure_retry_delay(pending.retry_attempts);
         pending.retry_at = Some(now + delay);
@@ -2899,6 +2914,15 @@ where
                                 pending_agent_registrations,
                             );
                             if error.code == "d1_pressure" {
+                                if application_liveness.discard_superseded(&error.id) {
+                                    tracing::debug!(
+                                        target = "relay_broker::fleet",
+                                        node_id,
+                                        id = %error.id,
+                                        "consumed d1_pressure for a superseded inventory sync"
+                                    );
+                                    return true;
+                                }
                                 if let Some(delay) = application_liveness
                                     .schedule_d1_pressure_retry(&error.id, Instant::now())
                                 {
@@ -4430,7 +4454,7 @@ mod tests {
         liveness.track_inventory_sync(new.clone());
 
         assert_eq!(liveness.take_due_retry(now + Duration::from_secs(1)), None);
-        assert!(liveness.reject("inventory-old"));
+        assert!(liveness.discard_superseded("inventory-old"));
         assert_eq!(
             liveness.schedule_d1_pressure_retry("inventory-new", now),
             Some(Duration::from_secs(1))
@@ -4438,6 +4462,55 @@ mod tests {
         assert_eq!(
             liveness.take_due_retry(now + Duration::from_secs(1)),
             Some(new)
+        );
+    }
+
+    #[tokio::test]
+    async fn late_d1_pressure_for_superseded_inventory_is_consumed_without_disconnect() {
+        let mut liveness = ApplicationLiveness::new(Duration::from_secs(120));
+        liveness.track_inventory_sync(test_inventory_sync("inventory-old"));
+        liveness.track_inventory_sync(test_inventory_sync("inventory-new"));
+        let (events, _receiver) = mpsc::channel(1);
+
+        let healthy = handle_server_message(
+            Message::Text(
+                json!({
+                    "v": 1,
+                    "id": "inventory-old",
+                    "type": "error",
+                    "ok": false,
+                    "code": "d1_pressure",
+                    "message": "Node liveness retry pending"
+                })
+                .to_string(),
+            ),
+            &events,
+            &mut HashMap::new(),
+            &mut HashMap::new(),
+            &mut liveness,
+            "node-test",
+            &mut futures_util::sink::drain(),
+            None,
+            None,
+        )
+        .await;
+
+        assert!(healthy);
+        assert_eq!(
+            liveness
+                .pending_inventory_syncs
+                .iter()
+                .filter_map(|pending| pending.frame.id.as_deref())
+                .collect::<Vec<_>>(),
+            vec!["inventory-new"]
+        );
+        assert_eq!(
+            liveness.schedule_d1_pressure_retry("inventory-old", Instant::now()),
+            None
+        );
+        assert_eq!(
+            liveness.schedule_d1_pressure_retry("inventory-new", Instant::now()),
+            Some(Duration::from_secs(1))
         );
     }
 

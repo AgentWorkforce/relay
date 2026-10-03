@@ -93,6 +93,28 @@ function createFrameReader(socket, onText) {
   };
 }
 
+function attachFrameReader(socket, head, onText) {
+  const readFrame = createFrameReader(socket, onText);
+  socket.on('data', readFrame);
+  if (head.length > 0) readFrame(head);
+}
+
+function assertBufferedUpgradeHeadIsParsed() {
+  let observed;
+  const socket = {
+    on(event) {
+      assert.equal(event, 'data');
+    },
+    write() {},
+  };
+  attachFrameReader(socket, encodeFrame(0x1, 'buffered-upgrade-head'), (text) => {
+    observed = text;
+  });
+  assert.equal(observed, 'buffered-upgrade-head');
+}
+
+assertBufferedUpgradeHeadIsParsed();
+
 function sendJson(socket, message) {
   socket.write(encodeFrame(0x1, JSON.stringify(message)));
 }
@@ -131,7 +153,7 @@ const server = http.createServer((request, response) => {
   });
 });
 
-server.on('upgrade', (request, socket) => {
+server.on('upgrade', (request, socket, head) => {
   const key = request.headers['sec-websocket-key'];
   if (!key) {
     socket.destroy();
@@ -168,52 +190,52 @@ server.on('upgrade', (request, socket) => {
     markClosed();
     socket.end();
   });
-  socket.on(
-    'data',
-    createFrameReader(socket, (text) => {
-      if (protocolError) return;
-      try {
-        const frame = JSON.parse(text);
-        if (frame.type === 'node.register') {
-          session.registrationFrames.push(frame);
-          session.registrationTimes.push(Date.now());
-          if (session.registrationFrames.length === 1) {
-            sendJson(socket, {
-              v: 1,
-              id: frame.id,
-              type: 'error',
-              ok: false,
-              code: 'd1_pressure',
-              message: 'Node liveness retry pending',
-            });
-          } else {
-            assert.deepEqual(frame, session.registrationFrames[0]);
-            assert.ok(session.registrationTimes[1] - session.registrationTimes[0] >= 750);
-            sendJson(socket, { v: 1, id: frame.id, type: 'reply', ok: true, data: {} });
-          }
-        } else if (frame.type === 'inventory.sync') {
-          session.inventoryFrames.push(frame);
-          session.inventoryTimes.push(Date.now());
-          if (session.inventoryFrames.length === 1) {
-            sendJson(socket, {
-              v: 1,
-              id: frame.id,
-              type: 'error',
-              ok: false,
-              code: 'd1_pressure',
-              message: 'Node liveness retry pending',
-            });
-          } else {
-            assert.deepEqual(frame, session.inventoryFrames[0]);
-            assert.ok(session.inventoryTimes[1] - session.inventoryTimes[0] >= 750);
-            sendJson(socket, { v: 1, id: frame.id, type: 'reply', ok: true, data: {} });
-          }
+  // Node's HTTP parser may consume the first WebSocket bytes together with
+  // the upgrade request. Feed that buffered head through the same reader only
+  // after the live data handler is installed, preserving wire order.
+  attachFrameReader(socket, head, (text) => {
+    if (protocolError) return;
+    try {
+      const frame = JSON.parse(text);
+      if (frame.type === 'node.register') {
+        session.registrationFrames.push(frame);
+        session.registrationTimes.push(Date.now());
+        if (session.registrationFrames.length === 1) {
+          sendJson(socket, {
+            v: 1,
+            id: frame.id,
+            type: 'error',
+            ok: false,
+            code: 'd1_pressure',
+            message: 'Node liveness retry pending',
+          });
+        } else {
+          assert.deepEqual(frame, session.registrationFrames[0]);
+          assert.ok(session.registrationTimes[1] - session.registrationTimes[0] >= 750);
+          sendJson(socket, { v: 1, id: frame.id, type: 'reply', ok: true, data: {} });
         }
-      } catch (error) {
-        protocolError = error;
+      } else if (frame.type === 'inventory.sync') {
+        session.inventoryFrames.push(frame);
+        session.inventoryTimes.push(Date.now());
+        if (session.inventoryFrames.length === 1) {
+          sendJson(socket, {
+            v: 1,
+            id: frame.id,
+            type: 'error',
+            ok: false,
+            code: 'd1_pressure',
+            message: 'Node liveness retry pending',
+          });
+        } else {
+          assert.deepEqual(frame, session.inventoryFrames[0]);
+          assert.ok(session.inventoryTimes[1] - session.inventoryTimes[0] >= 750);
+          sendJson(socket, { v: 1, id: frame.id, type: 'reply', ok: true, data: {} });
+        }
       }
-    })
-  );
+    } catch (error) {
+      protocolError = error;
+    }
+  });
 });
 
 try {
