@@ -318,10 +318,29 @@ echo "== (c) replacing a binary a running process holds open =="
 
 reset_release
 D="$(newdir)"; DEST="$D/agent-relay-broker"
-{ echo '#!/bin/bash'; echo '# old'; echo 'while :; do sleep 1; done'; } > "$DEST"; chmod +x "$DEST"
-"$DEST" &
+# Prefer a NATIVE executable as the running process: a shell script keeps
+# running its already parsed loop even if the file is overwritten in place, so
+# it could never tell an in-place overwrite from an atomic rename. If a copy of
+# a native binary will not run here, fall back to a script and rely on the
+# inode/open-fd assertions below, which do not depend on the fixture type.
+FIXTURE_KIND=native
+cp "$(command -v sleep)" "$DEST" 2>/dev/null && chmod +x "$DEST"
+# a copied Apple platform binary is killed unless re-signed
+[ "$(uname -s)" = Darwin ] && codesign --force --sign - "$DEST" >/dev/null 2>&1
+"$DEST" 300 &
 RUNNING=$!
 sleep 1
+if ! kill -0 "$RUNNING" 2>/dev/null; then
+    FIXTURE_KIND=script
+    { echo '#!/bin/bash'; echo '# old'; echo 'while :; do sleep 1; done'; } > "$DEST"; chmod +x "$DEST"
+    "$DEST" &
+    RUNNING=$!
+    sleep 1
+fi
+echo "       (running-process fixture: $FIXTURE_KIND)"
+OLD_INODE="$(ls -i "$DEST" | awk '{print $1}')"
+exec 9< "$DEST"                 # hold the old inode open; in-place writes would show through this fd
+OLD_CONTENT_HASH="$(real_sha256_of "$DEST")"
 make_fake_broker "$FIX/asset/agent-relay-broker-test-test" ok new
 NEW="$(sha256_of "$FIX/asset/agent-relay-broker-test-test")"
 make_release_json "$FIX/release.json" "agent-relay-broker-test-test" "$NEW"
@@ -330,7 +349,17 @@ install_binary_atomic "$FETCHED_TMP" "$DEST" check_broker_binary; rc=$?
 check "install over a running binary succeeded" test "$rc" -eq 0
 sleep 1
 check "running process still alive" kill -0 "$RUNNING"
-check "destination is the new binary" test "$(sha256_of "$DEST")" = "$NEW"
+check "destination now has the NEW content" test "$(sha256_of "$DEST")" = "$NEW"
+check "destination is a different inode (atomic rename, not in-place write)" test "$(ls -i "$DEST" | awk '{print $1}')" != "$OLD_INODE"
+check "the old inode, still open, still has the OLD content" test "$(cat <&9 | real_sha256_of)" = "$OLD_CONTENT_HASH"
+exec 9<&-
+# detector self-test: an in-place overwrite WOULD be caught by the fd check
+cp "$D/agent-relay-broker" "$D/inplace"
+exec 8< "$D/inplace"
+before="$(real_sha256_of "$D/inplace")"
+cat "$FIX/asset/pristine" > "$D/inplace" 2>/dev/null || make_fake_broker "$D/inplace" crash inplace
+check "detector self-test: the open-fd check notices an in-place overwrite" test "$(cat <&8 | real_sha256_of)" != "$before"
+exec 8<&-
 kill "$RUNNING" 2>/dev/null; { wait "$RUNNING"; } 2>/dev/null
 
 # ---------------------------------------------------------------------------
@@ -519,6 +548,116 @@ SHIMEOF
     check "$sig during download: no .download/.decoded/.copy temp files left" \
         test -z "$(find "$I" "$B" -type f -name '.*.??????' | head -1)"
 done
+
+echo "== a signal during the broker step rolls the whole transaction back =="
+
+# run the real installer with a curl shim that serves the fixtures
+run_installer_shim() { # run_installer_shim <signal-on-broker-download: TERM|INT|HUP|none>
+    local shim; shim="$(newdir)"
+    cat > "$shim/curl" <<'SHIMEOF'
+#!/bin/bash
+out=""; url=""; prev=""
+for a in "$@"; do [ "$prev" = "-o" ] && out="$a"; case "$a" in http*) url="$a" ;; esac; prev="$a"; done
+case "$url" in
+  https://api.github.com/*) exit 22 ;;
+  *agent-relay-broker-*)
+      if [ "$SHIM_SIGNAL" != none ]; then [ -n "$out" ] && echo partial > "$out"; kill -"$SHIM_SIGNAL" "$PPID"; sleep 1; exit 0; fi
+      cp "$SHIM_FIX/asset/${url##*/}" "$out" ;;
+  *) f="$SHIM_FIX/asset/${url##*/}"; [ -f "$f" ] || exit 22; cp "$f" "$out" ;;
+esac
+SHIMEOF
+    chmod +x "$shim/curl"
+    ( cd "$ROOT" && env -u AGENT_RELAY_INSTALL_SOURCE_ONLY PATH="$shim:$PATH" SHIM_SIGNAL="$1" SHIM_FIX="$FIX" HOME="$HOME" \
+        AGENT_RELAY_VERSION=1.2.3 AGENT_RELAY_INSTALL_DIR="$INSTALL_DIR" AGENT_RELAY_BIN_DIR="$BIN_DIR" \
+        AGENT_RELAY_TELEMETRY_DISABLED=1 AGENT_RELAY_SMOKE_SECONDS=2 bash install.sh ) > "$WORK/sig.out" 2>&1
+}
+sig_setup() { # previous CLI 1.0.0, old broker, an existing launcher
+    e2e_setup "${1:-ok}" no yes
+    printf '#!/bin/bash\n# existing launcher\nexec "%s/bin/agent-relay" "$@"\n' "$INSTALL_DIR" > "$BIN_DIR/agent-relay"
+    chmod +x "$BIN_DIR/agent-relay"; cp -p "$BIN_DIR/agent-relay" "$WORK/launcher.orig"
+}
+sig_assert() { # sig_assert <label>
+    check "$1: installer stopped" test "$rc" -ne 0
+    check "$1: previous CLI restored" test "$("$INSTALL_DIR/bin/agent-relay" --version)" = "1.0.0"
+    check "$1: old broker untouched" test "$(sha256_of "$INSTALL_DIR/bin/agent-relay-broker")" = "$OLD_BROKER_HASH"
+    check "$1: launcher byte-identical" cmp -s "$BIN_DIR/agent-relay" "$WORK/launcher.orig"
+    check "$1: no .prev/temp files left" test -z "$(find "$INSTALL_DIR" "$BIN_DIR" -type f \( -name '.*.??????' -o -name '*.prev' \) | head -1)"
+}
+for sig in TERM INT HUP; do
+    sig_setup ok; run_installer_shim "$sig"; rc=$?
+    sig_assert "$sig during broker download"
+done
+
+# signal while the broker smoke test is running (the fake broker signals its parent, the installer)
+sig_setup sigsmoke
+cat > "$FIX/asset/agent-relay-broker-$REAL_PLATFORM" <<'B'
+#!/bin/bash
+case "$1" in --help|--version) exit 0 ;; init) kill -TERM "$PPID"; exec sleep 30 ;; esac
+B
+chmod +x "$FIX/asset/agent-relay-broker-$REAL_PLATFORM"
+run_installer_shim none; rc=$?
+sig_assert "TERM during the broker smoke test"
+
+# signal after the INSTALL_DIR broker committed but before the BIN_DIR copy finished
+sig_setup ok
+orig_copy="$(declare -f copy_binary_atomic)"
+# (bash 3.2 has no $BASHPID: a child sh reports its parent, the subshell running main)
+copy_binary_atomic() { kill -TERM "$(cat "$WORK/main.pid")"; sleep 1; return 0; }
+( sh -c 'echo $PPID' > "$WORK/main.pid"; export AGENT_RELAY_TELEMETRY_DISABLED=1; main ) > "$WORK/main.out" 2>&1; rc=$?
+eval "$orig_copy"
+sig_assert "TERM between the two broker copies"
+
+echo "== codesign missing / failing on macOS fails closed =="
+SAVED_OS="$OS"
+OS=darwin
+orig_has_command="$(declare -f has_command)"
+cs_log="$WORK/codesign.log"
+codesign() { echo "$*" >> "$cs_log"; case "$*" in
+    --verify*) echo "$CS_VERIFY_MSG" >&2; return "${CS_VERIFY_RC:-1}" ;;
+    --force*)  return "${CS_SIGN_RC:-0}" ;; esac; }
+printf 'x' > "$WORK/bin1"
+
+: > "$cs_log"; CS_VERIFY_MSG="code object is not signed at all"; CS_SIGN_RC=1
+prepare_downloaded_binary "$WORK/bin1" >/dev/null 2>&1; rc=$?
+check "unsigned binary whose ad-hoc signing FAILS is rejected" test "$rc" -ne 0
+: > "$cs_log"; CS_SIGN_RC=0
+prepare_downloaded_binary "$WORK/bin1" >/dev/null 2>&1; rc=$?
+check "unsigned binary is signed once and accepted" test "$rc" -eq 0 -a "$(grep -c -- '--force' "$cs_log")" = "1"
+: > "$cs_log"; CS_VERIFY_MSG="invalid signature (code or signature have been modified)"
+prepare_downloaded_binary "$WORK/bin1" >/dev/null 2>&1; rc=$?
+check "modified signature is rejected" test "$rc" -ne 0
+check "modified signature is never signed over" test -z "$(grep -- '--force' "$cs_log")"
+unset -f codesign
+
+has_command() { [ "$1" != codesign ] && command -v "$1" >/dev/null 2>&1; }
+# shellcheck disable=SC2034
+DIGEST_VERIFIED=0
+prepare_downloaded_binary "$WORK/bin1" > "$WORK/prep.out" 2>&1; rc=$?
+check "no codesign and no verified digest: rejected" test "$rc" -ne 0
+# shellcheck disable=SC2034
+DIGEST_VERIFIED=1
+: > "$LOG"
+prepare_downloaded_binary "$WORK/bin1" >/dev/null 2>&1; rc=$?
+check "no codesign but digest verified: accepted with a warning" test "$rc" -eq 0 -a -n "$(grep -i codesign "$LOG")"
+# shellcheck disable=SC2034
+DIGEST_VERIFIED=0
+eval "$orig_has_command"
+OS="$SAVED_OS"
+
+echo "== AGENT_RELAY_SMOKE_SECONDS is validated =="
+for v in 0 abc -1 "" 1.5 99999; do
+    got="$(AGENT_RELAY_SMOKE_SECONDS="$v" resolve_smoke_seconds 2>/dev/null)"
+    case "$v" in 99999) want=60 ;; *) want=4 ;; esac
+    check "AGENT_RELAY_SMOKE_SECONDS='$v' resolves to $want" test "$got" = "$want"
+done
+check "a valid value is kept" test "$(AGENT_RELAY_SMOKE_SECONDS=7 resolve_smoke_seconds)" = "7"
+cat > "$WORK/late-crash" <<'B'
+#!/bin/bash
+case "$1" in --help) exit 0 ;; init) sleep 2; kill -ILL $$ ;; esac
+B
+chmod +x "$WORK/late-crash"
+AGENT_RELAY_SMOKE_SECONDS=0 smoke_test_broker "$WORK/late-crash"; rc=$?
+check "SMOKE_SECONDS=0 cannot make a crashing broker pass vacuously" test "$rc" -ne 0
 
 # ---------------------------------------------------------------------------
 if [ -n "${AGENT_RELAY_TEST_BROKER:-}" ]; then

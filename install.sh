@@ -227,6 +227,11 @@ TEMP_FILES=""
 SMOKE_PID=""
 SMOKE_DIR=""
 KEEP_PREV=0
+DIGEST_VERIFIED=0   # set by verify_asset_digest when the last fetched asset matched its published digest
+STANDALONE_TXN=0    # 1 while a newly installed CLI is waiting for the broker step to commit
+BROKER_STAGED=0     # 1 while the new INSTALL_DIR broker is installed but the BIN_DIR copy is not done
+BROKER_STAGED_TARGET=""
+BROKER_STAGED_HAD_PREV=0
 HAD_PREV_LAST=0     # set by install_binary_atomic: did THIS call make a .prev backup?
 CLI_HAD_PREV=0
 LAUNCHER_BACKUP=""
@@ -414,6 +419,7 @@ verify_asset_digest() {
         return 1
     fi
     info "Verified SHA-256 of $asset ($expected)"
+    DIGEST_VERIFIED=1
     return 0
 }
 
@@ -429,6 +435,7 @@ fetch_release_asset() {
     local dl out rc
 
     FETCHED_TMP=""
+    DIGEST_VERIFIED=0
     make_temp_file "$dir" "download" || return 1
     dl="$MADE_TEMP"
     if ! curl -fsSL "$url" -o "$dl" 2>/dev/null; then
@@ -485,9 +492,35 @@ smoke_test_broker() {
     smoke_test_broker_run "$@" 2>/dev/null
 }
 
+# AGENT_RELAY_SMOKE_SECONDS must be a positive integer; anything else (0,
+# negative, non-numeric, empty) would skip the wait and let a crashing broker
+# pass vacuously, so it falls back to the default with a warning. Clamped to 60.
+resolve_smoke_seconds() {
+    local v="${AGENT_RELAY_SMOKE_SECONDS-}"
+    if [ -z "$v" ]; then
+        echo 4
+        return 0
+    fi
+    case "$v" in
+        *[!0-9]*|0|00*)
+            warn "Ignoring invalid AGENT_RELAY_SMOKE_SECONDS='$v' (need a positive integer); using 4" >&2
+            echo 4
+            ;;
+        *)
+            if [ "${#v}" -gt 2 ] || [ "$v" -gt 60 ]; then
+                warn "AGENT_RELAY_SMOKE_SECONDS='$v' is too large; using 60" >&2
+                echo 60
+            else
+                echo "$v"
+            fi
+            ;;
+    esac
+}
+
 smoke_test_broker_run() {
     local bin="$1"
-    local seconds="${AGENT_RELAY_SMOKE_SECONDS:-4}"
+    local seconds
+    seconds=$(resolve_smoke_seconds)
     local tmp pid rc=0 i=0 alive=1
 
     tmp=$(mktemp -d "${TMPDIR:-/tmp}/agent-relay-smoke.XXXXXX") || {
@@ -534,6 +567,12 @@ smoke_test_broker_run() {
         fi
     done
 
+    # Accepted-state rule: a broker that is still running after the window, or
+    # exits 0, or stops with the expected clean relaycast error, passes; a signal
+    # or any other failure rejects. The damaged build from #1885 died with
+    # SIGILL (132) within about a second in every run, well inside the window,
+    # and the digest / signature checks run before this, so a late crash or a
+    # stall is the residual risk this short check cannot cover.
     if [ "$alive" -eq 1 ]; then
         kill "$pid" 2>/dev/null || true
         i=0
@@ -641,6 +680,7 @@ install_binary_atomic() {
         else
             { ln "$dest" "$prev" 2>/dev/null || cp -p "$dest" "$prev" 2>/dev/null; } && had_prev=1
         fi
+        HAD_PREV_LAST="$had_prev"
         if [ "$had_prev" -ne 1 ]; then
             warn "Could not keep a backup of $dest; leaving it untouched"
             [ "$rotated" -eq 1 ] && mv -f "${prev}.1" "$prev"
@@ -737,18 +777,19 @@ download_broker_binary() {
     if install_binary_atomic "$FETCHED_TMP" "$target_path" check_broker_binary; then
         made_prev="$HAD_PREV_LAST"
         KEEP_PREV="$saved_keep"
+        # Armed until both destinations committed, so an interrupt can undo it
+        BROKER_STAGED=1
+        BROKER_STAGED_TARGET="$target_path"
+        BROKER_STAGED_HAD_PREV="$made_prev"
         # Also install to BIN_DIR so it's discoverable on PATH
         if copy_binary_atomic "$target_path" "$BIN_DIR/agent-relay-broker"; then
             [ "$made_prev" -eq 1 ] && rm -f "$prev"
+            BROKER_STAGED=0
             success "Downloaded broker binary (workflow agent spawning)"
             return 0
         fi
         warn "Could not install the broker into $BIN_DIR; restoring the previous broker in $INSTALL_DIR/bin"
-        if [ "$made_prev" -eq 1 ]; then
-            mv -f "$prev" "$target_path"
-        else
-            rm -f "$target_path"
-        fi
+        restore_staged_broker
     fi
     KEEP_PREV="$saved_keep"
     warn "broker binary failed verification"
@@ -759,33 +800,67 @@ download_broker_binary() {
 # rejected after the CLI was replaced, undo the CLI step (transactional
 # install) and fail loudly instead of leaving a CLI/broker version skew.
 abort_standalone_install() {
-    local cli="$INSTALL_DIR/bin/agent-relay"
-    local prev="${cli}.prev"
     local broker="$INSTALL_DIR/bin/agent-relay-broker"
     local old_broker="none installed"
-    local outcome
 
     if [ -x "$broker" ]; then
         old_broker="$("$broker" --version 2>/dev/null | head -n 1)"
         [ -n "$old_broker" ] || old_broker="unknown version"
     fi
+    rollback_standalone
+    error "The v${VERSION} broker was rejected (integrity or smoke test failed), so the v${VERSION} CLI was NOT kept: ${ROLLBACK_OUTCOME}. The existing broker (${old_broker}) is untouched. Nothing was upgraded; re-run the installer, or set AGENT_RELAY_VERSION to a known-good version."
+}
+
+# Put the previous INSTALL_DIR broker back (or remove a first-time one) after
+# the BIN_DIR copy failed or the install was interrupted.
+restore_staged_broker() {
+    [ "$BROKER_STAGED" = "1" ] || return 0
+    local target="$BROKER_STAGED_TARGET"
+    local prev="${target}.prev"
+    if [ "$BROKER_STAGED_HAD_PREV" -eq 1 ] && [ -e "$prev" ]; then
+        mv -f "$prev" "$target"
+    else
+        rm -f "$target"
+    fi
+    BROKER_STAGED=0
+}
+
+# Undo a staged standalone CLI install: restore (or remove) the CLI binary and
+# restore the launcher independently of it. Sets ROLLBACK_OUTCOME.
+ROLLBACK_OUTCOME=""
+rollback_standalone() {
+    local cli="$INSTALL_DIR/bin/agent-relay"
+    local prev="${cli}.prev"
     if [ "$CLI_HAD_PREV" -eq 1 ] && [ -e "$prev" ]; then
         mv -f "$prev" "$cli"
-        outcome="the previous CLI ($("$cli" --version 2>/dev/null | head -n 1)) was restored"
+        ROLLBACK_OUTCOME="the previous CLI ($("$cli" --version 2>/dev/null | head -n 1)) was restored"
     else
         rm -f "$cli"
-        outcome="the new CLI was removed (there was no previous install)"
+        ROLLBACK_OUTCOME="the new CLI was removed (there was no previous install)"
     fi
-    # The launcher is restored independently of the standalone binary: a
-    # launcher from an earlier npm/source install must survive byte-identical.
+    # A launcher from an earlier npm/source install must survive byte-identical.
     if [ -n "$LAUNCHER_BACKUP" ] && [ -e "$LAUNCHER_BACKUP" ]; then
         mv -f "$LAUNCHER_BACKUP" "$BIN_DIR/agent-relay"
         LAUNCHER_BACKUP=""
-        outcome="${outcome}; the existing $BIN_DIR/agent-relay launcher was restored"
+        ROLLBACK_OUTCOME="${ROLLBACK_OUTCOME}; the existing $BIN_DIR/agent-relay launcher was restored"
     else
         rm -f "$BIN_DIR/agent-relay"
     fi
-    error "The v${VERSION} broker was rejected (integrity or smoke test failed), so the v${VERSION} CLI was NOT kept: ${outcome}. The existing broker (${old_broker}) is untouched. Nothing was upgraded; re-run the installer, or set AGENT_RELAY_VERSION to a known-good version."
+    STANDALONE_TXN=0
+}
+
+# INT/TERM/HUP: undo whatever is staged, then clean up and exit.
+handle_signal() {
+    trap '' INT TERM HUP
+    local code="$1"
+    restore_staged_broker
+    if [ "$STANDALONE_TXN" = "1" ]; then
+        rollback_standalone
+        warn "Interrupted: ${ROLLBACK_OUTCOME}."
+    fi
+    cleanup_temp_files
+    trap - EXIT
+    exit "$code"
 }
 
 # Check if a command exists
@@ -808,15 +883,27 @@ prepare_downloaded_binary() {
     if has_command xattr; then
         xattr -d com.apple.quarantine "$f" 2>/dev/null || true
     fi
-    has_command codesign || return 0
+    if ! has_command codesign; then
+        # Without codesign neither verification nor a required signature is
+        # possible. Only a verified published digest can vouch for the bytes.
+        if [ "$DIGEST_VERIFIED" = "1" ]; then
+            warn "codesign not found: cannot verify or apply a code signature. Continuing because the download matched its published SHA-256."
+            return 0
+        fi
+        warn "codesign not found and no published SHA-256 was verified: cannot establish the integrity of the downloaded binary. Refusing to install it."
+        return 1
+    fi
     local out
     if out=$(codesign --verify --strict "$f" 2>&1); then
         return 0
     fi
     case "$out" in
         *"not signed at all"*)
-            codesign --force --sign - "$f" >/dev/null 2>&1 || true
-            return 0
+            if codesign --force --sign - "$f" >/dev/null 2>&1; then
+                return 0
+            fi
+            warn "Could not apply an ad-hoc code signature to the downloaded binary; Apple Silicon will not run it unsigned. Refusing to install it."
+            return 1
             ;;
     esac
     warn "Code signature check failed for the downloaded binary (${out}); it is damaged or modified. Refusing to install it."
@@ -912,6 +999,8 @@ download_standalone_binary() {
         if fetch_release_asset "${binary_name}.gz" "$INSTALL_DIR/bin" gz; then
             CLI_CHECK_OUTPUT=""
             if install_binary_atomic "$FETCHED_TMP" "$target_path" check_cli_binary; then
+                CLI_HAD_PREV="$HAD_PREV_LAST"
+                STANDALONE_TXN=1
                 install_binary_launcher "$target_path"
                 prepend_bin_dir_to_path
                 success "Downloaded standalone agent-relay binary"
@@ -936,6 +1025,8 @@ download_standalone_binary() {
         if [ "$file_size" -gt 1000000 ]; then
             CLI_CHECK_OUTPUT=""
             if install_binary_atomic "$FETCHED_TMP" "$target_path" check_cli_binary; then
+                CLI_HAD_PREV="$HAD_PREV_LAST"
+                STANDALONE_TXN=1
                 install_binary_launcher "$target_path"
                 prepend_bin_dir_to_path
                 success "Downloaded standalone agent-relay binary (no Node.js required!)"
@@ -1191,8 +1282,8 @@ main() {
 
     # Remove any leftover temp files on exit
     trap cleanup_temp_files EXIT
-    trap 'cleanup_temp_files; trap - EXIT; exit 130' INT
-    trap 'cleanup_temp_files; trap - EXIT; exit 143' TERM HUP
+    trap 'handle_signal 130' INT
+    trap 'handle_signal 143' TERM HUP
 
     # Initialize telemetry
     generate_install_id
@@ -1225,7 +1316,6 @@ main() {
     local standalone_ok=0
     HAD_PREV_LAST=0
     download_standalone_binary && standalone_ok=1
-    CLI_HAD_PREV="$HAD_PREV_LAST"
     KEEP_PREV=0
     if [ "$standalone_ok" -eq 1 ]; then
         INSTALL_METHOD="binary"
@@ -1236,6 +1326,7 @@ main() {
         if [ "$broker_rc" -eq 2 ]; then
             abort_standalone_install
         fi
+        STANDALONE_TXN=0
         [ "$CLI_HAD_PREV" -eq 1 ] && rm -f "$INSTALL_DIR/bin/agent-relay.prev"
         [ -n "$LAUNCHER_BACKUP" ] && rm -f "$LAUNCHER_BACKUP"
         LAUNCHER_BACKUP=""

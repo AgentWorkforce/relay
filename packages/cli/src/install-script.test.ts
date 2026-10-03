@@ -32,13 +32,29 @@ describe('install.sh', () => {
       expect(sign).toBeGreaterThan(verify);
     });
 
-    it('re-signs only a binary that ships unsigned and rejects any other signature failure', () => {
-      // the only path that reaches the signing call is the "not signed at all" case
-      expect(body).toMatch(/\*"not signed at all"\*\)[\s\S]*codesign --force --sign - "\$f"/);
-      // anything else that fails verification returns non-zero without signing
+    it('re-signs only a binary that ships unsigned, and a failed signing rejects it', () => {
+      // exactly one signing call in the whole function
+      const signCalls = body.match(/codesign --force --sign/g) ?? [];
+      expect(signCalls).toHaveLength(1);
+      // ... and it lives inside the "not signed at all" arm (between its pattern and its `;;`)
+      const arm = body.match(/\*"not signed at all"\*\)([\s\S]*?);;/);
+      expect(arm).not.toBeNull();
+      expect(arm![1]).toMatch(/codesign --force --sign - "\$f"/);
+      // the signing status is checked (not swallowed with `|| true`) and failure returns non-zero
+      expect(arm![1]).toMatch(/if codesign --force --sign - "\$f"[^\n]*; then\s*return 0\s*fi/);
+      expect(arm![1]).toMatch(/fi[\s\S]*return 1/);
+      expect(arm![1]).not.toMatch(/\|\|\s*true/);
+      // every other signature failure falls through to a rejection with no signing
       const afterCase = body.slice(body.indexOf('esac'));
       expect(afterCase).toMatch(/return 1/);
       expect(afterCase).not.toMatch(/codesign --force/);
+    });
+
+    it('fails closed when codesign is missing and no digest was verified', () => {
+      const missing = body.match(/if ! has_command codesign; then([\s\S]*?)\n    fi\n/);
+      expect(missing).not.toBeNull();
+      expect(missing![1]).toMatch(/DIGEST_VERIFIED/);
+      expect(missing![1]).toMatch(/return 1/);
     });
 
     it('no longer re-signs unconditionally via strip_quarantine', () => {
