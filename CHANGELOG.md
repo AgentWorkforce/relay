@@ -13,6 +13,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- Broker fleet control keeps a healthy node WebSocket open when Relaycast returns retryable `d1_pressure` for `node.register` or `inventory.sync`, retrying the same frame with bounded exponential backoff while the existing registration and application-liveness deadlines remain fail-closed.
 - `--state-dir` on `node agent` commands, `node status`, and `node down` also accepts a fleet node directory whose broker state lives in `state/`.
 - An explicit `--state-dir` on `node agent` commands is no longer overridden by `RELAY_BROKER_URL` / `RELAY_BROKER_API_KEY`.
 - "No broker connection" errors name the path searched and whether it was the project default or `--state-dir`, instead of implying a running broker is down.

@@ -55,12 +55,19 @@ const CONNECT_TIMEOUT: Duration = Duration::from_secs(15);
 const WRITE_TIMEOUT: Duration = Duration::from_secs(10);
 const INITIAL_RECONNECT_DELAY: Duration = Duration::from_secs(1);
 const MAX_RECONNECT_DELAY: Duration = Duration::from_secs(30);
+const D1_PRESSURE_RETRY_INITIAL_DELAY: Duration = Duration::from_secs(1);
+const D1_PRESSURE_RETRY_MAX_DELAY: Duration = Duration::from_secs(8);
 const REGISTER_AGENT_PENDING_TTL: Duration = Duration::from_secs(300);
 const RELAYCAST_DEFAULT_BASE_URL: &str = "https://cast.agentrelay.com";
 const CREATE_NODE_RETRY_BACKOFFS_MS: [u64; 3] = [200, 400, 800];
 /// How many consecutive `/v1/node/ws` 401s to tolerate (each triggering a
 /// re-mint) before giving up and surfacing a hard error instead of looping.
 const MAX_UNAUTHORIZED_BEFORE_GIVING_UP: u32 = 5;
+
+fn d1_pressure_retry_delay(retry_attempts: u32) -> Duration {
+    let multiplier = 1u32 << retry_attempts.saturating_sub(1).min(3);
+    (D1_PRESSURE_RETRY_INITIAL_DELAY * multiplier).min(D1_PRESSURE_RETRY_MAX_DELAY)
+}
 
 /// Whether a fresh re-mint should still be attempted at this consecutive-401
 /// count. The count is incremented for the current 401 *before* this is called,
@@ -1980,10 +1987,17 @@ fn connect_error_is_unauthorized(error: &tokio_tungstenite::tungstenite::Error) 
 /// pong traffic is deliberately excluded: an intermediary or a socket task can
 /// keep answering pings even after the node-control application stops applying
 /// heartbeats and inventory.
+struct PendingInventorySync {
+    frame: InventorySync,
+    retry_attempts: u32,
+    retry_at: Option<Instant>,
+    superseded: bool,
+}
+
 struct ApplicationLiveness {
     deadline: Duration,
     last_acknowledged: Instant,
-    pending_inventory_syncs: VecDeque<String>,
+    pending_inventory_syncs: VecDeque<PendingInventorySync>,
     ready: bool,
 }
 
@@ -1997,8 +2011,21 @@ impl ApplicationLiveness {
         }
     }
 
-    fn track_inventory_sync(&mut self, id: String) {
-        self.pending_inventory_syncs.push_back(id);
+    fn track_inventory_sync(&mut self, frame: InventorySync) {
+        // A newer authoritative snapshot supersedes every older retry payload.
+        // Keep the probes for correlation/liveness, but never let an old frame
+        // apply after a later inventory update removed or changed an agent.
+        for pending in &mut self.pending_inventory_syncs {
+            pending.retry_at = None;
+            pending.superseded = true;
+        }
+        self.pending_inventory_syncs
+            .push_back(PendingInventorySync {
+                frame,
+                retry_attempts: 0,
+                retry_at: None,
+                superseded: false,
+            });
     }
 
     /// Returns `Some(true)` for the first successful application acknowledgement,
@@ -2007,7 +2034,7 @@ impl ApplicationLiveness {
         let acknowledged_index = self
             .pending_inventory_syncs
             .iter()
-            .position(|pending_id| pending_id == id)?;
+            .position(|pending| pending.frame.id.as_deref() == Some(id))?;
         self.pending_inventory_syncs.drain(..=acknowledged_index);
         let became_ready = !self.ready;
         self.ready = true;
@@ -2022,12 +2049,53 @@ impl ApplicationLiveness {
         let Some(index) = self
             .pending_inventory_syncs
             .iter()
-            .position(|pending_id| pending_id == id)
+            .position(|pending| pending.frame.id.as_deref() == Some(id))
         else {
             return false;
         };
         self.pending_inventory_syncs.remove(index);
         true
+    }
+
+    fn discard_superseded(&mut self, id: &str) -> bool {
+        let Some(index) = self
+            .pending_inventory_syncs
+            .iter()
+            .position(|pending| pending.superseded && pending.frame.id.as_deref() == Some(id))
+        else {
+            return false;
+        };
+        self.pending_inventory_syncs.remove(index);
+        true
+    }
+
+    fn schedule_d1_pressure_retry(&mut self, id: &str, now: Instant) -> Option<Duration> {
+        let pending = self
+            .pending_inventory_syncs
+            .iter_mut()
+            .find(|pending| !pending.superseded && pending.frame.id.as_deref() == Some(id))?;
+        pending.retry_attempts = pending.retry_attempts.saturating_add(1);
+        let delay = d1_pressure_retry_delay(pending.retry_attempts);
+        pending.retry_at = Some(now + delay);
+        Some(delay)
+    }
+
+    fn next_retry_delay(&self, now: Instant) -> Option<Duration> {
+        self.pending_inventory_syncs
+            .iter()
+            .filter_map(|pending| pending.retry_at)
+            .min()
+            .map(|retry_at| retry_at.saturating_duration_since(now))
+    }
+
+    fn take_due_retry(&mut self, now: Instant) -> Option<InventorySync> {
+        let pending = self
+            .pending_inventory_syncs
+            .iter_mut()
+            .filter(|pending| pending.retry_at.is_some_and(|retry_at| retry_at <= now))
+            .min_by_key(|pending| pending.retry_at)?;
+        pending.retry_at = None;
+        Some(pending.frame.clone())
     }
 
     fn idle(&self) -> Duration {
@@ -2109,8 +2177,21 @@ where
         if send_wire(sink, &BrokerToRelaycast::NodeRegister(registration.clone())).await.is_err() {
             return Some(false);
         }
+        let mut d1_pressure_retry_attempts = 0u32;
+        let mut d1_pressure_retry_at: Option<Instant> = None;
         loop {
+            let registration_retry_delay = d1_pressure_retry_at
+                .map(|retry_at| retry_at.saturating_duration_since(Instant::now()));
+            let d1_pressure_retry =
+                tokio::time::sleep(registration_retry_delay.unwrap_or(deadline));
+            tokio::pin!(d1_pressure_retry);
             tokio::select! {
+                _ = &mut d1_pressure_retry, if registration_retry_delay.is_some() => {
+                    d1_pressure_retry_at = None;
+                    if send_wire(sink, &BrokerToRelaycast::NodeRegister(registration.clone())).await.is_err() {
+                        return Some(false);
+                    }
+                }
                 message = stream.next() => {
                     let Some(Ok(message)) = message else { return Some(false); };
                     match message {
@@ -2121,6 +2202,20 @@ where
                                     if let Some(probe) = config.probe.as_ref() { probe.record_frame(&frame); }
                                     match frame {
                                         RelaycastToBroker::Reply(reply) if reply.id == id => return Some(reply.ok),
+                                        RelaycastToBroker::Error(error)
+                                            if error.id == id && error.code == "d1_pressure" =>
+                                        {
+                                            d1_pressure_retry_attempts = d1_pressure_retry_attempts.saturating_add(1);
+                                            let delay = d1_pressure_retry_delay(d1_pressure_retry_attempts);
+                                            tracing::warn!(
+                                                target = "relay_broker::fleet",
+                                                node_id = %registration.node_id,
+                                                id = %error.id,
+                                                retry_delay_ms = delay.as_millis(),
+                                                "retryable d1_pressure on node registration; retrying on the live control socket"
+                                            );
+                                            d1_pressure_retry_at = Some(Instant::now() + delay);
+                                        }
                                         RelaycastToBroker::Error(error) => {
                                             tracing::error!(code = %error.code, "node registration rejected; reconnecting without advertising delivery readiness");
                                             return Some(false);
@@ -2527,7 +2622,20 @@ async fn run_connected_once(
     }
 
     loop {
+        let inventory_retry_delay = application_liveness.next_retry_delay(Instant::now());
+        let inventory_retry =
+            tokio::time::sleep(inventory_retry_delay.unwrap_or(application_liveness.deadline));
+        tokio::pin!(inventory_retry);
         tokio::select! {
+            _ = &mut inventory_retry, if inventory_retry_delay.is_some() => {
+                let Some(frame) = application_liveness.take_due_retry(Instant::now()) else {
+                    continue;
+                };
+                if send_wire(&mut sink, &BrokerToRelaycast::InventorySync(frame)).await.is_err() {
+                    drain_agent_registrations(&mut pending_agent_registrations, "node_control_disconnected");
+                    return ControlRunResult::Disconnected { application_ready: application_liveness.ready };
+                }
+            }
             command = command_rx.recv() => {
                 if let std::ops::ControlFlow::Break(result) = handle_connected_command(
                     command,
@@ -2654,21 +2762,19 @@ where
     S::Error: std::error::Error + Send + Sync + 'static,
 {
     let request_id = format!("inventory_sync_{}", Uuid::new_v4().simple());
-    if send_wire(
-        sink,
-        &BrokerToRelaycast::InventorySync(InventorySync {
-            v: FLEET_WIRE_VERSION,
-            id: Some(request_id.clone()),
-            agents: inventory.to_vec(),
-        }),
-    )
-    .await
-    .is_err()
+    let frame = InventorySync {
+        v: FLEET_WIRE_VERSION,
+        id: Some(request_id),
+        agents: inventory.to_vec(),
+    };
+    if send_wire(sink, &BrokerToRelaycast::InventorySync(frame.clone()))
+        .await
+        .is_err()
     {
         drain_agent_registrations(pending_agent_registrations, "node_control_disconnected");
         return false;
     }
-    application_liveness.track_inventory_sync(request_id);
+    application_liveness.track_inventory_sync(frame);
 
     true
 }
@@ -2802,12 +2908,35 @@ where
                                 id = %error.id,
                                 "engine rejected a node control frame"
                             );
-                            let rejected_liveness_probe = application_liveness.reject(&error.id);
                             fail_agent_registration(
                                 &error.id,
                                 format!("{}: {}", error.code, error.message),
                                 pending_agent_registrations,
                             );
+                            if error.code == "d1_pressure" {
+                                if application_liveness.discard_superseded(&error.id) {
+                                    tracing::debug!(
+                                        target = "relay_broker::fleet",
+                                        node_id,
+                                        id = %error.id,
+                                        "consumed d1_pressure for a superseded inventory sync"
+                                    );
+                                    return true;
+                                }
+                                if let Some(delay) = application_liveness
+                                    .schedule_d1_pressure_retry(&error.id, Instant::now())
+                                {
+                                    tracing::warn!(
+                                        target = "relay_broker::fleet",
+                                        node_id,
+                                        id = %error.id,
+                                        retry_delay_ms = delay.as_millis(),
+                                        "retryable d1_pressure on inventory sync; retry scheduled on the live control socket"
+                                    );
+                                    return true;
+                                }
+                            }
+                            let rejected_liveness_probe = application_liveness.reject(&error.id);
                             // A reply proves the application is responsive, but rejecting
                             // the authoritative inventory probe means the control session
                             // is not healthy enough to advertise; replace it immediately.
@@ -3112,6 +3241,14 @@ mod tests {
             seq,
             mode: DeliveryMode::Wait,
             payload: json!({"type": "message.created", "text": "test"}),
+        }
+    }
+
+    fn test_inventory_sync(id: &str) -> InventorySync {
+        InventorySync {
+            v: FLEET_WIRE_VERSION,
+            id: Some(id.to_string()),
+            agents: Vec::new(),
         }
     }
 
@@ -4163,14 +4300,14 @@ mod tests {
     #[test]
     fn application_readiness_requires_successful_correlated_inventory_reply() {
         let mut liveness = ApplicationLiveness::new(Duration::from_secs(1));
-        liveness.track_inventory_sync("inventory-rejected".to_string());
+        liveness.track_inventory_sync(test_inventory_sync("inventory-rejected"));
         assert!(liveness.reject("inventory-rejected"));
         assert!(
             !liveness.ready,
             "an error reply must not make the link ready"
         );
 
-        liveness.track_inventory_sync("inventory-acknowledged".to_string());
+        liveness.track_inventory_sync(test_inventory_sync("inventory-acknowledged"));
         assert_eq!(liveness.acknowledge("unrelated"), None);
         assert_eq!(liveness.acknowledge("inventory-acknowledged"), Some(true));
         assert!(liveness.ready);
@@ -4179,7 +4316,7 @@ mod tests {
     #[tokio::test]
     async fn malformed_inventory_reply_does_not_make_application_ready() {
         let mut liveness = ApplicationLiveness::new(Duration::from_secs(1));
-        liveness.track_inventory_sync("inventory-rejected".to_string());
+        liveness.track_inventory_sync(test_inventory_sync("inventory-rejected"));
         let (events, _receiver) = mpsc::channel(1);
         let healthy = handle_server_message(
             Message::Text(json!({"v": 1, "type": "reply", "id": "inventory-rejected", "ok": false, "data": {}}).to_string()),
@@ -4261,15 +4398,120 @@ mod tests {
     #[test]
     fn acknowledged_probe_preserves_newer_probe_for_rejection() {
         let mut liveness = ApplicationLiveness::new(Duration::from_secs(1));
-        liveness.track_inventory_sync("inventory-a".to_string());
-        liveness.track_inventory_sync("inventory-b".to_string());
+        liveness.track_inventory_sync(test_inventory_sync("inventory-a"));
+        liveness.track_inventory_sync(test_inventory_sync("inventory-b"));
 
         assert_eq!(liveness.acknowledge("inventory-a"), Some(true));
         assert_eq!(
-            liveness.pending_inventory_syncs,
-            VecDeque::from(["inventory-b".to_string()])
+            liveness
+                .pending_inventory_syncs
+                .iter()
+                .filter_map(|pending| pending.frame.id.as_deref())
+                .collect::<Vec<_>>(),
+            vec!["inventory-b"]
         );
         assert!(liveness.reject("inventory-b"));
+    }
+
+    #[test]
+    fn d1_pressure_retry_backoff_is_bounded_and_preserves_the_frame() {
+        let mut liveness = ApplicationLiveness::new(Duration::from_secs(120));
+        let frame = test_inventory_sync("inventory-retry");
+        liveness.track_inventory_sync(frame.clone());
+        let now = Instant::now();
+
+        assert_eq!(
+            (0..5)
+                .map(|_| liveness.schedule_d1_pressure_retry("inventory-retry", now))
+                .collect::<Vec<_>>(),
+            vec![
+                Some(Duration::from_secs(1)),
+                Some(Duration::from_secs(2)),
+                Some(Duration::from_secs(4)),
+                Some(Duration::from_secs(8)),
+                Some(Duration::from_secs(8)),
+            ]
+        );
+        assert_eq!(
+            liveness.take_due_retry(now + Duration::from_secs(8)),
+            Some(frame)
+        );
+        assert!(!liveness.ready);
+    }
+
+    #[test]
+    fn newer_inventory_snapshot_cancels_an_older_retry_payload() {
+        let mut liveness = ApplicationLiveness::new(Duration::from_secs(120));
+        let old = test_inventory_sync("inventory-old");
+        let new = test_inventory_sync("inventory-new");
+        let now = Instant::now();
+
+        liveness.track_inventory_sync(old);
+        assert_eq!(
+            liveness.schedule_d1_pressure_retry("inventory-old", now),
+            Some(Duration::from_secs(1))
+        );
+        liveness.track_inventory_sync(new.clone());
+
+        assert_eq!(liveness.take_due_retry(now + Duration::from_secs(1)), None);
+        assert!(liveness.discard_superseded("inventory-old"));
+        assert_eq!(
+            liveness.schedule_d1_pressure_retry("inventory-new", now),
+            Some(Duration::from_secs(1))
+        );
+        assert_eq!(
+            liveness.take_due_retry(now + Duration::from_secs(1)),
+            Some(new)
+        );
+    }
+
+    #[tokio::test]
+    async fn late_d1_pressure_for_superseded_inventory_is_consumed_without_disconnect() {
+        let mut liveness = ApplicationLiveness::new(Duration::from_secs(120));
+        liveness.track_inventory_sync(test_inventory_sync("inventory-old"));
+        liveness.track_inventory_sync(test_inventory_sync("inventory-new"));
+        let (events, _receiver) = mpsc::channel(1);
+
+        let healthy = handle_server_message(
+            Message::Text(
+                json!({
+                    "v": 1,
+                    "id": "inventory-old",
+                    "type": "error",
+                    "ok": false,
+                    "code": "d1_pressure",
+                    "message": "Node liveness retry pending"
+                })
+                .to_string(),
+            ),
+            &events,
+            &mut HashMap::new(),
+            &mut HashMap::new(),
+            &mut liveness,
+            "node-test",
+            &mut futures_util::sink::drain(),
+            None,
+            None,
+        )
+        .await;
+
+        assert!(healthy);
+        assert_eq!(
+            liveness
+                .pending_inventory_syncs
+                .iter()
+                .filter_map(|pending| pending.frame.id.as_deref())
+                .collect::<Vec<_>>(),
+            vec!["inventory-new"]
+        );
+        assert_eq!(
+            liveness.schedule_d1_pressure_retry("inventory-old", Instant::now()),
+            None
+        );
+        assert_eq!(
+            liveness.schedule_d1_pressure_retry("inventory-new", Instant::now()),
+            Some(Duration::from_secs(1))
+        );
     }
 
     #[test]
@@ -4585,6 +4827,263 @@ mod tests {
             .await
             .unwrap()
             .unwrap();
+    }
+
+    #[tokio::test]
+    async fn retryable_d1_pressure_retries_control_frames_on_same_connection_with_backoff() {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let ws_url = format!("ws://{}/v1/node/ws", listener.local_addr().unwrap());
+        let (command_tx, mut command_rx) = mpsc::channel(4);
+        let (event_tx, mut event_rx) = mpsc::channel(4);
+        let mut registration = Some(build_node_register(
+            &test_manifest(),
+            "node-test",
+            "host-test",
+            "broker/test",
+            None,
+        ));
+        let mut inventory = vec![InventoryAgent {
+            agent_id: "agt-1".to_string(),
+            name: "agent-a".to_string(),
+            invocation_id: Some("inv-1".to_string()),
+            session_ref: Some("session-1".to_string()),
+        }];
+        let mut load = FleetLoadSnapshot {
+            active_agents: 1,
+            max_agents: 4,
+            handlers_live: true,
+            active_agent_names: vec!["agent-a".to_string()],
+        };
+        let (retry_seen_tx, retry_seen_rx) = oneshot::channel();
+
+        let server = tokio::spawn(async move {
+            let (stream, _) = listener.accept().await.unwrap();
+            let mut ws = accept_async(stream).await.unwrap();
+            let initial_register = match ws.next().await.unwrap().unwrap() {
+                Message::Text(text) => {
+                    match serde_json::from_str::<BrokerToRelaycast>(&text).unwrap() {
+                        BrokerToRelaycast::NodeRegister(register) => register,
+                        other => panic!("expected node.register, got {other:?}"),
+                    }
+                }
+                other => panic!("expected text node.register, got {other:?}"),
+            };
+            let register_id = initial_register
+                .id
+                .clone()
+                .expect("node.register request id");
+            ws.send(Message::Text(
+                json!({
+                    "v": 1,
+                    "id": register_id,
+                    "type": "error",
+                    "ok": false,
+                    "code": "d1_pressure",
+                    "message": "Node liveness retry pending"
+                })
+                .to_string(),
+            ))
+            .await
+            .unwrap();
+            assert!(
+                tokio::time::timeout(
+                    Duration::from_millis(500),
+                    next_non_heartbeat_node_to_server(&mut ws),
+                )
+                .await
+                .is_err(),
+                "the registration retry must honor its initial backoff"
+            );
+            let retried_register = tokio::time::timeout(
+                Duration::from_secs(2),
+                next_non_heartbeat_node_to_server(&mut ws),
+            )
+            .await
+            .expect("retryable registration d1_pressure should retry on the live socket");
+            assert_eq!(
+                retried_register,
+                BrokerToRelaycast::NodeRegister(initial_register)
+            );
+            let initial = match next_node_to_server(&mut ws).await {
+                BrokerToRelaycast::InventorySync(sync) => sync,
+                other => panic!("expected initial inventory.sync, got {other:?}"),
+            };
+            assert!(matches!(
+                next_node_to_server(&mut ws).await,
+                BrokerToRelaycast::NodeHeartbeat(_)
+            ));
+            let request_id = initial.id.clone().expect("inventory.sync request id");
+            ws.send(Message::Text(
+                json!({
+                    "v": 1,
+                    "id": request_id,
+                    "type": "error",
+                    "ok": false,
+                    "code": "d1_pressure",
+                    "message": "Node liveness retry pending"
+                })
+                .to_string(),
+            ))
+            .await
+            .unwrap();
+
+            assert!(
+                tokio::time::timeout(
+                    Duration::from_millis(500),
+                    next_non_heartbeat_node_to_server(&mut ws),
+                )
+                .await
+                .is_err(),
+                "the retry must honor its initial backoff"
+            );
+            let retried = tokio::time::timeout(
+                Duration::from_secs(2),
+                next_non_heartbeat_node_to_server(&mut ws),
+            )
+            .await
+            .expect("retryable d1_pressure should retry on the live socket");
+            assert_eq!(retried, BrokerToRelaycast::InventorySync(initial.clone()));
+            ws.send(Message::Text(
+                json!({"v": 1, "id": request_id, "type": "reply", "ok": true, "data": {}})
+                    .to_string(),
+            ))
+            .await
+            .unwrap();
+            retry_seen_tx.send(()).unwrap();
+            while ws.next().await.is_some() {}
+        });
+
+        let config = FleetControlConfig {
+            ws_url,
+            node_token: Some("nt_test".to_string()),
+            node_id: "node-test".to_string(),
+            node_name: "host-test".to_string(),
+            broker_version: "broker/test".to_string(),
+            token_minter: None,
+            session_token: None,
+            read_idle_timeout: None,
+            probe: None,
+            terminal_reconnect_tx: None,
+        };
+        let session = run_connected_once(
+            &config,
+            &mut command_rx,
+            &event_tx,
+            &mut registration,
+            &mut inventory,
+            &mut load,
+            Duration::from_secs(3_600),
+        );
+        let driver = async {
+            retry_seen_rx.await.unwrap();
+            command_tx
+                .send(FleetControlCommand::Shutdown)
+                .await
+                .unwrap();
+        };
+        let (result, ()) = tokio::time::timeout(Duration::from_secs(5), async {
+            tokio::join!(session, driver)
+        })
+        .await
+        .expect("same-socket retry should complete without reconnecting");
+
+        assert_eq!(result, ControlRunResult::Shutdown);
+        assert_eq!(event_rx.recv().await, Some(FleetControlEvent::Connected));
+        assert!(
+            event_rx.try_recv().is_err(),
+            "the control link must not disconnect"
+        );
+        server.abort();
+    }
+
+    #[tokio::test]
+    async fn registration_d1_pressure_backoff_remains_shutdown_interruptible() {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let ws_url = format!("ws://{}/v1/node/ws", listener.local_addr().unwrap());
+        let (command_tx, mut command_rx) = mpsc::channel(1);
+        let (event_tx, _event_rx) = mpsc::channel(1);
+        let mut registration = Some(build_node_register(
+            &test_manifest(),
+            "node-test",
+            "host-test",
+            "broker/test",
+            None,
+        ));
+        let mut inventory = Vec::new();
+        let mut load = FleetLoadSnapshot {
+            active_agents: 0,
+            max_agents: 4,
+            handlers_live: true,
+            active_agent_names: Vec::new(),
+        };
+        let (pressure_sent_tx, pressure_sent_rx) = oneshot::channel();
+
+        let server = tokio::spawn(async move {
+            let (stream, _) = listener.accept().await.unwrap();
+            let mut ws = accept_async(stream).await.unwrap();
+            let register = match ws.next().await.unwrap().unwrap() {
+                Message::Text(text) => {
+                    match serde_json::from_str::<BrokerToRelaycast>(&text).unwrap() {
+                        BrokerToRelaycast::NodeRegister(register) => register,
+                        other => panic!("expected node.register, got {other:?}"),
+                    }
+                }
+                other => panic!("expected text node.register, got {other:?}"),
+            };
+            ws.send(Message::Text(
+                json!({
+                    "v": 1,
+                    "id": register.id,
+                    "type": "error",
+                    "ok": false,
+                    "code": "d1_pressure",
+                    "message": "Node liveness retry pending"
+                })
+                .to_string(),
+            ))
+            .await
+            .unwrap();
+            pressure_sent_tx.send(()).unwrap();
+            tokio::time::sleep(Duration::from_secs(1)).await;
+        });
+
+        let config = FleetControlConfig {
+            ws_url,
+            node_token: Some("nt_test".to_string()),
+            node_id: "node-test".to_string(),
+            node_name: "host-test".to_string(),
+            broker_version: "broker/test".to_string(),
+            token_minter: None,
+            session_token: None,
+            read_idle_timeout: None,
+            probe: None,
+            terminal_reconnect_tx: None,
+        };
+        let session = run_connected_once(
+            &config,
+            &mut command_rx,
+            &event_tx,
+            &mut registration,
+            &mut inventory,
+            &mut load,
+            Duration::from_secs(3_600),
+        );
+        let driver = async {
+            pressure_sent_rx.await.unwrap();
+            tokio::time::sleep(Duration::from_millis(100)).await;
+            command_tx
+                .send(FleetControlCommand::Shutdown)
+                .await
+                .unwrap();
+        };
+        let (result, ()) = tokio::time::timeout(Duration::from_millis(500), async {
+            tokio::join!(session, driver)
+        })
+        .await
+        .expect("shutdown must interrupt registration d1_pressure backoff");
+
+        assert_eq!(result, ControlRunResult::Shutdown);
+        server.abort();
     }
 
     #[tokio::test]
