@@ -116,8 +116,12 @@ describe('install.sh', () => {
     });
 
     it('the standalone CLI and relay-acp also install through install_binary_atomic', () => {
-      expect(fnBody('download_standalone_binary')).toMatch(/install_binary_atomic "\$FETCHED_TMP" "\$target_path" check_cli_binary/);
-      expect(fnBody('download_relay_acp')).toMatch(/install_binary_atomic "\$FETCHED_TMP" "\$target_path" check_help_binary/);
+      expect(fnBody('download_standalone_binary')).toMatch(
+        /install_binary_atomic "\$FETCHED_TMP" "\$target_path" check_cli_binary/
+      );
+      expect(fnBody('download_relay_acp')).toMatch(
+        /install_binary_atomic "\$FETCHED_TMP" "\$target_path" check_help_binary/
+      );
     });
   });
 });
