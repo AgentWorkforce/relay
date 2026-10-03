@@ -873,6 +873,16 @@ pub(super) async fn spawn_worker_from_request(
         .await
     {
         Ok(effective_spec) => {
+            if worker_relay_key.is_some() {
+                // The provider session id is only final once the spawn has
+                // resolved it, so it is published here rather than alongside
+                // the declared metadata at registration.
+                super::fleet::spawn_session_metadata_publish(
+                    workspace_http,
+                    name.as_str(),
+                    &effective_spec,
+                );
+            }
             if owns_identity {
                 if let Some(worker) = workers.workers.get(&name) {
                     workers

@@ -657,6 +657,7 @@ impl BrokerRuntime {
                     }
                 }
 
+                let has_hosted_identity = worker_relay_key.is_some();
                 match workers
                     .spawn(
                         rst.payload.spec.clone(),
@@ -673,6 +674,15 @@ impl BrokerRuntime {
                 {
                     Ok(effective_spec) => {
                         fleet_load_changed = true;
+                        // A respawn may resume the same session or start a new
+                        // one; either way the published id must follow it.
+                        if has_hosted_identity {
+                            super::fleet::spawn_session_metadata_publish(
+                                relaycast_http,
+                                name.as_str(),
+                                &effective_spec,
+                            );
+                        }
                         // A supervised tokenless worker owns the identity
                         // across respawns, but each process is a new exact
                         // generation. Refresh custody before any later
