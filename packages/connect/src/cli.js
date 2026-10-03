@@ -2,7 +2,12 @@
 
 import { readFile } from 'node:fs/promises';
 import os from 'node:os';
-import { ensureProbe, InstallError, requireExistingProbe as findExistingProbe } from './install.js';
+import {
+  ensureProbe,
+  InstallError,
+  linuxProbeSessionUpdateHint,
+  requireExistingProbe as findExistingProbe,
+} from './install.js';
 import { requestJson, requireOk, SocketResponseError } from './http.js';
 
 const USAGE = `Usage:
@@ -101,6 +106,11 @@ function errorDetails(error) {
     connect_unavailable: ['Relay Connect cloud service is unavailable; retry once.', 8],
     connect_not_joined: ['This agent session has not joined a Relay Connect.', 4],
     connect_already_joined: ['This agent session is already in a different Relay Connect.', 5],
+    connect_join_pending: [
+      'A previous join has an unknown outcome; retry with the same link and options.',
+      8,
+    ],
+    connect_join_timeout: ['Relay Connect join timed out; retry the same join safely.', 8],
     connect_unreachable: ['Relay Connect cannot reach Cloud or Relaycast; retry once.', 8],
     agent_token_invalid: ['Relay Connect is over; run leave once to clear the local registration.', 3],
     not_a_relay_session: ['Run this command from a live Claude Code or Codex session.', 6],
@@ -124,6 +134,17 @@ async function requireExistingProbe() {
   if (!existing)
     throw new InstallError('No live Agent Relay probe; run `npx -y @agent-relay/connect install`.');
   return existing;
+}
+
+function requireSessionOk(response, probe) {
+  const hint = linuxProbeSessionUpdateHint(probe, response);
+  if (hint) {
+    const error = new InstallError(hint, 6);
+    error.code = 'probe_update_required';
+    error.response = { ...response, error: { ...response.error, message: hint } };
+    throw error;
+  }
+  return requireOk(response);
 }
 
 function joinSummary(response) {
@@ -195,33 +216,16 @@ async function run(options) {
       if (!claim) throw new UsageError('--host-claim-stdin requires a claim on stdin.');
       body.host_claim = claim;
     }
-    const response = requireOk(
+    const response = requireSessionOk(
       await requestJson(probe.socketPath, {
         method: 'POST',
         path: '/connect/join',
         body: JSON.stringify(body),
         headers: { 'content-type': 'application/json' },
-      })
+      }),
+      probe
     );
     delete body.host_claim;
-
-    if (response.data?.role !== 'host') {
-      const agentName = response.data?.agent_name;
-      const host = response.data?.host?.agent_name;
-      try {
-        if (!agentName || !host) throw new Error('Join response did not identify this agent and its host.');
-        requireOk(
-          await requestJson(probe.socketPath, {
-            method: 'POST',
-            path: `/connect/send?to=${encodeURIComponent(host)}`,
-            body: `${agentName} joined this Relay Connect and is ready to help.`,
-          })
-        );
-      } catch (error) {
-        const warning = errorDetails(error).message;
-        process.stderr.write(`Joined, but could not notify the host: ${warning}\n`);
-      }
-    }
 
     if (options.json) printJson(response);
     else process.stdout.write(`${joinSummary(response)}\n`);
@@ -232,12 +236,13 @@ async function run(options) {
     const message = await stdinText();
     if (!message) throw new UsageError('send requires message text on stdin.');
     const suffix = options.to ? `?to=${encodeURIComponent(options.to)}` : '';
-    const response = requireOk(
+    const response = requireSessionOk(
       await requestJson(probe.socketPath, {
         method: 'POST',
         path: `/connect/send${suffix}`,
         body: message,
-      })
+      }),
+      probe
     );
     if (options.json) printJson(response);
     else {
@@ -248,13 +253,19 @@ async function run(options) {
   }
 
   if (options.command === 'status') {
-    const response = requireOk(await requestJson(probe.socketPath, { path: '/connect/status' }));
+    const response = requireSessionOk(
+      await requestJson(probe.socketPath, { path: '/connect/status' }),
+      probe
+    );
     if (options.json) printJson(response);
     else process.stdout.write(`${statusSummary(response)}\n`);
     return;
   }
 
-  const response = requireOk(await requestJson(probe.socketPath, { method: 'POST', path: '/connect/leave' }));
+  const response = requireSessionOk(
+    await requestJson(probe.socketPath, { method: 'POST', path: '/connect/leave' }),
+    probe
+  );
   if (options.json) printJson(response);
   else process.stdout.write(`Left Relay Connect ${safeText(response.data?.connect_id)}.\n`);
 }
