@@ -7,10 +7,9 @@
 # Usage:
 #   scripts/test-install-atomic.sh
 #   AGENT_RELAY_TEST_BROKER=/path/to/real/broker scripts/test-install-atomic.sh
-#       additionally runs the real-binary cases (pristine passes the smoke
-#       test, one with a zeroed page is rejected). Also set
-#       AGENT_RELAY_TEST_CORRUPT_BROKER=/path/to/damaged/broker for the full
-#       download_broker_binary flow with a real damaged build (macOS arm64).
+#       additionally runs the real-binary cases against a pristine published
+#       broker: smoke test pass/fail with and without telemetry opt-out, the
+#       macOS signature check and scenarios A-D (macOS arm64 only for the latter).
 #
 # Compatible with bash 3.2 (macOS) and newer.
 
@@ -349,54 +348,137 @@ fetch_release_asset agent-relay-test-test.gz "$D" gz; rc=$?
 check "gz digest mismatch rejected" test "$rc" -eq 2
 
 # ---------------------------------------------------------------------------
-if [ -n "${AGENT_RELAY_TEST_BROKER:-}" ]; then
-    echo "== real broker binary =="
-    AGENT_RELAY_SMOKE_SECONDS=4
-    reset_release
-    D="$(newdir)"
-    cp "$AGENT_RELAY_TEST_BROKER" "$D/pristine"; chmod +x "$D/pristine"
-    smoke_test_broker "$D/pristine"; rc=$?
-    check "pristine broker passes the init smoke test" test "$rc" -eq 0
-    cp "$AGENT_RELAY_TEST_BROKER" "$D/damaged"
-    # zero the 16 KiB page at file offset 0x900000 (the #1885 damage), re-sign
-    dd if=/dev/zero of="$D/damaged" bs=16384 seek=576 count=1 conv=notrunc 2>/dev/null
-    [ "$(uname -s)" = Darwin ] && codesign --force --sign - "$D/damaged" >/dev/null 2>&1
-    check "damaged copy differs" test "$(sha256_of "$D/damaged")" != "$(sha256_of "$D/pristine")"
-    DEST="$D/live"; cp "$D/pristine" "$DEST"; LIVE="$(sha256_of "$DEST")"
-    install_binary_atomic "$D/damaged" "$DEST" check_broker_binary; rc=$?
-    check "damaged (re-signed) broker rejected by smoke test" test "$rc" -ne 0
-    check "live broker untouched" test "$(sha256_of "$DEST")" = "$LIVE"
-fi
+echo "== transactional standalone install (CLI + broker) =="
 
-if [ -n "${AGENT_RELAY_TEST_BROKER:-}" ] && [ -n "${AGENT_RELAY_TEST_CORRUPT_BROKER:-}" ]; then
-    echo "== real broker: full download_broker_binary flow =="
+detect_platform >/dev/null 2>&1
+REAL_PLATFORM="$PLATFORM"
+make_fake_cli() { # make_fake_cli <path> <version>
+    printf '#!/bin/bash\n[ "$1" = "--version" ] && { echo "%s"; exit 0; }\nexit 0\n' "$2" > "$1"; chmod +x "$1"
+}
+e2e_setup() { # e2e_setup <broker-mode> <digests: yes|no> [old-cli: yes|no]
     reset_release
-    PLATFORM="darwin-arm64"
-    INSTALL_DIR="$(newdir)"; BIN_DIR="$(newdir)"
-    mkdir -p "$INSTALL_DIR/bin"
-    A="agent-relay-broker-$PLATFORM"
-    cp "$AGENT_RELAY_TEST_BROKER" "$FIX/asset/$A"
-    make_release_json "$FIX/release.json" "$A" "$(sha256_of "$AGENT_RELAY_TEST_BROKER")"
-    download_broker_binary >/dev/null; rc=$?
-    check "pristine published broker installs" test "$rc" -eq 0
-    check "both copies were installed and smoke tested" \
-        test -x "$INSTALL_DIR/bin/agent-relay-broker" -a -x "$BIN_DIR/agent-relay-broker"
-    GOODSIG="$(sha256_of "$BIN_DIR/agent-relay-broker")"
-    # Same published digest, but the bytes served are the corrupt build: rejected on digest
-    reset_release
-    cp "$AGENT_RELAY_TEST_CORRUPT_BROKER" "$FIX/asset/$A"
-    make_release_json "$FIX/release.json" "$A" "$(sha256_of "$AGENT_RELAY_TEST_BROKER")"
-    download_broker_binary >/dev/null; rc=$?
-    check "corrupt bytes rejected by digest" test "$rc" -ne 0
-    # No digest published: the corrupt build must still be rejected by the init smoke test
-    reset_release
-    cp "$AGENT_RELAY_TEST_CORRUPT_BROKER" "$FIX/asset/$A"
-    make_release_json "$FIX/release.json" "$A" ""
-    AGENT_RELAY_SMOKE_SECONDS=4 download_broker_binary >/dev/null; rc=$?
-    check "corrupt bytes with no digest rejected by smoke test" test "$rc" -ne 0
-    check "smoke failure reported (status 132)" contains "$(cat "$LOG")" "init exited with status 132"
-    check "installed broker untouched by the failed installs" \
-        test "$(sha256_of "$BIN_DIR/agent-relay-broker")" = "$GOODSIG" -a -z "$(find "$INSTALL_DIR" "$BIN_DIR" -name '.*.*' -type f)"
+    INSTALL_DIR="$(newdir)"; BIN_DIR="$(newdir)"; mkdir -p "$INSTALL_DIR/bin"
+    make_fake_broker "$INSTALL_DIR/bin/agent-relay-broker" ok oldbroker
+    make_fake_cli "$FIX/cli-new" "9.9.9"
+    gzip -c "$FIX/cli-new" > "$FIX/asset/agent-relay-$REAL_PLATFORM.gz"
+    make_fake_broker "$FIX/asset/agent-relay-broker-$REAL_PLATFORM" "$1" newbroker
+    if [ "${3:-yes}" = yes ]; then make_fake_cli "$INSTALL_DIR/bin/agent-relay" "1.0.0"; fi
+    {
+        echo '{"assets": ['
+        if [ "$2" = yes ]; then
+            echo "{\"name\": \"agent-relay-$REAL_PLATFORM.gz\", \"digest\": \"sha256:$(sha256_of "$FIX/asset/agent-relay-$REAL_PLATFORM.gz")\"},"
+            echo "{\"name\": \"agent-relay-broker-$REAL_PLATFORM\", \"digest\": \"sha256:$(sha256_of "$FIX/asset/agent-relay-broker-$REAL_PLATFORM")\"}"
+        else
+            echo '{"name": "unrelated", "digest": null}'
+        fi
+        echo ']}'
+    } > "$FIX/release.json"
+    OLD_BROKER_HASH="$(sha256_of "$INSTALL_DIR/bin/agent-relay-broker")"
+}
+run_main() { ( export AGENT_RELAY_TELEMETRY_DISABLED=1; main ) > "$WORK/main.out" 2>&1; }
+
+e2e_setup ok yes
+run_main; rc=$?
+check "all good: installer exits 0" test "$rc" -eq 0
+check "all good: CLI upgraded" test "$("$INSTALL_DIR/bin/agent-relay" --version)" = "9.9.9"
+check "all good: no .prev left" test ! -e "$INSTALL_DIR/bin/agent-relay.prev"
+
+e2e_setup crash no
+run_main; rc=$?
+check "broker rejected: installer exits NON-zero" test "$rc" -ne 0
+check "broker rejected: previous CLI restored" test "$("$INSTALL_DIR/bin/agent-relay" --version)" = "1.0.0"
+check "broker rejected: old broker untouched" test "$(sha256_of "$INSTALL_DIR/bin/agent-relay-broker")" = "$OLD_BROKER_HASH"
+check "broker rejected: message says CLI was not kept" contains "$(cat "$WORK/main.out")" "CLI was NOT kept"
+check "broker rejected: no success message" test -z "$(grep -i 'installed successfully' "$WORK/main.out")"
+check "broker rejected: no .prev/temp files" test "$(find "$INSTALL_DIR" "$BIN_DIR" -name '.*' -type f | wc -l | tr -d ' ')" = "0" -a ! -e "$INSTALL_DIR/bin/agent-relay.prev"
+
+e2e_setup crash no no
+run_main; rc=$?
+check "fresh install + rejected broker: exits non-zero" test "$rc" -ne 0
+check "fresh install + rejected broker: new CLI removed" test ! -e "$INSTALL_DIR/bin/agent-relay" -a ! -e "$BIN_DIR/agent-relay"
+
+# ---------------------------------------------------------------------------
+if [ -n "${AGENT_RELAY_TEST_BROKER:-}" ]; then
+    echo "== real broker binary (pristine published build) =="
+    D="$(newdir)"
+    PRISTINE_BIN="$D/pristine"
+    cp "$AGENT_RELAY_TEST_BROKER" "$PRISTINE_BIN"; chmod +x "$PRISTINE_BIN"
+    # ZEROED: published bytes with the 16 KiB page at 0x900000 zero-filled, signature untouched
+    ZEROED="$D/zeroed"
+    cp "$AGENT_RELAY_TEST_BROKER" "$ZEROED"
+    dd if=/dev/zero of="$ZEROED" bs=16384 seek=576 count=1 conv=notrunc 2>/dev/null
+    chmod +x "$ZEROED"
+    # RESIGNED: what the old installer left behind (zeroed + locally re-signed)
+    RESIGNED="$D/resigned"
+    cp "$ZEROED" "$RESIGNED"
+    if [ "$(uname -s)" = Darwin ]; then
+        codesign --remove-signature "$RESIGNED" >/dev/null 2>&1
+        codesign --force --sign - "$RESIGNED" >/dev/null 2>&1
+    fi
+    check "fixtures differ from pristine" test "$(sha256_of "$ZEROED")" != "$(sha256_of "$PRISTINE_BIN")"
+
+    AGENT_RELAY_SMOKE_SECONDS=4
+    for optout in none opt-out; do
+        for which in pristine resigned; do
+            bin="$D/$which"
+            if [ "$optout" = none ]; then
+                smoke_test_broker "$bin"; rc=$?
+            else
+                AGENT_RELAY_TELEMETRY_DISABLED=1 smoke_test_broker "$bin"; rc=$?
+            fi
+            if [ "$which" = pristine ]; then
+                check "smoke: pristine PASSES ($optout)" test "$rc" -eq 0
+            else
+                check "smoke: corrupt re-signed FAILS ($optout)" test "$rc" -ne 0
+            fi
+        done
+    done
+
+    if [ "$(uname -s)" = Darwin ]; then
+        echo "== macOS signature check (offline integrity) =="
+        # shellcheck disable=SC2034
+        OS=darwin
+        cp "$PRISTINE_BIN" "$D/p2"; prepare_downloaded_binary "$D/p2"; rc=$?
+        check "pristine passes codesign --verify --strict" test "$rc" -eq 0
+        check "valid shipped signature is kept (not re-signed)" test "$(sha256_of "$D/p2")" = "$(sha256_of "$PRISTINE_BIN")"
+        cp "$ZEROED" "$D/z2"; prepare_downloaded_binary "$D/z2"; rc=$?
+        check "zero-filled page fails the signature check" test "$rc" -ne 0
+        check "damaged file was not re-signed" test "$(sha256_of "$D/z2")" = "$(sha256_of "$ZEROED")"
+
+        echo "== real broker: download_broker_binary, scenarios A-D =="
+        PLATFORM="darwin-arm64"
+        A="agent-relay-broker-$PLATFORM"
+        scenario() { # scenario <name> <served-file> <digest-of: file or none>
+            reset_release
+            INSTALL_DIR="$(newdir)"; BIN_DIR="$(newdir)"; mkdir -p "$INSTALL_DIR/bin"
+            cp "$PRISTINE_BIN" "$INSTALL_DIR/bin/agent-relay-broker"
+            cp "$2" "$FIX/asset/$A"
+            if [ "$3" = none ]; then make_release_json "$FIX/release.json" "$A" ""
+            else make_release_json "$FIX/release.json" "$A" "$(sha256_of "$3")"; fi
+            LIVE_BEFORE="$(sha256_of "$INSTALL_DIR/bin/agent-relay-broker")"
+            download_broker_binary >/dev/null; SC_RC=$?
+        }
+        scenario A "$PRISTINE_BIN" "$PRISTINE_BIN"
+        check "A clean+digest: installed" test "$SC_RC" -eq 0
+        check "A: installed bytes == published bytes (signature kept)" test "$(sha256_of "$INSTALL_DIR/bin/agent-relay-broker")" = "$(sha256_of "$PRISTINE_BIN")" -a "$(sha256_of "$BIN_DIR/agent-relay-broker")" = "$(sha256_of "$PRISTINE_BIN")"
+        scenario B "$ZEROED" "$PRISTINE_BIN"
+        check "B corrupt+digest: rejected (rc 2)" test "$SC_RC" -eq 2
+        check "B: digest mismatch reported" contains "$(cat "$LOG")" "SHA-256 mismatch"
+        check "B: live broker untouched" test "$(sha256_of "$INSTALL_DIR/bin/agent-relay-broker")" = "$LIVE_BEFORE"
+        scenario C "$PRISTINE_BIN" none
+        check "C clean, no digest: installed" test "$SC_RC" -eq 0
+        check "C: warned about the missing digest" contains "$(cat "$LOG")" "publishes no SHA-256 digest"
+        scenario D "$ZEROED" none
+        check "D corrupt, no digest: REJECTED (rc 2)" test "$SC_RC" -eq 2
+        check "D: rejected by the signature check" contains "$(cat "$LOG")" "Code signature check failed"
+        check "D: live broker untouched" test "$(sha256_of "$INSTALL_DIR/bin/agent-relay-broker")" = "$LIVE_BEFORE"
+        # Even if the signature check were bypassed, the (re-signed) damage is caught by the smoke test
+        prepare_downloaded_binary() { codesign --force --sign - "$1" >/dev/null 2>&1; return 0; }
+        scenario D2 "$ZEROED" none
+        check "D (signature check bypassed): smoke test still rejects it" test "$SC_RC" -eq 2
+        check "D2: smoke failure reported (status 132)" contains "$(cat "$LOG")" "init exited with status 132"
+        check "D2: live broker untouched" test "$(sha256_of "$INSTALL_DIR/bin/agent-relay-broker")" = "$LIVE_BEFORE"
+    fi
 fi
 
 echo

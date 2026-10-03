@@ -224,6 +224,8 @@ check_node() {
 # ---------------------------------------------------------------------------
 
 TEMP_FILES=""
+SMOKE_PID=""
+KEEP_PREV=0
 RELEASE_JSON=""
 RELEASE_JSON_STATE=""   # "", "ok" or "failed"
 
@@ -234,6 +236,10 @@ register_temp() {
 
 cleanup_temp_files() {
     local f
+    if [ -n "$SMOKE_PID" ]; then
+        kill -9 "$SMOKE_PID" 2>/dev/null || true
+        SMOKE_PID=""
+    fi
     [ -n "$TEMP_FILES" ] || return 0
     while IFS= read -r f; do
         [ -n "$f" ] && rm -f "$f" 2>/dev/null
@@ -423,8 +429,8 @@ smoke_test_broker_run() {
     }
     mkdir -p "$tmp/home" "$tmp/state"
 
-    # The code page that crashed in #1885 sits on the telemetry path, so the
-    # smoke test must NOT opt out of telemetry on the user's behalf. It only
+    # Telemetry: the damaged page from #1885 was reachable from the telemetry
+    # path, so the smoke test must not opt out on the user's behalf; it only
     # forwards an opt-out the user already made.
     local optout_a="" optout_b=""
     if ! telemetry_enabled; then
@@ -432,14 +438,24 @@ smoke_test_broker_run() {
         optout_b="DO_NOT_TRACK=1"
     fi
 
+    # Run the real fleet-style startup (instance + channels + API port), not
+    # --local-only: --local-only skips code that the damaged build crashed in.
+    # The environment is scrubbed (env -i: no RELAY_*/AGENT_RELAY_* credentials)
+    # and RELAY_BASE_URL points at a closed local port, so the throwaway broker
+    # cannot create or join any workspace. A clean "failed to initialize
+    # relaycast session" exit is therefore the expected outcome for a healthy
+    # binary; a crash (signal) is not.
     (
         cd "$tmp" || exit 126
         exec env -i HOME="$tmp/home" PATH="/usr/bin:/bin" TMPDIR="$tmp" \
+            RELAY_BASE_URL="http://127.0.0.1:9" \
             ${optout_a:+"$optout_a"} ${optout_b:+"$optout_b"} \
-            "$bin" init --local-only --state-dir "$tmp/state" \
+            "$bin" init --instance-name "smoke-$$" --channels general --api-port 0 \
+            --state-dir "$tmp/state" \
             < /dev/null > "$tmp/out.log" 2>&1
     ) &
     pid=$!
+    SMOKE_PID="$pid"
 
     while [ "$i" -lt "$seconds" ]; do
         sleep 1
@@ -459,15 +475,22 @@ smoke_test_broker_run() {
         done
         kill -9 "$pid" 2>/dev/null || true
         { wait "$pid"; } 2>/dev/null || true
+        SMOKE_PID=""
         rm -rf "$tmp"
         info "Broker smoke test passed (init stayed up ${seconds}s)"
         return 0
     fi
 
     { wait "$pid"; } 2>/dev/null || rc=$?
+    SMOKE_PID=""
     if [ "$rc" -eq 0 ]; then
         rm -rf "$tmp"
         info "Broker smoke test passed (init exited 0)"
+        return 0
+    fi
+    if [ "$rc" -lt 128 ] && grep -q "failed to initialize relaycast session" "$tmp/out.log" 2>/dev/null; then
+        rm -rf "$tmp"
+        info "Broker smoke test passed (init ran and stopped cleanly at the unreachable workspace service)"
         return 0
     fi
 
@@ -518,9 +541,12 @@ install_binary_atomic() {
     local prev="${dest}.prev"
     local had_prev=0 signed_hash installed_hash
 
+    rm -f "$prev"   # never trust a stale backup
+
     chmod +x "$tmp" || { rm -f "$tmp"; return 1; }
-    if [ "$sign" = "sign" ]; then
-        strip_quarantine "$tmp"
+    if [ "$sign" = "sign" ] && ! prepare_downloaded_binary "$tmp"; then
+        rm -f "$tmp"
+        return 1
     fi
 
     if ! "$check_fn" "$tmp"; then
@@ -568,7 +594,11 @@ install_binary_atomic() {
         fi
     fi
 
-    [ "$had_prev" -eq 1 ] && rm -f "$prev"
+    # KEEP_PREV=1 lets a caller (the standalone CLI) roll back later if a
+    # dependent step fails; the caller then owns removing the backup.
+    if [ "$had_prev" -eq 1 ] && [ "${KEEP_PREV:-0}" != "1" ]; then
+        rm -f "$prev"
+    fi
     return 0
 }
 
@@ -594,6 +624,9 @@ copy_binary_atomic() {
 }
 
 # Download broker binary (Rust broker for workflow/SDK agent spawning)
+# Returns 0 on success, 1 when no binary is available for this platform, and 2
+# when a binary was downloaded but REJECTED (integrity or smoke test failure);
+# the existing broker is left untouched in both failure cases.
 download_broker_binary() {
     step "Downloading broker binary..."
 
@@ -610,7 +643,7 @@ download_broker_binary() {
         return 1
     elif [ "$rc" -ne 0 ]; then
         warn "broker binary failed integrity verification"
-        return 1
+        return 2
     fi
 
     if install_binary_atomic "$FETCHED_TMP" "$target_path" check_broker_binary; then
@@ -621,7 +654,31 @@ download_broker_binary() {
         fi
     fi
     warn "broker binary failed verification"
-    return 1
+    return 2
+}
+
+# The standalone CLI and the broker must be the same version. If the broker was
+# rejected after the CLI was replaced, undo the CLI step (transactional
+# install) and fail loudly instead of leaving a CLI/broker version skew.
+abort_standalone_install() {
+    local cli="$INSTALL_DIR/bin/agent-relay"
+    local prev="${cli}.prev"
+    local broker="$INSTALL_DIR/bin/agent-relay-broker"
+    local old_broker="none installed"
+    local outcome
+
+    if [ -x "$broker" ]; then
+        old_broker="$("$broker" --version 2>/dev/null | head -n 1)"
+        [ -n "$old_broker" ] || old_broker="unknown version"
+    fi
+    if [ -e "$prev" ]; then
+        mv -f "$prev" "$cli"
+        outcome="the previous CLI ($("$cli" --version 2>/dev/null | head -n 1)) was restored"
+    else
+        rm -f "$cli" "$BIN_DIR/agent-relay"
+        outcome="the new CLI was removed (there was no previous install)"
+    fi
+    error "The v${VERSION} broker was rejected (integrity or smoke test failed), so the v${VERSION} CLI was NOT kept: ${outcome}. The existing broker (${old_broker}) is untouched. Nothing was upgraded; re-run the installer, or set AGENT_RELAY_VERSION to a known-good version."
 }
 
 # Check if a command exists
@@ -629,18 +686,34 @@ has_command() {
     command -v "$1" &> /dev/null
 }
 
-# Prepare a downloaded macOS binary so Gatekeeper does not kill it during
-# first execution.
-strip_quarantine() {
-    if [ "$OS" = "darwin" ]; then
-        if has_command xattr; then
-            xattr -d com.apple.quarantine "$1" 2>/dev/null || true
-        fi
-        if has_command codesign; then
-            codesign --remove-signature "$1" >/dev/null 2>&1 || true
-            codesign --force --sign - "$1" >/dev/null 2>&1 || true
-        fi
+# Prepare a downloaded temp binary (never a live path). On macOS this removes
+# the quarantine flag and checks the code signature:
+#   * The published binaries ship an ad-hoc signature whose page hashes cover
+#     every page, so `codesign --verify --strict` is an OFFLINE integrity check
+#     (a zero-filled page fails it). A damaged download is rejected (return 1).
+#   * A valid shipped signature is kept as is, so the installed bytes equal the
+#     published bytes. Re-signing is only done for a binary that ships unsigned
+#     (Apple Silicon refuses to run unsigned code). Re-signing a damaged file is
+#     exactly what hid the corruption in #1885, so it is never done blindly.
+prepare_downloaded_binary() {
+    local f="$1"
+    [ "$OS" = "darwin" ] || return 0
+    if has_command xattr; then
+        xattr -d com.apple.quarantine "$f" 2>/dev/null || true
     fi
+    has_command codesign || return 0
+    local out
+    if out=$(codesign --verify --strict "$f" 2>&1); then
+        return 0
+    fi
+    case "$out" in
+        *"not signed at all"*)
+            codesign --force --sign - "$f" >/dev/null 2>&1 || true
+            return 0
+            ;;
+    esac
+    warn "Code signature check failed for the downloaded binary (${out}); it is damaged or modified. Refusing to install it."
+    return 1
 }
 
 # Download relay-acp binary for Zed editor integration
@@ -872,8 +945,13 @@ Or use nvm: curl -o- https://raw.githubusercontent.com/nvm-sh/nvm/v0.39.0/instal
     # Install ACP bridge for Zed editor integration
     install_acp_bridge || true
 
-    # Download broker binary for workflow/SDK agent spawning
-    download_broker_binary || true
+    # Download broker binary for workflow/SDK agent spawning. A rejected broker
+    # (rc 2) must not look like success: the npm CLI is already installed.
+    local broker_rc=0
+    download_broker_binary || broker_rc=$?
+    if [ "$broker_rc" -eq 2 ]; then
+        error "The v${VERSION} broker was rejected (integrity or smoke test failed) after the CLI was installed via npm; the existing broker was left untouched, so CLI and broker versions now differ. Re-run the installer, or install a known-good version with AGENT_RELAY_VERSION."
+    fi
 
     success "Installed via npm"
 }
@@ -1022,10 +1100,20 @@ main() {
     # 3. source (fallback)
 
     # Try standalone binary first - works without Node.js
-    if download_standalone_binary; then
+    KEEP_PREV=1
+    local standalone_ok=0
+    download_standalone_binary && standalone_ok=1
+    KEEP_PREV=0
+    if [ "$standalone_ok" -eq 1 ]; then
         INSTALL_METHOD="binary"
-        # Download broker binary for workflow/SDK agent spawning
-        download_broker_binary || true
+        # Download broker binary for workflow/SDK agent spawning. A rejected
+        # broker (rc 2) rolls the CLI back; an unavailable one (rc 1) is fine.
+        local broker_rc=0
+        download_broker_binary || broker_rc=$?
+        if [ "$broker_rc" -eq 2 ]; then
+            abort_standalone_install
+        fi
+        rm -f "$INSTALL_DIR/bin/agent-relay.prev"
         # Install ACP bridge for Zed editor (requires Node.js)
         install_acp_bridge || true
         verify_installation && print_usage && track_event "install_completed" && exit 0
