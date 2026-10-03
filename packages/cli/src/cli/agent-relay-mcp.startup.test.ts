@@ -1371,10 +1371,25 @@ describe('createAgentRelayMcpServer', () => {
   });
 
   it.each([
-    { contract: 'readiness', output: { spawned: true } },
-    { contract: 'spawn confirmation', output: { ready: true } },
-    { contract: 'positive spawn confirmation', output: { spawned: false, ready: true } },
-  ])('does not report a raw CLI spawn without $contract proof', async ({ output }) => {
+    {
+      contract: 'readiness',
+      output: { spawned: true },
+      code: 'spawn_unconfirmed',
+      state: 'unconfirmed_may_be_running',
+    },
+    {
+      contract: 'spawn confirmation',
+      output: { ready: true },
+      code: 'spawn_unconfirmed',
+      state: 'unconfirmed_may_be_running',
+    },
+    {
+      contract: 'explicit negative spawn confirmation',
+      output: { spawned: false, ready: true },
+      code: 'spawn_failed',
+      state: 'failed',
+    },
+  ])('does not report a raw CLI spawn as ready without $contract proof', async ({ output, code, state }) => {
     const { mod, mocks } = await loadAgentRelayMcpModule();
     mod.createAgentRelayMcpServer({
       workspaceKey: 'rk_live_existing',
@@ -1399,8 +1414,8 @@ describe('createAgentRelayMcpServer', () => {
       isError: true,
       structuredContent: {
         error: {
-          code: 'spawn_failed',
-          state: 'failed',
+          code,
+          state,
           dispatchState: 'dispatched',
           invocationId: 'inv_1',
           node: 'registered-handler-node',
@@ -1773,7 +1788,7 @@ describe('createAgentRelayMcpServer', () => {
     });
   });
 
-  it('returns completed legacy add_agent results without readiness proof as an MCP error', async () => {
+  it('returns completed legacy add_agent results without readiness proof as unconfirmed', async () => {
     const { mod, mocks } = await loadAgentRelayMcpModule({
       workspaceSpawnResult: {
         invocation_id: 'inv_unproven',
@@ -1788,15 +1803,12 @@ describe('createAgentRelayMcpServer', () => {
       task: 'help',
     });
     expect(result).toMatchObject({
-      isError: true,
       structuredContent: {
-        ok: false,
-        error: {
-          code: 'spawn_failed',
-          state: 'failed',
+        invocation_id: 'inv_unproven',
+        placement: {
+          state: 'unconfirmed_may_be_running',
           invocationId: 'inv_unproven',
           dispatchState: 'dispatched',
-          receipt: { status: 'completed', invocation_id: 'inv_unproven' },
         },
       },
     });

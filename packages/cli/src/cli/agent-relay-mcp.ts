@@ -343,7 +343,7 @@ async function waitForVerifiedSpawn(
         continue;
       }
       const output = recordValue(record.output);
-      if (output.spawned !== true || output.ready !== true) {
+      if (output.spawned === false) {
         throw new VerifiedSpawnError(missingVerifiedSpawnProof(record, ack, current.invocationId), {
           code: 'spawn_failed',
           state: 'failed',
@@ -355,6 +355,22 @@ async function waitForVerifiedSpawn(
             current.node,
           receipt: record,
         });
+      }
+      if (output.spawned !== true || output.ready !== true) {
+        throw new VerifiedSpawnError(
+          `${missingVerifiedSpawnProof(record, ack, current.invocationId)} The worker may already be running; do not retry blindly.`,
+          {
+            code: 'spawn_unconfirmed',
+            state: 'unconfirmed_may_be_running',
+            dispatchState: dispatchStateForRecord(record, current.dispatchState),
+            invocationId: current.invocationId,
+            node:
+              invocationText(record, 'handlerNodeId', 'handler_node_id') ??
+              invocationText(record, 'dispatchedNodeId', 'dispatched_node_id') ??
+              current.node,
+            receipt: record,
+          }
+        );
       }
       return invocation;
     }

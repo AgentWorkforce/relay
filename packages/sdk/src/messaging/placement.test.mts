@@ -822,7 +822,7 @@ describe('RelaycastMessagingClient placement', () => {
       expect(ack.confirmation?.status).toBe('completed');
     });
 
-    it('does not report readiness without explicit spawned and ready proof', async () => {
+    it('reports an ambiguous completed spawn without readiness proof as unconfirmed', async () => {
       const { client } = createClient([LIVE_NODE_A], {
         getInvocation: async (name, invocationId) => ({
           invocation_id: invocationId,
@@ -843,11 +843,36 @@ describe('RelaycastMessagingClient placement', () => {
         .catch((caught: unknown) => caught);
 
       expect(error).toBeInstanceOf(RelayPlacementError);
-      expect((error as RelayPlacementError).code).toBe('spawn_failed');
-      expect((error as RelayPlacementError).state).toBe('failed');
+      expect((error as RelayPlacementError).code).toBe('spawn_unconfirmed');
+      expect((error as RelayPlacementError).state).toBe('unconfirmed_may_be_running');
       expect((error as RelayPlacementError).invocationId).toBeDefined();
       expect((error as RelayPlacementError).receipt).toMatchObject({ status: 'completed' });
       expect((error as Error).message).toContain('explicit spawned:true and ready:true proof');
+    });
+
+    it('keeps explicit spawned:false as a hard failure even when confirmation was requested', async () => {
+      const { client, invoke, getInvocation } = createClient([LIVE_NODE_A]);
+      invoke.mockResolvedValueOnce({
+        invocation_id: 'inv-explicit-no-spawn',
+        action_name: 'spawn',
+        status: 'completed',
+        output: { spawned: false },
+      } as never);
+
+      const error = await client.placement
+        .spawn({
+          capability: 'spawn:claude',
+          node: 'node-a',
+          confirm: true,
+          input: { name: 'worker-explicit-no-spawn' },
+        })
+        .catch((caught: unknown) => caught);
+
+      expect(error).toBeInstanceOf(RelayPlacementError);
+      expect((error as RelayPlacementError).code).toBe('spawn_failed');
+      expect((error as RelayPlacementError).state).toBe('failed');
+      expect((error as RelayPlacementError).invocationId).toBe('inv-explicit-no-spawn');
+      expect(getInvocation).not.toHaveBeenCalled();
     });
 
     // The sf-mini reproduction: capacity advertised, invocation accepted, no
@@ -1094,7 +1119,7 @@ describe('RelaycastMessagingClient placement', () => {
       expect((error as RelayPlacementError).dispatchState).toBe('unknown');
     });
 
-    it('rejects an immediate completed ack without explicit spawn/readiness proof by default', async () => {
+    it('reports an immediate completed ack without explicit spawn/readiness proof as unconfirmed', async () => {
       const { client, invoke } = createClient([LIVE_NODE_A]);
       invoke.mockResolvedValueOnce({
         invocation_id: 'inv-immediate-unproven-success',
@@ -1114,7 +1139,8 @@ describe('RelaycastMessagingClient placement', () => {
         .catch((caught: unknown) => caught);
 
       expect(error).toBeInstanceOf(RelayPlacementError);
-      expect((error as RelayPlacementError).code).toBe('spawn_failed');
+      expect((error as RelayPlacementError).code).toBe('spawn_unconfirmed');
+      expect((error as RelayPlacementError).state).toBe('unconfirmed_may_be_running');
       expect((error as RelayPlacementError).dispatchState).toBe('dispatched');
       expect((error as RelayPlacementError).invocationId).toBe('inv-immediate-unproven-success');
       expect((error as RelayPlacementError).receipt).toMatchObject({
