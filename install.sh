@@ -620,6 +620,27 @@ install_from_source() {
     info "Building..."
     npm run build
 
+    # Source builds put the broker under target/release, not bin/. Install
+    # that artifact into both paths used by the CLI and PATH lookup.
+    if [ -x "$INSTALL_DIR/target/release/agent-relay-broker" ]; then
+        mkdir -p "$INSTALL_DIR/bin" "$BIN_DIR"
+        # A plain local Cargo build reports the crate version (3.0.0), not
+        # the release version. Use it only if it was built with the release
+        # version embedded; otherwise download the matching release artifact.
+        local built_broker_version=""
+        built_broker_version=$("$INSTALL_DIR/target/release/agent-relay-broker" --version 2>/dev/null || true)
+        if [ "$built_broker_version" = "agent-relay-broker $VERSION" ] || [ "$built_broker_version" = "agent-relay-broker v$VERSION" ]; then
+            cp "$INSTALL_DIR/target/release/agent-relay-broker" "$INSTALL_DIR/bin/agent-relay-broker"
+            cp "$INSTALL_DIR/target/release/agent-relay-broker" "$BIN_DIR/agent-relay-broker"
+            chmod +x "$INSTALL_DIR/bin/agent-relay-broker" "$BIN_DIR/agent-relay-broker"
+        else
+            download_broker_binary || true
+        fi
+    else
+        # A build without Rust may still use the release broker artifact.
+        download_broker_binary || true
+    fi
+
     # Create wrapper script
     install_node_launcher "$INSTALL_DIR"
     prepend_bin_dir_to_path
@@ -652,8 +673,41 @@ verify_installation() {
     local installed_path="$BIN_DIR/agent-relay"
     local installed_version=""
     local original_path_command=""
+    local broker_path="$INSTALL_DIR/bin/agent-relay-broker"
+    local broker_version=""
 
-    if [ -x "$installed_path" ] && installed_version=$("$installed_path" --version 2>/dev/null); then
+    # The CLI and broker are one release. A failed broker download must not
+    # leave a previous broker behind while the installer reports success.
+    if [ ! -x "$broker_path" ]; then
+        error "Installation verification failed. Broker binary is missing at $broker_path"
+    fi
+    if ! broker_version=$("$broker_path" --version 2>/dev/null); then
+        error "Installation verification failed. Broker binary at $broker_path cannot report its version"
+    fi
+    case "$broker_version" in
+        "agent-relay-broker $VERSION"|"agent-relay-broker v$VERSION") ;;
+        *) error "Installation verification failed. Expected broker $VERSION, got $broker_version" ;;
+    esac
+
+    # Broker discovery may choose the PATH copy before the managed path.
+    # Both must be present and match, even if copying the download failed.
+    local path_broker="$BIN_DIR/agent-relay-broker"
+    local path_broker_version=""
+    if [ ! -x "$path_broker" ] || ! path_broker_version=$("$path_broker" --version 2>/dev/null); then
+        error "Installation verification failed. Broker binary is missing or unusable at $path_broker"
+    fi
+    case "$path_broker_version" in
+        "agent-relay-broker $VERSION"|"agent-relay-broker v$VERSION") ;;
+        *) error "Installation verification failed. Expected PATH broker $VERSION, got $path_broker_version" ;;
+    esac
+
+    # The Node CLI otherwise echoes AGENT_RELAY_VERSION ahead of its real
+    # installed package version. Clear that override only for the probe.
+    if [ -x "$installed_path" ] && installed_version=$(AGENT_RELAY_VERSION= "$installed_path" --version 2>/dev/null); then
+        case "$installed_version" in
+            "$VERSION"|"v$VERSION"|"agent-relay $VERSION"|"agent-relay v$VERSION") ;;
+            *) error "Installation verification failed. Expected CLI $VERSION, got $installed_version" ;;
+        esac
         success "agent-relay $installed_version installed successfully at $installed_path"
 
         original_path_command=$(resolve_command_in_path agent-relay "$ORIGINAL_PATH")
@@ -667,12 +721,6 @@ verify_installation() {
         elif [[ ":$ORIGINAL_PATH:" != *":$BIN_DIR:"* ]]; then
             setup_path "$ORIGINAL_PATH"
         fi
-        return 0
-    fi
-
-    if command -v agent-relay &> /dev/null; then
-        installed_version=$(agent-relay --version 2>/dev/null || echo "unknown")
-        success "agent-relay $installed_version installed successfully!"
         return 0
     fi
 
