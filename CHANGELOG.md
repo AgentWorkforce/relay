@@ -11,6 +11,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - `node agent list|spawn|new|release|set-model` and `node tail` accept `--state-dir`, `--broker-url`, and `--api-key`, so brokers started with `node up --state-dir` — such as fleet nodes — can be managed from any directory. Without these flags, `RELAY_BROKER_URL` / `RELAY_BROKER_API_KEY` or the enclosing project's broker is used.
 
+### Fixed
+
+- `--state-dir` on `node agent` commands, `node status`, and `node down` also accepts a fleet node directory whose broker state lives in `state/`.
+- An explicit `--state-dir` on `node agent` commands is no longer overridden by `RELAY_BROKER_URL` / `RELAY_BROKER_API_KEY`.
+- "No broker connection" errors name the path searched and whether it was the project default or `--state-dir`, instead of implying a running broker is down.
+- `node down --force --state-dir <dir>` can verify and stop brokers started from another working directory.
+- `node status` and `node down` name a missing broker identity record and how to create one.
+
+## [13.1.0] - 2026-10-03
+
 ### Changed
 
 - `npx -y @agent-relay/connect install` installs a signed standalone probe on a clean Mac without installing the GUI app.
@@ -19,11 +29,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - `agent-relay mcp` standalone binaries no longer dispatch each tool call twice.
 - MCP `send_dm` now forwards idempotency keys so keyed retries do not store duplicate messages.
-- `--state-dir` on `node agent` commands, `node status`, and `node down` also accepts a fleet node directory whose broker state lives in `state/`.
-- An explicit `--state-dir` on `node agent` commands is no longer overridden by `RELAY_BROKER_URL` / `RELAY_BROKER_API_KEY`.
-- "No broker connection" errors name the path searched and whether it was the project default or `--state-dir`, instead of implying a running broker is down.
-- `node down --force --state-dir <dir>` can verify and stop brokers started from another working directory.
-- `node status` and `node down` name a missing broker identity record and how to create one.
 - `@agent-relay/connect join` returns as soon as the probe admits the participant.
 - Timed-out or still-pending `@agent-relay/connect join` calls exit with status 8 and instruct the caller to retry the same request.
 
