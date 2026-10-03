@@ -106,6 +106,11 @@ function errorDetails(error) {
     connect_unavailable: ['Relay Connect cloud service is unavailable; retry once.', 8],
     connect_not_joined: ['This agent session has not joined a Relay Connect.', 4],
     connect_already_joined: ['This agent session is already in a different Relay Connect.', 5],
+    connect_join_pending: [
+      'A previous join has an unknown outcome; retry with the same link and options.',
+      8,
+    ],
+    connect_join_timeout: ['Relay Connect join timed out; retry the same join safely.', 8],
     connect_unreachable: ['Relay Connect cannot reach Cloud or Relaycast; retry once.', 8],
     agent_token_invalid: ['Relay Connect is over; run leave once to clear the local registration.', 3],
     not_a_relay_session: ['Run this command from a live Claude Code or Codex session.', 6],
@@ -221,24 +226,6 @@ async function run(options) {
       probe
     );
     delete body.host_claim;
-
-    if (response.data?.role !== 'host') {
-      const agentName = response.data?.agent_name;
-      const host = response.data?.host?.agent_name;
-      try {
-        if (!agentName || !host) throw new Error('Join response did not identify this agent and its host.');
-        requireOk(
-          await requestJson(probe.socketPath, {
-            method: 'POST',
-            path: `/connect/send?to=${encodeURIComponent(host)}`,
-            body: `${agentName} joined this Relay Connect and is ready to help.`,
-          })
-        );
-      } catch (error) {
-        const warning = errorDetails(error).message;
-        process.stderr.write(`Joined, but could not notify the host: ${warning}\n`);
-      }
-    }
 
     if (options.json) printJson(response);
     else process.stdout.write(`${joinSummary(response)}\n`);
