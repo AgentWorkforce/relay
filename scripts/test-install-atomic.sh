@@ -567,7 +567,7 @@ case "$url" in
 esac
 SHIMEOF
     chmod +x "$shim/curl"
-    ( cd "$ROOT" && env -u AGENT_RELAY_INSTALL_SOURCE_ONLY PATH="$shim:$PATH" SHIM_SIGNAL="$1" SHIM_FIX="$FIX" HOME="$HOME" \
+    ( cd "$ROOT" && env -u AGENT_RELAY_INSTALL_SOURCE_ONLY ${INSTALLER_SHELLOPTS:+SHELLOPTS="$INSTALLER_SHELLOPTS"} PATH="$shim:$PATH" SHIM_SIGNAL="$1" SHIM_FIX="$FIX" HOME="$HOME" \
         AGENT_RELAY_VERSION=1.2.3 AGENT_RELAY_INSTALL_DIR="$INSTALL_DIR" AGENT_RELAY_BIN_DIR="$BIN_DIR" \
         AGENT_RELAY_TELEMETRY_DISABLED=1 AGENT_RELAY_SMOKE_SECONDS=2 bash install.sh ) > "$WORK/sig.out" 2>&1
 }
@@ -606,6 +606,19 @@ copy_binary_atomic() { kill -TERM "$(cat "$WORK/main.pid")"; sleep 1; return 0; 
 ( sh -c 'echo $PPID' > "$WORK/main.pid"; export AGENT_RELAY_TELEMETRY_DISABLED=1; main ) > "$WORK/main.out" 2>&1; rc=$?
 eval "$orig_copy"
 sig_assert "TERM between the two broker copies"
+
+echo "== version probes cannot abort a rollback under inherited pipefail =="
+sig_setup crash
+printf '#!/bin/bash\nexit 1\n' > "$INSTALL_DIR/bin/agent-relay"; chmod +x "$INSTALL_DIR/bin/agent-relay"   # old CLI whose --version fails
+cp -p "$INSTALL_DIR/bin/agent-relay" "$WORK/oldcli.orig"
+printf '#!/bin/bash\nexit 1\n' > "$INSTALL_DIR/bin/agent-relay-broker"; chmod +x "$INSTALL_DIR/bin/agent-relay-broker"
+OLD_BROKER_HASH="$(sha256_of "$INSTALL_DIR/bin/agent-relay-broker")"
+INSTALLER_SHELLOPTS=pipefail run_installer_shim none; rc=$?
+INSTALLER_SHELLOPTS=
+check "pipefail: installer stopped with the rejection" test "$rc" -ne 0 && contains "$(cat "$WORK/sig.out")" "was rejected"
+check "pipefail: previous CLI restored" cmp -s "$INSTALL_DIR/bin/agent-relay" "$WORK/oldcli.orig"
+check "pipefail: launcher byte-identical" cmp -s "$BIN_DIR/agent-relay" "$WORK/launcher.orig"
+check "pipefail: old broker untouched" test "$(sha256_of "$INSTALL_DIR/bin/agent-relay-broker")" = "$OLD_BROKER_HASH"
 
 echo "== codesign missing / failing on macOS fails closed =="
 SAVED_OS="$OS"

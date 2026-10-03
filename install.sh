@@ -804,7 +804,7 @@ abort_standalone_install() {
     local old_broker="none installed"
 
     if [ -x "$broker" ]; then
-        old_broker="$("$broker" --version 2>/dev/null | head -n 1)"
+        old_broker="$( { "$broker" --version 2>/dev/null || true; } | head -n 1)"
         [ -n "$old_broker" ] || old_broker="unknown version"
     fi
     rollback_standalone
@@ -833,7 +833,8 @@ rollback_standalone() {
     local prev="${cli}.prev"
     if [ "$CLI_HAD_PREV" -eq 1 ] && [ -e "$prev" ]; then
         mv -f "$prev" "$cli"
-        ROLLBACK_OUTCOME="the previous CLI ($("$cli" --version 2>/dev/null | head -n 1)) was restored"
+        # version probes must never abort a rollback (set -e + inherited pipefail)
+        ROLLBACK_OUTCOME="the previous CLI ($( { "$cli" --version 2>/dev/null || true; } | head -n 1)) was restored"
     else
         rm -f "$cli"
         ROLLBACK_OUTCOME="the new CLI was removed (there was no previous install)"
