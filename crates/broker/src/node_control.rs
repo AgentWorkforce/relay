@@ -2011,6 +2011,12 @@ impl ApplicationLiveness {
     }
 
     fn track_inventory_sync(&mut self, frame: InventorySync) {
+        // A newer authoritative snapshot supersedes every older retry payload.
+        // Keep the probes for correlation/liveness, but never let an old frame
+        // apply after a later inventory update removed or changed an agent.
+        for pending in &mut self.pending_inventory_syncs {
+            pending.retry_at = None;
+        }
         self.pending_inventory_syncs
             .push_back(PendingInventorySync {
                 frame,
@@ -2157,8 +2163,20 @@ where
             return Some(false);
         }
         let mut d1_pressure_retry_attempts = 0u32;
+        let mut d1_pressure_retry_at: Option<Instant> = None;
         loop {
+            let registration_retry_delay = d1_pressure_retry_at
+                .map(|retry_at| retry_at.saturating_duration_since(Instant::now()));
+            let d1_pressure_retry =
+                tokio::time::sleep(registration_retry_delay.unwrap_or(deadline));
+            tokio::pin!(d1_pressure_retry);
             tokio::select! {
+                _ = &mut d1_pressure_retry, if registration_retry_delay.is_some() => {
+                    d1_pressure_retry_at = None;
+                    if send_wire(sink, &BrokerToRelaycast::NodeRegister(registration.clone())).await.is_err() {
+                        return Some(false);
+                    }
+                }
                 message = stream.next() => {
                     let Some(Ok(message)) = message else { return Some(false); };
                     match message {
@@ -2181,10 +2199,7 @@ where
                                                 retry_delay_ms = delay.as_millis(),
                                                 "retryable d1_pressure on node registration; retrying on the live control socket"
                                             );
-                                            tokio::time::sleep(delay).await;
-                                            if send_wire(sink, &BrokerToRelaycast::NodeRegister(registration.clone())).await.is_err() {
-                                                return Some(false);
-                                            }
+                                            d1_pressure_retry_at = Some(Instant::now() + delay);
                                         }
                                         RelaycastToBroker::Error(error) => {
                                             tracing::error!(code = %error.code, "node registration rejected; reconnecting without advertising delivery readiness");
@@ -4401,6 +4416,32 @@ mod tests {
     }
 
     #[test]
+    fn newer_inventory_snapshot_cancels_an_older_retry_payload() {
+        let mut liveness = ApplicationLiveness::new(Duration::from_secs(120));
+        let old = test_inventory_sync("inventory-old");
+        let new = test_inventory_sync("inventory-new");
+        let now = Instant::now();
+
+        liveness.track_inventory_sync(old);
+        assert_eq!(
+            liveness.schedule_d1_pressure_retry("inventory-old", now),
+            Some(Duration::from_secs(1))
+        );
+        liveness.track_inventory_sync(new.clone());
+
+        assert_eq!(liveness.take_due_retry(now + Duration::from_secs(1)), None);
+        assert!(liveness.reject("inventory-old"));
+        assert_eq!(
+            liveness.schedule_d1_pressure_retry("inventory-new", now),
+            Some(Duration::from_secs(1))
+        );
+        assert_eq!(
+            liveness.take_due_retry(now + Duration::from_secs(1)),
+            Some(new)
+        );
+    }
+
+    #[test]
     fn expire_agent_registrations_bounds_pending_map() {
         let created_at = Instant::now();
         let (reply_tx, mut reply_rx) = oneshot::channel();
@@ -4879,6 +4920,96 @@ mod tests {
             event_rx.try_recv().is_err(),
             "the control link must not disconnect"
         );
+        server.abort();
+    }
+
+    #[tokio::test]
+    async fn registration_d1_pressure_backoff_remains_shutdown_interruptible() {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let ws_url = format!("ws://{}/v1/node/ws", listener.local_addr().unwrap());
+        let (command_tx, mut command_rx) = mpsc::channel(1);
+        let (event_tx, _event_rx) = mpsc::channel(1);
+        let mut registration = Some(build_node_register(
+            &test_manifest(),
+            "node-test",
+            "host-test",
+            "broker/test",
+            None,
+        ));
+        let mut inventory = Vec::new();
+        let mut load = FleetLoadSnapshot {
+            active_agents: 0,
+            max_agents: 4,
+            handlers_live: true,
+            active_agent_names: Vec::new(),
+        };
+        let (pressure_sent_tx, pressure_sent_rx) = oneshot::channel();
+
+        let server = tokio::spawn(async move {
+            let (stream, _) = listener.accept().await.unwrap();
+            let mut ws = accept_async(stream).await.unwrap();
+            let register = match ws.next().await.unwrap().unwrap() {
+                Message::Text(text) => {
+                    match serde_json::from_str::<BrokerToRelaycast>(&text).unwrap() {
+                        BrokerToRelaycast::NodeRegister(register) => register,
+                        other => panic!("expected node.register, got {other:?}"),
+                    }
+                }
+                other => panic!("expected text node.register, got {other:?}"),
+            };
+            ws.send(Message::Text(
+                json!({
+                    "v": 1,
+                    "id": register.id,
+                    "type": "error",
+                    "ok": false,
+                    "code": "d1_pressure",
+                    "message": "Node liveness retry pending"
+                })
+                .to_string(),
+            ))
+            .await
+            .unwrap();
+            pressure_sent_tx.send(()).unwrap();
+            tokio::time::sleep(Duration::from_secs(1)).await;
+        });
+
+        let config = FleetControlConfig {
+            ws_url,
+            node_token: Some("nt_test".to_string()),
+            node_id: "node-test".to_string(),
+            node_name: "host-test".to_string(),
+            broker_version: "broker/test".to_string(),
+            token_minter: None,
+            session_token: None,
+            read_idle_timeout: None,
+            probe: None,
+            terminal_reconnect_tx: None,
+        };
+        let session = run_connected_once(
+            &config,
+            &mut command_rx,
+            &event_tx,
+            &mut registration,
+            &mut inventory,
+            &mut load,
+            Duration::from_secs(3_600),
+        );
+        let driver = async {
+            pressure_sent_rx.await.unwrap();
+            tokio::time::sleep(Duration::from_millis(100)).await;
+            command_tx
+                .send(FleetControlCommand::Shutdown)
+                .await
+                .unwrap();
+        };
+        let (result, ()) = tokio::time::timeout(Duration::from_millis(500), async {
+            tokio::join!(session, driver)
+        })
+        .await
+        .expect("shutdown must interrupt registration d1_pressure backoff");
+
+        assert_eq!(result, ControlRunResult::Shutdown);
         server.abort();
     }
 
