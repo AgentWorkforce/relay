@@ -86,8 +86,12 @@ jobs:
       - name: Install cross-compilation tools
         if: matrix.packages
         run: |
-          sudo apt-get update
-          sudo apt-get install -y ${{ matrix.packages }}
+          # These toolchains come from Ubuntu; unrelated runner feeds must not
+          # break their index refresh (for example a stale Chrome Packages.gz).
+          test -f /etc/apt/sources.list.d/ubuntu.sources
+          CI_APT_SOURCE_OPTIONS=(-o Dir::Etc::sourcelist=/etc/apt/sources.list.d/ubuntu.sources -o Dir::Etc::sourceparts=-)
+          sudo apt-get "${CI_APT_SOURCE_OPTIONS[@]}" update
+          sudo apt-get "${CI_APT_SOURCE_OPTIONS[@]}" install -y ${{ matrix.packages }}
       - name: Cross-compile agent-relay-broker
         run: cargo check --target ${{ matrix.target }} --bin agent-relay-broker
         env:
