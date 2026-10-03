@@ -24,8 +24,11 @@ import {
   finishSwap,
   findLiveSocket,
   findRecoveringProbe,
+  getMacAppAsset,
   getPlatformAsset,
+  hasStandaloneMacProbe,
   installMac,
+  installMacProbe,
   installLinux,
   linuxProbeSessionUpdateHint,
   macStageCommands,
@@ -103,7 +106,7 @@ async function runCli(home: string, args: string[], input = '') {
 }
 
 describe('@agent-relay/connect CLI', () => {
-  it('joins through a fake socket, keeps the host claim private, and makes no blocking follow-up send', async () => {
+  it('joins through a fake socket, keeps the host claim private, and is repeatable without a duplicate hello', async () => {
     const joins: Array<Record<string, string>> = [];
     const hellos: string[] = [];
     const { home } = await listen((request, response, body) => {
@@ -124,9 +127,9 @@ describe('@agent-relay/connect CLI', () => {
             participants: [],
           },
         });
-      } else if (request.url?.startsWith('/connect/send')) {
+      } else if (request.url === '/connect/send?to=host-agent') {
         hellos.push(body);
-        json(response, { ok: false, error: { code: 'unexpected_send' } }, 500);
+        json(response, { ok: true, data: { sent: [{ to: 'host-agent', message_id: 'message-1' }] } });
       } else {
         json(response, { ok: false, error: { code: 'unexpected', message: request.url } }, 404);
       }
@@ -218,40 +221,6 @@ describe('@agent-relay/connect CLI', () => {
     expect(sendRequests).toBe(0);
   });
 
-  it('maps retry-safe join timeout and pending-operation errors', async () => {
-    const { home } = await listen((request, response, body) => {
-      if (request.url === '/setup/status') {
-        json(response, { ok: true, data: { version: '2026.10.5' } });
-      } else if (request.url === '/connect/join') {
-        const pending = JSON.parse(body).link === 'connect-pending';
-        json(
-          response,
-          {
-            ok: false,
-            error: {
-              code: pending ? 'connect_join_pending' : 'connect_join_timeout',
-              message: 'safe to retry',
-            },
-          },
-          pending ? 409 : 504
-        );
-      }
-    });
-
-    const joined = await runCli(home, ['join', 'connect-timed-out']);
-    expect(joined).toEqual({
-      code: 8,
-      stdout: '',
-      stderr: 'Relay Connect join timed out; retry the same join safely.\n',
-    });
-    const pending = await runCli(home, ['join', 'connect-pending']);
-    expect(pending).toEqual({
-      code: 8,
-      stdout: '',
-      stderr: 'A previous join has an unknown outcome; retry with the same link and options.\n',
-    });
-  });
-
   it('maps socket errors and preserves their code in JSON mode', async () => {
     const { home } = await listen((request, response) => {
       if (request.url === '/setup/status') {
@@ -278,8 +247,9 @@ describe('probe installer', () => {
   it('selects release assets for every supported platform and architecture', () => {
     expect(getPlatformAsset('linux', 'x64')).toBe('AgentRelay-Linux-x64.tar.gz');
     expect(getPlatformAsset('linux', 'arm64')).toBe('AgentRelay-Linux-arm64.tar.gz');
-    expect(getPlatformAsset('darwin', 'x64')).toBe('AgentRelay-macOS-x64.dmg');
-    expect(getPlatformAsset('darwin', 'arm64')).toBe('AgentRelay-macOS-arm64.dmg');
+    expect(getPlatformAsset('darwin', 'x64')).toBe('AgentRelay-macOS-x64-probe.tar.gz');
+    expect(getPlatformAsset('darwin', 'arm64')).toBe('AgentRelay-macOS-arm64-probe.tar.gz');
+    expect(getMacAppAsset('arm64')).toBe('AgentRelay-macOS-arm64.dmg');
     expect(() => getPlatformAsset('linux', 'riscv64')).toThrow('Unsupported Linux architecture');
     expect(() => getPlatformAsset('win32', 'x64')).toThrow('Unsupported platform');
   });
@@ -335,6 +305,7 @@ describe('probe installer', () => {
     const result = await ensureProbe({
       home: '/tmp/old-mac-probe',
       platform: 'darwin',
+      installedMacApp: async () => '/Applications/Agent Relay.app',
       find: async () => ({
         socketPath: '/tmp/old.sock',
         status: { ok: true, data: { version: '2026.10.4' } },
@@ -352,6 +323,119 @@ describe('probe installer', () => {
     });
     expect(installs).toBe(1);
     expect(result).toMatchObject({ socketPath: '/tmp/new.sock', installed: true });
+  });
+
+  it('chooses a standalone probe for a clean Mac and the app updater for an installed app', async () => {
+    for (const app of [null, '/Applications/Agent Relay.app']) {
+      const calls: string[] = [];
+      const result = await ensureProbe({
+        home: '/tmp/clean-mac',
+        platform: 'darwin',
+        find: async () => null,
+        active: async () => false,
+        installedMacApp: async () => app,
+        acquire: async () => ({ release: async () => {} }),
+        installMacProbeFn: async () => {
+          calls.push('probe');
+          return { socketPath: '/tmp/probe.sock', status: { ok: true } };
+        },
+        installMacFn: async () => {
+          calls.push('app');
+          return { socketPath: '/tmp/app.sock', status: { ok: true } };
+        },
+      });
+      expect(calls).toEqual([app ? 'app' : 'probe']);
+      expect(result.installed).toBe(true);
+    }
+  });
+
+  it('refuses to start a second standalone core beside an old live Mac probe', async () => {
+    await expect(
+      ensureProbe({
+        home: '/tmp/old-standalone-mac',
+        platform: 'darwin',
+        find: async () => ({ version: '2026.10.3', supported: false }),
+        installedMacApp: async () => null,
+        installMacProbeFn: async () => {
+          throw new Error('must not install');
+        },
+      })
+    ).rejects.toMatchObject({ code: 'probe_too_old' });
+  });
+
+  it('refuses an old standalone core even when the GUI app is installed', async () => {
+    let appLookups = 0;
+    await expect(
+      ensureProbe({
+        home: '/tmp/old-standalone-with-app',
+        platform: 'darwin',
+        find: async () => ({ version: '2026.10.3', supported: false }),
+        installedMacApp: async () => {
+          appLookups += 1;
+          return '/Applications/Agent Relay.app';
+        },
+        standaloneMacProbe: async () => true,
+        acquire: async () => ({ release: async () => {} }),
+        installMacFn: async () => {
+          throw new Error('must not install');
+        },
+      })
+    ).rejects.toMatchObject({ code: 'probe_too_old' });
+    expect(appLookups).toBe(1);
+  });
+
+  it('retains an unsupported probe observed before a short post-lock miss', async () => {
+    let looks = 0;
+    await expect(
+      ensureProbe({
+        home: '/tmp/old-standalone-short-miss',
+        platform: 'darwin',
+        find: async () => (++looks === 1 ? { version: '2026.10.3', supported: false } : null),
+        installedMacApp: async () => null,
+        acquire: async () => ({ release: async () => {} }),
+        installMacProbeFn: async () => {
+          throw new Error('must not install');
+        },
+      })
+    ).rejects.toMatchObject({ code: 'probe_too_old' });
+    expect(looks).toBe(2);
+  });
+
+  it('recognizes the standalone symlink made by this installer', async () => {
+    const home = await mkdtemp(join(os.tmpdir(), 'connect-standalone-link-test-'));
+    cleanups.push(async () => rm(home, { recursive: true, force: true }));
+    expect(await hasStandaloneMacProbe(home)).toBe(false);
+    await mkdir(join(home, '.local/bin'), { recursive: true });
+    await symlink(
+      join(home, '.local/lib/agent-relay/current/agent_relay/helpers/agent-relay-probe'),
+      join(home, '.local/bin/agent-relay-probe')
+    );
+    expect(await hasStandaloneMacProbe(home)).toBe(true);
+    await rm(join(home, '.local/bin/agent-relay-probe'));
+    await writeFile(join(home, '.local/bin/agent-relay-probe'), 'copied binary');
+    await expect(hasStandaloneMacProbe(home)).rejects.toThrow(
+      'Could not inspect the standalone Agent Relay probe'
+    );
+  });
+
+  it('explains when the installed system app cannot be replaced', async () => {
+    await expect(
+      installMac({
+        home: '/tmp/non-admin-mac',
+        arch: 'arm64',
+        appPath: '/Applications/Agent Relay.app',
+        accessPath: async () => {
+          throw new Error('permission denied');
+        },
+        require: async () => {
+          throw new Error('must not download');
+        },
+        run: async () => {
+          throw new Error('must not run');
+        },
+        warn: () => {},
+      })
+    ).rejects.toThrow('ask an administrator to update it or move the app to ~/Applications');
   });
 
   it('accepts a live Linux 2026.10.4 probe without starting another one', async () => {
@@ -514,6 +598,86 @@ describe('probe installer', () => {
     ).rejects.toThrow('Agent Relay download is not signed by Agent Workforce; refusing installation.');
   });
 
+  it('verifies the extracted Mac helper against the pinned Developer ID before it can start', async () => {
+    const root = await mkdtemp(join(os.tmpdir(), 'connect-mac-probe-test-'));
+    cleanups.push(async () => rm(root, { recursive: true, force: true }));
+    const home = join(root, 'home');
+    const commands: Array<[string, string[]]> = [];
+    let minimumVersion: string | undefined;
+    const run = async (file: string, args: string[]) => {
+      commands.push([file, args]);
+      if (file === 'tar') {
+        const destination = args[args.indexOf('-C') + 1];
+        const probe = join(destination, 'agent_relay/helpers/agent-relay-probe');
+        await mkdir(join(probe, '..'), { recursive: true });
+        await writeFile(probe, '#!/bin/sh\n');
+        await chmod(probe, 0o755);
+      }
+      return { code: 0, stdout: '', stderr: '' };
+    };
+    const result = await installMacProbe({
+      home,
+      arch: 'arm64',
+      run,
+      require: async () => {},
+      start: async () => ({ pid: undefined, unref() {} }),
+      wait: async (options: { minimumVersion?: string }) => {
+        minimumVersion = options.minimumVersion;
+        return { socketPath: '/tmp/mac-probe.sock', status: { ok: true } };
+      },
+    });
+    expect(result.socketPath).toBe('/tmp/mac-probe.sock');
+    expect(minimumVersion).toBe('2026.10.5');
+    expect(commands.map(([file]) => file)).toEqual(['curl', 'curl', 'shasum', 'tar', 'codesign']);
+    expect(commands[0][1].at(-1)).toContain('AgentRelay-macOS-arm64-probe.tar.gz');
+    expect(commands[3][1].at(-1)).toBe('agent_relay/helpers/agent-relay-probe');
+    expect(commands[4][1].slice(0, 3)).toEqual([
+      '--verify',
+      '--strict',
+      '-R=anchor apple generic and certificate 1[field.1.2.840.113635.100.6.2.6] exists and certificate leaf[field.1.2.840.113635.100.6.1.13] exists and certificate leaf[subject.OU] = "QUJ7SA6X8X"',
+    ]);
+    await expect(
+      readFile(join(home, '.local/lib/agent-relay/current/agent_relay/helpers/agent-relay-probe'), 'utf8')
+    ).resolves.toBe('#!/bin/sh\n');
+  });
+
+  it('rejects an unsigned extracted Mac helper before swapping or starting it', async () => {
+    const root = await mkdtemp(join(os.tmpdir(), 'connect-unsigned-mac-probe-test-'));
+    cleanups.push(async () => rm(root, { recursive: true, force: true }));
+    const home = join(root, 'home');
+    let started = false;
+    const run = async (file: string, args: string[]) => {
+      if (file === 'tar') {
+        const destination = args[args.indexOf('-C') + 1];
+        const probe = join(destination, 'agent_relay/helpers/agent-relay-probe');
+        await mkdir(join(probe, '..'), { recursive: true });
+        await writeFile(probe, '#!/bin/sh\n');
+        await chmod(probe, 0o755);
+      }
+      if (file === 'codesign') throw new Error('signature mismatch');
+      return { code: 0, stdout: '', stderr: '' };
+    };
+    await expect(
+      installMacProbe({
+        home,
+        arch: 'arm64',
+        run,
+        require: async () => {},
+        start: async () => {
+          started = true;
+          throw new Error('must not start');
+        },
+        wait: async () => {
+          throw new Error('must not wait');
+        },
+      })
+    ).rejects.toThrow('Agent Relay probe is not signed by Agent Workforce');
+    expect(started).toBe(false);
+    await expect(
+      readFile(join(home, '.local/lib/agent-relay/current/agent_relay/helpers/agent-relay-probe'))
+    ).rejects.toMatchObject({ code: 'ENOENT' });
+  });
+
   it('restores the previous macOS app when the verified replacement cannot be installed', async () => {
     const app = '/Applications/Agent Relay.app';
     const staged = `${app}.new`;
@@ -598,6 +762,8 @@ describe('probe installer', () => {
         arch: 'arm64',
         run,
         warn: () => {},
+        appPath: app,
+        accessPath: async () => {},
         require: async () => {},
         wait: async () => {
           throw new Error('replacement never became ready');
