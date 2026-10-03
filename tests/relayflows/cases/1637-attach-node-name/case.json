@@ -1,0 +1,15 @@
+{
+  "version": 1,
+  "id": "1637-attach-node-name",
+  "kind": "bugfix",
+  "title": "Resolve a named fleet node before terminal-session creation",
+  "runner": {
+    "command": ["node", "tests/relayflows/cases/1637-attach-node-name/run.mjs"]
+  },
+  "requirements": [],
+  "timeoutSeconds": 900,
+  "expected": {
+    "base": { "outcome": "bug", "signature": "attach_posts_node_name" },
+    "head": { "outcome": "fixed", "signature": "attach_posts_stable_node_id" }
+  }
+}
