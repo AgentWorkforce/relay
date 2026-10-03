@@ -1325,6 +1325,7 @@ main() {
     # a later broker rejection must be able to put it back unchanged.
     LAUNCHER_BACKUP=""
     LAUNCHER_PRE=0
+    local skip_standalone=0
     if [ -e "$BIN_DIR/agent-relay" ] || [ -L "$BIN_DIR/agent-relay" ]; then
         LAUNCHER_PRE=1
         mkdir -p "$BIN_DIR"
@@ -1335,6 +1336,12 @@ main() {
                 rm -f "$MADE_TEMP"
             fi
         fi
+        if [ -z "$LAUNCHER_BACKUP" ]; then
+            # Without a backup a rollback could not restore the existing launcher,
+            # so do not replace it: skip the standalone install.
+            skip_standalone=1
+            warn "Could not back up the existing $BIN_DIR/agent-relay launcher (disk full or permissions?); not replacing it, skipping the standalone install."
+        fi
     fi
     CLI_PRE=0
     if [ -e "$INSTALL_DIR/bin/agent-relay" ] || [ -L "$INSTALL_DIR/bin/agent-relay" ]; then CLI_PRE=1; fi
@@ -1343,7 +1350,9 @@ main() {
     KEEP_PREV=1
     BACKUP_SUFFIX="$TXN_SUFFIX"
     local standalone_ok=0
-    download_standalone_binary && standalone_ok=1
+    if [ "$skip_standalone" -eq 0 ]; then
+        download_standalone_binary && standalone_ok=1
+    fi
     KEEP_PREV=0
     BACKUP_SUFFIX=""
     if [ "$standalone_ok" -eq 1 ]; then

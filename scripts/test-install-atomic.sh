@@ -656,6 +656,20 @@ for victim in agent-relay agent-relay-broker; do
     check "TERM during the read-back hash of $victim: BOTH broker locations are the old broker" both_brokers_old
 done
 
+echo "== an existing launcher whose backup fails is never replaced =="
+sig_setup ok
+orig_mtf="$(declare -f make_temp_file)"
+make_temp_file() { if [ "$2" = launcher ]; then return 1; fi; real_make_temp_file "$@"; }
+eval "$(printf '%s\n' "$orig_mtf" | sed '1s/make_temp_file/real_make_temp_file/')"
+orig_node="$(declare -f check_node)"
+check_node() { return 1; }     # never let this test reach a real npm install
+: > "$LOG"
+run_main; rc=$?
+eval "$orig_mtf"; eval "$orig_node"
+check "launcher backup failure: launcher untouched" cmp -s "$BIN_DIR/agent-relay" "$WORK/launcher.orig"
+check "launcher backup failure: CLI not replaced" test "$("$INSTALL_DIR/bin/agent-relay" --version)" = "1.0.0"
+check "launcher backup failure: reported" contains "$(cat "$LOG")" "Could not back up the existing"
+
 echo "== version probes cannot abort a rollback under inherited pipefail =="
 sig_setup crash
 printf '#!/bin/bash\nexit 1\n' > "$INSTALL_DIR/bin/agent-relay"; chmod +x "$INSTALL_DIR/bin/agent-relay"   # old CLI whose --version fails
