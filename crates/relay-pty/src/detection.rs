@@ -9,13 +9,36 @@ impl ActivityDetector {
     pub fn for_cli(cli: &str) -> Self {
         let lower = cli.to_lowercase();
         let patterns = if lower.contains("claude") {
-            vec!["⠋", "⠙", "⠹", "Tool:", "Read(", "Write(", "Edit("]
+            vec![
+                "⠋",
+                "⠙",
+                "⠹",
+                "Tool:",
+                "Read(",
+                "Write(",
+                "Edit(",
+                "esc to interrupt",
+            ]
         } else if lower.contains("codex") {
-            vec!["Thinking...", "Running:", "$ ", "function_call"]
+            // Current Codex renders `Working (… • esc to interrupt)` after a
+            // composer submission. Older builds used `Thinking...`/`Running:`.
+            // Keep both generations: this detector is acceptance evidence, so
+            // missing the current marker leaves a body parked while an echo is
+            // incorrectly treated as delivery success.
+            vec![
+                "Working",
+                "esc to interrupt",
+                "Thinking...",
+                "Running:",
+                "$ ",
+                "function_call",
+            ]
         } else if crate::readiness::is_devin_cli(cli) {
             vec!["Thinking ·", "Guide Devin while it works"]
         } else if lower.contains("gemini") {
             vec!["Generating", "Action:", "Executing"]
+        } else if lower.contains("opencode") {
+            vec!["Thinking", "Working", "tool"]
         } else {
             Vec::new()
         };
@@ -81,6 +104,13 @@ mod tests {
     #[test]
     fn detect_activity_for_codex_patterns() {
         let detector = ActivityDetector::for_cli("codex");
+        assert_eq!(
+            detector.detect_activity(
+                "Working (2s • esc to interrupt)",
+                "Relay message from Alice [evt_1]: hello"
+            ),
+            Some("Working".to_string())
+        );
         assert_eq!(
             detector.detect_activity(
                 "Thinking... running tool",

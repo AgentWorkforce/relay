@@ -245,6 +245,8 @@ public enum BrokerEvent: Sendable {
     case deliveryDropped(DeliveryDroppedEvent)
     case deliveryQueued(DeliveryStateEvent)
     case deliveryInjected(DeliveryStateEvent)
+    case deliveryUnconfirmed(DeliveryUnconfirmedEvent)
+    case deliveryResubmitted(DeliveryResubmittedEvent)
     case deliveryVerified(DeliveryStateEvent)
     case deliveryFailed(DeliveryFailedEvent)
     case deliveryActive(DeliveryStateEvent)
@@ -277,6 +279,8 @@ extension BrokerEvent: Codable {
         case "delivery_dropped": self = .deliveryDropped(try DeliveryDroppedEvent(from: decoder))
         case "delivery_queued": self = .deliveryQueued(try DeliveryStateEvent(from: decoder))
         case "delivery_injected": self = .deliveryInjected(try DeliveryStateEvent(from: decoder))
+        case "delivery_unconfirmed": self = .deliveryUnconfirmed(try DeliveryUnconfirmedEvent(from: decoder))
+        case "delivery_resubmitted": self = .deliveryResubmitted(try DeliveryResubmittedEvent(from: decoder))
         case "delivery_verified": self = .deliveryVerified(try DeliveryStateEvent(from: decoder))
         case "delivery_failed": self = .deliveryFailed(try DeliveryFailedEvent(from: decoder))
         case "delivery_active": self = .deliveryActive(try DeliveryStateEvent(from: decoder))
@@ -308,6 +312,8 @@ extension BrokerEvent: Codable {
         case .deliveryDropped(let value): try value.encode(to: encoder)
         case .deliveryQueued(let value): try value.encode(to: encoder)
         case .deliveryInjected(let value): try value.encode(to: encoder)
+        case .deliveryUnconfirmed(let value): try value.encode(to: encoder)
+        case .deliveryResubmitted(let value): try value.encode(to: encoder)
         case .deliveryVerified(let value): try value.encode(to: encoder)
         case .deliveryFailed(let value): try value.encode(to: encoder)
         case .deliveryActive(let value): try value.encode(to: encoder)
@@ -409,7 +415,9 @@ public struct RelayInboundEvent: Codable, Sendable { public var kind: String = "
 public struct WorkerStreamEvent: Codable, Sendable { public var kind: String = "worker_stream"; public var name: String; public var stream: String; public var chunk: String }
 public struct DeliveryRetryEvent: Codable, Sendable { public var kind: String = "delivery_retry"; public var name: String; public var deliveryId: String; public var eventId: String; public var attempts: Int; enum CodingKeys: String, CodingKey { case kind, name, attempts; case deliveryId = "delivery_id"; case eventId = "event_id" } }
 public struct DeliveryDroppedEvent: Codable, Sendable { public var kind: String = "delivery_dropped"; public var name: String; public var count: Int; public var reason: String }
-public struct DeliveryStateEvent: Codable, Sendable { public var kind: String; public var name: String; public var deliveryId: String; public var eventId: String; enum CodingKeys: String, CodingKey { case kind, name; case deliveryId = "delivery_id"; case eventId = "event_id" } }
+public struct DeliveryStateEvent: Codable, Sendable { public var kind: String; public var name: String; public var deliveryId: String; public var eventId: String; public var verification: String?; public var evidence: String?; public var attempts: Int?; enum CodingKeys: String, CodingKey { case kind, name, verification, evidence, attempts; case deliveryId = "delivery_id"; case eventId = "event_id" } }
+public struct DeliveryUnconfirmedEvent: Codable, Sendable { public var kind: String = "delivery_unconfirmed"; public var name: String; public var deliveryId: String; public var eventId: String; public var reason: String; public var attempts: Int; public var maxAttempts: Int; enum CodingKeys: String, CodingKey { case kind, name, reason, attempts; case deliveryId = "delivery_id"; case eventId = "event_id"; case maxAttempts = "max_attempts" } }
+public struct DeliveryResubmittedEvent: Codable, Sendable { public var kind: String = "delivery_resubmitted"; public var name: String; public var deliveryId: String; public var eventId: String; public var attempt: Int; public var strategy: String; enum CodingKeys: String, CodingKey { case kind, name, attempt, strategy; case deliveryId = "delivery_id"; case eventId = "event_id" } }
 public struct DeliveryFailedEvent: Codable, Sendable { public var kind: String = "delivery_failed"; public var name: String; public var deliveryId: String; public var eventId: String; public var reason: String; enum CodingKeys: String, CodingKey { case kind, name, reason; case deliveryId = "delivery_id"; case eventId = "event_id" } }
 public struct WorkerReadyEvent: Codable, Sendable { public var kind: String = "worker_ready"; public var name: String; public var runtime: AgentRuntime; public var provider: HeadlessProvider?; public var cli: String?; public var model: String?; public var sessionId: String?; enum CodingKeys: String, CodingKey { case kind, name, runtime, provider, cli, model; case sessionId = "session_id" } }
 public struct WorkerErrorEvent: Codable, Sendable { public var kind: String = "worker_error"; public var name: String; public var code: String; public var message: String }

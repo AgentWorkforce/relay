@@ -11,6 +11,8 @@
     "agent_permanently_dead",
     "agent_context_low",
     "agent_blocked_on_send",
+    "delivery_unconfirmed",
+    "delivery_resubmitted",
     "delivery_verified",
     "delivery_failed",
     "message_delivery_confirmed",

@@ -613,9 +613,28 @@ export type BrokerEvent =
       name: string;
       delivery_id: string;
       event_id: string;
-      /** 'echo' when confirmed in PTY output, 'timeout_fallback' when acked unverified. */
+      /** 'harness_acceptance' when activity or a cleared composer proves turn acceptance. */
       verification?: string;
       reason?: string;
+      evidence?: string;
+      attempts?: number;
+    }
+  | {
+      kind: 'delivery_unconfirmed';
+      name: string;
+      delivery_id: string;
+      event_id: string;
+      reason: string;
+      attempts: number;
+      max_attempts: number;
+    }
+  | {
+      kind: 'delivery_resubmitted';
+      name: string;
+      delivery_id: string;
+      event_id: string;
+      attempt: number;
+      strategy: string;
     }
   | {
       kind: 'delivery_failed';
@@ -838,7 +857,33 @@ export type WorkerToBroker =
     }
   | {
       type: 'delivery_verified';
-      payload: { delivery_id: string; event_id: string; verification?: string; reason?: string };
+      payload: {
+        delivery_id: string;
+        event_id: string;
+        verification?: string;
+        reason?: string;
+        evidence?: string;
+        attempts?: number;
+      };
+    }
+  | {
+      type: 'delivery_unconfirmed';
+      payload: {
+        delivery_id: string;
+        event_id: string;
+        reason: string;
+        attempts: number;
+        max_attempts: number;
+      };
+    }
+  | {
+      type: 'delivery_resubmitted';
+      payload: {
+        delivery_id: string;
+        event_id: string;
+        attempt: number;
+        strategy: string;
+      };
     }
   | {
       type: 'delivery_failed';

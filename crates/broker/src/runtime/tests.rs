@@ -4322,6 +4322,25 @@ fn worker_reported_delivery_failures_use_the_dead_letter_path() {
 }
 
 #[test]
+fn unconfirmed_pty_delivery_is_visible_as_blocked_on_send() {
+    let source = include_str!("worker_events.rs");
+    let branch = source
+        .split("msg_type == \"delivery_unconfirmed\"")
+        .nth(1)
+        .expect("worker_events.rs must handle delivery_unconfirmed");
+    let branch = &branch[..branch
+        .find("msg_type == \"delivery_verified\"")
+        .expect("unconfirmed handling must precede verified handling")];
+    assert!(branch.contains("delivery_resubmitted"));
+    assert!(branch.contains("AgentWorkState::BlockedOnSend"));
+    assert!(branch.contains("send_event"));
+
+    let inventory_source = include_str!("../worker.rs");
+    assert!(inventory_source.contains("\"current_state\": handle.state.as_str()"));
+    assert!(inventory_source.contains("\"pending_messages\""));
+}
+
+#[test]
 fn contract_broadcast_whitelist_fixture_requires_filtering_to_required_kinds() {
     let event_fixture: Value = serde_json::from_str(include_str!(
         "../../../../packages/contracts/fixtures/event-fixtures.json"

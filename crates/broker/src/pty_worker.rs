@@ -28,11 +28,10 @@ use tokio::{
 use crate::broker::{
     continuity::parse_continuity_command,
     delivery_verification::{
-        current_timestamp_ms, delivery_injected_event_payload, delivery_queued_event_payload,
-        pending_verification_echo_seen, queue_or_take_confirmed_verification,
-        queue_or_take_detected_activity, DeliveryOutcome, PendingActivity, PendingVerification,
-        ThrottleState, VerificationOutput, ACTIVITY_BUFFER_KEEP_BYTES, ACTIVITY_BUFFER_MAX_BYTES,
-        ACTIVITY_WINDOW, VERIFICATION_WINDOW,
+        assess_harness_acceptance, current_timestamp_ms, delivery_injected_event_payload,
+        delivery_queued_event_payload, DeliveryOutcome, HarnessAcceptance, PendingActivity,
+        PendingVerification, ThrottleState, VerificationOutput, ACTIVITY_BUFFER_KEEP_BYTES,
+        ACTIVITY_BUFFER_MAX_BYTES, ACTIVITY_WINDOW, MAX_VERIFICATION_ATTEMPTS, VERIFICATION_WINDOW,
     },
     injection_format::{format_injection_for_worker_with_workspace, McpReminderThrottle},
 };
@@ -46,7 +45,8 @@ use crate::util::terminal::{detect_claude_trust_prompt, detect_codex_trust_promp
 use crate::util::utf8_stream::Utf8StreamDecoder;
 use crate::worker::detection::ActivityDetector;
 use crate::wrap::{
-    submit_injection_body, warn_on_auto_response_write, PtyAutoState, AUTO_SUGGESTION_BLOCK_TIMEOUT,
+    submit_injection_body, submit_injection_recovery, warn_on_auto_response_write, PtyAutoState,
+    AUTO_SUGGESTION_BLOCK_TIMEOUT,
 };
 use base64::Engine;
 
@@ -181,6 +181,10 @@ struct ActiveInjection {
     /// delivery and must never turn into an allowance the next queued relay
     /// message can spend.
     targeted_hold_exemption: bool,
+    /// Human PTY input generation when this automated write started. A later
+    /// generation transfers composer ownership to the human and cancels
+    /// automatic verification/recovery.
+    human_input_generation: u64,
 }
 
 /// Result of an in-flight `write_pty` awaiting the PTY drainer: the request id
@@ -196,6 +200,14 @@ type PtyWriteAck = (
 /// Boxed future stored in the `pending_pty_writes` [`FuturesUnordered`]. Boxed
 /// because each `async move` block is a distinct anonymous type.
 type PtyWriteAckFuture = Pin<Box<dyn Future<Output = PtyWriteAck> + Send>>;
+
+type RecoveryWriteAck = (
+    PendingVerification,
+    u64,
+    u64,
+    Result<std::io::Result<()>, tokio::sync::oneshot::error::RecvError>,
+);
+type RecoveryWriteAckFuture = Pin<Box<dyn Future<Output = RecoveryWriteAck> + Send>>;
 
 fn cli_basename(command: &str) -> &str {
     command
@@ -1003,6 +1015,12 @@ pub(crate) async fn run_pty_worker(cmd: PtyCommand) -> Result<()> {
     // predictive-echo rollback). Draining lives in its own select arm so the
     // loop keeps forwarding PTY output and handling input while writes settle.
     let mut pending_pty_writes: FuturesUnordered<PtyWriteAckFuture> = FuturesUnordered::new();
+    // Submit-key recovery is tracked separately from initial body writes. The
+    // body is never replayed; each future owns the verification record until
+    // the drainer proves the recovery key reached the child.
+    let mut pending_recovery_writes: FuturesUnordered<RecoveryWriteAckFuture> =
+        FuturesUnordered::new();
+    let mut human_input_generation = 0u64;
     let mut startup_output = String::new();
     let mut startup_total_bytes = 0usize;
     let mut init_request_id: Option<RequestId> = None;
@@ -1336,7 +1354,24 @@ pub(crate) async fn run_pty_worker(cmd: PtyCommand) -> Result<()> {
                                 // child process sees the keystrokes.
                                 match frame.payload.get("data").and_then(Value::as_str) {
                                     Some(data) => {
+                                        human_input_generation = human_input_generation.saturating_add(1);
                                         if let Some(cancel) = &initial_injection_cancel { cancel.store(true, Ordering::Relaxed); }
+                                        // Once a human writes into the PTY we can
+                                        // no longer distinguish the broker body
+                                        // from their partial composer text. Give
+                                        // the human ownership and terminate every
+                                        // pending automatic verification without
+                                        // pressing a recovery key.
+                                        while let Some(pv) = pending_verifications.pop_front() {
+                                            let delivery_id = pv.delivery_id.clone();
+                                            let _ = send_frame(&out_tx, "delivery_failed", None, json!({
+                                                "delivery_id": delivery_id,
+                                                "event_id": pv.event_id,
+                                                "reason": "human PTY input took ownership before harness acceptance",
+                                                "attempts": pv.attempts,
+                                            })).await;
+                                            pending_worker_delivery_ids.remove(&delivery_id);
+                                        }
                                         // Non-blocking submission: never parks the
                                         // select loop even if the drainer is wedged
                                         // behind a child that stopped reading stdin.
@@ -1764,23 +1799,34 @@ pub(crate) async fn run_pty_worker(cmd: PtyCommand) -> Result<()> {
                             }
                         }
 
-                        // Check pending verifications against new output
+                        // Terminal echo only proves that the editor received the
+                        // body. Confirm delivery only after the harness starts a
+                        // turn (activity marker) or the echoed body has left a
+                        // proven idle composer.
+                        let snapshot = Snapshot::capture(&pty);
                         let mut verified_indices = Vec::new();
-                        for (i, pv) in pending_verifications.iter().enumerate() {
-                            if pending_verification_echo_seen(&echo_buffer, pv) {
-                                verified_indices.push(i);
+                        for (i, pv) in pending_verifications.iter_mut().enumerate() {
+                            pv.observe(&echo_buffer, &clean_text);
+                            if let HarnessAcceptance::Accepted(evidence) =
+                                assess_harness_acceptance(&resolved_cli, pv, &snapshot)
+                            {
+                                verified_indices.push((i, evidence));
                             }
                         }
-                        // Remove verified entries in reverse order to preserve indices
-                        for &i in verified_indices.iter().rev() {
+                        // Remove verified entries in reverse order to preserve indices.
+                        for (i, evidence) in verified_indices.into_iter().rev() {
                             let pv = pending_verifications.remove(i).unwrap();
                             let delivery_id = pv.delivery_id.clone();
                             let event_id = pv.event_id.clone();
                             tracing::debug!(
                                 delivery_id = %delivery_id,
                                 attempts = pv.attempts,
-                                "delivery echo verified"
+                                evidence = %evidence,
+                                "delivery accepted by harness"
                             );
+                            let activity_pattern = evidence
+                                .strip_prefix("activity:")
+                                .map(str::to_string);
                             let _ = send_frame(
                                 &out_tx,
                                 "delivery_ack",
@@ -1798,20 +1844,25 @@ pub(crate) async fn run_pty_worker(cmd: PtyCommand) -> Result<()> {
                                 json!({
                                     "delivery_id": delivery_id,
                                     "event_id": event_id,
-                                    "verification": "echo"
+                                    "verification": "harness_acceptance",
+                                    "evidence": evidence,
+                                    "attempts": pv.attempts,
                                 }),
                             )
                             .await;
                             throttle.record(DeliveryOutcome::Success);
-                            if let Some(detector) = activity_detector.as_ref() {
-                                pending_activities.push_back(PendingActivity {
-                                    delivery_id: delivery_id.clone(),
-                                    event_id: event_id.clone(),
-                                    expected_echo: pv.expected_echo,
-                                    verified_at: Instant::now(),
-                                    output_buffer: String::new(),
-                                    detector: detector.clone(),
-                                });
+                            if let Some(pattern) = activity_pattern {
+                                let _ = send_frame(
+                                    &out_tx,
+                                    "delivery_active",
+                                    None,
+                                    json!({
+                                        "delivery_id": delivery_id,
+                                        "event_id": event_id,
+                                        "pattern": pattern,
+                                    }),
+                                )
+                                .await;
                             }
                             pending_worker_delivery_ids.remove(&delivery_id);
                             completed_worker_deliveries.insert(delivery_id, event_id);
@@ -1956,6 +2007,7 @@ pub(crate) async fn run_pty_worker(cmd: PtyCommand) -> Result<()> {
             // stay parked (not dropped) until the human releases the drive.
             _ = pending_injection_interval.tick() => {
                 if !crate::devin::can_inject(&resolved_cli, &pty) { continue; }
+                if !pending_recovery_writes.is_empty() { continue; }
                 if let Some(index) = next_injection_index(
                     &pending_worker_injections,
                     active_injection.is_some(),
@@ -1981,6 +2033,7 @@ pub(crate) async fn run_pty_worker(cmd: PtyCommand) -> Result<()> {
                                 output_boundary: None,
                                 hold_exempt,
                                 targeted_hold_exemption,
+                                human_input_generation,
                             });
                         }
                     }
@@ -2204,6 +2257,17 @@ pub(crate) async fn run_pty_worker(cmd: PtyCommand) -> Result<()> {
                         })).await;
                         continue;
                     }
+                    if inj.human_input_generation != human_input_generation {
+                        let delivery_id = inj.pending.delivery.delivery_id.clone();
+                        let _ = send_frame(&out_tx, "delivery_failed", None, json!({
+                            "delivery_id": delivery_id,
+                            "event_id": inj.pending.delivery.event_id,
+                            "reason": "human PTY input took ownership during injection",
+                        })).await;
+                        pending_worker_delivery_ids.remove(&delivery_id);
+                        throttle.record(DeliveryOutcome::Failed);
+                        continue;
+                    }
                     match injection_ack_outcome(inj.stage, confirmed) {
                         InjectionAckOutcome::Finalize => {
                             // Body+Enter confirmed on the child: only now is
@@ -2222,11 +2286,12 @@ pub(crate) async fn run_pty_worker(cmd: PtyCommand) -> Result<()> {
                             .await;
                             pty_auto.note_completed_injection(&resolved_cli);
 
-                            // Queue echo verification against the confirmed body,
-                            // or confirm immediately when the echo raced ahead of
-                            // this ack while Claude's delayed Enter was pending.
+                            // Seed harness verification with any output that
+                            // raced ahead of this ack. Echo alone is not an ack:
+                            // the live screen must show activity or a cleared
+                            // composer before broker custody is released.
                             let injection = inj.injection_text.take().unwrap_or_default();
-                            let verification = PendingVerification {
+                            let mut verification = PendingVerification {
                                 delivery_id: inj.pending.delivery.delivery_id.clone(),
                                 event_id: inj.pending.delivery.event_id.clone(),
                                 expected_echo: injection,
@@ -2235,26 +2300,39 @@ pub(crate) async fn run_pty_worker(cmd: PtyCommand) -> Result<()> {
                                     .unwrap_or_else(|| echo_buffer.boundary()),
                                 injected_at: Instant::now(),
                                 attempts: 1,
-                                max_attempts: 1,
+                                max_attempts: MAX_VERIFICATION_ATTEMPTS,
                                 request_id: inj.pending.request_id,
                                 workspace_id: inj.pending.delivery.workspace_id.clone(),
                                 workspace_alias: inj.pending.delivery.workspace_alias.clone(),
                                 from: inj.pending.delivery.from,
                                 body: inj.pending.delivery.body,
                                 target: inj.pending.delivery.target,
+                                echo_seen: false,
+                                activity_buffer: String::new(),
+                                detector: ActivityDetector::for_cli(&resolved_cli),
                             };
-                            if let Some(pv) = queue_or_take_confirmed_verification(
-                                verification,
-                                &echo_buffer,
-                                &mut pending_verifications,
-                            ) {
+                            let raced_output = echo_buffer
+                                .since(verification.output_boundary)
+                                .into_owned();
+                            verification.observe(&echo_buffer, &raced_output);
+                            let acceptance = assess_harness_acceptance(
+                                &resolved_cli,
+                                &verification,
+                                &Snapshot::capture(&pty),
+                            );
+                            if let HarnessAcceptance::Accepted(evidence) = acceptance {
+                                let pv = verification;
                                 let delivery_id = pv.delivery_id.clone();
                                 let event_id = pv.event_id.clone();
                                 tracing::debug!(
                                     delivery_id = %delivery_id,
                                     attempts = pv.attempts,
-                                    "delivery echo verified before write ack was processed"
+                                    evidence = %evidence,
+                                    "delivery accepted before write ack was processed"
                                 );
+                                let activity_pattern = evidence
+                                    .strip_prefix("activity:")
+                                    .map(str::to_string);
                                 let _ = send_frame(
                                     &out_tx,
                                     "delivery_ack",
@@ -2272,40 +2350,30 @@ pub(crate) async fn run_pty_worker(cmd: PtyCommand) -> Result<()> {
                                     json!({
                                         "delivery_id": delivery_id,
                                         "event_id": event_id,
-                                        "verification": "echo"
+                                        "verification": "harness_acceptance",
+                                        "evidence": evidence,
+                                        "attempts": pv.attempts,
                                     }),
                                 )
                                 .await;
                                 throttle.record(DeliveryOutcome::Success);
-                                if let Some(detector) = activity_detector.as_ref() {
-                                    if let Some((activity, pattern)) = queue_or_take_detected_activity(
-                                        &pv,
-                                        &echo_buffer,
-                                        detector,
-                                        &mut pending_activities,
-                                    ) {
-                                        tracing::debug!(
-                                            target: "agent_relay::worker::pty",
-                                            delivery_id = %activity.delivery_id,
-                                            event_id = %activity.event_id,
-                                            pattern = %pattern,
-                                            "delivery activity detected before write ack was processed"
-                                        );
-                                        let _ = send_frame(
-                                            &out_tx,
-                                            "delivery_active",
-                                            None,
-                                            json!({
-                                                "delivery_id": activity.delivery_id,
-                                                "event_id": activity.event_id,
-                                                "pattern": pattern,
-                                            }),
-                                        )
-                                        .await;
-                                    }
+                                if let Some(pattern) = activity_pattern {
+                                    let _ = send_frame(
+                                        &out_tx,
+                                        "delivery_active",
+                                        None,
+                                        json!({
+                                            "delivery_id": delivery_id,
+                                            "event_id": event_id,
+                                            "pattern": pattern,
+                                        }),
+                                    )
+                                    .await;
                                 }
                                 pending_worker_delivery_ids.remove(&delivery_id);
                                 completed_worker_deliveries.insert(delivery_id, event_id);
+                            } else {
+                                pending_verifications.push_back(verification);
                             }
                             // active_injection remains None: injection complete.
                         }
@@ -2333,6 +2401,107 @@ pub(crate) async fn run_pty_worker(cmd: PtyCommand) -> Result<()> {
                             );
                             pending_worker_injections.push_front(inj.pending);
                         }
+                    }
+                }
+            }
+
+            // Settle submit-key-only recovery writes without blocking PTY
+            // output or human input. A failed recovery is terminal because the
+            // body may already be in the composer and must never be replayed.
+            Some((mut pv, output_boundary, submitted_generation, ack)) = pending_recovery_writes.next(),
+                if !pending_recovery_writes.is_empty() => {
+                let delivery_id = pv.delivery_id.clone();
+                let event_id = pv.event_id.clone();
+                if submitted_generation != human_input_generation {
+                    let _ = send_frame(&out_tx, "delivery_failed", None, json!({
+                        "delivery_id": delivery_id,
+                        "event_id": event_id,
+                        "reason": "human PTY input took ownership during submit recovery",
+                        "attempts": pv.attempts,
+                    })).await;
+                    throttle.record(DeliveryOutcome::Failed);
+                    pending_worker_delivery_ids.remove(&delivery_id);
+                    continue;
+                }
+                match ack {
+                    Ok(Ok(())) => {
+                        pv.output_boundary = output_boundary;
+                        pv.injected_at = Instant::now();
+                        pv.activity_buffer.clear();
+                        let raced_output = echo_buffer.since(output_boundary).into_owned();
+                        pv.observe(&echo_buffer, &raced_output);
+                        match assess_harness_acceptance(
+                            &resolved_cli,
+                            &pv,
+                            &Snapshot::capture(&pty),
+                        ) {
+                            HarnessAcceptance::Accepted(evidence) => {
+                                let activity_pattern = evidence
+                                    .strip_prefix("activity:")
+                                    .map(str::to_string);
+                                let _ = send_frame(
+                                    &out_tx,
+                                    "delivery_ack",
+                                    pv.request_id.clone(),
+                                    json!({ "delivery_id": delivery_id, "event_id": event_id }),
+                                )
+                                .await;
+                                let _ = send_frame(
+                                    &out_tx,
+                                    "delivery_verified",
+                                    None,
+                                    json!({
+                                        "delivery_id": delivery_id,
+                                        "event_id": event_id,
+                                        "verification": "harness_acceptance",
+                                        "evidence": evidence,
+                                        "attempts": pv.attempts,
+                                    }),
+                                )
+                                .await;
+                                if let Some(pattern) = activity_pattern {
+                                    let _ = send_frame(
+                                        &out_tx,
+                                        "delivery_active",
+                                        None,
+                                        json!({
+                                            "delivery_id": delivery_id,
+                                            "event_id": event_id,
+                                            "pattern": pattern,
+                                        }),
+                                    )
+                                    .await;
+                                }
+                                throttle.record(DeliveryOutcome::Success);
+                                pending_worker_delivery_ids.remove(&delivery_id);
+                                completed_worker_deliveries.insert(delivery_id, event_id);
+                            }
+                            HarnessAcceptance::Parked | HarnessAcceptance::Inconclusive => {
+                                pending_verifications.push_back(pv);
+                            }
+                        }
+                    }
+                    Ok(Err(error)) => {
+                        let reason = format!("submit recovery write failed: {error}");
+                        let _ = send_frame(&out_tx, "delivery_failed", None, json!({
+                            "delivery_id": delivery_id,
+                            "event_id": event_id,
+                            "reason": reason,
+                            "attempts": pv.attempts,
+                        })).await;
+                        throttle.record(DeliveryOutcome::Failed);
+                        pending_worker_delivery_ids.remove(&delivery_id);
+                    }
+                    Err(_) => {
+                        let reason = "submit recovery drainer exited before acknowledging the key";
+                        let _ = send_frame(&out_tx, "delivery_failed", None, json!({
+                            "delivery_id": delivery_id,
+                            "event_id": event_id,
+                            "reason": reason,
+                            "attempts": pv.attempts,
+                        })).await;
+                        throttle.record(DeliveryOutcome::Failed);
+                        pending_worker_delivery_ids.remove(&delivery_id);
                     }
                 }
             }
@@ -2367,43 +2536,140 @@ pub(crate) async fn run_pty_worker(cmd: PtyCommand) -> Result<()> {
                 let mut i = 0;
                 while i < pending_verifications.len() {
                     if pending_verifications[i].injected_at.elapsed() >= verification_window {
-                        let pv = pending_verifications.remove(i).unwrap();
+                        let mut pv = pending_verifications.remove(i).unwrap();
                         let delivery_id = pv.delivery_id.clone();
                         let event_id = pv.event_id.clone();
-                        // Do not re-inject on verification timeout. Re-injection can duplicate
-                        // already-delivered messages when terminal echo parsing is noisy.
-                        tracing::info!(
-                            delivery_id = %delivery_id,
-                            attempts = pv.attempts,
-                            "delivery echo not detected within verification window; acknowledging via timeout fallback (unverified)"
-                        );
-                        let _ = send_frame(
-                            &out_tx,
-                            "delivery_ack",
-                            pv.request_id.clone(),
-                            json!({
-                                "delivery_id": delivery_id,
-                                "event_id": event_id
-                            }),
-                        )
-                        .await;
-                        let _ = send_frame(
-                            &out_tx,
-                            "delivery_verified",
-                            pv.request_id.clone(),
-                            json!({
-                                "delivery_id": delivery_id,
-                                "event_id": event_id,
-                                "verification": "timeout_fallback",
-                                "reason": format!("echo not detected within {}s window", verification_window.as_secs())
-                            }),
-                        )
-                        .await;
-                        // Timeout-fallback acks are not verified deliveries:
-                        // keep them out of the throttle's success signal.
-                        throttle.record(DeliveryOutcome::Unverified);
-                        pending_worker_delivery_ids.remove(&delivery_id);
-                        completed_worker_deliveries.insert(delivery_id, event_id);
+                        match assess_harness_acceptance(
+                            &resolved_cli,
+                            &pv,
+                            &Snapshot::capture(&pty),
+                        ) {
+                            HarnessAcceptance::Accepted(evidence) => {
+                                let activity_pattern = evidence
+                                    .strip_prefix("activity:")
+                                    .map(str::to_string);
+                                let _ = send_frame(
+                                    &out_tx,
+                                    "delivery_ack",
+                                    pv.request_id.clone(),
+                                    json!({ "delivery_id": delivery_id, "event_id": event_id }),
+                                )
+                                .await;
+                                let _ = send_frame(
+                                    &out_tx,
+                                    "delivery_verified",
+                                    None,
+                                    json!({
+                                        "delivery_id": delivery_id,
+                                        "event_id": event_id,
+                                        "verification": "harness_acceptance",
+                                        "evidence": evidence,
+                                        "attempts": pv.attempts,
+                                    }),
+                                )
+                                .await;
+                                if let Some(pattern) = activity_pattern {
+                                    let _ = send_frame(
+                                        &out_tx,
+                                        "delivery_active",
+                                        None,
+                                        json!({
+                                            "delivery_id": delivery_id,
+                                            "event_id": event_id,
+                                            "pattern": pattern,
+                                        }),
+                                    )
+                                    .await;
+                                }
+                                throttle.record(DeliveryOutcome::Success);
+                                pending_worker_delivery_ids.remove(&delivery_id);
+                                completed_worker_deliveries.insert(delivery_id, event_id);
+                            }
+                            HarnessAcceptance::Parked
+                                if pv.attempts < pv.max_attempts
+                                    && !pty_auto.interactive_hold
+                                    && pending_pty_writes.is_empty()
+                                    && active_injection.is_none()
+                                    && pending_recovery_writes.is_empty() =>
+                            {
+                                let _ = send_frame(
+                                    &out_tx,
+                                    "delivery_unconfirmed",
+                                    None,
+                                    json!({
+                                        "delivery_id": delivery_id,
+                                        "event_id": event_id,
+                                        "reason": "body remains parked in the live composer",
+                                        "attempts": pv.attempts,
+                                        "max_attempts": pv.max_attempts,
+                                    }),
+                                )
+                                .await;
+                                match submit_injection_recovery(&pty, &resolved_cli, pv.attempts) {
+                                    Ok((ack_rx, output_boundary)) => {
+                                        pv.attempts += 1;
+                                        let _ = send_frame(
+                                            &out_tx,
+                                            "delivery_resubmitted",
+                                            None,
+                                            json!({
+                                                "delivery_id": delivery_id,
+                                                "event_id": event_id,
+                                                "attempt": pv.attempts,
+                                                "strategy": "submit_key_only",
+                                            }),
+                                        )
+                                        .await;
+                                        pending_recovery_writes.push(Box::pin(async move {
+                                            (pv, output_boundary, human_input_generation, ack_rx.await)
+                                        }));
+                                    }
+                                    Err(error) => {
+                                        let reason = format!("failed to queue submit recovery: {error}");
+                                        let _ = send_frame(&out_tx, "delivery_failed", None, json!({
+                                            "delivery_id": delivery_id,
+                                            "event_id": event_id,
+                                            "reason": reason,
+                                            "attempts": pv.attempts,
+                                        })).await;
+                                        throttle.record(DeliveryOutcome::Failed);
+                                        pending_worker_delivery_ids.remove(&delivery_id);
+                                    }
+                                }
+                            }
+                            HarnessAcceptance::Parked
+                                if pty_auto.interactive_hold
+                                    || !pending_pty_writes.is_empty()
+                                    || active_injection.is_some()
+                                    || !pending_recovery_writes.is_empty() =>
+                            {
+                                // A human or another writer owns the input FIFO.
+                                // Keep the delivery pending and retry the check
+                                // later without spending its submit-key budget.
+                                pv.injected_at = Instant::now();
+                                pending_verifications.push_back(pv);
+                            }
+                            state @ (HarnessAcceptance::Parked
+                            | HarnessAcceptance::Inconclusive) => {
+                                let reason = match state {
+                                    HarnessAcceptance::Parked => {
+                                        "body remained parked after bounded submit-key recovery"
+                                    }
+                                    HarnessAcceptance::Inconclusive => {
+                                        "harness acceptance could not be proven"
+                                    }
+                                    HarnessAcceptance::Accepted(_) => unreachable!(),
+                                };
+                                let _ = send_frame(&out_tx, "delivery_failed", None, json!({
+                                    "delivery_id": delivery_id,
+                                    "event_id": event_id,
+                                    "reason": reason,
+                                    "attempts": pv.attempts,
+                                })).await;
+                                throttle.record(DeliveryOutcome::Failed);
+                                pending_worker_delivery_ids.remove(&delivery_id);
+                            }
+                        }
                     } else {
                         i += 1;
                     }
@@ -2431,7 +2697,12 @@ pub(crate) async fn run_pty_worker(cmd: PtyCommand) -> Result<()> {
 
             // --- Auto-enter for stuck agents ---
             _ = auto_enter_interval.tick() => {
-                if active_injection.is_none() { pty_auto.try_auto_enter(&pty); }
+                if active_injection.is_none()
+                    && pending_verifications.is_empty()
+                    && pending_recovery_writes.is_empty()
+                {
+                    pty_auto.try_auto_enter(&pty);
+                }
 
                 // Idle detection: emit agent_idle once when silence exceeds threshold.
                 // Granularity depends on auto_enter_interval tick rate (2s).
@@ -2719,7 +2990,7 @@ mod tests {
         }
         assert!(pty.screen_text().contains("Ask Codex"));
         let before = pty.consumed_offset();
-        let ack = pty.submit_write(body[..768].as_bytes().to_vec()).unwrap();
+        let ack = pty.submit_write(body.as_bytes()[..768].to_vec()).unwrap();
         let cancelled = AtomicBool::new(cancel);
         let started = Instant::now();
         let result =
@@ -2730,7 +3001,7 @@ mod tests {
         let max_writer_submits = 1 + INITIAL_SUBMIT_RETRIES;
         if cancel {
             assert!(result.is_err());
-            assert_eq!(actual, body[..768].as_bytes());
+            assert_eq!(actual, &body.as_bytes()[..768]);
         } else if submits <= max_writer_submits {
             result.unwrap();
             assert!(started.elapsed() >= CODEX_STARTUP_SETTLE * 3);
@@ -2798,7 +3069,7 @@ mod tests {
         }
         assert!(pty.screen_text().contains(&body[..768]));
         let before = pty.consumed_offset();
-        let ack = pty.submit_write(body[..768].as_bytes().to_vec()).unwrap();
+        let ack = pty.submit_write(body.as_bytes()[..768].to_vec()).unwrap();
         let result = write_initial_codex(
             &pty,
             &body,
@@ -2814,7 +3085,7 @@ mod tests {
             .unwrap_err()
             .to_string()
             .contains("render gate timed out"));
-        assert_eq!(std::fs::read(log).unwrap(), body[..768].as_bytes());
+        assert_eq!(std::fs::read(log).unwrap(), &body.as_bytes()[..768]);
     }
 
     // codex_composer_ready (startup) already accepted both native `›` and
@@ -3003,7 +3274,7 @@ mod tests {
         }
         let before = pty.consumed_offset();
         let ack = pty
-            .submit_write(body[..chunk_end(&body, 0)].as_bytes().to_vec())
+            .submit_write(body.as_bytes()[..chunk_end(&body, 0)].to_vec())
             .unwrap();
         let result = write_initial_codex(
             &pty,
@@ -3030,6 +3301,285 @@ mod tests {
             responded,
             "Codex did not respond after chunked initial submission"
         );
+    }
+
+    #[cfg(unix)]
+    async fn submit_live_codex_probe(
+        pty: &PtySession,
+        rx: &mut tokio::sync::mpsc::Receiver<crate::pty::PtyOutput>,
+        output: &mut VerificationOutput,
+        body: &str,
+        response: &str,
+    ) {
+        let (ack_rx, output_boundary) =
+            submit_injection_body(pty, "codex", body.as_bytes().to_vec(), Duration::ZERO)
+                .expect("queue live Codex injection");
+        tokio::time::timeout(Duration::from_secs(5), ack_rx)
+            .await
+            .expect("initial injection ack timed out")
+            .expect("PTY drainer exited")
+            .expect("initial injection write failed");
+        let mut verification = PendingVerification {
+            delivery_id: "live-codex-delivery".into(),
+            event_id: "live-codex-event".into(),
+            expected_echo: body.to_string(),
+            output_boundary,
+            injected_at: Instant::now(),
+            attempts: 1,
+            max_attempts: MAX_VERIFICATION_ATTEMPTS,
+            request_id: None,
+            workspace_id: None,
+            workspace_alias: None,
+            from: "live-probe".into(),
+            body: body.into(),
+            target: "codex".into(),
+            echo_seen: false,
+            activity_buffer: String::new(),
+            detector: ActivityDetector::for_cli("codex"),
+        };
+        let started = Instant::now();
+        let mut accepted = false;
+        let mut transcript = String::new();
+        let mut attempt_started = Instant::now();
+        while started.elapsed() < Duration::from_secs(45) {
+            if let Ok(Some(chunk)) =
+                tokio::time::timeout(Duration::from_millis(250), rx.recv()).await
+            {
+                output.push_output(chunk.sequence(), chunk.as_bytes());
+                let text = String::from_utf8_lossy(chunk.as_bytes());
+                transcript.push_str(&text);
+                verification.observe(output, &text);
+            }
+            match assess_harness_acceptance("codex", &verification, &Snapshot::capture(pty)) {
+                HarnessAcceptance::Accepted(_) => accepted = true,
+                HarnessAcceptance::Parked
+                    if attempt_started.elapsed() >= VERIFICATION_WINDOW
+                        && verification.attempts < verification.max_attempts =>
+                {
+                    let (recovery_ack, boundary) =
+                        submit_injection_recovery(pty, "codex", verification.attempts)
+                            .expect("queue submit-key recovery");
+                    tokio::time::timeout(Duration::from_secs(5), recovery_ack)
+                        .await
+                        .expect("submit-key recovery ack timed out")
+                        .expect("PTY drainer exited during recovery")
+                        .expect("submit-key recovery failed");
+                    verification.attempts += 1;
+                    verification.output_boundary = boundary;
+                    verification.activity_buffer.clear();
+                    attempt_started = Instant::now();
+                }
+                _ => {}
+            }
+            if accepted && strip_ansi(&transcript).contains(response) {
+                return;
+            }
+        }
+        panic!(
+            "Codex did not accept/respond after {} submit attempts; screen={:?}",
+            verification.attempts,
+            pty.screen_text()
+        );
+    }
+
+    /// Real Codex regression: one delivery enters an already-idle composer;
+    /// the second is held while the first is busy and released only after the
+    /// prompt becomes idle again. Both must advance the harness, not merely
+    /// echo into its editor. Ignored in ordinary CI because it needs a local
+    /// authenticated Codex installation.
+    #[cfg(unix)]
+    #[tokio::test]
+    #[ignore = "requires authenticated Codex; native idle and queued-to-idle probe"]
+    async fn live_codex_idle_and_queued_to_idle_delivery() {
+        let (pty, mut rx) = PtySession::spawn(
+            "codex",
+            &[
+                "--no-alt-screen".into(),
+                "-a".into(),
+                "never".into(),
+                "-s".into(),
+                "read-only".into(),
+            ],
+            24,
+            120,
+        )
+        .unwrap();
+        let mut output = VerificationOutput::default();
+        let ready_deadline = Instant::now() + Duration::from_secs(25);
+        while Instant::now() < ready_deadline && !pty.screen_text().contains("Ask Codex") {
+            if let Ok(Some(chunk)) =
+                tokio::time::timeout(Duration::from_millis(250), rx.recv()).await
+            {
+                output.push_output(chunk.sequence(), chunk.as_bytes());
+            }
+        }
+        assert!(
+            pty.screen_text().contains("Ask Codex"),
+            "Codex did not become idle: {:?}",
+            pty.screen_text()
+        );
+
+        submit_live_codex_probe(
+            &pty,
+            &mut rx,
+            &mut output,
+            "Reply only with IDLE_INJECTION_OK. Do not use tools.",
+            "IDLE_INJECTION_OK",
+        )
+        .await;
+
+        // Model a delivery queued during the preceding turn: do not write it
+        // until Codex has redrawn its idle composer.
+        let idle_deadline = Instant::now() + Duration::from_secs(25);
+        while Instant::now() < idle_deadline && !pty.screen_text().contains("Ask Codex") {
+            if let Ok(Some(chunk)) =
+                tokio::time::timeout(Duration::from_millis(250), rx.recv()).await
+            {
+                output.push_output(chunk.sequence(), chunk.as_bytes());
+            }
+        }
+        assert!(pty.screen_text().contains("Ask Codex"));
+        submit_live_codex_probe(
+            &pty,
+            &mut rx,
+            &mut output,
+            "Reply only with QUEUED_TO_IDLE_OK. Do not use tools.",
+            "QUEUED_TO_IDLE_OK",
+        )
+        .await;
+        pty.shutdown().unwrap();
+    }
+
+    /// Reproduces Codex's multiline/paste-burst parking with the real TUI:
+    /// body+CR in one PTY write remains in the composer. Recovery then sends
+    /// only End+CR and, if still parked, LF, stopping as soon as the harness
+    /// shows acceptance so a turn can never be submitted twice.
+    #[cfg(unix)]
+    #[tokio::test]
+    #[ignore = "requires authenticated Codex; native parked-composer probe"]
+    async fn live_codex_burst_parks_then_submit_only_recovery_accepts() {
+        let (pty, mut rx) = PtySession::spawn(
+            "codex",
+            &[
+                "--no-alt-screen".into(),
+                "-a".into(),
+                "never".into(),
+                "-s".into(),
+                "read-only".into(),
+            ],
+            24,
+            120,
+        )
+        .unwrap();
+        let mut output = VerificationOutput::default();
+        let ready_deadline = Instant::now() + Duration::from_secs(25);
+        while Instant::now() < ready_deadline && !pty.screen_text().contains("Ask Codex") {
+            if let Ok(Some(chunk)) =
+                tokio::time::timeout(Duration::from_millis(250), rx.recv()).await
+            {
+                output.push_output(chunk.sequence(), chunk.as_bytes());
+            }
+        }
+        assert!(pty.screen_text().contains("Ask Codex"));
+
+        let body = "Reply only with BURST_RECOVERY_OK. Do not use tools.";
+        let mut burst = body.as_bytes().to_vec();
+        burst.push(b'\r');
+        let (ack_rx, output_boundary) = pty
+            .submit_write_paced_with_output_boundary(burst, Duration::ZERO)
+            .unwrap();
+        ack_rx.await.unwrap().unwrap();
+        let mut verification = PendingVerification {
+            delivery_id: "live-codex-parked".into(),
+            event_id: "live-codex-parked-event".into(),
+            expected_echo: body.to_string(),
+            output_boundary,
+            injected_at: Instant::now(),
+            attempts: 1,
+            max_attempts: MAX_VERIFICATION_ATTEMPTS,
+            request_id: None,
+            workspace_id: None,
+            workspace_alias: None,
+            from: "live-probe".into(),
+            body: body.into(),
+            target: "codex".into(),
+            echo_seen: false,
+            activity_buffer: String::new(),
+            detector: ActivityDetector::for_cli("codex"),
+        };
+        let mut transcript = String::new();
+        let parked_deadline = Instant::now() + Duration::from_secs(3);
+        while Instant::now() < parked_deadline {
+            if let Ok(Some(chunk)) =
+                tokio::time::timeout(Duration::from_millis(200), rx.recv()).await
+            {
+                output.push_output(chunk.sequence(), chunk.as_bytes());
+                let text = String::from_utf8_lossy(chunk.as_bytes());
+                transcript.push_str(&text);
+                verification.observe(&output, &text);
+            }
+        }
+        assert_eq!(
+            assess_harness_acceptance("codex", &verification, &Snapshot::capture(&pty)),
+            HarnessAcceptance::Parked,
+            "same-burst body+CR should reproduce the Codex parked composer"
+        );
+
+        let mut accepted_after = None;
+        for completed_attempts in [1, 2] {
+            let (recovery_ack, boundary) =
+                submit_injection_recovery(&pty, "codex", completed_attempts).unwrap();
+            recovery_ack.await.unwrap().unwrap();
+            verification.attempts += 1;
+            verification.output_boundary = boundary;
+            verification.activity_buffer.clear();
+            let recovery_deadline = Instant::now() + Duration::from_secs(4);
+            while Instant::now() < recovery_deadline {
+                if let Ok(Some(chunk)) =
+                    tokio::time::timeout(Duration::from_millis(200), rx.recv()).await
+                {
+                    output.push_output(chunk.sequence(), chunk.as_bytes());
+                    let text = String::from_utf8_lossy(chunk.as_bytes());
+                    transcript.push_str(&text);
+                    verification.observe(&output, &text);
+                }
+                if matches!(
+                    assess_harness_acceptance("codex", &verification, &Snapshot::capture(&pty)),
+                    HarnessAcceptance::Accepted(_)
+                ) {
+                    accepted_after = Some(completed_attempts + 1);
+                    break;
+                }
+            }
+            if accepted_after.is_some() {
+                break;
+            }
+        }
+        assert!(
+            accepted_after.is_some(),
+            "submit-only recovery never advanced Codex; screen={:?}",
+            pty.screen_text()
+        );
+        eprintln!(
+            "real Codex accepted the parked turn after submit attempt {}",
+            accepted_after.unwrap()
+        );
+        let response_deadline = Instant::now() + Duration::from_secs(20);
+        while Instant::now() < response_deadline
+            && !strip_ansi(&transcript).contains("BURST_RECOVERY_OK")
+        {
+            if let Ok(Some(chunk)) =
+                tokio::time::timeout(Duration::from_millis(250), rx.recv()).await
+            {
+                transcript.push_str(&String::from_utf8_lossy(chunk.as_bytes()));
+            }
+        }
+        assert!(
+            strip_ansi(&transcript).contains("BURST_RECOVERY_OK"),
+            "Codex accepted the turn but did not answer: {:?}",
+            pty.screen_text()
+        );
+        pty.shutdown().unwrap();
     }
 
     #[test]
@@ -3468,6 +4018,7 @@ mod tests {
             output_boundary: None,
             hold_exempt: true,
             targeted_hold_exemption: true,
+            human_input_generation: 0,
         };
         restore_hold_exemption(&targeted, &mut count, &mut event_ids);
         assert_eq!(count, 0);
@@ -3507,6 +4058,7 @@ mod tests {
             output_boundary: None,
             hold_exempt: true,
             targeted_hold_exemption: true,
+            human_input_generation: 0,
         };
         // What the blanket branch does to an already-exempt in-flight injection.
         injection.hold_exempt = true;
@@ -3552,68 +4104,6 @@ mod tests {
             injection_ack_outcome(InjectionStage::Body, true),
             InjectionAckOutcome::Requeue
         );
-    }
-
-    #[test]
-    fn echo_arriving_before_worker_write_ack_is_confirmed_immediately() {
-        let injection = "From: Lead\nReview this change";
-        let mut output = VerificationOutput::default();
-        output.push_output(1, b"older output\n");
-        // Sequence 2 was assigned by the reader before the write was queued,
-        // but this worker has not consumed that matching chunk yet.
-        let output_boundary = 2;
-        let verification = || PendingVerification {
-            delivery_id: "del_echo_before_ack".into(),
-            event_id: "evt_echo_before_ack".into(),
-            expected_echo: injection.to_string(),
-            output_boundary,
-            injected_at: Instant::now(),
-            attempts: 1,
-            max_attempts: 1,
-            request_id: None,
-            workspace_id: None,
-            workspace_alias: None,
-            from: "Lead".to_string(),
-            body: "Review this change".to_string(),
-            target: "Worker".into(),
-        };
-        let mut pending_verifications = VecDeque::new();
-
-        output.push_output(2, format!("stale composer echo: {injection}").as_bytes());
-
-        let stale = queue_or_take_confirmed_verification(
-            verification(),
-            &output,
-            &mut pending_verifications,
-        );
-        assert!(stale.is_none(), "a retained pre-submission echo is stale");
-        pending_verifications.clear();
-
-        output.push_output(
-            3,
-            format!("\nnew composer echo: {injection}\nTool: Write(review.md)").as_bytes(),
-        );
-        let confirmed = queue_or_take_confirmed_verification(
-            verification(),
-            &output,
-            &mut pending_verifications,
-        )
-        .expect("the buffered echo must be confirmed");
-
-        assert!(
-            pending_verifications.is_empty(),
-            "an already-observed echo must not be queued to time out"
-        );
-        let mut pending_activities = VecDeque::new();
-        let (_, pattern) = queue_or_take_detected_activity(
-            &confirmed,
-            &output,
-            &ActivityDetector::for_cli("claude"),
-            &mut pending_activities,
-        )
-        .expect("activity buffered before the ack must be detected immediately");
-        assert_eq!(pattern, "Tool:");
-        assert!(pending_activities.is_empty());
     }
 
     #[test]

@@ -8,6 +8,8 @@ use serde_json::{json, Value};
 
 use crate::{
     ids::{DeliveryId, EventId, MessageTarget, RequestId, WorkspaceAlias, WorkspaceId},
+    readiness::{cli_prompt_ready, GridReadinessSnapshot},
+    snapshot::Snapshot,
     util::ansi::strip_ansi,
     worker::detection::ActivityDetector,
 };
@@ -26,6 +28,7 @@ pub(crate) enum DeliveryOutcome {
     /// Neither speeds up nor backs off the throttle, but breaks the
     /// consecutive-success streak so unverified deliveries never drive
     /// the delay down.
+    #[allow(dead_code)]
     Unverified,
     Failed,
 }
@@ -92,11 +95,12 @@ pub(crate) struct PendingActivity {
     pub detector: ActivityDetector,
 }
 
-/// Maximum number of injection attempts before accepting delivery via timeout.
-/// Set to 1 to avoid re-injecting the same message when echo detection fails -
-/// duplicate injections cause agents to process messages multiple times,
-/// multiplying Relaycast API calls and triggering rate limits.
-pub(crate) const MAX_VERIFICATION_ATTEMPTS: usize = 1;
+/// Maximum number of submit-key attempts for one already-written body.
+///
+/// A retry never writes the body again: it only nudges a composer that is
+/// still proven to contain this delivery. This preserves at-most-once turn
+/// creation while giving paste-aware TUIs a bounded recovery path.
+pub(crate) const MAX_VERIFICATION_ATTEMPTS: usize = 3;
 
 /// Time window to wait for echo verification before accepting delivery.
 pub(crate) const VERIFICATION_WINDOW: std::time::Duration = std::time::Duration::from_secs(5);
@@ -116,11 +120,176 @@ pub(crate) struct PendingVerification {
     pub attempts: usize,
     pub max_attempts: usize,
     pub request_id: Option<RequestId>,
+    #[allow(dead_code)]
     pub workspace_id: Option<WorkspaceId>,
+    #[allow(dead_code)]
     pub workspace_alias: Option<WorkspaceAlias>,
+    #[allow(dead_code)]
     pub from: String,
+    #[allow(dead_code)]
     pub body: String,
+    #[allow(dead_code)]
     pub target: MessageTarget,
+    /// The formatted body appeared in post-submission PTY output. This proves
+    /// terminal echo only; it does not prove the harness accepted a turn.
+    pub echo_seen: bool,
+    /// Post-submission output retained until a harness activity marker proves
+    /// the turn started. Kept separately from `VerificationOutput` so matching
+    /// remains stable after the global tail trims.
+    pub activity_buffer: String,
+    pub detector: ActivityDetector,
+}
+
+impl PendingVerification {
+    pub(crate) fn observe(&mut self, output: &VerificationOutput, text: &str) {
+        let echo_now = pending_verification_echo_seen(output, self);
+        if !self.echo_seen && echo_now {
+            // Ignore activity that preceded the editor echo. A message may be
+            // injected while a previous turn is still rendering its own busy
+            // marker; that marker cannot prove this delivery was accepted.
+            self.echo_seen = true;
+            self.activity_buffer.clear();
+            let clean = strip_ansi(text);
+            if let Some(index) = clean.rfind(&self.expected_echo) {
+                self.activity_buffer
+                    .push_str(&clean[index + self.expected_echo.len()..]);
+            }
+        } else if self.echo_seen {
+            self.activity_buffer.push_str(text);
+        }
+        if self.activity_buffer.len() > ACTIVITY_BUFFER_MAX_BYTES {
+            let start = crate::util::ansi::floor_char_boundary(
+                &self.activity_buffer,
+                self.activity_buffer.len() - ACTIVITY_BUFFER_KEEP_BYTES,
+            );
+            self.activity_buffer = self.activity_buffer[start..].to_string();
+        }
+    }
+
+    pub(crate) fn accepted_activity(&self) -> Option<String> {
+        if !self.echo_seen {
+            return None;
+        }
+        self.detector
+            .detect_activity(&self.activity_buffer, &self.expected_echo)
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum HarnessAcceptance {
+    Accepted(String),
+    Parked,
+    Inconclusive,
+}
+
+fn compact_render(text: &str) -> String {
+    text.chars()
+        .filter(|character| !character.is_whitespace())
+        .collect()
+}
+
+fn expected_tail(expected: &str) -> String {
+    let compact = compact_render(expected);
+    let keep = compact.len().min(96);
+    let start = crate::util::ansi::floor_char_boundary(&compact, compact.len() - keep);
+    compact[start..].to_string()
+}
+
+fn current_composer(snapshot: &Snapshot, cli: &str) -> Option<String> {
+    let plain = snapshot.to_plain();
+    let lines: Vec<_> = plain.lines().collect();
+    let end = snapshot.cursor.0.checked_sub(1)? as usize;
+    if end >= lines.len() {
+        return None;
+    }
+    let lower = cli.to_ascii_lowercase();
+    let is_prompt = |line: &&str| {
+        let trimmed = line.trim_start();
+        if lower.contains("codex") {
+            trimmed == "›"
+                || trimmed.starts_with("› ")
+                || trimmed == "codex>"
+                || trimmed.starts_with("codex> ")
+        } else if lower.contains("claude") {
+            trimmed == "❯"
+                || trimmed.starts_with("❯ ")
+                || trimmed == ">"
+                || trimmed.starts_with("> ")
+        } else if crate::readiness::is_devin_cli(cli) {
+            trimmed == "❭" || trimmed.starts_with("❭ ")
+        } else {
+            trimmed == ">"
+                || trimmed.starts_with("> ")
+                || trimmed == "$"
+                || trimmed.starts_with("$ ")
+                || trimmed == ">>>"
+                || trimmed.starts_with(">>> ")
+                || trimmed == "›"
+                || trimmed.starts_with("› ")
+                || trimmed == "❯"
+                || trimmed.starts_with("❯ ")
+        }
+    };
+    let start = lines.iter().take(end + 1).rposition(is_prompt)?;
+    Some(lines[start..=end].join("\n"))
+}
+
+fn codex_busy(screen: &str) -> bool {
+    screen.lines().any(|line| {
+        let lower = line.to_ascii_lowercase();
+        lower.contains("working") && lower.contains("esc to interrupt")
+    })
+}
+
+fn composer_is_idle(snapshot: &Snapshot, cli: &str) -> bool {
+    let screen = snapshot.to_plain();
+    if cli.to_ascii_lowercase().contains("codex") && codex_busy(&screen) {
+        return false;
+    }
+    cli_prompt_ready(
+        cli,
+        GridReadinessSnapshot {
+            screen: &screen,
+            cursor: Some(snapshot.cursor),
+        },
+    ) && current_composer(snapshot, cli)
+        .map(|composer| {
+            let trimmed = composer.trim();
+            matches!(trimmed, "›" | "codex>" | "❯" | ">" | "$" | ">>>")
+                || trimmed.contains("Ask Codex to do anything")
+                || trimmed.contains("Type your message or @path/to/file")
+                || trimmed.contains("Ask Devin to build features, fix bugs, or work on your code")
+        })
+        .unwrap_or(false)
+}
+
+/// Distinguish terminal echo from actual harness acceptance.
+///
+/// Activity is definitive acceptance. A body is considered parked only when
+/// its tail is still in the live composer at the cursor. Once echo was seen,
+/// a proven empty composer is also acceptance. Every other state is
+/// inconclusive and must fail or wait — never blindly press a key.
+pub(crate) fn assess_harness_acceptance(
+    cli: &str,
+    verification: &PendingVerification,
+    snapshot: &Snapshot,
+) -> HarnessAcceptance {
+    if let Some(pattern) = verification.accepted_activity() {
+        return HarnessAcceptance::Accepted(format!("activity:{pattern}"));
+    }
+
+    let tail = expected_tail(&verification.expected_echo);
+    let parked = !tail.is_empty()
+        && current_composer(snapshot, cli)
+            .map(|composer| compact_render(&composer).contains(&tail))
+            .unwrap_or(false);
+    if parked {
+        return HarnessAcceptance::Parked;
+    }
+    if verification.echo_seen && composer_is_idle(snapshot, cli) {
+        return HarnessAcceptance::Accepted("composer_cleared".to_string());
+    }
+    HarnessAcceptance::Inconclusive
 }
 
 #[derive(Debug)]
@@ -217,25 +386,6 @@ pub(crate) fn pending_verification_echo_seen(
     check_echo_in_output(&observed, &verification.expected_echo)
 }
 
-/// Return a verification whose echo arrived before the PTY write ack was
-/// processed, otherwise queue it for later output-driven verification.
-///
-/// Both wrap-mode and fleet PTY workers use this policy. Keeping the decision
-/// here ensures the two delivery paths cannot drift on the echo-before-ack
-/// race while still letting each caller perform its own confirmation effects.
-pub(crate) fn queue_or_take_confirmed_verification(
-    verification: PendingVerification,
-    output: &VerificationOutput,
-    pending_verifications: &mut std::collections::VecDeque<PendingVerification>,
-) -> Option<PendingVerification> {
-    if pending_verification_echo_seen(output, &verification) {
-        Some(verification)
-    } else {
-        pending_verifications.push_back(verification);
-        None
-    }
-}
-
 /// Start activity detection with every post-submission byte already observed.
 ///
 /// The PTY output arm can receive both the task echo and an activity marker
@@ -243,6 +393,7 @@ pub(crate) fn queue_or_take_confirmed_verification(
 /// acknowledgement later confirms the delivery, seeding this buffer prevents
 /// the already-observed activity from being lost merely because no more output
 /// follows.
+#[cfg(test)]
 pub(crate) fn pending_activity_from_confirmed_output(
     verification: &PendingVerification,
     output: &VerificationOutput,
@@ -262,6 +413,7 @@ pub(crate) fn pending_activity_from_confirmed_output(
 /// state for later output. The returned activity carries the matched pattern
 /// so each runtime can emit its own protocol event or log without duplicating
 /// this race-handling policy.
+#[cfg(test)]
 pub(crate) fn queue_or_take_detected_activity(
     verification: &PendingVerification,
     output: &VerificationOutput,
@@ -324,6 +476,89 @@ pub(crate) fn delivery_injected_event_payload(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn codex_verification(expected: &str) -> PendingVerification {
+        PendingVerification {
+            delivery_id: "delivery-acceptance".into(),
+            event_id: "event-acceptance".into(),
+            expected_echo: expected.to_string(),
+            output_boundary: 0,
+            injected_at: Instant::now(),
+            attempts: 1,
+            max_attempts: MAX_VERIFICATION_ATTEMPTS,
+            request_id: None,
+            workspace_id: None,
+            workspace_alias: None,
+            from: "Lead".to_string(),
+            body: "fix idle injection".to_string(),
+            target: "Worker".into(),
+            echo_seen: true,
+            activity_buffer: String::new(),
+            detector: ActivityDetector::for_cli("codex"),
+        }
+    }
+
+    #[cfg(unix)]
+    async fn codex_snapshot(screen: &str) -> (crate::pty::PtySession, Snapshot) {
+        let encoded = base64::Engine::encode(
+            &base64::engine::general_purpose::STANDARD,
+            screen.as_bytes(),
+        );
+        let script = format!(
+            "stty raw -echo; printf '\\033[2J\\033[H'; printf '%s' '{encoded}' | base64 -d; sleep 3"
+        );
+        let (pty, mut rx) =
+            crate::pty::PtySession::spawn("/bin/sh", &["-c".into(), script], 24, 120).unwrap();
+        let expected_tail = screen.chars().last().unwrap_or('›');
+        for _ in 0..100 {
+            let _ = tokio::time::timeout(Duration::from_millis(20), rx.recv()).await;
+            if pty.screen_text().contains(expected_tail) {
+                break;
+            }
+        }
+        tokio::time::sleep(Duration::from_millis(30)).await;
+        let snapshot = Snapshot::capture(&pty);
+        (pty, snapshot)
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn editor_echo_is_parked_until_codex_accepts_the_turn() {
+        let expected = "Relay message from Lead [evt]: fix idle injection";
+        let (pty, snapshot) = codex_snapshot(&format!("› {expected}")).await;
+        let verification = codex_verification(expected);
+
+        assert_eq!(
+            assess_harness_acceptance("codex", &verification, &snapshot),
+            HarnessAcceptance::Parked,
+            "visible composer text must never be mistaken for acceptance"
+        );
+        pty.shutdown().unwrap();
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn codex_activity_and_cleared_composer_prove_acceptance() {
+        let expected = "Relay message from Lead [evt]: fix idle injection";
+        let (busy_pty, busy_snapshot) = codex_snapshot(&format!("› {expected}")).await;
+        let mut active = codex_verification(expected);
+        active
+            .activity_buffer
+            .push_str("Working (1s • esc to interrupt)");
+        assert!(matches!(
+            assess_harness_acceptance("codex", &active, &busy_snapshot),
+            HarnessAcceptance::Accepted(ref evidence) if evidence.starts_with("activity:")
+        ));
+        busy_pty.shutdown().unwrap();
+
+        let (idle_pty, idle_snapshot) = codex_snapshot("› Ask Codex to do anything").await;
+        let cleared = codex_verification(expected);
+        assert_eq!(
+            assess_harness_acceptance("codex", &cleared, &idle_snapshot),
+            HarnessAcceptance::Accepted("composer_cleared".to_string())
+        );
+        idle_pty.shutdown().unwrap();
+    }
 
     #[test]
     fn check_echo_clean_text() {
@@ -391,6 +626,9 @@ mod tests {
             from: "Alice".to_string(),
             body: "same body".to_string(),
             target: "Worker".into(),
+            echo_seen: false,
+            activity_buffer: String::new(),
+            detector: ActivityDetector::for_cli("codex"),
         };
 
         assert!(!pending_verification_echo_seen(&output, &verification));
@@ -424,6 +662,9 @@ mod tests {
             from: "Alice".to_string(),
             body: "same body".to_string(),
             target: "Worker".into(),
+            echo_seen: false,
+            activity_buffer: String::new(),
+            detector: ActivityDetector::for_cli("codex"),
         };
 
         output.push_output(2, expected.as_bytes());
@@ -478,6 +719,9 @@ mod tests {
             from: "Lead".to_string(),
             body: "review this".to_string(),
             target: "Worker".into(),
+            echo_seen: false,
+            activity_buffer: String::new(),
+            detector: ActivityDetector::for_cli("claude"),
         };
 
         let mut pending_activities = std::collections::VecDeque::new();
@@ -515,6 +759,9 @@ mod tests {
             from: "Lead".to_string(),
             body: "review this".to_string(),
             target: "Worker".into(),
+            echo_seen: false,
+            activity_buffer: String::new(),
+            detector: ActivityDetector::for_cli("claude"),
         };
         let mut pending_activities = std::collections::VecDeque::new();
 

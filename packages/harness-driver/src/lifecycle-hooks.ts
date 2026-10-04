@@ -165,6 +165,8 @@ export interface DriverAgentResult<T = unknown> {
 export type DriverAgentActivityReason =
   | 'delivery_queued'
   | 'delivery_injected'
+  | 'delivery_unconfirmed'
+  | 'delivery_resubmitted'
   | 'delivery_active'
   | 'delivery_ack'
   | 'delivery_read_ack'
