@@ -5,7 +5,11 @@ All notable changes to Agent Relay will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
+## [Unreleased - Patch]
+
+### Fixed
+
+- Broker node-token rotation proves possession with the current node token; if Relaycast rejects that proof after a node-control 401, recovery stops with a clear re-enrollment error instead of retrying the workspace-key mint loop.
 
 ## [13.1.1] - 2026-10-04
 

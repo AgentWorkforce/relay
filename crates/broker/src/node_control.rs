@@ -130,15 +130,18 @@ pub(crate) struct NodeTokenMinter {
 
 impl NodeTokenMinter {
     /// Mint a fresh node token via `POST /v1/nodes` and persist it to the
-    /// workspace-scoped cache. Returns the new token on success, or `None` after
-    /// logging the failure so the caller can back off and retry. Used for the
-    /// initial mint (no cached token) and as the shared body of [`Self::remint`].
-    async fn mint(&self) -> Option<String> {
+    /// workspace-scoped cache. Existing-node rotation sends `current_node_token`
+    /// as proof; a genuinely new node is minted with `None`.
+    async fn mint(
+        &self,
+        current_node_token: Option<&str>,
+    ) -> std::result::Result<String, CreateNodeMintError> {
         let request = create_node_request(&self.node_id, &self.node_name, &self.broker_version);
         match mint_node_token(
             &self.workspace_key,
             self.base_url.as_deref(),
             request,
+            current_node_token,
             MintNodeTokenLogContext {
                 node_id: &self.node_id,
                 workspace_id: &self.workspace_id,
@@ -169,7 +172,7 @@ impl NodeTokenMinter {
                     workspace_id = %self.workspace_id,
                     "minted node token via create_node"
                 );
-                Some(token)
+                Ok(token)
             }
             Err(error) => {
                 log_create_node_mint_error(
@@ -179,7 +182,7 @@ impl NodeTokenMinter {
                     &error,
                     "failed to mint node token via create_node",
                 );
-                None
+                Err(error)
             }
         }
     }
@@ -187,7 +190,10 @@ impl NodeTokenMinter {
     /// Discard the cached token for this workspace and mint a fresh one. Returns
     /// the new token on success. On failure the caller surfaces a loud error and
     /// backs off rather than looping on the rejected token.
-    async fn remint(&self) -> Option<String> {
+    async fn remint(
+        &self,
+        rejected_token: &str,
+    ) -> std::result::Result<String, CreateNodeMintError> {
         // Drop the rejected cache eagerly so a crash mid-mint doesn't leave the
         // stale token behind for the next start.
         if let Some(path) = self.token_path.as_deref() {
@@ -202,7 +208,7 @@ impl NodeTokenMinter {
                 }
             }
         }
-        self.mint().await
+        self.mint(Some(rejected_token)).await
     }
 }
 
@@ -267,6 +273,10 @@ impl CreateNodeMintError {
     }
 }
 
+fn is_node_token_proof_conflict(error: &CreateNodeMintError) -> bool {
+    error.status() == Some(409) && error.code() == Some("node_token_proof_required")
+}
+
 pub(crate) struct MintNodeTokenLogContext<'a> {
     pub(crate) node_id: &'a str,
     pub(crate) workspace_id: &'a str,
@@ -289,6 +299,7 @@ pub(crate) async fn mint_node_token(
     workspace_key: &str,
     base_url: Option<&str>,
     request: relaycast::CreateNodeRequest,
+    current_node_token: Option<&str>,
     context: MintNodeTokenLogContext<'_>,
 ) -> std::result::Result<String, CreateNodeMintError> {
     let url = format!(
@@ -319,6 +330,11 @@ pub(crate) async fn mint_node_token(
         // server telemetry can report real users rather than only workspaces.
         for (name, value) in crate::telemetry::cloud_identity_headers() {
             builder = builder.header(name, value);
+        }
+        if let Some(current_node_token) =
+            current_node_token.filter(|token| !token.trim().is_empty())
+        {
+            builder = builder.header("X-Relaycast-Node-Token", current_node_token);
         }
 
         let response = match builder.json(&request).send().await {
@@ -1795,54 +1811,67 @@ pub(crate) async fn run_node_control_client(
             // rather than idling forever — realtime delivery self-heals once the
             // engine is reachable.
             if let Some(minter) = config.token_minter.as_ref() {
-                if let Some(fresh) = minter.mint().await {
-                    config.node_token = Some(fresh);
-                    if let Some(shared) = &config.session_token {
-                        if let Ok(mut guard) = shared.write() {
-                            guard.clone_from(&config.node_token);
+                match minter.mint(None).await {
+                    Ok(fresh) => {
+                        config.node_token = Some(fresh);
+                        if let Some(shared) = &config.session_token {
+                            if let Ok(mut guard) = shared.write() {
+                                guard.clone_from(&config.node_token);
+                            }
                         }
+                        // A successful mint proves the engine is reachable, so reset
+                        // the backoff any earlier mint failures grew — the first
+                        // `/v1/node/ws` connect should start from the minimum delay,
+                        // not inherit a bloated one.
+                        reconnect_delay = INITIAL_RECONNECT_DELAY;
                     }
-                    // A successful mint proves the engine is reachable, so reset
-                    // the backoff any earlier mint failures grew — the first
-                    // `/v1/node/ws` connect should start from the minimum delay,
-                    // not inherit a bloated one.
-                    reconnect_delay = INITIAL_RECONNECT_DELAY;
-                } else {
-                    tracing::warn!(
-                        target = "relay_broker::fleet",
-                        node_id = %config.node_id,
-                        "node token mint failed; retrying after backoff (realtime delivery pending)"
-                    );
-                    // Stay responsive during the backoff instead of a blind
-                    // sleep: a spawn's `RegisterAgent` must get an immediate
-                    // `node_token_missing` (so the caller falls back to HTTP
-                    // register) rather than blocking on the 30s register timeout,
-                    // and load/inventory updates must keep draining so the bounded
-                    // control channel can't fill during a Relaycast outage.
-                    let backoff = tokio::time::sleep(reconnect_delay);
-                    tokio::pin!(backoff);
-                    loop {
-                        tokio::select! {
-                            _ = &mut backoff => break,
-                            command = command_rx.recv() => {
-                                if matches!(
-                                    handle_disconnected_command(
-                                        command,
-                                        &config,
-                                        &mut registration,
-                                        &mut load,
-                                        &mut inventory,
-                                        "node_token_missing",
-                                    ),
-                                    DisconnectedCommandOutcome::Shutdown
-                                ) {
-                                    return;
+                    Err(error) => {
+                        if is_node_token_proof_conflict(&error) {
+                            tracing::error!(
+                                target = "relay_broker::fleet",
+                                node_id = %config.node_id,
+                                error = %error,
+                                "NODE TOKEN ENROLLMENT REFUSED: this node identity already exists and no current node token is available; automatic mint stopped. Restore the cached node token or enroll a new node identity."
+                            );
+                            let _ = event_tx.send(FleetControlEvent::Disconnected).await;
+                            return;
+                        }
+                        tracing::warn!(
+                            target = "relay_broker::fleet",
+                            node_id = %config.node_id,
+                            "node token mint failed; retrying after backoff (realtime delivery pending)"
+                        );
+                        // Stay responsive during the backoff instead of a blind
+                        // sleep: a spawn's `RegisterAgent` must get an immediate
+                        // `node_token_missing` (so the caller falls back to HTTP
+                        // register) rather than blocking on the 30s register timeout,
+                        // and load/inventory updates must keep draining so the bounded
+                        // control channel can't fill during a Relaycast outage.
+                        let backoff = tokio::time::sleep(reconnect_delay);
+                        tokio::pin!(backoff);
+                        loop {
+                            tokio::select! {
+                                _ = &mut backoff => break,
+                                command = command_rx.recv() => {
+                                    if matches!(
+                                        handle_disconnected_command(
+                                            command,
+                                            &config,
+                                            &mut registration,
+                                            &mut load,
+                                            &mut inventory,
+                                            "node_token_missing",
+                                        ),
+                                        DisconnectedCommandOutcome::Shutdown
+                                    ) {
+                                        return;
+                                    }
                                 }
                             }
                         }
+                        reconnect_delay = (reconnect_delay * 2).min(MAX_RECONNECT_DELAY);
+                        continue;
                     }
-                    reconnect_delay = (reconnect_delay * 2).min(MAX_RECONNECT_DELAY);
-                    continue;
                 }
             } else {
                 // No minter available (e.g. no workspace RelayCast client). Can't
@@ -1897,24 +1926,44 @@ pub(crate) async fn run_node_control_client(
             consecutive_unauthorized = consecutive_unauthorized.saturating_add(1);
             if let Some(minter) = config.token_minter.as_ref() {
                 if should_attempt_remint(consecutive_unauthorized) {
-                    if let Some(fresh) = minter.remint().await {
-                        // Install the fresh token and retry, but fall through to
-                        // the shared backoff sleep at the bottom of the loop
-                        // rather than `continue`-ing past it. The delay throttles
-                        // the next connect attempt so a server that 401s every
-                        // freshly minted token can't be hammered. The counter is
-                        // intentionally NOT reset here; it only resets once a
-                        // correlated inventory reply establishes application readiness
-                        // (the `Disconnected` arm above), so repeated 401s still accumulate toward the cap
-                        // even when each mint succeeds.
-                        config.node_token = Some(fresh);
-                        // Mirror the fresh token to the HTTP session so a provider
-                        // reading it after this re-mint gets the valid token.
-                        if let Some(shared) = &config.session_token {
-                            if let Ok(mut guard) = shared.write() {
-                                guard.clone_from(&config.node_token);
+                    let rejected_token = config.node_token.as_deref().unwrap_or_default();
+                    match minter.remint(rejected_token).await {
+                        Ok(fresh) => {
+                            // Install the fresh token and retry, but fall through to
+                            // the shared backoff sleep at the bottom of the loop
+                            // rather than `continue`-ing past it. The delay throttles
+                            // the next connect attempt so a server that 401s every
+                            // freshly minted token can't be hammered. The counter is
+                            // intentionally NOT reset here; it only resets once a
+                            // correlated inventory reply establishes application readiness
+                            // (the `Disconnected` arm above), so repeated 401s still accumulate toward the cap
+                            // even when each mint succeeds.
+                            config.node_token = Some(fresh);
+                            // Mirror the fresh token to the HTTP session so a provider
+                            // reading it after this re-mint gets the valid token.
+                            if let Some(shared) = &config.session_token {
+                                if let Ok(mut guard) = shared.write() {
+                                    guard.clone_from(&config.node_token);
+                                }
                             }
                         }
+                        Err(error) if is_node_token_proof_conflict(&error) => {
+                            config.node_token = None;
+                            if let Some(shared) = &config.session_token {
+                                if let Ok(mut guard) = shared.write() {
+                                    *guard = None;
+                                }
+                            }
+                            tracing::error!(
+                                target = "relay_broker::fleet",
+                                node_id = %config.node_id,
+                                error = %error,
+                                "NODE TOKEN RECOVERY REFUSED: the server rejected this credential as proof for the established node; automatic re-mint stopped. Re-enroll with the current node token or a new node identity."
+                            );
+                            let _ = event_tx.send(FleetControlEvent::Disconnected).await;
+                            return;
+                        }
+                        Err(_) => {}
                     }
                 } else {
                     tracing::error!(
@@ -3335,6 +3384,7 @@ mod tests {
             "rk_live_test",
             Some(&server.base_url()),
             create_node_request("node_abc", "local-node", "relay-broker/test"),
+            None,
             MintNodeTokenLogContext {
                 node_id: "node_abc",
                 workspace_id: "ws_test",
@@ -3352,6 +3402,74 @@ mod tests {
                 .is_some_and(|body| body.contains("node creation is not allowed")),
             "error should preserve response body: {error:?}"
         );
+    }
+
+    #[tokio::test]
+    async fn mint_node_token_sends_current_node_token_as_header_proof() {
+        let server = MockServer::start();
+        let create_node = server.mock(|when, then| {
+            when.method(POST)
+                .path("/v1/nodes")
+                .header("authorization", "Bearer rk_live_test")
+                .header("x-relaycast-node-token", "nt_live_current");
+            then.status(201).json_body(json!({
+                "ok": true,
+                "data": {
+                    "id": "node_abc",
+                    "name": "local-node",
+                    "kind": "ws",
+                    "role": "broker",
+                    "version": "relay-broker/test",
+                    "status": "offline",
+                    "live": false,
+                    "handlers_live": false,
+                    "load": null,
+                    "active_agents": 0,
+                    "max_agents": 0,
+                    "created_at": "2026-10-04T00:00:00Z",
+                    "token": "nt_live_rotated"
+                }
+            }));
+        });
+
+        let token = mint_node_token(
+            "rk_live_test",
+            Some(&server.base_url()),
+            create_node_request("node_abc", "local-node", "relay-broker/test"),
+            Some("nt_live_current"),
+            MintNodeTokenLogContext {
+                node_id: "node_abc",
+                workspace_id: "ws_test",
+            },
+        )
+        .await
+        .expect("current node token should be sent as rotation proof");
+
+        create_node.assert_hits(1);
+        assert_eq!(token, "nt_live_rotated");
+    }
+
+    #[test]
+    fn node_token_proof_conflict_is_terminal_only_for_the_named_server_error() {
+        let proof_conflict = CreateNodeMintError::Api {
+            status: 409,
+            code: "node_token_proof_required".to_string(),
+            message: "current token required".to_string(),
+            body: String::new(),
+        };
+        assert!(is_node_token_proof_conflict(&proof_conflict));
+
+        for (status, code) in [
+            (403, "node_token_proof_required"),
+            (409, "node_name_conflict"),
+        ] {
+            assert!(!is_node_token_proof_conflict(&CreateNodeMintError::Api {
+                status,
+                code: code.to_string(),
+                message: "not the terminal proof conflict".to_string(),
+                body: String::new(),
+            }));
+        }
     }
 
     #[tokio::test]
@@ -3374,6 +3492,7 @@ mod tests {
             "rk_live_test",
             Some(&server.base_url()),
             create_node_request("node_abc", "local-node", "relay-broker/test"),
+            None,
             MintNodeTokenLogContext {
                 node_id: "node_abc",
                 workspace_id: "ws_test",
@@ -3430,6 +3549,7 @@ mod tests {
             "rk_live_test",
             Some(&base_url),
             create_node_request("node_abc", "local-node", "relay-broker/test"),
+            None,
             MintNodeTokenLogContext {
                 node_id: "node_abc",
                 workspace_id: "ws_test",
@@ -5317,6 +5437,82 @@ mod tests {
             "the background mint must publish the token to the shared HTTP session"
         );
         let _ = command_tx.send(FleetControlCommand::Shutdown).await;
+    }
+
+    #[tokio::test]
+    async fn node_control_stops_after_server_rejects_rejected_token_as_rotation_proof() {
+        let mint_server = MockServer::start();
+        let create_node = mint_server.mock(|when, then| {
+            when.method(POST)
+                .path("/v1/nodes")
+                .header("x-relaycast-node-token", "nt_live_rejected");
+            then.status(409).json_body(json!({
+                "ok": false,
+                "error": {
+                    "code": "node_token_proof_required",
+                    "message": "Node already exists; its current node token is required"
+                }
+            }));
+        });
+
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let ws_url = format!("ws://{}/v1/node/ws", listener.local_addr().unwrap());
+        let rejected_handshake = tokio::spawn(async move {
+            let (mut socket, _) = listener.accept().await.unwrap();
+            let mut buffer = [0_u8; 4096];
+            let _ = socket.read(&mut buffer).await.unwrap();
+            socket
+                .write_all(
+                    b"HTTP/1.1 401 Unauthorized\r\nContent-Length: 0\r\nConnection: close\r\n\r\n",
+                )
+                .await
+                .unwrap();
+        });
+
+        let (command_tx, command_rx) = mpsc::channel(32);
+        let (event_tx, mut event_rx) = mpsc::channel(32);
+        let session_token = Arc::new(std::sync::RwLock::new(Some("nt_live_rejected".to_string())));
+        let control = tokio::spawn(run_node_control_client(
+            FleetControlConfig {
+                ws_url,
+                node_token: Some("nt_live_rejected".to_string()),
+                node_id: "node-test".to_string(),
+                node_name: "host-test".to_string(),
+                broker_version: "broker/test".to_string(),
+                token_minter: Some(NodeTokenMinter {
+                    workspace_key: "rk_live_test".to_string(),
+                    workspace_id: "ws_test".to_string(),
+                    base_url: Some(mint_server.base_url()),
+                    node_id: "node-test".to_string(),
+                    node_name: "host-test".to_string(),
+                    broker_version: "broker/test".to_string(),
+                    token_path: None,
+                }),
+                session_token: Some(session_token.clone()),
+                read_idle_timeout: None,
+                probe: None,
+                terminal_reconnect_tx: None,
+            },
+            command_rx,
+            event_tx,
+        ));
+
+        command_tx
+            .send(FleetControlCommand::RegisterNode {
+                manifest: test_manifest(),
+                resume_cursor: None,
+            })
+            .await
+            .unwrap();
+
+        tokio::time::timeout(Duration::from_secs(5), control)
+            .await
+            .expect("terminal proof conflict must stop the control loop")
+            .unwrap();
+        rejected_handshake.await.unwrap();
+        create_node.assert_hits(1);
+        assert_eq!(event_rx.recv().await, Some(FleetControlEvent::Disconnected));
+        assert!(session_token.read().unwrap().is_none());
     }
 
     #[tokio::test]
