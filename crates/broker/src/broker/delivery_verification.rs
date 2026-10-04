@@ -104,6 +104,7 @@ pub(crate) const MAX_VERIFICATION_ATTEMPTS: usize = 3;
 
 /// Time window to wait for echo verification before accepting delivery.
 pub(crate) const VERIFICATION_WINDOW: std::time::Duration = std::time::Duration::from_secs(5);
+pub(crate) const MAX_ACCEPTANCE_LIFETIME: std::time::Duration = std::time::Duration::from_secs(30);
 
 /// A pending delivery waiting for echo verification in PTY output.
 #[derive(Debug)]
@@ -117,6 +118,7 @@ pub(crate) struct PendingVerification {
     /// PTY reader and this event loop.
     pub output_boundary: u64,
     pub injected_at: std::time::Instant,
+    pub verification_started_at: std::time::Instant,
     pub attempts: usize,
     pub max_attempts: usize,
     pub request_id: Option<RequestId>,
@@ -149,7 +151,7 @@ impl PendingVerification {
             // marker; that marker cannot prove this delivery was accepted.
             self.echo_seen = true;
             self.activity_buffer.clear();
-            let clean = strip_ansi(text);
+            let clean = strip_ansi(&output.since(self.output_boundary));
             if let Some(index) = clean.rfind(&self.expected_echo) {
                 self.activity_buffer
                     .push_str(&clean[index + self.expected_echo.len()..]);
@@ -172,6 +174,10 @@ impl PendingVerification {
         }
         self.detector
             .detect_activity(&self.activity_buffer, &self.expected_echo)
+    }
+
+    pub(crate) fn acceptance_expired(&self) -> bool {
+        self.verification_started_at.elapsed() >= MAX_ACCEPTANCE_LIFETIME
     }
 }
 
@@ -196,13 +202,17 @@ fn expected_tail(expected: &str) -> String {
 }
 
 fn current_composer(snapshot: &Snapshot, cli: &str) -> Option<String> {
-    let plain = snapshot.to_plain();
+    let plain = snapshot.to_plain_through_cursor();
     let lines: Vec<_> = plain.lines().collect();
     let end = snapshot.cursor.0.checked_sub(1)? as usize;
     if end >= lines.len() {
         return None;
     }
     let lower = cli.to_ascii_lowercase();
+    if lower.contains("gemini") {
+        let start = end.saturating_sub(3);
+        return Some(lines[start..=end].join("\n"));
+    }
     let is_prompt = |line: &&str| {
         let trimmed = line.trim_start();
         if lower.contains("codex") {
@@ -231,7 +241,17 @@ fn current_composer(snapshot: &Snapshot, cli: &str) -> Option<String> {
         }
     };
     let start = lines.iter().take(end + 1).rposition(is_prompt)?;
-    Some(lines[start..=end].join("\n"))
+    let composer_lines = &lines[start..=end];
+    if composer_lines.len() > 1 {
+        let activity = composer_lines[1..].join("\n");
+        let detector = ActivityDetector::for_cli(cli);
+        if detector.has_explicit_patterns() && detector.detect_activity(&activity, "").is_some() {
+            // The latest prompt-looking line is part of the submitted
+            // transcript; a harness activity row below it owns the cursor.
+            return None;
+        }
+    }
+    Some(composer_lines.join("\n"))
 }
 
 fn codex_busy(screen: &str) -> bool {
@@ -255,7 +275,7 @@ fn composer_is_idle(snapshot: &Snapshot, cli: &str) -> bool {
     ) && current_composer(snapshot, cli)
         .map(|composer| {
             let trimmed = composer.trim();
-            matches!(trimmed, "›" | "codex>" | "❯" | ">" | "$" | ">>>")
+            matches!(trimmed, "›" | "codex>" | "❯" | "❭" | ">" | "$" | ">>>")
                 || trimmed.contains("Ask Codex to do anything")
                 || trimmed.contains("Type your message or @path/to/file")
                 || trimmed.contains("Ask Devin to build features, fix bugs, or work on your code")
@@ -274,10 +294,6 @@ pub(crate) fn assess_harness_acceptance(
     verification: &PendingVerification,
     snapshot: &Snapshot,
 ) -> HarnessAcceptance {
-    if let Some(pattern) = verification.accepted_activity() {
-        return HarnessAcceptance::Accepted(format!("activity:{pattern}"));
-    }
-
     let tail = expected_tail(&verification.expected_echo);
     let parked = !tail.is_empty()
         && current_composer(snapshot, cli)
@@ -286,8 +302,19 @@ pub(crate) fn assess_harness_acceptance(
     if parked {
         return HarnessAcceptance::Parked;
     }
+    if let Some(pattern) = verification.accepted_activity() {
+        return HarnessAcceptance::Accepted(format!("activity:{pattern}"));
+    }
     if verification.echo_seen && composer_is_idle(snapshot, cli) {
         return HarnessAcceptance::Accepted("composer_cleared".to_string());
+    }
+    if verification.echo_seen && !verification.detector.has_explicit_patterns() {
+        if let Some(pattern) = verification
+            .detector
+            .detect_activity(&verification.activity_buffer, &verification.expected_echo)
+        {
+            return HarnessAcceptance::Accepted(format!("activity:{pattern}"));
+        }
     }
     HarnessAcceptance::Inconclusive
 }
@@ -484,6 +511,7 @@ mod tests {
             expected_echo: expected.to_string(),
             output_boundary: 0,
             injected_at: Instant::now(),
+            verification_started_at: Instant::now(),
             attempts: 1,
             max_attempts: MAX_VERIFICATION_ATTEMPTS,
             request_id: None,
@@ -540,7 +568,8 @@ mod tests {
     #[tokio::test]
     async fn codex_activity_and_cleared_composer_prove_acceptance() {
         let expected = "Relay message from Lead [evt]: fix idle injection";
-        let (busy_pty, busy_snapshot) = codex_snapshot(&format!("› {expected}")).await;
+        let (busy_pty, busy_snapshot) =
+            codex_snapshot(&format!("› {expected}\nWorking (1s • esc to interrupt)")).await;
         let mut active = codex_verification(expected);
         active
             .activity_buffer
@@ -577,6 +606,71 @@ mod tests {
             "generic output must not outrank a visibly parked composer"
         );
         pty.shutdown().unwrap();
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn previous_turn_busy_redraw_cannot_confirm_new_parked_body() {
+        let expected = "Relay message from Lead [evt]: queued while busy";
+        let screen = format!("› previous request\nWorking (4s • esc to interrupt)\n› {expected}");
+        let (pty, snapshot) = codex_snapshot(&screen).await;
+        let mut verification = codex_verification(expected);
+        verification
+            .activity_buffer
+            .push_str("Working (5s • esc to interrupt)");
+
+        assert_eq!(
+            assess_harness_acceptance("codex", &verification, &snapshot),
+            HarnessAcceptance::Parked,
+            "a continuing marker from the previous turn cannot outrank the new live composer"
+        );
+        pty.shutdown().unwrap();
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn generic_post_echo_output_confirms_after_composer_disappears() {
+        let expected = "Relay message from Lead [evt]: fix idle injection";
+        let (pty, snapshot) = codex_snapshot("Processing accepted turn").await;
+        let mut verification = codex_verification(expected);
+        verification.detector = ActivityDetector::for_cli("muse");
+        verification
+            .activity_buffer
+            .push_str("Processing accepted turn");
+
+        assert_eq!(
+            assess_harness_acceptance("muse", &verification, &snapshot),
+            HarnessAcceptance::Accepted("activity:any_output".to_string())
+        );
+        pty.shutdown().unwrap();
+    }
+
+    #[test]
+    fn split_echo_preserves_same_chunk_acceptance_activity() {
+        let expected = "Relay message from Lead [evt]: split echo";
+        let mut verification = codex_verification(expected);
+        verification.echo_seen = false;
+        let mut output = VerificationOutput::default();
+        output.push_output(1, b"Relay message from Lead [evt]: split ");
+        verification.observe(&output, "Relay message from Lead [evt]: split ");
+        assert!(!verification.echo_seen);
+
+        output.push_output(2, "echo\nWorking (1s • esc to interrupt)".as_bytes());
+        verification.observe(&output, "echo\nWorking (1s • esc to interrupt)");
+
+        assert!(verification.echo_seen);
+        assert_eq!(
+            verification.accepted_activity(),
+            Some("Working+esc to interrupt".to_string())
+        );
+    }
+
+    #[test]
+    fn acceptance_lifetime_is_not_reset_by_retry_windows() {
+        let mut verification = codex_verification("bounded delivery");
+        verification.verification_started_at = Instant::now() - MAX_ACCEPTANCE_LIFETIME;
+        verification.injected_at = Instant::now();
+        assert!(verification.acceptance_expired());
     }
 
     #[test]
@@ -637,6 +731,7 @@ mod tests {
             expected_echo: expected.to_string(),
             output_boundary,
             injected_at: Instant::now(),
+            verification_started_at: Instant::now(),
             attempts: 1,
             max_attempts: 1,
             request_id: None,
@@ -673,6 +768,7 @@ mod tests {
             expected_echo: expected.to_string(),
             output_boundary,
             injected_at: Instant::now(),
+            verification_started_at: Instant::now(),
             attempts: 1,
             max_attempts: 1,
             request_id: None,
@@ -730,6 +826,7 @@ mod tests {
             expected_echo: expected.to_string(),
             output_boundary,
             injected_at: Instant::now(),
+            verification_started_at: Instant::now(),
             attempts: 1,
             max_attempts: 1,
             request_id: None,
@@ -770,6 +867,7 @@ mod tests {
             expected_echo: expected.to_string(),
             output_boundary,
             injected_at: Instant::now(),
+            verification_started_at: Instant::now(),
             attempts: 1,
             max_attempts: 1,
             request_id: None,

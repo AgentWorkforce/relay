@@ -3,11 +3,13 @@ use crate::ansi::strip_ansi;
 #[derive(Debug, Clone)]
 pub struct ActivityDetector {
     patterns: Vec<&'static str>,
+    codex_working_pair: bool,
 }
 
 impl ActivityDetector {
     pub fn for_cli(cli: &str) -> Self {
         let lower = cli.to_lowercase();
+        let codex_working_pair = lower.contains("codex");
         let patterns = if lower.contains("claude") {
             vec![
                 "⠋",
@@ -25,25 +27,24 @@ impl ActivityDetector {
             // Keep both generations: this detector is acceptance evidence, so
             // missing the current marker leaves a body parked while an echo is
             // incorrectly treated as delivery success.
-            vec![
-                "Working",
-                "esc to interrupt",
-                "Thinking...",
-                "Running:",
-                "$ ",
-                "function_call",
-            ]
+            vec!["Thinking...", "Running:", "$ ", "function_call"]
         } else if crate::readiness::is_devin_cli(cli) {
             vec!["Thinking ·", "Guide Devin while it works"]
         } else if lower.contains("gemini") {
             vec!["Generating", "Action:", "Executing"]
         } else if lower.contains("opencode") {
-            vec!["Thinking", "Working", "tool"]
+            // OpenCode's ordinary transcript frequently contains the generic
+            // words "tool", "Thinking", and "Working". Until a distinctive
+            // busy marker is established, rely on composer clearing instead.
+            Vec::new()
         } else {
             Vec::new()
         };
 
-        Self { patterns }
+        Self {
+            patterns,
+            codex_working_pair,
+        }
     }
 
     /// Whether this detector has harness-specific evidence that a turn began.
@@ -60,6 +61,15 @@ impl ActivityDetector {
         } else {
             clean_output.replace(expected_echo, "")
         };
+
+        if self.codex_working_pair
+            && relevant_output.lines().any(|line| {
+                let lower = line.to_ascii_lowercase();
+                lower.contains("working") && lower.contains("esc to interrupt")
+            })
+        {
+            return Some("Working+esc to interrupt".to_string());
+        }
 
         if self.patterns.is_empty() {
             if relevant_output.trim().is_empty() {
@@ -113,10 +123,17 @@ mod tests {
         let detector = ActivityDetector::for_cli("codex");
         assert_eq!(
             detector.detect_activity(
+                "Working appears in the parked task body",
+                "Relay message from Alice [evt_1]: hello"
+            ),
+            None
+        );
+        assert_eq!(
+            detector.detect_activity(
                 "Working (2s • esc to interrupt)",
                 "Relay message from Alice [evt_1]: hello"
             ),
-            Some("Working".to_string())
+            Some("Working+esc to interrupt".to_string())
         );
         assert_eq!(
             detector.detect_activity(

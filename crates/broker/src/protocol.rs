@@ -656,6 +656,8 @@ pub enum WorkerToBroker {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         verification: Option<String>,
         #[serde(default, skip_serializing_if = "Option::is_none")]
+        reason: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
         evidence: Option<String>,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         attempts: Option<u32>,
@@ -857,6 +859,7 @@ mod tests {
             delivery_id: "del_v1".into(),
             event_id: "evt_v1".into(),
             verification: Some("harness_acceptance".into()),
+            reason: Some("accepted by live harness".into()),
             evidence: Some("activity:Working".into()),
             attempts: Some(2),
         };

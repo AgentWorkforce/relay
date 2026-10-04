@@ -190,6 +190,33 @@
         "blockedSecs": 120,
         "pendingDeliveryCount": 1
       }
+    },
+    {
+      "kind": "delivery_unconfirmed",
+      "eventId": "evt_0017",
+      "seq": 117,
+      "timestamp": "2026-02-23T00:00:16.000Z",
+      "payload": {
+        "name": "WorkerA",
+        "deliveryId": "del_5",
+        "eventId": "relay_evt_5",
+        "reason": "body remains parked in the live composer",
+        "attempts": 1,
+        "maxAttempts": 3
+      }
+    },
+    {
+      "kind": "delivery_resubmitted",
+      "eventId": "evt_0018",
+      "seq": 118,
+      "timestamp": "2026-02-23T00:00:17.000Z",
+      "payload": {
+        "name": "WorkerA",
+        "deliveryId": "del_5",
+        "eventId": "relay_evt_5",
+        "attempt": 2,
+        "strategy": "submit_key_only"
+      }
     }
   ],
   "wave0_timeout_terminal_semantics": {

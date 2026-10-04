@@ -871,18 +871,42 @@ impl BrokerRuntime {
                                 .get("event_id")
                                 .and_then(Value::as_str)
                                 .unwrap_or("");
-                            if let Some(pending) = pending_deliveries.get_mut(delivery_id) {
-                                if pending.delivery.event_id.as_str() == event_id {
+                            let matching_pending = pending_deliveries
+                                .get_mut(delivery_id)
+                                .filter(|pending| pending.delivery.event_id.as_str() == event_id)
+                                .map(|pending| {
                                     pending.next_retry_at = Instant::now()
                                         + delivery_recovery_ack_timeout(
                                             &pending.delivery.injection_mode,
                                             delivery_retry_interval,
                                         );
+                                })
+                                .is_some();
+                            if matching_pending {
+                                if let Some(handle) = workers.workers.get_mut(&name) {
+                                    handle.last_activity_at = Instant::now();
+                                    handle.state = AgentWorkState::BlockedOnSend;
                                 }
-                            }
-                            if let Some(handle) = workers.workers.get_mut(&name) {
-                                handle.last_activity_at = Instant::now();
-                                handle.state = AgentWorkState::BlockedOnSend;
+                                let pending_delivery_count = pending_deliveries
+                                    .values()
+                                    .filter(|pending| pending.worker_name == name)
+                                    .count();
+                                let _ = send_broker_event(
+                                    sdk_out_tx,
+                                    BrokerEvent::AgentBlockedOnSend {
+                                        name: name.clone(),
+                                        blocked_secs: 0,
+                                        pending_delivery_count,
+                                    },
+                                )
+                                .await;
+                                publish_agent_state_transition(
+                                    ws_control_tx,
+                                    &name,
+                                    "stuck",
+                                    Some("blocked_on_send"),
+                                )
+                                .await;
                             }
                             tracing::warn!(
                                 target = "agent_relay::broker",
@@ -924,7 +948,7 @@ impl BrokerRuntime {
                             let verification = payload
                                 .get("verification")
                                 .and_then(Value::as_str)
-                                .unwrap_or("harness_acceptance");
+                                .unwrap_or("worker_confirmation");
                             let reason = payload.get("reason").and_then(Value::as_str);
                             tracing::debug!(
                                 target = "agent_relay::broker",
@@ -1040,6 +1064,26 @@ impl BrokerRuntime {
                                     handle.last_activity_at = Instant::now();
                                     handle.state = AgentWorkState::BlockedOnSend;
                                 }
+                                let pending_delivery_count = pending_deliveries
+                                    .values()
+                                    .filter(|candidate| candidate.worker_name == name)
+                                    .count();
+                                let _ = send_broker_event(
+                                    sdk_out_tx,
+                                    BrokerEvent::AgentBlockedOnSend {
+                                        name: name.clone(),
+                                        blocked_secs: 0,
+                                        pending_delivery_count,
+                                    },
+                                )
+                                .await;
+                                publish_agent_state_transition(
+                                    ws_control_tx,
+                                    &name,
+                                    "stuck",
+                                    Some("blocked_on_send"),
+                                )
+                                .await;
                                 let _ = emit_dropped_delivery_failures(
                                     sdk_out_tx,
                                     dead_letters,
@@ -1385,7 +1429,9 @@ impl BrokerRuntime {
                             .is_some_and(|handle| handle.spec.runtime == AgentRuntime::Pty);
                         if let Some(handle) = workers.workers.get_mut(&name) {
                             handle.last_activity_at = Instant::now();
-                            handle.state = AgentWorkState::Working;
+                            if handle.state != AgentWorkState::BlockedOnSend {
+                                handle.state = AgentWorkState::Working;
+                            }
                         }
                         if is_pty {
                             publish_pty_busy(pty_observability, hosted_agent_event_tx, &name);
@@ -1627,13 +1673,20 @@ impl BrokerRuntime {
                             .unwrap_or(0);
                         let since =
                             chrono::Utc::now() - chrono::Duration::seconds(idle_secs as i64);
-                        if let Some(handle) = workers.workers.get_mut(&name) {
-                            handle.state = AgentWorkState::Idle;
-                        }
-                        if workers
+                        let remains_blocked = workers
                             .workers
                             .get(&name)
-                            .is_some_and(|handle| handle.spec.runtime == AgentRuntime::Pty)
+                            .is_some_and(|handle| handle.state == AgentWorkState::BlockedOnSend);
+                        if !remains_blocked {
+                            if let Some(handle) = workers.workers.get_mut(&name) {
+                                handle.state = AgentWorkState::Idle;
+                            }
+                        }
+                        if !remains_blocked
+                            && workers
+                                .workers
+                                .get(&name)
+                                .is_some_and(|handle| handle.spec.runtime == AgentRuntime::Pty)
                         {
                             publish_pty_idle(pty_observability, hosted_agent_event_tx, &name);
                         }
@@ -1648,13 +1701,15 @@ impl BrokerRuntime {
                             }),
                         )
                         .await;
-                        publish_agent_state_transition(
-                            ws_control_tx,
-                            &name,
-                            "idle",
-                            Some("idle_threshold"),
-                        )
-                        .await;
+                        if !remains_blocked {
+                            publish_agent_state_transition(
+                                ws_control_tx,
+                                &name,
+                                "idle",
+                                Some("idle_threshold"),
+                            )
+                            .await;
+                        }
                     } else if msg_type == "agent_blocked_on_send" {
                         let blocked_secs = value
                             .get("payload")

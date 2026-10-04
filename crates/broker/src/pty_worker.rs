@@ -209,6 +209,25 @@ type RecoveryWriteAck = (
 );
 type RecoveryWriteAckFuture = Pin<Box<dyn Future<Output = RecoveryWriteAck> + Send>>;
 
+fn queue_post_acceptance_activity(
+    verification: &PendingVerification,
+    output: &VerificationOutput,
+    detector: Option<&ActivityDetector>,
+    pending_activities: &mut VecDeque<PendingActivity>,
+) {
+    let Some(detector) = detector else {
+        return;
+    };
+    pending_activities.push_back(PendingActivity {
+        delivery_id: verification.delivery_id.clone(),
+        event_id: verification.event_id.clone(),
+        expected_echo: verification.expected_echo.clone(),
+        verified_at: Instant::now(),
+        output_buffer: output.since(verification.output_boundary).into_owned(),
+        detector: detector.clone(),
+    });
+}
+
 fn cli_basename(command: &str) -> &str {
     command
         .rsplit(['/', '\\'])
@@ -1363,7 +1382,9 @@ pub(crate) async fn run_pty_worker(cmd: PtyCommand) -> Result<()> {
                                         // the human ownership and terminate every
                                         // pending automatic verification without
                                         // pressing a recovery key.
+                                        let mut cancelled_verification = false;
                                         while let Some(pv) = pending_verifications.pop_front() {
+                                            cancelled_verification = true;
                                             let delivery_id = pv.delivery_id.clone();
                                             let _ = send_frame(&out_tx, "delivery_failed", None, json!({
                                                 "delivery_id": delivery_id,
@@ -1372,6 +1393,9 @@ pub(crate) async fn run_pty_worker(cmd: PtyCommand) -> Result<()> {
                                                 "attempts": pv.attempts,
                                             })).await;
                                             pending_worker_delivery_ids.remove(&delivery_id);
+                                        }
+                                        if cancelled_verification {
+                                            throttle.record(DeliveryOutcome::Failed);
                                         }
                                         // Non-blocking submission: never parks the
                                         // select loop even if the drainer is wedged
@@ -1804,14 +1828,16 @@ pub(crate) async fn run_pty_worker(cmd: PtyCommand) -> Result<()> {
                         // body. Confirm delivery only after the harness starts a
                         // turn (activity marker) or the echoed body has left a
                         // proven idle composer.
-                        let snapshot = Snapshot::capture(&pty);
                         let mut verified_indices = Vec::new();
-                        for (i, pv) in pending_verifications.iter_mut().enumerate() {
-                            pv.observe(&echo_buffer, &clean_text);
-                            if let HarnessAcceptance::Accepted(evidence) =
-                                assess_harness_acceptance(&resolved_cli, pv, &snapshot)
-                            {
-                                verified_indices.push((i, evidence));
+                        if !pending_verifications.is_empty() {
+                            let snapshot = Snapshot::capture(&pty);
+                            for (i, pv) in pending_verifications.iter_mut().enumerate() {
+                                pv.observe(&echo_buffer, &clean_text);
+                                if let HarnessAcceptance::Accepted(evidence) =
+                                    assess_harness_acceptance(&resolved_cli, pv, &snapshot)
+                                {
+                                    verified_indices.push((i, evidence));
+                                }
                             }
                         }
                         // Remove verified entries in reverse order to preserve indices.
@@ -1864,6 +1890,13 @@ pub(crate) async fn run_pty_worker(cmd: PtyCommand) -> Result<()> {
                                     }),
                                 )
                                 .await;
+                            } else {
+                                queue_post_acceptance_activity(
+                                    &pv,
+                                    &echo_buffer,
+                                    activity_detector.as_ref(),
+                                    &mut pending_activities,
+                                );
                             }
                             pending_worker_delivery_ids.remove(&delivery_id);
                             completed_worker_deliveries.insert(delivery_id, event_id);
@@ -2053,6 +2086,22 @@ pub(crate) async fn run_pty_worker(cmd: PtyCommand) -> Result<()> {
                 && (!pty_auto.interactive_hold
                     || active_injection.as_ref().is_some_and(|inj| inj.hold_exempt)) => {
                 let mut inj = active_injection.take().expect("active injection present under guard");
+                if inj.human_input_generation != human_input_generation {
+                    let delivery_id = inj.pending.delivery.delivery_id.clone();
+                    let _ = send_frame(&out_tx, "delivery_failed", None, json!({
+                        "delivery_id": delivery_id,
+                        "event_id": inj.pending.delivery.event_id,
+                        "reason": "human PTY input took ownership before body injection",
+                    })).await;
+                    restore_hold_exemption(
+                        &inj,
+                        &mut hold_exempt_injections,
+                        &mut hold_exempt_event_ids,
+                    );
+                    pending_worker_delivery_ids.remove(&delivery_id);
+                    throttle.record(DeliveryOutcome::Failed);
+                    continue;
+                }
                 match inj.stage {
                     InjectionStage::Escape => {
                         if matches!(inj.pending.delivery.injection_mode, MessageInjectionMode::Steer) {
@@ -2300,6 +2349,7 @@ pub(crate) async fn run_pty_worker(cmd: PtyCommand) -> Result<()> {
                                     .output_boundary
                                     .unwrap_or_else(|| echo_buffer.boundary()),
                                 injected_at: Instant::now(),
+                                verification_started_at: Instant::now(),
                                 attempts: 1,
                                 max_attempts: MAX_VERIFICATION_ATTEMPTS,
                                 request_id: inj.pending.request_id,
@@ -2370,6 +2420,13 @@ pub(crate) async fn run_pty_worker(cmd: PtyCommand) -> Result<()> {
                                         }),
                                     )
                                     .await;
+                                } else {
+                                    queue_post_acceptance_activity(
+                                        &pv,
+                                        &echo_buffer,
+                                        activity_detector.as_ref(),
+                                        &mut pending_activities,
+                                    );
                                 }
                                 pending_worker_delivery_ids.remove(&delivery_id);
                                 completed_worker_deliveries.insert(delivery_id, event_id);
@@ -2472,6 +2529,13 @@ pub(crate) async fn run_pty_worker(cmd: PtyCommand) -> Result<()> {
                                         }),
                                     )
                                     .await;
+                                } else {
+                                    queue_post_acceptance_activity(
+                                        &pv,
+                                        &echo_buffer,
+                                        activity_detector.as_ref(),
+                                        &mut pending_activities,
+                                    );
                                 }
                                 throttle.record(DeliveryOutcome::Success);
                                 pending_worker_delivery_ids.remove(&delivery_id);
@@ -2581,6 +2645,13 @@ pub(crate) async fn run_pty_worker(cmd: PtyCommand) -> Result<()> {
                                         }),
                                     )
                                     .await;
+                                } else {
+                                    queue_post_acceptance_activity(
+                                        &pv,
+                                        &echo_buffer,
+                                        activity_detector.as_ref(),
+                                        &mut pending_activities,
+                                    );
                                 }
                                 throttle.record(DeliveryOutcome::Success);
                                 pending_worker_delivery_ids.remove(&delivery_id);
@@ -2588,6 +2659,7 @@ pub(crate) async fn run_pty_worker(cmd: PtyCommand) -> Result<()> {
                             }
                             HarnessAcceptance::Parked
                                 if pv.attempts < pv.max_attempts
+                                    && !pv.acceptance_expired()
                                     && !pty_auto.interactive_hold
                                     && pending_pty_writes.is_empty()
                                     && active_injection.is_none()
@@ -2639,10 +2711,11 @@ pub(crate) async fn run_pty_worker(cmd: PtyCommand) -> Result<()> {
                                 }
                             }
                             HarnessAcceptance::Parked
-                                if pty_auto.interactive_hold
-                                    || !pending_pty_writes.is_empty()
-                                    || active_injection.is_some()
-                                    || !pending_recovery_writes.is_empty() =>
+                                if !pv.acceptance_expired()
+                                    && (pty_auto.interactive_hold
+                                        || !pending_pty_writes.is_empty()
+                                        || active_injection.is_some()
+                                        || !pending_recovery_writes.is_empty()) =>
                             {
                                 // A human or another writer owns the input FIFO.
                                 // Keep the delivery pending and retry the check
@@ -2710,6 +2783,8 @@ pub(crate) async fn run_pty_worker(cmd: PtyCommand) -> Result<()> {
                 if pending_worker_injections.is_empty()
                     && pending_verifications.is_empty()
                     && pending_activities.is_empty()
+                    && pending_recovery_writes.is_empty()
+                    && active_injection.is_none()
                 {
                     if let Some(threshold) = idle_threshold {
                     if let Some(idle_secs) = pty_auto.check_idle_transition(threshold) {
@@ -3326,6 +3401,7 @@ mod tests {
             expected_echo: body.to_string(),
             output_boundary,
             injected_at: Instant::now(),
+            verification_started_at: Instant::now(),
             attempts: 1,
             max_attempts: MAX_VERIFICATION_ATTEMPTS,
             request_id: None,
@@ -3496,6 +3572,7 @@ mod tests {
             expected_echo: body.to_string(),
             output_boundary,
             injected_at: Instant::now(),
+            verification_started_at: Instant::now(),
             attempts: 1,
             max_attempts: MAX_VERIFICATION_ATTEMPTS,
             request_id: None,

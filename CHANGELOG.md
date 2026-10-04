@@ -14,17 +14,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Fixed
 
 - Broker fleet control keeps a healthy node WebSocket open when Relaycast returns retryable `d1_pressure` for `node.register` or `inventory.sync`, retrying the same frame with bounded exponential backoff while the existing registration and application-liveness deadlines remain fail-closed.
-- Broker PTY delivery no longer treats terminal echo as proof that a harness accepted a message. It waits for harness activity or a cleared composer, retries only the submit gesture when the exact body is visibly parked, and reports bounded unconfirmed/retry/failure events instead of silently acknowledging stuck input. Codex recovery uses `End`, a distinct carriage return, and a guarded line-feed fallback without replaying the body; human input takes ownership and cancels recovery.
+- Broker-managed PTY messages now remain pending until the harness accepts them; failed delivery blocks further sends, with up to three submit-only attempts instead of silently parked input. Codex recovery uses `End`, a distinct carriage return, and a guarded line-feed fallback without replaying the body; human input takes ownership and cancels recovery. Upgrade and restart brokers and PTY agents for the planned 13.2.0 rollout.
 - `--state-dir` on `node agent` commands, `node status`, and `node down` also accepts a fleet node directory whose broker state lives in `state/`.
 - An explicit `--state-dir` on `node agent` commands is no longer overridden by `RELAY_BROKER_URL` / `RELAY_BROKER_API_KEY`.
 - "No broker connection" errors name the path searched and whether it was the project default or `--state-dir`, instead of implying a running broker is down.
 - `node down --force --state-dir <dir>` can verify and stop brokers started from another working directory.
 - `node status` and `node down` name a missing broker identity record and how to create one.
 - `install.sh` now verifies what it downloads and installs it atomically, so updating over a running broker no longer breaks it. A corrupt or failed update is rejected; the standalone installer then rolls back to your existing install, while an npm install reports the rejection without rolling back.
-
-### Migration Guidance
-
-- This fix is planned for broker 13.2.0. Upgrade and restart running brokers and PTY agents; already-running workers retain the old injection state machine until restarted.
 
 ## [13.1.0] - 2026-10-03
 

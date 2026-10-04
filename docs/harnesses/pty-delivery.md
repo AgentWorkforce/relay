@@ -14,7 +14,7 @@ that the composer submitted it.
 | OpenCode, Gemini, Cursor and other PTY harnesses | paced typed input              | trailing `CR`              | distinct `CR`, then guarded `LF`                                             |
 
 A recovery never writes the message body again. Relay retries a submit key only
-when the expected message tail is still present in the live composer at the
+when the compacted final 96 characters of the expected message are still present in the live composer at the
 cursor. It stops immediately when an activity marker appears or an echoed body
 has left a proven idle composer. An inconclusive screen is reported as failure
 instead of receiving a blind keypress.
@@ -25,6 +25,10 @@ transfers composer ownership to the operator, cancels automatic recovery, and
 reports the broker delivery as failed rather than submitting mixed input.
 
 ## Codex mechanism
+
+Broker-spawned `init_` tasks use Codex's existing render-gated, chunked initial
+write path before the same separate submit gesture and acceptance checks. The
+table's bulk-input description applies to ordinary post-startup deliveries.
 
 Reproduced with authenticated Codex CLI 0.160.0 in a real PTY: a message body
 and `CR` delivered in the same terminal write remained in Codex's multiline
@@ -42,7 +46,8 @@ PTY workers emit `delivery_unconfirmed` before recovery,
 and `delivery_failed` after a write error, inconclusive screen, or exhausted
 budget. Unconfirmed and retry events put the worker in `blocked_on_send`; agent
 and fleet listings already expose that state and retain the pending message
-count until a real `delivery_ack`.
+count while recovery is in flight. A terminal failure moves the delivery to the
+dead-letter path and removes it from the pending count.
 
 ## Rollout
 

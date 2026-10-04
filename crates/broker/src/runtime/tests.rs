@@ -4321,23 +4321,66 @@ fn worker_reported_delivery_failures_use_the_dead_letter_path() {
     );
 }
 
-#[test]
-fn unconfirmed_pty_delivery_is_visible_as_blocked_on_send() {
-    let source = include_str!("worker_events.rs");
-    let branch = source
-        .split("msg_type == \"delivery_unconfirmed\"")
-        .nth(1)
-        .expect("worker_events.rs must handle delivery_unconfirmed");
-    let branch = &branch[..branch
-        .find("msg_type == \"delivery_verified\"")
-        .expect("unconfirmed handling must precede verified handling")];
-    assert!(branch.contains("delivery_resubmitted"));
-    assert!(branch.contains("AgentWorkState::BlockedOnSend"));
-    assert!(branch.contains("send_event"));
+#[tokio::test]
+async fn unconfirmed_pty_delivery_is_visible_as_blocked_on_send() {
+    let worker_name = "worker-a";
+    let registry = make_worker_registry_with_worker(worker_name).await;
+    let generation = registry.workers[worker_name].generation;
+    let delivery_id = DeliveryId::new("del_blocked_on_send");
+    let pending = make_pending_delivery(delivery_id.as_str(), worker_name);
+    let event_id = pending.delivery.event_id.clone();
+    let mut fixture =
+        worker_event_runtime_fixture(registry, HashMap::from([(delivery_id.clone(), pending)]));
 
-    let inventory_source = include_str!("../worker.rs");
-    assert!(inventory_source.contains("\"current_state\": handle.state.as_str()"));
-    assert!(inventory_source.contains("\"pending_messages\""));
+    fixture
+        .runtime
+        .handle_worker_event(delivery_lifecycle_worker_event(
+            worker_name,
+            generation,
+            "delivery_unconfirmed",
+            delivery_id.as_str(),
+            event_id.as_str(),
+        ))
+        .await;
+
+    assert_eq!(
+        fixture.runtime.workers.workers[worker_name].state,
+        AgentWorkState::BlockedOnSend
+    );
+    let mut kinds = Vec::new();
+    while let Ok(frame) = fixture._sdk_out_rx.try_recv() {
+        if let Some(kind) = frame.payload.get("kind").and_then(Value::as_str) {
+            kinds.push(kind.to_string());
+        }
+    }
+    assert!(kinds.iter().any(|kind| kind == "delivery_unconfirmed"));
+    assert!(kinds.iter().any(|kind| kind == "agent_blocked_on_send"));
+    cleanup_worker_registry(fixture.runtime.workers).await;
+}
+
+#[tokio::test]
+async fn stale_recovery_progress_does_not_block_the_worker() {
+    let worker_name = "worker-a";
+    let registry = make_worker_registry_with_worker(worker_name).await;
+    let generation = registry.workers[worker_name].generation;
+    let mut fixture = worker_event_runtime_fixture(registry, HashMap::new());
+
+    fixture
+        .runtime
+        .handle_worker_event(delivery_lifecycle_worker_event(
+            worker_name,
+            generation,
+            "delivery_unconfirmed",
+            "del_already_complete",
+            "evt_already_complete",
+        ))
+        .await;
+
+    assert_eq!(
+        fixture.runtime.workers.workers[worker_name].state,
+        AgentWorkState::Working
+    );
+    cleanup_worker_registry(fixture.runtime.workers).await;
 }
 
 #[tokio::test]

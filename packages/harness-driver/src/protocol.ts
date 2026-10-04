@@ -613,11 +613,11 @@ export type BrokerEvent =
       name: string;
       delivery_id: string;
       event_id: string;
-      /** 'harness_acceptance' when activity or a cleared composer proves turn acceptance. */
+      /** 'harness_acceptance' for current PTY workers; legacy workers may report 'echo' or 'timeout_fallback'. */
       verification?: string;
       reason?: string;
-      evidence?: string;
-      attempts?: number;
+      evidence?: string | null;
+      attempts?: number | null;
     }
   | {
       kind: 'delivery_unconfirmed';

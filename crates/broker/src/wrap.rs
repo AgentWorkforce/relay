@@ -1698,26 +1698,28 @@ pub(crate) async fn run_wrap(
                         // Echo is editor receipt, not turn acceptance. Keep the
                         // delivery pending until activity starts or the body is
                         // gone from a proven idle composer.
-                        let snapshot = Snapshot::capture(&pty);
-                        let mut verified_indices = Vec::new();
-                        for (i, pv) in pending_verifications.iter_mut().enumerate() {
-                            pv.observe(&echo_buffer, &clean_text);
-                            if let HarnessAcceptance::Accepted(evidence) =
-                                assess_harness_acceptance(&resolved_cli, pv, &snapshot)
-                            {
-                                verified_indices.push((i, evidence));
+                        if !pending_verifications.is_empty() {
+                            let snapshot = Snapshot::capture(&pty);
+                            let mut verified_indices = Vec::new();
+                            for (i, pv) in pending_verifications.iter_mut().enumerate() {
+                                pv.observe(&echo_buffer, &clean_text);
+                                if let HarnessAcceptance::Accepted(evidence) =
+                                    assess_harness_acceptance(&resolved_cli, pv, &snapshot)
+                                {
+                                    verified_indices.push((i, evidence));
+                                }
                             }
-                        }
-                        for (i, evidence) in verified_indices.into_iter().rev() {
-                            let pv = pending_verifications.remove(i).unwrap();
-                            tracing::info!(
-                                event_id = %pv.event_id,
-                                delivery_id = %pv.delivery_id,
-                                attempts = pv.attempts,
-                                evidence = %evidence,
-                                "wrap: delivery accepted by harness"
-                            );
-                            throttle.record(DeliveryOutcome::Success);
+                            for (i, evidence) in verified_indices.into_iter().rev() {
+                                let pv = pending_verifications.remove(i).unwrap();
+                                tracing::info!(
+                                    event_id = %pv.event_id,
+                                    delivery_id = %pv.delivery_id,
+                                    attempts = pv.attempts,
+                                    evidence = %evidence,
+                                    "wrap: delivery accepted by harness"
+                                );
+                                throttle.record(DeliveryOutcome::Success);
+                            }
                         }
 
                         if activity_detector.as_ref().is_some() {
@@ -2237,6 +2239,15 @@ pub(crate) async fn run_wrap(
                         include_reminder,
                         human_input_generation: submitted_generation,
                     } => {
+                        if submitted_generation != human_input_generation {
+                            tracing::warn!(
+                                event_id = %pending.event_id,
+                                "wrap: human input followed the injection write; automatic verification cancelled"
+                            );
+                            throttle.record(DeliveryOutcome::Failed);
+                            continue;
+                        }
+
                         if let Some(error) = error {
                             tracing::warn!(
                                 event_id = %pending.event_id,
@@ -2244,15 +2255,6 @@ pub(crate) async fn run_wrap(
                                 "PTY injection write was not confirmed; re-queuing"
                             );
                             pending_wrap_injections.push_front(pending);
-                            continue;
-                        }
-
-                        if submitted_generation != human_input_generation {
-                            tracing::warn!(
-                                event_id = %pending.event_id,
-                                "wrap: human input followed the injection write; automatic verification cancelled"
-                            );
-                            throttle.record(DeliveryOutcome::Failed);
                             continue;
                         }
 
@@ -2274,6 +2276,7 @@ pub(crate) async fn run_wrap(
                             expected_echo: injection,
                             output_boundary,
                             injected_at: Instant::now(),
+                            verification_started_at: Instant::now(),
                             attempts: 1,
                             max_attempts: MAX_VERIFICATION_ATTEMPTS,
                             request_id: None,
@@ -2300,6 +2303,15 @@ pub(crate) async fn run_wrap(
                         output_boundary,
                         human_input_generation: submitted_generation,
                     } => {
+                        if submitted_generation != human_input_generation {
+                            tracing::warn!(
+                                event_id = %verification.event_id,
+                                "wrap: human input followed submit-key recovery; further automatic recovery cancelled"
+                            );
+                            throttle.record(DeliveryOutcome::Failed);
+                            continue;
+                        }
+
                         if let Some(error) = error {
                             tracing::error!(
                                 event_id = %verification.event_id,
@@ -2310,15 +2322,6 @@ pub(crate) async fn run_wrap(
                             continue;
                         }
 
-
-                        if submitted_generation != human_input_generation {
-                            tracing::warn!(
-                                event_id = %verification.event_id,
-                                "wrap: human input followed submit-key recovery; further automatic recovery cancelled"
-                            );
-                            throttle.record(DeliveryOutcome::Failed);
-                            continue;
-                        }
 
                         tracing::debug!(
                             delivery_id = %verification.delivery_id,
@@ -2364,6 +2367,7 @@ pub(crate) async fn run_wrap(
                             }
                             HarnessAcceptance::Parked
                                 if pv.attempts < pv.max_attempts
+                                    && !pv.acceptance_expired()
                                     && stdin_pending.is_empty()
                                     && pending_wrap_writes.is_empty()
                                     && crate::devin::can_inject(&resolved_cli, &pty) =>
@@ -2411,9 +2415,9 @@ pub(crate) async fn run_wrap(
                                 }
                             }
                             HarnessAcceptance::Parked
-                                if !stdin_pending.is_empty()
-                                    || !pending_wrap_writes.is_empty()
-                                    || !crate::devin::can_inject(&resolved_cli, &pty) =>
+                                if !pv.acceptance_expired()
+                                    && (!stdin_pending.is_empty()
+                                        || !pending_wrap_writes.is_empty()) =>
                             {
                                 // Human input and another automated writer take
                                 // priority. Deferral does not consume a retry.
@@ -2789,6 +2793,7 @@ sys.stdout.flush()"#;
             expected_echo: String::new(),
             output_boundary: 0,
             injected_at: Instant::now(),
+            verification_started_at: Instant::now(),
             attempts: 1,
             max_attempts: MAX_VERIFICATION_ATTEMPTS,
             request_id: None,
