@@ -431,6 +431,7 @@ pub struct PtySession {
     /// buffered stream chunks the snapshot already reflects and apply only
     /// the ones that came after.
     consumed_offset: Arc<AtomicU64>,
+    paste_capable: Arc<AtomicBool>,
     /// Sequence assigned as soon as the reader obtains a PTY output chunk,
     /// before grid parsing or async queue admission. Consumers sample this
     /// producer watermark when submitting input so output that was already
@@ -1057,6 +1058,8 @@ impl PtySession {
         let (tx, rx) = mpsc::channel(256);
         let term_clone = term.clone();
         let processor_clone = processor.clone();
+        let paste_capable = Arc::new(AtomicBool::new(false));
+        let paste_capable_reader = paste_capable.clone();
         let consumed_offset = Arc::new(AtomicU64::new(0));
         let consumed_offset_reader = consumed_offset.clone();
         let output_sequence = Arc::new(AtomicU64::new(0));
@@ -1130,7 +1133,20 @@ impl PtySession {
                     // writer lock taken by the drainer thread.
                     let mut processor_guard = processor_clone.lock();
                     let mut term_guard = term_clone.lock();
-                    processor_guard.advance(&mut *term_guard, bytes);
+                    // Observe every mode transition, including enable/disable in one read.
+                    if paste_capable_reader.load(Ordering::Acquire) {
+                        processor_guard.advance(&mut *term_guard, bytes);
+                    } else {
+                        for byte in bytes {
+                            processor_guard.advance(&mut *term_guard, std::slice::from_ref(byte));
+                            if term_guard
+                                .mode()
+                                .contains(alacritty_terminal::term::TermMode::BRACKETED_PASTE)
+                            {
+                                paste_capable_reader.store(true, Ordering::Release);
+                            }
+                        }
+                    }
                     // Publish the grid's consumed byte offset while
                     // still holding the term lock, so a concurrent
                     // snapshot reader (which also locks `term`) reads
@@ -1171,6 +1187,7 @@ impl PtySession {
                 term,
                 processor,
                 consumed_offset,
+                paste_capable,
                 output_sequence,
                 output_order,
                 #[cfg(unix)]
@@ -1451,6 +1468,11 @@ impl PtySession {
     /// with a grid render.
     ///
     /// [`with_term_and_offset`]: PtySession::with_term_and_offset
+    /// Sticky capability, independent of whether the composer is currently ready.
+    pub fn bracketed_paste_enabled(&self) -> bool {
+        self.paste_capable.load(Ordering::Acquire)
+    }
+
     pub fn consumed_offset(&self) -> u64 {
         self.consumed_offset.load(Ordering::Acquire)
     }
@@ -1805,6 +1827,37 @@ mod tests {
             "grid should contain echoed text, got: {screen:?}"
         );
         let _ = pty.shutdown();
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn paste_capability_latches_across_disable_in_same_read() {
+        let (pty, mut rx) = PtySession::spawn(
+            "sh",
+            &[
+                "-c".into(),
+                "printf '\\033[?2004h\\033[?2004lREADY'; sleep 2".into(),
+            ],
+            24,
+            80,
+        )
+        .unwrap();
+        let drain = tokio::spawn(async move { while rx.recv().await.is_some() {} });
+        tokio::time::timeout(Duration::from_secs(3), async {
+            while !pty.screen_text().contains("READY") {
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+        })
+        .await
+        .unwrap();
+        assert!(pty.bracketed_paste_enabled());
+        assert!(!pty
+            .term
+            .lock()
+            .mode()
+            .contains(alacritty_terminal::term::TermMode::BRACKETED_PASTE));
+        pty.shutdown().unwrap();
+        drain.abort();
     }
 
     #[tokio::test]
@@ -2964,20 +3017,21 @@ mod tests {
             ack: ack_tx,
         })
         .expect("queue accepts paced user input");
+        tx.send(WriteMsg::Reply(b"terminal-reply".to_vec()))
+            .unwrap();
 
         let ack = tokio::time::timeout(Duration::from_secs(2), ack_rx)
             .await
             .expect("drainer acks paced write")
             .expect("ack sender not dropped");
         assert!(ack.is_ok(), "paced write must succeed");
-        assert_eq!(
-            out.lock().unwrap().as_slice(),
-            b"go\x1b[A\r",
-            "paced write must deliver every byte in order"
-        );
-
         drop(tx);
         drainer.join().expect("drainer thread joins cleanly");
+        assert_eq!(
+            out.lock().unwrap().as_slice(),
+            b"go\x1b[A\rterminal-reply",
+            "terminal replies queue behind the entire typed body"
+        );
     }
 
     /// A delayed follow-up must be a distinct PTY write while remaining inside

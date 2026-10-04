@@ -103,7 +103,20 @@ pub(crate) fn submit_injection_body(
     bytes: Vec<u8>,
     pace: Duration,
 ) -> anyhow::Result<(tokio::sync::oneshot::Receiver<std::io::Result<()>>, u64)> {
-    if let Some(delay) = injection_submit_followup_delay(resolved_cli) {
+    // Follow the already-selected wire. Capability can latch between body
+    // construction and queue admission; re-probing here could bulk-type raw bytes.
+    let wire = if bytes.starts_with(b"\x1b[200~") && bytes.ends_with(b"\x1b[201~") {
+        crate::injection_wire::InjectionWire::Paste
+    } else {
+        crate::injection_wire::InjectionWire::Typed
+    };
+    let limit = crate::injection_wire::effective_limit(wire, pace);
+    anyhow::ensure!(bytes.len().saturating_sub(if wire == crate::injection_wire::InjectionWire::Paste { 12 } else { 0 }) <= limit, "injection_too_large: {resolved_cli} effective limit is {limit} bytes; use a brief file pointer");
+    let paste = wire == crate::injection_wire::InjectionWire::Paste;
+    let pace = if paste { Duration::ZERO } else { pace };
+    if let Some(delay) = injection_submit_followup_delay(resolved_cli)
+        .or_else(|| paste.then_some(PASTE_INJECTION_SUBMIT_DELAY))
+    {
         pty.submit_write_paced_with_followup_and_output_boundary(bytes, pace, delay, b"\r".to_vec())
     } else {
         let mut burst = bytes;
@@ -2144,7 +2157,12 @@ pub(crate) async fn run_wrap(
                         pending.workspace_id.as_deref(),
                         pending.workspace_alias.as_deref(),
                     );
-                    let bytes = crate::devin::injection_bytes(&resolved_cli, &injection);
+                    if injection.len() > crate::injection_wire::MAX_INJECTION_BODY_BYTES {
+                        tracing::warn!(limit = crate::injection_wire::MAX_INJECTION_BODY_BYTES, "wrap: injection_too_large; body was not written and will not be replayed");
+                        throttle.record(DeliveryOutcome::Failed);
+                        continue;
+                    }
+                    let bytes = crate::injection_wire::injection_bytes(crate::injection_wire::injection_wire(&resolved_cli, &pty), &injection);
                     let write = submit_injection_body(&pty, &resolved_cli, bytes, Duration::ZERO);
                     match write {
                         Ok((ack_rx, output_boundary)) => {
@@ -2353,7 +2371,12 @@ pub(crate) async fn run_wrap(
                         pv.workspace_id.as_deref(),
                         pv.workspace_alias.as_deref(),
                     );
-                    let bytes = crate::devin::injection_bytes(&resolved_cli, &injection);
+                    if injection.len() > crate::injection_wire::MAX_INJECTION_BODY_BYTES {
+                        tracing::warn!(limit = crate::injection_wire::MAX_INJECTION_BODY_BYTES, "wrap: injection_too_large; body was not written and will not be replayed");
+                        throttle.record(DeliveryOutcome::Failed);
+                        continue;
+                    }
+                    let bytes = crate::injection_wire::injection_bytes(crate::injection_wire::injection_wire(&resolved_cli, &pty), &injection);
                     let write = submit_injection_body(&pty, &resolved_cli, bytes, Duration::ZERO);
                     match write {
                         Ok((ack_rx, output_boundary)) => {

@@ -9,6 +9,7 @@
 mod devin;
 pub mod fleet_wire;
 pub mod ids;
+mod injection_wire;
 pub mod protocol;
 pub mod snippets;
 

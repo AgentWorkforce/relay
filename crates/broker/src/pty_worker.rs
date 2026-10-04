@@ -164,6 +164,7 @@ enum InjectionStage {
 struct ActiveInjection {
     pending: PendingWorkerInjection,
     stage: InjectionStage,
+    prompt_wait_started: Instant,
     next_at: tokio::time::Instant,
     injection_text: Option<String>,
     /// Receive-time PTY-output sequence captured atomically with submitting
@@ -1976,6 +1977,7 @@ pub(crate) async fn run_pty_worker(cmd: PtyCommand) -> Result<()> {
                             active_injection = Some(ActiveInjection {
                                 pending,
                                 stage: InjectionStage::Escape,
+                                prompt_wait_started: Instant::now(),
                                 next_at: tokio::time::Instant::now() + throttle.delay(),
                                 injection_text: None,
                                 output_boundary: None,
@@ -2045,7 +2047,14 @@ pub(crate) async fn run_pty_worker(cmd: PtyCommand) -> Result<()> {
                     InjectionStage::Body => {
                         // Recheck after throttling/steer delay: never paste
                         // into a dialog that replaced the previously idle UI.
-                        if !crate::devin::can_inject(&resolved_cli, &pty) {
+                        if !crate::injection_wire::can_inject(&resolved_cli, &pty) {
+                            if inj.prompt_wait_started.elapsed() >= crate::injection_wire::INJECTION_PROMPT_WAIT {
+                                let delivery = &inj.pending.delivery;
+                                let _ = send_frame(&out_tx, "delivery_failed", None, json!({"delivery_id": delivery.delivery_id, "event_id": delivery.event_id, "reason": "prompt_unproven"})).await;
+                                let _ = send_frame(&out_tx, "worker_error", inj.pending.request_id, json!({"code": "prompt_unproven", "retryable": false, "message": "Composer readiness could not be proven; body was not written"})).await;
+                                // Retain the pending id: a retry must never turn failure into an ack.
+                                continue;
+                            }
                             inj.next_at = tokio::time::Instant::now() + Duration::from_millis(50);
                             active_injection = Some(inj);
                             continue;
@@ -2064,8 +2073,21 @@ pub(crate) async fn run_pty_worker(cmd: PtyCommand) -> Result<()> {
                             inj.pending.delivery.workspace_id.as_deref(),
                             inj.pending.delivery.workspace_alias.as_deref(),
                         );
+                        let injection = String::from_utf8(crate::injection_wire::injection_bytes(crate::injection_wire::InjectionWire::Typed, &injection))?;
                         if include_mcp_reminder {
                             mcp_reminder_throttle.note_sent(Instant::now());
+                        }
+                        let wire = crate::injection_wire::injection_wire(&resolved_cli, &pty);
+                        let limit = if initial_codex_delivery(&resolved_cli, &inj.pending.delivery) {
+                            initial_codex_max_body_bytes().min(crate::injection_wire::MAX_INJECTION_BODY_BYTES)
+                        } else { crate::injection_wire::effective_limit(wire, inject_rate) };
+                        if injection.len() > limit {
+                            let delivery = &inj.pending.delivery;
+                            let reason = format!("injection_too_large: {resolved_cli} effective limit is {limit} bytes including envelope; use a brief file pointer");
+                            let _ = send_frame(&out_tx, "delivery_failed", None, json!({"delivery_id": delivery.delivery_id, "event_id": delivery.event_id, "reason": reason})).await;
+                            let _ = send_frame(&out_tx, "worker_error", inj.pending.request_id, json!({"code": "injection_too_large", "retryable": false, "message": reason})).await;
+                            // Retain the pending id; terminal failure is never a successful replay.
+                            continue;
                         }
                         if initial_codex_delivery(&resolved_cli, &inj.pending.delivery) {
                             // Reject before any byte is written rather than after
@@ -2125,7 +2147,7 @@ pub(crate) async fn run_pty_worker(cmd: PtyCommand) -> Result<()> {
                         // bracketed-paste body shape; the shared helper then
                         // selects the harness-specific delayed Enter. Finalization
                         // still waits for this ack in the injection-ack arm.
-                        let bytes = crate::devin::injection_bytes(&resolved_cli, &injection);
+                        let bytes = crate::injection_wire::injection_bytes(wire, &injection);
                         let write =
                             submit_injection_body(&pty, &resolved_cli, bytes, inject_rate);
                         match write {
@@ -3463,6 +3485,7 @@ mod tests {
         let targeted = ActiveInjection {
             pending: test_pending_injection("init_task"),
             stage: InjectionStage::Escape,
+            prompt_wait_started: Instant::now(),
             next_at: tokio::time::Instant::now(),
             injection_text: None,
             output_boundary: None,
@@ -3502,6 +3525,7 @@ mod tests {
         let mut injection = ActiveInjection {
             pending: test_pending_injection("init_task"),
             stage: InjectionStage::Escape,
+            prompt_wait_started: Instant::now(),
             next_at: tokio::time::Instant::now(),
             injection_text: None,
             output_boundary: None,
