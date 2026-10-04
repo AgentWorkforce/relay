@@ -2720,6 +2720,12 @@ pub(crate) async fn run_pty_worker(cmd: PtyCommand) -> Result<()> {
                                 // A human or another writer owns the input FIFO.
                                 // Keep the delivery pending and retry the check
                                 // later without spending its submit-key budget.
+                                if pty_auto.interactive_hold {
+                                    // Human drive pauses the total acceptance
+                                    // clock. Automated-writer contention stays
+                                    // wall-clock bounded.
+                                    pv.verification_started_at = Instant::now();
+                                }
                                 pv.injected_at = Instant::now();
                                 pending_verifications.push_back(pv);
                             }

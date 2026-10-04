@@ -210,6 +210,12 @@ fn current_composer(snapshot: &Snapshot, cli: &str) -> Option<String> {
     }
     let lower = cli.to_ascii_lowercase();
     if lower.contains("gemini") {
+        if lines
+            .get(end)
+            .is_some_and(|line| cursor_row_is_activity(cli, line))
+        {
+            return None;
+        }
         let start = end.saturating_sub(3);
         return Some(lines[start..=end].join("\n"));
     }
@@ -242,16 +248,37 @@ fn current_composer(snapshot: &Snapshot, cli: &str) -> Option<String> {
     };
     let start = lines.iter().take(end + 1).rposition(is_prompt)?;
     let composer_lines = &lines[start..=end];
-    if composer_lines.len() > 1 {
-        let activity = composer_lines[1..].join("\n");
-        let detector = ActivityDetector::for_cli(cli);
-        if detector.has_explicit_patterns() && detector.detect_activity(&activity, "").is_some() {
-            // The latest prompt-looking line is part of the submitted
-            // transcript; a harness activity row below it owns the cursor.
-            return None;
-        }
+    if composer_lines.len() > 1
+        && composer_lines
+            .last()
+            .is_some_and(|line| cursor_row_is_activity(cli, line))
+    {
+        // The latest prompt-looking line is part of the submitted transcript;
+        // a distinctive harness status row owns the cursor. Do not use the
+        // broader ActivityDetector patterns here because ordinary multiline
+        // draft text can contain Tool:, Write(, or shell prompts.
+        return None;
     }
     Some(composer_lines.join("\n"))
+}
+
+fn cursor_row_is_activity(cli: &str, line: &str) -> bool {
+    let lower_cli = cli.to_ascii_lowercase();
+    let trimmed = line.trim_start();
+    let lower_line = trimmed.to_ascii_lowercase();
+    if lower_cli.contains("codex") {
+        lower_line.contains("working") && lower_line.contains("esc to interrupt")
+    } else if lower_cli.contains("claude") {
+        matches!(trimmed.chars().next(), Some('⠋' | '⠙' | '⠹'))
+    } else if crate::readiness::is_devin_cli(cli) {
+        trimmed.starts_with("Thinking ·") || trimmed.starts_with("Guide Devin while it works")
+    } else if lower_cli.contains("gemini") {
+        trimmed.starts_with("Generating")
+            || trimmed.starts_with("Action:")
+            || trimmed.starts_with("Executing")
+    } else {
+        false
+    }
 }
 
 fn codex_busy(screen: &str) -> bool {
@@ -272,15 +299,17 @@ fn composer_is_idle(snapshot: &Snapshot, cli: &str) -> bool {
             screen: &screen,
             cursor: Some(snapshot.cursor),
         },
-    ) && current_composer(snapshot, cli)
-        .map(|composer| {
-            let trimmed = composer.trim();
-            matches!(trimmed, "›" | "codex>" | "❯" | "❭" | ">" | "$" | ">>>")
-                || trimmed.contains("Ask Codex to do anything")
-                || trimmed.contains("Type your message or @path/to/file")
-                || trimmed.contains("Ask Devin to build features, fix bugs, or work on your code")
-        })
-        .unwrap_or(false)
+    ) && !snapshot.has_visible_text_at_or_after_cursor()
+        && current_composer(snapshot, cli)
+            .map(|composer| {
+                let trimmed = composer.trim();
+                matches!(trimmed, "›" | "codex>" | "❯" | "❭" | ">" | "$" | ">>>")
+                    || trimmed.contains("Ask Codex to do anything")
+                    || trimmed.contains("Type your message or @path/to/file")
+                    || trimmed
+                        .contains("Ask Devin to build features, fix bugs, or work on your code")
+            })
+            .unwrap_or(false)
 }
 
 /// Distinguish terminal echo from actual harness acceptance.
@@ -537,7 +566,11 @@ mod tests {
         );
         let (pty, mut rx) =
             crate::pty::PtySession::spawn("/bin/sh", &["-c".into(), script], 24, 120).unwrap();
-        let expected_tail = screen.chars().last().unwrap_or('›');
+        let expected_tail = screen
+            .split('\x1b')
+            .next()
+            .and_then(|visible| visible.chars().last())
+            .unwrap_or('›');
         for _ in 0..100 {
             let _ = tokio::time::timeout(Duration::from_millis(20), rx.recv()).await;
             if pty.screen_text().contains(expected_tail) {
@@ -623,6 +656,41 @@ mod tests {
             assess_harness_acceptance("codex", &verification, &snapshot),
             HarnessAcceptance::Parked,
             "a continuing marker from the previous turn cannot outrank the new live composer"
+        );
+        pty.shutdown().unwrap();
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn multiline_draft_activity_words_remain_parked() {
+        let expected = "Relay message from Lead [evt]: call Write(test)";
+        let screen = format!("❯ {expected}\nTool: still part of the draft");
+        let (pty, snapshot) = codex_snapshot(&screen).await;
+        let mut verification = codex_verification(expected);
+        verification.detector = ActivityDetector::for_cli("claude");
+        verification
+            .activity_buffer
+            .push_str("Tool: still part of the draft");
+
+        assert_eq!(
+            assess_harness_acceptance("claude", &verification, &snapshot),
+            HarnessAcceptance::Parked
+        );
+        pty.shutdown().unwrap();
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn text_right_of_cursor_cannot_look_like_a_cleared_composer() {
+        let expected = "Relay message from Lead [evt]: hidden draft";
+        let screen = format!("› {expected}\x1b[1;3H");
+        let (pty, snapshot) = codex_snapshot(&screen).await;
+        let verification = codex_verification(expected);
+
+        assert_eq!(
+            assess_harness_acceptance("codex", &verification, &snapshot),
+            HarnessAcceptance::Inconclusive,
+            "right-side draft text prevents composer-cleared acceptance while recovery stays fail-closed"
         );
         pty.shutdown().unwrap();
     }

@@ -180,6 +180,18 @@ impl Snapshot {
         out
     }
 
+    /// Whether the cursor row contains visible cells at or to the right of
+    /// the cursor. A cursor-bounded composer can look like a bare prompt while
+    /// a draft remains in cells to its right, so callers must not classify it
+    /// as empty in that state.
+    pub fn has_visible_text_at_or_after_cursor(&self) -> bool {
+        let cursor_row = self.cursor.0.saturating_sub(1) as usize;
+        let cursor_col = self.cursor.1.saturating_sub(1) as usize;
+        self.cells
+            .get(cursor_row)
+            .is_some_and(|row| row.iter().skip(cursor_col).any(|cell| cell.c != ' '))
+    }
+
     /// ANSI bytes that redraw the captured grid on a fresh terminal.
     ///
     /// Layout:
@@ -617,6 +629,11 @@ mod tests {
         let snap = Snapshot::from_term(&term);
         assert_eq!(snap.cursor, (1, 4));
         assert_eq!(snap.to_plain_through_cursor(), "abc\n");
+        assert!(snap.has_visible_text_at_or_after_cursor());
+
+        let term = parse_into(4, 20, &[b"abc"]);
+        let snap = Snapshot::from_term(&term);
+        assert!(!snap.has_visible_text_at_or_after_cursor());
     }
 
     #[test]
