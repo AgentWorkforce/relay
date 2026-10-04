@@ -287,9 +287,17 @@ async function loadAgentRelayMcpModule(options: LoadOptions = {}) {
       output: { spawned: true, ready: true },
     })),
   };
+  const agentRelayNodesGet = vi.fn(
+    async (name: string) => (await agentRelayNodesList()).find((node) => node.name === name) ?? null
+  );
+  const agentRelayAgentsGet = vi.fn(async (): Promise<unknown> => {
+    throw { status: 404 };
+  });
+  const agentRelayAgentsList = vi.fn(async (): Promise<Array<{ name: string }>> => []);
   const AgentRelayMock = vi.fn(function (this: unknown) {
     return {
-      nodes: { list: agentRelayNodesList },
+      nodes: { list: agentRelayNodesList, get: agentRelayNodesGet },
+      agents: { get: agentRelayAgentsGet, list: agentRelayAgentsList },
       messaging: {
         commands: agentRelayMessagingCommands,
       },
@@ -333,7 +341,8 @@ async function loadAgentRelayMcpModule(options: LoadOptions = {}) {
       },
     };
   });
-  vi.doMock('@relaycast/sdk', () => ({
+  vi.doMock('@relaycast/sdk', async () => ({
+    ...(await vi.importActual<Record<string, unknown>>('@relaycast/sdk')),
     RelayCast,
     SDK_VERSION: 'test-sdk-version',
   }));
@@ -376,6 +385,10 @@ async function loadAgentRelayMcpModule(options: LoadOptions = {}) {
       RelayCast,
       FakeTransport,
       agentRelayMessagingCommands,
+      agentRelayNodesList,
+      agentRelayNodesGet,
+      agentRelayAgentsGet,
+      agentRelayAgentsList,
       agentClients,
     },
   };
@@ -1149,17 +1162,17 @@ describe('createAgentRelayMcpServer', () => {
           (error: unknown) => error
         ),
         new Promise<string>((resolve) =>
-          setTimeout(() => resolve('nested timeout test did not finish'), 130_001)
+          setTimeout(() => resolve('nested timeout test did not finish'), 132_001)
         ),
       ]);
 
-      await vi.advanceTimersByTimeAsync(130_001);
+      await vi.advanceTimersByTimeAsync(132_001);
 
       await expect(outcome).resolves.toMatchObject({
         isError: true,
         structuredContent: {
           error: {
-            code: 'spawn_unconfirmed',
+            code: 'spawn_pending',
             invocationId: 'inv_nested',
             dispatchState: 'dispatched',
             node: 'nested-node',
@@ -1194,20 +1207,20 @@ describe('createAgentRelayMcpServer', () => {
           (error: unknown) => error
         ),
         new Promise<string>((resolve) =>
-          setTimeout(() => resolve('still pending after the persona spawn deadline'), 130_001)
+          setTimeout(() => resolve('still pending after the persona spawn deadline'), 132_001)
         ),
       ]);
 
-      await vi.advanceTimersByTimeAsync(130_001);
+      await vi.advanceTimersByTimeAsync(132_001);
 
       await expect(outcome).resolves.toMatchObject({
         isError: true,
         structuredContent: {
           error: {
-            code: 'spawn_unconfirmed',
-            state: 'unconfirmed_may_be_running',
+            code: 'spawn_pending',
+            state: 'pending',
             dispatchState: 'unknown',
-            message: expect.stringContaining('may still be running'),
+            message: expect.stringContaining('outcome is pending'),
           },
         },
       });
@@ -1218,7 +1231,7 @@ describe('createAgentRelayMcpServer', () => {
 
   it('preserves an unconfirmed receipt when authorization is revoked after acceptance', async () => {
     const { mod, mocks } = await loadAgentRelayMcpModule();
-    mocks.agentRelayMessagingCommands.getInvocation.mockRejectedValueOnce(new Error('401 unauthorized'));
+    mocks.agentRelayMessagingCommands.getInvocation.mockRejectedValue(new Error('401 unauthorized'));
     mod.createAgentRelayMcpServer({
       workspaceKey: 'rk_live_existing',
       agentToken: 'at_live_fleet',
@@ -1233,15 +1246,127 @@ describe('createAgentRelayMcpServer', () => {
       isError: true,
       structuredContent: {
         error: {
-          code: 'spawn_unconfirmed',
-          state: 'unconfirmed_may_be_running',
+          code: 'spawn_pending',
+          state: 'pending',
           dispatchState: 'unknown',
           invocationId: 'inv_1',
-          message: expect.stringContaining('may still be running'),
+          message: expect.stringContaining('outcome is pending'),
         },
       },
     });
   });
+
+  it('recovers a terminal spawn result on the final invocation read', async () => {
+    const { mod, mocks } = await loadAgentRelayMcpModule();
+    mocks.agentRelayMessagingCommands.getInvocation.mockRejectedValueOnce(new Error('401 unauthorized'));
+    mod.createAgentRelayMcpServer({ agentToken: 'at_live_fleet', agentName: 'orchestrator' });
+    const result = await mocks.serverInstances[0].tools
+      .get('spawn')!
+      .handler({ name: 'worker', cli: 'codex' });
+    expect(result.isError).not.toBe(true);
+    expect(result.structuredContent.placement).toMatchObject({ state: 'ready', confirmed: true });
+    expect(mocks.agentRelayMessagingCommands.getInvocation).toHaveBeenCalledTimes(2);
+  });
+
+  it('keeps a late persona child acknowledgement pending with its own correlation', async () => {
+    const { mod, mocks } = await loadAgentRelayMcpModule();
+    mocks.agentRelayMessagingCommands.getInvocation
+      .mockRejectedValueOnce(new Error('401 unauthorized'))
+      .mockResolvedValueOnce({
+        status: 'completed',
+        output: {
+          invocationId: 'inv_child',
+          actionName: 'spawn',
+          status: 'dispatched',
+          handlerNodeId: 'child-node',
+        },
+      } as never);
+    mod.createAgentRelayMcpServer({ agentToken: 'at_live_fleet', agentName: 'orchestrator' });
+    const result = await mocks.serverInstances[0].tools
+      .get('spawn')!
+      .handler({ name: 'worker', persona: 'reviewer' });
+    expect(result).toMatchObject({
+      isError: true,
+      structuredContent: { error: { code: 'spawn_pending', invocationId: 'inv_child', node: 'child-node' } },
+    });
+  });
+
+  it.each(['live', 'live_elsewhere', 'stale', 'unknown'] as const)(
+    'reports %s evidence without manufacturing readiness',
+    async (evidence) => {
+      const { mod, mocks } = await loadAgentRelayMcpModule();
+      mocks.agentRelayMessagingCommands.invoke.mockResolvedValueOnce({} as never);
+      const record = {
+        name: evidence === 'live_elsewhere' ? 'other' : 'node-a',
+        status: 'online',
+        lastHeartbeatAt: new Date(Date.now() - (evidence === 'stale' ? 40_000 : 0)).toISOString(),
+        capabilities: [{ name: 'relay:live-agents:v1', metadata: { names: ['worker'] } }],
+      };
+      mocks.agentRelayNodesList.mockResolvedValue([record]);
+      mod.createAgentRelayMcpServer({
+        agentToken: 'at_live_fleet',
+        agentName: 'orchestrator',
+        ...(evidence !== 'unknown' ? { workspaceKey: 'rk_test' } : {}),
+      });
+      const result = await mocks.serverInstances[0].tools
+        .get('spawn')!
+        .handler({ name: 'worker', cli: 'codex', target_node: 'node-a' });
+      if (evidence === 'live') {
+        expect(result.isError).not.toBe(true);
+        expect(result.structuredContent.placement).toMatchObject({
+          state: 'accepted',
+          confirmed: false,
+          liveness: { evidence },
+        });
+      } else {
+        expect(result).toMatchObject({
+          isError: true,
+          structuredContent: { error: { code: 'spawn_pending', state: 'pending', liveness: { evidence } } },
+        });
+      }
+    }
+  );
+
+  it('classifies MCP registration collisions without exposing Rust debug text', async () => {
+    const { mod, mocks } = await loadAgentRelayMcpModule();
+    mocks.agentRelayMessagingCommands.getInvocation.mockResolvedValueOnce({
+      status: 'failed',
+      error:
+        "failed to pre-register worker 'worker': agent 'worker' already exists and registration is create-only; use a unique name",
+    } as never);
+    mod.createAgentRelayMcpServer({ agentToken: 'at_live_fleet', agentName: 'orchestrator' });
+    const result = await mocks.serverInstances[0].tools
+      .get('spawn')!
+      .handler({ name: 'worker', cli: 'codex' });
+    expect(result).toMatchObject({
+      isError: true,
+      structuredContent: { error: { code: 'spawn_name_taken', message: expect.stringContaining('--wait') } },
+    });
+  });
+
+  it.each(['cleared', 'present', 'unavailable'] as const)(
+    'remove_agent wait reports registration %s after acknowledgement',
+    async (evidence) => {
+      const { mod, mocks } = await loadAgentRelayMcpModule();
+      if (evidence === 'present') {
+        mocks.agentRelayAgentsGet.mockResolvedValue({ name: 'worker', status: 'released' });
+        mocks.agentRelayAgentsList.mockResolvedValue([{ name: 'worker' }]);
+      } else if (evidence === 'unavailable') {
+        mocks.agentRelayAgentsGet.mockRejectedValue(new Error('403 forbidden'));
+        mocks.agentRelayAgentsList.mockRejectedValue(new Error('403 forbidden'));
+      }
+      mod.createAgentRelayMcpServer({
+        workspaceKey: 'rk_test',
+        agentToken: 'at_live_fleet',
+        agentName: 'orchestrator',
+      });
+      const result = await mocks.serverInstances[0].tools
+        .get('remove_agent')!
+        .handler({ name: 'worker', delete_agent: true, wait: true, wait_timeout_ms: 1 });
+      expect(result.structuredContent.removal).toMatchObject({ cleared: evidence === 'cleared' });
+      expect(result.isError === true).toBe(evidence === 'present');
+    }
+  );
 
   it('correlates nested authorization failures to the nested route', async () => {
     const { mod, mocks } = await loadAgentRelayMcpModule();
@@ -1284,7 +1409,7 @@ describe('createAgentRelayMcpServer', () => {
       isError: true,
       structuredContent: {
         error: {
-          code: 'spawn_unconfirmed',
+          code: 'spawn_pending',
           invocationId: 'inv_nested',
           dispatchState: 'dispatched',
           node: 'nested-node',

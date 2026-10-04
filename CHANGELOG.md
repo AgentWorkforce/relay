@@ -9,6 +9,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- MCP `spawn` reports pending/liveness evidence, and `remove_agent` accepts optional registration-clearance waits.
 - `agent remove --wait` and `fleet release --delete-agent --wait` verify registration clearance before name reuse, with `--wait-timeout` and `--no-wait` controls. Fleet release adds `removal` evidence when waiting.
 - `fleet agent list` JSON includes node heartbeat timestamps and ages, with warnings for stale snapshots.
 
