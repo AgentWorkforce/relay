@@ -14,10 +14,12 @@ that the composer submitted it.
 | OpenCode, Gemini, Cursor and other PTY harnesses | paced typed input              | trailing `CR`              | distinct `CR`, then guarded `LF`                                             |
 
 A recovery never writes the message body again. Relay retries a submit key only
-when the compacted final 96 characters of the expected message are still present in the live composer at the
-cursor. It stops immediately when an activity marker appears or an echoed body
-has left a proven idle composer. An inconclusive screen is reported as failure
-instead of receiving a blind keypress.
+when a whitespace-stripped suffix of at most 96 UTF-8 bytes from an ordinary
+post-startup message is still present in the live composer at the cursor. It
+stops immediately when an activity marker appears or an echoed body has left a
+proven idle composer. An inconclusive screen is reported as failure instead of
+receiving a blind keypress. The separate broker-spawned Codex `init_` path
+checks a suffix of up to 128 UTF-8 bytes before stripping whitespace.
 
 Human drive sessions and queued human PTY writes take priority. An interactive
 hold pauses recovery without consuming its retry budget. Actual human input

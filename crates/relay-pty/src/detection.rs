@@ -1,5 +1,14 @@
 use crate::ansi::strip_ansi;
 
+/// Whether a rendered row is Codex's actual busy indicator.
+///
+/// Requiring both fragments on the same row avoids treating ordinary task
+/// text that mentions the interrupt hint as harness activity.
+pub fn is_codex_busy_status_line(line: &str) -> bool {
+    let lower = line.to_ascii_lowercase();
+    lower.contains("working") && lower.contains("esc to interrupt")
+}
+
 #[derive(Debug, Clone)]
 pub struct ActivityDetector {
     patterns: Vec<&'static str>,
@@ -62,12 +71,7 @@ impl ActivityDetector {
             clean_output.replace(expected_echo, "")
         };
 
-        if self.codex_working_pair
-            && relevant_output.lines().any(|line| {
-                let lower = line.to_ascii_lowercase();
-                lower.contains("working") && lower.contains("esc to interrupt")
-            })
-        {
+        if self.codex_working_pair && relevant_output.lines().any(is_codex_busy_status_line) {
             return Some("Working+esc to interrupt".to_string());
         }
 
@@ -142,6 +146,10 @@ mod tests {
             ),
             Some("Thinking...".to_string())
         );
+        assert!(is_codex_busy_status_line("Working (2s • esc to interrupt)"));
+        assert!(!is_codex_busy_status_line(
+            "task text mentions esc to interrupt"
+        ));
     }
 
     #[test]

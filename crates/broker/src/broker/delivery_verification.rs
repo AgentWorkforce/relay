@@ -11,7 +11,7 @@ use crate::{
     readiness::{cli_prompt_ready, GridReadinessSnapshot},
     snapshot::Snapshot,
     util::ansi::strip_ansi,
-    worker::detection::ActivityDetector,
+    worker::detection::{is_codex_busy_status_line, ActivityDetector},
 };
 
 pub(crate) const ACTIVITY_WINDOW: Duration = Duration::from_secs(5);
@@ -216,7 +216,19 @@ fn current_composer(snapshot: &Snapshot, cli: &str) -> Option<String> {
         {
             return None;
         }
-        let start = end.saturating_sub(3);
+        // Gemini renders its live input with a `> ` prefix (inside a `│`
+        // border on terminals that cannot use the background-colour frame).
+        // Anchor to that boundary instead of treating arbitrary transcript
+        // rows near the cursor as the composer. Keeping every row through the
+        // cursor also preserves long, wrapped drafts beyond four rows.
+        let start = lines.iter().take(end + 1).rposition(|line| {
+            let trimmed = line.trim_start();
+            let input = trimmed
+                .strip_prefix('│')
+                .map(str::trim_start)
+                .unwrap_or(trimmed);
+            input == ">" || input.starts_with("> ")
+        })?;
         return Some(lines[start..=end].join("\n"));
     }
     let is_prompt = |line: &&str| {
@@ -267,9 +279,10 @@ fn cursor_row_is_activity(cli: &str, line: &str) -> bool {
     let trimmed = line.trim_start();
     let lower_line = trimmed.to_ascii_lowercase();
     if lower_cli.contains("codex") {
-        lower_line.contains("working") && lower_line.contains("esc to interrupt")
+        is_codex_busy_status_line(line)
     } else if lower_cli.contains("claude") {
-        matches!(trimmed.chars().next(), Some('⠋' | '⠙' | '⠹'))
+        lower_line.contains("esc to interrupt")
+            || matches!(trimmed.chars().next(), Some('⠋' | '⠙' | '⠹'))
     } else if crate::readiness::is_devin_cli(cli) {
         trimmed.starts_with("Thinking ·") || trimmed.starts_with("Guide Devin while it works")
     } else if lower_cli.contains("gemini") {
@@ -282,10 +295,7 @@ fn cursor_row_is_activity(cli: &str, line: &str) -> bool {
 }
 
 fn codex_busy(screen: &str) -> bool {
-    screen.lines().any(|line| {
-        let lower = line.to_ascii_lowercase();
-        lower.contains("working") && lower.contains("esc to interrupt")
-    })
+    screen.lines().any(is_codex_busy_status_line)
 }
 
 fn composer_is_idle(snapshot: &Snapshot, cli: &str) -> bool {
@@ -677,6 +687,57 @@ mod tests {
             HarnessAcceptance::Parked
         );
         pty.shutdown().unwrap();
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn claude_interrupt_status_is_activity_not_a_parked_transcript() {
+        let expected = "Relay message from Lead [evt]: fix busy Claude";
+        let screen = format!("❯ {expected}\nResponding… esc to interrupt");
+        let (pty, snapshot) = codex_snapshot(&screen).await;
+        let mut verification = codex_verification(expected);
+        verification.detector = ActivityDetector::for_cli("claude");
+        verification
+            .activity_buffer
+            .push_str("Responding… esc to interrupt");
+
+        assert!(matches!(
+            assess_harness_acceptance("claude", &verification, &snapshot),
+            HarnessAcceptance::Accepted(ref evidence) if evidence == "activity:esc to interrupt"
+        ));
+        pty.shutdown().unwrap();
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn gemini_composer_is_prompt_anchored_and_keeps_long_drafts() {
+        let expected = "a".repeat(120);
+        let wrapped = expected
+            .as_bytes()
+            .chunks(20)
+            .map(|chunk| std::str::from_utf8(chunk).unwrap())
+            .collect::<Vec<_>>()
+            .join("\n");
+        let (parked_pty, parked_snapshot) = codex_snapshot(&format!("> {wrapped}")).await;
+        let mut parked = codex_verification(&expected);
+        parked.detector = ActivityDetector::for_cli("gemini");
+        assert_eq!(
+            assess_harness_acceptance("gemini", &parked, &parked_snapshot),
+            HarnessAcceptance::Parked,
+            "Gemini drafts longer than four rows retain the complete recovery tail"
+        );
+        parked_pty.shutdown().unwrap();
+
+        let (active_pty, active_snapshot) =
+            codex_snapshot(&format!("{expected}\nGenerating response")).await;
+        let mut active = codex_verification(&expected);
+        active.detector = ActivityDetector::for_cli("gemini");
+        active.activity_buffer.push_str("Generating response");
+        assert!(matches!(
+            assess_harness_acceptance("gemini", &active, &active_snapshot),
+            HarnessAcceptance::Accepted(ref evidence) if evidence == "activity:Generating"
+        ));
+        active_pty.shutdown().unwrap();
     }
 
     #[cfg(unix)]

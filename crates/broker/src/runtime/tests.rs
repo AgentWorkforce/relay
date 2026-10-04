@@ -842,6 +842,8 @@ fn delivery_lifecycle_worker_event(
                 "delivery_id": delivery_id,
                 "event_id": event_id,
                 "reason": "test terminal disposition",
+                "attempts": 1,
+                "max_attempts": 3,
             },
         }),
     }
@@ -4350,6 +4352,10 @@ async fn unconfirmed_pty_delivery_is_visible_as_blocked_on_send() {
     let mut kinds = Vec::new();
     while let Ok(frame) = fixture._sdk_out_rx.try_recv() {
         if let Some(kind) = frame.payload.get("kind").and_then(Value::as_str) {
+            if kind == "delivery_unconfirmed" {
+                assert_eq!(frame.payload["attempts"], 1);
+                assert_eq!(frame.payload["max_attempts"], 3);
+            }
             kinds.push(kind.to_string());
         }
     }

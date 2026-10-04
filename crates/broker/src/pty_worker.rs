@@ -43,7 +43,7 @@ use crate::snapshot::Snapshot;
 use crate::util::ansi::{floor_char_boundary, strip_ansi, AnsiStripper};
 use crate::util::terminal::{detect_claude_trust_prompt, detect_codex_trust_prompt};
 use crate::util::utf8_stream::Utf8StreamDecoder;
-use crate::worker::detection::ActivityDetector;
+use crate::worker::detection::{is_codex_busy_status_line, ActivityDetector};
 use crate::wrap::{
     submit_injection_body, submit_injection_recovery, warn_on_auto_response_write, PtyAutoState,
     AUTO_SUGGESTION_BLOCK_TIMEOUT,
@@ -328,16 +328,6 @@ fn initial_codex_delivery(cli: &str, delivery: &RelayDelivery) -> bool {
 
 fn compact_render(text: &str) -> String {
     text.chars().filter(|c| !c.is_whitespace()).collect()
-}
-
-// Codex's actual busy status line always pairs "working" with the
-// "esc to interrupt" hint on the same row (e.g. "Working (12s • esc to
-// interrupt)"). Requiring both, rather than the hint phrase alone, keeps
-// this from matching ordinary task text that happens to mention "esc to
-// interrupt" without being the real indicator (relay#1782 review, round 3).
-fn is_codex_busy_status_line(line: &str) -> bool {
-    let lower = line.to_ascii_lowercase();
-    lower.contains("working") && lower.contains("esc to interrupt")
 }
 
 // Only the current composer, never transcript/history. A scrolling composer
@@ -728,8 +718,8 @@ fn next_injection_index(
         .position(|entry| hold_exempt_event_ids.contains(entry.delivery.event_id.as_str()))
 }
 
-/// Return an interrupted injection's hold exemption so a requeued frame is
-/// retried through the hold instead of freezing behind it. A targeted exemption
+/// Return a requeued injection's hold exemption so the same frame is retried
+/// through the hold instead of freezing behind it. A targeted exemption
 /// goes back to the event-id set — it must stay bound to that one delivery —
 /// while a blanket `flush_injections` allowance goes back to the counter.
 fn restore_hold_exemption(
@@ -2094,11 +2084,10 @@ pub(crate) async fn run_pty_worker(cmd: PtyCommand) -> Result<()> {
                         "event_id": inj.pending.delivery.event_id,
                         "reason": "human PTY input took ownership before body injection",
                     })).await;
-                    restore_hold_exemption(
-                        &inj,
-                        &mut hold_exempt_injections,
-                        &mut hold_exempt_event_ids,
-                    );
+                    // This delivery is terminally failed rather than
+                    // requeued, so its one-shot flush exemption is consumed.
+                    // Restoring it would let the next queued delivery bypass
+                    // the human's interactive hold.
                     pending_worker_delivery_ids.remove(&delivery_id);
                     throttle.record(DeliveryOutcome::Failed);
                     continue;
