@@ -1790,6 +1790,23 @@ fn persist_node_token_state(
         .persist(path)
         .map_err(|error| error.error)
         .with_context(|| format!("failed to replace node token file {}", path.display()))?;
+    sync_parent_directory(parent)?;
+    Ok(())
+}
+
+#[cfg(unix)]
+fn sync_parent_directory(parent: &Path) -> Result<()> {
+    let directory = fs::File::open(parent)
+        .with_context(|| format!("failed to open node token directory {}", parent.display()))?;
+    directory
+        .sync_all()
+        .with_context(|| format!("failed to sync node token directory {}", parent.display()))
+}
+
+#[cfg(not(unix))]
+fn sync_parent_directory(_parent: &Path) -> Result<()> {
+    // Directory handles are not portably fsyncable outside Unix. The file
+    // content is still flushed before the atomic replacement above.
     Ok(())
 }
 
@@ -7185,6 +7202,24 @@ mod tests {
             1,
             "atomic replacement must not leave a temporary credential file"
         );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn persist_node_token_atomically_replaces_and_syncs_parent_directory() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("node-token.json");
+        persist_node_token(&path, "node-a", "ws-a", None, "nt_old").unwrap();
+        persist_node_token(&path, "node-a", "ws-a", None, "nt_new").unwrap();
+
+        assert_eq!(
+            load_node_token(&path, "node-a", "ws-a", None).as_deref(),
+            Some("nt_new")
+        );
+        assert_eq!(std::fs::read_dir(dir.path()).unwrap().count(), 1);
+        // The production path invokes this immediately after the rename; keep
+        // the platform durability primitive covered explicitly as well.
+        sync_parent_directory(dir.path()).unwrap();
     }
 
     #[test]
