@@ -2419,14 +2419,10 @@ pub(crate) async fn run_wrap(
                                     && (!stdin_pending.is_empty()
                                         || !pending_wrap_writes.is_empty()) =>
                             {
-                                // Human input and another automated writer take
-                                // priority. Deferral does not consume a retry.
-                                if !stdin_pending.is_empty() {
-                                    // Live human passthrough pauses the total
-                                    // acceptance clock. Automated writers do
-                                    // not extend it indefinitely.
-                                    pv.verification_started_at = Instant::now();
-                                }
+                                // An in-flight writer takes priority. Human
+                                // input already drains these verifications in
+                                // the stdin arm, so this deferral never resets
+                                // the total acceptance lifetime.
                                 pv.injected_at = Instant::now();
                                 pending_verifications.push_back(pv);
                             }
