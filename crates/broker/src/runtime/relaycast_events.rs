@@ -802,7 +802,10 @@ pub(super) async fn spawn_worker_from_request(
                             }
                             Some(token)
                         }
-                        Err(RegRetryOutcome::RetryableExhausted(error) | RegRetryOutcome::Fatal(error)) => {
+                        Err(
+                            RegRetryOutcome::RetryableExhausted(error)
+                            | RegRetryOutcome::Fatal(error),
+                        ) => {
                             anyhow::bail!("{}", format_worker_preregistration_error(&name, &error));
                         }
                     }
