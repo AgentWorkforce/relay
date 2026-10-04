@@ -4359,6 +4359,46 @@ async fn unconfirmed_pty_delivery_is_visible_as_blocked_on_send() {
 }
 
 #[tokio::test]
+async fn prior_delivery_activity_does_not_clear_blocked_on_send() {
+    let worker_name = "worker-a";
+    let registry = make_worker_registry_with_worker(worker_name).await;
+    let generation = registry.workers[worker_name].generation;
+    let delivery_id = DeliveryId::new("del_blocked_with_prior_activity");
+    let pending = make_pending_delivery(delivery_id.as_str(), worker_name);
+    let event_id = pending.delivery.event_id.clone();
+    let mut fixture =
+        worker_event_runtime_fixture(registry, HashMap::from([(delivery_id.clone(), pending)]));
+
+    fixture
+        .runtime
+        .handle_worker_event(delivery_lifecycle_worker_event(
+            worker_name,
+            generation,
+            "delivery_unconfirmed",
+            delivery_id.as_str(),
+            event_id.as_str(),
+        ))
+        .await;
+    fixture
+        .runtime
+        .handle_worker_event(delivery_lifecycle_worker_event(
+            worker_name,
+            generation,
+            "delivery_active",
+            "del_prior_delivery",
+            "event_prior_delivery",
+        ))
+        .await;
+
+    assert_eq!(
+        fixture.runtime.workers.workers[worker_name].state,
+        AgentWorkState::BlockedOnSend,
+        "late activity from an earlier accepted delivery must not clear recovery state"
+    );
+    cleanup_worker_registry(fixture.runtime.workers).await;
+}
+
+#[tokio::test]
 async fn stale_recovery_progress_does_not_block_the_worker() {
     let worker_name = "worker-a";
     let registry = make_worker_registry_with_worker(worker_name).await;

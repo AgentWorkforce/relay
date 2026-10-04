@@ -211,7 +211,6 @@ type RecoveryWriteAckFuture = Pin<Box<dyn Future<Output = RecoveryWriteAck> + Se
 
 fn queue_post_acceptance_activity(
     verification: &PendingVerification,
-    output: &VerificationOutput,
     detector: Option<&ActivityDetector>,
     pending_activities: &mut VecDeque<PendingActivity>,
 ) {
@@ -223,7 +222,10 @@ fn queue_post_acceptance_activity(
         event_id: verification.event_id.clone(),
         expected_echo: verification.expected_echo.clone(),
         verified_at: Instant::now(),
-        output_buffer: output.since(verification.output_boundary).into_owned(),
+        // `observe` clears this buffer when the delivery echo first appears,
+        // so it cannot carry a busy marker from the previous turn into this
+        // delivery's post-acceptance activity probe.
+        output_buffer: verification.activity_buffer.clone(),
         detector: detector.clone(),
     });
 }
@@ -1893,7 +1895,6 @@ pub(crate) async fn run_pty_worker(cmd: PtyCommand) -> Result<()> {
                             } else {
                                 queue_post_acceptance_activity(
                                     &pv,
-                                    &echo_buffer,
                                     activity_detector.as_ref(),
                                     &mut pending_activities,
                                 );
@@ -2421,10 +2422,9 @@ pub(crate) async fn run_pty_worker(cmd: PtyCommand) -> Result<()> {
                                     )
                                     .await;
                                 } else {
-                                    queue_post_acceptance_activity(
-                                        &pv,
-                                        &echo_buffer,
-                                        activity_detector.as_ref(),
+                                queue_post_acceptance_activity(
+                                    &pv,
+                                    activity_detector.as_ref(),
                                         &mut pending_activities,
                                     );
                                 }
@@ -2530,10 +2530,9 @@ pub(crate) async fn run_pty_worker(cmd: PtyCommand) -> Result<()> {
                                     )
                                     .await;
                                 } else {
-                                    queue_post_acceptance_activity(
-                                        &pv,
-                                        &echo_buffer,
-                                        activity_detector.as_ref(),
+                                queue_post_acceptance_activity(
+                                    &pv,
+                                    activity_detector.as_ref(),
                                         &mut pending_activities,
                                     );
                                 }
@@ -2646,10 +2645,9 @@ pub(crate) async fn run_pty_worker(cmd: PtyCommand) -> Result<()> {
                                     )
                                     .await;
                                 } else {
-                                    queue_post_acceptance_activity(
-                                        &pv,
-                                        &echo_buffer,
-                                        activity_detector.as_ref(),
+                                queue_post_acceptance_activity(
+                                    &pv,
+                                    activity_detector.as_ref(),
                                         &mut pending_activities,
                                     );
                                 }
@@ -2953,6 +2951,37 @@ pub(crate) async fn run_pty_worker(cmd: PtyCommand) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn post_acceptance_activity_is_seeded_only_from_post_echo_output() {
+        let verification = PendingVerification {
+            delivery_id: "delivery-current".into(),
+            event_id: "event-current".into(),
+            expected_echo: "current request".into(),
+            output_boundary: 0,
+            injected_at: Instant::now(),
+            verification_started_at: Instant::now(),
+            attempts: 1,
+            max_attempts: MAX_VERIFICATION_ATTEMPTS,
+            request_id: None,
+            workspace_id: None,
+            workspace_alias: None,
+            from: "lead".into(),
+            body: "current request".into(),
+            target: "worker".into(),
+            echo_seen: true,
+            activity_buffer: "post-echo repaint".into(),
+            detector: ActivityDetector::for_cli("codex"),
+        };
+        let mut pending = VecDeque::new();
+
+        queue_post_acceptance_activity(&verification, Some(&verification.detector), &mut pending);
+
+        assert_eq!(
+            pending.pop_front().unwrap().output_buffer,
+            "post-echo repaint"
+        );
+    }
 
     #[test]
     fn completed_delivery_replay_retains_the_original_event_identity() {

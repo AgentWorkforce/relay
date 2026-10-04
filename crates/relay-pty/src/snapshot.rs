@@ -71,6 +71,11 @@ pub struct Snapshot {
     pub rows: u16,
     pub cols: u16,
     pub cursor: (u16, u16),
+    /// The cursor cell contains the final character of an autowrapped line.
+    /// Alacritty keeps the cursor on that occupied cell until the next input
+    /// character performs the wrap, so cursor-bounded rendering must include
+    /// it rather than treating it as the insertion point.
+    input_needs_wrap: bool,
     cells: Vec<Vec<SnapshotCell>>,
     /// Terminal mode flags captured at the same locked point as the grid.
     /// `to_ansi` re-emits the relevant ones so an attaching client's terminal
@@ -112,6 +117,7 @@ impl Snapshot {
         // visible viewport.
         let cursor_row = (cursor_point.line.0.max(0) as u16).saturating_add(1);
         let cursor_col = (cursor_point.column.0 as u16).saturating_add(1);
+        let input_needs_wrap = grid.cursor.input_needs_wrap;
 
         let mut cells = Vec::with_capacity(rows as usize);
         for row_index in 0..(rows as usize) {
@@ -127,6 +133,7 @@ impl Snapshot {
             rows,
             cols,
             cursor: (cursor_row, cursor_col),
+            input_needs_wrap,
             cells,
             // Copy the mode flags out under the same lock as the cells so the
             // captured modes match the captured grid exactly.
@@ -164,7 +171,9 @@ impl Snapshot {
         );
         for (row_index, row) in self.cells.iter().enumerate().take(cursor_row + 1) {
             let limit = if row_index == cursor_row {
-                cursor_col.min(row.len())
+                cursor_col
+                    .saturating_add(usize::from(self.input_needs_wrap))
+                    .min(row.len())
             } else {
                 row.len()
             };
@@ -186,7 +195,8 @@ impl Snapshot {
     /// as empty in that state.
     pub fn has_visible_text_at_or_after_cursor(&self) -> bool {
         let cursor_row = self.cursor.0.saturating_sub(1) as usize;
-        let cursor_col = self.cursor.1.saturating_sub(1) as usize;
+        let cursor_col = (self.cursor.1.saturating_sub(1) as usize)
+            .saturating_add(usize::from(self.input_needs_wrap));
         self.cells
             .get(cursor_row)
             .is_some_and(|row| row.iter().skip(cursor_col).any(|cell| cell.c != ' '))
@@ -633,6 +643,17 @@ mod tests {
 
         let term = parse_into(4, 20, &[b"abc"]);
         let snap = Snapshot::from_term(&term);
+        assert!(!snap.has_visible_text_at_or_after_cursor());
+    }
+
+    #[test]
+    fn plain_through_cursor_includes_occupied_cell_while_wrap_is_pending() {
+        let term = parse_into(2, 5, &[b"abcde"]);
+        let snap = Snapshot::from_term(&term);
+
+        assert_eq!(snap.cursor, (1, 5));
+        assert!(snap.input_needs_wrap);
+        assert_eq!(snap.to_plain_through_cursor(), "abcde\n");
         assert!(!snap.has_visible_text_at_or_after_cursor());
     }
 

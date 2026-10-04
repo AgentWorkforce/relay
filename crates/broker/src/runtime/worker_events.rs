@@ -1004,7 +1004,9 @@ impl BrokerRuntime {
                         if let Some(payload) = value.get("payload") {
                             if let Some(handle) = workers.workers.get_mut(&name) {
                                 handle.last_activity_at = Instant::now();
-                                handle.state = AgentWorkState::Working;
+                                if handle.state != AgentWorkState::BlockedOnSend {
+                                    handle.state = AgentWorkState::Working;
+                                }
                             }
                             let _ = send_event(
                                 sdk_out_tx,
