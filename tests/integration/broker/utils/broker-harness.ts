@@ -65,11 +65,14 @@ const HARNESS_CHILD_ENV_ALLOWLIST = [
   'ANTHROPIC_API_KEY',
   'OPENAI_API_KEY',
   'GEMINI_API_KEY',
+  'AGENT_RELAY_MCP_COMMAND',
+  'AGENT_RELAY_INSTALL_DIR',
+  'AGENT_RELAY_BIN_DIR',
 ] as const;
 
 export function rejectUnsafeHarnessEnvironment(env: NodeJS.ProcessEnv): void {
   const present = UNSAFE_CALLER_CREDENTIALS.filter(
-    (name) => Object.prototype.hasOwnProperty.call(env, name) && env[name] !== undefined
+    (name) => typeof env[name] === 'string' && env[name]!.trim() !== ''
   );
   if (present.length > 0) {
     throw new Error(

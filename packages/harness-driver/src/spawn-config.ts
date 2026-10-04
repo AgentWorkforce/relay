@@ -32,7 +32,8 @@ export interface RuntimeSpawnOptions {
   /**
    * Whether to merge the launcher's environment into the broker child.
    * Defaults to true for backwards compatibility. Set false at trust
-   * boundaries that construct an explicit child environment.
+   * boundaries that construct a complete explicit child environment,
+   * including PATH when the broker must discover child executables.
    */
   inheritParentEnv?: boolean;
   /**
