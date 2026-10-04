@@ -2477,35 +2477,64 @@ pub(super) async fn register_node_agent_token_with_metadata(
     session_ref: Option<String>,
     metadata: Option<serde_json::Map<String, Value>>,
 ) -> Result<crate::node_control::AgentRegistrationToken, String> {
-    let (reply_tx, reply_rx) = tokio::sync::oneshot::channel();
-    fleet_control_tx
-        .send(FleetControlCommand::RegisterAgent {
-            request: AgentRegister {
-                // Preserve the legacy strict wire schema when its default
-                // membership already matches the requested scope.
-                auto_join_general: (!channels.iter().any(|channel| channel.as_str() == "general"))
-                    .then_some(false),
-                v: FLEET_WIRE_VERSION,
-                id: None,
-                name: name.to_string(),
-                invocation_id,
-                session_ref: session_ref.clone(),
-                resumable: session_ref.as_ref().map(|_| true),
-                metadata,
-            },
-            reply: reply_tx,
-        })
-        .await
-        .map_err(|_| "fleet_control_unavailable".to_string())?;
-    let token = tokio::time::timeout(FLEET_AGENT_REGISTER_TIMEOUT, reply_rx)
-        .await
-        .map_err(|_| "agent_register_timeout".to_string())?
-        .map_err(|_| "agent_register_reply_dropped".to_string())??;
+    let carries_metadata = metadata.is_some();
+    let request = AgentRegister {
+        // Preserve the legacy strict wire schema when its default
+        // membership already matches the requested scope.
+        auto_join_general: (!channels.iter().any(|channel| channel.as_str() == "general"))
+            .then_some(false),
+        v: FLEET_WIRE_VERSION,
+        id: None,
+        name: name.to_string(),
+        invocation_id,
+        session_ref: session_ref.clone(),
+        resumable: session_ref.as_ref().map(|_| true),
+        metadata,
+    };
+    let token = match request_node_agent_registration(fleet_control_tx, request.clone()).await {
+        Ok(token) => token,
+        Err(error)
+            if carries_metadata && error.starts_with("agent_register_unsupported_metadata:") =>
+        {
+            // Relaycast releases predating the additive metadata field reject
+            // the whole strict frame before they can echo our request id. Keep
+            // those deployments operable by retrying the established frame;
+            // the spawn path's trusted PATCH then supplies the same metadata.
+            // Current Relaycast accepts the first request and remains atomic.
+            tracing::warn!(
+                worker = name,
+                "Relaycast does not accept atomic agent registration metadata; retrying the legacy registration before trusted metadata reconciliation"
+            );
+            let mut legacy_request = request;
+            legacy_request.id = None;
+            legacy_request.metadata = None;
+            request_node_agent_registration(fleet_control_tx, legacy_request).await?
+        }
+        Err(error) => return Err(error),
+    };
     fleet_delivery_book.bind_authoritative_identity(token.name.clone(), token.agent_id.clone());
     if let Some(up_to_seq) = token.delivery_ack_seq {
         fleet_delivery_book.seed_cursor(token.name.clone(), token.agent_id.clone(), up_to_seq);
     }
     Ok(token)
+}
+
+async fn request_node_agent_registration(
+    fleet_control_tx: &mpsc::Sender<FleetControlCommand>,
+    request: AgentRegister,
+) -> Result<crate::node_control::AgentRegistrationToken, String> {
+    let (reply_tx, reply_rx) = tokio::sync::oneshot::channel();
+    fleet_control_tx
+        .send(FleetControlCommand::RegisterAgent {
+            request,
+            reply: reply_tx,
+        })
+        .await
+        .map_err(|_| "fleet_control_unavailable".to_string())?;
+    tokio::time::timeout(FLEET_AGENT_REGISTER_TIMEOUT, reply_rx)
+        .await
+        .map_err(|_| "agent_register_timeout".to_string())?
+        .map_err(|_| "agent_register_reply_dropped".to_string())?
 }
 
 pub(super) async fn publish_fleet_load_snapshot(
@@ -3996,6 +4025,73 @@ mod tests {
             delivery_book.observe(&resumed),
             crate::node_control::DeliveryDecision::Deliver { up_to_seq: 43 }
         );
+    }
+
+    #[tokio::test]
+    async fn agent_register_metadata_falls_back_only_for_a_legacy_strict_engine() {
+        let (tx, mut rx) = mpsc::channel::<FleetControlCommand>(4);
+        let register_handle = tokio::spawn(async move {
+            let mut delivery_book = FleetDeliveryBook::default();
+            let metadata = serde_json::json!({
+                "cloud_user_id": "user-1",
+                "cloud_workspace_id": null,
+                "owner_hash": "c6c289e49e9c05b2145860387b73bcb18df43fb09a1e4a4a9713c76c88bb541b"
+            })
+            .as_object()
+            .unwrap()
+            .clone();
+            let token = register_node_agent_token_with_metadata(
+                &tx,
+                &mut delivery_book,
+                "agent-a",
+                &[ChannelName::from("general")],
+                Some("inv-42".to_string()),
+                Some("session-42".to_string()),
+                Some(metadata),
+            )
+            .await?;
+            Ok::<_, String>((token, delivery_book))
+        });
+
+        let FleetControlCommand::RegisterAgent {
+            request: first,
+            reply: first_reply,
+        } = rx.recv().await.expect("metadata registration emitted")
+        else {
+            panic!("expected RegisterAgent command");
+        };
+        assert!(first.metadata.is_some());
+        first_reply
+            .send(Err(
+                "agent_register_unsupported_metadata: legacy engine requires post-registration PATCH"
+                    .to_string(),
+            ))
+            .unwrap();
+
+        let FleetControlCommand::RegisterAgent {
+            request: fallback,
+            reply: fallback_reply,
+        } = rx.recv().await.expect("legacy registration retry emitted")
+        else {
+            panic!("expected RegisterAgent command");
+        };
+        assert_eq!(fallback.metadata, None);
+        assert_eq!(fallback.name, first.name);
+        assert_eq!(fallback.invocation_id, first.invocation_id);
+        assert_eq!(fallback.session_ref, first.session_ref);
+        assert_eq!(fallback.resumable, first.resumable);
+        fallback_reply
+            .send(Ok(crate::node_control::AgentRegistrationToken {
+                name: "agent-a".to_string(),
+                agent_id: "agent-a-id".to_string(),
+                token: "at_test".to_string(),
+                delivery_ack_seq: Some(9),
+            }))
+            .unwrap();
+
+        let (token, delivery_book) = register_handle.await.unwrap().unwrap();
+        assert_eq!(token.agent_id, "agent-a-id");
+        assert_eq!(delivery_book.active_agent_id("agent-a"), Some("agent-a-id"));
     }
 
     #[tokio::test]
