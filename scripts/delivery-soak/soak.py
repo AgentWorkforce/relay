@@ -104,8 +104,6 @@ def run(args):
     env["AGENT_RELAY_TELEMETRY_DISABLED"] = "1"
     auth_link = None
     codex_home = None
-    claude_home = None
-    claude_auth_link = None
     if args.harness == "codex":
         # Concurrent Codex sessions contend on ~/.codex/*.sqlite. Give the
         # measurement worker its own state while using the existing login.
@@ -115,13 +113,6 @@ def run(args):
             auth_link = codex_home / "auth.json"
             auth_link.symlink_to(auth_source)
         env["CODEX_HOME"] = str(codex_home)
-    if args.harness == "claude":
-        claude_home = Path(tempfile.mkdtemp(prefix="relay-delivery-soak-claude-"))
-        auth_source = Path.home() / ".claude" / ".credentials.json"
-        if auth_source.exists():
-            claude_auth_link = claude_home / ".credentials.json"
-            claude_auth_link.symlink_to(auth_source)
-        env["CLAUDE_CONFIG_DIR"] = str(claude_home)
     broker = subprocess.Popen(
         [str(Path(args.broker_bin).resolve()), "init", "--local-only", "--persist",
          "--state-dir", str(state), "--instance-name", "delivery-soak"],
@@ -285,10 +276,6 @@ def run(args):
                 auth_link.unlink(missing_ok=True)
             if codex_home is not None:
                 shutil.rmtree(codex_home)
-            if claude_auth_link is not None:
-                claude_auth_link.unlink(missing_ok=True)
-            if claude_home is not None:
-                shutil.rmtree(claude_home)
 
 
 def main():
