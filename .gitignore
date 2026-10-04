@@ -37,6 +37,8 @@ pnpm-debug.log*
 # Relay runtime artifacts
 *.sock
 *.pid
+.agent-runs/
+INCIDENT-*.md
 
 # Local test artifacts
 .agent-relay-test-*/
