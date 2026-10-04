@@ -506,6 +506,11 @@ describe('sdk client option resolution', () => {
         env: { ...baseEnv, CLOUD_API_URL: 'https://agentrelay.com/cloud' },
       })
     ).toThrow(/not trusted/);
+    expect(() =>
+      resolveWorkspaceTransport({
+        env: { ...baseEnv, CLOUD_API_URL: 'https://dev.agentrelay.com/cloud/' },
+      })
+    ).toThrow(/not trusted/);
   });
 
   it('normalizes an equivalent requested trailing slash against the persisted route', () => {

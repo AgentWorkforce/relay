@@ -173,7 +173,7 @@ function validatePersistedRelaycastBaseUrl(
   }
   const expectedOrigin =
     route === 'canonical'
-      ? cloudApiUrl.replace(/\/+$/u, '') === DEV_CLOUD_API_URL
+      ? cloudApiUrl === DEV_CLOUD_API_URL
         ? DEV_RELAYCAST_ORIGIN
         : CANONICAL_RELAYCAST_ORIGIN
       : route === 'agent37-isolated'

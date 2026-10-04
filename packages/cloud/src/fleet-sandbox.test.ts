@@ -88,6 +88,7 @@ describe('Cloud fleet sandbox client', () => {
       undefined,
       'https://agentrelay.com/cloud',
       'https://dev.agentrelay.com',
+      'https://dev.agentrelay.com/cloud/',
       'https://dev.agentrelay.com/cloud/other',
       'https://dev.agentrelay.com/cloud?redirect=https://evil.example',
       'https://user:pass@dev.agentrelay.com/cloud',

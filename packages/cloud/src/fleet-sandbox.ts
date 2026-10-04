@@ -248,22 +248,7 @@ function readString(payload: JsonRecord, key: string): string | undefined {
 }
 
 function isExactDevCloudApiUrl(apiUrl: string | undefined): boolean {
-  if (!apiUrl) return false;
-  try {
-    const parsed = new URL(apiUrl.trim());
-    return (
-      parsed.protocol === 'https:' &&
-      !parsed.username &&
-      !parsed.password &&
-      !parsed.port &&
-      !parsed.search &&
-      !parsed.hash &&
-      parsed.origin === 'https://dev.agentrelay.com' &&
-      (parsed.pathname === '/cloud' || parsed.pathname === '/cloud/')
-    );
-  } catch {
-    return false;
-  }
+  return apiUrl === DEV_CLOUD_API_URL;
 }
 
 function canonicalRelaycastOrigin(apiUrl: string | undefined): string {
