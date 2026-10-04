@@ -147,6 +147,7 @@ export class BrokerHarness {
   private eventListeners: Array<(event: BrokerEvent) => void> = [];
   private unsubEvent?: () => void;
   private started = false;
+  private ephemeralWorkspaceKey?: string;
 
   constructor(options: BrokerHarnessOptions = {}) {
     const childEnv = buildHarnessChildEnv(process.env, options.env);
@@ -190,6 +191,7 @@ export class BrokerHarness {
 
     // Start the low-level client (spawns broker process)
     this.client = await HarnessDriverClient.spawn(clientOpts);
+    this.ephemeralWorkspaceKey = apiKey;
 
     // Wire event collection
     this.unsubEvent = this.client.onEvent((event: BrokerEvent) => {
@@ -200,6 +202,14 @@ export class BrokerHarness {
     });
 
     this.started = true;
+  }
+
+  /** Return the isolated workspace key provisioned by a successful start. */
+  getEphemeralWorkspaceKey(): string {
+    if (!this.started || !this.ephemeralWorkspaceKey) {
+      throw new Error('Broker harness has not started its ephemeral workspace');
+    }
+    return this.ephemeralWorkspaceKey;
   }
 
   /**
