@@ -887,26 +887,28 @@ impl BrokerRuntime {
                                     handle.last_activity_at = Instant::now();
                                     handle.state = AgentWorkState::BlockedOnSend;
                                 }
-                                let pending_delivery_count = pending_deliveries
-                                    .values()
-                                    .filter(|pending| pending.worker_name == name)
-                                    .count();
-                                let _ = send_broker_event(
-                                    sdk_out_tx,
-                                    BrokerEvent::AgentBlockedOnSend {
-                                        name: name.clone(),
-                                        blocked_secs: 0,
-                                        pending_delivery_count,
-                                    },
-                                )
-                                .await;
-                                publish_agent_state_transition(
-                                    ws_control_tx,
-                                    &name,
-                                    "stuck",
-                                    Some("blocked_on_send"),
-                                )
-                                .await;
+                                if msg_type == "delivery_unconfirmed" {
+                                    let pending_delivery_count = pending_deliveries
+                                        .values()
+                                        .filter(|pending| pending.worker_name == name)
+                                        .count();
+                                    let _ = send_broker_event(
+                                        sdk_out_tx,
+                                        BrokerEvent::AgentBlockedOnSend {
+                                            name: name.clone(),
+                                            blocked_secs: 0,
+                                            pending_delivery_count,
+                                        },
+                                    )
+                                    .await;
+                                    publish_agent_state_transition(
+                                        ws_control_tx,
+                                        &name,
+                                        "stuck",
+                                        Some("blocked_on_send"),
+                                    )
+                                    .await;
+                                }
                             }
                             tracing::warn!(
                                 target = "agent_relay::broker",
