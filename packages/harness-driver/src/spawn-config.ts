@@ -33,7 +33,10 @@ export interface RuntimeSpawnOptions {
    * Whether to merge the launcher's environment into the broker child.
    * Defaults to true for backwards compatibility. Set false at trust
    * boundaries that construct a complete explicit child environment,
-   * including PATH when the broker must discover child executables.
+   * including PATH when the broker must discover child executables. The
+   * explicit env must be allowlist-filtered; known caller-owned Relay node
+   * and workspace credentials are rejected in isolated mode. Supply an
+   * intentional workspace credential through workspaceKey instead.
    */
   inheritParentEnv?: boolean;
   /**
@@ -107,12 +110,32 @@ function nonEmptyString(value: string | undefined): string | undefined {
   return trimmed ? trimmed : undefined;
 }
 
+const UNSAFE_ISOLATED_ENV_KEYS = [
+  'RELAY_NODE_ID',
+  'RELAY_NODE_TOKEN',
+  'AGENT_RELAY_ENROLLED_NODE_ID',
+  'RELAY_WORKSPACE_KEY',
+  'AGENT_RELAY_WORKSPACE_KEY',
+  'RELAY_API_KEY',
+] as const;
+
 /** @internal */
 export function buildBrokerSpawnConfig(
   options: RuntimeSpawnOptions | undefined,
   apiKey: string,
   parentEnv: NodeJS.ProcessEnv = process.env
 ): BrokerSpawnConfig {
+  if (options?.inheritParentEnv === false) {
+    const present = UNSAFE_ISOLATED_ENV_KEYS.filter(
+      (name) => typeof options.env?.[name] === 'string' && options.env[name]!.trim() !== ''
+    );
+    if (present.length > 0) {
+      throw new Error(
+        `Isolated broker spawn refuses caller-owned Relay credentials: ${present.join(', ')}. ` +
+          'Pass an intentional workspace credential through workspaceKey.'
+      );
+    }
+  }
   const inheritedEnv = options?.inheritParentEnv === false ? {} : parentEnv;
   const cwd = options?.cwd ?? process.cwd();
   const brokerName =
