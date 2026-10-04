@@ -275,8 +275,8 @@ fn wrap_write_ack_error(ack: WrapWriteAck) -> Option<String> {
 /// Keep wrap injections single-flight until the PTY drainer confirms the
 /// previous write. Besides preserving delivery order, this ensures an MCP
 /// reminder is recorded before the next delivery decides whether to include it.
-fn wrap_injection_timer_allowed(has_pending_write_ack: bool) -> bool {
-    !has_pending_write_ack
+fn wrap_injection_timer_allowed(has_pending_write_ack: bool, has_pending_acceptance: bool) -> bool {
+    !has_pending_write_ack && !has_pending_acceptance
 }
 
 // Readiness deferrals must not spend the bounded delivery retry budget.
@@ -2128,7 +2128,10 @@ pub(crate) async fn run_wrap(
             }
 
             _ = pending_injection_interval.tick(),
-                if wrap_injection_timer_allowed(!pending_wrap_writes.is_empty()) => {
+                if wrap_injection_timer_allowed(
+                    !pending_wrap_writes.is_empty(),
+                    !pending_verifications.is_empty(),
+                ) => {
                 // Give backlogged human keystrokes priority onto the PTY FIFO
                 // over a new automated injection — see the auto-responder gate
                 // above for why.
@@ -2772,9 +2775,10 @@ sys.stdout.flush()"#;
     }
 
     #[test]
-    fn wrap_injection_timer_waits_for_the_previous_write_ack() {
-        assert!(wrap_injection_timer_allowed(false));
-        assert!(!wrap_injection_timer_allowed(true));
+    fn wrap_injection_timer_waits_for_write_ack_and_harness_acceptance() {
+        assert!(wrap_injection_timer_allowed(false, false));
+        assert!(!wrap_injection_timer_allowed(true, false));
+        assert!(!wrap_injection_timer_allowed(false, true));
     }
 
     #[test]

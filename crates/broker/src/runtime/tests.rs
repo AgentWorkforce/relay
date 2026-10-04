@@ -2923,7 +2923,8 @@ async fn a_worker_confirmed_ack_becomes_visible_on_the_node_delivery_endpoint() 
         ..withheld_ack_for(delivery_id.as_str())
     };
 
-    // The state right after an injection: received, ack withheld pending echo.
+    // The state right after an injection: received, ack withheld pending
+    // harness acceptance.
     fixture
         .runtime
         .fleet_delivery_book
@@ -3167,9 +3168,8 @@ async fn every_terminal_disposition_drops_its_withheld_fleet_ack() {
     cleanup_worker_registry(fixture.runtime.workers).await;
 }
 
-// relay#1310 MUST-NOT-FIRE: once the worker confirms the injection landed
-// (echo-verified, or its bounded timeout fallback — pty_worker.rs sends the
-// same internal `delivery_ack` event either way), the engine ack must still
+// relay#1310 MUST-NOT-FIRE: once the worker confirms harness acceptance, the
+// engine ack must still
 // fire, with the delivery's own (agent, up_to_seq) — i.e. the happy path is
 // unchanged, just correctly gated on confirmation instead of write-enqueue.
 // Exercises the full wiring: a real handoff through
@@ -3223,7 +3223,7 @@ async fn worker_confirmation_ack_diagnostics(closed: bool) {
             .expect("the delivery must be tracked pending the worker's confirmation")
             .withheld_fleet_ack
             .is_some(),
-        "a successful handoff must still withhold the ack pending echo confirmation"
+        "a successful handoff must still withhold the ack pending harness acceptance"
     );
 
     fixture
@@ -4338,6 +4338,44 @@ fn unconfirmed_pty_delivery_is_visible_as_blocked_on_send() {
     let inventory_source = include_str!("../worker.rs");
     assert!(inventory_source.contains("\"current_state\": handle.state.as_str()"));
     assert!(inventory_source.contains("\"pending_messages\""));
+}
+
+#[tokio::test]
+async fn submit_recovery_progress_defers_broker_delivery_retry() {
+    let worker_name = "worker-a";
+    let registry = make_worker_registry_with_worker(worker_name).await;
+    let generation = registry.workers[worker_name].generation;
+    let delivery_id = DeliveryId::new("del_recovery_progress");
+    let mut pending = make_pending_delivery(delivery_id.as_str(), worker_name);
+    pending.delivery.injection_mode = MessageInjectionMode::Steer;
+    let event_id = pending.delivery.event_id.clone();
+    let mut fixture =
+        worker_event_runtime_fixture(registry, HashMap::from([(delivery_id.clone(), pending)]));
+    let before = Instant::now();
+
+    fixture
+        .runtime
+        .handle_worker_event(delivery_lifecycle_worker_event(
+            worker_name,
+            generation,
+            "delivery_unconfirmed",
+            delivery_id.as_str(),
+            event_id.as_str(),
+        ))
+        .await;
+
+    let deadline = fixture.runtime.pending_deliveries[&delivery_id].next_retry_at;
+    assert!(
+        deadline
+            .checked_duration_since(before)
+            .is_some_and(|delay| {
+                delay
+                    >= crate::broker::delivery_verification::VERIFICATION_WINDOW
+                        + crate::broker::delivery_verification::VERIFICATION_WINDOW
+            }),
+        "broker retry must wait through the in-flight submit write and verification window"
+    );
+    cleanup_worker_registry(fixture.runtime.workers).await;
 }
 
 #[test]

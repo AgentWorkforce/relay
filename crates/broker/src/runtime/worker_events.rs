@@ -863,6 +863,23 @@ impl BrokerRuntime {
                         || msg_type == "delivery_resubmitted"
                     {
                         if let Some(payload) = value.get("payload") {
+                            let delivery_id = payload
+                                .get("delivery_id")
+                                .and_then(Value::as_str)
+                                .unwrap_or("");
+                            let event_id = payload
+                                .get("event_id")
+                                .and_then(Value::as_str)
+                                .unwrap_or("");
+                            if let Some(pending) = pending_deliveries.get_mut(delivery_id) {
+                                if pending.delivery.event_id.as_str() == event_id {
+                                    pending.next_retry_at = Instant::now()
+                                        + delivery_recovery_ack_timeout(
+                                            &pending.delivery.injection_mode,
+                                            delivery_retry_interval,
+                                        );
+                                }
+                            }
                             if let Some(handle) = workers.workers.get_mut(&name) {
                                 handle.last_activity_at = Instant::now();
                                 handle.state = AgentWorkState::BlockedOnSend;
@@ -870,8 +887,8 @@ impl BrokerRuntime {
                             tracing::warn!(
                                 target = "agent_relay::broker",
                                 worker = %name,
-                                delivery_id = %payload.get("delivery_id").and_then(|value| value.as_str()).unwrap_or(""),
-                                event_id = %payload.get("event_id").and_then(|value| value.as_str()).unwrap_or(""),
+                                delivery_id = %delivery_id,
+                                event_id = %event_id,
                                 attempts = ?payload.get("attempts").or_else(|| payload.get("attempt")),
                                 kind = msg_type,
                                 "delivery is not yet accepted by the harness"

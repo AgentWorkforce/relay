@@ -46,6 +46,13 @@ impl ActivityDetector {
         Self { patterns }
     }
 
+    /// Whether this detector has harness-specific evidence that a turn began.
+    /// Generic output is useful for activity telemetry, but a TUI repaint is
+    /// not strong enough to acknowledge a broker delivery.
+    pub fn has_explicit_patterns(&self) -> bool {
+        !self.patterns.is_empty()
+    }
+
     pub fn detect_activity(&self, output: &str, expected_echo: &str) -> Option<String> {
         let clean_output = strip_ansi(output);
         let relevant_output = if expected_echo.is_empty() {
@@ -142,6 +149,13 @@ mod tests {
             ),
             Some("any_output".to_string())
         );
+    }
+
+    #[test]
+    fn only_known_harnesses_have_explicit_acceptance_patterns() {
+        assert!(ActivityDetector::for_cli("codex").has_explicit_patterns());
+        assert!(ActivityDetector::for_cli("claude").has_explicit_patterns());
+        assert!(!ActivityDetector::for_cli("muse").has_explicit_patterns());
     }
 
     #[test]

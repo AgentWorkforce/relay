@@ -167,7 +167,7 @@ impl PendingVerification {
     }
 
     pub(crate) fn accepted_activity(&self) -> Option<String> {
-        if !self.echo_seen {
+        if !self.echo_seen || !self.detector.has_explicit_patterns() {
             return None;
         }
         self.detector
@@ -558,6 +558,25 @@ mod tests {
             HarnessAcceptance::Accepted("composer_cleared".to_string())
         );
         idle_pty.shutdown().unwrap();
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn generic_redraw_cannot_confirm_a_body_still_parked() {
+        let expected = "Relay message from Lead [evt]: fix idle injection";
+        let (pty, snapshot) = codex_snapshot(&format!("› {expected}")).await;
+        let mut verification = codex_verification(expected);
+        verification.detector = ActivityDetector::for_cli("muse");
+        verification
+            .activity_buffer
+            .push_str("composer repaint after echo");
+
+        assert_eq!(
+            assess_harness_acceptance("muse", &verification, &snapshot),
+            HarnessAcceptance::Parked,
+            "generic output must not outrank a visibly parked composer"
+        );
+        pty.shutdown().unwrap();
     }
 
     #[test]

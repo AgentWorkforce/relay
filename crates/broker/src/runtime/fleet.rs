@@ -188,8 +188,8 @@ enum FleetDeliverySurfaceOutcome {
     /// or an unrecognized payload type), so there is nothing to verify.
     Acknowledge,
     /// A PTY injection was handed to the worker. The engine ack is withheld
-    /// until the worker confirms it landed (echo-verified, or the bounded
-    /// timeout fallback) — see relay#1310. The withheld ack was already
+    /// until the worker confirms harness acceptance — see relay#1310. The
+    /// withheld ack was already
     /// registered on the corresponding `PendingDelivery` at insertion time
     /// (see relay#1543), so there is nothing left to carry here.
     AcknowledgeAfterEcho,
@@ -1928,9 +1928,8 @@ pub(super) async fn enqueue_delivery_ack(
 /// confirmation of a specific PTY injection (relay#1310: the ack must not
 /// fire before the worker confirms the write landed). Called with the
 /// `delivery_id`/`event_id` from the worker's own internal `delivery_ack`
-/// event (`worker_events.rs`), which pty_worker.rs sends only after echo
-/// verification succeeds or its bounded timeout fallback fires — never at
-/// write-enqueue time.
+/// event (`worker_events.rs`), which pty_worker.rs sends only after activity or
+/// a cleared composer proves harness acceptance — never at write-enqueue time.
 ///
 /// Returns the `(agent, up_to_seq)` to send to the engine once resolved, or
 /// `None` when there is nothing withheld for `delivery_id` (already

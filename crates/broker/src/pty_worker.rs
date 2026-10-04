@@ -687,11 +687,12 @@ fn injection_pop_allowed(
 fn next_injection_index(
     pending: &VecDeque<PendingWorkerInjection>,
     active_injection_present: bool,
+    pending_acceptance: bool,
     interactive_hold: bool,
     hold_exempt_remaining: usize,
     hold_exempt_event_ids: &HashSet<String>,
 ) -> Option<usize> {
-    if active_injection_present {
+    if active_injection_present || pending_acceptance {
         return None;
     }
     if injection_pop_allowed(
@@ -2007,10 +2008,10 @@ pub(crate) async fn run_pty_worker(cmd: PtyCommand) -> Result<()> {
             // stay parked (not dropped) until the human releases the drive.
             _ = pending_injection_interval.tick() => {
                 if !crate::devin::can_inject(&resolved_cli, &pty) { continue; }
-                if !pending_recovery_writes.is_empty() { continue; }
                 if let Some(index) = next_injection_index(
                     &pending_worker_injections,
                     active_injection.is_some(),
+                    !pending_verifications.is_empty() || !pending_recovery_writes.is_empty(),
                     pty_auto.interactive_hold,
                     hold_exempt_injections,
                     &hold_exempt_event_ids,
@@ -3973,32 +3974,37 @@ mod tests {
         let targeted = HashSet::from(["init_task".to_string()]);
 
         assert_eq!(
-            next_injection_index(&pending, false, true, 0, &targeted),
+            next_injection_index(&pending, false, false, true, 0, &targeted),
             Some(1)
         );
         // Nothing targeted: the whole queue stays parked under the hold.
         assert_eq!(
-            next_injection_index(&pending, false, true, 0, &HashSet::new()),
+            next_injection_index(&pending, false, false, true, 0, &HashSet::new()),
             None
         );
         // A blanket flush still drains from the front, in order.
         assert_eq!(
-            next_injection_index(&pending, false, true, 2, &HashSet::new()),
+            next_injection_index(&pending, false, false, true, 2, &HashSet::new()),
             Some(0)
         );
         // Unheld, the target is irrelevant — normal FIFO order applies.
         assert_eq!(
-            next_injection_index(&pending, false, false, 0, &targeted),
+            next_injection_index(&pending, false, false, false, 0, &targeted),
             Some(0)
         );
         // An injection already in flight is never preempted, targeted or not.
         assert_eq!(
-            next_injection_index(&pending, true, true, 0, &targeted),
+            next_injection_index(&pending, true, false, true, 0, &targeted),
+            None
+        );
+        // A body awaiting harness acceptance owns the one live composer.
+        assert_eq!(
+            next_injection_index(&pending, false, true, false, 0, &targeted),
             None
         );
         // An empty queue has nothing to start.
         assert_eq!(
-            next_injection_index(&VecDeque::new(), false, false, 0, &targeted),
+            next_injection_index(&VecDeque::new(), false, false, false, 0, &targeted),
             None
         );
     }
