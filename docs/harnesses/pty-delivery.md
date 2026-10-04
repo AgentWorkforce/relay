@@ -6,12 +6,12 @@ that the composer submitted it.
 
 ## Submit strategies
 
-| Harness | Initial body | Submit gesture | Bounded recovery |
-| --- | --- | --- | --- |
-| Codex | bulk editor input | distinct `CR` after 250 ms | `End`, then distinct `CR`; `LF` only if the same body remains visibly parked |
-| Claude and Muse | paced or configured body input | distinct `CR` after 250 ms | distinct `CR`, then guarded `LF` |
-| Devin | bracketed paste | distinct `CR` after 250 ms | distinct `CR`, then guarded `LF` |
-| OpenCode, Gemini, Cursor and other PTY harnesses | paced typed input | trailing `CR` | distinct `CR`, then guarded `LF` |
+| Harness                                          | Initial body                   | Submit gesture             | Bounded recovery                                                             |
+| ------------------------------------------------ | ------------------------------ | -------------------------- | ---------------------------------------------------------------------------- |
+| Codex                                            | bulk editor input              | distinct `CR` after 250 ms | `End`, then distinct `CR`; `LF` only if the same body remains visibly parked |
+| Claude and Muse                                  | paced or configured body input | distinct `CR` after 250 ms | distinct `CR`, then guarded `LF`                                             |
+| Devin                                            | bracketed paste                | distinct `CR` after 250 ms | distinct `CR`, then guarded `LF`                                             |
+| OpenCode, Gemini, Cursor and other PTY harnesses | paced typed input              | trailing `CR`              | distinct `CR`, then guarded `LF`                                             |
 
 A recovery never writes the message body again. Relay retries a submit key only
 when the expected message tail is still present in the live composer at the
