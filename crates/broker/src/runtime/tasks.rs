@@ -289,11 +289,13 @@ impl BrokerRuntime {
             &self.fleet_control_tx,
             &mut self.fleet_delivery_book,
             &mut self.fleet_inventory,
+            &mut self.fleet_worker_owners,
             &self.fleet_node_name,
             Some(record.invoke.invocation_id.clone()),
             None,
             &self.hosted_agent_event_tx,
             &mut self.pty_observability,
+            self.fleet_owner_identity.clone(),
             Some((callback, record.generation)),
         )
         .await;

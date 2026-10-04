@@ -606,6 +606,7 @@ mod tests {
             "RELAY_WORKSPACE_KEY",
             "AGENT_RELAY_WORKSPACE_KEY",
             "RELAY_WORKSPACES_JSON",
+            "AGENT_RELAY_ENROLLED_OWNER_METADATA",
         ] {
             assert!(
                 INHERITED_RELAY_CREDENTIAL_ENV_KEYS.contains(&key),

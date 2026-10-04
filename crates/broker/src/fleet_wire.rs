@@ -4,7 +4,8 @@ use serde::{
     de::{self, Deserializer},
     ser, Deserialize, Serialize, Serializer,
 };
-use serde_json::Value;
+use serde_json::{Map, Value};
+use sha2::{Digest, Sha256};
 
 pub const FLEET_WIRE_VERSION: FleetWireVersion = FleetWireVersion;
 /// Node capability that negotiates `delivery_ack_seq` in `agent.register`
@@ -253,14 +254,104 @@ pub struct AgentRegister {
         skip_serializing_if = "Option::is_none"
     )]
     pub resumable: Option<bool>,
-    // NOTE: declared registration metadata is deliberately NOT a field here.
-    // The engine parses this frame with a `.strict()` schema
-    // (relaycast packages/types/src/fleet-wire.ts, FleetAgentRegisterMessageSchema)
-    // that rejects unknown keys, and its rejection carries a freshly generated
-    // id, so the broker's id-keyed correlation never matches and the waiter
-    // stalls for the full `FLEET_AGENT_REGISTER_TIMEOUT`. Declared metadata is
-    // published over the HTTP agent API after registration instead — see
-    // `RelaycastHttpClient::publish_declared_metadata`.
+    /// Metadata written atomically with the agent row. Owner keys in this map
+    /// are server-derived: spawn input is never allowed to populate them.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub metadata: Option<Map<String, Value>>,
+}
+
+pub const OWNER_METADATA_ENV: &str = "AGENT_RELAY_ENROLLED_OWNER_METADATA";
+const RESERVED_OWNER_FIELDS: [&str; 3] = ["cloud_user_id", "cloud_workspace_id", "owner_hash"];
+
+/// Trusted Cloud principal attached to a node enrollment or authenticated
+/// action caller. These names deliberately match Relaycast agent metadata.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct AgentOwnerMetadata {
+    pub cloud_user_id: String,
+    pub cloud_workspace_id: Option<String>,
+    pub owner_hash: String,
+}
+
+impl AgentOwnerMetadata {
+    pub fn new(cloud_user_id: String, cloud_workspace_id: Option<String>) -> Result<Self, String> {
+        let owner_hash = owner_hash(&cloud_user_id);
+        Self {
+            cloud_user_id,
+            cloud_workspace_id,
+            owner_hash,
+        }
+        .validate()
+    }
+
+    pub fn validate(self) -> Result<Self, String> {
+        if !valid_cloud_identity_id(&self.cloud_user_id) {
+            return Err("invalid trusted cloud_user_id".to_string());
+        }
+        if self
+            .cloud_workspace_id
+            .as_deref()
+            .is_some_and(|value| !valid_cloud_identity_id(value))
+        {
+            return Err("invalid trusted cloud_workspace_id".to_string());
+        }
+        let expected = owner_hash(&self.cloud_user_id);
+        if self.owner_hash != expected {
+            return Err("trusted owner_hash does not match cloud_user_id".to_string());
+        }
+        Ok(self)
+    }
+
+    pub fn from_enrollment_env(value: Option<&str>) -> Result<Option<Self>, String> {
+        let Some(value) = value.map(str::trim).filter(|value| !value.is_empty()) else {
+            return Ok(None);
+        };
+        serde_json::from_str::<Self>(value)
+            .map_err(|_| "invalid trusted enrollment owner metadata".to_string())?
+            .validate()
+            .map(Some)
+    }
+
+    pub fn metadata(&self) -> Map<String, Value> {
+        let mut metadata = Map::new();
+        metadata.insert(
+            "cloud_user_id".to_string(),
+            Value::String(self.cloud_user_id.clone()),
+        );
+        metadata.insert(
+            "cloud_workspace_id".to_string(),
+            self.cloud_workspace_id
+                .as_ref()
+                .map_or(Value::Null, |value| Value::String(value.clone())),
+        );
+        metadata.insert(
+            "owner_hash".to_string(),
+            Value::String(self.owner_hash.clone()),
+        );
+        metadata
+    }
+}
+
+/// Prefer the principal authenticated for this spawn. When Relaycast cannot
+/// attach one (for example, a scheduled node-owned task), fall back to the
+/// principal captured by the trusted Cloud enrollment exchange.
+pub fn trusted_spawn_owner(
+    caller: Option<AgentOwnerMetadata>,
+    enrollment: Option<AgentOwnerMetadata>,
+) -> Option<AgentOwnerMetadata> {
+    caller.or(enrollment)
+}
+
+fn valid_cloud_identity_id(value: &str) -> bool {
+    !value.is_empty()
+        && value.len() <= 128
+        && value
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_'))
+}
+
+fn owner_hash(cloud_user_id: &str) -> String {
+    format!("{:x}", Sha256::digest(cloud_user_id.as_bytes()))
 }
 
 /// Explicit organizational identity declared by a fleet spawn and published to
@@ -280,6 +371,8 @@ pub struct AgentRegistrationMetadata {
     pub role: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub objective: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub owner: Option<AgentOwnerMetadata>,
 }
 
 impl AgentRegistrationMetadata {
@@ -289,21 +382,49 @@ impl AgentRegistrationMetadata {
             && self.workstream.is_none()
             && self.role.is_none()
             && self.objective.is_none()
+            && self.owner.is_none()
     }
 
     /// Read declared hierarchy from either a flattened spawn action or its
     /// `metadata` bag. `objective` falls back only to the supplied task — the
     /// caller's own brief — and never to a name-derived convention.
-    pub fn from_spawn_input(input: &Value, task: Option<&str>) -> Self {
+    pub fn from_spawn_input(input: &Value, task: Option<&str>) -> Result<Self, String> {
+        reject_reserved_owner_metadata(input)?;
         let objective = Self::declared_string(input, "objective")
             .or_else(|| task.and_then(non_empty_string).map(ToOwned::to_owned));
-        Self {
+        Ok(Self {
             organization: Self::declared_string(input, "organization"),
             project: Self::declared_string(input, "project"),
             workstream: Self::declared_string(input, "workstream"),
             role: Self::declared_string(input, "role"),
             objective,
+            owner: None,
+        })
+    }
+
+    pub fn with_owner(mut self, owner: Option<AgentOwnerMetadata>) -> Self {
+        self.owner = owner;
+        self
+    }
+
+    pub fn metadata(&self) -> Map<String, Value> {
+        let mut metadata = Map::new();
+        for (key, value) in [
+            ("organization", self.organization.as_deref()),
+            ("project", self.project.as_deref()),
+            ("workstream", self.workstream.as_deref()),
+            ("role", self.role.as_deref()),
+            ("objective", self.objective.as_deref()),
+        ] {
+            let Some(value) = value.map(str::trim).filter(|value| !value.is_empty()) else {
+                continue;
+            };
+            metadata.insert(key.to_string(), Value::String(value.to_string()));
         }
+        if let Some(owner) = &self.owner {
+            metadata.extend(owner.metadata());
+        }
+        metadata
     }
 
     fn declared_string(input: &Value, key: &str) -> Option<String> {
@@ -331,6 +452,26 @@ impl AgentRegistrationMetadata {
         }
         None
     }
+}
+
+fn reject_reserved_owner_metadata(input: &Value) -> Result<(), String> {
+    let nested_agent = input.get("agent").and_then(Value::as_object);
+    for record in std::iter::once(input.as_object()).chain(std::iter::once(nested_agent)) {
+        let Some(record) = record else {
+            continue;
+        };
+        let metadata = record.get("metadata").and_then(Value::as_object);
+        for key in RESERVED_OWNER_FIELDS {
+            if record.contains_key(key)
+                || metadata.is_some_and(|metadata| metadata.contains_key(key))
+            {
+                return Err(format!(
+                    "spawn input may not set reserved owner metadata field '{key}'"
+                ));
+            }
+        }
+    }
+    Ok(())
 }
 
 fn non_empty_string(value: &str) -> Option<&str> {
@@ -663,6 +804,9 @@ pub struct ActionInvoke {
         skip_serializing_if = "Option::is_none"
     )]
     pub agent_name: Option<String>,
+    /// Server-authenticated caller principal. Never copied from `input`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub caller_owner: Option<Box<AgentOwnerMetadata>>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub task_execution: Option<Box<TaskExecution>>,
 }
@@ -875,9 +1019,10 @@ mod tests {
 
     use super::{
         validate_agent_register_reply_data, validate_finite_nonnegative_f64, ActionResult,
-        ActionResultError, ActionResultPayload, AgentRegister, AgentRegistrationMetadata,
-        BrokerToRelaycast, Deliver, DeliveryMode, Error, FleetCapability, NodeHeartbeat,
-        RelaycastToBroker, Reply, TerminalReconnectRequested, FLEET_WIRE_VERSION,
+        ActionResultError, ActionResultPayload, AgentOwnerMetadata, AgentRegister,
+        AgentRegistrationMetadata, BrokerToRelaycast, Deliver, DeliveryMode, Error,
+        FleetCapability, NodeHeartbeat, RelaycastToBroker, Reply, TerminalReconnectRequested,
+        FLEET_WIRE_VERSION,
     };
 
     #[test]
@@ -890,6 +1035,7 @@ mod tests {
             invocation_id: None,
             session_ref: None,
             resumable: None,
+            metadata: None,
         });
 
         let value = serde_json::to_value(msg).unwrap();
@@ -927,11 +1073,16 @@ mod tests {
         .is_err());
     }
 
-    /// Cover both legacy-compatible default membership and the candidate
-    /// engine's explicit isolation extension. Metadata belongs on HTTP.
+    /// Trusted owner identity is part of the create itself, so a new fleet
+    /// worker can never appear briefly unowned before a detached PATCH lands.
     #[test]
-    fn agent_register_carries_no_keys_the_engine_schema_rejects() {
+    fn agent_register_carries_trusted_owner_metadata_atomically() {
         for auto_join_general in [None, Some(false)] {
+            let owner = AgentOwnerMetadata::new(
+                "user-1".to_string(),
+                Some("50587328-441d-4acb-b8f3-dbe1b3c5de99".to_string()),
+            )
+            .unwrap();
             let msg = BrokerToRelaycast::AgentRegister(AgentRegister {
                 auto_join_general,
                 v: FLEET_WIRE_VERSION,
@@ -940,6 +1091,7 @@ mod tests {
                 invocation_id: Some("inv-1".to_string()),
                 session_ref: Some("sess-1".to_string()),
                 resumable: Some(true),
+                metadata: Some(owner.metadata()),
             });
             let value = serde_json::to_value(msg).unwrap();
             let mut keys: Vec<&str> = value
@@ -952,6 +1104,7 @@ mod tests {
             let mut expected = vec![
                 "id",
                 "invocation_id",
+                "metadata",
                 "name",
                 "resumable",
                 "session_ref",
@@ -963,7 +1116,58 @@ mod tests {
                 assert_eq!(value["auto_join_general"], false);
             }
             assert_eq!(keys, expected);
+            assert_eq!(value["metadata"]["cloud_user_id"], "user-1");
+            assert_eq!(
+                value["metadata"]["cloud_workspace_id"],
+                "50587328-441d-4acb-b8f3-dbe1b3c5de99"
+            );
+            assert_eq!(
+                value["metadata"]["owner_hash"],
+                "c6c289e49e9c05b2145860387b73bcb18df43fb09a1e4a4a9713c76c88bb541b"
+            );
         }
+    }
+
+    #[test]
+    fn spawn_metadata_rejects_reserved_owner_spoofing() {
+        for input in [
+            json!({"cloud_user_id": "attacker"}),
+            json!({"metadata": {"owner_hash": "forged"}}),
+            json!({"agent": {"metadata": {"cloud_workspace_id": "other"}}}),
+        ] {
+            assert!(AgentRegistrationMetadata::from_spawn_input(&input, None).is_err());
+        }
+    }
+
+    #[test]
+    fn trusted_owner_is_derived_exactly_and_preserves_a_null_workspace() {
+        let owner = AgentOwnerMetadata::new("User-1".to_string(), None).unwrap();
+        assert_eq!(
+            owner.owner_hash,
+            "72e7a0d15b2efd5aa47b550f3c67b400d685f8350187cc122bca3910e93d087d"
+        );
+        assert_eq!(owner.metadata()["cloud_workspace_id"], Value::Null);
+        assert!(AgentOwnerMetadata::from_enrollment_env(Some(
+            r#"{"cloud_user_id":"User-1","cloud_workspace_id":null,"owner_hash":"forged"}"#
+        ))
+        .is_err());
+    }
+
+    #[test]
+    fn authenticated_spawn_caller_takes_precedence_over_enrollment_owner() {
+        let caller = AgentOwnerMetadata::new("caller".into(), Some("workspace-a".into())).unwrap();
+        let enrollment =
+            AgentOwnerMetadata::new("enroller".into(), Some("workspace-a".into())).unwrap();
+
+        assert_eq!(
+            super::trusted_spawn_owner(Some(caller.clone()), Some(enrollment.clone())),
+            Some(caller)
+        );
+        assert_eq!(
+            super::trusted_spawn_owner(None, Some(enrollment.clone())),
+            Some(enrollment)
+        );
+        assert_eq!(super::trusted_spawn_owner(None, None), None);
     }
 
     #[test]
@@ -979,14 +1183,16 @@ mod tests {
                 }
             }),
             Some("The wider initial brief"),
-        );
+        )
+        .unwrap();
         assert_eq!(declared.objective.as_deref(), Some("Ship fleet metadata"));
         assert_eq!(declared.organization.as_deref(), Some("Agent Workforce"));
 
         let fallback = AgentRegistrationMetadata::from_spawn_input(
             &json!({"agent": {"metadata": {"project": "relay"}}}),
             Some("  Publish declared registration metadata  "),
-        );
+        )
+        .unwrap();
         assert_eq!(fallback.project.as_deref(), Some("relay"));
         assert_eq!(
             fallback.objective.as_deref(),

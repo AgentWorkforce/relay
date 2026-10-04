@@ -203,6 +203,7 @@ pub(crate) struct BrokerRuntime {
     pub(super) self_names: HashSet<String>,
     pub(super) ws_control_tx: mpsc::Sender<WsControl>,
     pub(super) relaycast_http: RelaycastHttpClient,
+    pub(super) fleet_owner_identity: Option<crate::fleet_wire::AgentOwnerMetadata>,
     pub(super) hosted_agent_event_tx: mpsc::Sender<HostedAgentEvent>,
     pub(super) pty_observability: HashMap<WorkerName, PtyObservabilityState>,
     pub(super) api_rx: mpsc::Receiver<ListenApiRequest>,
@@ -240,6 +241,10 @@ pub(crate) struct BrokerRuntime {
     pub(super) fleet_delivery_book: FleetDeliveryBook,
     pub(super) fleet_max_agents: u32,
     pub(super) fleet_inventory: HashMap<WorkerName, InventoryAgent>,
+    /// Trusted owner paired with the exact live worker generation. Kept out of
+    /// `inventory.sync`: ownership belongs on Relaycast agent metadata only.
+    pub(super) fleet_worker_owners:
+        HashMap<WorkerName, (Uuid, crate::fleet_wire::AgentOwnerMetadata)>,
     /// Per-worker retry deadlines for failed Relaycast identity lookups while
     /// rebuilding the reconnect inventory.
     pub(super) fleet_inventory_reconcile_retry_after:

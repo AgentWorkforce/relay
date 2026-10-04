@@ -1,3 +1,4 @@
+import { createHash } from 'node:crypto';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
@@ -13,6 +14,12 @@ import { cloudHome } from './worker.js';
  * Mirrors the response shape of
  * cloud/packages/web/app/api/v1/fleet/register/route.ts.
  */
+export type FleetOwnerMetadata = {
+  cloud_user_id: string;
+  cloud_workspace_id: string | null;
+  owner_hash: string;
+};
+
 export type FleetNodeEnrollment = {
   nodeId: string;
   nodeName: string;
@@ -20,6 +27,8 @@ export type FleetNodeEnrollment = {
   relayWorkspaceId: string;
   relaycastUrl: string;
   websocketUrl: string;
+  /** Trusted Cloud principal returned by the enrollment exchange. */
+  ownerMetadata?: FleetOwnerMetadata;
 };
 
 export type EnrollFleetNodeInput = {
@@ -46,6 +55,32 @@ export type EnrollFleetNodeInput = {
 
 function ensurePlainObject(value: unknown): value is Record<string, unknown> {
   return value !== null && typeof value === 'object' && !Array.isArray(value);
+}
+
+function validCloudIdentityId(value: unknown): value is string {
+  return (
+    typeof value === 'string' && value.length > 0 && value.length <= 128 && /^[A-Za-z0-9_-]+$/.test(value)
+  );
+}
+
+function ownerHash(cloudUserId: string): string {
+  return createHash('sha256').update(cloudUserId, 'utf8').digest('hex');
+}
+
+function isFleetOwnerMetadata(value: unknown): value is FleetOwnerMetadata {
+  if (!ensurePlainObject(value) || !validCloudIdentityId(value.cloud_user_id)) return false;
+  if (value.cloud_workspace_id !== null && !validCloudIdentityId(value.cloud_workspace_id)) {
+    return false;
+  }
+  return value.owner_hash === ownerHash(value.cloud_user_id);
+}
+
+function copyFleetOwnerMetadata(value: FleetOwnerMetadata): FleetOwnerMetadata {
+  return {
+    cloud_user_id: value.cloud_user_id,
+    cloud_workspace_id: value.cloud_workspace_id,
+    owner_hash: value.owner_hash,
+  };
 }
 
 function normalizeEnrollmentUrl(value?: string): string {
@@ -164,6 +199,9 @@ export async function enrollFleetNode(input: EnrollFleetNodeInput): Promise<Flee
   if (!isFleetNodeEnrollment(payload)) {
     throw new Error('Node enrollment response is missing node credentials.');
   }
+  if (payload.ownerMetadata !== undefined && !isFleetOwnerMetadata(payload.ownerMetadata)) {
+    throw new Error('Node enrollment response carries an invalid owner identity.');
+  }
   return {
     nodeId: typeof payload.nodeId === 'string' ? payload.nodeId : '',
     nodeName: typeof payload.nodeName === 'string' ? payload.nodeName : (name ?? ''),
@@ -174,6 +212,9 @@ export async function enrollFleetNode(input: EnrollFleetNodeInput): Promise<Flee
       typeof payload.websocketUrl === 'string' && payload.websocketUrl.trim()
         ? payload.websocketUrl.trim()
         : `${payload.relaycastUrl.replace(/\/+$/, '')}/v1/node/ws`,
+    ...(payload.ownerMetadata !== undefined
+      ? { ownerMetadata: copyFleetOwnerMetadata(payload.ownerMetadata) }
+      : {}),
   };
 }
 
@@ -238,7 +279,8 @@ function isFleetNodeEnrollmentRecord(value: unknown): value is FleetNodeEnrollme
     typeof value.relayWorkspaceId === 'string' &&
     typeof value.relaycastUrl === 'string' &&
     typeof value.websocketUrl === 'string' &&
-    typeof value.enrolledAt === 'string'
+    typeof value.enrolledAt === 'string' &&
+    (value.ownerMetadata === undefined || isFleetOwnerMetadata(value.ownerMetadata))
   );
 }
 

@@ -23,6 +23,9 @@ pub const INHERITED_RELAY_CREDENTIAL_ENV_KEYS: &[&str] = &[
     "RELAY_WORKSPACE_KEY",
     "AGENT_RELAY_WORKSPACE_KEY",
     "RELAY_WORKSPACES_JSON",
+    // Trusted Cloud principal attached to the broker's fleet enrollment. The
+    // broker consumes it once; spawned workers never need the raw identity.
+    "AGENT_RELAY_ENROLLED_OWNER_METADATA",
 ];
 
 /// Remove [`INHERITED_RELAY_CREDENTIAL_ENV_KEYS`] from a command's inherited

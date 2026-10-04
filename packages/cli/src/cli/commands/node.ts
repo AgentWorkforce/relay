@@ -173,6 +173,18 @@ function applyEnrollment(
   // records it beside the project workspace so later starts can resolve the
   // same durable enrollment instead of minting a replacement node identity.
   env.AGENT_RELAY_ENROLLED_NODE_ID = record.nodeId;
+  if (record.ownerMetadata) {
+    const cloudUserId = record.ownerMetadata.cloud_user_id;
+    const cloudWorkspaceId = record.ownerMetadata.cloud_workspace_id;
+    const ownerHash = record.ownerMetadata.owner_hash;
+    env.AGENT_RELAY_ENROLLED_OWNER_METADATA = JSON.stringify({
+      cloud_user_id: cloudUserId,
+      cloud_workspace_id: cloudWorkspaceId,
+      owner_hash: ownerHash,
+    });
+  } else {
+    delete env.AGENT_RELAY_ENROLLED_OWNER_METADATA;
+  }
   if (!env.RELAY_BASE_URL) {
     env.RELAY_BASE_URL = record.relaycastUrl;
   }

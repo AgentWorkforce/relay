@@ -439,6 +439,7 @@ async fn owned_cleanup_waits_off_actor_and_retains_custody_until_confirmed() {
                 input: json!({"name":"retired", "cli":"claude"}),
                 agent_name: Some("retired".into()),
                 agent_id: None,
+                caller_owner: None,
             }),
         ))
         .await;
@@ -655,6 +656,7 @@ fn worker_event_runtime_fixture_with_relay(
         self_names,
         ws_control_tx,
         relaycast_http,
+        fleet_owner_identity: None,
         hosted_agent_event_tx,
         pty_observability: HashMap::new(),
         api_rx,
@@ -680,6 +682,7 @@ fn worker_event_runtime_fixture_with_relay(
         fleet_delivery_book: FleetDeliveryBook::default(),
         fleet_max_agents: 0,
         fleet_inventory: HashMap::new(),
+        fleet_worker_owners: HashMap::new(),
         fleet_inventory_reconcile_retry_after: HashMap::new(),
         sdk_out_tx,
         worker_event_rx,
@@ -7990,17 +7993,17 @@ async fn local_only_restored_exhausted_delivery_replays_to_already_registered_wo
 }
 
 #[tokio::test]
-async fn http_spawn_supplied_token_publishes_declared_metadata() {
+async fn http_spawn_supplied_token_publishes_registration_metadata() {
     assert_http_spawn_metadata_publication(true, true).await;
 }
 
 #[tokio::test]
-async fn http_spawn_new_identity_publishes_declared_metadata() {
+async fn http_spawn_new_identity_publishes_registration_metadata() {
     assert_http_spawn_metadata_publication(false, true).await;
 }
 
 #[tokio::test]
-async fn http_spawn_failed_launch_does_not_publish_declared_metadata() {
+async fn http_spawn_failed_launch_does_not_publish_registration_metadata() {
     assert_http_spawn_metadata_publication(true, false).await;
 }
 
@@ -8018,7 +8021,15 @@ async fn assert_http_spawn_metadata_publication(supplied_token: bool, valid_cwd:
     let identity = json!({"id":"metadata-id","workspace_id":"ws_demo",
         "name":name,"status":"active","created_at":"2026-09-11T12:00:00Z"});
     let create = server.mock(|when, then| {
-        when.method(POST).path("/v1/agents");
+        when.method(POST).path("/v1/agents").json_body(json!({
+            "name":"metadata-worker", "type":"agent", "auto_join_general":false,
+            "metadata": {
+                "cli":"cat", "organization":"demo-org", "project":"demo-project",
+                "workstream":"subscriptions", "role":"reviewer", "objective":"prove delivery",
+                "cloud_user_id":"user-1", "cloud_workspace_id":null,
+                "owner_hash":"c6c289e49e9c05b2145860387b73bcb18df43fb09a1e4a4a9713c76c88bb541b"
+            }
+        }));
         let mut data = identity.clone();
         data["token"] = json!(token);
         then.status(201).json_body(json!({"ok":true,"data":data}));
@@ -8049,7 +8060,9 @@ async fn assert_http_spawn_metadata_publication(supplied_token: bool, valid_cwd:
             .path("/v1/agents/metadata-worker")
             .json_body(json!({"metadata":{
                 "organization":"demo-org", "project":"demo-project",
-                "workstream":"subscriptions", "role":"reviewer", "objective":"prove delivery"
+                "workstream":"subscriptions", "role":"reviewer", "objective":"prove delivery",
+                "cloud_user_id":"user-1", "cloud_workspace_id":null,
+                "owner_hash":"c6c289e49e9c05b2145860387b73bcb18df43fb09a1e4a4a9713c76c88bb541b"
             }}));
         then.status(200)
             .json_body(json!({"ok":true,"data":identity}));
@@ -8062,6 +8075,8 @@ async fn assert_http_spawn_metadata_publication(supplied_token: bool, valid_cwd:
     let (events, _event_rx) = mpsc::channel(16);
     let registry = WorkerRegistry::new(events, vec![], dir.path().join("logs"), Instant::now());
     let mut fixture = worker_event_runtime_fixture(registry, HashMap::new());
+    fixture.runtime.fleet_owner_identity =
+        Some(crate::fleet_wire::AgentOwnerMetadata::new("user-1".into(), None).unwrap());
     fixture.runtime.relaycast_http =
         RelaycastHttpClient::new(Some(server.base_url()), "rk_live_test", "broker", "codex");
     let (reply, result) = oneshot::channel();
@@ -8080,6 +8095,7 @@ async fn assert_http_spawn_metadata_publication(supplied_token: bool, valid_cwd:
                 workstream: Some("subscriptions".into()),
                 role: Some("reviewer".into()),
                 objective: Some("prove delivery".into()),
+                owner: None,
             },
             channels: Some(vec![]),
             cwd: Some(
@@ -8130,9 +8146,17 @@ async fn assert_http_spawn_metadata_publication(supplied_token: bool, valid_cwd:
         .await;
         assert!(
             published.is_ok(),
-            "successful spawn did not publish declared metadata"
+            "successful spawn did not publish registration metadata"
         );
         metadata.assert_hits(1);
+        assert_eq!(
+            fixture
+                .runtime
+                .fleet_worker_owners
+                .get(&name)
+                .map(|(_, owner)| owner.cloud_user_id.as_str()),
+            Some("user-1")
+        );
     } else {
         assert!(response.unwrap_err().contains("cwd"));
         tokio::time::sleep(Duration::from_millis(100)).await;

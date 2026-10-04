@@ -4772,6 +4772,7 @@ mod tests {
                     input: json!({"suite": "unit"}),
                     agent_id: None,
                     agent_name: None,
+                    caller_owner: None,
                 }))
                 .unwrap(),
             ))
@@ -5185,6 +5186,7 @@ mod tests {
                     invocation_id: Some("inv-1".to_string()),
                     session_ref: Some("session-1".to_string()),
                     resumable: Some(true),
+                    metadata: None,
                 },
                 reply: reply_tx,
             })
@@ -5418,6 +5420,7 @@ mod tests {
                     invocation_id: Some("inv-1".to_string()),
                     session_ref: None,
                     resumable: None,
+                    metadata: None,
                 },
                 reply: reply_tx,
             })

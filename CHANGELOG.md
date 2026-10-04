@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- Fleet enrollment and spawn registration carry trusted Cloud owner identity into Relaycast agent metadata, allowing Desktop to group workers under their authenticated person without host or workspace heuristics.
+
 ## [13.1.1] - 2026-10-04
 
 ### Added
