@@ -15,8 +15,8 @@ use crate::{
 pub(crate) const ACTIVITY_WINDOW: Duration = Duration::from_secs(5);
 pub(crate) const ACTIVITY_BUFFER_MAX_BYTES: usize = 16_000;
 pub(crate) const ACTIVITY_BUFFER_KEEP_BYTES: usize = 12_000;
-const VERIFICATION_OUTPUT_MAX_BYTES: usize = 16_000;
-const VERIFICATION_OUTPUT_KEEP_BYTES: usize = 12_000;
+const VERIFICATION_OUTPUT_MAX_BYTES: usize = 64 * 1024;
+const VERIFICATION_OUTPUT_KEEP_BYTES: usize = 48 * 1024;
 
 #[derive(Debug, Clone, Copy)]
 pub(crate) enum DeliveryOutcome {
@@ -190,6 +190,14 @@ impl VerificationOutput {
         }
     }
 
+    /// A missing head is evidence only if we retained the entire observation window.
+    pub(crate) fn retains_boundary(&self, boundary: u64) -> bool {
+        self.segments.front().is_none_or(|segment| {
+            segment.sequence <= boundary.saturating_add(1)
+                && segment.start_offset >= self.base_offset
+        })
+    }
+
     /// Retained output read after the supplied producer sequence.
     pub(crate) fn since(&self, boundary: u64) -> Cow<'_, str> {
         let Some(segment) = self
@@ -280,10 +288,69 @@ pub(crate) fn queue_or_take_detected_activity(
     }
 }
 
-/// Check if the expected echo string appears in PTY output (after stripping ANSI).
-pub(crate) fn check_echo_in_output(output: &str, expected: &str) -> bool {
+/// One evidence ladder shared by fleet and wrap; timeout policy stays at the caller.
+#[derive(Debug, PartialEq, Eq)]
+pub(crate) enum EchoVerdict {
+    Exact,
+    Anchors,
+    PasteSummary,
+    HeadMissing,
+    Absent,
+}
+impl EchoVerdict {
+    pub(crate) fn confirmed(&self) -> bool {
+        matches!(self, Self::Exact | Self::Anchors | Self::PasteSummary)
+    }
+    pub(crate) fn label(&self) -> &'static str {
+        match self {
+            Self::Exact => "echo",
+            Self::Anchors => "echo_anchors",
+            Self::PasteSummary => "paste_summary",
+            Self::HeadMissing => "echo_head_missing",
+            Self::Absent => "timeout_fallback",
+        }
+    }
+}
+pub(crate) fn echo_verdict(output: &str, expected: &str) -> EchoVerdict {
     let clean = strip_ansi(output);
-    clean.contains(expected)
+    if !expected.is_empty() && clean.contains(expected) {
+        return EchoVerdict::Exact;
+    }
+    let compact = |s: &str| s.chars().filter(|c| !c.is_whitespace()).collect::<String>();
+    let expected = expected
+        .find("Relay message from ")
+        .map_or(expected, |i| &expected[i..]);
+    let expected = compact(expected);
+    let observed = compact(&clean);
+    // Short echoes need an exact match; overlapping anchors cannot prove loss.
+    if expected.chars().count() >= 240 {
+        let head: String = expected.chars().take(120).collect();
+        let tail: String = expected
+            .chars()
+            .rev()
+            .take(120)
+            .collect::<Vec<_>>()
+            .into_iter()
+            .rev()
+            .collect();
+        if observed.contains(&tail) {
+            return if observed.contains(&head) {
+                EchoVerdict::Anchors
+            } else {
+                EchoVerdict::HeadMissing
+            };
+        }
+    }
+    if clean.split("[Pasted text #").skip(1).any(|s| {
+        s.split_once(']')
+            .is_some_and(|(marker, _)| marker.starts_with(|c: char| c.is_ascii_digit()))
+    }) {
+        return EchoVerdict::PasteSummary;
+    }
+    EchoVerdict::Absent
+}
+pub(crate) fn check_echo_in_output(output: &str, expected: &str) -> bool {
+    echo_verdict(output, expected).confirmed()
 }
 
 pub(crate) fn current_timestamp_ms() -> u64 {
@@ -324,6 +391,38 @@ pub(crate) fn delivery_injected_event_payload(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn trimmed_observation_cannot_prove_head_loss() {
+        let mut output = VerificationOutput::default();
+        output.push_str(&"x".repeat(VERIFICATION_OUTPUT_MAX_BYTES + 1));
+        assert!(!output.retains_boundary(0));
+        let boundary = output.boundary();
+        output.push_str("next delivery");
+        // Conservative: a partially retained first segment never proves loss.
+        assert!(!output.retains_boundary(boundary));
+    }
+
+    #[test]
+    fn evidence_ladder_preserves_absent_fallback_and_detects_tail_loss() {
+        let expected = format!(
+            "Reminder changes each time\nRelay message from broker [init_1]: HEAD{}TAIL",
+            "abc xyz ".repeat(1280)
+        );
+        assert_eq!(echo_verdict(&expected, &expected), EchoVerdict::Exact);
+        let wrapped = expected.replace(' ', "\r\n ");
+        assert_eq!(echo_verdict(&wrapped, &expected), EchoVerdict::Anchors);
+        assert_eq!(
+            echo_verdict(&expected[expected.len() - 200..], &expected),
+            EchoVerdict::HeadMissing
+        );
+        assert_eq!(
+            echo_verdict("[Pasted text #1 +120 lines]", &expected),
+            EchoVerdict::PasteSummary
+        );
+        assert_eq!(echo_verdict("Working…", &expected), EchoVerdict::Absent);
+        assert_eq!(echo_verdict("", &expected).label(), "timeout_fallback");
+    }
 
     #[test]
     fn check_echo_clean_text() {

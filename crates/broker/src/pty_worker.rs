@@ -1799,7 +1799,7 @@ pub(crate) async fn run_pty_worker(cmd: PtyCommand) -> Result<()> {
                                 json!({
                                     "delivery_id": delivery_id,
                                     "event_id": event_id,
-                                    "verification": "echo"
+                                    "verification": crate::broker::delivery_verification::echo_verdict(&echo_buffer.since(pv.output_boundary), &pv.expected_echo).label()
                                 }),
                             )
                             .await;
@@ -2294,7 +2294,7 @@ pub(crate) async fn run_pty_worker(cmd: PtyCommand) -> Result<()> {
                                     json!({
                                         "delivery_id": delivery_id,
                                         "event_id": event_id,
-                                        "verification": "echo"
+                                        "verification": crate::broker::delivery_verification::echo_verdict(&echo_buffer.since(pv.output_boundary), &pv.expected_echo).label()
                                     }),
                                 )
                                 .await;
@@ -2392,6 +2392,18 @@ pub(crate) async fn run_pty_worker(cmd: PtyCommand) -> Result<()> {
                         let pv = pending_verifications.remove(i).unwrap();
                         let delivery_id = pv.delivery_id.clone();
                         let event_id = pv.event_id.clone();
+                        let verdict = crate::broker::delivery_verification::echo_verdict(
+                            &echo_buffer.since(pv.output_boundary), &pv.expected_echo);
+                        if verdict == crate::broker::delivery_verification::EchoVerdict::HeadMissing && echo_buffer.retains_boundary(pv.output_boundary) {
+                            let _ = send_frame(&out_tx, "delivery_failed", None, json!({"delivery_id": delivery_id, "event_id": event_id, "reason": "echo_head_missing"})).await;
+                            let _ = send_frame(&out_tx, "worker_error", pv.request_id, json!({"code": "echo_head_missing", "retryable": false, "message": "Task echo contains its tail without its head; inspect the agent before retrying"})).await;
+                            throttle.record(DeliveryOutcome::Failed);
+                            // Retain the pending id, matching initial_injection_incomplete.
+                            continue;
+                        }
+                        static TIMEOUT_FALLBACKS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+                        let fallback_count = TIMEOUT_FALLBACKS.fetch_add(1, Ordering::Relaxed) + 1;
+                        tracing::warn!(fallback_count, %delivery_id, "delivery echo absent; preserving unverified timeout fallback");
                         // Do not re-inject on verification timeout. Re-injection can duplicate
                         // already-delivered messages when terminal echo parsing is noisy.
                         tracing::info!(

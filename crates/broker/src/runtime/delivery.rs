@@ -861,6 +861,11 @@ pub(crate) async fn queue_and_try_delivery_raw(
     withheld_fleet_ack: Option<crate::fleet_wire::Deliver>,
     withheld_fleet_ack_floor: Option<u64>,
 ) -> Result<DeliveryId> {
+    anyhow::ensure!(
+        body.len() <= crate::injection_wire::MAX_INJECTION_BODY_BYTES,
+        "injection_too_large: global body limit is {} bytes; use a brief file pointer",
+        crate::injection_wire::MAX_INJECTION_BODY_BYTES
+    );
     // Fleet delivery IDs are stable across Relaycast retries. Preserve that
     // identity all the way into the worker so its completed-delivery cache can
     // re-ACK a replay without pasting the instruction a second time. Local
@@ -1060,7 +1065,12 @@ pub(crate) fn delivery_ack_timeout(
 ) -> Duration {
     let minimum = match injection_mode {
         MessageInjectionMode::Wait => WAIT_DELIVERY_ACK_TIMEOUT,
-        MessageInjectionMode::Steer => crate::broker::delivery_verification::VERIFICATION_WINDOW,
+        MessageInjectionMode::Steer => {
+            crate::injection_wire::INJECTION_PROMPT_WAIT
+                + crate::injection_wire::MAX_TYPED_WRITE_TIME
+                + Duration::from_millis(250)
+                + crate::broker::delivery_verification::VERIFICATION_WINDOW
+        }
     };
     std::cmp::max(retry_interval, minimum)
 }
@@ -1298,5 +1308,17 @@ mod reply_target_tests {
                 "expected non-target: {id:?}"
             );
         }
+    }
+}
+
+#[cfg(test)]
+mod injection_budget_tests {
+    use super::*;
+    #[test]
+    fn steer_ack_covers_prompt_typing_submit_and_verification() {
+        let required = crate::injection_wire::INJECTION_PROMPT_WAIT
+            + Duration::from_millis(crate::injection_wire::MAX_TYPED_BYTES as u64 * 5 + 250)
+            + crate::broker::delivery_verification::VERIFICATION_WINDOW;
+        assert!(delivery_ack_timeout(&MessageInjectionMode::Steer, Duration::ZERO) >= required);
     }
 }

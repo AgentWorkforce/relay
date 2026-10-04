@@ -275,6 +275,18 @@ fn prepare_wrap_retry(
     true
 }
 
+// Wrap has no delivery protocol. Preserve its existing failed-throttle timeout
+// policy, including absent echoes; fleet alone uses the compatibility fallback.
+fn wrap_timeout_outcome(
+    verdict: crate::broker::delivery_verification::EchoVerdict,
+) -> DeliveryOutcome {
+    if verdict.confirmed() {
+        DeliveryOutcome::Success
+    } else {
+        DeliveryOutcome::Failed
+    }
+}
+
 /// Start echo verification after a PTY write ack without missing output that
 /// raced ahead of the ack select arm. Returns `true` when the echo was already
 /// present and the delivery was confirmed immediately.
@@ -2324,7 +2336,8 @@ pub(crate) async fn run_wrap(
                                 attempts = pv.attempts,
                                 "wrap: delivery verification failed after max retries"
                             );
-                            throttle.record(DeliveryOutcome::Failed);
+                            throttle.record(wrap_timeout_outcome(crate::broker::delivery_verification::echo_verdict(
+                                &echo_buffer.since(pv.output_boundary), &pv.expected_echo)));
                         }
                     } else {
                         i += 1;
@@ -2729,6 +2742,22 @@ sys.stdout.flush()"#;
             Instant::now()
         ));
         assert_eq!(verification.attempts, 2);
+    }
+
+    #[test]
+    fn wrap_timeout_stays_failed_without_confirming_evidence() {
+        use crate::broker::delivery_verification::{DeliveryOutcome, EchoVerdict};
+        for verdict in [EchoVerdict::Absent, EchoVerdict::HeadMissing] {
+            assert!(matches!(
+                super::wrap_timeout_outcome(verdict),
+                DeliveryOutcome::Failed
+            ));
+        }
+        // Wrap always uses bulk writes, including its Typed fallback. Its
+        // write acknowledgement budget must cover the delayed submit only.
+        assert!(
+            Duration::ZERO + super::PASTE_INJECTION_SUBMIT_DELAY < super::WRAP_WRITE_ACK_TIMEOUT
+        );
     }
 
     #[test]

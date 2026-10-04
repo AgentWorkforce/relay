@@ -131,6 +131,31 @@ fn ten_kib_task_and_relay_message_are_intact() {
     long_pair();
 }
 #[test]
+fn tail_only_echo_fails_without_replay() {
+    let mut f = Fixture::new("tail");
+    f.deliver("init_tail", &format!("HEAD{}TAIL", "abc xyz".repeat(1500)));
+    assert_eq!(
+        f.wait("delivery_failed")["payload"]["reason"],
+        "echo_head_missing"
+    );
+    assert_eq!(f.wait("worker_error")["payload"]["retryable"], false);
+    let before = f.transcript();
+    f.deliver("init_tail", &format!("HEAD{}TAIL", "abc xyz".repeat(1500)));
+    let deadline = Instant::now() + Duration::from_millis(300);
+    while let Ok(line) =
+        f.rx.recv_timeout(deadline.saturating_duration_since(Instant::now()))
+    {
+        if let Ok(frame) = serde_json::from_str::<Value>(&line) {
+            assert_ne!(
+                frame["type"], "delivery_verified",
+                "failed replay must never become success"
+            );
+            assert_ne!(frame["type"], "delivery_ack");
+        }
+    }
+    assert_eq!(f.transcript(), before, "failed body must never be replayed");
+}
+#[test]
 fn over_limit_and_typed_fallback_reject_before_writing() {
     for mode in ["echo", "typed"] {
         let mut f = Fixture::new(mode);
