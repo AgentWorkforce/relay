@@ -16,7 +16,8 @@ const DAYTONA_PROVIDER_SANDBOX_ID_PATTERN =
  */
 export const CANONICAL_RELAYCAST_ORIGIN = 'https://cast.agentrelay.com';
 export const AGENT37_RELAYCAST_ORIGIN = 'https://agent37-cast.agentrelay.com';
-const TRUSTED_RELAYCAST_ORIGINS = new Set([CANONICAL_RELAYCAST_ORIGIN, AGENT37_RELAYCAST_ORIGIN]);
+export const DEV_CLOUD_API_URL = 'https://dev.agentrelay.com/cloud';
+export const DEV_RELAYCAST_ORIGIN = 'https://dev-cast.agentrelay.com';
 const DEFAULT_RESOLUTION_TIMEOUT_MS = 120_000;
 // Mounted provisioning can spend up to 240s completing the initial Relayfile
 // sync, then up to 90s waiting for the enrolled node to report ready. Leave a
@@ -246,7 +247,34 @@ function readString(payload: JsonRecord, key: string): string | undefined {
   return typeof value === 'string' && value.trim() ? value.trim() : undefined;
 }
 
-function normalizeRelaycastOrigin(value: unknown, field: string): string {
+function isExactDevCloudApiUrl(apiUrl: string | undefined): boolean {
+  if (!apiUrl) return false;
+  try {
+    const parsed = new URL(apiUrl.trim());
+    return (
+      parsed.protocol === 'https:' &&
+      !parsed.username &&
+      !parsed.password &&
+      !parsed.port &&
+      !parsed.search &&
+      !parsed.hash &&
+      parsed.origin === 'https://dev.agentrelay.com' &&
+      (parsed.pathname === '/cloud' || parsed.pathname === '/cloud/')
+    );
+  } catch {
+    return false;
+  }
+}
+
+function canonicalRelaycastOrigin(apiUrl: string | undefined): string {
+  return isExactDevCloudApiUrl(apiUrl) ? DEV_RELAYCAST_ORIGIN : CANONICAL_RELAYCAST_ORIGIN;
+}
+
+function normalizeRelaycastOrigin(
+  value: unknown,
+  field: string,
+  trustedOrigins: ReadonlySet<string>
+): string {
   if (typeof value !== 'string' || !value.trim()) {
     throw new Error(`Cloud fleet sandbox response has an invalid ${field}.`);
   }
@@ -264,7 +292,7 @@ function normalizeRelaycastOrigin(value: unknown, field: string): string {
     parsed.search ||
     parsed.hash ||
     (parsed.pathname !== '' && parsed.pathname !== '/') ||
-    !TRUSTED_RELAYCAST_ORIGINS.has(parsed.origin)
+    !trustedOrigins.has(parsed.origin)
   ) {
     throw new Error(`Cloud fleet sandbox response has an untrusted ${field}.`);
   }
@@ -272,7 +300,7 @@ function normalizeRelaycastOrigin(value: unknown, field: string): string {
 }
 
 /** Validate Cloud's closed Relaycast route, identity, and scoped credential contract. */
-export function normalizeRelaycastTarget(value: unknown): CloudFleetRelaycastTarget {
+export function normalizeRelaycastTarget(value: unknown, apiUrl?: string): CloudFleetRelaycastTarget {
   if (!isObject(value)) {
     throw new Error('Cloud fleet sandbox response is missing relaycastTarget.');
   }
@@ -280,8 +308,14 @@ export function normalizeRelaycastTarget(value: unknown): CloudFleetRelaycastTar
   if (route !== 'canonical' && route !== 'agent37-isolated') {
     throw new Error('Cloud fleet sandbox response has an unknown Relaycast route.');
   }
-  const baseUrl = normalizeRelaycastOrigin(value.baseUrl, 'relaycastTarget.baseUrl');
-  const expectedOrigin = route === 'canonical' ? CANONICAL_RELAYCAST_ORIGIN : AGENT37_RELAYCAST_ORIGIN;
+  const expectedCanonicalOrigin = canonicalRelaycastOrigin(apiUrl);
+  const trustedOrigins = new Set([
+    CANONICAL_RELAYCAST_ORIGIN,
+    AGENT37_RELAYCAST_ORIGIN,
+    ...(isExactDevCloudApiUrl(apiUrl) ? [DEV_RELAYCAST_ORIGIN] : []),
+  ]);
+  const baseUrl = normalizeRelaycastOrigin(value.baseUrl, 'relaycastTarget.baseUrl', trustedOrigins);
+  const expectedOrigin = route === 'canonical' ? expectedCanonicalOrigin : AGENT37_RELAYCAST_ORIGIN;
   if (baseUrl !== expectedOrigin) {
     throw new Error('Cloud fleet sandbox response mapped Relaycast route to the wrong origin.');
   }
@@ -309,19 +343,26 @@ function requiredNumber(payload: JsonRecord, key: string, context: string): numb
 
 function assertProviderRelaycastTarget(
   providerId: CloudFleetSandboxProviderId | undefined,
-  target: CloudFleetRelaycastTarget | undefined
+  target: CloudFleetRelaycastTarget | undefined,
+  apiUrl?: string
 ): void {
   if (providerId === 'agent37') {
     if (!target) {
       throw new Error('Cloud fleet sandbox response is missing the Agent37 Relaycast target.');
     }
-    if (target.route !== 'agent37-isolated' || target.baseUrl !== AGENT37_RELAYCAST_ORIGIN) {
+    const validDevTarget =
+      isExactDevCloudApiUrl(apiUrl) &&
+      target.route === 'canonical' &&
+      target.baseUrl === DEV_RELAYCAST_ORIGIN;
+    const validProductionTarget =
+      target.route === 'agent37-isolated' && target.baseUrl === AGENT37_RELAYCAST_ORIGIN;
+    if (!validDevTarget && !validProductionTarget) {
       throw new Error('Cloud fleet sandbox response mapped Agent37 to a non-isolated Relaycast target.');
     }
     return;
   }
   if (providerId !== undefined && target) {
-    if (target.route !== 'canonical' || target.baseUrl !== CANONICAL_RELAYCAST_ORIGIN) {
+    if (target.route !== 'canonical' || target.baseUrl !== canonicalRelaycastOrigin(apiUrl)) {
       throw new Error(
         `Cloud fleet sandbox response mapped ${providerId} to a non-canonical Relaycast target.`
       );
@@ -655,7 +696,8 @@ function normalizeEnsureResult(
   expectedSandboxId?: string,
   expectedNodeName?: string,
   requestedProviderId?: CloudFleetSandboxProviderId,
-  expectedRepoRevisions?: Readonly<Record<string, string>>
+  expectedRepoRevisions?: Readonly<Record<string, string>>,
+  apiUrl?: string
 ): EnsureCloudFleetSandboxResult {
   if (!isObject(payload)) throw new Error('Cloud fleet sandbox response was not valid JSON.');
   // A caller-declared identity is the cleanup authority. Validate it before
@@ -689,11 +731,13 @@ function normalizeEnsureResult(
     const relayWorkspaceId = requiredString(payload, 'relayWorkspaceId', 'Cloud fleet sandbox');
     const repoRevisions = assertRepoRevisions(payload, expectedRepoRevisions);
     const relaycastTarget =
-      payload.relaycastTarget === undefined ? undefined : normalizeRelaycastTarget(payload.relaycastTarget);
+      payload.relaycastTarget === undefined
+        ? undefined
+        : normalizeRelaycastTarget(payload.relaycastTarget, apiUrl);
     if (relaycastTarget !== undefined && relaycastTarget.workspaceId !== relayWorkspaceId) {
       throw new Error('Cloud fleet sandbox response has mismatched Relaycast workspace identities.');
     }
-    assertProviderRelaycastTarget(providerId, relaycastTarget);
+    assertProviderRelaycastTarget(providerId, relaycastTarget, apiUrl);
     return {
       outcome,
       cloudWorkspaceId,
@@ -714,8 +758,10 @@ function normalizeEnsureResult(
 
   if (outcome === 'reused') {
     const relaycastTarget =
-      payload.relaycastTarget === undefined ? undefined : normalizeRelaycastTarget(payload.relaycastTarget);
-    assertProviderRelaycastTarget(providerId, relaycastTarget);
+      payload.relaycastTarget === undefined
+        ? undefined
+        : normalizeRelaycastTarget(payload.relaycastTarget, apiUrl);
+    assertProviderRelaycastTarget(providerId, relaycastTarget, apiUrl);
     const repoRevisions = assertRepoRevisions(payload, expectedRepoRevisions);
     return {
       outcome,
@@ -736,7 +782,9 @@ function normalizeEnsureResult(
     const providerSandboxId = normalizeProviderSandboxId(payload, providerId);
     const relayWorkspaceId = requiredString(payload, 'relayWorkspaceId', 'Cloud fleet sandbox');
     const relaycastTarget =
-      payload.relaycastTarget === undefined ? undefined : normalizeRelaycastTarget(payload.relaycastTarget);
+      payload.relaycastTarget === undefined
+        ? undefined
+        : normalizeRelaycastTarget(payload.relaycastTarget, apiUrl);
     if (relaycastTarget !== undefined && relaycastTarget.workspaceId !== relayWorkspaceId) {
       throw new Error('Cloud fleet sandbox response has mismatched Relaycast workspace identities.');
     }
@@ -1012,7 +1060,8 @@ export async function ensureCloudFleetSandbox(
       sandboxIdentity.sandboxId,
       sandboxIdentity.name,
       input.providerId,
-      repoRevisions
+      repoRevisions,
+      resolved.auth.apiUrl
     );
   } catch (error) {
     const confirmedProvisioned = confirmsProvisionedSandboxIdentity(
