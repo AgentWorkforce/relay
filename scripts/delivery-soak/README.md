@@ -22,6 +22,10 @@ one message at each of 50, 150, 1,024, 4,096 and 16,384 bytes; increase
 `--count` for a stress run. Python 3.9+ is sufficient on macOS and
 Linux. The chosen agent CLI must be installed and authenticated.
 
+The Claude run appends a test-specific system prompt authorizing the local file
+writes. Codex uses a private state directory to avoid clashes with other Codex
+sessions and links the existing local login only while the test is running.
+
 The `records/` files contain exactly what the agent chose to write. A missing
 file can mean a parked turn or a model/tool failure as well as failed delivery;
 inspect `broker.log`, `broker-status.json`, and the terminal snapshot before

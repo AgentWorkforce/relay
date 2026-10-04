@@ -7,8 +7,10 @@ import json
 import os
 from pathlib import Path
 import random
+import shutil
 import subprocess
 import sys
+import tempfile
 import time
 import traceback
 from urllib.error import HTTPError, URLError
@@ -101,16 +103,25 @@ def run(args):
             env.pop(name)
     env["AGENT_RELAY_TELEMETRY_DISABLED"] = "1"
     auth_link = None
+    codex_home = None
+    claude_home = None
+    claude_auth_link = None
     if args.harness == "codex":
         # Concurrent Codex sessions contend on ~/.codex/*.sqlite. Give the
         # measurement worker its own state while using the existing login.
-        codex_home = output / "codex-home"
-        codex_home.mkdir()
+        codex_home = Path(tempfile.mkdtemp(prefix="relay-delivery-soak-codex-"))
         auth_source = Path.home() / ".codex" / "auth.json"
         if auth_source.exists():
             auth_link = codex_home / "auth.json"
             auth_link.symlink_to(auth_source)
         env["CODEX_HOME"] = str(codex_home)
+    if args.harness == "claude":
+        claude_home = Path(tempfile.mkdtemp(prefix="relay-delivery-soak-claude-"))
+        auth_source = Path.home() / ".claude" / ".credentials.json"
+        if auth_source.exists():
+            claude_auth_link = claude_home / ".credentials.json"
+            claude_auth_link.symlink_to(auth_source)
+        env["CLAUDE_CONFIG_DIR"] = str(claude_home)
     broker = subprocess.Popen(
         [str(Path(args.broker_bin).resolve()), "init", "--local-only", "--persist",
          "--state-dir", str(state), "--instance-name", "delivery-soak"],
@@ -131,7 +142,7 @@ def run(args):
             try:
                 status, _ = request(base, key, "GET", "/api/session", timeout=2)
                 return status == 200
-            except (URLError, TimeoutError):
+            except Exception:
                 return False
         if not wait_until(ready, args.startup_timeout, broker):
             raise TimeoutError("broker session did not become ready")
@@ -140,7 +151,12 @@ def run(args):
                                  "transport": "pty", "cwd": str(work),
                                  "args": (["--config", "check_for_update_on_startup=false",
                                            "--config", "model_reasoning_effort=low"]
-                                          if args.harness == "codex" else []),
+                                          if args.harness == "codex" else
+                                          ["--append-system-prompt",
+                                           "The user authorized this local delivery soak. "
+                                           "For each Relay message containing SOAK-ID, perform its "
+                                           "local file-write instruction without asking for confirmation. "
+                                           "Do not register with Relay or reply to the sender."]),
                                  "channels": []}, timeout=args.startup_timeout)
         result["spawn"] = {"status": status, "body": spawn}
         if status != 200 or not spawn.get("success", False):
@@ -161,7 +177,7 @@ def run(args):
                         request(base, key, "POST", "/api/input/soak-recorder", {"data": "\r"}, timeout=5)
                         trust_answered = True
                         return False
-                except (URLError, TimeoutError):
+                except Exception:
                     pass
                 if not trust_answered:
                     return False
@@ -170,7 +186,7 @@ def run(args):
                 agents = live.get("agents", []) if state_status == 200 else []
                 return any(agent.get("name") == "soak-recorder" and agent.get("ready") and
                            agent.get("current_state") == "idle" for agent in agents)
-            except (URLError, TimeoutError):
+            except Exception:
                 return False
         if not wait_until(agent_ready, args.ready_timeout, broker):
             raise TimeoutError("agent did not become ready and idle")
@@ -267,6 +283,12 @@ def run(args):
             broker_log.close()
             if auth_link is not None:
                 auth_link.unlink(missing_ok=True)
+            if codex_home is not None:
+                shutil.rmtree(codex_home)
+            if claude_auth_link is not None:
+                claude_auth_link.unlink(missing_ok=True)
+            if claude_home is not None:
+                shutil.rmtree(claude_home)
 
 
 def main():
