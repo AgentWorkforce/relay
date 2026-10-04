@@ -201,6 +201,19 @@ fn expected_tail(expected: &str) -> String {
     compact[start..].to_string()
 }
 
+fn gemini_composer_row(line: &str) -> &str {
+    let trimmed = line.trim_start();
+    let Some(bordered) = trimmed.strip_prefix('│') else {
+        return trimmed;
+    };
+    let bordered = bordered.trim_start();
+    bordered
+        .trim_end()
+        .strip_suffix('│')
+        .map(str::trim_end)
+        .unwrap_or(bordered)
+}
+
 fn current_composer(snapshot: &Snapshot, cli: &str) -> Option<String> {
     let plain = snapshot.to_plain_through_cursor();
     let lines: Vec<_> = plain.lines().collect();
@@ -222,14 +235,16 @@ fn current_composer(snapshot: &Snapshot, cli: &str) -> Option<String> {
         // rows near the cursor as the composer. Keeping every row through the
         // cursor also preserves long, wrapped drafts beyond four rows.
         let start = lines.iter().take(end + 1).rposition(|line| {
-            let trimmed = line.trim_start();
-            let input = trimmed
-                .strip_prefix('│')
-                .map(str::trim_start)
-                .unwrap_or(trimmed);
+            let input = gemini_composer_row(line);
             input == ">" || input.starts_with("> ")
         })?;
-        return Some(lines[start..=end].join("\n"));
+        return Some(
+            lines[start..=end]
+                .iter()
+                .map(|line| gemini_composer_row(line))
+                .collect::<Vec<_>>()
+                .join("\n"),
+        );
     }
     let is_prompt = |line: &&str| {
         let trimmed = line.trim_start();
@@ -727,6 +742,26 @@ mod tests {
             "Gemini drafts longer than four rows retain the complete recovery tail"
         );
         parked_pty.shutdown().unwrap();
+
+        let bordered = expected
+            .as_bytes()
+            .chunks(20)
+            .enumerate()
+            .map(|(index, chunk)| {
+                let prefix = if index == 0 { "> " } else { "  " };
+                format!("│ {prefix}{} │", std::str::from_utf8(chunk).unwrap())
+            })
+            .collect::<Vec<_>>()
+            .join("\n");
+        let (bordered_pty, bordered_snapshot) = codex_snapshot(&bordered).await;
+        let mut bordered_verification = codex_verification(&expected);
+        bordered_verification.detector = ActivityDetector::for_cli("gemini");
+        assert_eq!(
+            assess_harness_acceptance("gemini", &bordered_verification, &bordered_snapshot),
+            HarnessAcceptance::Parked,
+            "Gemini border glyphs must not split a wrapped recovery tail"
+        );
+        bordered_pty.shutdown().unwrap();
 
         let (active_pty, active_snapshot) =
             codex_snapshot(&format!("{expected}\nGenerating response")).await;
