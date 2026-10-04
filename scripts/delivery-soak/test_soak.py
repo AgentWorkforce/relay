@@ -1,6 +1,9 @@
+import json
+from pathlib import Path
+import tempfile
 import unittest
 
-from soak import classify, message_for, payload_for
+from soak import classify, dead_letter_reasons, message_for, payload_for
 
 
 class SoakComparisonTest(unittest.TestCase):
@@ -20,6 +23,14 @@ class SoakComparisonTest(unittest.TestCase):
         self.assertTrue(message.endswith(f"END-SOAK-ID: {ident}"))
         self.assertIn(payload_for(1, 150, 1890), message)
         self.assertEqual(classify(message, message[len(ident):]), "tail_only")
+
+    def test_queued_failure_is_observed_from_broker_dead_letter(self):
+        with tempfile.TemporaryDirectory() as directory:
+            state = Path(directory)
+            (state / "dead-letters-test.json").write_text(json.dumps([
+                {"delivery": {"event_id": "evt_1"}, "reason": "injection_too_large"}
+            ]))
+            self.assertEqual(dead_letter_reasons(state), {"evt_1": "injection_too_large"})
 
 
 if __name__ == "__main__":

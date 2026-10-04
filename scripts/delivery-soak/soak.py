@@ -14,11 +14,12 @@ import tempfile
 import time
 import traceback
 from urllib.error import HTTPError, URLError
-from urllib.request import Request, urlopen
+from urllib.request import ProxyHandler, Request, build_opener
 
 
 SIZES = (50, 150, 1024, 4096, 16384)
 ALPHABET = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789"
+LOCAL_OPENER = build_opener(ProxyHandler({}))
 
 
 def payload_for(seq, size, seed):
@@ -59,12 +60,25 @@ def file_sha256(path):
     return digest.hexdigest()
 
 
+def dead_letter_reasons(state):
+    failures = {}
+    for dead_path in state.glob("dead-letters*.json"):
+        try:
+            for dead in json.loads(dead_path.read_text()):
+                event_id = dead.get("delivery", {}).get("event_id")
+                if event_id:
+                    failures[event_id] = dead.get("reason")
+        except (ValueError, OSError, TypeError):
+            pass
+    return failures
+
+
 def request(base, key, method, path, body=None, timeout=120):
     data = None if body is None else json.dumps(body).encode("utf-8")
     req = Request(base + path, data=data, method=method,
                   headers={"x-api-key": key, "content-type": "application/json"})
     try:
-        with urlopen(req, timeout=timeout) as response:
+        with LOCAL_OPENER.open(req, timeout=timeout) as response:
             return response.status, json.load(response)
     except HTTPError as error:
         try:
@@ -87,6 +101,7 @@ def wait_until(predicate, seconds, process=None):
 
 
 def run(args):
+    broker_sha256 = file_sha256(args.broker_bin)
     output = Path(args.output).resolve()
     output.mkdir(parents=True, exist_ok=True)
     state = output / "broker-state"
@@ -113,16 +128,17 @@ def run(args):
             auth_link = codex_home / "auth.json"
             auth_link.symlink_to(auth_source)
         env["CODEX_HOME"] = str(codex_home)
-    broker = subprocess.Popen(
-        [str(Path(args.broker_bin).resolve()), "init", "--local-only", "--persist",
-         "--state-dir", str(state), "--instance-name", "delivery-soak"],
-        cwd=work, env=env, stdout=broker_log, stderr=subprocess.STDOUT,
-    )
+    broker = None
     result = {"schema": 1, "harness": args.harness, "broker_bin": str(Path(args.broker_bin).resolve()),
-              "broker_sha256": file_sha256(args.broker_bin),
+              "broker_sha256": broker_sha256,
               "sizes": args.sizes, "count": args.count, "seed": args.seed, "messages": [],
               "started_at": time.time()}
     try:
+        broker = subprocess.Popen(
+            [str(Path(args.broker_bin).resolve()), "init", "--local-only", "--persist",
+             "--state-dir", str(state), "--instance-name", "delivery-soak"],
+            cwd=work, env=env, stdout=broker_log, stderr=subprocess.STDOUT,
+        )
         if not wait_until(connection_path.exists, args.startup_timeout, broker):
             raise TimeoutError("broker connection file was not created")
         connection = json.loads(connection_path.read_text())
@@ -168,6 +184,8 @@ def run(args):
                         request(base, key, "POST", "/api/input/soak-recorder", {"data": "\r"}, timeout=5)
                         trust_answered = True
                         return False
+                    if "Ask Codex to do anything" in screen:
+                        trust_answered = True
                 except Exception:
                     pass
                 if not trust_answered:
@@ -197,24 +215,38 @@ def run(args):
                              "expected_sha256": hashlib.sha256(body.encode()).hexdigest()})
                 print(f"sent {ident}: HTTP {http_status}", flush=True)
         deadline = time.monotonic() + args.delivery_timeout
+        last_change = time.monotonic()
+        last_seen = None
         while time.monotonic() < deadline:
-            if all((records / (row["id"] + ".txt")).exists() or row["http_status"] != 200 for row in rows):
-                break
+            order_file = work / "order.log"
+            seen = (tuple(sorted((file.name, file.stat().st_size) for file in records.iterdir())),
+                    order_file.read_text() if order_file.exists() else "")
+            if seen != last_seen:
+                last_change = time.monotonic()
+                last_seen = seen
+            failed_events = dead_letter_reasons(state)
+            primaries = all((records / (row["id"] + ".txt")).exists() or
+                            row["http_status"] != 200 or
+                            row["receipt"].get("event_id") in failed_events for row in rows)
+            completed_writes = len(seen[1].splitlines()) >= sum(
+                (records / (row["id"] + ".txt")).exists() for row in rows)
+            if primaries and completed_writes and time.monotonic() - last_change >= args.settle_seconds:
+                try:
+                    status_code, broker_status = request(base, key, "GET", "/api/status", timeout=5)
+                    agents = broker_status.get("agents", []) if status_code == 200 else []
+                    idle = any(agent.get("name") == "soak-recorder" and
+                               agent.get("current_state") == "idle" for agent in agents)
+                    if idle and broker_status.get("pending_delivery_count") == 0:
+                        break
+                except Exception:
+                    pass
             if broker.poll() is not None:
                 break
             time.sleep(0.5)
         order_path = work / "order.log"
         order = order_path.read_text().splitlines() if order_path.exists() else []
         result["observed_order"] = order
-        failed_events = {}
-        for dead_path in state.glob("dead-letters*.json"):
-            try:
-                for dead in json.loads(dead_path.read_text()):
-                    event_id = dead.get("delivery", {}).get("event_id")
-                    if event_id:
-                        failed_events[event_id] = dead.get("reason")
-            except (ValueError, OSError, TypeError):
-                pass
+        failed_events = dead_letter_reasons(state)
         for row in rows:
             _, expected = message_for(row["seq"], row["size_bytes"], args.seed)
             file = records / (row["id"] + ".txt")
@@ -234,6 +266,8 @@ def run(args):
                 row["received_sha256"] = hashlib.sha256(actual).hexdigest()
                 row["classification"] = classify(expected, actual.decode("utf-8", errors="replace"))
                 row["latency_s"] = round(file.stat().st_mtime - row["sent_at"], 3)
+                if row["classification"] == "exact" and row["observed_order_index"] is None:
+                    row["classification"] = "order_missing"
         observed = [row["observed_order_index"] for row in rows if row["observed_order_index"] is not None]
         result["reordered"] = observed != sorted(observed)
         result["messages"] = rows
@@ -265,12 +299,13 @@ def run(args):
         except Exception:
             pass
         finally:
-            broker.terminate()
-            try:
-                broker.wait(timeout=10)
-            except subprocess.TimeoutExpired:
-                broker.kill()
-                broker.wait()
+            if broker is not None:
+                broker.terminate()
+                try:
+                    broker.wait(timeout=10)
+                except subprocess.TimeoutExpired:
+                    broker.kill()
+                    broker.wait()
             broker_log.close()
             if auth_link is not None:
                 auth_link.unlink(missing_ok=True)
@@ -289,9 +324,11 @@ def main():
     parser.add_argument("--startup-timeout", type=int, default=60)
     parser.add_argument("--ready-timeout", type=int, default=360)
     parser.add_argument("--delivery-timeout", type=int, default=600)
+    parser.add_argument("--settle-seconds", type=int, default=15,
+                        help="quiet seconds after all files and order entries before completion")
     args = parser.parse_args()
-    if args.count < 1 or any(size < 1 for size in args.sizes):
-        parser.error("count and sizes must be positive")
+    if args.count < 1 or any(size < 1 for size in args.sizes) or args.settle_seconds < 0:
+        parser.error("count and sizes must be positive; settle seconds must be nonnegative")
     if Path(args.output).exists():
         parser.error("output directory already exists; use a fresh directory for each run")
     try:

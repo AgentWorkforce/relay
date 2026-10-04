@@ -3,11 +3,12 @@
 This script starts a fresh **local-only** Relay broker, spawns a real Claude or
 Codex PTY worker, sends messages through the broker's `/api/send` endpoint, and
 asks the worker to save the bytes it saw. It compares each saved payload with
-the generated payload and writes `result.json`. A nonzero exit means a message
-was rejected, lost, changed, duplicated, or observed out of order. The broker
-and agent are stopped after the run; the output directory retains evidence.
+the generated payload and writes `result.json`. A nonzero exit means setup
+failed or a message was rejected, lost, changed, duplicated, or observed out
+of order. The broker and agent are stopped after the run; the output directory
+retains evidence.
 
-Build the broker from the revision under test, then run from any directory:
+From the repository root, build the broker from the revision under test, then run:
 
 ```sh
 cargo build -p agent-relay-broker --bin agent-relay-broker
@@ -34,3 +35,6 @@ writing. `reordered` describes file-write order, which can differ from wire
 order if the agent handles queued messages differently. The 16 KiB payload has
 an additional message envelope, so broker revisions with a 16 KiB
 formatted-body limit should reject that case after queue acceptance.
+Once all primary files and order entries appear, the runner waits for the
+broker to report an idle worker and an empty pending queue, plus 15 quiet
+seconds by default (`--settle-seconds`), before checking for duplicates.
