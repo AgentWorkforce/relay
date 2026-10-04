@@ -194,6 +194,63 @@ impl RecipientReachability {
 }
 
 impl RelaycastHttpClient {
+    /// Prove that the exact immutable identity returned by node-control
+    /// registration is readable through the worker-authenticated HTTP plane.
+    ///
+    /// Channel reconciliation uses that HTTP plane immediately afterwards. A
+    /// transient `agent_not_found` here is read-after-write lag, not evidence
+    /// that registration failed. Retrying this single exact-token probe keeps
+    /// later channel writes and cleanup generation-safe.
+    pub(crate) async fn await_node_registered_agent_visibility(
+        &self,
+        expected_name: &str,
+        expected_agent_id: &str,
+        token: &str,
+    ) -> Result<()> {
+        let relay = self
+            .relay_client()
+            .context("SDK relay client not initialized")?;
+        for (attempt, delay_ms) in std::iter::once(0)
+            .chain(NODE_REGISTER_VISIBILITY_BACKOFFS_MS)
+            .enumerate()
+        {
+            if delay_ms > 0 {
+                tokio::time::sleep(Duration::from_millis(delay_ms)).await;
+            }
+            match relay.get_current_agent(token.to_string()).await {
+                Ok(agent) => {
+                    anyhow::ensure!(
+                        agent.name == expected_name && agent.id == expected_agent_id,
+                        "node-registered identity mismatch: expected {expected_name}/{expected_agent_id}, got {}/{}",
+                        agent.name,
+                        agent.id
+                    );
+                    return Ok(());
+                }
+                Err(RelayError::Api {
+                    status: 404,
+                    ref code,
+                    ..
+                }) if code == "agent_not_found"
+                    && attempt < NODE_REGISTER_VISIBILITY_BACKOFFS_MS.len() =>
+                {
+                    tracing::warn!(
+                        worker = %expected_name,
+                        agent_id = %expected_agent_id,
+                        attempt = attempt + 1,
+                        "node-registered identity is not yet visible on the HTTP plane; retrying"
+                    );
+                }
+                Err(error) => {
+                    return Err(anyhow::anyhow!(
+                        "node-registered identity visibility failed: {error}"
+                    ));
+                }
+            }
+        }
+        unreachable!("visibility loop returns on its final attempt")
+    }
+
     /// A client with no transport or credentials. Local-only runtime paths cannot
     /// accidentally publish presence, register workers, or route remote messages.
     pub fn local_only(agent_name: impl Into<String>) -> Self {
@@ -1988,6 +2045,11 @@ const WORKSPACE_BUSY_ACTION_SAFETY_CAP: usize = 256;
 const WORKSPACE_BUSY_RECONCILE_SAFETY_CAP: usize = 8;
 const WORKSPACE_BUSY_RECONCILE_BUDGET: Duration = Duration::from_secs(60);
 const WORKSPACE_BUSY_RECONCILE_MAX_DELAY: Duration = Duration::from_secs(5);
+/// `agent.register` commits on the node-control transport, while the first
+/// worker-authenticated REST request may land on an HTTP isolate whose D1 view
+/// has not observed that commit yet. These waits total 15.85s and apply only
+/// to the exact token/id returned by node control.
+const NODE_REGISTER_VISIBILITY_BACKOFFS_MS: [u64; 7] = [100, 250, 500, 1_000, 2_000, 4_000, 8_000];
 /// Total wall-clock budget the bounded retry loops in this module honor
 /// before returning a typed `RetryableExhausted` diagnostic. Five minutes is
 /// deliberately longer than the observed 240-second/5-attempt engine envelope
@@ -2673,6 +2735,54 @@ mod tests {
         );
         client.seed_agent_token("broker", "at_live_test");
         client
+    }
+
+    #[tokio::test]
+    async fn node_registered_agent_visibility_retries_read_after_write_lag() {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let base_url = format!("http://{}", listener.local_addr().unwrap());
+        let server = tokio::spawn(async move {
+            for attempt in 0..2 {
+                let (mut stream, _) = listener.accept().await.unwrap();
+                let mut request = [0_u8; 4096];
+                let bytes = stream.read(&mut request).await.unwrap();
+                let request = String::from_utf8_lossy(&request[..bytes]);
+                assert!(request.starts_with("GET /v1/agent "), "{request}");
+                assert!(
+                    request
+                        .to_ascii_lowercase()
+                        .contains("authorization: bearer at_live_visibility"),
+                    "{request}"
+                );
+                let (status, body) = if attempt == 0 {
+                    (
+                        "404 Not Found",
+                        r#"{"ok":false,"error":{"code":"agent_not_found","message":"not visible yet"}}"#,
+                    )
+                } else {
+                    (
+                        "200 OK",
+                        r#"{"ok":true,"data":{"id":"agent-visibility","workspace_id":"ws-test","name":"cloud-zero-config","type":"agent","status":"online","persona":null,"metadata":{},"channels":[]}}"#,
+                    )
+                };
+                let response = format!(
+                    "HTTP/1.1 {status}\r\ncontent-type: application/json\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{body}",
+                    body.len()
+                );
+                stream.write_all(response.as_bytes()).await.unwrap();
+            }
+        });
+        let client = RelaycastHttpClient::new(Some(base_url), "rk_live_test", "broker", "codex");
+
+        client
+            .await_node_registered_agent_visibility(
+                "cloud-zero-config",
+                "agent-visibility",
+                "at_live_visibility",
+            )
+            .await
+            .expect("the exact node-created identity should become readable");
+        server.await.unwrap();
     }
 
     #[test]

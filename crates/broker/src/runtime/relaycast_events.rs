@@ -815,6 +815,18 @@ pub(super) async fn spawn_worker_from_request(
         if let Some(token) = worker_relay_key.as_deref() {
             seed_supplied_agent_token(workspace_http, &name, token);
             if let Err(error) = async {
+                if owns_identity {
+                    let (registration, _, _) = fleet_registration.as_ref().context(
+                        "owned node registration is missing its immutable identity receipt",
+                    )?;
+                    workspace_http
+                        .await_node_registered_agent_visibility(
+                            name.as_str(),
+                            &registration.agent_id,
+                            token,
+                        )
+                        .await?;
+                }
                 workspace_http
                     .ensure_agent_channels(&name, Some(&cli), &channels)
                     .await?;
