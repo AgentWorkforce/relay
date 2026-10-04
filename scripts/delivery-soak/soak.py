@@ -170,6 +170,7 @@ def run(args):
             raise RuntimeError(f"spawn failed: HTTP {status}: {spawn}")
         trust_answered = False
         last_probe = 0.0
+        ready_probe_started = time.monotonic()
         def agent_ready():
             nonlocal trust_answered, last_probe
             if time.monotonic() - last_probe < 2:
@@ -180,11 +181,12 @@ def run(args):
                     snap_status, snapshot = request(
                         base, key, "GET", "/api/spawned/soak-recorder/snapshot?format=plain", timeout=5)
                     screen = snapshot.get("screen", "") if snap_status == 200 else ""
-                    if "Trust this folder?" in screen and work.name in screen:
+                    if "Folder access" in screen and "Trust" in screen and work.name in screen:
                         request(base, key, "POST", "/api/input/soak-recorder", {"data": "\r"}, timeout=5)
                         trust_answered = True
                         return False
-                    if "Ask Codex to do anything" in screen:
+                    if ("Ask Codex to do anything" in screen and "Folder access" not in screen
+                            and time.monotonic() - ready_probe_started >= 30):
                         trust_answered = True
                 except Exception:
                     pass
