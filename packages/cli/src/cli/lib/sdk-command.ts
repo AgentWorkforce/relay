@@ -7,6 +7,8 @@ import {
   type AgentRelayAgent,
 } from '@agent-relay/sdk';
 
+import { AgentRemovalPendingError } from './agent-removal.js';
+import { FleetSpawnError } from './spawn-liveness.js';
 import { defaultExit } from './exit.js';
 import { createAgentRelay, createWorkspaceRelay, type SdkClientOptions } from './sdk-client.js';
 import { sanitizedSpawnReceipt } from './spawn-lifecycle.js';
@@ -77,7 +79,7 @@ export async function runSdk(deps: SdkCommandDeps, fn: () => Promise<void>): Pro
     await fn();
   } catch (err) {
     const message = safeRelayErrorMessage(err);
-    if (err instanceof RelayPlacementError) {
+    if (err instanceof RelayPlacementError || err instanceof FleetSpawnError) {
       const structured = {
         error: {
           code: err.code,
@@ -86,6 +88,10 @@ export async function runSdk(deps: SdkCommandDeps, fn: () => Promise<void>): Pro
           ...(err.node ? { node: err.node } : {}),
           ...(err.dispatchState ? { dispatchState: err.dispatchState } : {}),
           ...(err.receipt ? { receipt: sanitizedSpawnReceipt(err.receipt) } : {}),
+          ...(err instanceof FleetSpawnError && err.liveness ? { liveness: err.liveness } : {}),
+          ...(err instanceof FleetSpawnError && err.diagnostic
+            ? { diagnostic: safeRelayErrorMessage(new Error(err.diagnostic)) }
+            : {}),
           message,
         },
       };
@@ -93,6 +99,6 @@ export async function runSdk(deps: SdkCommandDeps, fn: () => Promise<void>): Pro
     } else {
       deps.error(message);
     }
-    deps.exit(1);
+    deps.exit(err instanceof FleetSpawnError || err instanceof AgentRemovalPendingError ? err.exitCode : 1);
   }
 }

@@ -1,0 +1,82 @@
+{
+  "id": "traj_ro3v7jmydpo5",
+  "version": 1,
+  "task": {
+    "title": "Fix fleet spawn pending outcomes and removal waits"
+  },
+  "status": "active",
+  "startedAt": "2026-10-04T14:42:43.542Z",
+  "agents": [
+    {
+      "name": "default",
+      "role": "lead",
+      "joinedAt": "2026-10-04T14:42:55.330Z"
+    }
+  ],
+  "chapters": [
+    {
+      "id": "chap_349pedkimqde",
+      "title": "Work",
+      "agentName": "default",
+      "startedAt": "2026-10-04T14:42:55.330Z",
+      "events": [
+        {
+          "ts": 1791124975331,
+          "type": "decision",
+          "content": "Keep SDK error unions unchanged; use CLI-owned pending and collision errors with known-class exit codes: Keep SDK error unions unchanged; use CLI-owned pending and collision errors with known-class exit codes",
+          "raw": {
+            "question": "Keep SDK error unions unchanged; use CLI-owned pending and collision errors with known-class exit codes",
+            "chosen": "Keep SDK error unions unchanged; use CLI-owned pending and collision errors with known-class exit codes",
+            "alternatives": [],
+            "reasoning": "Preserve SDK behavior and sandbox safety; uncertain accepted spawns exit 8 with diagnostics."
+          },
+          "significance": "high"
+        },
+        {
+          "ts": 1791124975634,
+          "type": "decision",
+          "content": "Ship removal waits opt-in; use get not-found and deadline list absence, never released status: Ship removal waits opt-in; use get not-found and deadline list absence, never released status",
+          "raw": {
+            "question": "Ship removal waits opt-in; use get not-found and deadline list absence, never released status",
+            "chosen": "Ship removal waits opt-in; use get not-found and deadline list absence, never released status",
+            "alternatives": [],
+            "reasoning": "No workspace credential environment variables or machine-global agent-relay configuration are available for live deletion verification. Reviewed-plan section 3.7 requires opt-in in this case. Exit 8 requires observed presence; all-read failures keep the asynchronous acknowledgement."
+          },
+          "significance": "high"
+        },
+        {
+          "ts": 1791125201843,
+          "type": "decision",
+          "content": "Keep existing asynchronous broker identity cleanup; expose safe name-reuse guidance: Keep existing asynchronous broker identity cleanup; expose safe name-reuse guidance",
+          "raw": {
+            "question": "Keep existing asynchronous broker identity cleanup; expose safe name-reuse guidance",
+            "chosen": "Keep existing asynchronous broker identity cleanup; expose safe name-reuse guidance",
+            "alternatives": [],
+            "reasoning": "Cleanup is already scheduled for owned failed spawns. A collision never grants ownership of the incumbent identity. Fleet release adds removal evidence to its existing JSON only with --wait."
+          },
+          "significance": "high"
+        },
+        {
+          "ts": 1791125587977,
+          "type": "decision",
+          "content": "Final invocation reads preserve the actual requested readiness contract: Final invocation reads preserve the actual requested readiness contract",
+          "raw": {
+            "question": "Final invocation reads preserve the actual requested readiness contract",
+            "chosen": "Final invocation reads preserve the actual requested readiness contract",
+            "alternatives": [],
+            "reasoning": "SDK confirm:true also requests verify_ready by default. A late terminal result must have ready:true; live heartbeat recovery remains explicitly confirmed:false. Late persona child acknowledgements stay pending and retain their child invocation/node."
+          },
+          "significance": "high"
+        }
+      ]
+    }
+  ],
+  "commits": [],
+  "filesChanged": [],
+  "projectId": "AgentWorkforce/relay",
+  "tags": [],
+  "_trace": {
+    "startRef": "3cfc0fd6cbc68c45a8dd455d7917a3c223ad74fd",
+    "endRef": "3cfc0fd6cbc68c45a8dd455d7917a3c223ad74fd"
+  }
+}

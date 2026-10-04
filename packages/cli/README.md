@@ -573,3 +573,20 @@ Hosted equivalents live under `agent-relay cloud …`.
 - `@agent-relay/sdk`: messaging, delivery contracts, and actions.
 - `@agent-relay/harness-driver`: optional managed harness runtime.
 - `agent-relay`: CLI and MCP entry point.
+
+### Pending fleet spawns and name reuse
+
+An accepted spawn whose result is still unknown returns `spawn_pending` (exit 8),
+with its invocation ID, dispatch state, and available liveness evidence. Check
+`agent-relay fleet agent list --node <node>` before retrying. A fresh heartbeat
+showing the worker on the requested node can return `confirmed:false` with exit 0;
+this proves observed worker presence, not harness readiness. Heartbeat snapshots
+can change between listings; JSON output includes their timestamps and ages.
+
+If no worker is running and you intend to reclaim the name, run
+`agent-relay agent remove <name> --wait` before respawning. Waiting is opt-in;
+`--wait-timeout <ms>` defaults to 30000, followed by one bounded membership read.
+`fleet release <name> --delete-agent --wait` offers the same check and adds
+`removal` evidence to its JSON. A remaining registration exits 8; unavailable
+verification reads retain the asynchronous acknowledgement. A name collision
+can also mean cleanup from a previous unsuccessful spawn is still in flight.

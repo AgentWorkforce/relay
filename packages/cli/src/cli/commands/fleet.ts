@@ -35,7 +35,16 @@ import { readBrokerConnection } from '../lib/broker-lifecycle.js';
 import { spawnAgentWithClient } from '../lib/client-factory.js';
 import { formatRelativeTime, sanitizeForTerminalLine } from '../lib/formatting.js';
 import { connectProjectBrokerClient } from '../lib/project-broker-client.js';
-import { isAvailableFleetNode } from '../lib/fleet-live-agents.js';
+import { AgentRemovalPendingError, waitForAgentRemoval } from '../lib/agent-removal.js';
+import {
+  classifySpawnFailure,
+  mayStillBeRunning,
+  nameTakenSpawnError,
+  pendingSpawnError,
+  probeSpawnLiveness,
+  terminalSpawnOutcome,
+} from '../lib/spawn-liveness.js';
+import { heartbeatAgeMs, MAX_LIVE_HEARTBEAT_AGE_MS, isAvailableFleetNode } from '../lib/fleet-live-agents.js';
 import { declaredWorkforceMetadata } from '../lib/registration-metadata.js';
 import { redactSecrets } from '../lib/redact.js';
 import { attributableReleaseReason } from '../lib/release-reason.js';
@@ -193,13 +202,13 @@ function spawnInvocationWithMergedPlacement(invocation: Record<string, unknown>)
     ...invocation,
     placement: {
       ...(sdkPlacement ?? {}),
-      dispatchState: receipt.dispatchState,
+      dispatchState: sdkPlacement?.dispatchState ?? receipt.dispatchState,
       ...(invocationId ? { invocationId } : {}),
     },
   };
 }
 
-function throwForTerminalSpawnFailure(invocation: Record<string, unknown>): void {
+function throwForTerminalSpawnFailure(invocation: Record<string, unknown>, name: string): void {
   const placement = spawnPlacementReceipt(invocation);
   if (placement.state !== 'failed') return;
   const invocationId = typeof placement.invocationId === 'string' ? placement.invocationId : undefined;
@@ -207,7 +216,7 @@ function throwForTerminalSpawnFailure(invocation: Record<string, unknown>): void
     typeof invocation.error === 'string' && invocation.error.trim()
       ? invocation.error
       : 'Fleet spawn invocation reported a terminal failure.';
-  throw new RelayPlacementError('spawn_failed', message, {
+  const error = new RelayPlacementError('spawn_failed', message, {
     capability: typeof invocation.capability === 'string' ? invocation.capability : 'spawn',
     attempts: 1,
     ...(invocationId ? { invocationId } : {}),
@@ -215,6 +224,7 @@ function throwForTerminalSpawnFailure(invocation: Record<string, unknown>): void
     dispatchState: placement.dispatchState as 'dispatched' | 'not_dispatched' | 'unknown',
     receipt: invocation,
   });
+  throw classifySpawnFailure(message) ? nameTakenSpawnError(name, error) : error;
 }
 
 export interface FleetCommandDependencies {
@@ -990,32 +1000,82 @@ export function registerFleetCommands(
                   '/.skills'
                 )}. The Relayfile daemon synchronizes this tree; it intentionally has no .git directory.`
               : undefined;
-          const invocation = await relay.messaging.placement.spawn({
-            capability: `spawn:${cli}`,
-            node: targetNode,
-            failFast: true,
-            confirm,
-            ...(confirm ? { confirmTimeoutMs: confirmTimeoutMs } : {}),
-            input: {
+          let invocation;
+          try {
+            invocation = await relay.messaging.placement.spawn({
+              capability: `spawn:${cli}`,
+              node: targetNode,
+              failFast: true,
+              confirm,
+              ...(confirm ? { confirmTimeoutMs: confirmTimeoutMs } : {}),
+              input: {
+                name,
+                cli,
+                task:
+                  sandbox &&
+                  checkoutRepository &&
+                  sandboxRepository &&
+                  mountSandboxRelayfile &&
+                  sandbox.outcome === 'provisioned'
+                    ? `${task}\n\nAgent Relay sandbox context: Relayfile records are available at ${sandbox.relayfileMountPath ?? '/workspace'}. The source checkout is separate; use ${workerCwd ?? 'the worker checkout'} for repository files and the mount for Relayfile records.`
+                    : liveSandboxContext
+                      ? `${task}\n\n${liveSandboxContext}`
+                      : task,
+                ...(channel ? { channels: [channel] } : {}),
+                ...(model ? { model } : {}),
+                ...(workerCwd ? { worker_cwd: workerCwd } : {}),
+                ...registrationMetadata,
+                ...(sessionRef ? { session_ref: sessionRef } : {}),
+              },
+            });
+          } catch (error) {
+            if (!(error instanceof RelayPlacementError)) throw error;
+            if (error.code === 'spawn_failed' && classifySpawnFailure(error.message))
+              throw nameTakenSpawnError(name, error);
+            if (error.code !== 'spawn_unconfirmed') throw error;
+            const liveness = await probeSpawnLiveness({
               name,
-              cli,
-              task:
-                sandbox &&
-                checkoutRepository &&
-                sandboxRepository &&
-                mountSandboxRelayfile &&
-                sandbox.outcome === 'provisioned'
-                  ? `${task}\n\nAgent Relay sandbox context: Relayfile records are available at ${sandbox.relayfileMountPath ?? '/workspace'}. The source checkout is separate; use ${workerCwd ?? 'the worker checkout'} for repository files and the mount for Relayfile records.`
-                  : liveSandboxContext
-                    ? `${task}\n\n${liveSandboxContext}`
-                    : task,
-              ...(channel ? { channels: [channel] } : {}),
-              ...(model ? { model } : {}),
-              ...(workerCwd ? { worker_cwd: workerCwd } : {}),
-              ...registrationMetadata,
-              ...(sessionRef ? { session_ref: sessionRef } : {}),
-            },
-          });
+              targetNode,
+              ...(error.invocationId
+                ? {
+                    getInvocation: () => relay.messaging.commands.getInvocation('spawn', error.invocationId!),
+                  }
+                : {}),
+              createClient: () => {
+                const workspace = deps.sdk.createWorkspaceRelay(relaycastClientOptions);
+                return { nodes: workspace.nodes, agents: workspace.agents };
+              },
+            });
+            if (liveness.evidence === 'invocation_terminal') {
+              try {
+                invocation = terminalSpawnOutcome(liveness.invocation!, error, confirm);
+              } catch (terminalError) {
+                if (
+                  terminalError instanceof RelayPlacementError &&
+                  classifySpawnFailure(terminalError.message)
+                )
+                  throw nameTakenSpawnError(name, terminalError);
+                throw terminalError;
+              }
+            } else if (liveness.evidence === 'live') {
+              deps.warn(
+                `A worker named ${JSON.stringify(name)} is running on ${JSON.stringify(liveness.node)} according to its fresh heartbeat; harness readiness was not confirmed within the budget.`
+              );
+              invocation = {
+                status: 'accepted',
+                invocationId: error.invocationId,
+                placement: {
+                  state: 'accepted',
+                  confirmed: false,
+                  invocationId: error.invocationId,
+                  dispatchState: error.dispatchState,
+                  liveness,
+                },
+              };
+            } else {
+              throw pendingSpawnError(name, error, liveness, error.message);
+            }
+          }
           const printableSandbox =
             (sandbox?.outcome === 'provisioned' || sandbox?.outcome === 'reused') && sandbox.relaycastTarget
               ? {
@@ -1037,11 +1097,7 @@ export function registerFleetCommands(
             invocation: spawnInvocationWithMergedPlacement(invocation as unknown as Record<string, unknown>),
           });
         } catch (error) {
-          if (
-            shouldCleanupSandbox &&
-            sandbox?.outcome === 'provisioned' &&
-            !(error instanceof RelayPlacementError && error.state === 'unconfirmed_may_be_running')
-          ) {
+          if (shouldCleanupSandbox && sandbox?.outcome === 'provisioned' && !mayStillBeRunning(error)) {
             await deps
               .deleteCloudFleetSandbox({
                 cloudWorkspaceId: sandbox.cloudWorkspaceId,
@@ -1122,7 +1178,7 @@ export function registerFleetCommands(
             }
           : {}),
       });
-      throwForTerminalSpawnFailure(invocation);
+      throwForTerminalSpawnFailure(invocation, name);
       printJson(deps.sdk, { invocation: spawnInvocationWithPlacement(invocation) });
     });
   });
@@ -1134,6 +1190,9 @@ export function registerFleetCommands(
       .argument('<name>', 'Worker agent name')
       .option('--reason <reason>', 'Release reason')
       .option('--delete-agent', 'Permanently delete the agent after release')
+      .option('--wait', 'With --delete-agent, wait for registration clearance', false)
+      .option('--no-wait', 'Return after release is accepted')
+      .option('--wait-timeout <ms>', 'Registration clearance timeout', '30000')
       .option(
         '--unsubscribe-bindings',
         'Retire provider bindings owned by this identity (implied by --delete-agent)'
@@ -1191,6 +1250,22 @@ export function registerFleetCommands(
           reason,
           deleteAgent: true,
         });
+        if (options.wait === true) {
+          // Construct/read on the same selected transport; unavailable credentials are uncertainty.
+          const removal = await waitForAgentRemoval({
+            name: workerName,
+            getAgent: (name) => deps.sdk.createWorkspaceRelay(transport).agents.get(name),
+            listAgents: () => deps.sdk.createWorkspaceRelay(transport).agents.list(),
+            timeoutMs: Number(options.waitTimeout),
+          });
+          printJson(deps.sdk, { ...deleted, removal });
+          if (!removal.cleared && removal.observedPresent) throw new AgentRemovalPendingError(workerName);
+          if (!removal.cleared)
+            deps.warn(
+              `Removal was initiated asynchronously; could not verify clearance: ${removal.readError}`
+            );
+          return;
+        }
         printJson(deps.sdk, deleted);
         return;
       }
@@ -1523,12 +1598,27 @@ async function runFleetAgentList(
     const now = new Date();
     const output = buildRows({ contributions, roster }, now);
 
+    const heartbeatNodes = contributions.map(({ node }) => ({
+      name: node.name,
+      lastHeartbeatAt: node.lastHeartbeatAt ?? null,
+      heartbeatAgeMs: heartbeatAgeMs(node, now.getTime()),
+    }));
+    if (
+      heartbeatNodes.some(
+        (node) => node.heartbeatAgeMs !== null && node.heartbeatAgeMs > MAX_LIVE_HEARTBEAT_AGE_MS
+      )
+    ) {
+      deps.warn(
+        'Some node heartbeats are older than 36 seconds. Listings are heartbeat snapshots and can differ within one heartbeat window.'
+      );
+    }
     if (options.pretty === true) {
       deps.log(formatPretty(output));
       return;
     }
     printJson(deps.sdk, {
       generatedAt: now.toISOString(),
+      nodes: heartbeatNodes,
       localNode: localNodeName ?? null,
       perNode: output.perNode,
       unplacedRoster: output.unplacedRoster,

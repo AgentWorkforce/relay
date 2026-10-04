@@ -1,3 +1,4 @@
+import { pendingSpawnError } from './spawn-liveness.js';
 import { describe, expect, it, vi } from 'vitest';
 
 import { RelayPlacementError } from '@agent-relay/sdk';
@@ -85,6 +86,24 @@ describe('runSdk structured error output', () => {
       dispatchState: 'dispatched',
       receipt: { status: 'accepted', invocation_id: 'inv_lifecycle', handler_node_id: 'sf-mini' },
     });
+  });
+
+  it('renders pending evidence and honors only known error exit codes', async () => {
+    const { deps: sdkDeps, errors } = deps();
+    await runSdk(sdkDeps, async () => {
+      throw pendingSpawnError(
+        'worker',
+        { invocationId: 'inv', dispatchState: 'dispatched' },
+        { evidence: 'unknown' }
+      );
+    });
+    expect(sdkDeps.exit).toHaveBeenCalledWith(8);
+    expect(errors.join('')).toContain('"code":"spawn_pending"');
+    expect(errors.join('')).toContain('"liveness":{"evidence":"unknown"}');
+    await runSdk(sdkDeps, async () => {
+      throw Object.assign(new Error('plain'), { exitCode: 0 });
+    });
+    expect(sdkDeps.exit).toHaveBeenLastCalledWith(1);
   });
 
   it('does not attach a structured receipt for a plain Error', async () => {

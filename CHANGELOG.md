@@ -5,7 +5,22 @@ All notable changes to Agent Relay will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
+## [Unreleased - Minor]
+
+### Added
+
+- `agent remove --wait` and `fleet release --delete-agent --wait` verify registration clearance before name reuse, with `--wait-timeout` and `--no-wait` controls. Fleet release adds `removal` evidence when waiting.
+- `fleet agent list` JSON includes node heartbeat timestamps and ages, with warnings for stale snapshots.
+
+### Changed
+
+- Unconfirmed `fleet spawn` results report `spawn_pending` with invocation diagnostics and exit 8. A fresh target-node heartbeat can return exit 0 with `confirmed:false`, extending the existing accepted-placement shape without claiming harness readiness.
+- Removal waits exit 8 if the registration remains present; scripts must handle nonzero exits beyond `$? -eq 1`. Waits remain opt-in, and unavailable verification reads preserve the asynchronous acknowledgement.
+
+### Fixed
+
+- Fleet registration collisions use readable `spawn_name_taken` guidance covering asynchronous removal and failed-spawn cleanup, instead of Rust `Fatal(AlreadyExists {...})` text.
+- Pending fleet spawns preserve provisioned sandboxes and distinguish live, stale, elsewhere, registered, absent, and unknown evidence before advising a retry.
 
 ## [13.1.1] - 2026-10-04
 

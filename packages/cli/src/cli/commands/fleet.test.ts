@@ -1085,11 +1085,103 @@ describe('fleet command support', () => {
 
     const rendered = errors.join('\n');
     expect(rendered).toContain('do not retry blindly');
-    expect(rendered).toContain('"code":"spawn_unconfirmed"');
-    expect(rendered).toContain('"state":"unconfirmed_may_be_running"');
+    expect(rendered).toContain('"code":"spawn_pending"');
+    expect(rendered).toContain('"state":"pending"');
     expect(rendered).toContain('"dispatchState":"dispatched"');
     expect(rendered).toContain(`"invocationId":"${invocationId}"`);
   });
+
+  it.each(['live', 'terminal', 'collision', 'missing_ready'] as const)(
+    'resolves timed-out targeted spawn using %s evidence',
+    async (evidence) => {
+      const invocationId = 'inv_late';
+      const pending = new RelayPlacementError('spawn_unconfirmed', 'timeout', {
+        capability: 'spawn:codex',
+        attempts: 1,
+        node: 'target',
+        invocationId,
+        state: 'unconfirmed_may_be_running',
+        dispatchState: 'dispatched',
+      });
+      const getInvocation = vi.fn(async () =>
+        evidence === 'live'
+          ? { status: 'running' }
+          : evidence === 'terminal' || evidence === 'missing_ready'
+            ? { status: 'completed', output: { spawned: true, ready: evidence === 'terminal' } }
+            : {
+                status: 'failed',
+                error: "failed to pre-register worker 'worker': agent 'worker' already exists and registration is create-only; use a unique name",
+              }
+      );
+      const nodes = {
+        get: vi.fn(async () => ({
+          name: 'target',
+          status: 'online',
+          lastHeartbeatAt: new Date().toISOString(),
+          capabilities: [{ name: 'relay:live-agents:v1', metadata: { names: ['worker'] } }],
+        })),
+        list: vi.fn(),
+      };
+      const logs: string[] = [];
+      const errors: string[] = [];
+      const exit = vi.fn();
+      const warn = vi.fn();
+      const program = new Command();
+      registerFleetCommands(program, {
+        resolveSandboxRepository: () => undefined,
+        sdk: {
+          createAgentRelay: vi.fn(() => ({
+            messaging: {
+              placement: {
+                spawn: vi.fn(async () => {
+                  throw pending;
+                }),
+              },
+              commands: { getInvocation },
+            },
+          })) as never,
+          createWorkspaceRelay: vi.fn(() => ({ nodes, agents: {} })) as never,
+          createWorkspace: vi.fn() as never,
+          log: (message) => logs.push(String(message)),
+          error: (message) => errors.push(String(message)),
+          exit: exit as never,
+        },
+        warn,
+        log: vi.fn(),
+        error: vi.fn(),
+      });
+      await program.parseAsync(
+        [
+          'fleet',
+          'spawn',
+          'codex',
+          '--name',
+          'worker',
+          '--task',
+          'work',
+          '--node',
+          'target',
+          '--token',
+          'at_test',
+        ],
+        { from: 'user' }
+      );
+      expect(getInvocation).toHaveBeenCalledWith('spawn', invocationId);
+      if (evidence === 'collision' || evidence === 'missing_ready') {
+        expect(exit).toHaveBeenCalledWith(1);
+        expect(errors.join('')).toContain(evidence === 'collision' ? '"code":"spawn_name_taken"' : '"code":"spawn_failed"');
+      } else {
+        expect(exit).not.toHaveBeenCalled();
+        expect(JSON.parse(logs[0]!).invocation.placement).toMatchObject({
+          state: evidence === 'terminal' ? 'ready' : 'accepted',
+          confirmed: evidence === 'terminal',
+          dispatchState: 'dispatched',
+        });
+        if (evidence === 'live')
+          expect(warn).toHaveBeenCalledWith(expect.stringContaining('harness readiness was not confirmed'));
+      }
+    }
+  );
 
   it('fleet spawn --sandbox-provider agent37 provisions the isolated canary and uses a temporary launcher', async () => {
     vi.stubEnv('RELAY_AGENT_TOKEN', undefined);
@@ -2458,6 +2550,7 @@ describe('fleet command support', () => {
     ).rejects.toThrow('__exit__');
 
     expect(errors.join('\n')).toContain('dispatch may still be running');
+    expect(errors.join('\n')).toContain('"code":"spawn_pending"');
     expect(ensureCloudFleetSandbox).toHaveBeenCalledWith(
       expect.objectContaining({
         workloadProfile: 'long-running-agent',
@@ -4170,6 +4263,55 @@ describe('fleet command support', () => {
       expect.objectContaining({ workspaceKey: 'rk_live_from_env' }),
       expect.objectContaining({ log: expect.any(Function), error: expect.any(Function) })
     );
+  });
+
+  it('fleet release --delete-agent --wait adds clearance evidence on the selected transport', async () => {
+    const createWorkspaceRelay = vi.fn(() => ({
+      agents: {
+        get: vi.fn(async () => {
+          throw { status: 404 };
+        }),
+        list: vi.fn(),
+      },
+    }));
+    const log = vi.fn();
+    const program = new Command();
+    registerFleetCommands(program, {
+      sdk: {
+        createWorkspaceRelay: createWorkspaceRelay as never,
+        createAgentRelay: vi.fn() as never,
+        createWorkspace: vi.fn() as never,
+        log,
+        error: vi.fn(),
+        exit: vi.fn() as never,
+      },
+      createFleetWorkspaceClient: vi.fn(() => ({
+        agents: { release: vi.fn(async () => ({ status: 'dispatched' })) },
+      })) as never,
+      retireOwnedBindings: vi.fn(async () => undefined),
+      warn: vi.fn(),
+    });
+    await program.parseAsync(
+      [
+        'fleet',
+        'release',
+        'worker',
+        '--delete-agent',
+        '--wait',
+        '--workspace-key',
+        'rk_test',
+        '--base-url',
+        'https://isolated.example',
+      ],
+      { from: 'user' }
+    );
+    expect(createWorkspaceRelay).toHaveBeenCalledWith(
+      expect.objectContaining({ workspaceKey: 'rk_test', baseUrl: 'https://isolated.example' })
+    );
+    expect(JSON.parse(log.mock.calls[0]![0])).toMatchObject({
+      status: 'dispatched',
+      removal: { cleared: true },
+    });
   });
 
   it('fleet release --delete-agent aborts without deleting when binding retirement fails', async () => {
