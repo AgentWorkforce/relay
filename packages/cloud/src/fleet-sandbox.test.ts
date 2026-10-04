@@ -498,6 +498,7 @@ describe('Cloud fleet sandbox client', () => {
       providerSandboxId: 'provider-sandbox-1',
       relayWorkspaceId: 'rw_abc',
       relaycastTarget: RELAYCAST_TARGET,
+      relaycastCloudApiUrl: refreshedAuth.apiUrl,
       relayfileMounted: true,
       relayfileMountPath: '/workspace',
       providerId: 'agent37',

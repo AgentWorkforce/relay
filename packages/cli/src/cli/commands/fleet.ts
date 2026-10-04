@@ -836,7 +836,10 @@ export function registerFleetCommands(
                 'Cloud returned a Relaycast workspace that could not be verified on the selected gateway.'
               );
             }
-            if (!deps.persistWorkspaceRelaycastTarget(workspaceSelection, target)) {
+            const persistedTarget = sandbox.relaycastCloudApiUrl
+              ? deps.persistWorkspaceRelaycastTarget(workspaceSelection, target, sandbox.relaycastCloudApiUrl)
+              : deps.persistWorkspaceRelaycastTarget(workspaceSelection, target);
+            if (!persistedTarget) {
               throw new Error(
                 'Cloud returned a Relaycast target, but no durable project session is available for follow-up attach.'
               );

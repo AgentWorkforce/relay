@@ -164,6 +164,8 @@ type CloudFleetSandboxReadyBase = {
   relayWorkspaceId: string;
   /** Closed server-owned Relaycast contract when Cloud returned one. Required for Agent37. */
   relaycastTarget?: CloudFleetRelaycastTarget;
+  /** Cloud API URL that authenticated and returned relaycastTarget. */
+  relaycastCloudApiUrl?: string;
   relayfileMounted: boolean;
   relayfileMountPath?: string;
   providerId?: CloudFleetSandboxProviderId;
@@ -192,6 +194,8 @@ export type CloudFleetSandboxReused = {
   providerId?: CloudFleetSandboxProviderId;
   /** Closed server-owned Relaycast contract when Cloud returned one. Required for Agent37. */
   relaycastTarget?: CloudFleetRelaycastTarget;
+  /** Cloud API URL that authenticated and returned relaycastTarget. */
+  relaycastCloudApiUrl?: string;
   /** Repository HEADs verified by Cloud for this sandbox. */
   repoRevisions?: Readonly<Record<string, string>>;
 };
@@ -203,6 +207,8 @@ type CloudFleetSandboxProvisioningTimeoutBase = {
   providerSandboxId?: string;
   relayWorkspaceId: string;
   relaycastTarget?: CloudFleetRelaycastTarget;
+  /** Cloud API URL that authenticated and returned relaycastTarget. */
+  relaycastCloudApiUrl?: string;
   nodeName: string;
   waitedMs: number;
   providerId?: CloudFleetSandboxProviderId;
@@ -732,6 +738,7 @@ function normalizeEnsureResult(
       ...(providerSandboxId === undefined ? {} : { providerSandboxId }),
       relayWorkspaceId,
       ...(relaycastTarget === undefined ? {} : { relaycastTarget }),
+      ...(relaycastTarget === undefined || apiUrl === undefined ? {} : { relaycastCloudApiUrl: apiUrl }),
       relayfileMounted: payload.relayfileMounted,
       ...(providerId === undefined ? {} : { providerId }),
       ...(repoRevisions === undefined ? {} : { repoRevisions }),
@@ -758,6 +765,7 @@ function normalizeEnsureResult(
       maxAgents: readNumber(payload, 'maxAgents') ?? null,
       ...(providerId === undefined ? {} : { providerId }),
       ...(relaycastTarget === undefined ? {} : { relaycastTarget }),
+      ...(relaycastTarget === undefined || apiUrl === undefined ? {} : { relaycastCloudApiUrl: apiUrl }),
       ...(repoRevisions === undefined ? {} : { repoRevisions }),
     };
   }
@@ -780,6 +788,7 @@ function normalizeEnsureResult(
       ...(providerSandboxId === undefined ? {} : { providerSandboxId }),
       relayWorkspaceId,
       ...(relaycastTarget === undefined ? {} : { relaycastTarget }),
+      ...(relaycastTarget === undefined || apiUrl === undefined ? {} : { relaycastCloudApiUrl: apiUrl }),
       nodeName,
       waitedMs: requiredNumber(payload, 'waitedMs', 'Cloud fleet sandbox'),
       ...(providerId === undefined ? {} : { providerId }),

@@ -70,6 +70,7 @@ const DEV_RELAYCAST_TARGET = {
   workspaceId: 'rw_abc',
   relaycastApiKey: 'rk_live_dev_target',
 };
+const DEV_CLOUD_API_URL = 'https://dev.agentrelay.com/cloud';
 
 const LIVE_AGENT_CAPABILITY_NAME = 'relay:live-agents:v1';
 const liveAgentCapabilities = (...names: string[]) => [
@@ -2072,6 +2073,7 @@ describe('fleet command support', () => {
         maxAgents: 1,
         providerId: 'agent37' as const,
         relaycastTarget: DEV_RELAYCAST_TARGET,
+        relaycastCloudApiUrl: DEV_CLOUD_API_URL,
       })),
       resolveWorkspaceSelection: () => ({
         key: 'rk_live_test',
@@ -2114,7 +2116,11 @@ describe('fleet command support', () => {
         baseUrl: DEV_RELAYCAST_TARGET.baseUrl,
       })
     );
-    expect(persistWorkspaceRelaycastTarget).toHaveBeenCalledWith(expect.anything(), DEV_RELAYCAST_TARGET);
+    expect(persistWorkspaceRelaycastTarget).toHaveBeenCalledWith(
+      expect.anything(),
+      DEV_RELAYCAST_TARGET,
+      DEV_CLOUD_API_URL
+    );
     expect(placement.spawn).toHaveBeenCalled();
     expect(release).toHaveBeenCalled();
   });

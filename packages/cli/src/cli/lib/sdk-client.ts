@@ -6,7 +6,6 @@ import {
   CANONICAL_RELAYCAST_ORIGIN,
   DEV_CLOUD_API_URL,
   DEV_RELAYCAST_ORIGIN,
-  defaultApiUrl,
 } from '@agent-relay/cloud';
 import {
   resolveWorkspaceSelection as resolveCloudWorkspaceSelection,
@@ -98,7 +97,7 @@ function resolveBaseUrlForSelection(
   selection: WorkspaceSelection | undefined,
   options: SdkClientOptions
 ): string | undefined {
-  const persisted = validatePersistedRelaycastBaseUrl(selection, defaultApiUrl(env(options)));
+  const persisted = validatePersistedRelaycastBaseUrl(selection);
   const requested = trimOrUndefined(options.baseUrl) ?? trimOrUndefined(env(options).RELAY_BASE_URL);
   if (persisted && requested) {
     let parsed: URL;
@@ -154,13 +153,11 @@ export function resolveWorkspaceTransport(options: SdkClientOptions = {}): Works
   };
 }
 
-function validatePersistedRelaycastBaseUrl(
-  selection: WorkspaceSelection | undefined,
-  cloudApiUrl: string
-): string | undefined {
+function validatePersistedRelaycastBaseUrl(selection: WorkspaceSelection | undefined): string | undefined {
   const baseUrl = trimOrUndefined(selection?.relaycastBaseUrl);
   const route = selection?.relaycastRoute;
   const relaycastApiKey = trimOrUndefined(selection?.relaycastApiKey);
+  const relaycastCloudApiUrl = trimOrUndefined(selection?.relaycastCloudApiUrl);
   if (!baseUrl && !route && !relaycastApiKey) return undefined;
   if (!baseUrl || !route) {
     throw new Error('The persisted Relaycast workspace route is incomplete.');
@@ -173,7 +170,7 @@ function validatePersistedRelaycastBaseUrl(
   }
   const expectedOrigin =
     route === 'canonical'
-      ? cloudApiUrl === DEV_CLOUD_API_URL
+      ? relaycastCloudApiUrl === DEV_CLOUD_API_URL
         ? DEV_RELAYCAST_ORIGIN
         : CANONICAL_RELAYCAST_ORIGIN
       : route === 'agent37-isolated'
@@ -203,9 +200,17 @@ export function persistWorkspaceRelaycastTarget(
     baseUrl: string;
     workspaceId: string;
     relaycastApiKey: string;
-  }
+  },
+  relaycastCloudApiUrl?: string
 ): boolean {
   if (!selection) return false;
+  if (
+    target.route === 'canonical' &&
+    target.baseUrl === DEV_RELAYCAST_ORIGIN &&
+    relaycastCloudApiUrl !== DEV_CLOUD_API_URL
+  ) {
+    return false;
+  }
   const selectionWithProjectDir = selection as WorkspaceSelection & { projectDataDir?: string };
   const dataDir =
     selectionWithProjectDir?.projectDataDir ??
@@ -215,6 +220,7 @@ export function persistWorkspaceRelaycastTarget(
     workspaceId: target.workspaceId,
     relaycastRoute: target.route,
     relaycastBaseUrl: target.baseUrl,
+    ...(relaycastCloudApiUrl ? { relaycastCloudApiUrl } : {}),
     relaycastApiKey: target.relaycastApiKey,
   });
 }
