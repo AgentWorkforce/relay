@@ -128,6 +128,8 @@ describe('spawn liveness resolution', () => {
       )
     ).toBe('spawn_name_taken');
     expect(classifySpawnFailure('failed to create sandbox: directory already exists')).toBeUndefined();
-    expect(classifySpawnFailure("failed to pre-register worker 'worker': cache entry already exists")).toBeUndefined();
+    expect(
+      classifySpawnFailure("failed to pre-register worker 'worker': cache entry already exists")
+    ).toBeUndefined();
   });
 });

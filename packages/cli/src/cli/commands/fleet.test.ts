@@ -1110,7 +1110,8 @@ describe('fleet command support', () => {
             ? { status: 'completed', output: { spawned: true, ready: evidence === 'terminal' } }
             : {
                 status: 'failed',
-                error: "failed to pre-register worker 'worker': agent 'worker' already exists and registration is create-only; use a unique name",
+                error:
+                  "failed to pre-register worker 'worker': agent 'worker' already exists and registration is create-only; use a unique name",
               }
       );
       const nodes = {
@@ -1169,7 +1170,9 @@ describe('fleet command support', () => {
       expect(getInvocation).toHaveBeenCalledWith('spawn', invocationId);
       if (evidence === 'collision' || evidence === 'missing_ready') {
         expect(exit).toHaveBeenCalledWith(1);
-        expect(errors.join('')).toContain(evidence === 'collision' ? '"code":"spawn_name_taken"' : '"code":"spawn_failed"');
+        expect(errors.join('')).toContain(
+          evidence === 'collision' ? '"code":"spawn_name_taken"' : '"code":"spawn_failed"'
+        );
       } else {
         expect(exit).not.toHaveBeenCalled();
         expect(JSON.parse(logs[0]!).invocation.placement).toMatchObject({

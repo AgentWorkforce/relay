@@ -919,7 +919,8 @@ async function invokeVerifiedSpawn(
     });
     if (liveness.evidence === 'invocation_terminal') {
       const nested = VERIFIED_SPAWN_SUCCESS_STATUSES.has(String(liveness.invocation!.status).toLowerCase())
-        ? nestedPersonaSpawnRef(liveness.invocation!) : undefined;
+        ? nestedPersonaSpawnRef(liveness.invocation!)
+        : undefined;
       if (nested) {
         // A late persona result can be only an acknowledgement of its child.
         // It is neither missing readiness proof nor a terminal worker failure.
