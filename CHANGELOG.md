@@ -9,10 +9,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- `fleet spawn`, `agent spawn`, and `node agent spawn` accept `--task-file` to read an initial brief from a local UTF-8 file. Fleet requires exactly one of `--task` and `--task-file`.
 - `node agent list|spawn|new|release|set-model` and `node tail` accept `--state-dir`, `--broker-url`, and `--api-key`, so brokers started with `node up --state-dir` — such as fleet nodes — can be managed from any directory. Without these flags, `RELAY_BROKER_URL` / `RELAY_BROKER_API_KEY` or the enclosing project's broker is used.
 
 ### Fixed
 
+- PTY tasks and relay messages use atomic bracketed paste when supported, wait for the composer, and prevent embedded carriage returns from submitting partial input. Oversized bodies and tail-only echoes fail explicitly without replay.
+- Verified fleet PTY spawns wait for the initial task delivery verdict before reporting readiness; unverified timeout fallback remains compatible.
 - Broker fleet control keeps a healthy node WebSocket open when Relaycast returns retryable `d1_pressure` for `node.register` or `inventory.sync`, retrying the same frame with bounded exponential backoff while the existing registration and application-liveness deadlines remain fail-closed.
 - `--state-dir` on `node agent` commands, `node status`, and `node down` also accepts a fleet node directory whose broker state lives in `state/`.
 - An explicit `--state-dir` on `node agent` commands is no longer overridden by `RELAY_BROKER_URL` / `RELAY_BROKER_API_KEY`.

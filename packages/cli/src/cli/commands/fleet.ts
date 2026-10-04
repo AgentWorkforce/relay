@@ -1,3 +1,4 @@
+import { readTaskInput } from '../lib/task-input.js';
 import { randomUUID } from 'node:crypto';
 import path from 'node:path';
 
@@ -424,7 +425,8 @@ export function registerFleetCommands(
       .description('Spawn locally by default, or select a fleet node or Cloud sandbox explicitly')
       .argument('<cli>', 'AI CLI to launch', parseFleetCli)
       .requiredOption('--name <name>', 'Worker agent name')
-      .requiredOption('--task <text>', 'Initial task instructions')
+      .option('--task <text>', 'Initial task instructions')
+      .option('--task-file <path>', 'Read the initial task from a local UTF-8 file')
       .option('--auto-place', 'Request automatic eligible-node placement in the Relay workspace')
       .option('--node <name>', 'Target a specific fleet node')
       .option('--target-node <name>', 'Alias for --node')
@@ -474,7 +476,7 @@ export function registerFleetCommands(
     await runSdk(deps.sdk, async () => {
       const clientOptions = sdkOptionsFromOpts(options);
       const name = requiredText(options.name, 'Worker name');
-      const task = requiredText(options.task, 'Task');
+      const task = (await readTaskInput(options.task, options.taskFile, true))!;
       let targetNode = optionalText(options.targetNode, 'Target node') ?? optionalText(options.node, 'Node');
       const useSandbox = options.sandbox === true;
       // Explicit hosted credentials/transport and personas retain their legacy

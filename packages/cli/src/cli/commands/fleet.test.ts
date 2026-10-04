@@ -3601,6 +3601,7 @@ describe('fleet command support', () => {
           { from: 'user' }
         );
       return {
+        program,
         cwd,
         projectRoot,
         local,
@@ -3614,6 +3615,39 @@ describe('fleet command support', () => {
         parse,
       };
     }
+
+    it('reads --task-file before spawning through the existing task transport', async () => {
+      const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'relay-fleet-brief-'));
+      try {
+        const brief = path.join(dir, 'brief.md');
+        fs.writeFileSync(brief, '  Full brief\r\nsecond line\n');
+        const fixture = setup();
+        await fixture.program.parseAsync(
+          ['fleet', 'spawn', 'claude', '--name', 'file-worker', '--task-file', brief],
+          { from: 'user' }
+        );
+        expect(fixture.errors).toEqual([]);
+        expect(fixture.local.spawnPty).toHaveBeenCalledWith(
+          expect.objectContaining({ task: '  Full brief\r\nsecond line\n' })
+        );
+      } finally {
+        fs.rmSync(dir, { recursive: true, force: true });
+      }
+    });
+
+    it.each([[], ['--task', 'brief', '--task-file', 'brief.md']])(
+      'rejects missing or conflicting task sources: %j',
+      async (...args) => {
+        const fixture = setup();
+        await expect(
+          fixture.program.parseAsync(['fleet', 'spawn', 'claude', '--name', 'file-worker', ...args], {
+            from: 'user',
+          })
+        ).rejects.toThrow('__exit__');
+        expect(fixture.errors.join('\n')).toContain('exactly one');
+        expect(fixture.local.spawnPty).not.toHaveBeenCalled();
+      }
+    );
 
     it('uses the caller nested directory and local broker despite ambient hosted credentials', async () => {
       vi.stubEnv('RELAY_WORKSPACE_KEY', 'rk_live_ambient_test');

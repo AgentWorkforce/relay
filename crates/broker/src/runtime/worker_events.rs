@@ -869,6 +869,23 @@ impl BrokerRuntime {
                                 .get("event_id")
                                 .and_then(Value::as_str)
                                 .unwrap_or("");
+                            if pending_verified_spawns.get(&name).is_some_and(|pending| {
+                                pending.readiness_proven
+                                    && pending.matches_task(generation, event_id)
+                            }) {
+                                if let Some(pending) = pending_verified_spawns.remove(&name) {
+                                    let result =
+                                        verified_spawn_ready_result(pending.invocation_id, &name);
+                                    let _ = fleet_control_tx
+                                        .send(FleetControlCommand::Send(
+                                            crate::fleet_wire::BrokerToRelaycast::ActionResult(
+                                                result,
+                                            ),
+                                        ))
+                                        .await;
+                                }
+                            }
+
                             // "echo" when the injection was confirmed in PTY
                             // output; "timeout_fallback" when the worker acked
                             // without ever seeing the echo.
@@ -961,6 +978,28 @@ impl BrokerRuntime {
                                 .get("event_id")
                                 .and_then(Value::as_str)
                                 .unwrap_or("");
+                            if pending_verified_spawns
+                                .get(&name)
+                                .is_some_and(|pending| pending.matches_task(generation, event_id))
+                            {
+                                if let Some(pending) = pending_verified_spawns.remove(&name) {
+                                    let result = super::fleet::verified_spawn_failed_result(
+                                        pending.invocation_id,
+                                        payload
+                                            .get("reason")
+                                            .and_then(Value::as_str)
+                                            .unwrap_or("initial_task_failed"),
+                                    );
+                                    let _ = fleet_control_tx
+                                        .send(FleetControlCommand::Send(
+                                            crate::fleet_wire::BrokerToRelaycast::ActionResult(
+                                                result,
+                                            ),
+                                        ))
+                                        .await;
+                                }
+                            }
+
                             let reason = payload
                                 .get("reason")
                                 .and_then(Value::as_str)
@@ -1414,15 +1453,25 @@ impl BrokerRuntime {
                             .get(&name)
                             .map(|handle| handle.spec.runtime == AgentRuntime::Pty)
                             .unwrap_or(false);
+                        let initial_task = workers.take_initial_task_for_injection(&name);
+                        let initial_event_id = initial_task
+                            .as_ref()
+                            .map(|_| format!("init_{}", Uuid::new_v4().simple()));
+                        if let Some(pending) = pending_verified_spawns.get_mut(&name) {
+                            if pending.generation == generation {
+                                pending.readiness_proven |= readiness_proven;
+                                if is_pty_worker && initial_event_id.is_some() {
+                                    pending.task_event_id = initial_event_id.clone();
+                                }
+                            }
+                        }
                         // Resolve the verified Fleet action before optional SDK
                         // notifications and initial-task work. A congested SDK
                         // output queue must not turn a ready worker into an
                         // action timeout.
                         let pending = pending_verified_spawns
                             .get(&name)
-                            .is_some_and(|pending| {
-                                readiness_proven && pending.generation == generation
-                            })
+                            .is_some_and(|pending| pending.can_report_ready(generation))
                             .then(|| pending_verified_spawns.remove(&name))
                             .flatten();
                         if let Some(pending) = pending {
@@ -1459,8 +1508,8 @@ impl BrokerRuntime {
                                 );
                             }
                         }
-                        if let Some(task_text) = workers.take_initial_task_for_injection(&name) {
-                            let event_id = format!("init_{}", Uuid::new_v4().simple());
+                        if let (Some(task_text), Some(event_id)) = (initial_task, initial_event_id)
+                        {
                             if let Err(e) = queue_and_try_delivery_raw(
                                 workers,
                                 pending_deliveries,
@@ -1481,6 +1530,19 @@ impl BrokerRuntime {
                             .await
                             {
                                 tracing::warn!(worker = %name, error = %e, "failed to deliver initial_task");
+                                if let Some(pending) = pending_verified_spawns.remove(&name) {
+                                    let result = super::fleet::verified_spawn_failed_result(
+                                        pending.invocation_id,
+                                        &e.to_string(),
+                                    );
+                                    let _ = fleet_control_tx
+                                        .send(FleetControlCommand::Send(
+                                            crate::fleet_wire::BrokerToRelaycast::ActionResult(
+                                                result,
+                                            ),
+                                        ))
+                                        .await;
+                                }
                             }
                             // The initial task bypasses the delivery-mode queue, but the
                             // hold replayed above freezes injection pops inside the PTY

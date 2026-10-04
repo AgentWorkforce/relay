@@ -153,6 +153,17 @@ pub(super) struct PendingVerifiedSpawn {
     pub(super) deadline: Instant,
     pub(super) started: Instant,
     pub(super) generation: Uuid,
+    pub(super) readiness_proven: bool,
+    pub(super) task_event_id: Option<String>,
+}
+
+impl PendingVerifiedSpawn {
+    pub(super) fn matches_task(&self, generation: Uuid, event_id: &str) -> bool {
+        self.generation == generation && self.task_event_id.as_deref() == Some(event_id)
+    }
+    pub(super) fn can_report_ready(&self, generation: Uuid) -> bool {
+        self.generation == generation && self.readiness_proven && self.task_event_id.is_none()
+    }
 }
 
 pub(super) fn verified_spawn_ready_result(
@@ -1661,6 +1672,8 @@ impl BrokerRuntime {
                                 deadline: Instant::now() + VERIFIED_SPAWN_READY_TIMEOUT,
                                 started,
                                 generation,
+                                readiness_proven: false,
+                                task_event_id: None,
                             },
                         );
                     }
@@ -3268,8 +3281,39 @@ mod tests {
             );
         }
         // CLI/SDK default confirmation budget is 120s (fleet.ts / relaycast.ts).
-        assert!(crate::pty_worker::STARTUP_READY_TIMEOUT < VERIFIED_SPAWN_READY_TIMEOUT);
+        assert!(
+            crate::pty_worker::STARTUP_READY_TIMEOUT
+                + crate::injection_wire::INJECTION_PROMPT_WAIT
+                + Duration::from_millis(crate::injection_wire::MAX_TYPED_BYTES as u64 * 5 + 250)
+                + crate::broker::delivery_verification::VERIFICATION_WINDOW
+                < VERIFIED_SPAWN_READY_TIMEOUT
+        );
         assert!(VERIFIED_SPAWN_READY_TIMEOUT < Duration::from_secs(120));
+    }
+
+    #[test]
+    fn verified_task_spawn_waits_for_matching_delivery_and_proven_prompt() {
+        let generation = Uuid::new_v4();
+        let mut pending = PendingVerifiedSpawn {
+            invocation_id: "test".into(),
+            deadline: Instant::now(),
+            started: Instant::now(),
+            generation,
+            readiness_proven: false,
+            task_event_id: Some("init_test".into()),
+        };
+        assert!(!pending.can_report_ready(generation));
+        pending.readiness_proven = true;
+        assert!(!pending.can_report_ready(generation));
+        assert!(!pending.matches_task(Uuid::new_v4(), "init_test"));
+        assert!(!pending.matches_task(generation, "another_message"));
+        assert!(pending.matches_task(generation, "init_test"));
+        // Exact echo, anchors, paste summary and compatibility fallback all retire
+        // the matching task; failed deliveries resolve the action as failure.
+        pending.task_event_id = None;
+        assert!(pending.can_report_ready(generation));
+        pending.readiness_proven = false;
+        assert!(!pending.can_report_ready(generation));
     }
 
     fn test_agent_spec(session_id: Option<&str>, harness_session_id: Option<&str>) -> AgentSpec {

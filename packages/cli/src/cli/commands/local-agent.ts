@@ -1,3 +1,4 @@
+import { readTaskInput } from '../lib/task-input.js';
 import type { Command } from 'commander';
 
 import { AGENT37_RELAYCAST_ORIGIN } from '@agent-relay/cloud';
@@ -849,6 +850,7 @@ export function registerLocalAgentCommands(
     .option('--name <name>', 'Agent name (defaults to the provider)')
     .option('--channels <channels...>', 'Channels to join', ['general'])
     .option('--task <task>', 'Initial task prompt')
+    .option('--task-file <path>', 'Read the initial task from a local UTF-8 file')
     .option('--model <model>', 'Model override')
     .option('--runtime <runtime>', 'Harness runtime: auto | native | pty', 'auto')
     .option('--cwd <path>', 'Working directory for the spawned agent')
@@ -873,7 +875,7 @@ export function registerLocalAgentCommands(
           const resolved = resolveAutoSpawn(
             provider,
             baseName,
-            opts.task as string | undefined,
+            await readTaskInput(opts.task, opts.taskFile),
             opts.model as string | undefined
           );
           await spawnAgentWithClient(client, {
@@ -904,6 +906,7 @@ export function registerLocalAgentCommands(
     .option('--mode <mode>', 'Attach mode: drive | view | passthrough', 'drive')
     .option('--channels <channels...>', 'Channels to join', ['general'])
     .option('--task <task>', 'Initial task prompt')
+    .option('--task-file <path>', 'Read the initial task from a local UTF-8 file')
     .option('--model <model>', 'Model override')
     .option('--runtime <runtime>', 'Harness runtime: auto | native | pty', 'auto')
     .option('--cwd <path>', 'Working directory for the spawned agent')
@@ -933,7 +936,7 @@ export function registerLocalAgentCommands(
       const resolved = resolveAutoSpawn(
         provider,
         baseName,
-        options.task as string | undefined,
+        await readTaskInput(options.task, options.taskFile),
         options.model as string | undefined
       );
       await run(
