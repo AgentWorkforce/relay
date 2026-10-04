@@ -5,6 +5,8 @@ import { InvalidArgumentError, type Command } from 'commander';
 import { findProjectRoot } from '@agent-relay/config';
 import {
   CloudFleetSandboxProvisionError,
+  DEV_CLOUD_API_URL,
+  DEV_RELAYCAST_ORIGIN,
   deleteCloudFleetSandbox,
   ensureCloudFleetSandbox,
   materializeCloudRelayfileRepository,
@@ -840,6 +842,15 @@ export function registerFleetCommands(
               ? deps.persistWorkspaceRelaycastTarget(workspaceSelection, target, sandbox.relaycastCloudApiUrl)
               : deps.persistWorkspaceRelaycastTarget(workspaceSelection, target);
             if (!persistedTarget) {
+              if (
+                target.route === 'canonical' &&
+                target.baseUrl === DEV_RELAYCAST_ORIGIN &&
+                sandbox.relaycastCloudApiUrl !== DEV_CLOUD_API_URL
+              ) {
+                throw new Error(
+                  `Cloud returned the DEV canonical Relaycast target, but relaycastCloudApiUrl was not exactly ${DEV_CLOUD_API_URL}; refusing to persist an untrusted route.`
+                );
+              }
               throw new Error(
                 'Cloud returned a Relaycast target, but no durable project session is available for follow-up attach.'
               );

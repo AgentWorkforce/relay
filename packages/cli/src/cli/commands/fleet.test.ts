@@ -2125,6 +2125,83 @@ describe('fleet command support', () => {
     expect(release).toHaveBeenCalled();
   });
 
+  it('reports the DEV trust guard when Cloud omits the exact DEV API URL', async () => {
+    const deleteCloudFleetSandbox = vi.fn(async () => undefined);
+    const cliError = vi.fn();
+    const program = new Command();
+    program.exitOverride();
+    registerFleetCommands(program, {
+      resolveSandboxRepository: () => undefined,
+      sdk: {
+        createAgentRelay: vi.fn() as never,
+        createWorkspaceRelay: vi.fn(() => ({
+          workspace: { info: vi.fn(async () => ({ id: 'rw_abc' })) },
+        })) as never,
+        createWorkspace: vi.fn() as never,
+        log: vi.fn(),
+        error: cliError,
+        exit: vi.fn(() => {
+          throw new Error('__exit__');
+        }) as never,
+      },
+      ensureCloudFleetSandbox: vi.fn(async () => ({
+        outcome: 'provisioned' as const,
+        cloudWorkspaceId: 'cloud-workspace',
+        nodeId: 'node-dev',
+        nodeName: 'agent37-dev',
+        sandboxId: 'sandbox-dev',
+        relayWorkspaceId: 'rw_abc',
+        providerId: 'agent37' as const,
+        relaycastTarget: DEV_RELAYCAST_TARGET,
+        relayfileMounted: true,
+      })),
+      resolveWorkspaceSelection: () => ({
+        key: 'rk_live_test',
+        source: 'project',
+        origin: '/cache/agent-relay-test/workspace-key.json',
+        workspaceId: 'rw_abc',
+      }),
+      persistWorkspaceRelaycastTarget: vi.fn(() => false),
+      deleteCloudFleetSandbox,
+      createFleetWorkspaceClient: vi.fn() as never,
+      log: () => undefined,
+      warn: () => undefined,
+      error: () => undefined,
+    });
+
+    await expect(
+      program.parseAsync(
+        [
+          'fleet',
+          'spawn',
+          'codex',
+          '--sandbox',
+          '--sandbox-provider',
+          'agent37',
+          '--no-sandbox-relayfile',
+          '--workspace-id',
+          'rw_abc',
+          '--name',
+          'dev-worker',
+          '--task',
+          'Work',
+          '--workspace-key',
+          'rk_live_test',
+        ],
+        { from: 'user' }
+      )
+    ).rejects.toThrow('__exit__');
+
+    expect(cliError).toHaveBeenCalledWith(
+      'Cloud returned the DEV canonical Relaycast target, but relaycastCloudApiUrl was not exactly https://dev.agentrelay.com/cloud; refusing to persist an untrusted route.'
+    );
+    expect(deleteCloudFleetSandbox).toHaveBeenCalledWith({
+      cloudWorkspaceId: 'cloud-workspace',
+      sandboxId: 'sandbox-dev',
+      providerId: 'agent37',
+    });
+  });
+
   it('preserves a retained sandbox when targeted spawn fails after attestation', async () => {
     const deleteCloudFleetSandbox = vi.fn(async () => undefined);
     const placement = {

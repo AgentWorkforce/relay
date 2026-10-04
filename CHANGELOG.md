@@ -10,7 +10,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Fixed
 
 - Broker recovery now stops with a clear re-enrollment error when Relaycast refuses node-token rotation proof, while retaining the last in-memory and durable credential for operator recovery. Accepted rotations use an atomically persisted idempotency key so a lost response or restart can recover the committed replacement.
-- `agent-relay fleet spawn --sandbox` accepts the canonical DEV Relaycast target only when authenticated against the exact DEV Cloud origin, while production trust remains unchanged.
+- `agent-relay fleet spawn --sandbox` accepts the canonical DEV Relaycast target only when authenticated against the exact DEV Cloud API URL (`https://dev.agentrelay.com/cloud`), while production trust remains unchanged.
 
 ## [13.1.1] - 2026-10-04
 
