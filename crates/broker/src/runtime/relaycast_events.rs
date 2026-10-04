@@ -509,7 +509,7 @@ pub(super) async fn spawn_worker_from_request(
     fleet_control_tx: &mpsc::Sender<FleetControlCommand>,
     fleet_delivery_book: &mut FleetDeliveryBook,
     fleet_inventory: &mut HashMap<WorkerName, InventoryAgent>,
-    fleet_worker_owners: &mut HashMap<WorkerName, (Uuid, crate::fleet_wire::AgentOwnerMetadata)>,
+    fleet_worker_owners: &mut HashMap<WorkerName, super::fleet::FleetWorkerOwner>,
     node_name: &str,
     invocation_id: Option<String>,
     session_ref: Option<String>,
@@ -874,7 +874,10 @@ pub(super) async fn spawn_worker_from_request(
                     registration_metadata.owner.clone(),
                     workers.workers.get(&name),
                 ) {
-                    fleet_worker_owners.insert(name.clone(), (worker.generation, owner));
+                    fleet_worker_owners.insert(
+                        name.clone(),
+                        super::fleet::FleetWorkerOwner::pending(worker.generation, owner),
+                    );
                 }
                 super::fleet::spawn_registration_metadata_publish(
                     workspace_http,

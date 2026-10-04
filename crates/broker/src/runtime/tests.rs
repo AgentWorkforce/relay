@@ -8154,7 +8154,7 @@ async fn assert_http_spawn_metadata_publication(supplied_token: bool, valid_cwd:
                 .runtime
                 .fleet_worker_owners
                 .get(&name)
-                .map(|(_, owner)| owner.cloud_user_id.as_str()),
+                .map(|owner| owner.owner.cloud_user_id.as_str()),
             Some("user-1")
         );
     } else {

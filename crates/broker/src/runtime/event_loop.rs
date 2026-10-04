@@ -243,8 +243,7 @@ pub(crate) struct BrokerRuntime {
     pub(super) fleet_inventory: HashMap<WorkerName, InventoryAgent>,
     /// Trusted owner paired with the exact live worker generation. Kept out of
     /// `inventory.sync`: ownership belongs on Relaycast agent metadata only.
-    pub(super) fleet_worker_owners:
-        HashMap<WorkerName, (Uuid, crate::fleet_wire::AgentOwnerMetadata)>,
+    pub(super) fleet_worker_owners: HashMap<WorkerName, super::fleet::FleetWorkerOwner>,
     /// Per-worker retry deadlines for failed Relaycast identity lookups while
     /// rebuilding the reconnect inventory.
     pub(super) fleet_inventory_reconcile_retry_after:

@@ -814,8 +814,13 @@ impl BrokerRuntime {
                                 registration_metadata.owner.clone(),
                                 workers.workers.get(&name),
                             ) {
-                                fleet_worker_owners
-                                    .insert(name.clone(), (worker.generation, owner));
+                                fleet_worker_owners.insert(
+                                    name.clone(),
+                                    super::fleet::FleetWorkerOwner::pending(
+                                        worker.generation,
+                                        owner,
+                                    ),
+                                );
                             }
                             super::fleet::spawn_registration_metadata_publish(
                                 relaycast_http,

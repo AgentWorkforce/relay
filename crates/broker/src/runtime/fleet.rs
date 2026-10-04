@@ -36,6 +36,29 @@ pub(super) struct FleetInventoryRetry {
     generation: Uuid,
     retry_after: Instant,
 }
+
+/// Trusted owner state for one exact worker process generation.
+///
+/// `metadata_pending` stays set until reconciliation observes a successful
+/// Relaycast PATCH. The spawn path also publishes immediately, but that write
+/// is detached from the runtime actor; retaining this bit gives transient
+/// failures a bounded, generation-fenced retry path.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(super) struct FleetWorkerOwner {
+    pub(super) generation: Uuid,
+    pub(super) owner: crate::fleet_wire::AgentOwnerMetadata,
+    pub(super) metadata_pending: bool,
+}
+
+impl FleetWorkerOwner {
+    pub(super) fn pending(generation: Uuid, owner: crate::fleet_wire::AgentOwnerMetadata) -> Self {
+        Self {
+            generation,
+            owner,
+            metadata_pending: true,
+        }
+    }
+}
 pub(super) fn try_send_terminal(
     terminal_control_tx: &mpsc::Sender<TerminalControlCommand>,
     message: TerminalToCloud,
@@ -2388,9 +2411,9 @@ pub(super) async fn reconcile_blocked_flush_predecessor(
 ///
 /// Best-effort by design: the agent is registered and running whether or not
 /// this lands, so a failure here must never fail the spawn. It is not silent
-/// either — a failure is logged at error level with the agent name and the
-/// underlying error, and it is not retried, because the honest signal is worth
-/// more than a hidden retry loop on a non-critical publish.
+/// either — a failure is logged at error level, while the runtime's
+/// generation-fenced reconciliation state retains a bounded retry path for the
+/// trusted owner fields.
 pub(super) fn spawn_registration_metadata_publish(
     relaycast_http: &RelaycastHttpClient,
     name: &str,
@@ -2674,8 +2697,7 @@ pub(super) async fn reconcile_fleet_inventory_with_live_workers(
 
 pub(super) struct FleetInventoryReconcileState<'a> {
     pub(super) retry_after: &'a mut HashMap<WorkerName, FleetInventoryRetry>,
-    pub(super) worker_owners:
-        &'a mut HashMap<WorkerName, (Uuid, crate::fleet_wire::AgentOwnerMetadata)>,
+    pub(super) worker_owners: &'a mut HashMap<WorkerName, FleetWorkerOwner>,
 }
 
 pub(super) async fn reconcile_fleet_inventory_with_live_workers_and_owner(
@@ -2691,20 +2713,28 @@ pub(super) async fn reconcile_fleet_inventory_with_live_workers_and_owner(
         .iter()
         .map(|worker| (worker.name.clone(), worker.generation))
         .collect();
-    // A worker that exits or has since been restored needs no retained retry
-    // state. A restarted same-name worker has a different generation and must not
-    // inherit the old process's retry deadline.
-    state.retry_after.retain(|name, retry| {
-        live_worker_generations.get(name) == Some(&retry.generation)
-            && !fleet_inventory.contains_key(name)
-    });
+    // A worker that exits needs no retained state. A restarted same-name worker
+    // has a different generation and must not inherit the old process's retry
+    // deadline. Existing inventory does not clear the deadline while a trusted
+    // owner PATCH is still pending.
     state
         .worker_owners
-        .retain(|name, (generation, _)| live_worker_generations.get(name) == Some(generation));
-    let missing_workers: Vec<_> = live_workers
+        .retain(|name, owner| live_worker_generations.get(name) == Some(&owner.generation));
+    state.retry_after.retain(|name, retry| {
+        live_worker_generations.get(name) == Some(&retry.generation)
+            && (!fleet_inventory.contains_key(name)
+                || state
+                    .worker_owners
+                    .get(name)
+                    .is_some_and(|owner| owner.metadata_pending))
+    });
+    let reconcile_workers: Vec<_> = live_workers
         .into_iter()
         .filter(|worker| {
-            !fleet_inventory.contains_key(&worker.name)
+            (!fleet_inventory.contains_key(&worker.name)
+                || state.worker_owners.get(&worker.name).is_some_and(|owner| {
+                    owner.generation == worker.generation && owner.metadata_pending
+                }))
                 && state
                     .retry_after
                     .get(&worker.name)
@@ -2712,7 +2742,7 @@ pub(super) async fn reconcile_fleet_inventory_with_live_workers_and_owner(
         })
         .take(FLEET_INVENTORY_RECONCILE_BATCH_SIZE)
         .collect();
-    if missing_workers.is_empty() {
+    if reconcile_workers.is_empty() {
         return 0;
     }
 
@@ -2727,8 +2757,9 @@ pub(super) async fn reconcile_fleet_inventory_with_live_workers_and_owner(
         name,
         session_ref,
         generation,
-    } in missing_workers
+    } in reconcile_workers
     {
+        let inventory_missing = !fleet_inventory.contains_key(&name);
         let agent = match timeout(
             FLEET_INVENTORY_RECONCILE_LOOKUP_TIMEOUT,
             relay.get_agent(name.as_str()),
@@ -2784,12 +2815,13 @@ pub(super) async fn reconcile_fleet_inventory_with_live_workers_and_owner(
             fleet_delivery_book.bind_authoritative_identity(agent.name.clone(), agent.id.clone());
         }
 
-        if let Some((_, owner)) = state
+        let pending_owner = state
             .worker_owners
             .get(&name)
-            .filter(|(owner_generation, _)| *owner_generation == generation)
-        {
-            let metadata = AgentRegistrationMetadata::default().with_owner(Some(owner.clone()));
+            .filter(|owner| owner.generation == generation && owner.metadata_pending)
+            .map(|owner| owner.owner.clone());
+        if let Some(owner) = pending_owner {
+            let metadata = AgentRegistrationMetadata::default().with_owner(Some(owner));
             if let Err(error) = relaycast_http
                 .publish_registration_metadata(name.as_str(), &metadata)
                 .await
@@ -2803,19 +2835,28 @@ pub(super) async fn reconcile_fleet_inventory_with_live_workers_and_owner(
                 schedule_fleet_inventory_retry(state.retry_after, name, generation, now);
                 continue;
             }
+            if let Some(owner) = state
+                .worker_owners
+                .get_mut(&name)
+                .filter(|owner| owner.generation == generation)
+            {
+                owner.metadata_pending = false;
+            }
         }
 
         state.retry_after.remove(&name);
-        fleet_inventory.insert(
-            name,
-            InventoryAgent {
-                agent_id: agent.id,
-                name: agent.name,
-                invocation_id: None,
-                session_ref,
-            },
-        );
-        repaired += 1;
+        if inventory_missing {
+            fleet_inventory.insert(
+                name,
+                InventoryAgent {
+                    agent_id: agent.id,
+                    name: agent.name,
+                    invocation_id: None,
+                    session_ref,
+                },
+            );
+            repaired += 1;
+        }
     }
 
     if repaired > 0 {
@@ -4458,7 +4499,7 @@ mod tests {
 
         let mut worker_owners = HashMap::from([(
             WorkerName::from("live-worker"),
-            (Uuid::from_u128(104), owner),
+            FleetWorkerOwner::pending(Uuid::from_u128(104), owner),
         )]);
         let state = FleetInventoryReconcileState {
             retry_after: &mut retry_after,
@@ -4477,6 +4518,127 @@ mod tests {
 
         assert_eq!(repaired, 1);
         patch.assert_hits(1);
+    }
+
+    #[tokio::test]
+    async fn reconciliation_retries_owner_metadata_for_an_inventoried_worker() {
+        let server = MockServer::start();
+        let lookup = server.mock(|when, then| {
+            when.method(GET).path("/v1/agents/live-worker");
+            then.status(200).json_body(serde_json::json!({
+                "ok": true,
+                "data": {
+                    "id": "agent-live-id", "name": "live-worker", "type": "agent",
+                    "status": "online", "persona": null, "metadata": {}
+                }
+            }));
+        });
+        let expected = serde_json::json!({"metadata": {
+            "cloud_user_id": "user-1",
+            "cloud_workspace_id": null,
+            "owner_hash": "c6c289e49e9c05b2145860387b73bcb18df43fb09a1e4a4a9713c76c88bb541b"
+        }});
+        let mut failed_patch = server.mock(|when, then| {
+            when.method(PATCH)
+                .path("/v1/agents/live-worker")
+                .json_body(expected.clone());
+            then.status(503).json_body(serde_json::json!({
+                "ok": false,
+                "error": {"code": "temporarily_unavailable", "message": "retry"}
+            }));
+        });
+        let relaycast_http =
+            RelaycastHttpClient::new(Some(server.base_url()), "rk_live_test", "broker", "claude");
+        let owner = crate::fleet_wire::AgentOwnerMetadata::new("user-1".into(), None).unwrap();
+        let name = WorkerName::from("live-worker");
+        let generation = Uuid::from_u128(105);
+        let (tx, mut rx) = mpsc::channel(2);
+        let mut inventory = HashMap::from([(
+            name.clone(),
+            InventoryAgent {
+                agent_id: "agent-live-id".into(),
+                name: "live-worker".into(),
+                invocation_id: None,
+                session_ref: None,
+            },
+        )]);
+        let mut delivery_book = FleetDeliveryBook::default();
+        delivery_book.bind_authoritative_identity("live-worker", "agent-live-id");
+        let mut retry_after = HashMap::new();
+        let mut worker_owners =
+            HashMap::from([(name.clone(), FleetWorkerOwner::pending(generation, owner))]);
+        let now = Instant::now();
+
+        let repaired = reconcile_fleet_inventory_with_live_workers_and_owner(
+            &tx,
+            &relaycast_http,
+            &mut delivery_book,
+            &mut inventory,
+            FleetInventoryReconcileState {
+                retry_after: &mut retry_after,
+                worker_owners: &mut worker_owners,
+            },
+            vec![live_fleet_worker("live-worker", None, 105)],
+            now,
+        )
+        .await;
+        assert_eq!(repaired, 0, "inventory was already healthy");
+        assert!(worker_owners[&name].metadata_pending);
+        assert_eq!(failed_patch.hits(), 1);
+        assert_eq!(lookup.hits(), 1);
+        assert!(
+            rx.try_recv().is_err(),
+            "owner-only repair is not inventory churn"
+        );
+
+        // The retry deadline suppresses a hot loop even though inventory is
+        // already present.
+        reconcile_fleet_inventory_with_live_workers_and_owner(
+            &tx,
+            &relaycast_http,
+            &mut delivery_book,
+            &mut inventory,
+            FleetInventoryReconcileState {
+                retry_after: &mut retry_after,
+                worker_owners: &mut worker_owners,
+            },
+            vec![live_fleet_worker("live-worker", None, 105)],
+            now + Duration::from_secs(1),
+        )
+        .await;
+        assert_eq!(failed_patch.hits(), 1);
+
+        failed_patch.delete();
+        let successful_patch = server.mock(|when, then| {
+            when.method(PATCH)
+                .path("/v1/agents/live-worker")
+                .json_body(expected);
+            then.status(200).json_body(serde_json::json!({
+                "ok": true,
+                "data": {
+                    "id": "agent-live-id", "name": "live-worker", "type": "agent",
+                    "status": "online", "persona": null, "metadata": {}
+                }
+            }));
+        });
+        reconcile_fleet_inventory_with_live_workers_and_owner(
+            &tx,
+            &relaycast_http,
+            &mut delivery_book,
+            &mut inventory,
+            FleetInventoryReconcileState {
+                retry_after: &mut retry_after,
+                worker_owners: &mut worker_owners,
+            },
+            vec![live_fleet_worker("live-worker", None, 105)],
+            now + FLEET_INVENTORY_RECONCILE_FAILURE_BACKOFF,
+        )
+        .await;
+
+        successful_patch.assert_hits(1);
+        assert!(!worker_owners[&name].metadata_pending);
+        assert!(!retry_after.contains_key(&name));
+        assert_eq!(inventory[&name].agent_id, "agent-live-id");
     }
 
     #[tokio::test]

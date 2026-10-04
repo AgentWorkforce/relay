@@ -217,6 +217,14 @@ impl BrokerRuntime {
     }
 
     async fn launch_task(&mut self, record: TaskRecord) {
+        let trusted_owner =
+            match trusted_task_owner(&record.invoke, self.fleet_owner_identity.clone()) {
+                Ok(owner) => owner,
+                Err(error) => {
+                    self.fail_task(&record.invoke.invocation_id, &error).await;
+                    return;
+                }
+            };
         let Some(cli) = record
             .invoke
             .input
@@ -295,7 +303,7 @@ impl BrokerRuntime {
             None,
             &self.hosted_agent_event_tx,
             &mut self.pty_observability,
-            self.fleet_owner_identity.clone(),
+            trusted_owner,
             Some((callback, record.generation)),
         )
         .await;
@@ -624,5 +632,65 @@ impl BrokerRuntime {
             }
             self.task_provider.retry_cursor = (start + records.len().min(16)) % records.len();
         }
+    }
+}
+
+/// Resolve task ownership from the authenticated action frame, falling back
+/// to the trusted node enrollment principal. Persisted task records retain the
+/// full frame, so delayed launches must apply the same precedence as immediate
+/// `spawn` actions rather than silently attributing work to the enroller.
+fn trusted_task_owner(
+    invoke: &ActionInvoke,
+    enrollment_owner: Option<crate::fleet_wire::AgentOwnerMetadata>,
+) -> Result<Option<crate::fleet_wire::AgentOwnerMetadata>, String> {
+    let caller_owner = invoke
+        .caller_owner
+        .as_deref()
+        .cloned()
+        .map(|owner| owner.validate())
+        .transpose()?;
+    Ok(crate::fleet_wire::trusted_spawn_owner(
+        caller_owner,
+        enrollment_owner,
+    ))
+}
+
+#[cfg(test)]
+mod owner_tests {
+    use super::*;
+
+    fn owner(id: &str) -> crate::fleet_wire::AgentOwnerMetadata {
+        crate::fleet_wire::AgentOwnerMetadata::new(id.to_string(), None).unwrap()
+    }
+
+    #[test]
+    fn task_owner_prefers_authenticated_caller_and_falls_back_to_enrollment() {
+        let enrollment = owner("alice");
+        let caller = owner("bob");
+        let mut invoke = super::task_store::fixture_invoke();
+        invoke.caller_owner = Some(Box::new(caller.clone()));
+        assert_eq!(
+            trusted_task_owner(&invoke, Some(enrollment.clone())).unwrap(),
+            Some(caller)
+        );
+
+        invoke.caller_owner = None;
+        assert_eq!(
+            trusted_task_owner(&invoke, Some(enrollment.clone())).unwrap(),
+            Some(enrollment)
+        );
+        assert_eq!(trusted_task_owner(&invoke, None).unwrap(), None);
+    }
+
+    #[test]
+    fn task_owner_rejects_an_invalid_server_principal() {
+        let mut invoke = super::task_store::fixture_invoke();
+        let mut caller = owner("bob");
+        caller.owner_hash = "0".repeat(64);
+        invoke.caller_owner = Some(Box::new(caller));
+        assert_eq!(
+            trusted_task_owner(&invoke, Some(owner("alice"))).unwrap_err(),
+            "trusted owner_hash does not match cloud_user_id"
+        );
     }
 }
