@@ -9,7 +9,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
-- Broker node-token rotation proves possession with the current node token and atomically persists a stable idempotency key so a lost response or restart can recover the committed replacement; if Relaycast rejects that proof after a node-control 401, recovery stops with a clear re-enrollment error while retaining the last in-memory and durable credential for operator recovery.
+- Broker recovery now stops with a clear re-enrollment error when Relaycast refuses node-token rotation proof, while retaining the last in-memory and durable credential for operator recovery. Accepted rotations use an atomically persisted idempotency key so a lost response or restart can recover the committed replacement.
 
 ## [13.1.1] - 2026-10-04
 

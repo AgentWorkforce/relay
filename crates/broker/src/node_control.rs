@@ -198,8 +198,9 @@ impl NodeTokenMinter {
     }
 
     /// Prove the cached token and replace it only after Relaycast returns a new
-    /// one. A failed request leaves the last proof on disk so a restart can
-    /// retry recovery instead of losing the established node credential.
+    /// one. A named proof conflict is terminal in the caller; other failures
+    /// fall through to its reconnect backoff. Every failure leaves the last
+    /// proof on disk so a restart can retry recovery.
     async fn remint(
         &self,
         rejected_token: &str,
@@ -5531,6 +5532,67 @@ mod tests {
             "the background mint must publish the token to the shared HTTP session"
         );
         let _ = command_tx.send(FleetControlCommand::Shutdown).await;
+    }
+
+    #[tokio::test]
+    async fn node_control_stops_when_initial_enrollment_requires_existing_node_proof() {
+        let mint_server = MockServer::start();
+        let create_node = mint_server.mock(|when, then| {
+            when.method(POST).path("/v1/nodes");
+            then.status(409).json_body(json!({
+                "ok": false,
+                "error": {
+                    "code": "node_token_proof_required",
+                    "message": "Node already exists; its current node token is required"
+                }
+            }));
+        });
+
+        let (command_tx, command_rx) = mpsc::channel(32);
+        let (event_tx, mut event_rx) = mpsc::channel(32);
+        let session_token = Arc::new(std::sync::RwLock::new(None));
+        let control = tokio::spawn(run_node_control_client(
+            FleetControlConfig {
+                // A terminal enrollment conflict returns before any WebSocket
+                // connection is attempted, so no listener is required.
+                ws_url: "ws://127.0.0.1:9/v1/node/ws".to_string(),
+                node_token: None,
+                node_id: "node-test".to_string(),
+                node_name: "host-test".to_string(),
+                broker_version: "broker/test".to_string(),
+                token_minter: Some(NodeTokenMinter {
+                    workspace_key: "rk_live_test".to_string(),
+                    workspace_id: "ws_test".to_string(),
+                    base_url: Some(mint_server.base_url()),
+                    node_id: "node-test".to_string(),
+                    node_name: "host-test".to_string(),
+                    broker_version: "broker/test".to_string(),
+                    token_path: None,
+                }),
+                session_token: Some(session_token.clone()),
+                read_idle_timeout: None,
+                probe: None,
+                terminal_reconnect_tx: None,
+            },
+            command_rx,
+            event_tx,
+        ));
+
+        command_tx
+            .send(FleetControlCommand::RegisterNode {
+                manifest: test_manifest(),
+                resume_cursor: None,
+            })
+            .await
+            .unwrap();
+
+        tokio::time::timeout(Duration::from_secs(5), control)
+            .await
+            .expect("terminal initial enrollment conflict must stop the control loop")
+            .unwrap();
+        create_node.assert_hits(1);
+        assert_eq!(event_rx.recv().await, Some(FleetControlEvent::Disconnected));
+        assert!(session_token.read().unwrap().is_none());
     }
 
     #[tokio::test]
