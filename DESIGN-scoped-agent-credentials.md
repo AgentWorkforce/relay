@@ -103,7 +103,8 @@ Option 1 has the smallest exposed credential surface and is preferred. Until one
 The smallest safe code step after approval is not to remove keys. It is to add the disabled single-workspace feature flag plus pure environment/config-construction tests, while leaving the default behavior unchanged. The flag should refuse to launch unless all of these are true:
 
 - the worker has a server-minted agent token whose server-verified workspace binding matches the
-  broker's single membership;
+  broker's single membership and whose server-verified agent identity matches the worker being
+  launched;
 - the broker has exactly one workspace membership;
 - the agent-token conformance suite passed for the target server version;
 - generated MCP configuration contains no workspace credential aliases or multi-workspace credential JSON.
@@ -113,7 +114,7 @@ Only then should a separate PR enable the flag in a canary. This design PR inten
 ## Required tests and mutation checks
 
 - Real worker process test: poison ambient, broker worker, harness, and result environments; assert the child sees the agent token but none of the workspace credential names.
-- Fail-closed token tests: with the canary flag enabled, a missing, blank, unusable, or wrong-workspace agent token refuses the spawn without a workspace-credential fallback.
+- Fail-closed token tests: with the canary flag enabled, a missing, blank, unusable, wrong-workspace, or wrong-agent token refuses the spawn without a workspace-credential fallback.
 - Snapshot or parser tests for every CLI MCP generator: the token is present, workspace credential names are absent.
 - MCP tests without a workspace key for list agents, recipient resolution, send/receive, inbox, presence, query nodes, and action-based spawn.
 - CLI tests for `message dm send` and the worker-supported command set using only `RELAY_AGENT_TOKEN`.
