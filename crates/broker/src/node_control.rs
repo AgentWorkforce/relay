@@ -1,6 +1,7 @@
 use std::{
     collections::{BTreeMap, HashMap, HashSet, VecDeque},
     fs,
+    io::Write,
     path::Path,
     sync::OnceLock,
     time::{Duration, Instant},
@@ -130,15 +131,27 @@ pub(crate) struct NodeTokenMinter {
 
 impl NodeTokenMinter {
     /// Mint a fresh node token via `POST /v1/nodes` and persist it to the
-    /// workspace-scoped cache. Returns the new token on success, or `None` after
-    /// logging the failure so the caller can back off and retry. Used for the
-    /// initial mint (no cached token) and as the shared body of [`Self::remint`].
-    async fn mint(&self) -> Option<String> {
+    /// workspace-scoped cache. Existing-node rotation sends `current_node_token`
+    /// as proof; a genuinely new node is minted with `None`.
+    async fn mint(
+        &self,
+        current_node_token: Option<&str>,
+    ) -> std::result::Result<String, CreateNodeMintError> {
+        self.mint_with_idempotency(current_node_token, None).await
+    }
+
+    async fn mint_with_idempotency(
+        &self,
+        current_node_token: Option<&str>,
+        idempotency_key: Option<&str>,
+    ) -> std::result::Result<String, CreateNodeMintError> {
         let request = create_node_request(&self.node_id, &self.node_name, &self.broker_version);
         match mint_node_token(
             &self.workspace_key,
             self.base_url.as_deref(),
             request,
+            current_node_token,
+            idempotency_key,
             MintNodeTokenLogContext {
                 node_id: &self.node_id,
                 workspace_id: &self.workspace_id,
@@ -169,7 +182,7 @@ impl NodeTokenMinter {
                     workspace_id = %self.workspace_id,
                     "minted node token via create_node"
                 );
-                Some(token)
+                Ok(token)
             }
             Err(error) => {
                 log_create_node_mint_error(
@@ -179,30 +192,43 @@ impl NodeTokenMinter {
                     &error,
                     "failed to mint node token via create_node",
                 );
-                None
+                Err(error)
             }
         }
     }
 
-    /// Discard the cached token for this workspace and mint a fresh one. Returns
-    /// the new token on success. On failure the caller surfaces a loud error and
-    /// backs off rather than looping on the rejected token.
-    async fn remint(&self) -> Option<String> {
-        // Drop the rejected cache eagerly so a crash mid-mint doesn't leave the
-        // stale token behind for the next start.
-        if let Some(path) = self.token_path.as_deref() {
-            if let Err(error) = fs::remove_file(path) {
-                if error.kind() != std::io::ErrorKind::NotFound {
+    /// Prove the cached token and replace it only after Relaycast returns a new
+    /// one. A named proof conflict is terminal in the caller; other failures
+    /// fall through to its reconnect backoff. Every failure leaves the last
+    /// proof on disk so a restart can retry recovery.
+    async fn remint(
+        &self,
+        rejected_token: &str,
+    ) -> std::result::Result<String, CreateNodeMintError> {
+        let fallback_key = || format!("node-rotation:{}", Uuid::new_v4());
+        let idempotency_key = match self.token_path.as_deref() {
+            Some(path) => match prepare_node_rotation(
+                path,
+                &self.node_id,
+                &self.workspace_id,
+                self.base_url.as_deref(),
+                rejected_token,
+            ) {
+                Ok(key) => key,
+                Err(error) => {
                     tracing::warn!(
                         target = "relay_broker::fleet",
                         node_id = %self.node_id,
                         error = %error,
-                        "failed to clear rejected node token cache before re-mint"
+                        "failed to persist node rotation recovery key; retry is process-local"
                     );
+                    fallback_key()
                 }
-            }
-        }
-        self.mint().await
+            },
+            None => fallback_key(),
+        };
+        self.mint_with_idempotency(Some(rejected_token), Some(&idempotency_key))
+            .await
     }
 }
 
@@ -267,6 +293,10 @@ impl CreateNodeMintError {
     }
 }
 
+fn is_node_token_proof_conflict(error: &CreateNodeMintError) -> bool {
+    error.status() == Some(409) && error.code() == Some("node_token_proof_required")
+}
+
 pub(crate) struct MintNodeTokenLogContext<'a> {
     pub(crate) node_id: &'a str,
     pub(crate) workspace_id: &'a str,
@@ -289,6 +319,8 @@ pub(crate) async fn mint_node_token(
     workspace_key: &str,
     base_url: Option<&str>,
     request: relaycast::CreateNodeRequest,
+    current_node_token: Option<&str>,
+    idempotency_key: Option<&str>,
     context: MintNodeTokenLogContext<'_>,
 ) -> std::result::Result<String, CreateNodeMintError> {
     let url = format!(
@@ -319,6 +351,14 @@ pub(crate) async fn mint_node_token(
         // server telemetry can report real users rather than only workspaces.
         for (name, value) in crate::telemetry::cloud_identity_headers() {
             builder = builder.header(name, value);
+        }
+        if let Some(current_node_token) =
+            current_node_token.filter(|token| !token.trim().is_empty())
+        {
+            builder = builder.header("X-Relaycast-Node-Token", current_node_token);
+        }
+        if let Some(idempotency_key) = idempotency_key.filter(|key| !key.trim().is_empty()) {
+            builder = builder.header("Idempotency-Key", idempotency_key);
         }
 
         let response = match builder.json(&request).send().await {
@@ -1622,6 +1662,33 @@ struct PersistedNodeToken {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     base_url: Option<String>,
     token: String,
+    /// CSPRNG capability for replaying the exact in-flight rotation after a
+    /// lost response or process restart. Cleared only when the replacement
+    /// token has been atomically persisted.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pending_rotation_idempotency_key: Option<String>,
+}
+
+fn load_scoped_node_token(
+    path: &Path,
+    node_id: &str,
+    workspace_id: &str,
+    base_url: Option<&str>,
+) -> Option<PersistedNodeToken> {
+    let raw = fs::read_to_string(path).ok()?;
+    let persisted: PersistedNodeToken = serde_json::from_str(&raw).ok()?;
+    if persisted.node_id != node_id || persisted.workspace_id != workspace_id {
+        return None;
+    }
+    // Only enforce the base URL when both the cache and the current run carry
+    // one; a cache written before base_url existed (None) stays usable so long
+    // as the workspace matches.
+    if let (Some(cached), Some(current)) = (persisted.base_url.as_deref(), base_url) {
+        if cached != current {
+            return None;
+        }
+    }
+    (!persisted.token.trim().is_empty()).then_some(persisted)
 }
 
 /// Load a previously minted node token, but only if it was minted for the same
@@ -1636,27 +1703,38 @@ pub(crate) fn load_node_token(
     workspace_id: &str,
     base_url: Option<&str>,
 ) -> Option<String> {
-    let raw = fs::read_to_string(path).ok()?;
-    let persisted: PersistedNodeToken = serde_json::from_str(&raw).ok()?;
-    if persisted.node_id != node_id {
-        return None;
-    }
-    if persisted.workspace_id != workspace_id {
-        return None;
-    }
-    // Only enforce the base URL when both the cache and the current run carry
-    // one; a cache written before base_url existed (None) stays usable so long
-    // as the workspace matches.
-    if let (Some(cached), Some(current)) = (persisted.base_url.as_deref(), base_url) {
-        if cached != current {
-            return None;
-        }
-    }
-    let token = persisted.token.trim();
-    (!token.is_empty()).then(|| token.to_string())
+    load_scoped_node_token(path, node_id, workspace_id, base_url)
+        .map(|persisted| persisted.token.trim().to_string())
 }
 
-/// Persist a minted node token next to the node id, scoped to `node_id`,
+/// Reuse a durable rotation capability if one is already pending; otherwise
+/// create and atomically persist it alongside the retained token before the
+/// request can commit. This closes both the lost-response and process-crash
+/// windows without deleting the only credential that can prove node ownership.
+fn prepare_node_rotation(
+    path: &Path,
+    node_id: &str,
+    workspace_id: &str,
+    base_url: Option<&str>,
+    token: &str,
+) -> Result<String> {
+    if let Some(persisted) = load_scoped_node_token(path, node_id, workspace_id, base_url) {
+        if persisted.token.trim() == token {
+            if let Some(key) = persisted
+                .pending_rotation_idempotency_key
+                .filter(|key| !key.trim().is_empty())
+            {
+                return Ok(key);
+            }
+        }
+    }
+
+    let key = format!("node-rotation:{}", Uuid::new_v4());
+    persist_node_token_state(path, node_id, workspace_id, base_url, token, Some(&key))?;
+    Ok(key)
+}
+
+/// Atomically persist a minted node token next to the node id, scoped to `node_id`,
 /// `workspace_id` and the engine `base_url` so an id rotation, a different
 /// workspace, or a different engine all invalidate it. Failures are surfaced as
 /// `Err` but are non-fatal to startup — the caller logs and continues with the
@@ -1668,6 +1746,40 @@ pub(crate) fn persist_node_token(
     base_url: Option<&str>,
     token: &str,
 ) -> Result<()> {
+    persist_node_token_state(path, node_id, workspace_id, base_url, token, None)
+}
+
+fn persist_node_token_state(
+    path: &Path,
+    node_id: &str,
+    workspace_id: &str,
+    base_url: Option<&str>,
+    token: &str,
+    pending_rotation_idempotency_key: Option<&str>,
+) -> Result<()> {
+    persist_node_token_state_with_sync(
+        path,
+        node_id,
+        workspace_id,
+        base_url,
+        token,
+        pending_rotation_idempotency_key,
+        sync_parent_directory,
+    )
+}
+
+fn persist_node_token_state_with_sync<F>(
+    path: &Path,
+    node_id: &str,
+    workspace_id: &str,
+    base_url: Option<&str>,
+    token: &str,
+    pending_rotation_idempotency_key: Option<&str>,
+    sync_directory: F,
+) -> Result<()>
+where
+    F: FnOnce(&Path) -> Result<()>,
+{
     if let Some(parent) = path.parent() {
         fs::create_dir_all(parent)
             .with_context(|| format!("failed to create node token dir {}", parent.display()))?;
@@ -1677,10 +1789,58 @@ pub(crate) fn persist_node_token(
         workspace_id: workspace_id.to_string(),
         base_url: base_url.map(ToOwned::to_owned),
         token: token.to_string(),
+        pending_rotation_idempotency_key: pending_rotation_idempotency_key.map(ToOwned::to_owned),
     })
     .context("failed to serialize node token")?;
-    fs::write(path, body)
-        .with_context(|| format!("failed to write node token file {}", path.display()))?;
+    let parent = path.parent().unwrap_or_else(|| Path::new("."));
+    let mut temporary = tempfile::NamedTempFile::new_in(parent).with_context(|| {
+        format!(
+            "failed to create node token temp file in {}",
+            parent.display()
+        )
+    })?;
+    temporary.write_all(body.as_bytes()).with_context(|| {
+        format!(
+            "failed to write node token temp file for {}",
+            path.display()
+        )
+    })?;
+    temporary
+        .as_file()
+        .sync_all()
+        .with_context(|| format!("failed to sync node token temp file for {}", path.display()))?;
+    temporary
+        .persist(path)
+        .map_err(|error| error.error)
+        .with_context(|| format!("failed to replace node token file {}", path.display()))?;
+    // The rename has committed at this point. A directory-sync failure means
+    // crash durability is uncertain, but returning Err would be worse: remint
+    // would generate a different process-local key from the one now visible on
+    // disk. Keep using the committed key and report the durability degradation.
+    if let Err(error) = sync_directory(parent) {
+        tracing::warn!(
+            target = "relay_broker::fleet",
+            path = %path.display(),
+            error = %error,
+            "node token replacement is visible but parent-directory sync failed"
+        );
+    }
+    Ok(())
+}
+
+#[cfg(unix)]
+fn sync_parent_directory(parent: &Path) -> Result<()> {
+    let directory = fs::File::open(parent)
+        .with_context(|| format!("failed to open node token directory {}", parent.display()))?;
+    directory
+        .sync_all()
+        .with_context(|| format!("failed to sync node token directory {}", parent.display()))
+}
+
+#[cfg(not(unix))]
+fn sync_parent_directory(_parent: &Path) -> Result<()> {
+    // Directory handles are not portably fsyncable outside Unix. The file
+    // content is still flushed before the atomic replacement above.
     Ok(())
 }
 
@@ -1795,54 +1955,67 @@ pub(crate) async fn run_node_control_client(
             // rather than idling forever — realtime delivery self-heals once the
             // engine is reachable.
             if let Some(minter) = config.token_minter.as_ref() {
-                if let Some(fresh) = minter.mint().await {
-                    config.node_token = Some(fresh);
-                    if let Some(shared) = &config.session_token {
-                        if let Ok(mut guard) = shared.write() {
-                            guard.clone_from(&config.node_token);
+                match minter.mint(None).await {
+                    Ok(fresh) => {
+                        config.node_token = Some(fresh);
+                        if let Some(shared) = &config.session_token {
+                            if let Ok(mut guard) = shared.write() {
+                                guard.clone_from(&config.node_token);
+                            }
                         }
+                        // A successful mint proves the engine is reachable, so reset
+                        // the backoff any earlier mint failures grew — the first
+                        // `/v1/node/ws` connect should start from the minimum delay,
+                        // not inherit a bloated one.
+                        reconnect_delay = INITIAL_RECONNECT_DELAY;
                     }
-                    // A successful mint proves the engine is reachable, so reset
-                    // the backoff any earlier mint failures grew — the first
-                    // `/v1/node/ws` connect should start from the minimum delay,
-                    // not inherit a bloated one.
-                    reconnect_delay = INITIAL_RECONNECT_DELAY;
-                } else {
-                    tracing::warn!(
-                        target = "relay_broker::fleet",
-                        node_id = %config.node_id,
-                        "node token mint failed; retrying after backoff (realtime delivery pending)"
-                    );
-                    // Stay responsive during the backoff instead of a blind
-                    // sleep: a spawn's `RegisterAgent` must get an immediate
-                    // `node_token_missing` (so the caller falls back to HTTP
-                    // register) rather than blocking on the 30s register timeout,
-                    // and load/inventory updates must keep draining so the bounded
-                    // control channel can't fill during a Relaycast outage.
-                    let backoff = tokio::time::sleep(reconnect_delay);
-                    tokio::pin!(backoff);
-                    loop {
-                        tokio::select! {
-                            _ = &mut backoff => break,
-                            command = command_rx.recv() => {
-                                if matches!(
-                                    handle_disconnected_command(
-                                        command,
-                                        &config,
-                                        &mut registration,
-                                        &mut load,
-                                        &mut inventory,
-                                        "node_token_missing",
-                                    ),
-                                    DisconnectedCommandOutcome::Shutdown
-                                ) {
-                                    return;
+                    Err(error) => {
+                        if is_node_token_proof_conflict(&error) {
+                            tracing::error!(
+                                target = "relay_broker::fleet",
+                                node_id = %config.node_id,
+                                error = %error,
+                                "NODE TOKEN ENROLLMENT REFUSED: this node identity already exists and no current node token is available; automatic mint stopped. Restore the cached node token or enroll a new node identity."
+                            );
+                            let _ = event_tx.send(FleetControlEvent::Disconnected).await;
+                            return;
+                        }
+                        tracing::warn!(
+                            target = "relay_broker::fleet",
+                            node_id = %config.node_id,
+                            "node token mint failed; retrying after backoff (realtime delivery pending)"
+                        );
+                        // Stay responsive during the backoff instead of a blind
+                        // sleep: a spawn's `RegisterAgent` must get an immediate
+                        // `node_token_missing` (so the caller falls back to HTTP
+                        // register) rather than blocking on the 30s register timeout,
+                        // and load/inventory updates must keep draining so the bounded
+                        // control channel can't fill during a Relaycast outage.
+                        let backoff = tokio::time::sleep(reconnect_delay);
+                        tokio::pin!(backoff);
+                        loop {
+                            tokio::select! {
+                                _ = &mut backoff => break,
+                                command = command_rx.recv() => {
+                                    if matches!(
+                                        handle_disconnected_command(
+                                            command,
+                                            &config,
+                                            &mut registration,
+                                            &mut load,
+                                            &mut inventory,
+                                            "node_token_missing",
+                                        ),
+                                        DisconnectedCommandOutcome::Shutdown
+                                    ) {
+                                        return;
+                                    }
                                 }
                             }
                         }
+                        reconnect_delay = (reconnect_delay * 2).min(MAX_RECONNECT_DELAY);
+                        continue;
                     }
-                    reconnect_delay = (reconnect_delay * 2).min(MAX_RECONNECT_DELAY);
-                    continue;
                 }
             } else {
                 // No minter available (e.g. no workspace RelayCast client). Can't
@@ -1897,24 +2070,38 @@ pub(crate) async fn run_node_control_client(
             consecutive_unauthorized = consecutive_unauthorized.saturating_add(1);
             if let Some(minter) = config.token_minter.as_ref() {
                 if should_attempt_remint(consecutive_unauthorized) {
-                    if let Some(fresh) = minter.remint().await {
-                        // Install the fresh token and retry, but fall through to
-                        // the shared backoff sleep at the bottom of the loop
-                        // rather than `continue`-ing past it. The delay throttles
-                        // the next connect attempt so a server that 401s every
-                        // freshly minted token can't be hammered. The counter is
-                        // intentionally NOT reset here; it only resets once a
-                        // correlated inventory reply establishes application readiness
-                        // (the `Disconnected` arm above), so repeated 401s still accumulate toward the cap
-                        // even when each mint succeeds.
-                        config.node_token = Some(fresh);
-                        // Mirror the fresh token to the HTTP session so a provider
-                        // reading it after this re-mint gets the valid token.
-                        if let Some(shared) = &config.session_token {
-                            if let Ok(mut guard) = shared.write() {
-                                guard.clone_from(&config.node_token);
+                    let rejected_token = config.node_token.as_deref().unwrap_or_default();
+                    match minter.remint(rejected_token).await {
+                        Ok(fresh) => {
+                            // Install the fresh token and retry, but fall through to
+                            // the shared backoff sleep at the bottom of the loop
+                            // rather than `continue`-ing past it. The delay throttles
+                            // the next connect attempt so a server that 401s every
+                            // freshly minted token can't be hammered. The counter is
+                            // intentionally NOT reset here; it only resets once a
+                            // correlated inventory reply establishes application readiness
+                            // (the `Disconnected` arm above), so repeated 401s still accumulate toward the cap
+                            // even when each mint succeeds.
+                            config.node_token = Some(fresh);
+                            // Mirror the fresh token to the HTTP session so a provider
+                            // reading it after this re-mint gets the valid token.
+                            if let Some(shared) = &config.session_token {
+                                if let Ok(mut guard) = shared.write() {
+                                    guard.clone_from(&config.node_token);
+                                }
                             }
                         }
+                        Err(error) if is_node_token_proof_conflict(&error) => {
+                            tracing::error!(
+                                target = "relay_broker::fleet",
+                                node_id = %config.node_id,
+                                error = %error,
+                                "NODE TOKEN RECOVERY REFUSED: the server rejected this credential as proof for the established node; automatic re-mint stopped and the last credential was retained for operator recovery. Restore the current token or enroll a new node identity."
+                            );
+                            let _ = event_tx.send(FleetControlEvent::Disconnected).await;
+                            return;
+                        }
+                        Err(_) => {}
                     }
                 } else {
                     tracing::error!(
@@ -3335,6 +3522,8 @@ mod tests {
             "rk_live_test",
             Some(&server.base_url()),
             create_node_request("node_abc", "local-node", "relay-broker/test"),
+            None,
+            None,
             MintNodeTokenLogContext {
                 node_id: "node_abc",
                 workspace_id: "ws_test",
@@ -3352,6 +3541,79 @@ mod tests {
                 .is_some_and(|body| body.contains("node creation is not allowed")),
             "error should preserve response body: {error:?}"
         );
+    }
+
+    #[tokio::test]
+    async fn mint_node_token_sends_current_node_token_as_header_proof() {
+        let server = MockServer::start();
+        let create_node = server.mock(|when, then| {
+            when.method(POST)
+                .path("/v1/nodes")
+                .header("authorization", "Bearer rk_live_test")
+                .header("x-relaycast-node-token", "nt_live_current")
+                .header(
+                    "idempotency-key",
+                    "node-rotation:00000000-0000-4000-8000-000000000001",
+                );
+            then.status(201).json_body(json!({
+                "ok": true,
+                "data": {
+                    "id": "node_abc",
+                    "name": "local-node",
+                    "kind": "ws",
+                    "role": "broker",
+                    "version": "relay-broker/test",
+                    "status": "offline",
+                    "live": false,
+                    "handlers_live": false,
+                    "load": null,
+                    "active_agents": 0,
+                    "max_agents": 0,
+                    "created_at": "2026-10-04T00:00:00Z",
+                    "token": "nt_live_rotated"
+                }
+            }));
+        });
+
+        let token = mint_node_token(
+            "rk_live_test",
+            Some(&server.base_url()),
+            create_node_request("node_abc", "local-node", "relay-broker/test"),
+            Some("nt_live_current"),
+            Some("node-rotation:00000000-0000-4000-8000-000000000001"),
+            MintNodeTokenLogContext {
+                node_id: "node_abc",
+                workspace_id: "ws_test",
+            },
+        )
+        .await
+        .expect("current node token should be sent as rotation proof");
+
+        create_node.assert_hits(1);
+        assert_eq!(token, "nt_live_rotated");
+    }
+
+    #[test]
+    fn node_token_proof_conflict_is_terminal_only_for_the_named_server_error() {
+        let proof_conflict = CreateNodeMintError::Api {
+            status: 409,
+            code: "node_token_proof_required".to_string(),
+            message: "current token required".to_string(),
+            body: String::new(),
+        };
+        assert!(is_node_token_proof_conflict(&proof_conflict));
+
+        for (status, code) in [
+            (403, "node_token_proof_required"),
+            (409, "node_name_conflict"),
+        ] {
+            assert!(!is_node_token_proof_conflict(&CreateNodeMintError::Api {
+                status,
+                code: code.to_string(),
+                message: "not the terminal proof conflict".to_string(),
+                body: String::new(),
+            }));
+        }
     }
 
     #[tokio::test]
@@ -3374,6 +3636,8 @@ mod tests {
             "rk_live_test",
             Some(&server.base_url()),
             create_node_request("node_abc", "local-node", "relay-broker/test"),
+            None,
+            None,
             MintNodeTokenLogContext {
                 node_id: "node_abc",
                 workspace_id: "ws_test",
@@ -3430,6 +3694,8 @@ mod tests {
             "rk_live_test",
             Some(&base_url),
             create_node_request("node_abc", "local-node", "relay-broker/test"),
+            None,
+            None,
             MintNodeTokenLogContext {
                 node_id: "node_abc",
                 workspace_id: "ws_test",
@@ -5320,6 +5586,169 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn node_control_stops_when_initial_enrollment_requires_existing_node_proof() {
+        let mint_server = MockServer::start();
+        let create_node = mint_server.mock(|when, then| {
+            when.method(POST).path("/v1/nodes");
+            then.status(409).json_body(json!({
+                "ok": false,
+                "error": {
+                    "code": "node_token_proof_required",
+                    "message": "Node already exists; its current node token is required"
+                }
+            }));
+        });
+
+        let (command_tx, command_rx) = mpsc::channel(32);
+        let (event_tx, mut event_rx) = mpsc::channel(32);
+        let session_token = Arc::new(std::sync::RwLock::new(None));
+        let control = tokio::spawn(run_node_control_client(
+            FleetControlConfig {
+                // A terminal enrollment conflict returns before any WebSocket
+                // connection is attempted, so no listener is required.
+                ws_url: "ws://127.0.0.1:9/v1/node/ws".to_string(),
+                node_token: None,
+                node_id: "node-test".to_string(),
+                node_name: "host-test".to_string(),
+                broker_version: "broker/test".to_string(),
+                token_minter: Some(NodeTokenMinter {
+                    workspace_key: "rk_live_test".to_string(),
+                    workspace_id: "ws_test".to_string(),
+                    base_url: Some(mint_server.base_url()),
+                    node_id: "node-test".to_string(),
+                    node_name: "host-test".to_string(),
+                    broker_version: "broker/test".to_string(),
+                    token_path: None,
+                }),
+                session_token: Some(session_token.clone()),
+                read_idle_timeout: None,
+                probe: None,
+                terminal_reconnect_tx: None,
+            },
+            command_rx,
+            event_tx,
+        ));
+
+        command_tx
+            .send(FleetControlCommand::RegisterNode {
+                manifest: test_manifest(),
+                resume_cursor: None,
+            })
+            .await
+            .unwrap();
+
+        tokio::time::timeout(Duration::from_secs(5), control)
+            .await
+            .expect("terminal initial enrollment conflict must stop the control loop")
+            .unwrap();
+        create_node.assert_hits(1);
+        assert_eq!(event_rx.recv().await, Some(FleetControlEvent::Disconnected));
+        assert!(session_token.read().unwrap().is_none());
+    }
+
+    #[tokio::test]
+    async fn node_control_stops_after_server_rejects_rejected_token_as_rotation_proof() {
+        let mint_server = MockServer::start();
+        let create_node = mint_server.mock(|when, then| {
+            when.method(POST)
+                .path("/v1/nodes")
+                .header("x-relaycast-node-token", "nt_live_rejected");
+            then.status(409).json_body(json!({
+                "ok": false,
+                "error": {
+                    "code": "node_token_proof_required",
+                    "message": "Node already exists; its current node token is required"
+                }
+            }));
+        });
+
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let ws_url = format!("ws://{}/v1/node/ws", listener.local_addr().unwrap());
+        let rejected_handshake = tokio::spawn(async move {
+            let (mut socket, _) = listener.accept().await.unwrap();
+            let mut buffer = [0_u8; 4096];
+            let _ = socket.read(&mut buffer).await.unwrap();
+            socket
+                .write_all(
+                    b"HTTP/1.1 401 Unauthorized\r\nContent-Length: 0\r\nConnection: close\r\n\r\n",
+                )
+                .await
+                .unwrap();
+        });
+
+        let token_dir = tempfile::tempdir().unwrap();
+        let token_path = token_dir.path().join("node-token.json");
+        persist_node_token(
+            &token_path,
+            "node-test",
+            "ws_test",
+            Some(&mint_server.base_url()),
+            "nt_live_rejected",
+        )
+        .unwrap();
+
+        let (command_tx, command_rx) = mpsc::channel(32);
+        let (event_tx, mut event_rx) = mpsc::channel(32);
+        let session_token = Arc::new(std::sync::RwLock::new(Some("nt_live_rejected".to_string())));
+        let control = tokio::spawn(run_node_control_client(
+            FleetControlConfig {
+                ws_url,
+                node_token: Some("nt_live_rejected".to_string()),
+                node_id: "node-test".to_string(),
+                node_name: "host-test".to_string(),
+                broker_version: "broker/test".to_string(),
+                token_minter: Some(NodeTokenMinter {
+                    workspace_key: "rk_live_test".to_string(),
+                    workspace_id: "ws_test".to_string(),
+                    base_url: Some(mint_server.base_url()),
+                    node_id: "node-test".to_string(),
+                    node_name: "host-test".to_string(),
+                    broker_version: "broker/test".to_string(),
+                    token_path: Some(token_path.clone()),
+                }),
+                session_token: Some(session_token.clone()),
+                read_idle_timeout: None,
+                probe: None,
+                terminal_reconnect_tx: None,
+            },
+            command_rx,
+            event_tx,
+        ));
+
+        command_tx
+            .send(FleetControlCommand::RegisterNode {
+                manifest: test_manifest(),
+                resume_cursor: None,
+            })
+            .await
+            .unwrap();
+
+        tokio::time::timeout(Duration::from_secs(5), control)
+            .await
+            .expect("terminal proof conflict must stop the control loop")
+            .unwrap();
+        rejected_handshake.await.unwrap();
+        create_node.assert_hits(1);
+        assert_eq!(event_rx.recv().await, Some(FleetControlEvent::Disconnected));
+        assert_eq!(
+            session_token.read().unwrap().as_deref(),
+            Some("nt_live_rejected"),
+            "terminal recovery must retain the last in-memory proof"
+        );
+        assert_eq!(
+            load_node_token(
+                &token_path,
+                "node-test",
+                "ws_test",
+                Some(&mint_server.base_url()),
+            )
+            .as_deref(),
+            Some("nt_live_rejected"),
+            "terminal recovery must retain the last durable proof"
+        );
+    }
+
+    #[tokio::test]
     async fn node_control_agent_register_timeout_late_success_deregisters() {
         let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
         let ws_url = format!("ws://{}/v1/node/ws", listener.local_addr().unwrap());
@@ -6760,6 +7189,95 @@ mod tests {
 
         let loaded = load_node_token(&path, "node-a", "ws-a", Some("https://engine.test"));
         assert_eq!(loaded.as_deref(), Some("nt_123"));
+
+        let pending = prepare_node_rotation(
+            &path,
+            "node-a",
+            "ws-a",
+            Some("https://engine.test"),
+            "nt_123",
+        )
+        .unwrap();
+        assert!(pending.starts_with("node-rotation:"));
+        assert_eq!(
+            prepare_node_rotation(
+                &path,
+                "node-a",
+                "ws-a",
+                Some("https://engine.test"),
+                "nt_123",
+            )
+            .unwrap(),
+            pending,
+            "a restart must reuse the durable in-flight recovery key"
+        );
+        let with_pending: PersistedNodeToken =
+            serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
+        assert_eq!(
+            with_pending.pending_rotation_idempotency_key.as_deref(),
+            Some(pending.as_str())
+        );
+
+        persist_node_token(
+            &path,
+            "node-a",
+            "ws-a",
+            Some("https://engine.test"),
+            "nt_456",
+        )
+        .unwrap();
+        let replaced = load_node_token(&path, "node-a", "ws-a", Some("https://engine.test"));
+        assert_eq!(replaced.as_deref(), Some("nt_456"));
+        let replaced_state: PersistedNodeToken =
+            serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
+        assert!(replaced_state.pending_rotation_idempotency_key.is_none());
+        assert_eq!(
+            std::fs::read_dir(dir.path()).unwrap().count(),
+            1,
+            "atomic replacement must not leave a temporary credential file"
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn persist_node_token_atomically_replaces_and_syncs_parent_directory() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("node-token.json");
+        persist_node_token(&path, "node-a", "ws-a", None, "nt_old").unwrap();
+        persist_node_token(&path, "node-a", "ws-a", None, "nt_new").unwrap();
+
+        assert_eq!(
+            load_node_token(&path, "node-a", "ws-a", None).as_deref(),
+            Some("nt_new")
+        );
+        assert_eq!(std::fs::read_dir(dir.path()).unwrap().count(), 1);
+        // The production path invokes this immediately after the rename; keep
+        // the platform durability primitive covered explicitly as well.
+        sync_parent_directory(dir.path()).unwrap();
+    }
+
+    #[test]
+    fn post_rename_sync_failure_reuses_the_committed_rotation_key() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("node-token.json");
+        let key = "node-rotation:00000000-0000-4000-8000-000000000006";
+
+        persist_node_token_state_with_sync(
+            &path,
+            "node-a",
+            "ws-a",
+            None,
+            "nt_current",
+            Some(key),
+            |_| anyhow::bail!("simulated directory sync failure"),
+        )
+        .expect("a post-rename sync failure must not discard committed state");
+
+        assert_eq!(
+            prepare_node_rotation(&path, "node-a", "ws-a", None, "nt_current").unwrap(),
+            key,
+            "remint must reuse the key already visible in the replaced cache"
+        );
     }
 
     #[test]
