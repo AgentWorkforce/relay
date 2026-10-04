@@ -1757,6 +1757,29 @@ fn persist_node_token_state(
     token: &str,
     pending_rotation_idempotency_key: Option<&str>,
 ) -> Result<()> {
+    persist_node_token_state_with_sync(
+        path,
+        node_id,
+        workspace_id,
+        base_url,
+        token,
+        pending_rotation_idempotency_key,
+        sync_parent_directory,
+    )
+}
+
+fn persist_node_token_state_with_sync<F>(
+    path: &Path,
+    node_id: &str,
+    workspace_id: &str,
+    base_url: Option<&str>,
+    token: &str,
+    pending_rotation_idempotency_key: Option<&str>,
+    sync_directory: F,
+) -> Result<()>
+where
+    F: FnOnce(&Path) -> Result<()>,
+{
     if let Some(parent) = path.parent() {
         fs::create_dir_all(parent)
             .with_context(|| format!("failed to create node token dir {}", parent.display()))?;
@@ -1790,7 +1813,18 @@ fn persist_node_token_state(
         .persist(path)
         .map_err(|error| error.error)
         .with_context(|| format!("failed to replace node token file {}", path.display()))?;
-    sync_parent_directory(parent)?;
+    // The rename has committed at this point. A directory-sync failure means
+    // crash durability is uncertain, but returning Err would be worse: remint
+    // would generate a different process-local key from the one now visible on
+    // disk. Keep using the committed key and report the durability degradation.
+    if let Err(error) = sync_directory(parent) {
+        tracing::warn!(
+            target = "relay_broker::fleet",
+            path = %path.display(),
+            error = %error,
+            "node token replacement is visible but parent-directory sync failed"
+        );
+    }
     Ok(())
 }
 
@@ -7220,6 +7254,30 @@ mod tests {
         // The production path invokes this immediately after the rename; keep
         // the platform durability primitive covered explicitly as well.
         sync_parent_directory(dir.path()).unwrap();
+    }
+
+    #[test]
+    fn post_rename_sync_failure_reuses_the_committed_rotation_key() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("node-token.json");
+        let key = "node-rotation:00000000-0000-4000-8000-000000000006";
+
+        persist_node_token_state_with_sync(
+            &path,
+            "node-a",
+            "ws-a",
+            None,
+            "nt_current",
+            Some(key),
+            |_| anyhow::bail!("simulated directory sync failure"),
+        )
+        .expect("a post-rename sync failure must not discard committed state");
+
+        assert_eq!(
+            prepare_node_rotation(&path, "node-a", "ws-a", None, "nt_current").unwrap(),
+            key,
+            "remint must reuse the key already visible in the replaced cache"
+        );
     }
 
     #[test]
