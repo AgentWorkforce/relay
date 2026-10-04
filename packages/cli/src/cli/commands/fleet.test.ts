@@ -64,6 +64,12 @@ const CANONICAL_RELAYCAST_TARGET = {
   workspaceId: 'rw_abc',
   relaycastApiKey: 'rk_live_canonical_target',
 };
+const DEV_RELAYCAST_TARGET = {
+  route: 'canonical' as const,
+  baseUrl: 'https://dev-cast.agentrelay.com',
+  workspaceId: 'rw_abc',
+  relaycastApiKey: 'rk_live_dev_target',
+};
 
 const LIVE_AGENT_CAPABILITY_NAME = 'relay:live-agents:v1';
 const liveAgentCapabilities = (...names: string[]) => [
@@ -2031,6 +2037,85 @@ describe('fleet command support', () => {
       expect.objectContaining({ name: expect.stringMatching(/^fleet-spawn-launcher-/) }),
       { strict: true }
     );
+    expect(release).toHaveBeenCalled();
+  });
+
+  it('dispatches through a Cloud-validated canonical dev target for Agent37', async () => {
+    const placement = {
+      spawn: vi.fn(async () => ({ invocationId: 'inv_dev', node: { name: 'agent37-dev' } })),
+    };
+    const register = vi.fn(async () => ({ token: 'at_live_dev' }));
+    const release = vi.fn(async () => ({ released: true, deleted: true }));
+    const createWorkspaceRelay = vi.fn(() => ({
+      workspace: { info: vi.fn(async () => ({ id: 'rw_abc' })), register, release },
+    }));
+    const persistWorkspaceRelaycastTarget = vi.fn(() => true);
+    const program = new Command();
+    program.exitOverride();
+    registerFleetCommands(program, {
+      resolveSandboxRepository: () => undefined,
+      sdk: {
+        createAgentRelay: vi.fn(() => ({ messaging: { placement } })) as never,
+        createWorkspaceRelay: createWorkspaceRelay as never,
+        createWorkspace: vi.fn() as never,
+        log: vi.fn(),
+        error: vi.fn(),
+        exit: vi.fn() as never,
+      },
+      ensureCloudFleetSandbox: vi.fn(async () => ({
+        outcome: 'reused' as const,
+        cloudWorkspaceId: 'cloud-workspace',
+        nodeId: 'node-dev',
+        nodeName: 'agent37-dev',
+        status: 'online',
+        activeAgents: 0,
+        maxAgents: 1,
+        providerId: 'agent37' as const,
+        relaycastTarget: DEV_RELAYCAST_TARGET,
+      })),
+      resolveWorkspaceSelection: () => ({
+        key: 'rk_live_test',
+        source: 'project',
+        origin: '/cache/agent-relay-test/workspace-key.json',
+        workspaceId: 'rw_abc',
+      }),
+      persistWorkspaceRelaycastTarget,
+      deleteCloudFleetSandbox: vi.fn(async () => undefined),
+      createFleetWorkspaceClient: vi.fn() as never,
+      log: () => undefined,
+      warn: () => undefined,
+      error: () => undefined,
+    });
+
+    await program.parseAsync(
+      [
+        'fleet',
+        'spawn',
+        'codex',
+        '--sandbox',
+        '--sandbox-provider',
+        'agent37',
+        '--no-sandbox-relayfile',
+        '--workspace-id',
+        'rw_abc',
+        '--name',
+        'dev-worker',
+        '--task',
+        'Work',
+        '--workspace-key',
+        'rk_live_test',
+      ],
+      { from: 'user' }
+    );
+
+    expect(createWorkspaceRelay).toHaveBeenCalledWith(
+      expect.objectContaining({
+        workspaceKey: DEV_RELAYCAST_TARGET.relaycastApiKey,
+        baseUrl: DEV_RELAYCAST_TARGET.baseUrl,
+      })
+    );
+    expect(persistWorkspaceRelaycastTarget).toHaveBeenCalledWith(expect.anything(), DEV_RELAYCAST_TARGET);
+    expect(placement.spawn).toHaveBeenCalled();
     expect(release).toHaveBeenCalled();
   });
 

@@ -813,16 +813,11 @@ export function registerFleetCommands(
             const returnedRelayWorkspaceId =
               'relayWorkspaceId' in sandbox ? sandbox.relayWorkspaceId?.trim() : undefined;
             if (
-              (sandboxProvider === 'agent37' && target.route !== 'agent37-isolated') ||
               (returnedRelayWorkspaceId !== undefined &&
                 target.workspaceId.trim() !== returnedRelayWorkspaceId) ||
               (sandbox.outcome === 'provisioned' && !returnedRelayWorkspaceId)
             ) {
-              throw new Error(
-                sandboxProvider === 'agent37' && target.route !== 'agent37-isolated'
-                  ? 'Explicit Agent37 provisioning requires the isolated Agent37 Relaycast target.'
-                  : 'Cloud returned a Relaycast target for a different workspace.'
-              );
+              throw new Error('Cloud returned a Relaycast target for a different workspace.');
             }
             relaycastClientOptions = {
               ...relaycastClientOptions,

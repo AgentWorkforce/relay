@@ -90,6 +90,8 @@ export {
   normalizeRelaycastTarget,
   CANONICAL_RELAYCAST_ORIGIN,
   AGENT37_RELAYCAST_ORIGIN,
+  DEV_CLOUD_API_URL,
+  DEV_RELAYCAST_ORIGIN,
   type EnsureCloudFleetSandboxInput,
   type EnsureCloudFleetSandboxResult,
   type MaterializeCloudRelayfileRepositoryInput,

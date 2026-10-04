@@ -965,8 +965,9 @@ export async function ensureCloudFleetSandbox(
   const resolved = await resolveCloudWorkspaceId(workspaceId, session.auth, resolutionSignal);
   const signal = boundedSignal(options, DEFAULT_ENSURE_TIMEOUT_MS);
   let response: Response;
+  let responseAuth = resolved.auth;
   try {
-    ({ response } = await authorizedApiFetch(
+    ({ response, auth: responseAuth } = await authorizedApiFetch(
       resolved.auth,
       '/api/v1/fleet/nodes/sandbox/ensure',
       {
@@ -1061,7 +1062,7 @@ export async function ensureCloudFleetSandbox(
       sandboxIdentity.name,
       input.providerId,
       repoRevisions,
-      resolved.auth.apiUrl
+      responseAuth.apiUrl
     );
   } catch (error) {
     const confirmedProvisioned = confirmsProvisionedSandboxIdentity(

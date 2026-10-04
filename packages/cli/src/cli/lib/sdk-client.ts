@@ -1,7 +1,13 @@
 import path from 'node:path';
 
 import { AgentRelay, type AgentRelayAgent } from '@agent-relay/sdk';
-import { AGENT37_RELAYCAST_ORIGIN, CANONICAL_RELAYCAST_ORIGIN } from '@agent-relay/cloud';
+import {
+  AGENT37_RELAYCAST_ORIGIN,
+  CANONICAL_RELAYCAST_ORIGIN,
+  DEV_CLOUD_API_URL,
+  DEV_RELAYCAST_ORIGIN,
+  defaultApiUrl,
+} from '@agent-relay/cloud';
 import {
   resolveWorkspaceSelection as resolveCloudWorkspaceSelection,
   writeProjectWorkspaceTargetIfSelectionCurrent,
@@ -92,7 +98,7 @@ function resolveBaseUrlForSelection(
   selection: WorkspaceSelection | undefined,
   options: SdkClientOptions
 ): string | undefined {
-  const persisted = validatePersistedRelaycastBaseUrl(selection);
+  const persisted = validatePersistedRelaycastBaseUrl(selection, defaultApiUrl(env(options)));
   const requested = trimOrUndefined(options.baseUrl) ?? trimOrUndefined(env(options).RELAY_BASE_URL);
   if (persisted && requested) {
     let parsed: URL;
@@ -148,7 +154,10 @@ export function resolveWorkspaceTransport(options: SdkClientOptions = {}): Works
   };
 }
 
-function validatePersistedRelaycastBaseUrl(selection: WorkspaceSelection | undefined): string | undefined {
+function validatePersistedRelaycastBaseUrl(
+  selection: WorkspaceSelection | undefined,
+  cloudApiUrl: string
+): string | undefined {
   const baseUrl = trimOrUndefined(selection?.relaycastBaseUrl);
   const route = selection?.relaycastRoute;
   const relaycastApiKey = trimOrUndefined(selection?.relaycastApiKey);
@@ -164,7 +173,9 @@ function validatePersistedRelaycastBaseUrl(selection: WorkspaceSelection | undef
   }
   const expectedOrigin =
     route === 'canonical'
-      ? CANONICAL_RELAYCAST_ORIGIN
+      ? cloudApiUrl.replace(/\/+$/u, '') === DEV_CLOUD_API_URL
+        ? DEV_RELAYCAST_ORIGIN
+        : CANONICAL_RELAYCAST_ORIGIN
       : route === 'agent37-isolated'
         ? AGENT37_RELAYCAST_ORIGIN
         : undefined;

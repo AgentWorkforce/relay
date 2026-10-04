@@ -393,6 +393,43 @@ describe('Cloud fleet sandbox client', () => {
     });
   });
 
+  it('validates the target against the auth returned by the ensure request', async () => {
+    mocks.authorizedApiFetch
+      .mockResolvedValueOnce({
+        response: Response.json({ cloudWorkspaceId: CLOUD_WORKSPACE_ID }),
+        auth,
+      })
+      .mockResolvedValueOnce({
+        response: Response.json(
+          {
+            outcome: 'provisioned',
+            providerId: 'agent37',
+            nodeId: 'node-refreshed-dev',
+            nodeName: SANDBOX_NAME,
+            sandboxId: SANDBOX_ID,
+            providerSandboxId: 'provider-refreshed-dev',
+            relayWorkspaceId: 'rw_abc',
+            relaycastTarget: DEV_RELAYCAST_TARGET,
+            relayfileMounted: true,
+          },
+          { status: 201 }
+        ),
+        auth: devAuth,
+      });
+
+    await expect(
+      ensureCloudFleetSandbox({
+        workspaceId: 'rw_abc',
+        name: SANDBOX_NAME,
+        sandboxId: SANDBOX_ID,
+        requiredCapability: 'spawn:codex',
+        providerId: 'agent37',
+        forceProvision: true,
+        workloadProfile: 'long-running-agent',
+      })
+    ).resolves.toMatchObject({ relaycastTarget: DEV_RELAYCAST_TARGET });
+  });
+
   it('resolves the unified workspace and provisions a ready mounted sandbox', async () => {
     mocks.authorizedApiFetch
       .mockResolvedValueOnce({

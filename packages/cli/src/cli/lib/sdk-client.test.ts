@@ -480,6 +480,34 @@ describe('sdk client option resolution', () => {
     expect(() => resolveBaseUrl({ env: { AGENT_RELAY_HOME: dir } })).toThrow(/not trusted/);
   });
 
+  it('loads the persisted dev canonical route only for the exact dev Cloud API', () => {
+    writeProjectWorkspaceKey(projectDataDir(), 'rk_live_canonical', {
+      workspaceId: 'rw_abc',
+      relaycastRoute: 'canonical',
+      relaycastBaseUrl: 'https://dev-cast.agentrelay.com',
+      relaycastApiKey: 'rk_live_dev',
+    });
+    const baseEnv = {
+      AGENT_RELAY_HOME: dir,
+      AGENT_RELAY_PROJECT: projectRoot,
+    };
+
+    expect(
+      resolveWorkspaceTransport({
+        env: { ...baseEnv, CLOUD_API_URL: 'https://dev.agentrelay.com/cloud' },
+      })
+    ).toEqual({
+      workspaceKey: 'rk_live_dev',
+      baseUrl: 'https://dev-cast.agentrelay.com',
+      source: 'project',
+    });
+    expect(() =>
+      resolveWorkspaceTransport({
+        env: { ...baseEnv, CLOUD_API_URL: 'https://agentrelay.com/cloud' },
+      })
+    ).toThrow(/not trusted/);
+  });
+
   it('normalizes an equivalent requested trailing slash against the persisted route', () => {
     writeProjectWorkspaceKey(projectDataDir(), 'rk_live_canonical', {
       workspaceId: 'rw_abc',
