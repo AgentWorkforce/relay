@@ -56,12 +56,14 @@ Removing the key before these gaps are closed would produce partially working ag
 Add server and SDK conformance tests that use only an agent token. The allowed matrix must include:
 
 - send, reply, DM, DM conversation reads, inbox, read receipts, reactions;
-- channel list/join/leave and the intended channel-management subset;
+- channel list/get (workspace scope), channel member reads (one named channel), join/leave and
+  mute/unmute (the acting agent's membership only), channel create (workspace scope), and channel
+  topic update/archive (only channels created by the acting agent);
 - self identity and presence/realtime heartbeat;
 - workspace roster read needed for exact recipient resolution;
 - node inventory read and action invocation needed for `spawn`.
 
-The denied matrix must include workspace creation, workspace credential recovery, node creation/rename, observer-token minting, other-agent token rotation, and any workspace-administration endpoint. A denial must remain a denial even if workspace identifiers or node identifiers are supplied.
+The denied matrix must include workspace creation, workspace credential recovery, node creation/rename, observer-token minting, other-agent token rotation, channel deletion, inviting or otherwise changing another agent's channel membership, updating or archiving channels the acting agent did not create, and any other workspace-administration endpoint. A denial must remain a denial even if workspace identifiers, node identifiers, channel identifiers, or target agent identifiers are supplied.
 
 This is the dependency on the companion server guard. The Relay change should not infer permissions from client behavior alone.
 
