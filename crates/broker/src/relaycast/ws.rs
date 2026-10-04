@@ -207,11 +207,27 @@ impl RelaycastHttpClient {
         expected_agent_id: &str,
         token: &str,
     ) -> Result<()> {
+        self.await_node_registered_agent_visibility_with_backoffs(
+            expected_name,
+            expected_agent_id,
+            token,
+            &NODE_REGISTER_VISIBILITY_BACKOFFS_MS,
+        )
+        .await
+    }
+
+    async fn await_node_registered_agent_visibility_with_backoffs(
+        &self,
+        expected_name: &str,
+        expected_agent_id: &str,
+        token: &str,
+        backoffs_ms: &[u64],
+    ) -> Result<()> {
         let relay = self
             .relay_client()
             .context("SDK relay client not initialized")?;
         for (attempt, delay_ms) in std::iter::once(0)
-            .chain(NODE_REGISTER_VISIBILITY_BACKOFFS_MS)
+            .chain(backoffs_ms.iter().copied())
             .enumerate()
         {
             if delay_ms > 0 {
@@ -231,9 +247,7 @@ impl RelaycastHttpClient {
                     status: 404,
                     ref code,
                     ..
-                }) if code == "agent_not_found"
-                    && attempt < NODE_REGISTER_VISIBILITY_BACKOFFS_MS.len() =>
-                {
+                }) if code == "agent_not_found" && attempt < backoffs_ms.len() => {
                     tracing::warn!(
                         worker = %expected_name,
                         agent_id = %expected_agent_id,
@@ -2783,6 +2797,69 @@ mod tests {
             .await
             .expect("the exact node-created identity should become readable");
         server.await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn node_registered_agent_visibility_fails_closed_across_split_servers() {
+        let node_control_server = MockServer::start();
+        let worker_http_server = MockServer::start();
+        let visible_on_node_control = node_control_server.mock(|when, then| {
+            when.method(GET)
+                .path("/v1/agent")
+                .header("authorization", "Bearer at_live_split");
+            then.status(200).json_body(json!({"ok":true,"data":{
+                "id":"agent-split","workspace_id":"ws-node-control",
+                "name":"cloud-zero-config","type":"agent","status":"online",
+                "persona":null,"metadata":{},"channels":[]
+            }}));
+        });
+        let absent_on_worker_http = worker_http_server.mock(|when, then| {
+            when.method(GET)
+                .path("/v1/agent")
+                .header("authorization", "Bearer at_live_split");
+            then.status(404).json_body(json!({"ok":false,"error":{
+                "code":"agent_not_found","message":"not present on this Relaycast target"
+            }}));
+        });
+
+        let node_client = RelaycastHttpClient::new(
+            Some(node_control_server.base_url()),
+            "rk_live_node_control",
+            "broker",
+            "codex",
+        );
+        node_client
+            .await_node_registered_agent_visibility_with_backoffs(
+                "cloud-zero-config",
+                "agent-split",
+                "at_live_split",
+                &[],
+            )
+            .await
+            .expect("the node-control target contains the identity");
+
+        let worker_http = RelaycastHttpClient::new(
+            Some(worker_http_server.base_url()),
+            "rk_live_worker_http",
+            "broker",
+            "codex",
+        );
+        let error = worker_http
+            .await_node_registered_agent_visibility_with_backoffs(
+                "cloud-zero-config",
+                "agent-split",
+                "at_live_split",
+                &[0, 0],
+            )
+            .await
+            .expect_err("a different HTTP target must never be mistaken for propagation lag");
+
+        assert!(
+            error.to_string().contains("agent_not_found"),
+            "split-target failure should retain the terminal API code: {error:#}"
+        );
+        visible_on_node_control.assert_hits(1);
+        absent_on_worker_http.assert_hits(3);
     }
 
     #[test]

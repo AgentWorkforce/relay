@@ -325,6 +325,38 @@ pub(super) async fn bind_http_registered_agent_to_node(
     }
 }
 
+/// Reconcile the HTTP-plane state for a freshly spawned worker.
+///
+/// Only an identity minted by node-control needs the read-after-write
+/// visibility barrier. The HTTP fallback already created the identity on this
+/// plane; requiring a node receipt there regresses otherwise-usable fallback
+/// spawns when bind or token-resolution could not populate fleet inventory.
+async fn reconcile_spawned_agent_channels(
+    workspace_http: &RelaycastHttpClient,
+    name: &WorkerName,
+    cli: &str,
+    channels: &[ChannelName],
+    token: &str,
+    node_registered_agent_id: Option<&str>,
+    owns_identity: bool,
+) -> Result<()> {
+    seed_supplied_agent_token(workspace_http, name, token);
+    if let Some(agent_id) = node_registered_agent_id {
+        workspace_http
+            .await_node_registered_agent_visibility(name.as_str(), agent_id, token)
+            .await?;
+    }
+    workspace_http
+        .ensure_agent_channels(name, Some(cli), channels)
+        .await?;
+    if owns_identity {
+        workspace_http
+            .verify_agent_channel_scope(name, channels)
+            .await?;
+    }
+    Ok(())
+}
+
 /// Outcome of a local release request, so callers can report a faithful
 /// `action.result` to the node control plane.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -674,6 +706,11 @@ pub(super) async fn spawn_worker_from_request(
     // the worker MCP never re-registers over HTTP. Falls back to HTTP
     // pre-registration when node binding is unavailable.
     let mut fleet_registration = None;
+    // This is deliberately distinct from `fleet_registration`: the latter is
+    // also populated after a successful HTTP fallback bind so reconnect
+    // inventory can be restored. Only a receipt returned directly by
+    // node-control requires the HTTP visibility barrier below.
+    let mut node_registered_agent_id = None;
     let mut owns_identity = true;
     let registration_metadata =
         crate::fleet_wire::AgentRegistrationMetadata::from_spawn_input(ws_value, task.as_deref());
@@ -726,6 +763,7 @@ pub(super) async fn spawn_worker_from_request(
                         registration_metadata,
                     );
                     let relay_key = token.token.clone();
+                    node_registered_agent_id = Some(token.agent_id.clone());
                     fleet_registration = Some((token, invocation_id.clone(), session_ref.clone()));
                     Some(relay_key)
                 }
@@ -813,30 +851,15 @@ pub(super) async fn spawn_worker_from_request(
     }
     let channel_membership_warning: Option<String> =
         if let Some(token) = worker_relay_key.as_deref() {
-            seed_supplied_agent_token(workspace_http, &name, token);
-            if let Err(error) = async {
-                if owns_identity {
-                    let (registration, _, _) = fleet_registration.as_ref().context(
-                        "owned node registration is missing its immutable identity receipt",
-                    )?;
-                    workspace_http
-                        .await_node_registered_agent_visibility(
-                            name.as_str(),
-                            &registration.agent_id,
-                            token,
-                        )
-                        .await?;
-                }
-                workspace_http
-                    .ensure_agent_channels(&name, Some(&cli), &channels)
-                    .await?;
-                if owns_identity {
-                    workspace_http
-                        .verify_agent_channel_scope(&name, &channels)
-                        .await?;
-                }
-                anyhow::Ok(())
-            }
+            if let Err(error) = reconcile_spawned_agent_channels(
+                workspace_http,
+                &name,
+                &cli,
+                &channels,
+                token,
+                node_registered_agent_id.as_deref(),
+                owns_identity,
+            )
             .await
             {
                 tracing::error!(
@@ -998,6 +1021,112 @@ mod tests {
     use super::*;
     use crate::terminal_control::TerminalToCloud;
     use ::relaycast::WsEvent;
+
+    #[tokio::test]
+    async fn http_registration_fallback_does_not_require_a_node_receipt() {
+        use httpmock::{Method::GET, MockServer};
+
+        let server = MockServer::start();
+        let unexpected_node_visibility = server.mock(|when, then| {
+            when.method(GET).path("/v1/agent");
+            then.status(500);
+        });
+        let scope = server.mock(|when, then| {
+            when.method(GET)
+                .path("/v1/agents/cloud-zero-config")
+                .header("authorization", "Bearer rk_live_test");
+            then.status(200)
+                .json_body(json!({"ok":true,"data":{"channels":[]}}));
+        });
+        let http =
+            RelaycastHttpClient::new(Some(server.base_url()), "rk_live_test", "broker", "codex");
+        let name = WorkerName::from("cloud-zero-config");
+
+        reconcile_spawned_agent_channels(
+            &http,
+            &name,
+            "codex",
+            &[],
+            "at_live_http_fallback",
+            None,
+            true,
+        )
+        .await
+        .expect("an HTTP-created identity must reconcile without a node registration receipt");
+
+        unexpected_node_visibility.assert_hits(0);
+        scope.assert_hits(1);
+    }
+
+    #[tokio::test]
+    async fn node_registration_visibility_precedes_nonempty_channel_reconciliation() {
+        use httpmock::{
+            Method::{GET, POST},
+            MockServer,
+        };
+
+        let server = MockServer::start();
+        let visibility = server.mock(|when, then| {
+            when.method(GET)
+                .path("/v1/agent")
+                .header("authorization", "Bearer at_live_node");
+            then.status(200).json_body(json!({"ok":true,"data":{
+                "id":"agent-node","workspace_id":"ws-test","name":"cloud-zero-config",
+                "type":"agent","status":"online","persona":null,"metadata":{},"channels":[]
+            }}));
+        });
+        let create_channel = server.mock(|when, then| {
+            when.method(POST)
+                .path("/v1/channels")
+                .header("authorization", "Bearer at_live_node")
+                .body_contains("\"name\":\"agent37-ga\"");
+            then.status(409).json_body(json!({"ok":false,"error":{
+                "code":"channel_already_exists","message":"exists"
+            }}));
+        });
+        let join_channel = server.mock(|when, then| {
+            when.method(POST)
+                .path("/v1/channels/agent37-ga/join")
+                .header("authorization", "Bearer at_live_node");
+            then.status(409).json_body(json!({"ok":false,"error":{
+                "code":"already_member","message":"joined"
+            }}));
+        });
+        let channel_members = server.mock(|when, then| {
+            when.method(GET).path("/v1/channels/agent37-ga/members");
+            then.status(200).json_body(json!({"ok":true,"data":[{
+                "agent_id":"agent-node","agent_name":"cloud-zero-config",
+                "role":"member","joined_at":"2026-10-04T00:00:00Z"
+            }]}));
+        });
+        let scope = server.mock(|when, then| {
+            when.method(GET).path("/v1/agents/cloud-zero-config");
+            then.status(200).json_body(json!({"ok":true,"data":{
+                "channels":[{"name":"agent37-ga"}]
+            }}));
+        });
+        let http =
+            RelaycastHttpClient::new(Some(server.base_url()), "rk_live_test", "broker", "codex");
+        let name = WorkerName::from("cloud-zero-config");
+
+        reconcile_spawned_agent_channels(
+            &http,
+            &name,
+            "codex",
+            &[ChannelName::from("agent37-ga")],
+            "at_live_node",
+            Some("agent-node"),
+            true,
+        )
+        .await
+        .expect("the node receipt should become visible before channel reconciliation");
+
+        visibility.assert_hits(1);
+        create_channel.assert_hits(1);
+        join_channel.assert_hits(1);
+        channel_members.assert_hits(1);
+        scope.assert_hits(1);
+    }
 
     #[cfg(unix)]
     #[tokio::test]
