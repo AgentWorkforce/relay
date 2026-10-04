@@ -276,14 +276,18 @@ fn prepare_wrap_retry(
 }
 
 // Wrap has no delivery protocol. Preserve its existing failed-throttle timeout
-// policy, including absent echoes; fleet alone uses the compatibility fallback.
+// policy, including absent echoes and evidence of loss. A collapsed paste is
+// the one unconfirmed verdict that is not evidence of anything going wrong —
+// the harness simply never echoes content — so it must not drive the injection
+// delay up on every delivery to a paste-collapsing TUI.
 fn wrap_timeout_outcome(
     verdict: crate::broker::delivery_verification::EchoVerdict,
 ) -> DeliveryOutcome {
-    if verdict.confirmed() {
-        DeliveryOutcome::Success
-    } else {
-        DeliveryOutcome::Failed
+    use crate::broker::delivery_verification::EchoVerdict;
+    match verdict {
+        _ if verdict.confirmed() => DeliveryOutcome::Success,
+        EchoVerdict::PasteSummary => DeliveryOutcome::Unverified,
+        _ => DeliveryOutcome::Failed,
     }
 }
 
@@ -2747,12 +2751,26 @@ sys.stdout.flush()"#;
     #[test]
     fn wrap_timeout_stays_failed_without_confirming_evidence() {
         use crate::broker::delivery_verification::{DeliveryOutcome, EchoVerdict};
-        for verdict in [EchoVerdict::Absent, EchoVerdict::HeadMissing] {
+        for verdict in [
+            EchoVerdict::Absent,
+            EchoVerdict::HeadMissing,
+            EchoVerdict::Incomplete,
+        ] {
             assert!(matches!(
                 super::wrap_timeout_outcome(verdict),
                 DeliveryOutcome::Failed
             ));
         }
+        // Neither a success (nothing was verified) nor a failure (nothing
+        // indicates loss) — exactly what `Unverified` exists for.
+        assert!(matches!(
+            super::wrap_timeout_outcome(EchoVerdict::PasteSummary),
+            DeliveryOutcome::Unverified
+        ));
+        assert!(matches!(
+            super::wrap_timeout_outcome(EchoVerdict::Normalized),
+            DeliveryOutcome::Success
+        ));
         // Wrap always uses bulk writes, including its Typed fallback. Its
         // write acknowledgement budget must cover the delayed submit only.
         assert!(

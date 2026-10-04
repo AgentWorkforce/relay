@@ -289,28 +289,123 @@ pub(crate) fn queue_or_take_detected_activity(
 }
 
 /// One evidence ladder shared by fleet and wrap; timeout policy stays at the caller.
-#[derive(Debug, PartialEq, Eq)]
+///
+/// Only whole-payload evidence confirms a delivery. Endpoint anchors and a
+/// collapsed-paste marker are reported, because they tell an operator what the
+/// terminal actually showed, but neither establishes that the harness received
+/// every byte: anchors say nothing about the bytes between them, and a paste
+/// marker is emitted for any paste, including a truncated one (relay#1893
+/// review, P1 x2).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum EchoVerdict {
+    /// The whole expected envelope appears verbatim in post-boundary output.
     Exact,
-    Anchors,
-    PasteSummary,
+    /// The whole expected envelope appears once the TUI's wrapping whitespace
+    /// is removed from both sides. Equivalent to `Exact` as integrity evidence.
+    Normalized,
+    /// The tail anchor is present without the head anchor: the injection lost
+    /// its head, which is the truncation this verification exists to catch.
     HeadMissing,
+    /// Both anchors are present but the payload between them is not, or the
+    /// echo is otherwise a strict subset. Evidence of a delivery, never
+    /// evidence of a complete one.
+    Incomplete,
+    /// The harness collapsed the paste into a `[Pasted text #N …]` marker, so
+    /// no content was echoed at all and nothing about it can be verified.
+    PasteSummary,
+    /// No echo evidence whatsoever.
     Absent,
 }
 impl EchoVerdict {
+    /// Whether this verdict proves the harness received the whole payload.
     pub(crate) fn confirmed(&self) -> bool {
-        matches!(self, Self::Exact | Self::Anchors | Self::PasteSummary)
+        matches!(self, Self::Exact | Self::Normalized)
     }
     pub(crate) fn label(&self) -> &'static str {
         match self {
             Self::Exact => "echo",
-            Self::Anchors => "echo_anchors",
-            Self::PasteSummary => "paste_summary",
+            Self::Normalized => "echo_normalized",
             Self::HeadMissing => "echo_head_missing",
+            Self::Incomplete => "echo_incomplete",
+            Self::PasteSummary => "paste_summary",
             Self::Absent => "timeout_fallback",
         }
     }
 }
+
+/// Whether a `delivery_verified` label proves full receipt.
+///
+/// The broker runtime sees deliveries only as the worker's wire label, so this
+/// is the one place that decides which labels a caller — notably the verified
+/// fleet spawn completion in `runtime::worker_events` — may treat as receipt.
+/// Kept in lockstep with [`EchoVerdict::confirmed`] by
+/// `verification_labels_agree_with_the_verdict_ladder`.
+pub(crate) fn verification_label_confirms_receipt(label: &str) -> bool {
+    label == EchoVerdict::Exact.label() || label == EchoVerdict::Normalized.label()
+}
+
+/// What a verification timeout should report for a final verdict.
+#[derive(Debug, PartialEq, Eq)]
+pub(crate) enum VerificationTimeout {
+    /// Head loss proven against a fully retained observation window. Terminal.
+    HeadLoss,
+    /// Whole-payload evidence that the output arm did not get to act on.
+    /// Practically unreachable — that arm checks every pending verification on
+    /// each read — but a late confirmation is still a confirmation, so it must
+    /// not be downgraded to an unverified ack.
+    Confirmed { label: &'static str },
+    /// Acked without proof of full receipt. `label` is the wire `verification`
+    /// value; `reason` states what the observed output actually showed. The
+    /// label is never one `verification_label_confirms_receipt` accepts.
+    Unconfirmed { label: &'static str, reason: String },
+}
+
+/// Classify a timed-out verification.
+///
+/// `retains_boundary` must come from [`VerificationOutput::retains_boundary`]:
+/// a trimmed window cannot prove head loss, so a head-missing verdict without
+/// it degrades to an unconfirmed ack rather than failing a delivery that may
+/// well have landed.
+pub(crate) fn verification_timeout(
+    verdict: EchoVerdict,
+    retains_boundary: bool,
+    window: Duration,
+) -> VerificationTimeout {
+    match verdict {
+        EchoVerdict::HeadMissing if retains_boundary => VerificationTimeout::HeadLoss,
+        EchoVerdict::HeadMissing => VerificationTimeout::Unconfirmed {
+            label: EchoVerdict::Incomplete.label(),
+            reason: "echo tail observed without its head, and the observation window was trimmed"
+                .to_string(),
+        },
+        EchoVerdict::Exact | EchoVerdict::Normalized => VerificationTimeout::Confirmed {
+            label: verdict.label(),
+        },
+        EchoVerdict::Incomplete => VerificationTimeout::Unconfirmed {
+            label: verdict.label(),
+            reason:
+                "echo matched only its head and tail; the payload between them was not observed"
+                    .to_string(),
+        },
+        EchoVerdict::PasteSummary => VerificationTimeout::Unconfirmed {
+            label: verdict.label(),
+            reason: "harness collapsed the paste, so no content was echoed to verify".to_string(),
+        },
+        EchoVerdict::Absent => VerificationTimeout::Unconfirmed {
+            label: verdict.label(),
+            reason: format!("echo not detected within {}s window", window.as_secs()),
+        },
+    }
+}
+
+/// Whether `output` carries a `[Pasted text #N …]` collapsed-paste marker.
+fn has_paste_marker(output: &str) -> bool {
+    output.split("[Pasted text #").skip(1).any(|rest| {
+        rest.split_once(']')
+            .is_some_and(|(marker, _)| marker.starts_with(|c: char| c.is_ascii_digit()))
+    })
+}
+
 pub(crate) fn echo_verdict(output: &str, expected: &str) -> EchoVerdict {
     let clean = strip_ansi(output);
     if !expected.is_empty() && clean.contains(expected) {
@@ -322,7 +417,16 @@ pub(crate) fn echo_verdict(output: &str, expected: &str) -> EchoVerdict {
         .map_or(expected, |i| &expected[i..]);
     let expected = compact(expected);
     let observed = compact(&clean);
-    // Short echoes need an exact match; overlapping anchors cannot prove loss.
+    // A TUI wraps and re-indents what it echoes, so whitespace cannot be
+    // compared — but every other byte can, and only the whole payload confirms
+    // receipt. Anchors are then diagnosis, not confirmation: a present tail
+    // without its head is the reported truncation, and a present head and tail
+    // around an unobserved middle is simply incomplete.
+    if !expected.is_empty() && observed.contains(&expected) {
+        return EchoVerdict::Normalized;
+    }
+    // Short echoes need a whole-payload match; overlapping anchors cannot
+    // distinguish loss from a near-complete echo.
     if expected.chars().count() >= 240 {
         let head: String = expected.chars().take(120).collect();
         let tail: String = expected
@@ -335,16 +439,13 @@ pub(crate) fn echo_verdict(output: &str, expected: &str) -> EchoVerdict {
             .collect();
         if observed.contains(&tail) {
             return if observed.contains(&head) {
-                EchoVerdict::Anchors
+                EchoVerdict::Incomplete
             } else {
                 EchoVerdict::HeadMissing
             };
         }
     }
-    if clean.split("[Pasted text #").skip(1).any(|s| {
-        s.split_once(']')
-            .is_some_and(|(marker, _)| marker.starts_with(|c: char| c.is_ascii_digit()))
-    }) {
+    if has_paste_marker(&clean) {
         return EchoVerdict::PasteSummary;
     }
     EchoVerdict::Absent
@@ -403,25 +504,148 @@ mod tests {
         assert!(!output.retains_boundary(boundary));
     }
 
-    #[test]
-    fn evidence_ladder_preserves_absent_fallback_and_detects_tail_loss() {
-        let expected = format!(
+    /// A long envelope and the pieces of it an adversarial or lossy TUI can
+    /// echo. `HEAD`/`TAIL` sentinels sit inside the anchors so a verdict can be
+    /// built from endpoints alone.
+    fn long_envelope() -> String {
+        format!(
             "Reminder changes each time\nRelay message from broker [init_1]: HEAD{}TAIL",
             "abc xyz ".repeat(1280)
-        );
+        )
+    }
+
+    #[test]
+    fn whole_payload_echoes_confirm_and_a_lost_head_fails() {
+        let expected = long_envelope();
         assert_eq!(echo_verdict(&expected, &expected), EchoVerdict::Exact);
+        // Wrapping and re-indenting is all a TUI may do to a confirmed echo.
         let wrapped = expected.replace(' ', "\r\n ");
-        assert_eq!(echo_verdict(&wrapped, &expected), EchoVerdict::Anchors);
+        assert_eq!(echo_verdict(&wrapped, &expected), EchoVerdict::Normalized);
+        assert!(echo_verdict(&wrapped, &expected).confirmed());
         assert_eq!(
             echo_verdict(&expected[expected.len() - 200..], &expected),
             EchoVerdict::HeadMissing
         );
-        assert_eq!(
-            echo_verdict("[Pasted text #1 +120 lines]", &expected),
-            EchoVerdict::PasteSummary
-        );
         assert_eq!(echo_verdict("Working…", &expected), EchoVerdict::Absent);
         assert_eq!(echo_verdict("", &expected).label(), "timeout_fallback");
+    }
+
+    /// relay#1893 review, P1: matching endpoints certified a payload whose
+    /// middle was missing, and that verdict completed a verified fleet spawn.
+    #[test]
+    fn endpoint_anchors_never_confirm_a_payload_whose_middle_is_unobserved() {
+        let expected = long_envelope();
+        let anchor_head = &expected[..expected.find("HEAD").unwrap() + 300];
+        let anchor_tail = &expected[expected.len() - 300..];
+
+        // Missing middle: exactly the reviewer's `middle_lost` reproduction.
+        let missing_middle = format!("{anchor_head}{anchor_tail}");
+        assert_eq!(
+            echo_verdict(&missing_middle, &expected),
+            EchoVerdict::Incomplete
+        );
+        // Changed middle: every byte between the anchors is a substitution.
+        let changed_middle = format!("{anchor_head}{}{anchor_tail}", "q".repeat(9_000));
+        assert_eq!(
+            echo_verdict(&changed_middle, &expected),
+            EchoVerdict::Incomplete
+        );
+        // Reversed anchors: the endpoints are both present in the wrong order,
+        // so nothing about the payload's shape was actually observed.
+        let reversed = format!("{anchor_tail}{anchor_head}");
+        assert_eq!(echo_verdict(&reversed, &expected), EchoVerdict::Incomplete);
+        for observed in [missing_middle, changed_middle, reversed] {
+            assert!(
+                !echo_verdict(&observed, &expected).confirmed(),
+                "endpoint evidence must stay unconfirmed"
+            );
+            assert!(!check_echo_in_output(&observed, &expected));
+        }
+    }
+
+    /// relay#1893 review, P1: any pasted-text marker verified any delivery.
+    #[test]
+    fn a_collapsed_paste_marker_never_confirms_a_delivery() {
+        let expected = long_envelope();
+        for observed in [
+            // A full collapse: the harness echoed no content at all.
+            "[Pasted text #1 +120 lines]".to_string(),
+            // The reviewer's `paste_tail` reproduction: a partial paste's
+            // marker plus the payload's last bytes.
+            format!(
+                "[Pasted text #1 +3 lines]{}",
+                &expected[expected.len() - 40..]
+            ),
+            // An earlier, smaller paste's marker redrawn during this delivery.
+            "❯ [Pasted text #1 +2 lines] previous turn\n❯ ".to_string(),
+        ] {
+            let verdict = echo_verdict(&observed, &expected);
+            assert_eq!(verdict, EchoVerdict::PasteSummary);
+            assert!(
+                !verdict.confirmed(),
+                "a paste marker is not a receipt for {observed:?}"
+            );
+            assert!(!check_echo_in_output(&observed, &expected));
+        }
+    }
+
+    /// The runtime sees labels, not verdicts; the two must not drift apart.
+    #[test]
+    fn verification_labels_agree_with_the_verdict_ladder() {
+        for verdict in [
+            EchoVerdict::Exact,
+            EchoVerdict::Normalized,
+            EchoVerdict::HeadMissing,
+            EchoVerdict::Incomplete,
+            EchoVerdict::PasteSummary,
+            EchoVerdict::Absent,
+        ] {
+            assert_eq!(
+                verification_label_confirms_receipt(verdict.label()),
+                verdict.confirmed(),
+                "{:?} label and confirmation disagree",
+                verdict
+            );
+        }
+        // An absent or unknown label is never receipt.
+        assert!(!verification_label_confirms_receipt(""));
+        assert!(!verification_label_confirms_receipt("echo_anchors"));
+    }
+
+    #[test]
+    fn timeout_disposition_fails_only_on_proven_head_loss() {
+        let window = Duration::from_secs(5);
+        assert_eq!(
+            verification_timeout(EchoVerdict::HeadMissing, true, window),
+            VerificationTimeout::HeadLoss
+        );
+        // A trimmed window cannot prove head loss, so it cannot fail a delivery.
+        for (verdict, label) in [
+            (EchoVerdict::HeadMissing, "echo_incomplete"),
+            (EchoVerdict::Incomplete, "echo_incomplete"),
+            (EchoVerdict::PasteSummary, "paste_summary"),
+            (EchoVerdict::Absent, "timeout_fallback"),
+        ] {
+            let retains = verdict != EchoVerdict::HeadMissing;
+            match verification_timeout(verdict, retains, window) {
+                VerificationTimeout::Unconfirmed { label: got, reason } => {
+                    assert_eq!(got, label, "{verdict:?}");
+                    assert!(!reason.is_empty());
+                    assert!(!verification_label_confirms_receipt(got), "{verdict:?}");
+                }
+                other => panic!("{verdict:?} must not fail a delivery: {other:?}"),
+            }
+        }
+        // A late whole-payload echo keeps its confirmation rather than being
+        // downgraded to an unverified ack.
+        for verdict in [EchoVerdict::Exact, EchoVerdict::Normalized] {
+            assert_eq!(
+                verification_timeout(verdict, true, window),
+                VerificationTimeout::Confirmed {
+                    label: verdict.label()
+                }
+            );
+        }
     }
 
     #[test]

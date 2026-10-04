@@ -869,13 +869,46 @@ impl BrokerRuntime {
                                 .get("event_id")
                                 .and_then(Value::as_str)
                                 .unwrap_or("");
+                            // "echo" / "echo_normalized" when the whole payload
+                            // was observed in PTY output. Every other label —
+                            // "echo_incomplete", "paste_summary",
+                            // "timeout_fallback" — is an ack without proof of
+                            // receipt. `verification_label_confirms_receipt` is
+                            // the single source of truth for which is which.
+                            let verification = payload.get("verification").and_then(Value::as_str);
+                            let reason = payload.get("reason").and_then(Value::as_str);
+                            let receipt_confirmed = verification.is_some_and(
+                                crate::broker::delivery_verification::verification_label_confirms_receipt,
+                            );
                             if pending_verified_spawns.get(&name).is_some_and(|pending| {
                                 pending.readiness_proven
                                     && pending.matches_task(generation, event_id)
                             }) {
                                 if let Some(pending) = pending_verified_spawns.remove(&name) {
-                                    let result =
-                                        verified_spawn_ready_result(pending.invocation_id, &name);
+                                    // A spawn carrying a task succeeds only when
+                                    // that task is proven received. An ack the
+                                    // worker could not verify leaves the agent
+                                    // live, so the action resolves as explicitly
+                                    // unconfirmed rather than as either a success
+                                    // or a retryable failure.
+                                    let result = if receipt_confirmed {
+                                        verified_spawn_ready_result(pending.invocation_id, &name)
+                                    } else {
+                                        tracing::warn!(
+                                            target = "agent_relay::broker",
+                                            worker = %name,
+                                            delivery_id = %delivery_id,
+                                            event_id = %event_id,
+                                            verification = verification.unwrap_or("none"),
+                                            "verified spawn's initial task was acked without \
+                                             proof of full receipt; reporting it unconfirmed"
+                                        );
+                                        super::fleet::verified_spawn_task_unconfirmed_result(
+                                            pending.invocation_id,
+                                            &name,
+                                            verification,
+                                        )
+                                    };
                                     let _ = fleet_control_tx
                                         .send(FleetControlCommand::Send(
                                             crate::fleet_wire::BrokerToRelaycast::ActionResult(
@@ -886,22 +919,15 @@ impl BrokerRuntime {
                                 }
                             }
 
-                            // "echo" when the injection was confirmed in PTY
-                            // output; "timeout_fallback" when the worker acked
-                            // without ever seeing the echo.
-                            let verification = payload
-                                .get("verification")
-                                .and_then(Value::as_str)
-                                .unwrap_or("echo");
-                            let reason = payload.get("reason").and_then(Value::as_str);
-                            if verification == "timeout_fallback" {
+                            if !receipt_confirmed {
                                 tracing::info!(
                                     target = "agent_relay::broker",
                                     worker = %name,
                                     delivery_id = %delivery_id,
                                     event_id = %event_id,
+                                    verification = verification.unwrap_or("none"),
                                     reason = reason.unwrap_or(""),
-                                    "delivery acked via timeout fallback — echo never verified"
+                                    "delivery acked without confirmed receipt"
                                 );
                             } else {
                                 tracing::debug!(
@@ -924,7 +950,7 @@ impl BrokerRuntime {
                                 "name": name,
                                 "delivery_id": delivery_id,
                                 "event_id": event_id,
-                                "verification": verification,
+                                "verification": verification.unwrap_or("echo"),
                             });
                             if let (Some(reason), Some(map)) =
                                 (reason, verified_event.as_object_mut())

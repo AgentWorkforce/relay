@@ -181,6 +181,33 @@ pub(super) fn verified_spawn_ready_result(
     }
 }
 
+/// A live, ready agent whose initial task was never confirmed as fully
+/// received.
+///
+/// This is deliberately neither a success nor an ordinary failure. The spawn
+/// did happen — the agent is registered, ready and holding the node's only
+/// slot for that name — so the caller must not retry, or it duplicates the
+/// agent. But the task it was spawned to run cannot be shown to have arrived
+/// intact, and `spawned:true, ready:true` is exactly the proof `fleet spawn`
+/// uses to report success, so the only honest answer is an error that names
+/// the live agent and says what to do instead (relay#1893 review, P1).
+pub(super) fn verified_spawn_task_unconfirmed_result(
+    invocation_id: String,
+    name: &WorkerName,
+    verification: Option<&str>,
+) -> ActionResult {
+    verified_spawn_failed_result(
+        invocation_id,
+        &format!(
+            "spawn_task_unconfirmed: agent '{name}' is live and ready, but full receipt of its \
+             initial task was not confirmed (verification: {}). Do not retry this spawn — it \
+             would duplicate the agent. Resend the task, or write the brief to a file and send a \
+             short pointer, then check the agent's transcript.",
+            verification.unwrap_or("none")
+        ),
+    )
+}
+
 pub(super) fn verified_spawn_failed_result(invocation_id: String, error: &str) -> ActionResult {
     ActionResult {
         task: None,
@@ -3308,8 +3335,10 @@ mod tests {
         assert!(!pending.matches_task(Uuid::new_v4(), "init_test"));
         assert!(!pending.matches_task(generation, "another_message"));
         assert!(pending.matches_task(generation, "init_test"));
-        // Exact echo, anchors, paste summary and compatibility fallback all retire
-        // the matching task; failed deliveries resolve the action as failure.
+        // The matching task retires this entry whatever its verdict; whether
+        // that resolves the action as success or as `spawn_task_unconfirmed`
+        // is `worker_events`' receipt gate, covered by
+        // `a_spawn_task_acked_without_proof_of_receipt_never_reports_success`.
         pending.task_event_id = None;
         assert!(pending.can_report_ready(generation));
         pending.readiness_proven = false;

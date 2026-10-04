@@ -44,6 +44,8 @@ while True:
  if data.endswith(b'\r'):
   body=data.replace(b'\x1b[200~',b'').replace(b'\x1b[201~',b'').rstrip(b'\r')
   if mode == 'tail': body=body[-200:]
+  if mode == 'middle_lost': body=body[:body.index(b'Relay message from ')+300]+body[-300:]
+  if mode == 'paste_tail': body=b'[Pasted text #1 +3 lines]'+body[-40:]
   if mode != 'silent': os.write(1,b'\r\n'+body+b'\r\n')
   os.write(1,'\r\n❯ '.encode())
   data=b''
@@ -117,7 +119,13 @@ fn long_pair() {
         let before = f.transcript().len();
         f.deliver(id, &body);
         let verified = f.wait("delivery_verified");
-        assert_ne!(verified["payload"]["verification"], "timeout_fallback");
+        // Whole-payload evidence, which is the only verdict a verified fleet
+        // spawn accepts as receipt of its task.
+        assert!(
+            ["echo", "echo_normalized"]
+                .contains(&verified["payload"]["verification"].as_str().unwrap()),
+            "{verified}"
+        );
         let transcript = f.transcript();
         let bytes = &transcript[before..];
         assert!(bytes.windows(body.len()).any(|w| w == body.as_bytes()));
@@ -179,6 +187,38 @@ fn absent_echo_preserves_timeout_fallback() {
         "timeout_fallback"
     );
 }
+/// relay#1893 review, P1 x2: a tail-preserving echo was certified by matching
+/// endpoints, and a collapsed-paste marker was certified by its mere presence.
+/// Neither observes the payload, so neither may report a confirmed delivery.
+#[test]
+fn partial_echoes_are_acked_without_claiming_verification() {
+    for (mode, expected) in [
+        // Head and tail echoed, ~10 KB of the middle gone.
+        ("middle_lost", "echo_incomplete"),
+        // A partial paste's marker plus the body's last 40 bytes.
+        ("paste_tail", "paste_summary"),
+    ] {
+        let mut f = Fixture::new(mode);
+        f.deliver(
+            "init_partial",
+            &format!("HEAD{}TAIL", "important task content ".repeat(450)),
+        );
+        let verified = f.wait("delivery_verified");
+        assert_eq!(
+            verified["payload"]["verification"], expected,
+            "{mode} must report what was actually observed"
+        );
+        // The labels a verified fleet spawn accepts as receipt.
+        for confirming in ["echo", "echo_normalized"] {
+            assert_ne!(
+                verified["payload"]["verification"], confirming,
+                "{mode} must never confirm full receipt"
+            );
+        }
+        assert!(verified["payload"]["reason"].is_string(), "{mode}");
+    }
+}
+
 #[test]
 #[ignore = "20 cold starts; run separately"]
 fn twenty_cold_starts() {

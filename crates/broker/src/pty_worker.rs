@@ -714,6 +714,28 @@ fn restore_hold_exemption(
     }
 }
 
+/// Wire `verification` label for a delivery the output arm just confirmed.
+///
+/// Both output arms confirm through `pending_verification_echo_seen`, which
+/// accepts only whole-payload evidence, so re-deriving the label here cannot
+/// report anything weaker. The assertion keeps that true if the ladder gains a
+/// rung: a label the runtime does not treat as receipt must never be emitted
+/// from a path that already acted on confirmation (relay#1893 review).
+fn confirmed_verification_label(
+    output: &crate::broker::delivery_verification::VerificationOutput,
+    pv: &PendingVerification,
+) -> &'static str {
+    let verdict = crate::broker::delivery_verification::echo_verdict(
+        &output.since(pv.output_boundary),
+        &pv.expected_echo,
+    );
+    debug_assert!(
+        verdict.confirmed(),
+        "output-arm confirmation emitted a non-confirming verdict: {verdict:?}"
+    );
+    verdict.label()
+}
+
 /// Relay command detection must stay disabled for the entire injection lifecycle.
 /// The paced writer can echo command-like text before its post-write verification
 /// is queued, so checking only `pending_verifications` leaves a false-positive gap.
@@ -1799,7 +1821,10 @@ pub(crate) async fn run_pty_worker(cmd: PtyCommand) -> Result<()> {
                                 json!({
                                     "delivery_id": delivery_id,
                                     "event_id": event_id,
-                                    "verification": crate::broker::delivery_verification::echo_verdict(&echo_buffer.since(pv.output_boundary), &pv.expected_echo).label()
+                                    // Output-arm confirmation is gated on
+                                    // `confirmed()`, so this label can only be
+                                    // whole-payload evidence.
+                                    "verification": confirmed_verification_label(&echo_buffer, &pv)
                                 }),
                             )
                             .await;
@@ -2294,7 +2319,7 @@ pub(crate) async fn run_pty_worker(cmd: PtyCommand) -> Result<()> {
                                     json!({
                                         "delivery_id": delivery_id,
                                         "event_id": event_id,
-                                        "verification": crate::broker::delivery_verification::echo_verdict(&echo_buffer.since(pv.output_boundary), &pv.expected_echo).label()
+                                        "verification": confirmed_verification_label(&echo_buffer, &pv)
                                     }),
                                 )
                                 .await;
@@ -2394,22 +2419,41 @@ pub(crate) async fn run_pty_worker(cmd: PtyCommand) -> Result<()> {
                         let event_id = pv.event_id.clone();
                         let verdict = crate::broker::delivery_verification::echo_verdict(
                             &echo_buffer.since(pv.output_boundary), &pv.expected_echo);
-                        if verdict == crate::broker::delivery_verification::EchoVerdict::HeadMissing && echo_buffer.retains_boundary(pv.output_boundary) {
-                            let _ = send_frame(&out_tx, "delivery_failed", None, json!({"delivery_id": delivery_id, "event_id": event_id, "reason": "echo_head_missing"})).await;
-                            let _ = send_frame(&out_tx, "worker_error", pv.request_id, json!({"code": "echo_head_missing", "retryable": false, "message": "Task echo contains its tail without its head; inspect the agent before retrying"})).await;
-                            throttle.record(DeliveryOutcome::Failed);
-                            // Retain the pending id, matching initial_injection_incomplete.
-                            continue;
+                        let disposition = crate::broker::delivery_verification::verification_timeout(
+                            verdict,
+                            echo_buffer.retains_boundary(pv.output_boundary),
+                            verification_window,
+                        );
+                        let (verification, reason) = match disposition {
+                            crate::broker::delivery_verification::VerificationTimeout::HeadLoss => {
+                                let _ = send_frame(&out_tx, "delivery_failed", None, json!({"delivery_id": delivery_id, "event_id": event_id, "reason": "echo_head_missing"})).await;
+                                let _ = send_frame(&out_tx, "worker_error", pv.request_id, json!({"code": "echo_head_missing", "retryable": false, "message": "Task echo contains its tail without its head; inspect the agent before retrying"})).await;
+                                throttle.record(DeliveryOutcome::Failed);
+                                // Retain the pending id, matching initial_injection_incomplete.
+                                continue;
+                            }
+                            crate::broker::delivery_verification::VerificationTimeout::Confirmed { label } => (label, None),
+                            crate::broker::delivery_verification::VerificationTimeout::Unconfirmed { label, reason } => (label, Some(reason)),
+                        };
+                        let outcome = match reason {
+                            None => DeliveryOutcome::Success,
+                            // An unconfirmed ack is not a verified delivery:
+                            // keep it out of the throttle's success signal.
+                            Some(_) => DeliveryOutcome::Unverified,
+                        };
+                        if let Some(reason) = reason.as_deref() {
+                            static TIMEOUT_FALLBACKS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+                            let fallback_count = TIMEOUT_FALLBACKS.fetch_add(1, Ordering::Relaxed) + 1;
+                            tracing::warn!(fallback_count, %delivery_id, %verification, %reason, "delivery receipt unconfirmed; acking without claiming verification");
                         }
-                        static TIMEOUT_FALLBACKS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
-                        let fallback_count = TIMEOUT_FALLBACKS.fetch_add(1, Ordering::Relaxed) + 1;
-                        tracing::warn!(fallback_count, %delivery_id, "delivery echo absent; preserving unverified timeout fallback");
                         // Do not re-inject on verification timeout. Re-injection can duplicate
                         // already-delivered messages when terminal echo parsing is noisy.
                         tracing::info!(
                             delivery_id = %delivery_id,
                             attempts = pv.attempts,
-                            "delivery echo not detected within verification window; acknowledging via timeout fallback (unverified)"
+                            %verification,
+                            confirmed = reason.is_none(),
+                            "verification window closed; acknowledging the delivery"
                         );
                         let _ = send_frame(
                             &out_tx,
@@ -2421,21 +2465,22 @@ pub(crate) async fn run_pty_worker(cmd: PtyCommand) -> Result<()> {
                             }),
                         )
                         .await;
+                        let mut verified = json!({
+                            "delivery_id": delivery_id,
+                            "event_id": event_id,
+                            "verification": verification,
+                        });
+                        if let Some(reason) = reason {
+                            verified["reason"] = json!(reason);
+                        }
                         let _ = send_frame(
                             &out_tx,
                             "delivery_verified",
                             pv.request_id.clone(),
-                            json!({
-                                "delivery_id": delivery_id,
-                                "event_id": event_id,
-                                "verification": "timeout_fallback",
-                                "reason": format!("echo not detected within {}s window", verification_window.as_secs())
-                            }),
+                            verified,
                         )
                         .await;
-                        // Timeout-fallback acks are not verified deliveries:
-                        // keep them out of the throttle's success signal.
-                        throttle.record(DeliveryOutcome::Unverified);
+                        throttle.record(outcome);
                         pending_worker_delivery_ids.remove(&delivery_id);
                         completed_worker_deliveries.insert(delivery_id, event_id);
                     } else {

@@ -35,14 +35,24 @@ or bypass size limits. Fleet requires exactly one of `--task` and `--task-file`;
 local `agent spawn` and `node agent spawn` allow neither. The integration command's
 existing task option remains unchanged.
 
-Verification recognizes exact echoes, whitespace-normalized head/tail anchors,
-and paste summaries. A tail without its head fails with `echo_head_missing`; the
-body is never automatically replayed. If the observation buffer has discarded the
-head, that is not treated as proof of truncation. No echo retains the existing
-`timeout_fallback` behavior, with a warning and process-local fallback counter.
-This compatibility verdict **does not prove byte-for-byte receipt**.
+Only a whole-payload echo confirms receipt: `echo` (verbatim) or
+`echo_normalized` (verbatim once the TUI's wrapping whitespace is removed from
+both sides). A tail without its head fails with `echo_head_missing`; the body is
+never automatically replayed. If the observation buffer has discarded the head,
+that is not treated as proof of truncation.
+
+Every other verdict is an ack that **does not prove byte-for-byte receipt**, and
+each says what was actually observed: `echo_incomplete` (head and tail without
+the payload between them — matching endpoints say nothing about the bytes
+between them), `paste_summary` (the harness collapsed the paste, so no content
+was echoed at all) and `timeout_fallback` (no echo), the last with a warning and
+a process-local fallback counter.
 
 Verified fleet PTY spawns with a task wait for its delivery verdict after proven
-startup readiness. A failed task fails the spawn action; timeout fallback still
-counts as success for compatibility. Wrap uses the same echo evidence but keeps
-its existing failed-throttle policy on absent echoes.
+startup readiness. A failed task fails the spawn action. A task acked without
+confirmed receipt resolves the action as `spawn_task_unconfirmed`, naming the
+live agent: the spawn must not be retried (that duplicates the agent), so resend
+the task or point the agent at a brief file. Wrap uses the same echo evidence and
+keeps its failed-throttle policy on absent echoes and on evidence of loss; a
+collapsed paste is recorded as unverified instead, since it indicates nothing
+about loss.

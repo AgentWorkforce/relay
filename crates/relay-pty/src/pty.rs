@@ -928,6 +928,12 @@ fn read_was_cancelled(error: &io::Error) -> bool {
     error.raw_os_error() == Some(ERROR_OPERATION_ABORTED as i32)
 }
 
+/// Whether the grid currently has bracketed-paste mode (DECSET 2004) set.
+fn paste_mode_enabled(term: &Term<RelayEventListener>) -> bool {
+    term.mode()
+        .contains(alacritty_terminal::term::TermMode::BRACKETED_PASTE)
+}
+
 impl PtySession {
     fn enqueue_write_with_output_boundary(
         &self,
@@ -1133,18 +1139,30 @@ impl PtySession {
                     // writer lock taken by the drainer thread.
                     let mut processor_guard = processor_clone.lock();
                     let mut term_guard = term_clone.lock();
-                    // Observe every mode transition, including enable/disable in one read.
+                    // Observe every mode transition, including an enable and a
+                    // disable inside one read. Stepping the parser one byte at a
+                    // time is the only way to see a transition that does not
+                    // survive to the end of the chunk, but it costs the reader
+                    // thread a parser call per byte, so it is reserved for chunks
+                    // that can actually carry the DECSET 2004 parameter. Every
+                    // other chunk is parsed in bulk and then checked once, which
+                    // still latches a `2004h` split across reads.
                     if paste_capable_reader.load(Ordering::Acquire) {
                         processor_guard.advance(&mut *term_guard, bytes);
                     } else {
-                        for byte in bytes {
-                            processor_guard.advance(&mut *term_guard, std::slice::from_ref(byte));
-                            if term_guard
-                                .mode()
-                                .contains(alacritty_terminal::term::TermMode::BRACKETED_PASTE)
-                            {
-                                paste_capable_reader.store(true, Ordering::Release);
+                        if bytes.windows(4).any(|window| window == b"2004") {
+                            for byte in bytes {
+                                processor_guard
+                                    .advance(&mut *term_guard, std::slice::from_ref(byte));
+                                if paste_mode_enabled(&term_guard) {
+                                    paste_capable_reader.store(true, Ordering::Release);
+                                }
                             }
+                        } else {
+                            processor_guard.advance(&mut *term_guard, bytes);
+                        }
+                        if paste_mode_enabled(&term_guard) {
+                            paste_capable_reader.store(true, Ordering::Release);
                         }
                     }
                     // Publish the grid's consumed byte offset while
@@ -1468,13 +1486,17 @@ impl PtySession {
     /// with a grid render.
     ///
     /// [`with_term_and_offset`]: PtySession::with_term_and_offset
-    /// Sticky capability, independent of whether the composer is currently ready.
-    pub fn bracketed_paste_enabled(&self) -> bool {
-        self.paste_capable.load(Ordering::Acquire)
-    }
-
     pub fn consumed_offset(&self) -> u64 {
         self.consumed_offset.load(Ordering::Acquire)
+    }
+
+    /// Whether the child has ever enabled bracketed-paste mode (DECSET 2004).
+    ///
+    /// Sticky: a TUI that turns the mode off while a dialog is open still
+    /// understands `ESC[200~` framing, so the capability is independent of
+    /// whether the composer is currently ready.
+    pub fn bracketed_paste_enabled(&self) -> bool {
+        self.paste_capable.load(Ordering::Acquire)
     }
 
     /// Check if the child process has exited without blocking.
@@ -1856,6 +1878,35 @@ mod tests {
             .lock()
             .mode()
             .contains(alacritty_terminal::term::TermMode::BRACKETED_PASTE));
+        pty.shutdown().unwrap();
+        drain.abort();
+    }
+
+    /// Only a chunk carrying the `2004` parameter is parsed byte-by-byte, so a
+    /// DECSET split across reads must still latch from the bulk-parse path.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn paste_capability_latches_when_decset_spans_two_reads() {
+        let (pty, mut rx) = PtySession::spawn(
+            "sh",
+            &[
+                "-c".into(),
+                "printf '\\033[?20'; sleep 0.3; printf '04hREADY'; sleep 2".into(),
+            ],
+            24,
+            80,
+        )
+        .unwrap();
+        let drain = tokio::spawn(async move { while rx.recv().await.is_some() {} });
+        // `READY` trails the DECSET, so the mode was parsed by the time it renders.
+        tokio::time::timeout(Duration::from_secs(3), async {
+            while !pty.screen_text().contains("READY") {
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+        })
+        .await
+        .unwrap();
+        assert!(pty.bracketed_paste_enabled());
         pty.shutdown().unwrap();
         drain.abort();
     }
