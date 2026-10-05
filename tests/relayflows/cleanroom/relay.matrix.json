@@ -184,7 +184,7 @@
             "node",
             "--test",
             "--test-concurrency=1",
-            "--test-reporter=spec",
+            "--test-reporter=tap",
             "--test-reporter-destination=stdout",
             "--test-reporter=./tests/integration/broker/failure-summary-reporter.mjs",
             "--test-reporter-destination=stderr",

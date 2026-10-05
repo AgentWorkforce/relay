@@ -4,6 +4,12 @@ function oneLine(value) {
     .trim();
 }
 
+export function redactFailureMessage(value) {
+  return oneLine(value)
+    .replace(/\b(?:rk|at|br|arr)_live_[A-Za-z0-9._~-]+\b/g, '[REDACTED_RELAY_CREDENTIAL]')
+    .replace(/\bBearer\s+[^\s,;]+/gi, 'Bearer [REDACTED_RELAY_CREDENTIAL]');
+}
+
 export default async function* failureSummary(source) {
   const failures = [];
 
@@ -12,7 +18,7 @@ export default async function* failureSummary(source) {
     const error = event.data?.details?.error;
     failures.push({
       name: oneLine(event.data?.name),
-      message: oneLine(error?.message),
+      message: redactFailureMessage(error?.message),
     });
   }
 
