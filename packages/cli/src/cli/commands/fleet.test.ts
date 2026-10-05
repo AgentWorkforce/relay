@@ -1264,8 +1264,20 @@ describe('fleet command support', () => {
       workerCwd: '/srv/agent-workforce/cloud/packages/web',
     };
     const events: string[] = [];
-    const materializeCloudRelayfileRepository = vi.fn(async () => {
+    const materializeCloudRelayfileRepository = vi.fn(async (_input, options) => {
       events.push('materialize');
+      options?.onProgress?.({
+        status: 'queued',
+        waitedMs: 65_000,
+        wait: {
+          reason: 'waiting_on_output_lock',
+          ownerJobId: 'older-clone-job',
+          ownerStatus: 'running',
+          ownerStartedAt: '2026-10-02T10:00:00.000Z',
+          ownerUpdatedAt: '2026-10-02T10:01:00.000Z',
+          leaseExpiresAt: '2026-10-02T10:16:00.000Z',
+        },
+      });
       return {
         cloudWorkspaceId: 'cloud-workspace',
         repository: 'AgentWorkforce/cloud',
@@ -1305,6 +1317,7 @@ describe('fleet command support', () => {
         release: vi.fn(async () => ({ released: true, deleted: true })),
       },
     }));
+    const warn = vi.fn();
     const program = new Command();
     program.exitOverride();
     registerFleetCommands(program, {
@@ -1329,7 +1342,7 @@ describe('fleet command support', () => {
       deleteCloudFleetSandbox: vi.fn(async () => undefined),
       createFleetWorkspaceClient: vi.fn() as never,
       log: () => undefined,
-      warn: () => undefined,
+      warn,
       error: () => undefined,
     });
 
@@ -1354,11 +1367,17 @@ describe('fleet command support', () => {
     );
 
     expect(events).toEqual(['materialize', 'ensure', 'spawn']);
-    expect(materializeCloudRelayfileRepository).toHaveBeenCalledWith({
-      workspaceId: 'rw_abc',
-      repository: 'AgentWorkforce/cloud',
-      revision,
-    });
+    expect(materializeCloudRelayfileRepository).toHaveBeenCalledWith(
+      {
+        workspaceId: 'rw_abc',
+        repository: 'AgentWorkforce/cloud',
+        revision,
+      },
+      { onProgress: expect.any(Function) }
+    );
+    expect(warn).toHaveBeenCalledWith(
+      'Materializing AgentWorkforce/cloud into Relayfile: waiting on output lock held by clone job older-clone-job (running; owner updated 2026-10-02T10:01:00.000Z; lease expires 2026-10-02T10:16:00.000Z; 65s elapsed).'
+    );
     expect(ensureCloudFleetSandbox).toHaveBeenCalledWith(
       expect.objectContaining({
         mountRelayfile: true,

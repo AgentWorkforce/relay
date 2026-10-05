@@ -687,11 +687,29 @@ export function registerFleetCommands(
           throw new Error('--workspace-id does not match the captured workspace identity.');
         }
         if (!checkoutRepository && mountSandboxRelayfile && sandboxRepository) {
-          liveRepository = await deps.materializeCloudRelayfileRepository({
-            workspaceId: relayWorkspaceId,
-            repository: sandboxRepository.repository,
-            revision: sandboxRepository.revision,
-          });
+          const repository = sandboxRepository.repository;
+          liveRepository = await deps.materializeCloudRelayfileRepository(
+            {
+              workspaceId: relayWorkspaceId,
+              repository,
+              revision: sandboxRepository.revision,
+            },
+            {
+              onProgress: (progress) => {
+                const elapsedSeconds = Math.floor(progress.waitedMs / 1_000);
+                if (progress.wait) {
+                  const ownerState = progress.wait.ownerStatus ?? 'unknown';
+                  deps.warn(
+                    `Materializing ${repository} into Relayfile: waiting on output lock held by clone job ${progress.wait.ownerJobId} (${ownerState}; owner updated ${progress.wait.ownerUpdatedAt ?? 'unknown'}; lease expires ${progress.wait.leaseExpiresAt}; ${elapsedSeconds}s elapsed).`
+                  );
+                  return;
+                }
+                deps.warn(
+                  `Materializing ${repository} into Relayfile (${progress.status}; ${elapsedSeconds}s elapsed).`
+                );
+              },
+            }
+          );
         }
         const sandboxId = sandboxIdOption ?? (sandboxName === undefined ? `sbx_${randomUUID()}` : undefined);
         const deterministicSandboxName =

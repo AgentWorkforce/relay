@@ -56,8 +56,23 @@ export type CloudRelayfileRepositoryMaterialization = {
   sentinelPath: string;
 };
 
+export type CloudRelayfileRepositoryProgress = {
+  status: 'queued' | 'running' | 'retrying';
+  waitedMs: number;
+  wait?: {
+    reason: 'waiting_on_output_lock';
+    ownerJobId: string;
+    ownerStatus: 'queued' | 'running' | 'retrying' | 'completed' | 'failed' | null;
+    ownerStartedAt: string | null;
+    ownerUpdatedAt: string | null;
+    leaseExpiresAt: string;
+  };
+};
+
 export type CloudRelayfileRepositoryMaterializeOptions = CloudFleetSandboxRequestOptions & {
   pollIntervalMs?: number;
+  /** Receives bounded, credential-free status while the Cloud clone remains non-terminal. */
+  onProgress?: (progress: CloudRelayfileRepositoryProgress) => void;
 };
 
 export type CloudFleetSandboxProviderId =
@@ -500,6 +515,53 @@ function expectedRelayfileRepositoryPaths(
   };
 }
 
+const CLOUD_CLONE_PROGRESS_STATUSES = new Set(['queued', 'running', 'retrying', 'completed', 'failed']);
+const CLOUD_CLONE_PROGRESS_REPEAT_MS = 30_000;
+
+function normalizeProgressTimestamp(value: unknown): string | null | undefined {
+  if (value === null) return null;
+  if (typeof value !== 'string' || value.length > 64) return undefined;
+  const timestamp = Date.parse(value);
+  return Number.isFinite(timestamp) ? new Date(timestamp).toISOString() : undefined;
+}
+
+function readCloudRelayfileRepositoryWait(
+  payload: JsonRecord
+): CloudRelayfileRepositoryProgress['wait'] | undefined {
+  if (!isObject(payload.wait) || payload.wait.reason !== 'waiting_on_output_lock') return undefined;
+  const wait = payload.wait;
+  const ownerJobId = readString(wait, 'ownerJobId');
+  const ownerStatusValue = wait.ownerStatus;
+  const ownerStatus =
+    ownerStatusValue === null
+      ? null
+      : typeof ownerStatusValue === 'string' && CLOUD_CLONE_PROGRESS_STATUSES.has(ownerStatusValue)
+        ? (ownerStatusValue as NonNullable<CloudRelayfileRepositoryProgress['wait']>['ownerStatus'])
+        : undefined;
+  const ownerStartedAt = normalizeProgressTimestamp(wait.ownerStartedAt);
+  const ownerUpdatedAt = normalizeProgressTimestamp(wait.ownerUpdatedAt);
+  const leaseExpiresAt = normalizeProgressTimestamp(wait.leaseExpiresAt);
+  if (
+    !ownerJobId ||
+    ownerJobId.length > 128 ||
+    !/^[A-Za-z0-9_-]+$/.test(ownerJobId) ||
+    ownerStatus === undefined ||
+    ownerStartedAt === undefined ||
+    ownerUpdatedAt === undefined ||
+    !leaseExpiresAt
+  ) {
+    return undefined;
+  }
+  return {
+    reason: 'waiting_on_output_lock',
+    ownerJobId,
+    ownerStatus,
+    ownerStartedAt,
+    ownerUpdatedAt,
+    leaseExpiresAt,
+  };
+}
+
 function waitForDelay(ms: number, signal: AbortSignal): Promise<void> {
   if (signal.aborted) return Promise.reject(signal.reason);
   return new Promise((resolve, reject) => {
@@ -858,6 +920,9 @@ export async function materializeCloudRelayfileRepository(
   }
   const jobId = requiredString(requestPayload, 'jobId', 'Cloud Relayfile repository materializer');
   const expectedPaths = expectedRelayfileRepositoryPaths(owner, repo);
+  const materializationStartedAt = Date.now();
+  let lastProgressSignature: string | undefined;
+  let lastProgressAt = 0;
 
   for (;;) {
     const statusResult = await authorizedApiFetch(
@@ -930,6 +995,31 @@ export async function materializeCloudRelayfileRepository(
     }
     if (status !== 'queued' && status !== 'running' && status !== 'retrying') {
       throw new Error('Cloud Relayfile repository materialization reported an unknown status.');
+    }
+    const now = Date.now();
+    const wait = readCloudRelayfileRepositoryWait(statusPayload);
+    const progress: CloudRelayfileRepositoryProgress = {
+      status,
+      waitedMs: Math.max(0, now - materializationStartedAt),
+      ...(wait ? { wait } : {}),
+    };
+    const progressSignature = JSON.stringify([
+      progress.status,
+      progress.wait?.reason,
+      progress.wait?.ownerJobId,
+      progress.wait?.ownerStatus,
+    ]);
+    if (
+      options.onProgress &&
+      (progressSignature !== lastProgressSignature || now - lastProgressAt >= CLOUD_CLONE_PROGRESS_REPEAT_MS)
+    ) {
+      lastProgressSignature = progressSignature;
+      lastProgressAt = now;
+      try {
+        options.onProgress(progress);
+      } catch {
+        // Progress is advisory; an observer must not abort a healthy materialization.
+      }
     }
     await waitForDelay(pollIntervalMs, signal);
   }
