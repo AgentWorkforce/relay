@@ -1789,6 +1789,16 @@ struct NodeRotationPreparation {
     expected_cache: Option<PersistedNodeToken>,
 }
 
+#[derive(Debug, Clone, Copy)]
+enum PendingNodeRotation<'a> {
+    None,
+    Bound {
+        key: &'a str,
+        request_digest: &'a str,
+    },
+    LegacyKey(&'a str),
+}
+
 static PROCESS_NODE_ROTATION_KEYS: OnceLock<std::sync::Mutex<HashMap<String, String>>> =
     OnceLock::new();
 
@@ -1945,7 +1955,10 @@ fn prepare_node_rotation(
         workspace_id,
         base_url,
         token,
-        Some((&key, request_digest)),
+        PendingNodeRotation::Bound {
+            key: &key,
+            request_digest,
+        },
     )?;
     Ok(NodeRotationPreparation {
         idempotency_key: Some(key.clone()),
@@ -2004,11 +2017,12 @@ fn persist_node_token_after_rotation(
                 current.pending_rotation_idempotency_key.as_deref(),
                 current.pending_rotation_request_digest.as_deref(),
             ) {
-                (Some(key), Some(digest)) => Some((key, digest)),
-                (None, None) => None,
-                // A legacy or malformed half-pair cannot safely be replayed or
-                // discarded here. Keep the minted token process-local.
-                _ => return Ok(minted_token.to_string()),
+                (Some(key), Some(request_digest)) => PendingNodeRotation::Bound {
+                    key,
+                    request_digest,
+                },
+                (Some(key), None) => PendingNodeRotation::LegacyKey(key),
+                (None, _) => PendingNodeRotation::None,
             };
             persist_node_token_state(
                 path,
@@ -2040,7 +2054,14 @@ fn persist_node_token_after_rotation(
         return Ok(minted_token.to_string());
     }
 
-    persist_node_token_state(path, node_id, workspace_id, base_url, minted_token, None)?;
+    persist_node_token_state(
+        path,
+        node_id,
+        workspace_id,
+        base_url,
+        minted_token,
+        PendingNodeRotation::None,
+    )?;
     Ok(minted_token.to_string())
 }
 
@@ -2057,7 +2078,14 @@ pub(crate) fn persist_node_token(
     token: &str,
 ) -> Result<()> {
     let _lock = lock_node_token_cache(path)?;
-    persist_node_token_state(path, node_id, workspace_id, base_url, token, None)
+    persist_node_token_state(
+        path,
+        node_id,
+        workspace_id,
+        base_url,
+        token,
+        PendingNodeRotation::None,
+    )
 }
 
 fn persist_node_token_state(
@@ -2066,7 +2094,7 @@ fn persist_node_token_state(
     workspace_id: &str,
     base_url: Option<&str>,
     token: &str,
-    pending_rotation: Option<(&str, &str)>,
+    pending_rotation: PendingNodeRotation<'_>,
 ) -> Result<()> {
     persist_node_token_state_with_sync(
         path,
@@ -2085,7 +2113,7 @@ fn persist_node_token_state_with_sync<F>(
     workspace_id: &str,
     base_url: Option<&str>,
     token: &str,
-    pending_rotation: Option<(&str, &str)>,
+    pending_rotation: PendingNodeRotation<'_>,
     sync_directory: F,
 ) -> Result<()>
 where
@@ -2095,13 +2123,22 @@ where
         fs::create_dir_all(parent)
             .with_context(|| format!("failed to create node token dir {}", parent.display()))?;
     }
+    let (pending_rotation_idempotency_key, pending_rotation_request_digest) = match pending_rotation
+    {
+        PendingNodeRotation::None => (None, None),
+        PendingNodeRotation::Bound {
+            key,
+            request_digest,
+        } => (Some(key.to_string()), Some(request_digest.to_string())),
+        PendingNodeRotation::LegacyKey(key) => (Some(key.to_string()), None),
+    };
     let body = serde_json::to_string(&PersistedNodeToken {
         node_id: node_id.to_string(),
         workspace_id: workspace_id.to_string(),
         base_url: base_url.map(ToOwned::to_owned),
         token: token.to_string(),
-        pending_rotation_idempotency_key: pending_rotation.map(|(key, _)| key.to_string()),
-        pending_rotation_request_digest: pending_rotation.map(|(_, digest)| digest.to_string()),
+        pending_rotation_idempotency_key,
+        pending_rotation_request_digest,
     })
     .context("failed to serialize node token")?;
     let parent = path.parent().unwrap_or_else(|| Path::new("."));
@@ -8339,7 +8376,10 @@ mod tests {
             "ws-a",
             None,
             "nt_current",
-            Some((key, &request_digest)),
+            PendingNodeRotation::Bound {
+                key,
+                request_digest: &request_digest,
+            },
             |_| anyhow::bail!("simulated directory sync failure"),
         )
         .expect("a post-rename sync failure must not discard committed state");
@@ -8432,7 +8472,10 @@ mod tests {
             "ws-a",
             None,
             "nt_current",
-            Some((sibling_key, &sibling_digest)),
+            PendingNodeRotation::Bound {
+                key: sibling_key,
+                request_digest: &sibling_digest,
+            },
         )
         .unwrap();
 
@@ -8481,6 +8524,49 @@ mod tests {
             load_node_token(&path, "node-a", "ws-a", None).as_deref(),
             Some("nt_sibling_rotated")
         );
+    }
+
+    #[test]
+    fn rotation_persists_minted_token_and_preserves_legacy_pending_key() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("node-token.json");
+        persist_node_token(&path, "node-a", "ws-a", None, "nt_current").unwrap();
+
+        let request_digest = create_node_request_digest("node-a", "host-a", "broker/v2");
+        let preparation =
+            prepare_node_rotation(&path, "node-a", "ws-a", None, "nt_current", &request_digest)
+                .unwrap();
+        let legacy_key = "node-rotation:00000000-0000-4000-8000-000000000008";
+        persist_node_token_state(
+            &path,
+            "node-a",
+            "ws-a",
+            None,
+            "nt_current",
+            PendingNodeRotation::LegacyKey(legacy_key),
+        )
+        .unwrap();
+
+        assert_eq!(
+            persist_node_token_after_rotation(
+                &path,
+                "node-a",
+                "ws-a",
+                None,
+                &preparation,
+                "nt_rotated",
+            )
+            .unwrap(),
+            "nt_rotated"
+        );
+        let persisted: PersistedNodeToken =
+            serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
+        assert_eq!(persisted.token, "nt_rotated");
+        assert_eq!(
+            persisted.pending_rotation_idempotency_key.as_deref(),
+            Some(legacy_key)
+        );
+        assert!(persisted.pending_rotation_request_digest.is_none());
     }
 
     #[test]
