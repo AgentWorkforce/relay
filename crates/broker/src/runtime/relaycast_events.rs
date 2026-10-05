@@ -350,9 +350,20 @@ async fn reconcile_spawned_agent_channels(
         .ensure_agent_channels(name, Some(cli), channels)
         .await?;
     if owns_identity {
-        workspace_http
-            .verify_agent_channel_scope(name, channels)
-            .await?;
+        if let Some(agent_id) = node_registered_agent_id {
+            workspace_http
+                .verify_node_registered_agent_channel_scope(
+                    name.as_str(),
+                    agent_id,
+                    token,
+                    channels,
+                )
+                .await?;
+        } else {
+            workspace_http
+                .verify_agent_channel_scope(name, channels)
+                .await?;
+        }
     }
     Ok(())
 }
@@ -1072,7 +1083,9 @@ mod tests {
                 .header("authorization", "Bearer at_live_node");
             then.status(200).json_body(json!({"ok":true,"data":{
                 "id":"agent-node","workspace_id":"ws-test","name":"cloud-zero-config",
-                "type":"agent","status":"online","persona":null,"metadata":{},"channels":[]
+                "type":"agent","status":"online","persona":null,"metadata":{},
+                "channels":[{"id":"ch-agent37","name":"agent37-ga","role":"member",
+                    "joined_at":"2026-10-04T00:00:00Z"}]
             }}));
         });
         let create_channel = server.mock(|when, then| {
@@ -1093,16 +1106,18 @@ mod tests {
             }}));
         });
         let channel_members = server.mock(|when, then| {
-            when.method(GET).path("/v1/channels/agent37-ga/members");
+            when.method(GET)
+                .path("/v1/channels/agent37-ga/members")
+                .header("authorization", "Bearer at_live_node");
             then.status(200).json_body(json!({"ok":true,"data":[{
                 "agent_id":"agent-node","agent_name":"cloud-zero-config",
                 "role":"member","joined_at":"2026-10-04T00:00:00Z"
             }]}));
         });
-        let scope = server.mock(|when, then| {
+        let laggy_workspace_scope = server.mock(|when, then| {
             when.method(GET).path("/v1/agents/cloud-zero-config");
-            then.status(200).json_body(json!({"ok":true,"data":{
-                "channels":[{"name":"agent37-ga"}]
+            then.status(404).json_body(json!({"ok":false,"error":{
+                "code":"agent_not_found","message":"negative-cache lag"
             }}));
         });
         let http =
@@ -1121,11 +1136,11 @@ mod tests {
         .await
         .expect("the node receipt should become visible before channel reconciliation");
 
-        visibility.assert_hits(1);
+        visibility.assert_hits(2);
         create_channel.assert_hits(1);
         join_channel.assert_hits(1);
         channel_members.assert_hits(1);
-        scope.assert_hits(1);
+        laggy_workspace_scope.assert_hits(0);
     }
 
     #[cfg(unix)]

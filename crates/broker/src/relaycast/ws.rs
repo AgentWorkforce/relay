@@ -1199,6 +1199,7 @@ impl RelaycastHttpClient {
                 body["expected_token_hash"] = Value::String(expected_token_hash.to_string());
                 let started = Instant::now();
                 let mut attempts = 0usize;
+                let mut agent_not_found_retries = 0usize;
                 let (status, result): (reqwest::StatusCode, Value) = 'cleanup: loop {
                     attempts += 1;
                     let response = reqwest::Client::new()
@@ -1230,6 +1231,23 @@ impl RelaycastHttpClient {
                         .context("invalid identity cleanup response")?;
                     let workspace_busy = matches!(status.as_u16(), 429 | 503)
                         && result["error"]["code"] == "workspace_busy";
+                    let agent_not_found = status == reqwest::StatusCode::NOT_FOUND
+                        && result["error"]["code"] == "agent_not_found";
+                    if agent_not_found
+                        && agent_not_found_retries < NODE_REGISTER_VISIBILITY_BACKOFFS_MS.len()
+                    {
+                        let delay_ms =
+                            NODE_REGISTER_VISIBILITY_BACKOFFS_MS[agent_not_found_retries];
+                        agent_not_found_retries += 1;
+                        tracing::warn!(
+                            agent = %agent_name,
+                            attempt = agent_not_found_retries,
+                            delay_ms,
+                            "owned identity is not yet visible to the guarded release path; retrying"
+                        );
+                        tokio::time::sleep(Duration::from_millis(delay_ms)).await;
+                        continue 'cleanup;
+                    }
                     if let Some(retry_after) = retry_after.filter(|retry_after| {
                         workspace_busy
                             && attempts < WORKSPACE_BUSY_RECONCILE_SAFETY_CAP
@@ -1657,6 +1675,105 @@ impl RelaycastHttpClient {
             "worker '{name}' live channel isolation failed: expected {expected:?}, got {actual:?}"
         );
         Ok(())
+    }
+
+    /// Verify a node-created worker through its own token-scoped identity.
+    ///
+    /// The workspace-key by-name endpoint can retain a negative cache after
+    /// node `agent.register`, even while `GET /v1/agent` already resolves the
+    /// exact token/id. Keep that eventually-consistent index out of the spawn
+    /// critical path and prove both identity and channel scope on the plane
+    /// the worker itself will use.
+    pub(crate) async fn verify_node_registered_agent_channel_scope(
+        &self,
+        name: &str,
+        expected_agent_id: &str,
+        token: &str,
+        channels: &[crate::ids::ChannelName],
+    ) -> Result<()> {
+        self.verify_node_registered_agent_channel_scope_with_backoffs(
+            name,
+            expected_agent_id,
+            token,
+            channels,
+            &NODE_REGISTER_VISIBILITY_BACKOFFS_MS,
+        )
+        .await
+    }
+
+    async fn verify_node_registered_agent_channel_scope_with_backoffs(
+        &self,
+        name: &str,
+        expected_agent_id: &str,
+        token: &str,
+        channels: &[crate::ids::ChannelName],
+        backoffs_ms: &[u64],
+    ) -> Result<()> {
+        let relay = self
+            .relay_client()
+            .context("SDK relay client not initialized")?;
+        let expected = channels
+            .iter()
+            .map(|channel| channel.as_str())
+            .collect::<BTreeSet<_>>();
+        for (attempt, delay_ms) in std::iter::once(0)
+            .chain(backoffs_ms.iter().copied())
+            .enumerate()
+        {
+            if delay_ms > 0 {
+                tokio::time::sleep(Duration::from_millis(delay_ms)).await;
+            }
+            match relay.get_current_agent(token.to_string()).await {
+                Ok(agent) => {
+                    anyhow::ensure!(
+                        agent.name == name && agent.id == expected_agent_id,
+                        "node-registered channel-scope identity mismatch: expected {name}/{expected_agent_id}, got {}/{}",
+                        agent.name,
+                        agent.id
+                    );
+                    let actual = agent
+                        .channels
+                        .iter()
+                        .map(|membership| membership.name.as_str())
+                        .collect::<BTreeSet<_>>();
+                    if actual == expected {
+                        return Ok(());
+                    }
+                    if attempt < backoffs_ms.len() {
+                        tracing::warn!(
+                            worker = %name,
+                            agent_id = %expected_agent_id,
+                            attempt = attempt + 1,
+                            "worker-token channel scope is not yet visible; retrying"
+                        );
+                        continue;
+                    }
+                    anyhow::bail!(
+                        "worker-token channel scope mismatch for '{name}': expected {:?}, got {:?}",
+                        expected,
+                        actual
+                    );
+                }
+                Err(RelayError::Api {
+                    status: 404,
+                    ref code,
+                    ..
+                }) if code == "agent_not_found" && attempt < backoffs_ms.len() => {
+                    tracing::warn!(
+                        worker = %name,
+                        agent_id = %expected_agent_id,
+                        attempt = attempt + 1,
+                        "node-registered identity is not yet visible to its worker token; retrying"
+                    );
+                }
+                Err(error) => {
+                    return Err(anyhow::anyhow!(
+                        "worker-token channel scope lookup for '{name}' failed: {error}"
+                    ));
+                }
+            }
+        }
+        unreachable!("worker-token channel-scope loop returns on its final attempt")
     }
 
     /// Reconcile worker-side Relaycast membership when the broker removes
@@ -2104,8 +2221,10 @@ const WORKSPACE_BUSY_RECONCILE_BUDGET: Duration = Duration::from_secs(60);
 const WORKSPACE_BUSY_RECONCILE_MAX_DELAY: Duration = Duration::from_secs(5);
 /// `agent.register` commits on the node-control transport, while the first
 /// worker-authenticated REST request may land on an HTTP isolate whose D1 view
-/// has not observed that commit yet. These waits total 15.85s and apply only
-/// to the exact token/id returned by node control.
+/// has not observed that commit yet. These waits total 15.85s. Spawn-critical
+/// identity and channel checks use the exact worker token/id; guarded cleanup
+/// also reuses the cadence, but only for the typed by-name `agent_not_found`
+/// lag while retaining its captured token-hash fence.
 const NODE_REGISTER_VISIBILITY_BACKOFFS_MS: [u64; 7] = [100, 250, 500, 1_000, 2_000, 4_000, 8_000];
 /// Total wall-clock budget the bounded retry loops in this module honor
 /// before returning a typed `RetryableExhausted` diagnostic. Five minutes is
@@ -2890,6 +3009,60 @@ mod tests {
             )
             .await
             .expect("the workspace-key by-name lookup should tolerate bounded propagation lag");
+        server.await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn node_registered_channel_scope_uses_worker_token_not_by_name_index() {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let base_url = format!("http://{}", listener.local_addr().unwrap());
+        let server = tokio::spawn(async move {
+            for attempt in 0..3 {
+                let (mut stream, _) = listener.accept().await.unwrap();
+                let mut request = [0_u8; 4096];
+                let bytes = stream.read(&mut request).await.unwrap();
+                let request = String::from_utf8_lossy(&request[..bytes]);
+                assert!(request.starts_with("GET /v1/agent "), "{request}");
+                assert!(
+                    request
+                        .to_ascii_lowercase()
+                        .contains("authorization: bearer at_live_worker"),
+                    "{request}"
+                );
+                assert!(
+                    !request.contains("/v1/agents/cloud-zero-config"),
+                    "{request}"
+                );
+                let (status, body) = if attempt < 2 {
+                    (
+                        "404 Not Found",
+                        r#"{"ok":false,"error":{"code":"agent_not_found","message":"worker token not visible yet"}}"#,
+                    )
+                } else {
+                    (
+                        "200 OK",
+                        r#"{"ok":true,"data":{"id":"agent-node-created","workspace_id":"ws-dev","name":"cloud-zero-config","type":"agent","status":"online","persona":null,"metadata":{},"channels":[{"id":"ch-general","name":"general","role":"member","joined_at":"2026-10-05T00:00:00Z"}]}}"#,
+                    )
+                };
+                let response = format!(
+                    "HTTP/1.1 {status}\r\ncontent-type: application/json\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{body}",
+                    body.len()
+                );
+                stream.write_all(response.as_bytes()).await.unwrap();
+            }
+        });
+        let client = RelaycastHttpClient::new(Some(base_url), "rk_live_test", "broker", "codex");
+
+        client
+            .verify_node_registered_agent_channel_scope_with_backoffs(
+                "cloud-zero-config",
+                "agent-node-created",
+                "at_live_worker",
+                &["general".into()],
+                &[0, 0],
+            )
+            .await
+            .expect("worker-token scope should tolerate bounded visibility lag");
         server.await.unwrap();
     }
 
@@ -4610,6 +4783,47 @@ mod tests {
         assert!(error.to_string().contains("HTTP 403"));
         cleanup.assert_hits(1);
         assert!(client.owned_identity_token_hash("owned-worker").is_ok());
+    }
+
+    #[tokio::test]
+    async fn owned_identity_cleanup_retries_only_agent_not_found_visibility_lag() {
+        use sha2::{Digest, Sha256};
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let base_url = format!("http://{}", listener.local_addr().unwrap());
+        let expected_hash = format!("{:x}", Sha256::digest(b"owned-token"));
+        let server_hash = expected_hash.clone();
+        let server = tokio::spawn(async move {
+            for attempt in 0..3 {
+                let (mut stream, _) = listener.accept().await.unwrap();
+                let mut request = [0_u8; 8192];
+                let bytes = stream.read(&mut request).await.unwrap();
+                let request = String::from_utf8_lossy(&request[..bytes]);
+                assert!(request.starts_with("POST /v1/agents/release "), "{request}");
+                assert!(request.contains(&server_hash), "{request}");
+                let (status, body) = if attempt < 2 {
+                    (
+                        "404 Not Found",
+                        r#"{"ok":false,"error":{"code":"agent_not_found","message":"not visible by name yet"}}"#,
+                    )
+                } else {
+                    ("200 OK", r#"{"ok":true,"data":{"status":"completed"}}"#)
+                };
+                let response = format!(
+                    "HTTP/1.1 {status}\r\ncontent-type: application/json\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{body}",
+                    body.len()
+                );
+                stream.write_all(response.as_bytes()).await.unwrap();
+            }
+        });
+        let client = RelaycastHttpClient::new(Some(base_url), "rk_live_test", "broker", "codex");
+        client.seed_agent_token("owned-worker", "owned-token");
+
+        client
+            .release_agent_identity_guarded("owned-worker", None, true, Some(&expected_hash))
+            .await
+            .expect("guarded cleanup should retry transient by-name absence");
+        server.await.unwrap();
+        assert!(client.owned_identity_token_hash("owned-worker").is_err());
     }
 
     #[tokio::test]
