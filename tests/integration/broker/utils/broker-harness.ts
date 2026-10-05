@@ -119,6 +119,15 @@ export async function ensureApiKey(): Promise<string> {
   return apiKey;
 }
 
+type SpawnHarnessClient = (options: RuntimeSpawnOptions) => Promise<HarnessDriverClient>;
+
+export function spawnHarnessClientOnce(
+  options: RuntimeSpawnOptions,
+  spawnClient: SpawnHarnessClient = (spawnOptions) => HarnessDriverClient.spawn(spawnOptions)
+): Promise<HarnessDriverClient> {
+  return spawnClient(options);
+}
+
 // ── Types ────────────────────────────────────────────────────────────────────
 
 export interface BrokerHarnessOptions {
@@ -201,7 +210,7 @@ export class BrokerHarness {
     };
 
     // Start the low-level client (spawns broker process)
-    this.client = await HarnessDriverClient.spawn(clientOpts);
+    this.client = await spawnHarnessClientOnce(clientOpts);
     this.ephemeralWorkspaceKey = apiKey;
 
     // Wire event collection

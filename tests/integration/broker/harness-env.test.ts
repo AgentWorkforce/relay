@@ -1,7 +1,11 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 
-import { buildEphemeralWorkspaceName, buildHarnessChildEnv } from './utils/broker-harness.js';
+import {
+  buildEphemeralWorkspaceName,
+  buildHarnessChildEnv,
+  spawnHarnessClientOnce,
+} from './utils/broker-harness.js';
 
 test('ephemeral workspace names stay unique across parallel test processes', () => {
   const first = buildEphemeralWorkspaceName(1_700_000_000_000, 101, 'alpha');
@@ -60,4 +64,19 @@ test('broker harness ignores blank caller credential declarations', () => {
     }),
     { PATH: '/safe/bin' }
   );
+});
+
+test('broker harness never replays an ambiguous registration failure', async () => {
+  const ambiguous = new Error('registration returned an ambiguous server failure');
+  let attempts = 0;
+
+  await assert.rejects(
+    spawnHarnessClientOnce({}, async () => {
+      attempts += 1;
+      throw ambiguous;
+    }),
+    ambiguous
+  );
+
+  assert.equal(attempts, 1);
 });
