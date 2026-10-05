@@ -313,3 +313,41 @@ describe('messaging delivery receipts over MCP', () => {
     }
   });
 });
+
+describe('channel and thread writes over MCP', () => {
+  it.each([
+    ['post_message', 'send', { channel: 'events', text: 'ACK' }],
+    ['reply_to_thread', 'reply', { message_id: 'provider-parent', text: 'ACK' }],
+  ] as const)('coalesces parallel %s calls but permits sequential repeats', async (tool, method, args) => {
+    let release!: () => void;
+    const gate = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const write = vi.fn(async () => {
+      await gate;
+      return { id: 'reply-1' };
+    });
+    const server = new McpServer({ name: 'write-test', version: '1' });
+    registerMessagingTools(server, () => ({ [method]: write }) as never);
+    const client = new Client({ name: 'write-client', version: '1' });
+    const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
+    try {
+      await server.connect(serverTransport);
+      await client.connect(clientTransport);
+      const first = client.callTool({ name: tool, arguments: args });
+      const second = client.callTool({ name: tool, arguments: args });
+      await vi.waitFor(() => expect(write).toHaveBeenCalledTimes(1));
+      release();
+      const results = await Promise.all([first, second]);
+      expect(results[0].isError).not.toBe(true);
+      expect(results[0].structuredContent).toEqual(results[1].structuredContent);
+      expect(write).toHaveBeenCalledTimes(1);
+      await client.callTool({ name: tool, arguments: args });
+      expect(write).toHaveBeenCalledTimes(2);
+    } finally {
+      release();
+      await client.close();
+      await server.close();
+    }
+  });
+});

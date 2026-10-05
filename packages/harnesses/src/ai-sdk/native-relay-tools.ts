@@ -53,6 +53,21 @@ export function createNativeRelayTools(options: NativeRelayToolOptions = {}): Ha
   const workspace =
     options.workspaceClient ?? (workspaceKey ? createWorkspaceClient({ workspaceKey, baseUrl }) : undefined);
 
+  // One map per native session; never retain a completed write.
+  const pendingWrites = new Map<string, Promise<unknown>>();
+  function write(tool: string, target: string, text: string, operation: () => Promise<unknown>) {
+    const key = JSON.stringify([tool, target, text]);
+    const existing = pendingWrites.get(key);
+    if (existing) return existing;
+    const pending = Promise.resolve().then(operation);
+    pendingWrites.set(key, pending);
+    void pending.then(
+      () => pendingWrites.delete(key),
+      () => pendingWrites.delete(key)
+    );
+    return pending;
+  }
+
   const tools: HarnessHostTool[] = [
     {
       spec: {
@@ -89,7 +104,9 @@ export function createNativeRelayTools(options: NativeRelayToolOptions = {}): Ha
       },
       execute: (value) => {
         const input = objectInput(value);
-        return agent.send(requiredString(input, 'channel'), requiredString(input, 'text'));
+        const target = requiredString(input, 'channel');
+        const text = requiredString(input, 'text');
+        return write('post_message', target, text, () => agent.send(target, text));
       },
     },
     {
@@ -150,7 +167,9 @@ export function createNativeRelayTools(options: NativeRelayToolOptions = {}): Ha
       },
       execute: (value) => {
         const input = objectInput(value);
-        return agent.reply(requiredString(input, 'message_id'), requiredString(input, 'text'));
+        const target = requiredString(input, 'message_id');
+        const text = requiredString(input, 'text');
+        return write('reply_to_thread', target, text, () => agent.reply(target, text));
       },
     },
     {

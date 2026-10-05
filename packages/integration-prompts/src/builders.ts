@@ -55,6 +55,9 @@ export function fullInjectInstructions(descriptors: IntegrationDescriptor[]): st
     lines.push('No integration event subscriptions are active for this project.');
   } else {
     lines.push('Active integration event subscriptions for this project:');
+    lines.push(
+      'Reply once in the Relay thread to respond to a subscription event; when writeback is configured and authorized, that reply posts back to the provider. Use resource file writes to initiate new integration actions.'
+    );
     for (const subscription of subscriptions) {
       lines.push(subscriptionLine(subscription));
     }

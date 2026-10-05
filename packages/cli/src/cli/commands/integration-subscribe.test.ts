@@ -29,6 +29,7 @@ interface InboundWebhook {
 
 function createRelayMock(opts: { inboundWebhooks?: InboundWebhook[] } = {}) {
   let counter = 0;
+  const subscriptions = new Map<string, Record<string, unknown>>();
   return {
     agents: {
       register: vi.fn(async (i: { name: string }) => ({ id: 'a1', token: 't1', name: i.name })),
@@ -36,7 +37,12 @@ function createRelayMock(opts: { inboundWebhooks?: InboundWebhook[] } = {}) {
     },
     integrations: {
       subscriptions: {
-        create: vi.fn(async (i: unknown) => ({ id: `sub_${++counter}`, ...(i as object) })),
+        create: vi.fn(async (i: unknown) => {
+          const row = { id: `sub_${++counter}`, ...(i as object) };
+          subscriptions.set(row.id, row);
+          return row;
+        }),
+        get: vi.fn(async (id: string) => subscriptions.get(id) ?? { id }),
         delete: vi.fn(async () => undefined),
       },
     },
@@ -2063,4 +2069,175 @@ describe('confirmed agent subscription setup', () => {
     expect(h.relayfile.bind).not.toHaveBeenCalled();
     expect(h.relay.webhooks.createInbound).not.toHaveBeenCalled();
   });
+});
+
+describe('subscription writeback verification', () => {
+  it.each([{ event: 'message.created' }, { events: ['message.created'] }, {}])(
+    'rolls back incomplete persisted event coverage: %j',
+    async (echo) => {
+      const relay = createRelayMock();
+      relay.integrations.subscriptions.get.mockImplementation(async (id) => ({ id, ...echo }));
+      const { program, relayfile, error, journal } = harness({ relay });
+      await program.parseAsync(ARGS(), { from: 'user' });
+      expect(error.mock.calls.flat().join(' ')).toContain('did not confirm requested events');
+      expect(relayfile.bind).not.toHaveBeenCalled();
+      expect(relay.integrations.subscriptions.delete).toHaveBeenCalled();
+      expect(relay.webhooks.delete).toHaveBeenCalled();
+      expect(relayfile.deleteWebhookSubscription).toHaveBeenCalled();
+      expect(await journal.list()).toEqual([]);
+    }
+  );
+
+  it('journals a failed rollback delete after read-back fails', async () => {
+    const relay = createRelayMock();
+    relay.integrations.subscriptions.get.mockRejectedValue(new Error('read unavailable'));
+    relay.integrations.subscriptions.delete.mockRejectedValue(new Error('delete unavailable'));
+    const { program, journal, relayfile } = harness({ relay });
+    await program.parseAsync(ARGS(), { from: 'user' });
+    expect(relayfile.bind).not.toHaveBeenCalled();
+    expect(await journal.list()).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ kind: 'relay-subscription', id: expect.stringMatching(/^sub_/) }),
+      ])
+    );
+  });
+
+  it.each(['events', 'event_types', 'eventTypes'])(
+    'accepts %s coverage and de-duplicates requested events',
+    async (field) => {
+      const relay = createRelayMock();
+      relay.integrations.subscriptions.get.mockImplementation(async (id) => ({
+        id,
+        [field]: ['thread.reply', 'message.created'],
+      }));
+      const { program, relayfile } = harness({ relay });
+      await program.parseAsync(ARGS(['--events', 'thread.reply,message.created,thread.reply']), {
+        from: 'user',
+      });
+      expect(relayfile.bind).toHaveBeenCalledOnce();
+      expect(relay.integrations.subscriptions.create).toHaveBeenCalledWith(
+        expect.objectContaining({
+          event: 'thread.reply',
+          events: ['thread.reply', 'message.created'],
+        })
+      );
+    }
+  );
+
+  it('rejects misspelled events before provisioning', async () => {
+    const { program, relay, relayfile, error } = harness();
+    await program.parseAsync(ARGS(['--events', 'thread.replies']), { from: 'user' });
+    expect(error.mock.calls.flat().join(' ')).toContain('Unsupported subscription events');
+    expect(relay.webhooks.createInbound).not.toHaveBeenCalled();
+    expect(relayfile.createWebhookSubscription).not.toHaveBeenCalled();
+  });
+
+  it('accepts singular thread.reply coverage', async () => {
+    const relay = createRelayMock();
+    relay.integrations.subscriptions.get.mockImplementation(async (id) => ({ id, event: 'thread.reply' }));
+    const { program, relayfile } = harness({ relay });
+    await program.parseAsync(ARGS(['--events', 'thread.reply']), { from: 'user' });
+    expect(relayfile.bind).toHaveBeenCalledOnce();
+  });
+
+  it.each([true, false, undefined])(
+    'reports GitHub identity authorization %s honestly',
+    async (authorized) => {
+      const relayfile = createRelayfileMock([], {
+        listWebhookSubscriptions: vi.fn(async () => ({
+          workspaceId: 'rw_test',
+          subscriptions: [
+            {
+              subscriptionId: 'whsub_1',
+              url: 'https://cast.test/inbound',
+              pathGlobs: ['/github/repos/AgentWorkforce/relaycast/pulls/448/**'],
+              githubPrIdentityAuthorized: authorized,
+            },
+          ],
+        })),
+      });
+      const { program, log } = harness({ relayfile });
+      await program.parseAsync(
+        [
+          'integration',
+          'subscribe',
+          'github',
+          '--resource',
+          '/github/repos/AgentWorkforce/relaycast/pulls/448/**',
+          '--to',
+          '#general',
+        ],
+        { from: 'user' }
+      );
+      const output = log.mock.calls.flat().join(' ');
+      expect(output).not.toContain('Replies will post back');
+      expect(output).toContain(authorized === true ? 'writeback is configured' : 'writeback is unverified');
+      expect(relayfile.bind).toHaveBeenCalledWith(
+        expect.objectContaining({ resource: '/github/repos/AgentWorkforce/relaycast/pulls/448/**' })
+      );
+    }
+  );
+});
+
+it('reports outbound configuration separately from inferred inbound activity', async () => {
+  const relay = createRelayMock();
+  relay.integrations.subscriptions.get.mockResolvedValue({
+    id: 'sub_existing',
+    events: ['thread.reply'],
+    isActive: false,
+  });
+  relay.messages.list.mockResolvedValue([{ createdAt: '2026-10-05T00:00:00Z' }] as never);
+  const relayfile = createRelayfileMock([
+    {
+      provider: 'github',
+      resource: '/github/repos/AgentWorkforce/relaycast/pulls/448/**',
+      channel: 'general',
+      subscriptionId: 'sub_existing',
+      webhookId: 'in_existing',
+    },
+  ]);
+  const { program, log } = harness({ relay, relayfile });
+  await program.parseAsync(['integration', 'subscribe', '--list'], { from: 'user' });
+  expect(JSON.parse(log.mock.calls[0][0]).bindings[0]).toMatchObject({
+    lastDeliverySource: 'channel-inferred',
+    writebackSubscription: {
+      id: 'sub_existing',
+      events: ['thread.reply'],
+      active: false,
+      deliveryStatus: null,
+    },
+  });
+  relay.integrations.subscriptions.get.mockRejectedValue(new Error('unavailable'));
+  log.mockClear();
+  await program.parseAsync(['integration', 'subscribe', '--list'], { from: 'user' });
+  expect(JSON.parse(log.mock.calls[0][0]).bindings[0].writebackSubscription).toBeNull();
+});
+
+it.each([
+  { id: 'wrong', events: ['message.created', 'thread.reply'] },
+  { isActive: false, events: ['message.created', 'thread.reply'] },
+  { is_active: false, events: ['message.created', 'thread.reply'] },
+])('preserves the prior binding when read-back is invalid: %j', async (echo) => {
+  const prior = {
+    provider: 'slack',
+    resource: RESOURCE,
+    channel: 'general',
+    webhookId: 'in_old',
+    subscriptionId: 'sub_old',
+  };
+  const relay = createRelayMock();
+  relay.integrations.subscriptions.get.mockImplementation(async (id) => ({ id, ...echo }));
+  const relayfile = createRelayfileMock([prior]);
+  const { program, error } = harness({ relay, relayfile });
+  await program.parseAsync(ARGS(), { from: 'user' });
+  expect(error.mock.calls.flat().join(' ')).toContain('different or inactive subscription');
+  expect(await relayfile.listBindings()).toEqual([prior]);
+  expect(relay.integrations.subscriptions.delete).not.toHaveBeenCalledWith('sub_old');
+  expect(relay.webhooks.delete).not.toHaveBeenCalledWith('in_old');
+});
+
+it('does not advertise thread writeback when only message.created is requested', async () => {
+  const { program, log } = harness();
+  await program.parseAsync(ARGS(['--events', 'message.created']), { from: 'user' });
+  expect(log.mock.calls.flat().join(' ')).toContain('thread.reply was not requested');
 });

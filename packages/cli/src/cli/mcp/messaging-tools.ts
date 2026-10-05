@@ -1,6 +1,7 @@
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { replayMessageMetadata } from '@agent-relay/sdk';
 import { z } from 'zod';
+import { track } from '../telemetry/index.js';
 
 import {
   compactDirectMessageReceipt,
@@ -247,13 +248,22 @@ export function registerMessagingTools(
         openWorldHint: true,
       },
     },
-    async ({ channel, text, attachments, mode, as }) =>
-      jsonContent(
-        await getAgentClient(as).send(channel, text, {
-          attachments,
-          data: replayMessageMetadata(),
-          mode,
-        })
+    async ({ channel, text, attachments, mode, as }, extra) =>
+      replay.run('post_message', extra, undefined, () =>
+        replay.coalesceWrite(
+          'post_message',
+          extra,
+          [as ?? null, channel, text, attachments ?? [], mode ?? 'wait'],
+          async () =>
+            jsonContent(
+              await getAgentClient(as).send(channel, text, {
+                attachments,
+                data: replayMessageMetadata(),
+                mode,
+              })
+            ),
+          () => track('agent_relay_write_coalesced', { tool_name: 'post_message' })
+        )
       )
   );
 
@@ -302,8 +312,17 @@ export function registerMessagingTools(
         openWorldHint: true,
       },
     },
-    async ({ message_id, text, as }) =>
-      jsonContent(await getAgentClient(as).reply(message_id, text, { data: replayMessageMetadata() }))
+    async ({ message_id, text, as }, extra) =>
+      replay.run('reply_to_thread', extra, undefined, () =>
+        replay.coalesceWrite(
+          'reply_to_thread',
+          extra,
+          [as ?? null, message_id, text],
+          async () =>
+            jsonContent(await getAgentClient(as).reply(message_id, text, { data: replayMessageMetadata() })),
+          () => track('agent_relay_write_coalesced', { tool_name: 'reply_to_thread' })
+        )
+      )
   );
 
   server.registerTool(

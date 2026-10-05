@@ -5,10 +5,37 @@
  * JSON-RPC permits IDs to be reused after a response. Clients that need to
  * retry after a lost response provide an explicit idempotency key; that key
  * retains the completed result briefly. Arguments deliberately do not
- * participate, so intentional identical sends remain separate requests.
+ * participate in this request key. A separate pending-write key includes the
+ * session, tool, identity and all write arguments to join parallel tool aliases.
+ * It is removed on settlement so sequential identical sends remain distinct.
  */
 export class McpRequestReplay {
   private readonly requests = new Map<string, Promise<unknown>>();
+
+  private readonly writes = new Map<string, Promise<unknown>>();
+
+  coalesceWrite<T>(
+    tool: string,
+    extra: unknown,
+    argumentsKey: unknown[],
+    operation: () => Promise<T>,
+    onCoalesce: () => void = () => {}
+  ): Promise<T> {
+    const sessionId = (extra as { sessionId?: unknown } | undefined)?.sessionId;
+    const key = JSON.stringify([sessionId ?? '', tool, ...argumentsKey]);
+    const existing = this.writes.get(key) as Promise<T> | undefined;
+    if (existing) {
+      onCoalesce();
+      return existing;
+    }
+    const pending = Promise.resolve().then(operation);
+    this.writes.set(key, pending);
+    void pending.then(
+      () => this.writes.delete(key),
+      () => this.writes.delete(key)
+    );
+    return pending;
+  }
 
   run<T>(
     tool: string,

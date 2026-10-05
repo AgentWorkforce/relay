@@ -480,6 +480,7 @@ export interface RelayCreateWebhookInput {
 
 export interface RelayEventSubscription {
   id: string;
+  events?: string[];
   event?: string;
   createdAt?: string;
   [key: string]: unknown;

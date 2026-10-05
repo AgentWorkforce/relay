@@ -15,3 +15,5 @@ export {
   type RelaySpawnPlacementState,
 } from './relaycast.js';
 export * from './thin-client.js';
+
+export { normalizeWebhookSubscription } from './relaycast-translate.js';

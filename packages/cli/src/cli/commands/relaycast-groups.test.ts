@@ -84,7 +84,7 @@ function createRelayMock() {
       subscriptions: {
         create: vi.fn(async (i: unknown) => ({ id: 'sub1', ...(i as object) })),
         list: vi.fn(async () => []),
-        get: vi.fn(async (id: string) => ({ id })),
+        get: vi.fn(async (id: string) => ({ id, events: ['message.created', 'thread.reply'] })),
         delete: vi.fn(async () => undefined),
       },
     },
@@ -706,6 +706,13 @@ describe('SDK-backed CLI groups', () => {
               lastSuccessAt: null,
               lastError: null,
               lastChannelMessageAt: null,
+              lastDeliverySource: null,
+              writebackSubscription: {
+                id: 'sub1',
+                events: ['message.created', 'thread.reply'],
+                active: null,
+                deliveryStatus: null,
+              },
               githubPrIdentityAuthorized: null,
             },
           ],

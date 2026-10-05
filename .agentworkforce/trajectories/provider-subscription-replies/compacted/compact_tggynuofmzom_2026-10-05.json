@@ -1,0 +1,89 @@
+{
+  "id": "compact_tggynuofmzom",
+  "version": 1,
+  "type": "compacted",
+  "compactedAt": "2026-10-05T10:18:47.735Z",
+  "sourceTrajectories": [
+    "traj_kvnuivdfl4un"
+  ],
+  "dateRange": {
+    "start": "2026-10-05T10:17:44.252Z",
+    "end": "2026-10-05T10:18:47.370Z"
+  },
+  "summary": {
+    "totalDecisions": 2,
+    "totalEvents": 2,
+    "uniqueAgents": [
+      "default"
+    ]
+  },
+  "decisionGroups": [
+    {
+      "category": "security",
+      "decisions": [
+        {
+          "question": "Implement pending-only local coalescing and verified provisioning; leave provider scope unchanged",
+          "chosen": "Implement pending-only local coalescing and verified provisioning; leave provider scope unchanged",
+          "reasoning": "Reviewed plan confirms MCP replay asymmetry. Incident credentials and control-plane daemon are unavailable; do not widen PR globs without E2 evidence.",
+          "fromTrajectory": "traj_kvnuivdfl4un"
+        }
+      ]
+    },
+    {
+      "category": "tooling",
+      "decisions": [
+        {
+          "question": "Demote plural-events hypothesis and defer explicit message idempotency keys",
+          "chosen": "Demote plural-events hypothesis and defer explicit message idempotency keys",
+          "reasoning": "Installed Relaycast types require plural events and the SDK already sends generated Idempotency-Key headers. Engine enforcement cannot be verified here. Installed Relayfile client has no writeback ledger status or retry methods.",
+          "fromTrajectory": "traj_kvnuivdfl4un"
+        }
+      ]
+    }
+  ],
+  "keyLearnings": [],
+  "keyFindings": [],
+  "filesAffected": [
+    "CHANGELOG.md",
+    "packages/cli/src/cli/commands/integration-subscribe.test.ts",
+    "packages/cli/src/cli/commands/integration.ts",
+    "packages/cli/src/cli/commands/relaycast-groups.test.ts",
+    "packages/cli/src/cli/mcp/messaging-tools.protocol.test.ts",
+    "packages/cli/src/cli/mcp/messaging-tools.ts",
+    "packages/cli/src/cli/mcp/request-replay.ts",
+    "packages/cli/src/cli/telemetry/events.ts",
+    "packages/harnesses/src/ai-sdk/native-relay-tools.test.ts",
+    "packages/harnesses/src/ai-sdk/native-relay-tools.ts",
+    "packages/integration-prompts/src/builders.ts",
+    "packages/sdk/src/__tests__/integrations.test.ts",
+    "packages/sdk/src/__tests__/relaycast-translate.test.ts",
+    "packages/sdk/src/messaging/index.ts",
+    "packages/sdk/src/messaging/relaycast-translate.ts",
+    "packages/sdk/src/messaging/relaycast.ts",
+    "packages/sdk/src/messaging/types.ts",
+    "packages/cli/src/cli/mcp/request-replay.test.ts",
+    "summary.md",
+    "docs/evidence/provider-subscription-replies.md"
+  ],
+  "commits": [],
+  "narrative": "Implemented pending-only MCP/native reply coalescing, subscription event read-back with journaled rollback, authorization-aware output, outbound configuration diagnostics, and regression tests on the current branch. Local tests and typechecks passed. Incident workspace access and the Relayfile daemon are unavailable; actual GitHub writeback and durable retry remain unverified. See summary.md and docs/evidence/provider-subscription-replies.md.",
+  "decisions": [
+    {
+      "question": "Implement pending-only local coalescing and verified provisioning; leave provider scope unchanged",
+      "chosen": "Implement pending-only local coalescing and verified provisioning; leave provider scope unchanged",
+      "reasoning": "Reviewed plan confirms MCP replay asymmetry. Incident credentials and control-plane daemon are unavailable; do not widen PR globs without E2 evidence."
+    },
+    {
+      "question": "Demote plural-events hypothesis and defer explicit message idempotency keys",
+      "chosen": "Demote plural-events hypothesis and defer explicit message idempotency keys",
+      "reasoning": "Installed Relaycast types require plural events and the SDK already sends generated Idempotency-Key headers. Engine enforcement cannot be verified here. Installed Relayfile client has no writeback ledger status or retry methods."
+    }
+  ],
+  "conventions": [],
+  "lessons": [],
+  "openQuestions": [
+    "Does subscription writeback ingress use the existing Relayfile ops ledger, keyed by Relay message ID?",
+    "What are the incident binding paths and persisted subscription events?",
+    "Does the engine enforce message/reply idempotency keys across processes?"
+  ]
+}
