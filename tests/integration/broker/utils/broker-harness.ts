@@ -119,6 +119,36 @@ export async function ensureApiKey(): Promise<string> {
   return apiKey;
 }
 
+const MAX_TRANSIENT_REGISTRATION_ATTEMPTS = 3;
+
+export function isRetryableWorkspaceRegistrationError(error: unknown): boolean {
+  const message = error instanceof Error ? error.message : String(error);
+  return (
+    message.includes('failed registering agent with AGENT_RELAY_WORKSPACE_KEY workspace key') &&
+    (message.includes('status: 500') || message.includes('code: internal_error'))
+  );
+}
+
+type SpawnHarnessClient = (options: RuntimeSpawnOptions) => Promise<HarnessDriverClient>;
+type RetryDelay = (delayMs: number) => Promise<void>;
+
+export async function spawnHarnessClientWithRetry(
+  options: RuntimeSpawnOptions,
+  spawnClient: SpawnHarnessClient = (spawnOptions) => HarnessDriverClient.spawn(spawnOptions),
+  delay: RetryDelay = (delayMs) => new Promise((resolve) => setTimeout(resolve, delayMs))
+): Promise<HarnessDriverClient> {
+  for (let attempt = 1; ; attempt++) {
+    try {
+      return await spawnClient(options);
+    } catch (error) {
+      if (attempt >= MAX_TRANSIENT_REGISTRATION_ATTEMPTS || !isRetryableWorkspaceRegistrationError(error)) {
+        throw error;
+      }
+      await delay(attempt * 1_000);
+    }
+  }
+}
+
 // ── Types ────────────────────────────────────────────────────────────────────
 
 export interface BrokerHarnessOptions {
@@ -201,7 +231,7 @@ export class BrokerHarness {
     };
 
     // Start the low-level client (spawns broker process)
-    this.client = await HarnessDriverClient.spawn(clientOpts);
+    this.client = await spawnHarnessClientWithRetry(clientOpts);
     this.ephemeralWorkspaceKey = apiKey;
 
     // Wire event collection

@@ -4,6 +4,11 @@ function oneLine(value) {
     .trim();
 }
 
+function bounded(value, limit = 180) {
+  const line = oneLine(value);
+  return line.length <= limit ? line : `${line.slice(0, limit - 1)}…`;
+}
+
 export function redactFailureMessage(value) {
   return oneLine(value)
     .replace(
@@ -20,8 +25,8 @@ export default async function* failureSummary(source) {
     if (event.type !== 'test:fail') continue;
     const error = event.data?.details?.error;
     failures.push({
-      name: oneLine(event.data?.name),
-      message: redactFailureMessage(error?.message),
+      name: bounded(redactFailureMessage(event.data?.name), 120),
+      message: bounded(redactFailureMessage(error?.message)),
     });
   }
 

@@ -46,6 +46,24 @@ test('failure summary emits only the redacted one-line error', async () => {
   assert.ok(!output.includes(syntheticAgentToken));
 });
 
+test('failure summary bounds long startup diagnostics', async () => {
+  async function* events() {
+    yield {
+      type: 'test:fail',
+      data: {
+        name: 'bounded failure',
+        details: { error: { message: 'x'.repeat(500) } },
+      },
+    };
+  }
+
+  let output = '';
+  for await (const chunk of failureSummary(events())) output += chunk;
+
+  assert.ok(output.length < 260);
+  assert.match(output, /…$/m);
+});
+
 test('broker cleanroom scenario retains TAP skip fail-closed output', async () => {
   const matrixUrl = new URL('../../relayflows/cleanroom/relay.matrix.json', import.meta.url);
   const matrix = JSON.parse(await readFile(matrixUrl, 'utf8'));
