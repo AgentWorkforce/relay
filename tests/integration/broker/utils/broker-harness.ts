@@ -139,7 +139,8 @@ export async function waitForNodeRegistration(
   let lastError: unknown;
   for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
     try {
-      await lookupNode();
+      const node = await lookupNode();
+      if (node == null) throw new Error(`Broker node '${nodeName}' is not visible yet`);
       return;
     } catch (error) {
       lastError = error;

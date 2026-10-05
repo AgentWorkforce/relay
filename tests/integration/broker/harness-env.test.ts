@@ -90,7 +90,8 @@ test('broker harness waits for read-only node visibility before spawning workers
     'test-node',
     async () => {
       lookups += 1;
-      if (lookups < 3) throw new Error('node_not_found');
+      if (lookups < 3) return null;
+      return { name: 'test-node' };
     },
     async (delayMs) => {
       delays.push(delayMs);
