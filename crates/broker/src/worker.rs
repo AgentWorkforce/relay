@@ -36,8 +36,8 @@ use crate::{
     spawner::{
         add_broker_hooks_path, attestation_env_present, is_valid_attestation_value,
         remove_inherited_relay_credentials, resolve_commit_hooks_dir, terminate_child,
-        with_commit_attestation_env, RELAY_ATTEST_AGENT_ID, RELAY_ATTEST_JTI,
-        RELAY_ATTEST_SESSION_ID, RELAY_ATTEST_SPONSOR_ID,
+        with_commit_attestation_env, NODE_IDENTITY_ENV_KEYS, RELAY_ATTEST_AGENT_ID,
+        RELAY_ATTEST_JTI, RELAY_ATTEST_SESSION_ID, RELAY_ATTEST_SPONSOR_ID,
     },
 };
 
@@ -1616,6 +1616,12 @@ impl WorkerRegistry {
             for (key, value) in config.env_pairs() {
                 command.env(key, value);
             }
+        }
+        // Node identity belongs only to the broker and node-provider helpers.
+        // Neither the broker's worker env nor per-spawn harness/result env may
+        // add it back after the inherited credential scrub.
+        for key in NODE_IDENTITY_ENV_KEYS {
+            command.env_remove(key);
         }
         if should_inject_relay_participant_env(
             &spec.runtime,
@@ -3403,7 +3409,10 @@ mod tests {
     async fn spawned_worker_holds_only_its_own_and_delegated_relay_credentials() {
         let dir = tempfile::tempdir().expect("worker cwd");
         // Record only the NAMES of relay credential variables the worker sees.
-        let keys = crate::spawner::INHERITED_RELAY_CREDENTIAL_ENV_KEYS.join(" ");
+        let keys = format!(
+            "{} RELAY_NODE_ID AGENT_RELAY_ENROLLED_NODE_ID",
+            crate::spawner::INHERITED_RELAY_CREDENTIAL_ENV_KEYS.join(" ")
+        );
         let script = format!(
             "for k in {keys}; do if printenv \"$k\" >/dev/null; then echo \"$k\"; fi; done > names.tmp && mv names.tmp names.txt; sleep 30"
         );
@@ -3412,16 +3421,26 @@ mod tests {
             command: "sh".to_string(),
             args: vec!["-c".to_string(), script],
             cwd: Some(dir.path().to_string_lossy().into_owned()),
-            env: None,
+            env: Some(std::collections::HashMap::from([
+                ("RELAY_NODE_ID".to_string(), "node_harness".to_string()),
+                (
+                    "AGENT_RELAY_ENROLLED_NODE_ID".to_string(),
+                    "node_harness".to_string(),
+                ),
+            ])),
             session_id: "session-credential-worker".to_string(),
             metadata: None,
         }));
         // The broker explicitly delegates a workspace key through its worker
         // environment; that delegation must survive the inherited scrub.
-        let mut registry = make_registry(vec![(
-            "RELAY_API_KEY".to_string(),
-            "rk_live_delegated".to_string(),
-        )]);
+        let mut registry = make_registry(vec![
+            ("RELAY_API_KEY".to_string(), "rk_live_delegated".to_string()),
+            ("RELAY_NODE_ID".to_string(), "node_broker".to_string()),
+            (
+                "AGENT_RELAY_ENROLLED_NODE_ID".to_string(),
+                "node_broker".to_string(),
+            ),
+        ]);
 
         registry
             .spawn(
