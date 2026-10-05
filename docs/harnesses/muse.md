@@ -40,9 +40,11 @@ corroborating structure such as a verification URL plus a labelled code.
 
 Device-login detection requires cues from at least two independent categories,
 such as a verification destination plus a labelled code, or an explicit login
-request plus a wait or `muse login` command. A lone phrase such as `device code`
-is ordinary task/agent text and does not classify the screen. The cue groups
-live in
+request plus a wait or `muse login` command. It also requires every visible
+non-empty row to have the compact auth-interstitial shape; unrelated task or
+agent output makes the screen unrecognised instead of producing a fatal auth
+error. A lone phrase such as `device code` is ordinary task/agent text and does
+not classify the screen. The cue groups live in
 `detect_muse_device_auth_prompt` (`crates/relay-pty/src/terminal.rs`). They are
 not derived from a captured Muse screen; extend them when one is captured. Device
 codes and auth contents are never copied into logs or protocol frames.

@@ -112,6 +112,19 @@ pub fn detect_codex_trust_prompt(clean_output: &str) -> bool {
 /// look ready and prose mentioning "device code" does not become an auth
 /// failure.
 pub fn detect_muse_device_auth_prompt(screen: &str) -> bool {
+    let visible_lines: Vec<_> = screen
+        .lines()
+        .map(str::trim)
+        .filter(|line| !line.is_empty())
+        .collect();
+    if visible_lines.is_empty()
+        || !visible_lines
+            .iter()
+            .all(|line| muse_auth_interstitial_line(line))
+    {
+        return false;
+    }
+
     // Collapse whitespace so a phrase wrapped across grid rows still matches.
     let normalized = screen
         .to_lowercase()
@@ -129,6 +142,39 @@ pub fn detect_muse_device_auth_prompt(screen: &str) -> bool {
         || (has_request && (has_destination || has_code || has_wait || has_command))
         || (has_code && has_wait)
         || (has_wait && has_command)
+}
+
+/// Accept only rows that belong to the compact device-auth interstitial.
+/// Ordinary task and agent output may quote every auth cue; one unrelated row
+/// keeps that transcript from becoming a fatal provider-auth classification.
+fn muse_auth_interstitial_line(line: &str) -> bool {
+    let lower = line.trim().to_ascii_lowercase();
+    if matches!(lower.as_str(), "›" | "❯" | ">") || muse_labelled_code_line(line) {
+        return true;
+    }
+
+    let normalized = lower.split_whitespace().collect::<Vec<_>>().join(" ");
+    let starts_with_any = |cues: &[&str]| cues.iter().any(|cue| normalized.starts_with(cue));
+    let has_destination = contains_any(&normalized, MUSE_VERIFICATION_DESTINATION_CUES);
+
+    (has_destination
+        && (["visit ", "open ", "go to ", "navigate to "]
+            .iter()
+            .any(|prefix| normalized.starts_with(prefix))
+            || normalized.contains("facebook.com/device")
+            || normalized.contains("meta.com/device")))
+        || starts_with_any(MUSE_DEVICE_CODE_CUES)
+        || normalized.starts_with("and enter this code")
+        || starts_with_any(MUSE_AUTH_REQUEST_CUES)
+        || (normalized.starts_with("you are ")
+            && (normalized.contains("not signed in") || normalized.contains("not logged in")))
+        || starts_with_any(MUSE_AUTH_WAIT_CUES)
+        || matches!(
+            normalized.as_str(),
+            "waiting for" | "authorization to complete"
+        )
+        || (contains_any(&normalized, MUSE_AUTH_COMMAND_CUES)
+            && (normalized.starts_with("run ") || normalized.starts_with("press enter")))
 }
 
 fn contains_any(normalized: &str, cues: &[&str]) -> bool {
@@ -818,6 +864,8 @@ Entertoconfirm·Esctocancel\n";
             "Logged in. Ready.\n❯\n",
             "Reading src/device/auth.rs to add the login handler\n❯\n",
             "Document the device code exchange and update its tests.\n›\n",
+            "Agent output:\nSee https://example.org/activate\nCode: WXYZ\n›\n",
+            "Task: explain why authentication required appears at https://example.org/docs\n›\n",
             "I will authenticate the request before signing the payload.\n›\n",
             "",
         ] {
