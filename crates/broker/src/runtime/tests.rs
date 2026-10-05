@@ -9095,3 +9095,143 @@ async fn durable_task_numeric_output_and_accounting_reconcile_javascript_json() 
         .await;
     assert!(receiver.await.unwrap().is_ok());
 }
+
+#[tokio::test]
+async fn muse_provider_auth_error_expires_verified_spawn_and_releases_capacity() {
+    let name = WorkerName::from("muse-auth-test");
+    let workers = make_worker_registry_with_worker(name.as_str()).await;
+    let generation = workers.workers.get(&name).unwrap().generation;
+    let mut fixture = worker_event_runtime_fixture(workers, HashMap::new());
+    fixture.runtime.pending_verified_spawns.insert(
+        name.clone(),
+        super::fleet::PendingVerifiedSpawn {
+            invocation_id: "auth-invocation".into(),
+            deadline: Instant::now() + Duration::from_secs(90),
+            started: Instant::now(),
+            generation,
+            failure_reason: None,
+        },
+    );
+    for event_generation in [Uuid::new_v4(), generation] {
+        fixture.runtime.handle_worker_event(WorkerEvent::Message {
+            name: name.clone(), generation: event_generation,
+            value: json!({"type":"worker_error", "payload":{"code":"provider_auth_required", "message":"private-device-code"}}),
+        }).await;
+        let pending = fixture.runtime.pending_verified_spawns.get(&name).unwrap();
+        if event_generation != generation {
+            assert!(pending.failure_reason.is_none());
+            assert!(pending.deadline > Instant::now());
+        } else {
+            assert!(pending
+                .failure_reason
+                .as_deref()
+                .unwrap()
+                .contains("provider_auth_required"));
+            assert!(!pending
+                .failure_reason
+                .as_deref()
+                .unwrap()
+                .contains("private-device-code"));
+            assert!(pending.deadline <= Instant::now());
+        }
+    }
+    fixture
+        .runtime
+        .handle_worker_event(WorkerEvent::Message {
+            name: name.clone(),
+            generation,
+            value: json!({"type":"worker_ready", "payload":{"readiness_proven":true}}),
+        })
+        .await;
+    assert!(fixture.runtime.pending_verified_spawns.contains_key(&name));
+    fixture.runtime.handle_maintenance_tick().await;
+    assert!(!fixture.runtime.pending_verified_spawns.contains_key(&name));
+    assert!(!fixture.runtime.workers.has_worker(&name));
+    let mut found = false;
+    while let Ok(command) = fixture.fleet_control_rx.try_recv() {
+        if let FleetControlCommand::Send(BrokerToRelaycast::ActionResult(result)) = command {
+            assert!(match &result.result {
+                crate::fleet_wire::ActionResultPayload::Error(error) => error.error.as_str(),
+                _ => panic!("expected fleet error: {result:?}"),
+            }
+            .contains("provider_auth_required"));
+            found = true;
+        }
+    }
+    assert!(found, "maintenance must return the specific fleet failure");
+}
+
+#[tokio::test]
+async fn muse_fleet_missing_auth_fails_before_registration_and_dedup() {
+    let temp = tempfile::tempdir().unwrap();
+    let worker_auth = temp.path().join("worker-auth.json");
+    std::fs::write(&worker_auth, r#"{"token":"fixture"}"#).unwrap();
+    let (tx, _rx) = mpsc::channel(16);
+    let workers = WorkerRegistry::new(
+        tx,
+        vec![
+            (
+                "RELAY_MUSE_SHARED_AUTH_PATH".into(),
+                worker_auth.display().to_string(),
+            ),
+            ("RELAY_MUSE_ISOLATED_AUTH".into(), "0".into()),
+        ],
+        temp.path().into(),
+        Instant::now(),
+    );
+    let mut fixture = worker_event_runtime_fixture(workers, HashMap::new());
+    // harnessConfig.env must outrank the valid worker-env login. Repeating the
+    // same name must still report auth, proving rejection precedes dedup.
+    for attempt in 0..2 {
+        fixture
+            .runtime
+            .handle_fleet_control_event(crate::node_control::FleetControlEvent::Message(
+                crate::fleet_wire::RelaycastToBroker::ActionInvoke(
+                    crate::fleet_wire::ActionInvoke {
+                        task_execution: None,
+                        v: FLEET_WIRE_VERSION,
+                        invocation_id: format!("missing-auth-{attempt}"),
+                        action: "spawn".into(),
+                        input: json!({"name":"missing-auth", "cli":"muse", "verify_ready":true,
+                        "cwd":temp.path(), "task":"do work",
+                        "harnessConfig":{"runtime":"pty", "command":"muse", "env":{
+                            "RELAY_MUSE_SHARED_AUTH_PATH":temp.path().join("missing.json")
+                        }}}),
+                        agent_name: Some("missing-auth".into()),
+                        agent_id: None,
+                    },
+                ),
+            ))
+            .await;
+        let mut found = false;
+        while let Ok(command) = fixture.fleet_control_rx.try_recv() {
+            match command {
+                FleetControlCommand::RegisterAgent { .. } => {
+                    panic!("auth failure must precede registration")
+                }
+                FleetControlCommand::Send(BrokerToRelaycast::ActionResult(result)) => {
+                    assert!(
+                        match &result.result {
+                            crate::fleet_wire::ActionResultPayload::Error(error) =>
+                                error.error.as_str(),
+                            _ => panic!("expected fleet error: {result:?}"),
+                        }
+                        .contains("provider_auth_required"),
+                        "{result:?}"
+                    );
+                    assert!(match &result.result {
+                        crate::fleet_wire::ActionResultPayload::Error(error) =>
+                            error.error.as_str(),
+                        _ => panic!("expected fleet error: {result:?}"),
+                    }
+                    .contains("missing.json"));
+                    found = true;
+                }
+                _ => {}
+            }
+        }
+        assert!(found);
+        assert!(fixture.runtime.workers.workers.is_empty());
+        assert!(fixture.runtime.pending_verified_spawns.is_empty());
+    }
+}

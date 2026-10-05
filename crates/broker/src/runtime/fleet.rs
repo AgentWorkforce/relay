@@ -152,7 +152,18 @@ pub(super) struct PendingVerifiedSpawn {
     pub(super) invocation_id: String,
     pub(super) deadline: Instant,
     pub(super) started: Instant,
+    pub(super) failure_reason: Option<String>,
     pub(super) generation: Uuid,
+}
+
+impl PendingVerifiedSpawn {
+    pub(super) fn provider_auth_failed(&mut self, generation: Uuid) {
+        if self.generation == generation {
+            self.deadline = Instant::now();
+            // Do not copy provider output: it may contain device codes or tokens.
+            self.failure_reason = Some("spawn_provider_auth_required: Muse requires authentication; run `muse` on the selected node and complete device login, then retry".into());
+        }
+    }
 }
 
 pub(super) fn verified_spawn_ready_result(
@@ -1660,6 +1671,7 @@ impl BrokerRuntime {
                                 invocation_id: invoke.invocation_id,
                                 deadline: Instant::now() + VERIFIED_SPAWN_READY_TIMEOUT,
                                 started,
+                                failure_reason: None,
                                 generation,
                             },
                         );
