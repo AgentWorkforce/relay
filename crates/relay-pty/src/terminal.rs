@@ -148,39 +148,16 @@ pub fn detect_muse_device_auth_prompt(screen: &str) -> bool {
 /// Ordinary task and agent output may quote every auth cue; one unrelated row
 /// keeps that transcript from becoming a fatal provider-auth classification.
 fn muse_auth_interstitial_line(line: &str) -> bool {
-    let lower = line.trim().to_ascii_lowercase();
-    if matches!(lower.as_str(), "›" | "❯" | ">") || muse_labelled_code_line(line) {
+    let lower = muse_unframe_line(line).to_ascii_lowercase();
+    if matches!(lower.as_str(), "›" | "❯" | ">") || muse_labelled_code_line(&lower) {
         return true;
     }
 
-    let content = lower
-        .trim_matches(|ch| {
-            matches!(
-                ch,
-                '─' | '│'
-                    | '┌'
-                    | '┐'
-                    | '└'
-                    | '┘'
-                    | '├'
-                    | '┤'
-                    | '┬'
-                    | '┴'
-                    | '┼'
-                    | '═'
-                    | '║'
-                    | '╔'
-                    | '╗'
-                    | '╚'
-                    | '╝'
-            )
-        })
-        .trim();
-    if content.is_empty() {
+    if lower.is_empty() {
         return true;
     }
 
-    let normalized = content.split_whitespace().collect::<Vec<_>>().join(" ");
+    let normalized = lower.split_whitespace().collect::<Vec<_>>().join(" ");
     let starts_with_any = |cues: &[&str]| cues.iter().any(|cue| normalized.starts_with(cue));
     let has_destination = contains_any(&normalized, MUSE_VERIFICATION_DESTINATION_CUES);
 
@@ -205,12 +182,38 @@ fn muse_auth_interstitial_line(line: &str) -> bool {
             && (normalized.starts_with("run ") || normalized.starts_with("press enter")))
 }
 
+fn muse_unframe_line(line: &str) -> &str {
+    line.trim()
+        .trim_matches(|ch| {
+            matches!(
+                ch,
+                '─' | '│'
+                    | '┌'
+                    | '┐'
+                    | '└'
+                    | '┘'
+                    | '├'
+                    | '┤'
+                    | '┬'
+                    | '┴'
+                    | '┼'
+                    | '═'
+                    | '║'
+                    | '╔'
+                    | '╗'
+                    | '╚'
+                    | '╝'
+            )
+        })
+        .trim()
+}
+
 fn contains_any(normalized: &str, cues: &[&str]) -> bool {
     cues.iter().any(|cue| normalized.contains(cue))
 }
 
 fn muse_labelled_code_line(line: &str) -> bool {
-    let lower = line.trim().to_ascii_lowercase();
+    let lower = muse_unframe_line(line).to_ascii_lowercase();
     [
         "code:",
         "device code:",
@@ -877,6 +880,9 @@ Entertoconfirm·Esctocancel\n";
             // The real-binary broker fixture surrounds the same layout with
             // a title and box-drawing decoration.
             "┌ Sign in to Muse ───┐\nTo continue, sign in with your Meta account.\nOpen https://www.facebook.com/device in a browser\nand enter this code: ABCD-1234\nWaiting for authentication...\n└───┘\n›\n",
+            // Providers may place the content and prompt inside vertical
+            // borders instead of drawing only a title and footer.
+            "┌ Sign in to Muse ───┐\n│ Open https://example.org/activate │\n│ Code: WXYZ │\n│ › │\n└───┘\n",
         ] {
             assert!(
                 detect_muse_device_auth_prompt(screen),
