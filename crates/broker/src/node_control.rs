@@ -1999,6 +1999,17 @@ fn persist_node_token_after_rotation(
     let _lock = lock_node_token_cache(path)?;
     let current = load_scoped_node_token(path, node_id, workspace_id, base_url);
     if current.as_ref() != preparation.expected_cache.as_ref() {
+        if matches!(
+            (&preparation.expected_cache, &current),
+            (Some(expected), Some(current))
+                if current.token.trim() == expected.token.trim()
+        ) {
+            // A sibling may have replaced only the pending rotation metadata.
+            // Relaycast accepted this proof, so the minted credential is newer
+            // than the token both cache versions still hold.
+            persist_node_token_state(path, node_id, workspace_id, base_url, minted_token, None)?;
+            return Ok(minted_token.to_string());
+        }
         let cache_advanced = match (&preparation.expected_cache, &current) {
             (Some(expected), Some(current)) => current.token.trim() != expected.token.trim(),
             (None, Some(_)) => true,
@@ -2014,8 +2025,8 @@ fn persist_node_token_after_rotation(
             );
             return Ok(current.token.trim().to_string());
         }
-        // A concurrent removal or metadata-only replacement must not be
-        // overwritten. The minted token is still valid for this process.
+        // A concurrent removal must not be overwritten. The minted token is
+        // still valid for this process.
         return Ok(minted_token.to_string());
     }
 
@@ -8315,6 +8326,55 @@ mod tests {
             );
             previous_key = changed_key;
         }
+    }
+
+    #[test]
+    fn rotation_persists_minted_token_after_metadata_only_cache_change() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("node-token.json");
+        persist_node_token(&path, "node-a", "ws-a", None, "nt_current").unwrap();
+
+        let original_digest = create_node_request_digest("node-a", "host-a", "broker/v1");
+        let preparation = prepare_node_rotation(
+            &path,
+            "node-a",
+            "ws-a",
+            None,
+            "nt_current",
+            &original_digest,
+        )
+        .unwrap();
+        let sibling_digest = create_node_request_digest("node-a", "host-b", "broker/v2");
+        persist_node_token_state(
+            &path,
+            "node-a",
+            "ws-a",
+            None,
+            "nt_current",
+            Some((
+                "node-rotation:00000000-0000-4000-8000-000000000007",
+                &sibling_digest,
+            )),
+        )
+        .unwrap();
+
+        assert_eq!(
+            persist_node_token_after_rotation(
+                &path,
+                "node-a",
+                "ws-a",
+                None,
+                &preparation,
+                "nt_rotated",
+            )
+            .unwrap(),
+            "nt_rotated"
+        );
+        let persisted: PersistedNodeToken =
+            serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
+        assert_eq!(persisted.token, "nt_rotated");
+        assert!(persisted.pending_rotation_idempotency_key.is_none());
+        assert!(persisted.pending_rotation_request_digest.is_none());
     }
 
     #[test]
