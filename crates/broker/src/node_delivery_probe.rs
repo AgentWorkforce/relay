@@ -356,7 +356,7 @@ impl NodeDeliveryProbe {
     }
 
     fn record_node_control_if_nonterminal(&self, state: u8) {
-        let _ = self.counters.node_control_health.fetch_update(
+        let _ = self.counters.node_control_health.try_update(
             Ordering::Relaxed,
             Ordering::Relaxed,
             |current| (!node_control_state_is_terminal(current)).then_some(state),
