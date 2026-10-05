@@ -354,13 +354,19 @@ fn composer_is_idle(snapshot: &Snapshot, cli: &str) -> bool {
     if cli.to_ascii_lowercase().contains("codex") && codex_busy(&screen) {
         return false;
     }
+    let codex_placeholder_after_cursor = cli.to_ascii_lowercase().contains("codex")
+        && snapshot.cursor.1 == 3
+        && screen
+            .lines()
+            .nth(snapshot.cursor.0.saturating_sub(1) as usize)
+            .is_some_and(|line| line.trim_start() == "› Ask Codex to do anything");
     cli_prompt_ready(
         cli,
         GridReadinessSnapshot {
             screen: &screen,
             cursor: Some(snapshot.cursor),
         },
-    ) && !snapshot.has_visible_text_at_or_after_cursor()
+    ) && (!snapshot.has_visible_text_at_or_after_cursor() || codex_placeholder_after_cursor)
         && current_composer(snapshot, cli)
             .map(|composer| {
                 let trimmed = composer.trim();
@@ -506,7 +512,14 @@ pub(crate) fn pending_verification_echo_seen(
     verification: &PendingVerification,
 ) -> bool {
     let observed = output.since(verification.output_boundary);
-    check_echo_in_output(&observed, &verification.expected_echo)
+    if check_echo_in_output(&observed, &verification.expected_echo) {
+        return true;
+    }
+    // Native TUIs can wrap and indent every line of a long delivery. The
+    // receive-time boundary still excludes older turns; compare this body's
+    // compact tail when the full byte-for-byte echo is unavailable.
+    let tail = expected_tail(&verification.expected_echo);
+    !tail.is_empty() && compact_render(&strip_ansi(&observed)).contains(&tail)
 }
 
 /// Start activity detection with every post-submission byte already observed.
@@ -747,6 +760,21 @@ mod tests {
 
     #[cfg(unix)]
     #[tokio::test]
+    async fn codex_idle_placeholder_to_right_of_cursor_proves_cleared_composer() {
+        let expected = "Relay message from Lead [evt]: fix idle injection";
+        let (pty, snapshot) = codex_snapshot("› Ask Codex to do anything\x1b[1;3H").await;
+        assert_eq!(snapshot.cursor, (1, 3));
+        assert!(snapshot.has_visible_text_at_or_after_cursor());
+        let verification = codex_verification(expected);
+        assert_eq!(
+            assess_harness_acceptance("codex", &verification, &snapshot),
+            HarnessAcceptance::Accepted("composer_cleared".to_string())
+        );
+        pty.shutdown().unwrap();
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
     async fn generic_redraw_cannot_confirm_a_body_still_parked() {
         let expected = "Relay message from Lead [evt]: fix idle injection";
         let (pty, snapshot) = codex_snapshot(&format!("› {expected}")).await;
@@ -925,6 +953,25 @@ mod tests {
             verification.accepted_activity(),
             Some("Working+esc to interrupt".to_string())
         );
+    }
+
+    #[test]
+    fn wrapped_tui_echo_is_scoped_to_delivery_output_boundary() {
+        let expected = "Relay message from Lead [evt]: Reply with exactly WRAPPED_CODEX_ACK";
+        let mut verification = codex_verification(expected);
+        verification.echo_seen = false;
+        verification.output_boundary = 1;
+        let mut output = VerificationOutput::default();
+        output.push_output(
+            1,
+            b"Relay message from Lead [evt]: Reply with exactly WRAPPED_CODEX_ACK",
+        );
+        assert!(!pending_verification_echo_seen(&output, &verification));
+        output.push_output(
+            2,
+            b"Relay message from Lead [evt]: Reply with exactly\r\n  WRAPPED_CODEX_ACK",
+        );
+        assert!(pending_verification_echo_seen(&output, &verification));
     }
 
     #[test]

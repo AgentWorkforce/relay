@@ -111,7 +111,7 @@ try {
   worker = spawn(binaryPath, ['pty', '--agent-name', 'relayflow-codex-1891', 'codex'], {
     cwd: targetDir,
     env: {
-      ...process.env,
+      ...Object.fromEntries(Object.entries(process.env).filter(([name]) => !/^(?:LD_|DYLD_)/.test(name))),
       PATH: `${binDir}:${process.env.PATH ?? '/usr/local/bin:/usr/bin:/bin'}`,
       RELAY_INJECT_RATE_MS: '0',
     },
@@ -162,7 +162,7 @@ try {
   let outcome;
   let signature;
   let details;
-  if (arm === 'base' && observation.marker === 'TASK_PARKED_TIMEOUT') {
+  if (arm === 'base' && observation.marker === 'TASK_PARKED_TIMEOUT' && observation.copies === 1) {
     outcome = 'bug';
     signature = 'codex_delivery_left_in_composer';
     details = `The delivery body reached the Codex composer ${observation.copies} time without a turn; the baseline never sent the bounded submit-only recovery.`;
@@ -213,9 +213,14 @@ try {
 
 function createTaskObserver() {
   let output = '';
+  const seen = new WeakSet();
   return {
     observe(frame) {
       if (frame?.type !== 'worker_stream' || typeof frame.payload?.chunk !== 'string') return undefined;
+      // waitFor can revisit queued frames on each poll. Each stream chunk must
+      // contribute to the split-marker buffer exactly once.
+      if (seen.has(frame)) return undefined;
+      seen.add(frame);
       // The broker may split terminal output across stream frames. Keep a
       // bounded tail so a marker is recognized even when it crosses a frame.
       output = `${output}${frame.payload.chunk}`.slice(-8_000);

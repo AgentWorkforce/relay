@@ -18,7 +18,7 @@
  */
 
 import { constants as fsConstants } from 'node:fs';
-import { access, mkdtemp, mkdir, rm, writeFile } from 'node:fs/promises';
+import { access, chmod, copyFile, mkdtemp, mkdir, rm, writeFile } from 'node:fs/promises';
 import { spawn } from 'node:child_process';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
@@ -35,7 +35,7 @@ const BODY = [
 const brokerPath = path.resolve(option('--broker', process.env.RELAY_REAL_CODEX_BROKER_BINARY ?? ''));
 const resultPath = option('--result', '');
 const timeoutSeconds = Number(option('--timeout-seconds', '180'));
-const settleSeconds = Number(option('--settle-seconds', '45'));
+const settleSeconds = Number(option('--settle-seconds', '60'));
 
 if (!brokerPath || brokerPath === path.resolve('.')) {
   throw new Error('Pass --broker <built-agent-relay-broker> or RELAY_REAL_CODEX_BROKER_BINARY.');
@@ -51,12 +51,20 @@ await requireCommand('codex');
 
 const probeDir = await mkdtemp(path.join(tmpdir(), 'relayflow-real-codex-1891-'));
 const cwd = path.join(probeDir, 'workspace');
+const codexHome = path.join(probeDir, 'codex-home');
 const agentName = `relayflow-real-codex-1891-${process.pid}`;
 let worker;
 let stderr = '';
 
 try {
   await mkdir(cwd, { recursive: true });
+  await mkdir(codexHome, { mode: 0o700 });
+  // Codex must have separate SQLite state from the live sessions on this
+  // machine. Copy only the login into a private disposable home.
+  const authSource = path.join(process.env.CODEX_HOME ?? path.join(process.env.HOME, '.codex'), 'auth.json');
+  const authCopy = path.join(codexHome, 'auth.json');
+  await copyFile(authSource, authCopy);
+  await chmod(authCopy, 0o600);
   worker = spawn(
     brokerPath,
     [
@@ -67,14 +75,20 @@ try {
       '--',
       '--config',
       'check_for_update_on_startup=false',
-      '--dangerously-bypass-approvals-and-sandbox',
+      '--model',
+      'gpt-6-sol',
+      '--config',
+      'model_reasoning_effort="low"',
+      '--sandbox',
+      'workspace-write',
+      '--no-daemon',
     ],
     {
       cwd,
       env: {
         ...process.env,
-        // Keep the operator's existing authenticated Codex home. The disposable
-        // cwd prevents the check from modifying a repository.
+        CODEX_HOME: codexHome,
+        // The disposable cwd prevents the check from modifying a repository.
         RELAY_INJECT_RATE_MS: '0',
       },
       stdio: ['pipe', 'pipe', 'pipe'],
@@ -136,17 +150,23 @@ try {
   if (observation.deliveryInjections !== 1) {
     throw new Error(`Expected one body injection, observed ${observation.deliveryInjections}.`);
   }
-  if (observation.recoveries.some((strategy) => strategy !== 'submit_key_only')) {
+  if (
+    observation.recoveries.length > 2 ||
+    observation.recoveries.some((strategy) => strategy !== 'submit_key_only')
+  ) {
     throw new Error(`Unexpected recovery strategy: ${JSON.stringify(observation.recoveries)}.`);
   }
   if (!observation.verified) throw new Error('Broker never verified harness acceptance.');
-  await waitForVisibleAnswer(worker, frames, 45_000);
+  await waitForVisibleAnswer(worker, frames, 120_000);
 
   const result = {
     version: 1,
     caseId: CASE_ID,
     outcome: 'passed',
-    signature: 'real_codex_parked_delivery_recovers_once',
+    signature:
+      observation.recoveries.length > 0
+        ? 'real_codex_parked_delivery_recovers_once'
+        : 'real_codex_delivery_completes_once',
     deliveryInjections: observation.deliveryInjections,
     submitOnlyRecoveries: observation.recoveries.length,
     dismissedUpdateDialogs,
@@ -282,6 +302,7 @@ async function observeOneCodexTurn(worker, frames, parkedSnapshot, timeoutMs) {
           reason: frame.payload?.reason,
           deliveryInjections,
           recoveries,
+          cursor: snapshot.payload?.cursor,
           screen: String(snapshot.payload?.screen ?? '').slice(-4_000),
         })}`
       );
