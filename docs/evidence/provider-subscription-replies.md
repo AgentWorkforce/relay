@@ -6,7 +6,7 @@ It does **not** establish that the reported GitHub writeback failure is fixed.
 ## Available evidence
 
 - The incident's Relay workspace is inaccessible in this run: `agent-relay
-  message inbox check` reports no workspace key. No authenticated message,
+message inbox check` reports no workspace key. No authenticated message,
   transcript, subscription, or binding read could be made (E1–E3).
 - A read-only `RelayfileControlPlaneClient({ autoStart: false })` binding read
   reports `DAEMON_UNAVAILABLE`. Stored PR globs therefore remain unverified;
