@@ -48,6 +48,14 @@ const NODE_CONTROL_CONNECTING: u8 = 0;
 const NODE_CONTROL_BACKOFF: u8 = 1;
 const NODE_CONTROL_OK: u8 = 2;
 const NODE_CONTROL_TERMINAL: u8 = 3;
+const NODE_CONTROL_ENV_OVERRIDE_REJECTED: u8 = 4;
+
+fn node_control_state_is_terminal(state: u8) -> bool {
+    matches!(
+        state,
+        NODE_CONTROL_TERMINAL | NODE_CONTROL_ENV_OVERRIDE_REJECTED
+    )
+}
 
 use crate::fleet_wire::{Deliver, RelaycastToBroker};
 use crate::node_control::DeliveryDecision;
@@ -362,7 +370,9 @@ impl NodeDeliveryProbe {
     }
 
     pub(crate) fn record_node_control_connecting(&self) {
-        if self.counters.node_control_health.load(Ordering::Relaxed) != NODE_CONTROL_TERMINAL {
+        if !node_control_state_is_terminal(
+            self.counters.node_control_health.load(Ordering::Relaxed),
+        ) {
             self.counters
                 .node_control_health
                 .store(NODE_CONTROL_CONNECTING, Ordering::Relaxed);
@@ -370,7 +380,9 @@ impl NodeDeliveryProbe {
     }
 
     pub(crate) fn record_node_control_backoff(&self) {
-        if self.counters.node_control_health.load(Ordering::Relaxed) != NODE_CONTROL_TERMINAL {
+        if !node_control_state_is_terminal(
+            self.counters.node_control_health.load(Ordering::Relaxed),
+        ) {
             self.counters
                 .node_control_health
                 .store(NODE_CONTROL_BACKOFF, Ordering::Relaxed);
@@ -383,11 +395,21 @@ impl NodeDeliveryProbe {
             .store(NODE_CONTROL_TERMINAL, Ordering::Relaxed);
     }
 
+    pub(crate) fn record_env_node_token_rejected_terminal(&self) {
+        self.counters
+            .node_control_health
+            .store(NODE_CONTROL_ENV_OVERRIDE_REJECTED, Ordering::Relaxed);
+    }
+
     pub(crate) fn node_control_health(&self) -> Value {
         match self.counters.node_control_health.load(Ordering::Relaxed) {
             NODE_CONTROL_TERMINAL => json!({
                 "state": "terminal",
                 "reason": "node_token_proof_required",
+            }),
+            NODE_CONTROL_ENV_OVERRIDE_REJECTED => json!({
+                "state": "terminal",
+                "reason": "env_override_rejected",
             }),
             NODE_CONTROL_OK => json!({ "state": "ok" }),
             NODE_CONTROL_BACKOFF => json!({ "state": "backoff" }),
@@ -1333,6 +1355,19 @@ mod tests {
         assert_eq!(probe.node_control_health()["state"], "terminal");
         probe.record_node_control_connecting();
         assert_eq!(probe.node_control_health()["state"], "terminal");
+
+        let env_probe = NodeDeliveryProbe::new();
+        env_probe.record_env_node_token_rejected_terminal();
+        assert_eq!(env_probe.node_control_health()["state"], "terminal");
+        assert_eq!(
+            env_probe.node_control_health()["reason"],
+            "env_override_rejected"
+        );
+        env_probe.record_node_control_backoff();
+        assert_eq!(
+            env_probe.node_control_health()["reason"],
+            "env_override_rejected"
+        );
     }
 
     #[test]

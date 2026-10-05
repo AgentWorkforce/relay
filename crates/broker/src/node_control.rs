@@ -213,26 +213,38 @@ impl NodeTokenMinter {
     ) -> std::result::Result<String, CreateNodeMintError> {
         let request_digest =
             create_node_request_digest(&self.node_id, &self.node_name, &self.broker_version);
-        let preparation = match self.token_path.as_deref() {
-            Some(path) => match prepare_node_rotation(
+        let preparation = self.token_path.as_deref().map(|path| {
+            prepare_node_rotation(
                 path,
                 &self.node_id,
                 &self.workspace_id,
                 self.base_url.as_deref(),
                 rejected_token,
                 &request_digest,
-            ) {
-                Ok(preparation) => Some(preparation),
-                Err(error) => {
-                    tracing::warn!(
-                        target = "relay_broker::fleet",
-                        node_id = %self.node_id,
-                        error = %error,
-                        "failed to persist node rotation recovery key; retry is process-local"
-                    );
-                    None
-                }
-            },
+            )
+        });
+        self.remint_after_preparation(rejected_token, &request_digest, preparation)
+            .await
+    }
+
+    async fn remint_after_preparation(
+        &self,
+        rejected_token: &str,
+        request_digest: &str,
+        preparation: Option<Result<NodeRotationPreparation>>,
+    ) -> std::result::Result<String, CreateNodeMintError> {
+        let preparation_failed = matches!(preparation.as_ref(), Some(Err(_)));
+        let preparation = match preparation {
+            Some(Ok(preparation)) => Some(preparation),
+            Some(Err(error)) => {
+                tracing::warn!(
+                    target = "relay_broker::fleet",
+                    node_id = %self.node_id,
+                    error = %error,
+                    "failed to persist node rotation recovery key; retry is process-local and a successful replacement will be persisted best-effort"
+                );
+                None
+            }
             None => None,
         };
         let process_key = preparation
@@ -244,7 +256,7 @@ impl NodeTokenMinter {
                     &self.workspace_id,
                     self.base_url.as_deref(),
                     rejected_token,
-                    &request_digest,
+                    request_digest,
                 )
             });
         let minted = self
@@ -271,6 +283,23 @@ impl NodeTokenMinter {
                     minted
                 }
             },
+            (Some(path), None) if preparation_failed => {
+                if let Err(error) = persist_node_token(
+                    path,
+                    &self.node_id,
+                    &self.workspace_id,
+                    self.base_url.as_deref(),
+                    &minted,
+                ) {
+                    tracing::warn!(
+                        target = "relay_broker::fleet",
+                        node_id = %self.node_id,
+                        error = %error,
+                        "failed to persist minted node token after rotation preparation failed; recovery remains process-local"
+                    );
+                }
+                minted
+            }
             _ => minted,
         };
         clear_process_node_rotation_idempotency_key(
@@ -278,7 +307,7 @@ impl NodeTokenMinter {
             &self.workspace_id,
             self.base_url.as_deref(),
             rejected_token,
-            &request_digest,
+            request_digest,
         );
         Ok(effective)
     }
@@ -291,6 +320,15 @@ impl NodeTokenMinter {
         if !self.adopt_cached_token_after_conflict {
             return None;
         }
+        self.different_cached_token(rejected_token)
+    }
+
+    fn env_override_shadows_different_cached_token(&self, rejected_token: Option<&str>) -> bool {
+        !self.adopt_cached_token_after_conflict
+            && self.different_cached_token(rejected_token).is_some()
+    }
+
+    fn different_cached_token(&self, rejected_token: Option<&str>) -> Option<String> {
         let cached = self.token_path.as_deref().and_then(|path| {
             load_node_token(
                 path,
@@ -2250,14 +2288,28 @@ pub(crate) async fn run_node_control_client(
                                 );
                                 continue;
                             }
+                            let env_override_rejected =
+                                minter.env_override_shadows_different_cached_token(None);
                             if let Some(probe) = &config.probe {
-                                probe.record_node_token_proof_conflict_terminal();
+                                if env_override_rejected {
+                                    probe.record_env_node_token_rejected_terminal();
+                                } else {
+                                    probe.record_node_token_proof_conflict_terminal();
+                                }
                             }
-                            tracing::error!(
-                                target = "relay_broker::fleet",
-                                node_id = %config.node_id,
-                                "NODE TOKEN ENROLLMENT TERMINAL: node_token_proof_required and no newer cached credential is available; realtime delivery stopped"
-                            );
+                            if env_override_rejected {
+                                tracing::error!(
+                                    target = "relay_broker::fleet",
+                                    node_id = %config.node_id,
+                                    "NODE TOKEN ENROLLMENT TERMINAL: RELAY_NODE_TOKEN override was rejected; the scoped cache holds a different credential that cannot be used while the override is set. Re-enroll this Cloud node or unset RELAY_NODE_TOKEN; realtime delivery stopped"
+                                );
+                            } else {
+                                tracing::error!(
+                                    target = "relay_broker::fleet",
+                                    node_id = %config.node_id,
+                                    "NODE TOKEN ENROLLMENT TERMINAL: node_token_proof_required and no newer cached credential is available; realtime delivery stopped"
+                                );
+                            }
                             let _ = event_tx.send(FleetControlEvent::Disconnected).await;
                             return;
                         }
@@ -2394,14 +2446,30 @@ pub(crate) async fn run_node_control_client(
                                     "node token cache changed during recovery; adopting the cached credential and retrying once"
                                 );
                             } else {
+                                let env_override_rejected = minter
+                                    .env_override_shadows_different_cached_token(Some(
+                                        rejected_token,
+                                    ));
                                 if let Some(probe) = &config.probe {
-                                    probe.record_node_token_proof_conflict_terminal();
+                                    if env_override_rejected {
+                                        probe.record_env_node_token_rejected_terminal();
+                                    } else {
+                                        probe.record_node_token_proof_conflict_terminal();
+                                    }
                                 }
-                                tracing::error!(
-                                    target = "relay_broker::fleet",
-                                    node_id = %config.node_id,
-                                    "NODE TOKEN RECOVERY TERMINAL: node_token_proof_required and no newer cached credential is available; realtime delivery stopped"
-                                );
+                                if env_override_rejected {
+                                    tracing::error!(
+                                        target = "relay_broker::fleet",
+                                        node_id = %config.node_id,
+                                        "NODE TOKEN RECOVERY TERMINAL: RELAY_NODE_TOKEN override was rejected; the scoped cache holds a different credential that cannot be used while the override is set. Re-enroll this Cloud node or unset RELAY_NODE_TOKEN; realtime delivery stopped"
+                                    );
+                                } else {
+                                    tracing::error!(
+                                        target = "relay_broker::fleet",
+                                        node_id = %config.node_id,
+                                        "NODE TOKEN RECOVERY TERMINAL: node_token_proof_required and no newer cached credential is available; realtime delivery stopped"
+                                    );
+                                }
                                 let _ = event_tx.send(FleetControlEvent::Disconnected).await;
                                 return;
                             }
@@ -6212,6 +6280,10 @@ mod tests {
             Some("nt_live_older_cache")
         );
         assert_eq!(probe.node_control_health()["state"], "terminal");
+        assert_eq!(
+            probe.node_control_health()["reason"],
+            "env_override_rejected"
+        );
     }
 
     #[tokio::test]
@@ -6514,6 +6586,63 @@ mod tests {
         assert_eq!(
             load_node_token(&token_path, "node-test", "ws_test", Some(&mint_base_url)).as_deref(),
             Some("nt_live_recovered")
+        );
+    }
+
+    #[tokio::test]
+    async fn successful_rotation_is_persisted_after_preparation_failure() {
+        let mint_listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let mint_base_url = format!("http://{}", mint_listener.local_addr().unwrap());
+        let mint_server = tokio::spawn(async move {
+            let (mut socket, _) = mint_listener.accept().await.unwrap();
+            let request = read_http_request(&mut socket).await;
+            assert_eq!(
+                http_request_header(&request, "x-relaycast-node-token").as_deref(),
+                Some("nt_live_original")
+            );
+            assert!(http_request_header(&request, "idempotency-key").is_some());
+            write_create_node_success(&mut socket, "nt_live_recovered").await;
+        });
+
+        let token_dir = tempfile::tempdir().unwrap();
+        let token_path = token_dir.path().join("node-token.json");
+        persist_node_token(
+            &token_path,
+            "node-test",
+            "ws_test",
+            Some(&mint_base_url),
+            "nt_live_original",
+        )
+        .unwrap();
+        let minter = NodeTokenMinter {
+            workspace_key: "rk_live_test".to_string(),
+            workspace_id: "ws_test".to_string(),
+            base_url: Some(mint_base_url.clone()),
+            node_id: "node-test".to_string(),
+            node_name: "host-test".to_string(),
+            broker_version: "broker/test".to_string(),
+            token_path: Some(token_path.clone()),
+            adopt_cached_token_after_conflict: true,
+        };
+        let request_digest =
+            create_node_request_digest(&minter.node_id, &minter.node_name, &minter.broker_version);
+
+        assert_eq!(
+            minter
+                .remint_after_preparation(
+                    "nt_live_original",
+                    &request_digest,
+                    Some(Err(anyhow::anyhow!("simulated preparation failure"))),
+                )
+                .await
+                .unwrap(),
+            "nt_live_recovered"
+        );
+        mint_server.await.unwrap();
+        assert_eq!(
+            load_node_token(&token_path, "node-test", "ws_test", Some(&mint_base_url)).as_deref(),
+            Some("nt_live_recovered"),
+            "a successful rotation must repair the cache even when pending-key preparation failed"
         );
     }
 

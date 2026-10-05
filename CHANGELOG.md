@@ -10,10 +10,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Fixed
 
 - Broker recovery stops with a clear re-enrollment error when Relaycast refuses node-token rotation proof while retaining the last in-memory and durable credential.
-- Broker recovery preserves the cached node credential when an environment-supplied token is rejected.
+- Broker recovery preserves the cached node credential when an environment-supplied token is rejected, and `/api/session` reports the actionable terminal reason `env_override_rejected` until the stale override is removed or the Cloud node is re-enrolled.
 - Broker recovery retries once with a concurrently rotated cached token after a proof conflict, unless an environment override is active.
 - Concurrent node-token rotations retain the newest cached credential when an older response arrives late.
-- Node-token rotations reuse request-bound idempotency keys after lost responses, including process-local recovery for environment tokens and durable recovery across restarts.
+- Node-token rotations reuse request-bound idempotency keys after lost responses, including process-local recovery for environment tokens and durable recovery across restarts when the node name and broker version are unchanged.
 - `/api/session` reports node control as `connecting`, `backoff`, `ok`, or `terminal` so operators can diagnose stopped realtime delivery.
 - `agent-relay fleet spawn --sandbox` accepts the canonical DEV Relaycast target only when authenticated against the exact DEV Cloud API URL (`https://dev.agentrelay.com/cloud`), while production trust remains unchanged.
 - `agent-relay fleet spawn --sandbox` makes bounded visibility checks for a node-created identity on both the worker-token and workspace-key read paths during channel reconciliation, absorbing Relaycast read-after-write lag without rotating the new worker credential.

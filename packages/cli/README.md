@@ -492,6 +492,13 @@ agent-relay cloud enroll --workspace "Chief HQ"
 agent-relay node up
 ```
 
+If `/api/session` reports node control as `terminal` with reason
+`env_override_rejected`, the active `RELAY_NODE_TOKEN` is stale and shadows a
+different credential in the broker's scoped cache. Re-enroll the Cloud node and
+restart it, or unset a manually exported `RELAY_NODE_TOKEN`. Deleting only the
+Relaycast node row is not enough for a Cloud-enrolled node: its Fleet enrollment
+record restores the stored token on the next `agent-relay node up`.
+
 `agent-relay cloud whoami` also prints the current organization and workspace IDs.
 
 ## Cloud multiplayer rooms
