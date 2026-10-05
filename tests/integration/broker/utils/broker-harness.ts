@@ -128,6 +128,30 @@ export function spawnHarnessClientOnce(
   return spawnClient(options);
 }
 
+type ReadinessDelay = (delayMs: number) => Promise<void>;
+
+export async function waitForNodeRegistration(
+  nodeName: string,
+  lookupNode: () => Promise<unknown>,
+  delay: ReadinessDelay = (delayMs) => new Promise((resolve) => setTimeout(resolve, delayMs)),
+  maxAttempts = 20
+): Promise<void> {
+  let lastError: unknown;
+  for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
+    try {
+      await lookupNode();
+      return;
+    } catch (error) {
+      lastError = error;
+      if (attempt < maxAttempts) await delay(500);
+    }
+  }
+
+  throw new Error(`Broker node '${nodeName}' did not become visible after ${maxAttempts} read-only checks`, {
+    cause: lastError,
+  });
+}
+
 // ── Types ────────────────────────────────────────────────────────────────────
 
 export interface BrokerHarnessOptions {
@@ -210,7 +234,19 @@ export class BrokerHarness {
     };
 
     // Start the low-level client (spawns broker process)
-    this.client = await spawnHarnessClientOnce(clientOpts);
+    const client = await spawnHarnessClientOnce(clientOpts);
+    try {
+      const relay = new RelayCast({ apiKey });
+      await waitForNodeRegistration(this.opts.brokerName, () => relay.nodes.get(this.opts.brokerName));
+    } catch (error) {
+      try {
+        await client.shutdown();
+      } catch {
+        // The readiness failure is the useful error; the broker may already be down.
+      }
+      throw error;
+    }
+    this.client = client;
     this.ephemeralWorkspaceKey = apiKey;
 
     // Wire event collection

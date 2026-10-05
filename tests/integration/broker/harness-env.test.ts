@@ -5,6 +5,7 @@ import {
   buildEphemeralWorkspaceName,
   buildHarnessChildEnv,
   spawnHarnessClientOnce,
+  waitForNodeRegistration,
 } from './utils/broker-harness.js';
 
 test('ephemeral workspace names stay unique across parallel test processes', () => {
@@ -79,4 +80,46 @@ test('broker harness never replays an ambiguous registration failure', async () 
   );
 
   assert.equal(attempts, 1);
+});
+
+test('broker harness waits for read-only node visibility before spawning workers', async () => {
+  let lookups = 0;
+  const delays: number[] = [];
+
+  await waitForNodeRegistration(
+    'test-node',
+    async () => {
+      lookups += 1;
+      if (lookups < 3) throw new Error('node_not_found');
+    },
+    async (delayMs) => {
+      delays.push(delayMs);
+    },
+    3
+  );
+
+  assert.equal(lookups, 3);
+  assert.deepEqual(delays, [500, 500]);
+});
+
+test('broker harness bounds node visibility checks', async () => {
+  let lookups = 0;
+  const missing = new Error('node_not_found');
+
+  await assert.rejects(
+    waitForNodeRegistration(
+      'test-node',
+      async () => {
+        lookups += 1;
+        throw missing;
+      },
+      async () => {},
+      3
+    ),
+    (error: Error) =>
+      error.message === "Broker node 'test-node' did not become visible after 3 read-only checks" &&
+      error.cause === missing
+  );
+
+  assert.equal(lookups, 3);
 });
