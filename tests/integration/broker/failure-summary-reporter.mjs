@@ -6,7 +6,10 @@ function oneLine(value) {
 
 export function redactFailureMessage(value) {
   return oneLine(value)
-    .replace(/\b(?:rk|at|br|arr)_live_[A-Za-z0-9._~-]+\b/g, '[REDACTED_RELAY_CREDENTIAL]')
+    .replace(
+      /(?:rk_live_|rjt_live_|at_live_|nt_live_|ot_live_|cld_at_|rth_at_|ocl_node_enr_|arr_live_|br_)[A-Za-z0-9._~+/=%-]+/g,
+      '[REDACTED_RELAY_CREDENTIAL]'
+    )
     .replace(/\bBearer\s+[^\s,;]+/gi, 'Bearer [REDACTED_RELAY_CREDENTIAL]');
 }
 

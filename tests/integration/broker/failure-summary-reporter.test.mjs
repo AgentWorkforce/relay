@@ -5,11 +5,26 @@ import test from 'node:test';
 import failureSummary, { redactFailureMessage } from './failure-summary-reporter.mjs';
 
 test('failure summary redacts Relay credential material', () => {
-  const syntheticWorkspaceKey = ['rk', 'live', 'SYNTHETIC_NOT_A_SECRET'].join('_');
-  const message = redactFailureMessage(`request failed for ${syntheticWorkspaceKey}`);
+  const prefixes = [
+    ['rk', 'live'].join('_') + '_',
+    ['rjt', 'live'].join('_') + '_',
+    ['at', 'live'].join('_') + '_',
+    ['nt', 'live'].join('_') + '_',
+    ['ot', 'live'].join('_') + '_',
+    ['cld', 'at'].join('_') + '_',
+    ['rth', 'at'].join('_') + '_',
+    ['ocl', 'node', 'enr'].join('_') + '_',
+    ['arr', 'live'].join('_') + '_',
+    'br_',
+  ];
 
-  assert.equal(message, 'request failed for [REDACTED_RELAY_CREDENTIAL]');
-  assert.ok(!message.includes(syntheticWorkspaceKey));
+  for (const prefix of prefixes) {
+    const syntheticCredential = `${prefix}SYNTHETIC_NOT_A_SECRET`;
+    const message = redactFailureMessage(`request failed for x${syntheticCredential}`);
+
+    assert.equal(message, 'request failed for x[REDACTED_RELAY_CREDENTIAL]');
+    assert.ok(!message.includes(syntheticCredential));
+  }
 });
 
 test('failure summary emits only the redacted one-line error', async () => {
@@ -40,5 +55,6 @@ test('broker cleanroom scenario retains TAP skip fail-closed output', async () =
 
   assert.ok(scenario, 'broker-process-integration scenario must exist');
   assert.ok(scenario.command.includes('--test-reporter=tap'));
+  assert.ok(scenario.command.includes('tests/integration/broker/failure-summary-reporter.test.mjs'));
   assert.ok(scenario.forbidOutput.includes('# SKIP'));
 });
