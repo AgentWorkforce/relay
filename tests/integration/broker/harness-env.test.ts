@@ -1,7 +1,16 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 
-import { buildHarnessChildEnv } from './utils/broker-harness.js';
+import { buildEphemeralWorkspaceName, buildHarnessChildEnv } from './utils/broker-harness.js';
+
+test('ephemeral workspace names stay unique across parallel test processes', () => {
+  const first = buildEphemeralWorkspaceName(1_700_000_000_000, 101, 'alpha');
+  const secondProcess = buildEphemeralWorkspaceName(1_700_000_000_000, 202, 'alpha');
+  const secondAttempt = buildEphemeralWorkspaceName(1_700_000_000_000, 101, 'bravo');
+
+  assert.notEqual(first, secondProcess);
+  assert.notEqual(first, secondAttempt);
+});
 
 test('broker harness copies only allowlisted variables from the caller', () => {
   const child: NodeJS.ProcessEnv = buildHarnessChildEnv({

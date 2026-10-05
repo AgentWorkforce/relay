@@ -23,6 +23,14 @@ import { RelayCast } from '@relaycast/sdk';
 
 let _cachedApiKey: string | undefined;
 
+export function buildEphemeralWorkspaceName(
+  nowMs: number = Date.now(),
+  pid: number = process.pid,
+  entropy: string = Math.random().toString(36).slice(2, 10)
+): string {
+  return `test-${nowMs.toString(36)}-${pid.toString(36)}-${entropy}`;
+}
+
 const UNSAFE_CALLER_CREDENTIALS = [
   'RELAY_NODE_ID',
   'RELAY_NODE_TOKEN',
@@ -102,7 +110,7 @@ export function buildHarnessChildEnv(
  */
 export async function ensureApiKey(): Promise<string> {
   if (_cachedApiKey) return _cachedApiKey;
-  const ws = await RelayCast.createWorkspace(`test-${Date.now().toString(36)}`);
+  const ws = await RelayCast.createWorkspace(buildEphemeralWorkspaceName());
   const apiKey = ws.apiKey;
   if (!apiKey) {
     throw new Error('Relaycast workspace did not return an API key');
