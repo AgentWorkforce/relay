@@ -28,20 +28,21 @@ therefore fails a verified spawn's preflight. Unset the isolation override to
 reuse the node's login.
 
 The filesystem check does not validate token expiry, so a present-but-expired
-login is caught at startup instead. Readiness for Muse is the visible prompt
-alone: output volume is not accepted as proof, because the device-login screen
-renders a prompt glyph and plenty of output while waiting on a human. A
+login is caught at startup instead. Readiness for Muse requires a bare prompt
+on the cursor's active row: a prompt-like glyph elsewhere in the grid and
+output volume are not accepted as proof, because the device-login screen
+renders both while waiting on a human. A
 recognised device-login screen is reported once as `provider_auth_required`,
 which fails the verified spawn immediately and releases the worker through the
 normal failed-spawn cleanup; the fleet action receives that specific reason. An
-unrecognised screen still cannot report itself ready, so the spawn fails closed
-on the readiness deadline instead.
+device-flow layout with unfamiliar wording is still vetoed when it contains
+corroborating structure such as a verification URL plus a labelled code.
 
-Device-login detection keys on whole phrases that only an authentication
-interstitial renders (`waiting for authentication`, `enter this code`,
-`sign in to continue`, a `facebook.com/device` verification URL, and similar) —
-never on bare words like `login` or `signed in`, which an authenticated
-composer legitimately shows. The phrase list lives in
-`detect_muse_device_auth_prompt` (`crates/relay-pty/src/terminal.rs`) and is
-not derived from a captured Muse screen; extend it when one is captured. Device
+Device-login detection requires cues from at least two independent categories,
+such as a verification destination plus a labelled code, or an explicit login
+request plus a wait or `muse login` command. A lone phrase such as `device code`
+is ordinary task/agent text and does not classify the screen. The cue groups
+live in
+`detect_muse_device_auth_prompt` (`crates/relay-pty/src/terminal.rs`). They are
+not derived from a captured Muse screen; extend them when one is captured. Device
 codes and auth contents are never copied into logs or protocol frames.

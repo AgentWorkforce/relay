@@ -42,15 +42,15 @@ pub fn detect_cli_ready(
 
     if is_muse_cli(cli) {
         // Muse's device login is an interactive interstitial that draws
-        // prompt-like glyphs and plenty of output, so neither a glyph nor
-        // output volume proves it can accept a task. A visible prompt with no
-        // authentication screen on it is the only accepted proof: the
+        // prompt-like glyphs and plenty of output, so neither a glyph anywhere
+        // in the grid nor output volume proves it can accept a task. The
+        // cursor must be on a bare composer row and no authentication layout
+        // may be visible: the
         // `total_bytes` fallback below is deliberately NOT applied to Muse.
         // Refusing to prove readiness is cheap here — Muse's initial task is
         // passed in argv, so a worker whose prompt is never recognised still
         // does its assigned work.
-        return !detect_muse_device_auth_prompt(grid.screen)
-            && for_cli::generic().evaluate(&grid_snapshot).is_some();
+        return !detect_muse_device_auth_prompt(grid.screen) && muse_prompt_ready(grid);
     }
 
     if lower_cli.contains("gemini") {
@@ -85,6 +85,9 @@ pub fn cli_prompt_ready(cli: &str, grid: GridReadinessSnapshot<'_>) -> bool {
     if lower_cli.contains("claude") {
         return claude_prompt_row(grid);
     }
+    if is_muse_cli(cli) {
+        return muse_prompt_ready(grid);
+    }
     if lower_cli.contains("gemini") {
         return for_cli::gemini().evaluate(&grid_snapshot).is_some();
     }
@@ -95,6 +98,23 @@ pub fn cli_prompt_ready(cli: &str, grid: GridReadinessSnapshot<'_>) -> bool {
         for_cli::generic()
     };
     set.evaluate(&grid_snapshot).is_some()
+}
+
+/// Muse reuses prompt glyphs in non-composer UI and rendered transcript text.
+/// Only a bare prompt on the cursor's current row is evidence of an active
+/// composer; searching the entire grid lets an unrelated glyph prove ready.
+fn muse_prompt_ready(grid: GridReadinessSnapshot<'_>) -> bool {
+    let Some((row, _col)) = grid.cursor else {
+        return false;
+    };
+    if row == 0 {
+        return false;
+    }
+    grid.screen
+        .lines()
+        .nth((row - 1) as usize)
+        .map(str::trim)
+        .is_some_and(|line| matches!(line, "›" | "❯" | ">"))
 }
 
 /// Match a native executable basename, tolerating Windows suffixes.
@@ -531,6 +551,15 @@ mod tests {
         ));
         assert!(cli_prompt_ready("muse", prompt_grid));
 
+        // A prompt glyph rendered in transcript/output is not the active
+        // composer. The generic matcher searches the entire grid, so Muse
+        // must additionally prove that the cursor is on the prompt row.
+        let transcript_glyph_grid = GridReadinessSnapshot {
+            screen: "Previous output uses › as a bullet\nstill loading\n",
+            cursor: Some((2, 14)),
+        };
+        assert!(!detect_cli_ready("muse", "", 100, transcript_glyph_grid));
+
         let loading_grid = GridReadinessSnapshot {
             screen: "loading...\n",
             cursor: Some((1, 11)),
@@ -553,6 +582,20 @@ mod tests {
             "",
             5_001,
             device_auth_grid
+        ));
+
+        // Device providers may change the surrounding copy. The URL +
+        // labelled code layout must remain blocked even when none of the
+        // known authentication phrases are present.
+        let unknown_device_auth_grid = GridReadinessSnapshot {
+            screen: "Visit https://example.org/activate\nCode: WXYZ\n›\n",
+            cursor: Some((3, 2)),
+        };
+        assert!(!detect_cli_ready(
+            "muse",
+            "",
+            5_001,
+            unknown_device_auth_grid
         ));
 
         // The protocol marker still outranks every screen heuristic, for Muse

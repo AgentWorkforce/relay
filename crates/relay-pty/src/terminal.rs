@@ -105,13 +105,12 @@ pub fn detect_codex_trust_prompt(clean_output: &str) -> bool {
 /// worker can never clear that screen, so readiness must not be claimed while
 /// it is visible and no startup deadline may release queued work into it.
 ///
-/// Keyed on whole phrases, not single words. An authenticated composer
-/// legitimately renders bare words like "login" (slash-command hints) and
-/// "signed in" (account footers), and vetoing on those would strand a
-/// correctly authenticated node. None of the phrases below appear outside an
-/// explicit authentication interstitial. A screen this list misses is not a
-/// false ready: Muse readiness separately refuses to accept output volume as
-/// proof, so the spawn still fails closed on the startup deadline.
+/// A single phrase is not sufficient evidence: it may be ordinary task or
+/// agent text visible in an authenticated composer. Instead this recognises a
+/// device-flow layout from corroborating categories (for example a URL plus a
+/// labelled code), so provider wording can change without making a bare glyph
+/// look ready and prose mentioning "device code" does not become an auth
+/// failure.
 pub fn detect_muse_device_auth_prompt(screen: &str) -> bool {
     // Collapse whitespace so a phrase wrapped across grid rows still matches.
     let normalized = screen
@@ -119,15 +118,39 @@ pub fn detect_muse_device_auth_prompt(screen: &str) -> bool {
         .split_whitespace()
         .collect::<Vec<_>>()
         .join(" ");
-    MUSE_DEVICE_AUTH_PHRASES
-        .iter()
-        .any(|phrase| normalized.contains(phrase))
+    let has_code = contains_any(&normalized, MUSE_DEVICE_CODE_CUES)
+        || screen.lines().any(muse_labelled_code_line);
+    let has_destination = contains_any(&normalized, MUSE_VERIFICATION_DESTINATION_CUES);
+    let has_request = contains_any(&normalized, MUSE_AUTH_REQUEST_CUES);
+    let has_wait = contains_any(&normalized, MUSE_AUTH_WAIT_CUES);
+    let has_command = contains_any(&normalized, MUSE_AUTH_COMMAND_CUES);
+
+    (has_destination && has_code)
+        || (has_request && (has_destination || has_code || has_wait || has_command))
+        || (has_code && has_wait)
+        || (has_wait && has_command)
 }
 
-/// Phrases that only a provider authentication screen renders. Lowercase and
-/// single-spaced, to match `detect_muse_device_auth_prompt`'s normalization.
-const MUSE_DEVICE_AUTH_PHRASES: &[&str] = &[
-    // Device-flow code presentation.
+fn contains_any(normalized: &str, cues: &[&str]) -> bool {
+    cues.iter().any(|cue| normalized.contains(cue))
+}
+
+fn muse_labelled_code_line(line: &str) -> bool {
+    let lower = line.trim().to_ascii_lowercase();
+    [
+        "code:",
+        "device code:",
+        "user code:",
+        "verification code:",
+        "one-time code:",
+    ]
+    .iter()
+    .any(|label| lower.starts_with(label))
+}
+
+/// Lowercase, single-spaced cues grouped by the independent facts they prove.
+/// No one cue is sufficient to classify a screen as authentication UI.
+const MUSE_DEVICE_CODE_CUES: &[&str] = &[
     "device code",
     "user code",
     "verification code",
@@ -138,12 +161,16 @@ const MUSE_DEVICE_AUTH_PHRASES: &[&str] = &[
     "device authentication",
     "device authorization",
     "device authorisation",
-    // Blocking on the out-of-band approval.
+];
+
+const MUSE_AUTH_WAIT_CUES: &[&str] = &[
     "waiting for auth",
     "waiting for login",
     "waiting for browser",
     "waiting for you to",
-    // Explicit demands for a login before anything else can happen.
+];
+
+const MUSE_AUTH_REQUEST_CUES: &[&str] = &[
     "sign in to continue",
     "log in to continue",
     "to continue, sign in",
@@ -161,11 +188,19 @@ const MUSE_DEVICE_AUTH_PHRASES: &[&str] = &[
     "complete the login",
     "complete sign in",
     "finish signing in",
-    // Verification URLs and the browser handoff.
+];
+
+const MUSE_VERIFICATION_DESTINATION_CUES: &[&str] = &[
+    "http://",
+    "https://",
     "open the following url",
     "open this url",
     "facebook.com/device",
     "meta.com/device",
+];
+
+const MUSE_AUTH_COMMAND_CUES: &[&str] = &[
+    "muse login",
     "press enter to sign in",
     "press enter to log in",
 ];
@@ -755,17 +790,16 @@ Entertoconfirm·Esctocancel\n";
 
     #[test]
     fn muse_device_auth_screen_is_recognised() {
-        // Phrasings a device flow can render. No live capture exists for
-        // Muse's screen, so the list is deliberately phrase-level rather than
-        // pinned to one vendor layout.
+        // Device flows are classified from two independent structural cues,
+        // not one vendor's exact prose.
         for screen in [
             "Sign in to continue\nVisit https://www.facebook.com/device\nCode: ABCD-1234\n›\n",
-            "To continue, sign in with your Meta account.\n›\n",
             "Enter this code at meta.com/device: WXYZ-7788\nWaiting for authentication...\n",
             "Authentication required\nRun `muse login` to continue\n❯\n",
-            "You are not signed in.\n❯\n",
             // Wrapped across grid rows.
-            "waiting for\nauthorization to complete\n",
+            "Enter this code: QWER\nwaiting for\nauthorization to complete\n",
+            // Unknown provider wording still has the device-flow shape.
+            "Visit https://example.org/activate\nCode: WXYZ\n›\n",
         ] {
             assert!(
                 detect_muse_device_auth_prompt(screen),
@@ -783,12 +817,30 @@ Entertoconfirm·Esctocancel\n";
             "muse v1.4.0  signed in as relay-node\n/login  /logout  /help\n›\n",
             "Logged in. Ready.\n❯\n",
             "Reading src/device/auth.rs to add the login handler\n❯\n",
+            "Document the device code exchange and update its tests.\n›\n",
             "I will authenticate the request before signing the payload.\n›\n",
             "",
         ] {
             assert!(
                 !detect_muse_device_auth_prompt(screen),
                 "authenticated screen must not read as an auth screen: {screen:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn muse_auth_cues_alone_in_task_text_are_not_an_auth_screen() {
+        for cue in MUSE_DEVICE_CODE_CUES
+            .iter()
+            .chain(MUSE_AUTH_WAIT_CUES)
+            .chain(MUSE_AUTH_REQUEST_CUES)
+            .chain(MUSE_VERIFICATION_DESTINATION_CUES)
+            .chain(MUSE_AUTH_COMMAND_CUES)
+        {
+            let screen = format!("Task: document {cue} behavior without changing it.\n›\n");
+            assert!(
+                !detect_muse_device_auth_prompt(&screen),
+                "a lone auth cue in task text must not classify the screen: {cue:?}"
             );
         }
     }
