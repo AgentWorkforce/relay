@@ -98,3 +98,18 @@ test('broker cleanroom scenario retains TAP skip fail-closed output', async () =
   assert.ok(scenario.command.includes('tests/integration/broker/failure-summary-reporter.test.mjs'));
   assert.ok(scenario.forbidOutput.includes('# SKIP'));
 });
+
+test('messaging cleanroom scenario retains bounded failure reporting', async () => {
+  const matrixUrl = new URL('../../relayflows/cleanroom/relay.matrix.json', import.meta.url);
+  const matrix = JSON.parse(await readFile(matrixUrl, 'utf8'));
+  const scenario = matrix.lanes
+    .flatMap((lane) => lane.scenarios ?? [])
+    .find((candidate) => candidate.id === 'messaging-mcp-process-roundtrip');
+
+  assert.ok(scenario, 'messaging-mcp-process-roundtrip scenario must exist');
+  assert.ok(scenario.command.includes('--test-reporter=tap'));
+  assert.ok(
+    scenario.command.includes('--test-reporter=./tests/integration/broker/failure-summary-reporter.mjs')
+  );
+  assert.ok(scenario.forbidOutput.includes('# SKIP'));
+});
