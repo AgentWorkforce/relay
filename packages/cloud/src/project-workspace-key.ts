@@ -43,6 +43,8 @@ export interface ProjectWorkspaceSession {
   /** Last server-selected Relaycast route for follow-up commands in this session. */
   relaycastRoute?: 'canonical' | 'agent37-isolated';
   relaycastBaseUrl?: string;
+  /** Cloud API origin that authenticated and returned the Relaycast target. */
+  relaycastCloudApiUrl?: string;
   /** Route-scoped transport credential; the canonical Cloud workspace key remains `workspaceKey`. */
   relaycastApiKey?: string;
   /** Reference to a machine-local route credential; never contains key material. */
@@ -83,6 +85,7 @@ export interface WorkspaceSelection {
   workspaceId?: string;
   relaycastRoute?: 'canonical' | 'agent37-isolated';
   relaycastBaseUrl?: string;
+  relaycastCloudApiUrl?: string;
   relaycastApiKey?: string;
   relaycastApiKeyRef?: string;
   /** Project session directory that can durably carry a server-selected target. */
@@ -125,6 +128,7 @@ export function readProjectWorkspaceSession(
         ? parsed.relaycastRoute
         : undefined;
     const relaycastBaseUrl = trimOrUndefined(parsed.relaycastBaseUrl);
+    const relaycastCloudApiUrl = trimOrUndefined(parsed.relaycastCloudApiUrl);
     const relaycastApiKeyRef = trimOrUndefined(parsed.relaycastApiKeyRef);
     const legacyApiKey = trimOrUndefined(parsed.relaycastApiKey);
     const expectedRef =
@@ -149,6 +153,7 @@ export function readProjectWorkspaceSession(
       ...(workspaceId ? { workspaceId } : {}),
       ...(relaycastRoute ? { relaycastRoute } : {}),
       ...(relaycastBaseUrl ? { relaycastBaseUrl } : {}),
+      ...(relaycastCloudApiUrl ? { relaycastCloudApiUrl } : {}),
       ...(relaycastApiKey ? { relaycastApiKey } : {}),
       ...(relaycastApiKeyRef ? { relaycastApiKeyRef } : {}),
     };
@@ -184,6 +189,7 @@ function writeProjectWorkspaceKeyUnlocked(
   const workspaceId = trimOrUndefined(options.workspaceId);
   const relaycastRoute = options.relaycastRoute;
   const relaycastBaseUrl = trimOrUndefined(options.relaycastBaseUrl);
+  const relaycastCloudApiUrl = trimOrUndefined(options.relaycastCloudApiUrl);
   const relaycastApiKey = trimOrUndefined(options.relaycastApiKey);
   let relaycastApiKeyRef = trimOrUndefined(options.relaycastApiKeyRef);
   if (relaycastApiKey && workspaceId && relaycastRoute && relaycastBaseUrl) {
@@ -210,6 +216,7 @@ function writeProjectWorkspaceKeyUnlocked(
       ...(workspaceId ? { workspaceId } : {}),
       ...(relaycastRoute ? { relaycastRoute } : {}),
       ...(relaycastBaseUrl ? { relaycastBaseUrl } : {}),
+      ...(relaycastCloudApiUrl ? { relaycastCloudApiUrl } : {}),
       // Route credentials are always externalized above. Never serialize a
       // raw Relaycast key into repository metadata, even for incomplete input.
       ...(relaycastApiKeyRef ? { relaycastApiKeyRef } : {}),
@@ -386,7 +393,8 @@ export function writeProjectWorkspaceTargetIfSelectionCurrent(
   selection: WorkspaceSelection,
   target: Required<
     Pick<ProjectWorkspaceSession, 'workspaceId' | 'relaycastRoute' | 'relaycastBaseUrl' | 'relaycastApiKey'>
-  >
+  > &
+    Pick<ProjectWorkspaceSession, 'relaycastCloudApiUrl'>
 ): boolean {
   const credentialEnv = selection.credentialHome
     ? { AGENT_RELAY_HOME: selection.credentialHome }
@@ -400,6 +408,7 @@ export function writeProjectWorkspaceTargetIfSelectionCurrent(
         current.workspaceId !== selection.workspaceId ||
         current.relaycastRoute !== selection.relaycastRoute ||
         current.relaycastBaseUrl !== selection.relaycastBaseUrl ||
+        current.relaycastCloudApiUrl !== selection.relaycastCloudApiUrl ||
         current.relaycastApiKey !== selection.relaycastApiKey ||
         current.relaycastApiKeyRef !== selection.relaycastApiKeyRef)
     ) {
@@ -432,6 +441,7 @@ export function writeProjectWorkspaceTargetIfSelectionCurrent(
         workspaceId: target.workspaceId,
         relaycastRoute: target.relaycastRoute,
         relaycastBaseUrl: target.relaycastBaseUrl,
+        ...(target.relaycastCloudApiUrl ? { relaycastCloudApiUrl: target.relaycastCloudApiUrl } : {}),
         relaycastApiKeyRef: credentialRef,
       },
       credentialEnv
@@ -468,6 +478,7 @@ export function writeProjectWorkspaceKeyPreservingSession(
           ...(existing?.workspaceId ? { workspaceId: existing.workspaceId } : {}),
           ...(existing?.relaycastRoute ? { relaycastRoute: existing.relaycastRoute } : {}),
           ...(existing?.relaycastBaseUrl ? { relaycastBaseUrl: existing.relaycastBaseUrl } : {}),
+          ...(existing?.relaycastCloudApiUrl ? { relaycastCloudApiUrl: existing.relaycastCloudApiUrl } : {}),
           ...(existing?.relaycastApiKey ? { relaycastApiKey: existing.relaycastApiKey } : {}),
           ...(existing?.relaycastApiKeyRef ? { relaycastApiKeyRef: existing.relaycastApiKeyRef } : {}),
         }
@@ -487,6 +498,9 @@ export function writeProjectWorkspaceKeyPreservingSession(
         ...(metadata.relaycastRoute ? { relaycastRoute: metadata.relaycastRoute } : {}),
         ...(trimOrUndefined(metadata.relaycastBaseUrl)
           ? { relaycastBaseUrl: trimOrUndefined(metadata.relaycastBaseUrl) }
+          : {}),
+        ...(trimOrUndefined(metadata.relaycastCloudApiUrl)
+          ? { relaycastCloudApiUrl: trimOrUndefined(metadata.relaycastCloudApiUrl) }
           : {}),
         ...(trimOrUndefined(metadata.relaycastApiKey)
           ? { relaycastApiKey: trimOrUndefined(metadata.relaycastApiKey) }
@@ -540,6 +554,9 @@ export function resolveWorkspaceSelection(
       ...(project?.workspaceKey === flag && project.relaycastBaseUrl
         ? { relaycastBaseUrl: project.relaycastBaseUrl }
         : {}),
+      ...(project?.workspaceKey === flag && project.relaycastCloudApiUrl
+        ? { relaycastCloudApiUrl: project.relaycastCloudApiUrl }
+        : {}),
       ...(project?.workspaceKey === flag && project.relaycastApiKey
         ? { relaycastApiKey: project.relaycastApiKey }
         : {}),
@@ -569,6 +586,9 @@ export function resolveWorkspaceSelection(
         ...(project?.workspaceKey === envKey && project.relaycastBaseUrl
           ? { relaycastBaseUrl: project.relaycastBaseUrl }
           : {}),
+        ...(project?.workspaceKey === envKey && project.relaycastCloudApiUrl
+          ? { relaycastCloudApiUrl: project.relaycastCloudApiUrl }
+          : {}),
         ...(project?.workspaceKey === envKey && project.relaycastApiKey
           ? { relaycastApiKey: project.relaycastApiKey }
           : {}),
@@ -591,6 +611,7 @@ export function resolveWorkspaceSelection(
       ...(project.workspaceId ? { workspaceId: project.workspaceId } : {}),
       ...(project.relaycastRoute ? { relaycastRoute: project.relaycastRoute } : {}),
       ...(project.relaycastBaseUrl ? { relaycastBaseUrl: project.relaycastBaseUrl } : {}),
+      ...(project.relaycastCloudApiUrl ? { relaycastCloudApiUrl: project.relaycastCloudApiUrl } : {}),
       ...(project.relaycastApiKey ? { relaycastApiKey: project.relaycastApiKey } : {}),
       ...(project.relaycastApiKeyRef ? { relaycastApiKeyRef: project.relaycastApiKeyRef } : {}),
       ...(dataDir ? { projectDataDir: dataDir, projectSessionPresent: true } : {}),

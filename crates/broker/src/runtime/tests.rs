@@ -7235,6 +7235,233 @@ async fn tokenless_http_spawn_requires_create_only_before_fleet_registration() {
 }
 
 #[tokio::test]
+async fn node_owned_identity_create_reconcile_teardown_create_again() {
+    use httpmock::{
+        Method::{GET, POST},
+        MockServer,
+    };
+
+    let server = MockServer::start();
+    let first_visible = server.mock(|when, then| {
+        when.method(GET)
+            .path("/v1/agent")
+            .header("authorization", "Bearer at_live_first");
+        then.status(200).json_body(json!({"ok":true,"data":{
+            "id":"agent-first","workspace_id":"ws_demo","name":"cloud-zero-config",
+            "type":"agent","status":"online","persona":null,"metadata":{},"channels":[]
+        }}));
+    });
+    let second_visible = server.mock(|when, then| {
+        when.method(GET)
+            .path("/v1/agent")
+            .header("authorization", "Bearer at_live_second");
+        then.status(200).json_body(json!({"ok":true,"data":{
+            "id":"agent-second","workspace_id":"ws_demo","name":"cloud-zero-config",
+            "type":"agent","status":"online","persona":null,"metadata":{},"channels":[]
+        }}));
+    });
+    let mut delayed_cleanup = server.mock(|when, then| {
+        when.method(POST).path("/v1/agents/release");
+        then.status(503).json_body(json!({"ok":false,"error":{
+            "code":"cleanup_unavailable","message":"release service is temporarily unavailable"
+        }}));
+    });
+    let registry = make_worker_registry_with_worker("unrelated").await;
+    let mut fixture = worker_event_runtime_fixture(registry, HashMap::new());
+    let http = RelaycastHttpClient::new(Some(server.base_url()), "rk_live_test", "broker", "codex");
+    let name = WorkerName::from("cloud-zero-config");
+
+    // Create the first immutable identity through the exact node-control path
+    // used by an isolated fleet spawn.
+    let first = {
+        let control = fixture.runtime.fleet_control_tx.clone();
+        let first_registration = super::fleet::register_node_agent_token(
+            &control,
+            &mut fixture.runtime.fleet_delivery_book,
+            name.as_str(),
+            &[],
+            Some("inv-lifecycle".to_string()),
+            None,
+        );
+        tokio::pin!(first_registration);
+        let FleetControlCommand::RegisterAgent { reply, .. } = (tokio::select! {
+            command = fixture.fleet_control_rx.recv() => command.expect("first register command"),
+            result = &mut first_registration => panic!("first registration returned before its node reply: {result:?}"),
+        }) else {
+            panic!("expected first RegisterAgent command");
+        };
+        reply
+            .send(Ok(crate::node_control::AgentRegistrationToken {
+                name: name.to_string(),
+                agent_id: "agent-first".to_string(),
+                token: "at_live_first".to_string(),
+                delivery_ack_seq: None,
+            }))
+            .unwrap();
+        first_registration.await.expect("first registration")
+    };
+    http.seed_agent_token(&name, &first.token);
+    http.await_node_registered_agent_visibility(&name, &first.agent_id, &first.token)
+        .await
+        .expect("first identity should reconcile");
+    http.ensure_agent_channels(&name, Some("codex"), &[])
+        .await
+        .expect("empty isolated scope should reconcile");
+    first_visible.assert_hits(1);
+
+    // Teardown initially sees a terminal release-service failure. The fleet
+    // action result must remain withheld so Cloud cannot destroy the only
+    // broker capable of completing the retained outer cleanup retry. The
+    // guarded release helper's internal `agent_not_found` retries are covered
+    // separately in `relaycast::ws` tests.
+    let generation = Uuid::new_v4();
+    fixture
+        .runtime
+        .workers
+        .owned_spawn_generations
+        .insert(name.clone(), (generation, http.clone()));
+    let failed_spawn = crate::fleet_wire::ActionResult {
+        v: FLEET_WIRE_VERSION,
+        id: None,
+        invocation_id: "inv-lifecycle".to_string(),
+        result: crate::fleet_wire::ActionResultPayload::Error(
+            crate::fleet_wire::ActionResultError {
+                error: "channel reconciliation failed".to_string(),
+            },
+        ),
+        task: None,
+    };
+    let control = fixture.runtime.fleet_control_tx.clone();
+    super::identity_cleanup::schedule_identity_cleanup(
+        &mut fixture.runtime.workers,
+        &control,
+        &fixture.runtime.fleet_delivery_book,
+        &mut fixture.runtime.fleet_inventory,
+        &http,
+        &name,
+        true,
+        Some(super::identity_cleanup::CleanupCompletion::Fleet(
+            failed_spawn,
+        )),
+    );
+    loop {
+        if let FleetControlCommand::DeregisterAgent { request, reply } =
+            fixture.fleet_control_rx.recv().await.unwrap()
+        {
+            assert_eq!(request.agent_id, "agent-first");
+            reply.send(Ok(())).unwrap();
+            break;
+        }
+    }
+    tokio::time::timeout(Duration::from_secs(2), async {
+        loop {
+            fixture.runtime.reconcile_identity_cleanups().await;
+            let pending = &fixture.runtime.workers.identity_cleanups[&name];
+            if pending.attempts == 1 && pending.retry_at > Instant::now() {
+                break;
+            }
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .expect("first cleanup failure should be retained");
+    delayed_cleanup.assert_hits(1);
+    assert!(
+        fixture.fleet_control_rx.try_recv().is_err(),
+        "the failed spawn result must wait for the retained cleanup retry"
+    );
+
+    delayed_cleanup.delete();
+    let cleanup = server.mock(|when, then| {
+        when.method(POST).path("/v1/agents/release");
+        then.status(200)
+            .json_body(json!({"ok":true,"data":{"status":"completed"}}));
+    });
+    fixture
+        .runtime
+        .workers
+        .identity_cleanups
+        .get_mut(&name)
+        .unwrap()
+        .retry_at = Instant::now();
+    tokio::time::timeout(Duration::from_secs(2), async {
+        while fixture
+            .runtime
+            .workers
+            .identity_cleanups
+            .contains_key(&name)
+        {
+            fixture.runtime.reconcile_identity_cleanups().await;
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .expect("retained cleanup should complete");
+    cleanup.assert_hits(1);
+    let action_result = loop {
+        if let FleetControlCommand::Send(BrokerToRelaycast::ActionResult(result)) =
+            fixture.fleet_control_rx.recv().await.unwrap()
+        {
+            break result;
+        }
+    };
+    assert_eq!(action_result.invocation_id, "inv-lifecycle");
+    assert!(matches!(
+        action_result.result,
+        crate::fleet_wire::ActionResultPayload::Error(ref error)
+            if error.error == "channel reconciliation failed"
+    ));
+    assert_eq!(
+        fixture.runtime.fleet_delivery_book.active_agent_id(&name),
+        None
+    );
+
+    // The exact same name is now safe to create again with a new immutable id.
+    let second = {
+        let control = fixture.runtime.fleet_control_tx.clone();
+        let second_registration = super::fleet::register_node_agent_token(
+            &control,
+            &mut fixture.runtime.fleet_delivery_book,
+            name.as_str(),
+            &[],
+            Some("inv-lifecycle-retry".to_string()),
+            None,
+        );
+        tokio::pin!(second_registration);
+        let FleetControlCommand::RegisterAgent { reply, .. } = (tokio::select! {
+            command = fixture.fleet_control_rx.recv() => command.expect("second register command"),
+            result = &mut second_registration => panic!("second registration returned before its node reply: {result:?}"),
+        }) else {
+            panic!("expected second RegisterAgent command");
+        };
+        reply
+            .send(Ok(crate::node_control::AgentRegistrationToken {
+                name: name.to_string(),
+                agent_id: "agent-second".to_string(),
+                token: "at_live_second".to_string(),
+                delivery_ack_seq: None,
+            }))
+            .unwrap();
+        second_registration
+            .await
+            .expect("same-name re-registration")
+    };
+    http.seed_agent_token(&name, &second.token);
+    http.await_node_registered_agent_visibility(&name, &second.agent_id, &second.token)
+        .await
+        .expect("replacement identity should reconcile");
+    http.ensure_agent_channels(&name, Some("codex"), &[])
+        .await
+        .expect("replacement isolated scope should reconcile");
+    second_visible.assert_hits(1);
+    assert_eq!(
+        fixture.runtime.fleet_delivery_book.active_agent_id(&name),
+        Some("agent-second")
+    );
+    fixture.runtime.workers.release("unrelated").await.unwrap();
+}
+
+#[tokio::test]
 async fn owned_cleanup_retries_delete_without_repeating_acknowledged_deregistration() {
     use crate::listen_api::ListenApiRequest;
     use httpmock::{Method::POST, MockServer};
