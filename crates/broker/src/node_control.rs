@@ -1915,8 +1915,7 @@ fn prepare_node_rotation(
         workspace_id,
         base_url,
         token,
-        Some(&key),
-        Some(request_digest),
+        Some((&key, request_digest)),
     )?;
     Ok(NodeRotationPreparation {
         idempotency_key: Some(key.clone()),
@@ -1982,15 +1981,7 @@ fn persist_node_token_after_rotation(
         return Ok(minted_token.to_string());
     }
 
-    persist_node_token_state(
-        path,
-        node_id,
-        workspace_id,
-        base_url,
-        minted_token,
-        None,
-        None,
-    )?;
+    persist_node_token_state(path, node_id, workspace_id, base_url, minted_token, None)?;
     Ok(minted_token.to_string())
 }
 
@@ -2007,7 +1998,7 @@ pub(crate) fn persist_node_token(
     token: &str,
 ) -> Result<()> {
     let _lock = lock_node_token_cache(path)?;
-    persist_node_token_state(path, node_id, workspace_id, base_url, token, None, None)
+    persist_node_token_state(path, node_id, workspace_id, base_url, token, None)
 }
 
 fn persist_node_token_state(
@@ -2016,8 +2007,7 @@ fn persist_node_token_state(
     workspace_id: &str,
     base_url: Option<&str>,
     token: &str,
-    pending_rotation_idempotency_key: Option<&str>,
-    pending_rotation_request_digest: Option<&str>,
+    pending_rotation: Option<(&str, &str)>,
 ) -> Result<()> {
     persist_node_token_state_with_sync(
         path,
@@ -2025,8 +2015,7 @@ fn persist_node_token_state(
         workspace_id,
         base_url,
         token,
-        pending_rotation_idempotency_key,
-        pending_rotation_request_digest,
+        pending_rotation,
         sync_parent_directory,
     )
 }
@@ -2037,8 +2026,7 @@ fn persist_node_token_state_with_sync<F>(
     workspace_id: &str,
     base_url: Option<&str>,
     token: &str,
-    pending_rotation_idempotency_key: Option<&str>,
-    pending_rotation_request_digest: Option<&str>,
+    pending_rotation: Option<(&str, &str)>,
     sync_directory: F,
 ) -> Result<()>
 where
@@ -2053,8 +2041,8 @@ where
         workspace_id: workspace_id.to_string(),
         base_url: base_url.map(ToOwned::to_owned),
         token: token.to_string(),
-        pending_rotation_idempotency_key: pending_rotation_idempotency_key.map(ToOwned::to_owned),
-        pending_rotation_request_digest: pending_rotation_request_digest.map(ToOwned::to_owned),
+        pending_rotation_idempotency_key: pending_rotation.map(|(key, _)| key.to_string()),
+        pending_rotation_request_digest: pending_rotation.map(|(_, digest)| digest.to_string()),
     })
     .context("failed to serialize node token")?;
     let parent = path.parent().unwrap_or_else(|| Path::new("."));
@@ -8131,8 +8119,7 @@ mod tests {
             "ws-a",
             None,
             "nt_current",
-            Some(key),
-            Some(&request_digest),
+            Some((key, &request_digest)),
             |_| anyhow::bail!("simulated directory sync failure"),
         )
         .expect("a post-rename sync failure must not discard committed state");
