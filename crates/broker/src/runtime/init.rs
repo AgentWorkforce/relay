@@ -291,8 +291,10 @@ pub(crate) async fn run_init(cmd: InitCommand, telemetry: TelemetryClient) -> Re
     // it next to the node id so it rotates with the machine identity.
     // The node token is scoped to the workspace (and engine) it was minted
     // against. Thread the resolved workspace id and base URL through so the
-    // cached token is only reused when both match, and so a re-mint after a
-    // node-control 401 rewrites the correctly-scoped cache.
+    // cached token is only reused when both match. A re-mint after a node-control
+    // 401 presents that token as proof before rewriting the correctly-scoped
+    // cache; if Relaycast rejects the proof, recovery stops for explicit
+    // re-enrollment instead of trying to take over the established row.
     let node_base_url = configured_base.clone();
     // Resolve only the fast, local token sources here (RELAY_NODE_TOKEN override
     // and the on-disk cache). The network mint (create_node) is deliberately NOT
@@ -355,10 +357,11 @@ pub(crate) async fn run_init(cmd: InitCommand, telemetry: TelemetryClient) -> Re
     let session_node_token = std::sync::Arc::new(std::sync::RwLock::new(node_token.clone()));
     // Wire the token minter used by the node-control client both for the initial
     // mint (when no token is cached, off the readiness path) and to recover from
-    // a node-control 401 (stale/wrong-scoped token) by discarding the cached
-    // token and minting a fresh one instead of looping forever on the rejected
-    // token. Absent when no workspace RelayCast client is available (then a 401
-    // surfaces a hard error rather than recovering).
+    // a node-control 401 by presenting the rejected token as current-node proof,
+    // then replacing the cache only if Relaycast accepts the rotation. A named
+    // proof conflict is terminal and tells the operator to restore the current
+    // token or enroll a new node identity. Absent when no workspace RelayCast
+    // client is available (then a 401 surfaces a hard error rather than recovering).
     let token_minter = Some(crate::node_control::NodeTokenMinter {
         workspace_key: relay_workspace_key.clone(),
         workspace_id: node_workspace_id.clone(),
