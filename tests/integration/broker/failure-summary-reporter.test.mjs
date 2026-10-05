@@ -42,7 +42,8 @@ test('failure summary emits only the redacted one-line error', async () => {
   let output = '';
   for await (const chunk of failureSummary(events())) output += chunk;
 
-  assert.match(output, /FAIL synthetic failure: Bearer \[REDACTED_RELAY_CREDENTIAL\] second line/);
+  assert.match(output, /FAIL synthetic failure/);
+  assert.match(output, /DETAIL synthetic failure: Bearer \[REDACTED_RELAY_CREDENTIAL\] second line/);
   assert.ok(!output.includes(syntheticAgentToken));
 });
 
@@ -62,6 +63,27 @@ test('failure summary bounds long startup diagnostics', async () => {
 
   assert.ok(output.length < 260);
   assert.match(output, /…$/m);
+});
+
+test('failure summary caps aggregate output and counts omissions', async () => {
+  async function* events() {
+    for (let index = 0; index < 20; index += 1) {
+      yield {
+        type: 'test:fail',
+        data: {
+          name: `failure-${index}-${'n'.repeat(180)}`,
+          details: { error: { message: 'm'.repeat(500) } },
+        },
+      };
+    }
+  }
+
+  let output = '';
+  for await (const chunk of failureSummary(events())) output += chunk;
+
+  assert.ok(Buffer.byteLength(output, 'utf8') <= 900);
+  assert.match(output, /OMITTED_FAILURES count=\d+/);
+  assert.match(output, /OMITTED_DETAILS count=\d+/);
 });
 
 test('broker cleanroom scenario retains TAP skip fail-closed output', async () => {
