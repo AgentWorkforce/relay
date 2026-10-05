@@ -355,12 +355,18 @@ impl NodeDeliveryProbe {
             .fetch_add(1, Ordering::Relaxed)
     }
 
+    fn record_node_control_if_nonterminal(&self, state: u8) {
+        let _ = self.counters.node_control_health.fetch_update(
+            Ordering::Relaxed,
+            Ordering::Relaxed,
+            |current| (!node_control_state_is_terminal(current)).then_some(state),
+        );
+    }
+
     pub(crate) fn record_connected(&self) {
         self.counters.connects.fetch_add(1, Ordering::Relaxed);
         self.counters.session_live.store(true, Ordering::Relaxed);
-        self.counters
-            .node_control_health
-            .store(NODE_CONTROL_OK, Ordering::Relaxed);
+        self.record_node_control_if_nonterminal(NODE_CONTROL_OK);
     }
 
     pub(crate) fn record_disconnected(&self) {
@@ -370,23 +376,11 @@ impl NodeDeliveryProbe {
     }
 
     pub(crate) fn record_node_control_connecting(&self) {
-        if !node_control_state_is_terminal(
-            self.counters.node_control_health.load(Ordering::Relaxed),
-        ) {
-            self.counters
-                .node_control_health
-                .store(NODE_CONTROL_CONNECTING, Ordering::Relaxed);
-        }
+        self.record_node_control_if_nonterminal(NODE_CONTROL_CONNECTING);
     }
 
     pub(crate) fn record_node_control_backoff(&self) {
-        if !node_control_state_is_terminal(
-            self.counters.node_control_health.load(Ordering::Relaxed),
-        ) {
-            self.counters
-                .node_control_health
-                .store(NODE_CONTROL_BACKOFF, Ordering::Relaxed);
-        }
+        self.record_node_control_if_nonterminal(NODE_CONTROL_BACKOFF);
     }
 
     pub(crate) fn record_node_token_proof_conflict_terminal(&self) {
@@ -1355,6 +1349,12 @@ mod tests {
         assert_eq!(probe.node_control_health()["state"], "terminal");
         probe.record_node_control_connecting();
         assert_eq!(probe.node_control_health()["state"], "terminal");
+        probe.record_connected();
+        assert_eq!(probe.node_control_health()["state"], "terminal");
+        assert_eq!(
+            probe.node_control_health()["reason"],
+            "node_token_proof_required"
+        );
 
         let env_probe = NodeDeliveryProbe::new();
         env_probe.record_env_node_token_rejected_terminal();
@@ -1364,6 +1364,11 @@ mod tests {
             "env_override_rejected"
         );
         env_probe.record_node_control_backoff();
+        assert_eq!(
+            env_probe.node_control_health()["reason"],
+            "env_override_rejected"
+        );
+        env_probe.record_connected();
         assert_eq!(
             env_probe.node_control_health()["reason"],
             "env_override_rejected"

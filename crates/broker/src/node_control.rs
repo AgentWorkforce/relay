@@ -233,7 +233,6 @@ impl NodeTokenMinter {
         request_digest: &str,
         preparation: Option<Result<NodeRotationPreparation>>,
     ) -> std::result::Result<String, CreateNodeMintError> {
-        let preparation_failed = matches!(preparation.as_ref(), Some(Err(_)));
         let preparation = match preparation {
             Some(Ok(preparation)) => Some(preparation),
             Some(Err(error)) => {
@@ -243,7 +242,17 @@ impl NodeTokenMinter {
                     error = %error,
                     "failed to persist node rotation recovery key; retry is process-local and a successful replacement will be persisted best-effort"
                 );
-                None
+                Some(NodeRotationPreparation {
+                    idempotency_key: None,
+                    expected_cache: self.token_path.as_deref().and_then(|path| {
+                        load_scoped_node_token(
+                            path,
+                            &self.node_id,
+                            &self.workspace_id,
+                            self.base_url.as_deref(),
+                        )
+                    }),
+                })
             }
             None => None,
         };
@@ -283,23 +292,6 @@ impl NodeTokenMinter {
                     minted
                 }
             },
-            (Some(path), None) if preparation_failed => {
-                if let Err(error) = persist_node_token(
-                    path,
-                    &self.node_id,
-                    &self.workspace_id,
-                    self.base_url.as_deref(),
-                    &minted,
-                ) {
-                    tracing::warn!(
-                        target = "relay_broker::fleet",
-                        node_id = %self.node_id,
-                        error = %error,
-                        "failed to persist minted node token after rotation preparation failed; recovery remains process-local"
-                    );
-                }
-                minted
-            }
             _ => minted,
         };
         clear_process_node_rotation_idempotency_key(
@@ -2007,7 +1999,25 @@ fn persist_node_token_after_rotation(
             // A sibling may have replaced only the pending rotation metadata.
             // Relaycast accepted this proof, so the minted credential is newer
             // than the token both cache versions still hold.
-            persist_node_token_state(path, node_id, workspace_id, base_url, minted_token, None)?;
+            let current = current.as_ref().expect("same-token match requires cache");
+            let concurrent_pending = match (
+                current.pending_rotation_idempotency_key.as_deref(),
+                current.pending_rotation_request_digest.as_deref(),
+            ) {
+                (Some(key), Some(digest)) => Some((key, digest)),
+                (None, None) => None,
+                // A legacy or malformed half-pair cannot safely be replayed or
+                // discarded here. Keep the minted token process-local.
+                _ => return Ok(minted_token.to_string()),
+            };
+            persist_node_token_state(
+                path,
+                node_id,
+                workspace_id,
+                base_url,
+                minted_token,
+                concurrent_pending,
+            )?;
             return Ok(minted_token.to_string());
         }
         let cache_advanced = match (&preparation.expected_cache, &current) {
@@ -6658,6 +6668,76 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn preparation_failure_does_not_overwrite_advanced_cache() {
+        let mint_listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let mint_base_url = format!("http://{}", mint_listener.local_addr().unwrap());
+        let (request_seen_tx, request_seen_rx) = oneshot::channel();
+        let (release_response_tx, release_response_rx) = oneshot::channel();
+        let mint_server = tokio::spawn(async move {
+            let (mut socket, _) = mint_listener.accept().await.unwrap();
+            let _request = read_http_request(&mut socket).await;
+            request_seen_tx.send(()).unwrap();
+            release_response_rx.await.unwrap();
+            write_create_node_success(&mut socket, "nt_live_late").await;
+        });
+
+        let token_dir = tempfile::tempdir().unwrap();
+        let token_path = token_dir.path().join("node-token.json");
+        persist_node_token(
+            &token_path,
+            "node-test",
+            "ws_test",
+            Some(&mint_base_url),
+            "nt_live_original",
+        )
+        .unwrap();
+        let minter = NodeTokenMinter {
+            workspace_key: "rk_live_test".to_string(),
+            workspace_id: "ws_test".to_string(),
+            base_url: Some(mint_base_url.clone()),
+            node_id: "node-test".to_string(),
+            node_name: "host-test".to_string(),
+            broker_version: "broker/test".to_string(),
+            token_path: Some(token_path.clone()),
+            adopt_cached_token_after_conflict: true,
+        };
+        let request_digest =
+            create_node_request_digest(&minter.node_id, &minter.node_name, &minter.broker_version);
+        let rotating_minter = minter.clone();
+        let rotation = tokio::spawn(async move {
+            rotating_minter
+                .remint_after_preparation(
+                    "nt_live_original",
+                    &request_digest,
+                    Some(Err(anyhow::anyhow!("simulated preparation failure"))),
+                )
+                .await
+        });
+
+        request_seen_rx.await.unwrap();
+        persist_node_token(
+            &token_path,
+            "node-test",
+            "ws_test",
+            Some(&mint_base_url),
+            "nt_live_sibling",
+        )
+        .unwrap();
+        release_response_tx.send(()).unwrap();
+
+        assert_eq!(
+            rotation.await.unwrap().unwrap(),
+            "nt_live_sibling",
+            "the late caller must reconcile to the cache that advanced during its mint"
+        );
+        mint_server.await.unwrap();
+        assert_eq!(
+            load_node_token(&token_path, "node-test", "ws_test", Some(&mint_base_url)).as_deref(),
+            Some("nt_live_sibling")
+        );
+    }
+
+    #[tokio::test]
     async fn node_control_agent_register_timeout_late_success_deregisters() {
         let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
         let ws_url = format!("ws://{}/v1/node/ws", listener.local_addr().unwrap());
@@ -8345,16 +8425,14 @@ mod tests {
         )
         .unwrap();
         let sibling_digest = create_node_request_digest("node-a", "host-b", "broker/v2");
+        let sibling_key = "node-rotation:00000000-0000-4000-8000-000000000007";
         persist_node_token_state(
             &path,
             "node-a",
             "ws-a",
             None,
             "nt_current",
-            Some((
-                "node-rotation:00000000-0000-4000-8000-000000000007",
-                &sibling_digest,
-            )),
+            Some((sibling_key, &sibling_digest)),
         )
         .unwrap();
 
@@ -8373,8 +8451,36 @@ mod tests {
         let persisted: PersistedNodeToken =
             serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
         assert_eq!(persisted.token, "nt_rotated");
-        assert!(persisted.pending_rotation_idempotency_key.is_none());
-        assert!(persisted.pending_rotation_request_digest.is_none());
+        assert_eq!(
+            persisted.pending_rotation_idempotency_key.as_deref(),
+            Some(sibling_key),
+            "the sibling must retain its replay capability"
+        );
+        assert_eq!(
+            persisted.pending_rotation_request_digest.as_deref(),
+            Some(sibling_digest.as_str())
+        );
+
+        let sibling_replay =
+            prepare_node_rotation(&path, "node-a", "ws-a", None, "nt_rotated", &sibling_digest)
+                .unwrap();
+        assert_eq!(sibling_replay.idempotency_key.as_deref(), Some(sibling_key));
+        assert_eq!(
+            persist_node_token_after_rotation(
+                &path,
+                "node-a",
+                "ws-a",
+                None,
+                &sibling_replay,
+                "nt_sibling_rotated",
+            )
+            .unwrap(),
+            "nt_sibling_rotated"
+        );
+        assert_eq!(
+            load_node_token(&path, "node-a", "ws-a", None).as_deref(),
+            Some("nt_sibling_rotated")
+        );
     }
 
     #[test]
