@@ -293,7 +293,8 @@ pub(crate) async fn run_init(cmd: InitCommand, telemetry: TelemetryClient) -> Re
     // against. Thread the resolved workspace id and base URL through so the
     // cached token is only reused when both match. A re-mint after a node-control
     // 401 presents that token as proof before rewriting the correctly-scoped
-    // cache; if Relaycast rejects the proof, recovery stops for explicit
+    // cache; if Relaycast rejects the proof, recovery adopts a different token
+    // concurrently written to that cache once, then stops for explicit
     // re-enrollment instead of trying to take over the established row.
     let node_base_url = configured_base.clone();
     // Resolve only the fast, local token sources here (RELAY_NODE_TOKEN override
@@ -359,8 +360,8 @@ pub(crate) async fn run_init(cmd: InitCommand, telemetry: TelemetryClient) -> Re
     // mint (when no token is cached, off the readiness path) and to recover from
     // a node-control 401 by presenting the rejected token as current-node proof,
     // then replacing the cache only if Relaycast accepts the rotation. A named
-    // proof conflict is terminal and tells the operator to restore the current
-    // token or enroll a new node identity. Absent when no workspace RelayCast
+    // proof conflict first re-reads a concurrently rotated cache, then becomes
+    // terminal if no newer token exists. Absent when no workspace RelayCast
     // client is available (then a 401 surfaces a hard error rather than recovering).
     let token_minter = Some(crate::node_control::NodeTokenMinter {
         workspace_key: relay_workspace_key.clone(),

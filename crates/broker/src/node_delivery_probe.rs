@@ -38,7 +38,7 @@
 //! endpoint stays safe to paste into an issue.
 
 use std::collections::BTreeMap;
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::Mutex;
 use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -297,6 +297,10 @@ struct Counters {
     /// live session as dead. The tallies stay because reconnect churn is
     /// itself diagnostic, but the flag is what `connected` reports.
     session_live: std::sync::atomic::AtomicBool,
+    /// Terminal node-control state exposed by the authenticated session health.
+    /// The flag is local state rather than peer-controlled text, so the
+    /// diagnostic cannot retain or disclose credential material.
+    node_token_proof_conflict_terminal: AtomicBool,
     last_deliver_at_ms: AtomicU64,
     last_frame_at_ms: AtomicU64,
     /// Ticket dispenser for [`AgentStats::last_touch_order`].
@@ -346,6 +350,27 @@ impl NodeDeliveryProbe {
     pub(crate) fn record_disconnected(&self) {
         self.counters.disconnects.fetch_add(1, Ordering::Relaxed);
         self.counters.session_live.store(false, Ordering::Relaxed);
+    }
+
+    pub(crate) fn record_node_token_proof_conflict_terminal(&self) {
+        self.counters
+            .node_token_proof_conflict_terminal
+            .store(true, Ordering::Relaxed);
+    }
+
+    pub(crate) fn node_control_health(&self) -> Value {
+        if self
+            .counters
+            .node_token_proof_conflict_terminal
+            .load(Ordering::Relaxed)
+        {
+            json!({
+                "state": "terminal",
+                "reason": "node_token_proof_required",
+            })
+        } else {
+            json!({ "state": "ok" })
+        }
     }
 
     /// Called for every inbound WS text frame, before any deserialization.

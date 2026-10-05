@@ -198,9 +198,10 @@ impl NodeTokenMinter {
     }
 
     /// Prove the cached token and replace it only after Relaycast returns a new
-    /// one. A named proof conflict is terminal in the caller; other failures
+    /// one. On a named proof conflict the caller first checks for a sibling's
+    /// newer cached token, then goes terminal if none exists; other failures
     /// fall through to its reconnect backoff. Every failure leaves the last
-    /// proof on disk so a restart can retry recovery.
+    /// durable proof on disk so a restart can retry recovery.
     async fn remint(
         &self,
         rejected_token: &str,
@@ -222,13 +223,31 @@ impl NodeTokenMinter {
                         error = %error,
                         "failed to persist node rotation recovery key; retry is process-local"
                     );
-                    fallback_key()
+                    Some(fallback_key())
                 }
             },
-            None => fallback_key(),
+            None => Some(fallback_key()),
         };
-        self.mint_with_idempotency(Some(rejected_token), Some(&idempotency_key))
+        self.mint_with_idempotency(Some(rejected_token), idempotency_key.as_deref())
             .await
+    }
+
+    /// Re-read the durable cache after a proof conflict. Another broker process
+    /// may have won the rotation race while this process's request was in
+    /// flight. Only a different token is useful; returning the rejected token
+    /// would turn a terminal conflict into an infinite retry loop.
+    fn load_different_cached_token(&self, rejected_token: Option<&str>) -> Option<String> {
+        let cached = self.token_path.as_deref().and_then(|path| {
+            load_node_token(
+                path,
+                &self.node_id,
+                &self.workspace_id,
+                self.base_url.as_deref(),
+            )
+        })?;
+        rejected_token
+            .is_none_or(|rejected| cached.trim() != rejected.trim())
+            .then_some(cached)
     }
 }
 
@@ -1717,21 +1736,31 @@ fn prepare_node_rotation(
     workspace_id: &str,
     base_url: Option<&str>,
     token: &str,
-) -> Result<String> {
+) -> Result<Option<String>> {
     if let Some(persisted) = load_scoped_node_token(path, node_id, workspace_id, base_url) {
-        if persisted.token.trim() == token {
-            if let Some(key) = persisted
-                .pending_rotation_idempotency_key
-                .filter(|key| !key.trim().is_empty())
-            {
-                return Ok(key);
-            }
+        if persisted.token.trim() != token.trim() {
+            // The active credential came from a non-cache source (most notably
+            // RELAY_NODE_TOKEN, whose contract is "never persisted") or the
+            // cache was rotated by a sibling process. Never overwrite that
+            // durable credential with the token the server just rejected.
+            return Ok(None);
         }
+        if let Some(key) = persisted
+            .pending_rotation_idempotency_key
+            .filter(|key| !key.trim().is_empty())
+        {
+            return Ok(Some(key));
+        }
+    } else {
+        // Without a matching durable token, the rejected credential may be an
+        // environment override. Keep it process-local and omit the recovery
+        // key rather than materializing either value on disk.
+        return Ok(None);
     }
 
     let key = format!("node-rotation:{}", Uuid::new_v4());
     persist_node_token_state(path, node_id, workspace_id, base_url, token, Some(&key))?;
-    Ok(key)
+    Ok(Some(key))
 }
 
 /// Atomically persist a minted node token next to the node id, scoped to `node_id`,
@@ -1922,6 +1951,10 @@ pub(crate) async fn run_node_control_client(
     // toward [`MAX_UNAUTHORIZED_BEFORE_GIVING_UP`] even when each mint succeeds,
     // and each retry honors the backoff sleep at the bottom of the loop.
     let mut consecutive_unauthorized: u32 = 0;
+    // A proof conflict can be the benign race where another broker process
+    // rotated the shared cache while our request was in flight. Adopt that
+    // token once, but never follow an unbounded chain of cache changes.
+    let mut proof_conflict_cache_retry_used = false;
 
     loop {
         while registration.is_none() {
@@ -1971,11 +2004,31 @@ pub(crate) async fn run_node_control_client(
                     }
                     Err(error) => {
                         if is_node_token_proof_conflict(&error) {
+                            let cached = (!proof_conflict_cache_retry_used)
+                                .then(|| minter.load_different_cached_token(None))
+                                .flatten();
+                            if let Some(cached) = cached {
+                                config.node_token = Some(cached);
+                                if let Some(shared) = &config.session_token {
+                                    if let Ok(mut guard) = shared.write() {
+                                        guard.clone_from(&config.node_token);
+                                    }
+                                }
+                                proof_conflict_cache_retry_used = true;
+                                tracing::warn!(
+                                    target = "relay_broker::fleet",
+                                    node_id = %config.node_id,
+                                    "node token cache changed during enrollment; adopting the cached credential and retrying once"
+                                );
+                                continue;
+                            }
+                            if let Some(probe) = &config.probe {
+                                probe.record_node_token_proof_conflict_terminal();
+                            }
                             tracing::error!(
                                 target = "relay_broker::fleet",
                                 node_id = %config.node_id,
-                                error = %error,
-                                "NODE TOKEN ENROLLMENT REFUSED: this node identity already exists and no current node token is available; automatic mint stopped. Restore the cached node token or enroll a new node identity."
+                                "NODE TOKEN ENROLLMENT TERMINAL: node_token_proof_required and no newer cached credential is available; realtime delivery stopped"
                             );
                             let _ = event_tx.send(FleetControlEvent::Disconnected).await;
                             return;
@@ -2063,6 +2116,7 @@ pub(crate) async fn run_node_control_client(
             // must preserve both the 401 history and exponential backoff.
             consecutive_unauthorized = 0;
             reconnect_delay = INITIAL_RECONNECT_DELAY;
+            proof_conflict_cache_retry_used = false;
         }
         if matches!(result, ControlRunResult::Unauthorized) {
             // The engine rejected our current node token. Re-mint a fresh one
@@ -2092,14 +2146,34 @@ pub(crate) async fn run_node_control_client(
                             }
                         }
                         Err(error) if is_node_token_proof_conflict(&error) => {
-                            tracing::error!(
-                                target = "relay_broker::fleet",
-                                node_id = %config.node_id,
-                                error = %error,
-                                "NODE TOKEN RECOVERY REFUSED: the server rejected this credential as proof for the established node; automatic re-mint stopped and the last credential was retained for operator recovery. Restore the current token or enroll a new node identity."
-                            );
-                            let _ = event_tx.send(FleetControlEvent::Disconnected).await;
-                            return;
+                            let cached = (!proof_conflict_cache_retry_used)
+                                .then(|| minter.load_different_cached_token(Some(rejected_token)))
+                                .flatten();
+                            if let Some(cached) = cached {
+                                config.node_token = Some(cached);
+                                if let Some(shared) = &config.session_token {
+                                    if let Ok(mut guard) = shared.write() {
+                                        guard.clone_from(&config.node_token);
+                                    }
+                                }
+                                proof_conflict_cache_retry_used = true;
+                                tracing::warn!(
+                                    target = "relay_broker::fleet",
+                                    node_id = %config.node_id,
+                                    "node token cache changed during recovery; adopting the cached credential and retrying once"
+                                );
+                            } else {
+                                if let Some(probe) = &config.probe {
+                                    probe.record_node_token_proof_conflict_terminal();
+                                }
+                                tracing::error!(
+                                    target = "relay_broker::fleet",
+                                    node_id = %config.node_id,
+                                    "NODE TOKEN RECOVERY TERMINAL: node_token_proof_required and no newer cached credential is available; realtime delivery stopped"
+                                );
+                                let _ = event_tx.send(FleetControlEvent::Disconnected).await;
+                                return;
+                            }
                         }
                         Err(_) => {}
                     }
@@ -3401,7 +3475,8 @@ mod tests {
     use serde_json::{json, Value};
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
     use tokio::net::TcpListener;
-    use tokio_tungstenite::accept_async;
+    use tokio_tungstenite::tungstenite::handshake::server::{Request, Response};
+    use tokio_tungstenite::{accept_async, accept_hdr_async};
 
     use super::*;
     use crate::fleet_wire::{
@@ -5690,6 +5765,7 @@ mod tests {
         let (command_tx, command_rx) = mpsc::channel(32);
         let (event_tx, mut event_rx) = mpsc::channel(32);
         let session_token = Arc::new(std::sync::RwLock::new(Some("nt_live_rejected".to_string())));
+        let probe = Arc::new(crate::node_delivery_probe::NodeDeliveryProbe::new());
         let control = tokio::spawn(run_node_control_client(
             FleetControlConfig {
                 ws_url,
@@ -5708,7 +5784,7 @@ mod tests {
                 }),
                 session_token: Some(session_token.clone()),
                 read_idle_timeout: None,
-                probe: None,
+                probe: Some(probe.clone()),
                 terminal_reconnect_tx: None,
             },
             command_rx,
@@ -5746,6 +5822,167 @@ mod tests {
             Some("nt_live_rejected"),
             "terminal recovery must retain the last durable proof"
         );
+        assert_eq!(probe.node_control_health()["state"], "terminal");
+        assert_eq!(
+            probe.node_control_health()["reason"],
+            "node_token_proof_required"
+        );
+    }
+
+    #[tokio::test]
+    async fn node_control_adopts_sibling_rotated_cache_after_proof_conflict() {
+        let mint_listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let mint_base_url = format!("http://{}", mint_listener.local_addr().unwrap());
+        let (mint_seen_tx, mint_seen_rx) = oneshot::channel();
+        let (cache_replaced_tx, cache_replaced_rx) = oneshot::channel();
+        let mint_server = tokio::spawn(async move {
+            let (mut socket, _) = mint_listener.accept().await.unwrap();
+            let mut buffer = [0_u8; 8192];
+            let read = socket.read(&mut buffer).await.unwrap();
+            let request = String::from_utf8_lossy(&buffer[..read]).to_ascii_lowercase();
+            assert!(request.contains("x-relaycast-node-token: nt_live_rejected"));
+            mint_seen_tx.send(()).unwrap();
+            cache_replaced_rx.await.unwrap();
+
+            let body = json!({
+                "ok": false,
+                "error": {
+                    "code": "node_token_proof_required",
+                    "message": "Node token changed before enrollment"
+                }
+            })
+            .to_string();
+            let response = format!(
+                "HTTP/1.1 409 Conflict\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+                body.len(),
+                body
+            );
+            socket.write_all(response.as_bytes()).await.unwrap();
+        });
+
+        let ws_listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let ws_url = format!("ws://{}/v1/node/ws", ws_listener.local_addr().unwrap());
+        let ws_server = tokio::spawn(async move {
+            let (mut rejected_socket, _) = ws_listener.accept().await.unwrap();
+            let mut buffer = [0_u8; 4096];
+            let _ = rejected_socket.read(&mut buffer).await.unwrap();
+            rejected_socket
+                .write_all(
+                    b"HTTP/1.1 401 Unauthorized\r\nContent-Length: 0\r\nConnection: close\r\n\r\n",
+                )
+                .await
+                .unwrap();
+
+            let (stream, _) = ws_listener.accept().await.unwrap();
+            let mut ws = accept_hdr_async(stream, |request: &Request, response: Response| {
+                assert_eq!(
+                    request
+                        .headers()
+                        .get("authorization")
+                        .and_then(|value| value.to_str().ok()),
+                    Some("Bearer nt_live_sibling_rotated")
+                );
+                Ok(response)
+            })
+            .await
+            .unwrap();
+            assert!(matches!(
+                next_node_to_server(&mut ws).await,
+                BrokerToRelaycast::NodeRegister(_)
+            ));
+            while ws.next().await.is_some() {}
+        });
+
+        let token_dir = tempfile::tempdir().unwrap();
+        let token_path = token_dir.path().join("node-token.json");
+        persist_node_token(
+            &token_path,
+            "node-test",
+            "ws_test",
+            Some(&mint_base_url),
+            "nt_live_rejected",
+        )
+        .unwrap();
+
+        let (command_tx, command_rx) = mpsc::channel(32);
+        let (event_tx, mut event_rx) = mpsc::channel(32);
+        let session_token = Arc::new(std::sync::RwLock::new(Some("nt_live_rejected".to_string())));
+        let control = tokio::spawn(run_node_control_client(
+            FleetControlConfig {
+                ws_url,
+                node_token: Some("nt_live_rejected".to_string()),
+                node_id: "node-test".to_string(),
+                node_name: "host-test".to_string(),
+                broker_version: "broker/test".to_string(),
+                token_minter: Some(NodeTokenMinter {
+                    workspace_key: "rk_live_test".to_string(),
+                    workspace_id: "ws_test".to_string(),
+                    base_url: Some(mint_base_url.clone()),
+                    node_id: "node-test".to_string(),
+                    node_name: "host-test".to_string(),
+                    broker_version: "broker/test".to_string(),
+                    token_path: Some(token_path.clone()),
+                }),
+                session_token: Some(session_token.clone()),
+                read_idle_timeout: None,
+                probe: None,
+                terminal_reconnect_tx: None,
+            },
+            command_rx,
+            event_tx,
+        ));
+
+        command_tx
+            .send(FleetControlCommand::RegisterNode {
+                manifest: test_manifest(),
+                resume_cursor: None,
+            })
+            .await
+            .unwrap();
+
+        tokio::time::timeout(Duration::from_secs(5), mint_seen_rx)
+            .await
+            .expect("rotation request should reach the server")
+            .unwrap();
+        persist_node_token(
+            &token_path,
+            "node-test",
+            "ws_test",
+            Some(&mint_base_url),
+            "nt_live_sibling_rotated",
+        )
+        .unwrap();
+        cache_replaced_tx.send(()).unwrap();
+
+        tokio::time::timeout(Duration::from_secs(5), async {
+            loop {
+                match event_rx.recv().await {
+                    Some(FleetControlEvent::Connected) => break,
+                    Some(FleetControlEvent::Disconnected) => {}
+                    None => panic!("control task stopped instead of adopting the cached token"),
+                    Some(other) => panic!("unexpected control event: {other:?}"),
+                }
+            }
+        })
+        .await
+        .expect("the sibling-rotated token should reconnect");
+
+        assert_eq!(
+            session_token.read().unwrap().as_deref(),
+            Some("nt_live_sibling_rotated")
+        );
+        assert_eq!(
+            load_node_token(&token_path, "node-test", "ws_test", Some(&mint_base_url)).as_deref(),
+            Some("nt_live_sibling_rotated")
+        );
+
+        let _ = command_tx.send(FleetControlCommand::Shutdown).await;
+        tokio::time::timeout(Duration::from_secs(5), control)
+            .await
+            .expect("control task should shut down")
+            .unwrap();
+        mint_server.await.unwrap();
+        ws_server.await.unwrap();
     }
 
     #[tokio::test]
@@ -7197,7 +7434,8 @@ mod tests {
             Some("https://engine.test"),
             "nt_123",
         )
-        .unwrap();
+        .unwrap()
+        .expect("a cached token should get a durable rotation key");
         assert!(pending.starts_with("node-rotation:"));
         assert_eq!(
             prepare_node_rotation(
@@ -7207,8 +7445,9 @@ mod tests {
                 Some("https://engine.test"),
                 "nt_123",
             )
-            .unwrap(),
-            pending,
+            .unwrap()
+            .as_deref(),
+            Some(pending.as_str()),
             "a restart must reuse the durable in-flight recovery key"
         );
         let with_pending: PersistedNodeToken =
@@ -7236,6 +7475,67 @@ mod tests {
             1,
             "atomic replacement must not leave a temporary credential file"
         );
+    }
+
+    #[test]
+    fn stale_env_token_never_replaces_cached_token_across_restarts() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("node-token.json");
+        // First run: the configured token is also the cached token, so an
+        // accepted rotation may durably retain its replay key and then replace
+        // the cache with the server-issued credential.
+        persist_node_token(
+            &path,
+            "node-a",
+            "ws-a",
+            Some("https://engine.test"),
+            "nt_live_stale_env",
+        )
+        .unwrap();
+        assert!(prepare_node_rotation(
+            &path,
+            "node-a",
+            "ws-a",
+            Some("https://engine.test"),
+            "nt_live_stale_env",
+        )
+        .unwrap()
+        .is_some());
+        persist_node_token(
+            &path,
+            "node-a",
+            "ws-a",
+            Some("https://engine.test"),
+            "nt_live_cached_current",
+        )
+        .unwrap();
+
+        // Two later starts still prefer the pinned environment value in
+        // memory. Neither rejected attempt may write it over the good cache.
+        for restart in 1..=2 {
+            let key = prepare_node_rotation(
+                &path,
+                "node-a",
+                "ws-a",
+                Some("https://engine.test"),
+                "nt_live_stale_env",
+            )
+            .unwrap();
+            assert!(
+                key.is_none(),
+                "restart {restart} must keep env-token recovery process-local"
+            );
+            let persisted: PersistedNodeToken =
+                serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
+            assert_eq!(
+                persisted.token, "nt_live_cached_current",
+                "restart {restart} must retain the known-good cached token"
+            );
+            assert!(
+                persisted.pending_rotation_idempotency_key.is_none(),
+                "restart {restart} must not persist a rotation key for an env token"
+            );
+        }
     }
 
     #[cfg(unix)]
@@ -7274,8 +7574,10 @@ mod tests {
         .expect("a post-rename sync failure must not discard committed state");
 
         assert_eq!(
-            prepare_node_rotation(&path, "node-a", "ws-a", None, "nt_current").unwrap(),
-            key,
+            prepare_node_rotation(&path, "node-a", "ws-a", None, "nt_current")
+                .unwrap()
+                .as_deref(),
+            Some(key),
             "remint must reuse the key already visible in the replaced cache"
         );
     }

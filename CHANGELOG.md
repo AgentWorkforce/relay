@@ -9,7 +9,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
-- Broker recovery now stops with a clear re-enrollment error when Relaycast refuses node-token rotation proof, while retaining the last in-memory and durable credential for operator recovery. Accepted rotations use an atomically persisted idempotency key so a lost response or restart can recover the committed replacement.
+- Broker node-token recovery no longer lets a rejected environment override replace a valid cached credential, adopts a sibling process's concurrently rotated cache once, and exposes unrecoverable proof conflicts in `/api/session`.
 
 ## [13.1.1] - 2026-10-04
 
