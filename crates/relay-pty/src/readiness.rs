@@ -1,5 +1,6 @@
 use crate::{
     ansi::{floor_char_boundary, strip_ansi},
+    terminal::detect_muse_device_auth_prompt,
     wait::{for_cli, WaitSnapshot},
 };
 
@@ -38,6 +39,19 @@ pub fn detect_cli_ready(
     }
 
     let grid_snapshot = snapshot_for_grid(grid);
+
+    if is_muse_cli(cli) {
+        // Muse's device login is an interactive interstitial that draws
+        // prompt-like glyphs and plenty of output, so neither a glyph nor
+        // output volume proves it can accept a task. A visible prompt with no
+        // authentication screen on it is the only accepted proof: the
+        // `total_bytes` fallback below is deliberately NOT applied to Muse.
+        // Refusing to prove readiness is cheap here — Muse's initial task is
+        // passed in argv, so a worker whose prompt is never recognised still
+        // does its assigned work.
+        return !detect_muse_device_auth_prompt(grid.screen)
+            && for_cli::generic().evaluate(&grid_snapshot).is_some();
+    }
 
     if lower_cli.contains("gemini") {
         let clean_window = tail_chars(&clean, 2000).to_lowercase();
@@ -81,6 +95,25 @@ pub fn cli_prompt_ready(cli: &str, grid: GridReadinessSnapshot<'_>) -> bool {
         for_cli::generic()
     };
     set.evaluate(&grid_snapshot).is_some()
+}
+
+/// Match a native executable basename, tolerating Windows suffixes.
+///
+/// Mirrors the broker's `is_muse_executable` spelling rules; `relay-pty` is
+/// the lower crate and cannot depend on the broker.
+pub fn is_muse_cli(cli: &str) -> bool {
+    let base = cli
+        .rsplit(['/', '\\'])
+        .next()
+        .filter(|part| !part.is_empty())
+        .unwrap_or(cli)
+        .to_ascii_lowercase();
+    let stem = base
+        .strip_suffix(".exe")
+        .or_else(|| base.strip_suffix(".cmd"))
+        .or_else(|| base.strip_suffix(".bat"))
+        .unwrap_or(&base);
+    stem == "muse"
 }
 
 /// Match a native executable basename, including the Windows .exe suffix.
@@ -478,10 +511,13 @@ mod tests {
     }
 
     #[test]
-    fn detect_cli_ready_muse_uses_generic_prompt_detection() {
-        // Muse has no vendor-specific readiness arm: the generic prompt set
-        // plus the byte-count fallback release its initial task, with the
-        // STARTUP_READY_TIMEOUT last resort behind both.
+    fn detect_cli_ready_muse_requires_a_prompt_and_no_auth_screen() {
+        // Muse's readiness arm is the generic prompt set minus the byte-count
+        // fallback, vetoed by its device-login screen. Output volume cannot
+        // prove a Muse worker can accept a task: its device login renders a
+        // prompt-like glyph and far more than 500 bytes while waiting on a
+        // human, which is how a fleet-spawned worker came to report itself
+        // ready and occupy capacity forever.
         let prompt_grid = GridReadinessSnapshot {
             screen: "muse session ready\n❯ \n",
             cursor: Some((2, 3)),
@@ -494,12 +530,65 @@ mod tests {
             prompt_grid
         ));
         assert!(cli_prompt_ready("muse", prompt_grid));
+
         let loading_grid = GridReadinessSnapshot {
             screen: "loading...\n",
             cursor: Some((1, 11)),
         };
         assert!(!detect_cli_ready("muse", "loading...", 100, loading_grid));
-        assert!(detect_cli_ready("muse", "loading...", 501, loading_grid));
+        assert!(
+            !detect_cli_ready("muse", "loading...", 5_001, loading_grid),
+            "output volume must not prove Muse readiness"
+        );
+
+        // The reported stall: a device-login screen that also carries a
+        // prompt glyph and plenty of output.
+        let device_auth_grid = GridReadinessSnapshot {
+            screen: "Sign in to continue\nVisit https://www.facebook.com/device\n                     and enter this code: ABCD-1234\nWaiting for authentication...\n›\n",
+            cursor: Some((5, 3)),
+        };
+        assert!(!detect_cli_ready("muse", "", 5_001, device_auth_grid));
+        assert!(!detect_cli_ready(
+            "/Users/khaliqgant/.local/bin/muse.exe",
+            "",
+            5_001,
+            device_auth_grid
+        ));
+
+        // The protocol marker still outranks every screen heuristic, for Muse
+        // as for every other CLI: an explicit ready frame from the harness is
+        // stronger evidence than anything we infer from a grid.
+        assert!(detect_cli_ready(
+            "muse",
+            "->pty:ready",
+            10,
+            device_auth_grid
+        ));
+
+        // The veto is scoped to the startup gate. `cli_prompt_ready` answers
+        // "is a prompt visible" for delivery, where an agent that renders
+        // these words mid-session must not have its messages parked — the
+        // same split Gemini's `waiting for auth` veto already uses.
+        assert!(cli_prompt_ready("muse", device_auth_grid));
+    }
+
+    #[test]
+    fn is_muse_cli_matches_spellings_without_false_positives() {
+        for cli in [
+            "muse",
+            "Muse",
+            "MUSE",
+            "muse.exe",
+            "muse.cmd",
+            "muse.bat",
+            "/Users/khaliqgant/.local/bin/muse",
+            r"C:\Tools\Muse.CMD",
+        ] {
+            assert!(is_muse_cli(cli), "{cli} must classify as Muse");
+        }
+        for cli in ["claude", "codex", "xmuse", "muse2", "amuse.exe", "my-muse"] {
+            assert!(!is_muse_cli(cli), "{cli} must not classify as Muse");
+        }
     }
 
     #[test]

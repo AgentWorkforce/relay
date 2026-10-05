@@ -98,6 +98,78 @@ pub fn detect_codex_trust_prompt(clean_output: &str) -> bool {
         && lower.contains("no, quit")
 }
 
+/// Detect Muse's interactive provider (device) login screen.
+///
+/// Muse authenticates out of band: the TUI prints a verification URL and a
+/// short code, then blocks until a human approves the device. A fleet-spawned
+/// worker can never clear that screen, so readiness must not be claimed while
+/// it is visible and no startup deadline may release queued work into it.
+///
+/// Keyed on whole phrases, not single words. An authenticated composer
+/// legitimately renders bare words like "login" (slash-command hints) and
+/// "signed in" (account footers), and vetoing on those would strand a
+/// correctly authenticated node. None of the phrases below appear outside an
+/// explicit authentication interstitial. A screen this list misses is not a
+/// false ready: Muse readiness separately refuses to accept output volume as
+/// proof, so the spawn still fails closed on the startup deadline.
+pub fn detect_muse_device_auth_prompt(screen: &str) -> bool {
+    // Collapse whitespace so a phrase wrapped across grid rows still matches.
+    let normalized = screen
+        .to_lowercase()
+        .split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ");
+    MUSE_DEVICE_AUTH_PHRASES
+        .iter()
+        .any(|phrase| normalized.contains(phrase))
+}
+
+/// Phrases that only a provider authentication screen renders. Lowercase and
+/// single-spaced, to match `detect_muse_device_auth_prompt`'s normalization.
+const MUSE_DEVICE_AUTH_PHRASES: &[&str] = &[
+    // Device-flow code presentation.
+    "device code",
+    "user code",
+    "verification code",
+    "one-time code",
+    "enter the code",
+    "enter this code",
+    "device login",
+    "device authentication",
+    "device authorization",
+    "device authorisation",
+    // Blocking on the out-of-band approval.
+    "waiting for auth",
+    "waiting for login",
+    "waiting for browser",
+    "waiting for you to",
+    // Explicit demands for a login before anything else can happen.
+    "sign in to continue",
+    "log in to continue",
+    "to continue, sign in",
+    "to continue, log in",
+    "please sign in",
+    "please log in",
+    "please authenticate",
+    "sign in required",
+    "login required",
+    "log in required",
+    "authentication required",
+    "authorization required",
+    "not logged in",
+    "not signed in",
+    "complete the login",
+    "complete sign in",
+    "finish signing in",
+    // Verification URLs and the browser handoff.
+    "open the following url",
+    "open this url",
+    "facebook.com/device",
+    "meta.com/device",
+    "press enter to sign in",
+    "press enter to log in",
+];
+
 /// Detect opencode/droid EXECUTE permission prompt in output.
 /// Returns (has_header, has_allow_option).
 /// The prompt looks like:
@@ -679,6 +751,46 @@ Entertoconfirm·Esctocancel\n";
         assert!(!detect_codex_trust_prompt(
             "The agent said yes, continue, then no, quit."
         ));
+    }
+
+    #[test]
+    fn muse_device_auth_screen_is_recognised() {
+        // Phrasings a device flow can render. No live capture exists for
+        // Muse's screen, so the list is deliberately phrase-level rather than
+        // pinned to one vendor layout.
+        for screen in [
+            "Sign in to continue\nVisit https://www.facebook.com/device\nCode: ABCD-1234\n›\n",
+            "To continue, sign in with your Meta account.\n›\n",
+            "Enter this code at meta.com/device: WXYZ-7788\nWaiting for authentication...\n",
+            "Authentication required\nRun `muse login` to continue\n❯\n",
+            "You are not signed in.\n❯\n",
+            // Wrapped across grid rows.
+            "waiting for\nauthorization to complete\n",
+        ] {
+            assert!(
+                detect_muse_device_auth_prompt(screen),
+                "device auth screen must be recognised: {screen:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn muse_authenticated_composer_is_not_an_auth_screen() {
+        // Must-not-fire. An authenticated composer renders account footers and
+        // slash-command hints whose bare words overlap with a login screen;
+        // vetoing on those would strand a correctly authenticated node.
+        for screen in [
+            "muse v1.4.0  signed in as relay-node\n/login  /logout  /help\n›\n",
+            "Logged in. Ready.\n❯\n",
+            "Reading src/device/auth.rs to add the login handler\n❯\n",
+            "I will authenticate the request before signing the payload.\n›\n",
+            "",
+        ] {
+            assert!(
+                !detect_muse_device_auth_prompt(screen),
+                "authenticated screen must not read as an auth screen: {screen:?}"
+            );
+        }
     }
 
     #[test]

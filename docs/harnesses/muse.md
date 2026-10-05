@@ -27,9 +27,21 @@ login when a clean home is provisioned. A fresh isolated home has no login and
 therefore fails a verified spawn's preflight. Unset the isolation override to
 reuse the node's login.
 
-This filesystem check does not validate token expiry. Muse device-login and
-composer screen detection still require verified terminal captures; this change
-does not yet prevent a present-but-expired login from reaching the existing
-readiness heuristic. A worker that explicitly reports `provider_auth_required`
-during verified startup is released through the normal failed-spawn cleanup,
-and the fleet action receives that specific reason.
+The filesystem check does not validate token expiry, so a present-but-expired
+login is caught at startup instead. Readiness for Muse is the visible prompt
+alone: output volume is not accepted as proof, because the device-login screen
+renders a prompt glyph and plenty of output while waiting on a human. A
+recognised device-login screen is reported once as `provider_auth_required`,
+which fails the verified spawn immediately and releases the worker through the
+normal failed-spawn cleanup; the fleet action receives that specific reason. An
+unrecognised screen still cannot report itself ready, so the spawn fails closed
+on the readiness deadline instead.
+
+Device-login detection keys on whole phrases that only an authentication
+interstitial renders (`waiting for authentication`, `enter this code`,
+`sign in to continue`, a `facebook.com/device` verification URL, and similar) —
+never on bare words like `login` or `signed in`, which an authenticated
+composer legitimately shows. The phrase list lives in
+`detect_muse_device_auth_prompt` (`crates/relay-pty/src/terminal.rs`) and is
+not derived from a captured Muse screen; extend it when one is captured. Device
+codes and auth contents are never copied into logs or protocol frames.
