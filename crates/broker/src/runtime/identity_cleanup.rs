@@ -324,8 +324,23 @@ impl BrokerRuntime {
                 .unwrap()
                 .await
                 .unwrap_or_else(|error| Err(format!("cleanup task failed: {error}")));
-            let completions = std::mem::take(&mut pending.completions);
             let generation = pending.generation;
+            // A fleet action retry retained only in this sandbox cannot
+            // outlive its action result: Cloud tears the sandbox down as soon
+            // as it receives a failed spawn. Keep fleet callers waiting while
+            // bounded retries remain, and report an unconfirmed cleanup only
+            // after the final attempt. API release callers retain their
+            // existing immediate-error contract because the broker remains
+            // alive for an explicit retry.
+            let completions = if result.is_err() && pending.attempts < 5 {
+                let (retained, ready): (Vec<_>, Vec<_>) = std::mem::take(&mut pending.completions)
+                    .into_iter()
+                    .partition(|completion| matches!(completion, CleanupCompletion::Fleet(_)));
+                pending.completions = retained;
+                ready
+            } else {
+                std::mem::take(&mut pending.completions)
+            };
             if let Err(error) = &result {
                 pending.retry_at = Instant::now() + CLEANUP_RETRY_DELAY;
                 if pending.attempts >= 5 {

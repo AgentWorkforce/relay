@@ -1,7 +1,12 @@
 import path from 'node:path';
 
 import { AgentRelay, type AgentRelayAgent } from '@agent-relay/sdk';
-import { AGENT37_RELAYCAST_ORIGIN, CANONICAL_RELAYCAST_ORIGIN } from '@agent-relay/cloud';
+import {
+  AGENT37_RELAYCAST_ORIGIN,
+  CANONICAL_RELAYCAST_ORIGIN,
+  DEV_CLOUD_API_URL,
+  DEV_RELAYCAST_ORIGIN,
+} from '@agent-relay/cloud';
 import {
   resolveWorkspaceSelection as resolveCloudWorkspaceSelection,
   writeProjectWorkspaceTargetIfSelectionCurrent,
@@ -152,6 +157,7 @@ function validatePersistedRelaycastBaseUrl(selection: WorkspaceSelection | undef
   const baseUrl = trimOrUndefined(selection?.relaycastBaseUrl);
   const route = selection?.relaycastRoute;
   const relaycastApiKey = trimOrUndefined(selection?.relaycastApiKey);
+  const relaycastCloudApiUrl = trimOrUndefined(selection?.relaycastCloudApiUrl);
   if (!baseUrl && !route && !relaycastApiKey) return undefined;
   if (!baseUrl || !route) {
     throw new Error('The persisted Relaycast workspace route is incomplete.');
@@ -164,7 +170,9 @@ function validatePersistedRelaycastBaseUrl(selection: WorkspaceSelection | undef
   }
   const expectedOrigin =
     route === 'canonical'
-      ? CANONICAL_RELAYCAST_ORIGIN
+      ? relaycastCloudApiUrl === DEV_CLOUD_API_URL
+        ? DEV_RELAYCAST_ORIGIN
+        : CANONICAL_RELAYCAST_ORIGIN
       : route === 'agent37-isolated'
         ? AGENT37_RELAYCAST_ORIGIN
         : undefined;
@@ -192,9 +200,17 @@ export function persistWorkspaceRelaycastTarget(
     baseUrl: string;
     workspaceId: string;
     relaycastApiKey: string;
-  }
+  },
+  relaycastCloudApiUrl?: string
 ): boolean {
   if (!selection) return false;
+  if (
+    target.route === 'canonical' &&
+    target.baseUrl === DEV_RELAYCAST_ORIGIN &&
+    relaycastCloudApiUrl !== DEV_CLOUD_API_URL
+  ) {
+    return false;
+  }
   const selectionWithProjectDir = selection as WorkspaceSelection & { projectDataDir?: string };
   const dataDir =
     selectionWithProjectDir?.projectDataDir ??
@@ -204,6 +220,7 @@ export function persistWorkspaceRelaycastTarget(
     workspaceId: target.workspaceId,
     relaycastRoute: target.route,
     relaycastBaseUrl: target.baseUrl,
+    ...(relaycastCloudApiUrl ? { relaycastCloudApiUrl } : {}),
     relaycastApiKey: target.relaycastApiKey,
   });
 }
