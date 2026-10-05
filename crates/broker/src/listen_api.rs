@@ -5468,7 +5468,7 @@ mod auth_tests {
         assert_eq!(body["protocol_version"], 2);
         assert_eq!(body["relay_base_url"], "https://relay.test");
         assert_eq!(body["mode"], "ephemeral");
-        assert_eq!(body["node_control_health"]["state"], "ok");
+        assert_eq!(body["node_control_health"]["state"], "connecting");
     }
 
     #[tokio::test]

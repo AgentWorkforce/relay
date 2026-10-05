@@ -305,6 +305,7 @@ pub(crate) async fn run_init(cmd: InitCommand, telemetry: TelemetryClient) -> Re
     // node-control client mints one in the background (it holds the same minter)
     // and publishes it to `session_node_token`, so realtime delivery still comes
     // online without gating startup on it.
+    let explicit_node_token_override = explicit_env_node_token_present();
     let node_token = if local_only {
         None
     } else {
@@ -371,6 +372,7 @@ pub(crate) async fn run_init(cmd: InitCommand, telemetry: TelemetryClient) -> Re
         node_name: node_name.clone(),
         broker_version: broker_version.clone(),
         token_path: crate::node_control::default_node_token_path(&node_id),
+        adopt_cached_token_after_conflict: !explicit_node_token_override,
     });
     let (fleet_control_tx, fleet_control_rx) = mpsc::channel::<FleetControlCommand>(256);
     let (fleet_event_tx, fleet_event_rx) = mpsc::channel::<FleetControlEvent>(256);

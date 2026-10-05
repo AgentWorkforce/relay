@@ -9,7 +9,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
-- Broker node-token recovery no longer lets a rejected environment override replace a valid cached credential, adopts a sibling process's concurrently rotated cache once, and exposes unrecoverable proof conflicts in `/api/session`.
+- Broker recovery preserves the cached node credential when an environment-supplied token is rejected.
+- Broker recovery retries once with a concurrently rotated cached token after a proof conflict, unless an environment override is active.
+- Concurrent node-token rotations retain the newest cached credential when an older response arrives late.
+- Node-token rotations reuse request-bound idempotency keys after lost responses, including process-local recovery for environment tokens and durable recovery across restarts.
+- `/api/session` reports node control as `connecting`, `backoff`, `ok`, or `terminal` so operators can diagnose stopped realtime delivery.
 
 ## [13.1.1] - 2026-10-04
 

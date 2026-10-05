@@ -127,6 +127,10 @@ pub(crate) struct NodeTokenMinter {
     /// Path of the persisted, workspace-scoped token cache (`None` when the data
     /// dir is unavailable; the freshly minted token is still used in memory).
     pub(crate) token_path: Option<std::path::PathBuf>,
+    /// Whether a proof conflict may adopt a different token found in the cache.
+    /// Disabled when the active token came from `RELAY_NODE_TOKEN`: that override
+    /// shadows the cache, whose different value can be arbitrarily old.
+    pub(crate) adopt_cached_token_after_conflict: bool,
 }
 
 impl NodeTokenMinter {
@@ -137,7 +141,24 @@ impl NodeTokenMinter {
         &self,
         current_node_token: Option<&str>,
     ) -> std::result::Result<String, CreateNodeMintError> {
-        self.mint_with_idempotency(current_node_token, None).await
+        let token = self.mint_with_idempotency(current_node_token, None).await?;
+        if let Some(path) = self.token_path.as_deref() {
+            if let Err(error) = persist_node_token(
+                path,
+                &self.node_id,
+                &self.workspace_id,
+                self.base_url.as_deref(),
+                &token,
+            ) {
+                tracing::warn!(
+                    target = "relay_broker::fleet",
+                    node_id = %self.node_id,
+                    error = %error,
+                    "failed to persist minted node token"
+                );
+            }
+        }
+        Ok(token)
     }
 
     async fn mint_with_idempotency(
@@ -160,22 +181,6 @@ impl NodeTokenMinter {
         .await
         {
             Ok(token) => {
-                if let Some(path) = self.token_path.as_deref() {
-                    if let Err(error) = persist_node_token(
-                        path,
-                        &self.node_id,
-                        &self.workspace_id,
-                        self.base_url.as_deref(),
-                        &token,
-                    ) {
-                        tracing::warn!(
-                            target = "relay_broker::fleet",
-                            node_id = %self.node_id,
-                            error = %error,
-                            "failed to persist minted node token"
-                        );
-                    }
-                }
                 tracing::info!(
                     target = "relay_broker::fleet",
                     node_id = %self.node_id,
@@ -206,16 +211,18 @@ impl NodeTokenMinter {
         &self,
         rejected_token: &str,
     ) -> std::result::Result<String, CreateNodeMintError> {
-        let fallback_key = || format!("node-rotation:{}", Uuid::new_v4());
-        let idempotency_key = match self.token_path.as_deref() {
+        let request_digest =
+            create_node_request_digest(&self.node_id, &self.node_name, &self.broker_version);
+        let preparation = match self.token_path.as_deref() {
             Some(path) => match prepare_node_rotation(
                 path,
                 &self.node_id,
                 &self.workspace_id,
                 self.base_url.as_deref(),
                 rejected_token,
+                &request_digest,
             ) {
-                Ok(key) => key,
+                Ok(preparation) => Some(preparation),
                 Err(error) => {
                     tracing::warn!(
                         target = "relay_broker::fleet",
@@ -223,13 +230,57 @@ impl NodeTokenMinter {
                         error = %error,
                         "failed to persist node rotation recovery key; retry is process-local"
                     );
-                    Some(fallback_key())
+                    None
                 }
             },
-            None => Some(fallback_key()),
+            None => None,
         };
-        self.mint_with_idempotency(Some(rejected_token), idempotency_key.as_deref())
-            .await
+        let process_key = preparation
+            .as_ref()
+            .and_then(|preparation| preparation.idempotency_key.clone())
+            .unwrap_or_else(|| {
+                process_node_rotation_idempotency_key(
+                    &self.node_id,
+                    &self.workspace_id,
+                    self.base_url.as_deref(),
+                    rejected_token,
+                    &request_digest,
+                )
+            });
+        let minted = self
+            .mint_with_idempotency(Some(rejected_token), Some(&process_key))
+            .await?;
+
+        let effective = match (self.token_path.as_deref(), preparation.as_ref()) {
+            (Some(path), Some(preparation)) => match persist_node_token_after_rotation(
+                path,
+                &self.node_id,
+                &self.workspace_id,
+                self.base_url.as_deref(),
+                preparation,
+                &minted,
+            ) {
+                Ok(token) => token,
+                Err(error) => {
+                    tracing::warn!(
+                        target = "relay_broker::fleet",
+                        node_id = %self.node_id,
+                        error = %error,
+                        "failed to reconcile minted node token with the durable cache"
+                    );
+                    minted
+                }
+            },
+            _ => minted,
+        };
+        clear_process_node_rotation_idempotency_key(
+            &self.node_id,
+            &self.workspace_id,
+            self.base_url.as_deref(),
+            rejected_token,
+            &request_digest,
+        );
+        Ok(effective)
     }
 
     /// Re-read the durable cache after a proof conflict. Another broker process
@@ -237,6 +288,9 @@ impl NodeTokenMinter {
     /// flight. Only a different token is useful; returning the rejected token
     /// would turn a terminal conflict into an infinite retry loop.
     fn load_different_cached_token(&self, rejected_token: Option<&str>) -> Option<String> {
+        if !self.adopt_cached_token_after_conflict {
+            return None;
+        }
         let cached = self.token_path.as_deref().and_then(|path| {
             load_node_token(
                 path,
@@ -249,6 +303,13 @@ impl NodeTokenMinter {
             .is_none_or(|rejected| cached.trim() != rejected.trim())
             .then_some(cached)
     }
+}
+
+fn create_node_request_digest(node_id: &str, node_name: &str, broker_version: &str) -> String {
+    let request = create_node_request(node_id, node_name, broker_version);
+    let body = serde_json::to_vec(&request)
+        .expect("CreateNodeRequest contains only infallibly serializable fields");
+    format!("sha256:{:x}", Sha256::digest(body))
 }
 
 pub(crate) fn create_node_request(
@@ -1668,7 +1729,7 @@ fn sanitize_node_id_for_filename(node_id: &str) -> String {
     }
 }
 
-#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 struct PersistedNodeToken {
     node_id: String,
     /// Workspace this token was minted for. A node token is only valid against
@@ -1686,6 +1747,80 @@ struct PersistedNodeToken {
     /// token has been atomically persisted.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pending_rotation_idempotency_key: Option<String>,
+    /// Digest of the exact create-node request body associated with the pending
+    /// key. Reusing a key for a changed name/version could replay stale data.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pending_rotation_request_digest: Option<String>,
+}
+
+#[derive(Debug, Clone)]
+struct NodeRotationPreparation {
+    idempotency_key: Option<String>,
+    expected_cache: Option<PersistedNodeToken>,
+}
+
+static PROCESS_NODE_ROTATION_KEYS: OnceLock<std::sync::Mutex<HashMap<String, String>>> =
+    OnceLock::new();
+
+fn process_node_rotation_fingerprint(
+    node_id: &str,
+    workspace_id: &str,
+    base_url: Option<&str>,
+    token: &str,
+    request_digest: &str,
+) -> String {
+    let mut hasher = Sha256::new();
+    for value in [
+        node_id,
+        workspace_id,
+        base_url.unwrap_or_default(),
+        token,
+        request_digest,
+    ] {
+        hasher.update((value.len() as u64).to_le_bytes());
+        hasher.update(value.as_bytes());
+    }
+    format!("{:x}", hasher.finalize())
+}
+
+fn process_node_rotation_idempotency_key(
+    node_id: &str,
+    workspace_id: &str,
+    base_url: Option<&str>,
+    token: &str,
+    request_digest: &str,
+) -> String {
+    let fingerprint =
+        process_node_rotation_fingerprint(node_id, workspace_id, base_url, token, request_digest);
+    let keys = PROCESS_NODE_ROTATION_KEYS.get_or_init(Default::default);
+    let Ok(mut keys) = keys.lock() else {
+        return format!("node-rotation:{}", Uuid::new_v4());
+    };
+    keys.entry(fingerprint)
+        .or_insert_with(|| format!("node-rotation:{}", Uuid::new_v4()))
+        .clone()
+}
+
+fn clear_process_node_rotation_idempotency_key(
+    node_id: &str,
+    workspace_id: &str,
+    base_url: Option<&str>,
+    token: &str,
+    request_digest: &str,
+) {
+    let Some(keys) = PROCESS_NODE_ROTATION_KEYS.get() else {
+        return;
+    };
+    let Ok(mut keys) = keys.lock() else {
+        return;
+    };
+    keys.remove(&process_node_rotation_fingerprint(
+        node_id,
+        workspace_id,
+        base_url,
+        token,
+        request_digest,
+    ));
 }
 
 fn load_scoped_node_token(
@@ -1736,31 +1871,127 @@ fn prepare_node_rotation(
     workspace_id: &str,
     base_url: Option<&str>,
     token: &str,
-) -> Result<Option<String>> {
+    request_digest: &str,
+) -> Result<NodeRotationPreparation> {
+    let _lock = lock_node_token_cache(path)?;
     if let Some(persisted) = load_scoped_node_token(path, node_id, workspace_id, base_url) {
         if persisted.token.trim() != token.trim() {
             // The active credential came from a non-cache source (most notably
             // RELAY_NODE_TOKEN, whose contract is "never persisted") or the
             // cache was rotated by a sibling process. Never overwrite that
             // durable credential with the token the server just rejected.
-            return Ok(None);
+            return Ok(NodeRotationPreparation {
+                idempotency_key: None,
+                expected_cache: Some(persisted),
+            });
         }
         if let Some(key) = persisted
             .pending_rotation_idempotency_key
-            .filter(|key| !key.trim().is_empty())
+            .as_deref()
+            .filter(|key| {
+                !key.trim().is_empty()
+                    && persisted.pending_rotation_request_digest.as_deref() == Some(request_digest)
+            })
         {
-            return Ok(Some(key));
+            return Ok(NodeRotationPreparation {
+                idempotency_key: Some(key.to_string()),
+                expected_cache: Some(persisted),
+            });
         }
     } else {
         // Without a matching durable token, the rejected credential may be an
         // environment override. Keep it process-local and omit the recovery
         // key rather than materializing either value on disk.
-        return Ok(None);
+        return Ok(NodeRotationPreparation {
+            idempotency_key: None,
+            expected_cache: None,
+        });
     }
 
     let key = format!("node-rotation:{}", Uuid::new_v4());
-    persist_node_token_state(path, node_id, workspace_id, base_url, token, Some(&key))?;
-    Ok(Some(key))
+    persist_node_token_state(
+        path,
+        node_id,
+        workspace_id,
+        base_url,
+        token,
+        Some(&key),
+        Some(request_digest),
+    )?;
+    Ok(NodeRotationPreparation {
+        idempotency_key: Some(key.clone()),
+        expected_cache: Some(PersistedNodeToken {
+            node_id: node_id.to_string(),
+            workspace_id: workspace_id.to_string(),
+            base_url: base_url.map(ToOwned::to_owned),
+            token: token.to_string(),
+            pending_rotation_idempotency_key: Some(key),
+            pending_rotation_request_digest: Some(request_digest.to_string()),
+        }),
+    })
+}
+
+fn lock_node_token_cache(path: &Path) -> Result<fs::File> {
+    let parent = path.parent().unwrap_or_else(|| Path::new("."));
+    fs::create_dir_all(parent)
+        .with_context(|| format!("failed to create node token dir {}", parent.display()))?;
+    let lock_path = path.with_extension("lock");
+    let mut options = fs::OpenOptions::new();
+    options.read(true).write(true).create(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        options.mode(0o600);
+    }
+    let lock = options
+        .open(&lock_path)
+        .with_context(|| format!("failed to open node token lock {}", lock_path.display()))?;
+    lock.lock()
+        .with_context(|| format!("failed to lock node token cache {}", path.display()))?;
+    Ok(lock)
+}
+
+fn persist_node_token_after_rotation(
+    path: &Path,
+    node_id: &str,
+    workspace_id: &str,
+    base_url: Option<&str>,
+    preparation: &NodeRotationPreparation,
+    minted_token: &str,
+) -> Result<String> {
+    let _lock = lock_node_token_cache(path)?;
+    let current = load_scoped_node_token(path, node_id, workspace_id, base_url);
+    if current.as_ref() != preparation.expected_cache.as_ref() {
+        let cache_advanced = match (&preparation.expected_cache, &current) {
+            (Some(expected), Some(current)) => current.token.trim() != expected.token.trim(),
+            (None, Some(_)) => true,
+            _ => false,
+        };
+        if cache_advanced {
+            let current = current.expect("cache_advanced requires a current cache");
+            tracing::info!(
+                target = "relay_broker::fleet",
+                node_id,
+                workspace_id,
+                "node token cache advanced during rotation; retaining the newer cached credential"
+            );
+            return Ok(current.token.trim().to_string());
+        }
+        // A concurrent removal or metadata-only replacement must not be
+        // overwritten. The minted token is still valid for this process.
+        return Ok(minted_token.to_string());
+    }
+
+    persist_node_token_state(
+        path,
+        node_id,
+        workspace_id,
+        base_url,
+        minted_token,
+        None,
+        None,
+    )?;
+    Ok(minted_token.to_string())
 }
 
 /// Atomically persist a minted node token next to the node id, scoped to `node_id`,
@@ -1775,7 +2006,8 @@ pub(crate) fn persist_node_token(
     base_url: Option<&str>,
     token: &str,
 ) -> Result<()> {
-    persist_node_token_state(path, node_id, workspace_id, base_url, token, None)
+    let _lock = lock_node_token_cache(path)?;
+    persist_node_token_state(path, node_id, workspace_id, base_url, token, None, None)
 }
 
 fn persist_node_token_state(
@@ -1785,6 +2017,7 @@ fn persist_node_token_state(
     base_url: Option<&str>,
     token: &str,
     pending_rotation_idempotency_key: Option<&str>,
+    pending_rotation_request_digest: Option<&str>,
 ) -> Result<()> {
     persist_node_token_state_with_sync(
         path,
@@ -1793,6 +2026,7 @@ fn persist_node_token_state(
         base_url,
         token,
         pending_rotation_idempotency_key,
+        pending_rotation_request_digest,
         sync_parent_directory,
     )
 }
@@ -1804,6 +2038,7 @@ fn persist_node_token_state_with_sync<F>(
     base_url: Option<&str>,
     token: &str,
     pending_rotation_idempotency_key: Option<&str>,
+    pending_rotation_request_digest: Option<&str>,
     sync_directory: F,
 ) -> Result<()>
 where
@@ -1819,6 +2054,7 @@ where
         base_url: base_url.map(ToOwned::to_owned),
         token: token.to_string(),
         pending_rotation_idempotency_key: pending_rotation_idempotency_key.map(ToOwned::to_owned),
+        pending_rotation_request_digest: pending_rotation_request_digest.map(ToOwned::to_owned),
     })
     .context("failed to serialize node token")?;
     let parent = path.parent().unwrap_or_else(|| Path::new("."));
@@ -1973,6 +2209,10 @@ pub(crate) async fn run_node_control_client(
             }
         }
 
+        if let Some(probe) = &config.probe {
+            probe.record_node_control_connecting();
+        }
+
         if config
             .node_token
             .as_deref()
@@ -2038,6 +2278,9 @@ pub(crate) async fn run_node_control_client(
                             node_id = %config.node_id,
                             "node token mint failed; retrying after backoff (realtime delivery pending)"
                         );
+                        if let Some(probe) = &config.probe {
+                            probe.record_node_control_backoff();
+                        }
                         // Stay responsive during the backoff instead of a blind
                         // sleep: a spawn's `RegisterAgent` must get an immediate
                         // `node_token_missing` (so the caller falls back to HTTP
@@ -2208,6 +2451,9 @@ pub(crate) async fn run_node_control_client(
             reconnect_delay_ms = reconnect_delay.as_millis(),
             "node-control transition: unhealthy; reconnect scheduled"
         );
+        if let Some(probe) = &config.probe {
+            probe.record_node_control_backoff();
+        }
         let _ = event_tx.send(FleetControlEvent::Disconnected).await;
         tokio::time::sleep(reconnect_delay).await;
         if !application_ready {
@@ -3474,7 +3720,7 @@ mod tests {
     use httpmock::{Method::POST, MockServer};
     use serde_json::{json, Value};
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
-    use tokio::net::TcpListener;
+    use tokio::net::{TcpListener, TcpStream};
     use tokio_tungstenite::tungstenite::handshake::server::{Request, Response};
     use tokio_tungstenite::{accept_async, accept_hdr_async};
 
@@ -3512,6 +3758,49 @@ mod tests {
             id: Some(id.to_string()),
             agents: Vec::new(),
         }
+    }
+
+    async fn read_http_request(socket: &mut TcpStream) -> String {
+        let mut buffer = [0_u8; 8192];
+        let read = socket.read(&mut buffer).await.unwrap();
+        String::from_utf8_lossy(&buffer[..read]).into_owned()
+    }
+
+    fn http_request_header(request: &str, name: &str) -> Option<String> {
+        request.lines().find_map(|line| {
+            let (found_name, value) = line.split_once(':')?;
+            found_name
+                .eq_ignore_ascii_case(name)
+                .then(|| value.trim().to_string())
+        })
+    }
+
+    async fn write_create_node_success(socket: &mut TcpStream, token: &str) {
+        let body = json!({
+            "ok": true,
+            "data": {
+                "id": "node-test",
+                "name": "host-test",
+                "kind": "ws",
+                "role": "broker",
+                "version": "broker/test",
+                "status": "online",
+                "live": true,
+                "handlers_live": true,
+                "load": 0.0,
+                "active_agents": 0,
+                "max_agents": 0,
+                "created_at": "2026-10-04T00:00:00Z",
+                "token": token
+            }
+        })
+        .to_string();
+        let response = format!(
+            "HTTP/1.1 201 Created\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+            body.len(),
+            body
+        );
+        socket.write_all(response.as_bytes()).await.unwrap();
     }
 
     #[test]
@@ -5611,6 +5900,7 @@ mod tests {
                     node_name: "host-test".to_string(),
                     broker_version: "broker/test".to_string(),
                     token_path: None,
+                    adopt_cached_token_after_conflict: true,
                 }),
                 session_token: Some(session_token.clone()),
                 read_idle_timeout: None,
@@ -5694,6 +5984,7 @@ mod tests {
                     node_name: "host-test".to_string(),
                     broker_version: "broker/test".to_string(),
                     token_path: None,
+                    adopt_cached_token_after_conflict: true,
                 }),
                 session_token: Some(session_token.clone()),
                 read_idle_timeout: None,
@@ -5781,6 +6072,7 @@ mod tests {
                     node_name: "host-test".to_string(),
                     broker_version: "broker/test".to_string(),
                     token_path: Some(token_path.clone()),
+                    adopt_cached_token_after_conflict: true,
                 }),
                 session_token: Some(session_token.clone()),
                 read_idle_timeout: None,
@@ -5827,6 +6119,111 @@ mod tests {
             probe.node_control_health()["reason"],
             "node_token_proof_required"
         );
+    }
+
+    #[tokio::test]
+    async fn env_token_proof_conflict_does_not_adopt_shadowed_cache() {
+        let mint_server = MockServer::start();
+        let create_node = mint_server.mock(|when, then| {
+            when.method(POST)
+                .path("/v1/nodes")
+                .header("x-relaycast-node-token", "nt_live_env_override");
+            then.status(409).json_body(json!({
+                "ok": false,
+                "error": {
+                    "code": "node_token_proof_required",
+                    "message": "Node already exists; its current node token is required"
+                }
+            }));
+        });
+
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let ws_url = format!("ws://{}/v1/node/ws", listener.local_addr().unwrap());
+        let rejected_handshake = tokio::spawn(async move {
+            let (mut socket, _) = listener.accept().await.unwrap();
+            let mut buffer = [0_u8; 4096];
+            let _ = socket.read(&mut buffer).await.unwrap();
+            socket
+                .write_all(
+                    b"HTTP/1.1 401 Unauthorized\r\nContent-Length: 0\r\nConnection: close\r\n\r\n",
+                )
+                .await
+                .unwrap();
+        });
+
+        let token_dir = tempfile::tempdir().unwrap();
+        let token_path = token_dir.path().join("node-token.json");
+        persist_node_token(
+            &token_path,
+            "node-test",
+            "ws_test",
+            Some(&mint_server.base_url()),
+            "nt_live_older_cache",
+        )
+        .unwrap();
+
+        let (command_tx, command_rx) = mpsc::channel(32);
+        let (event_tx, mut event_rx) = mpsc::channel(32);
+        let session_token = Arc::new(std::sync::RwLock::new(Some(
+            "nt_live_env_override".to_string(),
+        )));
+        let probe = Arc::new(crate::node_delivery_probe::NodeDeliveryProbe::new());
+        let control = tokio::spawn(run_node_control_client(
+            FleetControlConfig {
+                ws_url,
+                node_token: Some("nt_live_env_override".to_string()),
+                node_id: "node-test".to_string(),
+                node_name: "host-test".to_string(),
+                broker_version: "broker/test".to_string(),
+                token_minter: Some(NodeTokenMinter {
+                    workspace_key: "rk_live_test".to_string(),
+                    workspace_id: "ws_test".to_string(),
+                    base_url: Some(mint_server.base_url()),
+                    node_id: "node-test".to_string(),
+                    node_name: "host-test".to_string(),
+                    broker_version: "broker/test".to_string(),
+                    token_path: Some(token_path.clone()),
+                    adopt_cached_token_after_conflict: false,
+                }),
+                session_token: Some(session_token.clone()),
+                read_idle_timeout: None,
+                probe: Some(probe.clone()),
+                terminal_reconnect_tx: None,
+            },
+            command_rx,
+            event_tx,
+        ));
+
+        command_tx
+            .send(FleetControlCommand::RegisterNode {
+                manifest: test_manifest(),
+                resume_cursor: None,
+            })
+            .await
+            .unwrap();
+
+        tokio::time::timeout(Duration::from_secs(5), control)
+            .await
+            .expect("env-token proof conflict must not retry the shadowed cache")
+            .unwrap();
+        rejected_handshake.await.unwrap();
+        create_node.assert_hits(1);
+        assert_eq!(event_rx.recv().await, Some(FleetControlEvent::Disconnected));
+        assert_eq!(
+            session_token.read().unwrap().as_deref(),
+            Some("nt_live_env_override")
+        );
+        assert_eq!(
+            load_node_token(
+                &token_path,
+                "node-test",
+                "ws_test",
+                Some(&mint_server.base_url()),
+            )
+            .as_deref(),
+            Some("nt_live_older_cache")
+        );
+        assert_eq!(probe.node_control_health()["state"], "terminal");
     }
 
     #[tokio::test]
@@ -5922,6 +6319,7 @@ mod tests {
                     node_name: "host-test".to_string(),
                     broker_version: "broker/test".to_string(),
                     token_path: Some(token_path.clone()),
+                    adopt_cached_token_after_conflict: true,
                 }),
                 session_token: Some(session_token.clone()),
                 read_idle_timeout: None,
@@ -5983,6 +6381,152 @@ mod tests {
             .unwrap();
         mint_server.await.unwrap();
         ws_server.await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn late_rotation_response_does_not_overwrite_newer_cached_token() {
+        let mint_listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let mint_base_url = format!("http://{}", mint_listener.local_addr().unwrap());
+        let (first_request_tx, first_request_rx) = oneshot::channel();
+        let (release_first_tx, release_first_rx) = oneshot::channel();
+        let mint_server = tokio::spawn(async move {
+            let (mut first_socket, _) = mint_listener.accept().await.unwrap();
+            let first_request = read_http_request(&mut first_socket).await;
+            let first_key = http_request_header(&first_request, "idempotency-key")
+                .expect("cache-backed rotation must send a durable key");
+            first_request_tx.send(first_key.clone()).unwrap();
+
+            let (mut replay_socket, _) = mint_listener.accept().await.unwrap();
+            let replay_request = read_http_request(&mut replay_socket).await;
+            assert_eq!(
+                http_request_header(&replay_request, "idempotency-key").as_deref(),
+                Some(first_key.as_str())
+            );
+            write_create_node_success(&mut replay_socket, "nt_live_rotated_once").await;
+
+            let (mut newer_socket, _) = mint_listener.accept().await.unwrap();
+            let newer_request = read_http_request(&mut newer_socket).await;
+            assert_ne!(
+                http_request_header(&newer_request, "idempotency-key").as_deref(),
+                Some(first_key.as_str())
+            );
+            write_create_node_success(&mut newer_socket, "nt_live_rotated_twice").await;
+
+            release_first_rx.await.unwrap();
+            write_create_node_success(&mut first_socket, "nt_live_rotated_once").await;
+        });
+
+        let token_dir = tempfile::tempdir().unwrap();
+        let token_path = token_dir.path().join("node-token.json");
+        persist_node_token(
+            &token_path,
+            "node-test",
+            "ws_test",
+            Some(&mint_base_url),
+            "nt_live_original",
+        )
+        .unwrap();
+        let minter = NodeTokenMinter {
+            workspace_key: "rk_live_test".to_string(),
+            workspace_id: "ws_test".to_string(),
+            base_url: Some(mint_base_url.clone()),
+            node_id: "node-test".to_string(),
+            node_name: "host-test".to_string(),
+            broker_version: "broker/test".to_string(),
+            token_path: Some(token_path.clone()),
+            adopt_cached_token_after_conflict: true,
+        };
+
+        let first_minter = minter.clone();
+        let first_rotation =
+            tokio::spawn(async move { first_minter.remint("nt_live_original").await });
+        first_request_rx.await.unwrap();
+
+        assert_eq!(
+            minter.remint("nt_live_original").await.unwrap(),
+            "nt_live_rotated_once"
+        );
+        assert_eq!(
+            minter.remint("nt_live_rotated_once").await.unwrap(),
+            "nt_live_rotated_twice"
+        );
+        release_first_tx.send(()).unwrap();
+
+        assert_eq!(
+            first_rotation.await.unwrap().unwrap(),
+            "nt_live_rotated_twice",
+            "the late caller must reconcile to the cache that advanced while its response was in flight"
+        );
+        assert_eq!(
+            load_node_token(&token_path, "node-test", "ws_test", Some(&mint_base_url)).as_deref(),
+            Some("nt_live_rotated_twice")
+        );
+        mint_server.await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn env_token_rotation_reuses_process_key_after_lost_responses() {
+        let mint_listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let mint_base_url = format!("http://{}", mint_listener.local_addr().unwrap());
+        let seen_keys = Arc::new(std::sync::Mutex::new(Vec::new()));
+        let server_keys = seen_keys.clone();
+        let mint_server = tokio::spawn(async move {
+            for attempt in 0..5 {
+                let (mut socket, _) = mint_listener.accept().await.unwrap();
+                let request = read_http_request(&mut socket).await;
+                server_keys
+                    .lock()
+                    .unwrap()
+                    .push(http_request_header(&request, "idempotency-key"));
+                if attempt == 4 {
+                    write_create_node_success(&mut socket, "nt_live_recovered").await;
+                }
+            }
+        });
+
+        let token_dir = tempfile::tempdir().unwrap();
+        let token_path = token_dir.path().join("node-token.json");
+        persist_node_token(
+            &token_path,
+            "node-test",
+            "ws_test",
+            Some(&mint_base_url),
+            "nt_live_cached_other",
+        )
+        .unwrap();
+        let minter = NodeTokenMinter {
+            workspace_key: "rk_live_test".to_string(),
+            workspace_id: "ws_test".to_string(),
+            base_url: Some(mint_base_url.clone()),
+            node_id: "node-test".to_string(),
+            node_name: "host-test".to_string(),
+            broker_version: "broker/test".to_string(),
+            token_path: Some(token_path.clone()),
+            adopt_cached_token_after_conflict: true,
+        };
+
+        minter
+            .remint("nt_live_env")
+            .await
+            .expect_err("four lost responses should exhaust the request retry loop");
+        assert_eq!(
+            minter.remint("nt_live_env").await.unwrap(),
+            "nt_live_recovered"
+        );
+        mint_server.await.unwrap();
+
+        let keys = seen_keys.lock().unwrap();
+        let first = keys[0]
+            .as_deref()
+            .expect("environment-token rotation must use a process-local key");
+        assert!(
+            keys.iter().all(|key| key.as_deref() == Some(first)),
+            "all retries, including the later outer retry, must replay the same rotation"
+        );
+        assert_eq!(
+            load_node_token(&token_path, "node-test", "ws_test", Some(&mint_base_url)).as_deref(),
+            Some("nt_live_recovered")
+        );
     }
 
     #[tokio::test]
@@ -7415,6 +7959,7 @@ mod tests {
     fn load_node_token_round_trips_when_node_and_workspace_match() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("node-token.json");
+        let request_digest = create_node_request_digest("node-a", "host-a", "broker/test");
         persist_node_token(
             &path,
             "node-a",
@@ -7433,8 +7978,10 @@ mod tests {
             "ws-a",
             Some("https://engine.test"),
             "nt_123",
+            &request_digest,
         )
         .unwrap()
+        .idempotency_key
         .expect("a cached token should get a durable rotation key");
         assert!(pending.starts_with("node-rotation:"));
         assert_eq!(
@@ -7444,8 +7991,10 @@ mod tests {
                 "ws-a",
                 Some("https://engine.test"),
                 "nt_123",
+                &request_digest,
             )
             .unwrap()
+            .idempotency_key
             .as_deref(),
             Some(pending.as_str()),
             "a restart must reuse the durable in-flight recovery key"
@@ -7455,6 +8004,10 @@ mod tests {
         assert_eq!(
             with_pending.pending_rotation_idempotency_key.as_deref(),
             Some(pending.as_str())
+        );
+        assert_eq!(
+            with_pending.pending_rotation_request_digest.as_deref(),
+            Some(request_digest.as_str())
         );
 
         persist_node_token(
@@ -7472,8 +8025,8 @@ mod tests {
         assert!(replaced_state.pending_rotation_idempotency_key.is_none());
         assert_eq!(
             std::fs::read_dir(dir.path()).unwrap().count(),
-            1,
-            "atomic replacement must not leave a temporary credential file"
+            2,
+            "only the credential and its stable lock file should remain"
         );
     }
 
@@ -7481,6 +8034,7 @@ mod tests {
     fn stale_env_token_never_replaces_cached_token_across_restarts() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("node-token.json");
+        let request_digest = create_node_request_digest("node-a", "host-a", "broker/test");
         // First run: the configured token is also the cached token, so an
         // accepted rotation may durably retain its replay key and then replace
         // the cache with the server-issued credential.
@@ -7498,8 +8052,10 @@ mod tests {
             "ws-a",
             Some("https://engine.test"),
             "nt_live_stale_env",
+            &request_digest,
         )
         .unwrap()
+        .idempotency_key
         .is_some());
         persist_node_token(
             &path,
@@ -7519,8 +8075,10 @@ mod tests {
                 "ws-a",
                 Some("https://engine.test"),
                 "nt_live_stale_env",
+                &request_digest,
             )
-            .unwrap();
+            .unwrap()
+            .idempotency_key;
             assert!(
                 key.is_none(),
                 "restart {restart} must keep env-token recovery process-local"
@@ -7550,7 +8108,11 @@ mod tests {
             load_node_token(&path, "node-a", "ws-a", None).as_deref(),
             Some("nt_new")
         );
-        assert_eq!(std::fs::read_dir(dir.path()).unwrap().count(), 1);
+        assert_eq!(
+            std::fs::read_dir(dir.path()).unwrap().count(),
+            2,
+            "only the credential and its stable lock file should remain"
+        );
         // The production path invokes this immediately after the rename; keep
         // the platform durability primitive covered explicitly as well.
         sync_parent_directory(dir.path()).unwrap();
@@ -7561,6 +8123,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("node-token.json");
         let key = "node-rotation:00000000-0000-4000-8000-000000000006";
+        let request_digest = create_node_request_digest("node-a", "host-a", "broker/test");
 
         persist_node_token_state_with_sync(
             &path,
@@ -7569,17 +8132,73 @@ mod tests {
             None,
             "nt_current",
             Some(key),
+            Some(&request_digest),
             |_| anyhow::bail!("simulated directory sync failure"),
         )
         .expect("a post-rename sync failure must not discard committed state");
 
         assert_eq!(
-            prepare_node_rotation(&path, "node-a", "ws-a", None, "nt_current")
+            prepare_node_rotation(&path, "node-a", "ws-a", None, "nt_current", &request_digest,)
                 .unwrap()
+                .idempotency_key
                 .as_deref(),
             Some(key),
             "remint must reuse the key already visible in the replaced cache"
         );
+    }
+
+    #[test]
+    fn changed_create_node_body_does_not_reuse_pending_rotation_key() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("node-token.json");
+        persist_node_token(&path, "node-a", "ws-a", None, "nt_current").unwrap();
+
+        let original_digest = create_node_request_digest("node-a", "host-a", "broker/v1");
+        let original_key = prepare_node_rotation(
+            &path,
+            "node-a",
+            "ws-a",
+            None,
+            "nt_current",
+            &original_digest,
+        )
+        .unwrap()
+        .idempotency_key
+        .unwrap();
+        assert_eq!(
+            prepare_node_rotation(
+                &path,
+                "node-a",
+                "ws-a",
+                None,
+                "nt_current",
+                &original_digest,
+            )
+            .unwrap()
+            .idempotency_key
+            .as_deref(),
+            Some(original_key.as_str())
+        );
+
+        let mut previous_key = original_key;
+        for changed_digest in [
+            create_node_request_digest("node-a", "host-b", "broker/v1"),
+            create_node_request_digest("node-a", "host-b", "broker/v2"),
+        ] {
+            let changed_key =
+                prepare_node_rotation(&path, "node-a", "ws-a", None, "nt_current", &changed_digest)
+                    .unwrap()
+                    .idempotency_key
+                    .unwrap();
+            assert_ne!(changed_key, previous_key);
+            let persisted: PersistedNodeToken =
+                serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
+            assert_eq!(
+                persisted.pending_rotation_request_digest.as_deref(),
+                Some(changed_digest.as_str())
+            );
+            previous_key = changed_key;
+        }
     }
 
     #[test]
