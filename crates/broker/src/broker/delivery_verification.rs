@@ -143,6 +143,36 @@ pub(crate) struct PendingVerification {
 }
 
 impl PendingVerification {
+    pub(crate) fn observe_raw_process_receipt(&mut self, output: &VerificationOutput, cli: &str) {
+        if self.echo_seen || !is_cat_process(cli) || self.body.is_empty() {
+            return;
+        }
+        let observed = strip_ansi(&output.since(self.output_boundary));
+        if observed.contains(&self.body) || observed.replace("\r\n", "\n").contains(&self.body) {
+            self.echo_seen = true;
+        }
+    }
+
+    /// A native TUI may wrap or repaint the injected text, so its raw PTY
+    /// output need not contain the formatted body as one contiguous string.
+    /// The injection gate starts from an empty composer and delivery stays
+    /// single-flight. Seeing this delivery's tail in the *current* composer
+    /// therefore proves the editor received it. Keep that fact when a later
+    /// submit clears the composer.
+    pub(crate) fn observe_visible_composer(&mut self, snapshot: &Snapshot, cli: &str) {
+        if self.echo_seen {
+            return;
+        }
+        let tail = expected_tail(&self.expected_echo);
+        if !tail.is_empty()
+            && current_composer(snapshot, cli)
+                .is_some_and(|composer| compact_render(&composer).contains(&tail))
+        {
+            self.echo_seen = true;
+            self.activity_buffer.clear();
+        }
+    }
+
     pub(crate) fn observe(&mut self, output: &VerificationOutput, text: &str) {
         let echo_now = pending_verification_echo_seen(output, self);
         if !self.echo_seen && echo_now {
@@ -192,6 +222,12 @@ fn compact_render(text: &str) -> String {
     text.chars()
         .filter(|character| !character.is_whitespace())
         .collect()
+}
+
+fn is_cat_process(cli: &str) -> bool {
+    cli.rsplit(['/', '\\'])
+        .next()
+        .is_some_and(|name| matches!(name.to_ascii_lowercase().as_str(), "cat" | "cat.exe"))
 }
 
 fn expected_tail(expected: &str) -> String {
@@ -362,6 +398,12 @@ pub(crate) fn assess_harness_acceptance(
     if verification.echo_seen && composer_is_idle(snapshot, cli) {
         return HarnessAcceptance::Accepted("composer_cleared".to_string());
     }
+    // `cat` is also a supported local PTY recipient. It has no composer or
+    // turn-start marker; its PTY echo confirms transport receipt. Keep native
+    // agent TUIs on the stronger gate.
+    if verification.echo_seen && is_cat_process(cli) {
+        return HarnessAcceptance::Accepted("process_echo".to_string());
+    }
     if verification.echo_seen && !verification.detector.has_explicit_patterns() {
         if let Some(pattern) = verification
             .detector
@@ -516,7 +558,7 @@ pub(crate) fn queue_or_take_detected_activity(
 /// Check if the expected echo string appears in PTY output (after stripping ANSI).
 pub(crate) fn check_echo_in_output(output: &str, expected: &str) -> bool {
     let clean = strip_ansi(output);
-    clean.contains(expected)
+    clean.contains(expected) || clean.replace("\r\n", "\n").contains(expected)
 }
 
 pub(crate) fn current_timestamp_ms() -> u64 {
@@ -620,6 +662,62 @@ mod tests {
             "visible composer text must never be mistaken for acceptance"
         );
         pty.shutdown().unwrap();
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn visible_wrapped_composer_tail_survives_codex_submit() {
+        let expected = "Relay message from Lead [evt]: Reply with exactly WRAPPED_CODEX_ACK";
+        let (parked_pty, parked) = codex_snapshot(
+            "› Relay message from Lead [evt]: Reply with exactly\n  WRAPPED_CODEX_ACK",
+        )
+        .await;
+        let mut verification = codex_verification(expected);
+        verification.echo_seen = false;
+        verification.observe_visible_composer(&parked, "codex");
+        assert!(verification.echo_seen);
+        assert_eq!(
+            assess_harness_acceptance("codex", &verification, &parked),
+            HarnessAcceptance::Parked,
+        );
+        parked_pty.shutdown().unwrap();
+
+        let (idle_pty, idle) = codex_snapshot("› Ask Codex to do anything").await;
+        assert_eq!(
+            assess_harness_acceptance("codex", &verification, &idle),
+            HarnessAcceptance::Accepted("composer_cleared".to_string()),
+        );
+        idle_pty.shutdown().unwrap();
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn cat_process_echo_confirms_local_pty_receipt() {
+        let (pty, snapshot) = codex_snapshot("LOCAL_WORK_PROOF").await;
+        let mut verification = codex_verification("LOCAL_WORK_PROOF");
+        verification.body = "LOCAL_WORK_PROOF".to_string();
+        verification.echo_seen = false;
+        assert_eq!(
+            assess_harness_acceptance("cat", &verification, &snapshot),
+            HarnessAcceptance::Inconclusive,
+        );
+        let mut output = VerificationOutput::default();
+        output.push_str("raw PTY echo: LOCAL_WORK_PROOF\r\n");
+        verification.observe_raw_process_receipt(&output, "/bin/cat");
+        assert!(verification.echo_seen);
+        assert_eq!(
+            assess_harness_acceptance("cat", &verification, &snapshot),
+            HarnessAcceptance::Accepted("process_echo".to_string()),
+        );
+        pty.shutdown().unwrap();
+    }
+
+    #[test]
+    fn pty_crlf_echo_matches_formatted_message() {
+        assert!(check_echo_in_output(
+            "Relay message from Lead:\r\n  LOCAL_WORK_PROOF",
+            "Relay message from Lead:\n  LOCAL_WORK_PROOF",
+        ));
     }
 
     #[cfg(unix)]

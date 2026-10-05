@@ -743,8 +743,9 @@ fn restore_hold_exemption(
 fn injected_output_command_detection_allowed(
     active_injection_present: bool,
     pending_verifications_empty: bool,
+    pending_recovery_writes_empty: bool,
 ) -> bool {
-    !active_injection_present && pending_verifications_empty
+    !active_injection_present && pending_verifications_empty && pending_recovery_writes_empty
 }
 
 /// What to do with an in-flight injection once its combined Body+Enter write
@@ -1722,6 +1723,7 @@ pub(crate) async fn run_pty_worker(cmd: PtyCommand) -> Result<()> {
                         if injected_output_command_detection_allowed(
                             active_injection.is_some(),
                             pending_verifications.is_empty(),
+                            pending_recovery_writes.is_empty(),
                         )
                             && clean_text.lines().any(|line| line.trim() == "/exit")
                         {
@@ -1775,6 +1777,7 @@ pub(crate) async fn run_pty_worker(cmd: PtyCommand) -> Result<()> {
                         if injected_output_command_detection_allowed(
                             active_injection.is_some(),
                             pending_verifications.is_empty(),
+                            pending_recovery_writes.is_empty(),
                         ) {
                             continuity_buffer.push_str(&clean_text);
                             if continuity_buffer.len() > CONTINUITY_BUFFER_MAX {
@@ -1825,6 +1828,8 @@ pub(crate) async fn run_pty_worker(cmd: PtyCommand) -> Result<()> {
                             let snapshot = Snapshot::capture(&pty);
                             for (i, pv) in pending_verifications.iter_mut().enumerate() {
                                 pv.observe(&echo_buffer, &clean_text);
+                                pv.observe_raw_process_receipt(&echo_buffer, &resolved_cli);
+                                pv.observe_visible_composer(&snapshot, &resolved_cli);
                                 if let HarnessAcceptance::Accepted(evidence) =
                                     assess_harness_acceptance(&resolved_cli, pv, &snapshot)
                                 {
@@ -2477,10 +2482,13 @@ pub(crate) async fn run_pty_worker(cmd: PtyCommand) -> Result<()> {
                         pv.activity_buffer.clear();
                         let raced_output = echo_buffer.since(output_boundary).into_owned();
                         pv.observe(&echo_buffer, &raced_output);
+                        pv.observe_raw_process_receipt(&echo_buffer, &resolved_cli);
+                        let snapshot = Snapshot::capture(&pty);
+                        pv.observe_visible_composer(&snapshot, &resolved_cli);
                         match assess_harness_acceptance(
                             &resolved_cli,
                             &pv,
-                            &Snapshot::capture(&pty),
+                            &snapshot,
                         ) {
                             HarnessAcceptance::Accepted(evidence) => {
                                 let activity_pattern = evidence
@@ -2592,10 +2600,13 @@ pub(crate) async fn run_pty_worker(cmd: PtyCommand) -> Result<()> {
                         let mut pv = pending_verifications.remove(i).unwrap();
                         let delivery_id = pv.delivery_id.clone();
                         let event_id = pv.event_id.clone();
+                        pv.observe_raw_process_receipt(&echo_buffer, &resolved_cli);
+                        let snapshot = Snapshot::capture(&pty);
+                        pv.observe_visible_composer(&snapshot, &resolved_cli);
                         match assess_harness_acceptance(
                             &resolved_cli,
                             &pv,
-                            &Snapshot::capture(&pty),
+                            &snapshot,
                         ) {
                             HarnessAcceptance::Accepted(evidence) => {
                                 let activity_pattern = evidence
@@ -4024,12 +4035,19 @@ mod tests {
 
     #[test]
     fn injected_output_commands_are_suppressed_through_injection_lifecycle() {
-        // (active_injection_present, pending_verifications_empty): detection is
-        // allowed only when no injection is active and no verification is pending.
-        assert!(injected_output_command_detection_allowed(false, true));
-        assert!(!injected_output_command_detection_allowed(true, true));
-        assert!(!injected_output_command_detection_allowed(false, false));
-        assert!(!injected_output_command_detection_allowed(true, false));
+        // A recovery owns the verification record while its write is in
+        // flight. Command-like text in a Codex redraw is still an echo then.
+        assert!(injected_output_command_detection_allowed(false, true, true));
+        assert!(!injected_output_command_detection_allowed(true, true, true));
+        assert!(!injected_output_command_detection_allowed(
+            false, false, true
+        ));
+        assert!(!injected_output_command_detection_allowed(
+            true, false, true
+        ));
+        assert!(!injected_output_command_detection_allowed(
+            false, true, false
+        ));
     }
 
     #[test]

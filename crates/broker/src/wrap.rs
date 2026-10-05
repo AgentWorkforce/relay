@@ -306,6 +306,8 @@ fn queue_or_confirm_wrap_verification(
 ) -> bool {
     let raced_output = output.since(verification.output_boundary).into_owned();
     verification.observe(output, &raced_output);
+    verification.observe_raw_process_receipt(output, resolved_cli);
+    verification.observe_visible_composer(&Snapshot::capture(pty), resolved_cli);
     if let HarnessAcceptance::Accepted(evidence) =
         assess_harness_acceptance(resolved_cli, &verification, &Snapshot::capture(pty))
     {
@@ -1703,6 +1705,8 @@ pub(crate) async fn run_wrap(
                             let mut verified_indices = Vec::new();
                             for (i, pv) in pending_verifications.iter_mut().enumerate() {
                                 pv.observe(&echo_buffer, &clean_text);
+                                pv.observe_raw_process_receipt(&echo_buffer, &resolved_cli);
+                                pv.observe_visible_composer(&snapshot, &resolved_cli);
                                 if let HarnessAcceptance::Accepted(evidence) =
                                     assess_harness_acceptance(&resolved_cli, pv, &snapshot)
                                 {
@@ -2350,10 +2354,13 @@ pub(crate) async fn run_wrap(
                 while i < pending_verifications.len() {
                     if pending_verifications[i].injected_at.elapsed() >= VERIFICATION_WINDOW {
                         let mut pv = pending_verifications.remove(i).unwrap();
+                        pv.observe_raw_process_receipt(&echo_buffer, &resolved_cli);
+                        let snapshot = Snapshot::capture(&pty);
+                        pv.observe_visible_composer(&snapshot, &resolved_cli);
                         match assess_harness_acceptance(
                             &resolved_cli,
                             &pv,
-                            &Snapshot::capture(&pty),
+                            &snapshot,
                         ) {
                             HarnessAcceptance::Accepted(evidence) => {
                                 tracing::info!(
