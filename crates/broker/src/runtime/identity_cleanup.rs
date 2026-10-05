@@ -270,6 +270,49 @@ pub(super) fn restore_identity_cleanups(runtime: &mut BrokerRuntime) -> Result<(
     Ok(())
 }
 
+fn prepare_cleanup_completion(
+    completion: CleanupCompletion,
+    cleanup_error: Option<String>,
+) -> Option<BrokerToRelaycast> {
+    match completion {
+        CleanupCompletion::Api(reply, response) => {
+            let response = match cleanup_error {
+                Some(error) => Err(match response {
+                    Err(original) => format!("{original}; {error}"),
+                    Ok(_) => error,
+                }),
+                None => response,
+            };
+            let _ = reply.send(response);
+            None
+        }
+        CleanupCompletion::Fleet(mut response) => {
+            if let Some(error) = cleanup_error {
+                let original = match response.result {
+                    ActionResultPayload::Error(error) => error.error,
+                    _ => String::new(),
+                };
+                response.result = ActionResultPayload::Error(ActionResultError {
+                    error: format!("{original}; {error}"),
+                });
+            }
+            Some(BrokerToRelaycast::ActionResult(response))
+        }
+    }
+}
+
+async fn send_cleanup_completion(
+    fleet_control_tx: &mpsc::Sender<FleetControlCommand>,
+    completion: CleanupCompletion,
+    cleanup_error: Option<String>,
+) {
+    if let Some(message) = prepare_cleanup_completion(completion, cleanup_error) {
+        let _ = fleet_control_tx
+            .send(FleetControlCommand::Send(message))
+            .await;
+    }
+}
+
 impl BrokerRuntime {
     pub(super) async fn drain_identity_cleanups_on_shutdown(&mut self) {
         // Leave room for the existing 2.5s presence phase inside the CLI stop
@@ -281,12 +324,33 @@ impl BrokerRuntime {
             }
         })
         .await;
+        let mut completions = Vec::new();
         for (name, pending) in &mut self.workers.identity_cleanups {
             if let Some(task) = pending.task.take() {
                 task.abort();
             }
+            let error = format!(
+                "owned identity cleanup unconfirmed for {name} generation {}; broker shutting down before reconciliation",
+                pending.generation
+            );
+            completions.extend(
+                std::mem::take(&mut pending.completions)
+                    .into_iter()
+                    .map(|completion| (completion, error.clone())),
+            );
             tracing::warn!(worker = %name, generation = %pending.generation,
                 "broker shutting down with unconfirmed owned cleanup; reconcile the recorded generation before name reuse");
+        }
+        for (completion, error) in completions {
+            if let Some(message) = prepare_cleanup_completion(completion, Some(error)) {
+                if let Err(send_error) = self
+                    .fleet_control_tx
+                    .try_send(FleetControlCommand::Send(message))
+                {
+                    tracing::warn!(error = %send_error,
+                        "broker shutdown could not enqueue retained Fleet cleanup result");
+                }
+            }
         }
     }
 
@@ -378,35 +442,7 @@ impl BrokerRuntime {
             }
             for completion in completions {
                 let cleanup_error = result.as_ref().err().map(|error| format!("owned identity cleanup unconfirmed for {name} generation {generation}; retry retained: {error}"));
-                match completion {
-                    CleanupCompletion::Api(reply, response) => {
-                        let response = match cleanup_error {
-                            Some(error) => Err(match response {
-                                Err(original) => format!("{original}; {error}"),
-                                Ok(_) => error,
-                            }),
-                            None => response,
-                        };
-                        let _ = reply.send(response);
-                    }
-                    CleanupCompletion::Fleet(mut response) => {
-                        if let Some(error) = cleanup_error {
-                            let original = match response.result {
-                                ActionResultPayload::Error(error) => error.error,
-                                _ => String::new(),
-                            };
-                            response.result = ActionResultPayload::Error(ActionResultError {
-                                error: format!("{original}; {error}"),
-                            });
-                        }
-                        let _ = self
-                            .fleet_control_tx
-                            .send(FleetControlCommand::Send(BrokerToRelaycast::ActionResult(
-                                response,
-                            )))
-                            .await;
-                    }
-                }
+                send_cleanup_completion(&self.fleet_control_tx, completion, cleanup_error).await;
             }
         }
     }

@@ -325,6 +325,8 @@ pub(super) async fn bind_http_registered_agent_to_node(
     }
 }
 
+const SPAWN_CHANNEL_RECONCILIATION_TIMEOUT: Duration = Duration::from_secs(60);
+
 /// Reconcile the HTTP-plane state for a freshly spawned worker.
 ///
 /// Only an identity minted by node-control needs the read-after-write
@@ -340,31 +342,64 @@ async fn reconcile_spawned_agent_channels(
     node_registered_agent_id: Option<&str>,
     owns_identity: bool,
 ) -> Result<()> {
+    reconcile_spawned_agent_channels_with_timeout(
+        workspace_http,
+        name,
+        cli,
+        channels,
+        token,
+        node_registered_agent_id,
+        owns_identity,
+        SPAWN_CHANNEL_RECONCILIATION_TIMEOUT,
+    )
+    .await
+}
+
+#[allow(clippy::too_many_arguments)]
+pub(super) async fn reconcile_spawned_agent_channels_with_timeout(
+    workspace_http: &RelaycastHttpClient,
+    name: &WorkerName,
+    cli: &str,
+    channels: &[ChannelName],
+    token: &str,
+    node_registered_agent_id: Option<&str>,
+    owns_identity: bool,
+    total_budget: Duration,
+) -> Result<()> {
     seed_supplied_agent_token(workspace_http, name, token);
-    if let Some(agent_id) = node_registered_agent_id {
-        workspace_http
-            .await_node_registered_agent_visibility(name.as_str(), agent_id, token)
-            .await?;
-    }
-    workspace_http
-        .ensure_agent_channels(name, Some(cli), channels)
-        .await?;
-    if owns_identity {
+    tokio::time::timeout(total_budget, async {
         if let Some(agent_id) = node_registered_agent_id {
             workspace_http
-                .verify_node_registered_agent_channel_scope(
-                    name.as_str(),
-                    agent_id,
-                    token,
-                    channels,
-                )
-                .await?;
-        } else {
-            workspace_http
-                .verify_agent_channel_scope(name, channels)
+                .await_node_registered_agent_visibility(name.as_str(), agent_id, token)
                 .await?;
         }
-    }
+        workspace_http
+            .ensure_agent_channels(name, Some(cli), channels)
+            .await?;
+        if owns_identity {
+            if let Some(agent_id) = node_registered_agent_id {
+                workspace_http
+                    .verify_node_registered_agent_channel_scope(
+                        name.as_str(),
+                        agent_id,
+                        token,
+                        channels,
+                    )
+                    .await?;
+            } else {
+                workspace_http
+                    .verify_agent_channel_scope(name, channels)
+                    .await?;
+            }
+        }
+        Ok::<(), anyhow::Error>(())
+    })
+    .await
+    .with_context(|| {
+        format!(
+            "spawned agent channel reconciliation for '{name}' exceeded its {total_budget:?} total budget"
+        )
+    })??;
     Ok(())
 }
 
@@ -1174,6 +1209,42 @@ mod tests {
         join_channel.assert_hits(1);
         channel_members.assert_hits(1);
         laggy_workspace_scope.assert_hits(0);
+    }
+
+    #[tokio::test]
+    async fn spawned_channel_reconciliation_has_one_combined_budget() {
+        use httpmock::{Method::GET, MockServer};
+
+        let server = MockServer::start();
+        let absent = server.mock(|when, then| {
+            when.method(GET)
+                .path("/v1/agent")
+                .header("authorization", "Bearer at_live_budget");
+            then.status(404).json_body(json!({"ok":false,"error":{
+                "code":"agent_not_found","message":"not visible yet"
+            }}));
+        });
+        let http =
+            RelaycastHttpClient::new(Some(server.base_url()), "rk_live_test", "broker", "codex");
+        let name = WorkerName::from("cloud-zero-config");
+        let started = Instant::now();
+
+        let error = reconcile_spawned_agent_channels_with_timeout(
+            &http,
+            &name,
+            "codex",
+            &[],
+            "at_live_budget",
+            Some("agent-budget"),
+            true,
+            Duration::from_millis(50),
+        )
+        .await
+        .expect_err("the combined spawn reconciliation deadline must interrupt real backoffs");
+
+        assert!(error.to_string().contains("total budget"), "{error:#}");
+        assert!(started.elapsed() < Duration::from_millis(500));
+        absent.assert_hits(1);
     }
 
     #[cfg(unix)]

@@ -7462,6 +7462,174 @@ async fn node_owned_identity_create_reconcile_teardown_create_again() {
 }
 
 #[tokio::test]
+async fn shutdown_returns_retained_fleet_cleanup_completion() {
+    let registry = make_worker_registry_with_worker("unrelated").await;
+    let mut fixture = worker_event_runtime_fixture(registry, HashMap::new());
+    let name = WorkerName::from("shutdown-cleanup");
+    let generation = Uuid::new_v4();
+    let http = RelaycastHttpClient::new(
+        Some("http://127.0.0.1:1".into()),
+        "rk_live_fixture",
+        "broker",
+        "codex",
+    );
+    http.seed_agent_token(&name, "shutdown-owned-token");
+    fixture
+        .runtime
+        .workers
+        .owned_spawn_generations
+        .insert(name.clone(), (generation, http.clone()));
+    fixture
+        .runtime
+        .fleet_delivery_book
+        .bind_authoritative_identity(name.to_string(), "shutdown-agent-id");
+    let failed_spawn = crate::fleet_wire::ActionResult {
+        v: FLEET_WIRE_VERSION,
+        id: None,
+        invocation_id: "inv-shutdown-cleanup".to_string(),
+        result: crate::fleet_wire::ActionResultPayload::Error(
+            crate::fleet_wire::ActionResultError {
+                error: "spawn failed before cleanup".to_string(),
+            },
+        ),
+        task: None,
+    };
+    let control = fixture.runtime.fleet_control_tx.clone();
+    super::identity_cleanup::schedule_identity_cleanup(
+        &mut fixture.runtime.workers,
+        &control,
+        &fixture.runtime.fleet_delivery_book,
+        &mut fixture.runtime.fleet_inventory,
+        &http,
+        &name,
+        true,
+        Some(super::identity_cleanup::CleanupCompletion::Fleet(
+            failed_spawn,
+        )),
+    );
+
+    let deregister_reply = loop {
+        if let FleetControlCommand::DeregisterAgent { request, reply } =
+            fixture.fleet_control_rx.recv().await.unwrap()
+        {
+            assert_eq!(request.agent_id, "shutdown-agent-id");
+            break reply;
+        }
+    };
+
+    // Leave the deregistration acknowledgement pending until shutdown. The
+    // retained Fleet completion must still be returned before the broker exits.
+    fixture.runtime.drain_identity_cleanups_on_shutdown().await;
+    assert!(fixture.runtime.workers.identity_cleanups[&name]
+        .completions
+        .is_empty());
+    let action_result = tokio::time::timeout(Duration::from_secs(2), async {
+        loop {
+            if let FleetControlCommand::Send(BrokerToRelaycast::ActionResult(result)) =
+                fixture.fleet_control_rx.recv().await.unwrap()
+            {
+                break result;
+            }
+        }
+    })
+    .await
+    .expect("shutdown must return the retained Fleet completion");
+    assert_eq!(action_result.invocation_id, "inv-shutdown-cleanup");
+    assert!(matches!(
+        action_result.result,
+        crate::fleet_wire::ActionResultPayload::Error(ref error)
+            if error.error.contains("spawn failed before cleanup")
+                && error.error.contains("broker shutting down before reconciliation")
+    ));
+    assert_eq!(
+        fixture.runtime.fleet_delivery_book.active_agent_id(&name),
+        Some("shutdown-agent-id")
+    );
+    drop(deregister_reply);
+    fixture.runtime.workers.release("unrelated").await.unwrap();
+}
+
+#[tokio::test]
+async fn shutdown_does_not_block_on_a_full_fleet_queue() {
+    use tokio::sync::oneshot;
+
+    let registry = make_worker_registry_with_worker("unrelated").await;
+    let mut fixture = worker_event_runtime_fixture(registry, HashMap::new());
+    let name = WorkerName::from("shutdown-full-queue");
+    let generation = Uuid::new_v4();
+    let http = RelaycastHttpClient::new(
+        Some("http://127.0.0.1:1".into()),
+        "rk_live_fixture",
+        "broker",
+        "codex",
+    );
+    http.seed_agent_token(&name, "shutdown-owned-token");
+    fixture
+        .runtime
+        .workers
+        .owned_spawn_generations
+        .insert(name.clone(), (generation, http.clone()));
+    fixture
+        .runtime
+        .fleet_delivery_book
+        .bind_authoritative_identity(name.to_string(), "shutdown-agent-id");
+    let failed_spawn = crate::fleet_wire::ActionResult {
+        v: FLEET_WIRE_VERSION,
+        id: None,
+        invocation_id: "inv-shutdown-full-queue".to_string(),
+        result: crate::fleet_wire::ActionResultPayload::Error(
+            crate::fleet_wire::ActionResultError {
+                error: "spawn failed before cleanup".to_string(),
+            },
+        ),
+        task: None,
+    };
+    let control = fixture.runtime.fleet_control_tx.clone();
+    super::identity_cleanup::schedule_identity_cleanup(
+        &mut fixture.runtime.workers,
+        &control,
+        &fixture.runtime.fleet_delivery_book,
+        &mut fixture.runtime.fleet_inventory,
+        &http,
+        &name,
+        true,
+        Some(super::identity_cleanup::CleanupCompletion::Fleet(
+            failed_spawn,
+        )),
+    );
+    let (api_reply, api_result) = oneshot::channel();
+    fixture
+        .runtime
+        .workers
+        .identity_cleanups
+        .get_mut(&name)
+        .unwrap()
+        .completions
+        .push(super::identity_cleanup::CleanupCompletion::Api(
+            api_reply,
+            Ok(json!({"process":"stopped"})),
+        ));
+    while control
+        .try_send(FleetControlCommand::UpdateInventory(Vec::new()))
+        .is_ok()
+    {}
+
+    let api_response = tokio::time::timeout(Duration::from_secs(2), async {
+        fixture.runtime.drain_identity_cleanups_on_shutdown().await;
+        api_result.await.unwrap()
+    })
+    .await
+    .expect("a full Fleet queue must not block broker shutdown")
+    .expect_err("shutdown must report the local API cleanup as unconfirmed");
+
+    assert!(api_response.contains("broker shutting down before reconciliation"));
+    assert!(fixture.runtime.workers.identity_cleanups[&name]
+        .completions
+        .is_empty());
+    fixture.runtime.workers.release("unrelated").await.unwrap();
+}
+
+#[tokio::test]
 async fn owned_cleanup_retries_delete_without_repeating_acknowledged_deregistration() {
     use crate::listen_api::ListenApiRequest;
     use httpmock::{Method::POST, MockServer};

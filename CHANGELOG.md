@@ -13,6 +13,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `agent-relay fleet spawn --sandbox` accepts the canonical DEV Relaycast target only when authenticated against the exact DEV Cloud API URL (`https://dev.agentrelay.com/cloud`), while production trust remains unchanged.
 - `agent-relay fleet spawn --sandbox` makes bounded visibility checks for a node-created identity on both the worker-token and workspace-key read paths during channel reconciliation, absorbing Relaycast read-after-write lag without rotating the new worker credential.
 - Failed Fleet spawns keep owned identity cleanup alive for up to 5 attempts before returning the action failure, so teardown cannot strand a same-name identity.
+- A Fleet cleanup still in flight when the broker stops now reports an explicit cleanup-unconfirmed error instead of ending silently, so the caller can retry the cleanup.
+- `agent-relay fleet spawn --sandbox` for a node-created identity now finishes channel reconciliation within a 60-second budget and fails immediately on a confirmed channel mismatch, so a spawn cannot hang behind read-after-write retries.
+- Identity release retried for a node-created Fleet spawn now stops once the shared retry budget is exhausted.
 
 ### Security
 
