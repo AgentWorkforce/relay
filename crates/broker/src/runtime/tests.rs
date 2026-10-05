@@ -7262,8 +7262,8 @@ async fn node_owned_identity_create_reconcile_teardown_create_again() {
     });
     let mut delayed_cleanup = server.mock(|when, then| {
         when.method(POST).path("/v1/agents/release");
-        then.status(404).json_body(json!({"ok":false,"error":{
-            "code":"agent_not_found","message":"identity is not visible on this isolate yet"
+        then.status(503).json_body(json!({"ok":false,"error":{
+            "code":"cleanup_unavailable","message":"release service is temporarily unavailable"
         }}));
     });
     let registry = make_worker_registry_with_worker("unrelated").await;
@@ -7309,9 +7309,11 @@ async fn node_owned_identity_create_reconcile_teardown_create_again() {
         .expect("empty isolated scope should reconcile");
     first_visible.assert_hits(1);
 
-    // Teardown initially sees the same read-after-write 404 observed in DEV.
-    // The fleet action result must remain withheld so Cloud cannot destroy the
-    // only broker capable of completing the retained cleanup.
+    // Teardown initially sees a terminal release-service failure. The fleet
+    // action result must remain withheld so Cloud cannot destroy the only
+    // broker capable of completing the retained outer cleanup retry. The
+    // guarded release helper's internal `agent_not_found` retries are covered
+    // separately in `relaycast::ws` tests.
     let generation = Uuid::new_v4();
     fixture
         .runtime
