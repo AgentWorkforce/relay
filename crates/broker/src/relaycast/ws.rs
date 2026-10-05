@@ -1582,16 +1582,59 @@ impl RelaycastHttpClient {
         name: &str,
         channels: &[crate::ids::ChannelName],
     ) -> Result<()> {
+        self.verify_agent_channel_scope_with_backoffs(
+            name,
+            channels,
+            &NODE_REGISTER_VISIBILITY_BACKOFFS_MS,
+        )
+        .await
+    }
+
+    async fn verify_agent_channel_scope_with_backoffs(
+        &self,
+        name: &str,
+        channels: &[crate::ids::ChannelName],
+        backoffs_ms: &[u64],
+    ) -> Result<()> {
         let relay = self
             .relay
             .as_ref()
             .as_ref()
             .context("SDK relay client not initialized")?;
         let client = relay.as_agent(&self.api_key)?;
-        let agent: Value = client
-            .http_client()
-            .get(&format!("/v1/agents/{name}"), None, None)
-            .await?;
+        let path = format!("/v1/agents/{name}");
+        let mut agent: Option<Value> = None;
+        for (attempt, delay_ms) in std::iter::once(0)
+            .chain(backoffs_ms.iter().copied())
+            .enumerate()
+        {
+            if delay_ms > 0 {
+                tokio::time::sleep(Duration::from_millis(delay_ms)).await;
+            }
+            match client.http_client().get(&path, None, None).await {
+                Ok(value) => {
+                    agent = Some(value);
+                    break;
+                }
+                Err(RelayError::Api {
+                    status: 404,
+                    ref code,
+                    ..
+                }) if code == "agent_not_found" && attempt < backoffs_ms.len() => {
+                    tracing::warn!(
+                        worker = %name,
+                        attempt = attempt + 1,
+                        "node-registered identity is not yet visible to the workspace-key channel-scope lookup; retrying"
+                    );
+                }
+                Err(error) => {
+                    return Err(anyhow::anyhow!(
+                        "live channel scope lookup for worker '{name}' failed: {error}"
+                    ));
+                }
+            }
+        }
+        let agent = agent.context("live channel scope lookup exhausted without a response")?;
         let memberships = agent
             .get("channels")
             .and_then(Value::as_array)
@@ -2796,6 +2839,57 @@ mod tests {
             )
             .await
             .expect("the exact node-created identity should become readable");
+        server.await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn workspace_key_channel_scope_retries_read_after_write_lag() {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let base_url = format!("http://{}", listener.local_addr().unwrap());
+        let server = tokio::spawn(async move {
+            for attempt in 0..3 {
+                let (mut stream, _) = listener.accept().await.unwrap();
+                let mut request = [0_u8; 4096];
+                let bytes = stream.read(&mut request).await.unwrap();
+                let request = String::from_utf8_lossy(&request[..bytes]);
+                assert!(
+                    request.starts_with("GET /v1/agents/cloud-zero-config "),
+                    "{request}"
+                );
+                assert!(
+                    request
+                        .to_ascii_lowercase()
+                        .contains("authorization: bearer rk_live_test"),
+                    "{request}"
+                );
+                let (status, body) = if attempt < 2 {
+                    (
+                        "404 Not Found",
+                        r#"{"ok":false,"error":{"code":"agent_not_found","message":"not visible by name yet"}}"#,
+                    )
+                } else {
+                    (
+                        "200 OK",
+                        r#"{"ok":true,"data":{"channels":[{"name":"engineering"},{"name":"general"}]}}"#,
+                    )
+                };
+                let response = format!(
+                    "HTTP/1.1 {status}\r\ncontent-type: application/json\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{body}",
+                    body.len()
+                );
+                stream.write_all(response.as_bytes()).await.unwrap();
+            }
+        });
+        let client = RelaycastHttpClient::new(Some(base_url), "rk_live_test", "broker", "codex");
+
+        client
+            .verify_agent_channel_scope_with_backoffs(
+                "cloud-zero-config",
+                &["general".into(), "engineering".into()],
+                &[0, 0],
+            )
+            .await
+            .expect("the workspace-key by-name lookup should tolerate bounded propagation lag");
         server.await.unwrap();
     }
 

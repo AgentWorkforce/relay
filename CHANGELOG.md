@@ -11,7 +11,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - Broker recovery now stops with a clear re-enrollment error when Relaycast refuses node-token rotation proof, while retaining the last in-memory and durable credential for operator recovery. Accepted rotations use an atomically persisted idempotency key so a lost response or restart can recover the committed replacement.
 - `agent-relay fleet spawn --sandbox` accepts the canonical DEV Relaycast target only when authenticated against the exact DEV Cloud API URL (`https://dev.agentrelay.com/cloud`), while production trust remains unchanged.
-- `agent-relay fleet spawn --sandbox` makes up to 8 visibility checks for a node-created identity before channel reconciliation, absorbing bounded Relaycast read-after-write lag without rotating the new worker credential.
+- `agent-relay fleet spawn --sandbox` makes bounded visibility checks for a node-created identity on both the worker-token and workspace-key read paths during channel reconciliation, absorbing Relaycast read-after-write lag without rotating the new worker credential.
 - Failed Fleet spawns keep owned identity cleanup alive for up to 5 attempts before returning the action failure, so teardown cannot strand a same-name identity.
 
 ## [13.1.1] - 2026-10-04
