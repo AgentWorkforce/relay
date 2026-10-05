@@ -153,7 +153,34 @@ fn muse_auth_interstitial_line(line: &str) -> bool {
         return true;
     }
 
-    let normalized = lower.split_whitespace().collect::<Vec<_>>().join(" ");
+    let content = lower
+        .trim_matches(|ch| {
+            matches!(
+                ch,
+                '─' | '│'
+                    | '┌'
+                    | '┐'
+                    | '└'
+                    | '┘'
+                    | '├'
+                    | '┤'
+                    | '┬'
+                    | '┴'
+                    | '┼'
+                    | '═'
+                    | '║'
+                    | '╔'
+                    | '╗'
+                    | '╚'
+                    | '╝'
+            )
+        })
+        .trim();
+    if content.is_empty() {
+        return true;
+    }
+
+    let normalized = content.split_whitespace().collect::<Vec<_>>().join(" ");
     let starts_with_any = |cues: &[&str]| cues.iter().any(|cue| normalized.starts_with(cue));
     let has_destination = contains_any(&normalized, MUSE_VERIFICATION_DESTINATION_CUES);
 
@@ -165,6 +192,7 @@ fn muse_auth_interstitial_line(line: &str) -> bool {
             || normalized.contains("meta.com/device")))
         || starts_with_any(MUSE_DEVICE_CODE_CUES)
         || normalized.starts_with("and enter this code")
+        || normalized.starts_with("sign in to muse")
         || starts_with_any(MUSE_AUTH_REQUEST_CUES)
         || (normalized.starts_with("you are ")
             && (normalized.contains("not signed in") || normalized.contains("not logged in")))
@@ -846,6 +874,9 @@ Entertoconfirm·Esctocancel\n";
             "Enter this code: QWER\nwaiting for\nauthorization to complete\n",
             // Unknown provider wording still has the device-flow shape.
             "Visit https://example.org/activate\nCode: WXYZ\n›\n",
+            // The real-binary broker fixture surrounds the same layout with
+            // a title and box-drawing decoration.
+            "┌ Sign in to Muse ───┐\nTo continue, sign in with your Meta account.\nOpen https://www.facebook.com/device in a browser\nand enter this code: ABCD-1234\nWaiting for authentication...\n└───┘\n›\n",
         ] {
             assert!(
                 detect_muse_device_auth_prompt(screen),
