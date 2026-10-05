@@ -1035,7 +1035,10 @@ mod tests {
 
     #[tokio::test]
     async fn http_registration_fallback_does_not_require_a_node_receipt() {
-        use httpmock::{Method::GET, MockServer};
+        use httpmock::{
+            Method::{GET, POST},
+            MockServer,
+        };
 
         let server = MockServer::start();
         let unexpected_node_visibility = server.mock(|when, then| {
@@ -1046,8 +1049,35 @@ mod tests {
             when.method(GET)
                 .path("/v1/agents/cloud-zero-config")
                 .header("authorization", "Bearer rk_live_test");
-            then.status(200)
-                .json_body(json!({"ok":true,"data":{"channels":[]}}));
+            then.status(200).json_body(json!({"ok":true,"data":{
+                "channels":[{"name":"agent37-ga"}]
+            }}));
+        });
+        let create_channel = server.mock(|when, then| {
+            when.method(POST)
+                .path("/v1/channels")
+                .header("authorization", "Bearer at_live_http_fallback")
+                .body_contains("\"name\":\"agent37-ga\"");
+            then.status(409).json_body(json!({"ok":false,"error":{
+                "code":"channel_already_exists","message":"exists"
+            }}));
+        });
+        let join_channel = server.mock(|when, then| {
+            when.method(POST)
+                .path("/v1/channels/agent37-ga/join")
+                .header("authorization", "Bearer at_live_http_fallback");
+            then.status(409).json_body(json!({"ok":false,"error":{
+                "code":"already_member","message":"joined"
+            }}));
+        });
+        let channel_members = server.mock(|when, then| {
+            when.method(GET)
+                .path("/v1/channels/agent37-ga/members")
+                .header("authorization", "Bearer at_live_http_fallback");
+            then.status(200).json_body(json!({"ok":true,"data":[{
+                "agent_id":"agent-http","agent_name":"cloud-zero-config",
+                "role":"member","joined_at":"2026-10-04T00:00:00Z"
+            }]}));
         });
         let http =
             RelaycastHttpClient::new(Some(server.base_url()), "rk_live_test", "broker", "codex");
@@ -1057,7 +1087,7 @@ mod tests {
             &http,
             &name,
             "codex",
-            &[],
+            &[ChannelName::from("agent37-ga")],
             "at_live_http_fallback",
             None,
             true,
@@ -1066,6 +1096,9 @@ mod tests {
         .expect("an HTTP-created identity must reconcile without a node registration receipt");
 
         unexpected_node_visibility.assert_hits(0);
+        create_channel.assert_hits(1);
+        join_channel.assert_hits(1);
+        channel_members.assert_hits(1);
         scope.assert_hits(1);
     }
 
