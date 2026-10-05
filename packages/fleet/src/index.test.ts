@@ -304,14 +304,16 @@ describe('@agent-relay/fleet', () => {
     });
     const ctx = stubContext(node.name, Object.keys(node.capabilities));
     await invokeNodeHandler(node, 'spawn:muse', { name: 'muse-worker', task: 'ship it' }, ctx);
-    expect(ctx.spawnAgent).toHaveBeenCalledWith(expect.objectContaining({
-      verifyReady: true,
-      initialTask: 'ship it',
-      agent: expect.objectContaining({
-        cli: 'muse',
-        harness_config: expect.objectContaining({ env }),
-      }),
-    }));
+    expect(ctx.spawnAgent).toHaveBeenCalledWith(
+      expect.objectContaining({
+        verifyReady: true,
+        initialTask: 'ship it',
+        agent: expect.objectContaining({
+          cli: 'muse',
+          harness_config: expect.objectContaining({ env }),
+        }),
+      })
+    );
   });
 
   it('advertises spawn:muse from the default local node', () => {

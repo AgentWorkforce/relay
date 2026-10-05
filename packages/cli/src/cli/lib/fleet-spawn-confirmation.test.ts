@@ -143,7 +143,9 @@ describe('fleet spawn confirmation is observable from the requester (#1430)', ()
     'preserves %s from the node',
     async (reason) => {
       const { client } = createClient(async (name, id) => ({
-        invocation_id: id, action_name: name, status: 'failed',
+        invocation_id: id,
+        action_name: name,
+        status: 'failed',
         error: `${reason}: run muse on the selected node to log in`,
       }));
       const error = await client.placement
