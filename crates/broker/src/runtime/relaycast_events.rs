@@ -613,11 +613,13 @@ pub(super) async fn spawn_worker_from_request(
     fleet_control_tx: &mpsc::Sender<FleetControlCommand>,
     fleet_delivery_book: &mut FleetDeliveryBook,
     fleet_inventory: &mut HashMap<WorkerName, InventoryAgent>,
+    fleet_worker_owners: &mut HashMap<WorkerName, super::fleet::FleetWorkerOwner>,
     node_name: &str,
     invocation_id: Option<String>,
     session_ref: Option<String>,
     hosted_agent_event_tx: &mpsc::Sender<HostedAgentEvent>,
     pty_observability: &mut HashMap<WorkerName, PtyObservabilityState>,
+    trusted_owner: Option<crate::fleet_wire::AgentOwnerMetadata>,
     task_binding: Option<(AgentResultMcpConfig, Uuid)>,
 ) -> Result<()> {
     if workers.identity_cleanups.contains_key(&name) {
@@ -822,7 +824,9 @@ pub(super) async fn spawn_worker_from_request(
     let mut node_registered_agent_id = None;
     let mut owns_identity = true;
     let registration_metadata =
-        crate::fleet_wire::AgentRegistrationMetadata::from_spawn_input(ws_value, task.as_deref());
+        crate::fleet_wire::AgentRegistrationMetadata::from_spawn_input(ws_value, task.as_deref())
+            .map_err(anyhow::Error::msg)?
+            .with_owner(trusted_owner);
     let worker_relay_key = {
         if let Some(token) = relaycast_ws_spawn_token(ws_value)
             .filter(|_| !require_node_registration && !relaycast_spawn_verifies_ready(ws_value))
@@ -851,13 +855,14 @@ pub(super) async fn spawn_worker_from_request(
             }
             Some(token)
         } else {
-            match super::fleet::register_node_agent_token(
+            match super::fleet::register_node_agent_token_with_metadata(
                 fleet_control_tx,
                 fleet_delivery_book,
                 name.as_str(),
                 &channels,
                 invocation_id.clone(),
                 session_ref.clone(),
+                Some(registration_metadata.metadata()),
             )
             .await
             {
@@ -865,11 +870,6 @@ pub(super) async fn spawn_worker_from_request(
                     tracing::info!(
                         worker = %name,
                         "bound agent to node via agent.register for action.invoke spawn"
-                    );
-                    super::fleet::spawn_declared_metadata_publish(
-                        workspace_http,
-                        name.as_str(),
-                        registration_metadata,
                     );
                     let relay_key = token.token.clone();
                     node_registered_agent_id = Some(token.agent_id.clone());
@@ -892,22 +892,15 @@ pub(super) async fn spawn_worker_from_request(
                         error = %node_error,
                         "node agent.register unavailable; falling back to HTTP pre-registration"
                     );
-                    match crate::relaycast::register_new_spawn_identity(
+                    match crate::relaycast::register_new_spawn_identity_with_metadata(
                         workspace_http,
                         &name,
                         Some(cli.as_str()),
+                        Some(&registration_metadata.metadata()),
                     )
                     .await
                     {
                         Ok(token) => {
-                            // Declared metadata is published over the agent API
-                            // exactly as on the node path; registration itself
-                            // stays on the cache- and rate-limit-aware call.
-                            super::fleet::spawn_declared_metadata_publish(
-                                workspace_http,
-                                name.as_str(),
-                                registration_metadata,
-                            );
                             tracing::info!(
                                 worker = %name,
                                 "pre-registered agent via broker for WS spawn"
@@ -1017,6 +1010,25 @@ pub(super) async fn spawn_worker_from_request(
         .await
     {
         Ok(effective_spec) => {
+            // Initial create paths already carry this atomically. Reapply it
+            // after admission so supplied-token spawns and resumed identities
+            // also replace stale owner metadata from trusted authority.
+            if worker_relay_key.is_some() {
+                if let (Some(owner), Some(worker)) = (
+                    registration_metadata.owner.clone(),
+                    workers.workers.get(&name),
+                ) {
+                    fleet_worker_owners.insert(
+                        name.clone(),
+                        super::fleet::FleetWorkerOwner::pending(worker.generation, owner),
+                    );
+                }
+                super::fleet::spawn_registration_metadata_publish(
+                    workspace_http,
+                    name.as_str(),
+                    registration_metadata.clone(),
+                );
+            }
             if owns_identity {
                 if let Some(worker) = workers.workers.get(&name) {
                     workers
@@ -1569,6 +1581,7 @@ mod tests {
         let (fleet_control_tx, _fleet_control_rx) = mpsc::channel(4);
         let mut fleet_delivery_book = FleetDeliveryBook::default();
         let mut fleet_inventory = HashMap::new();
+        let mut fleet_worker_owners = HashMap::new();
         let (hosted_agent_event_tx, _hosted_agent_event_rx) = mpsc::channel(4);
         let mut pty_observability = HashMap::new();
         let name = WorkerName::from("failed-native-worker-1430");
@@ -1614,11 +1627,13 @@ mod tests {
             &fleet_control_tx,
             &mut fleet_delivery_book,
             &mut fleet_inventory,
+            &mut fleet_worker_owners,
             "test-node",
             Some("inv-failed-1430".to_string()),
             None,
             &hosted_agent_event_tx,
             &mut pty_observability,
+            None,
             None,
         )
         .await

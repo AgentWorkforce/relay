@@ -1119,7 +1119,16 @@ async fn listen_api_spawn(
         })
         .unwrap_or_default();
     let task = body.get("task").and_then(Value::as_str).map(String::from);
-    let registration_metadata = AgentRegistrationMetadata::from_spawn_input(&body, task.as_deref());
+    let registration_metadata =
+        match AgentRegistrationMetadata::from_spawn_input(&body, task.as_deref()) {
+            Ok(metadata) => metadata,
+            Err(error) => {
+                return (
+                    axum::http::StatusCode::BAD_REQUEST,
+                    axum::Json(json!({"error": error})),
+                )
+            }
+        };
     let channels: Option<Vec<ChannelName>> = match body.get("channels") {
         None => None,
         Some(Value::Array(values)) if values.iter().all(Value::is_string) => Some(
@@ -4776,6 +4785,7 @@ mod auth_tests {
                             workstream: Some("fleet-metadata".to_string()),
                             role: Some("implementation".to_string()),
                             objective: Some("Publish registration metadata".to_string()),
+                            owner: None,
                         }
                     );
                     assert_eq!(channels, Some(vec!["general".into(), "engineering".into()]));
@@ -4879,6 +4889,40 @@ mod auth_tests {
             .as_str()
             .expect("error should be a string")
             .contains("unsupported spawnMode 'detached'"));
+    }
+
+    #[tokio::test]
+    async fn spawn_route_rejects_caller_supplied_owner_metadata() {
+        for body in [
+            json!({"name":"worker-a", "cloud_user_id":"attacker"}),
+            json!({"name":"worker-a", "metadata":{"owner_hash":"forged"}}),
+            json!({"name":"worker-a", "agent":{"cloud_workspace_id":"other"}}),
+        ] {
+            let (router, mut rx) = test_router(Some("secret"));
+            let response = router
+                .oneshot(
+                    Request::builder()
+                        .uri("/api/spawn")
+                        .method("POST")
+                        .header("x-api-key", "secret")
+                        .header("content-type", "application/json")
+                        .body(Body::from(body.to_string()))
+                        .expect("request should build"),
+                )
+                .await
+                .expect("request should succeed");
+
+            assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+            let response_body = response_json(response).await;
+            assert!(response_body["error"]
+                .as_str()
+                .expect("error should be a string")
+                .contains("reserved owner metadata"));
+            assert!(
+                rx.try_recv().is_err(),
+                "rejected spoof must not reach runtime"
+            );
+        }
     }
 
     #[tokio::test]

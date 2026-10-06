@@ -17,6 +17,7 @@ impl BrokerRuntime {
         let fleet_control_tx = &self.fleet_control_tx;
         let fleet_inventory = &mut self.fleet_inventory;
         let fleet_inventory_reconcile_retry_after = &mut self.fleet_inventory_reconcile_retry_after;
+        let fleet_worker_owners = &mut self.fleet_worker_owners;
         let fleet_delivery_book = &mut self.fleet_delivery_book;
         let fleet_max_agents = self.fleet_max_agents;
         // The broker provider's capacity handlers are live whenever it is
@@ -758,12 +759,16 @@ impl BrokerRuntime {
             .into_iter()
             .filter(|worker| !workers.identity_cleanups.contains_key(&worker.name))
             .collect();
-        if super::fleet::reconcile_fleet_inventory_with_live_workers(
+        let reconcile_state = super::fleet::FleetInventoryReconcileState {
+            retry_after: fleet_inventory_reconcile_retry_after,
+            worker_owners: fleet_worker_owners,
+        };
+        if super::fleet::reconcile_fleet_inventory_with_live_workers_and_owner(
             fleet_control_tx,
             relaycast_http,
             fleet_delivery_book,
             fleet_inventory,
-            fleet_inventory_reconcile_retry_after,
+            reconcile_state,
             live_fleet_workers,
             now,
         )

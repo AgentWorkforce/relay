@@ -907,20 +907,14 @@ impl RelaycastHttpClient {
         }
     }
 
-    /// Publish caller-declared workforce metadata onto an already-registered
-    /// agent. The engine merges it over whatever it already holds.
+    /// Publish trusted owner and caller-declared workforce metadata onto an
+    /// already-registered agent. The engine merges it over whatever it already
+    /// holds. New registrations also carry these values in their initial POST
+    /// or `agent.register`; this PATCH repairs resumed and legacy identities.
     ///
-    /// This is how declared metadata reaches the engine on the node
-    /// registration path. It deliberately does NOT ride the `agent.register`
-    /// frame: that frame is parsed by a `.strict()` schema which rejects unknown
-    /// keys, and the rejection stalls the registration waiter for 30s (see the
-    /// note on `fleet_wire::AgentRegister`). The REST agent API has no such
-    /// restriction and already accepts a metadata bag, so the observable
-    /// outcome is the same over a transport every engine accepts.
-    ///
-    /// Callers treat this as best-effort: the agent is registered and running
-    /// either way, so a failure here must be logged, not fatal.
-    pub async fn publish_declared_metadata(
+    /// Callers treat this as best-effort after a successful create: the agent
+    /// is registered and running either way, so a failure is logged, not fatal.
+    pub async fn publish_registration_metadata(
         &self,
         agent_name: &str,
         declared: &AgentRegistrationMetadata,
@@ -929,7 +923,7 @@ impl RelaycastHttpClient {
         if name.is_empty() {
             return Err(RelaycastRegistrationError::InvalidAgentName);
         }
-        let declared_metadata = declared_metadata_map(declared);
+        let declared_metadata = declared.metadata();
         if declared_metadata.is_empty() {
             return Ok(());
         }
@@ -2809,10 +2803,25 @@ pub async fn register_new_spawn_identity(
     name: &str,
     cli: Option<&str>,
 ) -> Result<String, RegRetryOutcome> {
+    register_new_spawn_identity_with_metadata(http, name, cli, None).await
+}
+
+pub async fn register_new_spawn_identity_with_metadata(
+    http: &RelaycastHttpClient,
+    name: &str,
+    cli: Option<&str>,
+    registration_metadata: Option<&serde_json::Map<String, Value>>,
+) -> Result<String, RegRetryOutcome> {
     let total_attempts = Arc::new(AtomicU32::new(0));
     match tokio::time::timeout(
         MAX_AGENT_REGISTRATION_OUTER_TIMEOUT,
-        register_new_spawn_identity_inner(http, name, cli, Arc::clone(&total_attempts)),
+        register_new_spawn_identity_inner(
+            http,
+            name,
+            cli,
+            registration_metadata,
+            Arc::clone(&total_attempts),
+        ),
     )
     .await
     {
@@ -2834,6 +2843,7 @@ async fn register_new_spawn_identity_inner(
     http: &RelaycastHttpClient,
     name: &str,
     cli: Option<&str>,
+    registration_metadata: Option<&serde_json::Map<String, Value>>,
     total_attempts: Arc<AtomicU32>,
 ) -> Result<String, RegRetryOutcome> {
     let relay = http.relay.as_ref().as_ref().ok_or_else(|| {
@@ -2847,9 +2857,14 @@ async fn register_new_spawn_identity_inner(
     let client = relay
         .as_agent(&http.api_key)
         .map_err(|error| RegRetryOutcome::Fatal(registration_metadata_error(name, error)))?;
+    let mut metadata = registration_metadata.cloned().unwrap_or_default();
+    metadata.insert(
+        "cli".to_string(),
+        Value::String(cli.unwrap_or(&http.default_cli).to_string()),
+    );
     let body = serde_json::json!({
         "name": name, "type": "agent", "auto_join_general": false,
-        "metadata": {"cli": cli.unwrap_or(&http.default_cli)}
+        "metadata": metadata
     });
     // The first create can commit while its response is lost. Reusing one key
     // for this logical spawn lets Relaycast replay that committed result on a
@@ -2968,29 +2983,6 @@ async fn register_new_spawn_identity_inner(
     }
 }
 
-/// The declared fields alone, trimmed, with blanks omitted.
-///
-/// Omitting rather than sending `""` matters because both callers merge this
-/// over metadata the engine already holds: an empty value would overwrite an
-/// engine-owned field with nothing.
-fn declared_metadata_map(declared: &AgentRegistrationMetadata) -> serde_json::Map<String, Value> {
-    let mut metadata = serde_json::Map::new();
-    let declared_fields = [
-        ("organization", declared.organization.as_deref()),
-        ("project", declared.project.as_deref()),
-        ("workstream", declared.workstream.as_deref()),
-        ("role", declared.role.as_deref()),
-        ("objective", declared.objective.as_deref()),
-    ];
-    for (key, value) in declared_fields {
-        let Some(value) = value.map(str::trim).filter(|value| !value.is_empty()) else {
-            continue;
-        };
-        metadata.insert(key.to_string(), Value::String(value.to_string()));
-    }
-    metadata
-}
-
 /// Convert a terminal SDK error into the typed registration error, keeping
 /// the two facts the broker's retry loops need from the SDK layer: the
 /// server's `Retry-After` (so the broker paces on the same cadence the SDK
@@ -3076,16 +3068,17 @@ mod tests {
         absorb_registration_round, agent_registration_retry_delay,
         format_worker_preregistration_error, is_typed_registration_overload,
         is_workspace_busy_reconcile_error, is_workspace_busy_registration_error,
-        register_new_spawn_identity, registration_is_retryable, registration_retry_after_secs,
-        retry_agent_registration, retry_agent_registration_with,
-        retry_agent_registration_with_budget, retry_agent_registration_with_timeout,
-        retry_workspace_busy_reconcile, with_registration_attempts, workspace_busy_reconcile_delay,
-        workspace_busy_retry_allowed, ImpersonationAwareRegistrationError, MessageInjectionMode,
-        RecipientReachability, RegRetryOutcome, RegisterIntent, RelaycastHttpClient,
-        RelaycastRegistrationError, MAX_AGENT_REGISTRATION_ELAPSED,
-        MAX_AGENT_REGISTRATION_OUTER_TIMEOUT, MAX_AGENT_REGISTRATION_RETRY_DELAY,
-        WORKSPACE_BUSY_ACTION_SAFETY_CAP, WORKSPACE_BUSY_CREATE_ONLY_SAFETY_CAP,
-        WORKSPACE_BUSY_RECONCILE_BUDGET, WORKSPACE_BUSY_RECONCILE_SAFETY_CAP,
+        register_new_spawn_identity, register_new_spawn_identity_with_metadata,
+        registration_is_retryable, registration_retry_after_secs, retry_agent_registration,
+        retry_agent_registration_with, retry_agent_registration_with_budget,
+        retry_agent_registration_with_timeout, retry_workspace_busy_reconcile,
+        with_registration_attempts, workspace_busy_reconcile_delay, workspace_busy_retry_allowed,
+        ImpersonationAwareRegistrationError, MessageInjectionMode, RecipientReachability,
+        RegRetryOutcome, RegisterIntent, RelaycastHttpClient, RelaycastRegistrationError,
+        MAX_AGENT_REGISTRATION_ELAPSED, MAX_AGENT_REGISTRATION_OUTER_TIMEOUT,
+        MAX_AGENT_REGISTRATION_RETRY_DELAY, WORKSPACE_BUSY_ACTION_SAFETY_CAP,
+        WORKSPACE_BUSY_CREATE_ONLY_SAFETY_CAP, WORKSPACE_BUSY_RECONCILE_BUDGET,
+        WORKSPACE_BUSY_RECONCILE_SAFETY_CAP,
     };
 
     fn seeded_http_client(base_url: &str) -> RelaycastHttpClient {
@@ -4381,7 +4374,7 @@ mod tests {
     /// a stale snapshot. The body is matched exactly, so a stray key — or a
     /// re-introduced read-merge-write — fails here.
     #[tokio::test]
-    async fn publish_declared_metadata_sends_only_the_declared_keys() {
+    async fn publish_registration_metadata_sends_only_the_supplied_keys() {
         let server = MockServer::start();
         let read = server.mock(|when, then| {
             when.method(GET).path("/v1/agents/worker-a");
@@ -4412,7 +4405,7 @@ mod tests {
 
         let client = seeded_http_client(&server.base_url());
         client
-            .publish_declared_metadata(
+            .publish_registration_metadata(
                 "worker-a",
                 &AgentRegistrationMetadata {
                     organization: Some("Agent Workforce".to_string()),
@@ -4420,6 +4413,7 @@ mod tests {
                     workstream: Some("   ".to_string()),
                     role: None,
                     objective: Some("Publish registration metadata".to_string()),
+                    owner: None,
                 },
             )
             .await
@@ -4434,7 +4428,7 @@ mod tests {
     /// declares nothing should not pay for a read-modify-write, and must not
     /// rewrite the agent's metadata with what it happens to already hold.
     #[tokio::test]
-    async fn publish_declared_metadata_makes_no_request_when_nothing_is_declared() {
+    async fn publish_registration_metadata_makes_no_request_when_empty() {
         let server = MockServer::start();
         let any_read = server.mock(|when, then| {
             when.method(GET).path("/v1/agents/worker-a");
@@ -4447,7 +4441,7 @@ mod tests {
 
         let client = seeded_http_client(&server.base_url());
         client
-            .publish_declared_metadata(
+            .publish_registration_metadata(
                 "worker-a",
                 &AgentRegistrationMetadata {
                     organization: Some(String::new()),
@@ -4564,6 +4558,39 @@ mod tests {
             .expect("explicit release should succeed");
 
         release.assert_hits(1);
+    }
+
+    #[tokio::test]
+    async fn fresh_spawn_creates_agent_with_owner_metadata_in_initial_post() {
+        let server = MockServer::start();
+        let create = server.mock(|when, then| {
+            when.method(POST).path("/v1/agents").json_body(json!({
+                "name": "worker", "type": "agent", "auto_join_general": false,
+                "metadata": {
+                    "cli": "codex",
+                    "cloud_user_id": "user-1",
+                    "cloud_workspace_id": null,
+                    "owner_hash": "c6c289e49e9c05b2145860387b73bcb18df43fb09a1e4a4a9713c76c88bb541b"
+                }
+            }));
+            then.status(200).json_body(json!({"ok":true,"data":{
+                "id":"agent_new","workspace_id":"ws_test","name":"worker",
+                "token":"at_live_new","status":"online","created_at":"2026-01-01T00:00:00Z"
+            }}));
+        });
+        let client = seeded_http_client(&server.base_url());
+        let owner = crate::fleet_wire::AgentOwnerMetadata::new("user-1".into(), None).unwrap();
+
+        register_new_spawn_identity_with_metadata(
+            &client,
+            "worker",
+            Some("codex"),
+            Some(&owner.metadata()),
+        )
+        .await
+        .expect("owner-aware create should succeed");
+
+        create.assert_hits(1);
     }
 
     #[tokio::test]

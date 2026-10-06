@@ -1,5 +1,5 @@
 use super::*;
-use crate::relaycast::register_new_spawn_identity;
+use crate::relaycast::register_new_spawn_identity_with_metadata;
 use relaycast::{
     CreateObserverTokenRequest, ObserverScope, ObserverToken, ObserverTokenFilters, RelayError,
 };
@@ -331,6 +331,7 @@ impl BrokerRuntime {
         let node_delivery_token_present = self.node_delivery_token_present;
         let node_delivery_connected = self.node_delivery_connected;
         let fleet_inventory = &mut self.fleet_inventory;
+        let fleet_worker_owners = &mut self.fleet_worker_owners;
         let fleet_delivery_book = &mut self.fleet_delivery_book;
         let fleet_max_agents = self.fleet_max_agents;
         // The broker provider's capacity handlers are live whenever it is
@@ -383,6 +384,8 @@ impl BrokerRuntime {
                 replay_buffer,
                 reply,
             } => {
+                let registration_metadata =
+                    registration_metadata.with_owner(self.fleet_owner_identity.clone());
                 // Tokenless HTTP registration below is create-only;
                 // only their successful new identity may be deleted on failure.
                 // A supplied credential never grants cleanup ownership.
@@ -622,7 +625,14 @@ impl BrokerRuntime {
                     // Node agent.register may resume an existing identity. Establish
                     // create-only ownership over HTTP first, then bind that exact
                     // new identity to the node for normal delivery/inventory.
-                    match register_new_spawn_identity(relaycast_http, &name, Some(&cli)).await {
+                    match register_new_spawn_identity_with_metadata(
+                        relaycast_http,
+                        &name,
+                        Some(&cli),
+                        Some(&registration_metadata.metadata()),
+                    )
+                    .await
+                    {
                         Ok(token) => {
                             // HTTP registration alone leaves the agent
                             // without a node binding; the engine only
@@ -795,14 +805,27 @@ impl BrokerRuntime {
                     .await
                 {
                     Ok(effective_spec) => {
-                        // Both hosted credential paths publish declared metadata. Wait for
-                        // admission to succeed before scheduling a detached PATCH.
+                        // Both hosted credential paths publish trusted owner and
+                        // declared workforce metadata. Wait for admission to
+                        // succeed before scheduling a detached PATCH.
                         // Local-only workers have no hosted identity to update.
                         if worker_relay_key.is_some() {
-                            super::fleet::spawn_declared_metadata_publish(
+                            if let (Some(owner), Some(worker)) = (
+                                registration_metadata.owner.clone(),
+                                workers.workers.get(&name),
+                            ) {
+                                fleet_worker_owners.insert(
+                                    name.clone(),
+                                    super::fleet::FleetWorkerOwner::pending(
+                                        worker.generation,
+                                        owner,
+                                    ),
+                                );
+                            }
+                            super::fleet::spawn_registration_metadata_publish(
                                 relaycast_http,
                                 name.as_str(),
-                                registration_metadata,
+                                registration_metadata.clone(),
                             );
                         }
                         if owns_identity {

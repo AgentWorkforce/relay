@@ -613,6 +613,7 @@ pub(crate) struct AgentRegistrationToken {
 #[derive(Debug)]
 struct PendingAgentRegistration {
     isolates_channels: bool,
+    has_metadata: bool,
     name: String,
     reply: oneshot::Sender<Result<AgentRegistrationToken, String>>,
     created_at: Instant,
@@ -2648,6 +2649,7 @@ where
                 request_id,
                 PendingAgentRegistration {
                     isolates_channels: request.auto_join_general == Some(false),
+                    has_metadata: request.metadata.is_some(),
                     name: request.name.clone(),
                     reply,
                     created_at: Instant::now(),
@@ -3177,7 +3179,7 @@ where
                                 return true;
                             }
                             if error.code == "invalid_message" {
-                                fail_unsupported_channel_isolation(
+                                fail_unsupported_agent_register_extensions(
                                     &error.message,
                                     pending_agent_registrations,
                                 );
@@ -3346,7 +3348,7 @@ fn fail_agent_registration(
 /// Older strict schemas cannot echo the request id when parsing fails. Only
 /// reject registrations using the specifically rejected extension; unrelated
 /// schema errors and legacy registrations keep their normal correlation.
-fn fail_unsupported_channel_isolation(
+fn fail_unsupported_agent_register_extensions(
     message: &str,
     pending: &mut HashMap<String, PendingAgentRegistration>,
 ) {
@@ -3354,27 +3356,35 @@ fn fail_unsupported_channel_isolation(
     else {
         return;
     };
-    let rejected = issues.iter().any(|issue| {
-        issue["code"] == "unrecognized_keys"
-            && issue["path"].as_array().is_some_and(Vec::is_empty)
-            && issue["keys"]
-                .as_array()
-                .is_some_and(|keys| keys.iter().any(|key| key == "auto_join_general"))
-    });
-    if !rejected {
+    let rejects_key = |expected: &str| {
+        issues.iter().any(|issue| {
+            issue["code"] == "unrecognized_keys"
+                && issue["path"].as_array().is_some_and(Vec::is_empty)
+                && issue["keys"]
+                    .as_array()
+                    .is_some_and(|keys| keys.iter().any(|key| key == expected))
+        })
+    };
+    let rejects_channel_isolation = rejects_key("auto_join_general");
+    let rejects_metadata = rejects_key("metadata");
+    if !rejects_channel_isolation && !rejects_metadata {
         return;
     }
     let incompatible: Vec<_> = pending
         .iter()
-        .filter(|(_, entry)| entry.isolates_channels)
-        .map(|(id, _)| id.clone())
+        .filter_map(|(id, entry)| {
+            let reason = if rejects_channel_isolation && entry.isolates_channels {
+                Some("agent_register_unsupported_channel_isolation: engine upgrade required")
+            } else if rejects_metadata && entry.has_metadata {
+                Some("agent_register_unsupported_metadata: legacy engine requires post-registration PATCH")
+            } else {
+                None
+            };
+            reason.map(|reason| (id.clone(), reason.to_string()))
+        })
         .collect();
-    for id in incompatible {
-        fail_agent_registration(
-            &id,
-            "agent_register_unsupported_channel_isolation: engine upgrade required".to_string(),
-            pending,
-        );
+    for (id, reason) in incompatible {
+        fail_agent_registration(&id, reason, pending);
     }
 }
 
@@ -4778,6 +4788,7 @@ mod tests {
                 "isolated".to_string(),
                 PendingAgentRegistration {
                     isolates_channels: true,
+                    has_metadata: false,
                     name: "isolated".to_string(),
                     reply: isolated_tx,
                     created_at: Instant::now(),
@@ -4787,6 +4798,7 @@ mod tests {
                 "legacy".to_string(),
                 PendingAgentRegistration {
                     isolates_channels: false,
+                    has_metadata: false,
                     name: "legacy".to_string(),
                     reply: legacy_tx,
                     created_at: Instant::now(),
@@ -4826,6 +4838,73 @@ mod tests {
         assert!(
             matches!(isolated_rx.try_recv(), Ok(Err(reason)) if reason.starts_with("agent_register_unsupported_channel_isolation"))
         );
+        assert_eq!(pending.len(), 1);
+    }
+
+    #[tokio::test]
+    async fn uncorrelated_strict_schema_error_identifies_metadata_compatibility() {
+        let (metadata_tx, mut metadata_rx) = oneshot::channel();
+        let (legacy_tx, mut legacy_rx) = oneshot::channel();
+        let mut pending = HashMap::from([
+            (
+                "metadata".to_string(),
+                PendingAgentRegistration {
+                    isolates_channels: false,
+                    has_metadata: true,
+                    name: "metadata".to_string(),
+                    reply: metadata_tx,
+                    created_at: Instant::now(),
+                },
+            ),
+            (
+                "legacy".to_string(),
+                PendingAgentRegistration {
+                    isolates_channels: false,
+                    has_metadata: false,
+                    name: "legacy".to_string(),
+                    reply: legacy_tx,
+                    created_at: Instant::now(),
+                },
+            ),
+        ]);
+        let (events, _) = mpsc::channel(1);
+        let mut deregistrations = HashMap::new();
+        let mut sink = futures_util::sink::drain();
+        let error = json!({
+            "v": 1,
+            "type": "error",
+            "ok": false,
+            "id": "fresh-engine-id",
+            "code": "invalid_message",
+            "message": json!([{
+                "code": "unrecognized_keys",
+                "path": [],
+                "keys": ["metadata"]
+            }]).to_string()
+        });
+
+        assert!(
+            handle_server_message(
+                Message::Text(error.to_string()),
+                &events,
+                &mut pending,
+                &mut deregistrations,
+                &mut ApplicationLiveness::new(Duration::from_secs(1)),
+                "node-test",
+                &mut sink,
+                None,
+                None,
+            )
+            .await
+        );
+        assert!(matches!(
+            metadata_rx.try_recv(),
+            Ok(Err(reason)) if reason.starts_with("agent_register_unsupported_metadata")
+        ));
+        assert!(matches!(
+            legacy_rx.try_recv(),
+            Err(oneshot::error::TryRecvError::Empty)
+        ));
         assert_eq!(pending.len(), 1);
     }
 
@@ -5054,6 +5133,7 @@ mod tests {
             "agent_register_1".to_string(),
             PendingAgentRegistration {
                 isolates_channels: false,
+                has_metadata: false,
                 name: "agent-a".to_string(),
                 reply: reply_tx,
                 created_at,
@@ -5085,6 +5165,7 @@ mod tests {
             "agent_register_req".to_string(),
             PendingAgentRegistration {
                 isolates_channels: false,
+                has_metadata: false,
                 name: "agent-a".to_string(),
                 reply: reply_tx,
                 created_at: Instant::now(),
@@ -5129,6 +5210,7 @@ mod tests {
             "agent_register_req".to_string(),
             PendingAgentRegistration {
                 isolates_channels: false,
+                has_metadata: false,
                 name: "agent-a".to_string(),
                 reply: reply_tx,
                 created_at: Instant::now(),
@@ -5304,6 +5386,7 @@ mod tests {
                     input: json!({"suite": "unit"}),
                     agent_id: None,
                     agent_name: None,
+                    caller_owner: None,
                 }))
                 .unwrap(),
             ))
@@ -5717,6 +5800,7 @@ mod tests {
                     invocation_id: Some("inv-1".to_string()),
                     session_ref: Some("session-1".to_string()),
                     resumable: Some(true),
+                    metadata: None,
                 },
                 reply: reply_tx,
             })
@@ -6113,6 +6197,7 @@ mod tests {
                     invocation_id: Some("inv-1".to_string()),
                     session_ref: None,
                     resumable: None,
+                    metadata: None,
                 },
                 reply: reply_tx,
             })

@@ -25,6 +25,11 @@ function jsonResponse(body: unknown, init: ResponseInit = {}): Response {
 }
 
 const REGISTER_URL = 'https://agentrelay.com/api/v1/fleet/register';
+const OWNER_METADATA = {
+  cloud_user_id: 'user-1',
+  cloud_workspace_id: '50587328-441d-4acb-b8f3-dbe1b3c5de99',
+  owner_hash: 'c6c289e49e9c05b2145860387b73bcb18df43fb09a1e4a4a9713c76c88bb541b',
+};
 
 describe('enrollFleetNode', () => {
   it('exchanges a one-time token for node credentials', async () => {
@@ -36,6 +41,7 @@ describe('enrollFleetNode', () => {
         relayWorkspaceId: 'rw_123',
         relaycastUrl: 'https://relaycast.example.com/',
         websocketUrl: 'https://relaycast.example.com//v1/node/ws',
+        ownerMetadata: { ...OWNER_METADATA, email: 'must-not-propagate@example.com' },
       })
     );
 
@@ -69,7 +75,32 @@ describe('enrollFleetNode', () => {
       nodeToken: 'nt_secret',
       relayWorkspaceId: 'rw_123',
       relaycastUrl: 'https://relaycast.example.com',
+      ownerMetadata: OWNER_METADATA,
     });
+  });
+
+  it('rejects partial or forged owner metadata from the enrollment service', async () => {
+    const credentials = {
+      nodeId: 'node_abc',
+      nodeName: 'n',
+      nodeToken: 'nt_secret',
+      relayWorkspaceId: 'rw_123',
+      relaycastUrl: 'https://relaycast.example.com',
+    };
+    for (const ownerMetadata of [
+      { cloud_user_id: 'user-1' },
+      { ...OWNER_METADATA, owner_hash: '0'.repeat(64) },
+      { ...OWNER_METADATA, cloud_user_id: 'user 1' },
+    ]) {
+      const fetchImpl = vi.fn(async () => jsonResponse({ ...credentials, ownerMetadata }));
+      await expect(
+        enrollFleetNode({
+          enrollmentToken: 'ocl_node_enr_xyz',
+          enrollmentUrl: REGISTER_URL,
+          fetchImpl: fetchImpl as unknown as typeof fetch,
+        })
+      ).rejects.toThrow(/owner identity/i);
+    }
   });
 
   it('derives the websocket url when the response omits it', async () => {
@@ -211,6 +242,7 @@ describe('fleet node enrollment store', () => {
       relayWorkspaceId: 'rw_1',
       relaycastUrl: 'https://relaycast.example.com',
       websocketUrl: 'https://relaycast.example.com/v1/node/ws',
+      ownerMetadata: OWNER_METADATA,
       enrolledAt: '2026-07-03T00:00:00.000Z',
       ...overrides,
     };

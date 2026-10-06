@@ -38,6 +38,11 @@ const enrollmentRecord = {
   relayWorkspaceId: 'rw_123',
   relaycastUrl: 'https://relaycast.example.com',
   websocketUrl: 'https://relaycast.example.com/v1/node/ws',
+  ownerMetadata: {
+    cloud_user_id: 'user-1',
+    cloud_workspace_id: '50587328-441d-4acb-b8f3-dbe1b3c5de99',
+    owner_hash: 'c6c289e49e9c05b2145860387b73bcb18df43fb09a1e4a4a9713c76c88bb541b',
+  },
   enrolledAt: '2026-07-03T00:00:00.000Z',
 };
 
@@ -225,6 +230,9 @@ describe('registerNodeCommands', () => {
     expect(env.RELAY_NODE_TOKEN).toBe('nt_secret');
     expect(env.RELAY_NODE_ID).toBe('node_abc');
     expect(env.AGENT_RELAY_ENROLLED_NODE_ID).toBe('node_abc');
+    expect(JSON.parse(String(env.AGENT_RELAY_ENROLLED_OWNER_METADATA))).toEqual(
+      enrollmentRecord.ownerMetadata
+    );
     expect(env.RELAY_BASE_URL).toBe('https://relaycast.example.com');
     expect(brokerMocks.runUpCommand).toHaveBeenCalledWith(
       expect.objectContaining({ discoverConfig: true, nodeName: 'kjglaptop' }),
@@ -232,6 +240,21 @@ describe('registerNodeCommands', () => {
     );
     expect(log.mock.calls.flat().join('\n')).toContain('kjglaptop');
     expect(log.mock.calls.flat().join('\n')).toContain('rw_123');
+  });
+
+  it('clears stale owner metadata when a legacy enrollment has no trusted principal', async () => {
+    const { ownerMetadata: _ownerMetadata, ...legacyEnrollment } = enrollmentRecord;
+    const resolveEnrollment = vi.fn(
+      () => legacyEnrollment
+    ) as unknown as NodeCommandDependencies['resolveEnrollment'];
+    const { program, env } = createNodeHarness({
+      env: { AGENT_RELAY_ENROLLED_OWNER_METADATA: JSON.stringify(enrollmentRecord.ownerMetadata) },
+      resolveEnrollment,
+    });
+
+    await program.parseAsync(['node', 'up'], { from: 'user' });
+
+    expect(env.AGENT_RELAY_ENROLLED_OWNER_METADATA).toBeUndefined();
   });
 
   it('preserves the enrolled identity when background startup re-execs the CLI', async () => {

@@ -245,6 +245,12 @@ pub(crate) async fn run_init(cmd: InitCommand, telemetry: TelemetryClient) -> Re
     let self_names = default_workspace.self_names.clone();
     let ws_control_tx = default_workspace.ws_control_tx.clone();
     let relaycast_http = default_workspace.http_client.clone();
+    let fleet_owner_identity = crate::fleet_wire::AgentOwnerMetadata::from_enrollment_env(
+        std::env::var(crate::fleet_wire::OWNER_METADATA_ENV)
+            .ok()
+            .as_deref(),
+    )
+    .map_err(anyhow::Error::msg)?;
     let (hosted_agent_event_tx, hosted_agent_event_rx) = mpsc::channel::<HostedAgentEvent>(10_000);
     let hosted_event_client = relaycast_http.clone();
     let hosted_event_clients = workspaces
@@ -804,6 +810,7 @@ pub(crate) async fn run_init(cmd: InitCommand, telemetry: TelemetryClient) -> Re
         self_names,
         ws_control_tx,
         relaycast_http,
+        fleet_owner_identity,
         hosted_agent_event_tx,
         pty_observability: HashMap::new(),
         api_rx,
@@ -832,6 +839,7 @@ pub(crate) async fn run_init(cmd: InitCommand, telemetry: TelemetryClient) -> Re
         // field); 0 means unlimited, matching the register manifest.
         fleet_max_agents: node_max_agents().unwrap_or(0),
         fleet_inventory: HashMap::new(),
+        fleet_worker_owners: HashMap::new(),
         fleet_inventory_reconcile_retry_after: HashMap::new(),
         sdk_out_tx,
         worker_event_rx,
