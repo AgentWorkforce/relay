@@ -23,6 +23,17 @@ PTY auto-responders for Devin. Trust and tool approvals require an operator in
 an attached terminal. Authenticate and trust the intended worktree before
 unattended spawning. Trust is scoped to that directory.
 
+During broker-managed PTY startup, a recognised directory-trust prompt blocks
+readiness and task injection. If still present 30 seconds after first detection,
+the worker reports `directory_trust_required` with instructions to trust the
+explicit spawn working directory. Verified fleet spawns return
+`spawn_directory_trust_required` and release the worker through spawn cleanup.
+An unverified (`confirm: false`) spawn reports the worker error but does not reap
+the harness; stop it explicitly or attach to resolve trust. Already-trusted
+installations retain the existing startup path. Relay does not yet answer this
+menu automatically: that requires captured evidence of Devin's actual menu and
+trust scope.
+
 Readiness requires the live idle `❭ Ask Devin to build features, fix bugs, or
 work on your code` composer at the cursor. Trust choices, busy composers and
 output byte counts do not establish readiness. Messages remain queued while

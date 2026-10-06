@@ -157,6 +157,14 @@ pub(super) struct PendingVerifiedSpawn {
 }
 
 impl PendingVerifiedSpawn {
+    pub(super) fn directory_trust_failed(&mut self, generation: Uuid) {
+        if self.generation == generation {
+            self.deadline = Instant::now();
+            // Fixed remediation only: never propagate private terminal output.
+            self.failure_reason = Some("spawn_directory_trust_required: Devin requires directory trust; run `devin` in the explicit spawn working directory on the selected node, trust that directory, then retry".into());
+        }
+    }
+
     pub(super) fn provider_auth_failed(&mut self, generation: Uuid) {
         if self.generation == generation {
             self.deadline = Instant::now();

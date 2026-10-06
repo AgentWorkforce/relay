@@ -9354,6 +9354,71 @@ async fn muse_provider_auth_error_expires_verified_spawn_and_releases_capacity()
 }
 
 #[tokio::test]
+async fn devin_directory_trust_error_expires_verified_spawn_and_releases_capacity() {
+    let name = WorkerName::from("devin-trust-test");
+    let workers = make_worker_registry_with_worker(name.as_str()).await;
+    let generation = workers.workers.get(&name).unwrap().generation;
+    let mut fixture = worker_event_runtime_fixture(workers, HashMap::new());
+    fixture.runtime.pending_verified_spawns.insert(
+        name.clone(),
+        super::fleet::PendingVerifiedSpawn {
+            invocation_id: "auth-invocation".into(),
+            deadline: Instant::now() + Duration::from_secs(90),
+            started: Instant::now(),
+            generation,
+            failure_reason: None,
+        },
+    );
+    for event_generation in [Uuid::new_v4(), generation] {
+        fixture.runtime.handle_worker_event(WorkerEvent::Message {
+            name: name.clone(), generation: event_generation,
+            value: json!({"type":"worker_error", "payload":{"code":"directory_trust_required", "message":"private-directory-path"}}),
+        }).await;
+        let pending = fixture.runtime.pending_verified_spawns.get(&name).unwrap();
+        if event_generation != generation {
+            assert!(pending.failure_reason.is_none());
+            assert!(pending.deadline > Instant::now());
+        } else {
+            assert!(pending
+                .failure_reason
+                .as_deref()
+                .unwrap()
+                .contains("directory_trust_required"));
+            assert!(!pending
+                .failure_reason
+                .as_deref()
+                .unwrap()
+                .contains("private-directory-path"));
+            assert!(pending.deadline <= Instant::now());
+        }
+    }
+    fixture
+        .runtime
+        .handle_worker_event(WorkerEvent::Message {
+            name: name.clone(),
+            generation,
+            value: json!({"type":"worker_ready", "payload":{"readiness_proven":true}}),
+        })
+        .await;
+    assert!(fixture.runtime.pending_verified_spawns.contains_key(&name));
+    fixture.runtime.handle_maintenance_tick().await;
+    assert!(!fixture.runtime.pending_verified_spawns.contains_key(&name));
+    assert!(!fixture.runtime.workers.has_worker(&name));
+    let mut found = false;
+    while let Ok(command) = fixture.fleet_control_rx.try_recv() {
+        if let FleetControlCommand::Send(BrokerToRelaycast::ActionResult(result)) = command {
+            assert!(match &result.result {
+                crate::fleet_wire::ActionResultPayload::Error(error) => error.error.as_str(),
+                _ => panic!("expected fleet error: {result:?}"),
+            }
+            .contains("directory_trust_required"));
+            found = true;
+        }
+    }
+    assert!(found, "maintenance must return the specific fleet failure");
+}
+
+#[tokio::test]
 async fn muse_fleet_missing_auth_fails_before_registration_and_dedup() {
     let temp = tempfile::tempdir().unwrap();
     let worker_auth = temp.path().join("worker-auth.json");

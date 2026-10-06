@@ -139,7 +139,11 @@ describe('fleet spawn confirmation is observable from the requester (#1430)', ()
   // MUST-FIRE — a node that reports its failure honestly still surfaced as
   // success before this change, because nothing read the action result. The
   // broker's detail (startup exit status and worker log path) must survive.
-  it.each(['spawn_failed: provider_auth_required', 'spawn_provider_auth_required'])(
+  it.each([
+    'spawn_failed: provider_auth_required',
+    'spawn_provider_auth_required',
+    'spawn_directory_trust_required',
+  ])(
     'preserves %s from the node',
     async (reason) => {
       const { client } = createClient(async (name, id) => ({

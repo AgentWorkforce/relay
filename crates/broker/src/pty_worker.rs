@@ -38,12 +38,13 @@ use crate::broker::{
 };
 use crate::cli::command_parse::parse_cli_command;
 use crate::cli::PtyCommand;
-use crate::readiness::{detect_cli_ready, is_muse_cli, GridReadinessSnapshot};
+use crate::readiness::{detect_cli_ready, is_devin_cli, is_muse_cli, GridReadinessSnapshot};
 use crate::runtime::{get_terminal_size, send_frame};
 use crate::snapshot::Snapshot;
 use crate::util::ansi::{floor_char_boundary, strip_ansi, AnsiStripper};
 use crate::util::terminal::{
-    detect_claude_trust_prompt, detect_codex_trust_prompt, detect_muse_device_auth_prompt,
+    detect_claude_trust_prompt, detect_codex_trust_prompt, detect_devin_trust_prompt,
+    detect_muse_device_auth_prompt,
 };
 use crate::util::utf8_stream::Utf8StreamDecoder;
 use crate::worker::detection::ActivityDetector;
@@ -510,6 +511,8 @@ struct StartupReadinessState {
     fallback_sent: bool,
     wait_warned: bool,
     auth_error_sent: bool,
+    trust_first_seen: Option<Instant>,
+    trust_error_sent: bool,
 }
 
 fn append_bounded(buf: &mut String, text: &str, max: usize, keep: usize) {
@@ -584,7 +587,8 @@ fn evaluate_startup_gate(
         "codex" | "codex.exe"
     );
     let trust_blocked = detect_codex_trust_prompt(grid.screen)
-        || detect_claude_trust_prompt(grid.screen) == (true, true);
+        || detect_claude_trust_prompt(grid.screen) == (true, true)
+        || (is_devin_cli(resolved_cli) && detect_devin_trust_prompt(grid.screen));
     let composer_ready = is_codex && codex_composer_ready(grid);
     tracing::debug!(target: "relay_broker::startup_gate",
         cli = resolved_cli, is_codex, composer_ready, trust_blocked,
@@ -602,7 +606,7 @@ fn evaluate_startup_gate(
 
 /// The startup gate's verdict.
 ///
-/// Three states, not two booleans: `Ready && Blocked` is not representable,
+/// Explicit verdicts rather than booleans: `Ready && Blocked` is not representable,
 /// and the difference between "we could not recognise the prompt" and "the
 /// harness is deliberately refusing work" decides whether the deadline may
 /// release queued work at all.
@@ -621,14 +625,20 @@ pub(crate) enum StartupGate {
     /// node will ever answer a device prompt, so the worker reports
     /// `provider_auth_required` rather than waiting out the deadline.
     ProviderAuthRequired,
+    /// Devin requires directory trust. Block immediately and report a terminal
+    /// spawn error if the screen persists for DIRECTORY_TRUST_TIMEOUT.
+    DirectoryTrustRequired,
 }
 
 impl StartupGate {
     /// Whether the harness is deliberately refusing input, as opposed to
     /// showing a prompt we failed to recognise. No deadline may release
-    /// queued work past either blocking verdict.
+    /// queued work past any blocking verdict.
     fn is_blocking(self) -> bool {
-        matches!(self, Self::Blocked | Self::ProviderAuthRequired)
+        matches!(
+            self,
+            Self::Blocked | Self::ProviderAuthRequired | Self::DirectoryTrustRequired
+        )
     }
 }
 
@@ -646,6 +656,9 @@ impl StartupGate {
 /// on that screen; this names it as deliberate so the deadline cannot
 /// release the brief into a login form.
 fn startup_gate_block_reason(resolved_cli: &str, screen: &str) -> Option<StartupGate> {
+    if is_devin_cli(resolved_cli) && detect_devin_trust_prompt(screen) {
+        return Some(StartupGate::DirectoryTrustRequired);
+    }
     if is_muse_cli(resolved_cli) && detect_muse_device_auth_prompt(screen) {
         return Some(StartupGate::ProviderAuthRequired);
     }
@@ -797,6 +810,8 @@ fn should_block_pending_injection(
         && pending.queued_at.elapsed() < AUTO_SUGGESTION_BLOCK_TIMEOUT
 }
 
+const DIRECTORY_TRUST_TIMEOUT: Duration = Duration::from_secs(30);
+
 #[allow(clippy::too_many_arguments)]
 async fn try_emit_worker_ready(
     out_tx: &mpsc::Sender<ProtocolEnvelope<Value>>,
@@ -810,8 +825,31 @@ async fn try_emit_worker_ready(
     // init_received_at is Some only after init_worker has been received.
     // We use it (not init_request_id) as the gate because the broker sends
     // init_worker without a request_id.
-    if readiness.ready_sent || init_received_at.is_none() {
+    if readiness.ready_sent || readiness.trust_error_sent || init_received_at.is_none() {
         return;
+    }
+
+    // Anchor the deadline on the gate's own detector, not a parsed menu row or
+    // response attempt. The 200 ms verification tick drives this even when the
+    // child stops producing output. Blocking suppresses the generic fail-open.
+    if gate == StartupGate::DirectoryTrustRequired && !readiness.fallback_sent {
+        let first_seen = readiness.trust_first_seen.get_or_insert_with(Instant::now);
+        if first_seen.elapsed() >= DIRECTORY_TRUST_TIMEOUT {
+            readiness.trust_error_sent = true;
+            tracing::warn!(target: "agent_relay::worker::pty", worker = %worker_name,
+                "Devin directory trust is unresolved; reporting directory_trust_required");
+            let _ = send_frame(
+                out_tx,
+                "worker_error",
+                None,
+                json!({
+                    "code": "directory_trust_required",
+                    "message": "Devin requires directory trust; run `devin` in the explicit spawn working directory on this node, trust that directory, then retry",
+                    "retryable": false
+                }),
+            ).await;
+            return;
+        }
     }
 
     let startup_ready = gate == StartupGate::Ready;
@@ -3336,6 +3374,135 @@ mod tests {
             rx.try_recv().is_err(),
             "no worker_ready frame may escape a provider login, and the error is reported once"
         );
+    }
+
+    #[test]
+    fn devin_trust_gate_is_scoped_to_devin_and_vetoes_composer() {
+        let screen = "Do you trust the authors of this directory?\n❭ 1 Yes, trust\n2 No, exit";
+        for cli in ["devin", "/usr/local/bin/devin", "devin.exe"] {
+            assert_eq!(
+                startup_gate_block_reason(cli, screen),
+                Some(StartupGate::DirectoryTrustRequired)
+            );
+            assert!(!evaluate_startup_gate(
+                cli,
+                screen,
+                1000,
+                Duration::from_secs(90),
+                GridReadinessSnapshot {
+                    screen,
+                    cursor: Some((2, 1))
+                }
+            ));
+        }
+        for cli in ["claude", "codex", "muse"] {
+            assert_eq!(startup_gate_block_reason(cli, screen), None);
+        }
+        assert_eq!(
+            startup_gate_block_reason(
+                "devin",
+                "Sign in to continue\nVisit https://www.facebook.com/device\n›"
+            ),
+            None
+        );
+    }
+
+    #[tokio::test]
+    async fn devin_trust_deadline_starts_at_detection_and_fails_once() {
+        let (tx, mut rx) = mpsc::channel(4);
+        let mut request_id = None;
+        let started = Instant::now() - STARTUP_READY_TIMEOUT - Duration::from_secs(60);
+        let mut readiness = StartupReadinessState::default();
+        try_emit_worker_ready(
+            &tx,
+            "devin-trust",
+            Some(42),
+            &mut request_id,
+            Some(started),
+            &mut readiness,
+            StartupGate::DirectoryTrustRequired,
+        )
+        .await;
+        assert!(readiness.trust_first_seen.is_some());
+        assert!(
+            rx.try_recv().is_err(),
+            "init age must not advance the trust deadline"
+        );
+        readiness.trust_first_seen = Some(Instant::now() - DIRECTORY_TRUST_TIMEOUT);
+        for gate in [
+            StartupGate::DirectoryTrustRequired,
+            StartupGate::DirectoryTrustRequired,
+            StartupGate::Unrecognised,
+            StartupGate::Ready,
+        ] {
+            try_emit_worker_ready(
+                &tx,
+                "devin-trust",
+                Some(42),
+                &mut request_id,
+                Some(started),
+                &mut readiness,
+                gate,
+            )
+            .await;
+        }
+        let frame = rx.try_recv().expect("trust error");
+        assert_eq!(frame.msg_type, "worker_error");
+        assert_eq!(frame.payload["code"], "directory_trust_required");
+        assert_eq!(frame.payload["retryable"], false);
+        assert!(
+            rx.try_recv().is_err(),
+            "terminal error cannot become ready later"
+        );
+        assert!(!readiness.ready_sent && !readiness.fallback_sent);
+    }
+
+    #[tokio::test]
+    async fn devin_trust_cannot_retroactively_fail_released_workers() {
+        for proven in [true, false] {
+            let (tx, mut rx) = mpsc::channel(4);
+            let mut request_id = None;
+            let mut readiness = StartupReadinessState {
+                ready_sent: proven,
+                fallback_sent: !proven,
+                trust_first_seen: Some(Instant::now() - DIRECTORY_TRUST_TIMEOUT),
+                ..Default::default()
+            };
+            try_emit_worker_ready(
+                &tx,
+                "devin-trust",
+                Some(42),
+                &mut request_id,
+                Some(Instant::now()),
+                &mut readiness,
+                StartupGate::DirectoryTrustRequired,
+            )
+            .await;
+            assert!(rx.try_recv().is_err());
+        }
+    }
+
+    #[tokio::test]
+    async fn devin_trust_cleared_before_deadline_allows_readiness() {
+        let (tx, mut rx) = mpsc::channel(4);
+        let mut request_id = None;
+        let mut readiness = StartupReadinessState::default();
+        for gate in [StartupGate::DirectoryTrustRequired, StartupGate::Ready] {
+            try_emit_worker_ready(
+                &tx,
+                "devin-trust",
+                Some(42),
+                &mut request_id,
+                Some(Instant::now()),
+                &mut readiness,
+                gate,
+            )
+            .await;
+        }
+        let frame = rx.try_recv().expect("ready after trust resolved");
+        assert_eq!(frame.msg_type, "worker_ready");
+        assert_eq!(frame.payload["readiness_proven"], true);
+        assert!(rx.try_recv().is_err());
     }
 
     #[test]
