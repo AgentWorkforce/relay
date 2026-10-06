@@ -143,23 +143,20 @@ describe('fleet spawn confirmation is observable from the requester (#1430)', ()
     'spawn_failed: provider_auth_required',
     'spawn_provider_auth_required',
     'spawn_directory_trust_required',
-  ])(
-    'preserves %s from the node',
-    async (reason) => {
-      const { client } = createClient(async (name, id) => ({
-        invocation_id: id,
-        action_name: name,
-        status: 'failed',
-        error: `${reason}: run muse on the selected node to log in`,
-      }));
-      const error = await client.placement
-        .spawn(spawnInput({ confirm: true, confirmTimeoutMs: 60, confirmPollIntervalMs: 10 }))
-        .catch((caught: unknown) => caught);
-      expect(error).toBeInstanceOf(RelayPlacementError);
-      expect((error as RelayPlacementError).code).toBe('spawn_failed');
-      expect((error as Error).message).toContain(reason);
-    }
-  );
+  ])('preserves %s from the node', async (reason) => {
+    const { client } = createClient(async (name, id) => ({
+      invocation_id: id,
+      action_name: name,
+      status: 'failed',
+      error: `${reason}: run muse on the selected node to log in`,
+    }));
+    const error = await client.placement
+      .spawn(spawnInput({ confirm: true, confirmTimeoutMs: 60, confirmPollIntervalMs: 10 }))
+      .catch((caught: unknown) => caught);
+    expect(error).toBeInstanceOf(RelayPlacementError);
+    expect((error as RelayPlacementError).code).toBe('spawn_failed');
+    expect((error as Error).message).toContain(reason);
+  });
 
   it('fails with spawn_failed and preserves the node-reported detail', async () => {
     const { client } = createClient(async (name, invocationId) => ({
