@@ -1,5 +1,31 @@
 use super::*;
 
+/// Run before dedup, registration, or token creation for a remote spawn.
+fn preflight_muse_auth(
+    cli: &str,
+    verify_ready: bool,
+    node: &str,
+    clean_home: Option<&std::path::Path>,
+    lookup: &dyn Fn(&str) -> Option<std::ffi::OsString>,
+) -> Result<()> {
+    if !crate::snippets::is_muse_executable(cli) {
+        return Ok(());
+    }
+    if let crate::snippets::MuseAuthState::Unusable { path, reason } =
+        crate::snippets::muse_auth_state(lookup, clean_home)
+    {
+        let path = path
+            .map(|p| p.display().to_string())
+            .unwrap_or_else(|| "<unresolved>".into());
+        let message = format!("provider_auth_required: muse is not authenticated on node '{node}'; the login at {path} is {reason}. Run `muse` on that node and complete the device login, or set RELAY_MUSE_SHARED_AUTH_PATH to an existing auth.json. Fresh isolated-auth workers require their own login.");
+        if verify_ready {
+            anyhow::bail!(message);
+        }
+        tracing::warn!("{message}");
+    }
+    Ok(())
+}
+
 impl BrokerRuntime {
     /// Drain a workspace-firehose event for the broker runtime.
     ///
@@ -587,6 +613,58 @@ pub(super) async fn spawn_worker_from_request(
     // registration side effects. A remote Fleet cwd cannot be validated by the
     // caller because the path belongs to this node's filesystem.
     let worker_cwd = relaycast_spawn_worker_cwd(ws_value)?;
+    let harness_config = match relaycast_harness_config(ws_value) {
+        Ok(config) => config,
+        Err(error) => {
+            tracing::warn!(
+                worker = %name,
+                error = %error,
+                "rejecting relaycast spawn with invalid harness config"
+            );
+            eprintln!(
+                "[agent-relay] rejecting spawn request for '{}': {}",
+                name, error
+            );
+            return Err(anyhow::anyhow!(error));
+        }
+    };
+    let harness_env = match harness_config.as_ref() {
+        Some(ResolvedHarnessConfig::Pty(config)) => config.env.as_ref(),
+        _ => None,
+    };
+    let effective_cli = match harness_config.as_ref() {
+        Some(ResolvedHarnessConfig::Pty(config)) => config.command.as_str(),
+        _ => cli.as_str(),
+    };
+    let (effective_cli, _) = crate::cli::command_parse::parse_cli_command(effective_cli)?;
+    let normalized_cli = crate::cli::command_parse::normalize_cli_name(&effective_cli);
+    let clean_home = (workers.env_value("AGENT_RELAY_LOCAL_ONLY") != Some("1")).then(|| {
+        crate::snippets::muse_clean_home_dir(
+            std::path::Path::new(
+                worker_cwd
+                    .as_deref()
+                    .or(match harness_config.as_ref() {
+                        Some(ResolvedHarnessConfig::Pty(config)) => config.cwd.as_deref(),
+                        _ => None,
+                    })
+                    .unwrap_or("."),
+            ),
+            &name,
+        )
+    });
+    preflight_muse_auth(
+        &normalized_cli,
+        relaycast_spawn_verifies_ready(ws_value),
+        node_name,
+        clean_home.as_deref(),
+        &|key| {
+            harness_env
+                .and_then(|env| env.get(key))
+                .map(std::ffi::OsString::from)
+                .or_else(|| workers.env_value(key).map(std::ffi::OsString::from))
+                .or_else(|| std::env::var_os(key))
+        },
+    )?;
     let local_spawn_echo_key = relaycast_spawn_control_dedup_key(workspace_id, &name);
     if relaycast_ws_should_apply_local_spawn_echo_dedup(control_dedup_key, &local_spawn_echo_key)
         && !dedup.insert_if_new(&local_spawn_echo_key, Instant::now())
@@ -607,21 +685,6 @@ pub(super) async fn spawn_worker_from_request(
     // started with `--model` (see worker.rs). An empty/blank
     // model is treated as unset.
     let model = model.filter(|value| !value.trim().is_empty());
-    let harness_config = match relaycast_harness_config(ws_value) {
-        Ok(config) => config,
-        Err(error) => {
-            tracing::warn!(
-                worker = %name,
-                error = %error,
-                "rejecting relaycast spawn with invalid harness config"
-            );
-            eprintln!(
-                "[agent-relay] rejecting spawn request for '{}': {}",
-                name, error
-            );
-            return Err(anyhow::anyhow!(error));
-        }
-    };
     let commit_attestation = match relaycast_spawn_commit_attestation(ws_value) {
         Ok(Some(attestation)) => Some(attestation),
         Ok(None) => None,
@@ -1032,6 +1095,21 @@ mod tests {
     use super::*;
     use crate::terminal_control::TerminalToCloud;
     use ::relaycast::WsEvent;
+
+    #[test]
+    fn muse_preflight_only_rejects_verified_muse_spawns() {
+        let temp = tempfile::tempdir().unwrap();
+        let lookup = |key: &str| (key == "HOME").then(|| temp.path().as_os_str().to_owned());
+        assert!(preflight_muse_auth("claude", true, "node", None, &lookup).is_ok());
+        assert!(preflight_muse_auth("muse", false, "node", None, &lookup).is_ok());
+        let error = preflight_muse_auth("muse", true, "node", None, &lookup).unwrap_err();
+        assert!(error.to_string().contains("provider_auth_required"));
+        assert!(error.to_string().contains("missing"));
+        let auth = temp.path().join(".config/muse/auth.json");
+        std::fs::create_dir_all(auth.parent().unwrap()).unwrap();
+        std::fs::write(auth, r#"{"credential":"private-fixture"}"#).unwrap();
+        assert!(preflight_muse_auth("muse", true, "node", None, &lookup).is_ok());
+    }
 
     #[tokio::test]
     async fn http_registration_fallback_does_not_require_a_node_receipt() {

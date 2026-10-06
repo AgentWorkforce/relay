@@ -210,7 +210,7 @@ impl BrokerRuntime {
             .map(|(name, pending)| (name.clone(), pending.invocation_id.clone()))
             .collect();
         for (name, invocation_id) in &expired_verified_spawns {
-            pending_verified_spawns.remove(name);
+            let pending = pending_verified_spawns.remove(name);
             let _ = super::relaycast_events::release_worker_locally(
                 name.clone(),
                 default_workspace,
@@ -234,7 +234,8 @@ impl BrokerRuntime {
             let owned = workers.owned_spawn_generations.get(name).cloned();
             let completion = super::fleet::verified_spawn_failed_result(
                 invocation_id.clone(),
-                "spawn_readiness_timeout: worker released after failing to reach harness readiness",
+                pending.as_ref().and_then(|pending| pending.failure_reason.as_deref()).unwrap_or(
+                    "spawn_readiness_timeout: worker released after failing to reach harness readiness"),
             );
             // This result goes out through identity cleanup or the fleet channel
             // directly rather than `send_fleet_action_result`, so it would
