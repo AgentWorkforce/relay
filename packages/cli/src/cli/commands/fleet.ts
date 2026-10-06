@@ -153,8 +153,10 @@ function scopedSandboxRelayfilePaths(
   requested: readonly string[],
   inferredContentRoot: string | undefined
 ): string[] {
-  if (requested.length > 13) {
-    throw new Error('--sandbox-relayfile-path accepts at most 13 paths.');
+  // Cloud accepts at most 16 mount paths; an explicit list carries no implicit
+  // repository roots, so the full budget is available here.
+  if (requested.length > 16) {
+    throw new Error('--sandbox-relayfile-path accepts at most 16 paths.');
   }
   if (inferredContentRoot !== undefined) {
     const contentAncestor = requested.find((candidate) => {
@@ -600,13 +602,23 @@ export function registerFleetCommands(
         const hasExplicitProjectOverride = Boolean(
           deps.core.env?.AGENT_RELAY_PROJECT?.trim() || process.env.AGENT_RELAY_PROJECT?.trim()
         );
+        // AGENT_RELAY_PROJECT selects the workspace namespace, while static
+        // checkout and live Relayfile source inference remain anchored to
+        // the actual Git tree. This also lets --cwd point at a sibling
+        // checkout when explicitly asked.
+        const repositoryRootHint = hasExplicitProjectOverride ? process.cwd() : coreProjectRoot;
+        // An explicit --sandbox-relayfile-path list only needs the repository
+        // identity for mount scoping and project inference — a clean, pushed
+        // HEAD is re-verified strictly below only when the repository is
+        // actually materialized or checked out.
+        const repositoryIdentityOnly = !checkoutRepository && sandboxRelayfilePaths !== undefined;
         if (checkoutRepository || mountSandboxRelayfile) {
-          // AGENT_RELAY_PROJECT selects the workspace namespace, while static
-          // checkout and live Relayfile source inference remain anchored to
-          // the actual Git tree. This also lets --cwd point at a sibling
-          // checkout when explicitly asked.
-          const repositoryRootHint = hasExplicitProjectOverride ? process.cwd() : coreProjectRoot;
-          sandboxRepository = deps.resolveSandboxRepository(repositoryRootHint, requestedCwd);
+          sandboxRepository = deps.resolveSandboxRepository(
+            repositoryRootHint,
+            requestedCwd,
+            undefined,
+            repositoryIdentityOnly ? 'identity' : 'strict'
+          );
           if (checkoutRepository && !sandboxRepository) {
             throw new Error('--checkout requires a GitHub checkout with a clean, pushed commit.');
           }
@@ -716,7 +728,27 @@ export function registerFleetCommands(
         const mountsInferredRepository =
           inferredRelayfileRoots !== undefined &&
           (sandboxMountPaths?.includes(`${inferredRelayfileRoots.contentRoot}/**`) ?? false);
+        if (
+          localRequestedCwd !== undefined &&
+          inferredRelayfileRoots !== undefined &&
+          !mountsInferredRepository
+        ) {
+          throw new Error(
+            `--cwd ${JSON.stringify(requestedCwd)} resolves inside the inferred repository, but --sandbox-relayfile-path does not mount it; include ${inferredRelayfileRoots.contentRoot}/** or omit --cwd.`
+          );
+        }
         if (sandboxRepository && mountsInferredRepository) {
+          if (repositoryIdentityOnly) {
+            // The scoped mount does include the inferred repository, so the
+            // exact pushed HEAD is required after all — re-resolve strictly.
+            const strictSelection = deps.resolveSandboxRepository(repositoryRootHint, requestedCwd);
+            if (!strictSelection) {
+              throw new Error(
+                'The inferred repository is no longer resolvable; run from its checkout or remove its contents/** path from --sandbox-relayfile-path.'
+              );
+            }
+            sandboxRepository = strictSelection;
+          }
           liveRepository = await deps.materializeCloudRelayfileRepository({
             workspaceId: relayWorkspaceId,
             repository: sandboxRepository.repository,

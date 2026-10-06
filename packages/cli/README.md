@@ -456,7 +456,8 @@ one or more explicit directory roots after `--sandbox-relayfile-path`; the
 supplied list is the complete mount set — nothing else is added. To include the
 inferred repository, list its `contents/**` root explicitly (for example
 `/github/repos/Owner/repo/contents/**`); when the flag is omitted the inferred
-repository, its source metadata, and `.skills` are mounted automatically.
+repository, its source metadata, and `.skills` are mounted automatically. A
+repo-relative `--cwd` requires the repository to stay in the mount list.
 Cloud validates the `/path/**` form and materializes those roots before the
 agent starts:
 
