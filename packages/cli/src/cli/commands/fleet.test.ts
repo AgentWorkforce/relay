@@ -1476,10 +1476,7 @@ describe('fleet command support', () => {
     expect(ensureCloudFleetSandbox).toHaveBeenCalledWith(
       expect.objectContaining({
         mountRelayfile: true,
-        relayfilePaths: [
-          '/github/repos/AgentWorkforce/agent-assistant/contents/**',
-          '/memory/**',
-        ],
+        relayfilePaths: ['/github/repos/AgentWorkforce/agent-assistant/contents/**', '/memory/**'],
       })
     );
     const spawnInput = placement.spawn.mock.calls[0]?.[0]?.input as {
@@ -1590,10 +1587,7 @@ describe('fleet command support', () => {
     expect(ensureCloudFleetSandbox).toHaveBeenCalledWith(
       expect.objectContaining({
         mountRelayfile: true,
-        relayfilePaths: [
-          '/github/repos/AgentWorkforce/cloud/contents/**',
-          '/memory/**',
-        ],
+        relayfilePaths: ['/github/repos/AgentWorkforce/cloud/contents/**', '/memory/**'],
       })
     );
     const spawnInput = placement.spawn.mock.calls[0]?.[0]?.input as { task?: string };
@@ -1604,9 +1598,7 @@ describe('fleet command support', () => {
         }),
       })
     );
-    expect(spawnInput.task).toContain(
-      'AgentWorkforce/cloud is mounted as a live Relayfile working tree'
-    );
+    expect(spawnInput.task).toContain('AgentWorkforce/cloud is mounted as a live Relayfile working tree');
     // The sentinel and skills subtrees were not in the scoped list, so the
     // context must not claim they are mounted.
     expect(spawnInput.task).not.toContain('.relayfile/clone.json');

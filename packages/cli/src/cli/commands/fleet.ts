@@ -1019,9 +1019,7 @@ export function registerFleetCommands(
                     liveRepository,
                     ''
                   )}. Its exact source revision is ${liveRepository.revision}.`,
-                  ...(sandboxMountPaths?.includes(
-                    `${path.posix.dirname(liveRepository.sentinelPath)}/**`
-                  )
+                  ...(sandboxMountPaths?.includes(`${path.posix.dirname(liveRepository.sentinelPath)}/**`)
                     ? [
                         `The same attestation is recorded at ${mountedRelayfilePath(
                           sandbox.relayfileMountPath ?? '/workspace',
