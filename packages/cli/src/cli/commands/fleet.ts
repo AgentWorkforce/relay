@@ -635,8 +635,7 @@ export function registerFleetCommands(
           }
         }
         const localCwdIsHostPath =
-          requestedCwd !== undefined &&
-          !/^\/(?:srv\/agent-workforce|workspace)(?:\/|$)/.test(requestedCwd);
+          requestedCwd !== undefined && !/^\/(?:srv\/agent-workforce|workspace)(?:\/|$)/.test(requestedCwd);
         const localRequestedCwd =
           sandboxRepository && localCwdIsHostPath
             ? path.resolve(process.cwd(), requestedCwd as string)
