@@ -205,6 +205,7 @@ struct WorkerEventRuntimeFixture {
     runtime: BrokerRuntime,
     api_tx: mpsc::Sender<ListenApiRequest>,
     fleet_control_rx: mpsc::Receiver<FleetControlCommand>,
+    fleet_completion_rx: mpsc::UnboundedReceiver<BrokerToRelaycast>,
     _sdk_out_rx: mpsc::Receiver<ProtocolEnvelope<Value>>,
     _temp_dir: tempfile::TempDir,
 }
@@ -623,6 +624,7 @@ fn worker_event_runtime_fixture_with_relay(
     let (api_tx, api_rx) = mpsc::channel(4);
     let (_ws_inbound_tx, ws_inbound_rx) = mpsc::channel(4);
     let (fleet_control_tx, fleet_control_rx) = mpsc::channel(16);
+    let (fleet_completion_tx, fleet_completion_rx) = mpsc::unbounded_channel();
     let (_fleet_event_tx, fleet_event_rx) = mpsc::channel(4);
     let (terminal_control_tx, _terminal_control_rx) = mpsc::channel(4);
     let (terminal_reconnect_tx, _terminal_reconnect_rx) = tokio::sync::watch::channel(None);
@@ -662,6 +664,7 @@ fn worker_event_runtime_fixture_with_relay(
         ws_inbound_rx,
         relaycast_open: true,
         fleet_control_tx,
+        fleet_completion_tx,
         fleet_node_name: "test-node".to_string(),
         node_delivery_token_present: true,
         node_delivery_probe: std::sync::Arc::new(
@@ -715,6 +718,7 @@ fn worker_event_runtime_fixture_with_relay(
         runtime,
         api_tx,
         fleet_control_rx,
+        fleet_completion_rx,
         _sdk_out_rx: sdk_out_rx,
         _temp_dir: temp_dir,
     }
@@ -7399,8 +7403,8 @@ async fn node_owned_identity_create_reconcile_teardown_create_again() {
     .expect("retained cleanup should complete");
     cleanup.assert_hits(1);
     let action_result = loop {
-        if let FleetControlCommand::Send(BrokerToRelaycast::ActionResult(result)) =
-            fixture.fleet_control_rx.recv().await.unwrap()
+        if let BrokerToRelaycast::ActionResult(result) =
+            fixture.fleet_completion_rx.recv().await.unwrap()
         {
             break result;
         }
@@ -7525,8 +7529,8 @@ async fn shutdown_returns_retained_fleet_cleanup_completion() {
         .is_empty());
     let action_result = tokio::time::timeout(Duration::from_secs(2), async {
         loop {
-            if let FleetControlCommand::Send(BrokerToRelaycast::ActionResult(result)) =
-                fixture.fleet_control_rx.recv().await.unwrap()
+            if let BrokerToRelaycast::ActionResult(result) =
+                fixture.fleet_completion_rx.recv().await.unwrap()
             {
                 break result;
             }
@@ -7626,6 +7630,18 @@ async fn shutdown_does_not_block_on_a_full_fleet_queue() {
     assert!(fixture.runtime.workers.identity_cleanups[&name]
         .completions
         .is_empty());
+    let mut retained_fleet_result = None;
+    while let Ok(message) = fixture.fleet_completion_rx.try_recv() {
+        if let BrokerToRelaycast::ActionResult(result) = message {
+            retained_fleet_result = Some(result);
+            break;
+        }
+    }
+    assert_eq!(
+        retained_fleet_result.map(|result| result.invocation_id),
+        Some("inv-shutdown-full-queue".to_string()),
+        "queue pressure must not discard the retained Fleet completion",
+    );
     fixture.runtime.workers.release("unrelated").await.unwrap();
 }
 

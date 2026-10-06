@@ -301,15 +301,16 @@ fn prepare_cleanup_completion(
     }
 }
 
-async fn send_cleanup_completion(
-    fleet_control_tx: &mpsc::Sender<FleetControlCommand>,
+fn send_cleanup_completion(
+    fleet_completion_tx: &mpsc::UnboundedSender<BrokerToRelaycast>,
     completion: CleanupCompletion,
     cleanup_error: Option<String>,
 ) {
     if let Some(message) = prepare_cleanup_completion(completion, cleanup_error) {
-        let _ = fleet_control_tx
-            .send(FleetControlCommand::Send(message))
-            .await;
+        if let Err(error) = fleet_completion_tx.send(message) {
+            tracing::warn!(error = %error,
+                "node-control completion lane closed before retained cleanup result was queued");
+        }
     }
 }
 
@@ -342,15 +343,7 @@ impl BrokerRuntime {
                 "broker shutting down with unconfirmed owned cleanup; reconcile the recorded generation before name reuse");
         }
         for (completion, error) in completions {
-            if let Some(message) = prepare_cleanup_completion(completion, Some(error)) {
-                if let Err(send_error) = self
-                    .fleet_control_tx
-                    .try_send(FleetControlCommand::Send(message))
-                {
-                    tracing::warn!(error = %send_error,
-                        "broker shutdown could not enqueue retained Fleet cleanup result");
-                }
-            }
+            send_cleanup_completion(&self.fleet_completion_tx, completion, Some(error));
         }
     }
 
@@ -442,7 +435,7 @@ impl BrokerRuntime {
             }
             for completion in completions {
                 let cleanup_error = result.as_ref().err().map(|error| format!("owned identity cleanup unconfirmed for {name} generation {generation}; retry retained: {error}"));
-                send_cleanup_completion(&self.fleet_control_tx, completion, cleanup_error).await;
+                send_cleanup_completion(&self.fleet_completion_tx, completion, cleanup_error);
             }
         }
     }

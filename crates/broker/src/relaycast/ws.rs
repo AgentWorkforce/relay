@@ -1912,11 +1912,23 @@ impl RelaycastHttpClient {
                         .iter()
                         .map(|membership| membership.name.as_str())
                         .collect::<BTreeSet<_>>();
-                    anyhow::ensure!(
-                        actual == expected,
+                    if actual == expected {
+                        return Ok(());
+                    }
+                    if attempt < backoffs_ms.len() {
+                        tracing::warn!(
+                            worker = %name,
+                            agent_id = %expected_agent_id,
+                            attempt = attempt + 1,
+                            expected = ?expected,
+                            actual = ?actual,
+                            "node-registered channel scope is not yet converged; retrying"
+                        );
+                        continue;
+                    }
+                    anyhow::bail!(
                         "worker-token channel scope mismatch for '{name}': expected {expected:?}, got {actual:?}"
                     );
-                    return Ok(());
                 }
                 Ok(Err(RelayError::Api {
                     status: 404,
@@ -3278,7 +3290,48 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn node_registered_channel_scope_mismatch_fails_without_retry() {
+    async fn node_registered_channel_scope_retries_a_lagging_successful_read() {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let base_url = format!("http://{}", listener.local_addr().unwrap());
+        let server = tokio::spawn(async move {
+            for attempt in 0..2 {
+                let (mut stream, _) = listener.accept().await.unwrap();
+                let mut request = [0_u8; 4096];
+                let bytes = stream.read(&mut request).await.unwrap();
+                let request = String::from_utf8_lossy(&request[..bytes]);
+                assert!(request.starts_with("GET /v1/agent "), "{request}");
+                let channels = if attempt == 0 {
+                    r#"[{"id":"ch-general","name":"general","role":"member","joined_at":"2026-10-05T00:00:00Z"}]"#
+                } else {
+                    r#"[{"id":"ch-engineering","name":"engineering","role":"member","joined_at":"2026-10-05T00:00:00Z"}]"#
+                };
+                let body = format!(
+                    r#"{{"ok":true,"data":{{"id":"agent-node-created","workspace_id":"ws-dev","name":"cloud-zero-config","type":"agent","status":"online","persona":null,"metadata":{{}},"channels":{channels}}}}}"#
+                );
+                let response = format!(
+                    "HTTP/1.1 200 OK\r\ncontent-type: application/json\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{body}",
+                    body.len()
+                );
+                stream.write_all(response.as_bytes()).await.unwrap();
+            }
+        });
+        let client = RelaycastHttpClient::new(Some(base_url), "rk_live_test", "broker", "codex");
+
+        client
+            .verify_node_registered_agent_channel_scope_with_backoffs(
+                "cloud-zero-config",
+                "agent-node-created",
+                "at_live_scope_lag",
+                &["engineering".into()],
+                &[0],
+            )
+            .await
+            .expect("a recent channel join may lag one successful identity read");
+        server.await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn node_registered_channel_scope_mismatch_fails_after_bounded_retries() {
         let server = MockServer::start();
         let scope = server.mock(|when, then| {
             when.method(GET)
@@ -3304,13 +3357,13 @@ mod tests {
                 &[0, 0],
             )
             .await
-            .expect_err("a genuine channel-set mismatch must fail closed immediately");
+            .expect_err("a genuine channel-set mismatch must fail closed after bounded retries");
 
         assert!(
             error.to_string().contains("channel scope mismatch"),
             "{error:#}"
         );
-        scope.assert_hits(1);
+        scope.assert_hits(3);
     }
 
     #[tokio::test]

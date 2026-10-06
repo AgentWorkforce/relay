@@ -1906,9 +1906,39 @@ fn handle_disconnected_command(
     DisconnectedCommandOutcome::Handled
 }
 
+async fn recv_control_command(
+    command_rx: &mut mpsc::Receiver<FleetControlCommand>,
+    completion_rx: &mut mpsc::UnboundedReceiver<BrokerToRelaycast>,
+) -> Option<FleetControlCommand> {
+    tokio::select! {
+        // Retained action results are terminal caller outcomes. Prefer them to
+        // ordinary bounded control traffic once they become ready, especially
+        // during broker shutdown when the normal queue may already be full.
+        biased;
+        completion = completion_rx.recv(), if !completion_rx.is_closed() => {
+            completion.map(FleetControlCommand::Send)
+        }
+        command = command_rx.recv() => command,
+    }
+}
+
+#[cfg(test)]
 pub(crate) async fn run_node_control_client(
+    config: FleetControlConfig,
+    command_rx: mpsc::Receiver<FleetControlCommand>,
+    event_tx: mpsc::Sender<FleetControlEvent>,
+) {
+    // Most callers, including focused node-control tests, do not need the
+    // retained-completion lane. Keep the ordinary entry point while production
+    // supplies the dedicated receiver below.
+    let (_completion_tx, completion_rx) = mpsc::unbounded_channel();
+    run_node_control_client_with_completions(config, command_rx, completion_rx, event_tx).await;
+}
+
+pub(crate) async fn run_node_control_client_with_completions(
     mut config: FleetControlConfig,
     mut command_rx: mpsc::Receiver<FleetControlCommand>,
+    mut completion_rx: mpsc::UnboundedReceiver<BrokerToRelaycast>,
     event_tx: mpsc::Sender<FleetControlEvent>,
 ) {
     let mut registration: Option<NodeRegister> = None;
@@ -1927,7 +1957,7 @@ pub(crate) async fn run_node_control_client(
         while registration.is_none() {
             if matches!(
                 handle_disconnected_command(
-                    command_rx.recv().await,
+                    recv_control_command(&mut command_rx, &mut completion_rx).await,
                     &config,
                     &mut registration,
                     &mut load,
@@ -1996,7 +2026,7 @@ pub(crate) async fn run_node_control_client(
                         loop {
                             tokio::select! {
                                 _ = &mut backoff => break,
-                                command = command_rx.recv() => {
+                                command = recv_control_command(&mut command_rx, &mut completion_rx) => {
                                     if matches!(
                                         handle_disconnected_command(
                                             command,
@@ -2022,7 +2052,7 @@ pub(crate) async fn run_node_control_client(
                 // self-recover; wait for a token to arrive via command.
                 if matches!(
                     handle_disconnected_command(
-                        command_rx.recv().await,
+                        recv_control_command(&mut command_rx, &mut completion_rx).await,
                         &config,
                         &mut registration,
                         &mut load,
@@ -2037,9 +2067,10 @@ pub(crate) async fn run_node_control_client(
             }
         }
 
-        let result = run_connected_once(
+        let result = run_connected_once_with_completions(
             &config,
             &mut command_rx,
+            &mut completion_rx,
             &event_tx,
             &mut registration,
             &mut inventory,
@@ -2345,6 +2376,7 @@ async fn register_node_session<S, R>(
     registration: &mut NodeRegister,
     config: &FleetControlConfig,
     command_rx: &mut mpsc::Receiver<FleetControlCommand>,
+    completion_rx: &mut mpsc::UnboundedReceiver<BrokerToRelaycast>,
 ) -> (Option<bool>, Vec<FleetControlCommand>)
 where
     S: Sink<Message> + Unpin,
@@ -2425,7 +2457,7 @@ where
                         _ => {},
                     }
                 }
-                command = command_rx.recv() => {
+                command = recv_control_command(command_rx, completion_rx) => {
                     match command {
                         Some(FleetControlCommand::Shutdown) | None => return None,
                         Some(other) => deferred_commands.push(other),
@@ -2604,9 +2636,35 @@ where
     }
 }
 
+#[cfg(test)]
 async fn run_connected_once(
     config: &FleetControlConfig,
     command_rx: &mut mpsc::Receiver<FleetControlCommand>,
+    event_tx: &mpsc::Sender<FleetControlEvent>,
+    registration: &mut Option<NodeRegister>,
+    inventory: &mut Vec<InventoryAgent>,
+    load: &mut FleetLoadSnapshot,
+    inventory_refresh_interval: Duration,
+) -> ControlRunResult {
+    let (_completion_tx, mut completion_rx) = mpsc::unbounded_channel();
+    run_connected_once_with_completions(
+        config,
+        command_rx,
+        &mut completion_rx,
+        event_tx,
+        registration,
+        inventory,
+        load,
+        inventory_refresh_interval,
+    )
+    .await
+}
+
+#[allow(clippy::too_many_arguments)]
+async fn run_connected_once_with_completions(
+    config: &FleetControlConfig,
+    command_rx: &mut mpsc::Receiver<FleetControlCommand>,
+    completion_rx: &mut mpsc::UnboundedReceiver<BrokerToRelaycast>,
     event_tx: &mpsc::Sender<FleetControlEvent>,
     registration: &mut Option<NodeRegister>,
     inventory: &mut Vec<InventoryAgent>,
@@ -2715,6 +2773,7 @@ async fn run_connected_once(
         &mut node_register,
         config,
         command_rx,
+        completion_rx,
     )
     .await
     {
@@ -2823,7 +2882,7 @@ async fn run_connected_once(
                     return ControlRunResult::Disconnected { application_ready: application_liveness.ready };
                 }
             }
-            command = command_rx.recv() => {
+            command = recv_control_command(command_rx, completion_rx) => {
                 if let std::ops::ControlFlow::Break(result) = handle_connected_command(
                     command,
                     &mut sink,
@@ -3405,8 +3464,44 @@ mod tests {
 
     use super::*;
     use crate::fleet_wire::{
-        ActionInvoke, ActionResultOutput, DeliveryMode, TerminalReconnectRequested,
+        ActionInvoke, ActionResult, ActionResultError, ActionResultOutput, ActionResultPayload,
+        DeliveryMode, TerminalReconnectRequested,
     };
+
+    #[tokio::test]
+    async fn retained_completion_lane_preempts_a_full_control_queue() {
+        let (command_tx, mut command_rx) = mpsc::channel(1);
+        command_tx
+            .try_send(FleetControlCommand::UpdateInventory(Vec::new()))
+            .unwrap();
+        let (completion_tx, mut completion_rx) = mpsc::unbounded_channel();
+        completion_tx
+            .send(BrokerToRelaycast::ActionResult(ActionResult {
+                v: FLEET_WIRE_VERSION,
+                id: None,
+                invocation_id: "inv-retained".to_string(),
+                result: ActionResultPayload::Error(ActionResultError {
+                    error: "cleanup unconfirmed".to_string(),
+                }),
+                task: None,
+            }))
+            .unwrap();
+
+        let command = recv_control_command(&mut command_rx, &mut completion_rx)
+            .await
+            .expect("the dedicated completion lane should stay readable");
+        assert!(matches!(
+            command,
+            FleetControlCommand::Send(BrokerToRelaycast::ActionResult(ActionResult {
+                invocation_id,
+                ..
+            })) if invocation_id == "inv-retained"
+        ));
+        assert!(matches!(
+            command_rx.try_recv(),
+            Ok(FleetControlCommand::UpdateInventory(inventory)) if inventory.is_empty()
+        ));
+    }
 
     fn seed_authoritative_cursor(
         book: &mut FleetDeliveryBook,
