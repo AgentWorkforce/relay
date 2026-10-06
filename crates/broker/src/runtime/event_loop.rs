@@ -1,6 +1,4 @@
 use super::*;
-use crate::fleet_wire::BrokerToRelaycast;
-
 use futures_util::future::{join, join_all};
 
 /// Current PTY resize owner for a worker under the single-resizer policy.
@@ -213,7 +211,9 @@ pub(crate) struct BrokerRuntime {
     pub(super) fleet_control_tx: mpsc::Sender<FleetControlCommand>,
     /// Retained cleanup completions bypass the bounded control queue so queue
     /// pressure cannot discard the caller's terminal Fleet result at shutdown.
-    pub(super) fleet_completion_tx: mpsc::UnboundedSender<BrokerToRelaycast>,
+    pub(super) fleet_completion_tx:
+        mpsc::UnboundedSender<crate::node_control::RetainedFleetCompletion>,
+    pub(super) fleet_completion_acks: Vec<tokio::sync::oneshot::Receiver<()>>,
     /// This broker's relaycast node name, used to bind agents to the node over
     /// HTTP when the node-control `agent.register` path is unavailable.
     pub(super) fleet_node_name: String,

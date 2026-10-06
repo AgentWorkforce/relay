@@ -373,7 +373,7 @@ pub(crate) async fn run_init(cmd: InitCommand, telemetry: TelemetryClient) -> Re
     });
     let (fleet_control_tx, fleet_control_rx) = mpsc::channel::<FleetControlCommand>(256);
     let (fleet_completion_tx, fleet_completion_rx) =
-        mpsc::unbounded_channel::<crate::fleet_wire::BrokerToRelaycast>();
+        mpsc::unbounded_channel::<crate::node_control::RetainedFleetCompletion>();
     let (fleet_event_tx, fleet_event_rx) = mpsc::channel::<FleetControlEvent>(256);
     // The terminal queue is deliberately bounded. A wedged remote attach must
     // fail its session rather than accumulating unbounded PTY output in the
@@ -812,6 +812,7 @@ pub(crate) async fn run_init(cmd: InitCommand, telemetry: TelemetryClient) -> Re
         relaycast_open: true,
         fleet_control_tx,
         fleet_completion_tx,
+        fleet_completion_acks: Vec::new(),
         fleet_node_name,
         node_delivery_token_present,
         node_delivery_probe,

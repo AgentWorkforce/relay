@@ -302,16 +302,21 @@ fn prepare_cleanup_completion(
 }
 
 fn send_cleanup_completion(
-    fleet_completion_tx: &mpsc::UnboundedSender<BrokerToRelaycast>,
+    fleet_completion_tx: &mpsc::UnboundedSender<crate::node_control::RetainedFleetCompletion>,
     completion: CleanupCompletion,
     cleanup_error: Option<String>,
-) {
+) -> Option<oneshot::Receiver<()>> {
     if let Some(message) = prepare_cleanup_completion(completion, cleanup_error) {
-        if let Err(error) = fleet_completion_tx.send(message) {
-            tracing::warn!(error = %error,
-                "node-control completion lane closed before retained cleanup result was queued");
+        let (delivered, delivery_ack) = oneshot::channel();
+        if let Err(error) = fleet_completion_tx
+            .send(crate::node_control::RetainedFleetCompletion { message, delivered })
+        {
+            tracing::warn!(error = %error, "node-control completion lane closed before retained cleanup result was queued");
+            return None;
         }
+        return Some(delivery_ack);
     }
+    None
 }
 
 impl BrokerRuntime {
@@ -343,7 +348,26 @@ impl BrokerRuntime {
                 "broker shutting down with unconfirmed owned cleanup; reconcile the recorded generation before name reuse");
         }
         for (completion, error) in completions {
-            send_cleanup_completion(&self.fleet_completion_tx, completion, Some(error));
+            if let Some(delivery_ack) =
+                send_cleanup_completion(&self.fleet_completion_tx, completion, Some(error))
+            {
+                self.fleet_completion_acks.push(delivery_ack);
+            }
+        }
+        let pending_delivery_count = self.fleet_completion_acks.len();
+        if pending_delivery_count > 0
+            && timeout(Duration::from_millis(500), async {
+                for delivery_ack in std::mem::take(&mut self.fleet_completion_acks) {
+                    let _ = delivery_ack.await;
+                }
+            })
+            .await
+            .is_err()
+        {
+            tracing::warn!(
+                pending_delivery_count,
+                "timed out waiting for retained Fleet cleanup results to reach the node socket"
+            );
         }
     }
 
@@ -435,7 +459,11 @@ impl BrokerRuntime {
             }
             for completion in completions {
                 let cleanup_error = result.as_ref().err().map(|error| format!("owned identity cleanup unconfirmed for {name} generation {generation}; retry retained: {error}"));
-                send_cleanup_completion(&self.fleet_completion_tx, completion, cleanup_error);
+                if let Some(delivery_ack) =
+                    send_cleanup_completion(&self.fleet_completion_tx, completion, cleanup_error)
+                {
+                    self.fleet_completion_acks.push(delivery_ack);
+                }
             }
         }
     }
