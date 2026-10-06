@@ -5,7 +5,13 @@ All notable changes to Agent Relay will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
+## [Unreleased - Patch]
+
+### Fixed
+
+- `agent-relay fleet spawn --sandbox --sandbox-relayfile-path <path...>` now mounts exactly the listed subtrees — a scoped spawn from inside a large checkout no longer force-mounts the whole repository. The flag accepts up to Cloud's 16-path limit; the inferred repository is materialized and mounted only when its `contents/**` root is in the list (or the flag is omitted, which keeps the repository + `.relayfile` + `.skills` defaults).
+- Scoped `fleet spawn --sandbox` runs that exclude the repository no longer require a clean, pushed checkout — only repository identity is resolved.
+- A repo-relative `--cwd` whose repository is excluded from the scoped mount is now rejected instead of silently starting the worker at the mount root.
 
 ## [13.1.2] - 2026-10-06
 

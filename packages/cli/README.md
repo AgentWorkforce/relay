@@ -451,9 +451,15 @@ through Cloud at spawn time. The key travels in an authenticated POST body,
 never a URL. Nested packages share the repository pin; an existing subproject
 pin or `AGENT_RELAY_PROJECT` remains an explicit workspace override.
 
-Large workspaces can add only the other live subtrees an agent needs. Pass one
-or more explicit directory roots after `--sandbox-relayfile-path`; the inferred
-repository, its source metadata, and `.skills` remain mounted automatically.
+Large workspaces can be scoped to only the live subtrees an agent needs. Pass
+one or more explicit directory roots after `--sandbox-relayfile-path`; the
+supplied list is the complete mount set — nothing else is added. To include the
+inferred repository, list its `contents/**` root explicitly (for example
+`/github/repos/Owner/repo/contents/**`); when the flag is omitted the inferred
+repository, its source metadata, and `.skills` are mounted automatically. When
+the list omits the repository root, the worker starts at the mount root
+(`/workspace`) rather than the repository tree, and a repo-relative `--cwd` is
+rejected.
 Cloud validates the `/path/**` form and materializes those roots before the
 agent starts:
 
