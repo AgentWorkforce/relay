@@ -1915,7 +1915,7 @@ async fn recv_control_command(
         // ordinary bounded control traffic once they become ready, especially
         // during broker shutdown when the normal queue may already be full.
         biased;
-        completion = completion_rx.recv(), if !completion_rx.is_closed() => {
+        completion = completion_rx.recv(), if !(completion_rx.is_closed() && completion_rx.is_empty()) => {
             completion.map(FleetControlCommand::Send)
         }
         command = command_rx.recv() => command,
@@ -1954,10 +1954,13 @@ pub(crate) async fn run_node_control_client_with_completions(
     let mut consecutive_unauthorized: u32 = 0;
 
     loop {
+        // Retained completion frames stay in their unbounded lane until a
+        // node session is registered. Treating them like ordinary commands
+        // here would drop them in `handle_disconnected_command`.
         while registration.is_none() {
             if matches!(
                 handle_disconnected_command(
-                    recv_control_command(&mut command_rx, &mut completion_rx).await,
+                    command_rx.recv().await,
                     &config,
                     &mut registration,
                     &mut load,
@@ -2026,7 +2029,7 @@ pub(crate) async fn run_node_control_client_with_completions(
                         loop {
                             tokio::select! {
                                 _ = &mut backoff => break,
-                                command = recv_control_command(&mut command_rx, &mut completion_rx) => {
+                                command = command_rx.recv() => {
                                     if matches!(
                                         handle_disconnected_command(
                                             command,
@@ -2052,7 +2055,7 @@ pub(crate) async fn run_node_control_client_with_completions(
                 // self-recover; wait for a token to arrive via command.
                 if matches!(
                     handle_disconnected_command(
-                        recv_control_command(&mut command_rx, &mut completion_rx).await,
+                        command_rx.recv().await,
                         &config,
                         &mut registration,
                         &mut load,
@@ -2370,13 +2373,14 @@ impl Drop for ProbeSessionGuard<'_> {
 /// the main loop uses once this gate opens — preserving the ordering an
 /// `UpdateInventory`/`RegisterAgent`/etc. would have had if it had simply
 /// arrived a moment later, after the registration reply.
+/// Retained completion frames deliberately remain queued in their dedicated
+/// receiver during this gate and are consumed only after registration succeeds.
 async fn register_node_session<S, R>(
     sink: &mut S,
     stream: &mut R,
     registration: &mut NodeRegister,
     config: &FleetControlConfig,
     command_rx: &mut mpsc::Receiver<FleetControlCommand>,
-    completion_rx: &mut mpsc::UnboundedReceiver<BrokerToRelaycast>,
 ) -> (Option<bool>, Vec<FleetControlCommand>)
 where
     S: Sink<Message> + Unpin,
@@ -2457,7 +2461,7 @@ where
                         _ => {},
                     }
                 }
-                command = recv_control_command(command_rx, completion_rx) => {
+                command = command_rx.recv() => {
                     match command {
                         Some(FleetControlCommand::Shutdown) | None => return None,
                         Some(other) => deferred_commands.push(other),
@@ -2773,7 +2777,6 @@ async fn run_connected_once_with_completions(
         &mut node_register,
         config,
         command_rx,
-        completion_rx,
     )
     .await
     {
@@ -3500,6 +3503,35 @@ mod tests {
         assert!(matches!(
             command_rx.try_recv(),
             Ok(FleetControlCommand::UpdateInventory(inventory)) if inventory.is_empty()
+        ));
+    }
+
+    #[tokio::test]
+    async fn retained_completion_lane_drains_buffer_after_sender_closes() {
+        let (_command_tx, mut command_rx) = mpsc::channel(1);
+        let (completion_tx, mut completion_rx) = mpsc::unbounded_channel();
+        completion_tx
+            .send(BrokerToRelaycast::ActionResult(ActionResult {
+                v: FLEET_WIRE_VERSION,
+                id: None,
+                invocation_id: "inv-buffered-before-close".to_string(),
+                result: ActionResultPayload::Error(ActionResultError {
+                    error: "cleanup unconfirmed".to_string(),
+                }),
+                task: None,
+            }))
+            .unwrap();
+        drop(completion_tx);
+
+        let command = recv_control_command(&mut command_rx, &mut completion_rx)
+            .await
+            .expect("a buffered completion must remain readable after sender close");
+        assert!(matches!(
+            command,
+            FleetControlCommand::Send(BrokerToRelaycast::ActionResult(ActionResult {
+                invocation_id,
+                ..
+            })) if invocation_id == "inv-buffered-before-close"
         ));
     }
 

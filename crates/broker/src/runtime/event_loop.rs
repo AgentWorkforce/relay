@@ -476,7 +476,7 @@ impl BrokerRuntime {
         }
     }
 
-    async fn shutdown_runtime(mut self) -> Result<()> {
+    pub(super) async fn shutdown_runtime(mut self) -> Result<()> {
         self.drain_identity_cleanups_on_shutdown().await;
         // Save crash insights before shutdown (only in persist mode)
         if self.paths.persist {
@@ -535,8 +535,7 @@ impl BrokerRuntime {
         }
         if let Err(error) = self
             .fleet_control_tx
-            .send(FleetControlCommand::Shutdown)
-            .await
+            .try_send(FleetControlCommand::Shutdown)
         {
             tracing::debug!(error = %error, "failed to send fleet control shutdown signal");
         }
