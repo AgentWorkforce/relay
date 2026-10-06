@@ -634,11 +634,12 @@ export function registerFleetCommands(
                 : undefined;
           }
         }
+        const localCwdIsHostPath =
+          requestedCwd !== undefined &&
+          !/^\/(?:srv\/agent-workforce|workspace)(?:\/|$)/.test(requestedCwd);
         const localRequestedCwd =
-          sandboxRepository &&
-          requestedCwd &&
-          !/^\/(?:srv\/agent-workforce|workspace)(?:\/|$)/.test(requestedCwd)
-            ? path.resolve(process.cwd(), requestedCwd)
+          sandboxRepository && localCwdIsHostPath
+            ? path.resolve(process.cwd(), requestedCwd as string)
             : undefined;
         // With --checkout, `--cwd` selects both the local checkout subdirectory
         // and its Relay project namespace. Resolve an intentional nested pin
@@ -728,13 +729,20 @@ export function registerFleetCommands(
         const mountsInferredRepository =
           inferredRelayfileRoots !== undefined &&
           (sandboxMountPaths?.includes(`${inferredRelayfileRoots.contentRoot}/**`) ?? false);
+        // A local --cwd is only meaningful when it maps into a mounted
+        // repository. With an explicit scoped list it must be rejected whether
+        // the repository was resolved-but-excluded or never resolved at all —
+        // otherwise the host path leaks through verbatim as worker_cwd.
         if (
-          localRequestedCwd !== undefined &&
-          inferredRelayfileRoots !== undefined &&
+          localCwdIsHostPath &&
+          sandboxRelayfilePaths !== undefined &&
+          !checkoutRepository &&
           !mountsInferredRepository
         ) {
           throw new Error(
-            `--cwd ${JSON.stringify(requestedCwd)} resolves inside the inferred repository, but --sandbox-relayfile-path does not mount it; include ${inferredRelayfileRoots.contentRoot}/** or omit --cwd.`
+            inferredRelayfileRoots !== undefined
+              ? `--cwd ${JSON.stringify(requestedCwd)} resolves inside the inferred repository, but --sandbox-relayfile-path does not mount it; include ${inferredRelayfileRoots.contentRoot}/** or omit --cwd.`
+              : `--cwd ${JSON.stringify(requestedCwd)} is a local path and no repository is mounted; use an absolute sandbox path or omit --cwd.`
           );
         }
         if (sandboxRepository && mountsInferredRepository) {
@@ -745,6 +753,11 @@ export function registerFleetCommands(
             if (!strictSelection) {
               throw new Error(
                 'The inferred repository is no longer resolvable; run from its checkout or remove its contents/** path from --sandbox-relayfile-path.'
+              );
+            }
+            if (strictSelection.repository !== sandboxRepository.repository) {
+              throw new Error(
+                'The repository identity changed between mount planning and materialization; retry the spawn.'
               );
             }
             sandboxRepository = strictSelection;
