@@ -133,31 +133,43 @@ function pathContains(parent: string, child: string): boolean {
   );
 }
 
-function liveRelayfileMountPaths(
-  materialization: CloudRelayfileRepositoryMaterialization,
-  requested: readonly string[] | undefined
+function liveRelayfileRepositoryRoots(repository: string): {
+  contentRoot: string;
+  sentinelRoot: string;
+} {
+  // Mirror of expectedRelayfileRepositoryPaths in @agent-relay/cloud; the
+  // materialization response is asserted against the same paths, so the
+  // predicted roots are authoritative even before materialization runs.
+  const [owner, repo] = repository.split('/');
+  const root = `/github/repos/${encodeURIComponent(owner!)}/${encodeURIComponent(repo!)}`;
+  return { contentRoot: `${root}/contents`, sentinelRoot: `${root}/.relayfile` };
+}
+
+function liveRelayfileMountPaths(roots: { contentRoot: string; sentinelRoot: string }): string[] {
+  return [`${roots.contentRoot}/**`, `${roots.sentinelRoot}/**`, '/.skills/**'];
+}
+
+function scopedSandboxRelayfilePaths(
+  requested: readonly string[],
+  inferredContentRoot: string | undefined
 ): string[] {
-  const contentRoot = materialization.contentRoot;
-  const sentinelRoot = path.posix.dirname(materialization.sentinelPath);
-  const requestedPaths = requested ?? [];
-  if (requestedPaths.length > 13) {
-    throw new Error(
-      '--sandbox-relayfile-path accepts at most 13 paths when a live repository, its source metadata, and workspace skills are mounted.'
-    );
+  if (requested.length > 13) {
+    throw new Error('--sandbox-relayfile-path accepts at most 13 paths.');
   }
-  const contentAncestor = requestedPaths.find((candidate) => {
-    const root = candidate
-      .trim()
-      .replace(/\/\*\*$/, '')
-      .replace(/\/$/, '');
-    return contentRoot === root || contentRoot.startsWith(`${root}/`);
-  });
-  if (contentAncestor && contentAncestor.trim() !== `${contentRoot}/**`) {
-    throw new Error(
-      `Relayfile path ${JSON.stringify(contentAncestor)} contains the repository source root; omit it so Relay can mount ${contentRoot}/** as a decoded working tree.`
-    );
+  if (inferredContentRoot !== undefined) {
+    const contentAncestor = requested.find((candidate) => {
+      const normalized = candidate.trim();
+      if (normalized === `${inferredContentRoot}/**`) return false;
+      const root = normalized.replace(/\/\*\*$/, '').replace(/\/$/, '');
+      return inferredContentRoot === root || inferredContentRoot.startsWith(`${root}/`);
+    });
+    if (contentAncestor) {
+      throw new Error(
+        `Relayfile path ${JSON.stringify(contentAncestor)} contains the repository source root; mount ${inferredContentRoot}/** explicitly to include the decoded working tree.`
+      );
+    }
   }
-  return [...new Set([`${contentRoot}/**`, `${sentinelRoot}/**`, '/.skills/**', ...requestedPaths])];
+  return [...new Set(requested)];
 }
 
 function liveRelayfileWorkerCwd(
@@ -578,6 +590,7 @@ export function registerFleetCommands(
       let sandbox: EnsureCloudFleetSandboxResult | undefined;
       let sandboxRepository: SandboxRepositorySelection | undefined;
       let liveRepository: CloudRelayfileRepositoryMaterialization | undefined;
+      let sandboxMountPaths: string[] | undefined;
       let attachProjectRoot: string | undefined;
       let workspaceRelay: ReturnType<FleetCommandDependencies['sdk']['createWorkspaceRelay']> | undefined;
       let relaycastClientOptions = clientOptions;
@@ -686,7 +699,24 @@ export function registerFleetCommands(
         ) {
           throw new Error('--workspace-id does not match the captured workspace identity.');
         }
-        if (!checkoutRepository && mountSandboxRelayfile && sandboxRepository) {
+        const inferredRelayfileRoots =
+          !checkoutRepository && mountSandboxRelayfile && sandboxRepository
+            ? liveRelayfileRepositoryRoots(sandboxRepository.repository)
+            : undefined;
+        // --sandbox-relayfile-path is the complete subtree list: an explicit
+        // selection replaces the inferred repository/skills roots instead of
+        // unioning with them, so a scoped spawn from inside a large checkout
+        // is not forced to mount the whole repository.
+        sandboxMountPaths =
+          sandboxRelayfilePaths === undefined
+            ? inferredRelayfileRoots
+              ? liveRelayfileMountPaths(inferredRelayfileRoots)
+              : undefined
+            : scopedSandboxRelayfilePaths(sandboxRelayfilePaths, inferredRelayfileRoots?.contentRoot);
+        const mountsInferredRepository =
+          inferredRelayfileRoots !== undefined &&
+          (sandboxMountPaths?.includes(`${inferredRelayfileRoots.contentRoot}/**`) ?? false);
+        if (sandboxRepository && mountsInferredRepository) {
           liveRepository = await deps.materializeCloudRelayfileRepository({
             workspaceId: relayWorkspaceId,
             repository: sandboxRepository.repository,
@@ -721,11 +751,7 @@ export function registerFleetCommands(
             requiredCapability: `spawn:${cli}`,
             maxAgents: 1,
             mountRelayfile: mountSandboxRelayfile,
-            ...(liveRepository
-              ? { relayfilePaths: liveRelayfileMountPaths(liveRepository, sandboxRelayfilePaths) }
-              : sandboxRelayfilePaths === undefined
-                ? {}
-                : { relayfilePaths: sandboxRelayfilePaths }),
+            ...(sandboxMountPaths === undefined ? {} : { relayfilePaths: sandboxMountPaths }),
             ...(sandboxId === undefined ? {} : { sandboxId }),
             forceProvision: true,
             ...(sandboxProvider === undefined ? {} : { providerId: sandboxProvider }),
@@ -987,17 +1013,32 @@ export function registerFleetCommands(
           const confirm = options.confirm !== false;
           const liveSandboxContext =
             sandbox?.outcome === 'provisioned' && liveRepository && sandboxRepository
-              ? `Agent Relay sandbox context: ${liveRepository.repository} is mounted as a live Relayfile working tree at ${liveRelayfileWorkerCwd(
-                  sandbox.relayfileMountPath ?? '/workspace',
-                  liveRepository,
-                  ''
-                )}. Its exact source revision is ${liveRepository.revision}; the same attestation is recorded at ${mountedRelayfilePath(
-                  sandbox.relayfileMountPath ?? '/workspace',
-                  liveRepository.sentinelPath
-                )}. Workspace skills are under ${mountedRelayfilePath(
-                  sandbox.relayfileMountPath ?? '/workspace',
-                  '/.skills'
-                )}. The Relayfile daemon synchronizes this tree; it intentionally has no .git directory.`
+              ? [
+                  `Agent Relay sandbox context: ${liveRepository.repository} is mounted as a live Relayfile working tree at ${liveRelayfileWorkerCwd(
+                    sandbox.relayfileMountPath ?? '/workspace',
+                    liveRepository,
+                    ''
+                  )}. Its exact source revision is ${liveRepository.revision}.`,
+                  ...(sandboxMountPaths?.includes(
+                    `${path.posix.dirname(liveRepository.sentinelPath)}/**`
+                  )
+                    ? [
+                        `The same attestation is recorded at ${mountedRelayfilePath(
+                          sandbox.relayfileMountPath ?? '/workspace',
+                          liveRepository.sentinelPath
+                        )}.`,
+                      ]
+                    : []),
+                  ...(sandboxMountPaths?.includes('/.skills/**')
+                    ? [
+                        `Workspace skills are under ${mountedRelayfilePath(
+                          sandbox.relayfileMountPath ?? '/workspace',
+                          '/.skills'
+                        )}.`,
+                      ]
+                    : []),
+                  'The Relayfile daemon synchronizes this tree; it intentionally has no .git directory.',
+                ].join(' ')
               : undefined;
           const invocation = await relay.messaging.placement.spawn({
             capability: `spawn:${cli}`,

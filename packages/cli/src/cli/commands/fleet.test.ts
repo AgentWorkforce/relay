@@ -1341,8 +1341,6 @@ describe('fleet command support', () => {
         '--sandbox',
         '--sandbox-provider',
         'agent37',
-        '--sandbox-relayfile-path',
-        '/memory/**',
         '--name',
         'cloud-live',
         '--task',
@@ -1366,7 +1364,6 @@ describe('fleet command support', () => {
           '/github/repos/AgentWorkforce/cloud/contents/**',
           '/github/repos/AgentWorkforce/cloud/.relayfile/**',
           '/.skills/**',
-          '/memory/**',
         ],
       })
     );
@@ -1387,6 +1384,302 @@ describe('fleet command support', () => {
     expect(spawnInput.task).toContain(revision);
     expect(spawnInput.task).toContain('/workspace/github/repos/AgentWorkforce/cloud/.relayfile/clone.json');
     expect(spawnInput.task).not.toContain('/local/cloud');
+  });
+
+  it('explicit --sandbox-relayfile-path is the complete mount list and does not union the inferred repository', async () => {
+    vi.stubEnv('RELAY_AGENT_TOKEN', undefined);
+    const revision = '0123456789abcdef0123456789abcdef01234567';
+    const repositorySelection = {
+      repository: 'AgentWorkforce/cloud',
+      repositoryName: 'cloud',
+      revision,
+      projectRoot: '/local/cloud',
+      repositoryRelativeCwd: 'packages/web',
+      workerCwd: '/srv/agent-workforce/cloud/packages/web',
+    };
+    const materializeCloudRelayfileRepository = vi.fn();
+    const ensureCloudFleetSandbox = vi.fn(async () => ({
+      outcome: 'provisioned' as const,
+      providerId: 'agent37' as const,
+      cloudWorkspaceId: 'cloud-workspace',
+      nodeId: 'node-scoped',
+      nodeName: 'scoped-node',
+      sandboxId: 'sandbox-scoped',
+      providerSandboxId: 'provider-scoped',
+      relayWorkspaceId: 'rw_abc',
+      relaycastTarget: AGENT37_RELAYCAST_TARGET,
+      relayfileMounted: true,
+      relayfileMountPath: '/workspace',
+    }));
+    const placement = {
+      spawn: vi.fn(async () => ({ invocationId: 'inv_scoped', node: { name: 'scoped-node' } })),
+    };
+    const createWorkspaceRelay = vi.fn(() => ({
+      workspace: {
+        info: vi.fn(async () => ({ id: 'rw_abc' })),
+        register: vi.fn(async () => ({ token: 'at_live_launcher' })),
+        release: vi.fn(async () => ({ released: true, deleted: true })),
+      },
+    }));
+    const program = new Command();
+    program.exitOverride();
+    registerFleetCommands(program, {
+      resolveSandboxRepository: vi.fn(() => repositorySelection),
+      materializeCloudRelayfileRepository,
+      ensureCloudFleetSandbox,
+      sdk: {
+        createAgentRelay: vi.fn(() => ({ messaging: { placement } })) as never,
+        createWorkspaceRelay: createWorkspaceRelay as never,
+        createWorkspace: vi.fn() as never,
+        log: vi.fn(),
+        error: vi.fn(),
+        exit: vi.fn() as never,
+      },
+      resolveWorkspaceSelection: () => ({
+        key: 'rk_live_test',
+        source: 'project',
+        origin: '/local/cloud/.agentworkforce/relay/workspace-key.json',
+        workspaceId: 'rw_abc',
+      }),
+      persistWorkspaceRelaycastTarget: () => true,
+      deleteCloudFleetSandbox: vi.fn(async () => undefined),
+      createFleetWorkspaceClient: vi.fn() as never,
+      log: () => undefined,
+      warn: () => undefined,
+      error: () => undefined,
+    });
+
+    await program.parseAsync(
+      [
+        'fleet',
+        'spawn',
+        'codex',
+        '--sandbox',
+        '--sandbox-provider',
+        'agent37',
+        '--sandbox-relayfile-path',
+        '/github/repos/AgentWorkforce/agent-assistant/contents/**',
+        '/memory/**',
+        '--name',
+        'cloud-scoped',
+        '--task',
+        'Inspect the mounted records',
+        '--workspace-key',
+        'rk_live_test',
+      ],
+      { from: 'user' }
+    );
+
+    // The inferred checkout is not in the scoped list, so it is neither
+    // materialized nor mounted.
+    expect(materializeCloudRelayfileRepository).not.toHaveBeenCalled();
+    expect(ensureCloudFleetSandbox).toHaveBeenCalledWith(
+      expect.objectContaining({
+        mountRelayfile: true,
+        relayfilePaths: [
+          '/github/repos/AgentWorkforce/agent-assistant/contents/**',
+          '/memory/**',
+        ],
+      })
+    );
+    const spawnInput = placement.spawn.mock.calls[0]?.[0]?.input as {
+      task?: string;
+      worker_cwd?: string;
+    };
+    expect(spawnInput.worker_cwd).toBe('/workspace');
+    expect(spawnInput.task).toBe('Inspect the mounted records');
+  });
+
+  it('explicit --sandbox-relayfile-path may pin the inferred repository working tree verbatim', async () => {
+    vi.stubEnv('RELAY_AGENT_TOKEN', undefined);
+    const revision = '0123456789abcdef0123456789abcdef01234567';
+    const repositorySelection = {
+      repository: 'AgentWorkforce/cloud',
+      repositoryName: 'cloud',
+      revision,
+      projectRoot: '/local/cloud',
+      repositoryRelativeCwd: 'packages/web',
+      workerCwd: '/srv/agent-workforce/cloud/packages/web',
+    };
+    const materializeCloudRelayfileRepository = vi.fn(async () => ({
+      cloudWorkspaceId: 'cloud-workspace',
+      repository: 'AgentWorkforce/cloud',
+      revision,
+      filesWritten: 4312,
+      sourceProfile: 'complete-v1' as const,
+      contentRoot: '/github/repos/AgentWorkforce/cloud/contents',
+      sentinelPath: '/github/repos/AgentWorkforce/cloud/.relayfile/clone.json',
+    }));
+    const ensureCloudFleetSandbox = vi.fn(async () => ({
+      outcome: 'provisioned' as const,
+      providerId: 'agent37' as const,
+      cloudWorkspaceId: 'cloud-workspace',
+      nodeId: 'node-scoped-repo',
+      nodeName: 'scoped-repo-node',
+      sandboxId: 'sandbox-scoped-repo',
+      providerSandboxId: 'provider-scoped-repo',
+      relayWorkspaceId: 'rw_abc',
+      relaycastTarget: AGENT37_RELAYCAST_TARGET,
+      relayfileMounted: true,
+      relayfileMountPath: '/workspace',
+    }));
+    const placement = {
+      spawn: vi.fn(async () => ({ invocationId: 'inv_scoped_repo', node: { name: 'scoped-repo-node' } })),
+    };
+    const createWorkspaceRelay = vi.fn(() => ({
+      workspace: {
+        info: vi.fn(async () => ({ id: 'rw_abc' })),
+        register: vi.fn(async () => ({ token: 'at_live_launcher' })),
+        release: vi.fn(async () => ({ released: true, deleted: true })),
+      },
+    }));
+    const program = new Command();
+    program.exitOverride();
+    registerFleetCommands(program, {
+      resolveSandboxRepository: vi.fn(() => repositorySelection),
+      materializeCloudRelayfileRepository,
+      ensureCloudFleetSandbox,
+      sdk: {
+        createAgentRelay: vi.fn(() => ({ messaging: { placement } })) as never,
+        createWorkspaceRelay: createWorkspaceRelay as never,
+        createWorkspace: vi.fn() as never,
+        log: vi.fn(),
+        error: vi.fn(),
+        exit: vi.fn() as never,
+      },
+      resolveWorkspaceSelection: () => ({
+        key: 'rk_live_test',
+        source: 'project',
+        origin: '/local/cloud/.agentworkforce/relay/workspace-key.json',
+        workspaceId: 'rw_abc',
+      }),
+      persistWorkspaceRelaycastTarget: () => true,
+      deleteCloudFleetSandbox: vi.fn(async () => undefined),
+      createFleetWorkspaceClient: vi.fn() as never,
+      log: () => undefined,
+      warn: () => undefined,
+      error: () => undefined,
+    });
+
+    await program.parseAsync(
+      [
+        'fleet',
+        'spawn',
+        'codex',
+        '--sandbox',
+        '--sandbox-provider',
+        'agent37',
+        '--sandbox-relayfile-path',
+        '/github/repos/AgentWorkforce/cloud/contents/**',
+        '/memory/**',
+        '--name',
+        'cloud-scoped-repo',
+        '--task',
+        'Inspect this repository',
+        '--workspace-key',
+        'rk_live_test',
+      ],
+      { from: 'user' }
+    );
+
+    expect(materializeCloudRelayfileRepository).toHaveBeenCalledWith({
+      workspaceId: 'rw_abc',
+      repository: 'AgentWorkforce/cloud',
+      revision,
+    });
+    expect(ensureCloudFleetSandbox).toHaveBeenCalledWith(
+      expect.objectContaining({
+        mountRelayfile: true,
+        relayfilePaths: [
+          '/github/repos/AgentWorkforce/cloud/contents/**',
+          '/memory/**',
+        ],
+      })
+    );
+    const spawnInput = placement.spawn.mock.calls[0]?.[0]?.input as { task?: string };
+    expect(placement.spawn).toHaveBeenCalledWith(
+      expect.objectContaining({
+        input: expect.objectContaining({
+          worker_cwd: '/workspace/github/repos/AgentWorkforce/cloud/contents/packages/web',
+        }),
+      })
+    );
+    expect(spawnInput.task).toContain(
+      'AgentWorkforce/cloud is mounted as a live Relayfile working tree'
+    );
+    // The sentinel and skills subtrees were not in the scoped list, so the
+    // context must not claim they are mounted.
+    expect(spawnInput.task).not.toContain('.relayfile/clone.json');
+    expect(spawnInput.task).not.toContain('/.skills');
+  });
+
+  it('rejects a scoped path that would swallow the inferred repository source root as raw storage', async () => {
+    vi.stubEnv('RELAY_AGENT_TOKEN', undefined);
+    const revision = '0123456789abcdef0123456789abcdef01234567';
+    const materializeCloudRelayfileRepository = vi.fn();
+    const ensureCloudFleetSandbox = vi.fn();
+    const program = new Command();
+    program.exitOverride();
+    registerFleetCommands(program, {
+      resolveSandboxRepository: vi.fn(() => ({
+        repository: 'AgentWorkforce/cloud',
+        repositoryName: 'cloud',
+        revision,
+        projectRoot: '/local/cloud',
+        repositoryRelativeCwd: '',
+        workerCwd: '/srv/agent-workforce/cloud',
+      })),
+      materializeCloudRelayfileRepository,
+      ensureCloudFleetSandbox,
+      sdk: {
+        createAgentRelay: vi.fn() as never,
+        createWorkspaceRelay: vi.fn() as never,
+        createWorkspace: vi.fn() as never,
+        log: vi.fn(),
+        error: vi.fn((message) => {
+          throw new Error(String(message));
+        }),
+        exit: vi.fn((code) => {
+          throw new Error(`CLI exit ${code}`);
+        }) as never,
+      },
+      resolveWorkspaceSelection: () => ({
+        key: 'rk_live_test',
+        source: 'project',
+        origin: '/local/cloud/.agentworkforce/relay/workspace-key.json',
+        workspaceId: 'rw_abc',
+      }),
+      persistWorkspaceRelaycastTarget: () => true,
+      deleteCloudFleetSandbox: vi.fn(async () => undefined),
+      createFleetWorkspaceClient: vi.fn() as never,
+      log: () => undefined,
+      warn: () => undefined,
+      error: () => undefined,
+    });
+
+    await expect(
+      program.parseAsync(
+        [
+          'fleet',
+          'spawn',
+          'codex',
+          '--sandbox',
+          '--sandbox-provider',
+          'agent37',
+          '--sandbox-relayfile-path',
+          '/github/repos/AgentWorkforce/cloud/**',
+          '--name',
+          'cloud-swallow',
+          '--task',
+          'Work',
+          '--workspace-key',
+          'rk_live_test',
+        ],
+        { from: 'user' }
+      )
+    ).rejects.toThrow('contains the repository source root');
+    expect(materializeCloudRelayfileRepository).not.toHaveBeenCalled();
+    expect(ensureCloudFleetSandbox).not.toHaveBeenCalled();
   });
 
   it('rejects an explicit workspace mismatch before live repository materialization', async () => {

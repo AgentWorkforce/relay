@@ -5,7 +5,11 @@ All notable changes to Agent Relay will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
+## [Unreleased - Patch]
+
+### Fixed
+
+- `agent-relay fleet spawn --sandbox --sandbox-relayfile-path <path...>` now treats the supplied list as the complete mount set instead of unioning it with the inferred repository's `contents/**`, `.relayfile/**`, and `.skills/**` roots. A scoped spawn from inside a large checkout no longer force-mounts the whole repository; the repository is only materialized and mounted when its `contents/**` root is in the list, or when the flag is omitted entirely.
 
 ## [13.1.2] - 2026-10-06
 
