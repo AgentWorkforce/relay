@@ -9,7 +9,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
-- `agent-relay fleet spawn --sandbox --sandbox-relayfile-path <path...>` now treats the supplied list as the complete mount set instead of unioning it with the inferred repository's `contents/**`, `.relayfile/**`, and `.skills/**` roots, and accepts up to Cloud's 16-path limit since no implicit roots are added. A scoped spawn from inside a large checkout no longer force-mounts the whole repository; the repository is only materialized and mounted when its `contents/**` root is in the list, or when the flag is omitted entirely. Scoped spawns that exclude the repository also skip the clean/pushed checkout requirement (identity-level inference only), and a repo-relative `--cwd` that can no longer be satisfied is rejected instead of silently starting the worker at the mount root.
+- `agent-relay fleet spawn --sandbox --sandbox-relayfile-path <path...>` now mounts exactly the listed subtrees — a scoped spawn from inside a large checkout no longer force-mounts the whole repository. The flag accepts up to Cloud's 16-path limit; the inferred repository is materialized and mounted only when its `contents/**` root is in the list (or the flag is omitted, which keeps the repository + `.relayfile` + `.skills` defaults).
+- Scoped `fleet spawn --sandbox` runs that exclude the repository no longer require a clean, pushed checkout — only repository identity is resolved.
+- A repo-relative `--cwd` whose repository is excluded from the scoped mount is now rejected instead of silently starting the worker at the mount root.
 
 ## [13.1.2] - 2026-10-06
 

@@ -1484,6 +1484,9 @@ describe('fleet command support', () => {
         relayfilePaths: ['/github/repos/AgentWorkforce/agent-assistant/contents/**', '/memory/**'],
       })
     );
+    const ensureInput = ensureCloudFleetSandbox.mock.calls[0]?.[0] as Record<string, unknown>;
+    expect(ensureInput.repos).toBeUndefined();
+    expect(ensureInput.repoRevisions).toBeUndefined();
     const spawnInput = placement.spawn.mock.calls[0]?.[0]?.input as {
       task?: string;
       worker_cwd?: string;
