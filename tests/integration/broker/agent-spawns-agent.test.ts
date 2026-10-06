@@ -59,7 +59,7 @@ async function testAgentAddSpawn(
   const suffix = uniqueSuffix();
   const childName = `child-${cli}-${suffix}`;
 
-  const apiKey = process.env.RELAY_API_KEY!;
+  const apiKey = harness.getEphemeralWorkspaceKey();
   const relay = new RelayCast({ apiKey });
   console.log(`  Spawning '${childName}' via Relaycast API (agent_add path)...`);
   const spawnResult = await relay.agents.spawn({

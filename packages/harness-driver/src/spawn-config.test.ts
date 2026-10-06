@@ -3,6 +3,55 @@ import { describe, expect, it } from 'vitest';
 import { buildBrokerSpawnConfig } from './spawn-config.js';
 
 describe('buildBrokerSpawnConfig', () => {
+  for (const name of [
+    'RELAY_NODE_ID',
+    'RELAY_NODE_TOKEN',
+    'AGENT_RELAY_ENROLLED_NODE_ID',
+    'RELAY_WORKSPACE_KEY',
+    'AGENT_RELAY_WORKSPACE_KEY',
+    'RELAY_API_KEY',
+  ]) {
+    it(`refuses caller-owned ${name} in an isolated explicit environment`, () => {
+      expect(() =>
+        buildBrokerSpawnConfig(
+          {
+            inheritParentEnv: false,
+            env: { [name]: 'poisoned' },
+          },
+          'br_test',
+          {}
+        )
+      ).toThrow(name);
+    });
+  }
+
+  it('can isolate a child from a poisoned parent environment', () => {
+    const config = buildBrokerSpawnConfig(
+      {
+        cwd: '/tmp/my-project',
+        inheritParentEnv: false,
+        env: {
+          PATH: '/safe/bin',
+        },
+      },
+      'br_test',
+      {
+        RELAY_NODE_ID: 'poisoned-node',
+        RELAY_NODE_TOKEN: 'poisoned-token',
+        AGENT_RELAY_ENROLLED_NODE_ID: 'poisoned-enrollment',
+        RELAY_WORKSPACE_KEY: 'poisoned-workspace',
+        UNRELATED_PARENT_SECRET: 'poisoned-secret',
+      }
+    );
+
+    expect(config.env).toEqual({
+      PATH: '/safe/bin',
+      AGENT_RELAY_STARTUP_DEBUG: '1',
+      RELAY_BROKER_API_KEY: 'br_test',
+      AGENT_RELAY_BROKER_NAME: 'my-project',
+    });
+  });
+
   it('does not promote legacy RELAY_API_KEY into explicit workspace-key argv', () => {
     const config = buildBrokerSpawnConfig(
       {
