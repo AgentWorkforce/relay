@@ -628,6 +628,7 @@ pub(crate) enum FleetControlCommand {
     UpdateLoad(FleetLoadSnapshot),
     HeartbeatNow,
     Send(BrokerToRelaycast),
+    RetainedSend(RetainedFleetCompletion),
     DeregisterAgent {
         request: AgentDeregister,
         reply: oneshot::Sender<Result<(), String>>,
@@ -637,6 +638,12 @@ pub(crate) enum FleetControlCommand {
         reply: oneshot::Sender<Result<AgentRegistrationToken, String>>,
     },
     Shutdown,
+}
+
+#[derive(Debug)]
+pub(crate) struct RetainedFleetCompletion {
+    pub(crate) message: BrokerToRelaycast,
+    pub(crate) delivered: oneshot::Sender<()>,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -1864,6 +1871,7 @@ fn handle_disconnected_command(
     registration: &mut Option<NodeRegister>,
     load: &mut FleetLoadSnapshot,
     inventory: &mut Vec<InventoryAgent>,
+    retained_completion: &mut Option<RetainedFleetCompletion>,
     register_agent_error: &str,
 ) -> DisconnectedCommandOutcome {
     match command {
@@ -1900,15 +1908,52 @@ fn handle_disconnected_command(
                     "dropping fleet frame while disconnected");
             }
         }
+        Some(FleetControlCommand::RetainedSend(completion)) => {
+            *retained_completion = Some(completion);
+        }
         Some(FleetControlCommand::HeartbeatNow) => {}
         Some(FleetControlCommand::Shutdown) | None => return DisconnectedCommandOutcome::Shutdown,
     }
     DisconnectedCommandOutcome::Handled
 }
 
+async fn recv_control_command(
+    command_rx: &mut mpsc::Receiver<FleetControlCommand>,
+    completion_rx: &mut mpsc::UnboundedReceiver<RetainedFleetCompletion>,
+    retained_completion: &mut Option<RetainedFleetCompletion>,
+) -> Option<FleetControlCommand> {
+    if let Some(completion) = retained_completion.take() {
+        return Some(FleetControlCommand::RetainedSend(completion));
+    }
+    tokio::select! {
+        // Retained action results are terminal caller outcomes. Prefer them to
+        // ordinary bounded control traffic once they become ready, especially
+        // during broker shutdown when the normal queue may already be full.
+        biased;
+        completion = completion_rx.recv(), if !(completion_rx.is_closed() && completion_rx.is_empty()) => {
+            completion.map(FleetControlCommand::RetainedSend)
+        }
+        command = command_rx.recv() => command,
+    }
+}
+
+#[cfg(test)]
 pub(crate) async fn run_node_control_client(
+    config: FleetControlConfig,
+    command_rx: mpsc::Receiver<FleetControlCommand>,
+    event_tx: mpsc::Sender<FleetControlEvent>,
+) {
+    // Most callers, including focused node-control tests, do not need the
+    // retained-completion lane. Keep the ordinary entry point while production
+    // supplies the dedicated receiver below.
+    let (_completion_tx, completion_rx) = mpsc::unbounded_channel();
+    run_node_control_client_with_completions(config, command_rx, completion_rx, event_tx).await;
+}
+
+pub(crate) async fn run_node_control_client_with_completions(
     mut config: FleetControlConfig,
     mut command_rx: mpsc::Receiver<FleetControlCommand>,
+    mut completion_rx: mpsc::UnboundedReceiver<RetainedFleetCompletion>,
     event_tx: mpsc::Sender<FleetControlEvent>,
 ) {
     let mut registration: Option<NodeRegister> = None;
@@ -1922,8 +1967,12 @@ pub(crate) async fn run_node_control_client(
     // toward [`MAX_UNAUTHORIZED_BEFORE_GIVING_UP`] even when each mint succeeds,
     // and each retry honors the backoff sleep at the bottom of the loop.
     let mut consecutive_unauthorized: u32 = 0;
+    let mut retained_completion: Option<RetainedFleetCompletion> = None;
 
     loop {
+        // Retained completion frames stay in their unbounded lane until a
+        // node session is registered. Treating them like ordinary commands
+        // here would drop them in `handle_disconnected_command`.
         while registration.is_none() {
             if matches!(
                 handle_disconnected_command(
@@ -1932,6 +1981,7 @@ pub(crate) async fn run_node_control_client(
                     &mut registration,
                     &mut load,
                     &mut inventory,
+                    &mut retained_completion,
                     "node_not_registered",
                 ),
                 DisconnectedCommandOutcome::Shutdown
@@ -2004,6 +2054,7 @@ pub(crate) async fn run_node_control_client(
                                             &mut registration,
                                             &mut load,
                                             &mut inventory,
+                                            &mut retained_completion,
                                             "node_token_missing",
                                         ),
                                         DisconnectedCommandOutcome::Shutdown
@@ -2027,6 +2078,7 @@ pub(crate) async fn run_node_control_client(
                         &mut registration,
                         &mut load,
                         &mut inventory,
+                        &mut retained_completion,
                         "node_token_missing",
                     ),
                     DisconnectedCommandOutcome::Shutdown
@@ -2037,9 +2089,11 @@ pub(crate) async fn run_node_control_client(
             }
         }
 
-        let result = run_connected_once(
+        let result = run_connected_once_with_completions(
             &config,
             &mut command_rx,
+            &mut completion_rx,
+            &mut retained_completion,
             &event_tx,
             &mut registration,
             &mut inventory,
@@ -2339,6 +2393,8 @@ impl Drop for ProbeSessionGuard<'_> {
 /// the main loop uses once this gate opens — preserving the ordering an
 /// `UpdateInventory`/`RegisterAgent`/etc. would have had if it had simply
 /// arrived a moment later, after the registration reply.
+/// Retained completion frames deliberately remain queued in their dedicated
+/// receiver during this gate and are consumed only after registration succeeds.
 async fn register_node_session<S, R>(
     sink: &mut S,
     stream: &mut R,
@@ -2463,6 +2519,7 @@ async fn handle_connected_command<S>(
     pending_agent_registrations: &mut HashMap<String, PendingAgentRegistration>,
     pending_deregistrations: &mut HashMap<String, oneshot::Sender<Result<(), String>>>,
     application_liveness: &mut ApplicationLiveness,
+    retained_completion: &mut Option<RetainedFleetCompletion>,
 ) -> std::ops::ControlFlow<ControlRunResult>
 where
     S: Sink<Message> + Unpin,
@@ -2556,6 +2613,16 @@ where
             }
             Continue(())
         }
+        Some(FleetControlCommand::RetainedSend(completion)) => {
+            if send_wire(sink, &completion.message).await.is_err() {
+                *retained_completion = Some(completion);
+                return Break(ControlRunResult::Disconnected {
+                    application_ready: application_liveness.ready,
+                });
+            }
+            let _ = completion.delivered.send(());
+            Continue(())
+        }
         Some(FleetControlCommand::DeregisterAgent { mut request, reply }) => {
             let request_id = format!("agent_deregister_{}", Uuid::new_v4().simple());
             request.id = Some(request_id.clone());
@@ -2604,9 +2671,38 @@ where
     }
 }
 
+#[cfg(test)]
 async fn run_connected_once(
     config: &FleetControlConfig,
     command_rx: &mut mpsc::Receiver<FleetControlCommand>,
+    event_tx: &mpsc::Sender<FleetControlEvent>,
+    registration: &mut Option<NodeRegister>,
+    inventory: &mut Vec<InventoryAgent>,
+    load: &mut FleetLoadSnapshot,
+    inventory_refresh_interval: Duration,
+) -> ControlRunResult {
+    let (_completion_tx, mut completion_rx) = mpsc::unbounded_channel();
+    let mut retained_completion = None;
+    run_connected_once_with_completions(
+        config,
+        command_rx,
+        &mut completion_rx,
+        &mut retained_completion,
+        event_tx,
+        registration,
+        inventory,
+        load,
+        inventory_refresh_interval,
+    )
+    .await
+}
+
+#[allow(clippy::too_many_arguments)]
+async fn run_connected_once_with_completions(
+    config: &FleetControlConfig,
+    command_rx: &mut mpsc::Receiver<FleetControlCommand>,
+    completion_rx: &mut mpsc::UnboundedReceiver<RetainedFleetCompletion>,
+    retained_completion: &mut Option<RetainedFleetCompletion>,
     event_tx: &mpsc::Sender<FleetControlEvent>,
     registration: &mut Option<NodeRegister>,
     inventory: &mut Vec<InventoryAgent>,
@@ -2790,6 +2886,7 @@ async fn run_connected_once(
             &mut pending_agent_registrations,
             &mut pending_deregistrations,
             &mut application_liveness,
+            retained_completion,
         )
         .await
         {
@@ -2823,7 +2920,7 @@ async fn run_connected_once(
                     return ControlRunResult::Disconnected { application_ready: application_liveness.ready };
                 }
             }
-            command = command_rx.recv() => {
+            command = recv_control_command(command_rx, completion_rx, retained_completion) => {
                 if let std::ops::ControlFlow::Break(result) = handle_connected_command(
                     command,
                     &mut sink,
@@ -2836,6 +2933,7 @@ async fn run_connected_once(
                     &mut pending_agent_registrations,
                     &mut pending_deregistrations,
                     &mut application_liveness,
+                    retained_completion,
                 )
                 .await
                 {
@@ -3345,6 +3443,7 @@ fn fail_deferred_commands(
             FleetControlCommand::UpdateLoad(next) => *load = next,
             FleetControlCommand::RegisterNode { .. }
             | FleetControlCommand::Send(_)
+            | FleetControlCommand::RetainedSend(_)
             | FleetControlCommand::HeartbeatNow => {}
             FleetControlCommand::Shutdown => {}
         }
@@ -3405,8 +3504,175 @@ mod tests {
 
     use super::*;
     use crate::fleet_wire::{
-        ActionInvoke, ActionResultOutput, DeliveryMode, TerminalReconnectRequested,
+        ActionInvoke, ActionResult, ActionResultError, ActionResultOutput, ActionResultPayload,
+        DeliveryMode, TerminalReconnectRequested,
     };
+
+    #[tokio::test]
+    async fn retained_completion_lane_preempts_a_full_control_queue() {
+        let (command_tx, mut command_rx) = mpsc::channel(1);
+        command_tx
+            .try_send(FleetControlCommand::UpdateInventory(Vec::new()))
+            .unwrap();
+        let (completion_tx, mut completion_rx) = mpsc::unbounded_channel();
+        let (delivered, _delivered_rx) = oneshot::channel();
+        completion_tx
+            .send(RetainedFleetCompletion {
+                message: BrokerToRelaycast::ActionResult(ActionResult {
+                    v: FLEET_WIRE_VERSION,
+                    id: None,
+                    invocation_id: "inv-retained".to_string(),
+                    result: ActionResultPayload::Error(ActionResultError {
+                        error: "cleanup unconfirmed".to_string(),
+                    }),
+                    task: None,
+                }),
+                delivered,
+            })
+            .unwrap();
+
+        let mut retained_completion = None;
+        let command = recv_control_command(
+            &mut command_rx,
+            &mut completion_rx,
+            &mut retained_completion,
+        )
+        .await
+        .expect("the dedicated completion lane should stay readable");
+        assert!(matches!(
+            command,
+            FleetControlCommand::RetainedSend(RetainedFleetCompletion {
+                message: BrokerToRelaycast::ActionResult(ActionResult { invocation_id, .. }),
+                ..
+            }) if invocation_id == "inv-retained"
+        ));
+        assert!(matches!(
+            command_rx.try_recv(),
+            Ok(FleetControlCommand::UpdateInventory(inventory)) if inventory.is_empty()
+        ));
+    }
+
+    #[tokio::test]
+    async fn retained_completion_lane_drains_buffer_after_sender_closes() {
+        let (_command_tx, mut command_rx) = mpsc::channel(1);
+        let (completion_tx, mut completion_rx) = mpsc::unbounded_channel();
+        let (delivered, _delivered_rx) = oneshot::channel();
+        completion_tx
+            .send(RetainedFleetCompletion {
+                message: BrokerToRelaycast::ActionResult(ActionResult {
+                    v: FLEET_WIRE_VERSION,
+                    id: None,
+                    invocation_id: "inv-buffered-before-close".to_string(),
+                    result: ActionResultPayload::Error(ActionResultError {
+                        error: "cleanup unconfirmed".to_string(),
+                    }),
+                    task: None,
+                }),
+                delivered,
+            })
+            .unwrap();
+        drop(completion_tx);
+
+        let mut retained_completion = None;
+        let command = recv_control_command(
+            &mut command_rx,
+            &mut completion_rx,
+            &mut retained_completion,
+        )
+        .await
+        .expect("a buffered completion must remain readable after sender close");
+        assert!(matches!(
+            command,
+            FleetControlCommand::RetainedSend(RetainedFleetCompletion {
+                message: BrokerToRelaycast::ActionResult(ActionResult { invocation_id, .. }),
+                ..
+            }) if invocation_id == "inv-buffered-before-close"
+        ));
+    }
+
+    #[tokio::test]
+    async fn retained_completion_requeues_when_the_socket_write_fails() {
+        let mut sink = Box::pin(futures_util::sink::unfold((), |(), _: Message| async {
+            Err::<(), std::io::Error>(std::io::Error::new(
+                std::io::ErrorKind::BrokenPipe,
+                "fixture socket closed",
+            ))
+        }));
+        let config = FleetControlConfig {
+            ws_url: "ws://127.0.0.1:1/v1/node/ws".to_string(),
+            node_token: Some("nt_test".to_string()),
+            node_id: "node-test".to_string(),
+            node_name: "host-test".to_string(),
+            broker_version: "broker/test".to_string(),
+            token_minter: None,
+            session_token: None,
+            read_idle_timeout: None,
+            probe: None,
+            terminal_reconnect_tx: None,
+        };
+        let provider = FleetProviderIdentity {
+            name: BROKER_PROVIDER_NAME.to_string(),
+            instance_id: "broker-fixture".to_string(),
+        };
+        let node_register = build_node_register(
+            &test_manifest(),
+            "node-test",
+            "host-test",
+            "broker/test",
+            None,
+        );
+        let mut registration = Some(node_register.clone());
+        let mut load = FleetLoadSnapshot::default();
+        let mut inventory = Vec::new();
+        let mut pending_agent_registrations = HashMap::new();
+        let mut pending_deregistrations = HashMap::new();
+        let mut application_liveness = ApplicationLiveness::new(Duration::from_secs(1));
+        let (delivered, mut delivery_ack) = oneshot::channel();
+        let mut retained_completion = None;
+
+        let result = handle_connected_command(
+            Some(FleetControlCommand::RetainedSend(RetainedFleetCompletion {
+                message: BrokerToRelaycast::ActionResult(ActionResult {
+                    v: FLEET_WIRE_VERSION,
+                    id: None,
+                    invocation_id: "inv-retry-after-write".to_string(),
+                    result: ActionResultPayload::Error(ActionResultError {
+                        error: "cleanup unconfirmed".to_string(),
+                    }),
+                    task: None,
+                }),
+                delivered,
+            })),
+            &mut sink,
+            &config,
+            &provider,
+            &node_register,
+            &mut registration,
+            &mut load,
+            &mut inventory,
+            &mut pending_agent_registrations,
+            &mut pending_deregistrations,
+            &mut application_liveness,
+            &mut retained_completion,
+        )
+        .await;
+
+        assert!(matches!(
+            result,
+            std::ops::ControlFlow::Break(ControlRunResult::Disconnected { .. })
+        ));
+        assert!(matches!(
+            delivery_ack.try_recv(),
+            Err(oneshot::error::TryRecvError::Empty)
+        ));
+        assert!(matches!(
+            retained_completion,
+            Some(RetainedFleetCompletion {
+                message: BrokerToRelaycast::ActionResult(ActionResult { invocation_id, .. }),
+                ..
+            }) if invocation_id == "inv-retry-after-write"
+        ));
+    }
 
     fn seed_authoritative_cursor(
         book: &mut FleetDeliveryBook,

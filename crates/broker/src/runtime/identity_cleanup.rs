@@ -270,7 +270,64 @@ pub(super) fn restore_identity_cleanups(runtime: &mut BrokerRuntime) -> Result<(
     Ok(())
 }
 
+fn prepare_cleanup_completion(
+    completion: CleanupCompletion,
+    cleanup_error: Option<String>,
+) -> Option<BrokerToRelaycast> {
+    match completion {
+        CleanupCompletion::Api(reply, response) => {
+            let response = match cleanup_error {
+                Some(error) => Err(match response {
+                    Err(original) => format!("{original}; {error}"),
+                    Ok(_) => error,
+                }),
+                None => response,
+            };
+            let _ = reply.send(response);
+            None
+        }
+        CleanupCompletion::Fleet(mut response) => {
+            if let Some(error) = cleanup_error {
+                let original = match response.result {
+                    ActionResultPayload::Error(error) => error.error,
+                    _ => String::new(),
+                };
+                response.result = ActionResultPayload::Error(ActionResultError {
+                    error: format!("{original}; {error}"),
+                });
+            }
+            Some(BrokerToRelaycast::ActionResult(response))
+        }
+    }
+}
+
+fn send_cleanup_completion(
+    fleet_completion_tx: &mpsc::UnboundedSender<crate::node_control::RetainedFleetCompletion>,
+    completion: CleanupCompletion,
+    cleanup_error: Option<String>,
+) -> Option<oneshot::Receiver<()>> {
+    if let Some(message) = prepare_cleanup_completion(completion, cleanup_error) {
+        let (delivered, delivery_ack) = oneshot::channel();
+        if let Err(error) = fleet_completion_tx
+            .send(crate::node_control::RetainedFleetCompletion { message, delivered })
+        {
+            tracing::warn!(error = %error, "node-control completion lane closed before retained cleanup result was queued");
+            return None;
+        }
+        return Some(delivery_ack);
+    }
+    None
+}
+
 impl BrokerRuntime {
+    pub(super) fn reap_fleet_completion_acks(&mut self) {
+        self.fleet_completion_acks
+            .retain_mut(|delivery_ack| match delivery_ack.try_recv() {
+                Ok(()) | Err(oneshot::error::TryRecvError::Closed) => false,
+                Err(oneshot::error::TryRecvError::Empty) => true,
+            });
+    }
+
     pub(super) async fn drain_identity_cleanups_on_shutdown(&mut self) {
         // Leave room for the existing 2.5s presence phase inside the CLI stop
         // deadline. Never detach a mutating task beyond broker shutdown.
@@ -281,12 +338,45 @@ impl BrokerRuntime {
             }
         })
         .await;
+        let mut completions = Vec::new();
         for (name, pending) in &mut self.workers.identity_cleanups {
             if let Some(task) = pending.task.take() {
                 task.abort();
             }
+            let error = format!(
+                "owned identity cleanup unconfirmed for {name} generation {}; broker shutting down before reconciliation",
+                pending.generation
+            );
+            completions.extend(
+                std::mem::take(&mut pending.completions)
+                    .into_iter()
+                    .map(|completion| (completion, error.clone())),
+            );
             tracing::warn!(worker = %name, generation = %pending.generation,
                 "broker shutting down with unconfirmed owned cleanup; reconcile the recorded generation before name reuse");
+        }
+        for (completion, error) in completions {
+            if let Some(delivery_ack) =
+                send_cleanup_completion(&self.fleet_completion_tx, completion, Some(error))
+            {
+                self.fleet_completion_acks.push(delivery_ack);
+            }
+        }
+        self.reap_fleet_completion_acks();
+        let pending_delivery_count = self.fleet_completion_acks.len();
+        if pending_delivery_count > 0
+            && timeout(Duration::from_millis(500), async {
+                for delivery_ack in std::mem::take(&mut self.fleet_completion_acks) {
+                    let _ = delivery_ack.await;
+                }
+            })
+            .await
+            .is_err()
+        {
+            tracing::warn!(
+                pending_delivery_count,
+                "timed out waiting for retained Fleet cleanup results to reach the node socket"
+            );
         }
     }
 
@@ -378,34 +468,10 @@ impl BrokerRuntime {
             }
             for completion in completions {
                 let cleanup_error = result.as_ref().err().map(|error| format!("owned identity cleanup unconfirmed for {name} generation {generation}; retry retained: {error}"));
-                match completion {
-                    CleanupCompletion::Api(reply, response) => {
-                        let response = match cleanup_error {
-                            Some(error) => Err(match response {
-                                Err(original) => format!("{original}; {error}"),
-                                Ok(_) => error,
-                            }),
-                            None => response,
-                        };
-                        let _ = reply.send(response);
-                    }
-                    CleanupCompletion::Fleet(mut response) => {
-                        if let Some(error) = cleanup_error {
-                            let original = match response.result {
-                                ActionResultPayload::Error(error) => error.error,
-                                _ => String::new(),
-                            };
-                            response.result = ActionResultPayload::Error(ActionResultError {
-                                error: format!("{original}; {error}"),
-                            });
-                        }
-                        let _ = self
-                            .fleet_control_tx
-                            .send(FleetControlCommand::Send(BrokerToRelaycast::ActionResult(
-                                response,
-                            )))
-                            .await;
-                    }
+                if let Some(delivery_ack) =
+                    send_cleanup_completion(&self.fleet_completion_tx, completion, cleanup_error)
+                {
+                    self.fleet_completion_acks.push(delivery_ack);
                 }
             }
         }
