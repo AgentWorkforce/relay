@@ -403,6 +403,7 @@ impl BrokerRuntime {
                 }
             }
 
+            self.reap_fleet_completion_acks();
             self.flush_persisted_stores();
             self.publish_fleet_delivery_cursors_if_dirty();
         }

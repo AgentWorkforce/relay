@@ -320,6 +320,14 @@ fn send_cleanup_completion(
 }
 
 impl BrokerRuntime {
+    pub(super) fn reap_fleet_completion_acks(&mut self) {
+        self.fleet_completion_acks
+            .retain_mut(|delivery_ack| match delivery_ack.try_recv() {
+                Ok(()) | Err(oneshot::error::TryRecvError::Closed) => false,
+                Err(oneshot::error::TryRecvError::Empty) => true,
+            });
+    }
+
     pub(super) async fn drain_identity_cleanups_on_shutdown(&mut self) {
         // Leave room for the existing 2.5s presence phase inside the CLI stop
         // deadline. Never detach a mutating task beyond broker shutdown.
@@ -354,6 +362,7 @@ impl BrokerRuntime {
                 self.fleet_completion_acks.push(delivery_ack);
             }
         }
+        self.reap_fleet_completion_acks();
         let pending_delivery_count = self.fleet_completion_acks.len();
         if pending_delivery_count > 0
             && timeout(Duration::from_millis(500), async {

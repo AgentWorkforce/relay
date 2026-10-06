@@ -7404,12 +7404,14 @@ async fn node_owned_identity_create_reconcile_teardown_create_again() {
     .expect("retained cleanup should complete");
     cleanup.assert_hits(1);
     let action_result = loop {
-        if let BrokerToRelaycast::ActionResult(result) =
-            fixture.fleet_completion_rx.recv().await.unwrap().message
-        {
+        let completion = fixture.fleet_completion_rx.recv().await.unwrap();
+        if let BrokerToRelaycast::ActionResult(result) = completion.message {
+            let _ = completion.delivered.send(());
             break result;
         }
     };
+    fixture.runtime.reap_fleet_completion_acks();
+    assert!(fixture.runtime.fleet_completion_acks.is_empty());
     assert_eq!(action_result.invocation_id, "inv-lifecycle");
     assert!(matches!(
         action_result.result,
