@@ -731,7 +731,7 @@ struct PendingAgentRegistration {
     isolates_channels: bool,
     name: String,
     request: AgentRegister,
-    reply: oneshot::Sender<Result<AgentRegistrationToken, String>>,
+    reply: Option<oneshot::Sender<Result<AgentRegistrationToken, String>>>,
     created_at: Instant,
     d1_pressure_retry_attempts: u32,
     d1_pressure_retry_at: Option<Instant>,
@@ -3211,7 +3211,7 @@ where
                     isolates_channels: request.auto_join_general == Some(false),
                     name: request.name.clone(),
                     request,
-                    reply,
+                    reply: Some(reply),
                     created_at: Instant::now(),
                     d1_pressure_retry_attempts: 0,
                     d1_pressure_retry_at: None,
@@ -3997,9 +3997,9 @@ where
     let data = match data {
         Some(data) => data,
         None => {
-            let _ = pending
-                .reply
-                .send(Err("invalid_agent_register_reply_data".to_string()));
+            if let Some(reply) = pending.reply {
+                let _ = reply.send(Err("invalid_agent_register_reply_data".to_string()));
+            }
             return true;
         }
     };
@@ -4009,30 +4009,32 @@ where
         token: data.token,
         delivery_ack_seq: data.delivery_ack_seq,
     };
-    match pending.reply.send(Ok(token.clone())) {
-        Ok(()) => true,
-        Err(Ok(token)) => {
-            tracing::warn!(
-                target = "relay_broker::fleet",
-                id = %request_id,
-                name = %pending.name,
-                agent_id = %token.agent_id,
-                "late agent.register success after caller stopped waiting; sending compensating agent.deregister"
-            );
-            send_wire(
-                sink,
-                &BrokerToRelaycast::AgentDeregister(AgentDeregister {
-                    v: FLEET_WIRE_VERSION,
-                    id: Some(request_id),
-                    agent_id: token.agent_id,
-                    name: Some(pending.name),
-                }),
-            )
-            .await
-            .is_ok()
-        }
-        Err(Err(_)) => true,
-    }
+    let late_token = match pending.reply {
+        Some(reply) => match reply.send(Ok(token.clone())) {
+            Ok(()) => return true,
+            Err(Ok(token)) => token,
+            Err(Err(_)) => return true,
+        },
+        None => token,
+    };
+    tracing::warn!(
+        target = "relay_broker::fleet",
+        id = %request_id,
+        name = %pending.name,
+        agent_id = %late_token.agent_id,
+        "late agent.register success after caller stopped waiting; sending compensating agent.deregister"
+    );
+    send_wire(
+        sink,
+        &BrokerToRelaycast::AgentDeregister(AgentDeregister {
+            v: FLEET_WIRE_VERSION,
+            id: Some(request_id),
+            agent_id: late_token.agent_id,
+            name: Some(pending.name),
+        }),
+    )
+    .await
+    .is_ok()
 }
 
 fn fail_agent_registration(
@@ -4041,7 +4043,9 @@ fn fail_agent_registration(
     pending_agent_registrations: &mut HashMap<String, PendingAgentRegistration>,
 ) {
     if let Some(pending) = pending_agent_registrations.remove(id) {
-        let _ = pending.reply.send(Err(reason));
+        if let Some(reply) = pending.reply {
+            let _ = reply.send(Err(reason));
+        }
     }
 }
 
@@ -4155,15 +4159,19 @@ fn fail_agent_registration_d1_pressure_exhausted(
     id: &str,
     pending_agent_registrations: &mut HashMap<String, PendingAgentRegistration>,
 ) {
-    let Some(pending) = pending_agent_registrations.remove(id) else {
+    let Some(pending) = pending_agent_registrations.get_mut(id) else {
         return;
     };
     let reason = pending
         .last_d1_pressure
+        .take()
         .unwrap_or_else(|| "Node liveness retry pending".to_string());
-    let _ = pending.reply.send(Err(format!(
-        "d1_pressure: {reason} (retry budget exhausted)"
-    )));
+    pending.d1_pressure_retry_at = None;
+    if let Some(reply) = pending.reply.take() {
+        let _ = reply.send(Err(format!(
+            "d1_pressure: {reason} (retry budget exhausted)"
+        )));
+    }
 }
 
 fn take_due_agent_registration_retry(
@@ -4202,9 +4210,9 @@ fn expire_agent_registrations(
                 name = %pending.name,
                 "agent.register pending reply expired without engine response"
             );
-            let _ = pending
-                .reply
-                .send(Err("agent_register_pending_expired".to_string()));
+            if let Some(reply) = pending.reply {
+                let _ = reply.send(Err("agent_register_pending_expired".to_string()));
+            }
         }
     }
 }
@@ -4214,7 +4222,9 @@ fn drain_agent_registrations(
     reason: &str,
 ) {
     for (_, pending) in pending_agent_registrations.drain() {
-        let _ = pending.reply.send(Err(reason.to_string()));
+        if let Some(reply) = pending.reply {
+            let _ = reply.send(Err(reason.to_string()));
+        }
     }
 }
 
@@ -4254,42 +4264,36 @@ fn fail_deferred_commands(
     }
 }
 
-/// Gives every safely replayable steady-state control frame a stable
-/// correlation id. The engine's `d1_pressure` contract guarantees that the
-/// rejected operation was not applied, so exact replay is safe for:
+/// Tracks safely replayable steady-state control frames which also have a
+/// concrete recovery owner. The engine's `d1_pressure` contract guarantees
+/// that the rejected operation was not applied, so exact replay is safe for:
 ///
-/// - `agent.deregister` (engine teardown is idempotent),
-/// - cumulative `delivery.ack`, and
-/// - `action.accept` / `action.result` (invocation-ledger idempotency covers
-///   spawn results, release results, and task receipts).
+/// - acknowledged `agent.deregister`,
+/// - cumulative `delivery.ack` (a missed terminal ack is recovered by durable
+///   redelivery), and
+/// - task `action.accept` / `action.result`, whose existing request id maps
+///   retry exhaustion back to the runtime task owner.
 ///
 /// `node.register`, `inventory.sync`, and `agent.register` have dedicated
 /// pending state because their successful replies open liveness or return a
 /// token. Heartbeats intentionally are not retried: a newer periodic snapshot
 /// supersedes them. No separate channel-join frame exists; the only join sent
-/// by this broker is part of the exact `agent.register` frame.
+/// by this broker is part of the exact `agent.register` frame. One-way
+/// spawn/release results and deregistrations remain untracked: acknowledging
+/// their initial socket write and later consuming retry exhaustion would lose
+/// the terminal outcome, so they require a separate retained-owner protocol.
 fn prepare_retryable_control_frame(
     message: &mut BrokerToRelaycast,
 ) -> Option<(String, &'static str)> {
     let (id, kind) = match message {
-        BrokerToRelaycast::AgentDeregister(request) => (
-            request
-                .id
-                .get_or_insert_with(|| format!("agent_deregister_{}", Uuid::new_v4().simple())),
-            "agent.deregister",
-        ),
+        BrokerToRelaycast::AgentDeregister(request) => (request.id.as_mut()?, "agent.deregister"),
         BrokerToRelaycast::DeliveryAck(request) => (
             request
                 .id
                 .get_or_insert_with(|| format!("delivery_ack_{}", Uuid::new_v4().simple())),
             "delivery.ack",
         ),
-        BrokerToRelaycast::ActionResult(request) => (
-            request
-                .id
-                .get_or_insert_with(|| format!("action_result_{}", Uuid::new_v4().simple())),
-            "action.result",
-        ),
+        BrokerToRelaycast::ActionResult(request) => (request.id.as_mut()?, "action.result"),
         BrokerToRelaycast::ActionAccept(request) => (&mut request.id, "action.accept"),
         _ => return None,
     };
@@ -4571,7 +4575,7 @@ mod tests {
                 session_ref: None,
                 resumable: None,
             },
-            reply,
+            reply: Some(reply),
             created_at,
             d1_pressure_retry_attempts: 0,
             d1_pressure_retry_at: None,
@@ -5895,14 +5899,14 @@ mod tests {
         let frames = vec![
             BrokerToRelaycast::AgentDeregister(AgentDeregister {
                 v: FLEET_WIRE_VERSION,
-                id: None,
+                id: Some("agent_deregister_1".to_string()),
                 agent_id: "agt-1".to_string(),
                 name: Some("agent-a".to_string()),
             }),
             delivery_ack("agent-a", 7),
             BrokerToRelaycast::ActionResult(ActionResult {
                 v: FLEET_WIRE_VERSION,
-                id: None,
+                id: Some("task_request_result_1".to_string()),
                 invocation_id: "inv-1".to_string(),
                 result: ActionResultPayload::Output(ActionResultOutput {
                     output: json!({"ok": true}),
@@ -5945,6 +5949,27 @@ mod tests {
             )),
         );
         assert_eq!(prepare_retryable_control_frame(&mut heartbeat), None);
+
+        let mut one_way_result = BrokerToRelaycast::ActionResult(ActionResult {
+            v: FLEET_WIRE_VERSION,
+            id: None,
+            invocation_id: "inv-spawn".to_string(),
+            result: ActionResultPayload::Output(ActionResultOutput {
+                output: json!({"ok": true}),
+            }),
+            task: None,
+        });
+        assert_eq!(prepare_retryable_control_frame(&mut one_way_result), None);
+        let mut one_way_deregister = BrokerToRelaycast::AgentDeregister(AgentDeregister {
+            v: FLEET_WIRE_VERSION,
+            id: None,
+            agent_id: "agt-one-way".to_string(),
+            name: Some("agent-one-way".to_string()),
+        });
+        assert_eq!(
+            prepare_retryable_control_frame(&mut one_way_deregister),
+            None
+        );
     }
 
     #[test]
@@ -6872,11 +6897,13 @@ mod tests {
     }
 
     #[tokio::test(start_paused = true)]
-    async fn node_control_agent_register_persistent_d1_pressure_fails_closed_with_named_error() {
+    async fn node_control_agent_register_persistent_d1_pressure_fails_closed_and_cleans_late_success(
+    ) {
         let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
         let ws_url = format!("ws://{}/v1/node/ws", listener.local_addr().unwrap());
         let (command_tx, command_rx) = mpsc::channel(32);
         let (event_tx, mut event_rx) = mpsc::channel(32);
+        let (late_success_tx, late_success_rx) = oneshot::channel();
 
         tokio::spawn(run_node_control_client(
             FleetControlConfig {
@@ -6939,6 +6966,32 @@ mod tests {
                 .await
                 .unwrap();
             }
+            let initial = initial.expect("initial agent.register frame");
+            let request_id = initial.id.expect("agent.register request id");
+            late_success_rx.await.unwrap();
+            ws.send(Message::Text(
+                serde_json::to_string(&RelaycastToBroker::Reply(crate::fleet_wire::Reply {
+                    v: FLEET_WIRE_VERSION,
+                    id: request_id.clone(),
+                    ok: true,
+                    data: json!({
+                        "name": "agent-a",
+                        "agent_id": "agt-late",
+                        "token": "at-late"
+                    }),
+                }))
+                .unwrap(),
+            ))
+            .await
+            .unwrap();
+            match next_non_heartbeat_node_to_server(&mut ws).await {
+                BrokerToRelaycast::AgentDeregister(deregister) => {
+                    assert_eq!(deregister.id.as_deref(), Some(request_id.as_str()));
+                    assert_eq!(deregister.agent_id, "agt-late");
+                    assert_eq!(deregister.name.as_deref(), Some("agent-a"));
+                }
+                other => panic!("expected compensating agent.deregister, got {other:?}"),
+            }
         });
 
         command_tx
@@ -6976,6 +7029,7 @@ mod tests {
             error.starts_with("d1_pressure:"),
             "spawn caller must see the retryable root cause, got {error}"
         );
+        late_success_tx.send(()).unwrap();
         tokio::time::timeout(Duration::from_secs(1), server)
             .await
             .unwrap()
