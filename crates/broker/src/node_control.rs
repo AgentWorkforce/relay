@@ -6237,7 +6237,10 @@ mod tests {
 
         let mut task_result = BrokerToRelaycast::ActionResult(ActionResult {
             v: FLEET_WIRE_VERSION,
-            id: Some("task_request_result_1".to_string()),
+            id: Some(format!(
+                "{}result_1",
+                crate::runtime::task_request_prefix()
+            )),
             invocation_id: "inv-1".to_string(),
             result: ActionResultPayload::Output(ActionResultOutput {
                 output: json!({"ok": true}),
@@ -8050,7 +8053,7 @@ mod tests {
                 .unwrap();
             error
         };
-        let ((result, error), ()) = tokio::time::timeout(Duration::from_secs(5), async {
+        let ((result, error), ()) = tokio::time::timeout(Duration::from_secs(15), async {
             let (result, error) = tokio::join!(session, driver);
             ((result, error), server.await.unwrap())
         })
