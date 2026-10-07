@@ -293,7 +293,8 @@ pub(crate) async fn run_init(cmd: InitCommand, telemetry: TelemetryClient) -> Re
     // against. Thread the resolved workspace id and base URL through so the
     // cached token is only reused when both match. A re-mint after a node-control
     // 401 presents that token as proof before rewriting the correctly-scoped
-    // cache; if Relaycast rejects the proof, recovery stops for explicit
+    // cache; if Relaycast rejects the proof, recovery adopts a different token
+    // concurrently written to that cache once, then stops for explicit
     // re-enrollment instead of trying to take over the established row.
     let node_base_url = configured_base.clone();
     // Resolve only the fast, local token sources here (RELAY_NODE_TOKEN override
@@ -304,6 +305,7 @@ pub(crate) async fn run_init(cmd: InitCommand, telemetry: TelemetryClient) -> Re
     // node-control client mints one in the background (it holds the same minter)
     // and publishes it to `session_node_token`, so realtime delivery still comes
     // online without gating startup on it.
+    let explicit_node_token_override = explicit_env_node_token_present();
     let node_token = if local_only {
         None
     } else {
@@ -359,8 +361,8 @@ pub(crate) async fn run_init(cmd: InitCommand, telemetry: TelemetryClient) -> Re
     // mint (when no token is cached, off the readiness path) and to recover from
     // a node-control 401 by presenting the rejected token as current-node proof,
     // then replacing the cache only if Relaycast accepts the rotation. A named
-    // proof conflict is terminal and tells the operator to restore the current
-    // token or enroll a new node identity. Absent when no workspace RelayCast
+    // proof conflict first re-reads a concurrently rotated cache, then becomes
+    // terminal if no newer token exists. Absent when no workspace RelayCast
     // client is available (then a 401 surfaces a hard error rather than recovering).
     let token_minter = Some(crate::node_control::NodeTokenMinter {
         workspace_key: relay_workspace_key.clone(),
@@ -370,6 +372,7 @@ pub(crate) async fn run_init(cmd: InitCommand, telemetry: TelemetryClient) -> Re
         node_name: node_name.clone(),
         broker_version: broker_version.clone(),
         token_path: crate::node_control::default_node_token_path(&node_id),
+        adopt_cached_token_after_conflict: !explicit_node_token_override,
     });
     let (fleet_control_tx, fleet_control_rx) = mpsc::channel::<FleetControlCommand>(256);
     let (fleet_completion_tx, fleet_completion_rx) =

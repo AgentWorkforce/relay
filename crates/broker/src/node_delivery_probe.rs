@@ -38,11 +38,24 @@
 //! endpoint stays safe to paste into an issue.
 
 use std::collections::BTreeMap;
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicU64, AtomicU8, Ordering};
 use std::sync::Mutex;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use serde_json::{json, Value};
+
+const NODE_CONTROL_CONNECTING: u8 = 0;
+const NODE_CONTROL_BACKOFF: u8 = 1;
+const NODE_CONTROL_OK: u8 = 2;
+const NODE_CONTROL_TERMINAL: u8 = 3;
+const NODE_CONTROL_ENV_OVERRIDE_REJECTED: u8 = 4;
+
+fn node_control_state_is_terminal(state: u8) -> bool {
+    matches!(
+        state,
+        NODE_CONTROL_TERMINAL | NODE_CONTROL_ENV_OVERRIDE_REJECTED
+    )
+}
 
 use crate::fleet_wire::{Deliver, RelaycastToBroker};
 use crate::node_control::DeliveryDecision;
@@ -297,6 +310,10 @@ struct Counters {
     /// live session as dead. The tallies stay because reconnect churn is
     /// itself diagnostic, but the flag is what `connected` reports.
     session_live: std::sync::atomic::AtomicBool,
+    /// Node-control lifecycle exposed by the authenticated session health.
+    /// Values are local constants rather than peer-controlled text, so the
+    /// diagnostic cannot retain or disclose credential material.
+    node_control_health: AtomicU8,
     last_deliver_at_ms: AtomicU64,
     last_frame_at_ms: AtomicU64,
     /// Ticket dispenser for [`AgentStats::last_touch_order`].
@@ -338,14 +355,60 @@ impl NodeDeliveryProbe {
             .fetch_add(1, Ordering::Relaxed)
     }
 
+    fn record_node_control_if_nonterminal(&self, state: u8) {
+        let _ = self.counters.node_control_health.try_update(
+            Ordering::Relaxed,
+            Ordering::Relaxed,
+            |current| (!node_control_state_is_terminal(current)).then_some(state),
+        );
+    }
+
     pub(crate) fn record_connected(&self) {
         self.counters.connects.fetch_add(1, Ordering::Relaxed);
         self.counters.session_live.store(true, Ordering::Relaxed);
+        self.record_node_control_if_nonterminal(NODE_CONTROL_OK);
     }
 
     pub(crate) fn record_disconnected(&self) {
         self.counters.disconnects.fetch_add(1, Ordering::Relaxed);
         self.counters.session_live.store(false, Ordering::Relaxed);
+        self.record_node_control_backoff();
+    }
+
+    pub(crate) fn record_node_control_connecting(&self) {
+        self.record_node_control_if_nonterminal(NODE_CONTROL_CONNECTING);
+    }
+
+    pub(crate) fn record_node_control_backoff(&self) {
+        self.record_node_control_if_nonterminal(NODE_CONTROL_BACKOFF);
+    }
+
+    pub(crate) fn record_node_token_proof_conflict_terminal(&self) {
+        self.counters
+            .node_control_health
+            .store(NODE_CONTROL_TERMINAL, Ordering::Relaxed);
+    }
+
+    pub(crate) fn record_env_node_token_rejected_terminal(&self) {
+        self.counters
+            .node_control_health
+            .store(NODE_CONTROL_ENV_OVERRIDE_REJECTED, Ordering::Relaxed);
+    }
+
+    pub(crate) fn node_control_health(&self) -> Value {
+        match self.counters.node_control_health.load(Ordering::Relaxed) {
+            NODE_CONTROL_TERMINAL => json!({
+                "state": "terminal",
+                "reason": "node_token_proof_required",
+            }),
+            NODE_CONTROL_ENV_OVERRIDE_REJECTED => json!({
+                "state": "terminal",
+                "reason": "env_override_rejected",
+            }),
+            NODE_CONTROL_OK => json!({ "state": "ok" }),
+            NODE_CONTROL_BACKOFF => json!({ "state": "backoff" }),
+            _ => json!({ "state": "connecting" }),
+        }
     }
 
     /// Called for every inbound WS text frame, before any deserialization.
@@ -1268,6 +1331,48 @@ mod tests {
         assert_eq!(probe.snapshot_with_token(true)["connected"], false);
         probe.record_connected();
         assert_eq!(probe.snapshot_with_token(true)["connected"], true);
+    }
+
+    #[test]
+    fn node_control_health_reports_lifecycle_and_preserves_terminal_state() {
+        let probe = NodeDeliveryProbe::new();
+        assert_eq!(probe.node_control_health()["state"], "connecting");
+        probe.record_node_control_backoff();
+        assert_eq!(probe.node_control_health()["state"], "backoff");
+        probe.record_node_control_connecting();
+        assert_eq!(probe.node_control_health()["state"], "connecting");
+        probe.record_connected();
+        assert_eq!(probe.node_control_health()["state"], "ok");
+        probe.record_disconnected();
+        assert_eq!(probe.node_control_health()["state"], "backoff");
+        probe.record_node_token_proof_conflict_terminal();
+        assert_eq!(probe.node_control_health()["state"], "terminal");
+        probe.record_node_control_connecting();
+        assert_eq!(probe.node_control_health()["state"], "terminal");
+        probe.record_connected();
+        assert_eq!(probe.node_control_health()["state"], "terminal");
+        assert_eq!(
+            probe.node_control_health()["reason"],
+            "node_token_proof_required"
+        );
+
+        let env_probe = NodeDeliveryProbe::new();
+        env_probe.record_env_node_token_rejected_terminal();
+        assert_eq!(env_probe.node_control_health()["state"], "terminal");
+        assert_eq!(
+            env_probe.node_control_health()["reason"],
+            "env_override_rejected"
+        );
+        env_probe.record_node_control_backoff();
+        assert_eq!(
+            env_probe.node_control_health()["reason"],
+            "env_override_rejected"
+        );
+        env_probe.record_connected();
+        assert_eq!(
+            env_probe.node_control_health()["reason"],
+            "env_override_rejected"
+        );
     }
 
     #[test]
