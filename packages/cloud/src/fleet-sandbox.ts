@@ -678,8 +678,10 @@ function readCapacityExhaustion(
       !CLOUD_FLEET_SANDBOX_PROVIDER_IDS.includes(provider as CloudFleetSandboxProviderId) ||
       current === undefined ||
       current < 0 ||
+      !Number.isInteger(current) ||
       limit === undefined ||
-      limit < 0
+      limit < 0 ||
+      !Number.isInteger(limit)
     ) {
       return undefined;
     }

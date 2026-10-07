@@ -671,6 +671,54 @@ describe('Cloud fleet sandbox client', () => {
     expect(String(error)).toContain('No sandbox was created');
   });
 
+  it.each([
+    ['current', 14.5, 10],
+    ['limit', 14, 10.5],
+  ])(
+    'keeps a capacity 503 with fractional %s on the conservative unknown path',
+    async (_field, current, limit) => {
+      mocks.authorizedApiFetch
+        .mockResolvedValueOnce({
+          response: Response.json({ cloudWorkspaceId: CLOUD_WORKSPACE_ID }),
+          auth,
+        })
+        .mockResolvedValueOnce({
+          response: Response.json(
+            {
+              error: 'Sandbox capacity is exhausted before allocation; no sandbox was created',
+              code: 'sandbox_capacity_exhausted',
+              capacity: [{ provider: 'agent37', current, limit }],
+              retryable: true,
+              no_sandbox_created: true,
+            },
+            { status: 503 }
+          ),
+          auth,
+        });
+
+      const error = await ensureCloudFleetSandbox({
+        workspaceId: 'rw_abc',
+        requiredCapability: 'spawn:codex',
+        sandboxId: SANDBOX_ID,
+        name: SANDBOX_NAME,
+        forceProvision: true,
+        providerId: 'agent37',
+        workloadProfile: 'long-running-agent',
+      }).catch((caught: unknown) => caught);
+
+      expect(error).toBeInstanceOf(CloudFleetSandboxProvisionError);
+      expect(error).toMatchObject({
+        code: undefined,
+        sandboxId: SANDBOX_ID,
+        confirmedProvisioned: false,
+        outcomeUnknown: true,
+        noSandboxCreated: false,
+        retryable: false,
+        capacity: [],
+      });
+    }
+  );
+
   it.each(['provisioned', 'provisioning_timeout'] as const)(
     'requires a valid Daytona providerSandboxId for %s responses',
     async (outcome) => {
