@@ -3876,7 +3876,7 @@ async fn delivery_retry_transient_blip_emits_failed_event_for_present_worker() {
     assert_eq!(frame.payload["to"], worker_name);
     assert_eq!(
         frame.payload["attempts"].as_u64(),
-        Some(u64::from(MAX_DELIVERY_RETRIES))
+        Some(u64::from(total_attempts))
     );
     let last_error = frame.payload["lastError"].as_str().unwrap_or_default();
     assert!(
@@ -3901,7 +3901,7 @@ async fn delivery_retry_transient_blip_emits_failed_event_for_present_worker() {
     );
     let entry = dead_letters.get("del_blip").expect("dead letter by id");
     assert_eq!(entry.delivery.body, "transient auth blip");
-    assert_eq!(entry.attempts, MAX_DELIVERY_RETRIES);
+    assert_eq!(entry.attempts, total_attempts);
 }
 
 #[tokio::test]
