@@ -199,16 +199,19 @@ try {
   await rm(observationPath, { force: true });
 }
 
+/** Read a required non-empty RelayFlow environment value. */
 function requiredValue(name) {
   const value = process.env[name]?.trim();
   if (!value) throw new Error(`Missing required environment variable ${name}.`);
   return value;
 }
 
+/** Resolve a required RelayFlow directory to an absolute path. */
 function requiredDirectory(name) {
   return path.resolve(requiredValue(name));
 }
 
+/** Return true when a candidate path stays inside the expected checkout. */
 function isWithin(directory, candidate) {
   const relative = path.relative(directory, candidate);
   return (
@@ -217,6 +220,7 @@ function isWithin(directory, candidate) {
   );
 }
 
+/** Run a proof subprocess synchronously and surface a stable labeled failure. */
 function run(command, args, cwd, label, extraEnv = {}) {
   const completed = spawnSync(command, args, {
     cwd,
