@@ -68,6 +68,12 @@ export type CloudFleetSandboxProviderId =
   | 'agent37'
   | 'microsandbox';
 
+export type CloudFleetSandboxCapacityExhaustion = {
+  readonly provider: CloudFleetSandboxProviderId;
+  readonly current: number;
+  readonly limit: number;
+};
+
 /**
  * Carries every safe identifier Cloud returned when provisioning failed after
  * the request may have created a billable sandbox.
@@ -80,6 +86,10 @@ export class CloudFleetSandboxProvisionError extends Error {
   /** A 2xx response proved this exact caller-owned sandbox was provisioned. */
   readonly confirmedProvisioned: boolean;
   readonly outcomeUnknown: boolean;
+  readonly code?: 'sandbox_capacity_exhausted';
+  readonly noSandboxCreated: boolean;
+  readonly retryable: boolean;
+  readonly capacity: readonly CloudFleetSandboxCapacityExhaustion[];
 
   constructor(
     message: string,
@@ -90,6 +100,10 @@ export class CloudFleetSandboxProvisionError extends Error {
       providerId?: CloudFleetSandboxProviderId;
       confirmedProvisioned?: boolean;
       outcomeUnknown?: boolean;
+      code?: 'sandbox_capacity_exhausted';
+      noSandboxCreated?: boolean;
+      retryable?: boolean;
+      capacity?: readonly CloudFleetSandboxCapacityExhaustion[];
       cause?: unknown;
     } = {}
   ) {
@@ -101,6 +115,10 @@ export class CloudFleetSandboxProvisionError extends Error {
     this.providerId = identity.providerId;
     this.confirmedProvisioned = identity.confirmedProvisioned === true;
     this.outcomeUnknown = !this.confirmedProvisioned && identity.outcomeUnknown === true;
+    this.code = identity.code;
+    this.noSandboxCreated = !this.confirmedProvisioned && identity.noSandboxCreated === true;
+    this.retryable = identity.retryable === true;
+    this.capacity = identity.capacity?.map((entry) => ({ ...entry })) ?? [];
   }
 }
 
@@ -636,6 +654,51 @@ function readProviderId(
   return undefined;
 }
 
+function readCapacityExhaustion(
+  payload: unknown
+): readonly CloudFleetSandboxCapacityExhaustion[] | undefined {
+  if (
+    !isObject(payload) ||
+    readString(payload, 'code') !== 'sandbox_capacity_exhausted' ||
+    payload.no_sandbox_created !== true ||
+    payload.retryable !== true ||
+    !Array.isArray(payload.capacity) ||
+    payload.capacity.length === 0
+  ) {
+    return undefined;
+  }
+  const capacity: CloudFleetSandboxCapacityExhaustion[] = [];
+  for (const value of payload.capacity) {
+    if (!isObject(value)) return undefined;
+    const provider = readString(value, 'provider');
+    const current = readNumber(value, 'current');
+    const limit = readNumber(value, 'limit');
+    if (
+      provider === undefined ||
+      !CLOUD_FLEET_SANDBOX_PROVIDER_IDS.includes(provider as CloudFleetSandboxProviderId) ||
+      current === undefined ||
+      current < 0 ||
+      limit === undefined ||
+      limit < 0
+    ) {
+      return undefined;
+    }
+    capacity.push({
+      provider: provider as CloudFleetSandboxProviderId,
+      current,
+      limit,
+    });
+  }
+  return capacity;
+}
+
+function capacityExhaustionMessage(capacity: readonly CloudFleetSandboxCapacityExhaustion[]): string {
+  const detail = capacity
+    .map(({ provider, current, limit }) => `${provider}: ${current} current / ${limit} limit`)
+    .join('; ');
+  return `Sandbox capacity is exhausted before allocation (${detail}). No sandbox was created; retry when capacity is available.`;
+}
+
 function assertExpectedSandboxIdentity(payload: JsonRecord, expectedSandboxId: string): void {
   const sandboxId = requiredString(payload, 'sandboxId', 'Cloud fleet sandbox');
   if (sandboxId !== expectedSandboxId) {
@@ -1022,6 +1085,19 @@ export async function ensureCloudFleetSandbox(
       });
     }
     const error = endpointError('provision the fleet sandbox', response, payload);
+    const capacity = response.status === 503 ? readCapacityExhaustion(payload) : undefined;
+    if (capacity !== undefined) {
+      throw new CloudFleetSandboxProvisionError(capacityExhaustionMessage(capacity), {
+        cloudWorkspaceId: resolved.cloudWorkspaceId,
+        ...(sandboxIdentity.name === undefined ? {} : { nodeName: sandboxIdentity.name }),
+        providerId: capacity.length === 1 ? capacity[0].provider : input.providerId,
+        code: 'sandbox_capacity_exhausted',
+        noSandboxCreated: true,
+        retryable: true,
+        capacity,
+        cause: error,
+      });
+    }
     // Gateway/server failures can arrive after Cloud accepted the ensure
     // request but before it could return an identity. Keep every 5xx failure
     // replayable as an unknown outcome, even for legacy custom-name callers;
