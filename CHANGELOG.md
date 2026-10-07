@@ -10,7 +10,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Fixed
 
 - Fleet spawns now recover from transient Relaycast `d1_pressure`; persistent registration pressure returns a named `d1_pressure` error within 25 seconds.
-- Acknowledged `agent.deregister`, cumulative `delivery.ack`, and task action accept/results now recover from transient Relaycast `d1_pressure`.
+- Acknowledged `agent.deregister`, cumulative `delivery.ack`, and action accept/results now recover from transient Relaycast `d1_pressure`; exhausted non-task results are retained across reconnect, and the CLI reports registration pressure as retryable.
 
 ## [13.1.3] - 2026-10-07
 

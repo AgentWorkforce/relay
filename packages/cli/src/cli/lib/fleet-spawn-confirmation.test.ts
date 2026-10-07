@@ -176,6 +176,25 @@ describe('fleet spawn confirmation is observable from the requester (#1430)', ()
     expect((error as Error).message).toContain('/tmp/worker-1430.log');
   });
 
+  it('maps exhausted agent registration pressure to a retryable spawn error', async () => {
+    const { client } = createClient(async (name, invocationId) => ({
+      invocation_id: invocationId,
+      action_name: name,
+      status: 'failed',
+      error:
+        "node agent.register failed for agent 'worker-pressure': d1_pressure: Node liveness retry pending (retry budget exhausted)",
+    }));
+
+    const error = await client.placement
+      .spawn(spawnInput({ confirm: true, confirmTimeoutMs: 1_000, confirmPollIntervalMs: 10 }))
+      .catch((caught: unknown) => caught);
+
+    expect(error).toBeInstanceOf(RelayPlacementError);
+    expect((error as RelayPlacementError).code).toBe('spawn_retryable');
+    expect((error as Error).message).toContain('d1_pressure');
+    expect((error as Error).message).toContain('retry the spawn');
+  });
+
   // MUST-NOT-FIRE — a healthy node. This is the arm a repaired node represents:
   // confirmation must not turn a working spawn into an error.
   it('resolves when the node confirms the spawn completed', async () => {

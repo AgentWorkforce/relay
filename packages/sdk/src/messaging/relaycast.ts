@@ -1070,9 +1070,13 @@ export class RelaycastMessagingClient implements RelayMessagingClient {
               return invocation;
             }
             if (status && CONFIRM_FAILURE_STATUSES.has(status)) {
+              const nodeError = invocation?.error?.trim();
+              const retryablePressure = nodeError?.includes('d1_pressure') === true;
               throw new RelayPlacementError(
-                'spawn_failed',
-                invocation?.error?.trim() || `node '${context.node}' reported ${status} for ${actionName}`,
+                retryablePressure ? 'spawn_retryable' : 'spawn_failed',
+                retryablePressure
+                  ? `${nodeError}. No registration mutation was applied; retry the spawn.`
+                  : nodeError || `node '${context.node}' reported ${status} for ${actionName}`,
                 {
                   ...errorContext,
                   state: 'failed',
