@@ -2440,11 +2440,46 @@ pub(super) fn spawn_declared_metadata_publish(
 }
 
 /// The CLI a launched worker actually runs: a PTY harness's own command,
-/// which can differ from the requested `cli`, else the requested `cli`.
+/// which can differ from the requested `cli`, else the requested `cli`, else
+/// the CLI a provider-only headless spawn runs.
 fn launched_cli(spec: &crate::protocol::AgentSpec) -> &str {
     match spec.harness_config.as_ref() {
         Some(crate::protocol::ResolvedHarnessConfig::Pty(config)) => config.command.as_str(),
-        _ => spec.cli.as_deref().unwrap_or_default(),
+        _ => spec
+            .cli
+            .as_deref()
+            .or_else(|| {
+                spec.provider
+                    .as_ref()
+                    .map(crate::runtime::headless::headless_provider_cli_name)
+            })
+            .unwrap_or_default(),
+    }
+}
+
+#[cfg(test)]
+mod launched_cli_tests {
+    use super::launched_cli;
+    use crate::protocol::AgentSpec;
+    use serde_json::json;
+
+    fn spec(value: serde_json::Value) -> AgentSpec {
+        serde_json::from_value(value).expect("a valid agent spec")
+    }
+
+    #[test]
+    fn the_roster_cli_is_what_the_worker_runs() {
+        let requested = spec(json!({"name": "w", "runtime": "pty", "cli": "codex"}));
+        assert_eq!(launched_cli(&requested), "codex");
+        let harness = spec(json!({
+            "name": "w", "runtime": "pty", "cli": "codex",
+            "harnessConfig": {"runtime": "pty", "command": "/usr/local/bin/claude"}
+        }));
+        assert_eq!(launched_cli(&harness), "/usr/local/bin/claude");
+        let headless = spec(json!({"name": "w", "runtime": "headless", "provider": "opencode"}));
+        assert_eq!(launched_cli(&headless), "opencode");
+        let unknown = spec(json!({"name": "w", "runtime": "pty"}));
+        assert_eq!(launched_cli(&unknown), "");
     }
 }
 
