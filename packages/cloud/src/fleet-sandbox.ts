@@ -68,16 +68,14 @@ export type CloudFleetSandboxProviderId =
   | 'agent37'
   | 'microsandbox';
 
+/** Safe aggregate provider-capacity detail returned before allocation. */
 export type CloudFleetSandboxCapacityExhaustion = {
   readonly provider: CloudFleetSandboxProviderId;
   readonly current: number;
   readonly limit: number;
 };
 
-/**
- * Carries every safe identifier Cloud returned when provisioning failed after
- * the request may have created a billable sandbox.
- */
+/** Describes provisioning failure without granting unproven cleanup authority. */
 export class CloudFleetSandboxProvisionError extends Error {
   readonly cloudWorkspaceId?: string;
   readonly sandboxId?: string;
@@ -85,10 +83,15 @@ export class CloudFleetSandboxProvisionError extends Error {
   readonly providerId?: CloudFleetSandboxProviderId;
   /** A 2xx response proved this exact caller-owned sandbox was provisioned. */
   readonly confirmedProvisioned: boolean;
+  /** Cloud may have accepted the request without returning a complete outcome. */
   readonly outcomeUnknown: boolean;
+  /** Stable Cloud error code for a validated pre-allocation capacity rejection. */
   readonly code?: 'sandbox_capacity_exhausted';
+  /** Cloud affirmatively proved the rejected request allocated no sandbox. */
   readonly noSandboxCreated: boolean;
+  /** The same request can be retried after provider capacity becomes available. */
   readonly retryable: boolean;
+  /** Safe aggregate counts for each provider that blocked allocation. */
   readonly capacity: readonly CloudFleetSandboxCapacityExhaustion[];
 
   constructor(
@@ -654,6 +657,7 @@ function readProviderId(
   return undefined;
 }
 
+/** Parse only the complete, affirmative pre-allocation capacity contract. */
 function readCapacityExhaustion(
   payload: unknown
 ): readonly CloudFleetSandboxCapacityExhaustion[] | undefined {
@@ -694,6 +698,7 @@ function readCapacityExhaustion(
   return capacity;
 }
 
+/** Render safe aggregate provider counts for a definitive capacity rejection. */
 function capacityExhaustionMessage(capacity: readonly CloudFleetSandboxCapacityExhaustion[]): string {
   const detail = capacity
     .map(({ provider, current, limit }) => `${provider}: ${current} current / ${limit} limit`)

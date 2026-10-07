@@ -385,6 +385,7 @@ function mergeFleetNodeListOptions(
   return merged;
 }
 
+/** Register fleet lifecycle and sandbox commands on the root CLI program. */
 export function registerFleetCommands(
   program: Command,
   overrides: Partial<FleetCommandDependencies> = {}
