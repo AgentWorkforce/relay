@@ -98,6 +98,190 @@ pub fn detect_codex_trust_prompt(clean_output: &str) -> bool {
         && lower.contains("no, quit")
 }
 
+/// Detect Muse's interactive provider (device) login screen.
+///
+/// Muse authenticates out of band: the TUI prints a verification URL and a
+/// short code, then blocks until a human approves the device. A fleet-spawned
+/// worker can never clear that screen, so readiness must not be claimed while
+/// it is visible and no startup deadline may release queued work into it.
+///
+/// A single phrase is not sufficient evidence: it may be ordinary task or
+/// agent text visible in an authenticated composer. Instead this recognises a
+/// device-flow layout from corroborating categories (for example a URL plus a
+/// labelled code), so provider wording can change without making a bare glyph
+/// look ready and prose mentioning "device code" does not become an auth
+/// failure.
+pub fn detect_muse_device_auth_prompt(screen: &str) -> bool {
+    let visible_lines: Vec<_> = screen
+        .lines()
+        .map(str::trim)
+        .filter(|line| !line.is_empty())
+        .collect();
+    if visible_lines.is_empty()
+        || !visible_lines
+            .iter()
+            .all(|line| muse_auth_interstitial_line(line))
+    {
+        return false;
+    }
+
+    // Collapse whitespace so a phrase wrapped across grid rows still matches.
+    let normalized = screen
+        .to_lowercase()
+        .split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ");
+    let has_code = contains_any(&normalized, MUSE_DEVICE_CODE_CUES)
+        || screen.lines().any(muse_labelled_code_line);
+    let has_destination = contains_any(&normalized, MUSE_VERIFICATION_DESTINATION_CUES);
+    let has_request = contains_any(&normalized, MUSE_AUTH_REQUEST_CUES);
+    let has_wait = contains_any(&normalized, MUSE_AUTH_WAIT_CUES);
+    let has_command = contains_any(&normalized, MUSE_AUTH_COMMAND_CUES);
+
+    (has_destination && has_code)
+        || (has_request && (has_destination || has_code || has_wait || has_command))
+        || (has_code && has_wait)
+        || (has_wait && has_command)
+}
+
+/// Accept only rows that belong to the compact device-auth interstitial.
+/// Ordinary task and agent output may quote every auth cue; one unrelated row
+/// keeps that transcript from becoming a fatal provider-auth classification.
+fn muse_auth_interstitial_line(line: &str) -> bool {
+    let lower = muse_unframe_line(line).to_ascii_lowercase();
+    if matches!(lower.as_str(), "›" | "❯" | ">") || muse_labelled_code_line(&lower) {
+        return true;
+    }
+
+    if lower.is_empty() {
+        return true;
+    }
+
+    let normalized = lower.split_whitespace().collect::<Vec<_>>().join(" ");
+    let starts_with_any = |cues: &[&str]| cues.iter().any(|cue| normalized.starts_with(cue));
+    let has_destination = contains_any(&normalized, MUSE_VERIFICATION_DESTINATION_CUES);
+
+    (has_destination
+        && (["visit ", "open ", "go to ", "navigate to "]
+            .iter()
+            .any(|prefix| normalized.starts_with(prefix))
+            || normalized.contains("facebook.com/device")
+            || normalized.contains("meta.com/device")))
+        || starts_with_any(MUSE_DEVICE_CODE_CUES)
+        || normalized.starts_with("and enter this code")
+        || normalized.starts_with("sign in to muse")
+        || starts_with_any(MUSE_AUTH_REQUEST_CUES)
+        || (normalized.starts_with("you are ")
+            && (normalized.contains("not signed in") || normalized.contains("not logged in")))
+        || starts_with_any(MUSE_AUTH_WAIT_CUES)
+        || matches!(
+            normalized.as_str(),
+            "waiting for" | "authorization to complete"
+        )
+        || (contains_any(&normalized, MUSE_AUTH_COMMAND_CUES)
+            && (normalized.starts_with("run ") || normalized.starts_with("press enter")))
+}
+
+fn muse_unframe_line(line: &str) -> &str {
+    line.trim()
+        .trim_matches(|ch| {
+            matches!(
+                ch,
+                '─' | '│'
+                    | '┌'
+                    | '┐'
+                    | '└'
+                    | '┘'
+                    | '├'
+                    | '┤'
+                    | '┬'
+                    | '┴'
+                    | '┼'
+                    | '═'
+                    | '║'
+                    | '╔'
+                    | '╗'
+                    | '╚'
+                    | '╝'
+            )
+        })
+        .trim()
+}
+
+fn contains_any(normalized: &str, cues: &[&str]) -> bool {
+    cues.iter().any(|cue| normalized.contains(cue))
+}
+
+fn muse_labelled_code_line(line: &str) -> bool {
+    let lower = muse_unframe_line(line).to_ascii_lowercase();
+    [
+        "code:",
+        "device code:",
+        "user code:",
+        "verification code:",
+        "one-time code:",
+    ]
+    .iter()
+    .any(|label| lower.starts_with(label))
+}
+
+/// Lowercase, single-spaced cues grouped by the independent facts they prove.
+/// No one cue is sufficient to classify a screen as authentication UI.
+const MUSE_DEVICE_CODE_CUES: &[&str] = &[
+    "device code",
+    "user code",
+    "verification code",
+    "one-time code",
+    "enter the code",
+    "enter this code",
+    "device login",
+    "device authentication",
+    "device authorization",
+    "device authorisation",
+];
+
+const MUSE_AUTH_WAIT_CUES: &[&str] = &[
+    "waiting for auth",
+    "waiting for login",
+    "waiting for browser",
+    "waiting for you to",
+];
+
+const MUSE_AUTH_REQUEST_CUES: &[&str] = &[
+    "sign in to continue",
+    "log in to continue",
+    "to continue, sign in",
+    "to continue, log in",
+    "please sign in",
+    "please log in",
+    "please authenticate",
+    "sign in required",
+    "login required",
+    "log in required",
+    "authentication required",
+    "authorization required",
+    "not logged in",
+    "not signed in",
+    "complete the login",
+    "complete sign in",
+    "finish signing in",
+];
+
+const MUSE_VERIFICATION_DESTINATION_CUES: &[&str] = &[
+    "http://",
+    "https://",
+    "open the following url",
+    "open this url",
+    "facebook.com/device",
+    "meta.com/device",
+];
+
+const MUSE_AUTH_COMMAND_CUES: &[&str] = &[
+    "muse login",
+    "press enter to sign in",
+    "press enter to log in",
+];
+
 /// Detect opencode/droid EXECUTE permission prompt in output.
 /// Returns (has_header, has_allow_option).
 /// The prompt looks like:
@@ -679,6 +863,71 @@ Entertoconfirm·Esctocancel\n";
         assert!(!detect_codex_trust_prompt(
             "The agent said yes, continue, then no, quit."
         ));
+    }
+
+    #[test]
+    fn muse_device_auth_screen_is_recognised() {
+        // Device flows are classified from two independent structural cues,
+        // not one vendor's exact prose.
+        for screen in [
+            "Sign in to continue\nVisit https://www.facebook.com/device\nCode: ABCD-1234\n›\n",
+            "Enter this code at meta.com/device: WXYZ-7788\nWaiting for authentication...\n",
+            "Authentication required\nRun `muse login` to continue\n❯\n",
+            // Wrapped across grid rows.
+            "Enter this code: QWER\nwaiting for\nauthorization to complete\n",
+            // Unknown provider wording still has the device-flow shape.
+            "Visit https://example.org/activate\nCode: WXYZ\n›\n",
+            // The real-binary broker fixture surrounds the same layout with
+            // a title and box-drawing decoration.
+            "┌ Sign in to Muse ───┐\nTo continue, sign in with your Meta account.\nOpen https://www.facebook.com/device in a browser\nand enter this code: ABCD-1234\nWaiting for authentication...\n└───┘\n›\n",
+            // Providers may place the content and prompt inside vertical
+            // borders instead of drawing only a title and footer.
+            "┌ Sign in to Muse ───┐\n│ Open https://example.org/activate │\n│ Code: WXYZ │\n│ › │\n└───┘\n",
+        ] {
+            assert!(
+                detect_muse_device_auth_prompt(screen),
+                "device auth screen must be recognised: {screen:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn muse_authenticated_composer_is_not_an_auth_screen() {
+        // Must-not-fire. An authenticated composer renders account footers and
+        // slash-command hints whose bare words overlap with a login screen;
+        // vetoing on those would strand a correctly authenticated node.
+        for screen in [
+            "muse v1.4.0  signed in as relay-node\n/login  /logout  /help\n›\n",
+            "Logged in. Ready.\n❯\n",
+            "Reading src/device/auth.rs to add the login handler\n❯\n",
+            "Document the device code exchange and update its tests.\n›\n",
+            "Agent output:\nSee https://example.org/activate\nCode: WXYZ\n›\n",
+            "Task: explain why authentication required appears at https://example.org/docs\n›\n",
+            "I will authenticate the request before signing the payload.\n›\n",
+            "",
+        ] {
+            assert!(
+                !detect_muse_device_auth_prompt(screen),
+                "authenticated screen must not read as an auth screen: {screen:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn muse_auth_cues_alone_in_task_text_are_not_an_auth_screen() {
+        for cue in MUSE_DEVICE_CODE_CUES
+            .iter()
+            .chain(MUSE_AUTH_WAIT_CUES)
+            .chain(MUSE_AUTH_REQUEST_CUES)
+            .chain(MUSE_VERIFICATION_DESTINATION_CUES)
+            .chain(MUSE_AUTH_COMMAND_CUES)
+        {
+            let screen = format!("Task: document {cue} behavior without changing it.\n›\n");
+            assert!(
+                !detect_muse_device_auth_prompt(&screen),
+                "a lone auth cue in task text must not classify the screen: {cue:?}"
+            );
+        }
     }
 
     #[test]

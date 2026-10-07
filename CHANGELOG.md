@@ -9,15 +9,28 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
-- Broker recovery stops with a clear re-enrollment error when Relaycast refuses node-token rotation proof while retaining the last in-memory and durable credential.
 - Broker recovery preserves the cached node credential when an environment-supplied token is rejected, and `/api/session` reports the actionable terminal reason `env_override_rejected` until the stale override is removed or the Cloud node is re-enrolled.
 - Broker recovery retries once with a concurrently rotated cached token after a proof conflict, unless an environment override is active.
 - Concurrent node-token rotations retain the newest cached credential when an older response arrives late.
 - Node-token rotations reuse request-bound idempotency keys after lost responses, including process-local recovery for environment tokens and durable recovery across restarts when the node name and broker version are unchanged.
 - `/api/session` reports node control as `connecting`, `backoff`, `ok`, or `terminal` so operators can diagnose stopped realtime delivery.
+- `agent-relay fleet spawn --sandbox --sandbox-relayfile-path <path...>` now mounts exactly the listed subtrees — a scoped spawn from inside a large checkout no longer force-mounts the whole repository. The flag accepts up to Cloud's 16-path limit; the inferred repository is materialized and mounted only when its `contents/**` root is in the list (or the flag is omitted, which keeps the repository + `.relayfile` + `.skills` defaults).
+- Scoped `fleet spawn --sandbox` runs that exclude the repository no longer require a clean, pushed checkout — only repository identity is resolved.
+- A repo-relative `--cwd` whose repository is excluded from the scoped mount is now rejected instead of silently starting the worker at the mount root.
+
+## [13.1.2] - 2026-10-06
+
+### Fixed
+
+- Verified Fleet Muse spawns reject missing or unusable node login files before creating a worker, including fresh isolated-auth homes; reported provider-auth errors release capacity through spawn cleanup.
+- Fleet-spawned Muse workers no longer report themselves ready on an interactive device-login screen. Muse readiness now requires a visible prompt rather than output volume, and a recognised login screen fails the spawn with `provider_auth_required` and releases the worker instead of holding node capacity.
+- Broker recovery now stops with a clear re-enrollment error when Relaycast refuses node-token rotation proof, while retaining the last in-memory and durable credential for operator recovery. Accepted rotations use an atomically persisted idempotency key so a lost response or restart can recover the committed replacement.
 - `agent-relay fleet spawn --sandbox` accepts the canonical DEV Relaycast target only when authenticated against the exact DEV Cloud API URL (`https://dev.agentrelay.com/cloud`), while production trust remains unchanged.
 - `agent-relay fleet spawn --sandbox` makes bounded visibility checks for a node-created identity on both the worker-token and workspace-key read paths during channel reconciliation, absorbing Relaycast read-after-write lag without rotating the new worker credential.
 - Failed Fleet spawns keep owned identity cleanup alive for up to 5 attempts before returning the action failure, so teardown cannot strand a same-name identity.
+- A Fleet cleanup still in flight when the broker stops now reports an explicit cleanup-unconfirmed error instead of ending silently, so the caller can retry the cleanup.
+- `agent-relay fleet spawn --sandbox` for a node-created identity now finishes channel reconciliation within a 60-second budget, tolerates bounded read-after-write lag, and fails closed on a sustained channel mismatch.
+- Identity release retried for a node-created Fleet spawn now stops once the shared retry budget is exhausted.
 
 ### Security
 

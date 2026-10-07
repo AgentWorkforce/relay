@@ -1241,6 +1241,30 @@ impl RelaycastHttpClient {
         expected_token_hash: Option<&str>,
         visibility_backoffs_ms: &[u64],
     ) -> Result<()> {
+        let total_budget = identity_visibility_total_budget(
+            visibility_backoffs_ms,
+            NODE_REGISTER_VISIBILITY_REQUEST_TIMEOUT,
+        );
+        self.release_agent_identity_guarded_with_budget(
+            agent_name,
+            reason,
+            delete_identity,
+            expected_token_hash,
+            visibility_backoffs_ms,
+            total_budget,
+        )
+        .await
+    }
+
+    async fn release_agent_identity_guarded_with_budget(
+        &self,
+        agent_name: &str,
+        reason: Option<&str>,
+        delete_identity: bool,
+        expected_token_hash: Option<&str>,
+        visibility_backoffs_ms: &[u64],
+        total_budget: Duration,
+    ) -> Result<()> {
         if let Some(relay) = (*self.relay).as_ref() {
             let reason = reason
                 .map(str::trim)
@@ -1261,36 +1285,55 @@ impl RelaycastHttpClient {
                 let mut body = serde_json::to_value(&request)?;
                 body["expected_token_hash"] = Value::String(expected_token_hash.to_string());
                 let started = Instant::now();
+                let deadline = tokio::time::Instant::now() + total_budget;
+                let client = reqwest::Client::new();
                 let mut busy_attempts = 0usize;
                 let mut agent_not_found_retries = 0usize;
                 let (status, result): (reqwest::StatusCode, Value) = 'cleanup: loop {
-                    let response = reqwest::Client::new()
-                        .post(format!(
-                            "{}/v1/agents/release",
-                            self.base_url
-                                .as_deref()
-                                .unwrap_or("https://cast.agentrelay.com")
-                                .trim_end_matches('/')
-                        ))
-                        .bearer_auth(&self.api_key)
-                        .json(&body)
-                        .timeout(Duration::from_secs(30))
-                        .send()
-                        .await
-                        .context("owned identity cleanup request failed")?;
-                    let status = response.status();
-                    let retry_after = reconcile_cooldown(
-                        response
-                            .headers()
-                            .get(reqwest::header::RETRY_AFTER)
-                            .and_then(|value| value.to_str().ok())
-                            .and_then(|value| value.trim().parse::<u64>().ok())
-                            .map(Duration::from_secs),
+                    let remaining = deadline.saturating_duration_since(tokio::time::Instant::now());
+                    anyhow::ensure!(
+                        !remaining.is_zero(),
+                        "owned identity cleanup for '{agent_name}' exceeded its {total_budget:?} total budget"
                     );
-                    let result: Value = response
-                        .json()
-                        .await
-                        .context("invalid identity cleanup response")?;
+                    let request_budget = NODE_REGISTER_VISIBILITY_REQUEST_TIMEOUT.min(remaining);
+                    let request = async {
+                        let response = client
+                            .post(format!(
+                                "{}/v1/agents/release",
+                                self.base_url
+                                    .as_deref()
+                                    .unwrap_or("https://cast.agentrelay.com")
+                                    .trim_end_matches('/')
+                            ))
+                            .bearer_auth(&self.api_key)
+                            .json(&body)
+                            .timeout(request_budget)
+                            .send()
+                            .await
+                            .context("owned identity cleanup request failed")?;
+                        let status = response.status();
+                        let retry_after = reconcile_cooldown(
+                            response
+                                .headers()
+                                .get(reqwest::header::RETRY_AFTER)
+                                .and_then(|value| value.to_str().ok())
+                                .and_then(|value| value.trim().parse::<u64>().ok())
+                                .map(Duration::from_secs),
+                        );
+                        let result: Value = response
+                            .json()
+                            .await
+                            .context("invalid identity cleanup response")?;
+                        Ok::<_, anyhow::Error>((status, retry_after, result))
+                    };
+                    let (status, retry_after, result) =
+                        tokio::time::timeout(remaining, request)
+                            .await
+                            .with_context(|| {
+                                format!(
+                                    "owned identity cleanup for '{agent_name}' exceeded its {total_budget:?} total budget"
+                                )
+                            })??;
                     let workspace_busy = matches!(status.as_u16(), 429 | 503)
                         && result["error"]["code"] == "workspace_busy";
                     if workspace_busy {
@@ -1307,7 +1350,18 @@ impl RelaycastHttpClient {
                             delay_ms,
                             "owned identity is not yet visible to the guarded release path; retrying"
                         );
-                        tokio::time::sleep(Duration::from_millis(delay_ms)).await;
+                        let remaining =
+                            deadline.saturating_duration_since(tokio::time::Instant::now());
+                        tokio::time::timeout(
+                            remaining,
+                            tokio::time::sleep(Duration::from_millis(delay_ms)),
+                        )
+                        .await
+                        .with_context(|| {
+                            format!(
+                                "owned identity cleanup for '{agent_name}' exceeded its {total_budget:?} total budget during visibility backoff"
+                            )
+                        })?;
                         continue 'cleanup;
                     }
                     if let Some(retry_after) = retry_after.filter(|retry_after| {
@@ -1316,7 +1370,15 @@ impl RelaycastHttpClient {
                             && started.elapsed().saturating_add(*retry_after)
                                 <= WORKSPACE_BUSY_RECONCILE_BUDGET
                     }) {
-                        tokio::time::sleep(retry_after).await;
+                        let remaining =
+                            deadline.saturating_duration_since(tokio::time::Instant::now());
+                        tokio::time::timeout(remaining, tokio::time::sleep(retry_after))
+                            .await
+                            .with_context(|| {
+                                format!(
+                                    "owned identity cleanup for '{agent_name}' exceeded its {total_budget:?} total budget during workspace backoff"
+                                )
+                            })?;
                         continue 'cleanup;
                     }
                     break 'cleanup (status, result);
@@ -1858,14 +1920,14 @@ impl RelaycastHttpClient {
                             worker = %name,
                             agent_id = %expected_agent_id,
                             attempt = attempt + 1,
-                            "worker-token channel scope is not yet visible; retrying"
+                            expected = ?expected,
+                            actual = ?actual,
+                            "node-registered channel scope is not yet converged; retrying"
                         );
                         continue;
                     }
                     anyhow::bail!(
-                        "worker-token channel scope mismatch for '{name}': expected {:?}, got {:?}",
-                        expected,
-                        actual
+                        "worker-token channel scope mismatch for '{name}': expected {expected:?}, got {actual:?}"
                     );
                 }
                 Ok(Err(RelayError::Api {
@@ -3225,6 +3287,83 @@ mod tests {
             .await
             .expect("worker-token scope should tolerate bounded visibility lag");
         server.await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn node_registered_channel_scope_retries_a_lagging_successful_read() {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let base_url = format!("http://{}", listener.local_addr().unwrap());
+        let server = tokio::spawn(async move {
+            for attempt in 0..2 {
+                let (mut stream, _) = listener.accept().await.unwrap();
+                let mut request = [0_u8; 4096];
+                let bytes = stream.read(&mut request).await.unwrap();
+                let request = String::from_utf8_lossy(&request[..bytes]);
+                assert!(request.starts_with("GET /v1/agent "), "{request}");
+                let channels = if attempt == 0 {
+                    r#"[{"id":"ch-general","name":"general","role":"member","joined_at":"2026-10-05T00:00:00Z"}]"#
+                } else {
+                    r#"[{"id":"ch-engineering","name":"engineering","role":"member","joined_at":"2026-10-05T00:00:00Z"}]"#
+                };
+                let body = format!(
+                    r#"{{"ok":true,"data":{{"id":"agent-node-created","workspace_id":"ws-dev","name":"cloud-zero-config","type":"agent","status":"online","persona":null,"metadata":{{}},"channels":{channels}}}}}"#
+                );
+                let response = format!(
+                    "HTTP/1.1 200 OK\r\ncontent-type: application/json\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{body}",
+                    body.len()
+                );
+                stream.write_all(response.as_bytes()).await.unwrap();
+            }
+        });
+        let client = RelaycastHttpClient::new(Some(base_url), "rk_live_test", "broker", "codex");
+
+        client
+            .verify_node_registered_agent_channel_scope_with_backoffs(
+                "cloud-zero-config",
+                "agent-node-created",
+                "at_live_scope_lag",
+                &["engineering".into()],
+                &[0],
+            )
+            .await
+            .expect("a recent channel join may lag one successful identity read");
+        server.await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn node_registered_channel_scope_mismatch_fails_after_bounded_retries() {
+        let server = MockServer::start();
+        let scope = server.mock(|when, then| {
+            when.method(GET)
+                .path("/v1/agent")
+                .header("authorization", "Bearer at_live_scope_mismatch");
+            then.status(200).json_body(json!({"ok":true,"data":{
+                "id":"agent-node-created","workspace_id":"ws-dev",
+                "name":"cloud-zero-config","type":"agent","status":"online",
+                "persona":null,"metadata":{},
+                "channels":[{"id":"ch-general","name":"general","role":"member",
+                    "joined_at":"2026-10-05T00:00:00Z"}]
+            }}));
+        });
+        let client =
+            RelaycastHttpClient::new(Some(server.base_url()), "rk_live_test", "broker", "codex");
+
+        let error = client
+            .verify_node_registered_agent_channel_scope_with_backoffs(
+                "cloud-zero-config",
+                "agent-node-created",
+                "at_live_scope_mismatch",
+                &["engineering".into()],
+                &[0, 0],
+            )
+            .await
+            .expect_err("a genuine channel-set mismatch must fail closed after bounded retries");
+
+        assert!(
+            error.to_string().contains("channel scope mismatch"),
+            "{error:#}"
+        );
+        scope.assert_hits(3);
     }
 
     #[tokio::test]
@@ -4985,6 +5124,38 @@ mod tests {
             .expect("guarded cleanup should retry transient by-name absence");
         server.await.unwrap();
         assert!(client.owned_identity_token_hash("owned-worker").is_err());
+    }
+
+    #[tokio::test]
+    async fn owned_identity_cleanup_has_one_overall_deadline() {
+        use sha2::{Digest, Sha256};
+        let server = MockServer::start();
+        let cleanup = server.mock(|when, then| {
+            when.method(POST).path("/v1/agents/release");
+            then.status(404).json_body(json!({"ok":false,"error":{
+                "code":"agent_not_found","message":"not visible by name yet"
+            }}));
+        });
+        let client = seeded_http_client(&server.base_url());
+        client.seed_agent_token("owned-worker", "owned-token");
+        let expected_hash = format!("{:x}", Sha256::digest(b"owned-token"));
+        let started = tokio::time::Instant::now();
+
+        let error = client
+            .release_agent_identity_guarded_with_budget(
+                "owned-worker",
+                None,
+                true,
+                Some(&expected_hash),
+                &[5_000],
+                Duration::from_millis(50),
+            )
+            .await
+            .expect_err("the guarded release loop must honor one overall deadline");
+
+        assert!(error.to_string().contains("total budget"), "{error:#}");
+        assert!(started.elapsed() < Duration::from_millis(500));
+        cleanup.assert_hits(1);
     }
 
     #[tokio::test]

@@ -108,6 +108,51 @@ describe('resolveSandboxRepository', () => {
     );
   });
 
+  it('identity mode resolves repository identity without cleanliness or push checks', () => {
+    const git = vi.fn((_command: string, args: readonly string[]) => {
+      if (args.includes('--show-toplevel')) return '/checkout\n';
+      if (args.includes('get-url')) return 'git@github.com:AgentWorkforce/relay.git\n';
+      if (args.includes('HEAD') && args.includes('rev-parse'))
+        return '0123456789abcdef0123456789abcdef01234567\n';
+      throw new Error(`unexpected git invocation: ${args.join(' ')}`);
+    });
+    const result = resolveSandboxRepository(
+      '/checkout',
+      undefined,
+      { execFileSync: git as never, cwd: () => '/checkout' },
+      'identity'
+    );
+    expect(result).toEqual({
+      repository: 'AgentWorkforce/relay',
+      repositoryName: 'relay',
+      revision: '0123456789abcdef0123456789abcdef01234567',
+      projectRoot: '/checkout',
+      repositoryRelativeCwd: '',
+      workerCwd: '/srv/agent-workforce/relay',
+    });
+  });
+
+  it('identity mode reports no repository when the origin is unusable', () => {
+    const git = vi.fn((_command: string, args: readonly string[]) => {
+      if (args.includes('--show-toplevel')) return '/checkout\n';
+      throw new Error('no origin');
+    });
+    expect(
+      resolveSandboxRepository('/checkout', undefined, { execFileSync: git as never }, 'identity')
+    ).toBeUndefined();
+  });
+
+  it('identity mode still rejects a cwd outside the checkout', () => {
+    expect(() =>
+      resolveSandboxRepository(
+        '/checkout',
+        '/Users/operator/private',
+        { execFileSync: gitMock() as never },
+        'identity'
+      )
+    ).toThrow(/outside the checked-out repository/);
+  });
+
   it('rejects a Git checkout with no usable origin', () => {
     const run = vi.fn((_command: string, args: readonly string[]) => {
       if (args.includes('--show-toplevel')) return '/checkout\n';

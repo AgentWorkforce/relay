@@ -30,6 +30,16 @@ export interface RuntimeSpawnOptions {
   /** Environment variables for the broker process. */
   env?: NodeJS.ProcessEnv;
   /**
+   * Whether to merge the launcher's environment into the broker child.
+   * Defaults to true for backwards compatibility. Set false at trust
+   * boundaries that construct a complete explicit child environment,
+   * including PATH when the broker must discover child executables. The
+   * explicit env must be allowlist-filtered; known caller-owned Relay node
+   * and workspace credentials are rejected in isolated mode. Supply an
+   * intentional workspace credential through workspaceKey instead.
+   */
+  inheritParentEnv?: boolean;
+  /**
    * Descriptors open in this process to hand the broker child, appended after
    * stdio. They are inherited across `fork`, so whatever they hold — an
    * ownership lease, a lock — is held by the child from the instant it exists,
@@ -100,33 +110,54 @@ function nonEmptyString(value: string | undefined): string | undefined {
   return trimmed ? trimmed : undefined;
 }
 
+const UNSAFE_ISOLATED_ENV_KEYS = [
+  'RELAY_NODE_ID',
+  'RELAY_NODE_TOKEN',
+  'AGENT_RELAY_ENROLLED_NODE_ID',
+  'RELAY_WORKSPACE_KEY',
+  'AGENT_RELAY_WORKSPACE_KEY',
+  'RELAY_API_KEY',
+] as const;
+
 /** @internal */
 export function buildBrokerSpawnConfig(
   options: RuntimeSpawnOptions | undefined,
   apiKey: string,
   parentEnv: NodeJS.ProcessEnv = process.env
 ): BrokerSpawnConfig {
+  if (options?.inheritParentEnv === false) {
+    const present = UNSAFE_ISOLATED_ENV_KEYS.filter(
+      (name) => typeof options.env?.[name] === 'string' && options.env[name]!.trim() !== ''
+    );
+    if (present.length > 0) {
+      throw new Error(
+        `Isolated broker spawn refuses caller-owned Relay credentials: ${present.join(', ')}. ` +
+          'Pass an intentional workspace credential through workspaceKey.'
+      );
+    }
+  }
+  const inheritedEnv = options?.inheritParentEnv === false ? {} : parentEnv;
   const cwd = options?.cwd ?? process.cwd();
   const brokerName =
     nonEmptyString(options?.brokerName) ??
     nonEmptyString(options?.env?.AGENT_RELAY_BROKER_NAME) ??
-    nonEmptyString(parentEnv.AGENT_RELAY_BROKER_NAME) ??
+    nonEmptyString(inheritedEnv.AGENT_RELAY_BROKER_NAME) ??
     (path.basename(cwd) || 'project');
   const workspaceKey =
     nonEmptyString(options?.workspaceKey) ??
     nonEmptyString(options?.env?.RELAY_WORKSPACE_KEY) ??
     nonEmptyString(options?.env?.AGENT_RELAY_WORKSPACE_KEY) ??
-    nonEmptyString(parentEnv.RELAY_WORKSPACE_KEY) ??
-    nonEmptyString(parentEnv.AGENT_RELAY_WORKSPACE_KEY);
+    nonEmptyString(inheritedEnv.RELAY_WORKSPACE_KEY) ??
+    nonEmptyString(inheritedEnv.AGENT_RELAY_WORKSPACE_KEY);
   const channels = options?.channels ?? ['general'];
   const timeoutMs = options?.startupTimeoutMs ?? 45_000;
   const userArgs = buildBrokerInitArgs(options?.binaryArgs);
 
   const env = {
-    ...parentEnv,
+    ...inheritedEnv,
     ...options?.env,
     AGENT_RELAY_STARTUP_DEBUG:
-      options?.env?.AGENT_RELAY_STARTUP_DEBUG ?? parentEnv.AGENT_RELAY_STARTUP_DEBUG ?? '1',
+      options?.env?.AGENT_RELAY_STARTUP_DEBUG ?? inheritedEnv.AGENT_RELAY_STARTUP_DEBUG ?? '1',
     RELAY_BROKER_API_KEY: apiKey,
     ...(workspaceKey
       ? {
