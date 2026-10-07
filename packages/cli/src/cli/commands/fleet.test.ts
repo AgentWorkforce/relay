@@ -3893,6 +3893,77 @@ describe('fleet command support', () => {
     expect(warnings.join('\n')).toContain(`--sandbox-id '${REPLAY_SANDBOX_ID}'`);
   });
 
+  it('prints definitive capacity detail without cleanup or unknown-outcome guidance', async () => {
+    const warnings: string[] = [];
+    const deleteCloudFleetSandbox = vi.fn(async () => undefined);
+    const capacityMessage =
+      'Sandbox capacity is exhausted before allocation (agent37: 14 current / 10 limit). No sandbox was created; retry when capacity is available.';
+    const program = new Command();
+    program.exitOverride();
+    registerFleetCommands(program, {
+      resolveSandboxRepository: () => undefined,
+      sdk: {
+        createAgentRelay: vi.fn() as never,
+        createWorkspaceRelay: vi.fn(() => ({
+          workspace: { info: vi.fn(async () => ({ id: 'rw_abc' })) },
+        })) as never,
+        createWorkspace: vi.fn() as never,
+        log: vi.fn(),
+        error: vi.fn(),
+        exit: (() => {
+          throw new Error('__exit__');
+        }) as never,
+      },
+      ensureCloudFleetSandbox: vi.fn(async () => {
+        throw new CloudFleetSandboxProvisionError(capacityMessage, {
+          cloudWorkspaceId: '50587328-441d-4acb-b8f3-dbe1b3c5de99',
+          nodeName: REPLAY_SANDBOX_NAME,
+          providerId: 'agent37',
+          code: 'sandbox_capacity_exhausted',
+          noSandboxCreated: true,
+          retryable: true,
+          capacity: [{ provider: 'agent37', current: 14, limit: 10 }],
+        });
+      }),
+      deleteCloudFleetSandbox,
+      createFleetWorkspaceClient: vi.fn() as never,
+      log: () => undefined,
+      warn: (...args: unknown[]) => warnings.push(args.join(' ')),
+      error: () => undefined,
+    });
+
+    await expect(
+      program.parseAsync(
+        [
+          'fleet',
+          'spawn',
+          'codex',
+          '--sandbox',
+          '--sandbox-id',
+          REPLAY_SANDBOX_ID,
+          '--sandbox-name',
+          REPLAY_SANDBOX_NAME,
+          '--workspace-id',
+          'rw_abc',
+          '--name',
+          'sandbox-worker',
+          '--task',
+          'Work',
+          '--workspace-key',
+          'rk_live_test',
+          '--token',
+          'at_live_lead',
+        ],
+        { from: 'user' }
+      )
+    ).rejects.toThrow('__exit__');
+
+    expect(deleteCloudFleetSandbox).not.toHaveBeenCalled();
+    expect(warnings).toEqual([capacityMessage]);
+    expect(warnings.join('\n')).not.toContain('outcome is unknown');
+    expect(warnings.join('\n')).not.toContain('check Cloud Fleet');
+  });
+
   it('preserves the caller Daytona ID after a matched malformed provisioned response', async () => {
     const warnings: string[] = [];
     const deleteCloudFleetSandbox = vi.fn(async () => undefined);

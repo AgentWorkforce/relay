@@ -101,6 +101,7 @@ export {
   type CloudFleetSandboxReused,
   type CloudFleetSandboxProvisioningTimeout,
   type CloudFleetSandboxProviderId,
+  type CloudFleetSandboxCapacityExhaustion,
   type CloudFleetSandboxWorkloadProfile,
   type DeleteCloudFleetSandboxInput,
   type CloudFleetSandboxRequestOptions,

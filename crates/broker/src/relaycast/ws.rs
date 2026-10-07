@@ -920,16 +920,22 @@ impl RelaycastHttpClient {
     ///
     /// Callers treat this as best-effort: the agent is registered and running
     /// either way, so a failure here must be logged, not fatal.
+    ///
+    /// `spawned` is what this broker knows about the worker it spawned (see
+    /// [`spawned_worker_metadata`]); it rides the same PATCH so a spawn costs
+    /// one request either way.
     pub async fn publish_declared_metadata(
         &self,
         agent_name: &str,
         declared: &AgentRegistrationMetadata,
+        spawned: &serde_json::Map<String, Value>,
     ) -> std::result::Result<(), RelaycastRegistrationError> {
         let name = agent_name.trim();
         if name.is_empty() {
             return Err(RelaycastRegistrationError::InvalidAgentName);
         }
-        let declared_metadata = declared_metadata_map(declared);
+        let mut declared_metadata = spawned.clone();
+        declared_metadata.extend(declared_metadata_map(declared));
         if declared_metadata.is_empty() {
             return Ok(());
         }
@@ -939,7 +945,8 @@ impl RelaycastHttpClient {
                 agent_name: name.to_string(),
                 detail: "SDK relay client not initialized".to_string(),
             })?;
-        // Send ONLY the declared keys. `PATCH /v1/agents/:name` merges them over
+        // Send ONLY the declared keys and the spawned worker's `cli`, `host` and
+        // `owner_hash`. `PATCH /v1/agents/:name` merges them over
         // the record's existing metadata server-side — verified in the engine at
         // both the ref fleet-e2e pins (v7.0.0, eb7563ff) and relaycast `main`
         // (`packages/engine/src/routes/agent.ts`:
@@ -2968,6 +2975,85 @@ async fn register_new_spawn_identity_inner(
     }
 }
 
+/// What a broker knows about a worker it spawned, as roster metadata: the
+/// CLI it runs (`cli`), this machine's name (`host`) and the signed-in Cloud
+/// person who runs this broker (`owner_hash`, the SHA-256 hex of their Cloud
+/// user id). These are the keys Agent Relay Desktop stamps on the sessions it
+/// registers, so a worker spawned on someone's fleet node is listed as theirs
+/// and on that machine instead of as an unowned agent. A key whose value is
+/// unknown is omitted, never sent blank.
+pub fn spawned_worker_metadata(cli: &str) -> serde_json::Map<String, Value> {
+    let host = hostname::get()
+        .ok()
+        .and_then(|name| name.into_string().ok());
+    spawned_worker_metadata_from(cli, host.as_deref(), signed_in_user_id().as_deref())
+}
+
+fn spawned_worker_metadata_from(
+    cli: &str,
+    host: Option<&str>,
+    user_id: Option<&str>,
+) -> serde_json::Map<String, Value> {
+    let mut metadata = serde_json::Map::new();
+    let cli = crate::cli::command_parse::parse_cli_command(cli)
+        .map(|(command, _)| crate::cli::command_parse::normalize_cli_name(&command))
+        .unwrap_or_default();
+    if !cli.is_empty() {
+        metadata.insert("cli".into(), Value::String(cli));
+    }
+    // The desktop's label: no trailing dot or `.local` (macOS Bonjour names).
+    if let Some(host) = host.map(|host| host.trim().trim_end_matches('.')) {
+        let host = match host.len().checked_sub(".local".len()) {
+            Some(cut)
+                if host.is_char_boundary(cut) && host[cut..].eq_ignore_ascii_case(".local") =>
+            {
+                &host[..cut]
+            }
+            _ => host,
+        };
+        if !host.is_empty() {
+            metadata.insert("host".into(), Value::String(host.to_string()));
+        }
+    }
+    if let Some(user_id) = user_id.map(str::trim).filter(|id| !id.is_empty()) {
+        let hash = Sha256::digest(user_id.as_bytes())
+            .iter()
+            .map(|byte| format!("{byte:02x}"))
+            .collect::<String>();
+        metadata.insert("owner_hash".into(), Value::String(hash));
+    }
+    metadata
+}
+
+/// The Cloud user this broker runs for: the CLI's stored sign-in, read at
+/// each spawn, so signing in or out takes effect for the next worker without a
+/// broker restart. `AGENT_RELAY_USER_ID` is deliberately not used: it is a
+/// copy taken when the broker started, which outlives a sign-out, and a broker
+/// started by a service manager has none.
+fn signed_in_user_id() -> Option<String> {
+    let data_dir = std::env::var("AGENT_RELAY_DATA_DIR")
+        .ok()
+        .map(|dir| dir.trim().to_string())
+        .filter(|dir| !dir.is_empty())
+        .map(std::path::PathBuf::from)
+        .or_else(|| dirs::home_dir().map(|home| home.join(".agentworkforce/relay")))?;
+    let file = std::fs::read_to_string(data_dir.join("cloud-identity.json")).ok()?;
+    user_id_from_identity(&file)
+}
+
+/// The `userId` of a stored identity, held to the CLI's own rules: printable
+/// ASCII, at most 128 bytes once trimmed.
+fn user_id_from_identity(file: &str) -> Option<String> {
+    let identity: Value = serde_json::from_str(file).ok()?;
+    identity["userId"]
+        .as_str()
+        .map(str::trim)
+        .filter(|id| {
+            !id.is_empty() && id.len() <= 128 && id.chars().all(|c| (' '..='~').contains(&c))
+        })
+        .map(str::to_string)
+}
+
 /// The declared fields alone, trimmed, with blanks omitted.
 ///
 /// Omitting rather than sending `""` matters because both callers merge this
@@ -4421,6 +4507,7 @@ mod tests {
                     role: None,
                     objective: Some("Publish registration metadata".to_string()),
                 },
+                &serde_json::Map::new(),
             )
             .await
             .expect("publishing declared metadata should succeed");
@@ -4454,12 +4541,98 @@ mod tests {
                     project: Some("   ".to_string()),
                     ..Default::default()
                 },
+                &serde_json::Map::new(),
             )
             .await
             .expect("an empty declaration is a no-op, not an error");
 
         any_read.assert_hits(0);
         any_write.assert_hits(0);
+    }
+
+    /// The worker's CLI, machine and owner ride the declared-metadata PATCH,
+    /// so the roster can show whose worker it is, where it runs and its icon.
+    #[tokio::test]
+    async fn publish_declared_metadata_carries_the_spawned_worker_keys() {
+        let server = MockServer::start();
+        let update = server.mock(|when, then| {
+            when.method(PATCH)
+                .path("/v1/agents/worker-a")
+                .json_body(json!({
+                    "metadata": {
+                        "cli": "claude",
+                        "host": "Finn-Mac-Mini",
+                        "owner_hash": "abc",
+                        "objective": "Check the roster"
+                    }
+                }));
+            then.status(200).json_body(json!({
+                "ok": true,
+                "data": {
+                    "id": "agent_worker_a",
+                    "name": "worker-a",
+                    "type": "agent",
+                    "status": "online",
+                    "persona": null,
+                    "metadata": {}
+                }
+            }));
+        });
+        let spawned = json!({"cli": "claude", "host": "Finn-Mac-Mini", "owner_hash": "abc"});
+
+        let client = seeded_http_client(&server.base_url());
+        client
+            .publish_declared_metadata(
+                "worker-a",
+                &AgentRegistrationMetadata {
+                    objective: Some("Check the roster".to_string()),
+                    ..Default::default()
+                },
+                spawned.as_object().unwrap(),
+            )
+            .await
+            .expect("publishing spawned worker metadata should succeed");
+
+        update.assert_hits(1);
+    }
+
+    #[test]
+    fn spawned_worker_metadata_matches_the_desktop_keys() {
+        let metadata = super::spawned_worker_metadata_from(
+            "/opt/homebrew/bin/claude --model opus",
+            Some("Finn-Mac-Mini.local."),
+            Some(" user-1 "),
+        );
+        assert_eq!(
+            serde_json::Value::Object(metadata),
+            json!({
+                "cli": "claude",
+                "host": "Finn-Mac-Mini",
+                // SHA-256 of "user-1", the desktop's `identity_hash`.
+                "owner_hash": "c6c289e49e9c05b2145860387b73bcb18df43fb09a1e4a4a9713c76c88bb541b"
+            })
+        );
+    }
+
+    #[test]
+    fn spawned_worker_metadata_omits_what_it_does_not_know() {
+        let metadata = super::spawned_worker_metadata_from("  ", Some(" .local "), Some(""));
+        assert!(metadata.is_empty(), "unexpected keys: {metadata:?}");
+        let metadata = super::spawned_worker_metadata_from("codex", Some("éabcde"), None);
+        assert_eq!(metadata["host"], "éabcde");
+        let metadata = super::spawned_worker_metadata_from("codex", None, None);
+        assert_eq!(serde_json::Value::Object(metadata), json!({"cli": "codex"}));
+    }
+
+    #[test]
+    fn stored_identity_user_id_follows_the_cli_rules() {
+        let id = |file: &str| super::user_id_from_identity(file);
+        assert_eq!(id(r#"{"userId":" user-1 "}"#).as_deref(), Some("user-1"));
+        assert_eq!(id(r#"{"userId":"bad\u0007id"}"#), None);
+        assert_eq!(id(&format!(r#"{{"userId":"{}"}}"#, "u".repeat(129))), None);
+        assert_eq!(id(r#"{"userId":""}"#), None);
+        assert_eq!(id(r#"{"email":"a@b"}"#), None);
+        assert_eq!(id("not json"), None);
     }
 
     /// A presence update used to call POST /v1/agents/release with no reason.

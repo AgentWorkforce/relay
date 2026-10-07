@@ -385,6 +385,7 @@ function mergeFleetNodeListOptions(
   return merged;
 }
 
+/** Register fleet lifecycle and sandbox commands on the root CLI program. */
 export function registerFleetCommands(
   program: Command,
   overrides: Partial<FleetCommandDependencies> = {}
@@ -829,6 +830,8 @@ export function registerFleetCommands(
                   }`
                 );
               });
+          } else if (error instanceof CloudFleetSandboxProvisionError && error.noSandboxCreated) {
+            deps.warn(error.message);
           } else if (error instanceof CloudFleetSandboxProvisionError && error.outcomeUnknown) {
             deps.warn(
               `Cloud did not return a complete provisioning response. The outcome is unknown; check Cloud Fleet for node '${

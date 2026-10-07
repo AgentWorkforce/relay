@@ -866,11 +866,6 @@ pub(super) async fn spawn_worker_from_request(
                         worker = %name,
                         "bound agent to node via agent.register for action.invoke spawn"
                     );
-                    super::fleet::spawn_declared_metadata_publish(
-                        workspace_http,
-                        name.as_str(),
-                        registration_metadata,
-                    );
                     let relay_key = token.token.clone();
                     node_registered_agent_id = Some(token.agent_id.clone());
                     fleet_registration = Some((token, invocation_id.clone(), session_ref.clone()));
@@ -900,14 +895,6 @@ pub(super) async fn spawn_worker_from_request(
                     .await
                     {
                         Ok(token) => {
-                            // Declared metadata is published over the agent API
-                            // exactly as on the node path; registration itself
-                            // stays on the cache- and rate-limit-aware call.
-                            super::fleet::spawn_declared_metadata_publish(
-                                workspace_http,
-                                name.as_str(),
-                                registration_metadata,
-                            );
                             tracing::info!(
                                 worker = %name,
                                 "pre-registered agent via broker for WS spawn"
@@ -1017,6 +1004,17 @@ pub(super) async fn spawn_worker_from_request(
         .await
     {
         Ok(effective_spec) => {
+            // Every hosted credential path (node bind, HTTP fallback or a
+            // supplied token) publishes declared metadata, only once the worker
+            // launched, as the API spawn does.
+            if worker_relay_key.is_some() {
+                super::fleet::spawn_declared_metadata_publish(
+                    workspace_http,
+                    name.as_str(),
+                    &effective_spec,
+                    registration_metadata,
+                );
+            }
             if owns_identity {
                 if let Some(worker) = workers.workers.get(&name) {
                     workers
