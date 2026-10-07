@@ -2699,6 +2699,7 @@ struct ApplicationLiveness {
     last_acknowledged: Instant,
     pending_inventory_syncs: VecDeque<PendingInventorySync>,
     pending_retryable_control_frames: HashMap<String, PendingRetryableControlFrame>,
+    exhausted_retryable_control_frames: HashMap<String, Instant>,
     ready: bool,
 }
 
@@ -2709,11 +2710,13 @@ impl ApplicationLiveness {
             last_acknowledged: Instant::now(),
             pending_inventory_syncs: VecDeque::new(),
             pending_retryable_control_frames: HashMap::new(),
+            exhausted_retryable_control_frames: HashMap::new(),
             ready: false,
         }
     }
 
     fn track_retryable_control_frame(&mut self, id: String, frame: BrokerToRelaycast) {
+        self.exhausted_retryable_control_frames.remove(&id);
         self.pending_retryable_control_frames.insert(
             id,
             PendingRetryableControlFrame {
@@ -2728,6 +2731,10 @@ impl ApplicationLiveness {
 
     fn complete_retryable_control_frame(&mut self, id: &str) {
         self.pending_retryable_control_frames.remove(id);
+    }
+
+    fn consume_exhausted_retryable_control_frame(&mut self, id: &str) -> bool {
+        self.exhausted_retryable_control_frames.remove(id).is_some()
     }
 
     fn schedule_control_d1_pressure_retry(
@@ -2772,6 +2779,10 @@ impl ApplicationLiveness {
     }
 
     fn expire_retryable_control_frames(&mut self, now: Instant) -> Vec<(String, String)> {
+        self.exhausted_retryable_control_frames
+            .retain(|_, exhausted_at| {
+                now.saturating_duration_since(*exhausted_at) < CONTROL_D1_PRESSURE_RETRY_BUDGET
+            });
         let expired: Vec<String> = self
             .pending_retryable_control_frames
             .iter()
@@ -2786,6 +2797,12 @@ impl ApplicationLiveness {
             .filter_map(|id| {
                 let pending = self.pending_retryable_control_frames.remove(&id)?;
                 pending.last_d1_pressure.map(|reason| {
+                    // At most one response can still be in flight because a retry is
+                    // scheduled only after the previous pressure response arrives.
+                    // Keep a one-shot tombstone so that late terminal response cannot
+                    // produce a second task outcome after the timeout path below.
+                    self.exhausted_retryable_control_frames
+                        .insert(id.clone(), now);
                     (
                         id,
                         format!("d1_pressure: {reason} (retry budget exhausted)"),
@@ -3490,19 +3507,31 @@ async fn run_connected_once_with_completions(
             _ = &mut control_retry, if control_retry_delay.is_some() => {
                 let now = Instant::now();
                 for (id, reason) in application_liveness.expire_retryable_control_frames(now) {
+                    let mut surfaced_to_owner = false;
                     if let Some(pending) = pending_deregistrations.remove(&id) {
                         let _ = pending.send(Err(reason.clone()));
+                        surfaced_to_owner = true;
                     }
                     if id.starts_with(crate::runtime::task_request_prefix()) {
                         let _ = event_tx.send(FleetControlEvent::Message(RelaycastToBroker::Error(
                             crate::fleet_wire::Error {
                                 v: FLEET_WIRE_VERSION,
-                                id,
+                                id: id.clone(),
                                 ok: false,
                                 code: "d1_pressure".to_string(),
-                                message: reason,
+                                message: reason.clone(),
                             },
                         ))).await;
+                        surfaced_to_owner = true;
+                    }
+                    if !surfaced_to_owner {
+                        tracing::error!(
+                            target = "relay_broker::fleet",
+                            node_id = %config.node_id,
+                            id,
+                            reason,
+                            "control frame d1_pressure retry budget exhausted"
+                        );
                     }
                 }
                 if let Some(frame) = application_liveness.take_due_control_retry(now) {
@@ -3727,6 +3756,17 @@ where
                     }
                     match frame {
                         RelaycastToBroker::Reply(reply) => {
+                            if application_liveness
+                                .consume_exhausted_retryable_control_frame(&reply.id)
+                            {
+                                tracing::debug!(
+                                    target = "relay_broker::fleet",
+                                    node_id,
+                                    id = %reply.id,
+                                    "consumed late reply for an exhausted control-frame retry"
+                                );
+                                return true;
+                            }
                             application_liveness.complete_retryable_control_frame(&reply.id);
                             if reply.id.starts_with(crate::runtime::task_request_prefix()) {
                                 return event_tx
@@ -3771,6 +3811,7 @@ where
                                     complete_agent_registration(
                                         reply,
                                         pending_agent_registrations,
+                                        application_liveness,
                                         sink,
                                     )
                                     .await
@@ -3832,6 +3873,17 @@ where
                                     ControlPressureRetry::Unmatched => {}
                                 }
                             }
+                            if application_liveness
+                                .consume_exhausted_retryable_control_frame(&error.id)
+                            {
+                                tracing::debug!(
+                                    target = "relay_broker::fleet",
+                                    node_id,
+                                    id = %error.id,
+                                    "consumed late error for an exhausted control-frame retry"
+                                );
+                                return true;
+                            }
                             application_liveness.complete_retryable_control_frame(&error.id);
                             if error.id.starts_with(crate::runtime::task_request_prefix()) {
                                 return event_tx
@@ -3852,17 +3904,6 @@ where
                                     pending_agent_registrations,
                                 );
                             }
-                            // Surface every engine rejection at error level. A node.register or
-                            // heartbeat rejection (e.g. node_name_conflict) matches no pending
-                            // agent registration below, so without this it vanishes silently —
-                            // leaving the node half-registered with dead heartbeats and no signal.
-                            tracing::error!(
-                                target = "relay_broker::fleet",
-                                code = %error.code,
-                                message = %error.message,
-                                id = %error.id,
-                                "engine rejected a node control frame"
-                            );
                             if error.code == "d1_pressure" {
                                 let reason = error.message.clone();
                                 match schedule_agent_registration_d1_pressure_retry(
@@ -3918,6 +3959,17 @@ where
                                     return true;
                                 }
                             }
+                            // Surface every unhandled engine rejection at error level. A
+                            // node.register or heartbeat rejection (e.g. node_name_conflict)
+                            // matches no pending operation below, so without this it vanishes
+                            // silently. Expected, retryable pressure returned above at WARN.
+                            tracing::error!(
+                                target = "relay_broker::fleet",
+                                code = %error.code,
+                                message = %error.message,
+                                id = %error.id,
+                                "engine rejected a node control frame"
+                            );
                             fail_agent_registration(
                                 &error.id,
                                 format!("{}: {}", error.code, error.message),
@@ -3956,6 +4008,7 @@ where
 async fn complete_agent_registration<S>(
     reply: crate::fleet_wire::Reply,
     pending_agent_registrations: &mut HashMap<String, PendingAgentRegistration>,
+    application_liveness: &mut ApplicationLiveness,
     sink: &mut S,
 ) -> bool
 where
@@ -3980,7 +4033,7 @@ where
             let name = data.as_ref()?.name.as_deref()?;
             let key = pending_agent_registrations
                 .iter()
-                .find(|(_, pending)| pending.name == name)
+                .find(|(_, pending)| pending.reply.is_some() && pending.name == name)
                 .map(|(key, _)| key.clone())?;
             pending_agent_registrations
                 .remove(&key)
@@ -4024,17 +4077,14 @@ where
         agent_id = %late_token.agent_id,
         "late agent.register success after caller stopped waiting; sending compensating agent.deregister"
     );
-    send_wire(
-        sink,
-        &BrokerToRelaycast::AgentDeregister(AgentDeregister {
-            v: FLEET_WIRE_VERSION,
-            id: Some(request_id),
-            agent_id: late_token.agent_id,
-            name: Some(pending.name),
-        }),
-    )
-    .await
-    .is_ok()
+    let cleanup = BrokerToRelaycast::AgentDeregister(AgentDeregister {
+        v: FLEET_WIRE_VERSION,
+        id: Some(request_id.clone()),
+        agent_id: late_token.agent_id,
+        name: Some(pending.name),
+    });
+    application_liveness.track_retryable_control_frame(request_id, cleanup.clone());
+    send_wire(sink, &cleanup).await.is_ok()
 }
 
 fn fail_agent_registration(
@@ -6047,6 +6097,62 @@ mod tests {
         );
     }
 
+    #[tokio::test]
+    async fn late_d1_pressure_after_control_retry_timeout_is_consumed_once() {
+        let mut liveness = ApplicationLiveness::new(Duration::from_secs(120));
+        let id = format!("{}late-pressure", crate::runtime::task_request_prefix());
+        let frame = BrokerToRelaycast::ActionAccept(crate::fleet_wire::ActionAccept {
+            v: FLEET_WIRE_VERSION,
+            id: id.clone(),
+            invocation_id: "inv-late-pressure".to_string(),
+            execution_id: "exec-late-pressure".to_string(),
+            worker_generation: "generation-late-pressure".to_string(),
+        });
+        liveness.track_retryable_control_frame(id.clone(), frame);
+        let now = Instant::now();
+        assert!(matches!(
+            liveness.schedule_control_d1_pressure_retry(&id, "Node liveness retry pending", now,),
+            ControlPressureRetry::Scheduled(_)
+        ));
+        assert_eq!(
+            liveness
+                .expire_retryable_control_frames(now + CONTROL_D1_PRESSURE_RETRY_BUDGET)
+                .len(),
+            1
+        );
+
+        let (events, mut receiver) = mpsc::channel(1);
+        let healthy = handle_server_message(
+            Message::Text(
+                json!({
+                    "v": 1,
+                    "id": id.clone(),
+                    "type": "error",
+                    "ok": false,
+                    "code": "d1_pressure",
+                    "message": "Node liveness retry pending"
+                })
+                .to_string(),
+            ),
+            &events,
+            &mut HashMap::new(),
+            &mut HashMap::new(),
+            &mut liveness,
+            "node-test",
+            &mut futures_util::sink::drain(),
+            None,
+            None,
+        )
+        .await;
+
+        assert!(healthy);
+        assert!(matches!(
+            receiver.try_recv(),
+            Err(mpsc::error::TryRecvError::Empty)
+        ));
+        assert!(!liveness.consume_exhausted_retryable_control_frame(&id));
+    }
+
     #[test]
     fn expire_agent_registrations_bounds_pending_map() {
         let created_at = Instant::now();
@@ -6105,7 +6211,8 @@ mod tests {
             }),
         };
 
-        assert!(complete_agent_registration(reply, &mut pending, &mut sink).await);
+        let mut liveness = ApplicationLiveness::new(Duration::from_secs(30));
+        assert!(complete_agent_registration(reply, &mut pending, &mut liveness, &mut sink).await);
         assert!(
             pending.is_empty(),
             "the pending registration must be consumed by the name-based fallback"
@@ -6119,6 +6226,103 @@ mod tests {
                 delivery_ack_seq: None,
             }
         );
+    }
+
+    #[tokio::test]
+    async fn complete_agent_registration_name_fallback_skips_exhausted_same_name_request() {
+        let (stale_tx, _stale_rx) = oneshot::channel();
+        let mut stale = test_pending_agent_registration(
+            "agent-a",
+            false,
+            "agent_register_stale",
+            stale_tx,
+            Instant::now(),
+        );
+        stale.reply = None;
+        let (active_tx, active_rx) = oneshot::channel();
+        let active = test_pending_agent_registration(
+            "agent-a",
+            false,
+            "agent_register_active",
+            active_tx,
+            Instant::now(),
+        );
+        let mut pending = HashMap::from([
+            ("agent_register_stale".to_string(), stale),
+            ("agent_register_active".to_string(), active),
+        ]);
+        let reply = crate::fleet_wire::Reply {
+            v: FLEET_WIRE_VERSION,
+            id: "196331520553345024".to_string(),
+            ok: true,
+            data: json!({
+                "name": "agent-a",
+                "agent_id": "agt-active",
+                "token": "at_active"
+            }),
+        };
+        let mut liveness = ApplicationLiveness::new(Duration::from_secs(30));
+
+        assert!(
+            complete_agent_registration(
+                reply,
+                &mut pending,
+                &mut liveness,
+                &mut futures_util::sink::drain(),
+            )
+            .await
+        );
+        assert!(pending.contains_key("agent_register_stale"));
+        assert!(!pending.contains_key("agent_register_active"));
+        assert_eq!(active_rx.await.unwrap().unwrap().agent_id, "agt-active");
+    }
+
+    #[tokio::test]
+    async fn late_agent_registration_cleanup_is_tracked_for_pressure_retry() {
+        let (reply_tx, reply_rx) = oneshot::channel();
+        drop(reply_rx);
+        let mut pending = HashMap::from([(
+            "agent_register_late".to_string(),
+            test_pending_agent_registration(
+                "agent-a",
+                false,
+                "agent_register_late",
+                reply_tx,
+                Instant::now(),
+            ),
+        )]);
+        let reply = crate::fleet_wire::Reply {
+            v: FLEET_WIRE_VERSION,
+            id: "agent_register_late".to_string(),
+            ok: true,
+            data: json!({
+                "name": "agent-a",
+                "agent_id": "agt-late",
+                "token": "at_late"
+            }),
+        };
+        let mut liveness = ApplicationLiveness::new(Duration::from_secs(30));
+
+        assert!(
+            complete_agent_registration(
+                reply,
+                &mut pending,
+                &mut liveness,
+                &mut futures_util::sink::drain(),
+            )
+            .await
+        );
+        let tracked = liveness
+            .pending_retryable_control_frames
+            .get("agent_register_late")
+            .expect("compensating deregistration must retain a retry owner");
+        assert!(matches!(
+            &tracked.frame,
+            BrokerToRelaycast::AgentDeregister(request)
+                if request.id.as_deref() == Some("agent_register_late")
+                    && request.agent_id == "agt-late"
+                    && request.name.as_deref() == Some("agent-a")
+        ));
     }
 
     #[tokio::test]
@@ -6146,7 +6350,8 @@ mod tests {
             data: json!({ "node_id": "node-test", "online": true }),
         };
 
-        assert!(complete_agent_registration(reply, &mut pending, &mut sink).await);
+        let mut liveness = ApplicationLiveness::new(Duration::from_secs(30));
+        assert!(complete_agent_registration(reply, &mut pending, &mut liveness, &mut sink).await);
         assert_eq!(
             pending.len(),
             1,
@@ -6296,8 +6501,17 @@ mod tests {
             ))
             .await
             .unwrap();
-            let ack = next_non_heartbeat_node_to_server(&mut ws).await;
-            assert_eq!(ack, delivery_ack("agent-a", 1));
+            match next_non_heartbeat_node_to_server(&mut ws).await {
+                BrokerToRelaycast::DeliveryAck(ack) => {
+                    assert_eq!(ack.agent, "agent-a");
+                    assert_eq!(ack.up_to_seq, 1);
+                    assert!(ack
+                        .id
+                        .as_deref()
+                        .is_some_and(|id| id.starts_with("delivery_ack_")));
+                }
+                other => panic!("expected delivery.ack, got {other:?}"),
+            }
 
             ws.send(Message::Text(
                 serde_json::to_string(&RelaycastToBroker::ActionInvoke(ActionInvoke {
@@ -6896,7 +7110,7 @@ mod tests {
         let _ = command_tx.send(FleetControlCommand::Shutdown).await;
     }
 
-    #[tokio::test(start_paused = true)]
+    #[tokio::test]
     async fn node_control_agent_register_persistent_d1_pressure_fails_closed_and_cleans_late_success(
     ) {
         let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();

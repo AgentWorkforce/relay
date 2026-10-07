@@ -9,7 +9,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
-- Fleet spawns and other safely replayable node-control operations now ride out transient Relaycast `d1_pressure` on the existing WebSocket with bounded exponential backoff, while persistent pressure fails closed with its named root cause.
+- Fleet spawns now recover from transient Relaycast `d1_pressure`; persistent registration pressure returns a named `d1_pressure` error within 25 seconds.
+- Acknowledged `agent.deregister`, cumulative `delivery.ack`, and task action accept/results now recover from transient Relaycast `d1_pressure`.
 
 ## [13.1.3] - 2026-10-07
 
