@@ -316,7 +316,22 @@ export class BrokerHarness {
    * Release an agent by name via the low-level client.
    */
   async releaseAgent(name: string): Promise<{ name: string }> {
-    return this.client.release(name);
+    // The broker reports an identity cleanup it could not confirm yet (for
+    // example Relaycast answering `d1_pressure`) at once, keeps retrying it
+    // every 5s, and expects API callers to release again. Until its retry
+    // lands, a repeated release answers "cleanup is in progress".
+    const deadline = Date.now() + 60_000;
+    for (;;) {
+      try {
+        return await this.client.release(name);
+      } catch (error) {
+        const message = error instanceof Error ? error.message : String(error);
+        const pendingCleanup =
+          /owned identity cleanup unconfirmed/.test(message) || /cleanup is in progress/.test(message);
+        if (!pendingCleanup || Date.now() >= deadline) throw error;
+        await new Promise((resolve) => setTimeout(resolve, 3_000));
+      }
+    }
   }
 
   /**

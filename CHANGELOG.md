@@ -5,7 +5,11 @@ All notable changes to Agent Relay will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
+## [Unreleased - Patch]
+
+### Fixed
+
+- Workers started with `agent-relay fleet spawn` now appear in Agent Relay Desktop as your agents, on the machine that runs them, with their CLI's icon, instead of under "Other live agents".
 
 ## [13.1.4] - 2026-10-07
 
