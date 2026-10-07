@@ -6237,10 +6237,7 @@ mod tests {
 
         let mut task_result = BrokerToRelaycast::ActionResult(ActionResult {
             v: FLEET_WIRE_VERSION,
-            id: Some(format!(
-                "{}result_1",
-                crate::runtime::task_request_prefix()
-            )),
+            id: Some(format!("{}result_1", crate::runtime::task_request_prefix())),
             invocation_id: "inv-1".to_string(),
             result: ActionResultPayload::Output(ActionResultOutput {
                 output: json!({"ok": true}),
