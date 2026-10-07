@@ -139,6 +139,9 @@ try {
   run('npm', ['run', 'build:config'], targetDir, 'configuration package build');
   run('npm', ['run', 'build:cloud'], targetDir, 'Cloud package build');
 
+  await rm(probePath, { force: true });
+  await rm(configPath, { force: true });
+  await rm(observationPath, { force: true });
   await writeFile(probePath, probeSource, { encoding: 'utf8', flag: 'wx' });
   await writeFile(configPath, configSource, { encoding: 'utf8', flag: 'wx' });
   run(
