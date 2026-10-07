@@ -2710,6 +2710,7 @@ struct PendingRetryableControlFrame {
     retry_attempts: u32,
     retry_at: Option<Instant>,
     last_d1_pressure: Option<String>,
+    replayed_after_pressure: bool,
 }
 
 #[derive(Debug, PartialEq, Eq)]
@@ -2757,8 +2758,15 @@ impl ApplicationLiveness {
                 retry_attempts: 0,
                 retry_at: None,
                 last_d1_pressure: None,
+                replayed_after_pressure: false,
             },
         );
+    }
+
+    fn mark_retryable_control_frame_replayed(&mut self, id: &str) {
+        if let Some(pending) = self.pending_retryable_control_frames.get_mut(id) {
+            pending.replayed_after_pressure = true;
+        }
     }
 
     fn complete_retryable_control_frame(&mut self, id: &str) {
@@ -2823,7 +2831,7 @@ impl ApplicationLiveness {
     fn expire_retryable_control_frames(
         &mut self,
         now: Instant,
-    ) -> Vec<(String, String, BrokerToRelaycast)> {
+    ) -> Vec<(String, String, BrokerToRelaycast, bool)> {
         self.exhausted_retryable_control_frames
             .retain(|_, exhausted_at| {
                 now.saturating_duration_since(*exhausted_at) < self.control_retry_policy.budget
@@ -2852,16 +2860,15 @@ impl ApplicationLiveness {
                         id,
                         format!("d1_pressure: {reason} (retry budget exhausted)"),
                         pending.frame,
+                        pending.replayed_after_pressure,
                     )
                 })
             })
             .collect()
     }
 
-    fn take_retryable_control_frame(&mut self, id: &str) -> Option<BrokerToRelaycast> {
-        self.pending_retryable_control_frames
-            .remove(id)
-            .map(|pending| pending.frame)
+    fn take_retryable_control_frame(&mut self, id: &str) -> Option<PendingRetryableControlFrame> {
+        self.pending_retryable_control_frames.remove(id)
     }
 
     fn retain_non_task_action_results(
@@ -2874,6 +2881,7 @@ impl ApplicationLiveness {
             .filter(|(id, pending)| {
                 !id.starts_with(crate::runtime::task_request_prefix())
                     && matches!(&pending.frame, BrokerToRelaycast::ActionResult(_))
+                    && pending.last_d1_pressure.is_some()
             })
             .map(|(id, _)| id.clone())
             .collect();
@@ -3162,6 +3170,7 @@ async fn handle_connected_command<S>(
     pending_deregistrations: &mut HashMap<String, oneshot::Sender<Result<(), String>>>,
     application_liveness: &mut ApplicationLiveness,
     retained_completion: &mut Option<RetainedFleetCompletion>,
+    retained_pressure_frames: &mut VecDeque<BrokerToRelaycast>,
 ) -> std::ops::ControlFlow<ControlRunResult>
 where
     S: Sink<Message> + Unpin,
@@ -3251,6 +3260,17 @@ where
                 if let BrokerToRelaycast::ActionResult(result) = &message {
                     tracing::warn!(invocation_id = %result.invocation_id, frame_kind = "action.result",
                         "retaining fleet result for replay after reconnect");
+                    if result.task.is_none()
+                        && !result
+                            .id
+                            .as_deref()
+                            .is_some_and(|id| id.starts_with(crate::runtime::task_request_prefix()))
+                    {
+                        if let Some(id) = result.id.as_deref() {
+                            application_liveness.complete_retryable_control_frame(id);
+                        }
+                        retained_pressure_frames.push_back(message);
+                    }
                 }
                 return Break(ControlRunResult::Disconnected {
                     application_ready: application_liveness.ready,
@@ -3552,9 +3572,11 @@ async fn run_connected_once_with_completions(
         let request_id = prepare_retryable_control_frame(&mut frame)
             .map(|(id, _)| id)
             .expect("pressure-retained control frames must remain retryable");
-        application_liveness.track_retryable_control_frame(request_id, frame.clone());
+        application_liveness.track_retryable_control_frame(request_id.clone(), frame.clone());
+        application_liveness.mark_retryable_control_frame_replayed(&request_id);
         if send_wire(&mut sink, &frame).await.is_err() {
-            application_liveness.retain_non_task_action_results(retained_pressure_frames);
+            application_liveness.complete_retryable_control_frame(&request_id);
+            retained_pressure_frames.push_front(frame);
             return ControlRunResult::Disconnected {
                 application_ready: false,
             };
@@ -3596,6 +3618,7 @@ async fn run_connected_once_with_completions(
             &mut pending_deregistrations,
             &mut application_liveness,
             retained_completion,
+            retained_pressure_frames,
         )
         .await
         {
@@ -3640,7 +3663,7 @@ async fn run_connected_once_with_completions(
             _ = &mut control_retry, if control_retry_delay.is_some() => {
                 let now = Instant::now();
                 let mut reconnect_for_retained_result = false;
-                for (id, reason, frame) in application_liveness.expire_retryable_control_frames(now) {
+                for (id, reason, frame, replayed_after_pressure) in application_liveness.expire_retryable_control_frames(now) {
                     let mut surfaced_to_owner = false;
                     if let Some(pending) = pending_deregistrations.remove(&id) {
                         let _ = pending.send(Err(reason.clone()));
@@ -3662,14 +3685,15 @@ async fn run_connected_once_with_completions(
                         && matches!(&frame, BrokerToRelaycast::ActionResult(_))
                     {
                         retained_pressure_frames.push_back(frame);
-                        reconnect_for_retained_result = true;
+                        reconnect_for_retained_result |= !replayed_after_pressure;
                         surfaced_to_owner = true;
                         tracing::warn!(
                             target = "relay_broker::fleet",
                             node_id = %config.node_id,
                             id,
                             reason,
-                            "retaining action.result after d1_pressure exhaustion; reconnecting for redelivery"
+                            replayed_after_pressure,
+                            "retaining action.result after d1_pressure exhaustion"
                         );
                     }
                     if !surfaced_to_owner {
@@ -3737,6 +3761,7 @@ async fn run_connected_once_with_completions(
                     &mut pending_deregistrations,
                     &mut application_liveness,
                     retained_completion,
+                    retained_pressure_frames,
                 )
                 .await
                 {
@@ -4009,7 +4034,7 @@ where
                                         return true;
                                     }
                                     ControlPressureRetry::Exhausted => {
-                                        let exhausted_frame = application_liveness
+                                        let exhausted = application_liveness
                                             .take_retryable_control_frame(&error.id);
                                         let reason = format!(
                                             "d1_pressure: {} (retry budget exhausted)",
@@ -4018,21 +4043,27 @@ where
                                         if !error
                                             .id
                                             .starts_with(crate::runtime::task_request_prefix())
-                                            && exhausted_frame.as_ref().is_some_and(|frame| {
-                                                matches!(frame, BrokerToRelaycast::ActionResult(_))
+                                            && exhausted.as_ref().is_some_and(|pending| {
+                                                matches!(
+                                                    &pending.frame,
+                                                    BrokerToRelaycast::ActionResult(_)
+                                                )
                                             })
                                         {
-                                            retained_pressure_frames.push_back(
-                                                exhausted_frame.expect("checked action.result"),
-                                            );
+                                            let exhausted =
+                                                exhausted.expect("checked action.result");
+                                            let replayed_after_pressure =
+                                                exhausted.replayed_after_pressure;
+                                            retained_pressure_frames.push_back(exhausted.frame);
                                             tracing::warn!(
                                                 target = "relay_broker::fleet",
                                                 node_id,
                                                 id = %error.id,
                                                 reason,
-                                                "retaining action.result after d1_pressure exhaustion; reconnecting for redelivery"
+                                                replayed_after_pressure,
+                                                "retaining action.result after d1_pressure exhaustion"
                                             );
-                                            return false;
+                                            return replayed_after_pressure;
                                         }
                                         if let Some(pending) =
                                             pending_deregistrations.remove(&error.id)
@@ -4521,8 +4552,6 @@ fn fail_deferred_commands(
 /// - acknowledged `agent.deregister`,
 /// - cumulative `delivery.ack` (a missed terminal ack is recovered by durable
 ///   redelivery), and
-/// - task `action.accept` / `action.result`, whose request id maps retry
-///   exhaustion back to the runtime task owner, and
 /// - non-task `action.result`, which gets a stable id and is retained for
 ///   redelivery after reconnect if the bounded pressure budget is exhausted.
 ///
@@ -4543,13 +4572,26 @@ fn prepare_retryable_control_frame(
                 .get_or_insert_with(|| format!("delivery_ack_{}", Uuid::new_v4().simple())),
             "delivery.ack",
         ),
+        BrokerToRelaycast::ActionResult(request)
+            if request.task.is_some()
+                || request
+                    .id
+                    .as_deref()
+                    .is_some_and(|id| id.starts_with(crate::runtime::task_request_prefix())) =>
+        {
+            return None;
+        }
         BrokerToRelaycast::ActionResult(request) => (
             request
                 .id
                 .get_or_insert_with(|| format!("action_result_{}", Uuid::new_v4().simple())),
             "action.result",
         ),
-        BrokerToRelaycast::ActionAccept(request) => (&mut request.id, "action.accept"),
+        // Task owners have a shorter acknowledgement deadline than this
+        // socket's pressure budget. Surface their correlated d1_pressure
+        // immediately so the owner, rather than a stale socket timer, decides
+        // whether to retry the task.
+        BrokerToRelaycast::ActionAccept(_) => return None,
         _ => return None,
     };
     Some((id.clone(), kind))
@@ -4735,6 +4777,7 @@ mod tests {
         let mut application_liveness = ApplicationLiveness::new(Duration::from_secs(1));
         let (delivered, mut delivery_ack) = oneshot::channel();
         let mut retained_completion = None;
+        let mut retained_pressure_frames = VecDeque::new();
         let result = handle_connected_command(
             Some(FleetControlCommand::RetainedSend(RetainedFleetCompletion {
                 message: BrokerToRelaycast::ActionResult(ActionResult {
@@ -4759,6 +4802,7 @@ mod tests {
             &mut pending_deregistrations,
             &mut application_liveness,
             &mut retained_completion,
+            &mut retained_pressure_frames,
         )
         .await;
 
@@ -6161,22 +6205,6 @@ mod tests {
                 name: Some("agent-a".to_string()),
             }),
             delivery_ack("agent-a", 7),
-            BrokerToRelaycast::ActionResult(ActionResult {
-                v: FLEET_WIRE_VERSION,
-                id: Some("task_request_result_1".to_string()),
-                invocation_id: "inv-1".to_string(),
-                result: ActionResultPayload::Output(ActionResultOutput {
-                    output: json!({"ok": true}),
-                }),
-                task: None,
-            }),
-            BrokerToRelaycast::ActionAccept(crate::fleet_wire::ActionAccept {
-                v: FLEET_WIRE_VERSION,
-                id: "task_request_1".to_string(),
-                invocation_id: "inv-task".to_string(),
-                execution_id: "exec-1".to_string(),
-                worker_generation: "generation-1".to_string(),
-            }),
         ];
 
         for mut frame in frames {
@@ -6206,6 +6234,25 @@ mod tests {
             )),
         );
         assert_eq!(prepare_retryable_control_frame(&mut heartbeat), None);
+
+        let mut task_result = BrokerToRelaycast::ActionResult(ActionResult {
+            v: FLEET_WIRE_VERSION,
+            id: Some("task_request_result_1".to_string()),
+            invocation_id: "inv-1".to_string(),
+            result: ActionResultPayload::Output(ActionResultOutput {
+                output: json!({"ok": true}),
+            }),
+            task: None,
+        });
+        assert_eq!(prepare_retryable_control_frame(&mut task_result), None);
+        let mut task_accept = BrokerToRelaycast::ActionAccept(crate::fleet_wire::ActionAccept {
+            v: FLEET_WIRE_VERSION,
+            id: "task_request_1".to_string(),
+            invocation_id: "inv-task".to_string(),
+            execution_id: "exec-1".to_string(),
+            worker_generation: "generation-1".to_string(),
+        });
+        assert_eq!(prepare_retryable_control_frame(&mut task_accept), None);
 
         let mut one_way_result = BrokerToRelaycast::ActionResult(ActionResult {
             v: FLEET_WIRE_VERSION,
@@ -6409,6 +6456,96 @@ mod tests {
             .expire_retryable_control_frames(now + policy.budget + policy.budget)
             .is_empty());
         assert!(liveness.exhausted_retryable_control_frames.is_empty());
+    }
+
+    #[test]
+    fn disconnect_retains_only_action_results_that_observed_pressure() {
+        let mut liveness = ApplicationLiveness::new(Duration::from_secs(1));
+        let id = "action_result_disconnect".to_string();
+        let frame = BrokerToRelaycast::ActionResult(ActionResult {
+            v: FLEET_WIRE_VERSION,
+            id: Some(id.clone()),
+            invocation_id: "inv-disconnect".to_string(),
+            result: ActionResultPayload::Output(ActionResultOutput {
+                output: json!({"ok": true}),
+            }),
+            task: None,
+        });
+        liveness.track_retryable_control_frame(id.clone(), frame.clone());
+        let mut retained = VecDeque::new();
+        liveness.retain_non_task_action_results(&mut retained);
+        assert!(
+            retained.is_empty(),
+            "a successful write has no replay proof"
+        );
+
+        assert!(matches!(
+            liveness.schedule_control_d1_pressure_retry(
+                &id,
+                "Node liveness retry pending",
+                Instant::now(),
+            ),
+            ControlPressureRetry::Scheduled(_)
+        ));
+        liveness.retain_non_task_action_results(&mut retained);
+        assert_eq!(retained, VecDeque::from([frame]));
+    }
+
+    #[tokio::test]
+    async fn replayed_action_result_exhaustion_waits_for_an_organic_reconnect() {
+        let policy = ControlRetryPolicy {
+            initial_delay: Duration::from_millis(1),
+            max_delay: Duration::from_millis(1),
+            max_retries: 0,
+            budget: Duration::from_millis(10),
+        };
+        let mut liveness =
+            ApplicationLiveness::new_with_retry_policy(Duration::from_secs(1), policy);
+        let id = "action_result_replayed".to_string();
+        liveness.track_retryable_control_frame(
+            id.clone(),
+            BrokerToRelaycast::ActionResult(ActionResult {
+                v: FLEET_WIRE_VERSION,
+                id: Some(id.clone()),
+                invocation_id: "inv-replayed".to_string(),
+                result: ActionResultPayload::Output(ActionResultOutput {
+                    output: json!({"ok": true}),
+                }),
+                task: None,
+            }),
+        );
+        liveness.mark_retryable_control_frame_replayed(&id);
+        let (events, _receiver) = mpsc::channel(1);
+        let mut retained = VecDeque::new();
+        let stays_connected = handle_server_message(
+            Message::Text(
+                json!({
+                    "v": 1,
+                    "id": id,
+                    "type": "error",
+                    "ok": false,
+                    "code": "d1_pressure",
+                    "message": "Node liveness retry pending"
+                })
+                .to_string(),
+            ),
+            &events,
+            &mut HashMap::new(),
+            &mut HashMap::new(),
+            &mut liveness,
+            &mut retained,
+            "node-test",
+            &mut futures_util::sink::drain(),
+            None,
+            None,
+        )
+        .await;
+        assert!(stays_connected, "a replay must not start a reconnect loop");
+        assert_eq!(
+            retained.len(),
+            1,
+            "the result remains queued for a later reconnect"
+        );
     }
 
     #[test]

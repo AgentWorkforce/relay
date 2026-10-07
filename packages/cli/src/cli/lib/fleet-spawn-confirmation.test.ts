@@ -195,6 +195,23 @@ describe('fleet spawn confirmation is observable from the requester (#1430)', ()
     expect((error as Error).message).toContain('retry the spawn');
   });
 
+  it('does not call a later free-form d1_pressure detail pre-mutation', async () => {
+    const { client } = createClient(async (name, invocationId) => ({
+      invocation_id: invocationId,
+      action_name: name,
+      status: 'failed',
+      error: 'spawn cleanup failed after mutation: d1_pressure remained elevated',
+    }));
+
+    const error = await client.placement
+      .spawn(spawnInput({ confirm: true, confirmTimeoutMs: 1_000, confirmPollIntervalMs: 10 }))
+      .catch((caught: unknown) => caught);
+
+    expect(error).toBeInstanceOf(RelayPlacementError);
+    expect((error as RelayPlacementError).code).toBe('spawn_failed');
+    expect((error as Error).message).not.toContain('No registration mutation was applied');
+  });
+
   // MUST-NOT-FIRE — a healthy node. This is the arm a repaired node represents:
   // confirmation must not turn a working spawn into an error.
   it('resolves when the node confirms the spawn completed', async () => {

@@ -1071,7 +1071,9 @@ export class RelaycastMessagingClient implements RelayMessagingClient {
             }
             if (status && CONFIRM_FAILURE_STATUSES.has(status)) {
               const nodeError = invocation?.error?.trim();
-              const retryablePressure = nodeError?.includes('d1_pressure') === true;
+              const retryablePressure =
+                errorContext.capability.startsWith('spawn:') &&
+                /^node agent\.register failed for agent '[^']+': d1_pressure:/.test(nodeError ?? '');
               throw new RelayPlacementError(
                 retryablePressure ? 'spawn_retryable' : 'spawn_failed',
                 retryablePressure
