@@ -2400,10 +2400,23 @@ pub(super) fn spawn_declared_metadata_publish(
     tokio::spawn(async move {
         // The hostname call and the identity file read block; keep them off
         // the runtime's async workers too.
-        let spawned =
-            tokio::task::spawn_blocking(move || crate::relaycast::spawned_worker_metadata(&cli))
-                .await
-                .unwrap_or_default();
+        // A failed lookup still publishes the declared fields, and says so.
+        let spawned = match tokio::task::spawn_blocking(move || {
+            crate::relaycast::spawned_worker_metadata(&cli)
+        })
+        .await
+        {
+            Ok(spawned) => spawned,
+            Err(error) => {
+                tracing::error!(
+                    worker = %agent,
+                    error = %error,
+                    "could not read the spawned worker's cli/host/owner; publishing its \
+                     declared workforce metadata without them"
+                );
+                serde_json::Map::new()
+            }
+        };
         if declared.is_empty() && spawned.is_empty() {
             return;
         }
