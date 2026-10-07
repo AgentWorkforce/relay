@@ -945,7 +945,8 @@ impl RelaycastHttpClient {
                 agent_name: name.to_string(),
                 detail: "SDK relay client not initialized".to_string(),
             })?;
-        // Send ONLY the declared keys. `PATCH /v1/agents/:name` merges them over
+        // Send ONLY the declared keys and the spawned worker's `cli`, `host` and
+        // `owner_hash`. `PATCH /v1/agents/:name` merges them over
         // the record's existing metadata server-side — verified in the engine at
         // both the ref fleet-e2e pins (v7.0.0, eb7563ff) and relaycast `main`
         // (`packages/engine/src/routes/agent.ts`:
@@ -3024,31 +3025,33 @@ fn spawned_worker_metadata_from(
     metadata
 }
 
-/// The Cloud user this broker runs for: `AGENT_RELAY_USER_ID` when the CLI
-/// published it, otherwise the CLI's stored sign-in. A broker started by a
-/// service manager has no CLI parent, so the file is the common case there.
+/// The Cloud user this broker runs for: the CLI's stored sign-in, read at
+/// each spawn, so signing in or out takes effect for the next worker without a
+/// broker restart. `AGENT_RELAY_USER_ID` is deliberately not used: it is a
+/// copy taken when the broker started, which outlives a sign-out, and a broker
+/// started by a service manager has none.
 fn signed_in_user_id() -> Option<String> {
-    let from_env = std::env::var("AGENT_RELAY_USER_ID")
+    let data_dir = std::env::var("AGENT_RELAY_DATA_DIR")
         .ok()
-        .map(|id| id.trim().to_string())
-        .filter(|id| !id.is_empty());
-    from_env.or_else(|| {
-        let data_dir = std::env::var("AGENT_RELAY_DATA_DIR")
-            .ok()
-            .map(|dir| dir.trim().to_string())
-            .filter(|dir| !dir.is_empty())
-            .map(std::path::PathBuf::from)
-            .or_else(|| dirs::home_dir().map(|home| home.join(".agentworkforce/relay")))?;
-        let file = std::fs::read_to_string(data_dir.join("cloud-identity.json")).ok()?;
-        let identity: Value = serde_json::from_str(&file).ok()?;
-        identity["userId"]
-            .as_str()
-            .map(str::trim)
-            .filter(|id| {
-                !id.is_empty() && id.len() <= 128 && id.chars().all(|c| (' '..='~').contains(&c))
-            })
-            .map(str::to_string)
-    })
+        .map(|dir| dir.trim().to_string())
+        .filter(|dir| !dir.is_empty())
+        .map(std::path::PathBuf::from)
+        .or_else(|| dirs::home_dir().map(|home| home.join(".agentworkforce/relay")))?;
+    let file = std::fs::read_to_string(data_dir.join("cloud-identity.json")).ok()?;
+    user_id_from_identity(&file)
+}
+
+/// The `userId` of a stored identity, held to the CLI's own rules: printable
+/// ASCII, at most 128 bytes once trimmed.
+fn user_id_from_identity(file: &str) -> Option<String> {
+    let identity: Value = serde_json::from_str(file).ok()?;
+    identity["userId"]
+        .as_str()
+        .map(str::trim)
+        .filter(|id| {
+            !id.is_empty() && id.len() <= 128 && id.chars().all(|c| (' '..='~').contains(&c))
+        })
+        .map(str::to_string)
 }
 
 /// The declared fields alone, trimmed, with blanks omitted.
@@ -4619,6 +4622,17 @@ mod tests {
         assert_eq!(metadata["host"], "éabcde");
         let metadata = super::spawned_worker_metadata_from("codex", None, None);
         assert_eq!(serde_json::Value::Object(metadata), json!({"cli": "codex"}));
+    }
+
+    #[test]
+    fn stored_identity_user_id_follows_the_cli_rules() {
+        let id = |file: &str| super::user_id_from_identity(file);
+        assert_eq!(id(r#"{"userId":" user-1 "}"#).as_deref(), Some("user-1"));
+        assert_eq!(id(r#"{"userId":"bad\u0007id"}"#), None);
+        assert_eq!(id(&format!(r#"{{"userId":"{}"}}"#, "u".repeat(129))), None);
+        assert_eq!(id(r#"{"userId":""}"#), None);
+        assert_eq!(id(r#"{"email":"a@b"}"#), None);
+        assert_eq!(id("not json"), None);
     }
 
     /// A presence update used to call POST /v1/agents/release with no reason.

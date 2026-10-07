@@ -8463,19 +8463,25 @@ async fn assert_http_spawn_metadata_publication(supplied_token: bool, valid_cwd:
         then.status(200)
             .json_body(json!({"ok":true,"data":{"channels":[]}}));
     });
-    // Partial: the same PATCH also carries this machine's `host` and, when
-    // the test machine is signed in, its `owner_hash`.
+    // The same PATCH carries this machine's `host` and, when the test machine
+    // is signed in, its `owner_hash`; both are exactly what the broker
+    // computes for this process, so the body is still matched in full.
+    let mut expected = serde_json::Map::new();
+    expected.extend(crate::relaycast::spawned_worker_metadata("cat"));
+    expected.extend(
+        json!({
+            "organization":"demo-org", "project":"demo-project",
+            "workstream":"subscriptions", "role":"reviewer", "objective":"prove delivery"
+        })
+        .as_object()
+        .unwrap()
+        .clone(),
+    );
+    assert_eq!(expected["cli"], "cat");
     let metadata = server.mock(|when, then| {
         when.method(PATCH)
             .path("/v1/agents/metadata-worker")
-            .json_body_partial(
-                json!({"metadata":{
-                    "organization":"demo-org", "project":"demo-project",
-                    "workstream":"subscriptions", "role":"reviewer", "objective":"prove delivery",
-                    "cli":"cat"
-                }})
-                .to_string(),
-            );
+            .json_body(json!({ "metadata": expected }));
         then.status(200)
             .json_body(json!({"ok":true,"data":identity}));
     });

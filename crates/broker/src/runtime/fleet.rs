@@ -2391,16 +2391,22 @@ pub(super) async fn reconcile_blocked_flush_predecessor(
 pub(super) fn spawn_declared_metadata_publish(
     relaycast_http: &RelaycastHttpClient,
     name: &str,
-    cli: &str,
+    spec: &crate::protocol::AgentSpec,
     declared: AgentRegistrationMetadata,
 ) {
-    let spawned = crate::relaycast::spawned_worker_metadata(cli);
-    if declared.is_empty() && spawned.is_empty() {
-        return;
-    }
     let http = relaycast_http.clone();
     let agent = name.to_string();
+    let cli = launched_cli(spec).to_string();
     tokio::spawn(async move {
+        // The hostname call and the identity file read block; keep them off
+        // the runtime's async workers too.
+        let spawned =
+            tokio::task::spawn_blocking(move || crate::relaycast::spawned_worker_metadata(&cli))
+                .await
+                .unwrap_or_default();
+        if declared.is_empty() && spawned.is_empty() {
+            return;
+        }
         match http
             .publish_declared_metadata(&agent, &declared, &spawned)
             .await
@@ -2418,6 +2424,15 @@ pub(super) fn spawn_declared_metadata_publish(
             ),
         }
     });
+}
+
+/// The CLI a launched worker actually runs: a PTY harness's own command,
+/// which can differ from the requested `cli`, else the requested `cli`.
+fn launched_cli(spec: &crate::protocol::AgentSpec) -> &str {
+    match spec.harness_config.as_ref() {
+        Some(crate::protocol::ResolvedHarnessConfig::Pty(config)) => config.command.as_str(),
+        _ => spec.cli.as_deref().unwrap_or_default(),
+    }
 }
 
 /// Bind an agent to this node by sending node-control `agent.register` and

@@ -802,7 +802,7 @@ impl BrokerRuntime {
                             super::fleet::spawn_declared_metadata_publish(
                                 relaycast_http,
                                 name.as_str(),
-                                cli.as_str(),
+                                &effective_spec,
                                 registration_metadata,
                             );
                         }
