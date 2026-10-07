@@ -8463,13 +8463,19 @@ async fn assert_http_spawn_metadata_publication(supplied_token: bool, valid_cwd:
         then.status(200)
             .json_body(json!({"ok":true,"data":{"channels":[]}}));
     });
+    // Partial: the same PATCH also carries this machine's `host` and, when
+    // the test machine is signed in, its `owner_hash`.
     let metadata = server.mock(|when, then| {
         when.method(PATCH)
             .path("/v1/agents/metadata-worker")
-            .json_body(json!({"metadata":{
-                "organization":"demo-org", "project":"demo-project",
-                "workstream":"subscriptions", "role":"reviewer", "objective":"prove delivery"
-            }}));
+            .json_body_partial(
+                json!({"metadata":{
+                    "organization":"demo-org", "project":"demo-project",
+                    "workstream":"subscriptions", "role":"reviewer", "objective":"prove delivery",
+                    "cli":"cat"
+                }})
+                .to_string(),
+            );
         then.status(200)
             .json_body(json!({"ok":true,"data":identity}));
     });

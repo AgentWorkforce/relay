@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- Workers a fleet broker spawns now record their CLI (`cli`), the machine's name (`host`) and the signed-in Cloud person who runs the broker (`owner_hash`) in their Relaycast metadata. These are the keys Agent Relay Desktop records for the sessions it registers, so the desktop lists your fleet workers as your agents on that machine, with their harness icon, instead of under "Other live agents". The broker reads the person from `AGENT_RELAY_USER_ID` or, for a broker started by a service manager, from the CLI's stored `cloud-identity.json`.
+
 ## [13.1.3] - 2026-10-07
 
 ### Fixed

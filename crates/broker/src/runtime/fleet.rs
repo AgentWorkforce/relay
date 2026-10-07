@@ -2384,18 +2384,27 @@ pub(super) async fn reconcile_blocked_flush_predecessor(
 /// either — a failure is logged at error level with the agent name and the
 /// underlying error, and it is not retried, because the honest signal is worth
 /// more than a hidden retry loop on a non-critical publish.
+///
+/// The same PATCH carries the worker's CLI, this machine's name and the
+/// broker's signed-in owner, so the roster can show whose agent it is, where
+/// it runs and which CLI's icon to draw.
 pub(super) fn spawn_declared_metadata_publish(
     relaycast_http: &RelaycastHttpClient,
     name: &str,
+    cli: &str,
     declared: AgentRegistrationMetadata,
 ) {
-    if declared.is_empty() {
+    let spawned = crate::relaycast::spawned_worker_metadata(cli);
+    if declared.is_empty() && spawned.is_empty() {
         return;
     }
     let http = relaycast_http.clone();
     let agent = name.to_string();
     tokio::spawn(async move {
-        match http.publish_declared_metadata(&agent, &declared).await {
+        match http
+            .publish_declared_metadata(&agent, &declared, &spawned)
+            .await
+        {
             Ok(()) => tracing::debug!(
                 worker = %agent,
                 "published declared workforce metadata for spawned agent"
@@ -2404,8 +2413,8 @@ pub(super) fn spawn_declared_metadata_publish(
                 worker = %agent,
                 error = %error,
                 "failed to publish declared workforce metadata; the agent is registered and \
-                 running but its declared organization/project/workstream/role/objective are \
-                 not visible to the engine"
+                 running but its declared organization/project/workstream/role/objective and \
+                 its cli/host/owner are not visible to the engine"
             ),
         }
     });

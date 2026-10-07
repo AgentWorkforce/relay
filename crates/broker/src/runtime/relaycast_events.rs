@@ -869,6 +869,7 @@ pub(super) async fn spawn_worker_from_request(
                     super::fleet::spawn_declared_metadata_publish(
                         workspace_http,
                         name.as_str(),
+                        cli.as_str(),
                         registration_metadata,
                     );
                     let relay_key = token.token.clone();
@@ -906,6 +907,7 @@ pub(super) async fn spawn_worker_from_request(
                             super::fleet::spawn_declared_metadata_publish(
                                 workspace_http,
                                 name.as_str(),
+                                cli.as_str(),
                                 registration_metadata,
                             );
                             tracing::info!(
