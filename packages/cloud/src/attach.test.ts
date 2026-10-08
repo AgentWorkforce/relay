@@ -102,6 +102,18 @@ it('replays output to a late event listener even while a raw client consumed it'
   events.close();
 });
 
+it('ends the raw attachment on a connection-fatal session error after ready', async () => {
+  const { remote } = await setup();
+  local = connect(proxy!.socketPath);
+  await once(local, 'connect');
+  send(remote, 'terminal.ready', { screen: Buffer.from('hello').toString('base64') });
+  await once(local, 'data');
+  const closed = once(local, 'close');
+  send(remote, 'terminal.error', { code: 'node_unreachable', message: 'node went away' });
+  await expect(proxy!.finished).resolves.toBe(1);
+  await closed;
+});
+
 it('settles finished on explicit close before terminal.ready', async () => {
   await setup();
   await proxy!.close();

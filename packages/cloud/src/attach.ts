@@ -1556,6 +1556,12 @@ export async function startFleetNodeAttachProxy(
           endTerminal(new FleetNodeAttachError(message, code));
         } else if (!frameRid) {
           failAllInputSockets(code, message);
+          if (inputErrorIsConnectionFatal(code)) {
+            // The raw stdio client has no error frame to read: close it and
+            // report the failure so callers stop writing to a dead session.
+            finish(1);
+            rawSocket?.end();
+          }
         }
       } else if (frame.type === 'terminal.closed') {
         endTerminal(new FleetNodeAttachError('remote terminal session closed', 'terminal_closed'));
