@@ -234,6 +234,25 @@ function throwForTerminalSpawnFailure(invocation: Record<string, unknown>): void
   });
 }
 
+// Keep placement codes, receipts and cleanup behavior intact while explaining
+// why releasing a process alone does not make its Relaycast name reusable.
+async function runFleetSpawn(deps: SdkCommandDeps, fn: () => Promise<void>): Promise<void> {
+  await runSdk(deps, async () => {
+    try {
+      await fn();
+    } catch (error) {
+      if (error instanceof Error && /\bagent_already_exists\b/.test(error.message)) {
+        error.message +=
+          ' Fleet release keeps the Relaycast identity unless --delete-agent is passed.' +
+          ' To free a name you own, run `agent-relay fleet release <name> --delete-agent`' +
+          ' in the same workspace, then retry spawning. This permanently deletes the identity' +
+          ' and retires its provider bindings.';
+      }
+      throw error;
+    }
+  });
+}
+
 export interface FleetCommandDependencies {
   core: CoreDependencies;
   sdk: SdkCommandDeps;
@@ -492,7 +511,7 @@ export function registerFleetCommands(
         '120000'
       )
   ).action(async (cli: string, options: Record<string, unknown>) => {
-    await runSdk(deps.sdk, async () => {
+    await runFleetSpawn(deps.sdk, async () => {
       const clientOptions = sdkOptionsFromOpts(options);
       const name = requiredText(options.name, 'Worker name');
       const task = requiredText(options.task, 'Task');
@@ -1259,7 +1278,7 @@ export function registerFleetCommands(
       .description('Release a spawned fleet agent')
       .argument('<name>', 'Worker agent name')
       .option('--reason <reason>', 'Release reason')
-      .option('--delete-agent', 'Permanently delete the agent after release')
+      .option('--delete-agent', 'Permanently delete the agent after release so its name can be reused')
       .option(
         '--unsubscribe-bindings',
         'Retire provider bindings owned by this identity (implied by --delete-agent)'

@@ -4779,6 +4779,78 @@ describe('fleet command support', () => {
     });
   });
 
+  it.each(['targeted', 'automatic'])(
+    'fleet spawn explains retained name cleanup for a %s registration collision',
+    async (mode) => {
+      const message =
+        'node agent.register failed for agent \'dots-D\': agent_already_exists: Agent "dots-D" already exists; use agent.recover with proof of the immutable id';
+      const failure = new RelayPlacementError('spawn_failed', message, {
+        capability: 'spawn:claude',
+        attempts: 1,
+        invocationId: 'inv_collision',
+        state: 'failed',
+        dispatchState: 'dispatched',
+      });
+      const targetedSpawn = vi.fn(async () => {
+        throw failure;
+      });
+      const automaticSpawn = vi.fn(async () => ({
+        invocation_id: 'inv_collision',
+        status: 'failed',
+        error: message,
+      }));
+      const release = vi.fn();
+      const errors: string[] = [];
+      const log = vi.fn();
+      const program = new Command();
+      program.exitOverride();
+      registerFleetCommands(program, {
+        resolveSandboxRepository: () => undefined,
+        sdk: {
+          createAgentRelay: vi.fn(() => ({ messaging: { placement: { spawn: targetedSpawn } } })) as never,
+          createWorkspaceRelay: vi.fn() as never,
+          createWorkspace: vi.fn() as never,
+          log,
+          error: (message: unknown) => errors.push(String(message)),
+          exit: (() => {
+            throw new Error('__exit__');
+          }) as never,
+        },
+        createFleetWorkspaceClient: vi.fn(() => ({ agents: { spawn: automaticSpawn, release } })) as never,
+      });
+      await expect(
+        program.parseAsync(
+          [
+            'fleet',
+            'spawn',
+            'claude',
+            '--name',
+            'dots-D',
+            '--task',
+            'Work',
+            '--workspace-key',
+            'rk_live_test',
+            ...(mode === 'targeted' ? ['--node', 'kjg-lap', '--token', 'at_live_lead'] : []),
+          ],
+          { from: 'user' }
+        )
+      ).rejects.toThrow('__exit__');
+      const output = errors.join('\n');
+      expect(output).toContain(message);
+      expect(output).toContain('agent-relay fleet release <name> --delete-agent');
+      expect(output).toContain('permanently deletes the identity');
+      const structured = JSON.parse(errors[0]!.split('\n').at(-1)!);
+      expect(structured.error).toMatchObject({
+        code: 'spawn_failed',
+        state: 'failed',
+        invocationId: 'inv_collision',
+        message: expect.stringContaining('--delete-agent'),
+      });
+      expect(release).not.toHaveBeenCalled();
+      expect(log).not.toHaveBeenCalled();
+    }
+  );
+
   it('fleet spawn propagates a terminal automatic failure with structured correlation', async () => {
     const spawn = vi.fn(async () => ({
       invocation_id: 'inv_auto_failed',
@@ -4824,6 +4896,7 @@ describe('fleet command support', () => {
     ).rejects.toThrow('__exit__');
 
     expect(errors.join('\n')).toContain('spawn_harness_not_ready');
+    expect(errors.join('\n')).not.toContain('--delete-agent');
     expect(errors.join('\n')).toContain('"code":"spawn_failed"');
     expect(errors.join('\n')).toContain('"state":"failed"');
     expect(errors.join('\n')).toContain('"invocationId":"inv_auto_failed"');
