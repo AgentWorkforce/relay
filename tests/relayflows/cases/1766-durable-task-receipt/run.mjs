@@ -126,7 +126,9 @@ async function start() {
     logs = (logs + chunk).slice(-10000);
   });
   const registration = await next('node.register');
-  await next('inventory.sync');
+  reply(registration.id ?? 'legacy-register', {});
+  const inventory = await next('inventory.sync');
+  reply(inventory.id ?? 'legacy-inventory', { reconciled: 0 });
   return registration;
 }
 async function stop(signal = 'SIGTERM') {

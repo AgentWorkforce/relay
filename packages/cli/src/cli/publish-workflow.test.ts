@@ -109,4 +109,20 @@ describe('package=main publish dependency chain', () => {
     expect(waitStep?.run).toContain('sleep 10');
     expect(waitStep?.run).toContain('if [ "$attempt" -lt 60 ]');
   });
+
+  it('pins @relayflows/sdk optional @agent-relay peers during version bump', () => {
+    const versionStep = loadPublishWorkflow().jobs.build?.steps?.find(
+      (step) => step.name === 'Version all packages'
+    );
+    const run = versionStep?.run ?? '';
+
+    expect(run).toContain("rootPkg.overrides['@relayflows/sdk']");
+    expect(run).toContain("'@agent-relay/sdk': version");
+    expect(run).toContain("'@agent-relay/harness-driver': version");
+
+    const cleanReinstall = loadPublishWorkflow().jobs.build?.steps?.find(
+      (step) => step.name === 'Clean reinstall after version bump'
+    );
+    expect(cleanReinstall?.run).toContain('npm install');
+  });
 });

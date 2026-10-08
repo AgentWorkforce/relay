@@ -1,6 +1,7 @@
 # Relay clean-room verification campaign
 
-This catalog drives `workflows/verify-cleanroom.ts`. It complements the fast
+This catalog drives `flows/verify/cleanroom.spec.ts`, which emits the
+`relay.verify.cleanroom` Relayflows v2 spec. It complements the fast
 per-PR red/green proof in `tests/relayflows/cases/`; it does not replace it.
 
 The campaign has three promises:
@@ -10,6 +11,45 @@ The campaign has three promises:
    documented title filter is routed to exactly one domain lane;
 3. a missing fixture, skipped suite, coverage gap, or dirty cleanup is never a
    pass.
+
+## Targeted pull-request verification
+
+`.github/workflows/targeted-feature-verification.yml` runs the fast pull-request
+slice. `scripts/verify-features/targeted-pr-plan.mjs` maps the changed paths
+through the feature manifest and this campaign's matrix, then
+`flows/verify/targeted-pr.spec.ts` emits a deterministic Relayflows v2 spec for
+only the selected setup and scenarios. A directly mapped feature runs its
+contract scenarios plus any category-level guard. A changed test runs the
+scenario that names it.
+
+The selector fails closed. Changes to the selector, manifest, matrix, generated
+flow, or workflow run the complete smoke profile. Any other non-documentation
+path without a known route also runs the complete smoke profile and is recorded
+in `unmatchedRuntimeFiles`; it never becomes a green skip. Documentation-only
+changes do not start the workflow. The plan and generated spec are uploaded as
+CI evidence on every run.
+
+Targeted verification is intentionally contract-level. Provider-backed and
+fresh-host scenarios remain visible in the plan as `coverageGaps` and continue
+to run in release qualification. In particular, Fleet pull requests run the
+Fleet CLI/attach/spawn contracts and the Daytona board contract, while the live
+two-node Daytona board remains a release gate.
+
+To reproduce a CI selection locally, generate a plan from two full Git SHAs,
+then check and run the generated v2 spec:
+
+```bash
+node scripts/verify-features/targeted-pr-plan.mjs plan \
+  --base <base-sha> --head <head-sha> \
+  --output .workflow-artifacts/targeted-pr/plan.json
+node --experimental-strip-types flows/verify/targeted-pr.spec.ts \
+  --plan .workflow-artifacts/targeted-pr/plan.json \
+  --out .workflow-artifacts/flows/relay.verify.targeted-pr.json
+flows check .workflow-artifacts/flows/relay.verify.targeted-pr.json
+flows run --no-observer-link \
+  --data-dir .workflow-artifacts/targeted-pr/relayflowd \
+  .workflow-artifacts/flows/relay.verify.targeted-pr.json
+```
 
 `full` and `soak` are Cloud-only profiles. Each lane is a separate non-interactive
 agent step, so the Cloud sandbox executor gives it a fresh OS sandbox. Inside
@@ -26,7 +66,8 @@ Use the released CLI to submit the checkout:
 
 ```bash
 VERIFY_CLEANROOM_PROFILE=full \
-  agent-relay cloud run workflows/verify-cleanroom.ts --sync-code
+  node flows/verify/cleanroom.spec.ts --out .workflow-artifacts/flows/relay.verify.cleanroom.json
+  flows run --cloud --sync-code .workflow-artifacts/flows/relay.verify.cleanroom.json
 ```
 
 For a long flake hunt, use `VERIFY_CLEANROOM_PROFILE=soak`. For graph and
@@ -35,7 +76,7 @@ catalog development, use:
 ```bash
 npm run verify:cleanroom:validate
 DRY_RUN=1 VERIFY_CLEANROOM_PROFILE=smoke \
-  relayflows run workflows/verify-cleanroom.ts
+  npm run verify:cleanroom
 ```
 
 The smoke profile may be executed locally, but local execution is process
@@ -70,7 +111,7 @@ Daytona baseline and hard acceptance gates, use
 Fleet has a dedicated operator-host Relayflow because its proof environment is
 itself a set of fresh Cloud sandboxes. The flow runs two sequential attempts;
 each provisions at least two distinct Daytona sandboxes, registers both as live
-Fleet nodes, and measures 108 operations:
+Fleet nodes, and measures 110 operations:
 every visible `fleet` leaf, all supported Fleet provider values, every `node`
 leaf, all `node agent spawn` providers/runtimes/lifecycle modes, initial and
 post-ready injection, remote and broker-local attach/message control,
@@ -85,7 +126,7 @@ acknowledgements, exact injection reader receipts, same-name reuse, and verified
 process/identity absence after release. The baseline rejects any total or online
 agent identity and any total or live Fleet node record; release qualification
 also hashes the actual CLI and broker executables inside each sandbox. See the
-exact 108-operation acceptance crosswalk and external gates in
+exact 110-operation acceptance crosswalk and external gates in
 [`FLEET_ACCEPTANCE_AUDIT.md`](./FLEET_ACCEPTANCE_AUDIT.md).
 
 ```bash
@@ -116,11 +157,11 @@ node scripts/verify-features/fleet-daytona.mjs cleanup \
   --nonce <run-nonce>
 ```
 
-`fleet enable`, `fleet disable`, and `fleet inherit` affect a whole workspace.
-They are evidence-visible safety skips unless the active workspace is disposable,
-`VERIFY_FLEET_DISPOSABLE_WORKSPACE=1` is set, and
-`VERIFY_FLEET_EXPECTED_WORKSPACE_ID` exactly matches the resolved Cloud workspace.
-The runner captures the initial override and restores it in `finally`. `node down
+`fleet config`, `fleet enable`, `fleet disable`, and `fleet inherit` are hidden
+compatibility no-ops. The runner checks successful exits and deprecation notices
+against an unreachable endpoint, with a JSON deprecation object for `fleet config`.
+They change no workspace state and need no restoration. Disposable-workspace and
+workspace-identity checks still apply to the campaign baseline. `node down
 --all` runs only inside an exact owned Daytona sandbox, never on the operator host.
 
 Each attempt is sealed under
@@ -159,8 +200,8 @@ containing the complete verifier. The request workflow receives the
 for that trusted verifier; there is no nightly qualification schedule.
 
 The diagnosis flow is itself fail-closed. Before independent review it authors
-and validates exactly 156 runtime contracts: 12 state transitions, 23 injected
-faults, 13 release acceptance gates, and all 108 Fleet operations. Diagnosis mode
+and validates exactly 158 runtime contracts: 12 state transitions, 23 injected
+faults, 13 release acceptance gates, and all 110 Fleet operations. Diagnosis mode
 must mark every runtime row `BLOCKED` and bind it bidirectionally to an owned,
 promotion-blocking unknown; static tests and historical observations cannot
 become runtime passes. The seal hashes every generated artifact and reproduction

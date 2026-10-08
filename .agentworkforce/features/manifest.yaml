@@ -710,6 +710,13 @@ categories:
         location: packages/cli/src/cli/commands/fleet.ts
         verify_tier: 5
 
+      - id: fleet-nodes-pretty
+        name: List Fleet Nodes as a Table
+        cli: relay fleet nodes list [--pretty] [--name <name>] [--capability <name>] [--all]
+        description: Show fleet nodes in a human-readable table, including identity, liveness, capacity, version, and heartbeat age
+        location: packages/cli/src/cli/commands/fleet.ts
+        verify_tier: 5
+
       - id: fleet-spawn
         name: Spawn Fleet Agent
         cli: relay fleet spawn <cli> [--name <name>] [--task <text>] [--node <name>] [--persona <persona>] [--model <model>]
@@ -721,34 +728,6 @@ categories:
         name: Release Fleet Agent
         cli: relay fleet release <name> [--reason <reason>] [--delete-agent]
         description: Release a spawned fleet agent, optionally deleting the agent identity
-        location: packages/cli/src/cli/commands/fleet.ts
-        verify_tier: 5
-
-      - id: fleet-config
-        name: Fleet Config
-        cli: relay fleet config
-        description: Show the workspace fleet-node configuration
-        location: packages/cli/src/cli/commands/fleet.ts
-        verify_tier: 5
-
-      - id: fleet-enable
-        name: Enable Fleet
-        cli: relay fleet enable
-        description: Enable fleet nodes for the workspace (modifies cloud state)
-        location: packages/cli/src/cli/commands/fleet.ts
-        verify_tier: 5
-
-      - id: fleet-disable
-        name: Disable Fleet
-        cli: relay fleet disable
-        description: Disable fleet nodes for the workspace (modifies cloud state)
-        location: packages/cli/src/cli/commands/fleet.ts
-        verify_tier: 5
-
-      - id: fleet-inherit
-        name: Inherit Fleet Config
-        cli: relay fleet inherit
-        description: Use deployment defaults for fleet node configuration (modifies cloud state)
         location: packages/cli/src/cli/commands/fleet.ts
         verify_tier: 5
 

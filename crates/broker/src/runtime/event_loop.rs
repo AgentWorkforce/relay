@@ -1,5 +1,4 @@
 use super::*;
-
 use futures_util::future::{join, join_all};
 
 /// Current PTY resize owner for a worker under the single-resizer policy.
@@ -210,6 +209,11 @@ pub(crate) struct BrokerRuntime {
     pub(super) ws_inbound_rx: mpsc::Receiver<WorkspaceInboundMessage>,
     pub(super) relaycast_open: bool,
     pub(super) fleet_control_tx: mpsc::Sender<FleetControlCommand>,
+    /// Retained cleanup completions bypass the bounded control queue so queue
+    /// pressure cannot discard the caller's terminal Fleet result at shutdown.
+    pub(super) fleet_completion_tx:
+        mpsc::UnboundedSender<crate::node_control::RetainedFleetCompletion>,
+    pub(super) fleet_completion_acks: Vec<tokio::sync::oneshot::Receiver<()>>,
     /// This broker's relaycast node name, used to bind agents to the node over
     /// HTTP when the node-control `agent.register` path is unavailable.
     pub(super) fleet_node_name: String,
@@ -224,6 +228,10 @@ pub(crate) struct BrokerRuntime {
     /// Independent outbound terminal lane. It never shares the node-control
     /// socket, keeping high-volume PTY bytes away from heartbeats/actions.
     pub(super) terminal_control_tx: mpsc::Sender<TerminalControlCommand>,
+    /// Coalescing wake-up path from the live node-control lane into the single
+    /// terminal dial loop. A watch channel cannot fill behind PTY output and
+    /// never creates a second competing reconnect task.
+    pub(super) terminal_reconnect_tx: watch::Sender<Option<u64>>,
     pub(super) terminal_event_rx: mpsc::Receiver<TerminalControlEvent>,
     pub(super) terminal_control_open: bool,
     pub(super) terminal_sessions: HashMap<String, TerminalSession>,
@@ -395,6 +403,7 @@ impl BrokerRuntime {
                 }
             }
 
+            self.reap_fleet_completion_acks();
             self.flush_persisted_stores();
             self.publish_fleet_delivery_cursors_if_dirty();
         }
@@ -468,7 +477,7 @@ impl BrokerRuntime {
         }
     }
 
-    async fn shutdown_runtime(mut self) -> Result<()> {
+    pub(super) async fn shutdown_runtime(mut self) -> Result<()> {
         self.drain_identity_cleanups_on_shutdown().await;
         // Save crash insights before shutdown (only in persist mode)
         if self.paths.persist {
@@ -527,8 +536,7 @@ impl BrokerRuntime {
         }
         if let Err(error) = self
             .fleet_control_tx
-            .send(FleetControlCommand::Shutdown)
-            .await
+            .try_send(FleetControlCommand::Shutdown)
         {
             tracing::debug!(error = %error, "failed to send fleet control shutdown signal");
         }

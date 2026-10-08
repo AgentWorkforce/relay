@@ -1,0 +1,21 @@
+{
+  "version": 1,
+  "id": "1806-node-claim-state-dir-realpath",
+  "kind": "bugfix",
+  "title": "node down releases a claim whose recorded state dir is a non-canonical spelling",
+  "runner": {
+    "command": ["node", "tests/relayflows/cases/1806-node-claim-state-dir-realpath/run.mjs"]
+  },
+  "requirements": [],
+  "timeoutSeconds": 600,
+  "expected": {
+    "base": {
+      "outcome": "bug",
+      "signature": "node_claim_symlinked_state_dir_not_released"
+    },
+    "head": {
+      "outcome": "fixed",
+      "signature": "node_claim_symlinked_state_dir_released"
+    }
+  }
+}

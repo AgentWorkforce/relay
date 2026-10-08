@@ -651,6 +651,11 @@ impl BrokerRuntime {
                     error = %error,
                     "worker command writer failed; closing attached terminals and resetting worker"
                 );
+                workers.fail_native_delivery_custody_generation(
+                    &name,
+                    generation,
+                    &format!("worker command writer failed: {error}"),
+                );
                 let session_ids: Vec<String> = terminal_sessions
                     .iter()
                     .filter(|(_, session)| session.agent == name)
@@ -693,6 +698,36 @@ impl BrokerRuntime {
                     return;
                 }
                 if let Some(msg_type) = value.get("type").and_then(Value::as_str) {
+                    if let Some(payload) = value.get("payload") {
+                        let delivery_id = payload
+                            .get("delivery_id")
+                            .and_then(Value::as_str)
+                            .unwrap_or("");
+                        if !delivery_id.is_empty() {
+                            match msg_type {
+                                "delivery_queued" | "delivery_ack" => {
+                                    workers.confirm_native_delivery_custody(
+                                        &name,
+                                        generation,
+                                        delivery_id,
+                                    );
+                                }
+                                "delivery_failed" => {
+                                    let reason = payload
+                                        .get("reason")
+                                        .and_then(Value::as_str)
+                                        .unwrap_or("native sidecar rejected delivery");
+                                    workers.fail_native_delivery_custody(
+                                        &name,
+                                        generation,
+                                        delivery_id,
+                                        reason,
+                                    );
+                                }
+                                _ => {}
+                            }
+                        }
+                    }
                     if msg_type == "delivery_ack" {
                         if let Some(payload) = value.get("payload") {
                             let delivery_id = payload
@@ -974,6 +1009,13 @@ impl BrokerRuntime {
                             }
                         }
                     } else if msg_type == "worker_error" {
+                        if value.pointer("/payload/code").and_then(Value::as_str)
+                            == Some("provider_auth_required")
+                        {
+                            if let Some(pending) = pending_verified_spawns.get_mut(&name) {
+                                pending.provider_auth_failed(generation);
+                            }
+                        }
                         let is_pty = workers
                             .workers
                             .get(&name)
@@ -1363,6 +1405,13 @@ impl BrokerRuntime {
                             );
                         }
                     } else if msg_type == "worker_ready" {
+                        // An auth failure is terminal for this verified spawn,
+                        // even if another frame arrives before maintenance runs.
+                        if pending_verified_spawns.get(&name).is_some_and(|pending| {
+                            pending.generation == generation && pending.failure_reason.is_some()
+                        }) {
+                            return;
+                        }
                         let readiness_proven = value
                             .get("payload")
                             .and_then(|payload| payload.get("readiness_proven"))
@@ -1391,6 +1440,9 @@ impl BrokerRuntime {
                             .then(|| pending_verified_spawns.remove(&name))
                             .flatten();
                         if let Some(pending) = pending {
+                            tracing::info!(invocation_id = %pending.invocation_id, worker = %name,
+                                verify_ready = true, elapsed_ms = pending.started.elapsed().as_millis() as u64,
+                                "sending verified fleet spawn result");
                             let _ = fleet_control_tx
                                 .send(FleetControlCommand::Send(
                                     crate::fleet_wire::BrokerToRelaycast::ActionResult(
@@ -1421,7 +1473,7 @@ impl BrokerRuntime {
                                 );
                             }
                         }
-                        if let Some(task_text) = workers.initial_tasks.remove(&name) {
+                        if let Some(task_text) = workers.take_initial_task_for_injection(&name) {
                             let event_id = format!("init_{}", Uuid::new_v4().simple());
                             if let Err(e) = queue_and_try_delivery_raw(
                                 workers,
@@ -1829,6 +1881,11 @@ impl BrokerRuntime {
                             .and_then(|p| p.get("signal"))
                             .and_then(Value::as_str)
                             .map(String::from);
+                        workers.fail_native_delivery_custody_generation(
+                            &name,
+                            generation,
+                            "native worker reported exit before confirming delivery custody",
+                        );
                         tracing::info!(
                             agent = %name,
                             code = ?code,

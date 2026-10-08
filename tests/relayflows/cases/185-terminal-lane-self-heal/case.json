@@ -1,0 +1,21 @@
+{
+  "version": 1,
+  "id": "185-terminal-lane-self-heal",
+  "kind": "bugfix",
+  "title": "Replace a dark terminal lane when Relaycast advances its generation",
+  "requirements": ["broker-linux-x64"],
+  "runner": {
+    "command": ["node", "tests/relayflows/cases/185-terminal-lane-self-heal/run.mjs"]
+  },
+  "timeoutSeconds": 900,
+  "expected": {
+    "base": {
+      "outcome": "bug",
+      "signature": "terminal_generation_advance_leaves_dark_lane_attached"
+    },
+    "head": {
+      "outcome": "fixed",
+      "signature": "terminal_generation_advance_redials_once_per_generation"
+    }
+  }
+}

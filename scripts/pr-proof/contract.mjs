@@ -98,11 +98,13 @@ export function parsePrProofMetadata(body = '') {
  */
 const NON_RUNTIME_PATH_PATTERNS = Object.freeze([
   /^workflows\//,
+  /^flows\//,
   /^docs\//,
   /^\.github\//,
   /^\.agentworkforce\//,
   /^scripts\/pr-proof\//,
   /^scripts\/evals\//,
+  /^scripts\/verify-features\//,
   /^tests\//,
   // Not just the top-level tests/ tree: a package-local unit test
   // (packages/*/src/**/*.test.ts) is test corpus too. Every published

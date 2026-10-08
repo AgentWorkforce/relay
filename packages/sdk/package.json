@@ -1,6 +1,6 @@
 {
   "name": "@agent-relay/sdk",
-  "version": "12.2.4",
+  "version": "13.1.5",
   "engines": {
     "node": ">=22.0.0"
   },
@@ -75,6 +75,6 @@
     "@relaycast/sdk": "^8.0.7",
     "@relaycast/types": "^8.0.7",
     "zod": "^4.4.3",
-    "@agent-relay/cloud": "12.2.4"
+    "@agent-relay/cloud": "13.1.5"
   }
 }

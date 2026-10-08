@@ -1,0 +1,13 @@
+{
+  "version": 1,
+  "id": "muse-unattended-startup",
+  "kind": "bugfix",
+  "title": "Broker-managed Muse starts its assigned task unattended before reporting ready",
+  "requirements": ["broker-linux-x64"],
+  "runner": { "command": ["node", "tests/relayflows/cases/muse-unattended-startup/run.mjs"] },
+  "timeoutSeconds": 180,
+  "expected": {
+    "base": { "outcome": "bug", "signature": "muse_waits_without_startup_task_or_unattended_mode" },
+    "head": { "outcome": "fixed", "signature": "muse_runs_startup_task_unattended_then_ready" }
+  }
+}

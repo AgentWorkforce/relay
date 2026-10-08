@@ -93,6 +93,8 @@ export class RelayPlacementError extends Error {
     | 'unmapped_repo'
     /** The node ran the action and reported a failure. */
     | 'spawn_failed'
+    /** The node rejected spawn setup before mutation and a caller may retry. */
+    | 'spawn_retryable'
     /**
      * The node accepted the invocation but never reported a terminal result.
      * A node running an obsolete broker advertises `spawn:<harness>` capacity
@@ -153,10 +155,11 @@ export function placementActionName(capability: string): string {
 
 export function placementActionInput(
   input: Record<string, unknown> | undefined,
-  placement: { capability: string; node?: string; repo?: string; ttlMs: number }
+  placement: { capability: string; node?: string; repo?: string; ttlMs: number; verifyReady?: boolean }
 ): Record<string, unknown> {
   const payload = { ...(input ?? {}) };
   payload.capability = placement.capability;
+  if (placement.verifyReady) payload.verify_ready = true;
   if (placement.node) {
     payload.node = placement.node;
     payload.target_node = placement.node;

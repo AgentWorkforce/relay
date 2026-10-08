@@ -1,0 +1,55 @@
+{
+  "id": "compact_219eq595nnmd",
+  "version": 1,
+  "type": "compacted",
+  "compactedAt": "2026-09-22T19:28:36.361Z",
+  "sourceTrajectories": [
+    "traj_hwpsorpvo3va"
+  ],
+  "dateRange": {
+    "start": "2026-09-22T19:25:17.654Z",
+    "end": "2026-09-22T19:28:35.620Z"
+  },
+  "summary": {
+    "totalDecisions": 2,
+    "totalEvents": 2,
+    "uniqueAgents": [
+      "default"
+    ]
+  },
+  "decisionGroups": [
+    {
+      "category": "database",
+      "decisions": [
+        {
+          "question": "Use the existing broker model handling and document supported harnesses without catalog validation",
+          "chosen": "Use the existing broker model handling and document supported harnesses without catalog validation",
+          "reasoning": "The protocol already supports model; catalog validation would reject future models. Preserve inline model argument precedence.",
+          "fromTrajectory": "traj_hwpsorpvo3va"
+        },
+        {
+          "question": "Deprecate public model-mapping helpers; retain root and subpath exports until the next major",
+          "chosen": "Deprecate public model-mapping helpers; retain root and subpath exports until the next major",
+          "reasoning": "The reviewed plan reserves breaking removal for an explicit release-level choice. No preference was supplied, so preserve compatibility and mark the obsolete helpers deprecated. Leave model-commands, broker colon branches and capacity normalization for follow-up.",
+          "fromTrajectory": "traj_hwpsorpvo3va"
+        }
+      ]
+    }
+  ],
+  "keyLearnings": [],
+  "keyFindings": [],
+  "filesAffected": [
+    "CHANGELOG.md",
+    "crates/broker/src/worker.rs",
+    "packages/cli/src/cli/commands/core.test.ts",
+    "packages/cli/src/cli/commands/core.ts",
+    "packages/cli/src/cli/lib/broker-lifecycle.ts",
+    "packages/config/src/schemas.test.ts",
+    "packages/config/src/schemas.ts",
+    "packages/config/src/teams-config.test.ts",
+    "packages/config/src/teams-config.ts"
+  ],
+  "commits": [
+    "28b174a"
+  ]
+}

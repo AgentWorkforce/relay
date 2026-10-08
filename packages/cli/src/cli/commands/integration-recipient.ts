@@ -98,8 +98,19 @@ export async function launchSubscriptionRecipient(input: RecipientLaunchInput): 
     }
     const ready = await owned.waitForReady(90_000);
     if (ready.reason !== 'ready' || !ready.pid || ready.pid <= 0) {
+      // A PTY-close `agent_exit` can arrive before the reaper's code-bearing
+      // `agent_exited`; while the worker is still registered, hold a short
+      // bounded grace so the reported exit keeps the authoritative status.
+      let exit = ready.exit;
+      if (ready.reason === 'exited' && exit?.code === undefined) {
+        const deadline = Date.now() + 3_000;
+        while (exit?.code === undefined && Date.now() < deadline) {
+          await new Promise((resolve) => setTimeout(resolve, 100));
+          exit = owned.exit ?? exit;
+        }
+      }
       throw new Error(
-        `Recipient ${input.name} failed startup: ${ready.reason}${ready.exit ? ` (${JSON.stringify(ready.exit)})` : ''}`
+        `Recipient ${input.name} failed startup: ${ready.reason}${exit ? ` (${JSON.stringify(exit)})` : ''}`
       );
     }
     process.kill(ready.pid, 0);

@@ -68,10 +68,11 @@ const CLAUDE_TRUST_KEY_PACE: Duration = Duration::from_millis(40);
 // partially delivered and is unsafe to requeue blindly.
 const WRAP_WRITE_ACK_TIMEOUT: Duration = Duration::from_secs(5);
 
-/// Claude Code and Codex treat multiline input and a trailing Enter received in the
-/// same paste burst as editor content, leaving the task parked in its composer.
-/// Give its submit key a distinct, delayed PTY write. Other harnesses retain
-/// the established body-plus-Enter write shape.
+/// Claude Code, Codex, and Muse treat multiline input and a trailing Enter
+/// received in the same paste burst as editor content, leaving the task parked
+/// in the composer until a human presses Enter. Give its submit key a distinct,
+/// delayed PTY write. Other harnesses retain the established body-plus-Enter
+/// write shape.
 fn paste_submit_harness(cli: &str) -> bool {
     let basename = cli
         .rsplit(['/', '\\'])
@@ -79,11 +80,36 @@ fn paste_submit_harness(cli: &str) -> bool {
         .filter(|part| !part.is_empty())
         .unwrap_or(cli);
     // PTY entry points accept arbitrary executable names, including company
-    // wrappers such as `company-claude` and `claude-code`. Match the same
-    // Claude identity signal used by readiness and activity detection so a
-    // wrapper cannot silently fall back to the broken body-plus-Enter burst.
+    // wrappers such as `company-claude` and `claude-code`, and absolute paths
+    // such as `/Users/.../.local/bin/muse`. Match the same substring identity
+    // signal used by readiness and activity detection so a wrapper or path
+    // spelling cannot silently fall back to the broken body-plus-Enter burst.
     let lower = basename.to_ascii_lowercase();
-    lower.contains("claude") || lower.contains("codex")
+    lower.contains("claude")
+        || lower.contains("codex")
+        || lower.contains("muse")
+        || crate::readiness::is_devin_cli(cli)
+}
+
+/// Submit an injection body with the harness-specific submit sequence,
+/// returning the drainer ack plus the receive-time output watermark.
+/// Paste-aware harnesses get the body with a distinct delayed Enter in one
+/// atomic compound write (no terminal reply, later input, or other producer
+/// can splice into the pause); other harnesses keep the single body-plus-Enter
+/// burst. Finalization still waits for this ack.
+pub(crate) fn submit_injection_body(
+    pty: &PtySession,
+    resolved_cli: &str,
+    bytes: Vec<u8>,
+    pace: Duration,
+) -> anyhow::Result<(tokio::sync::oneshot::Receiver<std::io::Result<()>>, u64)> {
+    if let Some(delay) = injection_submit_followup_delay(resolved_cli) {
+        pty.submit_write_paced_with_followup_and_output_boundary(bytes, pace, delay, b"\r".to_vec())
+    } else {
+        let mut burst = bytes;
+        burst.extend_from_slice(b"\r");
+        pty.submit_write_paced_with_output_boundary(burst, pace)
+    }
 }
 
 pub(crate) fn injection_submit_followup_delay(cli: &str) -> Option<Duration> {
@@ -222,6 +248,20 @@ fn wrap_injection_timer_allowed(has_pending_write_ack: bool) -> bool {
     !has_pending_write_ack
 }
 
+// Readiness deferrals must not spend the bounded delivery retry budget.
+fn prepare_wrap_retry(
+    verification: &mut PendingVerification,
+    injectable: bool,
+    now: Instant,
+) -> bool {
+    if !injectable {
+        verification.injected_at = now;
+        return false;
+    }
+    verification.attempts += 1;
+    true
+}
+
 /// Start echo verification after a PTY write ack without missing output that
 /// raced ahead of the ack select arm. Returns `true` when the echo was already
 /// present and the delivery was confirmed immediately.
@@ -309,6 +349,7 @@ pub(crate) struct PtyAutoState {
     /// split (`pty_worker`); `run_wrap` leaves it `false` since that mode is
     /// itself a live human passthrough where auto-responses are wanted.
     pub(crate) interactive_hold: bool,
+    pub(crate) automatic_responses_disabled: bool,
 }
 
 impl PtyAutoState {
@@ -341,6 +382,7 @@ impl PtyAutoState {
             last_output_time: Instant::now(),
             is_idle: false,
             interactive_hold: false,
+            automatic_responses_disabled: false,
         }
     }
 
@@ -357,7 +399,7 @@ impl PtyAutoState {
     /// Supports full match (header + option) and partial-match timeout (5s fallback).
     /// Handles edge cases where prompt text fragments across reads.
     pub(crate) async fn handle_mcp_approval(&mut self, text: &str, pty: &PtySession) {
-        if self.interactive_hold {
+        if self.automatic_responses_disabled || self.interactive_hold {
             return;
         }
         if self.mcp_approved {
@@ -399,7 +441,7 @@ impl PtyAutoState {
 
     /// Detect and approve bypass-permissions prompts in PTY output.
     pub(crate) async fn handle_bypass_permissions(&mut self, text: &str, pty: &PtySession) {
-        if self.interactive_hold {
+        if self.automatic_responses_disabled || self.interactive_hold {
             return;
         }
         let in_cooldown = self
@@ -439,7 +481,7 @@ impl PtyAutoState {
 
     /// Detect and dismiss Codex model upgrade prompts by selecting "Use existing model".
     pub(crate) async fn handle_codex_model_prompt(&mut self, text: &str, pty: &PtySession) {
-        if self.interactive_hold {
+        if self.automatic_responses_disabled || self.interactive_hold {
             return;
         }
         if self.codex_model_prompt_handled {
@@ -462,7 +504,7 @@ impl PtyAutoState {
     /// Detect and accept Codex's startup directory-trust prompt.
     /// "Yes, continue" is pre-selected as option 1, so Enter is sufficient.
     pub(crate) async fn handle_codex_trust(&mut self, text: &str, pty: &PtySession) {
-        if self.interactive_hold || self.codex_trust_handled {
+        if self.automatic_responses_disabled || self.interactive_hold || self.codex_trust_handled {
             return;
         }
         Self::append_buf(&mut self.codex_trust_buffer, text, 2500, 2000);
@@ -483,7 +525,7 @@ impl PtyAutoState {
     /// Detect and auto-approve opencode/droid EXECUTE permission prompts.
     /// Selects "Yes, and always allow medium impact commands" (arrow down + Enter).
     pub(crate) async fn handle_opencode_permission(&mut self, text: &str, pty: &PtySession) {
-        if self.interactive_hold {
+        if self.automatic_responses_disabled || self.interactive_hold {
             return;
         }
         let in_cooldown = self
@@ -519,7 +561,7 @@ impl PtyAutoState {
 
     /// Detect and auto-approve Gemini "Action Required" permission prompts.
     pub(crate) async fn handle_gemini_action(&mut self, text: &str, pty: &PtySession) {
-        if self.interactive_hold {
+        if self.automatic_responses_disabled || self.interactive_hold {
             return;
         }
         let in_cooldown = self
@@ -545,7 +587,7 @@ impl PtyAutoState {
     /// Detect and auto-approve Gemini "Modify Trust Level" folder trust prompts.
     /// The menu shows "Trust this folder" pre-selected as option 1, so we just press Enter.
     pub(crate) async fn handle_gemini_trust(&mut self, text: &str, pty: &PtySession) {
-        if self.interactive_hold {
+        if self.automatic_responses_disabled || self.interactive_hold {
             return;
         }
         if !self.gemini_trust_handled {
@@ -569,7 +611,7 @@ impl PtyAutoState {
     /// to open the trust menu. The existing `handle_gemini_trust` will then pick up the
     /// interactive "Modify Trust Level" prompt that appears in response.
     pub(crate) async fn handle_gemini_untrusted_banner(&mut self, text: &str, pty: &PtySession) {
-        if self.interactive_hold {
+        if self.automatic_responses_disabled || self.interactive_hold {
             return;
         }
         if !self.gemini_untrusted_handled {
@@ -601,7 +643,7 @@ impl PtyAutoState {
     /// selected and sent a bare Enter — on Claude Code 2.1.259+ that confirmed
     /// `No, exit`, killing the worker while its roster row survived.
     pub(crate) async fn handle_claude_trust(&mut self, _text: &str, pty: &PtySession) {
-        if self.interactive_hold {
+        if self.automatic_responses_disabled || self.interactive_hold {
             return;
         }
         if self.claude_trust_handled {
@@ -660,7 +702,7 @@ impl PtyAutoState {
     pub(crate) fn try_auto_enter(&mut self, pty: &PtySession) {
         // Suppressed while a human drives: pressing Enter here would submit the
         // human's half-typed input.
-        if self.interactive_hold {
+        if self.automatic_responses_disabled || self.interactive_hold {
             return;
         }
         if let Some(injection_time) = self.last_injection_time {
@@ -694,9 +736,10 @@ impl PtyAutoState {
         }
     }
 
-    /// Acknowledgment confirms a PTY write, never a harness action. Claude and
-    /// Codex already received a separate delayed submit; another Enter after
-    /// they become idle can submit unrelated composer text or repeat a command.
+    /// Acknowledgment confirms a PTY write, never a harness action. Claude,
+    /// Codex, and Muse already received a separate delayed submit; another Enter
+    /// after they become idle can submit unrelated composer text or repeat
+    /// a command.
     /// Keep that distinction observable, including when the body only echoed.
     pub(crate) fn note_completed_injection(&mut self, cli: &str) {
         let delayed_submit = paste_submit_harness(cli);
@@ -929,6 +972,8 @@ while True:
             "/opt/codex/",
             "claude",
             "claude-code",
+            "muse",
+            "/Users/khaliqgant/.local/bin/muse",
         ] {
             let mut state = PtyAutoState::new();
             state.last_injection_time = Some(Instant::now() - Duration::from_secs(120));
@@ -1336,6 +1381,20 @@ pub(crate) async fn run_wrap(
     // Spawner for child agents
     let mut spawner = Spawner::new();
 
+    if crate::readiness::is_devin_cli(&resolved_cli) && !skip_prompt {
+        let token = default_workspace
+            .http_client
+            .cached_agent_token(&default_workspace.self_name)
+            .context("Devin wrap requires the existing authenticated session token")?;
+        std::env::set_var("RELAY_AGENT_NAME", &default_workspace.self_name);
+        std::env::set_var("RELAY_AGENT_TOKEN", token);
+        std::env::set_var("RELAY_WORKSPACES_JSON", &child_workspaces_json);
+        if let Some(base) = child_base_url.as_deref() {
+            std::env::set_var("RELAY_BASE_URL", base);
+        }
+    }
+    let _devin_state = crate::devin::prepare_worker_config(&resolved_cli).await?;
+
     // --- Spawn CLI in PTY ---
     let (pty, mut pty_rx) = PtySession::spawn(
         &resolved_cli,
@@ -1408,6 +1467,7 @@ pub(crate) async fn run_wrap(
     const SUGGESTION_LOOKBEHIND_MAX: usize = 512;
 
     let mut pty_auto = PtyAutoState::new();
+    pty_auto.automatic_responses_disabled = crate::readiness::is_devin_cli(&resolved_cli);
     let mut auto_enter_interval = tokio::time::interval(Duration::from_secs(2));
     auto_enter_interval.set_missed_tick_behavior(MissedTickBehavior::Skip);
     let mut pending_injection_interval = tokio::time::interval(Duration::from_millis(50));
@@ -1770,76 +1830,83 @@ pub(crate) async fn run_wrap(
                                     // starts with a valid token (avoiding "Not registered"
                                     // errors when non-claude CLIs like codex try to use
                                     // relay tools before calling register() themselves).
-                                    let child_token = match retry_agent_registration(
+                                    match retry_agent_registration(
                                         &workspace_child_http,
                                         &params.name,
                                         Some(&params.cli),
                                     ).await {
-                                        Ok(token) => Some(token),
+                                        Ok(child_token) => {
+                                            match spawner
+                                                .spawn_wrap_with_token(
+                                                    &params.name,
+                                                    &params.cli,
+                                                    &params.args,
+                                                    &env_vars,
+                                                    Some(&action_ref.invoked_by),
+                                                    Some(&child_token),
+                                                )
+                                                .await
+                                            {
+                                                Ok(pid) => {
+                                                    agent_spawn_count += 1;
+                                                    telemetry.track(TelemetryEvent::AgentSpawn {
+                                                        cli: params.cli.clone(),
+                                                        // The wrap path handles child spawns requested by a
+                                                        // running agent through the broker action channel —
+                                                        // always agent-originated here.
+                                                        runtime: "pty".to_string(),
+                                                        spawn_source: ActionSource::Agent,
+                                                        has_task: false,
+                                                        is_shadow: false,
+                                                    });
+                                                    tracing::info!(
+                                                        child = %params.name,
+                                                        cli = %params.cli,
+                                                        pid = pid,
+                                                        invoked_by = %action_ref.invoked_by,
+                                                        "spawned child agent"
+                                                    );
+                                                    eprintln!(
+                                                        "\r\n[agent-relay] spawned child '{}' (pid {})\r",
+                                                        params.name, pid
+                                                    );
+                                                }
+                                                Err(error) => {
+                                                    tracing::error!(
+                                                        child = %params.name,
+                                                        error = %error,
+                                                        "failed to spawn child agent"
+                                                    );
+                                                    eprintln!(
+                                                        "\r\n[agent-relay] failed to spawn '{}': {}\r",
+                                                        params.name, error
+                                                    );
+                                                    completion_error = Some(format!(
+                                                        "failed to spawn '{}': {error}",
+                                                        params.name
+                                                    ));
+                                                }
+                                            }
+                                        }
                                         Err(RegRetryOutcome::RetryableExhausted(e)) => {
                                             tracing::warn!(
                                                 child = %params.name,
                                                 error = %e,
-                                                "pre-registration failed after retries, spawning without token"
+                                                "pre-registration failed after retries; refusing tokenless spawn"
                                             );
-                                            None
+                                            completion_error = Some(format!(
+                                                "pre-registration failed for '{}': {e}",
+                                                params.name
+                                            ));
                                         }
                                         Err(RegRetryOutcome::Fatal(e)) => {
                                             tracing::warn!(
                                                 child = %params.name,
                                                 error = %e,
-                                                "pre-registration fatal error, spawning without token"
-                                            );
-                                            None
-                                        }
-                                    };
-                                    match spawner
-                                        .spawn_wrap_with_token(
-                                            &params.name,
-                                            &params.cli,
-                                            &params.args,
-                                            &env_vars,
-                                            Some(&action_ref.invoked_by),
-                                            child_token.as_deref(),
-                                        )
-                                        .await
-                                    {
-                                        Ok(pid) => {
-                                            agent_spawn_count += 1;
-                                            telemetry.track(TelemetryEvent::AgentSpawn {
-                                                cli: params.cli.clone(),
-                                                runtime: "pty".to_string(),
-                                                // The wrap path handles child spawns requested by a
-                                                // running agent through the broker action channel —
-                                                // always agent-originated here.
-                                                spawn_source: ActionSource::Agent,
-                                                has_task: false,
-                                                is_shadow: false,
-                                            });
-                                            tracing::info!(
-                                                child = %params.name,
-                                                cli = %params.cli,
-                                                pid = pid,
-                                                invoked_by = %action_ref.invoked_by,
-                                                "spawned child agent"
-                                            );
-                                            eprintln!(
-                                                "\r\n[agent-relay] spawned child '{}' (pid {})\r",
-                                                params.name, pid
-                                            );
-                                        }
-                                        Err(error) => {
-                                            tracing::error!(
-                                                child = %params.name,
-                                                error = %error,
-                                                "failed to spawn child agent"
-                                            );
-                                            eprintln!(
-                                                "\r\n[agent-relay] failed to spawn '{}': {}\r",
-                                                params.name, error
+                                                "pre-registration fatal error; refusing tokenless spawn"
                                             );
                                             completion_error = Some(format!(
-                                                "failed to spawn '{}': {error}",
+                                                "pre-registration failed for '{}': {e}",
                                                 params.name
                                             ));
                                         }
@@ -2044,8 +2111,13 @@ pub(crate) async fn run_wrap(
                 if should_block {
                     continue;
                 }
+                if !crate::devin::can_inject(&resolved_cli, &pty) { continue; }
                 if let Some(pending) = pending_wrap_injections.pop_front() {
                     tokio::time::sleep(throttle.delay()).await;
+                    if !crate::devin::can_inject(&resolved_cli, &pty) {
+                        pending_wrap_injections.push_front(pending);
+                        continue;
+                    }
                     if pty_auto.auto_suggestion_visible {
                         tracing::warn!(
                             event_id = %pending.event_id,
@@ -2072,25 +2144,8 @@ pub(crate) async fn run_wrap(
                         pending.workspace_id.as_deref(),
                         pending.workspace_alias.as_deref(),
                     );
-                    let mut bytes = injection.as_bytes().to_vec();
-                    let write = if let Some(delay) = injection_submit_followup_delay(&resolved_cli)
-                    {
-                        // Claude needs Enter in a later PTY write to close its
-                        // multiline paste boundary. The relay-pty compound
-                        // command keeps that delayed write atomic with the body
-                        // and acknowledges only after both writes succeed.
-                        pty.submit_write_paced_with_followup_and_output_boundary(
-                            bytes,
-                            Duration::ZERO,
-                            delay,
-                            b"\r".to_vec(),
-                        )
-                    } else {
-                        // Other harnesses retain the established single-write
-                        // body-plus-Enter shape.
-                        bytes.extend_from_slice(b"\r");
-                        pty.submit_write_paced_with_output_boundary(bytes, Duration::ZERO)
-                    };
+                    let bytes = crate::devin::injection_bytes(&resolved_cli, &injection);
+                    let write = submit_injection_body(&pty, &resolved_cli, bytes, Duration::ZERO);
                     match write {
                         Ok((ack_rx, output_boundary)) => {
                             let pending_write = PendingWrapWrite::Initial {
@@ -2242,15 +2297,8 @@ pub(crate) async fn run_wrap(
                 let mut i = 0;
                 while i < pending_verifications.len() {
                     if pending_verifications[i].injected_at.elapsed() >= VERIFICATION_WINDOW {
-                        let mut pv = pending_verifications.remove(i).unwrap();
+                        let pv = pending_verifications.remove(i).unwrap();
                         if pv.attempts < pv.max_attempts {
-                            pv.attempts += 1;
-                            tracing::warn!(
-                                event_id = %pv.event_id,
-                                attempt = pv.attempts,
-                                max = pv.max_attempts,
-                                "wrap: echo verification timeout, retrying injection"
-                            );
                             retry_queue.push(pv);
                         } else {
                             tracing::warn!(
@@ -2277,8 +2325,18 @@ pub(crate) async fn run_wrap(
                 }
 
                 // Re-inject retries
-                for pv in retry_queue {
+                for mut pv in retry_queue {
                     tokio::time::sleep(throttle.delay()).await;
+                    if !prepare_wrap_retry(&mut pv, crate::devin::can_inject(&resolved_cli, &pty), Instant::now()) {
+                        pending_verifications.push_back(pv);
+                        continue;
+                    }
+                    tracing::warn!(
+                        event_id = %pv.event_id,
+                        attempt = pv.attempts,
+                        max = pv.max_attempts,
+                        "wrap: echo verification timeout, retrying injection"
+                    );
                     // Retries consult the throttle like first injections: the
                     // failed attempt usually already echoed the full block, so
                     // a fresh one within the cooldown is redundant.
@@ -2295,19 +2353,8 @@ pub(crate) async fn run_wrap(
                         pv.workspace_id.as_deref(),
                         pv.workspace_alias.as_deref(),
                     );
-                    let mut bytes = injection.as_bytes().to_vec();
-                    let write = if let Some(delay) = injection_submit_followup_delay(&resolved_cli)
-                    {
-                        pty.submit_write_paced_with_followup_and_output_boundary(
-                            bytes,
-                            Duration::ZERO,
-                            delay,
-                            b"\r".to_vec(),
-                        )
-                    } else {
-                        bytes.extend_from_slice(b"\r");
-                        pty.submit_write_paced_with_output_boundary(bytes, Duration::ZERO)
-                    };
+                    let bytes = crate::devin::injection_bytes(&resolved_cli, &injection);
+                    let write = submit_injection_body(&pty, &resolved_cli, bytes, Duration::ZERO);
                     match write {
                         Ok((ack_rx, output_boundary)) => {
                             let pending_write = PendingWrapWrite::Retry {
@@ -2413,17 +2460,42 @@ pub(crate) async fn run_wrap(
 mod tests {
     use super::{
         await_wrap_write_ack, buffer_and_drain_stdin, drain_stdin_buffer,
-        injection_submit_followup_delay, queue_or_confirm_wrap_verification,
+        injection_submit_followup_delay, queue_or_confirm_wrap_verification, submit_injection_body,
         wrap_injection_timer_allowed, wrap_write_ack_error, STDIN_PENDING_MAX_CHUNKS,
     };
     use crate::broker::delivery_verification::{
         PendingVerification, ThrottleState, VerificationOutput, MAX_VERIFICATION_ATTEMPTS,
     };
     use crate::ids::{DeliveryId, EventId, MessageTarget};
+    use crate::pty::PtySession;
     use crate::worker::detection::ActivityDetector;
     use std::collections::VecDeque;
     use std::io;
     use std::time::{Duration, Instant};
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn devin_disables_generic_prompt_approvals_and_idle_enter() {
+        let (pty, _rx) = crate::pty::PtySession::spawn("sleep", &["10".into()], 24, 80).unwrap();
+        let mut state = super::PtyAutoState::new();
+        state.automatic_responses_disabled = true;
+        state
+            .handle_mcp_approval("Do you want to allow this MCP server?", &pty)
+            .await;
+        state
+            .handle_opencode_permission("EXECUTE Permission required Yes, allow", &pty)
+            .await;
+        state
+            .handle_codex_trust("Do you trust this directory?", &pty)
+            .await;
+        state.last_injection_time = Some(Instant::now() - Duration::from_secs(60));
+        state.try_auto_enter(&pty);
+        assert!(state.mcp_detection_buffer.is_empty());
+        assert!(state.opencode_perm_buffer.is_empty());
+        assert!(state.codex_trust_buffer.is_empty());
+        assert!(state.last_auto_enter_time.is_none());
+        pty.shutdown().unwrap();
+    }
 
     #[test]
     fn paste_aware_harnesses_use_a_delayed_submit_followup() {
@@ -2451,7 +2523,123 @@ mod tests {
             injection_submit_followup_delay("/usr/local/bin/Codex.EXE"),
             expected
         );
+        // Regression: the reported Muse run used an absolute-path CLI and its
+        // task parked until a manual Enter — Muse missed this classification.
+        assert_eq!(injection_submit_followup_delay("muse"), expected);
+        assert_eq!(injection_submit_followup_delay("muse.exe"), expected);
+        assert_eq!(
+            injection_submit_followup_delay("/Users/khaliqgant/.local/bin/muse"),
+            expected
+        );
         assert_eq!(injection_submit_followup_delay("opencode"), None);
+        for cli in ["devin", "/usr/bin/devin", "Devin.EXE"] {
+            assert_eq!(injection_submit_followup_delay(cli), expected);
+        }
+    }
+
+    /// Fake Muse-like composer: raw stdin, then one verdict line. A submit key
+    /// that shares its read with multiline body bytes was swallowed into the
+    /// paste (PARKED — the reported manual-Enter bug); a submit key arriving
+    /// in a later read submits the task (SUBMITTED).
+    #[cfg(unix)]
+    const MUSE_LIKE_COMPOSER: &str = r#"import os, sys, tty
+tty.setraw(sys.stdin.fileno())
+sys.stdout.write("READY\n")
+sys.stdout.flush()
+chunks = []
+while True:
+    chunk = os.read(sys.stdin.fileno(), 4096)
+    if not chunk:
+        break
+    chunks.append(chunk)
+    if b"\r" in chunk:
+        break
+head, _, _ = chunks[-1].partition(b"\r")
+sys.stdout.write("PARKED\n" if b"\n" in head else "SUBMITTED\n")
+sys.stdout.flush()"#;
+
+    #[cfg(unix)]
+    async fn await_composer_ready(pty: &PtySession) {
+        for _ in 0..100 {
+            if pty.screen_text().contains("READY") {
+                return;
+            }
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        }
+        panic!(
+            "Muse-like composer did not become ready: {:?}",
+            pty.screen_text()
+        );
+    }
+
+    #[cfg(unix)]
+    async fn composer_verdict(pty: &PtySession) -> String {
+        for _ in 0..100 {
+            let screen = pty.screen_text();
+            if screen.contains("SUBMITTED") || screen.contains("PARKED") {
+                return screen;
+            }
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        }
+        pty.screen_text()
+    }
+
+    /// Regression for the reported Muse run
+    /// (`cli=/Users/khaliqgant/.local/bin/muse`): the injected task reached
+    /// the composer but sat parked until a manual Enter, because Muse missed
+    /// paste-submit classification and took the single body-plus-Enter burst.
+    /// Through the production submit path, the task must now submit with no
+    /// manual Enter for both the bare and absolute-path CLI spellings.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn muse_injected_task_submits_without_manual_enter() {
+        for resolved_cli in ["muse", "/Users/khaliqgant/.local/bin/muse"] {
+            let args = vec!["-u".into(), "-c".into(), MUSE_LIKE_COMPOSER.into()];
+            let (pty, _rx) = PtySession::spawn("python3", &args, 24, 80).unwrap();
+            await_composer_ready(&pty).await;
+            let bytes = b"relay task line one\nrelay task line two".to_vec();
+            let (ack_rx, _boundary) =
+                submit_injection_body(&pty, resolved_cli, bytes, Duration::ZERO)
+                    .expect("muse injection submit");
+            tokio::time::timeout(Duration::from_secs(10), ack_rx)
+                .await
+                .expect("submit ack in time")
+                .expect("drainer alive")
+                .expect("writes flushed");
+            let screen = composer_verdict(&pty).await;
+            assert!(
+                screen.contains("SUBMITTED"),
+                "{resolved_cli}: injected task must submit without a manual Enter, screen: {screen:?}"
+            );
+            let _ = pty.shutdown();
+        }
+    }
+
+    /// Control for the regression above: the same fake composer parks a
+    /// same-burst trailing Enter, proving the harness discriminates the
+    /// reported failure shape instead of passing vacuously.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn burst_trailing_enter_parks_in_muse_like_composer() {
+        let args = vec!["-u".into(), "-c".into(), MUSE_LIKE_COMPOSER.into()];
+        let (pty, _rx) = PtySession::spawn("python3", &args, 24, 80).unwrap();
+        await_composer_ready(&pty).await;
+        let mut burst = b"relay task line one\nrelay task line two".to_vec();
+        burst.extend_from_slice(b"\r");
+        let (ack_rx, _boundary) = pty
+            .submit_write_paced_with_output_boundary(burst, Duration::ZERO)
+            .expect("burst write");
+        tokio::time::timeout(Duration::from_secs(10), ack_rx)
+            .await
+            .expect("burst ack in time")
+            .expect("drainer alive")
+            .expect("burst flushed");
+        let screen = composer_verdict(&pty).await;
+        assert!(
+            screen.contains("PARKED"),
+            "same-burst trailing Enter must park in a Muse-like composer, screen: {screen:?}"
+        );
+        let _ = pty.shutdown();
     }
 
     #[test]
@@ -2487,6 +2675,37 @@ mod tests {
     fn wrap_injection_timer_waits_for_the_previous_write_ack() {
         assert!(wrap_injection_timer_allowed(false));
         assert!(!wrap_injection_timer_allowed(true));
+    }
+
+    #[test]
+    fn busy_devin_deferrals_preserve_retry_budget_and_reset_deadline() {
+        let mut verification = PendingVerification {
+            delivery_id: DeliveryId::new("delivery"),
+            event_id: EventId::new("event"),
+            expected_echo: String::new(),
+            output_boundary: 0,
+            injected_at: Instant::now(),
+            attempts: 1,
+            max_attempts: MAX_VERIFICATION_ATTEMPTS,
+            request_id: None,
+            workspace_id: None,
+            workspace_alias: None,
+            from: "sender".into(),
+            body: "task".into(),
+            target: MessageTarget::new("devin"),
+        };
+        for _ in 0..20 {
+            let now = verification.injected_at + super::VERIFICATION_WINDOW;
+            assert!(!super::prepare_wrap_retry(&mut verification, false, now));
+            assert_eq!(verification.attempts, 1);
+            assert_eq!(verification.injected_at, now);
+        }
+        assert!(super::prepare_wrap_retry(
+            &mut verification,
+            true,
+            Instant::now()
+        ));
+        assert_eq!(verification.attempts, 2);
     }
 
     #[test]

@@ -329,7 +329,10 @@ describe('SDK-backed CLI groups', () => {
     expect(resolveLocalRelayOptions).toHaveBeenCalled();
     expect(createAgentRelay).toHaveBeenNthCalledWith(
       2,
-      expect.objectContaining({ workspaceKey: 'rk_live_local', baseUrl: 'https://relay.local' })
+      expect.objectContaining({
+        workspaceKey: 'rk_live_local',
+        fallbackBaseUrl: 'https://relay.local',
+      })
     );
     expect(secondRelay.integrations.webhooks.create).toHaveBeenCalledWith({
       channel: 'deploy-status',
@@ -379,7 +382,10 @@ describe('SDK-backed CLI groups', () => {
     expect(resolveLocalRelayOptions).toHaveBeenCalled();
     expect(createAgentRelay).toHaveBeenNthCalledWith(
       2,
-      expect.objectContaining({ workspaceKey: 'rk_live_local', baseUrl: 'https://relay.local' })
+      expect.objectContaining({
+        workspaceKey: 'rk_live_local',
+        fallbackBaseUrl: 'https://relay.local',
+      })
     );
     expect(secondRelay.webhooks.createInbound).toHaveBeenCalledWith({
       channel: 'general',
@@ -529,7 +535,7 @@ describe('SDK-backed CLI groups', () => {
     const program = new Command();
     program.exitOverride();
     registerIntegrationCommands(program, {
-      createAgentRelay: () => relay as never,
+      createWorkspaceRelay: () => relay as never,
       log,
       error,
       exit: exit as never,
@@ -617,7 +623,7 @@ describe('SDK-backed CLI groups', () => {
     const program = new Command();
     program.exitOverride();
     registerIntegrationCommands(program, {
-      createAgentRelay: () => relay as never,
+      createWorkspaceRelay: () => relay as never,
       log: vi.fn(),
       error: vi.fn(),
       exit: vi.fn() as never,
@@ -668,6 +674,7 @@ describe('SDK-backed CLI groups', () => {
       })),
       createWebhookSubscription: vi.fn(async () => ({ subscriptionId: 'whsub_1' })),
       deleteWebhookSubscription: vi.fn(async () => undefined),
+      listWebhookSubscriptions: vi.fn(async () => ({ subscriptions: [] })),
     };
     const log = vi.fn();
     const error = vi.fn();
@@ -675,7 +682,7 @@ describe('SDK-backed CLI groups', () => {
     const program = new Command();
     program.exitOverride();
     registerIntegrationCommands(program, {
-      createAgentRelay: () => relay as never,
+      createWorkspaceRelay: () => relay as never,
       log,
       error,
       exit: exit as never,
@@ -699,6 +706,13 @@ describe('SDK-backed CLI groups', () => {
               channel: 'slackbot',
               webhookId: 'in1',
               subscriptionId: 'sub1',
+              to: null,
+              targetAgent: null,
+              lastDeliveryAt: null,
+              lastSuccessAt: null,
+              lastError: null,
+              lastChannelMessageAt: null,
+              githubPrIdentityAuthorized: null,
             },
           ],
           webhooks: [],
@@ -720,7 +734,7 @@ describe('SDK-backed CLI groups', () => {
     const program = new Command();
     program.exitOverride();
     registerIntegrationCommands(program, {
-      createAgentRelay: () => relay as never,
+      createWorkspaceRelay: () => relay as never,
       log,
       error,
       exit: exit as never,
@@ -785,7 +799,7 @@ describe('SDK-backed CLI groups', () => {
     const program = new Command();
     program.exitOverride();
     registerIntegrationCommands(program, {
-      createAgentRelay: () => relay as never,
+      createWorkspaceRelay: () => relay as never,
       log,
       error,
       exit: exit as never,

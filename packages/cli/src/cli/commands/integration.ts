@@ -136,7 +136,18 @@ export interface RelayfileBridge {
    * find subscriptions whose server-assigned id was never persisted. */
   listWebhookSubscriptions: (workspace?: string) => Promise<{
     workspaceId?: string;
-    subscriptions: Array<{ subscriptionId: string; url: string; pathGlobs: string[] }>;
+    subscriptions: Array<{
+      subscriptionId: string;
+      url: string;
+      pathGlobs: string[];
+      githubPrIdentityAuthorized?: boolean;
+      health?: {
+        lastDeliveryAt?: string | null;
+        lastSuccessAt?: string | null;
+        lastError?: string | null;
+        consecutiveFailures?: number;
+      };
+    }>;
   }>;
 }
 
@@ -404,11 +415,12 @@ function shouldRetryWithLocalWorkspaceKey(error: unknown): boolean {
   );
 }
 
+/** Add a local session as a non-authoritative retry fallback. */
 function localRetryOptions(options: SdkClientOptions, local: LocalRelayOptions): SdkClientOptions {
   return {
     ...options,
     workspaceKey: local.workspaceKey,
-    baseUrl: options.baseUrl ?? local.baseUrl,
+    ...(options.baseUrl === undefined && local.baseUrl ? { fallbackBaseUrl: local.baseUrl } : {}),
   };
 }
 
@@ -533,15 +545,16 @@ function parseRelayfileInboundTargetResponse(body: unknown): { url: string; secr
   return { url: parsedUrl.toString(), secret };
 }
 
+/** Resolve the HTTPS Relaycast transport used to provision an inbound target. */
 function resolveInboundTargetTransport(options: SdkClientOptions, callerOptions: SdkClientOptions) {
   const selected = { ...options };
   // A legacy broker session can advertise its loopback HTTP API. It is not
-  // the Relaycast gateway. Preserve genuine HTTPS session origins, including
-  // custom self-hosts, and let persisted workspace routing validate the pair.
-  if (!callerOptions.baseUrl && selected.baseUrl) {
-    const url = new URL(selected.baseUrl);
+  // the Relaycast gateway. Preserve genuine HTTPS session fallbacks, including
+  // custom self-hosts, while keeping them subordinate to persisted routing.
+  if (!callerOptions.baseUrl && selected.fallbackBaseUrl) {
+    const url = new URL(selected.fallbackBaseUrl);
     if (url.protocol === 'http:' && ['localhost', '127.0.0.1', '[::1]'].includes(url.hostname)) {
-      selected.baseUrl = undefined;
+      selected.fallbackBaseUrl = undefined;
     }
   }
   const transport = resolveWorkspaceTransport(selected);
@@ -568,6 +581,132 @@ function targetChannel(target: string): string {
 function agentName(target: string): string | undefined {
   const trimmed = target.trim();
   return trimmed.startsWith('@') ? trimmed.slice(1).trim() : undefined;
+}
+
+function agentEventsChannelId(channel: string): string | undefined {
+  const match = /^agent-events-(.+)$/.exec(channel.trim());
+  return match?.[1] || undefined;
+}
+
+type ListedWebhookSubscription = Awaited<
+  ReturnType<RelayfileBridge['listWebhookSubscriptions']>
+>['subscriptions'][number];
+
+async function listWebhookSubscriptionsForBindings(
+  relayfile: RelayfileBridge,
+  bindings: RelayfileBinding[]
+): Promise<Map<string, ListedWebhookSubscription>> {
+  const listOne = async (workspace?: string) => {
+    if (typeof relayfile.listWebhookSubscriptions !== 'function') {
+      return { subscriptions: [] as ListedWebhookSubscription[] };
+    }
+    try {
+      return await relayfile.listWebhookSubscriptions(workspace);
+    } catch {
+      return { subscriptions: [] as ListedWebhookSubscription[] };
+    }
+  };
+
+  const pins = [
+    ...new Set(
+      bindings
+        .map((binding) => binding.webhookSubscriptionWorkspaceId?.trim())
+        .filter((workspace): workspace is string => Boolean(workspace))
+    ),
+  ];
+  const needsCurrent =
+    pins.length === 0 || bindings.some((binding) => !binding.webhookSubscriptionWorkspaceId?.trim());
+
+  const listed = await Promise.all([
+    ...pins.map((workspace) => listOne(workspace)),
+    ...(needsCurrent ? [listOne()] : []),
+  ]);
+
+  const byId = new Map<string, ListedWebhookSubscription>();
+  for (const result of listed) {
+    for (const item of result.subscriptions ?? []) {
+      byId.set(item.subscriptionId, item);
+    }
+  }
+  return byId;
+}
+
+type ListedBinding = RelayfileBinding & {
+  to: string | null;
+  targetAgent: { id: string; name: string; status: string } | null;
+  lastDeliveryAt: string | null;
+  lastSuccessAt: string | null;
+  lastError: string | null;
+  lastChannelMessageAt: string | null;
+  githubPrIdentityAuthorized: boolean | null;
+};
+
+async function enrichBindingsForList(
+  deps: IntegrationCommandDependencies,
+  relay: AgentRelayAgent,
+  bindings: RelayfileBinding[]
+): Promise<ListedBinding[]> {
+  const agents = await relay.agents
+    .list()
+    .catch(() => [] as Array<{ id: string; name: string; status?: string }>);
+  const agentById = new Map(agents.map((agent) => [String(agent.id), agent]));
+
+  const cloudById = await listWebhookSubscriptionsForBindings(deps.relayfile, bindings);
+
+  const channels = await Promise.resolve(
+    relay.channels && typeof relay.channels.list === 'function'
+      ? relay.channels.list({ includeArchived: true })
+      : []
+  ).catch(() => [] as Array<{ name: string; metadata?: Record<string, unknown> }>);
+  const channelByName = new Map(channels.map((channel) => [channel.name, channel]));
+
+  return Promise.all(
+    bindings.map(async (binding) => {
+      const channelMeta = channelByName.get(binding.channel);
+      const metaAgentId =
+        typeof channelMeta?.metadata?.subscription_agent_id === 'string'
+          ? channelMeta.metadata.subscription_agent_id
+          : undefined;
+      const channelAgentId = agentEventsChannelId(binding.channel);
+      const agent =
+        (metaAgentId ? agentById.get(metaAgentId) : undefined) ??
+        (channelAgentId ? agentById.get(channelAgentId) : undefined) ??
+        null;
+
+      let lastChannelMessageAt: string | null = null;
+      try {
+        const listMessages =
+          relay.messages && typeof relay.messages.list === 'function' ? relay.messages.list : null;
+        const messages = listMessages ? await listMessages(binding.channel, { limit: 1 }) : [];
+        const latest = messages[0] as { createdAt?: string; created_at?: string } | undefined;
+        lastChannelMessageAt = latest?.createdAt ?? latest?.created_at ?? null;
+      } catch {
+        lastChannelMessageAt = null;
+      }
+
+      const cloudRow = binding.webhookSubscriptionId
+        ? cloudById.get(binding.webhookSubscriptionId)
+        : undefined;
+      const health = cloudRow?.health;
+      return {
+        ...binding,
+        to: agent ? `@${agent.name}` : null,
+        targetAgent: agent
+          ? { id: String(agent.id), name: agent.name, status: String(agent.status ?? 'unknown') }
+          : null,
+        lastDeliveryAt: health?.lastDeliveryAt ?? lastChannelMessageAt,
+        lastSuccessAt: health?.lastSuccessAt ?? null,
+        lastError: health?.lastError ?? null,
+        lastChannelMessageAt,
+        githubPrIdentityAuthorized: cloudRow?.githubPrIdentityAuthorized ?? null,
+      };
+    })
+  );
+}
+
+function bindingOwnedByAgent(binding: RelayfileBinding, agent: { id: string; name: string }): boolean {
+  const channelId = agentEventsChannelId(binding.channel);
+  return channelId === String(agent.id);
 }
 
 async function ensureProviderConnected(
@@ -1391,18 +1530,39 @@ async function runSubscribe(
   }
 }
 
+/** Subscription provisioning and retirement are workspace-owner operations, like
+ * their inbound-target and subscription-channel HTTP calls. Do not let the
+ * worker's ambient participant token override the selected workspace here. */
+function validateSubscriptionCredentials(options: SdkClientOptions): void {
+  if (options.token?.trim()) {
+    throw new Error(
+      'Integration subscription management requires a workspace key; use --workspace-key instead of --token.'
+    );
+  }
+}
+
+function createSubscriptionRelay(
+  deps: IntegrationCommandDependencies,
+  options: SdkClientOptions
+): AgentRelayAgent {
+  validateSubscriptionCredentials(options);
+  return deps.createWorkspaceRelay(options);
+}
+
 async function runSubscribeSetup(
   deps: IntegrationCommandDependencies,
   providerArg: string | undefined,
   opts: Record<string, unknown>,
   recipient: { launch?: RecipientLaunch; committed?: boolean }
 ): Promise<void> {
+  validateSubscriptionCredentials(sdkOptionsFromOpts(opts));
   await deps.relayfile.ensureCompatible();
 
   if (opts.list) {
     const local = await deps.resolveLocalRelayOptions();
     const relayOptions = sdkOptionsFromOpts(opts);
-    const relay = deps.createAgentRelay(
+    const relay = createSubscriptionRelay(
+      deps,
       local && !explicitWorkspaceKey(opts) ? localRetryOptions(relayOptions, local) : relayOptions
     );
     const [bindings, webhooks, subscriptions] = await Promise.all([
@@ -1410,7 +1570,11 @@ async function runSubscribeSetup(
       relay.webhooks.list(),
       relay.webhooks.subscriptions(),
     ]);
-    printJson(deps, { bindings, webhooks, subscriptions });
+    printJson(deps, {
+      bindings: await enrichBindingsForList(deps, relay, bindings),
+      webhooks,
+      subscriptions,
+    });
     return;
   }
 
@@ -1431,7 +1595,7 @@ async function runSubscribeSetup(
   const relayOptions = sdkOptionsFromOpts(opts);
   const effectiveRelayOptions =
     local && !explicitWorkspaceKey(opts) ? localRetryOptions(relayOptions, local) : relayOptions;
-  const relay = deps.createAgentRelay(effectiveRelayOptions);
+  const relay = createSubscriptionRelay(deps, effectiveRelayOptions);
   const recipientName = agentName(to);
   if (opts.spawn && !recipientName) throw new Error('--spawn requires an explicit @agent recipient');
   if (recipientName && typeof opts.spawn === 'string') {
@@ -1714,14 +1878,70 @@ async function runSubscribeSetup(
   deps.log('✓ Listening. Replies will post back in-thread.');
 }
 
+async function runUnsubscribeOwnedBy(
+  deps: IntegrationCommandDependencies,
+  provider: string,
+  owner: string,
+  opts: Record<string, unknown>
+): Promise<void> {
+  validateSubscriptionCredentials(sdkOptionsFromOpts(opts));
+  await deps.relayfile.ensureCompatible();
+  const local = await deps.resolveLocalRelayOptions();
+  const relayOptions = sdkOptionsFromOpts(opts);
+  const effectiveRelayOptions =
+    local && !explicitWorkspaceKey(opts) ? localRetryOptions(relayOptions, local) : relayOptions;
+  const relay = createSubscriptionRelay(deps, effectiveRelayOptions);
+  const agents = await relay.agents.list();
+  const agent = agents.find((item) => item.name === owner || `@${item.name}` === owner);
+  if (!agent) {
+    throw new Error(`No registered agent named ${owner} — cannot retire owned bindings.`);
+  }
+  const bindings = await deps.relayfile.listBindings();
+  const owned = bindings.filter(
+    (binding) => (!provider || binding.provider === provider) && bindingOwnedByAgent(binding, agent)
+  );
+  if (owned.length === 0) {
+    deps.log(`No ${provider} bindings target @${agent.name}.`);
+    return;
+  }
+  for (const binding of owned) {
+    await runUnsubscribe(deps, binding.provider, { ...opts, resource: binding.resource, ownedBy: undefined });
+  }
+  deps.log(`Retired ${owned.length} binding(s) owned by @${agent.name}.`);
+}
+
+/**
+ * Retire provider bindings whose identity-bound `agent-events-<id>` channel
+ * belongs to `owner`. Fleet release stops the agent first, then calls this
+ * while the roster row still exists; callers that will delete the identity
+ * must abort if this throws. Pass `log`/`error` overrides when stdout must
+ * stay a single JSON document (fleet release).
+ */
+export async function retireOwnedIntegrationBindings(
+  owner: string,
+  opts: Record<string, unknown> = {},
+  overrides: Partial<IntegrationCommandDependencies> = {}
+): Promise<void> {
+  const deps = withIntegrationDefaults(overrides);
+  await runUnsubscribeOwnedBy(deps, typeof opts.provider === 'string' ? opts.provider : '', owner, opts);
+}
+
 async function runUnsubscribe(
   deps: IntegrationCommandDependencies,
   provider: string,
   opts: Record<string, unknown>
 ): Promise<void> {
+  validateSubscriptionCredentials(sdkOptionsFromOpts(opts));
+  const ownedBy = typeof opts.ownedBy === 'string' ? opts.ownedBy.trim().replace(/^@/, '') : '';
+  if (ownedBy) {
+    await runUnsubscribeOwnedBy(deps, provider, ownedBy, opts);
+    return;
+  }
   const resource = typeof opts.resource === 'string' ? opts.resource.trim() : '';
   if (!resource) {
-    throw new Error('Missing --resource <value> for unsubscribe.');
+    throw new Error(
+      'Missing --resource <value> for unsubscribe. Use --owned-by @agent to retire every binding for a live identity.'
+    );
   }
   await deps.relayfile.ensureCompatible();
   // Resolve native -> glob: relayfile keys bindings on the glob, so the user's
@@ -1731,7 +1951,7 @@ async function runUnsubscribe(
   const relayOptions = sdkOptionsFromOpts(opts);
   const effectiveRelayOptions =
     local && !explicitWorkspaceKey(opts) ? localRetryOptions(relayOptions, local) : relayOptions;
-  const relay = deps.createAgentRelay(effectiveRelayOptions);
+  const relay = createSubscriptionRelay(deps, effectiveRelayOptions);
   const relayScope = relayCleanupScope(effectiveRelayOptions);
   const relayfileScope = relayfileCleanupScope();
 
@@ -1904,6 +2124,7 @@ export function registerIntegrationCommands(
       .description('Remove a relayfile integration subscription')
       .argument('<provider>', 'Integration provider')
       .option('--resource <value>', 'Provider-native resource used when subscribing')
+      .option('--owned-by <agent>', 'Retire every binding whose identity-bound channel belongs to this agent')
   ).action(async (provider: string, o: Record<string, unknown>) => {
     await runSdk(deps, async () => {
       await runUnsubscribe(deps, provider, o);

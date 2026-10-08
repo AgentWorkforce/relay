@@ -10,6 +10,10 @@ import { fileURLToPath } from 'node:url';
 const CASE_ID = 'http-spawn-binding-failure';
 const NAME = 'owned-binding-probe';
 const API_KEY = 'br_binding_probe';
+// Relaycast 8 owns one bounded three-request admission round before returning
+// a typed workspace_busy error to the broker. The broker must not add another
+// binding round after that SDK error.
+const HEAD_BINDING_ATTEMPTS = 3;
 const required = (key) => {
   if (!process.env[key]) throw new Error(`Missing ${key}`);
   return process.env[key];
@@ -193,7 +197,7 @@ try {
   });
   const listing = await api('/api/spawned');
   assert.equal(observations.registrations, 1);
-  assert.equal(observations.bindings, 1);
+  assert.equal(observations.bindings, arm === 'head' ? HEAD_BINDING_ATTEMPTS : 1);
   assert.equal(listing.status, 200);
   if (arm === 'head') {
     assert(result.status >= 400);

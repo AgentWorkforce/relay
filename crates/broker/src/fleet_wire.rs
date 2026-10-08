@@ -673,6 +673,20 @@ pub struct Ping {
     pub v: FleetWireVersion,
 }
 
+/// Best-effort control-plane hint that the cloud-side terminal lane is dark.
+///
+/// The terminal WebSocket is independent from the node-control WebSocket, so
+/// the latter can remain healthy after the former disappears. `generation` is
+/// the cloud's last accepted terminal-lane generation; the broker uses it to
+/// coalesce duplicate hints and to avoid tearing down a freshly reconnected
+/// lane for a stale request.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct TerminalReconnectRequested {
+    pub v: FleetWireVersion,
+    pub generation: u64,
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Reply {
@@ -844,6 +858,8 @@ pub enum ServerToNode {
     ActionInvoke(ActionInvoke),
     #[serde(rename = "ping")]
     Ping(Ping),
+    #[serde(rename = "terminal.reconnect_requested")]
+    TerminalReconnectRequested(TerminalReconnectRequested),
     #[serde(rename = "reply")]
     Reply(Reply),
     #[serde(rename = "error")]
@@ -861,7 +877,7 @@ mod tests {
         validate_agent_register_reply_data, validate_finite_nonnegative_f64, ActionResult,
         ActionResultError, ActionResultPayload, AgentRegister, AgentRegistrationMetadata,
         BrokerToRelaycast, Deliver, DeliveryMode, Error, FleetCapability, NodeHeartbeat,
-        RelaycastToBroker, Reply, FLEET_WIRE_VERSION,
+        RelaycastToBroker, Reply, TerminalReconnectRequested, FLEET_WIRE_VERSION,
     };
 
     #[test]
@@ -885,6 +901,30 @@ mod tests {
                 "name": "codex-1"
             })
         );
+    }
+
+    #[test]
+    fn terminal_reconnect_request_decodes_as_an_additive_control_frame() {
+        let decoded: RelaycastToBroker = serde_json::from_value(json!({
+            "v": 1,
+            "type": "terminal.reconnect_requested",
+            "generation": 42
+        }))
+        .unwrap();
+        assert_eq!(
+            decoded,
+            RelaycastToBroker::TerminalReconnectRequested(TerminalReconnectRequested {
+                v: FLEET_WIRE_VERSION,
+                generation: 42,
+            })
+        );
+
+        assert!(serde_json::from_value::<RelaycastToBroker>(json!({
+            "v": 1,
+            "type": "terminal.reconnect_requested",
+            "generation": -1
+        }))
+        .is_err());
     }
 
     /// Cover both legacy-compatible default membership and the candidate

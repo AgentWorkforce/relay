@@ -15,6 +15,12 @@ import {
 } from './core.js';
 import { runUpCommand } from '../lib/broker-lifecycle.js';
 import {
+  describeNodeClaimHolder,
+  enrolledNodeIdForClaim,
+  inspectNodeClaim,
+  type NodeClaimState,
+} from '../lib/node-claim.js';
+import {
   projectWorkspaceKeyPath,
   readProjectWorkspaceSession,
   type ProjectWorkspaceSession,
@@ -25,12 +31,20 @@ import { registerLocalWorkflowCommands } from './local-workflow.js';
 
 type ExitFn = (code: number) => never;
 
+/** `node up` options: the shared broker set plus `--config` and `--force`. */
+type NodeUpCommandOptions = UpCommandOptions & { force?: boolean };
+
 export interface NodeCommandDependencies {
   core: CoreDependencies;
   resolveEnrollment: typeof resolveActiveFleetNodeEnrollment;
   /** Every stored fleet enrollment, used only to report how many a project pin is shadowing. */
   listFleetEnrollments: (env: NodeJS.ProcessEnv) => FleetNodeEnrollmentRecord[];
   resolveProjectWorkspaceSession: () => ProjectWorkspaceSession | undefined;
+  /**
+   * Whether a live local broker already serves a node id. Injected so tests can
+   * drive the guard without a real claim directory.
+   */
+  inspectNodeClaim: (nodeId: string) => Promise<NodeClaimState>;
   log: (...args: unknown[]) => void;
   warn: (...args: unknown[]) => void;
   error: (...args: unknown[]) => void;
@@ -50,6 +64,12 @@ function withNodeDefaults(overrides: Partial<NodeCommandDependencies> = {}): Nod
     resolveEnrollment: resolveActiveFleetNodeEnrollment,
     listFleetEnrollments: (env: NodeJS.ProcessEnv) => Object.values(readFleetNodeEnrollmentStore(env).nodes),
     resolveProjectWorkspaceSession: () => readProjectWorkspaceSession(core.getProjectPaths().dataDir),
+    inspectNodeClaim: (nodeId: string) =>
+      inspectNodeClaim(nodeId, {
+        env: core.env,
+        killProcess: core.killProcess,
+        execCommand: core.execCommand,
+      }),
     log: (...args: unknown[]) => console.log(...args),
     warn: (...args: unknown[]) => console.warn(...args),
     error: (...args: unknown[]) => console.error(...args),
@@ -76,7 +96,11 @@ export function registerNodeCommands(
       '--config <file>',
       'Node definition file to serve (defaults to auto-discovered agent-relay.{ts,tsx,mts,cts,js,mjs,cjs})'
     )
-    .action(async (options: UpCommandOptions) => {
+    .option(
+      '--force',
+      "Serve the enrolled node even when another live local broker already claims it (evicts that broker's Cloud delivery socket)"
+    )
+    .action(async (options: NodeUpCommandOptions) => {
       await runNodeUp(options, deps);
     });
 
@@ -237,11 +261,83 @@ function applyResolvedNodeSession(
 }
 
 /**
+ * Refuse to adopt an enrolled node id that a live local broker already serves.
+ *
+ * The Fleet enrollment store is machine-global and is not scoped to a broker
+ * state dir, so a `node up` in another checkout — or the same one under a
+ * different `--state-dir` — resolves the very same node id. Both brokers then
+ * register as that node and the engine hands the node-control delivery socket
+ * to whichever registered last: the first broker keeps running, keeps reporting
+ * healthy, and silently stops receiving messages. The claim file written by the
+ * holding broker is the only machine-local record of that ownership, so it is
+ * checked here, before anything starts.
+ *
+ * Both of `runNodeUp`'s enrollment branches land the node identity in the env,
+ * so reading it back from there covers a stored enrollment, a project-pinned
+ * enrollment, and pre-set credentials alike.
+ *
+ * This is the operator-facing half of the guard: it turns a conflict into
+ * remedies instead of a startup failure. It is NOT what makes ownership
+ * exclusive — `runUpCommand` reserves the node id with an exclusive create
+ * before it spawns anything, and that reservation is what two starts racing
+ * past this check are serialized by.
+ *
+ * @returns True when startup may continue.
+ */
+async function guardEnrolledNodeIdentity(
+  options: NodeUpCommandOptions,
+  deps: NodeCommandDependencies
+): Promise<boolean> {
+  const nodeId = enrolledNodeIdForClaim(deps.core.env);
+  if (!nodeId) {
+    return true;
+  }
+  let status: NodeClaimState;
+  try {
+    status = await deps.inspectNodeClaim(nodeId);
+  } catch {
+    // The claim store is a guard, not a dependency: an unreadable claims
+    // directory must not stop a node that would otherwise start fine.
+    return true;
+  }
+  // A claim left behind by a crashed or rebooted broker is not a conflict; this
+  // start overwrites it.
+  if (status.state !== 'held') {
+    return true;
+  }
+
+  const holder = describeNodeClaimHolder(status.claim);
+  if (options.force) {
+    deps.warn(
+      `--force: taking node ${nodeId} over from a live local broker (${holder}). ` +
+        "That broker's Cloud delivery socket is evicted when this one registers, so messages routed to it stop arriving."
+    );
+    return true;
+  }
+
+  deps.error(`Refusing to start: node ${nodeId} is already served by a live broker on this machine.`);
+  deps.error(`  holding broker      ${holder}`);
+  deps.error(`  claimed at          ${status.claim.claimed_at}`);
+  deps.error(
+    "Two brokers cannot share one node id: the second registration takes over the node's Cloud " +
+      'delivery socket and messages stop reaching the first.'
+  );
+  deps.error('Pick one:');
+  deps.error(`  stop the running broker   agent-relay node down --state-dir ${status.claim.state_dir}`);
+  deps.error(
+    '  run a second node here    agent-relay cloud enroll --name <other-node>, then start this ' +
+      'project from that enrollment'
+  );
+  deps.error('  take the node over        agent-relay node up --force (evicts the broker above)');
+  return false;
+}
+
+/**
  * `node up` with Cloud enrollment pickup: when no `RELAY_NODE_TOKEN` is set,
  * resolve a persisted enrollment and wire its credentials into the env before
  * delegating to the shared broker `up` flow.
  */
-async function runNodeUp(options: UpCommandOptions, deps: NodeCommandDependencies): Promise<void> {
+async function runNodeUp(options: NodeUpCommandOptions, deps: NodeCommandDependencies): Promise<void> {
   if (options.localOnly || deps.core.env.AGENT_RELAY_LOCAL_ONLY === '1') {
     await runUpCommand({ ...options, localOnly: true, discoverConfig: false }, deps.core);
     return;
@@ -280,6 +376,11 @@ async function runNodeUp(options: UpCommandOptions, deps: NodeCommandDependencie
     // Serve under the enrolled name (mirrors the old `fleet serve
     // --enrollment-token` behavior where --name beat the enrollment name).
     enrolledNodeName = applyResolvedNodeSession(record, projectSession, deps);
+  }
+
+  if (!(await guardEnrolledNodeIdentity(options, deps))) {
+    deps.exit(1);
+    return;
   }
 
   const nodeName = options.brokerName ?? enrolledNodeName;

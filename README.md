@@ -29,6 +29,8 @@ GitHub, Linear, Notion, Slack, and other tools are exposed as a virtual filesyst
 
 Capture coding agent sessions so your team and their agents can search previous work, decisions, and context.
 
+Agents can search team history through the [Shared Sessions plugin](plugins/shared-sessions/README.md), or connect its MCP with `agent-relay mcp --sessions-only` after Cloud login.
+
 [How we capture sessions](https://github.com/agentworkforce/relayhistory) <br>
 [How we capture decisions](https://github.com/agentworkforce/trajectories)
 
@@ -45,6 +47,18 @@ Define multi-step workflows in TypeScript with deterministic checks, required st
 The easiest way to get started is to use [Agent Relay Cloud](https://agentrelay.com/flows).
 
 You don't need a credit card and you can explore all the pieces without setting up any infrastructure.
+
+Kick the tires yourself by installing the CLI:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/AgentWorkforce/relay/main/install.sh | bash
+```
+
+Or install with npm:
+
+```bash
+npm install -g agent-relay
+```
 
 ### Self Hosting
 

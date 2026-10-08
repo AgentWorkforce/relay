@@ -38,11 +38,14 @@ agent-relay node workflow sync <run-id>
 agent-relay node agent new claude            # spawn + attach
 agent-relay node agent new codex --runtime native
 agent-relay node agent spawn opencode --runtime pty
+agent-relay node agent spawn devin --name reviewer --task "Review the current diff"
 agent-relay node agent list
 agent-relay node agent list --status            # + inbound delivery mode and pending-queue contents per agent
 agent-relay node agent attach <name> --mode view
 agent-relay node agent release <name>
 ```
+
+Local-broker `node agent` subcommands and `node tail` accept `--state-dir <dir>`, `--broker-url <url>`, and `--api-key <key>` to target a broker other than the current project's — for example a fleet node started with `node up --state-dir`. `--state-dir` may name the broker state dir or a fleet node directory whose broker state lives in `state/`. An explicit `--state-dir` reads only that broker's `connection.json` (`--broker-url` may still override its URL), ignoring `RELAY_BROKER_URL` / `RELAY_BROKER_API_KEY`. Without flags, a nonblank `RELAY_BROKER_URL` or `RELAY_BROKER_API_KEY` selects the local broker; otherwise the enclosing project's broker is used, except that flag-free `attach` and `message flush|hold|auto` may auto-route to a live fleet placement. Remote routes differ: `attach --node` rejects these flags, `attach --ssh-host` rejects `--broker-url` / `--api-key`, and `message … --node` ignores them.
 
 `node agent spawn` and `node agent new` accept `--runtime auto|native|pty`. `auto` is the default and keeps experimental dual-runtime adapters on PTY. Claude Code, Codex, and OpenCode support explicit native or PTY selection; Pi and Deep Agents are experimental native-only harnesses and require `--runtime native`.
 
@@ -157,6 +160,72 @@ the ladder. If a stored enrollment addresses a different workspace than the
 repository pin, `node up` refuses to start and names both source files and
 workspace IDs, never their keys.
 
+### One live broker per enrolled node
+
+The Fleet enrollment store is machine-global and is not scoped to a broker state
+directory, so a second `node up` — another checkout, or the same one with a
+different `--state-dir` — used to adopt the same node id. Both brokers then
+registered as that node, the engine handed the node-control delivery socket to
+whichever registered last, and the first broker kept running and reporting
+healthy while messages silently stopped arriving.
+
+A start now takes machine-global ownership of its enrolled node id in
+`~/.agentworkforce/relay/node-claims/<node-id>.<generation>.json` (pid, state
+dir, API port, broker name, claim time) **before** it spawns a broker, because
+the broker registers with the engine from its own startup — anything claimed
+afterwards is claimed after the delivery socket could already have moved.
+Ownership is handed to the broker process once its identity is verified, and is
+released only after that process is observed to exit.
+
+Ownership _is_ the exclusive creation of the next generation file, so concurrent
+starts cannot both win and no start ever deletes a record another one might have
+replaced: whoever creates `…000002.json` first owns the node, and the others
+re-read and refuse. Releasing a claim retires its generation number instead of
+freeing it, so a number is never handed out twice and a start that was suspended
+across a full release-and-restart cycle cannot wake up and win a node id that
+now belongs to somebody else. A crashed start leaves a generation whose pids are
+dead, which is stale rather than blocking.
+
+Each generation also has a `…000002.hold` file that the supervising CLI opens
+before it spawns a broker and the broker child inherits. Whether anything still
+holds it open is answered by the kernel, not by a file either process has to
+survive long enough to write — so a supervisor killed anywhere between the spawn
+and the broker's first write still leaves a node id that reads as held, instead
+of one that looks free right up until the orphan registers. `node up` refuses to adopt a node id that a
+live claim names, printing the holding broker's pid and state directory:
+
+```text
+Refusing to start: node node_2230437463 is already served by a live broker on this machine.
+  holding broker      pid 48211, state dir /repo/.agentworkforce/relay, API port 3891
+```
+
+A claim whose pids are gone — or whose pids have since been recycled by other
+processes — is stale, so an ordinary restart after a crash or reboot is never
+refused. Two exceptions keep a crash from unguarding a running broker: if the
+supervising CLI was killed before it could record its broker's pid, the broker's
+own `connection.json` in the claimed state directory still names a live process,
+and that reads as held; and until a start has recorded which child it spawned,
+anything still holding that generation's `.hold` file keeps the node guarded,
+because a process that has since `exec`d into another binary is no longer
+anything the claim could identify. To run a second node on this machine alongside the live one, enroll a
+distinct node (`agent-relay cloud enroll --name <other-node>`) and start from
+that enrollment; `node up --force` takes the node over instead, evicting the
+live broker's delivery socket.
+
+An explicit `RELAY_NODE_ID` is the identity the broker sends in `node.register`,
+so it is guarded on that basis alone — the CLI does not try to predict which of
+the broker's credential routes will resolve. A node token in the environment, one
+the broker has already cached, and one it mints for itself from workspace
+credentials all end in the same registration, and only `--local-only`, which
+registers nothing, is exempt. A start that turns out to have had no credential at
+all is refused for a node somebody else is serving, which costs one `--force`.
+
+Because the claims are machine-global, they also give `node down` a way to point
+at a live broker it cannot see: run from the wrong directory it still reports
+`Not running`, but now lists the live nodes and the state directories serving
+them. Two brokers on _different_ machines sharing one enrollment store (a synced
+home directory) are out of scope — nothing local can see the other host's pids.
+
 `workspace create`, `join`, and `switch` select a named workspace globally and
 pin it to the current project. A changed selection records the old name, so an
 accidental create can be undone:
@@ -192,7 +261,8 @@ the active project workspace:
 
 ```bash
 agent-relay fleet nodes
-agent-relay fleet nodes --name sf-mini --capability spawn:codex
+agent-relay fleet nodes list --pretty
+agent-relay fleet nodes list --name sf-mini --capability spawn:codex --pretty
 
 # Exact-node placement uses the same agent-scoped Fleet action as the MCP tool.
 agent-relay fleet spawn codex \
@@ -381,9 +451,15 @@ through Cloud at spawn time. The key travels in an authenticated POST body,
 never a URL. Nested packages share the repository pin; an existing subproject
 pin or `AGENT_RELAY_PROJECT` remains an explicit workspace override.
 
-Large workspaces can add only the other live subtrees an agent needs. Pass one
-or more explicit directory roots after `--sandbox-relayfile-path`; the inferred
-repository, its source metadata, and `.skills` remain mounted automatically.
+Large workspaces can be scoped to only the live subtrees an agent needs. Pass
+one or more explicit directory roots after `--sandbox-relayfile-path`; the
+supplied list is the complete mount set — nothing else is added. To include the
+inferred repository, list its `contents/**` root explicitly (for example
+`/github/repos/Owner/repo/contents/**`); when the flag is omitted the inferred
+repository, its source metadata, and `.skills` are mounted automatically. When
+the list omits the repository root, the worker starts at the mount root
+(`/workspace`) rather than the repository tree, and a repo-relative `--cwd` is
+rejected.
 Cloud validates the `/path/**` form and materializes those roots before the
 agent starts:
 
@@ -434,6 +510,13 @@ agent-relay cloud workspaces
 agent-relay cloud enroll --workspace "Chief HQ"
 agent-relay node up
 ```
+
+If `/api/session` reports node control as `terminal` with reason
+`env_override_rejected`, the active `RELAY_NODE_TOKEN` is stale and shadows a
+different credential in the broker's scoped cache. Re-enroll the Cloud node and
+restart it, or unset a manually exported `RELAY_NODE_TOKEN`. Deleting only the
+Relaycast node row is not enough for a Cloud-enrolled node: its Fleet enrollment
+record restores the stored token on the next `agent-relay node up`.
 
 `agent-relay cloud whoami` also prints the current organization and workspace IDs.
 

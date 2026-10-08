@@ -1,0 +1,37 @@
+{
+  "id": "compact_fiats1hqsz1w",
+  "version": 1,
+  "type": "compacted",
+  "compactedAt": "2026-09-20T07:35:59.621Z",
+  "sourceTrajectories": [
+    "traj_wgktv31za7qa"
+  ],
+  "dateRange": {
+    "start": "2026-09-20T07:32:32.259Z",
+    "end": "2026-09-20T07:35:59.393Z"
+  },
+  "summary": {
+    "totalDecisions": 1,
+    "totalEvents": 1,
+    "uniqueAgents": [
+      "default"
+    ]
+  },
+  "decisionGroups": [
+    {
+      "category": "testing",
+      "decisions": [
+        {
+          "question": "Fix CI regressions in test expectations and asynchronous PTY observation only",
+          "chosen": "Fix CI regressions in test expectations and asynchronous PTY observation only",
+          "reasoning": "All five JS failures point to omitted devin profile expectation. macOS fails fixture result assertion after a fixed 100ms sleep. Preserve 250ms submit behavior and both semantic assertions; await observed output up to 5s and keep fixture alive until shutdown.",
+          "fromTrajectory": "traj_wgktv31za7qa"
+        }
+      ]
+    }
+  ],
+  "keyLearnings": [],
+  "keyFindings": [],
+  "filesAffected": [],
+  "commits": []
+}

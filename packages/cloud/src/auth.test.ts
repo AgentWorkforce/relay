@@ -30,6 +30,7 @@ import {
   clearStoredAuth,
   ensureAuthenticated,
   ensureCloudSession,
+  loginWithDevice,
   readStoredAuth,
   refreshStoredAuth,
   refreshStoredCloudIdentity,
@@ -64,6 +65,10 @@ function createEnvAuth(overrides: Partial<StoredAuth> = {}): NodeJS.ProcessEnv {
     CLOUD_API_ACCESS_TOKEN_EXPIRES_AT: next.accessTokenExpiresAt,
     ...(next.refreshTokenExpiresAt ? { CLOUD_API_REFRESH_TOKEN_EXPIRES_AT: next.refreshTokenExpiresAt } : {}),
   };
+}
+
+function requireHttps(apiUrl: string): void {
+  if (new URL(apiUrl).protocol !== 'https:') throw new Error('requires HTTPS');
 }
 
 // `clearAllMocks` resets call history but leaves `vi.spyOn` spies installed, so
@@ -401,6 +406,67 @@ describe('ensureAuthenticated', () => {
     logSpy.mockRestore();
   });
 
+  it('rejects an unsafe browser-returned host before persistence or whoami', async () => {
+    const realFetch = globalThis.fetch;
+    const logSpy = vi.spyOn(console, 'log').mockImplementation(() => undefined);
+    let whoamiCalls = 0;
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async (input: string | URL) => {
+        if (String(input).includes('/api/v1/auth/whoami')) whoamiCalls += 1;
+        return new Response('{}', { status: 500 });
+      })
+    );
+
+    const sessionPromise = ensureCloudSession({
+      apiUrl: 'https://api.example.test',
+      validateApiUrl: requireHttps,
+    });
+    await vi.waitFor(() => {
+      expect(logSpy).toHaveBeenCalledWith(expect.stringContaining('Opening browser for cloud login: '));
+    });
+
+    const loginLine = logSpy.mock.calls
+      .map((call) => String(call[0]))
+      .find((line) => line.startsWith('Opening browser for cloud login: '));
+    const loginUrl = new URL(String(loginLine).slice('Opening browser for cloud login: '.length));
+    const callbackUrl = new URL(String(loginUrl.searchParams.get('redirect_uri')));
+    callbackUrl.searchParams.set('state', String(loginUrl.searchParams.get('state')));
+    callbackUrl.searchParams.set('access_token', 'unsafe-browser-access');
+    callbackUrl.searchParams.set('refresh_token', 'unsafe-browser-refresh');
+    callbackUrl.searchParams.set('access_token_expires_at', '2999-01-01T00:00:00.000Z');
+    callbackUrl.searchParams.set('api_url', 'http://unsafe.example.test');
+    const rejection = expect(sessionPromise).rejects.toThrow('requires HTTPS');
+    const callbackResponse = await realFetch(callbackUrl, { redirect: 'manual' });
+
+    expect(callbackResponse.status).toBe(302);
+    await rejection;
+    expect(fsMocks.writeFile).not.toHaveBeenCalled();
+    expect(whoamiCalls).toBe(0);
+    logSpy.mockRestore();
+  });
+
+  it('rejects unsafe configured browser and device hosts before starting either login flow', async () => {
+    const fetchSpy = vi.fn();
+    vi.stubGlobal('fetch', fetchSpy);
+
+    await expect(
+      ensureCloudSession({
+        apiUrl: 'http://unsafe-browser.example.test',
+        validateApiUrl: requireHttps,
+      })
+    ).rejects.toThrow('requires HTTPS');
+    await expect(
+      loginWithDevice('http://unsafe-device.example.test', {
+        validateApiUrl: requireHttps,
+      })
+    ).rejects.toThrow('requires HTTPS');
+
+    expect(fetchSpy).not.toHaveBeenCalled();
+    expect(childProcessMocks.spawn).not.toHaveBeenCalled();
+    expect(fsMocks.writeFile).not.toHaveBeenCalled();
+  });
+
   it('falls back to the device flow on a host that cannot open a browser', async () => {
     // barry over ssh: no browser here, so the loopback callback the browser
     // flow depends on is unreachable and would only hang until it timed out.
@@ -454,7 +520,109 @@ describe('ensureAuthenticated', () => {
     expect(fsMocks.writeFile).toHaveBeenCalled();
     // The user was actually told the code.
     expect(logSpy.mock.calls.map((call) => String(call[0])).join('\n')).toContain('BCDF-GHJK');
+    expect(
+      fetchSpy.mock.calls
+        .filter(([input]) => String(input).includes('/api/v1/auth/device/'))
+        .every(([, init]) => !(init as RequestInit | undefined)?.redirect)
+    ).toBe(true);
 
+    logSpy.mockRestore();
+  });
+
+  it('rejects an unsafe host returned by a fresh device login before persistence or whoami', async () => {
+    vi.stubEnv('SSH_CONNECTION', '10.0.0.2 54321 10.0.0.1 22');
+    const logSpy = vi.spyOn(console, 'log').mockImplementation(() => undefined);
+    let whoamiCalls = 0;
+    const fetchSpy = vi.fn(async (input: string | URL) => {
+      const url = String(input);
+      if (url.includes('/api/v1/auth/device/start')) {
+        return Response.json(
+          {
+            device_code: 'cld_dc_unsafe_fresh',
+            user_code: 'SAFE-FRESH',
+            verification_uri: 'https://api.example.test/cloud/device',
+            expires_in: 600,
+            interval: 1,
+          },
+          { status: 201 }
+        );
+      }
+      if (url.includes('/api/v1/auth/device/token')) {
+        return Response.json({
+          access_token: 'unsafe-access',
+          refresh_token: 'unsafe-refresh',
+          access_token_expires_at: '2999-01-01T00:00:00.000Z',
+          api_url: 'http://unsafe.example.test',
+        });
+      }
+      if (url.includes('/api/v1/auth/whoami')) whoamiCalls += 1;
+      return new Response('{}', { status: 500 });
+    });
+    vi.stubGlobal('fetch', fetchSpy);
+
+    await expect(
+      ensureCloudSession({
+        apiUrl: 'https://api.example.test',
+        validateApiUrl: requireHttps,
+      })
+    ).rejects.toThrow('requires HTTPS');
+
+    expect(fsMocks.writeFile).not.toHaveBeenCalled();
+    expect(whoamiCalls).toBe(0);
+    logSpy.mockRestore();
+  });
+
+  it('rejects an unsafe host returned after refresh falls back to device login', async () => {
+    vi.stubEnv('SSH_CONNECTION', '10.0.0.2 54321 10.0.0.1 22');
+    const logSpy = vi.spyOn(console, 'log').mockImplementation(() => undefined);
+    fsMocks.readFile.mockResolvedValue(
+      JSON.stringify({
+        apiUrl: 'https://api.example.test',
+        accessToken: 'expired-access',
+        refreshToken: 'expired-refresh',
+        accessTokenExpiresAt: '2000-01-01T00:00:00.000Z',
+      } satisfies StoredAuth)
+    );
+    let whoamiCalls = 0;
+    const fetchSpy = vi.fn(async (input: string | URL) => {
+      const url = String(input);
+      if (url.includes('/api/v1/auth/token/refresh')) {
+        return new Response('{}', { status: 401 });
+      }
+      if (url.includes('/api/v1/auth/device/start')) {
+        return Response.json(
+          {
+            device_code: 'cld_dc_unsafe_fallback',
+            user_code: 'SAFE-FALLBACK',
+            verification_uri: 'https://api.example.test/cloud/device',
+            expires_in: 600,
+            interval: 1,
+          },
+          { status: 201 }
+        );
+      }
+      if (url.includes('/api/v1/auth/device/token')) {
+        return Response.json({
+          access_token: 'unsafe-access',
+          refresh_token: 'unsafe-refresh',
+          access_token_expires_at: '2999-01-01T00:00:00.000Z',
+          api_url: 'http://unsafe.example.test',
+        });
+      }
+      if (url.includes('/api/v1/auth/whoami')) whoamiCalls += 1;
+      return new Response('{}', { status: 500 });
+    });
+    vi.stubGlobal('fetch', fetchSpy);
+
+    await expect(
+      ensureCloudSession({
+        apiUrl: 'https://api.example.test',
+        validateApiUrl: requireHttps,
+      })
+    ).rejects.toThrow('requires HTTPS');
+
+    expect(fsMocks.writeFile).not.toHaveBeenCalled();
+    expect(whoamiCalls).toBe(0);
     logSpy.mockRestore();
   });
 
@@ -855,6 +1023,70 @@ describe('authorizedApiFetch telemetry headers', () => {
 });
 
 describe('authorizedApiFetch re-login', () => {
+  it.each([true, false])(
+    'preserves the destination policy for initial and post-refresh requests (policy=%s)',
+    async (policyEnabled) => {
+      let protectedCalls = 0;
+      const fetchSpy = vi.fn(async (input: string | URL, _init?: RequestInit) => {
+        const url = String(input);
+        if (url.includes('/api/v1/auth/token/refresh')) {
+          return Response.json({
+            accessToken: 'refreshed-access',
+            refreshToken: 'refreshed-token',
+            accessTokenExpiresAt: '2999-01-01T00:00:00.000Z',
+            apiUrl: 'https://api.example.test',
+          });
+        }
+        protectedCalls += 1;
+        return new Response('{}', { status: protectedCalls === 1 ? 401 : 200 });
+      });
+      vi.stubGlobal('fetch', fetchSpy);
+
+      const validateApiUrl = vi.fn(requireHttps);
+      const { response } = await authorizedApiFetch(
+        {
+          apiUrl: 'https://api.example.test',
+          accessToken: 'stale-access',
+          refreshToken: 'stale-refresh',
+          accessTokenExpiresAt: '2999-01-01T00:00:00.000Z',
+        },
+        '/api/v1/workflows/run',
+        { method: 'POST', redirect: 'follow' },
+        policyEnabled ? { validateApiUrl } : {}
+      );
+
+      expect(response.status).toBe(200);
+      const protectedInits = fetchSpy.mock.calls
+        .filter(([input]) => String(input).includes('/api/v1/workflows/run'))
+        .map(([, init]) => init);
+      expect(protectedInits).toHaveLength(2);
+      expect(protectedInits.every((init) => init?.redirect === (policyEnabled ? 'error' : 'follow'))).toBe(
+        true
+      );
+      expect(validateApiUrl).toHaveBeenCalledTimes(policyEnabled ? 4 : 0);
+    }
+  );
+
+  it('rejects unsafe env auth before sending its refresh token', async () => {
+    const fetchSpy = vi.fn();
+    vi.stubGlobal('fetch', fetchSpy);
+
+    await expect(
+      ensureCloudSession({
+        interactive: false,
+        env: createEnvAuth({
+          apiUrl: 'http://unsafe.example.test',
+          accessTokenExpiresAt: '2000-01-01T00:00:00.000Z',
+        }),
+        validateApiUrl: (apiUrl) => {
+          if (new URL(apiUrl).protocol !== 'https:') throw new Error('requires HTTPS');
+        },
+      })
+    ).rejects.toThrow('requires HTTPS');
+
+    expect(fetchSpy).not.toHaveBeenCalled();
+  });
+
   it('rejects an unsafe host selected while establishing an expired stored session', async () => {
     const storedAuth: StoredAuth = {
       apiUrl: 'https://stored.example.test',
@@ -863,7 +1095,7 @@ describe('authorizedApiFetch re-login', () => {
       accessTokenExpiresAt: '2000-01-01T00:00:00.000Z',
     };
     fsMocks.readFile.mockResolvedValue(JSON.stringify(storedAuth));
-    const fetchSpy = vi.fn(async (input: string | URL) => {
+    const fetchSpy = vi.fn(async (input: string | URL, _init?: RequestInit) => {
       const url = String(input);
       if (url.endsWith('/api/v1/auth/token/refresh')) {
         return new Response(
@@ -893,6 +1125,7 @@ describe('authorizedApiFetch re-login', () => {
     expect(fetchSpy.mock.calls.map((call) => String(call[0]))).toEqual([
       'https://stored.example.test/api/v1/auth/token/refresh',
     ]);
+    expect(fetchSpy.mock.calls[0][1]).toMatchObject({ redirect: 'error' });
     expect(fsMocks.writeFile).not.toHaveBeenCalled();
   });
 
@@ -995,6 +1228,7 @@ describe('authorizedApiFetch re-login', () => {
     });
     vi.stubGlobal('fetch', fetchSpy);
 
+    const validateApiUrl = vi.fn(requireHttps);
     const { response, auth } = await authorizedApiFetch(
       {
         apiUrl: 'https://api.example.test',
@@ -1003,7 +1237,8 @@ describe('authorizedApiFetch re-login', () => {
         accessTokenExpiresAt: '2999-01-01T00:00:00.000Z',
       },
       '/api/v1/workflows/run',
-      { method: 'POST' }
+      { method: 'POST' },
+      { validateApiUrl }
     );
 
     expect(response.status).toBe(200);
@@ -1011,12 +1246,75 @@ describe('authorizedApiFetch re-login', () => {
 
     const requested = fetchSpy.mock.calls.map((call) => String(call[0]));
     expect(requested.some((url) => url.includes('/api/v1/auth/device/start'))).toBe(true);
+    expect(
+      fetchSpy.mock.calls
+        .filter(([input]) => String(input).includes('/api/v1/auth/device/'))
+        .every(([, init]) => (init as RequestInit | undefined)?.redirect === 'error')
+    ).toBe(true);
     // The browser flow is what this fix routes around: no browser launch, and
     // the retried request carries the token the device flow just issued.
     expect(childProcessMocks.spawn).not.toHaveBeenCalled();
     const retryInit = fetchSpy.mock.calls.at(-1)?.[1] as RequestInit;
     expect(new Headers(retryInit.headers).get('authorization')).toBe('Bearer reauth-access');
+    expect(validateApiUrl).toHaveBeenCalledWith('https://api.example.test');
 
+    logSpy.mockRestore();
+  });
+
+  it('rejects an unsafe host returned by request reauthentication before persistence or whoami', async () => {
+    vi.stubEnv('SSH_CONNECTION', '10.0.0.2 54321 10.0.0.1 22');
+    const logSpy = vi.spyOn(console, 'log').mockImplementation(() => undefined);
+    let protectedCalls = 0;
+    let whoamiCalls = 0;
+    const fetchSpy = vi.fn(async (input: string | URL) => {
+      const url = String(input);
+      if (url.includes('/api/v1/auth/token/refresh')) return new Response('{}', { status: 401 });
+      if (url.includes('/api/v1/auth/device/start')) {
+        return Response.json(
+          {
+            device_code: 'cld_dc_unsafe_request',
+            user_code: 'SAFE-REQUEST',
+            verification_uri: 'https://api.example.test/cloud/device',
+            expires_in: 600,
+            interval: 1,
+          },
+          { status: 201 }
+        );
+      }
+      if (url.includes('/api/v1/auth/device/token')) {
+        return Response.json({
+          access_token: 'unsafe-access',
+          refresh_token: 'unsafe-refresh',
+          access_token_expires_at: '2999-01-01T00:00:00.000Z',
+          api_url: 'http://unsafe.example.test',
+        });
+      }
+      if (url.includes('/api/v1/auth/whoami')) {
+        whoamiCalls += 1;
+        return new Response('{}', { status: 500 });
+      }
+      protectedCalls += 1;
+      return new Response('{}', { status: 401 });
+    });
+    vi.stubGlobal('fetch', fetchSpy);
+
+    await expect(
+      authorizedApiFetch(
+        {
+          apiUrl: 'https://api.example.test',
+          accessToken: 'stale-access',
+          refreshToken: 'stale-refresh',
+          accessTokenExpiresAt: '2999-01-01T00:00:00.000Z',
+        },
+        '/api/v1/workflows/run',
+        { method: 'POST' },
+        { validateApiUrl: requireHttps }
+      )
+    ).rejects.toThrow('requires HTTPS');
+
+    expect(protectedCalls).toBe(1);
+    expect(fsMocks.writeFile).not.toHaveBeenCalled();
+    expect(whoamiCalls).toBe(0);
     logSpy.mockRestore();
   });
 
@@ -1086,6 +1384,7 @@ describe('authorizedApiFetch re-login', () => {
     });
     vi.stubGlobal('fetch', fetchSpy);
 
+    const validateApiUrl = vi.fn(requireHttps);
     const pending = authorizedApiFetch(
       {
         apiUrl: 'https://api.example.test',
@@ -1094,7 +1393,8 @@ describe('authorizedApiFetch re-login', () => {
         accessTokenExpiresAt: '2999-01-01T00:00:00.000Z',
       },
       '/api/v1/workflows/run',
-      { method: 'POST' }
+      { method: 'POST' },
+      { validateApiUrl }
     );
 
     await vi.waitFor(() => {
@@ -1118,6 +1418,7 @@ describe('authorizedApiFetch re-login', () => {
     const { auth } = await pending;
     expect(auth).toMatchObject({ accessToken: 'browser-access' });
     expect(childProcessMocks.spawn).toHaveBeenCalled();
+    expect(validateApiUrl).toHaveBeenCalledWith('https://api.example.test');
 
     logSpy.mockRestore();
   });
@@ -1189,9 +1490,10 @@ describe('cloud identity capture', () => {
     const fetchSpy = vi.fn(async () => new Response(JSON.stringify(WHOAMI_PAYLOAD), { status: 200 }));
     vi.stubGlobal('fetch', fetchSpy);
 
-    const identity = await refreshStoredCloudIdentity(AUTH);
+    const identity = await refreshStoredCloudIdentity(AUTH, { validateApiUrl: requireHttps });
 
     expect(String(fetchSpy.mock.calls[0][0])).toBe(WHOAMI_URL);
+    expect(fetchSpy.mock.calls[0][1]).toMatchObject({ redirect: 'error' });
     expect(identity?.userId).toBe('usr_abc123');
     expect(fsMocks.writeFile).toHaveBeenCalledWith(
       expect.stringContaining('cloud-identity.json'),

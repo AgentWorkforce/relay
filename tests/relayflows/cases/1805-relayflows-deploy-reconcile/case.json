@@ -1,0 +1,21 @@
+{
+  "version": 1,
+  "id": "1805-relayflows-deploy-reconcile",
+  "kind": "feature",
+  "title": "Reconcile the pr-proof hosted listener by name without touching unrelated listeners",
+  "runner": {
+    "command": ["node", "tests/relayflows/cases/1805-relayflows-deploy-reconcile/run.mjs"]
+  },
+  "requirements": [],
+  "timeoutSeconds": 300,
+  "expected": {
+    "base": {
+      "outcome": "absent",
+      "signature": "listener_reconcile_not_available"
+    },
+    "head": {
+      "outcome": "fixed",
+      "signature": "listener_reconcile_converges_by_name"
+    }
+  }
+}

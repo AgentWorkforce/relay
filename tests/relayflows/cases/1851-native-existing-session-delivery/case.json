@@ -1,0 +1,21 @@
+{
+  "version": 1,
+  "id": "1851-native-existing-session-delivery",
+  "kind": "feature",
+  "title": "Persistent brokers advertise durable existing-session delivery and reconciliation",
+  "requirements": ["broker-linux-x64"],
+  "runner": {
+    "command": ["node", "tests/relayflows/cases/1851-native-existing-session-delivery/run.mjs"]
+  },
+  "timeoutSeconds": 120,
+  "expected": {
+    "base": {
+      "outcome": "absent",
+      "signature": "native_existing_session_capabilities_absent"
+    },
+    "head": {
+      "outcome": "fixed",
+      "signature": "native_existing_session_capabilities_advertised"
+    }
+  }
+}

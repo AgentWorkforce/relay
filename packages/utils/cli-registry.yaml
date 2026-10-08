@@ -389,6 +389,16 @@ clis:
         id: 'kimi-k2.5'
         label: 'Kimi K2.5'
 
+  devin:
+    name: 'Devin'
+    package: 'devin'
+    version: '3000.10.31'
+    install: 'Install Devin CLI from https://docs.devin.ai/cli'
+    models:
+      swe_1_6:
+        id: 'swe-1.6'
+        label: 'SWE-1.6'
+
   droid:
     name: 'Droid'
     package: 'droid'

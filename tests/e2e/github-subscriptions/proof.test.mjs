@@ -10,6 +10,7 @@ import {
   semanticMatches,
   hasContinuousCoverage,
   standaloneControlsAfter,
+  collectUnseenMessages,
 } from './proof.mjs';
 
 test('no-poke audit catches background Enter after idle and excludes initial submission', () => {
@@ -25,6 +26,53 @@ test('no-poke audit catches background Enter after idle and excludes initial sub
   assert.throws(
     () => standaloneControlsAfter('writing terminal control input unknown format', '2026-09-08T20:28:29Z'),
     /Unrecognized/
+  );
+});
+
+test('no-poke audit parses ANSI-styled broker log fields', () => {
+  const styled =
+    '\x1b[2m2026-09-08T20:28:35.404753Z\x1b[0m \x1b[34mDEBUG\x1b[0m \x1b[2mrelay_pty::startup_input\x1b[0m\x1b[2m:\x1b[0m writing terminal control input \x1b[3mcontrol\x1b[0m\x1b[2m=\x1b[0m[27, 91, 66]';
+  assert.deepEqual(standaloneControlsAfter(styled, '2026-09-08T20:28:29Z'), [
+    { at: '2026-09-08T20:28:35.404753Z', control: '27, 91, 66' },
+  ]);
+  assert.throws(
+    () =>
+      standaloneControlsAfter(
+        '\x1b[2m2026-09-08T20:28:35.404753Z\x1b[0m DEBUG writing terminal control input unknown format',
+        '2026-09-08T20:28:29Z'
+      ),
+    /Unrecognized/
+  );
+});
+
+test('history collector crosses full pages and rejects a stalled cursor', async () => {
+  const message = (id) => ({ id, created_at: '2026-09-08T12:00:00Z' });
+  const pages = [
+    [message('4'), message('3')],
+    [message('2'), message('1')],
+  ];
+  const cursors = [];
+  const result = await collectUnseenMessages(
+    async (before) => {
+      cursors.push(before);
+      return pages.shift();
+    },
+    new Set(['1']),
+    0,
+    2
+  );
+  assert.deepEqual(
+    result.map((m) => m.id),
+    ['4', '3', '2']
+  );
+  assert.deepEqual(cursors, [undefined, '3']);
+  await assert.rejects(
+    collectUnseenMessages(async () => [message('4'), message('3')], new Set(), 0, 2),
+    /did not advance/
+  );
+  await assert.rejects(
+    collectUnseenMessages(async () => [{ id: '1' }], new Set(), 0),
+    /timestamp/
   );
 });
 
@@ -179,5 +227,266 @@ test('startup failure retains sanitized diagnostics without inventing an idle au
     );
   } finally {
     rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+for (const [name, mutate] of [
+  [
+    'action before injection',
+    (f) => {
+      f.messages[1].created_at = '2026-09-08T12:00:02Z';
+    },
+  ],
+  [
+    'action after deadline',
+    (f) => {
+      f.messages[1].created_at = '2026-09-08T13:00:05Z';
+    },
+  ],
+  [
+    'unaccepted producer intent',
+    (f) => {
+      f.stimulus.accepted = false;
+    },
+  ],
+  [
+    'receiver exited after idle',
+    (f) => {
+      f.events.push({ kind: 'agent_exited', name: f.actor, observedAt: '2026-09-08T12:00:00.500Z' });
+    },
+  ],
+  [
+    'nonce acknowledged before terminal event',
+    (f) => {
+      f.messages[1].created_at = '2026-09-08T11:59:59Z';
+    },
+  ],
+])
+  test(`rejects ${name}`, () => {
+    const f = fixture();
+    mutate(f);
+    assert.equal(correlate(f).pass, false);
+  });
+
+test('exact fixture matching rejects another GitHub object and unsafe numeric IDs', () => {
+  const f = fixture();
+  f.stimulus.expected = {
+    path: '/github/repos/owner/repo/comments/9007199254740993.json',
+    record: { id: '9007199254740993', user: { login: 'fixture-author' } },
+  };
+  f.messages[0].metadata.path = f.stimulus.expected.path;
+  f.messages[0].metadata.record = structuredClone(f.stimulus.expected.record);
+  assert.equal(correlate(f).pass, true);
+  f.messages[0].metadata.record.id = 9007199254740993;
+  assert.equal(correlate(f).pass, false);
+  f.messages[0].metadata.record = structuredClone(f.stimulus.expected.record);
+  f.messages[0].metadata.record.user.login = 'other-author';
+  assert.equal(correlate(f).pass, false);
+  f.messages[0].metadata.record = structuredClone(f.stimulus.expected.record);
+  f.messages[0].metadata.path = '/github/repos/owner/other/comments/9007199254740993.json';
+  assert.equal(correlate(f).pass, false);
+});
+
+test('strict live fixture mode cannot accept an unbound rehearsal trace', () => {
+  assert.equal(correlate({ ...fixture(), strictFixture: true }).pass, false);
+});
+
+test('strict fixture assertion rejects incomplete external schemas and mismatched stimulus bindings', async () => {
+  const { fixtureExpected } = await import('./fixture-scope.mjs');
+  for (const kind of ['comment', 'review', 'thread', 'merge', 'ci']) {
+    const f = fixture();
+    Object.assign(f.stimulus, {
+      kind,
+      accepted: true,
+      repo: 'AgentWorkforce/relay',
+      pr: 123,
+      providerId: '456',
+      headSha: 'a'.repeat(40),
+      base: 'owned-base',
+      mergeSha: 'b'.repeat(40),
+      file: 'owned.txt',
+      line: 2,
+      side: 'RIGHT',
+    });
+    f.strictFixture = true;
+    f.stimulus.expected = fixtureExpected(
+      f.stimulus,
+      {
+        id: '456',
+        user: { login: 'owner' },
+        issue_url: 'https://api.github.com/repos/AgentWorkforce/relay/issues/123',
+        submitted_at: '2026-09-11T12:00:00Z',
+        pull_request_review_id: '789',
+        merge_commit_sha: 'b'.repeat(40),
+        name: 'owned-check',
+      },
+      'test'
+    );
+    Object.assign(f.messages[0].metadata, {
+      path: f.stimulus.expected.path,
+      record: structuredClone(f.stimulus.expected.record),
+      provider_event_type: {
+        comment: 'issue_comment.created',
+        review: 'pull_request_review.submitted',
+        thread: 'pull_request_review_comment.created',
+        merge: 'pull_request.closed',
+        ci: 'check_run.completed',
+      }[kind],
+    });
+    assert.equal(correlate(f).pass, true, kind);
+    for (const key of Object.keys(f.stimulus.expected.record)) {
+      const adverse = structuredClone(f);
+      delete adverse.stimulus.expected.record[key];
+      assert.equal(correlate(adverse).pass, false, kind + ' missing ' + key);
+    }
+    for (const patch of [{ providerId: '999' }, { repo: 'AgentWorkforce/other' }, { headSha: 'bad' }]) {
+      if (kind === 'comment' && patch.headSha) continue;
+      const adverse = structuredClone(f);
+      Object.assign(adverse.stimulus, patch);
+      assert.equal(correlate(adverse).pass, false, kind + JSON.stringify(patch));
+    }
+  }
+});
+
+for (const kind of ['agent_exited', 'delivery_failed'])
+  test(`rejects ${kind} after ACK within response deadline`, () => {
+    const f = fixture();
+    f.events.push({ kind, name: f.actor, observedAt: '2026-09-08T12:00:06Z' });
+    assert.equal(correlate(f).pass, false);
+    f.events.at(-1).observedAt = '2026-09-08T12:03:00Z';
+    assert.equal(correlate(f).pass, true);
+  });
+
+test('history collector stops within a page at the first known boundary', async () => {
+  const message = (id) => ({ id, created_at: '2026-09-08T12:00:00Z' });
+  const pages = [
+    ['4', '3'],
+    ['2', '1'],
+  ];
+  const records = await collectUnseenMessages(async () => pages.shift().map(message), new Set(['2']), 0, 2);
+  assert.deepEqual(
+    records.map((m) => m.id),
+    ['4', '3']
+  );
+});
+
+test('normalized issue comments retain exact provider, parent, author and action checks', async () => {
+  const { fixtureExpected } = await import('./fixture-scope.mjs');
+  const f = fixture();
+  Object.assign(f.stimulus, { accepted: true, repo: 'AgentWorkforce/relay', pr: 123, providerId: '456' });
+  f.strictFixture = true;
+  f.stimulus.expected = fixtureExpected(
+    f.stimulus,
+    {
+      id: 456,
+      issue_url: 'https://api.github.com/repos/AgentWorkforce/relay/issues/123',
+      user: { login: 'owner' },
+    },
+    'normalized-comment'
+  );
+  Object.assign(f.messages[0].metadata, {
+    path: f.stimulus.expected.path,
+    record: { id: 456, body: `GHSUB_EVENT_NONCE=${f.stimulus.nonce}`, author: { login: 'owner' } },
+  });
+  assert.equal(correlate(f).pass, true);
+  const mutations = [
+    (x) => {
+      x.messages[0].metadata.record.id = 457;
+    },
+    (x) => {
+      x.messages[0].metadata.record.id = Number.MAX_SAFE_INTEGER + 1;
+    },
+    (x) => {
+      x.messages[0].metadata.record.author.login = 'other';
+    },
+    (x) => {
+      delete x.messages[0].metadata.record.author;
+    },
+    (x) => {
+      x.messages[0].metadata.record.user = { login: 'other' };
+    },
+    (x) => {
+      x.messages[0].metadata.record.issue_url =
+        'https://api.github.com/repos/AgentWorkforce/relay/issues/124';
+    },
+    (x) => {
+      x.messages[0].metadata.path = x.messages[0].metadata.path.replace('/issues/123__', '/issues/1234__');
+    },
+    (x) => {
+      x.stimulus.expected.record.issue_url = 'https://api.github.com/repos/AgentWorkforce/relay/issues/124';
+    },
+    (x) => {
+      x.messages[0].agent_id = 'untrusted';
+    },
+    (x) => {
+      x.messages.push({ ...x.messages[1], id: 'duplicate-action' });
+    },
+  ];
+  for (const mutate of mutations) {
+    const adverse = structuredClone(f);
+    mutate(adverse);
+    assert.equal(correlate(adverse).pass, false, mutate.toString());
+  }
+});
+
+test('ingest lower bound accepts exact intent time and rejects even one millisecond before it', () => {
+  const f = fixture();
+  f.messages[0].created_at = f.stimulus.createdAt;
+  assert.equal(correlate(f).pass, true);
+  f.messages[0].created_at = new Date(Date.parse(f.stimulus.createdAt) - 1).toISOString();
+  assert.equal(correlate(f).pass, false);
+});
+
+test('strict thread correlation distinguishes explicit null association from absent, malformed, changed and replies', async () => {
+  const { fixtureExpected } = await import('./fixture-scope.mjs');
+  for (const association of [null, '9007199254740993']) {
+    const f = fixture();
+    Object.assign(f.stimulus, {
+      kind: 'thread',
+      accepted: true,
+      repo: 'owner/repo',
+      pr: 1,
+      providerId: '42',
+      headSha: 'a'.repeat(40),
+      file: 'owned.txt',
+      line: 2,
+      side: 'RIGHT',
+    });
+    f.strictFixture = true;
+    f.stimulus.expected = fixtureExpected(
+      f.stimulus,
+      { id: '42', user: { login: 'owner' }, pull_request_review_id: association },
+      'test'
+    );
+    Object.assign(f.messages[0].metadata, {
+      path: f.stimulus.expected.path,
+      record: structuredClone(f.stimulus.expected.record),
+      provider_event_type: 'pull_request_review_comment.created',
+    });
+    assert.equal(correlate(f).pass, true);
+    for (const mutate of [
+      (r) => {
+        delete r.pull_request_review_id;
+      },
+      (r) => {
+        r.pull_request_review_id = undefined;
+      },
+      (r) => {
+        r.pull_request_review_id = 'null';
+      },
+      (r) => {
+        r.pull_request_review_id = '9007199254740995';
+      },
+      (r) => {
+        r.pull_request_review_id = 9007199254740992;
+      },
+      (r) => {
+        r.in_reply_to_id = '44';
+      },
+    ]) {
+      const bad = structuredClone(f);
+      mutate(bad.messages[0].metadata.record);
+      assert.equal(correlate(bad).pass, false);
+    }
   }
 });

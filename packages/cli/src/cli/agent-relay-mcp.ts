@@ -24,6 +24,7 @@ import {
 } from '@agent-relay/sdk';
 import { z } from 'zod';
 import { declaredWorkforceMetadata } from './lib/registration-metadata.js';
+import { isBundledBunEntrypointPath } from './lib/agent-relay-mcp-command.js';
 import {
   DEFAULT_AGENT_REGISTRATION_TIMEOUT_MS,
   withAgentRegistrationDeadline,
@@ -49,7 +50,13 @@ import {
 import { enableInboxPiggyback } from './mcp/telemetry.js';
 import { registerAgentRelayActionTools } from './mcp/action-tools.js';
 import { registerMessagingTools } from './mcp/messaging-tools.js';
+import { McpRequestReplay } from './mcp/request-replay.js';
 import { identityOverrideInputShape, messageResult } from './mcp/tool-shapes.js';
+import {
+  registerSharedSessionTools,
+  requireCompleteSharedSessionToolset,
+  SharedSessionsMcpClient,
+} from './mcp/shared-sessions-client.js';
 import {
   describeClearedEnrollment,
   persistWorkspaceSession,
@@ -420,6 +427,12 @@ export const AGENT_RELAY_MCP_INSTRUCTIONS = `You are an AI agent in a collaborat
 
 const DEFAULT_SYSTEM_PROMPT = AGENT_RELAY_MCP_INSTRUCTIONS;
 
+const SHARED_SESSIONS_MCP_INSTRUCTIONS =
+  'Search and read agent sessions shared with your Agent Relay Cloud workspace. ' +
+  'Run `agent-relay cloud login` before starting this MCP server; on headless hosts use `agent-relay cloud login --device`.';
+
+const OPTIONAL_SHARED_SESSIONS_DISCOVERY_TIMEOUT_MS = 2_000;
+
 type AgentResultCallbackConfig = {
   url: string;
   token: string;
@@ -484,6 +497,11 @@ export function normalizeBaseUrl(baseUrl?: string): string | undefined {
 function isEntrypoint(): boolean {
   const invocationPath = process.argv[1];
   if (!invocationPath) return false;
+  // `bun build --compile` folds this importable module into the CLI entrypoint,
+  // and both modules observe the same virtual import.meta.url. Treating this
+  // module as an entrypoint in that environment starts a second stdio server;
+  // the CLI's `mcp` command owns startup for the compiled executable.
+  if (isBundledBunEntrypointPath(invocationPath)) return false;
   try {
     return fs.realpathSync(invocationPath) === fs.realpathSync(fileURLToPath(import.meta.url));
   } catch {
@@ -954,7 +972,8 @@ function registerAgentRelayTools(
   baseUrl: string | undefined,
   strictAgentName: boolean | undefined,
   preferredAgentName: string | undefined,
-  forcedAgentType: AgentType | undefined
+  forcedAgentType: AgentType | undefined,
+  requestReplay: McpRequestReplay
 ): void {
   server.registerTool(
     'create_workspace',
@@ -1252,10 +1271,15 @@ function registerAgentRelayTools(
     }
   );
 
-  registerMessagingTools(server, getAgentClient, async () => {
-    if (!getSession().workspaceKey) return undefined;
-    return getRelay().agents.list();
-  });
+  registerMessagingTools(
+    server,
+    getAgentClient,
+    async () => {
+      if (!getSession().workspaceKey) return undefined;
+      return getRelay().agents.list();
+    },
+    requestReplay
+  );
 
   server.registerTool(
     'add_agent',
@@ -1272,9 +1296,10 @@ function registerAgentRelayTools(
       inputSchema: {
         name: z.string().describe('Worker agent name'),
         cli: z
-          .enum(['claude', 'codex', 'gemini', 'aider', 'goose', 'grok', 'opencode'])
+          .enum(['claude', 'codex', 'gemini', 'aider', 'goose', 'grok', 'muse', 'opencode', 'devin'])
           .describe(
             'Which AI CLI runs the worker: "codex agent" → codex, "gemini agent" → gemini, ' +
+              '"muse agent" → muse, "devin agent" → devin, ' +
               '"claude/opus claude/sonnet claude agent" → claude (default).'
           ),
         task: z.string().describe('Task instructions'),
@@ -1296,32 +1321,49 @@ function registerAgentRelayTools(
           .boolean()
           .optional()
           .describe('Exit the worker after it completes the injected task.'),
+        idempotency_key: z
+          .string()
+          .min(1)
+          .max(255)
+          .optional()
+          .describe(
+            'Stable key for retrying this same request after a lost response; use a new key for a new spawn.'
+          ),
       },
       outputSchema: jsonResult,
-      annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: true, openWorldHint: true },
+      annotations: {
+        readOnlyHint: false,
+        destructiveHint: false,
+        idempotentHint: false,
+        openWorldHint: true,
+      },
     },
-    async ({ name, cli, task, channel, persona, model, spawn_mode, exit_after_task }) => {
-      const invocation = await getRelay().agents.spawn({
-        name,
-        cli,
-        task:
-          exit_after_task ||
-          spawn_mode === 'task_exit' ||
-          spawn_mode === 'task-exit' ||
-          spawn_mode === 'single_shot' ||
-          spawn_mode === 'single-shot'
-            ? withExitAfterTaskInstruction(task)
-            : task,
-        channel,
-        persona,
-        // SpawnAgentRequest has no top-level model field; pass via metadata
-        // so the broker can extract it and forward --model to the launched CLI.
-        metadata: model ? { model } : undefined,
-      });
-      const failure = terminalSpawnFailureResult(invocation);
-      if (failure) return failure;
-      return jsonContent({ ...invocation, placement: spawnReceipt(invocation) });
-    }
+    async (
+      { name, cli, task, channel, persona, model, spawn_mode, exit_after_task, idempotency_key },
+      extra
+    ) =>
+      requestReplay.run('add_agent', extra, idempotency_key, async () => {
+        const invocation = await getRelay().agents.spawn({
+          name,
+          cli,
+          task:
+            exit_after_task ||
+            spawn_mode === 'task_exit' ||
+            spawn_mode === 'task-exit' ||
+            spawn_mode === 'single_shot' ||
+            spawn_mode === 'single-shot'
+              ? withExitAfterTaskInstruction(task)
+              : task,
+          channel,
+          persona,
+          // SpawnAgentRequest has no top-level model field; pass via metadata
+          // so the broker can extract it and forward --model to the launched CLI.
+          metadata: model ? { model } : undefined,
+        });
+        const failure = terminalSpawnFailureResult(invocation);
+        if (failure) return failure;
+        return jsonContent({ ...invocation, placement: spawnReceipt(invocation) });
+      })
   );
 
   server.registerTool(
@@ -1334,7 +1376,7 @@ function registerAgentRelayTools(
       inputSchema: {
         name: z.string().describe('Agent name'),
         cli: z
-          .enum(['claude', 'codex', 'gemini', 'aider', 'goose', 'grok', 'opencode'])
+          .enum(['claude', 'codex', 'gemini', 'aider', 'goose', 'grok', 'muse', 'opencode', 'devin'])
           .optional()
           .describe('AI CLI to launch; mutually exclusive with persona'),
         persona: z
@@ -1363,6 +1405,14 @@ function registerAgentRelayTools(
         objective: z.string().optional().describe('Declared objective; defaults to task when omitted'),
         session_ref: z.string().optional().describe('Session reference for resumable spawns'),
         target_node: z.string().optional().describe('Optional target fleet node name'),
+        idempotency_key: z
+          .string()
+          .min(1)
+          .max(255)
+          .optional()
+          .describe(
+            'Stable key for retrying this same request after a lost response; use a new key for a new spawn.'
+          ),
         ...identityOverrideInputShape,
       },
       outputSchema: jsonResult,
@@ -1373,34 +1423,15 @@ function registerAgentRelayTools(
         openWorldHint: true,
       },
     },
-    async ({
-      name,
-      cli,
-      persona,
-      task,
-      cwd,
-      persona_cwd,
-      worker_cwd,
-      channel,
-      channels,
-      model,
-      organization,
-      project,
-      workstream,
-      role,
-      objective,
-      session_ref,
-      target_node,
-      as,
-    }) => {
-      const request = {
+    async (
+      {
         name,
         cli,
         persona,
         task,
         cwd,
-        personaCwd: persona_cwd,
-        workerCwd: worker_cwd,
+        persona_cwd,
+        worker_cwd,
         channel,
         channels,
         model,
@@ -1409,22 +1440,46 @@ function registerAgentRelayTools(
         workstream,
         role,
         objective,
-        sessionRef: session_ref,
-        targetNode: target_node,
-      };
-      validateSpawnRequest(request);
-      const actionInput = buildSpawnActionInput(request);
-      try {
-        const invocation = await invokeVerifiedSpawn(getSession(), as, baseUrl, actionInput);
-        return jsonContent({
-          invocation,
-          placement: { state: 'ready', ...spawnReceipt(recordValue(invocation)) },
-        });
-      } catch (error) {
-        if (error instanceof VerifiedSpawnError) return verifiedSpawnErrorResult(error);
-        throw error;
-      }
-    }
+        session_ref,
+        target_node,
+        idempotency_key,
+        as,
+      },
+      extra
+    ) =>
+      requestReplay.run('spawn', extra, idempotency_key, async () => {
+        const request = {
+          name,
+          cli,
+          persona,
+          task,
+          cwd,
+          personaCwd: persona_cwd,
+          workerCwd: worker_cwd,
+          channel,
+          channels,
+          model,
+          organization,
+          project,
+          workstream,
+          role,
+          objective,
+          sessionRef: session_ref,
+          targetNode: target_node,
+        };
+        validateSpawnRequest(request);
+        const actionInput = buildSpawnActionInput(request);
+        try {
+          const invocation = await invokeVerifiedSpawn(getSession(), as, baseUrl, actionInput);
+          return jsonContent({
+            invocation,
+            placement: { state: 'ready', ...spawnReceipt(recordValue(invocation)) },
+          });
+        } catch (error) {
+          if (error instanceof VerifiedSpawnError) return verifiedSpawnErrorResult(error);
+          throw error;
+        }
+      })
   );
 
   server.registerTool(
@@ -1482,24 +1537,39 @@ function registerAgentRelayTools(
 }
 
 export function createAgentRelayMcpServer(options: AgentRelayMcpServerOptions): McpServer {
+  if (options.sessionsOnly) {
+    requireCompleteSharedSessionToolset(options.sharedSessionTools ?? []);
+  }
+
   const session = createInitialSession({
     workspaceKey: options.workspaceKey ?? options.apiKey ?? null,
     agentToken: options.agentToken ?? null,
     agentName: options.agentName ?? null,
   });
   const actionToolNames = new Set<string>();
+  const requestReplay = new McpRequestReplay();
 
   const mcpServer = new McpServer(
     { name: 'agent-relay', version: AGENT_RELAY_MCP_VERSION },
     {
-      capabilities: {
-        resources: { subscribe: true, listChanged: true },
-        tools: {},
-        prompts: {},
-      },
-      instructions: AGENT_RELAY_MCP_INSTRUCTIONS,
+      capabilities: options.sessionsOnly
+        ? { tools: {} }
+        : {
+            resources: { subscribe: true, listChanged: true },
+            tools: {},
+            prompts: {},
+          },
+      instructions: options.sessionsOnly ? SHARED_SESSIONS_MCP_INSTRUCTIONS : AGENT_RELAY_MCP_INSTRUCTIONS,
     }
   );
+  const sharedSessionsClient = options.sharedSessionsClient ?? new SharedSessionsMcpClient();
+
+  if (options.sessionsOnly) {
+    registerSharedSessionTools(mcpServer, sharedSessionsClient, options.sharedSessionTools ?? [], {
+      strict: true,
+    });
+    return mcpServer;
+  }
 
   const getSession = (): SessionState => session;
   const getRelay = (): RelayCastLike => {
@@ -1629,7 +1699,8 @@ export function createAgentRelayMcpServer(options: AgentRelayMcpServerOptions): 
     options.baseUrl,
     options.strictAgentName,
     options.agentName,
-    options.agentType
+    options.agentType,
+    requestReplay
   );
   registerAgentRelayActionTools(
     mcpServer,
@@ -1640,6 +1711,9 @@ export function createAgentRelayMcpServer(options: AgentRelayMcpServerOptions): 
     actionToolNames
   );
   registerAgentResultTool(mcpServer, readAgentResultCallbackConfig(options.agentName));
+  registerSharedSessionTools(mcpServer, sharedSessionsClient, options.sharedSessionTools ?? [], {
+    strict: false,
+  });
 
   mcpServer.registerPrompt(
     'system',
@@ -1698,7 +1772,7 @@ function isRelaycastAgentToken(token: string | undefined): token is string {
 export async function resolveStdioBootstrapOptions(
   options: AgentRelayMcpServerOptions
 ): Promise<AgentRelayMcpServerOptions> {
-  if (isRelaycastAgentToken(options.agentToken) || options.skipBootstrap) {
+  if (options.sessionsOnly || isRelaycastAgentToken(options.agentToken) || options.skipBootstrap) {
     return options;
   }
 
@@ -1728,8 +1802,39 @@ export async function resolveStdioBootstrapOptions(
 export async function startAgentRelayMcpStdio(options: AgentRelayMcpServerOptions): Promise<void> {
   initMcpTelemetry();
   const bootstrappedOptions = await resolveStdioBootstrapOptions(options);
+  const sharedSessionsClient = bootstrappedOptions.sharedSessionsClient ?? new SharedSessionsMcpClient();
+  let sharedSessionTools = bootstrappedOptions.sharedSessionTools;
+  if (!sharedSessionTools) {
+    let discoveryTimer: ReturnType<typeof setTimeout> | undefined;
+    try {
+      const discovery = sharedSessionsClient.listTools();
+      sharedSessionTools = bootstrappedOptions.sessionsOnly
+        ? await discovery
+        : await Promise.race([
+            discovery,
+            new Promise<never>((_resolve, reject) => {
+              discoveryTimer = setTimeout(
+                () => reject(new Error('Optional Cloud discovery timed out.')),
+                OPTIONAL_SHARED_SESSIONS_DISCOVERY_TIMEOUT_MS
+              );
+            }),
+          ]);
+    } catch (error) {
+      if (bootstrappedOptions.sessionsOnly) throw error;
+      // Cancel abandoned network work without letting cleanup delay local stdio.
+      void sharedSessionsClient.close?.().catch(() => undefined);
+      // A Cloud login is optional for the normal Relaycast MCP surface. Keep
+      // messaging available even when auth, initialization, or listing stalls.
+      // A restarted process after recovery will discover the hosted tools.
+      sharedSessionTools = [];
+    } finally {
+      if (discoveryTimer !== undefined) clearTimeout(discoveryTimer);
+    }
+  }
   const mcpServer = createAgentRelayMcpServer({
     ...bootstrappedOptions,
+    sharedSessionsClient,
+    sharedSessionTools,
     telemetryTransport: 'stdio',
   });
   const transport = new StdioServerTransport();

@@ -41,13 +41,9 @@ const expectedLeafCommands = [
   'flows',
   // `session` (singular) is the hidden alias of `sessions`, so it is absent here.
   'sessions',
-  // fleet (serve is a hidden error stub, filtered out below)
+  // fleet (serve is a hidden error stub; config/enable/disable/inherit are hidden no-ops)
   'fleet agent list',
-  'fleet config',
-  'fleet disable',
-  'fleet enable',
-  'fleet inherit',
-  'fleet nodes',
+  'fleet nodes list',
   'fleet release',
   'fleet spawn',
   'fleet status',
@@ -259,6 +255,13 @@ describe('bootstrap CLI', () => {
         'rm',
       ])
     );
+  });
+
+  it('offers a sessions-only MCP mode for plugin configuration', () => {
+    const program = createProgram();
+    const mcp = program.commands.find((command) => command.name() === 'mcp');
+
+    expect(mcp?.options.map((option) => option.long)).toContain('--sessions-only');
   });
 
   it('registers `observer` as a runnable command, not just a group', () => {

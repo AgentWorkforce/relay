@@ -1,0 +1,21 @@
+{
+  "version": 1,
+  "id": "1811-fleet-nodes-pretty",
+  "kind": "feature",
+  "title": "List fleet nodes as a human-readable table",
+  "runner": {
+    "command": ["node", "tests/relayflows/cases/1811-fleet-nodes-pretty/run.mjs"]
+  },
+  "requirements": [],
+  "timeoutSeconds": 900,
+  "expected": {
+    "base": {
+      "outcome": "absent",
+      "signature": "fleet_nodes_pretty_absent"
+    },
+    "head": {
+      "outcome": "fixed",
+      "signature": "fleet_nodes_pretty_lists_nodes"
+    }
+  }
+}

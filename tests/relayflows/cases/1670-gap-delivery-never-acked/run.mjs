@@ -149,7 +149,17 @@ try {
   // authenticates against production instead of the engine under test.
   broker = spawn(
     binaryPath,
-    ['init', '--api-port', '0', '--api-bind', '127.0.0.1', '--state-dir', stateDir],
+    [
+      'init',
+      '--instance-name',
+      'relayflow-1670-node',
+      '--api-port',
+      '0',
+      '--api-bind',
+      '127.0.0.1',
+      '--state-dir',
+      stateDir,
+    ],
     {
       cwd: workDir,
       env: {
@@ -164,6 +174,7 @@ try {
         RELAY_NODE_ID: nodeId,
         RELAY_BROKER_API_KEY: BROKER_API_KEY,
         RELAY_SKIP_TELEMETRY: '1',
+        AGENT_RELAY_NODE_HARNESSES: 'cat',
         RUST_LOG: 'info',
       },
       stdio: ['ignore', 'pipe', 'pipe'],
@@ -196,10 +207,35 @@ try {
   }, 'the broker connection file to publish its bound API port');
   const api = brokerClient(brokerUrl);
   await waitFor(() => api('GET', '/api/status').then(() => true), 'the broker API to answer');
+  await waitFor(
+    async () => (await api('GET', '/api/status')).node_connected === true,
+    'node control to become delivery-ready'
+  );
 
-  // A live worker, registered through the real engine, and holding its inbound
-  // queue so the ACK stream stays silent until the case makes it speak.
-  await api('POST', '/api/spawn', { name: AGENT, cli: 'cat', transport: 'pty' });
+  // A live worker must be created through the node action path so the engine
+  // assigns it to this broker provider. The local HTTP fallback creates a
+  // provider="default" identity that a modern engine correctly refuses to
+  // reconcile into the broker provider's inventory.
+  const sender = await eng('POST', '/v1/agents', { name: 'proof-sender', type: 'agent' }, wsAuth);
+  const senderToken = sender.body?.data?.token;
+  if (!senderToken) throw new Error('Local proof sender registration failed.');
+  const spawned = await eng(
+    'POST',
+    '/v1/actions/spawn/invoke',
+    {
+      input: {
+        name: AGENT,
+        cli: 'cat',
+        capability: 'spawn:cat',
+        node: 'relayflow-1670-node',
+        target_node: 'relayflow-1670-node',
+      },
+    },
+    { authorization: `Bearer ${senderToken}` }
+  );
+  if (spawned.status < 200 || spawned.status >= 300) {
+    throw new Error(`Local node action spawn was rejected: ${JSON.stringify(spawned.body)}`);
+  }
   const agentId = await waitFor(
     () => tap.agentIdFor(AGENT),
     'the broker to register the agent with the engine'
@@ -265,8 +301,9 @@ try {
   process.stderr.write(`${diag.join('').slice(-12_000)}\n`);
   throw error;
 } finally {
+  await stop(broker);
   if (tap) await tap.stop().catch(() => {});
-  for (const child of [broker, engine]) await stop(child);
+  await stop(engine);
   await rm(workDir, { recursive: true, force: true });
 }
 

@@ -11,7 +11,7 @@ use anyhow::{bail, Context, Result};
 use serde_json::{json, Value};
 use tokio::{
     io::{AsyncBufReadExt, AsyncWriteExt, BufReader, Lines},
-    process::{ChildStdin, ChildStdout, Command},
+    process::{ChildStdin, ChildStdout},
     time::timeout,
 };
 
@@ -47,7 +47,7 @@ async fn create_resumable_codex_thread_inner(
     client_version: &str,
 ) -> Result<String> {
     let thread_cwd = cwd.canonicalize().unwrap_or_else(|_| cwd.to_path_buf());
-    let mut command = Command::new(codex_bin);
+    let mut command = crate::credentials::scrubbed_command(codex_bin);
     command
         .arg("app-server")
         .arg("--listen")
@@ -62,6 +62,9 @@ async fn create_resumable_codex_thread_inner(
     }
     for (key, value) in env {
         command.env(key, value);
+    }
+    for key in crate::credentials::NODE_IDENTITY_ENV_KEYS {
+        command.env_remove(key);
     }
     let mut child = command
         .spawn()
@@ -311,6 +314,54 @@ while read line; do :; done
         .expect("thread id");
 
         assert_eq!(thread_id, "thread-test");
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn create_resumable_codex_thread_scrubs_explicit_node_identity() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let dir = tempfile::tempdir().expect("temp dir");
+        let fake_codex = dir.path().join("codex");
+        std::fs::write(
+            &fake_codex,
+            r#"#!/bin/sh
+if [ -n "${RELAY_NODE_ID+x}" ] || [ -n "${AGENT_RELAY_ENROLLED_NODE_ID+x}" ]; then
+  exit 9
+fi
+read line
+printf '%s\n' '{"jsonrpc":"2.0","id":1,"result":{}}'
+read line
+printf '%s\n' '{"jsonrpc":"2.0","id":2,"result":{"thread":{"id":"thread-scrubbed"}}}'
+read line
+printf '%s\n' '{"jsonrpc":"2.0","id":3,"result":{}}'
+while read line; do :; done
+"#,
+        )
+        .expect("write fake codex");
+        let mut permissions = std::fs::metadata(&fake_codex)
+            .expect("fake codex metadata")
+            .permissions();
+        permissions.set_mode(0o755);
+        std::fs::set_permissions(&fake_codex, permissions).expect("chmod fake codex");
+
+        let thread_id = create_resumable_codex_thread(
+            fake_codex.to_str().expect("utf-8 fake codex path"),
+            dir.path(),
+            &[
+                ("RELAY_NODE_ID".to_string(), "poisoned".to_string()),
+                (
+                    "AGENT_RELAY_ENROLLED_NODE_ID".to_string(),
+                    "poisoned".to_string(),
+                ),
+            ],
+            &[],
+            "0.0.0-test",
+        )
+        .await
+        .expect("thread id");
+
+        assert_eq!(thread_id, "thread-scrubbed");
     }
 
     #[test]

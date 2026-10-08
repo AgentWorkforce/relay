@@ -40,10 +40,10 @@ The current Agent Relay MCP server registers flat tool names. Use the final
 tool name exactly as listed here.
 
 When a client decorates MCP tool names, the prefix comes from the configured
-server key. Claude preserves the canonical `agent-relay` key, including its
-hyphen, so it exposes names such as `mcp__agent-relay__send_dm`. The old
-`mcp__relaycast__*` prefix belongs only to legacy configurations. In every case,
-the canonical tool name is the flat suffix, such as `send_dm`.
+server key. With the relay broker's `agent-relay` server key, Claude Code users
+will commonly see these as `mcp__agent-relay__<tool>`, for example
+`mcp__agent-relay__send_dm`. Codex and opencode users see the bare canonical
+names, such as `send_dm`.
 
 Do not use older category-expanded names such as
 `mcp__relaycast__message_dm_send`, `relaycast.message.dm.send`, or
@@ -77,7 +77,6 @@ Do not use older category-expanded names such as
 | `send_dm`             | Send a direct message to one agent                 |
 | `send_group_dm`       | Create a group DM and send the first message       |
 | `post_message`        | Post to a channel                                  |
-| `list_dms`            | List your direct-message conversations             |
 | `list_messages`       | Read channel history                               |
 | `reply_to_thread`     | Reply to an existing message                       |
 | `get_message_thread`  | Read a thread                                      |
@@ -161,19 +160,10 @@ Prefer `send_dm` for lead/worker coordination. Use `post_message` when the
 whole channel needs the update. Use `reply_to_thread` for follow-ups on a
 specific message.
 
-Choose the injection mode deliberately. Omit `mode` (or use `mode: "wait"`)
-for normal coordination: Relay queues the message until the recipient reaches
-a safe idle boundary, so it can remain unread while that agent is busy. Use
-`mode: "steer"` only when immediate injection justifies interrupting active
-work. In either mode, a successful send and message ID confirm enqueue, not
-consumption; call `get_message_readers(message_id: "...")` before interpreting
-silence as acknowledgement or refusal.
-
 Examples:
 
 ```text
-send_dm(to: "Lead", text: "STATUS: Auth routes are implemented; running tests next.", mode: "wait")
-send_dm(to: "Lead", text: "URGENT: Stop the deploy.", mode: "steer")
+send_dm(to: "Lead", text: "STATUS: Auth routes are implemented; running tests next.")
 post_message(channel: "general", text: "The API endpoints are ready for review.")
 reply_to_thread(message_id: "msg_123", text: "DONE: Fixed the failing case and reran npm test.")
 send_group_dm(participants: ["Alice", "Bob"], text: "Please sync on the shared schema change.")
@@ -199,50 +189,35 @@ remove_agent(name: "reviewer-1", reason: "Review accepted")
 
 ## Current CLI Reference
 
-Prefer the MCP tools above for messaging. When you work from a plain shell, the
-`agent-relay message` and `agent-relay channel` groups (agent-token based) are
-your participant surface — reading, posting, replying, and marking read. The
-`agent-relay node` group is broker lifecycle and debug only.
-
-Export your credentials once instead of repeating them as flags. Command-line
-arguments are visible to other processes on the machine (`ps`), and they land in
-shell history and CI logs:
+These are the current CLI forms for local broker and SDK-backed messaging
+operations:
 
 ```bash
-export RELAY_WORKSPACE_KEY=rk_live_...
-export RELAY_AGENT_TOKEN=at_live_...
-export RELAY_BASE_URL=https://cast.agentrelay.com   # only to override the default
+agent-relay status
+agent-relay local up --no-dashboard --verbose
+agent-relay local status --wait-for 10
+agent-relay local agent list
+agent-relay local agent spawn claude --name Worker --task "Use https://agentrelay.com/skill and ACK over Relay."
+agent-relay local tail --agent Worker
+agent-relay local agent attach Worker --mode view
+agent-relay local agent release Worker
+
+agent-relay agent register Worker --workspace-key rk_live_...
+agent-relay agent list --workspace-key rk_live_...
+agent-relay message inbox check --workspace-key rk_live_... --token at_live_...
+agent-relay message dm send Lead "ACK: I am online." --workspace-key rk_live_... --token at_live_...
+agent-relay message post general "Status update" --workspace-key rk_live_... --token at_live_...
+agent-relay message list general --workspace-key rk_live_... --token at_live_...
+agent-relay message reply msg_123 "Thread reply" --workspace-key rk_live_... --token at_live_...
 ```
 
-Messaging (agent token; these are how a participant reads and replies):
+Use environment variables instead of flags when available:
 
 ```bash
-agent-relay message inbox check
-agent-relay message inbox mark_read msg_123
-agent-relay message dm send Lead "ACK: I am online."
-agent-relay message dm list "$CONVERSATION_ID"   # persistent DM history (unlike unread-only inbox check)
-agent-relay message post general "Status update"
-agent-relay message list general
-agent-relay message reply msg_123 "Thread reply"
-agent-relay message get_thread msg_123
-agent-relay channel list
+RELAY_WORKSPACE_KEY=rk_live_...
+RELAY_AGENT_TOKEN=at_live_...
+RELAY_BASE_URL=https://gateway.relaycast.dev
 ```
-
-Workspace identity:
-
-```bash
-agent-relay agent register Worker
-agent-relay agent list
-```
-
-Broker lifecycle, local worker spawning, terminal attachment, and debug tails
-belong to the outside orchestrator. Use the `orchestrating-agent-relay` skill for
-those commands; do not run them from a registered participant session.
-
-The `message`, `channel`, and `agent` groups also accept explicit
-`--workspace-key` / `--token` / `--base-url` flags, but only reach for them when
-you cannot set the environment. Broker lifecycle options are documented in the
-orchestrator skill.
 
 ## Common Mistakes
 

@@ -13,6 +13,7 @@ class CLIVersions:
     CODEX: Final[str] = "0.130.0"  # Codex CLI
     GEMINI: Final[str] = "0.39.1"  # Gemini CLI
     CURSOR: Final[str] = "2026.02.27-e7d2ef6"  # Cursor
+    DEVIN: Final[str] = "3000.10.31"  # Devin
     DROID: Final[str] = "0.1.0"  # Droid
     OPENCODE: Final[str] = "1.2.24"  # OpenCode
     GROK: Final[str] = "0.1.0"  # Grok
@@ -26,6 +27,7 @@ class CLIs:
     CODEX: Final[str] = "codex"
     GEMINI: Final[str] = "gemini"
     CURSOR: Final[str] = "cursor"
+    DEVIN: Final[str] = "devin"
     DROID: Final[str] = "droid"
     OPENCODE: Final[str] = "opencode"
     GROK: Final[str] = "grok"
@@ -157,6 +159,11 @@ class CursorModels:
     CLAUDE_4_SONNET_1M_THINKING: Final[str] = "claude-4-sonnet-1m-thinking"  # Sonnet 4 1M Thinking
     GPT_5_MINI: Final[str] = "gpt-5-mini"  # GPT-5 Mini
     KIMI_K2_5: Final[str] = "kimi-k2.5"  # Kimi K2.5
+
+
+class DevinModels:
+    """Devin model identifiers."""
+    SWE_1_6: Final[str] = "swe-1.6"  # SWE-1.6
 
 
 class DroidModels:
@@ -354,6 +361,10 @@ CURSOR_MODEL_OPTIONS: Final[List[ModelOption]] = [
     {"value": "kimi-k2.5", "label": "Kimi K2.5"},
 ]
 
+DEVIN_MODEL_OPTIONS: Final[List[ModelOption]] = [
+    {"value": "swe-1.6", "label": "SWE-1.6"},
+]
+
 DROID_MODEL_OPTIONS: Final[List[ModelOption]] = [
     {"value": "opus-4.6-fast", "label": "Opus 4.6 Fast Mode (12x)"},
     {"value": "opus-4.5", "label": "Opus 4.5 (2x)"},
@@ -424,6 +435,7 @@ class Models:
     Codex = CodexModels
     Gemini = GeminiModels
     Cursor = CursorModels
+    Devin = DevinModels
     Droid = DroidModels
     Opencode = OpencodeModels
     Grok = GrokModels
@@ -435,6 +447,7 @@ class ModelOptions:
     Codex = CODEX_MODEL_OPTIONS
     Gemini = GEMINI_MODEL_OPTIONS
     Cursor = CURSOR_MODEL_OPTIONS
+    Devin = DEVIN_MODEL_OPTIONS
     Droid = DROID_MODEL_OPTIONS
     Opencode = OPENCODE_MODEL_OPTIONS
     Grok = GROK_MODEL_OPTIONS
@@ -488,6 +501,12 @@ CLI_REGISTRY: Final[dict] = {
         "package": "cursor",
         "version": "2026.02.27-e7d2ef6",
         "install": "Download from cursor.com",
+    },
+    "devin": {
+        "name": "Devin",
+        "package": "devin",
+        "version": "3000.10.31",
+        "install": "Install Devin CLI from https://docs.devin.ai/cli",
     },
     "droid": {
         "name": "Droid",

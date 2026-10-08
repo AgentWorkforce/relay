@@ -1,0 +1,131 @@
+{
+  "id": "traj_eo83od8pm764",
+  "version": 1,
+  "task": {
+    "title": "Add targeted Flows v2 PR verification"
+  },
+  "status": "completed",
+  "startedAt": "2026-09-20T01:20:22.254Z",
+  "completedAt": "2026-09-20T01:35:07.131Z",
+  "agents": [
+    {
+      "name": "default",
+      "role": "lead",
+      "joinedAt": "2026-09-20T01:34:58.312Z"
+    }
+  ],
+  "chapters": [
+    {
+      "id": "chap_bqd4w6mmnq8n",
+      "title": "Work",
+      "agentName": "default",
+      "startedAt": "2026-09-20T01:34:58.312Z",
+      "endedAt": "2026-09-20T01:35:07.131Z",
+      "events": [
+        {
+          "ts": 1789868098312,
+          "type": "decision",
+          "content": "Route PR diffs through the feature manifest and cleanroom matrix: Route PR diffs through the feature manifest and cleanroom matrix",
+          "raw": {
+            "question": "Route PR diffs through the feature manifest and cleanroom matrix",
+            "chosen": "Route PR diffs through the feature manifest and cleanroom matrix",
+            "alternatives": [
+              {
+                "option": "Hard-coded workflow path filters",
+                "reason": ""
+              },
+              {
+                "option": "one monolithic suite on every PR",
+                "reason": ""
+              }
+            ],
+            "reasoning": "The manifest owns file-to-feature identity and the matrix owns executable evidence, so reusing both avoids a second drifting verification catalog."
+          },
+          "significance": "high"
+        },
+        {
+          "ts": 1789868098426,
+          "type": "decision",
+          "content": "Fail closed to the complete smoke profile: Fail closed to the complete smoke profile",
+          "raw": {
+            "question": "Fail closed to the complete smoke profile",
+            "chosen": "Fail closed to the complete smoke profile",
+            "alternatives": [
+              {
+                "option": "Skip unknown paths",
+                "reason": ""
+              },
+              {
+                "option": "fail selection immediately",
+                "reason": ""
+              }
+            ],
+            "reasoning": "Selector and catalog changes, plus unknown non-documentation runtime paths, must execute broad verification rather than silently produce a green skip."
+          },
+          "significance": "high"
+        },
+        {
+          "ts": 1789868098539,
+          "type": "decision",
+          "content": "Keep live provider checks as explicit coverage gaps: Keep live provider checks as explicit coverage gaps",
+          "raw": {
+            "question": "Keep live provider checks as explicit coverage gaps",
+            "chosen": "Keep live provider checks as explicit coverage gaps",
+            "alternatives": [
+              {
+                "option": "Run live Daytona on every PR",
+                "reason": ""
+              },
+              {
+                "option": "hide provider checks from the plan",
+                "reason": ""
+              }
+            ],
+            "reasoning": "Generic pull-request runners can deterministically run contract and board-schema tests but cannot honestly claim the authenticated two-node Daytona release proof."
+          },
+          "significance": "high"
+        },
+        {
+          "ts": 1789868098651,
+          "type": "decision",
+          "content": "Allow Flows v2 to auto-start its pinned relayflowd runtime: Allow Flows v2 to auto-start its pinned relayflowd runtime",
+          "raw": {
+            "question": "Allow Flows v2 to auto-start its pinned relayflowd runtime",
+            "chosen": "Allow Flows v2 to auto-start its pinned relayflowd runtime",
+            "alternatives": [
+              {
+                "option": "Prestart a global daemon",
+                "reason": ""
+              },
+              {
+                "option": "use an unpinned globally installed binary",
+                "reason": ""
+              }
+            ],
+            "reasoning": "The --no-spawn flag caused daemon_unreachable; pinned optional platform runtimes make attach-or-start reproducible locally and on Linux CI."
+          },
+          "significance": "high"
+        },
+        {
+          "ts": 1789868098768,
+          "type": "reflection",
+          "content": "Implemented the selector, deterministic v2 spec generator, PR workflow, matrix routing metadata, product-surface coverage, docs, and fixtures. A real local Flows v2 run completed all five steps and exercised 397 Fleet plus 72 board-contract tests. Matrix validation, typecheck, Flows checks, formatting, and workflow parsing pass.",
+          "significance": "high"
+        }
+      ]
+    }
+  ],
+  "retrospective": {
+    "summary": "Added fail-closed targeted pull-request verification generated as a Relayflows v2 spec, backed by the existing feature manifest and cleanroom matrix.",
+    "approach": "Mapped changed paths to feature/category/scenario evidence, generated a sequential deterministic spec, wired GitHub Actions with pinned relayflowd runtimes, added matrix metadata and product-surface coverage, then validated with a real local flow run and focused repository gates.",
+    "confidence": 0.93
+  },
+  "commits": [],
+  "filesChanged": [],
+  "projectId": "AgentWorkforce/relay",
+  "tags": [],
+  "_trace": {
+    "startRef": "2ac330f1340d2010861bdf014a9a98ab7e9c6e2d",
+    "endRef": "2ac330f1340d2010861bdf014a9a98ab7e9c6e2d"
+  }
+}

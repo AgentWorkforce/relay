@@ -25,7 +25,10 @@ Runtime selection is final before the session starts. Relay does not switch a ru
 | OpenCode        | `@ai-sdk/harness-opencode@1.0.35`    | yes | PTY; native is explicit and experimental |
 | Pi              | `@ai-sdk/harness-pi@1.0.34`          | no  | explicit experimental native             |
 | Deep Agents     | `@ai-sdk/harness-deepagents@1.0.33`  | no  | explicit experimental native             |
+| Devin           | none                                 | yes | PTY with approval prompts preserved      |
 | Other built-ins | none                                 | yes | PTY                                      |
+
+See [Devin CLI setup and limitations](../../docs/harnesses/devin.md) for authentication, workspace trust, and isolated MCP configuration.
 
 Pi and Deep Agents require `runtime: 'native'` while experimental. Deep Agents does not advertise manual compaction, and stopping its current adapter does not preserve in-memory conversation.
 

@@ -636,7 +636,7 @@ describe('runViewSession', () => {
     const { deps, errors } = createHarness({ env: {}, connectionFile: null });
     const code = await runViewSession('Alice', {}, deps);
     expect(code).toBe(1);
-    expect(errors[0]?.[0]).toMatch(/could not locate broker connection/);
+    expect(errors[0]?.[0]).toMatch(/no broker connection at .*connection\.json \(project default\)/);
   });
 
   it('omits the X-API-Key header when no api key is available', async () => {

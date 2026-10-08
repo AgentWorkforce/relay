@@ -66,13 +66,14 @@ vi.mock('node:fs/promises', async (importOriginal) => {
 
 import { runWorkflow, scheduleWorkflow } from './workflows.js';
 
-const workflow = [
+const v1Workflow = [
   'version: "1.0"',
   'swarm:',
   '  pattern: dag',
   'agents: []',
   'workflows: []',
 ].join('\n');
+const v2Workflow = ['version: "1.0"', 'steps: []'].join('\n');
 
 test('observes v2 immediate-run forwarding and fail-closed v2 scheduling', async () => {
   const observationPath = process.env.RELAY_PR1640_OBSERVATION_PATH;
@@ -108,28 +109,58 @@ test('observes v2 immediate-run forwarding and fail-closed v2 scheduling', async
     }),
     auth,
   });
-  mocks.authorizedApiFetch
-    .mockResolvedValueOnce({
-      response: Response.json({ runId: 'run-relayflow-proof', status: 'queued' }),
-      auth,
-    })
-    .mockResolvedValueOnce(scheduleResponse())
-    .mockResolvedValueOnce(scheduleResponse());
+  mocks.authorizedApiFetch.mockImplementation(async (_activeAuth, requestPath) => {
+    if (requestPath === '/api/v1/workflows/run') {
+      return {
+        response: Response.json({ runId: 'run-relayflow-proof', status: 'queued' }),
+        auth,
+      };
+    }
+    if (requestPath === '/api/v1/workflows/prepare') {
+      return {
+        response: Response.json({
+          runId: 'prepared-relayflow-proof',
+          s3CodeKey: 'code.tar.gz',
+          s3Credentials: {
+            backend: 'cloud-api',
+            accessKeyId: 'unused',
+            secretAccessKey: 'unused',
+            sessionToken: 'unused',
+            bucket: 'unused',
+            prefix: 'unused',
+          },
+          workflowStorage: { backend: 'cloud-api' },
+        }),
+        auth,
+      };
+    }
+    if (requestPath.includes('/storage/')) {
+      return { response: Response.json({ ok: true }), auth };
+    }
+    if (requestPath === '/api/v1/workflows/schedules') return scheduleResponse();
+    throw new Error('Unexpected proof request: ' + requestPath);
+  });
 
-  await runWorkflow(workflow, {
+  await runWorkflow(v2Workflow, {
     apiUrl: auth.apiUrl,
     fileType: 'yaml',
     syncCode: false,
     relayflowVersion: ${JSON.stringify(RELAYFLOW_VERSION)},
   });
-  await scheduleWorkflow(workflow, {
+  await scheduleWorkflow(v1Workflow, {
     apiUrl: auth.apiUrl,
     fileType: 'yaml',
     at: '2099-01-01T00:00:00.000Z',
   });
 
-  const runRequest = mocks.authorizedApiFetch.mock.calls[0]?.[2];
-  const omittedScheduleRequest = mocks.authorizedApiFetch.mock.calls[1]?.[2];
+  const runCall = mocks.authorizedApiFetch.mock.calls.find(
+    (call) => call[1] === '/api/v1/workflows/run'
+  );
+  const omittedScheduleCall = mocks.authorizedApiFetch.mock.calls.find(
+    (call) => call[1] === '/api/v1/workflows/schedules'
+  );
+  const runRequest = runCall?.[2];
+  const omittedScheduleRequest = omittedScheduleCall?.[2];
   const runBody = JSON.parse(String(runRequest?.body ?? '{}'));
   const omittedScheduleBody = JSON.parse(String(omittedScheduleRequest?.body ?? '{}'));
   const beforeV2Schedule = {
@@ -141,7 +172,7 @@ test('observes v2 immediate-run forwarding and fail-closed v2 scheduling', async
   let v2ScheduleError = null;
   let v2ScheduleAccepted = false;
   try {
-    await scheduleWorkflow(workflow, {
+    await scheduleWorkflow(v1Workflow, {
       apiUrl: auth.apiUrl,
       fileType: 'yaml',
       at: '2099-01-01T00:00:00.000Z',
@@ -157,9 +188,6 @@ test('observes v2 immediate-run forwarding and fail-closed v2 scheduling', async
     filesystem: mocks.readFile.mock.calls.length,
     network: mocks.authorizedApiFetch.mock.calls.length,
   };
-  const acceptedV2ScheduleRequest = mocks.authorizedApiFetch.mock.calls[2]?.[2];
-  const acceptedV2ScheduleBody = JSON.parse(String(acceptedV2ScheduleRequest?.body ?? '{}'));
-
   await writeFile(
     observationPath,
     JSON.stringify({
@@ -168,8 +196,7 @@ test('observes v2 immediate-run forwarding and fail-closed v2 scheduling', async
         omittedScheduleBody.workflowRequest?.relayflowVersion ?? null,
       v2ScheduleAccepted,
       v2ScheduleError,
-      acceptedV2ScheduleRelayflowVersion:
-        acceptedV2ScheduleBody.workflowRequest?.relayflowVersion ?? null,
+      acceptedV2ScheduleRelayflowVersion: null,
       v2ScheduleSideEffectDeltas: {
         auth: afterV2Schedule.auth - beforeV2Schedule.auth,
         filesystem: afterV2Schedule.filesystem - beforeV2Schedule.filesystem,

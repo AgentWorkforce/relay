@@ -1,39 +1,42 @@
 use std::{
     collections::{BTreeSet, HashMap},
+    sync::atomic::{AtomicU32, Ordering},
     sync::{Arc, Mutex as StdMutex},
-    time::Duration,
+    time::{Duration, Instant},
 };
 
 use anyhow::{Context, Result};
 use relaycast::{
-    agent::DmOptions, format_registration_error, registration_is_retryable, ActionDefinition,
-    ActionInvocation, AgentClient, AgentIdentityRecoveryResponse, AgentRegistrationClient,
-    AgentRegistrationError, AgentRegistrationRetryOutcome, CompleteInvocationRequest,
+    agent::DmOptions, format_registration_error, ActionDefinition, ActionInvocation, AgentClient,
+    AgentIdentityRecoveryResponse, AgentRegistrationClient, AgentRegistrationError,
+    AgentRegistrationRetryOutcome, CompleteInvocationRequest, CreateAgentResponse,
     CreateObserverTokenRequest, EmitSessionEventRequest, MessageListQuery, ObserverToken,
     RegisterActionRequest, RelayCast, RelayCastOptions, RelayError, ReleaseAgentRequest,
-    TakeOverAgentRequest, UpdateAgentRequest,
+    RequestOptions, TakeOverAgentRequest, UpdateAgentRequest,
 };
 use serde_json::Value;
 use sha2::{Digest, Sha256};
+use uuid::Uuid;
 
 use crate::{fleet_wire::AgentRegistrationMetadata, protocol::MessageInjectionMode};
 
-/// Replays of a worker channel join rejected with Relaycast's exact
-/// `workspace_busy` write-admission code (served with `Retry-After: 2`). One
-/// entry per retry; the budget stays short because a spawn holds the broker
-/// event loop while it reconciles membership.
-#[cfg(not(test))]
-const WORKER_CHANNEL_BUSY_RETRY_BACKOFFS: [Duration; 3] = [
-    Duration::from_secs(1),
-    Duration::from_secs(2),
-    Duration::from_secs(4),
-];
 #[cfg(test)]
-const WORKER_CHANNEL_BUSY_RETRY_BACKOFFS: [Duration; 3] = [
-    Duration::from_millis(5),
-    Duration::from_millis(5),
-    Duration::from_millis(5),
-];
+use relaycast::registration_is_retryable;
+
+/// Requests the relaycast SDK sends for one call that keeps being denied
+/// admission (its bounded admission-retry schedule). Sizes the budget below;
+/// the loop itself measures each round from the SDK's reported `attempts`.
+const WORKER_CHANNEL_BUSY_SDK_ROUND_REQUESTS: u32 = 3;
+/// Total `workspace_busy` requests one spawn may send while joining channels:
+/// the SDK's own round plus one broker replay after the server's cooldown.
+/// Counted in requests the server receives, not broker rounds — a round cap
+/// would multiply pressure on a saturated workspace by the SDK's retry factor
+/// — and the broker replays only when a whole round (sized by the SDK's last
+/// one) still fits, so the ceiling is never crossed. It stays this small
+/// because a spawn holds the broker event loop while it reconciles membership;
+/// for the same reason the replay waits out a cooldown only within the
+/// reconcile policy ([`reconcile_cooldown`]) and is otherwise terminal.
+const WORKER_CHANNEL_BUSY_MAX_REQUESTS: u32 = 2 * WORKER_CHANNEL_BUSY_SDK_ROUND_REQUESTS;
 
 #[derive(Debug, Clone)]
 pub enum WsControl {
@@ -191,6 +194,122 @@ impl RecipientReachability {
 }
 
 impl RelaycastHttpClient {
+    /// Prove that the exact immutable identity returned by node-control
+    /// registration is readable through the worker-authenticated HTTP plane.
+    ///
+    /// Channel reconciliation uses that HTTP plane immediately afterwards. A
+    /// transient `agent_not_found` here is read-after-write lag, not evidence
+    /// that registration failed. Retrying this single exact-token probe keeps
+    /// later channel writes and cleanup generation-safe.
+    pub(crate) async fn await_node_registered_agent_visibility(
+        &self,
+        expected_name: &str,
+        expected_agent_id: &str,
+        token: &str,
+    ) -> Result<()> {
+        self.await_node_registered_agent_visibility_with_backoffs(
+            expected_name,
+            expected_agent_id,
+            token,
+            &NODE_REGISTER_VISIBILITY_BACKOFFS_MS,
+        )
+        .await
+    }
+
+    async fn await_node_registered_agent_visibility_with_backoffs(
+        &self,
+        expected_name: &str,
+        expected_agent_id: &str,
+        token: &str,
+        backoffs_ms: &[u64],
+    ) -> Result<()> {
+        self.await_node_registered_agent_visibility_with_policy(
+            expected_name,
+            expected_agent_id,
+            token,
+            backoffs_ms,
+            NODE_REGISTER_VISIBILITY_REQUEST_TIMEOUT,
+        )
+        .await
+    }
+
+    async fn await_node_registered_agent_visibility_with_policy(
+        &self,
+        expected_name: &str,
+        expected_agent_id: &str,
+        token: &str,
+        backoffs_ms: &[u64],
+        request_timeout: Duration,
+    ) -> Result<()> {
+        let relay = self
+            .relay_client()
+            .context("SDK relay client not initialized")?;
+        let total_budget = identity_visibility_total_budget(backoffs_ms, request_timeout);
+        let deadline = tokio::time::Instant::now() + total_budget;
+        for (attempt, delay_ms) in std::iter::once(0)
+            .chain(backoffs_ms.iter().copied())
+            .enumerate()
+        {
+            if delay_ms > 0 {
+                let remaining = deadline.saturating_duration_since(tokio::time::Instant::now());
+                anyhow::ensure!(
+                    !remaining.is_zero(),
+                    "node-registered identity visibility exceeded its {total_budget:?} total budget"
+                );
+                tokio::time::timeout(
+                    remaining,
+                    tokio::time::sleep(Duration::from_millis(delay_ms)),
+                )
+                .await
+                .context(
+                    "node-registered identity visibility budget expired during retry backoff",
+                )?;
+            }
+            let remaining = deadline.saturating_duration_since(tokio::time::Instant::now());
+            anyhow::ensure!(
+                !remaining.is_zero(),
+                "node-registered identity visibility exceeded its {total_budget:?} total budget"
+            );
+            let request_budget = request_timeout.min(remaining);
+            match tokio::time::timeout(request_budget, relay.get_current_agent(token.to_string()))
+                .await
+            {
+                Err(_) => {
+                    anyhow::bail!(
+                        "node-registered identity visibility request timed out after {request_budget:?} within a {total_budget:?} total budget"
+                    );
+                }
+                Ok(Ok(agent)) => {
+                    anyhow::ensure!(
+                        agent.name == expected_name && agent.id == expected_agent_id,
+                        "node-registered identity mismatch: expected {expected_name}/{expected_agent_id}, got {}/{}",
+                        agent.name,
+                        agent.id
+                    );
+                    return Ok(());
+                }
+                Ok(Err(RelayError::Api {
+                    status: 404,
+                    ref code,
+                    ..
+                })) if code == "agent_not_found" && attempt < backoffs_ms.len() => {
+                    tracing::warn!(
+                        worker = %expected_name,
+                        agent_id = %expected_agent_id,
+                        attempt = attempt + 1,
+                        "node-registered identity is not yet visible on the HTTP plane; retrying"
+                    );
+                }
+                Ok(Err(error)) => {
+                    return Err(anyhow::anyhow!(
+                        "node-registered identity visibility failed: {error}"
+                    ));
+                }
+            }
+        }
+        unreachable!("visibility loop returns on its final attempt")
+    }
+
     /// A client with no transport or credentials. Local-only runtime paths cannot
     /// accidentally publish presence, register workers, or route remote messages.
     pub fn local_only(agent_name: impl Into<String>) -> Self {
@@ -238,6 +357,15 @@ impl RelaycastHttpClient {
         if let Some(registration) = self.registration.as_ref() {
             registration.seed_agent_token(agent_name, token);
         }
+    }
+
+    /// Read an already-authenticated identity without registration, takeover,
+    /// or any network fallback. Used when handing a live session to a CLI.
+    pub(crate) fn cached_agent_token(&self, agent_name: &str) -> Option<String> {
+        self.registration
+            .as_ref()
+            .as_ref()
+            .and_then(|registration| registration.cached_agent_token(agent_name))
     }
 
     pub fn registration_block_remaining(&self, agent_name: &str) -> Option<Duration> {
@@ -379,12 +507,86 @@ impl RelaycastHttpClient {
         }
     }
 
+    /// Register one action-spawn attempt with the caller's stable waiter and
+    /// idempotency identity. The SDK helper cannot attach either header and
+    /// owns a separate cooldown, so the bounded action retry loop uses this
+    /// raw request instead. A create conflict still follows the audited
+    /// takeover path used by the normal spawn registration wrapper.
+    async fn register_agent_token_with_waiter(
+        &self,
+        agent_name: &str,
+        cli_hint: Option<&str>,
+        waiter_id: &str,
+    ) -> std::result::Result<String, RelaycastRegistrationError> {
+        let trimmed_name = agent_name.trim();
+        let relay =
+            self.relay
+                .as_ref()
+                .as_ref()
+                .ok_or_else(|| RelaycastRegistrationError::Transport {
+                    agent_name: trimmed_name.to_string(),
+                    detail: "SDK relay client not initialized".to_string(),
+                })?;
+        let body = serde_json::json!({
+            "name": trimmed_name,
+            "type": "agent",
+            "auto_join_general": false,
+            "metadata": {"cli": cli_hint.unwrap_or(&self.default_cli)},
+        });
+        let options = RequestOptions {
+            headers: Some(vec![
+                ("Idempotency-Key".to_string(), waiter_id.to_string()),
+                (
+                    "X-Workspace-Write-Waiter".to_string(),
+                    waiter_id.to_string(),
+                ),
+            ]),
+            idempotency_key: None,
+        };
+        let client = relay.as_agent(&self.api_key).map_err(|error| {
+            RelaycastRegistrationError::Transport {
+                agent_name: trimmed_name.to_string(),
+                detail: error.to_string(),
+            }
+        })?;
+        match client
+            .http_client()
+            .post::<CreateAgentResponse>("/v1/agents", Some(&body), Some(options))
+            .await
+        {
+            Ok(response) if response.token.trim().is_empty() => {
+                Err(RelaycastRegistrationError::MissingToken {
+                    agent_name: trimmed_name.to_string(),
+                })
+            }
+            Ok(response) => {
+                self.seed_agent_token(trimmed_name, &response.token);
+                Ok(response.token)
+            }
+            Err(RelayError::Api { status: 409, .. }) => {
+                self.take_over_agent_identity_with_waiter(trimmed_name, None, Some(waiter_id))
+                    .await
+            }
+            Err(error) => Err(registration_metadata_error(trimmed_name, error)),
+        }
+    }
+
     /// Reclaim an agent name this workspace already owns, leaving an audit
     /// record. Used when create-only registration reports the name is taken.
     async fn take_over_agent_identity(
         &self,
         agent_name: &str,
         known_agent_id: Option<&str>,
+    ) -> std::result::Result<String, RelaycastRegistrationError> {
+        self.take_over_agent_identity_with_waiter(agent_name, known_agent_id, None)
+            .await
+    }
+
+    async fn take_over_agent_identity_with_waiter(
+        &self,
+        agent_name: &str,
+        known_agent_id: Option<&str>,
+        waiter_id: Option<&str>,
     ) -> std::result::Result<String, RelaycastRegistrationError> {
         // Singleflight per agent name. Two concurrent cache misses would
         // otherwise both take the name over, and the second response would
@@ -438,19 +640,41 @@ impl RelaycastHttpClient {
             }
         };
 
-        let response = match relay
-            .take_over_agent(
-                agent_name,
-                TakeOverAgentRequest {
-                    expected_agent_id: existing_id.clone(),
-                    actor: self.agent_name.clone(),
-                    reason: "broker reclaimed an agent name it owns after create-only registration reported a collision".to_string(),
-                    session_ref: existing_id.clone(),
-                    node_id: self.agent_name.clone(),
-                },
-            )
-            .await
-        {
+        let takeover_request = TakeOverAgentRequest {
+            expected_agent_id: existing_id.clone(),
+            actor: self.agent_name.clone(),
+            reason: "broker reclaimed an agent name it owns after create-only registration reported a collision".to_string(),
+            session_ref: existing_id.clone(),
+            node_id: self.agent_name.clone(),
+        };
+        let takeover_result = if let Some(waiter_id) = waiter_id {
+            let client = relay.as_agent(&self.api_key).map_err(|error| {
+                RelaycastRegistrationError::Transport {
+                    agent_name: agent_name.to_string(),
+                    detail: error.to_string(),
+                }
+            })?;
+            client
+                .http_client()
+                .post::<AgentIdentityRecoveryResponse>(
+                    &format!("/v1/agents/{}/takeover", urlencoding::encode(agent_name)),
+                    Some(&takeover_request),
+                    Some(RequestOptions {
+                        headers: Some(vec![
+                            ("Idempotency-Key".to_string(), waiter_id.to_string()),
+                            (
+                                "X-Workspace-Write-Waiter".to_string(),
+                                waiter_id.to_string(),
+                            ),
+                        ]),
+                        idempotency_key: None,
+                    }),
+                )
+                .await
+        } else {
+            relay.take_over_agent(agent_name, takeover_request).await
+        };
+        let response = match takeover_result {
             Ok(response) => response,
             // Engines before 8.2.0 have no `/takeover` route — the whole
             // identity-recovery surface arrived with it. Those engines still
@@ -465,9 +689,11 @@ impl RelaycastHttpClient {
             // workspace key at a `requireAgentToken` route and report the 401 as
             // "takeover unavailable on this engine", which is exactly the kind
             // of misdirecting error this whole change exists to remove.
-            Err(RelayError::Api { status: 404, ref code, .. })
-                if code != "agent_not_found" =>
-            {
+            Err(RelayError::Api {
+                status: 404,
+                ref code,
+                ..
+            }) if code != "agent_not_found" => {
                 let rotated = relay
                     .rotate_agent_token(agent_name, self.api_key.clone())
                     .await
@@ -483,6 +709,9 @@ impl RelaycastHttpClient {
                     token: rotated.token,
                     audit_id: String::new(),
                 }
+            }
+            Err(error @ RelayError::Api { .. }) => {
+                return Err(registration_metadata_error(agent_name, error));
             }
             Err(error) => {
                 return Err(RelaycastRegistrationError::Transport {
@@ -691,16 +920,22 @@ impl RelaycastHttpClient {
     ///
     /// Callers treat this as best-effort: the agent is registered and running
     /// either way, so a failure here must be logged, not fatal.
+    ///
+    /// `spawned` is what this broker knows about the worker it spawned (see
+    /// [`spawned_worker_metadata`]); it rides the same PATCH so a spawn costs
+    /// one request either way.
     pub async fn publish_declared_metadata(
         &self,
         agent_name: &str,
         declared: &AgentRegistrationMetadata,
+        spawned: &serde_json::Map<String, Value>,
     ) -> std::result::Result<(), RelaycastRegistrationError> {
         let name = agent_name.trim();
         if name.is_empty() {
             return Err(RelaycastRegistrationError::InvalidAgentName);
         }
-        let declared_metadata = declared_metadata_map(declared);
+        let mut declared_metadata = spawned.clone();
+        declared_metadata.extend(declared_metadata_map(declared));
         if declared_metadata.is_empty() {
             return Ok(());
         }
@@ -710,7 +945,8 @@ impl RelaycastHttpClient {
                 agent_name: name.to_string(),
                 detail: "SDK relay client not initialized".to_string(),
             })?;
-        // Send ONLY the declared keys. `PATCH /v1/agents/:name` merges them over
+        // Send ONLY the declared keys and the spawned worker's `cli`, `host` and
+        // `owner_hash`. `PATCH /v1/agents/:name` merges them over
         // the record's existing metadata server-side — verified in the engine at
         // both the ref fleet-e2e pins (v7.0.0, eb7563ff) and relaycast `main`
         // (`packages/engine/src/routes/agent.ts`:
@@ -994,6 +1230,48 @@ impl RelaycastHttpClient {
         delete_identity: bool,
         expected_token_hash: Option<&str>,
     ) -> Result<()> {
+        self.release_agent_identity_guarded_with_backoffs(
+            agent_name,
+            reason,
+            delete_identity,
+            expected_token_hash,
+            &NODE_REGISTER_VISIBILITY_BACKOFFS_MS,
+        )
+        .await
+    }
+
+    async fn release_agent_identity_guarded_with_backoffs(
+        &self,
+        agent_name: &str,
+        reason: Option<&str>,
+        delete_identity: bool,
+        expected_token_hash: Option<&str>,
+        visibility_backoffs_ms: &[u64],
+    ) -> Result<()> {
+        let total_budget = identity_visibility_total_budget(
+            visibility_backoffs_ms,
+            NODE_REGISTER_VISIBILITY_REQUEST_TIMEOUT,
+        );
+        self.release_agent_identity_guarded_with_budget(
+            agent_name,
+            reason,
+            delete_identity,
+            expected_token_hash,
+            visibility_backoffs_ms,
+            total_budget,
+        )
+        .await
+    }
+
+    async fn release_agent_identity_guarded_with_budget(
+        &self,
+        agent_name: &str,
+        reason: Option<&str>,
+        delete_identity: bool,
+        expected_token_hash: Option<&str>,
+        visibility_backoffs_ms: &[u64],
+        total_budget: Duration,
+    ) -> Result<()> {
         if let Some(relay) = (*self.relay).as_ref() {
             let reason = reason
                 .map(str::trim)
@@ -1013,27 +1291,108 @@ impl RelaycastHttpClient {
                     expected_token_hash.context("owned cleanup has no captured credential hash")?;
                 let mut body = serde_json::to_value(&request)?;
                 body["expected_token_hash"] = Value::String(expected_token_hash.to_string());
-                let response = reqwest::Client::new()
-                    .post(format!(
-                        "{}/v1/agents/release",
-                        self.base_url
-                            .as_deref()
-                            .unwrap_or("https://cast.agentrelay.com")
-                            .trim_end_matches('/')
-                    ))
-                    .bearer_auth(&self.api_key)
-                    .json(&body)
-                    .timeout(Duration::from_secs(30))
-                    .send()
-                    .await
-                    .context("owned identity cleanup request failed")?;
-                if !response.status().is_success() {
-                    anyhow::bail!("owned identity cleanup rejected (HTTP {}); retry/reconcile without deleting a replacement", response.status());
+                let started = Instant::now();
+                let deadline = tokio::time::Instant::now() + total_budget;
+                let client = reqwest::Client::new();
+                let mut busy_attempts = 0usize;
+                let mut agent_not_found_retries = 0usize;
+                let (status, result): (reqwest::StatusCode, Value) = 'cleanup: loop {
+                    let remaining = deadline.saturating_duration_since(tokio::time::Instant::now());
+                    anyhow::ensure!(
+                        !remaining.is_zero(),
+                        "owned identity cleanup for '{agent_name}' exceeded its {total_budget:?} total budget"
+                    );
+                    let request_budget = NODE_REGISTER_VISIBILITY_REQUEST_TIMEOUT.min(remaining);
+                    let request = async {
+                        let response = client
+                            .post(format!(
+                                "{}/v1/agents/release",
+                                self.base_url
+                                    .as_deref()
+                                    .unwrap_or("https://cast.agentrelay.com")
+                                    .trim_end_matches('/')
+                            ))
+                            .bearer_auth(&self.api_key)
+                            .json(&body)
+                            .timeout(request_budget)
+                            .send()
+                            .await
+                            .context("owned identity cleanup request failed")?;
+                        let status = response.status();
+                        let retry_after = reconcile_cooldown(
+                            response
+                                .headers()
+                                .get(reqwest::header::RETRY_AFTER)
+                                .and_then(|value| value.to_str().ok())
+                                .and_then(|value| value.trim().parse::<u64>().ok())
+                                .map(Duration::from_secs),
+                        );
+                        let result: Value = response
+                            .json()
+                            .await
+                            .context("invalid identity cleanup response")?;
+                        Ok::<_, anyhow::Error>((status, retry_after, result))
+                    };
+                    let (status, retry_after, result) =
+                        tokio::time::timeout(remaining, request)
+                            .await
+                            .with_context(|| {
+                                format!(
+                                    "owned identity cleanup for '{agent_name}' exceeded its {total_budget:?} total budget"
+                                )
+                            })??;
+                    let workspace_busy = matches!(status.as_u16(), 429 | 503)
+                        && result["error"]["code"] == "workspace_busy";
+                    if workspace_busy {
+                        busy_attempts += 1;
+                    }
+                    let agent_not_found = status == reqwest::StatusCode::NOT_FOUND
+                        && result["error"]["code"] == "agent_not_found";
+                    if agent_not_found && agent_not_found_retries < visibility_backoffs_ms.len() {
+                        let delay_ms = visibility_backoffs_ms[agent_not_found_retries];
+                        agent_not_found_retries += 1;
+                        tracing::warn!(
+                            agent = %agent_name,
+                            attempt = agent_not_found_retries,
+                            delay_ms,
+                            "owned identity is not yet visible to the guarded release path; retrying"
+                        );
+                        let remaining =
+                            deadline.saturating_duration_since(tokio::time::Instant::now());
+                        tokio::time::timeout(
+                            remaining,
+                            tokio::time::sleep(Duration::from_millis(delay_ms)),
+                        )
+                        .await
+                        .with_context(|| {
+                            format!(
+                                "owned identity cleanup for '{agent_name}' exceeded its {total_budget:?} total budget during visibility backoff"
+                            )
+                        })?;
+                        continue 'cleanup;
+                    }
+                    if let Some(retry_after) = retry_after.filter(|retry_after| {
+                        workspace_busy
+                            && busy_attempts < WORKSPACE_BUSY_RECONCILE_SAFETY_CAP
+                            && started.elapsed().saturating_add(*retry_after)
+                                <= WORKSPACE_BUSY_RECONCILE_BUDGET
+                    }) {
+                        let remaining =
+                            deadline.saturating_duration_since(tokio::time::Instant::now());
+                        tokio::time::timeout(remaining, tokio::time::sleep(retry_after))
+                            .await
+                            .with_context(|| {
+                                format!(
+                                    "owned identity cleanup for '{agent_name}' exceeded its {total_budget:?} total budget during workspace backoff"
+                                )
+                            })?;
+                        continue 'cleanup;
+                    }
+                    break 'cleanup (status, result);
+                };
+                if !status.is_success() {
+                    anyhow::bail!("owned identity cleanup rejected (HTTP {status}); retry/reconcile without deleting a replacement");
                 }
-                let result: Value = response
-                    .json()
-                    .await
-                    .context("invalid identity cleanup response")?;
                 if result["data"]["status"] != "completed" {
                     anyhow::bail!("owned identity cleanup queued but unconfirmed; reconcile lifecycle invocation {}", result["data"]["invocation_id"]);
                 }
@@ -1230,14 +1589,15 @@ impl RelaycastHttpClient {
         let mut seen = BTreeSet::new();
         let mut failures = Vec::new();
         // One `workspace_busy` budget for the whole spawn, not per channel: the
-        // spawn holds the broker event loop, so the total stall stays bounded by
-        // the backoff table however many channels the worker joins.
-        let mut busy_retries = WORKER_CHANNEL_BUSY_RETRY_BACKOFFS.iter();
+        // spawn holds the broker event loop, so the total stall stays bounded
+        // however many channels the worker joins.
+        let mut busy_requests: u32 = 0;
         for (index, channel) in channels.iter().enumerate() {
             let name = channel.as_str();
             if !seen.insert(name.to_ascii_lowercase()) {
                 continue;
             }
+
             let joined = loop {
                 match agent_client
                     .ensure_joined_channel(relaycast::CreateChannelRequest {
@@ -1253,18 +1613,30 @@ impl RelaycastHttpClient {
                     // bounded replay is safe. Without it a saturated workspace
                     // fails every fleet spawn on its first channel join.
                     Err(error) if super::auth::is_workspace_busy_error(&error) => {
-                        match busy_retries.next() {
-                            Some(delay) => {
-                                tracing::warn!(
-                                    worker = %agent_name,
-                                    channel = %name,
-                                    delay_ms = delay.as_millis() as u64,
-                                    "worker channel join hit workspace_busy; retrying"
-                                );
-                                tokio::time::sleep(*delay).await;
-                            }
-                            None => break Err(error),
+                        let round_requests = super::auth::relay_error_attempts(&error);
+                        busy_requests = busy_requests.saturating_add(round_requests);
+                        let next_round_fits = busy_requests.saturating_add(round_requests)
+                            <= WORKER_CHANNEL_BUSY_MAX_REQUESTS;
+                        if !next_round_fits {
+                            break Err(error);
                         }
+                        // The SDK paced its own attempts on the server's
+                        // Retry-After; never replay sooner than that, and never
+                        // hold the event loop for a cooldown beyond the
+                        // reconcile policy — a long cooldown is terminal here,
+                        // exactly as on the registration and reconcile paths.
+                        let Some(delay) = reconcile_cooldown(workspace_busy_retry_after(&error))
+                        else {
+                            break Err(error);
+                        };
+                        tracing::warn!(
+                            worker = %agent_name,
+                            channel = %name,
+                            delay_ms = delay.as_millis() as u64,
+                            busy_requests,
+                            "worker channel join hit workspace_busy; retrying"
+                        );
+                        tokio::time::sleep(delay).await;
                     }
                     other => break other,
                 }
@@ -1273,7 +1645,9 @@ impl RelaycastHttpClient {
                 Ok(outcome) => {
                     let mut verification_error = None;
                     for attempt in 0..3 {
-                        match agent_client.channel_members(name).await {
+                        match retry_workspace_busy_reconcile(|| agent_client.channel_members(name))
+                            .await
+                        {
                             Ok(members)
                                 if members.iter().any(|member| member.agent_name == agent_name) =>
                             {
@@ -1287,7 +1661,13 @@ impl RelaycastHttpClient {
                             }
                             Err(error) => {
                                 verification_error =
-                                    Some(format!("membership verification failed: {error}"))
+                                    Some(format!("membership verification failed: {error}"));
+                                // The reconcile loop already spent (or refused)
+                                // the admission cooldown; do not replay it on
+                                // this shorter schedule.
+                                if is_workspace_busy_reconcile_error(&error) {
+                                    break;
+                                }
                             }
                         }
                         if attempt < 2 {
@@ -1351,16 +1731,85 @@ impl RelaycastHttpClient {
         name: &str,
         channels: &[crate::ids::ChannelName],
     ) -> Result<()> {
+        self.verify_agent_channel_scope_with_backoffs(
+            name,
+            channels,
+            &NODE_REGISTER_VISIBILITY_BACKOFFS_MS,
+        )
+        .await
+    }
+
+    async fn verify_agent_channel_scope_with_backoffs(
+        &self,
+        name: &str,
+        channels: &[crate::ids::ChannelName],
+        backoffs_ms: &[u64],
+    ) -> Result<()> {
         let relay = self
             .relay
             .as_ref()
             .as_ref()
             .context("SDK relay client not initialized")?;
         let client = relay.as_agent(&self.api_key)?;
-        let agent: Value = client
-            .http_client()
-            .get(&format!("/v1/agents/{name}"), None, None)
-            .await?;
+        let path = format!("/v1/agents/{name}");
+        let mut agent: Option<Value> = None;
+        let total_budget =
+            identity_visibility_total_budget(backoffs_ms, NODE_REGISTER_VISIBILITY_REQUEST_TIMEOUT);
+        let deadline = tokio::time::Instant::now() + total_budget;
+        for (attempt, delay_ms) in std::iter::once(0)
+            .chain(backoffs_ms.iter().copied())
+            .enumerate()
+        {
+            if delay_ms > 0 {
+                let remaining = deadline.saturating_duration_since(tokio::time::Instant::now());
+                anyhow::ensure!(
+                    !remaining.is_zero(),
+                    "live channel scope lookup for worker '{name}' exceeded its {total_budget:?} total budget"
+                );
+                tokio::time::timeout(
+                    remaining,
+                    tokio::time::sleep(Duration::from_millis(delay_ms)),
+                )
+                .await
+                .context("live channel scope lookup budget expired during retry backoff")?;
+            }
+            let remaining = deadline.saturating_duration_since(tokio::time::Instant::now());
+            anyhow::ensure!(
+                !remaining.is_zero(),
+                "live channel scope lookup for worker '{name}' exceeded its {total_budget:?} total budget"
+            );
+            let request_budget = NODE_REGISTER_VISIBILITY_REQUEST_TIMEOUT.min(remaining);
+            match tokio::time::timeout(request_budget, client.http_client().get(&path, None, None))
+                .await
+            {
+                Err(_) => {
+                    anyhow::bail!(
+                        "live channel scope lookup for worker '{name}' timed out after {request_budget:?} within a {total_budget:?} total budget"
+                    );
+                }
+                Ok(Ok(value)) => {
+                    agent = Some(value);
+                    break;
+                }
+                Ok(Err(RelayError::Api {
+                    status: 404,
+                    ref code,
+                    ..
+                })) if code == "agent_not_found" && attempt < backoffs_ms.len() => {
+                    tracing::warn!(
+                        worker = %name,
+                        attempt = attempt + 1,
+                        "node-registered identity is not yet visible to the workspace-key channel-scope lookup; retrying"
+                    );
+                }
+                Ok(Err(error)) => {
+                    return Err(anyhow::anyhow!(
+                        "live channel scope lookup for worker '{name}' failed: {error}"
+                    ));
+                }
+            }
+        }
+        let agent = agent.context("live channel scope lookup exhausted without a response")?;
         let memberships = agent
             .get("channels")
             .and_then(Value::as_array)
@@ -1383,6 +1832,131 @@ impl RelaycastHttpClient {
             "worker '{name}' live channel isolation failed: expected {expected:?}, got {actual:?}"
         );
         Ok(())
+    }
+
+    /// Verify a node-created worker through its own token-scoped identity.
+    ///
+    /// The workspace-key by-name endpoint can retain a negative cache after
+    /// node `agent.register`, even while `GET /v1/agent` already resolves the
+    /// exact token/id. Keep that eventually-consistent index out of the spawn
+    /// critical path and prove both identity and channel scope on the plane
+    /// the worker itself will use.
+    pub(crate) async fn verify_node_registered_agent_channel_scope(
+        &self,
+        name: &str,
+        expected_agent_id: &str,
+        token: &str,
+        channels: &[crate::ids::ChannelName],
+    ) -> Result<()> {
+        self.verify_node_registered_agent_channel_scope_with_backoffs(
+            name,
+            expected_agent_id,
+            token,
+            channels,
+            &NODE_REGISTER_VISIBILITY_BACKOFFS_MS,
+        )
+        .await
+    }
+
+    async fn verify_node_registered_agent_channel_scope_with_backoffs(
+        &self,
+        name: &str,
+        expected_agent_id: &str,
+        token: &str,
+        channels: &[crate::ids::ChannelName],
+        backoffs_ms: &[u64],
+    ) -> Result<()> {
+        let relay = self
+            .relay_client()
+            .context("SDK relay client not initialized")?;
+        let expected = channels
+            .iter()
+            .map(|channel| channel.as_str())
+            .collect::<BTreeSet<_>>();
+        let total_budget =
+            identity_visibility_total_budget(backoffs_ms, NODE_REGISTER_VISIBILITY_REQUEST_TIMEOUT);
+        let deadline = tokio::time::Instant::now() + total_budget;
+        for (attempt, delay_ms) in std::iter::once(0)
+            .chain(backoffs_ms.iter().copied())
+            .enumerate()
+        {
+            if delay_ms > 0 {
+                let remaining = deadline.saturating_duration_since(tokio::time::Instant::now());
+                anyhow::ensure!(
+                    !remaining.is_zero(),
+                    "worker-token channel scope lookup for '{name}' exceeded its {total_budget:?} total budget"
+                );
+                tokio::time::timeout(
+                    remaining,
+                    tokio::time::sleep(Duration::from_millis(delay_ms)),
+                )
+                .await
+                .context("worker-token channel scope lookup budget expired during retry backoff")?;
+            }
+            let remaining = deadline.saturating_duration_since(tokio::time::Instant::now());
+            anyhow::ensure!(
+                !remaining.is_zero(),
+                "worker-token channel scope lookup for '{name}' exceeded its {total_budget:?} total budget"
+            );
+            let request_budget = NODE_REGISTER_VISIBILITY_REQUEST_TIMEOUT.min(remaining);
+            match tokio::time::timeout(request_budget, relay.get_current_agent(token.to_string()))
+                .await
+            {
+                Err(_) => {
+                    anyhow::bail!(
+                        "worker-token channel scope lookup for '{name}' timed out after {request_budget:?} within a {total_budget:?} total budget"
+                    );
+                }
+                Ok(Ok(agent)) => {
+                    anyhow::ensure!(
+                        agent.name == name && agent.id == expected_agent_id,
+                        "node-registered channel-scope identity mismatch: expected {name}/{expected_agent_id}, got {}/{}",
+                        agent.name,
+                        agent.id
+                    );
+                    let actual = agent
+                        .channels
+                        .iter()
+                        .map(|membership| membership.name.as_str())
+                        .collect::<BTreeSet<_>>();
+                    if actual == expected {
+                        return Ok(());
+                    }
+                    if attempt < backoffs_ms.len() {
+                        tracing::warn!(
+                            worker = %name,
+                            agent_id = %expected_agent_id,
+                            attempt = attempt + 1,
+                            expected = ?expected,
+                            actual = ?actual,
+                            "node-registered channel scope is not yet converged; retrying"
+                        );
+                        continue;
+                    }
+                    anyhow::bail!(
+                        "worker-token channel scope mismatch for '{name}': expected {expected:?}, got {actual:?}"
+                    );
+                }
+                Ok(Err(RelayError::Api {
+                    status: 404,
+                    ref code,
+                    ..
+                })) if code == "agent_not_found" && attempt < backoffs_ms.len() => {
+                    tracing::warn!(
+                        worker = %name,
+                        agent_id = %expected_agent_id,
+                        attempt = attempt + 1,
+                        "node-registered identity is not yet visible to its worker token; retrying"
+                    );
+                }
+                Ok(Err(error)) => {
+                    return Err(anyhow::anyhow!(
+                        "worker-token channel scope lookup for '{name}' failed: {error}"
+                    ));
+                }
+            }
+        }
+        unreachable!("worker-token channel-scope loop returns on its final attempt")
     }
 
     /// Reconcile worker-side Relaycast membership when the broker removes
@@ -1410,7 +1984,7 @@ impl RelaycastHttpClient {
             if !seen.insert(name.to_ascii_lowercase()) {
                 continue;
             }
-            match agent_client.leave_channel(name).await {
+            match retry_workspace_busy_reconcile(|| agent_client.leave_channel(name)).await {
                 Ok(())
                 | Err(RelayError::Api {
                     status: 404 | 409, ..
@@ -1655,18 +2229,320 @@ pub fn format_worker_preregistration_error(
     format_registration_error(name, error).replace("register agent", "pre-register worker")
 }
 
+fn is_typed_registration_overload(error: &RelaycastRegistrationError) -> bool {
+    match error {
+        // The SDK exposes 429 admission responses as RateLimited. Do not
+        // replay an unrelated rate limit whose code does not establish that
+        // workspace admission was rejected before the create committed.
+        RelaycastRegistrationError::RateLimited { detail, .. } => {
+            registration_error_code(detail) == Some("workspace_busy")
+        }
+        // The create-only path uses a raw request because the SDK's internal
+        // retry loop cannot attach the broker's stable idempotency key. A
+        // server error is replay-safe only for the typed pre-commit overload
+        // codes; generic 5xx errors retain the legacy one-attempt behavior.
+        RelaycastRegistrationError::Api { status, detail, .. }
+            if matches!(*status, 500 | 502 | 503 | 504) =>
+        {
+            [
+                "database_overloaded",
+                "registration_backend_overloaded",
+                "workspace_storage_unavailable",
+            ]
+            .iter()
+            .any(|code| registration_error_code(detail) == Some(*code))
+        }
+        _ => false,
+    }
+}
+
+/// True for the one typed code that carries Relaycast's waiter-aware
+/// admission-queue contract rather than the smaller transient-5xx budget
+/// shared by every other retryable registration failure.
+fn is_workspace_busy_registration_error(error: &RelaycastRegistrationError) -> bool {
+    matches!(
+        error,
+        RelaycastRegistrationError::RateLimited { detail, .. }
+            if registration_error_code(detail) == Some("workspace_busy")
+    )
+}
+
+/// Extract the server's wire error code without normalizing it. A near-match
+/// (case, whitespace, suffix, or prefix) is a different contract and must not
+/// receive the waiter-aware replay budget.
+fn registration_error_code(detail: &str) -> Option<&str> {
+    let (_, rest) = detail.split_once("(code: ")?;
+    rest.split_once(')').map(|(code, _)| code)
+}
+
+fn is_retryable_registration_error(error: &RelaycastRegistrationError) -> bool {
+    matches!(
+        error,
+        RelaycastRegistrationError::Blocked { .. } | RelaycastRegistrationError::Transport { .. }
+    ) || is_typed_registration_overload(error)
+}
+
+fn restamp_registration_attempts(detail: String, total_attempts: u32) -> String {
+    let marker = "; attempts: ";
+    let Some(start) = detail.find(marker) else {
+        return format!("{detail}; attempts: {total_attempts}");
+    };
+    let value_start = start + marker.len();
+    let value_end = detail[value_start..]
+        .find([';', ')'])
+        .map_or(detail.len(), |offset| value_start + offset);
+    format!(
+        "{}{}{}",
+        &detail[..value_start],
+        total_attempts,
+        &detail[value_end..]
+    )
+}
+
+/// HTTP requests one SDK call made before returning this error, as stamped by
+/// [`registration_metadata_error`]. Errors minted locally (no stamp) count as
+/// the single request the broker issued.
+fn registration_error_requests(error: &RelaycastRegistrationError) -> u32 {
+    let detail = match error {
+        RelaycastRegistrationError::Api { detail, .. }
+        | RelaycastRegistrationError::RateLimited { detail, .. }
+        | RelaycastRegistrationError::Transport { detail, .. } => detail,
+        _ => return 1,
+    };
+    let Some((_, rest)) = detail.split_once("; attempts: ") else {
+        return 1;
+    };
+    rest.split([';', ')'])
+        .next()
+        .and_then(|value| value.trim().parse::<u32>().ok())
+        .map_or(1, |value| value.max(1))
+}
+
+/// Fold one broker round's terminal error into the running request total.
+///
+/// Returns the error restamped with the cumulative `attempts`, the number of
+/// requests this round made (read *before* the restamp overwrites it), and
+/// the new cumulative total. `already_counted` is how many of this round's
+/// requests the caller had provisionally added to `total` before the call.
+fn absorb_registration_round(
+    error: RelaycastRegistrationError,
+    total: &AtomicU32,
+    already_counted: u32,
+) -> (RelaycastRegistrationError, u32, u32) {
+    let round_requests = registration_error_requests(&error);
+    let extra = round_requests.saturating_sub(already_counted);
+    let attempts_so_far = total
+        .fetch_add(extra, Ordering::Relaxed)
+        .saturating_add(extra);
+    (
+        with_registration_attempts(error, attempts_so_far),
+        round_requests,
+        attempts_so_far,
+    )
+}
+
+fn with_registration_attempts(
+    error: RelaycastRegistrationError,
+    total_attempts: u32,
+) -> RelaycastRegistrationError {
+    match error {
+        RelaycastRegistrationError::Api {
+            agent_name,
+            status,
+            detail,
+        } => RelaycastRegistrationError::Api {
+            agent_name,
+            status,
+            detail: restamp_registration_attempts(detail, total_attempts),
+        },
+        RelaycastRegistrationError::RateLimited {
+            agent_name,
+            retry_after_secs,
+            detail,
+        } => RelaycastRegistrationError::RateLimited {
+            agent_name,
+            retry_after_secs,
+            detail: restamp_registration_attempts(detail, total_attempts),
+        },
+        RelaycastRegistrationError::Transport { agent_name, detail } => {
+            RelaycastRegistrationError::Transport {
+                agent_name,
+                detail: restamp_registration_attempts(detail, total_attempts),
+            }
+        }
+        other => other,
+    }
+}
+
+#[cfg(test)]
 const MAX_AGENT_REGISTRATION_ATTEMPTS: usize = 3;
-const DEFAULT_AGENT_REGISTRATION_RETRY_DELAY: Duration = Duration::from_secs(2);
 const MAX_AGENT_REGISTRATION_RETRY_DELAY: Duration = Duration::from_secs(60);
-const MAX_AGENT_REGISTRATION_ELAPSED: Duration = Duration::from_secs(180);
+/// Fixed backoff schedule (one entry per retry) for a retryable registration
+/// failure whose typed code does not establish the waiter-aware `workspace_busy`
+/// admission-queue contract (see [`WORKSPACE_BUSY_CREATE_ONLY_SAFETY_CAP`]).
+/// Unchanged from the original bounded three-attempt schedule for the
+/// unkeyed-POST 5xx overload codes.
+const TRANSIENT_REGISTRATION_RETRY_BACKOFFS_MS: [u64; 2] = [200, 400];
+/// `workspace_busy` is a server admission contract: the retry carries the
+/// same waiter and honors the advertised cooldown. Admission may legitimately
+/// take longer than any observed queue sample, so the create-only path uses
+/// its explicit aggregate deadline plus a separate hard cap. The cap protects
+/// against a broken server returning immediately forever; it is not a queue
+/// depth claim. The action-spawn/takeover path applies the same contract with
+/// its own cap below while retaining the fixed three-attempt schedule for
+/// typed transient 5xx errors.
+const WORKSPACE_BUSY_CREATE_ONLY_SAFETY_CAP: usize = 256;
+/// The action-spawn path uses the same finite caller budget and a separate
+/// cap so a broken engine cannot turn immediate `workspace_busy` responses
+/// into an unbounded request loop.
+const WORKSPACE_BUSY_ACTION_SAFETY_CAP: usize = 256;
+/// Channel membership and owned-identity cleanup are idempotent reconciliation
+/// operations. They may retry the server's typed workspace-admission response,
+/// but must remain bounded independently of the registration loops above.
+const WORKSPACE_BUSY_RECONCILE_SAFETY_CAP: usize = 8;
+const WORKSPACE_BUSY_RECONCILE_BUDGET: Duration = Duration::from_secs(60);
+const WORKSPACE_BUSY_RECONCILE_MAX_DELAY: Duration = Duration::from_secs(5);
+/// `agent.register` commits on the node-control transport, while the first
+/// worker-authenticated REST request may land on an HTTP isolate whose D1 view
+/// has not observed that commit yet. These waits total 15.85s. The cadence is
+/// shared by exact worker-token identity/channel checks, the HTTP-registration
+/// fallback's workspace-key scope check, and guarded cleanup's typed by-name
+/// `agent_not_found` retry. Every visibility read also has a request timeout;
+/// [`identity_visibility_total_budget`] bounds request time plus backoffs.
+const NODE_REGISTER_VISIBILITY_BACKOFFS_MS: [u64; 7] = [100, 250, 500, 1_000, 2_000, 4_000, 8_000];
+const NODE_REGISTER_VISIBILITY_REQUEST_TIMEOUT: Duration = Duration::from_secs(5);
+
+fn identity_visibility_total_budget(backoffs_ms: &[u64], request_timeout: Duration) -> Duration {
+    let request_count = u32::try_from(backoffs_ms.len().saturating_add(1)).unwrap_or(u32::MAX);
+    backoffs_ms.iter().fold(
+        request_timeout.saturating_mul(request_count),
+        |budget, delay_ms| budget.saturating_add(Duration::from_millis(*delay_ms)),
+    )
+}
+/// Total wall-clock budget the bounded retry loops in this module honor
+/// before returning a typed `RetryableExhausted` diagnostic. Five minutes is
+/// deliberately longer than the observed 240-second/5-attempt engine envelope
+/// while leaving a finite upper bound; the separate 256-attempt cap protects
+/// against an engine that responds immediately forever. Callers that wrap
+/// [`retry_agent_registration_create_only`] (or the takeover variant) in their
+/// own `tokio::time::timeout` MUST use a strictly larger bound than this
+/// constant plus explicit slack -- otherwise the outer timeout can fire first
+/// and discard the typed diagnostic this budget guarantees.
+pub(crate) const MAX_AGENT_REGISTRATION_ELAPSED: Duration = Duration::from_secs(300);
+/// Defensive outer guard for [`register_new_spawn_identity`]. Keep this
+/// strictly larger than the inner retry budget so its final request/sleep can
+/// return the typed exhaustion result instead of being cancelled by the guard.
+pub(crate) const MAX_AGENT_REGISTRATION_OUTER_TIMEOUT: Duration = Duration::from_secs(330);
 
 fn agent_registration_retry_delay(error: &RelaycastRegistrationError) -> Duration {
     registration_retry_after_secs(error)
         .map(Duration::from_secs)
-        .unwrap_or(DEFAULT_AGENT_REGISTRATION_RETRY_DELAY)
+        .unwrap_or(Duration::from_secs(2))
         .min(MAX_AGENT_REGISTRATION_RETRY_DELAY)
 }
 
+/// The server's `Retry-After` behind a terminal SDK error, when it sent one.
+fn workspace_busy_retry_after(error: &RelayError) -> Option<Duration> {
+    match error {
+        RelayError::Api { retry_after_ms, .. } => retry_after_ms.map(Duration::from_millis),
+        _ => None,
+    }
+}
+
+/// The one-second workspace-admission minimum: no retry is ever sent sooner.
+const WORKSPACE_BUSY_MIN_COOLDOWN: Duration = Duration::from_secs(1);
+
+/// How long a reconcile retry may wait for an advertised cooldown, or `None`
+/// when the cooldown is longer than this path is willing to hold. A cooldown
+/// is never shortened: retrying early would violate the server's contract and
+/// spend the retry budget before admission can reopen, so a too-long cooldown
+/// means "do not retry here" rather than "retry sooner".
+fn reconcile_cooldown(retry_after: Option<Duration>) -> Option<Duration> {
+    let delay = retry_after.map_or(WORKSPACE_BUSY_MIN_COOLDOWN, |retry_after| {
+        retry_after.max(WORKSPACE_BUSY_MIN_COOLDOWN)
+    });
+    (delay <= WORKSPACE_BUSY_RECONCILE_MAX_DELAY).then_some(delay)
+}
+
+/// True for Relaycast's typed write-admission denial on the reconcile paths,
+/// whether or not this path will retry it.
+fn is_workspace_busy_reconcile_error(error: &RelayError) -> bool {
+    matches!(
+        error,
+        RelayError::Api { status: 429 | 503, code, .. } if code == "workspace_busy"
+    )
+}
+
+/// The delay before another reconcile request, or `None` when the error is
+/// not an admission denial or its cooldown exceeds the reconcile policy.
+fn workspace_busy_reconcile_delay(error: &RelayError) -> Option<Duration> {
+    if !is_workspace_busy_reconcile_error(error) {
+        return None;
+    }
+    reconcile_cooldown(workspace_busy_retry_after(error))
+}
+
+async fn retry_workspace_busy_reconcile<T, F, Fut>(mut request: F) -> relaycast::Result<T>
+where
+    F: FnMut() -> Fut,
+    Fut: std::future::Future<Output = relaycast::Result<T>>,
+{
+    let started = Instant::now();
+    for attempt in 0..WORKSPACE_BUSY_RECONCILE_SAFETY_CAP {
+        match request().await {
+            Ok(value) => return Ok(value),
+            Err(error) => {
+                let Some(delay) = workspace_busy_reconcile_delay(&error) else {
+                    return Err(error);
+                };
+                if attempt + 1 >= WORKSPACE_BUSY_RECONCILE_SAFETY_CAP
+                    || started.elapsed().saturating_add(delay) > WORKSPACE_BUSY_RECONCILE_BUDGET
+                {
+                    return Err(error);
+                }
+                tokio::time::sleep(delay).await;
+            }
+        }
+    }
+    unreachable!("bounded workspace-busy reconciliation loop always returns")
+}
+
+fn workspace_busy_retry_allowed(
+    projected_requests: usize,
+    elapsed: Duration,
+    round_cost: Duration,
+) -> bool {
+    workspace_busy_retry_allowed_with_budget(
+        projected_requests,
+        elapsed,
+        round_cost,
+        MAX_AGENT_REGISTRATION_ELAPSED,
+        WORKSPACE_BUSY_CREATE_ONLY_SAFETY_CAP,
+    )
+}
+
+/// `projected_requests` is the total the server will have received once the
+/// next round completes (every request so far plus a full round) and
+/// `round_cost` is how long that round will take (the inter-round sleep plus
+/// the SDK's own paced sleeps inside it). Permit the round only when that
+/// total stays within the cap and the whole round fits the remaining budget.
+fn workspace_busy_retry_allowed_with_budget(
+    projected_requests: usize,
+    elapsed: Duration,
+    round_cost: Duration,
+    budget: Duration,
+    safety_cap: usize,
+) -> bool {
+    projected_requests <= safety_cap && elapsed.saturating_add(round_cost) < budget
+}
+
+/// Requests the server will have received after one more round of
+/// `round_requests`, given `requests_so_far`.
+fn projected_requests(requests_so_far: u32, round_requests: u32) -> usize {
+    usize::try_from(requests_so_far.saturating_add(round_requests.max(1))).unwrap_or(usize::MAX)
+}
+
+#[cfg(test)]
 async fn retry_agent_registration_with<F, Fut, S, SleepFut>(
     mut request: F,
     mut sleep: S,
@@ -1684,6 +2560,7 @@ where
                 if registration_is_retryable(&error)
                     && attempt + 1 < MAX_AGENT_REGISTRATION_ATTEMPTS =>
             {
+                let error = with_registration_attempts(error, (attempt + 1) as u32);
                 let delay = agent_registration_retry_delay(&error);
                 tracing::warn!(
                     attempt = attempt + 1,
@@ -1694,7 +2571,9 @@ where
                 sleep(delay).await;
             }
             Err(error) if registration_is_retryable(&error) => {
-                return Err(RegRetryOutcome::RetryableExhausted(error));
+                return Err(RegRetryOutcome::RetryableExhausted(
+                    with_registration_attempts(error, (attempt + 1) as u32),
+                ));
             }
             Err(error) => return Err(RegRetryOutcome::Fatal(error)),
         }
@@ -1702,6 +2581,7 @@ where
     unreachable!("the registration retry loop always returns on its final attempt")
 }
 
+#[cfg(test)]
 async fn retry_agent_registration_with_budget<F, Fut, S, SleepFut>(
     agent_name: &str,
     budget: Duration,
@@ -1714,46 +2594,219 @@ where
     S: FnMut(Duration) -> SleepFut,
     SleepFut: std::future::Future<Output = ()>,
 {
-    match tokio::time::timeout(budget, retry_agent_registration_with(request, sleep)).await {
-        Ok(result) => result,
-        Err(_) => Err(RegRetryOutcome::RetryableExhausted(
-            RelaycastRegistrationError::Transport {
-                agent_name: agent_name.to_string(),
-                detail: format!(
-                    "registration retry budget exhausted after {}s",
-                    budget.as_secs()
-                ),
-            },
-        )),
+    let deadline = tokio::time::Instant::now() + budget;
+    let mut request = request;
+    let mut sleep = sleep;
+    for attempt in 0..MAX_AGENT_REGISTRATION_ATTEMPTS {
+        let remaining_before_request =
+            deadline.saturating_duration_since(tokio::time::Instant::now());
+        if remaining_before_request.is_zero() {
+            return Err(RegRetryOutcome::RetryableExhausted(
+                registration_budget_exhausted_error(agent_name, budget, attempt as u32),
+            ));
+        }
+        match tokio::time::timeout(remaining_before_request, request()).await {
+            Ok(Ok(token)) => return Ok(token),
+            Ok(Err(error)) if registration_is_retryable(&error) => {
+                let attempts_so_far = (attempt + 1) as u32;
+                let error = with_registration_attempts(error, attempts_so_far);
+                if attempt + 1 >= MAX_AGENT_REGISTRATION_ATTEMPTS {
+                    return Err(RegRetryOutcome::RetryableExhausted(error));
+                }
+                // The request may have consumed most (or all) of the
+                // remaining budget; recompute before deciding whether -- and
+                // how long -- to sleep instead of reusing a stale value.
+                let remaining_after_request =
+                    deadline.saturating_duration_since(tokio::time::Instant::now());
+                if remaining_after_request.is_zero() {
+                    return Err(RegRetryOutcome::RetryableExhausted(error));
+                }
+                // Honor a typed admission cooldown exactly when it fits both
+                // policy and the remaining budget; never clamp it down and
+                // retry early. Otherwise fail closed with the typed error.
+                let delay = match registration_retry_after_secs(&error) {
+                    Some(secs) => {
+                        let typed_delay = Duration::from_secs(secs);
+                        if typed_delay > MAX_AGENT_REGISTRATION_RETRY_DELAY
+                            || typed_delay > remaining_after_request
+                        {
+                            return Err(RegRetryOutcome::RetryableExhausted(error));
+                        }
+                        typed_delay
+                    }
+                    None => Duration::from_secs(2).min(remaining_after_request),
+                };
+                // Bound the sleep itself so it can never push this attempt
+                // past the overall operation deadline.
+                if tokio::time::timeout(remaining_after_request, sleep(delay))
+                    .await
+                    .is_err()
+                {
+                    return Err(RegRetryOutcome::RetryableExhausted(error));
+                }
+            }
+            Ok(Err(error)) => return Err(RegRetryOutcome::Fatal(error)),
+            Err(_) => {
+                return Err(RegRetryOutcome::RetryableExhausted(
+                    registration_budget_exhausted_error(agent_name, budget, (attempt + 1) as u32),
+                ));
+            }
+        }
     }
+    Err(RegRetryOutcome::RetryableExhausted(
+        registration_budget_exhausted_error(
+            agent_name,
+            budget,
+            MAX_AGENT_REGISTRATION_ATTEMPTS as u32,
+        ),
+    ))
 }
 
-/// Attempt to register an agent token with up to 3 retries for transient errors.
-///
-/// The Relaycast SDK's typed rate-limit errors carry its cooldown. Honor
-/// that duration (under a hard one-minute cap) instead of immediately retrying
-/// through the same admission window. Transport failures retain the short SDK
-/// fallback because they do not carry a retry delay. The complete operation is
-/// capped below Cloud's five-minute step-provisioning budget, so a hung request
-/// or a second full cooldown cannot strand the caller indefinitely.
+/// Retry the action-spawn registration path, whose explicit SpawnNew intent
+/// may auditably take over a released identity with the same name.
 pub async fn retry_agent_registration(
     http: &RelaycastHttpClient,
     name: &str,
     cli: Option<&str>,
 ) -> Result<String, RegRetryOutcome> {
-    let registration = http.registration.as_ref().as_ref().ok_or_else(|| {
-        RegRetryOutcome::Fatal(RelaycastRegistrationError::Transport {
-            agent_name: name.to_string(),
-            detail: "SDK relay client not initialized".to_string(),
-        })
-    })?;
-    retry_agent_registration_with_budget(
-        name,
-        MAX_AGENT_REGISTRATION_ELAPSED,
-        || registration.register_agent_token(name, cli),
-        |delay| tokio::time::sleep(delay),
-    )
-    .await
+    retry_agent_registration_with_timeout(http, name, cli, MAX_AGENT_REGISTRATION_ELAPSED).await
+}
+
+fn registration_budget_exhausted_error(
+    name: &str,
+    budget: Duration,
+    attempts: u32,
+) -> RelaycastRegistrationError {
+    RelaycastRegistrationError::Transport {
+        agent_name: name.to_string(),
+        detail: format!(
+            "registration retry budget exhausted after {budget:?}; attempts: {attempts}"
+        ),
+    }
+}
+
+async fn retry_agent_registration_with_timeout(
+    http: &RelaycastHttpClient,
+    name: &str,
+    cli: Option<&str>,
+    budget: Duration,
+) -> Result<String, RegRetryOutcome> {
+    let total_attempts = Arc::new(AtomicU32::new(0));
+    let deadline = tokio::time::Instant::now() + budget;
+    let waiter_id = format!("relay-action-spawn:{}", Uuid::new_v4());
+    let retry_started = tokio::time::Instant::now();
+    let mut attempt: usize = 0;
+    loop {
+        attempt += 1;
+        let remaining_before_request =
+            deadline.saturating_duration_since(tokio::time::Instant::now());
+        if remaining_before_request.is_zero() {
+            return Err(RegRetryOutcome::RetryableExhausted(
+                registration_budget_exhausted_error(
+                    name,
+                    budget,
+                    total_attempts.load(Ordering::Relaxed).saturating_add(1),
+                ),
+            ));
+        }
+        match tokio::time::timeout(
+            remaining_before_request,
+            http.register_agent_token_with_waiter(name, cli, &waiter_id),
+        )
+        .await
+        {
+            Ok(Ok(token)) => return Ok(token),
+            Ok(Err(error)) => {
+                // One broker round is several HTTP requests: the SDK retries
+                // admission denials itself (honouring Retry-After) before
+                // surfacing a terminal error. Count what the server saw.
+                let (error, round_requests, attempts_so_far) =
+                    absorb_registration_round(error, &total_attempts, 0);
+                if !is_retryable_registration_error(&error) {
+                    return Err(RegRetryOutcome::Fatal(error));
+                }
+                // The request itself may have consumed most (or all) of the
+                // remaining budget; recompute before deciding whether -- and
+                // how long -- to sleep instead of reusing the stale value
+                // from before the request was awaited.
+                let remaining_after_request =
+                    deadline.saturating_duration_since(tokio::time::Instant::now());
+                if remaining_after_request.is_zero() {
+                    return Err(RegRetryOutcome::RetryableExhausted(error));
+                }
+                // Honor a typed admission cooldown exactly when it fits both
+                // policy and the remaining budget. Never clamp it down to a
+                // shorter delay and retry early -- that would violate the
+                // server's cooldown contract. If it doesn't fit, fail closed
+                // with the typed error and accurate attempt count instead.
+                let delay = if is_workspace_busy_registration_error(&error) {
+                    let delay = registration_retry_after_secs(&error)
+                        .map(Duration::from_secs)
+                        .unwrap_or(Duration::from_secs(1));
+                    // The cap bounds *requests*, not rounds: capping rounds
+                    // would let pressure on a saturated workspace grow by the
+                    // SDK's per-call retry factor. Reserve the whole next
+                    // round (the SDK's last round is its size) so the cap is
+                    // a ceiling, never a threshold crossed mid-round.
+                    let projected = projected_requests(attempts_so_far, round_requests);
+                    // The next round costs this sleep plus the SDK's own paced
+                    // sleeps between its attempts; a round that does not fit
+                    // would be cancelled by the request timeout and lose the
+                    // typed receipt.
+                    let round_cost = delay.saturating_mul(round_requests.max(1));
+                    if delay > MAX_AGENT_REGISTRATION_RETRY_DELAY
+                        || round_cost > remaining_after_request
+                        || !workspace_busy_retry_allowed_with_budget(
+                            projected,
+                            retry_started.elapsed(),
+                            round_cost,
+                            budget,
+                            WORKSPACE_BUSY_ACTION_SAFETY_CAP,
+                        )
+                    {
+                        return Err(RegRetryOutcome::RetryableExhausted(error));
+                    }
+                    delay
+                } else {
+                    let Some(delay_ms) = TRANSIENT_REGISTRATION_RETRY_BACKOFFS_MS
+                        .get(attempt - 1)
+                        .copied()
+                    else {
+                        return Err(RegRetryOutcome::RetryableExhausted(error));
+                    };
+                    Duration::from_millis(delay_ms).min(remaining_after_request)
+                };
+                // Bound the sleep itself so it can never push this attempt
+                // past the overall operation deadline.
+                if tokio::time::timeout(remaining_after_request, tokio::time::sleep(delay))
+                    .await
+                    .is_err()
+                {
+                    return Err(RegRetryOutcome::RetryableExhausted(error));
+                }
+            }
+            Err(_) => {
+                // The cancelled request was issued; count it once.
+                return Err(RegRetryOutcome::RetryableExhausted(
+                    registration_budget_exhausted_error(
+                        name,
+                        budget,
+                        total_attempts.load(Ordering::Relaxed).saturating_add(1),
+                    ),
+                ));
+            }
+        }
+    }
+}
+
+/// Retry a create-only registration without takeover. `mcp-args --register`
+/// and fresh HTTP spawns use this path so a live name collision fails closed.
+pub async fn retry_agent_registration_create_only(
+    http: &RelaycastHttpClient,
+    name: &str,
+    cli: Option<&str>,
+) -> Result<String, RegRetryOutcome> {
+    register_new_spawn_identity(http, name, cli).await
 }
 
 /// Create a new spawn identity, never reuse a cached credential or take over a name.
@@ -1762,6 +2815,33 @@ pub async fn register_new_spawn_identity(
     http: &RelaycastHttpClient,
     name: &str,
     cli: Option<&str>,
+) -> Result<String, RegRetryOutcome> {
+    let total_attempts = Arc::new(AtomicU32::new(0));
+    match tokio::time::timeout(
+        MAX_AGENT_REGISTRATION_OUTER_TIMEOUT,
+        register_new_spawn_identity_inner(http, name, cli, Arc::clone(&total_attempts)),
+    )
+    .await
+    {
+        Ok(result) => result,
+        Err(_) => Err(RegRetryOutcome::RetryableExhausted(
+            RelaycastRegistrationError::Transport {
+                agent_name: name.to_string(),
+                detail: format!(
+                    "registration retry budget exhausted after {}s; attempts: {}",
+                    MAX_AGENT_REGISTRATION_ELAPSED.as_secs(),
+                    total_attempts.load(Ordering::Relaxed)
+                ),
+            },
+        )),
+    }
+}
+
+async fn register_new_spawn_identity_inner(
+    http: &RelaycastHttpClient,
+    name: &str,
+    cli: Option<&str>,
+    total_attempts: Arc<AtomicU32>,
 ) -> Result<String, RegRetryOutcome> {
     let relay = http.relay.as_ref().as_ref().ok_or_else(|| {
         RegRetryOutcome::Fatal(RelaycastRegistrationError::Transport {
@@ -1778,10 +2858,48 @@ pub async fn register_new_spawn_identity(
         "name": name, "type": "agent", "auto_join_general": false,
         "metadata": {"cli": cli.unwrap_or(&http.default_cli)}
     });
-    for attempt in 0..3 {
+    // The first create can commit while its response is lost. Reusing one key
+    // for this logical spawn lets Relaycast replay that committed result on a
+    // retry instead of turning it into an ambiguous 409 collision. Put the
+    // key in the raw headers rather than `RequestOptions::idempotency_key`:
+    // the SDK would otherwise add its own 5xx retry loop on top of this
+    // broker-owned loop, inflating the bounded attempt contract (three
+    // attempts for typed transient 5xx, or the larger proven `workspace_busy`
+    // budget -- see `registration_max_attempts`).
+    // Reuse the same value as `X-Workspace-Write-Waiter` on every retry of
+    // this logical spawn. Relaycast's workspace-write admission queue keys
+    // its "already waiting" collapse on this header: a stable value across
+    // attempts lets a spawn that is still queued from an earlier attempt be
+    // recognized as the same waiter rather than minting a new queue slot per
+    // retry. Distinct logical spawns (a new call to this function) always
+    // get a distinct UUID, so unrelated spawns never collapse into the same
+    // waiter.
+    let idempotency_key = format!("relay-spawn:{}", Uuid::new_v4());
+    let request_options = || RequestOptions {
+        headers: Some(vec![
+            ("Idempotency-Key".to_string(), idempotency_key.clone()),
+            (
+                "X-Workspace-Write-Waiter".to_string(),
+                idempotency_key.clone(),
+            ),
+        ]),
+        idempotency_key: None,
+    };
+    let mut attempt: usize = 0;
+    let retry_started = tokio::time::Instant::now();
+    loop {
+        attempt += 1;
+        // Provisionally count the request now so an outer timeout that
+        // cancels it mid-flight still reports it; a terminal error below
+        // corrects the total to what the SDK actually sent.
+        total_attempts.fetch_add(1, Ordering::Relaxed);
         match client
             .http_client()
-            .post::<relaycast::CreateAgentResponse>("/v1/agents", Some(&body), None)
+            .post::<relaycast::CreateAgentResponse>(
+                "/v1/agents",
+                Some(&body),
+                Some(request_options()),
+            )
             .await
         {
             Ok(agent) if !agent.token.trim().is_empty() => {
@@ -1803,18 +2921,137 @@ pub async fn register_new_spawn_identity(
                 ))
             }
             Err(error) => {
-                let error = registration_metadata_error(name, error);
-                if !relaycast::registration_is_retryable(&error) {
+                // One request was counted provisionally at the top of the loop.
+                let (error, round_requests, attempts_so_far) = absorb_registration_round(
+                    registration_metadata_error(name, error),
+                    &total_attempts,
+                    1,
+                );
+                if !is_retryable_registration_error(&error) {
                     return Err(RegRetryOutcome::Fatal(error));
                 }
-                if attempt == 2 {
+                // Typed rate-limit errors carry the admission cooldown. Honor
+                // it instead of hammering a still-closed registration window;
+                // 503/transport errors retain the short fixed schedule.
+                let delay = match registration_retry_after_secs(&error) {
+                    Some(secs) => {
+                        let typed_delay = Duration::from_secs(secs);
+                        // Never shorten an advertised cooldown: a retry sent
+                        // early cannot be admitted and only spends the budget.
+                        // A cooldown longer than this path will hold is
+                        // terminal, exactly as on the takeover loop above.
+                        if typed_delay > MAX_AGENT_REGISTRATION_RETRY_DELAY {
+                            return Err(RegRetryOutcome::RetryableExhausted(error));
+                        }
+                        typed_delay
+                    }
+                    None => {
+                        let Some(fixed_delay_ms) = TRANSIENT_REGISTRATION_RETRY_BACKOFFS_MS
+                            .get(attempt - 1)
+                            .copied()
+                        else {
+                            return Err(RegRetryOutcome::RetryableExhausted(error));
+                        };
+                        Duration::from_millis(fixed_delay_ms)
+                    }
+                };
+                let elapsed = retry_started.elapsed();
+                if is_workspace_busy_registration_error(&error) {
+                    // Cap requests, not rounds, and reserve room for the whole
+                    // next round so the cap is never exceeded (see the takeover
+                    // loop above).
+                    let projected = projected_requests(attempts_so_far, round_requests);
+                    // Budget the whole next round, SDK-internal sleeps included.
+                    let round_cost = delay.saturating_mul(round_requests.max(1));
+                    if !workspace_busy_retry_allowed(projected, elapsed, round_cost) {
+                        return Err(RegRetryOutcome::RetryableExhausted(error));
+                    }
+                } else if attempt > TRANSIENT_REGISTRATION_RETRY_BACKOFFS_MS.len() {
                     return Err(RegRetryOutcome::RetryableExhausted(error));
                 }
-                tokio::time::sleep(Duration::from_secs(2)).await;
+                tokio::time::sleep(delay).await;
             }
         }
     }
-    unreachable!()
+}
+
+/// What a broker knows about a worker it spawned, as roster metadata: the
+/// CLI it runs (`cli`), this machine's name (`host`) and the signed-in Cloud
+/// person who runs this broker (`owner_hash`, the SHA-256 hex of their Cloud
+/// user id). These are the keys Agent Relay Desktop stamps on the sessions it
+/// registers, so a worker spawned on someone's fleet node is listed as theirs
+/// and on that machine instead of as an unowned agent. A key whose value is
+/// unknown is omitted, never sent blank.
+pub fn spawned_worker_metadata(cli: &str) -> serde_json::Map<String, Value> {
+    let host = hostname::get()
+        .ok()
+        .and_then(|name| name.into_string().ok());
+    spawned_worker_metadata_from(cli, host.as_deref(), signed_in_user_id().as_deref())
+}
+
+fn spawned_worker_metadata_from(
+    cli: &str,
+    host: Option<&str>,
+    user_id: Option<&str>,
+) -> serde_json::Map<String, Value> {
+    let mut metadata = serde_json::Map::new();
+    let cli = crate::cli::command_parse::parse_cli_command(cli)
+        .map(|(command, _)| crate::cli::command_parse::normalize_cli_name(&command))
+        .unwrap_or_default();
+    if !cli.is_empty() {
+        metadata.insert("cli".into(), Value::String(cli));
+    }
+    // The desktop's label: no trailing dot or `.local` (macOS Bonjour names).
+    if let Some(host) = host.map(|host| host.trim().trim_end_matches('.')) {
+        let host = match host.len().checked_sub(".local".len()) {
+            Some(cut)
+                if host.is_char_boundary(cut) && host[cut..].eq_ignore_ascii_case(".local") =>
+            {
+                &host[..cut]
+            }
+            _ => host,
+        };
+        if !host.is_empty() {
+            metadata.insert("host".into(), Value::String(host.to_string()));
+        }
+    }
+    if let Some(user_id) = user_id.map(str::trim).filter(|id| !id.is_empty()) {
+        let hash = Sha256::digest(user_id.as_bytes())
+            .iter()
+            .map(|byte| format!("{byte:02x}"))
+            .collect::<String>();
+        metadata.insert("owner_hash".into(), Value::String(hash));
+    }
+    metadata
+}
+
+/// The Cloud user this broker runs for: the CLI's stored sign-in, read at
+/// each spawn, so signing in or out takes effect for the next worker without a
+/// broker restart. `AGENT_RELAY_USER_ID` is deliberately not used: it is a
+/// copy taken when the broker started, which outlives a sign-out, and a broker
+/// started by a service manager has none.
+fn signed_in_user_id() -> Option<String> {
+    let data_dir = std::env::var("AGENT_RELAY_DATA_DIR")
+        .ok()
+        .map(|dir| dir.trim().to_string())
+        .filter(|dir| !dir.is_empty())
+        .map(std::path::PathBuf::from)
+        .or_else(|| dirs::home_dir().map(|home| home.join(".agentworkforce/relay")))?;
+    let file = std::fs::read_to_string(data_dir.join("cloud-identity.json")).ok()?;
+    user_id_from_identity(&file)
+}
+
+/// The `userId` of a stored identity, held to the CLI's own rules: printable
+/// ASCII, at most 128 bytes once trimmed.
+fn user_id_from_identity(file: &str) -> Option<String> {
+    let identity: Value = serde_json::from_str(file).ok()?;
+    identity["userId"]
+        .as_str()
+        .map(str::trim)
+        .filter(|id| {
+            !id.is_empty() && id.len() <= 128 && id.chars().all(|c| (' '..='~').contains(&c))
+        })
+        .map(str::to_string)
 }
 
 /// The declared fields alone, trimmed, with blanks omitted.
@@ -1840,32 +3077,61 @@ fn declared_metadata_map(declared: &AgentRegistrationMetadata) -> serde_json::Ma
     metadata
 }
 
+/// Convert a terminal SDK error into the typed registration error, keeping
+/// the two facts the broker's retry loops need from the SDK layer: the
+/// server's `Retry-After` (so the broker paces on the same cadence the SDK
+/// just honoured, never a shorter guess) and the number of HTTP requests the
+/// SDK already made for this one call (so `attempts` in the final diagnostic
+/// is the true total across both layers, not the broker's round count).
 fn registration_metadata_error(agent_name: &str, error: RelayError) -> RelaycastRegistrationError {
     match error {
         RelayError::Api {
             status: 429,
             message,
             code,
+            request_id,
+            retry_after_ms,
+            attempts,
             ..
         } => RelaycastRegistrationError::RateLimited {
             agent_name: agent_name.to_string(),
-            retry_after_secs: 60,
-            detail: format!("{message} (code: {code})"),
+            retry_after_secs: retry_after_ms
+                .map(|ms| ms.div_ceil(1_000).max(1))
+                // No header: workspace admission uses the engine contract's
+                // one-second minimum; other rate limits keep the SDK's
+                // conservative minute fallback.
+                .unwrap_or(if code == "workspace_busy" { 1 } else { 60 }),
+            detail: restamp_registration_attempts(
+                registration_api_detail(message, code, request_id),
+                attempts.max(1),
+            ),
         },
         RelayError::Api {
             status,
             message,
             code,
+            request_id,
+            attempts,
             ..
         } => RelaycastRegistrationError::Api {
             agent_name: agent_name.to_string(),
             status,
-            detail: format!("{message} (code: {code})"),
+            detail: restamp_registration_attempts(
+                registration_api_detail(message, code, request_id),
+                attempts.max(1),
+            ),
         },
         error => RelaycastRegistrationError::Transport {
             agent_name: agent_name.to_string(),
             detail: error.to_string(),
         },
+    }
+}
+
+fn registration_api_detail(message: String, code: String, request_id: Option<String>) -> String {
+    match request_id {
+        Some(request_id) => format!("{message} (code: {code}); request_id: {request_id}"),
+        None => format!("{message} (code: {code})"),
     }
 }
 
@@ -1875,18 +3141,37 @@ mod tests {
         Method::{GET, PATCH, POST},
         MockServer,
     };
-    use relaycast::AgentRegistrationError;
+    use relaycast::{AgentRegistrationError, RelayError};
     use serde_json::json;
-    use std::time::Duration;
+    use std::{
+        sync::{
+            atomic::{AtomicU32, Ordering},
+            Arc, Mutex,
+        },
+        time::Duration,
+    };
+    use tokio::{
+        io::{AsyncReadExt, AsyncWriteExt},
+        net::TcpListener,
+    };
+    use uuid::Uuid;
 
     use crate::{fleet_wire::AgentRegistrationMetadata, ids::ChannelName};
 
     use super::{
-        agent_registration_retry_delay, format_worker_preregistration_error,
+        absorb_registration_round, agent_registration_retry_delay,
+        format_worker_preregistration_error, is_typed_registration_overload,
+        is_workspace_busy_reconcile_error, is_workspace_busy_registration_error,
         register_new_spawn_identity, registration_is_retryable, registration_retry_after_secs,
-        retry_agent_registration_with, retry_agent_registration_with_budget,
-        ImpersonationAwareRegistrationError, MessageInjectionMode, RecipientReachability,
-        RegRetryOutcome, RegisterIntent, RelaycastHttpClient, RelaycastRegistrationError,
+        retry_agent_registration, retry_agent_registration_with,
+        retry_agent_registration_with_budget, retry_agent_registration_with_timeout,
+        retry_workspace_busy_reconcile, with_registration_attempts, workspace_busy_reconcile_delay,
+        workspace_busy_retry_allowed, ImpersonationAwareRegistrationError, MessageInjectionMode,
+        RecipientReachability, RegRetryOutcome, RegisterIntent, RelaycastHttpClient,
+        RelaycastRegistrationError, MAX_AGENT_REGISTRATION_ELAPSED,
+        MAX_AGENT_REGISTRATION_OUTER_TIMEOUT, MAX_AGENT_REGISTRATION_RETRY_DELAY,
+        WORKSPACE_BUSY_ACTION_SAFETY_CAP, WORKSPACE_BUSY_CREATE_ONLY_SAFETY_CAP,
+        WORKSPACE_BUSY_RECONCILE_BUDGET, WORKSPACE_BUSY_RECONCILE_SAFETY_CAP,
     };
 
     fn seeded_http_client(base_url: &str) -> RelaycastHttpClient {
@@ -1900,6 +3185,336 @@ mod tests {
         client
     }
 
+    #[tokio::test]
+    async fn node_registered_agent_visibility_retries_read_after_write_lag() {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let base_url = format!("http://{}", listener.local_addr().unwrap());
+        let server = tokio::spawn(async move {
+            for attempt in 0..2 {
+                let (mut stream, _) = listener.accept().await.unwrap();
+                let mut request = [0_u8; 4096];
+                let bytes = stream.read(&mut request).await.unwrap();
+                let request = String::from_utf8_lossy(&request[..bytes]);
+                assert!(request.starts_with("GET /v1/agent "), "{request}");
+                assert!(
+                    request
+                        .to_ascii_lowercase()
+                        .contains("authorization: bearer at_live_visibility"),
+                    "{request}"
+                );
+                let (status, body) = if attempt == 0 {
+                    (
+                        "404 Not Found",
+                        r#"{"ok":false,"error":{"code":"agent_not_found","message":"not visible yet"}}"#,
+                    )
+                } else {
+                    (
+                        "200 OK",
+                        r#"{"ok":true,"data":{"id":"agent-visibility","workspace_id":"ws-test","name":"cloud-zero-config","type":"agent","status":"online","persona":null,"metadata":{},"channels":[]}}"#,
+                    )
+                };
+                let response = format!(
+                    "HTTP/1.1 {status}\r\ncontent-type: application/json\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{body}",
+                    body.len()
+                );
+                stream.write_all(response.as_bytes()).await.unwrap();
+            }
+        });
+        let client = RelaycastHttpClient::new(Some(base_url), "rk_live_test", "broker", "codex");
+
+        client
+            .await_node_registered_agent_visibility(
+                "cloud-zero-config",
+                "agent-visibility",
+                "at_live_visibility",
+            )
+            .await
+            .expect("the exact node-created identity should become readable");
+        server.await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn node_registered_agent_visibility_bounds_a_hung_identity_lookup() {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let base_url = format!("http://{}", listener.local_addr().unwrap());
+        let server = tokio::spawn(async move {
+            let (mut stream, _) = listener.accept().await.unwrap();
+            let mut request = [0_u8; 4096];
+            let bytes = stream.read(&mut request).await.unwrap();
+            let request = String::from_utf8_lossy(&request[..bytes]);
+            assert!(request.starts_with("GET /v1/agent "), "{request}");
+            std::future::pending::<()>().await;
+        });
+        let client = RelaycastHttpClient::new(Some(base_url), "rk_live_test", "broker", "codex");
+
+        let started = tokio::time::Instant::now();
+        let error = tokio::time::timeout(
+            Duration::from_secs(1),
+            client.await_node_registered_agent_visibility_with_policy(
+                "cloud-zero-config",
+                "agent-hung",
+                "at_live_hung",
+                &[],
+                Duration::from_millis(25),
+            ),
+        )
+        .await
+        .expect("the visibility helper itself must retain control of the timeout")
+        .expect_err("a hung identity read must fail closed");
+
+        assert!(error.to_string().contains("request timed out"), "{error:#}");
+        assert!(
+            started.elapsed() < Duration::from_millis(500),
+            "the per-request timeout must keep a hung read off the broker event loop"
+        );
+        server.abort();
+    }
+
+    #[tokio::test]
+    async fn workspace_key_channel_scope_retries_read_after_write_lag() {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let base_url = format!("http://{}", listener.local_addr().unwrap());
+        let server = tokio::spawn(async move {
+            for attempt in 0..3 {
+                let (mut stream, _) = listener.accept().await.unwrap();
+                let mut request = [0_u8; 4096];
+                let bytes = stream.read(&mut request).await.unwrap();
+                let request = String::from_utf8_lossy(&request[..bytes]);
+                assert!(
+                    request.starts_with("GET /v1/agents/cloud-zero-config "),
+                    "{request}"
+                );
+                assert!(
+                    request
+                        .to_ascii_lowercase()
+                        .contains("authorization: bearer rk_live_test"),
+                    "{request}"
+                );
+                let (status, body) = if attempt < 2 {
+                    (
+                        "404 Not Found",
+                        r#"{"ok":false,"error":{"code":"agent_not_found","message":"not visible by name yet"}}"#,
+                    )
+                } else {
+                    (
+                        "200 OK",
+                        r#"{"ok":true,"data":{"channels":[{"name":"engineering"},{"name":"general"}]}}"#,
+                    )
+                };
+                let response = format!(
+                    "HTTP/1.1 {status}\r\ncontent-type: application/json\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{body}",
+                    body.len()
+                );
+                stream.write_all(response.as_bytes()).await.unwrap();
+            }
+        });
+        let client = RelaycastHttpClient::new(Some(base_url), "rk_live_test", "broker", "codex");
+
+        client
+            .verify_agent_channel_scope_with_backoffs(
+                "cloud-zero-config",
+                &["general".into(), "engineering".into()],
+                &[0, 0],
+            )
+            .await
+            .expect("the workspace-key by-name lookup should tolerate bounded propagation lag");
+        server.await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn node_registered_channel_scope_uses_worker_token_not_by_name_index() {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let base_url = format!("http://{}", listener.local_addr().unwrap());
+        let server = tokio::spawn(async move {
+            for attempt in 0..3 {
+                let (mut stream, _) = listener.accept().await.unwrap();
+                let mut request = [0_u8; 4096];
+                let bytes = stream.read(&mut request).await.unwrap();
+                let request = String::from_utf8_lossy(&request[..bytes]);
+                assert!(request.starts_with("GET /v1/agent "), "{request}");
+                assert!(
+                    request
+                        .to_ascii_lowercase()
+                        .contains("authorization: bearer at_live_worker"),
+                    "{request}"
+                );
+                assert!(
+                    !request.contains("/v1/agents/cloud-zero-config"),
+                    "{request}"
+                );
+                let (status, body) = if attempt < 2 {
+                    (
+                        "404 Not Found",
+                        r#"{"ok":false,"error":{"code":"agent_not_found","message":"worker token not visible yet"}}"#,
+                    )
+                } else {
+                    (
+                        "200 OK",
+                        r#"{"ok":true,"data":{"id":"agent-node-created","workspace_id":"ws-dev","name":"cloud-zero-config","type":"agent","status":"online","persona":null,"metadata":{},"channels":[{"id":"ch-general","name":"general","role":"member","joined_at":"2026-10-05T00:00:00Z"}]}}"#,
+                    )
+                };
+                let response = format!(
+                    "HTTP/1.1 {status}\r\ncontent-type: application/json\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{body}",
+                    body.len()
+                );
+                stream.write_all(response.as_bytes()).await.unwrap();
+            }
+        });
+        let client = RelaycastHttpClient::new(Some(base_url), "rk_live_test", "broker", "codex");
+
+        client
+            .verify_node_registered_agent_channel_scope_with_backoffs(
+                "cloud-zero-config",
+                "agent-node-created",
+                "at_live_worker",
+                &["general".into()],
+                &[0, 0],
+            )
+            .await
+            .expect("worker-token scope should tolerate bounded visibility lag");
+        server.await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn node_registered_channel_scope_retries_a_lagging_successful_read() {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let base_url = format!("http://{}", listener.local_addr().unwrap());
+        let server = tokio::spawn(async move {
+            for attempt in 0..2 {
+                let (mut stream, _) = listener.accept().await.unwrap();
+                let mut request = [0_u8; 4096];
+                let bytes = stream.read(&mut request).await.unwrap();
+                let request = String::from_utf8_lossy(&request[..bytes]);
+                assert!(request.starts_with("GET /v1/agent "), "{request}");
+                let channels = if attempt == 0 {
+                    r#"[{"id":"ch-general","name":"general","role":"member","joined_at":"2026-10-05T00:00:00Z"}]"#
+                } else {
+                    r#"[{"id":"ch-engineering","name":"engineering","role":"member","joined_at":"2026-10-05T00:00:00Z"}]"#
+                };
+                let body = format!(
+                    r#"{{"ok":true,"data":{{"id":"agent-node-created","workspace_id":"ws-dev","name":"cloud-zero-config","type":"agent","status":"online","persona":null,"metadata":{{}},"channels":{channels}}}}}"#
+                );
+                let response = format!(
+                    "HTTP/1.1 200 OK\r\ncontent-type: application/json\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{body}",
+                    body.len()
+                );
+                stream.write_all(response.as_bytes()).await.unwrap();
+            }
+        });
+        let client = RelaycastHttpClient::new(Some(base_url), "rk_live_test", "broker", "codex");
+
+        client
+            .verify_node_registered_agent_channel_scope_with_backoffs(
+                "cloud-zero-config",
+                "agent-node-created",
+                "at_live_scope_lag",
+                &["engineering".into()],
+                &[0],
+            )
+            .await
+            .expect("a recent channel join may lag one successful identity read");
+        server.await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn node_registered_channel_scope_mismatch_fails_after_bounded_retries() {
+        let server = MockServer::start();
+        let scope = server.mock(|when, then| {
+            when.method(GET)
+                .path("/v1/agent")
+                .header("authorization", "Bearer at_live_scope_mismatch");
+            then.status(200).json_body(json!({"ok":true,"data":{
+                "id":"agent-node-created","workspace_id":"ws-dev",
+                "name":"cloud-zero-config","type":"agent","status":"online",
+                "persona":null,"metadata":{},
+                "channels":[{"id":"ch-general","name":"general","role":"member",
+                    "joined_at":"2026-10-05T00:00:00Z"}]
+            }}));
+        });
+        let client =
+            RelaycastHttpClient::new(Some(server.base_url()), "rk_live_test", "broker", "codex");
+
+        let error = client
+            .verify_node_registered_agent_channel_scope_with_backoffs(
+                "cloud-zero-config",
+                "agent-node-created",
+                "at_live_scope_mismatch",
+                &["engineering".into()],
+                &[0, 0],
+            )
+            .await
+            .expect_err("a genuine channel-set mismatch must fail closed after bounded retries");
+
+        assert!(
+            error.to_string().contains("channel scope mismatch"),
+            "{error:#}"
+        );
+        scope.assert_hits(3);
+    }
+
+    #[tokio::test]
+    async fn node_registered_agent_visibility_fails_closed_across_split_servers() {
+        let node_control_server = MockServer::start();
+        let worker_http_server = MockServer::start();
+        let visible_on_node_control = node_control_server.mock(|when, then| {
+            when.method(GET)
+                .path("/v1/agent")
+                .header("authorization", "Bearer at_live_split");
+            then.status(200).json_body(json!({"ok":true,"data":{
+                "id":"agent-split","workspace_id":"ws-node-control",
+                "name":"cloud-zero-config","type":"agent","status":"online",
+                "persona":null,"metadata":{},"channels":[]
+            }}));
+        });
+        let absent_on_worker_http = worker_http_server.mock(|when, then| {
+            when.method(GET)
+                .path("/v1/agent")
+                .header("authorization", "Bearer at_live_split");
+            then.status(404).json_body(json!({"ok":false,"error":{
+                "code":"agent_not_found","message":"not present on this Relaycast target"
+            }}));
+        });
+
+        let node_client = RelaycastHttpClient::new(
+            Some(node_control_server.base_url()),
+            "rk_live_node_control",
+            "broker",
+            "codex",
+        );
+        node_client
+            .await_node_registered_agent_visibility_with_backoffs(
+                "cloud-zero-config",
+                "agent-split",
+                "at_live_split",
+                &[],
+            )
+            .await
+            .expect("the node-control target contains the identity");
+
+        let worker_http = RelaycastHttpClient::new(
+            Some(worker_http_server.base_url()),
+            "rk_live_worker_http",
+            "broker",
+            "codex",
+        );
+        let error = worker_http
+            .await_node_registered_agent_visibility_with_backoffs(
+                "cloud-zero-config",
+                "agent-split",
+                "at_live_split",
+                &[0, 0],
+            )
+            .await
+            .expect_err("a different HTTP target must never be mistaken for propagation lag");
+
+        assert!(
+            error.to_string().contains("agent_not_found"),
+            "split-target failure should retain the terminal API code: {error:#}"
+        );
+        visible_on_node_control.assert_hits(1);
+        absent_on_worker_http.assert_hits(3);
+    }
+
     #[test]
     fn registration_retryable_for_rate_limited() {
         let error = AgentRegistrationError::RateLimited {
@@ -1909,6 +3524,151 @@ mod tests {
         };
         assert!(registration_is_retryable(&error));
         assert_eq!(registration_retry_after_secs(&error), Some(60));
+    }
+
+    #[test]
+    fn workspace_busy_api_registration_is_retryable() {
+        let error = super::registration_metadata_error(
+            "worker-busy",
+            relaycast::RelayError::Api {
+                status: 429,
+                code: "workspace_busy".to_string(),
+                message: "Workspace write capacity is busy; retry with backoff".to_string(),
+                request_id: Some("req-busy".to_string()),
+                attempts: 1,
+                retry_after_ms: None,
+            },
+        );
+        assert!(matches!(
+            error,
+            RelaycastRegistrationError::RateLimited { .. }
+        ));
+        assert_eq!(registration_retry_after_secs(&error), Some(1));
+        assert!(
+            format_worker_preregistration_error("worker-busy", &error).contains("workspace_busy")
+        );
+    }
+
+    #[test]
+    fn workspace_busy_registration_classifier_requires_exact_wire_code() {
+        for code in [
+            "Workspace_Busy",
+            "workspace_busy ",
+            " workspace_busy",
+            "workspace_busy_extra",
+            "workspace-busy",
+            "workspace_busy\t",
+            "workspace_busy\n",
+        ] {
+            let error = RelaycastRegistrationError::RateLimited {
+                agent_name: "worker-a".to_string(),
+                retry_after_secs: 1,
+                detail: format!("busy (code: {code}); request_id: req"),
+            };
+            assert!(
+                !is_workspace_busy_registration_error(&error),
+                "near match: {code:?}"
+            );
+            assert!(!is_typed_registration_overload(&error));
+        }
+        let exact = RelaycastRegistrationError::RateLimited {
+            agent_name: "worker-a".to_string(),
+            retry_after_secs: 1,
+            detail: "busy (code: workspace_busy); request_id: req".to_string(),
+        };
+        assert!(is_workspace_busy_registration_error(&exact));
+        assert!(is_typed_registration_overload(&exact));
+    }
+
+    #[test]
+    fn typed_5xx_registration_classifier_requires_exact_wire_codes() {
+        for code in [
+            "database_overloaded",
+            "registration_backend_overloaded",
+            "workspace_storage_unavailable",
+        ] {
+            let exact = RelaycastRegistrationError::Api {
+                agent_name: "worker-a".to_string(),
+                status: 503,
+                detail: format!("busy (code: {code}); request_id: req"),
+            };
+            assert!(
+                is_typed_registration_overload(&exact),
+                "exact code {code:?} should be retryable"
+            );
+
+            for near_match in [
+                format!("{code}_extra"),
+                format!("extra_{code}"),
+                code.to_ascii_uppercase(),
+            ] {
+                let error = RelaycastRegistrationError::Api {
+                    agent_name: "worker-a".to_string(),
+                    status: 503,
+                    detail: format!("busy (code: {near_match}); request_id: req"),
+                };
+                assert!(
+                    !is_typed_registration_overload(&error),
+                    "near-match code {near_match:?} must remain terminal"
+                );
+            }
+        }
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn workspace_busy_reconcile_retries_then_recovers() {
+        let mut attempts = 0;
+        let result: relaycast::Result<&str> = retry_workspace_busy_reconcile(|| {
+            attempts += 1;
+            async move {
+                if attempts == 1 {
+                    Err(RelayError::Api {
+                        status: 503,
+                        code: "workspace_busy".to_string(),
+                        message: "busy".to_string(),
+                        request_id: None,
+                        attempts: 1,
+                        retry_after_ms: None,
+                    })
+                } else {
+                    Ok::<_, RelayError>("recovered")
+                }
+            }
+        })
+        .await;
+        assert_eq!(result.unwrap(), "recovered");
+        assert_eq!(attempts, 2);
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn workspace_busy_reconcile_exhaustion_is_capped_without_terminal_retry() {
+        let mut attempts = 0;
+        let result: relaycast::Result<()> = retry_workspace_busy_reconcile(|| {
+            attempts += 1;
+            async {
+                Err::<(), _>(RelayError::Api {
+                    status: 429,
+                    code: "workspace_busy".to_string(),
+                    message: "busy".to_string(),
+                    request_id: None,
+                    attempts: 1,
+                    retry_after_ms: None,
+                })
+            }
+        })
+        .await;
+        assert!(result.is_err());
+        assert_eq!(attempts, WORKSPACE_BUSY_RECONCILE_SAFETY_CAP);
+        assert!(WORKSPACE_BUSY_RECONCILE_BUDGET <= Duration::from_secs(60));
+        assert!(workspace_busy_reconcile_delay(&RelayError::Api {
+            status: 403,
+            code: "workspace_busy".to_string(),
+            message: "denied".to_string(),
+            request_id: None,
+            attempts: 1,
+            retry_after_ms: None,
+        })
+        .is_none());
     }
 
     #[test]
@@ -1938,6 +3698,43 @@ mod tests {
         assert_eq!(
             agent_registration_retry_delay(&transport),
             Duration::from_secs(2)
+        );
+    }
+
+    #[test]
+    fn registration_retry_diagnostics_restamp_detail_bearing_errors() {
+        let api = with_registration_attempts(
+            AgentRegistrationError::Api {
+                agent_name: "worker-a".to_string(),
+                status: 503,
+                detail: "overloaded; attempts: 1".to_string(),
+            },
+            3,
+        );
+        let rate_limited = with_registration_attempts(
+            AgentRegistrationError::RateLimited {
+                agent_name: "worker-a".to_string(),
+                retry_after_secs: 60,
+                detail: "rate limited".to_string(),
+            },
+            2,
+        );
+        let transport = with_registration_attempts(
+            AgentRegistrationError::Transport {
+                agent_name: "worker-a".to_string(),
+                detail: "connection reset; attempts: 1".to_string(),
+            },
+            2,
+        );
+
+        assert!(
+            matches!(api, AgentRegistrationError::Api { detail, .. } if detail.ends_with("attempts: 3"))
+        );
+        assert!(
+            matches!(rate_limited, AgentRegistrationError::RateLimited { detail, .. } if detail.ends_with("attempts: 2"))
+        );
+        assert!(
+            matches!(transport, AgentRegistrationError::Transport { detail, .. } if detail.ends_with("attempts: 2"))
         );
     }
 
@@ -2004,7 +3801,7 @@ mod tests {
             exhausted,
             Err(RegRetryOutcome::RetryableExhausted(
                 AgentRegistrationError::Transport { detail, .. }
-            )) if detail == "third"
+            )) if detail.ends_with("attempts: 3")
         ));
         assert_eq!(transient_delays, vec![Duration::from_secs(2); 2]);
         assert!(transient_outcomes.is_empty());
@@ -2036,6 +3833,107 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn action_spawn_retry_retries_a_typed_429_then_succeeds() {
+        let mut outcomes = std::collections::VecDeque::from([
+            Err(AgentRegistrationError::RateLimited {
+                agent_name: "worker-a".to_string(),
+                retry_after_secs: 1,
+                detail: "workspace busy (code: workspace_busy); request_id: req-1".to_string(),
+            }),
+            Ok("at_live_after_cooldown".to_string()),
+        ]);
+        let mut delays = Vec::new();
+
+        let token = retry_agent_registration_with_budget(
+            "worker-a",
+            Duration::from_secs(5),
+            || std::future::ready(outcomes.pop_front().expect("bounded test outcome")),
+            |delay| {
+                delays.push(delay);
+                std::future::ready(())
+            },
+        )
+        .await
+        .expect("the advertised cooldown should be honored within budget");
+
+        assert_eq!(token, "at_live_after_cooldown");
+        assert_eq!(delays, vec![Duration::from_secs(1)]);
+        assert!(outcomes.is_empty());
+    }
+
+    #[tokio::test]
+    async fn action_spawn_retry_fails_closed_when_cooldown_exceeds_remaining_budget() {
+        let mut attempts = 0usize;
+        let mut sleep_count = 0usize;
+        let result = retry_agent_registration_with_budget(
+            "worker-a",
+            Duration::from_millis(10),
+            || {
+                attempts += 1;
+                std::future::ready(Err(AgentRegistrationError::RateLimited {
+                    agent_name: "worker-a".to_string(),
+                    retry_after_secs: 60,
+                    detail: "workspace busy (code: workspace_busy); request_id: req-2".to_string(),
+                }))
+            },
+            |_| {
+                sleep_count += 1;
+                std::future::ready(())
+            },
+        )
+        .await;
+
+        assert!(matches!(
+            result,
+            Err(RegRetryOutcome::RetryableExhausted(AgentRegistrationError::RateLimited {
+                retry_after_secs: 60,
+                detail,
+                ..
+            })) if detail.contains("workspace_busy")
+                && detail.contains("request_id: req-2")
+                && detail.ends_with("attempts: 1")
+        ));
+        assert_eq!(attempts, 1);
+        assert_eq!(sleep_count, 0);
+    }
+
+    #[tokio::test]
+    async fn action_spawn_retry_exhausts_after_bounded_429_attempts() {
+        let mut attempts = 0usize;
+        let mut delays = Vec::new();
+        let exhausted = retry_agent_registration_with_budget(
+            "worker-a",
+            Duration::from_secs(5),
+            || {
+                attempts += 1;
+                std::future::ready(Err(AgentRegistrationError::RateLimited {
+                    agent_name: "worker-a".to_string(),
+                    retry_after_secs: 1,
+                    detail: format!(
+                        "workspace busy (code: workspace_busy); request_id: req-{attempts}"
+                    ),
+                }))
+            },
+            |delay| {
+                delays.push(delay);
+                std::future::ready(())
+            },
+        )
+        .await;
+
+        assert!(matches!(
+            exhausted,
+            Err(RegRetryOutcome::RetryableExhausted(AgentRegistrationError::RateLimited {
+                retry_after_secs: 1,
+                detail,
+                ..
+            })) if detail.contains("req-3") && detail.ends_with("attempts: 3")
+        ));
+        assert_eq!(attempts, 3);
+        assert_eq!(delays, vec![Duration::from_secs(1), Duration::from_secs(1)]);
+    }
+
+    #[tokio::test]
     async fn registration_retry_budget_cancels_a_hung_request() {
         let result = retry_agent_registration_with_budget(
             "worker-a",
@@ -2054,7 +3952,12 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn registration_retry_budget_cancels_a_cooldown_sleep() {
+    async fn registration_retry_budget_fails_closed_when_cooldown_exceeds_budget_without_sleeping()
+    {
+        // The advertised cooldown (60s) cannot fit the tiny remaining
+        // budget, so this must fail closed immediately without ever
+        // invoking the (hanging) sleep closure.
+        let mut sleep_calls = 0usize;
         let result = retry_agent_registration_with_budget(
             "worker-a",
             Duration::from_millis(10),
@@ -2065,16 +3968,395 @@ mod tests {
                     detail: "rate limited".to_string(),
                 }))
             },
-            |_| std::future::pending::<()>(),
+            |_| {
+                sleep_calls += 1;
+                std::future::pending::<()>()
+            },
         )
         .await;
 
         assert!(matches!(
             result,
             Err(RegRetryOutcome::RetryableExhausted(
-                AgentRegistrationError::Transport { detail, .. }
-            )) if detail.contains("retry budget exhausted")
+                AgentRegistrationError::RateLimited { detail, .. }
+            )) if detail.contains("rate limited")
         ));
+        assert_eq!(sleep_calls, 0);
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn registration_retry_budget_cancels_a_hanging_sleep_at_the_deadline() {
+        // No typed Retry-After, so the fallback ~2s backoff is clamped to
+        // the remaining budget (50ms) and the sleep itself is bounded by a
+        // timeout, even though the injected sleep closure never resolves.
+        let started = tokio::time::Instant::now();
+        let result = retry_agent_registration_with_budget(
+            "worker-a",
+            Duration::from_millis(50),
+            || {
+                std::future::ready(Err(AgentRegistrationError::Transport {
+                    agent_name: "worker-a".to_string(),
+                    detail: "connection reset".to_string(),
+                }))
+            },
+            |_| std::future::pending::<()>(),
+        )
+        .await;
+        let elapsed = tokio::time::Instant::now().saturating_duration_since(started);
+
+        assert!(matches!(
+            result,
+            Err(RegRetryOutcome::RetryableExhausted(
+                AgentRegistrationError::Transport { .. }
+            ))
+        ));
+        assert!(
+            elapsed <= Duration::from_millis(50),
+            "virtual elapsed time {elapsed:?} exceeded the 50ms budget"
+        );
+    }
+
+    /// Regression for the "cheap fix": the final attempt has no scheduled
+    /// backoff (`retry_delay == None`). A 503 with no `Retry-After` header
+    /// used to reach `retry_delay.expect("bounded retry schedule")` and
+    /// panic instead of returning `RetryableExhausted`. Every retryable
+    /// attempt -- including the last -- must fail closed, never panic.
+    #[tokio::test]
+    async fn action_spawn_third_attempt_503_without_retry_after_fails_closed_not_panics() {
+        let server = MockServer::start();
+        let register = server.mock(|when, then| {
+            when.method(POST)
+                .path("/v1/agents")
+                .header_exists("X-Workspace-Write-Waiter")
+                .header_exists("Idempotency-Key");
+            then.status(503).json_body(json!({
+                "ok": false,
+                "error": { "code": "database_overloaded", "message": "overloaded, retry" }
+            }));
+        });
+        let client =
+            RelaycastHttpClient::new(Some(server.base_url()), "rk_live_test", "broker", "codex");
+
+        let result = retry_agent_registration_with_timeout(
+            &client,
+            "worker-a",
+            Some("codex"),
+            Duration::from_secs(5),
+        )
+        .await;
+
+        assert!(
+            matches!(
+                result,
+                Err(RegRetryOutcome::RetryableExhausted(
+                    RelaycastRegistrationError::Api { status: 503, .. }
+                ))
+            ),
+            "expected a typed RetryableExhausted(Api 503), got {result:?}"
+        );
+        // Three attempts: two scheduled backoffs (200ms, 400ms) then the
+        // unscheduled final attempt that must fail closed instead of panic.
+        register.assert_hits(3);
+    }
+
+    #[tokio::test]
+    async fn action_spawn_generic_503_preserves_legacy_single_attempt() {
+        let server = MockServer::start();
+        let register = server.mock(|when, then| {
+            when.method(POST).path("/v1/agents");
+            then.status(503).json_body(json!({
+                "ok": false,
+                "error": {
+                    "code": "application_temporarily_unavailable",
+                    "message": "application unavailable"
+                }
+            }));
+        });
+        let client =
+            RelaycastHttpClient::new(Some(server.base_url()), "rk_live_test", "broker", "codex");
+
+        let result = retry_agent_registration_with_timeout(
+            &client,
+            "worker-a",
+            Some("codex"),
+            Duration::from_secs(5),
+        )
+        .await;
+
+        assert!(
+            matches!(
+                result,
+                Err(RegRetryOutcome::Fatal(
+                    RelaycastRegistrationError::Api {
+                        status: 503,
+                        ref detail,
+                        ..
+                    }
+                )) if detail.contains("application_temporarily_unavailable")
+                    && detail.contains("attempts: 1")
+            ),
+            "generic 503 must remain terminal, got {result:?}"
+        );
+        register.assert_hits(1);
+    }
+
+    /// An action-spawn `workspace_busy` response uses its one-second admission
+    /// cooldown, not the typed-5xx three-attempt schedule. The finite test
+    /// budget proves a persistent queue failure returns the typed receipt
+    /// without sleeping after the budget has been exhausted, and that the
+    /// receipt's `attempts` is the total across the SDK's own admission
+    /// retries and the broker's rounds -- exactly what the server received.
+    #[tokio::test]
+    async fn action_spawn_workspace_busy_exhaustion_reports_every_request() {
+        let server = MockServer::start();
+        let register = server.mock(|when, then| {
+            when.method(POST)
+                .path("/v1/agents")
+                .header_exists("X-Workspace-Write-Waiter")
+                .header_exists("Idempotency-Key");
+            then.status(429).json_body(json!({
+                "ok": false,
+                "error": { "code": "workspace_busy", "message": "admission busy" }
+            }));
+        });
+        let client =
+            RelaycastHttpClient::new(Some(server.base_url()), "rk_live_test", "broker", "codex");
+
+        let started = std::time::Instant::now();
+        let result = retry_agent_registration_with_timeout(
+            &client,
+            "worker-a",
+            Some("codex"),
+            Duration::from_millis(2_500),
+        )
+        .await;
+
+        assert!(
+            matches!(
+                result,
+                Err(RegRetryOutcome::RetryableExhausted(
+                    RelaycastRegistrationError::RateLimited {
+                        retry_after_secs: 1,
+                        ref detail,
+                        ..
+                    }
+                )) if detail.contains("workspace_busy")
+                    && detail.contains("admission busy")
+                    && detail.contains(&format!("attempts: {}", register.hits()))
+            ),
+            "expected the final typed 429 with attempts equal to the {} requests the \
+             server received, got {result:?}",
+            register.hits()
+        );
+        assert!(
+            started.elapsed() < Duration::from_secs(4),
+            "retry budget was not bounded: {:?}",
+            started.elapsed()
+        );
+        let hits = register.hits();
+        assert!(
+            hits > 1,
+            "expected the admission denial to be retried, got {hits} request(s)"
+        );
+        assert!(
+            hits < WORKSPACE_BUSY_ACTION_SAFETY_CAP,
+            "retries exceeded the action request cap: {hits}"
+        );
+    }
+
+    /// Full action path proof: admission can take more than the old observed
+    /// eleven queue turns, and every replay carries one waiter/idempotency
+    /// identity until the 13th request succeeds.
+    #[tokio::test]
+    async fn action_spawn_admits_after_eleven_workspace_busy_retries() {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let base_url = format!("http://{}", listener.local_addr().unwrap());
+        let server = tokio::spawn(async move {
+            let mut waiter_ids = Vec::new();
+            let mut idempotency_keys = Vec::new();
+            for attempt in 0..13 {
+                let (mut stream, _) = listener.accept().await.unwrap();
+                let mut request = [0_u8; 8192];
+                let bytes = stream.read(&mut request).await.unwrap();
+                let request = String::from_utf8_lossy(&request[..bytes]);
+                for line in request.lines() {
+                    let Some((name, value)) = line.split_once(':') else {
+                        continue;
+                    };
+                    match name.to_ascii_lowercase().as_str() {
+                        "x-workspace-write-waiter" => waiter_ids.push(value.trim().to_string()),
+                        "idempotency-key" => idempotency_keys.push(value.trim().to_string()),
+                        _ => {}
+                    }
+                }
+                let (status, body) = if attempt < 12 {
+                    (
+                        "429 Too Many Requests",
+                        r#"{"ok":false,"error":{"code":"workspace_busy","message":"admission busy"}}"#,
+                    )
+                } else {
+                    (
+                        "200 OK",
+                        r#"{"ok":true,"data":{"id":"agent-1","workspace_id":"ws-1","name":"worker-a","token":"at_live_action","status":"offline","created_at":"2026-01-01T00:00:00Z"}}"#,
+                    )
+                };
+                let response = format!(
+                    "HTTP/1.1 {status}\r\ncontent-type: application/json\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{body}",
+                    body.len()
+                );
+                stream.write_all(response.as_bytes()).await.unwrap();
+            }
+            (waiter_ids, idempotency_keys)
+        });
+        let client = RelaycastHttpClient::new(Some(base_url), "rk_live_test", "broker", "codex");
+
+        let token = retry_agent_registration_with_timeout(
+            &client,
+            "worker-a",
+            Some("codex"),
+            Duration::from_secs(20),
+        )
+        .await
+        .expect("the waiter should be admitted after twelve cooldowns");
+        assert_eq!(token, "at_live_action");
+
+        let (waiter_ids, idempotency_keys) = server.await.unwrap();
+        assert_eq!(waiter_ids.len(), 13);
+        assert_eq!(idempotency_keys.len(), 13);
+        assert!(waiter_ids.windows(2).all(|pair| pair[0] == pair[1]));
+        assert!(idempotency_keys.windows(2).all(|pair| pair[0] == pair[1]));
+        assert_eq!(waiter_ids[0], idempotency_keys[0]);
+    }
+
+    /// The collision/takeover branch is part of the same logical action. A
+    /// busy takeover must retain the typed queue contract and stable waiter,
+    /// rather than being downgraded to a generic transport failure.
+    #[tokio::test]
+    async fn action_spawn_takeover_admits_after_eleven_workspace_busy_retries() {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let base_url = format!("http://{}", listener.local_addr().unwrap());
+        let server = tokio::spawn(async move {
+            let mut takeover_attempts = 0usize;
+            let mut waiter_ids = Vec::new();
+            let mut idempotency_keys = Vec::new();
+            loop {
+                let (mut stream, _) = listener.accept().await.unwrap();
+                let mut request = [0_u8; 8192];
+                let bytes = stream.read(&mut request).await.unwrap();
+                let request = String::from_utf8_lossy(&request[..bytes]);
+                let path = request.lines().next().unwrap_or_default();
+                if path.contains("/takeover ") {
+                    for line in request.lines() {
+                        let Some((name, value)) = line.split_once(':') else {
+                            continue;
+                        };
+                        match name.to_ascii_lowercase().as_str() {
+                            "x-workspace-write-waiter" => waiter_ids.push(value.trim().to_string()),
+                            "idempotency-key" => idempotency_keys.push(value.trim().to_string()),
+                            _ => {}
+                        }
+                    }
+                }
+                let (status, body, done) = if path.contains("/takeover ") {
+                    takeover_attempts += 1;
+                    if takeover_attempts <= 12 {
+                        (
+                            "429 Too Many Requests",
+                            r#"{"ok":false,"error":{"code":"workspace_busy","message":"takeover busy"}}"#,
+                            false,
+                        )
+                    } else {
+                        (
+                            "200 OK",
+                            r#"{"ok":true,"data":{"agent_id":"agent-1","name":"worker-a","token":"at_live_takeover","audit_id":"audit-1"}}"#,
+                            true,
+                        )
+                    }
+                } else if path.starts_with("GET /v1/agents/") {
+                    (
+                        "200 OK",
+                        r#"{"ok":true,"data":{"id":"agent-1","name":"worker-a","type":"agent","status":"offline","persona":null,"metadata":{},"last_seen":"2026-01-01T00:00:00Z"}}"#,
+                        false,
+                    )
+                } else {
+                    (
+                        "409 Conflict",
+                        r#"{"ok":false,"error":{"code":"agent_already_exists","message":"exists"}}"#,
+                        false,
+                    )
+                };
+                let response = format!(
+                    "HTTP/1.1 {status}\r\ncontent-type: application/json\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{body}",
+                    body.len()
+                );
+                stream.write_all(response.as_bytes()).await.unwrap();
+                if done {
+                    return (takeover_attempts, waiter_ids, idempotency_keys);
+                }
+            }
+        });
+        let client = RelaycastHttpClient::new(Some(base_url), "rk_live_test", "broker", "codex");
+
+        let token = retry_agent_registration_with_timeout(
+            &client,
+            "worker-a",
+            Some("codex"),
+            Duration::from_secs(20),
+        )
+        .await
+        .expect("the takeover waiter should be admitted after twelve cooldowns");
+        assert_eq!(token, "at_live_takeover");
+
+        let (takeover_attempts, waiter_ids, idempotency_keys) = server.await.unwrap();
+        assert_eq!(takeover_attempts, 13);
+        assert_eq!(waiter_ids.len(), 13);
+        assert_eq!(idempotency_keys.len(), 13);
+        assert!(waiter_ids.windows(2).all(|pair| pair[0] == pair[1]));
+        assert!(idempotency_keys.windows(2).all(|pair| pair[0] == pair[1]));
+        assert_eq!(waiter_ids[0], idempotency_keys[0]);
+    }
+
+    /// A slow request that eats most of the retry budget, followed by a
+    /// typed cooldown that still fits what's left, must not push the
+    /// operation past its overall deadline: the elapsed wall-clock time is
+    /// bounded by `budget` plus generous scheduling slack, not by
+    /// `request_delay + cooldown` unbounded.
+    #[tokio::test]
+    async fn action_spawn_slow_request_then_cooldown_stays_within_budget() {
+        let server = MockServer::start();
+        let register = server.mock(|when, then| {
+            when.method(POST).path("/v1/agents");
+            then.status(429)
+                .delay(Duration::from_millis(120))
+                .header("Retry-After", "1")
+                .json_body(json!({
+                    "ok": false,
+                    "error": { "code": "workspace_busy", "message": "busy" }
+                }));
+        });
+        let client =
+            RelaycastHttpClient::new(Some(server.base_url()), "rk_live_test", "broker", "codex");
+
+        let started = std::time::Instant::now();
+        let result = retry_agent_registration_with_timeout(
+            &client,
+            "worker-a",
+            Some("codex"),
+            Duration::from_millis(200),
+        )
+        .await;
+        let elapsed = started.elapsed();
+
+        assert!(
+            matches!(result, Err(RegRetryOutcome::RetryableExhausted(_))),
+            "expected the 1s cooldown to be rejected once it can't fit the 200ms budget, got {result:?}"
+        );
+        assert!(
+            elapsed < Duration::from_millis(600),
+            "elapsed {elapsed:?} suggests the operation slept past its budget instead of \
+             failing closed after the slow request consumed it"
+        );
+        register.assert_hits(1);
     }
 
     #[test]
@@ -2225,6 +4507,7 @@ mod tests {
                     role: None,
                     objective: Some("Publish registration metadata".to_string()),
                 },
+                &serde_json::Map::new(),
             )
             .await
             .expect("publishing declared metadata should succeed");
@@ -2258,12 +4541,98 @@ mod tests {
                     project: Some("   ".to_string()),
                     ..Default::default()
                 },
+                &serde_json::Map::new(),
             )
             .await
             .expect("an empty declaration is a no-op, not an error");
 
         any_read.assert_hits(0);
         any_write.assert_hits(0);
+    }
+
+    /// The worker's CLI, machine and owner ride the declared-metadata PATCH,
+    /// so the roster can show whose worker it is, where it runs and its icon.
+    #[tokio::test]
+    async fn publish_declared_metadata_carries_the_spawned_worker_keys() {
+        let server = MockServer::start();
+        let update = server.mock(|when, then| {
+            when.method(PATCH)
+                .path("/v1/agents/worker-a")
+                .json_body(json!({
+                    "metadata": {
+                        "cli": "claude",
+                        "host": "Finn-Mac-Mini",
+                        "owner_hash": "abc",
+                        "objective": "Check the roster"
+                    }
+                }));
+            then.status(200).json_body(json!({
+                "ok": true,
+                "data": {
+                    "id": "agent_worker_a",
+                    "name": "worker-a",
+                    "type": "agent",
+                    "status": "online",
+                    "persona": null,
+                    "metadata": {}
+                }
+            }));
+        });
+        let spawned = json!({"cli": "claude", "host": "Finn-Mac-Mini", "owner_hash": "abc"});
+
+        let client = seeded_http_client(&server.base_url());
+        client
+            .publish_declared_metadata(
+                "worker-a",
+                &AgentRegistrationMetadata {
+                    objective: Some("Check the roster".to_string()),
+                    ..Default::default()
+                },
+                spawned.as_object().unwrap(),
+            )
+            .await
+            .expect("publishing spawned worker metadata should succeed");
+
+        update.assert_hits(1);
+    }
+
+    #[test]
+    fn spawned_worker_metadata_matches_the_desktop_keys() {
+        let metadata = super::spawned_worker_metadata_from(
+            "/opt/homebrew/bin/claude --model opus",
+            Some("Finn-Mac-Mini.local."),
+            Some(" user-1 "),
+        );
+        assert_eq!(
+            serde_json::Value::Object(metadata),
+            json!({
+                "cli": "claude",
+                "host": "Finn-Mac-Mini",
+                // SHA-256 of "user-1", the desktop's `identity_hash`.
+                "owner_hash": "c6c289e49e9c05b2145860387b73bcb18df43fb09a1e4a4a9713c76c88bb541b"
+            })
+        );
+    }
+
+    #[test]
+    fn spawned_worker_metadata_omits_what_it_does_not_know() {
+        let metadata = super::spawned_worker_metadata_from("  ", Some(" .local "), Some(""));
+        assert!(metadata.is_empty(), "unexpected keys: {metadata:?}");
+        let metadata = super::spawned_worker_metadata_from("codex", Some("éabcde"), None);
+        assert_eq!(metadata["host"], "éabcde");
+        let metadata = super::spawned_worker_metadata_from("codex", None, None);
+        assert_eq!(serde_json::Value::Object(metadata), json!({"cli": "codex"}));
+    }
+
+    #[test]
+    fn stored_identity_user_id_follows_the_cli_rules() {
+        let id = |file: &str| super::user_id_from_identity(file);
+        assert_eq!(id(r#"{"userId":" user-1 "}"#).as_deref(), Some("user-1"));
+        assert_eq!(id(r#"{"userId":"bad\u0007id"}"#), None);
+        assert_eq!(id(&format!(r#"{{"userId":"{}"}}"#, "u".repeat(129))), None);
+        assert_eq!(id(r#"{"userId":""}"#), None);
+        assert_eq!(id(r#"{"email":"a@b"}"#), None);
+        assert_eq!(id("not json"), None);
     }
 
     /// A presence update used to call POST /v1/agents/release with no reason.
@@ -2412,6 +4781,428 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn fresh_spawn_replays_a_committed_response_lost_create_with_one_key() {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let base_url = format!("http://{}", listener.local_addr().unwrap());
+        let idempotency_keys = Arc::new(Mutex::new(Vec::new()));
+        let seen_keys = Arc::clone(&idempotency_keys);
+        let server = tokio::spawn(async move {
+            for attempt in 0..2 {
+                let (mut stream, _) = listener.accept().await.unwrap();
+                let mut request = Vec::new();
+                let mut chunk = [0_u8; 1024];
+                loop {
+                    let read = stream.read(&mut chunk).await.unwrap();
+                    request.extend_from_slice(&chunk[..read]);
+                    if request.windows(4).any(|window| window == b"\r\n\r\n") {
+                        break;
+                    }
+                }
+                let request = String::from_utf8_lossy(&request);
+                if let Some(value) = request.lines().find_map(|line| {
+                    line.strip_prefix("Idempotency-Key:")
+                        .or_else(|| line.strip_prefix("idempotency-key:"))
+                        .map(str::trim)
+                }) {
+                    seen_keys.lock().unwrap().push(value.to_string());
+                }
+                let (status, body) = if attempt == 0 {
+                    (
+                        "503 Service Unavailable",
+                        r#"{"ok":false,"error":{"code":"database_overloaded","message":"retry"}}"#,
+                    )
+                } else {
+                    (
+                        "200 OK",
+                        r#"{"ok":true,"data":{"id":"agent_new","workspace_id":"ws_test","name":"worker","token":"at_live_new","status":"online","created_at":"2026-01-01T00:00:00Z"}}"#,
+                    )
+                };
+                let response = format!(
+                    "HTTP/1.1 {status}\r\ncontent-type: application/json\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{body}",
+                    body.len()
+                );
+                stream.write_all(response.as_bytes()).await.unwrap();
+            }
+        });
+
+        let client = seeded_http_client(&base_url);
+        let token = register_new_spawn_identity(&client, "worker", Some("claude"))
+            .await
+            .expect("the idempotent replay should recover the committed create");
+        assert_eq!(token, "at_live_new");
+        server.await.unwrap();
+        let keys = idempotency_keys.lock().unwrap();
+        assert_eq!(keys.len(), 2);
+        assert!(!keys[0].is_empty());
+        assert_eq!(keys[0], keys[1]);
+    }
+
+    /// The `X-Workspace-Write-Waiter` header must ride every attempt of one
+    /// logical spawn with the exact same opaque value as the
+    /// `Idempotency-Key` (proving it reuses that per-spawn UUID rather than
+    /// minting a second one), and a *separate* logical spawn (a fresh call
+    /// to `register_new_spawn_identity`) must get a distinct value. Neither
+    /// header may ever carry the workspace API key or agent bearer token.
+    #[tokio::test]
+    async fn workspace_write_waiter_is_stable_per_spawn_and_distinct_across_spawns() {
+        async fn capture_request_headers(
+            listener: &TcpListener,
+            status_line: &str,
+            body: &str,
+        ) -> Vec<(String, String)> {
+            let (mut stream, _) = listener.accept().await.unwrap();
+            let mut request = Vec::new();
+            let mut chunk = [0_u8; 1024];
+            loop {
+                let read = stream.read(&mut chunk).await.unwrap();
+                request.extend_from_slice(&chunk[..read]);
+                if request.windows(4).any(|window| window == b"\r\n\r\n") {
+                    break;
+                }
+            }
+            let request = String::from_utf8_lossy(&request);
+            let headers: Vec<(String, String)> = request
+                .lines()
+                .skip(1)
+                .take_while(|line| !line.is_empty())
+                .filter_map(|line| {
+                    let (name, value) = line.split_once(':')?;
+                    Some((name.trim().to_lowercase(), value.trim().to_string()))
+                })
+                .collect();
+            let response = format!(
+                "HTTP/1.1 {status_line}\r\ncontent-type: application/json\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{body}",
+                body.len()
+            );
+            stream.write_all(response.as_bytes()).await.unwrap();
+            headers
+        }
+
+        // First logical spawn: two attempts (a lost-response 503 replay,
+        // then a committed success), so we can assert the header is IDENTICAL
+        // across both raw requests.
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let base_url = format!("http://{}", listener.local_addr().unwrap());
+        let headers_seen = Arc::new(Mutex::new(Vec::new()));
+        let seen = Arc::clone(&headers_seen);
+        let server = tokio::spawn(async move {
+            let first = capture_request_headers(
+                &listener,
+                "503 Service Unavailable",
+                r#"{"ok":false,"error":{"code":"database_overloaded","message":"retry"}}"#,
+            )
+            .await;
+            let second = capture_request_headers(
+                &listener,
+                "200 OK",
+                r#"{"ok":true,"data":{"id":"agent_new","workspace_id":"ws_test","name":"worker-one","token":"at_live_new","status":"online","created_at":"2026-01-01T00:00:00Z"}}"#,
+            )
+            .await;
+            seen.lock().unwrap().push(first);
+            seen.lock().unwrap().push(second);
+        });
+
+        let client = seeded_http_client(&base_url);
+        let token = register_new_spawn_identity(&client, "worker-one", Some("claude"))
+            .await
+            .expect("the idempotent replay should recover the committed create");
+        assert_eq!(token, "at_live_new");
+        server.await.unwrap();
+
+        let attempts = headers_seen.lock().unwrap().clone();
+        assert_eq!(attempts.len(), 2);
+        let waiter_of = |headers: &[(String, String)]| {
+            headers
+                .iter()
+                .find(|(name, _)| name == "x-workspace-write-waiter")
+                .map(|(_, value)| value.clone())
+                .expect("X-Workspace-Write-Waiter header must be present on every attempt")
+        };
+        let idempotency_of = |headers: &[(String, String)]| {
+            headers
+                .iter()
+                .find(|(name, _)| name == "idempotency-key")
+                .map(|(_, value)| value.clone())
+                .expect("Idempotency-Key header must be present")
+        };
+        let waiter_attempt_1 = waiter_of(&attempts[0]);
+        let waiter_attempt_2 = waiter_of(&attempts[1]);
+        assert_eq!(
+            waiter_attempt_1, waiter_attempt_2,
+            "the waiter id must be identical across every attempt of one logical spawn"
+        );
+        assert_eq!(
+            waiter_attempt_1,
+            idempotency_of(&attempts[0]),
+            "the waiter id must exactly reuse the per-spawn Idempotency-Key value"
+        );
+        // Exact format: `relay-spawn:<uuid>`.
+        let uuid_part = waiter_attempt_1
+            .strip_prefix("relay-spawn:")
+            .expect("waiter id must have the exact `relay-spawn:` prefix");
+        assert!(
+            Uuid::parse_str(uuid_part).is_ok(),
+            "waiter id suffix must be a valid UUID, got {uuid_part}"
+        );
+        // No credential leak: the waiter/idempotency header values are
+        // opaque UUID-derived strings, never the workspace API key or any
+        // bearer token material (the `authorization` header legitimately
+        // carries the bearer credential and is deliberately excluded here).
+        for headers in attempts.iter() {
+            for (name, value) in headers {
+                if name == "authorization" {
+                    continue;
+                }
+                assert!(
+                    !value.contains("rk_live_test") && !value.contains("at_live_"),
+                    "header {name} leaked credential material: {value}"
+                );
+            }
+        }
+
+        // Second, distinct logical spawn: a fresh call must mint a different
+        // waiter id, never colliding with the first spawn's value.
+        let listener_two = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let base_url_two = format!("http://{}", listener_two.local_addr().unwrap());
+        let second_headers = Arc::new(Mutex::new(None));
+        let seen_two = Arc::clone(&second_headers);
+        let server_two = tokio::spawn(async move {
+            let headers = capture_request_headers(
+                &listener_two,
+                "200 OK",
+                r#"{"ok":true,"data":{"id":"agent_other","workspace_id":"ws_test","name":"worker-two","token":"at_live_other","status":"online","created_at":"2026-01-01T00:00:00Z"}}"#,
+            )
+            .await;
+            *seen_two.lock().unwrap() = Some(headers);
+        });
+        let client_two = seeded_http_client(&base_url_two);
+        register_new_spawn_identity(&client_two, "worker-two", Some("claude"))
+            .await
+            .expect("second logical spawn should succeed");
+        server_two.await.unwrap();
+        let waiter_of_second_spawn = waiter_of(second_headers.lock().unwrap().as_ref().unwrap());
+        assert_ne!(
+            waiter_attempt_1, waiter_of_second_spawn,
+            "distinct logical spawns must never share a waiter id"
+        );
+    }
+
+    #[tokio::test]
+    async fn fresh_spawn_generic_503_preserves_legacy_single_attempt() {
+        let server = MockServer::start();
+        let register = server.mock(|when, then| {
+            when.method(POST).path("/v1/agents");
+            then.status(503).json_body(json!({
+                "ok": false,
+                "error": {
+                    "code": "application_temporarily_unavailable",
+                    "message": "application unavailable"
+                }
+            }));
+        });
+
+        let client = seeded_http_client(&server.base_url());
+        let result = register_new_spawn_identity(&client, "worker", Some("claude")).await;
+
+        assert!(
+            matches!(
+                result,
+                Err(RegRetryOutcome::Fatal(
+                    RelaycastRegistrationError::Api {
+                        status: 503,
+                        ref detail,
+                        ..
+                    }
+                )) if detail.contains("application_temporarily_unavailable")
+                    && detail.contains("attempts: 1")
+            ),
+            "generic 503 must remain terminal, got {result:?}"
+        );
+        register.assert_hits(1);
+    }
+
+    /// A `workspace_busy` cooldown longer than the create-only path will hold
+    /// is terminal after the SDK's own paced round: the broker neither sleeps
+    /// a shortened cooldown nor sends another round early.
+    #[tokio::test]
+    async fn fresh_spawn_long_workspace_busy_cooldown_is_terminal_without_early_retry() {
+        let server = MockServer::start();
+        let register = server.mock(|when, then| {
+            when.method(POST).path("/v1/agents");
+            then.status(429)
+                .header("retry-after", "120")
+                .json_body(json!({
+                    "ok": false,
+                    "error": { "code": "workspace_busy", "message": "admission busy" }
+                }));
+        });
+
+        let client = seeded_http_client(&server.base_url());
+        let started = std::time::Instant::now();
+        let result = register_new_spawn_identity(&client, "worker", Some("claude")).await;
+
+        let hits = register.hits();
+        assert!(
+            matches!(
+                result,
+                Err(RegRetryOutcome::RetryableExhausted(
+                    RelaycastRegistrationError::RateLimited {
+                        retry_after_secs: 120,
+                        ref detail,
+                        ..
+                    }
+                )) if detail.contains("workspace_busy")
+                    && detail.contains(&format!("attempts: {hits}"))
+            ),
+            "a 120s cooldown must surface as the typed terminal error carrying it, got {result:?}"
+        );
+        // Only the SDK's own paced round reached the server; the broker added
+        // no round of its own and did not wait out (or truncate) the cooldown.
+        assert!(hits >= 1, "registration must have been attempted");
+        assert!(
+            started.elapsed() < MAX_AGENT_REGISTRATION_RETRY_DELAY,
+            "the broker must not sleep a cooldown it refuses to honour in full: {:?}",
+            started.elapsed()
+        );
+    }
+
+    /// The round size must be read before the cumulative restamp: from the
+    /// second round on the detail carries the running total, and projecting
+    /// with that would exhaust the request cap at roughly half its value.
+    #[test]
+    fn absorb_registration_round_reports_round_size_not_running_total() {
+        let total = AtomicU32::new(6);
+        let sdk_round = RelaycastRegistrationError::RateLimited {
+            agent_name: "worker".to_string(),
+            retry_after_secs: 1,
+            detail: "admission busy (code: workspace_busy); attempts: 3".to_string(),
+        };
+        let (error, round_requests, attempts_so_far) =
+            absorb_registration_round(sdk_round, &total, 0);
+        assert_eq!(round_requests, 3);
+        assert_eq!(attempts_so_far, 9);
+        assert_eq!(total.load(Ordering::Relaxed), 9);
+        assert!(
+            matches!(&error, RelaycastRegistrationError::RateLimited { detail, .. }
+                if detail.ends_with("attempts: 9")),
+            "{error:?}"
+        );
+        // With one request counted provisionally (create-only loop), only the
+        // SDK's extra requests are added.
+        let total = AtomicU32::new(4);
+        let (_, round_requests, attempts_so_far) = absorb_registration_round(
+            RelaycastRegistrationError::Transport {
+                agent_name: "worker".to_string(),
+                detail: "reset (code: none); attempts: 3".to_string(),
+            },
+            &total,
+            1,
+        );
+        assert_eq!((round_requests, attempts_so_far), (3, 6));
+        // A locally minted error with no stamp is one request.
+        let (_, round_requests, _) = absorb_registration_round(
+            RelaycastRegistrationError::MissingToken {
+                agent_name: "worker".to_string(),
+            },
+            &AtomicU32::new(0),
+            0,
+        );
+        assert_eq!(round_requests, 1);
+    }
+
+    #[test]
+    fn reconcile_cooldown_is_floored_and_never_shortened() {
+        let busy = |retry_after_ms: Option<u64>| RelayError::Api {
+            status: 429,
+            code: "workspace_busy".to_string(),
+            message: "busy".to_string(),
+            request_id: None,
+            attempts: 1,
+            retry_after_ms,
+        };
+        // No header and `Retry-After: 0` both wait the admission minimum.
+        assert_eq!(
+            workspace_busy_reconcile_delay(&busy(None)),
+            Some(Duration::from_secs(1))
+        );
+        assert_eq!(
+            workspace_busy_reconcile_delay(&busy(Some(0))),
+            Some(Duration::from_secs(1))
+        );
+        // A cooldown within policy is honoured exactly.
+        assert_eq!(
+            workspace_busy_reconcile_delay(&busy(Some(3_000))),
+            Some(Duration::from_secs(3))
+        );
+        // A cooldown beyond policy is refused, not truncated: the error is
+        // still classified as an admission denial so callers stop replaying.
+        let long = busy(Some(30_000));
+        assert_eq!(workspace_busy_reconcile_delay(&long), None);
+        assert!(is_workspace_busy_reconcile_error(&long));
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn workspace_busy_reconcile_refuses_cooldown_beyond_policy() {
+        let mut attempts = 0;
+        let result: relaycast::Result<()> = retry_workspace_busy_reconcile(|| {
+            attempts += 1;
+            async {
+                Err::<(), _>(RelayError::Api {
+                    status: 429,
+                    code: "workspace_busy".to_string(),
+                    message: "busy".to_string(),
+                    request_id: None,
+                    attempts: 1,
+                    retry_after_ms: Some(30_000),
+                })
+            }
+        })
+        .await;
+        assert!(result.is_err());
+        assert_eq!(
+            attempts, 1,
+            "a 30s cooldown must not be retried on a 5s-max path"
+        );
+    }
+
+    #[test]
+    fn workspace_busy_create_only_policy_allows_late_admission_and_bounds_failure() {
+        // This is deliberately beyond the old observed maximum of eleven:
+        // queue depth is not a safe retry budget.
+        assert!(workspace_busy_retry_allowed(
+            12,
+            Duration::from_secs(11),
+            Duration::from_secs(1)
+        ));
+        // The cap is a ceiling on the projected total: a round that fills it
+        // exactly is allowed, one that would cross it is not.
+        assert!(workspace_busy_retry_allowed(
+            WORKSPACE_BUSY_CREATE_ONLY_SAFETY_CAP,
+            Duration::from_secs(1),
+            Duration::from_secs(1)
+        ));
+        assert!(!workspace_busy_retry_allowed(
+            WORKSPACE_BUSY_CREATE_ONLY_SAFETY_CAP + 1,
+            Duration::from_secs(1),
+            Duration::from_secs(1)
+        ));
+        assert!(!workspace_busy_retry_allowed(
+            12,
+            MAX_AGENT_REGISTRATION_ELAPSED - Duration::from_secs(1),
+            Duration::from_secs(1)
+        ));
+    }
+
+    #[test]
+    fn create_only_outer_guard_leaves_inner_retry_budget_safety_margin() {
+        assert!(MAX_AGENT_REGISTRATION_OUTER_TIMEOUT > MAX_AGENT_REGISTRATION_ELAPSED);
+        assert_eq!(
+            MAX_AGENT_REGISTRATION_OUTER_TIMEOUT,
+            MAX_AGENT_REGISTRATION_ELAPSED + Duration::from_secs(30)
+        );
+    }
+
+    #[tokio::test]
     async fn owned_identity_cleanup_requires_token_generation_and_terminal_ack() {
         use sha2::{Digest, Sha256};
         let server = MockServer::start();
@@ -2438,6 +5229,159 @@ mod tests {
             .await
             .unwrap();
         cleanup.assert_hits(1);
+    }
+
+    #[tokio::test]
+    async fn owned_identity_cleanup_does_not_retry_terminal_ownership_failure() {
+        use sha2::{Digest, Sha256};
+        let server = MockServer::start();
+        let cleanup = server.mock(|when, then| {
+            when.method(POST)
+                .path("/v1/agents/release")
+                .json_body_partial(
+                    json!({"expected_token_hash":format!("{:x}", Sha256::digest(b"owned-token"))})
+                        .to_string(),
+                );
+            then.status(403).json_body(json!({
+                "ok": false,
+                "error": { "code": "expected_token_hash_mismatch", "message": "ownership changed" }
+            }));
+        });
+        let client = seeded_http_client(&server.base_url());
+        client.seed_agent_token("owned-worker", "owned-token");
+        let error = client
+            .release_agent_identity("owned-worker", None, true)
+            .await
+            .expect_err("ownership failure must remain terminal");
+        assert!(error.to_string().contains("HTTP 403"));
+        cleanup.assert_hits(1);
+        assert!(client.owned_identity_token_hash("owned-worker").is_ok());
+    }
+
+    #[tokio::test]
+    async fn owned_identity_cleanup_retries_only_agent_not_found_visibility_lag() {
+        use sha2::{Digest, Sha256};
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let base_url = format!("http://{}", listener.local_addr().unwrap());
+        let expected_hash = format!("{:x}", Sha256::digest(b"owned-token"));
+        let server_hash = expected_hash.clone();
+        let server = tokio::spawn(async move {
+            for attempt in 0..3 {
+                let (mut stream, _) = listener.accept().await.unwrap();
+                let mut request = [0_u8; 8192];
+                let bytes = stream.read(&mut request).await.unwrap();
+                let request = String::from_utf8_lossy(&request[..bytes]);
+                assert!(request.starts_with("POST /v1/agents/release "), "{request}");
+                assert!(request.contains(&server_hash), "{request}");
+                let (status, body) = if attempt < 2 {
+                    (
+                        "404 Not Found",
+                        r#"{"ok":false,"error":{"code":"agent_not_found","message":"not visible by name yet"}}"#,
+                    )
+                } else {
+                    ("200 OK", r#"{"ok":true,"data":{"status":"completed"}}"#)
+                };
+                let response = format!(
+                    "HTTP/1.1 {status}\r\ncontent-type: application/json\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{body}",
+                    body.len()
+                );
+                stream.write_all(response.as_bytes()).await.unwrap();
+            }
+        });
+        let client = RelaycastHttpClient::new(Some(base_url), "rk_live_test", "broker", "codex");
+        client.seed_agent_token("owned-worker", "owned-token");
+
+        client
+            .release_agent_identity_guarded("owned-worker", None, true, Some(&expected_hash))
+            .await
+            .expect("guarded cleanup should retry transient by-name absence");
+        server.await.unwrap();
+        assert!(client.owned_identity_token_hash("owned-worker").is_err());
+    }
+
+    #[tokio::test]
+    async fn owned_identity_cleanup_has_one_overall_deadline() {
+        use sha2::{Digest, Sha256};
+        let server = MockServer::start();
+        let cleanup = server.mock(|when, then| {
+            when.method(POST).path("/v1/agents/release");
+            then.status(404).json_body(json!({"ok":false,"error":{
+                "code":"agent_not_found","message":"not visible by name yet"
+            }}));
+        });
+        let client = seeded_http_client(&server.base_url());
+        client.seed_agent_token("owned-worker", "owned-token");
+        let expected_hash = format!("{:x}", Sha256::digest(b"owned-token"));
+        let started = tokio::time::Instant::now();
+
+        let error = client
+            .release_agent_identity_guarded_with_budget(
+                "owned-worker",
+                None,
+                true,
+                Some(&expected_hash),
+                &[5_000],
+                Duration::from_millis(50),
+            )
+            .await
+            .expect_err("the guarded release loop must honor one overall deadline");
+
+        assert!(error.to_string().contains("total budget"), "{error:#}");
+        assert!(started.elapsed() < Duration::from_millis(500));
+        cleanup.assert_hits(1);
+    }
+
+    #[tokio::test]
+    async fn owned_identity_cleanup_visibility_retries_do_not_spend_busy_retry_cap() {
+        use sha2::{Digest, Sha256};
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let base_url = format!("http://{}", listener.local_addr().unwrap());
+        let expected_hash = format!("{:x}", Sha256::digest(b"owned-token"));
+        let server_hash = expected_hash.clone();
+        let server = tokio::spawn(async move {
+            for attempt in 0..9 {
+                let (mut stream, _) = listener.accept().await.unwrap();
+                let mut request = [0_u8; 8192];
+                let bytes = stream.read(&mut request).await.unwrap();
+                let request = String::from_utf8_lossy(&request[..bytes]);
+                assert!(request.starts_with("POST /v1/agents/release "), "{request}");
+                assert!(request.contains(&server_hash), "{request}");
+                let (status, headers, body) = match attempt {
+                    0..=6 => (
+                        "404 Not Found",
+                        "",
+                        r#"{"ok":false,"error":{"code":"agent_not_found","message":"not visible by name yet"}}"#,
+                    ),
+                    7 => (
+                        "503 Service Unavailable",
+                        "retry-after: 1\r\n",
+                        r#"{"ok":false,"error":{"code":"workspace_busy","message":"retry later"}}"#,
+                    ),
+                    _ => ("200 OK", "", r#"{"ok":true,"data":{"status":"completed"}}"#),
+                };
+                let response = format!(
+                    "HTTP/1.1 {status}\r\n{headers}content-type: application/json\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{body}",
+                    body.len()
+                );
+                stream.write_all(response.as_bytes()).await.unwrap();
+            }
+        });
+        let client = RelaycastHttpClient::new(Some(base_url), "rk_live_test", "broker", "codex");
+        client.seed_agent_token("owned-worker", "owned-token");
+
+        client
+            .release_agent_identity_guarded_with_backoffs(
+                "owned-worker",
+                None,
+                true,
+                Some(&expected_hash),
+                &[0; 7],
+            )
+            .await
+            .expect("visibility lag must not consume the independent workspace-busy retry cap");
+
+        server.await.unwrap();
+        assert!(client.owned_identity_token_hash("owned-worker").is_err());
     }
 
     #[tokio::test]
@@ -2612,6 +5556,27 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn worker_channel_membership_does_not_retry_terminal_auth_failure() {
+        let server = MockServer::start();
+        let create = server.mock(|when, then| {
+            when.method(POST).path("/v1/channels");
+            then.status(403).json_body(json!({
+                "ok": false,
+                "error": { "code": "forbidden", "message": "not allowed" }
+            }));
+        });
+        let client = seeded_http_client(&server.base_url());
+        client.seed_agent_token("worker", "owned-token");
+
+        let error = client
+            .ensure_agent_channels("worker", None, &[ChannelName::from("proof")])
+            .await
+            .expect_err("terminal ownership failure must fail closed");
+        assert!(error.to_string().contains("forbidden"));
+        create.assert_hits(1);
+    }
+
+    #[tokio::test]
     async fn worker_membership_retries_a_transient_read_but_rejects_permanent_absence() {
         for recover in [true, false] {
             let server = MockServer::start();
@@ -2668,6 +5633,44 @@ mod tests {
                 first.assert_hits(3);
             }
         }
+    }
+
+    /// A `workspace_busy` cooldown beyond the reconcile policy is terminal for
+    /// a worker channel join: the spawn holds the broker event loop, so the
+    /// broker neither waits it out nor shortens it.
+    #[tokio::test]
+    async fn worker_channel_join_long_cooldown_is_terminal_without_waiting() {
+        let server = MockServer::start();
+        let busy = server.mock(|when, then| {
+            when.method(POST).path("/v1/channels");
+            then.status(429)
+                .header("retry-after", "120")
+                .json_body(json!({"ok":false,"error":{"code":"workspace_busy","message":"Workspace write capacity is busy; retry with backoff"}}));
+        });
+        let client = seeded_http_client(&server.base_url());
+        client.seed_agent_token("worker", "owned-token");
+        let channels = [ChannelName::from("proof")];
+        let started = std::time::Instant::now();
+        let error = tokio::time::timeout(
+            Duration::from_secs(60),
+            client.ensure_agent_channels("worker", None, &channels),
+        )
+        .await
+        .expect("a long cooldown must not be waited out")
+        .unwrap_err()
+        .to_string();
+        assert!(error.contains("workspace_busy"), "{error}");
+        // Only the SDK's own paced round reached the server: no broker replay.
+        let hits = busy.hits();
+        assert!(
+            hits >= 1 && hits <= super::WORKER_CHANNEL_BUSY_SDK_ROUND_REQUESTS as usize,
+            "{hits}"
+        );
+        assert!(
+            started.elapsed() < Duration::from_secs(60),
+            "broker must not sleep a refused cooldown: {:?}",
+            started.elapsed()
+        );
     }
 
     #[tokio::test]
@@ -2729,9 +5732,22 @@ mod tests {
                     error.contains("skipped after workspace_busy: engineering"),
                     "{error}"
                 );
-                // One initial attempt plus the bounded retry budget for the whole
-                // spawn; never per channel, never unbounded.
-                busy.assert_hits(1 + super::WORKER_CHANNEL_BUSY_RETRY_BACKOFFS.len());
+                // One request budget for the whole spawn; never per channel,
+                // never unbounded. The SDK retries an admission denial itself,
+                // so the server sees several requests per broker round; the
+                // budget is a ceiling on what the server receives, and the
+                // broker replayed the SDK's round at least once.
+                let hits = busy.hits();
+                let budget = super::WORKER_CHANNEL_BUSY_MAX_REQUESTS as usize;
+                let sdk_round = super::WORKER_CHANNEL_BUSY_SDK_ROUND_REQUESTS as usize;
+                assert!(
+                    hits > sdk_round,
+                    "expected the broker to replay after the SDK's own round, got {hits}"
+                );
+                assert!(
+                    hits <= budget,
+                    "busy retries exceeded the request budget: {hits} > {budget}"
+                );
                 join.assert_hits(0);
             }
         }
@@ -2881,6 +5897,24 @@ mod tests {
         presence.assert_hits(1);
         rotate.assert_hits(0);
         register.assert_hits(0);
+    }
+
+    #[test]
+    fn cached_session_token_handoff_never_registers_or_takes_over() {
+        let server = MockServer::start();
+        let network = server.mock(|_when, then| {
+            then.status(500);
+        });
+        let client =
+            RelaycastHttpClient::new(Some(server.base_url()), "rk_test", "broker", "devin");
+        assert_eq!(client.cached_agent_token("worker-a"), None);
+        client.seed_agent_token("worker-a", "at_existing_session");
+        assert_eq!(
+            client.cached_agent_token("worker-a").as_deref(),
+            Some("at_existing_session")
+        );
+        assert_eq!(client.cached_agent_token("unknown-worker"), None);
+        network.assert_hits(0);
     }
 
     /// Must-not-fire: a cached token short-circuits before the presence
@@ -3161,6 +6195,80 @@ mod tests {
             "must not be misreported as an engine capability problem; got: {rendered}"
         );
         legacy_rotate.assert_hits(0);
+    }
+
+    /// Terminal takeover responses must remain terminal registration errors.
+    /// In particular, auth failures and an expected-agent conflict must not
+    /// be converted to `Transport`, retried by the registration loop, or
+    /// mistaken for an old engine that needs the workspace-key rotate route.
+    #[tokio::test]
+    async fn takeover_terminal_api_errors_preserve_status_and_do_not_retry_or_fallback() {
+        for (status, code) in [
+            (401, "unauthorized"),
+            (403, "forbidden"),
+            (409, "expected_agent_id_mismatch"),
+        ] {
+            let server = MockServer::start();
+            let register = server.mock(|when, then| {
+                when.method(POST).path("/v1/agents");
+                then.status(409).json_body(json!({
+                    "ok": false,
+                    "error": { "code": "agent_already_exists", "message": "exists" }
+                }));
+            });
+            let lookup = server.mock(|when, then| {
+                when.method(GET).path("/v1/agents/worker-a");
+                then.status(200).json_body(json!({
+                    "ok": true,
+                    "data": {
+                        "id": "agent_worker_a",
+                        "name": "worker-a",
+                        "type": "agent",
+                        "status": "offline",
+                        "persona": null,
+                        "metadata": {},
+                        "last_seen": "2026-08-16T20:00:00.000Z"
+                    }
+                }));
+            });
+            let takeover = server.mock(|when, then| {
+                when.method(POST).path("/v1/agents/worker-a/takeover");
+                then.status(status).json_body(json!({
+                    "ok": false,
+                    "error": { "code": code, "message": "terminal takeover failure" }
+                }));
+            });
+            let legacy_rotate = server.mock(|when, then| {
+                when.method(POST).path("/v1/agents/worker-a/rotate-token");
+                then.status(200).json_body(json!({
+                    "ok": true,
+                    "data": { "name": "worker-a", "token": "must_not_rotate" }
+                }));
+            });
+
+            let client = RelaycastHttpClient::new(
+                Some(server.base_url()),
+                "rk_live_test",
+                "broker",
+                "codex",
+            );
+            let outcome = retry_agent_registration(&client, "worker-a", Some("codex"))
+                .await
+                .expect_err("terminal takeover errors must fail closed");
+
+            assert!(matches!(
+                outcome,
+                RegRetryOutcome::Fatal(RelaycastRegistrationError::Api {
+                    status: actual_status,
+                    ref detail,
+                    ..
+                }) if actual_status == status && detail.contains(code)
+            ));
+            register.assert_hits(1);
+            lookup.assert_hits(1);
+            takeover.assert_hits(1);
+            legacy_rotate.assert_hits(0);
+        }
     }
 
     /// Two concurrent cache-miss registrations for the same name must produce

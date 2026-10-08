@@ -28,6 +28,12 @@ describe('Agent Relay MCP initialization', () => {
         role: { type: 'string' },
         objective: { type: 'string' },
       });
+      // Both public spawn schemas must accept the Muse CLI.
+      for (const name of ['spawn', 'add_agent'] as const) {
+        const tool = tools.tools.find((candidate) => candidate.name === name);
+        const props = tool?.inputSchema.properties as Record<string, { enum?: string[] }> | undefined;
+        expect(props?.cli?.enum).toContain('muse');
+      }
     } finally {
       await client.close();
       await server.close();

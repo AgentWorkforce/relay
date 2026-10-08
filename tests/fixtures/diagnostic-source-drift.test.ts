@@ -37,33 +37,36 @@ describe('diagnosis source provenance', () => {
   });
 
   it('accepts the RelayFlows CLI dry-run environment value in every verification workflow', async () => {
-    const workflowPaths = [
-      'workflows/verify-fleet-daytona.ts',
-      'workflows/verify-cleanroom.ts',
-      'workflows/diagnose-relay-orchestration-reliability.ts',
-      'workflows/verify-features.ts',
-    ];
-    for (const workflowPath of workflowPaths) {
-      const source = await readFile(workflowPath, 'utf8');
-      expect(source, workflowPath).toContain("process.env.DRY_RUN === '1'");
-      expect(source, workflowPath).toContain("process.env.DRY_RUN === 'true'");
+    // Every verification flow migrated to relayflows v2, which has no `dryRun`
+    // run option: `flows check` validates a spec without executing it, so the
+    // same guarantee is now carried by a `:check` script per flow.
+    const packageJson = JSON.parse(await readFile('package.json', 'utf8'));
+    for (const script of [
+      'verify:fleet-daytona:check',
+      'verify:cleanroom:check',
+      'diagnose:orchestration:check',
+      'audit:feature-manifest:check',
+      'verify:features:check',
+    ]) {
+      expect(packageJson.scripts[script], script).toContain('flows check');
     }
   });
 
-  it('wires the package dry-run command into the Relayflow runner', async () => {
+  it('wires the package validation command into the Relayflows runner', async () => {
     const [packageJson, workflow] = await Promise.all([
       readFile('package.json', 'utf8').then(JSON.parse),
-      readFile('workflows/diagnose-relay-orchestration-reliability.ts', 'utf8'),
+      readFile('flows/diagnose/orchestration.spec.ts', 'utf8'),
     ]);
-    expect(packageJson.scripts['diagnose:orchestration:dry-run']).toMatch(/(?:^|\s)DRY_RUN\s*=\s*1(?:\s|$)/);
-    expect(workflow).toMatch(
-      /dryRun\s*:\s*process\.env\.DRY_RUN\s*===\s*["']1["']\s*\|\|\s*process\.env\.DRY_RUN\s*===\s*["']true["']/
-    );
+    // v1's dry run became `flows check` on the generated spec.
+    expect(packageJson.scripts['diagnose:orchestration:check']).toContain('flows check');
     expect(workflow).toContain('`${ART}/*`');
     expect(workflow).toContain('extensions.map((extension)');
     expect(workflow).not.toContain("const extensions = '{");
     expect(workflow).toContain("'**/.workflow-artifacts/**/draft-*'");
     expect(workflow).toContain('network: diagnosisAgentNetwork(agentName)');
+    // The permission policy still comes from the same source; only its shape
+    // is narrowed to what AgentStepSpec.permissions can express.
+    expect(workflow).toContain('function agentPermissions(agentName: string)');
     expect(workflow).not.toContain('network: false');
   });
 

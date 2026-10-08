@@ -43,7 +43,7 @@ export type CloudSessionOptions = {
   device?: boolean;
   refreshTimeoutMs?: number;
   env?: NodeJS.ProcessEnv;
-  /** Optional caller policy applied before refreshed credentials use a selected API host. */
+  /** Optional URL policy applied before login credentials are persisted or used, including refresh. */
   validateApiUrl?: (apiUrl: string) => void;
 };
 

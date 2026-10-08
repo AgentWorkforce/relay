@@ -1,12 +1,13 @@
 use std::{
-    collections::{HashMap, VecDeque},
+    collections::{HashMap, HashSet, VecDeque},
     path::{Path, PathBuf},
     process::Stdio,
+    sync::{Arc, Mutex},
     time::{Duration, Instant},
 };
 
 use crate::{
-    ids::{RequestId, WorkerName},
+    ids::{DeliveryId, RequestId, WorkerName},
     metrics::MetricsCollector,
     protocol::{
         AgentRuntime, AgentSpec, AppServerAuthType, AppServerHostOwnership, HarnessReleasePolicy,
@@ -14,6 +15,7 @@ use crate::{
         ResolvedHarnessConfig, PROTOCOL_VERSION,
     },
     relaycast::configure_agent_relay_mcp_with_result,
+    snippets::{is_muse_executable, muse_clean_home_dir},
     supervisor::Supervisor,
     types::{AgentResultMcpConfig, CommitAttestation},
 };
@@ -33,8 +35,9 @@ use crate::{
     runtime::headless_provider_cli_name,
     spawner::{
         add_broker_hooks_path, attestation_env_present, is_valid_attestation_value,
-        resolve_commit_hooks_dir, terminate_child, with_commit_attestation_env,
-        RELAY_ATTEST_AGENT_ID, RELAY_ATTEST_JTI, RELAY_ATTEST_SESSION_ID, RELAY_ATTEST_SPONSOR_ID,
+        remove_inherited_relay_credentials, resolve_commit_hooks_dir, terminate_child,
+        with_commit_attestation_env, NODE_IDENTITY_ENV_KEYS, RELAY_ATTEST_AGENT_ID,
+        RELAY_ATTEST_JTI, RELAY_ATTEST_SESSION_ID, RELAY_ATTEST_SPONSOR_ID,
     },
 };
 
@@ -74,6 +77,11 @@ const WORKER_COMMAND_QUEUE_TIMEOUT: Duration = Duration::from_millis(250);
 /// slow provider response. The sole stdin writer must still eventually fault
 /// rather than wedge the worker lane, but should tolerate that short stall.
 const WORKER_WRITE_TIMEOUT: Duration = Duration::from_secs(5);
+/// A native existing-session delivery is not durably queued merely because its
+/// frame reached the worker pipe. Wait for the sidecar's correlated
+/// `delivery_queued` or `delivery_ack`, which is emitted only after durable
+/// custody or immediate acceptance.
+const NATIVE_DELIVERY_CUSTODY_TIMEOUT: Duration = Duration::from_secs(10);
 
 /// A complete newline-delimited worker protocol frame. A dedicated task owns
 /// each worker's stdin and writes these frames in order, so cancelling a
@@ -254,6 +262,7 @@ pub(crate) struct WorkerRegistry {
     worker_logs_dir: PathBuf,
     commit_hooks_dir: Option<tempfile::TempDir>,
     pub(crate) initial_tasks: HashMap<WorkerName, String>,
+    argv_initial_tasks: HashSet<WorkerName>,
     // Ownership outlives reaping so a failed pre-ready handle can clean up safely.
     pub(crate) owned_spawn_generations:
         HashMap<WorkerName, (Uuid, crate::relaycast::RelaycastHttpClient)>,
@@ -262,6 +271,189 @@ pub(crate) struct WorkerRegistry {
     pub(crate) owned_cleanup_journal: Option<PathBuf>,
     pub(crate) supervisor: Supervisor,
     pub(crate) metrics: MetricsCollector,
+    native_delivery_custody: NativeDeliveryCustodyHub,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+struct NativeDeliveryCustodyKey {
+    name: WorkerName,
+    generation: Uuid,
+    delivery_id: DeliveryId,
+}
+
+type NativeDeliveryCustodyResult = std::result::Result<(), String>;
+
+/// Correlates the native delivery HTTP task with the sidecar protocol event
+/// that proves durable custody. The registry owns the hub and authorized
+/// senders hold clones, so a same-name replacement cannot satisfy a waiter for
+/// an older process generation.
+#[derive(Clone, Default)]
+struct NativeDeliveryCustodyHub {
+    waiters:
+        Arc<Mutex<HashMap<NativeDeliveryCustodyKey, oneshot::Sender<NativeDeliveryCustodyResult>>>>,
+}
+
+impl NativeDeliveryCustodyHub {
+    fn register(
+        &self,
+        key: NativeDeliveryCustodyKey,
+    ) -> Result<oneshot::Receiver<NativeDeliveryCustodyResult>> {
+        let (sender, receiver) = oneshot::channel();
+        let mut waiters = self
+            .waiters
+            .lock()
+            .map_err(|_| anyhow::anyhow!("native delivery custody registry is unavailable"))?;
+        anyhow::ensure!(
+            !waiters.contains_key(&key),
+            "native delivery custody is already pending for '{}'",
+            key.delivery_id
+        );
+        waiters.insert(key, sender);
+        Ok(receiver)
+    }
+
+    fn resolve(&self, key: &NativeDeliveryCustodyKey, result: NativeDeliveryCustodyResult) -> bool {
+        let sender = self
+            .waiters
+            .lock()
+            .ok()
+            .and_then(|mut waiters| waiters.remove(key));
+        sender.is_some_and(|sender| sender.send(result).is_ok())
+    }
+
+    fn cancel(&self, key: &NativeDeliveryCustodyKey) {
+        if let Ok(mut waiters) = self.waiters.lock() {
+            waiters.remove(key);
+        }
+    }
+
+    fn fail_generation(&self, name: &WorkerName, generation: Uuid, error: &str) {
+        let senders = if let Ok(mut waiters) = self.waiters.lock() {
+            let keys: Vec<_> = waiters
+                .keys()
+                .filter(|key| key.name == *name && key.generation == generation)
+                .cloned()
+                .collect();
+            keys.into_iter()
+                .filter_map(|key| waiters.remove(&key))
+                .collect::<Vec<_>>()
+        } else {
+            Vec::new()
+        };
+        for sender in senders {
+            let _ = sender.send(Err(error.to_string()));
+        }
+    }
+}
+
+struct NativeDeliveryCustodyRegistration {
+    custody: NativeDeliveryCustodyHub,
+    key: Option<NativeDeliveryCustodyKey>,
+}
+
+impl NativeDeliveryCustodyRegistration {
+    fn new(custody: NativeDeliveryCustodyHub, key: NativeDeliveryCustodyKey) -> Self {
+        Self {
+            custody,
+            key: Some(key),
+        }
+    }
+
+    fn disarm(&mut self) {
+        self.key = None;
+    }
+}
+
+impl Drop for NativeDeliveryCustodyRegistration {
+    fn drop(&mut self) {
+        if let Some(key) = self.key.take() {
+            self.custody.cancel(&key);
+        }
+    }
+}
+
+/// Cloneable handle to one authorized worker generation's sole stdin writer.
+/// Native delivery tasks use this handle after leaving the broker actor so a
+/// stalled pipe cannot block unrelated runtime events.
+#[derive(Clone)]
+pub(crate) struct WorkerDeliverySender {
+    name: WorkerName,
+    generation: Uuid,
+    command_tx: mpsc::Sender<WorkerWriteCommand>,
+    custody: NativeDeliveryCustodyHub,
+}
+
+impl WorkerDeliverySender {
+    pub(crate) async fn deliver(&self, delivery: RelayDelivery) -> Result<()> {
+        tracing::debug!(
+            target = "broker::deliver",
+            worker = %self.name,
+            generation = %self.generation,
+            from = %delivery.from,
+            target = %delivery.target,
+            event_id = %delivery.event_id,
+            "delivering event to authorized worker generation"
+        );
+        let delivery_id = delivery.delivery_id.clone();
+        let frame = encode_worker_frame("deliver_relay", None, serde_json::to_value(delivery)?)?;
+        let custody_key = NativeDeliveryCustodyKey {
+            name: self.name.clone(),
+            generation: self.generation,
+            delivery_id,
+        };
+        let custody_rx = self.custody.register(custody_key.clone())?;
+        let mut custody_registration =
+            NativeDeliveryCustodyRegistration::new(self.custody.clone(), custody_key);
+        let (completion_tx, completion_rx) = oneshot::channel();
+        let write_result: Result<()> = async {
+            timeout(
+                WORKER_COMMAND_QUEUE_TIMEOUT,
+                self.command_tx.send(WorkerWriteCommand {
+                    frame,
+                    completion: Some(completion_tx),
+                }),
+            )
+            .await
+            .map_err(|_| anyhow::anyhow!("worker command queue timed out for '{}'", self.name))?
+            .map_err(|_| {
+                anyhow::anyhow!("worker command writer is unavailable for '{}'", self.name)
+            })?;
+            completion_rx
+                .await
+                .map_err(|_| {
+                    anyhow::anyhow!(
+                        "worker command writer stopped before completing '{}'",
+                        self.name
+                    )
+                })?
+                .map_err(anyhow::Error::msg)
+                .with_context(|| format!("failed writing frame to worker '{}'", self.name))
+        }
+        .await;
+        write_result?;
+
+        let custody_result = timeout(NATIVE_DELIVERY_CUSTODY_TIMEOUT, custody_rx).await;
+        if custody_result.is_ok() {
+            // Resolution removes the waiter from the hub. A timeout or a
+            // cancelled delivery future leaves the guard armed so Drop removes
+            // the registration and an exact retry can register immediately.
+            custody_registration.disarm();
+        }
+        custody_result
+            .map_err(|_| {
+                anyhow::anyhow!(
+                    "native delivery custody confirmation timed out for '{}'",
+                    self.name
+                )
+            })?
+            .map_err(|_| {
+                anyhow::anyhow!(
+                    "native delivery custody waiter stopped before confirmation for '{}'",
+                    self.name
+                )
+            })?
+            .map_err(anyhow::Error::msg)
+    }
 }
 
 fn encode_worker_frame(
@@ -365,12 +557,14 @@ impl WorkerRegistry {
             worker_logs_dir,
             commit_hooks_dir: None,
             initial_tasks: HashMap::new(),
+            argv_initial_tasks: HashSet::new(),
             owned_spawn_generations: HashMap::new(),
             completed_owned_releases: VecDeque::new(),
             identity_cleanups: HashMap::new(),
             owned_cleanup_journal: None,
             supervisor: Supervisor::new(),
             metrics: MetricsCollector::new(broker_start),
+            native_delivery_custody: NativeDeliveryCustodyHub::default(),
         }
     }
 
@@ -480,6 +674,94 @@ impl WorkerRegistry {
         self.workers.contains_key(name)
     }
 
+    /// Authorize the exact broker-owned Codex native session used by the
+    /// Cloud Babysitter delivery lane. Name-only liveness is insufficient: a
+    /// released worker can be replaced under the same Relay identity, so the
+    /// session id and native active-input capability are checked together at
+    /// the final local hop.
+    pub(crate) fn authorize_native_existing_session(
+        &mut self,
+        name: &WorkerName,
+        session_id: &str,
+    ) -> Result<WorkerDeliverySender> {
+        let handle = self
+            .workers
+            .get_mut(name)
+            .with_context(|| format!("native_session_not_found: no live worker named '{name}'"))?;
+        let live = match handle.child.try_wait() {
+            Ok(Some(_)) | Err(_) => false,
+            Ok(None) => {
+                #[cfg(unix)]
+                {
+                    handle.child.id().is_some_and(|pid| !pid_is_gone(pid))
+                }
+                #[cfg(not(unix))]
+                {
+                    handle.child.id().is_some()
+                }
+            }
+        };
+        anyhow::ensure!(live, "native_session_not_live: worker '{name}' is not live");
+        anyhow::ensure!(
+            handle.ready_at.is_some(),
+            "native_session_not_ready: worker '{name}' has not proved readiness"
+        );
+        authorize_native_existing_session_spec(&handle.spec, session_id)?;
+        anyhow::ensure!(
+            !self.initial_tasks.contains_key(name),
+            "native_session_not_ready: worker initial task has not been queued"
+        );
+        Ok(WorkerDeliverySender {
+            name: name.clone(),
+            generation: handle.generation,
+            command_tx: handle.command_tx.clone(),
+            custody: self.native_delivery_custody.clone(),
+        })
+    }
+
+    pub(crate) fn confirm_native_delivery_custody(
+        &self,
+        name: &WorkerName,
+        generation: Uuid,
+        delivery_id: &str,
+    ) -> bool {
+        self.native_delivery_custody.resolve(
+            &NativeDeliveryCustodyKey {
+                name: name.clone(),
+                generation,
+                delivery_id: DeliveryId::from(delivery_id),
+            },
+            Ok(()),
+        )
+    }
+
+    pub(crate) fn fail_native_delivery_custody(
+        &self,
+        name: &WorkerName,
+        generation: Uuid,
+        delivery_id: &str,
+        error: &str,
+    ) -> bool {
+        self.native_delivery_custody.resolve(
+            &NativeDeliveryCustodyKey {
+                name: name.clone(),
+                generation,
+                delivery_id: DeliveryId::from(delivery_id),
+            },
+            Err(error.to_string()),
+        )
+    }
+
+    pub(crate) fn fail_native_delivery_custody_generation(
+        &self,
+        name: &WorkerName,
+        generation: Uuid,
+        error: &str,
+    ) {
+        self.native_delivery_custody
+            .fail_generation(name, generation, error);
+    }
+
     /// True when a worker is registered AND its child process is still alive.
     /// Registration alone (`has_worker`) can lag a dead child until the periodic
     /// `reap_exited` sweep removes it, so callers that must not act on a
@@ -571,6 +853,7 @@ impl WorkerRegistry {
         }
         self.workers.remove(name);
         self.initial_tasks.remove(name);
+        self.argv_initial_tasks.remove(name);
         self.supervisor.unregister(name);
     }
 
@@ -583,6 +866,7 @@ impl WorkerRegistry {
         worker_relay_api_key: Option<String>,
         skip_relay_prompt: bool,
         workspace_id: Option<crate::ids::WorkspaceId>,
+        initial_task: Option<String>,
         agent_result: Option<AgentResultMcpConfig>,
         commit_attestation: Option<CommitAttestation>,
     ) -> Result<AgentSpec> {
@@ -593,6 +877,7 @@ impl WorkerRegistry {
             worker_relay_api_key,
             skip_relay_prompt,
             workspace_id,
+            initial_task,
             agent_result,
             commit_attestation,
             None,
@@ -609,6 +894,7 @@ impl WorkerRegistry {
         worker_relay_api_key: Option<String>,
         skip_relay_prompt: bool,
         workspace_id: Option<crate::ids::WorkspaceId>,
+        initial_task: Option<String>,
         agent_result: Option<AgentResultMcpConfig>,
         commit_attestation: Option<CommitAttestation>,
         task_generation: Option<Uuid>,
@@ -620,6 +906,7 @@ impl WorkerRegistry {
         if self.workers.contains_key(&spec.name) {
             anyhow::bail!("agent '{}' already exists", spec.name);
         }
+        validate_muse_startup_prompt_for_spec(&spec, initial_task.as_deref())?;
 
         tracing::info!(
             target = "broker::spawn",
@@ -665,6 +952,7 @@ impl WorkerRegistry {
         let mut suppress_worker_env: Vec<&'static str> = Vec::new();
         let mut initial_harness_pid: Option<u32> = None;
         let mut direct_native_harness_sidecar = false;
+        let mut initial_task_in_argv = false;
 
         match spec.harness_config.clone() {
             Some(ResolvedHarnessConfig::Pty(config)) => {
@@ -690,6 +978,17 @@ impl WorkerRegistry {
                 if let Some(secs) = idle_threshold_secs {
                     command.arg("--idle-threshold-secs").arg(secs.to_string());
                 }
+                if let Some(home) = muse_config_home_for_worker(
+                    &normalized_cli,
+                    spec.cwd.as_deref(),
+                    &spec.name,
+                    skip_relay_prompt,
+                    self.env_value("AGENT_RELAY_LOCAL_ONLY"),
+                ) {
+                    // Path only (no secrets): the pty worker points this Muse
+                    // invocation at its isolated clean config home.
+                    command.arg("--muse-config-home").arg(home);
+                }
                 command.arg(&resolved_cli);
 
                 let cli_lower = normalized_cli.to_lowercase();
@@ -697,6 +996,7 @@ impl WorkerRegistry {
                 let is_codex = cli_lower == "codex";
                 let is_gemini = cli_lower == "gemini";
                 let is_grok = cli_lower == "grok";
+                let muse_flag = muse_yolo_flag(&cli_lower, &effective_args);
                 if let Some(model) = apply_codex_model_arg_fallback(
                     &resolved_cli,
                     &cli_lower,
@@ -796,6 +1096,13 @@ impl WorkerRegistry {
                         "auto-injecting permission-bypass flag for spawned agent"
                     );
                 }
+                if let Some(flag) = muse_flag {
+                    tracing::warn!(
+                        worker = %spec.name,
+                        flag = %flag,
+                        "auto-injecting permission-bypass flag for spawned Muse agent"
+                    );
+                }
 
                 let mcp_args = self
                     .build_mcp_args(
@@ -819,14 +1126,22 @@ impl WorkerRegistry {
                 .await;
                 if let Some(ref model) = model_flag {
                     spec.model = Some(model.clone());
+                } else if let Some(inline) = model_override_from_args(&effective_args) {
+                    // Injection was suppressed because argv already names a
+                    // model; record what the harness will actually run.
+                    spec.model = Some(inline.to_string());
                 }
 
+                let startup_prompt = muse_startup_prompt(&cli_lower, initial_task.as_deref());
+                initial_task_in_argv = startup_prompt.is_some();
                 let pty_cli_args = ordered_pty_cli_args(
                     bypass_flag,
+                    muse_flag,
                     model_flag.as_deref(),
                     &mcp_args,
                     &effective_args,
                     &harness_session_args,
+                    startup_prompt,
                 );
                 if !pty_cli_args.is_empty() {
                     command.arg("--");
@@ -920,6 +1235,17 @@ impl WorkerRegistry {
                     if let Some(secs) = idle_threshold_secs {
                         command.arg("--idle-threshold-secs").arg(secs.to_string());
                     }
+                    if let Some(home) = muse_config_home_for_worker(
+                        &normalized_cli,
+                        spec.cwd.as_deref(),
+                        &spec.name,
+                        skip_relay_prompt,
+                        self.env_value("AGENT_RELAY_LOCAL_ONLY"),
+                    ) {
+                        // Path only (no secrets): the pty worker points this Muse
+                        // invocation at its isolated clean config home.
+                        command.arg("--muse-config-home").arg(home);
+                    }
                     command.arg(&resolved_cli);
 
                     let cli_lower = normalized_cli.to_lowercase();
@@ -927,6 +1253,7 @@ impl WorkerRegistry {
                     let is_codex = cli_lower == "codex";
                     let is_gemini = cli_lower == "gemini";
                     let is_grok = cli_lower == "grok";
+                    let muse_flag = muse_yolo_flag(&cli_lower, &effective_args);
                     if let Some(model) = apply_codex_model_arg_fallback(
                         &resolved_cli,
                         &cli_lower,
@@ -1029,6 +1356,13 @@ impl WorkerRegistry {
                             "auto-injecting permission-bypass flag for spawned agent"
                         );
                     }
+                    if let Some(flag) = muse_flag {
+                        tracing::warn!(
+                            worker = %spec.name,
+                            flag = %flag,
+                            "auto-injecting permission-bypass flag for spawned Muse agent"
+                        );
+                    }
 
                     let mcp_args = self
                         .build_mcp_args(
@@ -1052,14 +1386,20 @@ impl WorkerRegistry {
                     .await;
                     if let Some(ref model) = model_flag {
                         spec.model = Some(model.clone());
+                    } else if let Some(inline) = model_override_from_args(&effective_args) {
+                        spec.model = Some(inline.to_string());
                     }
 
+                    let startup_prompt = muse_startup_prompt(&cli_lower, initial_task.as_deref());
+                    initial_task_in_argv = startup_prompt.is_some();
                     let pty_cli_args = ordered_pty_cli_args(
                         bypass_flag,
+                        muse_flag,
                         model_flag.as_deref(),
                         &mcp_args,
                         &effective_args,
                         &harness_session_args,
+                        startup_prompt,
                     );
                     if !pty_cli_args.is_empty() {
                         command.arg("--");
@@ -1110,6 +1450,8 @@ impl WorkerRegistry {
                     .await;
                     if let Some(ref model) = model_arg {
                         spec.model = Some(model.clone());
+                    } else if let Some(inline) = model_override_from_args(&spec.args) {
+                        spec.model = Some(inline.to_string());
                     }
 
                     if model_arg.is_some() || !spec.args.is_empty() || !mcp_args.is_empty() {
@@ -1145,6 +1487,11 @@ impl WorkerRegistry {
             // attested child through Command's inherited environment.
             command.env_remove(key);
         }
+        // Every runtime (PTY, headless provider, app-server, native sidecar)
+        // reaches this point with a command that inherits the broker's
+        // environment. Drop relay-owned credentials from it; the worker's own
+        // credentials are injected below.
+        remove_inherited_relay_credentials(&mut command);
         child_env.retain(|(key, _)| {
             !matches!(
                 key.as_str(),
@@ -1270,6 +1617,12 @@ impl WorkerRegistry {
                 command.env(key, value);
             }
         }
+        // Node identity belongs only to the broker and node-provider helpers.
+        // Neither the broker's worker env nor per-spawn harness/result env may
+        // add it back after the inherited credential scrub.
+        for key in NODE_IDENTITY_ENV_KEYS {
+            command.env_remove(key);
+        }
         if should_inject_relay_participant_env(
             &spec.runtime,
             direct_native_harness_sidecar,
@@ -1281,6 +1634,11 @@ impl WorkerRegistry {
             command.env("RELAY_AGENT_NAME", &spec.name);
             command.env("RELAY_AGENT_TYPE", "agent");
             command.env("RELAY_STRICT_AGENT_NAME", "1");
+        }
+        // The per-worker option overrides a parent broker opt-out.
+        command.env_remove("RELAY_SKIP_PROMPT");
+        if skip_relay_prompt {
+            command.env("RELAY_SKIP_PROMPT", "1");
         }
         // Local-only workers must not bootstrap a separate Relaycast session.
         if self.env_value("AGENT_RELAY_LOCAL_ONLY") == Some("1") {
@@ -1362,6 +1720,12 @@ impl WorkerRegistry {
             exit_reason: None,
         };
         self.workers.insert(spec.name.clone(), handle);
+        if let Some(task) = initial_task {
+            self.initial_tasks.insert(spec.name.clone(), task);
+            if initial_task_in_argv {
+                self.argv_initial_tasks.insert(spec.name.clone());
+            }
+        }
 
         if let Err(error) = self
             .send_to_worker(
@@ -1536,6 +1900,19 @@ impl WorkerRegistry {
             .await
     }
 
+    /// Remove a startup task once the harness is ready and return it only when
+    /// the broker still needs to inject it through the PTY. Muse receives its
+    /// startup task as an argv prompt, but remains present in `initial_tasks`
+    /// until readiness so follow-up deliveries cannot race the assigned work.
+    pub(crate) fn take_initial_task_for_injection(&mut self, name: &str) -> Option<String> {
+        let task = self.initial_tasks.remove(name);
+        if self.argv_initial_tasks.remove(name) {
+            None
+        } else {
+            task
+        }
+    }
+
     /// Stop a terminal task without touching a replacement worker or bypassing
     /// the normal reap/owned-identity cleanup path.
     pub(crate) async fn stop_task_generation(
@@ -1558,15 +1935,26 @@ impl WorkerRegistry {
     pub(crate) async fn release(&mut self, name: &str) -> Result<()> {
         tracing::info!(target = "broker::release", name = %name, "releasing worker");
         self.initial_tasks.remove(name);
+        self.argv_initial_tasks.remove(name);
         // An explicit release is terminal even when the process already exited
         // and disappeared from `workers`. Cancel any pending restart before
         // looking up the handle so maintenance cannot resurrect the released
         // name after the API has acknowledged teardown.
         self.supervisor.unregister(name);
+        let generation = self
+            .workers
+            .get(name)
+            .with_context(|| format!("unknown worker '{name}'"))?
+            .generation;
+        self.fail_native_delivery_custody_generation(
+            &WorkerName::from(name),
+            generation,
+            "native worker was released before confirming delivery custody",
+        );
         let mut handle = self
             .workers
             .remove(name)
-            .with_context(|| format!("unknown worker '{name}'"))?;
+            .expect("worker generation was checked before release");
         let release_grace = release_grace_for_spec(&handle.spec);
 
         let shutdown_frame = ProtocolEnvelope {
@@ -1732,8 +2120,14 @@ impl WorkerRegistry {
                         ),
                     }
                 }
+                self.fail_native_delivery_custody_generation(
+                    &name,
+                    generation,
+                    "native worker exited before confirming delivery custody",
+                );
                 self.workers.remove(&name);
                 self.initial_tasks.remove(&name);
+                self.argv_initial_tasks.remove(&name);
                 exited.push((name, generation, None, None, reason));
                 continue;
             }
@@ -1755,8 +2149,14 @@ impl WorkerRegistry {
                     .workers
                     .get(&name)
                     .and_then(|handle| handle.exit_reason.clone());
+                self.fail_native_delivery_custody_generation(
+                    &name,
+                    generation,
+                    "native worker exited before confirming delivery custody",
+                );
                 self.workers.remove(&name);
                 self.initial_tasks.remove(&name);
+                self.argv_initial_tasks.remove(&name);
                 exited.push((name, generation, code, signal, reason));
             } else if gone_via_kill0 {
                 let generation = self
@@ -1768,8 +2168,14 @@ impl WorkerRegistry {
                     .workers
                     .get(&name)
                     .and_then(|handle| handle.exit_reason.clone());
+                self.fail_native_delivery_custody_generation(
+                    &name,
+                    generation,
+                    "native worker exited before confirming delivery custody",
+                );
                 self.workers.remove(&name);
                 self.initial_tasks.remove(&name);
+                self.argv_initial_tasks.remove(&name);
                 exited.push((name, generation, None, None, reason));
             }
         }
@@ -1822,6 +2228,53 @@ pub(crate) fn native_harness_metadata(spec: &AgentSpec) -> Option<(u64, Option<V
         })
         .cloned();
     Some((version, capabilities))
+}
+
+fn authorize_native_existing_session_spec(spec: &AgentSpec, session_id: &str) -> Result<()> {
+    let cli = spec.cli.as_deref().map_or_else(
+        || Ok(String::new()),
+        |raw| {
+            let (command, _) =
+                parse_cli_command(raw).with_context(|| format!("invalid CLI command '{raw}'"))?;
+            Ok::<_, anyhow::Error>(normalize_cli_name(&command).to_ascii_lowercase())
+        },
+    )?;
+    anyhow::ensure!(
+        cli == "codex" || cli == "codex.exe",
+        "native_session_unsupported_harness: only Codex native sessions are supported"
+    );
+    let actual_session = spec.session_id.as_deref().or_else(|| {
+        spec.harness_config
+            .as_ref()
+            .and_then(ResolvedHarnessConfig::session_id)
+    });
+    anyhow::ensure!(
+        actual_session == Some(session_id),
+        "native_session_mismatch: requested session does not match the live worker"
+    );
+    let (version, capabilities) = native_harness_metadata(spec).ok_or_else(|| {
+        anyhow::anyhow!(
+            "native_session_unsupported_transport: worker is not using the native harness protocol"
+        )
+    })?;
+    anyhow::ensure!(
+        version == 1,
+        "native_session_unsupported_protocol: expected native harness protocol version 1"
+    );
+    let active_input = capabilities
+        .as_ref()
+        .and_then(|value| {
+            value
+                .get("activeInput")
+                .or_else(|| value.get("active_input"))
+        })
+        .and_then(Value::as_bool)
+        .unwrap_or(false);
+    anyhow::ensure!(
+        active_input,
+        "native_session_input_unavailable: native session does not advertise active input"
+    );
+    Ok(())
 }
 
 fn release_policy_arg(policy: Option<&HarnessReleasePolicy>) -> &'static str {
@@ -1973,15 +2426,132 @@ fn prepare_claude_session_args(args: &mut Vec<String>) -> Option<String> {
     Some(session_id)
 }
 
+/// Broker-owned default for the Muse CLI: run unattended with tool approvals
+/// disabled. `--yolo` also implies workspace trust, so it replaces the weaker
+/// `--trust-workspace` default used by the first Muse integration. Preserve an
+/// explicit caller flag without adding a duplicate.
+fn muse_yolo_flag(cli_lower: &str, effective_args: &[String]) -> Option<&'static str> {
+    // Callers pass the lowercased executable basename (directories already
+    // stripped by `normalize_cli_name`); the shared matcher also tolerates
+    // Windows executable suffixes.
+    if !is_muse_executable(cli_lower) {
+        return None;
+    }
+    if effective_args.iter().any(|arg| arg == "--yolo") {
+        return None;
+    }
+    Some("--yolo")
+}
+
+/// Muse only begins a broker-assigned task deterministically when the prompt is
+/// present at process startup. Keep the prompt as one argv value (including
+/// newlines) and leave every other harness on the established post-ready PTY
+/// injection path.
+fn muse_startup_prompt<'a>(cli_lower: &str, initial_task: Option<&'a str>) -> Option<&'a str> {
+    if !is_muse_executable(cli_lower) {
+        return None;
+    }
+    initial_task.filter(|task| !task.trim().is_empty())
+}
+
+/// Portable ceiling for Muse's single-argument startup prompt. Windows limits
+/// the complete command line to roughly 32 Ki UTF-16 code units; reserving half
+/// for the executable and broker/user flags keeps accepted prompts portable.
+pub(crate) const MUSE_STARTUP_PROMPT_MAX_BYTES: usize = 16 * 1024;
+
+/// Validate text that must cross Muse's argv startup boundary. Callers perform
+/// this check before registering a remote worker identity; `spawn` repeats it
+/// as a final defense for restart and direct registry callers.
+pub(crate) fn validate_muse_startup_prompt(cli: &str, task: Option<&str>) -> Result<()> {
+    if !is_muse_executable(cli) {
+        return Ok(());
+    }
+    let Some(task) = task.filter(|task| !task.trim().is_empty()) else {
+        return Ok(());
+    };
+    if task.contains('\0') {
+        anyhow::bail!(
+            "Muse startup task contains a NUL byte and cannot be passed as a process argument"
+        );
+    }
+    if task.len() > MUSE_STARTUP_PROMPT_MAX_BYTES {
+        anyhow::bail!(
+            "Muse startup task is {} bytes; the portable argv limit is {} bytes",
+            task.len(),
+            MUSE_STARTUP_PROMPT_MAX_BYTES
+        );
+    }
+    Ok(())
+}
+
+/// Resolve the command that a PTY spec will actually launch before validating
+/// its Muse prompt. Explicit PTY harness configs own the executable; ordinary
+/// PTY specs use `spec.cli`.
+pub(crate) fn validate_muse_startup_prompt_for_spec(
+    spec: &AgentSpec,
+    task: Option<&str>,
+) -> Result<()> {
+    let cli = match spec.harness_config.as_ref() {
+        Some(ResolvedHarnessConfig::Pty(config)) => Some(
+            parse_cli_command(&config.command)
+                .with_context(|| format!("invalid harness command '{}'", config.command))?
+                .0,
+        ),
+        None if spec.runtime == AgentRuntime::Pty => match spec.cli.as_deref() {
+            Some(command) => Some(
+                parse_cli_command(command)
+                    .with_context(|| format!("invalid CLI command '{command}'"))?
+                    .0,
+            ),
+            None => None,
+        },
+        _ => None,
+    };
+    match cli {
+        Some(cli) => validate_muse_startup_prompt(&cli, task),
+        None => Ok(()),
+    }
+}
+
+/// Clean Muse config home for a worker spawn, when Relay MCP injection is
+/// active for Muse: an isolated `XDG_CONFIG_HOME` scope provisioned by the
+/// MCP configurator. Returns `None` for other CLIs and when injection is
+/// disabled (`skip_relay_prompt` / `AGENT_RELAY_LOCAL_ONLY=1`), preserving
+/// their argv and config scope exactly. Only a path crosses into argv —
+/// never a secret.
+fn muse_config_home_for_worker(
+    normalized_cli: &str,
+    cwd: Option<&str>,
+    agent_name: &str,
+    skip_relay_prompt: bool,
+    local_only: Option<&str>,
+) -> Option<PathBuf> {
+    if skip_relay_prompt || local_only == Some("1") {
+        return None;
+    }
+    if !is_muse_executable(normalized_cli) {
+        return None;
+    }
+    Some(muse_clean_home_dir(
+        Path::new(cwd.unwrap_or(".")),
+        agent_name,
+    ))
+}
+
 fn ordered_pty_cli_args(
     bypass_flag: Option<&str>,
+    muse_flag: Option<&str>,
     model: Option<&str>,
     mcp_args: &[String],
     effective_args: &[String],
     harness_session_args: &[String],
+    startup_prompt: Option<&str>,
 ) -> Vec<String> {
     let mut args = Vec::new();
     if let Some(flag) = bypass_flag {
+        args.push(flag.to_string());
+    }
+    if let Some(flag) = muse_flag {
         args.push(flag.to_string());
     }
     if let Some(model) = model {
@@ -1994,6 +2564,9 @@ fn ordered_pty_cli_args(
     // Codex accepts its resume options after the session positional.
     args.extend_from_slice(harness_session_args);
     args.extend_from_slice(effective_args);
+    if let Some(prompt) = startup_prompt {
+        args.push(prompt.to_string());
+    }
     args
 }
 
@@ -2006,6 +2579,24 @@ fn apply_requested_session_reference(
     let session_id = session_id.trim();
     if session_id.is_empty() {
         anyhow::bail!("session_ref must not be empty");
+    }
+
+    if crate::readiness::is_devin_cli(cli_lower) {
+        if let Some(existing) =
+            cli_flag_value(args, "--resume").or_else(|| cli_flag_value(args, "-r"))
+        {
+            anyhow::ensure!(
+                existing == session_id,
+                "session_ref conflicts with the Devin session argument"
+            );
+            return Ok(());
+        }
+        anyhow::ensure!(
+            !cli_flag_present(args, &["--resume", "-r", "--continue", "-c"]),
+            "session_ref requires an explicit Devin session id"
+        );
+        harness_session_args.extend(["--resume".into(), session_id.into()]);
+        return Ok(());
     }
 
     if cli_lower == "claude" || cli_lower.starts_with("claude:") {
@@ -2057,7 +2648,7 @@ fn apply_requested_session_reference(
         }
     }
 
-    anyhow::bail!("session_ref resume is supported only for Claude and Codex PTY harnesses");
+    anyhow::bail!("session_ref resume is supported only for Claude, Codex and Devin PTY harnesses");
 }
 
 fn codex_session_reference(args: &[String]) -> CodexSessionReference {
@@ -2229,6 +2820,40 @@ fn cli_flag_present(args: &[String], flags: &[&str]) -> bool {
     })
 }
 
+/// The model an inline `--model`/`-m` override names, if the arguments carry
+/// one with a value. The harness reads argv and never sees `spec.model`, so
+/// this is the model that actually runs, and it is what listings, spawn
+/// events, telemetry and relay-skill selection must describe.
+///
+/// Later occurrences win, matching how the harnesses themselves read argv.
+/// A bare `--model` with no value names nothing, so it yields `None` while
+/// still suppressing injection through `args_include_model_override`.
+pub(crate) fn model_override_from_args(args: &[String]) -> Option<&str> {
+    let mut found: Option<&str> = None;
+    let mut index = 0;
+    while index < args.len() {
+        let arg = args[index].as_str();
+        if let Some(value) = arg
+            .strip_prefix("--model=")
+            .or_else(|| arg.strip_prefix("-m="))
+        {
+            let value = value.trim();
+            if !value.is_empty() {
+                found = Some(value);
+            }
+        } else if arg == "--model" || arg == "-m" {
+            if let Some(value) = args.get(index + 1).map(|value| value.trim()) {
+                if !value.is_empty() {
+                    found = Some(value);
+                }
+                index += 1;
+            }
+        }
+        index += 1;
+    }
+    found
+}
+
 fn args_include_model_override(args: &[String]) -> bool {
     args.iter().any(|arg| {
         arg == "--model" || arg.starts_with("--model=") || arg == "-m" || arg.starts_with("-m=")
@@ -2387,12 +3012,8 @@ async fn codex_debug_models_output(resolved_cli: &str) -> std::io::Result<std::p
     let mut attempt: u32 = 0;
     loop {
         attempt += 1;
-        match Command::new(resolved_cli)
-            .arg("debug")
-            .arg("models")
-            .output()
-            .await
-        {
+        let mut command = crate::spawner::scrubbed_command(resolved_cli);
+        match command.arg("debug").arg("models").output().await {
             Err(err)
                 if err.kind() == std::io::ErrorKind::ExecutableFileBusy
                     && attempt < MAX_ATTEMPTS =>
@@ -2594,6 +3215,139 @@ mod tests {
         WorkerRegistry::new(tx, env, PathBuf::from("/tmp/worker-tests"), Instant::now())
     }
 
+    #[tokio::test]
+    async fn native_delivery_waits_for_correlated_sidecar_custody() {
+        let name = WorkerName::from("native");
+        let generation = Uuid::new_v4();
+        let custody = NativeDeliveryCustodyHub::default();
+        let (command_tx, mut command_rx) = mpsc::channel(1);
+        let sender = WorkerDeliverySender {
+            name: name.clone(),
+            generation,
+            command_tx,
+            custody: custody.clone(),
+        };
+        let delivery_id = DeliveryId::from("delivery-1");
+        let delivery = RelayDelivery {
+            delivery_id: delivery_id.clone(),
+            event_id: "event-1".into(),
+            workspace_id: None,
+            workspace_alias: None,
+            from: "reviewer".to_string(),
+            target: "native".into(),
+            body: "status".to_string(),
+            thread_id: None,
+            priority: None,
+            injection_mode: Default::default(),
+        };
+
+        let delivery_task = tokio::spawn(async move { sender.deliver(delivery).await });
+        let mut command = command_rx.recv().await.expect("worker command");
+        command
+            .completion
+            .take()
+            .expect("write completion")
+            .send(Ok(()))
+            .expect("delivery task should await write completion");
+        tokio::task::yield_now().await;
+        assert!(
+            !delivery_task.is_finished(),
+            "pipe write alone must not claim durable custody"
+        );
+
+        assert!(custody.resolve(
+            &NativeDeliveryCustodyKey {
+                name,
+                generation,
+                delivery_id,
+            },
+            Ok(()),
+        ));
+        delivery_task
+            .await
+            .expect("delivery task should join")
+            .expect("correlated sidecar confirmation should complete delivery");
+    }
+
+    #[tokio::test]
+    async fn cancelled_native_delivery_removes_its_custody_waiter() {
+        let name = WorkerName::from("native");
+        let generation = Uuid::new_v4();
+        let custody = NativeDeliveryCustodyHub::default();
+        let (command_tx, mut command_rx) = mpsc::channel(1);
+        let sender = WorkerDeliverySender {
+            name: name.clone(),
+            generation,
+            command_tx,
+            custody: custody.clone(),
+        };
+        let delivery_id = DeliveryId::from("delivery-cancelled");
+        let custody_key = NativeDeliveryCustodyKey {
+            name,
+            generation,
+            delivery_id: delivery_id.clone(),
+        };
+        let delivery = RelayDelivery {
+            delivery_id,
+            event_id: "event-cancelled".into(),
+            workspace_id: None,
+            workspace_alias: None,
+            from: "reviewer".to_string(),
+            target: "native".into(),
+            body: "status".to_string(),
+            thread_id: None,
+            priority: None,
+            injection_mode: Default::default(),
+        };
+
+        let delivery_task = tokio::spawn(async move { sender.deliver(delivery).await });
+        let mut command = command_rx.recv().await.expect("worker command");
+        command
+            .completion
+            .take()
+            .expect("write completion")
+            .send(Ok(()))
+            .expect("delivery task should await custody");
+        tokio::task::yield_now().await;
+        delivery_task.abort();
+        assert!(delivery_task
+            .await
+            .expect_err("delivery should be cancelled")
+            .is_cancelled());
+
+        let replacement = custody
+            .register(custody_key.clone())
+            .expect("cancelled delivery must not block an exact retry");
+        custody.cancel(&custody_key);
+        assert!(
+            replacement.await.is_err(),
+            "cancelling the replacement waiter should close its receiver"
+        );
+    }
+
+    #[tokio::test]
+    async fn native_delivery_custody_fails_when_worker_generation_exits() {
+        let name = WorkerName::from("native");
+        let generation = Uuid::new_v4();
+        let custody = NativeDeliveryCustodyHub::default();
+        let receiver = custody
+            .register(NativeDeliveryCustodyKey {
+                name: name.clone(),
+                generation,
+                delivery_id: DeliveryId::from("delivery-exit"),
+            })
+            .expect("custody waiter should register");
+
+        custody.fail_generation(&name, generation, "worker exited");
+        assert_eq!(
+            receiver
+                .await
+                .expect("exit should resolve custody waiter")
+                .expect_err("exit cannot confirm custody"),
+            "worker exited"
+        );
+    }
+
     #[cfg(unix)]
     fn git(repo: &Path, args: &[&str]) -> std::process::Output {
         std::process::Command::new("git")
@@ -2652,6 +3406,82 @@ mod tests {
 
     #[cfg(any(target_os = "linux", target_os = "macos"))]
     #[tokio::test]
+    async fn spawned_worker_holds_only_its_own_and_delegated_relay_credentials() {
+        let dir = tempfile::tempdir().expect("worker cwd");
+        // Record only the NAMES of relay credential variables the worker sees.
+        let keys = format!(
+            "{} RELAY_NODE_ID AGENT_RELAY_ENROLLED_NODE_ID",
+            crate::spawner::INHERITED_RELAY_CREDENTIAL_ENV_KEYS.join(" ")
+        );
+        let script = format!(
+            "for k in {keys}; do if printenv \"$k\" >/dev/null; then echo \"$k\"; fi; done > names.tmp && mv names.tmp names.txt; sleep 30"
+        );
+        let mut spec = sleeping_native_worker("credential-worker", None);
+        spec.harness_config = Some(ResolvedHarnessConfig::Native(NativeHarnessConfig {
+            command: "sh".to_string(),
+            args: vec!["-c".to_string(), script],
+            cwd: Some(dir.path().to_string_lossy().into_owned()),
+            env: Some(std::collections::HashMap::from([
+                ("RELAY_NODE_ID".to_string(), "node_harness".to_string()),
+                (
+                    "AGENT_RELAY_ENROLLED_NODE_ID".to_string(),
+                    "node_harness".to_string(),
+                ),
+            ])),
+            session_id: "session-credential-worker".to_string(),
+            metadata: None,
+        }));
+        // The broker explicitly delegates a workspace key through its worker
+        // environment; that delegation must survive the inherited scrub.
+        let mut registry = make_registry(vec![
+            ("RELAY_API_KEY".to_string(), "rk_live_delegated".to_string()),
+            ("RELAY_NODE_ID".to_string(), "node_broker".to_string()),
+            (
+                "AGENT_RELAY_ENROLLED_NODE_ID".to_string(),
+                "node_broker".to_string(),
+            ),
+        ]);
+
+        registry
+            .spawn(
+                spec,
+                None,
+                None,
+                Some("at_live_worker_own".to_string()),
+                false,
+                None,
+                None,
+                None,
+                None,
+            )
+            .await
+            .expect("credential worker should spawn");
+
+        let names_path = dir.path().join("names.txt");
+        let mut names = None;
+        for _ in 0..50 {
+            if let Ok(value) = std::fs::read_to_string(&names_path) {
+                names = Some(value);
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(100)).await;
+        }
+        registry
+            .release("credential-worker")
+            .await
+            .expect("release credential worker");
+
+        let mut observed: Vec<String> = names
+            .expect("worker recorded its credential names")
+            .lines()
+            .map(str::to_string)
+            .collect();
+        observed.sort();
+        assert_eq!(observed, vec!["RELAY_AGENT_TOKEN", "RELAY_API_KEY"]);
+    }
+
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
+    #[tokio::test]
     async fn spawned_worker_process_uses_requested_cwd() {
         let requested = tempfile::tempdir().expect("requested worker cwd");
         let requested_cwd = requested.path().to_string_lossy().into_owned();
@@ -2664,6 +3494,7 @@ mod tests {
                 None,
                 None,
                 true,
+                None,
                 None,
                 None,
                 None,
@@ -2710,6 +3541,7 @@ mod tests {
                 None,
                 None,
                 None,
+                None,
             )
             .await
             .expect_err("missing cwd must fail instead of inheriting the broker cwd")
@@ -2741,6 +3573,7 @@ mod tests {
                 None,
                 None,
                 true,
+                None,
                 None,
                 None,
                 None,
@@ -2810,7 +3643,7 @@ sleep 30
         let mut registry = make_registry(Vec::new());
 
         let effective_spec = registry
-            .spawn(spec, None, None, None, true, None, None, None)
+            .spawn(spec, None, None, None, true, None, None, None, None)
             .await
             .expect("attested worker should spawn");
         assert_eq!(effective_spec.session_id.as_deref(), Some(session_id));
@@ -2872,6 +3705,26 @@ sleep 30
             .release("attested-native-worker")
             .await
             .expect("release spawned worker");
+    }
+
+    #[test]
+    fn devin_session_reference_resumes_and_rejects_conflicting_flags() {
+        let mut args = Vec::new();
+        let mut session = Vec::new();
+        apply_requested_session_reference("devin", "session-1", &mut args, &mut session).unwrap();
+        assert_eq!(session, ["--resume", "session-1"]);
+        for original in [
+            vec!["--continue".into()],
+            vec!["--resume".into(), "other".into()],
+        ] {
+            assert!(apply_requested_session_reference(
+                "devin",
+                "session-1",
+                &mut original.clone(),
+                &mut Vec::new()
+            )
+            .is_err());
+        }
     }
 
     #[test]
@@ -3333,6 +4186,49 @@ sleep 30
         assert!(reg.supervisor.pending_restarts().is_empty());
     }
 
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
+    #[tokio::test]
+    async fn release_fails_native_delivery_custody_waiters_before_removal() {
+        let mut registry = make_registry(Vec::new());
+        let name = "released-native-worker";
+        registry
+            .spawn(
+                sleeping_native_worker(name, None),
+                None,
+                None,
+                None,
+                true,
+                None,
+                None,
+                None,
+                None,
+            )
+            .await
+            .expect("native worker should spawn");
+        let generation = registry
+            .workers
+            .get(name)
+            .expect("spawned worker")
+            .generation;
+        let receiver = registry
+            .native_delivery_custody
+            .register(NativeDeliveryCustodyKey {
+                name: WorkerName::from(name),
+                generation,
+                delivery_id: DeliveryId::from("delivery-release"),
+            })
+            .expect("custody waiter should register");
+
+        registry.release(name).await.expect("worker should release");
+        assert_eq!(
+            receiver
+                .await
+                .expect("release should resolve custody waiter")
+                .expect_err("release cannot confirm custody"),
+            "native worker was released before confirming delivery custody"
+        );
+    }
+
     #[test]
     fn worker_log_path_rejects_path_traversal() {
         let reg = make_registry(vec![]);
@@ -3427,6 +4323,108 @@ sleep 30
             capabilities.unwrap(),
             json!({"activeInput": true, "interrupt": true})
         );
+    }
+
+    fn native_codex_authorization_spec() -> AgentSpec {
+        serde_json::from_value(json!({
+            "name": "garden-coder",
+            "runtime": "headless",
+            "cli": "codex",
+            "sessionId": "native-1",
+            "args": [],
+            "channels": [],
+            "harnessConfig": {
+                "runtime": "native",
+                "command": "node",
+                "args": ["/tmp/sidecar.js"],
+                "sessionId": "native-1",
+                "metadata": {
+                    "runtimeKind": "native",
+                    "nativeHarnessProtocolVersion": 1,
+                    "nativeHarnessCapabilities": {"activeInput": true}
+                }
+            }
+        }))
+        .expect("native Codex spec")
+    }
+
+    #[test]
+    fn native_existing_session_authorization_requires_exact_session_and_active_input() {
+        let mut spec = native_codex_authorization_spec();
+        authorize_native_existing_session_spec(&spec, "native-1")
+            .expect("exact native Codex session should authorize");
+
+        spec.cli = Some("/usr/local/bin/codex --model o3".to_string());
+        authorize_native_existing_session_spec(&spec, "native-1")
+            .expect("inline Codex command should authorize by executable");
+
+        let mismatch = authorize_native_existing_session_spec(&spec, "replacement-session")
+            .expect_err("session substitution must fail")
+            .to_string();
+        assert!(mismatch.contains("native_session_mismatch"), "{mismatch}");
+
+        let mut no_input = spec.clone();
+        if let Some(ResolvedHarnessConfig::Native(config)) = no_input.harness_config.as_mut() {
+            config.metadata.as_mut().expect("metadata").insert(
+                "nativeHarnessCapabilities".to_string(),
+                json!({"activeInput": false}),
+            );
+        }
+        let unavailable = authorize_native_existing_session_spec(&no_input, "native-1")
+            .expect_err("inactive input must fail")
+            .to_string();
+        assert!(
+            unavailable.contains("native_session_input_unavailable"),
+            "{unavailable}"
+        );
+    }
+
+    #[test]
+    fn native_existing_session_authorization_rejects_non_codex_harnesses() {
+        let mut spec = native_codex_authorization_spec();
+        spec.cli = Some("claude".to_string());
+        let error = authorize_native_existing_session_spec(&spec, "native-1")
+            .expect_err("non-Codex native session must fail closed")
+            .to_string();
+        assert!(
+            error.contains("native_session_unsupported_harness"),
+            "{error}"
+        );
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn native_existing_session_authorization_reaps_an_exited_worker() {
+        let mut registry = make_registry(vec![]);
+        let name = WorkerName::from("exited-native-worker");
+        let child = Command::new("true").spawn().expect("spawn exiting child");
+        let generation = Uuid::new_v4();
+        let (command_tx, _command_rx) = mpsc::channel(WORKER_WRITE_QUEUE_CAPACITY);
+        registry.workers.insert(
+            name.clone(),
+            WorkerHandle {
+                generation,
+                spec: native_codex_authorization_spec(),
+                parent: None,
+                workspace_id: None,
+                child,
+                command_tx,
+                harness_pid: None,
+                spawned_at: Instant::now(),
+                ready_at: Some(Instant::now()),
+                last_activity_at: Instant::now(),
+                context_budget_pct: None,
+                state: AgentWorkState::Idle,
+                exit_reason: None,
+            },
+        );
+        tokio::time::sleep(Duration::from_millis(50)).await;
+
+        let error = match registry.authorize_native_existing_session(&name, "native-1") {
+            Ok(_) => panic!("an exited child must fail before receipt reservation"),
+            Err(error) => error.to_string(),
+        };
+        assert!(error.contains("native_session_not_live"), "{error}");
     }
 
     #[test]
@@ -3625,6 +4623,7 @@ sleep 30
 
         let ordered = ordered_pty_cli_args(
             Some("--dangerously-bypass-approvals-and-sandbox"),
+            None,
             Some("gpt-5.4"),
             &[
                 "-c".to_string(),
@@ -3632,6 +4631,7 @@ sleep 30
             ],
             &args,
             &harness_session_args,
+            None,
         );
         assert_eq!(
             ordered,
@@ -3668,6 +4668,208 @@ sleep 30
         .expect("matching explicit Codex resume");
 
         assert!(harness_session_args.is_empty());
+    }
+
+    #[test]
+    fn muse_yolo_flag_defaults_to_unattended_mode() {
+        assert_eq!(muse_yolo_flag("muse", &[]), Some("--yolo"));
+        assert_eq!(
+            muse_yolo_flag("muse", &["--model".to_string(), "muse-spark".to_string()]),
+            Some("--yolo")
+        );
+    }
+
+    #[test]
+    fn muse_yolo_flag_preserves_explicit_flag_without_duplication() {
+        assert_eq!(
+            muse_yolo_flag("muse", &["--trust-workspace".to_string()]),
+            Some("--yolo"),
+            "workspace trust alone does not make a broker worker unattended"
+        );
+        assert_eq!(muse_yolo_flag("muse", &["--yolo".to_string()]), None);
+    }
+
+    #[test]
+    fn muse_yolo_flag_ignores_other_clis() {
+        for cli in ["claude", "codex", "gemini", "grok", "opencode", "aider"] {
+            assert_eq!(muse_yolo_flag(cli, &[]), None);
+        }
+    }
+
+    #[test]
+    fn muse_yolo_flag_covers_windows_executable_spellings() {
+        // Bare and absolute-path spellings reduce to the same basename before
+        // reaching the helper; every Windows suffix must still run unattended.
+        for cli in [
+            "muse.exe",
+            "muse.cmd",
+            "muse.bat",
+            "MUSE.EXE",
+            r"C:\Tools\muse.exe",
+        ] {
+            let basename = cli
+                .rsplit(['/', '\\'])
+                .next()
+                .unwrap_or(cli)
+                .to_ascii_lowercase();
+            assert_eq!(
+                muse_yolo_flag(&basename, &[]),
+                Some("--yolo"),
+                "{cli} must get the unattended default"
+            );
+        }
+        // Suffix stripping must not mint false positives.
+        for cli in ["xmuse", "muse2", "amuse.exe", "my-muse-wrapper"] {
+            assert_eq!(muse_yolo_flag(cli, &[]), None);
+        }
+    }
+
+    #[test]
+    fn muse_spawn_args_are_unattended_and_start_with_the_assigned_prompt() {
+        let task = "Run pwd, then report ready.\nDo not ask for approval.";
+        let ordered = ordered_pty_cli_args(
+            None,
+            muse_yolo_flag("muse", &[]),
+            None,
+            &[],
+            &[],
+            &[],
+            muse_startup_prompt("muse", Some(task)),
+        );
+        assert_eq!(ordered, vec!["--yolo".to_string(), task.to_string()]);
+
+        let explicit = vec!["--yolo".to_string()];
+        let ordered = ordered_pty_cli_args(
+            None,
+            muse_yolo_flag("muse", &explicit),
+            None,
+            &[],
+            &explicit,
+            &[],
+            muse_startup_prompt("muse", Some(task)),
+        );
+        assert_eq!(ordered, vec!["--yolo".to_string(), task.to_string()]);
+        assert_eq!(
+            ordered
+                .iter()
+                .filter(|arg| arg.as_str() == "--yolo")
+                .count(),
+            1,
+            "an explicit --yolo must not be duplicated"
+        );
+    }
+
+    #[test]
+    fn muse_startup_prompt_is_not_used_for_other_harnesses_or_empty_tasks() {
+        assert_eq!(muse_startup_prompt("codex", Some("task")), None);
+        assert_eq!(muse_startup_prompt("muse", None), None);
+        assert_eq!(muse_startup_prompt("muse", Some("  \n")), None);
+    }
+
+    #[test]
+    fn muse_startup_prompt_rejects_nonportable_argv_text() {
+        assert!(validate_muse_startup_prompt("muse", Some("valid task")).is_ok());
+        assert!(validate_muse_startup_prompt("codex", Some("nul\0is fine off argv")).is_ok());
+
+        let nul = validate_muse_startup_prompt("muse", Some("invalid\0task"))
+            .expect_err("Muse argv cannot contain NUL")
+            .to_string();
+        assert!(nul.contains("NUL byte"), "{nul}");
+
+        let maximum = "x".repeat(MUSE_STARTUP_PROMPT_MAX_BYTES);
+        assert!(validate_muse_startup_prompt("muse", Some(&maximum)).is_ok());
+        let oversized = format!("{maximum}x");
+        let error = validate_muse_startup_prompt("muse", Some(&oversized))
+            .expect_err("oversized Muse argv must fail before process spawn")
+            .to_string();
+        assert!(
+            error.contains(&MUSE_STARTUP_PROMPT_MAX_BYTES.to_string()),
+            "{error}"
+        );
+    }
+
+    #[test]
+    fn muse_startup_prompt_validation_parses_inline_cli_arguments() {
+        let spec = AgentSpec {
+            name: WorkerName::from("muse-inline-validation"),
+            runtime: AgentRuntime::Pty,
+            provider: None,
+            cli: Some("muse --model muse-spark".to_string()),
+            session_id: None,
+            harness_config: None,
+            model: None,
+            cwd: None,
+            team: None,
+            shadow_of: None,
+            shadow_mode: None,
+            args: Vec::new(),
+            channels: Vec::new(),
+            restart_policy: None,
+        };
+        let oversized = "x".repeat(MUSE_STARTUP_PROMPT_MAX_BYTES + 1);
+        assert!(
+            validate_muse_startup_prompt_for_spec(&spec, Some(&oversized)).is_err(),
+            "inline Muse commands must not bypass argv prompt validation"
+        );
+    }
+
+    #[test]
+    fn argv_initial_task_blocks_followups_but_is_not_injected_twice() {
+        let mut registry = make_registry(Vec::new());
+        let name = WorkerName::from("muse-startup-task");
+        registry
+            .initial_tasks
+            .insert(name.clone(), "assigned task".to_string());
+        registry.argv_initial_tasks.insert(name.clone());
+
+        assert!(registry.initial_tasks.contains_key(&name));
+        assert_eq!(registry.take_initial_task_for_injection(&name), None);
+        assert!(!registry.initial_tasks.contains_key(&name));
+        assert!(!registry.argv_initial_tasks.contains(&name));
+    }
+
+    #[test]
+    fn muse_config_home_for_worker_gates_on_mcp_active() {
+        let home = muse_config_home_for_worker("muse", Some("/ws"), "agent-1", false, None)
+            .expect("muse with MCP active gets a clean home");
+        assert!(home.is_absolute());
+        assert_eq!(
+            home,
+            muse_clean_home_dir(std::path::Path::new("/ws"), "agent-1")
+        );
+        // Other CLIs keep their argv and config scope exactly.
+        assert_eq!(
+            muse_config_home_for_worker("claude", Some("/ws"), "agent-1", false, None),
+            None
+        );
+        // Injection disabled: no clean home, no argv change.
+        assert_eq!(
+            muse_config_home_for_worker("muse", Some("/ws"), "agent-1", true, None),
+            None
+        );
+        assert_eq!(
+            muse_config_home_for_worker("muse", Some("/ws"), "agent-1", false, Some("1")),
+            None
+        );
+    }
+
+    #[test]
+    fn muse_session_reference_resume_is_rejected() {
+        let mut args = Vec::new();
+        let mut harness_session_args = Vec::new();
+        let error = apply_requested_session_reference(
+            "muse",
+            "session-muse-1",
+            &mut args,
+            &mut harness_session_args,
+        )
+        .expect_err("muse session resume is unsupported");
+        assert!(
+            error
+                .to_string()
+                .contains("supported only for Claude, Codex and Devin"),
+            "unexpected error: {error}"
+        );
     }
 
     #[test]
@@ -3821,6 +5023,73 @@ sleep 30
             "--image".into(),
             "/tmp/review.png".into(),
         ]));
+    }
+
+    #[tokio::test]
+    async fn model_pin_yields_to_inline_model_overrides() {
+        for args in [
+            vec!["--model".to_string(), "sonnet".to_string()],
+            vec!["--model=sonnet".to_string()],
+            vec!["-m".to_string(), "sonnet".to_string()],
+            vec!["-m=sonnet".to_string()],
+        ] {
+            assert_eq!(
+                resolve_model_flag_for_cli("claude", "claude", "worker", Some("opus"), &args).await,
+                None
+            );
+        }
+        assert_eq!(
+            resolve_model_flag_for_cli("claude", "claude", "worker", Some("opus"), &[]).await,
+            Some("opus".to_string())
+        );
+    }
+
+    #[test]
+    fn model_override_from_args_reads_every_supported_form() {
+        for args in [
+            vec!["--model".to_string(), "haiku".to_string()],
+            vec!["--model=haiku".to_string()],
+            vec!["-m".to_string(), "haiku".to_string()],
+            vec!["-m=haiku".to_string()],
+        ] {
+            assert_eq!(model_override_from_args(&args), Some("haiku"), "{args:?}");
+            // The same arguments still suppress injection, so the harness is
+            // never handed two model flags.
+            assert!(args_include_model_override(&args), "{args:?}");
+        }
+        assert_eq!(model_override_from_args(&[]), None);
+        assert_eq!(model_override_from_args(&["--verbose".to_string()]), None);
+    }
+
+    #[test]
+    fn model_override_from_args_takes_the_last_one_and_ignores_a_valueless_flag() {
+        // argv semantics: a later flag wins.
+        assert_eq!(
+            model_override_from_args(&[
+                "--model".to_string(),
+                "haiku".to_string(),
+                "--model=sonnet".to_string(),
+            ]),
+            Some("sonnet")
+        );
+        // A trailing `--model` names nothing, so there is no effective model to
+        // record -- but injection stays suppressed.
+        let bare = vec!["--model".to_string()];
+        assert_eq!(model_override_from_args(&bare), None);
+        assert!(args_include_model_override(&bare));
+    }
+
+    #[tokio::test]
+    async fn an_inline_override_is_the_effective_model_the_pin_is_not() {
+        // `{"cli": "claude --model haiku", "model": "opus"}`: the harness runs
+        // haiku, so haiku is what the spec must carry. resolve_model_flag_for_cli
+        // returns None here precisely so no second flag is injected.
+        let args = vec!["--model".to_string(), "haiku".to_string()];
+        assert_eq!(
+            resolve_model_flag_for_cli("claude", "claude", "worker", Some("opus"), &args).await,
+            None
+        );
+        assert_eq!(model_override_from_args(&args), Some("haiku"));
     }
 
     #[test]
@@ -4008,6 +5277,7 @@ sleep 30
                 None,
                 None,
                 true,
+                None,
                 None,
                 Some(AgentResultMcpConfig {
                     callback_url: "http://127.0.0.1:1/api/agent-result".into(),

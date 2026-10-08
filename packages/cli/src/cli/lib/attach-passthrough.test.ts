@@ -839,7 +839,7 @@ describe('runPassthroughSession', () => {
     deps.readConnectionFile = vi.fn(() => null);
     const code = await runPassthroughSession('Alice', {}, deps);
     expect(code).toBe(1);
-    expect(errors[0]?.[0]).toMatch(/could not locate broker connection/);
+    expect(errors[0]?.[0]).toMatch(/no broker connection at .*connection\.json \(project default\)/);
   });
 
   // ---- API-key header propagation ----

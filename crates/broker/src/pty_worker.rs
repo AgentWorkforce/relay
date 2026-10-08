@@ -1,6 +1,7 @@
 use std::{
-    collections::{HashSet, VecDeque},
+    collections::{HashMap, HashSet, VecDeque},
     future::Future,
+    path::Path,
     pin::Pin,
     sync::{
         atomic::{AtomicBool, Ordering},
@@ -12,7 +13,7 @@ use std::{
 use futures_util::{stream::FuturesUnordered, StreamExt};
 
 use crate::{
-    ids::{DeliveryId, RequestId},
+    ids::{DeliveryId, EventId, RequestId},
     protocol::{MessageInjectionMode, ProtocolEnvelope, RelayDelivery},
     pty::{PtySession, PtyWriteSubmitError},
 };
@@ -37,16 +38,17 @@ use crate::broker::{
 };
 use crate::cli::command_parse::parse_cli_command;
 use crate::cli::PtyCommand;
-use crate::readiness::{detect_cli_ready, GridReadinessSnapshot};
+use crate::readiness::{detect_cli_ready, is_muse_cli, GridReadinessSnapshot};
 use crate::runtime::{get_terminal_size, send_frame};
 use crate::snapshot::Snapshot;
 use crate::util::ansi::{floor_char_boundary, strip_ansi, AnsiStripper};
-use crate::util::terminal::{detect_claude_trust_prompt, detect_codex_trust_prompt};
+use crate::util::terminal::{
+    detect_claude_trust_prompt, detect_codex_trust_prompt, detect_muse_device_auth_prompt,
+};
 use crate::util::utf8_stream::Utf8StreamDecoder;
 use crate::worker::detection::ActivityDetector;
 use crate::wrap::{
-    injection_submit_followup_delay, warn_on_auto_response_write, PtyAutoState,
-    AUTO_SUGGESTION_BLOCK_TIMEOUT,
+    submit_injection_body, warn_on_auto_response_write, PtyAutoState, AUTO_SUGGESTION_BLOCK_TIMEOUT,
 };
 use base64::Engine;
 
@@ -55,6 +57,47 @@ struct PendingWorkerInjection {
     delivery: RelayDelivery,
     request_id: Option<RequestId>,
     queued_at: Instant,
+}
+
+/// Recently completed broker deliveries retained for idempotent retry.
+///
+/// Broker custody and the worker's `delivery_ack` cross an asynchronous
+/// process boundary. If the acknowledgement is lost after the PTY write, the
+/// broker must retry the same delivery to repair its cumulative fleet cursor.
+/// Re-pasting it would duplicate a user-visible instruction, so the worker
+/// answers a matching retry with the original acknowledgement instead. The
+/// bounded FIFO matches the broker delivery book's recent-id horizon. This is
+/// deliberately an in-process guarantee: a worker restart clears both PTY
+/// completion evidence and broker receipt history, so a post-restart Relaycast
+/// replay follows the ordinary at-least-once delivery path. Likewise, after
+/// 512 later completions the old identity is outside this fence. Recovery must
+/// never be presented as exactly-once across restart or eviction boundaries.
+#[derive(Debug, Default)]
+struct CompletedWorkerDeliveries {
+    events: HashMap<DeliveryId, EventId>,
+    order: VecDeque<DeliveryId>,
+}
+
+impl CompletedWorkerDeliveries {
+    const CAPACITY: usize = 512;
+
+    fn get(&self, delivery_id: &DeliveryId) -> Option<&EventId> {
+        self.events.get(delivery_id)
+    }
+
+    fn insert(&mut self, delivery_id: DeliveryId, event_id: EventId) {
+        if let Some(existing_event_id) = self.events.get_mut(&delivery_id) {
+            *existing_event_id = event_id;
+            return;
+        }
+        if self.order.len() >= Self::CAPACITY {
+            if let Some(evicted) = self.order.pop_front() {
+                self.events.remove(&evicted);
+            }
+        }
+        self.events.insert(delivery_id.clone(), event_id);
+        self.order.push_back(delivery_id);
+    }
 }
 
 /// Default per-atom gap for escape-aware paced injection, in milliseconds.
@@ -69,7 +112,10 @@ const DEFAULT_INJECT_RATE_MS: u64 = 5;
 /// bulk-input path accepts the same reminder and task immediately.
 fn default_inject_rate_ms(cli: &str) -> u64 {
     let cli = cli_basename(cli);
-    if cli.eq_ignore_ascii_case("codex") || cli.eq_ignore_ascii_case("codex.exe") {
+    if cli.eq_ignore_ascii_case("codex")
+        || cli.eq_ignore_ascii_case("codex.exe")
+        || crate::readiness::is_devin_cli(cli)
+    {
         0
     } else {
         DEFAULT_INJECT_RATE_MS
@@ -180,7 +226,7 @@ const STARTUP_READY_WARNING: Duration = Duration::from_secs(25);
 /// that never receives its task is a total loss, while a brief typed a little
 /// early is recoverable. Bounded below `WORKER_READY_DEADLINE` (90s) so the work
 /// is released before an unready harness is reaped.
-const STARTUP_READY_TIMEOUT: Duration = Duration::from_secs(60);
+pub(crate) const STARTUP_READY_TIMEOUT: Duration = Duration::from_secs(60);
 const STARTUP_BUFFER_MAX: usize = 12_000;
 const STARTUP_BUFFER_KEEP: usize = 8_000;
 const CODEX_STARTUP_SETTLE: Duration = Duration::from_secs(1);
@@ -463,6 +509,7 @@ struct StartupReadinessState {
     ready_sent: bool,
     fallback_sent: bool,
     wait_warned: bool,
+    auth_error_sent: bool,
 }
 
 fn append_bounded(buf: &mut String, text: &str, max: usize, keep: usize) {
@@ -569,30 +616,56 @@ pub(crate) enum StartupGate {
     /// A known blocking dialog is on screen — the harness is deliberately not
     /// accepting input. Never released by any deadline.
     Blocked,
+    /// The harness is waiting on an interactive provider login. Blocking like
+    /// `Blocked`, but also terminal for an unattended spawn: nothing on this
+    /// node will ever answer a device prompt, so the worker reports
+    /// `provider_auth_required` rather than waiting out the deadline.
+    ProviderAuthRequired,
 }
 
-/// Whether a KNOWN blocking dialog is on screen, as opposed to a prompt we
-/// simply failed to recognise.
+impl StartupGate {
+    /// Whether the harness is deliberately refusing input, as opposed to
+    /// showing a prompt we failed to recognise. No deadline may release
+    /// queued work past either blocking verdict.
+    fn is_blocking(self) -> bool {
+        matches!(self, Self::Blocked | Self::ProviderAuthRequired)
+    }
+}
+
+/// Which KNOWN blocking dialog is on screen, if any, as opposed to a prompt
+/// we simply failed to recognise.
 ///
 /// The two must not be conflated. An unrecognised prompt means our heuristic is
 /// blind and the timeout should eventually release the brief anyway. A trust
 /// interstitial means the harness is deliberately not accepting work yet, and
 /// typing into it would answer a security question on the operator's behalf.
 /// `evaluate_startup_gate` vetoes it for exactly that reason.
-fn startup_gate_blocked(pty: &PtySession) -> bool {
-    let screen = pty.screen_text();
-    detect_codex_trust_prompt(&screen) || detect_claude_trust_prompt(&screen) == (true, true)
+/// Muse's device login is the third such dialog, and the only one no
+/// operator action on this node can clear — the approval happens in a
+/// browser elsewhere. `detect_cli_ready` already refuses to prove readiness
+/// on that screen; this names it as deliberate so the deadline cannot
+/// release the brief into a login form.
+fn startup_gate_block_reason(resolved_cli: &str, screen: &str) -> Option<StartupGate> {
+    if is_muse_cli(resolved_cli) && detect_muse_device_auth_prompt(screen) {
+        return Some(StartupGate::ProviderAuthRequired);
+    }
+    if detect_codex_trust_prompt(screen) || detect_claude_trust_prompt(screen) == (true, true) {
+        return Some(StartupGate::Blocked);
+    }
+    None
 }
 
-fn startup_gate_ready(
+/// Classify the harness's startup state from a single grid render, so the
+/// readiness and blocking verdicts cannot straddle two repaints.
+fn startup_gate(
     resolved_cli: &str,
     startup_output: &str,
     startup_total_bytes: usize,
     output_quiet: Duration,
     pty: &PtySession,
-) -> bool {
+) -> StartupGate {
     let screen = pty.screen_text();
-    evaluate_startup_gate(
+    if evaluate_startup_gate(
         resolved_cli,
         startup_output,
         startup_total_bytes,
@@ -601,7 +674,10 @@ fn startup_gate_ready(
             screen: &screen,
             cursor: Some(pty.cursor_position()),
         },
-    )
+    ) {
+        return StartupGate::Ready;
+    }
+    startup_gate_block_reason(resolved_cli, &screen).unwrap_or(StartupGate::Unrecognised)
 }
 
 /// Whether the loop may pop and start the next pending injection this tick.
@@ -739,11 +815,38 @@ async fn try_emit_worker_ready(
     }
 
     let startup_ready = gate == StartupGate::Ready;
+
+    // An interactive provider login cannot be waited out: the approval happens
+    // in someone else's browser, and until then the harness accepts no task.
+    // Report it once, specifically, so a verified spawn fails closed now
+    // instead of presenting a live worker that holds capacity and never works.
+    if gate == StartupGate::ProviderAuthRequired && !readiness.auth_error_sent {
+        readiness.auth_error_sent = true;
+        tracing::warn!(
+            target: "agent_relay::worker::pty",
+            worker = %worker_name,
+            "harness is waiting on an interactive provider login; reporting provider_auth_required instead of readiness"
+        );
+        // The screen carries a device code, so no harness output is copied
+        // into the frame — only the fixed remediation.
+        let _ = send_frame(
+            out_tx,
+            "worker_error",
+            None,
+            json!({
+                "code": "provider_auth_required",
+                "message": "harness is waiting on an interactive provider login; run the harness on this node and complete the device login, then retry",
+                "retryable": false
+            }),
+        )
+        .await;
+    }
+
     // A deliberate veto is not a blind spot: never time out past a known
     // blocking dialog, or the brief is typed into a trust prompt and answers a
     // security question nobody asked us to answer.
     let timed_out = !readiness.fallback_sent
-        && gate != StartupGate::Blocked
+        && !gate.is_blocking()
         && init_received_at.is_some_and(|started| started.elapsed() >= STARTUP_READY_TIMEOUT);
 
     if !startup_ready && !timed_out {
@@ -808,9 +911,51 @@ pub(crate) async fn run_pty_worker(cmd: PtyCommand) -> Result<()> {
 
     let (resolved_cli, inline_cli_args) = parse_cli_command(&cmd.cli)
         .with_context(|| format!("invalid CLI command '{}'", cmd.cli))?;
+    if let Some(home) = cmd.muse_config_home.as_deref().filter(|s| !s.is_empty()) {
+        // The broker passes this flag only for Muse workers with Relay MCP
+        // provisioned, but re-check the executable identity defensively: a
+        // stray flag must never redirect another CLI's config scope.
+        if crate::snippets::is_muse_executable(&resolved_cli) {
+            // Resolve before redirecting XDG_CONFIG_HOME: the shared login
+            // lives in the host's own Muse config scope.
+            let shared_auth_path = std::env::var_os(crate::snippets::MUSE_SHARED_AUTH_PATH_ENV);
+            let isolated_auth = std::env::var_os(crate::snippets::MUSE_ISOLATED_AUTH_ENV);
+            let host_muse_auth_path = std::env::var_os("MUSE_AUTH_PATH");
+            let xdg_config_home = std::env::var_os("XDG_CONFIG_HOME");
+            let user_home = std::env::var_os("HOME");
+            let user_profile = std::env::var_os("USERPROFILE");
+            if let Some(raw) = shared_auth_path
+                .as_deref()
+                .filter(|v| !v.is_empty() && !Path::new(v).is_absolute())
+            {
+                tracing::warn!(
+                    value = %raw.to_string_lossy(),
+                    "ignoring non-absolute {} (no ~ or relative expansion); using the default Muse login path",
+                    crate::snippets::MUSE_SHARED_AUTH_PATH_ENV
+                );
+            }
+            let shared_auth =
+                crate::snippets::muse_shared_auth_path(crate::snippets::MuseAuthEnv {
+                    shared_auth_path: shared_auth_path.as_deref(),
+                    isolated_auth: isolated_auth.as_deref(),
+                    muse_auth_path: host_muse_auth_path.as_deref(),
+                    xdg_config_home: xdg_config_home.as_deref(),
+                    home: user_home.as_deref(),
+                    userprofile: user_profile.as_deref(),
+                });
+            for (key, value) in crate::snippets::muse_clean_home_env_with_auth(
+                Path::new(home),
+                shared_auth.as_deref(),
+            ) {
+                #[allow(deprecated)]
+                std::env::set_var(key, value);
+            }
+        }
+    }
     let mut effective_args = inline_cli_args;
     effective_args.extend(cmd.args.clone());
 
+    let _devin_state = crate::devin::prepare_worker_config(&resolved_cli).await?;
     let (init_rows, init_cols) = get_terminal_size().unwrap_or((24, 80));
     let (pty, mut pty_rx) =
         PtySession::spawn(&resolved_cli, &effective_args, init_rows, init_cols)?;
@@ -841,6 +986,7 @@ pub(crate) async fn run_pty_worker(cmd: PtyCommand) -> Result<()> {
     let mut child_exit_detected = false;
 
     let mut pty_auto = PtyAutoState::new();
+    pty_auto.automatic_responses_disabled = crate::readiness::is_devin_cli(&resolved_cli);
 
     let idle_threshold = if cmd.idle_threshold_secs == 0 {
         None
@@ -875,6 +1021,7 @@ pub(crate) async fn run_pty_worker(cmd: PtyCommand) -> Result<()> {
     let mut mcp_reminder_throttle = McpReminderThrottle::new();
     let mut pending_worker_injections: VecDeque<PendingWorkerInjection> = VecDeque::new();
     let mut pending_worker_delivery_ids: HashSet<DeliveryId> = HashSet::new();
+    let mut completed_worker_deliveries = CompletedWorkerDeliveries::default();
     // The injection currently being written across paced stages, if any. Only
     // one injection is in flight at a time; the pending-injection interval arm
     // starts the next one once this returns to `None`.
@@ -1102,20 +1249,13 @@ pub(crate) async fn run_pty_worker(cmd: PtyCommand) -> Result<()> {
                                     pty.child_pid(),
                                 )
                                 .await;
-                                let startup_ready = startup_gate_ready(
+                                let gate = startup_gate(
                                     &resolved_cli,
                                     &startup_output,
                                     startup_total_bytes,
                                     last_pty_output_time.elapsed(),
                                     &pty,
                                 );
-                                let gate = if startup_ready {
-                                    StartupGate::Ready
-                                } else if startup_gate_blocked(&pty) {
-                                    StartupGate::Blocked
-                                } else {
-                                    StartupGate::Unrecognised
-                                };
                                 try_emit_worker_ready(
                                     &out_tx,
                                     &worker_name,
@@ -1139,7 +1279,50 @@ pub(crate) async fn run_pty_worker(cmd: PtyCommand) -> Result<()> {
                                         continue;
                                     }
                                 };
-                                if pending_worker_delivery_ids.insert(delivery.delivery_id.clone()) {
+                                if let Some(completed_event_id) = completed_worker_deliveries
+                                    .get(&delivery.delivery_id)
+                                {
+                                    if completed_event_id == &delivery.event_id {
+                                        tracing::info!(
+                                            delivery_id = %delivery.delivery_id,
+                                            event_id = %delivery.event_id,
+                                            "re-acknowledging completed delivery replay without reinjection"
+                                        );
+                                        let _ = send_frame(
+                                            &out_tx,
+                                            "delivery_ack",
+                                            frame.request_id.clone(),
+                                            json!({
+                                                "delivery_id": delivery.delivery_id,
+                                                "event_id": delivery.event_id,
+                                            }),
+                                        )
+                                        .await;
+                                        let _ = send_frame(
+                                            &out_tx,
+                                            "delivery_verified",
+                                            frame.request_id,
+                                            json!({
+                                                "delivery_id": delivery.delivery_id,
+                                                "event_id": delivery.event_id,
+                                                "verification": "completed_replay",
+                                            }),
+                                        )
+                                        .await;
+                                    } else {
+                                        tracing::warn!(
+                                            delivery_id = %delivery.delivery_id,
+                                            completed_event_id = %completed_event_id,
+                                            replay_event_id = %delivery.event_id,
+                                            "rejecting delivery-id reuse with a different event"
+                                        );
+                                        let _ = send_frame(&out_tx, "worker_error", frame.request_id, json!({
+                                            "code": "delivery_id_reused",
+                                            "message": "delivery id was already completed for a different event",
+                                            "retryable": false,
+                                        })).await;
+                                    }
+                                } else if pending_worker_delivery_ids.insert(delivery.delivery_id.clone()) {
                                     let _ = send_frame(
                                         &out_tx,
                                         "delivery_queued",
@@ -1494,20 +1677,13 @@ pub(crate) async fn run_pty_worker(cmd: PtyCommand) -> Result<()> {
                         if initial_injection_cancel.is_none() {
                             pty_auto.handle_codex_trust(&text, &pty).await;
                         }
-                        let startup_ready = startup_gate_ready(
+                        let gate = startup_gate(
                             &resolved_cli,
                             &startup_output,
                             startup_total_bytes,
                             last_pty_output_time.elapsed(),
                             &pty,
                         );
-                        let gate = if startup_ready {
-                            StartupGate::Ready
-                        } else if startup_gate_blocked(&pty) {
-                            StartupGate::Blocked
-                        } else {
-                            StartupGate::Unrecognised
-                        };
                         try_emit_worker_ready(
                             &out_tx,
                             &worker_name,
@@ -1675,7 +1851,7 @@ pub(crate) async fn run_pty_worker(cmd: PtyCommand) -> Result<()> {
                             if let Some(detector) = activity_detector.as_ref() {
                                 pending_activities.push_back(PendingActivity {
                                     delivery_id: delivery_id.clone(),
-                                    event_id,
+                                    event_id: event_id.clone(),
                                     expected_echo: pv.expected_echo,
                                     verified_at: Instant::now(),
                                     output_buffer: String::new(),
@@ -1683,6 +1859,7 @@ pub(crate) async fn run_pty_worker(cmd: PtyCommand) -> Result<()> {
                                 });
                             }
                             pending_worker_delivery_ids.remove(&delivery_id);
+                            completed_worker_deliveries.insert(delivery_id, event_id);
                         }
 
                         if activity_detector.as_ref().is_some() {
@@ -1823,6 +2000,7 @@ pub(crate) async fn run_pty_worker(cmd: PtyCommand) -> Result<()> {
             // Gated off while an interactive hold is active so queued deliveries
             // stay parked (not dropped) until the human releases the drive.
             _ = pending_injection_interval.tick() => {
+                if !crate::devin::can_inject(&resolved_cli, &pty) { continue; }
                 if let Some(index) = next_injection_index(
                     &pending_worker_injections,
                     active_injection.is_some(),
@@ -1910,6 +2088,13 @@ pub(crate) async fn run_pty_worker(cmd: PtyCommand) -> Result<()> {
                         }
                     }
                     InjectionStage::Body => {
+                        // Recheck after throttling/steer delay: never paste
+                        // into a dialog that replaced the previously idle UI.
+                        if !crate::devin::can_inject(&resolved_cli, &pty) {
+                            inj.next_at = tokio::time::Instant::now() + Duration::from_millis(50);
+                            active_injection = Some(inj);
+                            continue;
+                        }
                         pty_auto.auto_suggestion_visible = false;
                         let include_mcp_reminder = !suppress_multiline_mcp_reminder
                             && mcp_reminder_throttle.should_include(Instant::now());
@@ -1981,30 +2166,13 @@ pub(crate) async fn run_pty_worker(cmd: PtyCommand) -> Result<()> {
                             continue;
                         }
                         // Submit the body and mandatory Enter as one FIFO
-                        // command and hold the ack. Claude Code and Codex need Enter as
-                        // a distinct PTY write after its multiline paste
-                        // boundary settles; relay-pty keeps that delayed
-                        // follow-up atomic with the body. Other harnesses keep
-                        // the established body-plus-Enter write. In both cases,
-                        // nothing (passthrough input, an auto-responder, or a
-                        // terminal-query reply) can splice into submission.
-                        // Finalization (emit `delivery_injected`, queue echo
-                        // verification) still waits for this ack in the
-                        // injection-ack arm.
-                        let mut bytes = injection.clone().into_bytes();
-                        let write = if let Some(delay) =
-                            injection_submit_followup_delay(&resolved_cli)
-                        {
-                            pty.submit_write_paced_with_followup_and_output_boundary(
-                                bytes,
-                                inject_rate,
-                                delay,
-                                b"\r".to_vec(),
-                            )
-                        } else {
-                            bytes.extend_from_slice(b"\r");
-                            pty.submit_write_paced_with_output_boundary(bytes, inject_rate)
-                        };
+                        // command and hold the ack. Devin first applies its
+                        // bracketed-paste body shape; the shared helper then
+                        // selects the harness-specific delayed Enter. Finalization
+                        // still waits for this ack in the injection-ack arm.
+                        let bytes = crate::devin::injection_bytes(&resolved_cli, &injection);
+                        let write =
+                            submit_injection_body(&pty, &resolved_cli, bytes, inject_rate);
                         match write {
                             Ok((ack_rx, output_boundary)) => {
                                 inj.injection_text = Some(injection);
@@ -2182,6 +2350,7 @@ pub(crate) async fn run_pty_worker(cmd: PtyCommand) -> Result<()> {
                                     }
                                 }
                                 pending_worker_delivery_ids.remove(&delivery_id);
+                                completed_worker_deliveries.insert(delivery_id, event_id);
                             }
                             // active_injection remains None: injection complete.
                         }
@@ -2215,20 +2384,13 @@ pub(crate) async fn run_pty_worker(cmd: PtyCommand) -> Result<()> {
 
             // --- Verification tick: check for timed-out verifications ---
             _ = verification_tick.tick() => {
-                let startup_ready = startup_gate_ready(
+                let gate = startup_gate(
                     &resolved_cli,
                     &startup_output,
                     startup_total_bytes,
                     last_pty_output_time.elapsed(),
                     &pty,
                 );
-                let gate = if startup_ready {
-                    StartupGate::Ready
-                } else if startup_gate_blocked(&pty) {
-                    StartupGate::Blocked
-                } else {
-                    StartupGate::Unrecognised
-                };
                 try_emit_worker_ready(
                     &out_tx,
                     &worker_name,
@@ -2279,6 +2441,7 @@ pub(crate) async fn run_pty_worker(cmd: PtyCommand) -> Result<()> {
                         // keep them out of the throttle's success signal.
                         throttle.record(DeliveryOutcome::Unverified);
                         pending_worker_delivery_ids.remove(&delivery_id);
+                        completed_worker_deliveries.insert(delivery_id, event_id);
                     } else {
                         i += 1;
                     }
@@ -2475,6 +2638,54 @@ pub(crate) async fn run_pty_worker(cmd: PtyCommand) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn completed_delivery_replay_retains_the_original_event_identity() {
+        let mut completed = CompletedWorkerDeliveries::default();
+        let delivery_id = DeliveryId::new("delivery-89");
+        let event_id = EventId::new("message-89");
+        completed.insert(delivery_id.clone(), event_id.clone());
+
+        assert_eq!(completed.get(&delivery_id), Some(&event_id));
+        assert_ne!(
+            completed.get(&delivery_id),
+            Some(&EventId::new("different-message")),
+            "delivery-id reuse must not acknowledge a different event"
+        );
+    }
+
+    #[test]
+    fn completed_delivery_replay_cache_is_bounded() {
+        let mut completed = CompletedWorkerDeliveries::default();
+        for sequence in 0..=CompletedWorkerDeliveries::CAPACITY {
+            completed.insert(
+                DeliveryId::new(format!("delivery-{sequence}")),
+                EventId::new(format!("message-{sequence}")),
+            );
+        }
+
+        assert!(completed.get(&DeliveryId::new("delivery-0")).is_none());
+        assert!(completed
+            .get(&DeliveryId::new(format!(
+                "delivery-{}",
+                CompletedWorkerDeliveries::CAPACITY
+            )))
+            .is_some());
+    }
+
+    #[test]
+    fn completed_delivery_replay_cache_is_not_restart_durable() {
+        let mut before_restart = CompletedWorkerDeliveries::default();
+        let delivery_id = DeliveryId::new("delivery-89");
+        before_restart.insert(delivery_id.clone(), EventId::new("message-89"));
+        assert!(before_restart.get(&delivery_id).is_some());
+
+        let after_restart = CompletedWorkerDeliveries::default();
+        assert!(
+            after_restart.get(&delivery_id).is_none(),
+            "restart clears the volatile dedupe fence; callers must not claim cross-restart exactly-once"
+        );
+    }
 
     #[test]
     fn initial_chunks_preserve_utf8_and_whitespace() {
@@ -3080,6 +3291,74 @@ mod tests {
         assert!(
             rx.try_recv().is_err(),
             "no worker_ready frame may escape a trust prompt"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_provider_login_fails_closed_instead_of_reporting_readiness() {
+        // The reported fleet stall: a Muse worker sat on a Meta device-login
+        // screen, was reported live, and held node capacity until someone
+        // attached by hand. A login nobody on this node can answer is not a
+        // blind spot to wait out — it is reported once, specifically, so the
+        // verified spawn fails closed and releases its capacity.
+        let (tx, mut rx) = mpsc::channel(4);
+        let mut request_id = None;
+        let started = Instant::now() - STARTUP_READY_TIMEOUT - Duration::from_secs(60);
+        let mut readiness = StartupReadinessState::default();
+
+        for _ in 0..3 {
+            try_emit_worker_ready(
+                &tx,
+                "muse-device-auth",
+                Some(42),
+                &mut request_id,
+                Some(started),
+                &mut readiness,
+                StartupGate::ProviderAuthRequired,
+            )
+            .await;
+        }
+
+        assert!(
+            !readiness.ready_sent,
+            "an unanswerable login must never read as readiness"
+        );
+        let frame = rx.try_recv().expect("worker_error must be emitted");
+        assert_eq!(frame.msg_type, "worker_error");
+        assert_eq!(frame.payload["code"], "provider_auth_required");
+        assert_eq!(frame.payload["retryable"], false);
+        let message = frame.payload["message"].as_str().expect("message");
+        assert!(
+            message.contains("device login"),
+            "the error must name the remediation: {message}"
+        );
+        assert!(
+            rx.try_recv().is_err(),
+            "no worker_ready frame may escape a provider login, and the error is reported once"
+        );
+    }
+
+    #[test]
+    fn provider_login_and_trust_dialogs_are_classified_apart() {
+        let device_auth = "Sign in to continue\nVisit https://www.facebook.com/device\n›\n";
+        assert_eq!(
+            startup_gate_block_reason("/usr/local/bin/muse", device_auth),
+            Some(StartupGate::ProviderAuthRequired)
+        );
+        // Only Muse carries the device-login arm; another harness rendering
+        // the same words keeps its existing unrecognised-prompt behaviour.
+        assert_eq!(startup_gate_block_reason("codex", device_auth), None);
+        assert_eq!(
+            startup_gate_block_reason(
+                "codex",
+                "Do you trust the contents of this directory?\n> Yes, continue\n  No, quit\n"
+            ),
+            Some(StartupGate::Blocked)
+        );
+        // An authenticated composer is neither.
+        assert_eq!(
+            startup_gate_block_reason("muse", "muse  signed in as relay-node\n/login\n›\n"),
+            None
         );
     }
 

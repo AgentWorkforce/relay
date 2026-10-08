@@ -1,6 +1,7 @@
 import path from 'node:path';
 
 import { AgentRelay, type AgentRelayAgent } from '@agent-relay/sdk';
+import { DEV_CLOUD_API_URL, DEV_RELAYCAST_ORIGIN } from '@agent-relay/cloud';
 import {
   resolveBaseUrl,
   resolveWorkspaceSelection,
@@ -22,6 +23,8 @@ import {
 export interface SdkClientOptions {
   workspaceKey?: string;
   token?: string;
+  /** Non-authoritative session URL used only when no persisted route or explicit URL exists. */
+  fallbackBaseUrl?: string;
   baseUrl?: string;
   env?: NodeJS.ProcessEnv;
   /** Explicit project root for nested invocations such as packages/web. */
@@ -70,9 +73,17 @@ export function persistWorkspaceRelaycastTarget(
     baseUrl: string;
     workspaceId: string;
     relaycastApiKey: string;
-  }
+  },
+  relaycastCloudApiUrl?: string
 ): boolean {
   if (!selection) return false;
+  if (
+    target.route === 'canonical' &&
+    target.baseUrl === DEV_RELAYCAST_ORIGIN &&
+    relaycastCloudApiUrl !== DEV_CLOUD_API_URL
+  ) {
+    return false;
+  }
   const selectionWithProjectDir = selection as WorkspaceSelection & { projectDataDir?: string };
   const dataDir =
     selectionWithProjectDir?.projectDataDir ??
@@ -82,6 +93,7 @@ export function persistWorkspaceRelaycastTarget(
     workspaceId: target.workspaceId,
     relaycastRoute: target.route,
     relaycastBaseUrl: target.baseUrl,
+    ...(relaycastCloudApiUrl ? { relaycastCloudApiUrl } : {}),
     relaycastApiKey: target.relaycastApiKey,
   });
 }

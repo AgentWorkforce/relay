@@ -1,0 +1,48 @@
+{
+  "id": "compact_gekdxmou0hhn",
+  "version": 1,
+  "type": "compacted",
+  "compactedAt": "2026-09-20T05:37:28.642Z",
+  "sourceTrajectories": [
+    "traj_7j8hrargfgl8"
+  ],
+  "dateRange": {
+    "start": "2026-09-20T05:11:41.894Z",
+    "end": "2026-09-20T05:37:15.421Z"
+  },
+  "summary": {
+    "totalDecisions": 2,
+    "totalEvents": 3,
+    "uniqueAgents": [
+      "default"
+    ]
+  },
+  "decisionGroups": [
+    {
+      "category": "security",
+      "decisions": [
+        {
+          "question": "Use private per-worker XDG config snapshots and delayed bracketed-paste submission for Devin",
+          "chosen": "Use private per-worker XDG config snapshots and delayed bracketed-paste submission for Devin",
+          "reasoning": "Installed Devin ignores --config for MCP file relocation; XDG isolation preserved authentication in an actual probe. One-write body+Enter parked text, while a later Enter submitted. Keep user trust and approvals intact.",
+          "fromTrajectory": "traj_7j8hrargfgl8"
+        }
+      ]
+    },
+    {
+      "category": "other",
+      "decisions": [
+        {
+          "question": "Actual Devin two-message E2E passed with approval boundaries preserved",
+          "chosen": "Actual Devin two-message E2E passed with approval boundaries preserved",
+          "reasoning": "Worker devin-e2e-mu9dgnex (agent ID 227298977995862016) on isolated node node_devin-e2e-mu9dgnex in rw_7ccfea89 sent initial DM 227300144622936064. Lead follow-up 227300225157185536 was injected into the idle PTY and read at 2026-09-20T05:31:36Z. Actual Devin sent follow-up reply 227301341519724544. Lead confirmed both. Each send_dm was approved once; inbox approval was cancelled to prove PTY delivery. Production broker untouched.",
+          "fromTrajectory": "traj_7j8hrargfgl8"
+        }
+      ]
+    }
+  ],
+  "keyLearnings": [],
+  "keyFindings": [],
+  "filesAffected": [],
+  "commits": []
+}

@@ -1,0 +1,20 @@
+{
+  "version": 1,
+  "id": "1828-fleet-max-agents-display",
+  "kind": "bugfix",
+  "title": "Forward node definition maxAgents to the broker's advertised capacity",
+  "runner": {
+    "command": ["node", "tests/relayflows/cases/1828-fleet-max-agents-display/run.mjs"]
+  },
+  "timeoutSeconds": 900,
+  "expected": {
+    "base": {
+      "outcome": "bug",
+      "signature": "node_up_drops_definition_max_agents"
+    },
+    "head": {
+      "outcome": "fixed",
+      "signature": "node_up_forwards_definition_max_agents"
+    }
+  }
+}

@@ -182,6 +182,28 @@ export async function startFakeRelaycast({
       return;
     }
 
+    if (request.method === 'POST' && /^\/v1\/nodes\/[^/]+\/agents$/.test(pathname)) {
+      const nodeName = decodeURIComponent(pathname.split('/')[3]);
+      sendJson(response, 200, {
+        ok: true,
+        data: {
+          id: 'binding_relayflow_1615',
+          agent_id: state.agentId,
+          agent_name: body?.agent_name ?? recipientName,
+          node_id: 'node_relayflow_1615',
+          node_name: nodeName,
+          node_kind: 'ws',
+          node_role: 'broker',
+          status: 'active',
+          session_ref: body?.session_ref ?? null,
+          priority: body?.priority ?? 0,
+          created_at: '2026-09-02T00:00:00.000Z',
+          updated_at: null,
+        },
+      });
+      return;
+    }
+
     // Metadata publication, channel setup, release, and graceful-shutdown
     // bookkeeping are outside this case's routing contract. A successful
     // generic envelope keeps those best-effort paths from obscuring the probe.
@@ -219,7 +241,31 @@ export async function startFakeRelaycast({
         if (frame.opcode !== 0x1) return;
         const message = JSON.parse(frame.payload.toString('utf8'));
         state.nodeFrames.push(message);
-        if (message.type === 'agent.register') {
+        if (message.type === 'node.register') {
+          sendText(socket, {
+            type: 'reply',
+            v: 1,
+            id: message.id,
+            ok: true,
+            data: {},
+          });
+        } else if (message.type === 'inventory.sync') {
+          sendText(socket, {
+            type: 'reply',
+            v: 1,
+            id: message.id,
+            ok: true,
+            data: { reconciled: 0 },
+          });
+        } else if (message.type === 'agent.deregister') {
+          sendText(socket, {
+            type: 'reply',
+            v: 1,
+            id: message.id,
+            ok: true,
+            data: {},
+          });
+        } else if (message.type === 'agent.register') {
           sendText(socket, {
             type: 'reply',
             v: 1,

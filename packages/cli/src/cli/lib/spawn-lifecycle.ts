@@ -32,9 +32,12 @@ export function spawnLifecycleState(value: Record<string, unknown>): SpawnLifecy
       value.output !== null && typeof value.output === 'object'
         ? (value.output as Record<string, unknown>)
         : value;
-    // A terminal success status without explicit launch and readiness proof is
-    // a failed spawn, not a live-but-uncertain one. Genuine uncertainty is
-    // reserved for non-terminal acknowledgements and confirmation timeouts.
+    // Every caller of this receipt (MCP spawn, `fleet spawn --auto-place`)
+    // requires proven readiness. A terminal success without explicit launch and
+    // readiness proof is a failed spawn, not a live-but-uncertain one. Genuine
+    // uncertainty is reserved for non-terminal acknowledgements and confirmation
+    // timeouts. The unverified targeted path does not reach here: it keeps the
+    // SDK's own placement evidence (see `spawnInvocationWithMergedPlacement`).
     return output.spawned === true && output.ready === true ? 'ready' : 'failed';
   }
   if (status && FAILURE.has(status)) return 'failed';

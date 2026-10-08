@@ -64,11 +64,58 @@ type FleetSessionResponse = {
     session_id?: string;
     terminal_url?: string;
     resume_token?: string;
+    expires_at?: string;
   };
   error?: { code?: string; message?: string };
 };
 
-type TerminalFrame = Record<string, unknown> & { type?: string; session_id?: string };
+type TerminalFrame = Record<string, unknown> & {
+  type?: string;
+  session_id?: string;
+  blocked_reason_code?: unknown;
+  head_sequence?: unknown;
+  acked_up_to_sequence?: unknown;
+  received_up_to_sequence?: unknown;
+  next_ackable_sequence?: unknown;
+  reconciliation_action?: unknown;
+};
+
+type GapDiagnosticsResult = {
+  blocked_reason_code?: string;
+  head_sequence?: number;
+  acked_up_to_sequence?: number;
+  received_up_to_sequence?: number;
+  next_ackable_sequence?: number;
+  reconciliation_action?: string;
+};
+
+function gapDiagnosticsFromFrame(frame: {
+  blocked_reason_code?: unknown;
+  head_sequence?: unknown;
+  acked_up_to_sequence?: unknown;
+  received_up_to_sequence?: unknown;
+  next_ackable_sequence?: unknown;
+  reconciliation_action?: unknown;
+}): GapDiagnosticsResult {
+  return {
+    ...(typeof frame.blocked_reason_code === 'string'
+      ? { blocked_reason_code: frame.blocked_reason_code }
+      : {}),
+    ...(typeof frame.head_sequence === 'number' ? { head_sequence: frame.head_sequence } : {}),
+    ...(typeof frame.acked_up_to_sequence === 'number'
+      ? { acked_up_to_sequence: frame.acked_up_to_sequence }
+      : {}),
+    ...(typeof frame.received_up_to_sequence === 'number'
+      ? { received_up_to_sequence: frame.received_up_to_sequence }
+      : {}),
+    ...(typeof frame.next_ackable_sequence === 'number'
+      ? { next_ackable_sequence: frame.next_ackable_sequence }
+      : {}),
+    ...(typeof frame.reconciliation_action === 'string'
+      ? { reconciliation_action: frame.reconciliation_action }
+      : {}),
+  };
+}
 
 type TerminalReadiness = {
   generation: number;
@@ -236,6 +283,55 @@ function parseFrame(data: WebSocket.RawData): TerminalFrame | null {
   } catch {
     return null;
   }
+}
+
+/**
+ * Decode a `terminal.ready` / `terminal.snapshot` `screen` field into the raw
+ * ANSI bytes a terminal can render.
+ *
+ * The two payloads this adapter bridges are encoded differently and the
+ * difference is invisible at the type level — both are `string`:
+ *
+ * - `screen` is the visible grid rendered by `Snapshot::to_ansi()` and then
+ *   **base64-encoded**, because the broker asks the worker for
+ *   `format: "ansi"` (`fleet.rs`) and that arm encodes (`pty_worker.rs`).
+ *   Broker HTTP snapshot consumers decode it (`attach.ts` `captureAndRender…`).
+ * - `worker_stream.chunk` (and `terminal.output.chunk`, which is the same
+ *   value forwarded) is **raw PTY bytes**. Attach clients write it to stdout
+ *   verbatim (`applyServerOutput` in `attach-drive.ts`).
+ *
+ * Handing an undecoded `screen` to {@link workerStreamEvent} therefore prints
+ * the base64 text itself into the operator's terminal — the reconnect flood in
+ * relay#1829. Returns `null` when the payload is not canonical base64, so a
+ * malformed or protocol-violating frame is dropped rather than rendered: a
+ * stale-but-coherent screen beats writing unintelligible bytes to a live TTY.
+ */
+export function decodeAnsiScreenPayload(screen: string): string | null {
+  if (screen === '') return '';
+  if (screen.length % 4 !== 0 || !/^[A-Za-z0-9+/]+={0,2}$/.test(screen)) return null;
+  const decoded = Buffer.from(screen, 'base64');
+  // `Buffer.from(…, 'base64')` silently skips characters outside the alphabet,
+  // so the round-trip is what actually rejects a non-base64 payload.
+  if (decoded.toString('base64') !== screen) return null;
+  return decoded.toString('utf8');
+}
+
+/**
+ * Mirror of the broker's `pty_input_error_is_connection_fatal`
+ * (`crates/broker/src/listen_api.rs`). The two lists must agree, because the
+ * SDK's `PtyInputStream` latches `closed` **only** when its socket closes
+ * (`harness-driver/src/transport.ts`): a fatal error delivered on a socket
+ * that stays open leaves `isUsable()` true forever.
+ *
+ * That matters most for a fatal error that arrives with **no write in
+ * flight** — the session-scoped `terminal.error` path below. The client's
+ * `failAll()` then has nothing to reject, so nothing marks the stream dead:
+ * the drive session never enters recovery and keeps writing into a stream the
+ * node has already declared unusable. Closing the socket, as the broker does,
+ * is what turns that into a reported outage the session can recover from.
+ */
+export function inputErrorIsConnectionFatal(code: string): boolean {
+  return code !== 'worker_timeout' && code !== 'pty_write_queue_full';
 }
 
 function rawDataToString(data: WebSocket.RawData): string {
@@ -453,7 +549,7 @@ export async function startFleetNodeAttachProxy(
         );
         throw lastSessionError;
       }
-      return { terminalUrl, sessionId, resumeToken };
+      return { terminalUrl, sessionId, resumeToken, expiresAt: ticketPayload.data?.expires_at };
     },
     {
       retries: SESSION_REQUEST_RETRIES,
@@ -493,9 +589,9 @@ export async function startFleetNodeAttachProxy(
       failure?.code
     );
   }
-  const { terminalUrl, sessionId, resumeToken } = sessionResult.value;
+  let { terminalUrl, sessionId, resumeToken, expiresAt } = sessionResult.value;
   const resolvedNodeId = resolvedNodeIdFromTerminalUrl(terminalUrl);
-  const remoteEndpoint = diagnosticEndpoint(terminalUrl);
+  const remoteEndpoint = () => diagnosticEndpoint(terminalUrl);
   const reconnectInitialDelayMs = options.reconnectDelay?.initialMs ?? INITIAL_RECONNECT_DELAY_MS;
   const reconnectMaxDelayMs = options.reconnectDelay?.maxMs ?? MAX_RECONNECT_DELAY_MS;
   const terminalHandshakeTimeoutMs =
@@ -506,7 +602,8 @@ export async function startFleetNodeAttachProxy(
   // finite recovery path: every backoff plus every handshake/readiness pair.
   const terminalWaitTimeoutMs =
     retryDelayBudgetMs(MAX_RECONNECT_ATTEMPTS, reconnectInitialDelayMs, reconnectMaxDelayMs) +
-    MAX_RECONNECT_ATTEMPTS * (terminalHandshakeTimeoutMs + terminalReadyTimeoutMs);
+    MAX_RECONNECT_ATTEMPTS * (terminalHandshakeTimeoutMs + terminalReadyTimeoutMs) +
+    sessionRequestTotalTimeoutMs;
 
   let connectionGeneration = 0;
   const createReadiness = (): TerminalReadiness => {
@@ -564,8 +661,25 @@ export async function startFleetNodeAttachProxy(
         }
       );
     });
-  const snapshot: { screen: string; rows: number; cols: number; offset: number } = {
-    screen: '',
+  /**
+   * The two screen representations are kept as separate, differently named
+   * fields on purpose. They are both strings and only one of them may reach a
+   * terminal; a single `screen` field spread into both consumers is what let
+   * the encoded form escape to stdout (relay#1829).
+   *
+   * `screenBase64` is the HTTP snapshot wire format (callers decode it).
+   * `screenAnsi` is the renderable form, and the only one that may be emitted
+   * as a `worker_stream` chunk.
+   */
+  const snapshot: {
+    screenBase64: string;
+    screenAnsi: string;
+    rows: number;
+    cols: number;
+    offset: number;
+  } = {
+    screenBase64: '',
+    screenAnsi: '',
     rows: 24,
     cols: 80,
     offset: 0,
@@ -593,8 +707,15 @@ export async function startFleetNodeAttachProxy(
   /** Locally-tracked delivery mode, kept in sync with each broker reply. */
   let loopbackDeliveryMode: 'manual_flush' | 'auto_inject' =
     options.mode === 'drive' ? 'manual_flush' : 'auto_inject';
-  type DeliveryModeResult = { mode: string; flushed: number; matched: boolean; revision: string };
-  type FlushResult = {
+  type DeliveryModeResult = GapDiagnosticsResult & {
+    mode: string;
+    flushed: number;
+    dead_lettered?: number;
+    matched: boolean;
+    revision: string;
+    blocked_reason?: string;
+  };
+  type FlushResult = GapDiagnosticsResult & {
     flushed: number;
     dead_lettered: number;
     held: number;
@@ -639,7 +760,16 @@ export async function startFleetNodeAttachProxy(
         });
         return;
       }
-      json(response, 200, { format: 'ansi', ...snapshot });
+      // Explicit field mapping, not a spread: this endpoint's `screen` is
+      // contractually base64 (the caller decodes it), and only the encoded
+      // form may appear here.
+      json(response, 200, {
+        format: 'ansi',
+        screen: snapshot.screenBase64,
+        rows: snapshot.rows,
+        cols: snapshot.cols,
+        offset: snapshot.offset,
+      });
       return;
     }
     const name = encodeURIComponent(options.agent);
@@ -795,8 +925,11 @@ export async function startFleetNodeAttachProxy(
       json(response, 200, {
         mode: result.mode,
         flushed: result.flushed,
+        ...(result.dead_lettered !== undefined ? { dead_lettered: result.dead_lettered } : {}),
         matched: result.matched,
         revision: result.revision,
+        ...(result.blocked_reason !== undefined ? { blocked_reason: result.blocked_reason } : {}),
+        ...gapDiagnosticsFromFrame(result),
       });
       return;
     }
@@ -892,6 +1025,32 @@ export async function startFleetNodeAttachProxy(
     return true;
   };
 
+  /**
+   * Report a PTY-input failure to one input socket the way the broker does:
+   * with the `retryable` flag the SDK reads, and — for a connection-fatal
+   * code — by closing the socket so the client's `PtyInputStream` latches
+   * `closed` and its recovery can start buffering. See
+   * {@link inputErrorIsConnectionFatal}.
+   */
+  const failInputSocket = (socket: WebSocket, code: string, message: string): void => {
+    const fatal = inputErrorIsConnectionFatal(code);
+    if (socket.readyState === WebSocket.OPEN) {
+      try {
+        socket.send(JSON.stringify({ type: 'pty_input_error', code, message, retryable: !fatal }));
+      } catch {
+        // The socket is already gone; the close below is still correct.
+      }
+    }
+    if (!fatal) return;
+    inputSockets.delete(socket);
+    closeSocket(socket, 1011, message);
+  };
+
+  /** Same, for every attached input socket (session-scoped failures). */
+  const failAllInputSockets = (code: string, message: string): void => {
+    for (const socket of [...inputSockets]) failInputSocket(socket, code, message);
+  };
+
   websocketServer.on('connection', (socket, request) => {
     const path = new URL(request.url ?? '/', 'http://127.0.0.1').pathname;
     if (path === '/ws') {
@@ -922,11 +1081,10 @@ export async function startFleetNodeAttachProxy(
       socket.send(JSON.stringify({ type: 'pty_input_ready', name: options.agent }));
       socket.on('message', (data) => {
         if (!remote || remote.readyState !== WebSocket.OPEN || remote.bufferedAmount > MAX_BUFFERED_BYTES) {
-          broadcast(inputSockets, {
-            type: 'pty_input_error',
-            code: 'node_unreachable',
-            message: 'terminal transport is unavailable',
-          });
+          // Only THIS socket failed to write; a sibling input stream must not
+          // be torn down for it. `node_unreachable` is connection-fatal, so
+          // this also closes the socket — see failInputSocket.
+          failInputSocket(socket, 'node_unreachable', 'terminal transport is unavailable');
           return;
         }
         const raw = rawDataToString(data);
@@ -996,7 +1154,7 @@ export async function startFleetNodeAttachProxy(
     void waitForTerminalReady('terminal socket readiness timed out').then(
       () => {
         if (socket.destroyed || stopped || terminalEnded) return;
-        if (snapshot.screen) socket.write(snapshot.screen);
+        if (snapshot.screenAnsi) socket.write(snapshot.screenAnsi);
         for (const entry of outputHistory) socket.write(entry.chunk);
         outputHistory.length = 0;
         outputHistoryBytes = 0;
@@ -1022,10 +1180,123 @@ export async function startFleetNodeAttachProxy(
     throw error;
   }
 
-  const resumeUrl = new URL(terminalUrl);
-  resumeUrl.searchParams.delete('ticket');
-  resumeUrl.searchParams.set('session_id', sessionId);
-  resumeUrl.searchParams.set('resume', resumeToken);
+  const resumeUrlForCurrentSession = () => {
+    const resumeUrl = new URL(terminalUrl);
+    resumeUrl.searchParams.delete('ticket');
+    resumeUrl.searchParams.set('session_id', sessionId);
+    resumeUrl.searchParams.set('resume', resumeToken);
+    return resumeUrl.toString();
+  };
+  const terminalSessionExpired = () => {
+    if (!expiresAt) return false;
+    const expiresAtMs = Date.parse(expiresAt);
+    return Number.isFinite(expiresAtMs) && expiresAtMs <= Date.now();
+  };
+  // A disconnected terminal can need one replacement session when its resume
+  // credential has expired. Keep this scoped to the whole reconnect incident:
+  // a replacement that itself drops still follows the normal bounded resume
+  // budget instead of repeatedly allocating sessions.
+  let replacementAllocatedForReconnect = false;
+  const allocateReplacementTerminalSession = async (): Promise<{
+    terminalUrl: string;
+    sessionId: string;
+    resumeToken: string;
+    expiresAt: string | undefined;
+  }> => {
+    const replacementDeadline = Date.now() + sessionRequestTotalTimeoutMs;
+    let lastReplacementError: TerminalSessionAttemptError | undefined;
+    const result = await collectWithRetry(
+      'replacement terminal session request',
+      async () => {
+        const remainingMs = replacementDeadline - Date.now();
+        if (remainingMs <= 0) {
+          throw new TerminalSessionAttemptError(
+            lastReplacementError?.message ??
+              'overall replacement terminal-session request deadline exhausted',
+            lastReplacementError?.code ?? 'control_plane_timeout',
+            lastReplacementError?.status,
+            false,
+            lastReplacementError?.completionUnknown ?? false
+          );
+        }
+        const controller = new AbortController();
+        let timedOut = false;
+        const timeout = setTimeout(
+          () => {
+            timedOut = true;
+            controller.abort();
+          },
+          Math.min(sessionRequestTimeoutMs, remainingMs)
+        );
+        try {
+          const response = await fetchFn(sessionEndpoint, {
+            method: 'POST',
+            headers: { Authorization: `Bearer ${workspaceKey}`, 'Content-Type': 'application/json' },
+            // Keep the replacement bound to precisely the session this proxy was
+            // already serving; never infer a different agent or delivery mode.
+            body: JSON.stringify({ agent: options.agent, mode: options.mode }),
+            signal: controller.signal,
+          });
+          const parsed = (await response.json()) as unknown;
+          const payload =
+            parsed && typeof parsed === 'object' && !Array.isArray(parsed)
+              ? (parsed as FleetSessionResponse)
+              : {};
+          const replacementUrl = payload.data?.terminal_url;
+          const replacementSessionId = payload.data?.session_id;
+          const replacementResumeToken = payload.data?.resume_token;
+          if (!response.ok || !replacementUrl || !replacementSessionId || !replacementResumeToken) {
+            const error = new TerminalSessionAttemptError(
+              payload.error?.message ??
+                'terminal session could not be replaced after its resume credential expired',
+              payload.error?.code,
+              response.status,
+              isRetryableTerminalSessionFailure(payload.error?.code),
+              false
+            );
+            lastReplacementError = error;
+            throw error;
+          }
+          return {
+            terminalUrl: replacementUrl,
+            sessionId: replacementSessionId,
+            resumeToken: replacementResumeToken,
+            expiresAt: payload.data?.expires_at,
+          };
+        } catch (error) {
+          if (error instanceof TerminalSessionAttemptError) throw error;
+          const replacementError = new TerminalSessionAttemptError(
+            timedOut
+              ? 'replacement request exceeded its deadline'
+              : 'replacement terminal session request failed',
+            timedOut ? 'control_plane_timeout' : 'control_plane_unavailable',
+            undefined,
+            false,
+            true
+          );
+          lastReplacementError = replacementError;
+          throw replacementError;
+        } finally {
+          clearTimeout(timeout);
+        }
+      },
+      {
+        retries: SESSION_REQUEST_RETRIES,
+        baseDelayMs: SESSION_REQUEST_RETRY_DELAY_MS,
+        sleep: async (delayMs) => {
+          const remainingMs = replacementDeadline - Date.now();
+          if (remainingMs > 0) await sessionRequestSleep(Math.min(delayMs, remainingMs));
+        },
+        shouldRetry: (error) => error instanceof TerminalSessionAttemptError && error.retryable,
+      }
+    );
+    if (result.ok) return result.value;
+    if (lastReplacementError) throw lastReplacementError;
+    throw new FleetNodeAttachError(
+      'terminal session could not be replaced after its resume credential expired',
+      'terminal_session_unavailable'
+    );
+  };
   /** Reject and clear any in-flight delivery-mode PUT, if one is pending. */
   const rejectPendingDeliveryMode = (error: FleetNodeAttachError) => {
     if (pendingFlush) {
@@ -1066,7 +1337,7 @@ export async function startFleetNodeAttachProxy(
     const activeRemote = remote;
     remote = undefined;
     rejectReadiness(activeReadiness, error);
-    broadcast(inputSockets, { type: 'pty_input_error', code: error.code, message: error.message });
+    failAllInputSockets(error.code ?? 'terminal_error', error.message);
     for (const socket of eventSockets) closeSocket(socket, 1011, eventCloseReason);
     if (activeRemote && activeRemote.readyState !== WebSocket.CLOSED) {
       try {
@@ -1085,6 +1356,7 @@ export async function startFleetNodeAttachProxy(
     remote = socket;
     let readinessTimer: ReturnType<typeof setTimeout> | undefined;
     let readinessExpired = false;
+    let resumeRejectedAsExpired = false;
     const clearReadinessTimer = () => {
       if (!readinessTimer) return;
       clearTimeout(readinessTimer);
@@ -1107,7 +1379,7 @@ export async function startFleetNodeAttachProxy(
         if (!terminalEverReady) {
           failRemote(
             `terminal transport connected but did not become ready (node ref ${diagnosticValue(options.node.trim())},` +
-              ` resolved node id ${diagnosticValue(resolvedNodeId ?? 'unavailable')}, endpoint ${diagnosticValue(remoteEndpoint)},` +
+              ` resolved node id ${diagnosticValue(resolvedNodeId ?? 'unavailable')}, endpoint ${diagnosticValue(remoteEndpoint())},` +
               ` readiness timeout ${terminalReadyTimeoutMs}ms, attempts 1; not retried because no terminal session became ready)`
           );
           return;
@@ -1128,7 +1400,11 @@ export async function startFleetNodeAttachProxy(
       if (!frame || frame.session_id !== sessionId) return;
       if (frame.type === 'terminal.ready') {
         clearReadinessTimer();
-        snapshot.screen = typeof frame.screen === 'string' ? frame.screen : '';
+        snapshot.screenBase64 = typeof frame.screen === 'string' ? frame.screen : '';
+        // A payload that will not decode is kept out of `screenAnsi` entirely
+        // so no later consumer can render it; the HTTP snapshot still serves
+        // the bytes verbatim and lets its own decoder report the problem.
+        snapshot.screenAnsi = decodeAnsiScreenPayload(snapshot.screenBase64) ?? '';
         snapshot.rows = typeof frame.rows === 'number' ? frame.rows : 24;
         snapshot.cols = typeof frame.cols === 'number' ? frame.cols : 80;
         snapshot.offset = typeof frame.offset === 'number' ? frame.offset : 0;
@@ -1140,15 +1416,19 @@ export async function startFleetNodeAttachProxy(
         }
         terminalEverReady = true;
         reconnectAttempts = 0;
+        replacementAllocatedForReconnect = false;
         if (readiness === activeReadiness) {
           resolveReadiness(readiness);
           // A reconnect gets a fresh ANSI grid but existing local `/ws`
           // consumers have already performed their initial HTTP snapshot.
           // Re-emit this screen without an offset so they repaint instead of
-          // retaining a stale pre-reconnect terminal image.
-          if (readiness.generation > 1 && snapshot.screen) {
-            broadcast(eventSockets, workerStreamEvent(snapshot.screen));
-            rawSocket?.write(snapshot.screen);
+          // retaining a stale pre-reconnect terminal image. It must be the
+          // DECODED grid: a `worker_stream` chunk is raw PTY bytes that the
+          // attach client writes straight to the terminal, so the base64 form
+          // renders as a wall of text instead of a repaint (relay#1829).
+          if (readiness.generation > 1 && snapshot.screenAnsi) {
+            broadcast(eventSockets, workerStreamEvent(snapshot.screenAnsi));
+            rawSocket?.write(snapshot.screenAnsi);
           }
         }
       } else if (frame.type === 'terminal.output' && typeof frame.chunk === 'string') {
@@ -1190,8 +1470,11 @@ export async function startFleetNodeAttachProxy(
           pending.resolve({
             mode: typeof frame.mode === 'string' ? frame.mode : 'auto_inject',
             flushed: typeof frame.flushed === 'number' ? frame.flushed : 0,
+            ...(typeof frame.dead_lettered === 'number' ? { dead_lettered: frame.dead_lettered } : {}),
             matched: typeof frame.matched === 'boolean' ? frame.matched : true,
             revision: typeof frame.revision === 'string' ? frame.revision : '1',
+            ...(typeof frame.blocked_reason === 'string' ? { blocked_reason: frame.blocked_reason } : {}),
+            ...gapDiagnosticsFromFrame(frame),
           });
         }
       } else if (frame.type === 'terminal.flush_pending') {
@@ -1209,6 +1492,7 @@ export async function startFleetNodeAttachProxy(
             dead_lettered: typeof frame.dead_lettered === 'number' ? frame.dead_lettered : 0,
             held: typeof frame.held === 'number' ? frame.held : 0,
             blocked_reason: typeof frame.blocked_reason === 'string' ? frame.blocked_reason : null,
+            ...gapDiagnosticsFromFrame(frame),
           });
         }
       } else if (frame.type === 'terminal.error') {
@@ -1235,15 +1519,25 @@ export async function startFleetNodeAttachProxy(
         } else if (!frameRid && readiness === activeReadiness && !readiness.settled) {
           endTerminal(new FleetNodeAttachError(message, code));
         } else if (!frameRid) {
-          broadcast(inputSockets, { type: 'pty_input_error', code, message });
+          failAllInputSockets(code, message);
         }
       } else if (frame.type === 'terminal.closed') {
         endTerminal(new FleetNodeAttachError('remote terminal session closed', 'terminal_closed'));
       }
     });
-    socket.on('error', () => {
+    socket.on('error', (error) => {
       readinessExpired = true;
       clearReadinessTimer();
+      // `ws` exposes a refused HTTP upgrade as this error before `close`.
+      // Only an expired resume credential may mint a replacement terminal;
+      // notably a transient or 5xx failure stays on the resume path.
+      if (
+        terminalEverReady &&
+        error instanceof Error &&
+        /Unexpected server response: (401|410)\b/.test(error.message)
+      ) {
+        resumeRejectedAsExpired = true;
+      }
       // Initial connection failure has no terminal state worth preserving.
       // Fail promptly with the canonical unavailable-node error instead of
       // letting the HTTP snapshot timeout mask it. Once Ready has been seen,
@@ -1251,7 +1545,7 @@ export async function startFleetNodeAttachProxy(
       if (remote === socket && readiness === activeReadiness && !readiness.settled && !terminalEverReady) {
         failRemote(
           `terminal transport could not connect to the fleet node (node ref ${diagnosticValue(options.node.trim())},` +
-            ` resolved node id ${diagnosticValue(resolvedNodeId ?? 'unavailable')}, endpoint ${diagnosticValue(remoteEndpoint)},` +
+            ` resolved node id ${diagnosticValue(resolvedNodeId ?? 'unavailable')}, endpoint ${diagnosticValue(remoteEndpoint())},` +
             ` handshake budget ${terminalHandshakeTimeoutMs}ms, attempts 1; not retried because no terminal session became ready)`
         );
       }
@@ -1284,7 +1578,7 @@ export async function startFleetNodeAttachProxy(
         );
         const message =
           `terminal transport could not reconnect to the fleet node (node ref ${diagnosticValue(options.node.trim())},` +
-          ` resolved node id ${diagnosticValue(resolvedNodeId ?? 'unavailable')}, endpoint ${diagnosticValue(remoteEndpoint)},` +
+          ` resolved node id ${diagnosticValue(resolvedNodeId ?? 'unavailable')}, endpoint ${diagnosticValue(remoteEndpoint())},` +
           ` handshake timeout ${terminalHandshakeTimeoutMs}ms, readiness timeout ${terminalReadyTimeoutMs}ms,` +
           ` attempts ${reconnectAttempts},` +
           ` backoff budget ${backoffBudgetMs}ms)`;
@@ -1302,7 +1596,42 @@ export async function startFleetNodeAttachProxy(
       reconnectTimer = setTimeout(() => {
         reconnectTimer = undefined;
         reconnecting = false;
-        connect(resumeUrl.toString(), nextReadiness);
+        const needsReplacement =
+          !replacementAllocatedForReconnect && (resumeRejectedAsExpired || terminalSessionExpired());
+        if (!needsReplacement) {
+          connect(resumeUrlForCurrentSession(), nextReadiness);
+          return;
+        }
+        replacementAllocatedForReconnect = true;
+        void allocateReplacementTerminalSession().then(
+          (replacement) => {
+            if (stopped || terminalEnded || activeReadiness !== nextReadiness) return;
+            // This has no await between assignments, so every loopback
+            // handler observes one coherent replacement session.
+            terminalUrl = replacement.terminalUrl;
+            sessionId = replacement.sessionId;
+            resumeToken = replacement.resumeToken;
+            expiresAt = replacement.expiresAt;
+            connect(terminalUrl, nextReadiness);
+          },
+          (error) => {
+            if (stopped || terminalEnded || activeReadiness !== nextReadiness) return;
+            const replacementError =
+              error instanceof FleetNodeAttachError
+                ? error
+                : new FleetNodeAttachError(
+                    'terminal session could not be replaced after its resume credential expired',
+                    'terminal_session_unavailable'
+                  );
+            endTerminal(
+              new FleetNodeAttachError(
+                `terminal transport could not replace an expired terminal session (node ref ${diagnosticValue(options.node.trim())},` +
+                  ` resolved node id ${diagnosticValue(resolvedNodeId ?? 'unavailable')}, endpoint ${diagnosticValue(remoteEndpoint())})`,
+                replacementError.code
+              )
+            );
+          }
+        );
       }, delay);
     });
   };

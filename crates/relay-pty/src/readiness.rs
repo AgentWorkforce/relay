@@ -1,5 +1,6 @@
 use crate::{
     ansi::{floor_char_boundary, strip_ansi},
+    terminal::detect_muse_device_auth_prompt,
     wait::{for_cli, WaitSnapshot},
 };
 
@@ -25,6 +26,10 @@ pub fn detect_cli_ready(
     let clean = strip_ansi(output);
     let lower_cli = cli.to_lowercase();
 
+    if is_devin_cli(cli) {
+        return devin_prompt_ready(grid);
+    }
+
     if clean.contains("->pty:ready") {
         return true;
     }
@@ -34,6 +39,19 @@ pub fn detect_cli_ready(
     }
 
     let grid_snapshot = snapshot_for_grid(grid);
+
+    if is_muse_cli(cli) {
+        // Muse's device login is an interactive interstitial that draws
+        // prompt-like glyphs and plenty of output, so neither a glyph anywhere
+        // in the grid nor output volume proves it can accept a task. The
+        // cursor must be on a bare composer row and no authentication layout
+        // may be visible: the
+        // `total_bytes` fallback below is deliberately NOT applied to Muse.
+        // Refusing to prove readiness is cheap here — Muse's initial task is
+        // passed in argv, so a worker whose prompt is never recognised still
+        // does its assigned work.
+        return !detect_muse_device_auth_prompt(grid.screen) && muse_prompt_ready(grid);
+    }
 
     if lower_cli.contains("gemini") {
         let clean_window = tail_chars(&clean, 2000).to_lowercase();
@@ -58,11 +76,17 @@ pub fn detect_cli_ready(
 
 /// Detect prompt visibility from the rendered grid.
 pub fn cli_prompt_ready(cli: &str, grid: GridReadinessSnapshot<'_>) -> bool {
+    if is_devin_cli(cli) {
+        return devin_prompt_ready(grid);
+    }
     let lower_cli = cli.to_lowercase();
     let grid_snapshot = snapshot_for_grid(grid);
 
     if lower_cli.contains("claude") {
         return claude_prompt_row(grid);
+    }
+    if is_muse_cli(cli) {
+        return muse_prompt_ready(grid);
     }
     if lower_cli.contains("gemini") {
         return for_cli::gemini().evaluate(&grid_snapshot).is_some();
@@ -74,6 +98,94 @@ pub fn cli_prompt_ready(cli: &str, grid: GridReadinessSnapshot<'_>) -> bool {
         for_cli::generic()
     };
     set.evaluate(&grid_snapshot).is_some()
+}
+
+/// Muse reuses prompt glyphs in non-composer UI and rendered transcript text.
+/// Only a bare prompt on the cursor's current row is evidence of an active
+/// composer; searching the entire grid lets an unrelated glyph prove ready.
+fn muse_prompt_ready(grid: GridReadinessSnapshot<'_>) -> bool {
+    let Some((row, _col)) = grid.cursor else {
+        return false;
+    };
+    if row == 0 {
+        return false;
+    }
+    grid.screen
+        .lines()
+        .nth((row - 1) as usize)
+        .map(str::trim)
+        .is_some_and(|line| matches!(line, "›" | "❯" | ">"))
+}
+
+/// Match a native executable basename, tolerating Windows suffixes.
+///
+/// Mirrors the broker's `is_muse_executable` spelling rules; `relay-pty` is
+/// the lower crate and cannot depend on the broker.
+pub fn is_muse_cli(cli: &str) -> bool {
+    let base = cli
+        .rsplit(['/', '\\'])
+        .next()
+        .filter(|part| !part.is_empty())
+        .unwrap_or(cli)
+        .to_ascii_lowercase();
+    let stem = base
+        .strip_suffix(".exe")
+        .or_else(|| base.strip_suffix(".cmd"))
+        .or_else(|| base.strip_suffix(".bat"))
+        .unwrap_or(&base);
+    stem == "muse"
+}
+
+/// Match a native executable basename, including the Windows .exe suffix.
+pub fn is_devin_cli(cli: &str) -> bool {
+    let base = cli
+        .rsplit(['/', '\\'])
+        .next()
+        .unwrap_or(cli)
+        .to_ascii_lowercase();
+    matches!(base.as_str(), "devin" | "devin.exe")
+}
+
+fn devin_prompt_ready(grid: GridReadinessSnapshot<'_>) -> bool {
+    let Some((row, _)) = grid.cursor else {
+        return false;
+    };
+    // A trust choice also uses ❭. Require the exact idle placeholder across
+    // its visual rows, with the cursor inside that composer. Devin word-wraps
+    // continuation rows with two spaces at narrow terminal widths.
+    const IDLE: &str = "❭ Ask Devin to build features, fix bugs, or work on your code";
+    let Some(cursor_row) = row.checked_sub(1).map(usize::from) else {
+        return false;
+    };
+    let lines: Vec<_> = grid.screen.lines().collect();
+    for start in 0..=cursor_row.min(lines.len().saturating_sub(1)) {
+        let Some(first) = lines.get(start) else {
+            continue;
+        };
+        if !first.trim().starts_with("❭ ") {
+            continue;
+        }
+        let mut composer = String::new();
+        for (end, line) in lines.iter().enumerate().skip(start) {
+            if end > start {
+                if !line.starts_with("  ") || line.trim().is_empty() {
+                    break;
+                }
+                composer.push(' ');
+            }
+            composer.push_str(line.trim());
+            if composer == IDLE {
+                if cursor_row <= end {
+                    return true;
+                }
+                break;
+            }
+            if !IDLE.starts_with(&composer) {
+                break;
+            }
+        }
+    }
+    false
 }
 
 fn claude_grid_ready(grid: GridReadinessSnapshot<'_>) -> bool {
@@ -121,6 +233,87 @@ fn snapshot_for_grid(grid: GridReadinessSnapshot<'_>) -> WaitSnapshot<'_> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn devin_requires_live_idle_composer_for_all_executable_spellings() {
+        for cli in ["devin", "/usr/local/bin/devin", r"C:\tools\Devin.EXE"] {
+            assert!(is_devin_cli(cli));
+            let screen = "Devin CLI\n❭ Ask Devin to build features, fix bugs, or work on your code\nSWE-2 High";
+            assert!(detect_cli_ready(
+                cli,
+                "",
+                0,
+                GridReadinessSnapshot {
+                    screen,
+                    cursor: Some((2, 3))
+                }
+            ));
+            for blocked in [
+                "❭ 1 Yes, trust",
+                "❭ Guide Devin while it works",
+                "Loading...",
+                "❭ submitted text",
+            ] {
+                assert!(!detect_cli_ready(
+                    cli,
+                    "->pty:ready",
+                    99999,
+                    GridReadinessSnapshot {
+                        screen: blocked,
+                        cursor: Some((1, 3))
+                    }
+                ));
+            }
+            assert!(!cli_prompt_ready(
+                cli,
+                GridReadinessSnapshot {
+                    screen,
+                    cursor: Some((3, 3))
+                }
+            ));
+        }
+        assert!(!is_devin_cli("not-devin"));
+        assert!(!is_devin_cli("devin.cmd"));
+        assert!(!is_devin_cli("devin.bat"));
+    }
+
+    #[test]
+    fn devin_wrapped_idle_composer_requires_cursor_in_exact_placeholder() {
+        // Captured from Devin 3000.10.31 at 40 columns, including indentation.
+        let screen = "────────────────────────────────────────\n❭ Ask Devin to build features, fix \n  bugs, or work on your code\n────────────────────────────────────────\nSWE-2 High";
+        for row in [2, 3] {
+            let grid = GridReadinessSnapshot {
+                screen,
+                cursor: Some((row, 3)),
+            };
+            assert!(cli_prompt_ready("devin", grid));
+            assert!(detect_cli_ready("devin", "", 0, grid));
+        }
+        for row in [0, 1, 4, 5, 99] {
+            assert!(!cli_prompt_ready(
+                "devin",
+                GridReadinessSnapshot {
+                    screen,
+                    cursor: Some((row, 3))
+                }
+            ));
+        }
+        for blocked in [
+            "❭ Guide Devin while it works\n  bugs, or work on your code",
+            "❭ Ask Devin to build features, fix\n  changed text",
+            "❭ Ask Devin to build features, fix\n\n  bugs, or work on your code",
+            "❭ Ask Devin to build features, fix\nbugs, or work on your code",
+            "❭ 1 Yes, trust\n  this workspace",
+        ] {
+            assert!(!cli_prompt_ready(
+                "devin",
+                GridReadinessSnapshot {
+                    screen: blocked,
+                    cursor: Some((1, 3))
+                }
+            ));
+        }
+    }
 
     #[test]
     fn versioned_claude_banner_with_real_composer_is_ready_without_greeting() {
@@ -335,6 +528,110 @@ mod tests {
                 cursor: None,
             },
         ));
+    }
+
+    #[test]
+    fn detect_cli_ready_muse_requires_a_prompt_and_no_auth_screen() {
+        // Muse's readiness arm is the generic prompt set minus the byte-count
+        // fallback, vetoed by its device-login screen. Output volume cannot
+        // prove a Muse worker can accept a task: its device login renders a
+        // prompt-like glyph and far more than 500 bytes while waiting on a
+        // human, which is how a fleet-spawned worker came to report itself
+        // ready and occupy capacity forever.
+        let prompt_grid = GridReadinessSnapshot {
+            screen: "muse session ready\n❯ \n",
+            cursor: Some((2, 3)),
+        };
+        assert!(detect_cli_ready("muse", "", 100, prompt_grid));
+        assert!(detect_cli_ready(
+            "/Users/khaliqgant/.local/bin/muse",
+            "",
+            100,
+            prompt_grid
+        ));
+        assert!(cli_prompt_ready("muse", prompt_grid));
+
+        // A prompt glyph rendered in transcript/output is not the active
+        // composer. The generic matcher searches the entire grid, so Muse
+        // must additionally prove that the cursor is on the prompt row.
+        let transcript_glyph_grid = GridReadinessSnapshot {
+            screen: "Previous output uses › as a bullet\nstill loading\n",
+            cursor: Some((2, 14)),
+        };
+        assert!(!detect_cli_ready("muse", "", 100, transcript_glyph_grid));
+
+        let loading_grid = GridReadinessSnapshot {
+            screen: "loading...\n",
+            cursor: Some((1, 11)),
+        };
+        assert!(!detect_cli_ready("muse", "loading...", 100, loading_grid));
+        assert!(
+            !detect_cli_ready("muse", "loading...", 5_001, loading_grid),
+            "output volume must not prove Muse readiness"
+        );
+
+        // The reported stall: a device-login screen that also carries a
+        // prompt glyph and plenty of output.
+        let device_auth_grid = GridReadinessSnapshot {
+            screen: "Sign in to continue\nVisit https://www.facebook.com/device\n                     and enter this code: ABCD-1234\nWaiting for authentication...\n›\n",
+            cursor: Some((5, 3)),
+        };
+        assert!(!detect_cli_ready("muse", "", 5_001, device_auth_grid));
+        assert!(!detect_cli_ready(
+            "/Users/khaliqgant/.local/bin/muse.exe",
+            "",
+            5_001,
+            device_auth_grid
+        ));
+
+        // Device providers may change the surrounding copy. The URL +
+        // labelled code layout must remain blocked even when none of the
+        // known authentication phrases are present.
+        let unknown_device_auth_grid = GridReadinessSnapshot {
+            screen: "Visit https://example.org/activate\nCode: WXYZ\n›\n",
+            cursor: Some((3, 2)),
+        };
+        assert!(!detect_cli_ready(
+            "muse",
+            "",
+            5_001,
+            unknown_device_auth_grid
+        ));
+
+        // The protocol marker still outranks every screen heuristic, for Muse
+        // as for every other CLI: an explicit ready frame from the harness is
+        // stronger evidence than anything we infer from a grid.
+        assert!(detect_cli_ready(
+            "muse",
+            "->pty:ready",
+            10,
+            device_auth_grid
+        ));
+
+        // The veto is scoped to the startup gate. `cli_prompt_ready` answers
+        // "is a prompt visible" for delivery, where an agent that renders
+        // these words mid-session must not have its messages parked — the
+        // same split Gemini's `waiting for auth` veto already uses.
+        assert!(cli_prompt_ready("muse", device_auth_grid));
+    }
+
+    #[test]
+    fn is_muse_cli_matches_spellings_without_false_positives() {
+        for cli in [
+            "muse",
+            "Muse",
+            "MUSE",
+            "muse.exe",
+            "muse.cmd",
+            "muse.bat",
+            "/Users/khaliqgant/.local/bin/muse",
+            r"C:\Tools\Muse.CMD",
+        ] {
+            assert!(is_muse_cli(cli), "{cli} must classify as Muse");
+        }
+        for cli in ["claude", "codex", "xmuse", "muse2", "amuse.exe", "my-muse"] {
+            assert!(!is_muse_cli(cli), "{cli} must not classify as Muse");
+        }
     }
 
     #[test]
