@@ -85,6 +85,23 @@ it('replays output to a late raw client even when an event listener already cons
   events.close();
 });
 
+it('replays output to a late event listener even while a raw client consumed it', async () => {
+  const { remote } = await setup();
+  local = connect(proxy!.socketPath);
+  await once(local, 'connect');
+  send(remote, 'terminal.ready', { screen: Buffer.from('hello').toString('base64') });
+  await once(local, 'data');
+  const rawOutput = once(local, 'data');
+  send(remote, 'terminal.output', { chunk: ' during-raw' });
+  await rawOutput;
+  const events = new (await import('ws')).default(`${proxy!.brokerUrl.replace('http', 'ws')}/ws`, {
+    headers: { authorization: `Bearer ${proxy!.apiKey}` },
+  });
+  const [message] = await once(events, 'message');
+  expect(JSON.stringify(JSON.parse(String(message)))).toContain('during-raw');
+  events.close();
+});
+
 it('settles finished on explicit close before terminal.ready', async () => {
   await setup();
   await proxy!.close();

@@ -1037,6 +1037,13 @@ export async function startFleetNodeAttachProxy(
     chunk,
     ...(offset === undefined ? {} : { offset }),
   });
+  const retainOutputDroppingOldest = (chunk: string, offset: number | undefined) => {
+    outputHistory.push({ chunk, ...(offset === undefined ? {} : { offset }) });
+    outputHistoryBytes += Buffer.byteLength(chunk, 'utf8');
+    while (outputHistoryBytes > MAX_BUFFERED_BYTES && outputHistory.length > 0) {
+      outputHistoryBytes -= Buffer.byteLength(outputHistory.shift()!.chunk, 'utf8');
+    }
+  };
   const retainOutput = (chunk: string, offset: number | undefined): boolean => {
     const bytes = Buffer.byteLength(chunk, 'utf8');
     if (outputHistoryBytes + bytes > MAX_BUFFERED_BYTES) return false;
@@ -1470,8 +1477,12 @@ export async function startFleetNodeAttachProxy(
         } else {
           retainRawOutput(frame.chunk);
         }
-        if (!broadcast(eventSockets, workerStreamEvent(frame.chunk, offset)) && !rawReady) {
-          if (!retainOutput(frame.chunk, offset)) {
+        if (!broadcast(eventSockets, workerStreamEvent(frame.chunk, offset))) {
+          if (rawReady) {
+            // A raw client is draining the stream, so a missing /ws listener is
+            // not backpressure: keep the newest history for a later listener.
+            retainOutputDroppingOldest(frame.chunk, offset);
+          } else if (!retainOutput(frame.chunk, offset)) {
             endTerminal(
               new FleetNodeAttachError(
                 'terminal output exceeded the bounded loopback buffer',
