@@ -6,10 +6,20 @@ export const MAX_INJECTION_BODY_BYTES = 16 * 1024;
 export const ENVELOPE_RESERVE_BYTES = 2 * 1024;
 /** Largest body that still fits {@link MAX_INJECTION_BODY_BYTES} once formatted. */
 export const MAX_TASK_BODY_BYTES = MAX_INJECTION_BODY_BYTES - ENVELOPE_RESERVE_BYTES;
+/** The broker's portable argv ceiling for Muse's single-argument startup prompt. */
+export const MUSE_STARTUP_PROMPT_MAX_BYTES = 16 * 1024;
+
+/** Mirrors the broker's `is_muse_executable`: the basename, case-insensitive, minus a Windows launcher suffix. */
+function isMuseExecutable(cli: string): boolean {
+  const basename = cli.split(/[\\/]/).pop() || cli;
+  return basename.toLowerCase().replace(/\.(exe|cmd|bat)$/, '') === 'muse';
+}
+
 export async function readTaskInput(
   task: unknown,
   taskFile: unknown,
-  required = false
+  required = false,
+  cli?: string
 ): Promise<string | undefined> {
   if (task !== undefined && taskFile !== undefined)
     throw new Error('Specify exactly one of --task or --task-file');
@@ -19,8 +29,18 @@ export async function readTaskInput(
   }
   const text = taskFile === undefined ? task : await readFile(String(taskFile), 'utf8');
   if (typeof text !== 'string' || !text.trim()) throw new Error('Task must not be empty');
-  validateInjectionSize(text);
+  // Muse receives its startup task through argv, not the PTY envelope.
+  if (cli !== undefined && isMuseExecutable(cli)) validateMuseStartupPromptSize(text);
+  else validateInjectionSize(text);
   return text;
+}
+
+function validateMuseStartupPromptSize(text: string): void {
+  if (Buffer.byteLength(text, 'utf8') > MUSE_STARTUP_PROMPT_MAX_BYTES) {
+    throw new Error(
+      `Muse startup task exceeds the ${MUSE_STARTUP_PROMPT_MAX_BYTES}-byte portable argv limit; use a brief file on the node and send a short pointer`
+    );
+  }
 }
 
 export function validateInjectionSize(text: string): void {

@@ -296,8 +296,15 @@ pub(super) fn already_ready_spawn_result(
     }
 }
 
-/// The spawn error for an initial task whose body cannot fit the PTY envelope.
-pub(super) fn spawn_task_too_large(task: &str) -> Option<String> {
+/// The spawn error for an initial task that cannot reach the worker: a PTY
+/// task must fit the injection envelope, while Muse takes its startup task as
+/// one argv entry and is bounded by its portable argv limit instead.
+pub(super) fn spawn_task_too_large(cli: &str, task: &str) -> Option<String> {
+    if crate::snippets::is_muse_executable(cli) {
+        return crate::worker::validate_muse_startup_prompt(cli, Some(task))
+            .err()
+            .map(|error| format!("spawn_task_too_large: {error}"));
+    }
     crate::injection_wire::task_too_large_error(task)
 }
 
@@ -1672,7 +1679,10 @@ impl BrokerRuntime {
         let carries_task = task.is_some();
         // Reject before launching: an oversized task can only fail after the
         // worker exists, costing a launch and a release for a known outcome.
-        if let Some(error) = task.as_deref().and_then(spawn_task_too_large) {
+        if let Some(error) = task
+            .as_deref()
+            .and_then(|task| spawn_task_too_large(&cli, task))
+        {
             self.reply_action_error(&invoke.invocation_id, &error).await;
             return;
         }

@@ -861,8 +861,15 @@ pub(crate) async fn queue_and_try_delivery_raw(
     withheld_fleet_ack: Option<crate::fleet_wire::Deliver>,
     withheld_fleet_ack_floor: Option<u64>,
 ) -> Result<DeliveryId> {
+    // The envelope-sized cap exists because PTY delivery types the message into
+    // a terminal. Headless recipients never do, so only a known non-PTY worker
+    // skips it; an unknown recipient keeps the conservative check.
+    let pty_recipient = workers
+        .workers
+        .get(worker_name)
+        .is_none_or(|handle| handle.spec.runtime == AgentRuntime::Pty);
     anyhow::ensure!(
-        body.len() <= crate::injection_wire::MAX_BODY_BYTES,
+        !pty_recipient || body.len() <= crate::injection_wire::MAX_BODY_BYTES,
         "injection_too_large: body limit is {} bytes so the formatted envelope fits the {}-byte PTY limit; use a brief file pointer",
         crate::injection_wire::MAX_BODY_BYTES,
         crate::injection_wire::MAX_INJECTION_BODY_BYTES

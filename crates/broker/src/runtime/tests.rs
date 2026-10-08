@@ -1193,10 +1193,21 @@ async fn an_oversized_spawn_task_is_rejected_before_launch() {
     let (tx, _rx) = mpsc::channel(16);
     let workers = WorkerRegistry::new(tx, vec![], temp.path().into(), Instant::now());
     let mut fixture = worker_event_runtime_fixture(workers, HashMap::new());
-    assert!(
-        super::fleet::spawn_task_too_large(&"x".repeat(crate::injection_wire::MAX_BODY_BYTES))
-            .is_none()
-    );
+    assert!(super::fleet::spawn_task_too_large(
+        "codex",
+        &"x".repeat(crate::injection_wire::MAX_BODY_BYTES)
+    )
+    .is_none());
+    // Muse takes its startup task as one argv entry, not through the PTY
+    // envelope, so only its portable argv limit applies.
+    let over_pty = "x".repeat(crate::injection_wire::MAX_BODY_BYTES + 1);
+    assert!(super::fleet::spawn_task_too_large("codex", &over_pty).is_some());
+    assert!(super::fleet::spawn_task_too_large("/usr/local/bin/Muse.exe", &over_pty).is_none());
+    assert!(super::fleet::spawn_task_too_large(
+        "muse",
+        &"x".repeat(crate::worker::MUSE_STARTUP_PROMPT_MAX_BYTES + 1)
+    )
+    .is_some_and(|error| error.starts_with("spawn_task_too_large: ")));
     fixture
         .runtime
         .handle_fleet_control_event(crate::node_control::FleetControlEvent::Message(
@@ -4165,6 +4176,49 @@ async fn initial_delivery_failure_stays_owned_until_dead_lettered() {
         EventId::new("evt_initial_failure")
     );
     assert_eq!(pending.delivery.body, "must remain auditable");
+}
+
+#[tokio::test]
+async fn pty_body_cap_applies_only_to_pty_recipients() {
+    let over_cap = "x".repeat(crate::injection_wire::MAX_BODY_BYTES + 1);
+    for runtime in [AgentRuntime::Pty, AgentRuntime::Headless] {
+        let mut workers = make_worker_registry_with_worker("Worker").await;
+        workers
+            .workers
+            .get_mut(&WorkerName::from("Worker"))
+            .unwrap()
+            .spec
+            .runtime = runtime.clone();
+        let mut pending_deliveries = HashMap::new();
+        let result = super::queue_and_try_delivery_raw(
+            &mut workers,
+            &mut pending_deliveries,
+            "Worker",
+            "evt_large",
+            "orchestrator",
+            "Worker",
+            &over_cap,
+            None,
+            Some(WorkspaceId::new("ws_demo")),
+            None,
+            2,
+            MessageInjectionMode::Wait,
+            Duration::from_secs(1),
+            None,
+            None,
+        )
+        .await;
+        match runtime {
+            AgentRuntime::Pty => assert!(result
+                .expect_err("PTY recipients keep the envelope-sized body cap")
+                .to_string()
+                .contains("injection_too_large")),
+            AgentRuntime::Headless => {
+                result.expect("headless recipients never type into a PTY, so no PTY cap");
+                assert_eq!(pending_deliveries.len(), 1);
+            }
+        }
+    }
 }
 
 #[tokio::test]

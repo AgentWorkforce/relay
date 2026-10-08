@@ -2,7 +2,12 @@ import { mkdtemp, writeFile, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { describe, it, expect } from 'vitest';
-import { readTaskInput, MAX_INJECTION_BODY_BYTES, MAX_TASK_BODY_BYTES } from './task-input.js';
+import {
+  readTaskInput,
+  MAX_INJECTION_BODY_BYTES,
+  MAX_TASK_BODY_BYTES,
+  MUSE_STARTUP_PROMPT_MAX_BYTES,
+} from './task-input.js';
 describe('task input', () => {
   it('requires exactly one source for fleet, allows neither locally', async () => {
     await expect(readTaskInput(undefined, undefined, true)).rejects.toThrow('exactly one');
@@ -34,5 +39,18 @@ describe('task input', () => {
     await expect(readTaskInput('a'.repeat(MAX_TASK_BODY_BYTES + 1), undefined)).rejects.toThrow(
       'UTF-8 bytes'
     );
+  });
+  // Muse takes its startup task as one argv entry, never through the PTY
+  // envelope, so the broker's 16 KiB argv limit applies instead.
+  it('applies the Muse argv limit, not the PTY body limit, to Muse tasks', async () => {
+    const between = 'a'.repeat(MAX_TASK_BODY_BYTES + 1);
+    for (const cli of ['muse', 'MUSE.exe', '/usr/local/bin/muse', 'C:\\Tools\\Muse.CMD']) {
+      expect(await readTaskInput(between, undefined, false, cli)).toBe(between);
+      await expect(
+        readTaskInput('a'.repeat(MUSE_STARTUP_PROMPT_MAX_BYTES + 1), undefined, false, cli)
+      ).rejects.toThrow('argv');
+    }
+    await expect(readTaskInput(between, undefined, false, 'musey')).rejects.toThrow('envelope');
+    await expect(readTaskInput(between, undefined, false, 'claude')).rejects.toThrow('envelope');
   });
 });

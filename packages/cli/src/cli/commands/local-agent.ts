@@ -875,7 +875,7 @@ export function registerLocalAgentCommands(
           const resolved = resolveAutoSpawn(
             provider,
             baseName,
-            await readTaskInput(opts.task, opts.taskFile),
+            await readTaskInput(opts.task, opts.taskFile, false, provider),
             opts.model as string | undefined
           );
           await spawnAgentWithClient(client, {
@@ -936,7 +936,7 @@ export function registerLocalAgentCommands(
       const resolved = resolveAutoSpawn(
         provider,
         baseName,
-        await readTaskInput(options.task, options.taskFile),
+        await readTaskInput(options.task, options.taskFile, false, provider),
         options.model as string | undefined
       );
       await run(

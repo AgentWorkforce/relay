@@ -507,7 +507,7 @@ export function registerFleetCommands(
     await runSdk(deps.sdk, async () => {
       const clientOptions = sdkOptionsFromOpts(options);
       const name = requiredText(options.name, 'Worker name');
-      const task = (await readTaskInput(options.task, options.taskFile, true))!;
+      const task = (await readTaskInput(options.task, options.taskFile, true, cli))!;
       let targetNode = optionalText(options.targetNode, 'Target node') ?? optionalText(options.node, 'Node');
       const useSandbox = options.sandbox === true;
       // Explicit hosted credentials/transport and personas retain their legacy
