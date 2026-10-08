@@ -277,9 +277,9 @@
       "installedPath": ".agents/skills/writing-relayflows/SKILL.md"
     },
     "@agent-relay/merge-train-snippet#agents.md:AGENTS.md": {
-      "version": "1.0.0",
-      "resolved": "https://registry.prpm.dev/api/v1/packages/%40agent-relay%2Fmerge-train-snippet/1.0.0.tar.gz",
-      "integrity": "sha256-a85e34747a332452ab6d8d7f814c828d404a3a77dd724f16878d26b91fb7d5bb",
+      "version": "1.0.1",
+      "resolved": "https://registry.prpm.dev/api/v1/packages/%40agent-relay%2Fmerge-train-snippet/1.0.1.tar.gz",
+      "integrity": "sha256-b993f4fd7a737b5788f10fca8b02d6eea02c803b1d4483f6536f3cfd3f85126e",
       "format": "agents.md",
       "subtype": "snippet",
       "sourceFormat": "generic",
@@ -294,5 +294,5 @@
       }
     }
   },
-  "generated": "2026-10-08T22:45:33.057Z"
+  "generated": "2026-10-08T23:07:11.486Z"
 }

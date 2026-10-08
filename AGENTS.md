@@ -314,11 +314,14 @@ Future agents can query past trajectories to learn from your decisions.
 
 <!-- prpm:snippet:end @agent-workforce/trail-snippet@1.1.2 -->
 
-<!-- prpm:snippet:start @agent-relay/merge-train-snippet@1.0.0 -->
+<!-- prpm:snippet:start @agent-relay/merge-train-snippet@1.0.1 -->
 ## Merging: `trunk` + the `mergeable` label
 
-CI does **not** run on feature branches. It runs only on the `trunk` → `main`
-pull request and on pushes to `main`. (Repos whose default branch is not
+CI suites do **not** run automatically on feature branches. They run only on
+this repository's `trunk` → `main` pull request and on pushes to `main`. The
+one check that does run on a feature PR into `main` is `Trunk guard`, which
+fails it on purpose; manually dispatched workflows (`workflow_dispatch`) still
+run on any branch. (Repos whose default branch is not
 `main`, e.g. `master`, use that branch wherever this says `main`.) A merge
 agent batches ready PRs into `trunk`, gets that one PR green, and merges it.
 
@@ -352,4 +355,4 @@ to rebase on `trunk`; do so and keep the label.
 
 > Interim: the sweep worker is not deployed yet. Until it is, a human or a
 > designated agent performs the merge-agent steps manually. Labelling is unchanged.
-<!-- prpm:snippet:end @agent-relay/merge-train-snippet@1.0.0 -->
+<!-- prpm:snippet:end @agent-relay/merge-train-snippet@1.0.1 -->
