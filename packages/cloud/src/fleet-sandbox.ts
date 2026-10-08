@@ -1522,6 +1522,10 @@ export async function ensureCloudFleetSandbox(
       payload = await readJson(response);
       legacyCompatibilityResponse = true;
     } catch (error) {
+      // Match the initial and status paths: authentication failures and caller
+      // cancellation are not lost responses and must surface unchanged.
+      if (error instanceof CloudAuthError) throw error;
+      if (options.signal?.aborted) throw options.signal.reason ?? error;
       throw new CloudFleetSandboxProvisionError(
         redactCredentialValues(
           `Cloud fleet sandbox compatibility request ended without a complete response: ${

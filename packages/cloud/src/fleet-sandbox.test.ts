@@ -459,7 +459,9 @@ describe('Cloud fleet sandbox client', () => {
         response: Response.json(preparationEnvelope('pending', 'agent_relay_cli_bootstrap', 0), {
           status: 202,
         }),
-        auth: devAuth,
+        // Only the read of the ready record carries DEV auth, so this proves
+        // normalization uses the auth that read the record, not the ensure's.
+        auth,
       })
       .mockResolvedValueOnce({
         response: Response.json(
@@ -696,9 +698,9 @@ describe('Cloud fleet sandbox client', () => {
       sandboxId: SANDBOX_ID,
       providerId: 'daytona',
     });
-    expect(JSON.parse(String(mocks.authorizedApiFetch.mock.calls[1]?.[2]?.body))).not.toHaveProperty(
-      'providerId'
-    );
+    const ensureBody = JSON.parse(String(mocks.authorizedApiFetch.mock.calls[1]?.[2]?.body));
+    expect(ensureBody).toMatchObject({ preparationMode: 'async-v1', sandboxId: SANDBOX_ID });
+    expect(ensureBody).not.toHaveProperty('providerId');
   });
 
   it('accepts a synchronous 201 result when an older Cloud ignores async preparation mode', async () => {
@@ -1575,6 +1577,112 @@ describe('Cloud fleet sandbox client', () => {
       )
     ).rejects.toBe(authError);
     expect(mocks.authorizedApiFetch).toHaveBeenCalledTimes(2);
+  });
+
+  it('reconciles an envelope-shaped but invalid 5xx ensure body through durable status', async () => {
+    mocks.authorizedApiFetch
+      .mockResolvedValueOnce({
+        response: Response.json({ cloudWorkspaceId: CLOUD_WORKSPACE_ID }),
+        auth,
+      })
+      .mockResolvedValueOnce({
+        response: Response.json(
+          { version: 1, mode: 'async-v1', sandboxId: SANDBOX_ID, state: 'exploded', generation: -1 },
+          { status: 502 }
+        ),
+        auth,
+      })
+      .mockResolvedValueOnce({
+        response: Response.json(
+          preparationEnvelope('ready', 'broker_visible', 2, {
+            result: {
+              outcome: 'provisioned',
+              providerId: 'agent37',
+              nodeId: 'node-after-invalid-5xx',
+              nodeName: SANDBOX_NAME,
+              sandboxId: SANDBOX_ID,
+              providerSandboxId: 'provider-after-invalid-5xx',
+              relayWorkspaceId: 'rw_abc',
+              relaycastTarget: RELAYCAST_TARGET,
+              relayfileMounted: true,
+            },
+          })
+        ),
+        auth,
+      });
+
+    await expect(
+      ensureCloudFleetSandbox(
+        {
+          workspaceId: 'rw_abc',
+          name: SANDBOX_NAME,
+          sandboxId: SANDBOX_ID,
+          requiredCapability: 'spawn:codex',
+          forceProvision: true,
+          preparationMode: 'async-v1',
+        },
+        { preparationPollIntervalMs: 1 }
+      )
+    ).resolves.toMatchObject({ nodeId: 'node-after-invalid-5xx', sandboxId: SANDBOX_ID });
+    expect(mocks.authorizedApiFetch.mock.calls[2]?.[2]?.method).toBe('GET');
+  });
+
+  it('surfaces a compatibility-retry authentication failure unchanged', async () => {
+    const authError = new CloudAuthError('AUTH_REFRESH_EXPIRED', 'Sign in again.');
+    mocks.authorizedApiFetch
+      .mockResolvedValueOnce({
+        response: Response.json({ cloudWorkspaceId: CLOUD_WORKSPACE_ID }),
+        auth,
+      })
+      .mockResolvedValueOnce({
+        response: Response.json({ error: 'Unrecognized key: preparationMode' }, { status: 400 }),
+        auth,
+      })
+      .mockRejectedValueOnce(authError);
+
+    await expect(
+      ensureCloudFleetSandbox({
+        workspaceId: 'rw_abc',
+        name: SANDBOX_NAME,
+        sandboxId: SANDBOX_ID,
+        requiredCapability: 'spawn:codex',
+        forceProvision: true,
+        preparationMode: 'async-v1',
+      })
+    ).rejects.toBe(authError);
+    expect(mocks.authorizedApiFetch).toHaveBeenCalledTimes(3);
+  });
+
+  it('preserves caller cancellation during the compatibility retry', async () => {
+    const controller = new AbortController();
+    const cancelled = new Error('caller cancelled');
+    mocks.authorizedApiFetch
+      .mockResolvedValueOnce({
+        response: Response.json({ cloudWorkspaceId: CLOUD_WORKSPACE_ID }),
+        auth,
+      })
+      .mockResolvedValueOnce({
+        response: Response.json({ error: 'Unrecognized key: preparationMode' }, { status: 400 }),
+        auth,
+      })
+      .mockImplementationOnce(async () => {
+        controller.abort(cancelled);
+        throw new DOMException('This operation was aborted', 'AbortError');
+      });
+
+    await expect(
+      ensureCloudFleetSandbox(
+        {
+          workspaceId: 'rw_abc',
+          name: SANDBOX_NAME,
+          sandboxId: SANDBOX_ID,
+          requiredCapability: 'spawn:codex',
+          forceProvision: true,
+          preparationMode: 'async-v1',
+        },
+        { signal: controller.signal }
+      )
+    ).rejects.toBe(cancelled);
   });
 
   it('surfaces an async polling authentication failure without retrying it', async () => {
