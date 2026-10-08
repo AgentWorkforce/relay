@@ -480,3 +480,23 @@ describe('telemetry context propagation', () => {
     }
   });
 });
+
+describe('install.sh quick start', () => {
+  it('prints only commands this CLI actually has', () => {
+    // The installer once printed `agent-relay up --background` after `up` moved
+    // under `node`, so a first run failed with "unknown command 'up'".
+    const installScript = fs.readFileSync(new URL('../../../../install.sh', import.meta.url), 'utf-8');
+    const usage = installScript.match(/^print_usage\(\)\s*\{\n([\s\S]*?)^\}/m)?.[1] ?? '';
+    const commands = [...usage.matchAll(/echo "\s*agent-relay ([^"]+)"/g)].map((match) => match[1]);
+    expect(commands.length).toBeGreaterThan(0);
+    const program = createProgram();
+    for (const command of commands) {
+      let current: Command = program;
+      for (const word of command.split(/\s+/).filter((part) => !part.startsWith('-'))) {
+        const next = current.commands.find((sub) => sub.name() === word || sub.aliases().includes(word));
+        expect(next, `agent-relay ${command}: no "${word}" command`).toBeDefined();
+        current = next as Command;
+      }
+    }
+  });
+});
