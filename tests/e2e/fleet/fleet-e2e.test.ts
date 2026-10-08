@@ -633,7 +633,9 @@ describe.skipIf(!pre.ok)('two-node fleet scenario matrix', () => {
         args: expect.arrayContaining(['resume', sessionRef]),
       });
     },
-    180_000
+    // Two 60 s spawn settles, two 15 s brief observations and a 30 s release
+    // wait alone reach 180 s, so leave room for the actions between them.
+    240_000
   );
 
   it('propagates unsupported generic session resume as a terminal failure with no retained identity', async () => {

@@ -29,7 +29,9 @@ the worker reports `directory_trust_required` with instructions to trust the
 explicit spawn working directory. Verified fleet spawns return
 `spawn_directory_trust_required` and release the worker through spawn cleanup.
 An unverified (`confirm: false`) spawn reports the worker error but does not reap
-the harness; stop it explicitly or attach to resolve trust. Already-trusted
+the harness. Once reported, the worker never becomes ready, so trusting the
+directory in an attached terminal does not resume it or deliver its initial
+task: stop it, trust the directory, then spawn again. Already-trusted
 installations retain the existing startup path. Relay does not yet answer this
 menu automatically: that requires captured evidence of Devin's actual menu and
 trust scope.

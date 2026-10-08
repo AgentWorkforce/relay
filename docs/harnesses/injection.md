@@ -39,7 +39,8 @@ agent-relay node agent spawn claude --name reviewer --task-file ./brief.md
 `--task-file` reads a UTF-8 file on the **requester's machine**, then sends the
 contents through the usual task transport. It does not create a file on the node
 or bypass size limits. Fleet requires exactly one of `--task` and `--task-file`;
-local `agent spawn` and `node agent spawn` allow neither. The integration command's
+local `agent spawn` and `node agent spawn` accept either but require neither, and
+reject both together. The integration command's
 existing task option remains unchanged.
 
 Only a whole-payload echo confirms receipt: `echo` (verbatim) or

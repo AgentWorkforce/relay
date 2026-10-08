@@ -14,11 +14,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - MCP `spawn` reports pending/liveness evidence, and `remove_agent` accepts optional registration-clearance waits.
 - `agent remove --wait` and `fleet release --delete-agent --wait` verify registration clearance before name reuse, with `--wait-timeout` and `--no-wait` controls. Fleet release adds `removal` evidence when waiting.
 - `fleet agent list` JSON includes node heartbeat timestamps and ages, with warnings for stale snapshots.
+- `fleet spawn`, `agent spawn`, and `node agent spawn` accept `--task-file` to read an initial brief from a local UTF-8 file. Fleet requires exactly one of `--task` and `--task-file`.
 
 ### Changed
 
 - Unconfirmed `fleet spawn` results keep the `spawn_unconfirmed` code, now with `state: "pending"`, invocation diagnostics, liveness evidence and exit 8. Node heartbeat presence is reported as liveness evidence but never confirms the spawn, because heartbeats cannot tell this invocation's worker from an earlier one with the same name.
 - Removal waits exit 8 if the registration remains present; scripts must handle nonzero exits beyond `$? -eq 1`. Waits remain opt-in, and unavailable verification reads preserve the asynchronous acknowledgement.
+- PTY-delivered tasks and messages are limited to 14 KiB (16 KiB with the message envelope); `fleet spawn`, `agent spawn` and PTY delivery reject larger input and name the limit, so write the brief to a file and send a pointer. Agents whose terminal lacks bracketed paste accept at most 1,536 bytes per injection. Muse startup tasks keep their 16 KiB argument limit, headless agents are not capped, `message post|reply|dm send` are not capped, and a wrapped agent receives an oversized message as a pointer to it in Relay.
 
 ### Fixed
 
@@ -32,9 +34,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `agent-relay fleet spawn` reports registration `d1_pressure` as retryable only when the registration is proven to have failed before any change was made.
 - Verified Fleet Devin spawns fail with `directory_trust_required` when the directory-trust prompt persists, releasing the worker through spawn cleanup instead of leaving a live but blocked worker.
 - Relay MCP `post_message` and `reply_to_thread` coalesce a transport replay of one request (and accept an `idempotency_key` for retries after a lost response), matching `send_dm`; native host tools key on the tool call ID. Independent writes with identical text remain separate messages.
-- `integration subscribe` validates `--events` against the engine's full subscribable event list, verifies persisted writeback events, rolls back incomplete subscriptions, and reports GitHub authorization uncertainty; `--list` distinguishes subscription configuration from delivery confirmation.
+- `integration subscribe` rejects `--events` values the engine cannot subscribe to.
+- `integration subscribe` checks that the requested writeback events were persisted and rolls back a subscription left incomplete.
+- `integration subscribe` says when GitHub authorization for writeback could not be verified, instead of implying it succeeded.
+- `integration subscribe --list` separates a subscription's configuration from delivery confirmation, so a configured subscription is no longer read as a delivered one.
 - Fleet registration collisions use readable `spawn_name_taken` guidance covering asynchronous removal and failed-spawn cleanup, instead of Rust `Fatal(AlreadyExists {...})` text.
 - Pending fleet spawns preserve provisioned sandboxes and distinguish live, stale, elsewhere, registered, absent, and unknown evidence before advising a retry.
+- PTY tasks and relay messages use atomic bracketed paste when supported, wait for the composer, and prevent embedded carriage returns from submitting partial input. Oversized bodies and tail-only echoes fail explicitly without replay.
+- `fleet spawn --task` reports success only when the agent's terminal echoed the whole task; a task that fails to deliver releases the worker before the spawn fails with `spawn_task_failed`. A task acked without that proof fails with `spawn_task_unconfirmed`, which names the live agent and says not to retry, and `delivery_verified` now reports what was observed (`echo_incomplete`, `paste_summary`, `timeout_fallback`) instead of treating head/tail anchors or a collapsed-paste marker as receipt.
 
 ## [13.1.5] - 2026-10-08
 
@@ -83,17 +90,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
-- `fleet spawn`, `agent spawn`, and `node agent spawn` accept `--task-file` to read an initial brief from a local UTF-8 file. Fleet requires exactly one of `--task` and `--task-file`.
 - `node agent list|spawn|new|release|set-model` and `node tail` accept `--state-dir`, `--broker-url`, and `--api-key`, so brokers started with `node up --state-dir` — such as fleet nodes — can be managed from any directory. Without these flags, `RELAY_BROKER_URL` / `RELAY_BROKER_API_KEY` or the enclosing project's broker is used.
-
-### Changed
-
-- PTY injections are capped at 16 KiB including their envelope, and task and PTY-delivered message bodies at 14 KiB so the envelope always fits. `fleet spawn`, the fleet spawn action (before launching any worker) and the broker's PTY delivery reject larger input naming the limit, and the paced fallback wire rejects above 1,536 bytes; write the brief to a file and send a pointer instead. `message post|reply|dm send` are not capped, and a wrapped agent receives an oversized message as a notice pointing to it in Relay.
 
 ### Fixed
 
-- PTY tasks and relay messages use atomic bracketed paste when supported, wait for the composer, and prevent embedded carriage returns from submitting partial input. Oversized bodies and tail-only echoes fail explicitly without replay.
-- `fleet spawn --task` reports success only when the agent's terminal echoed the whole task; a task that fails to deliver releases the worker before the spawn fails with `spawn_task_failed`. A task acked without that proof fails with `spawn_task_unconfirmed`, which names the live agent and says not to retry, and `delivery_verified` now reports what was observed (`echo_incomplete`, `paste_summary`, `timeout_fallback`) instead of treating head/tail anchors or a collapsed-paste marker as receipt.
 - Broker fleet control keeps a healthy node WebSocket open when Relaycast returns retryable `d1_pressure` for `node.register` or `inventory.sync`, retrying the same frame with bounded exponential backoff while the existing registration and application-liveness deadlines remain fail-closed.
 - `--state-dir` on `node agent` commands, `node status`, and `node down` also accepts a fleet node directory whose broker state lives in `state/`.
 - An explicit `--state-dir` on `node agent` commands is no longer overridden by `RELAY_BROKER_URL` / `RELAY_BROKER_API_KEY`.

@@ -53,6 +53,8 @@ function renderCodexComposer(text) {
 }
 
 try {
+  // Decode as a stream: a UTF-8 character can straddle two PTY reads.
+  process.stdin.setEncoding('utf8');
   process.stdin.resume();
   process.stdin.on('data', (chunk) => {
     if (!ready) return;

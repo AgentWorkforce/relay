@@ -1,7 +1,17 @@
 # Provider subscription reply investigation (2026-10-05)
 
-This change implements the locally verifiable portions of `reviewed-plan.md`.
-It does **not** establish that the reported GitHub writeback failure is fixed.
+This change implements the locally verifiable portions of the reviewed plan
+for #1823 (relay#1910). It does **not** establish that the reported GitHub
+writeback failure is fixed.
+
+Evidence labels used below:
+
+- **E1–E3**: authenticated reads of the incident's message and transcript, its
+  subscription, and its provider binding.
+- **E4**: whether cloud subscription writeback ingress goes through the
+  file-write ops ledger.
+- **E5**: whether the Relaycast engine enforces `Idempotency-Key` on channel
+  posts and thread replies.
 
 ## Available evidence
 
@@ -21,8 +31,9 @@ message inbox check` reports no workspace key. No authenticated message,
   file-write ops ledger (E4 remains open).
 - Installed `@relaycast/sdk/dist/agent.js` supplies `Idempotency-Key` headers for
   channel posts and thread replies, including generated keys. That proves
-  transport behavior, not engine enforcement. No explicit `idempotency_key`
-  tool argument is added without E5 confirmation.
+  transport behavior, not engine enforcement (E5 remains open). The explicit
+  `idempotency_key` tool argument added later is forwarded to Relaycast and
+  also deduplicates locally, so it does not depend on E5.
 - The existing changelog also records a standalone MCP double-dispatch fix in
   13.1.0. The incident was on 12.4.0; without its transcript, parallel aliases
   cannot be asserted as the incident's root cause.
