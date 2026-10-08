@@ -38,13 +38,14 @@ use crate::broker::{
 };
 use crate::cli::command_parse::parse_cli_command;
 use crate::cli::PtyCommand;
-use crate::readiness::{detect_cli_ready, is_devin_cli, is_muse_cli, GridReadinessSnapshot};
+use crate::readiness::{
+    detect_cli_ready, devin_trust_prompt_active, is_devin_cli, is_muse_cli, GridReadinessSnapshot,
+};
 use crate::runtime::{get_terminal_size, send_frame};
 use crate::snapshot::Snapshot;
 use crate::util::ansi::{floor_char_boundary, strip_ansi, AnsiStripper};
 use crate::util::terminal::{
-    detect_claude_trust_prompt, detect_codex_trust_prompt, detect_devin_trust_prompt,
-    detect_muse_device_auth_prompt,
+    detect_claude_trust_prompt, detect_codex_trust_prompt, detect_muse_device_auth_prompt,
 };
 use crate::util::utf8_stream::Utf8StreamDecoder;
 use crate::worker::detection::ActivityDetector;
@@ -588,7 +589,7 @@ fn evaluate_startup_gate(
     );
     let trust_blocked = detect_codex_trust_prompt(grid.screen)
         || detect_claude_trust_prompt(grid.screen) == (true, true)
-        || (is_devin_cli(resolved_cli) && detect_devin_trust_prompt(grid.screen));
+        || (is_devin_cli(resolved_cli) && devin_trust_prompt_active(grid));
     let composer_ready = is_codex && codex_composer_ready(grid);
     tracing::debug!(target: "relay_broker::startup_gate",
         cli = resolved_cli, is_codex, composer_ready, trust_blocked,
@@ -655,8 +656,12 @@ impl StartupGate {
 /// browser elsewhere. `detect_cli_ready` already refuses to prove readiness
 /// on that screen; this names it as deliberate so the deadline cannot
 /// release the brief into a login form.
-fn startup_gate_block_reason(resolved_cli: &str, screen: &str) -> Option<StartupGate> {
-    if is_devin_cli(resolved_cli) && detect_devin_trust_prompt(screen) {
+fn startup_gate_block_reason(
+    resolved_cli: &str,
+    grid: GridReadinessSnapshot<'_>,
+) -> Option<StartupGate> {
+    let screen = grid.screen;
+    if is_devin_cli(resolved_cli) && devin_trust_prompt_active(grid) {
         return Some(StartupGate::DirectoryTrustRequired);
     }
     if is_muse_cli(resolved_cli) && detect_muse_device_auth_prompt(screen) {
@@ -678,19 +683,20 @@ fn startup_gate(
     pty: &PtySession,
 ) -> StartupGate {
     let screen = pty.screen_text();
+    let grid = GridReadinessSnapshot {
+        screen: &screen,
+        cursor: Some(pty.cursor_position()),
+    };
     if evaluate_startup_gate(
         resolved_cli,
         startup_output,
         startup_total_bytes,
         output_quiet,
-        GridReadinessSnapshot {
-            screen: &screen,
-            cursor: Some(pty.cursor_position()),
-        },
+        grid,
     ) {
         return StartupGate::Ready;
     }
-    startup_gate_block_reason(resolved_cli, &screen).unwrap_or(StartupGate::Unrecognised)
+    startup_gate_block_reason(resolved_cli, grid).unwrap_or(StartupGate::Unrecognised)
 }
 
 /// Whether the loop may pop and start the next pending injection this tick.
@@ -832,6 +838,11 @@ async fn try_emit_worker_ready(
     // Anchor the deadline on the gate's own detector, not a parsed menu row or
     // response attempt. The 200 ms verification tick drives this even when the
     // child stops producing output. Blocking suppresses the generic fail-open.
+    // A prompt that cleared before readiness must not hand its deadline to a
+    // later one; each appearance gets the full timeout.
+    if gate != StartupGate::DirectoryTrustRequired {
+        readiness.trust_first_seen = None;
+    }
     if gate == StartupGate::DirectoryTrustRequired && !readiness.fallback_sent {
         let first_seen = readiness.trust_first_seen.get_or_insert_with(Instant::now);
         if first_seen.elapsed() >= DIRECTORY_TRUST_TIMEOUT {
@@ -3376,12 +3387,19 @@ mod tests {
         );
     }
 
+    fn screen_only(screen: &str) -> GridReadinessSnapshot<'_> {
+        GridReadinessSnapshot {
+            screen,
+            cursor: None,
+        }
+    }
+
     #[test]
     fn devin_trust_gate_is_scoped_to_devin_and_vetoes_composer() {
         let screen = "Do you trust the authors of this directory?\n❭ 1 Yes, trust\n2 No, exit";
         for cli in ["devin", "/usr/local/bin/devin", "devin.exe"] {
             assert_eq!(
-                startup_gate_block_reason(cli, screen),
+                startup_gate_block_reason(cli, screen_only(screen)),
                 Some(StartupGate::DirectoryTrustRequired)
             );
             assert!(!evaluate_startup_gate(
@@ -3396,12 +3414,12 @@ mod tests {
             ));
         }
         for cli in ["claude", "codex", "muse"] {
-            assert_eq!(startup_gate_block_reason(cli, screen), None);
+            assert_eq!(startup_gate_block_reason(cli, screen_only(screen)), None);
         }
         assert_eq!(
             startup_gate_block_reason(
                 "devin",
-                "Sign in to continue\nVisit https://www.facebook.com/device\n›"
+                screen_only("Sign in to continue\nVisit https://www.facebook.com/device\n›")
             ),
             None
         );
@@ -3482,6 +3500,68 @@ mod tests {
         }
     }
 
+    #[test]
+    fn devin_trust_history_above_live_composer_does_not_block_readiness() {
+        // A resumed or uncleared Devin screen can keep the answered trust
+        // question visible above the idle composer that holds the cursor.
+        let screen = "Do you trust this directory?\n1 Yes, trust\n2 No, exit\n❭ Ask Devin to build features, fix bugs, or work on your code\nSWE-2 High";
+        let grid = GridReadinessSnapshot {
+            screen,
+            cursor: Some((4, 3)),
+        };
+        assert!(evaluate_startup_gate(
+            "devin",
+            screen,
+            1000,
+            Duration::from_secs(90),
+            grid
+        ));
+        assert_eq!(startup_gate_block_reason("devin", grid), None);
+        // The same text with the cursor on the menu is still the live dialog.
+        let menu = GridReadinessSnapshot {
+            screen,
+            cursor: Some((2, 1)),
+        };
+        assert_eq!(
+            startup_gate_block_reason("devin", menu),
+            Some(StartupGate::DirectoryTrustRequired)
+        );
+    }
+
+    #[tokio::test]
+    async fn devin_trust_prompt_that_returns_gets_a_fresh_deadline() {
+        let (tx, mut rx) = mpsc::channel(4);
+        let mut request_id = None;
+        let mut readiness = StartupReadinessState {
+            trust_first_seen: Some(Instant::now() - DIRECTORY_TRUST_TIMEOUT),
+            ..Default::default()
+        };
+        // The earlier prompt cleared before readiness, then trust reappears.
+        for gate in [
+            StartupGate::Unrecognised,
+            StartupGate::DirectoryTrustRequired,
+        ] {
+            try_emit_worker_ready(
+                &tx,
+                "devin-trust",
+                Some(42),
+                &mut request_id,
+                Some(Instant::now()),
+                &mut readiness,
+                gate,
+            )
+            .await;
+        }
+        assert!(
+            rx.try_recv().is_err(),
+            "a returning trust prompt must not inherit the cleared prompt's deadline"
+        );
+        assert!(!readiness.trust_error_sent);
+        assert!(readiness
+            .trust_first_seen
+            .is_some_and(|seen| seen.elapsed() < DIRECTORY_TRUST_TIMEOUT));
+    }
+
     #[tokio::test]
     async fn devin_trust_cleared_before_deadline_allows_readiness() {
         let (tx, mut rx) = mpsc::channel(4);
@@ -3509,22 +3589,30 @@ mod tests {
     fn provider_login_and_trust_dialogs_are_classified_apart() {
         let device_auth = "Sign in to continue\nVisit https://www.facebook.com/device\n›\n";
         assert_eq!(
-            startup_gate_block_reason("/usr/local/bin/muse", device_auth),
+            startup_gate_block_reason("/usr/local/bin/muse", screen_only(device_auth)),
             Some(StartupGate::ProviderAuthRequired)
         );
         // Only Muse carries the device-login arm; another harness rendering
         // the same words keeps its existing unrecognised-prompt behaviour.
-        assert_eq!(startup_gate_block_reason("codex", device_auth), None);
+        assert_eq!(
+            startup_gate_block_reason("codex", screen_only(device_auth)),
+            None
+        );
         assert_eq!(
             startup_gate_block_reason(
                 "codex",
-                "Do you trust the contents of this directory?\n> Yes, continue\n  No, quit\n"
+                screen_only(
+                    "Do you trust the contents of this directory?\n> Yes, continue\n  No, quit\n"
+                )
             ),
             Some(StartupGate::Blocked)
         );
         // An authenticated composer is neither.
         assert_eq!(
-            startup_gate_block_reason("muse", "muse  signed in as relay-node\n/login\n›\n"),
+            startup_gate_block_reason(
+                "muse",
+                screen_only("muse  signed in as relay-node\n/login\n›\n")
+            ),
             None
         );
     }
