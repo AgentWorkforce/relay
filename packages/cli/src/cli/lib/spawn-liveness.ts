@@ -61,10 +61,17 @@ export function pendingSpawnError(
   diagnostic?: string
 ): FleetSpawnError {
   const nodeOption = context.node ? ` --node ${shellQuote(context.node)}` : '';
+  // Heartbeats carry worker names, not invocation IDs, so presence cannot be
+  // attributed to this spawn: it may be a worker that was already running.
+  const attribution =
+    liveness.evidence === 'live' || liveness.evidence === 'live_elsewhere' || liveness.evidence === 'stale'
+      ? `A worker with this name is listed by a node heartbeat, but heartbeats do not identify the invocation that started it, so it may be an earlier worker rather than this spawn. `
+      : '';
   return new FleetSpawnError(
     'spawn_pending',
     `Spawn of ${JSON.stringify(name)} was accepted; its outcome is pending. ` +
       `Evidence: ${liveness.evidence}${liveness.node ? ` on ${JSON.stringify(liveness.node)}` : ''}. ` +
+      attribution +
       `Invocation: ${context.invocationId ?? 'unavailable'}; dispatch: ${context.dispatchState ?? 'unknown'}. ` +
       `Check \`agent-relay fleet agent list${nodeOption}\` before retrying. ` +
       `Only if no worker is running and you intend to reclaim the name, run \`agent-relay agent remove ${shellQuote(name)} --wait\` and wait for clearance before respawning.`,
@@ -103,6 +110,7 @@ export async function probeSpawnLiveness(options: {
   now?: () => number;
 }): Promise<SpawnLiveness> {
   let readError: string | undefined;
+  let rosterUnread = false;
   const read = <T>(fn: () => Promise<T>) =>
     withDeadline(fn, () => new Error('Spawn evidence read timed out.'), 2_000);
   if (options.getInvocation) {
@@ -156,13 +164,17 @@ export async function probeSpawnLiveness(options: {
       if (weaker) return weaker;
     } catch (error) {
       readError = safeRelayErrorMessage(error);
+      rosterUnread = true;
     }
     try {
       await read(() => client.agents.get(options.name));
       return { evidence: 'registered', ...(readError ? { readError } : {}) };
     } catch (error) {
-      if (isNotFoundError(error)) return { evidence: 'absent', ...(readError ? { readError } : {}) };
-      readError = safeRelayErrorMessage(error);
+      // `absent` claims no worker was observed. A missing registration only
+      // proves that when the node roster was actually read.
+      if (isNotFoundError(error) && !rosterUnread)
+        return { evidence: 'absent', ...(readError ? { readError } : {}) };
+      if (!isNotFoundError(error)) readError = safeRelayErrorMessage(error);
     }
   } catch (error) {
     readError = safeRelayErrorMessage(error);

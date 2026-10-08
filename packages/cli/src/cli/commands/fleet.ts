@@ -1152,21 +1152,6 @@ export function registerFleetCommands(
                   throw nameTakenSpawnError(name, terminalError);
                 throw terminalError;
               }
-            } else if (liveness.evidence === 'live') {
-              deps.warn(
-                `A worker named ${JSON.stringify(name)} is running on ${JSON.stringify(liveness.node)} according to its fresh heartbeat; harness readiness was not confirmed within the budget.`
-              );
-              invocation = {
-                status: 'accepted',
-                invocationId: error.invocationId,
-                placement: {
-                  state: 'accepted',
-                  confirmed: false,
-                  invocationId: error.invocationId,
-                  dispatchState: error.dispatchState,
-                  liveness,
-                },
-              };
             } else {
               throw pendingSpawnError(name, error, liveness, error.message);
             }

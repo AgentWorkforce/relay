@@ -591,10 +591,11 @@ Hosted equivalents live under `agent-relay cloud …`.
 
 An accepted spawn whose result is still unknown returns `spawn_pending` (exit 8),
 with its invocation ID, dispatch state, and available liveness evidence. Check
-`agent-relay fleet agent list --node <node>` before retrying. A fresh heartbeat
-showing the worker on the requested node can return `confirmed:false` with exit 0;
-this proves observed worker presence, not harness readiness. Heartbeat snapshots
-can change between listings; JSON output includes their timestamps and ages.
+`agent-relay fleet agent list --node <node>` before retrying. A heartbeat that
+lists a worker with the requested name is reported as evidence but keeps the
+spawn pending: heartbeats carry worker names, not invocation IDs, so that worker
+may have been running before this spawn. Heartbeat snapshots can change between
+listings; JSON output includes their timestamps and ages.
 
 If no worker is running and you intend to reclaim the name, run
 `agent-relay agent remove <name> --wait` before respawning. Waiting is opt-in;

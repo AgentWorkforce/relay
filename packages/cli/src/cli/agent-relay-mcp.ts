@@ -950,20 +950,6 @@ async function invokeVerifiedSpawn(
         });
       }
     }
-    if (liveness.evidence === 'live') {
-      return {
-        invocationId: error.invocationId,
-        status: 'accepted',
-        placement: {
-          state: 'accepted',
-          confirmed: false,
-          dispatchState: error.dispatchState,
-          invocationId: error.invocationId,
-          liveness,
-          warning: `A worker named ${JSON.stringify(name)} is running on ${JSON.stringify(liveness.node)} according to its fresh heartbeat; harness readiness was not confirmed within the budget.`,
-        },
-      };
-    }
     throw pendingSpawnError(name, context, liveness, error.message);
   }
 }

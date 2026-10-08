@@ -106,6 +106,30 @@ describe('spawn liveness resolution', () => {
       evidence: 'unknown',
     });
   });
+  it.each(['get', 'list'] as const)(
+    'does not report absent when the node %s read failed',
+    async (failing) => {
+      const workspace = client([node()]);
+      workspace.nodes[failing].mockRejectedValue(new Error('roster unavailable'));
+      const result = await probeSpawnLiveness({
+        name: 'worker',
+        ...(failing === 'get' ? { targetNode: 'target' } : {}),
+        createClient: () => workspace,
+        now: () => now,
+      });
+      expect(result).toEqual({ evidence: 'unknown', readError: 'roster unavailable' });
+    }
+  );
+  it('tells the operator a heartbeat cannot attribute a same-named worker to this spawn', () => {
+    const pending = pendingSpawnError(
+      'worker',
+      { invocationId: 'inv', node: 'target', dispatchState: 'dispatched' },
+      { evidence: 'live', node: 'target', heartbeatAgeMs: 0 }
+    );
+    expect(pending.code).toBe('spawn_pending');
+    expect(pending.message).toContain('may be an earlier worker');
+    expect(pending.message).toContain('Invocation: inv');
+  });
   it('bounds a hung invocation read and still probes worker evidence', async () => {
     vi.useFakeTimers();
     try {

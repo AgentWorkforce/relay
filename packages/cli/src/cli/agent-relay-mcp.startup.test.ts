@@ -1292,7 +1292,7 @@ describe('createAgentRelayMcpServer', () => {
   });
 
   it.each(['live', 'live_elsewhere', 'stale', 'unknown'] as const)(
-    'reports %s evidence without manufacturing readiness',
+    'keeps the spawn pending on %s evidence without manufacturing success',
     async (evidence) => {
       const { mod, mocks } = await loadAgentRelayMcpModule();
       mocks.agentRelayMessagingCommands.invoke.mockResolvedValueOnce({} as never);
@@ -1311,19 +1311,12 @@ describe('createAgentRelayMcpServer', () => {
       const result = await mocks.serverInstances[0].tools
         .get('spawn')!
         .handler({ name: 'worker', cli: 'codex', target_node: 'node-a' });
-      if (evidence === 'live') {
-        expect(result.isError).not.toBe(true);
-        expect(result.structuredContent.placement).toMatchObject({
-          state: 'accepted',
-          confirmed: false,
-          liveness: { evidence },
-        });
-      } else {
-        expect(result).toMatchObject({
-          isError: true,
-          structuredContent: { error: { code: 'spawn_pending', state: 'pending', liveness: { evidence } } },
-        });
-      }
+      // A heartbeat names a worker but not the invocation that created it,
+      // so even fresh target-node presence leaves the spawn pending.
+      expect(result).toMatchObject({
+        isError: true,
+        structuredContent: { error: { code: 'spawn_pending', state: 'pending', liveness: { evidence } } },
+      });
     }
   );
 

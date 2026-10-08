@@ -1180,15 +1180,24 @@ describe('fleet command support', () => {
         expect(errors.join('')).toContain(
           evidence === 'collision' ? '"code":"spawn_name_taken"' : '"code":"spawn_failed"'
         );
+      } else if (evidence === 'live') {
+        // Heartbeats carry worker names only: an existing worker with this
+        // name is indistinguishable from this invocation's worker, so the
+        // observation must not convert the timed-out spawn into success.
+        expect(exit).toHaveBeenCalledWith(8);
+        expect(logs).toEqual([]);
+        const rendered = errors.join('');
+        expect(rendered).toContain('"code":"spawn_pending"');
+        expect(rendered).toContain(`"invocationId":"${invocationId}"`);
+        expect(rendered).toContain('"evidence":"live"');
+        expect(rendered).toContain('may be an earlier worker');
       } else {
         expect(exit).not.toHaveBeenCalled();
         expect(JSON.parse(logs[0]!).invocation.placement).toMatchObject({
-          state: evidence === 'terminal' ? 'ready' : 'accepted',
-          confirmed: evidence === 'terminal',
+          state: 'ready',
+          confirmed: true,
           dispatchState: 'dispatched',
         });
-        if (evidence === 'live')
-          expect(warn).toHaveBeenCalledWith(expect.stringContaining('harness readiness was not confirmed'));
       }
     }
   );
