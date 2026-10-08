@@ -173,6 +173,16 @@ it('refuses raw clients after a connection-fatal session error', async () => {
   expect(received).toBe('');
 });
 
+it('settles finished with 0 when the raw client detaches', async () => {
+  const { remote } = await setup();
+  local = connect(proxy!.socketPath);
+  await once(local, 'connect');
+  send(remote, 'terminal.ready', { screen: Buffer.from('hello').toString('base64') });
+  await once(local, 'data');
+  local.end();
+  await expect(proxy!.finished).resolves.toBe(0);
+});
+
 it('settles finished on explicit close before terminal.ready', async () => {
   await setup();
   await proxy!.close();

@@ -1161,6 +1161,10 @@ export async function startFleetNodeAttachProxy(
     socket.on('error', () => socket.destroy());
     socket.on('close', () => {
       if (rawSocket === socket) rawSocket = undefined;
+      // The single raw client leaving is a detach: report it and refuse a
+      // replacement. The caller still owns close() for the remote session.
+      rawRefused = true;
+      finish(0);
     });
     socket.on('data', (data: Buffer) => {
       if (options.mode === 'view') return;
