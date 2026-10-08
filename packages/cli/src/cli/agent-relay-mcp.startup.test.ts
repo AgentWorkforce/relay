@@ -348,7 +348,14 @@ async function loadAgentRelayMcpModule(options: LoadOptions = {}) {
   }));
   vi.doMock('@agent-relay/sdk', async () => {
     const actual = await vi.importActual<Record<string, unknown>>('@agent-relay/sdk');
-    return { ...actual, AgentRelay: AgentRelayMock };
+    // A real realtime client keeps reconnecting after its test ends, and a
+    // reconnect's connect timeout then lands on a later test's fake clock.
+    const createRealtimeClient = () => ({
+      on: () => () => undefined,
+      connect: () => undefined,
+      disconnect: () => undefined,
+    });
+    return { ...actual, AgentRelay: AgentRelayMock, createRealtimeClient };
   });
   vi.doMock('./telemetry/index.js', () => ({
     initTelemetry: telemetryInit,
@@ -1362,6 +1369,26 @@ describe('createAgentRelayMcpServer', () => {
       expect(result.isError === true).toBe(evidence === 'present');
     }
   );
+
+  // relay#1930 review (cubic): an agent-token-only session cannot read the
+  // roster, so it keeps the accepted removal and says why instead of polling.
+  it('remove_agent wait without a workspace key keeps the acknowledgement and does not poll', async () => {
+    const { mod, mocks } = await loadAgentRelayMcpModule();
+    mod.createAgentRelayMcpServer({ agentToken: 'at_live_fleet', agentName: 'orchestrator' });
+    const started = Date.now();
+    const result = await mocks.serverInstances[0].tools
+      .get('remove_agent')!
+      .handler({ name: 'worker', delete_agent: true, wait: true });
+    expect(Date.now() - started).toBeLessThan(5_000);
+    expect(result.isError).toBeUndefined();
+    expect(result.structuredContent.invocation).toBeDefined();
+    expect(result.structuredContent.removal).toMatchObject({
+      cleared: false,
+      observedPresent: false,
+      readError: expect.stringContaining('Workspace key not configured'),
+    });
+    expect(mocks.agentRelayAgentsGet).not.toHaveBeenCalled();
+  }, 10_000);
 
   it('correlates nested authorization failures to the nested route', async () => {
     const { mod, mocks } = await loadAgentRelayMcpModule();

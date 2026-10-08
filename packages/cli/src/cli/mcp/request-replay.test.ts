@@ -59,6 +59,27 @@ describe('MCP request replay', () => {
     expect(replayScopeOf({})).toBe('');
   });
 
+  // Retention is checked lazily: a settling write must not leave a timer
+  // behind (it would land on whatever clock a later caller installed).
+  it('retains a completed idempotency key for five minutes without scheduling a timer', async () => {
+    vi.useFakeTimers();
+    try {
+      const replay = new McpRequestReplay();
+      const operation = vi.fn(async () => 'receipt');
+      await replay.run('post_message', { requestId: 1 }, 'k', operation);
+      await Promise.resolve();
+      expect(vi.getTimerCount()).toBe(0);
+      vi.setSystemTime(Date.now() + 5 * 60 * 1000 - 1);
+      await replay.run('post_message', { requestId: 2 }, 'k', operation);
+      expect(operation).toHaveBeenCalledTimes(1);
+      vi.setSystemTime(Date.now() + 1);
+      await replay.run('post_message', { requestId: 3 }, 'k', operation);
+      expect(operation).toHaveBeenCalledTimes(2);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it('clears a rejected request ID for a safe retry', async () => {
     const replay = new McpRequestReplay();
     const pending = deferred();

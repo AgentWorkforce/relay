@@ -31,8 +31,11 @@ export function replayScopeOf(client: object): string {
  * retains the completed result briefly. Arguments deliberately do not
  * participate, so intentional identical sends remain separate requests.
  */
+const RETAIN_COMPLETED_MS = 5 * 60 * 1000;
+
 export class McpRequestReplay {
-  private readonly requests = new Map<string, Promise<unknown>>();
+  /** `expiresAt` is set once a keyed request settles; expiry is checked lazily, never by a timer. */
+  private readonly requests = new Map<string, { pending: Promise<unknown>; expiresAt?: number }>();
 
   run<T>(
     tool: string,
@@ -56,27 +59,29 @@ export class McpRequestReplay {
       hasIdempotencyKey ? 'idempotency' : typeof requestId,
       hasIdempotencyKey ? idempotencyKey : requestId,
     ]);
-    const existing = this.requests.get(key) as Promise<T> | undefined;
-    if (existing) return existing;
+    this.pruneExpired();
+    const existing = this.requests.get(key);
+    if (existing) return existing.pending as Promise<T>;
 
     const pending = operation();
-    this.requests.set(key, pending);
+    const entry: { pending: Promise<unknown>; expiresAt?: number } = { pending };
+    this.requests.set(key, entry);
     // JSON-RPC permits an ID to be reused after its response. Only a client
     // supplied idempotency key can safely keep a completed result for a retry.
     void pending.then(
-      () => this.clearAfterSettlement(key, hasIdempotencyKey),
+      () => {
+        if (hasIdempotencyKey) entry.expiresAt = Date.now() + RETAIN_COMPLETED_MS;
+        else this.requests.delete(key);
+      },
       () => this.requests.delete(key)
     );
     return pending;
   }
 
-  private clearAfterSettlement(key: string, retainCompletedResult: boolean): void {
-    if (!retainCompletedResult) {
-      this.requests.delete(key);
-      return;
+  private pruneExpired(): void {
+    const now = Date.now();
+    for (const [key, entry] of this.requests) {
+      if (entry.expiresAt !== undefined && entry.expiresAt <= now) this.requests.delete(key);
     }
-
-    const cleanup = setTimeout(() => this.requests.delete(key), 5 * 60 * 1000);
-    cleanup.unref();
   }
 }
