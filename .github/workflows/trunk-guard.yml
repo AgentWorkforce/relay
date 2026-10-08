@@ -1,17 +1,22 @@
 name: Trunk guard
 
-# Only the `trunk` branch may merge into main. Feature branches merge into
-# `trunk` (via the merge train); CI runs only on the trunk -> main PR.
+# Only this repository's `trunk` branch may merge into main. Feature branches
+# merge into `trunk`; CI runs only on the trunk -> main PR.
+# pull_request_target loads this workflow from the base branch, so a PR cannot
+# edit the guard to pass itself. It never checks out PR code.
 on:
-  pull_request:
+  pull_request_target:
     branches: [main]
+    types: [opened, synchronize, reopened, edited]
+
+permissions: {}
 
 jobs:
   only-trunk-merges-to-main:
-    if: github.head_ref != 'trunk'
+    if: github.head_ref != 'trunk' || github.event.pull_request.head.repo.full_name != github.repository
     runs-on: ubuntu-latest
     timeout-minutes: 1
     steps:
       - run: |
-          echo "::error::Only the 'trunk' branch may merge into main. Retarget this PR to 'trunk'."
+          echo "::error::Only this repository's 'trunk' branch may merge into main. Retarget this PR to 'trunk'."
           exit 1
