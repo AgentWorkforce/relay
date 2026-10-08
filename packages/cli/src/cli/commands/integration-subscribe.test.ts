@@ -13,6 +13,7 @@ import {
   type RelayfileBinding,
 } from './integration.js';
 import type { PendingCleanupEntry } from './integration-cleanup-journal.js';
+import { writeProjectWorkspaceKey } from '../lib/project-workspace-key.js';
 
 afterEach(() => {
   vi.unstubAllEnvs();
@@ -343,6 +344,40 @@ describe('integration subscribe', () => {
         headers: expect.objectContaining({ Authorization: 'Bearer rk_live_local' }),
       })
     );
+  });
+
+  it('prefers a persisted route over a conflicting broker-session fallback', async () => {
+    const projectRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'relay-integration-persisted-route-'));
+    const relayHome = fs.mkdtempSync(path.join(os.tmpdir(), 'relay-integration-persisted-home-'));
+    try {
+      vi.stubEnv('AGENT_RELAY_PROJECT', projectRoot);
+      vi.stubEnv('AGENT_RELAY_HOME', relayHome);
+      writeProjectWorkspaceKey(path.join(projectRoot, '.agentworkforce/relay'), 'rk_live_local', {
+        workspaceId: 'rw_test',
+        relaycastRoute: 'agent37-isolated',
+        relaycastBaseUrl: 'https://agent37-cast.agentrelay.com',
+        relaycastApiKey: 'rk_live_agent37',
+      });
+      const { program, error } = harness({
+        resolveLocalRelayOptions: async () => ({
+          workspaceKey: 'rk_live_local',
+          baseUrl: 'https://cast.agentrelay.com',
+        }),
+      });
+
+      await program.parseAsync(ARGS(), { from: 'user' });
+
+      expect(error).not.toHaveBeenCalled();
+      expect(fetch).toHaveBeenCalledWith(
+        new URL('/v1/integrations/relayfile/inbound-target', 'https://agent37-cast.agentrelay.com'),
+        expect.objectContaining({
+          headers: expect.objectContaining({ Authorization: 'Bearer rk_live_agent37' }),
+        })
+      );
+    } finally {
+      fs.rmSync(projectRoot, { recursive: true, force: true });
+      fs.rmSync(relayHome, { recursive: true, force: true });
+    }
   });
 
   it('allows an explicit Relaycast base URL for inbound-target provisioning', async () => {
