@@ -1287,7 +1287,9 @@ describe('createAgentRelayMcpServer', () => {
       .handler({ name: 'worker', persona: 'reviewer' });
     expect(result).toMatchObject({
       isError: true,
-      structuredContent: { error: { code: 'spawn_unconfirmed', invocationId: 'inv_child', node: 'child-node' } },
+      structuredContent: {
+        error: { code: 'spawn_unconfirmed', invocationId: 'inv_child', node: 'child-node' },
+      },
     });
   });
 
