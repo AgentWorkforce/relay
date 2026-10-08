@@ -181,6 +181,28 @@ describe('spawnFleetSandbox', () => {
     expect(handle.sandbox.relaycastTarget?.relaycastApiKey).toBeUndefined();
   });
 
+  it('awaits async target persistence and cleans up when it rejects', async () => {
+    const h = harness({
+      ensure: async () =>
+        provisioned({
+          relaycastTarget: {
+            route: 'canonical',
+            baseUrl: 'https://cast.agentrelay.com',
+            workspaceId: 'rw_1',
+            relaycastApiKey: 'rk_live_secret',
+          },
+        }),
+    });
+    await expect(
+      spawnFleetSandbox(base, {
+        ...h.deps,
+        persistRelaycastTarget: async () => Promise.reject(new Error('session write failed')),
+      })
+    ).rejects.toThrow('session write failed');
+    expect(h.spawn).not.toHaveBeenCalled();
+    expect(h.deleteCloudFleetSandbox).toHaveBeenCalledTimes(1);
+  });
+
   it('tears down idempotently: releases the agent, then deletes the sandbox it provisioned', async () => {
     const h = harness();
     const handle = await spawnFleetSandbox(base, h.deps);

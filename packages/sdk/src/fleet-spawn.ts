@@ -131,7 +131,7 @@ export interface SpawnFleetSandboxDependencies {
   persistRelaycastTarget: (
     target: CloudFleetRelaycastTarget,
     context: { sandbox: EnsureCloudFleetSandboxResult; transport: WorkspaceTransportOptions }
-  ) => void;
+  ) => void | Promise<void>;
   startFleetNodeAttachProxy: (options: FleetNodeAttachOptions) => Promise<FleetNodeAttachProxy>;
   warn: (message: string) => void;
 }
@@ -463,7 +463,7 @@ export async function spawnFleetSandbox(
           `Cloud returned the DEV canonical Relaycast target, but relaycastCloudApiUrl was not exactly ${DEV_CLOUD_API_URL}; refusing to persist an untrusted route.`
         );
       }
-      deps.persistRelaycastTarget(target, { sandbox, transport });
+      await deps.persistRelaycastTarget(target, { sandbox, transport });
       verifiedTarget = target;
     } catch (error) {
       if (shouldCleanupSandbox && sandbox.outcome === 'provisioned') {
