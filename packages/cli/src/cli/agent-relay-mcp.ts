@@ -63,6 +63,7 @@ import {
   resolveWorkspaceSessionKey,
   validateWorkspaceSessionName,
 } from './lib/workspace-session.js';
+import { isAgentNameConflict } from './lib/agent-name-conflict.js';
 import { redactCredentials } from './lib/redact-credentials.js';
 import type {
   AgentClientLike,
@@ -1808,12 +1809,6 @@ export async function resolveStdioBootstrapOptions(
     agentToken: registered.token,
     agentName: registered.name ?? options.agentName,
   };
-}
-
-function isAgentNameConflict(error: unknown): boolean {
-  if (!error || typeof error !== 'object') return false;
-  const { code, rawCode } = error as { code?: unknown; rawCode?: unknown };
-  return code === 'name_conflict' || code === 'agent_already_exists' || rawCode === 'agent_already_exists';
 }
 
 /**

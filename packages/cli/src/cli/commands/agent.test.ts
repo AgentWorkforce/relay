@@ -217,6 +217,10 @@ describe('agent identity lifecycle commands', () => {
     ]);
 
     expect(harness.error.mock.calls.flat().join('\n')).toContain("this session's own identity");
+    // The warning must come before the destructive rotating call.
+    expect(harness.error.mock.invocationCallOrder[0]).toBeLessThan(
+      harness.workspaceRelay.workspace.register.mock.invocationCallOrder[1]!
+    );
   });
 
   it('register --rotate reports a create-only server refusal without claiming a rotation', async () => {

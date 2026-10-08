@@ -26,14 +26,16 @@ const EXTRA_PATTERNS: Array<[RegExp, string]> = [
 ];
 
 export function redactCredentials(text: string, known: Array<string | null | undefined> = []): string {
-  let out = text;
+  // Mask whole credential ranges first: replacing a declared value first could
+  // cut a longer credential that merely starts with it, so the remainder would
+  // no longer match a pattern and would survive.
+  let out = redactCredentialValues(text);
+  for (const [pattern, replacement] of EXTRA_PATTERNS) {
+    out = out.replace(pattern, replacement);
+  }
   for (const secret of known) {
     const value = secret?.trim();
     if (value) out = out.split(value).join('<redacted>');
-  }
-  out = redactCredentialValues(out);
-  for (const [pattern, replacement] of EXTRA_PATTERNS) {
-    out = out.replace(pattern, replacement);
   }
   return out;
 }

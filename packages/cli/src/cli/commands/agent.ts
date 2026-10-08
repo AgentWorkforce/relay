@@ -11,6 +11,7 @@ import {
 import { RelayError, safeRelayErrorMessage } from '@agent-relay/sdk';
 
 import { withAgentRegistrationDeadline, withDeadline } from '../lib/agent-registration.js';
+import { isAgentNameConflict } from '../lib/agent-name-conflict.js';
 import { attributableReleaseReason } from '../lib/release-reason.js';
 
 function isNotFoundError(error: unknown): boolean {
@@ -25,12 +26,6 @@ function isNotFoundError(error: unknown): boolean {
 function isCurrentIdentityName(env: NodeJS.ProcessEnv, name: string): boolean {
   const current = env.RELAY_AGENT_NAME?.trim().replace(/^@/, '');
   return Boolean(current) && current!.toLowerCase() === name.trim().replace(/^@/, '').toLowerCase();
-}
-
-function isNameConflictError(error: unknown): boolean {
-  if (!error || typeof error !== 'object') return false;
-  const { code, rawCode } = error as { code?: unknown; rawCode?: unknown };
-  return code === 'name_conflict' || code === 'agent_already_exists' || rawCode === 'agent_already_exists';
 }
 
 export interface AgentCommandDependencies extends SdkCommandDeps {
@@ -112,7 +107,7 @@ export function registerAgentCommands(
           name
         );
       } catch (error) {
-        if (!isNameConflictError(error)) throw error;
+        if (!isAgentNameConflict(error)) throw error;
         if (!rotate) throw existingNameError(name);
         if (isCurrentIdentityName(deps.env, name)) {
           deps.error(
@@ -124,7 +119,7 @@ export function registerAgentCommands(
           () => relay.workspace.register(input, { strict: false }),
           name
         ).catch((rotateError: unknown) => {
-          throw isNameConflictError(rotateError) ? rotationRefusedError(name) : rotateError;
+          throw isAgentNameConflict(rotateError) ? rotationRefusedError(name) : rotateError;
         });
       }
       printJson(deps, { id: registration.id, name: registration.name, token: registration.token });
@@ -168,7 +163,7 @@ export function registerAgentCommands(
         () => relay.workspace.register({ name }),
         name
       ).catch((error: unknown) => {
-        throw isNameConflictError(error) ? rotationRefusedError(name) : error;
+        throw isAgentNameConflict(error) ? rotationRefusedError(name) : error;
       });
       printJson(deps, { id: registration.id, name: registration.name, token: registration.token });
     });
