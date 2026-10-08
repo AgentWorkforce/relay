@@ -1366,41 +1366,45 @@ describe('Cloud fleet sandbox client', () => {
     expect(mocks.authorizedApiFetch).toHaveBeenCalledTimes(3);
   });
 
-  it('reports the production initial_sync_deadline 503 as a typed proven-absent failure, not an unknown outcome', async () => {
+  it('reports the production initial_sync_deadline mount failure as a typed proven-absent failure, not an unknown outcome', async () => {
     const preparationPath = `/api/v1/fleet/nodes/sandbox/${SANDBOX_ID}/preparation`;
     mocks.authorizedApiFetch
       .mockResolvedValueOnce({
         response: Response.json({ cloudWorkspaceId: CLOUD_WORKSPACE_ID }),
         auth,
       })
+      .mockResolvedValueOnce({
+        response: Response.json(preparationEnvelope('pending', 'relayfile_mount', 3), { status: 202 }),
+        auth,
+      })
+      .mockResolvedValueOnce({
+        response: Response.json(preparationEnvelope('pending', 'relayfile_mount', 3), { status: 202 }),
+        auth,
+      })
       // Cloud build 6b8f1de8, smoke B: the mount's initial sync hit the 250 s
-      // deadline and the ensure request answered with this typed 503.
+      // deadline. Under async-v1 that tick moves the record to cleanup.
       .mockResolvedValueOnce({
         response: Response.json(
-          {
-            error:
-              'Relayfile mount failed during relayfile_mount: initial sync deadline exceeded. Retry provisioning the sandbox.',
-            code: 'relayfile_mount_failed',
-            phase: 'relayfile_mount',
-            causeName: 'FleetSandboxRelayfileMountError',
-            causeStage: 'initial_sync_deadline',
-            sandboxId: SANDBOX_ID,
-          },
-          { status: 503 }
-        ),
-        auth,
-      })
-      .mockResolvedValueOnce({
-        response: Response.json(preparationEnvelope('cleanup_pending', 'cleanup', 3), { status: 202 }),
-        auth,
-      })
-      .mockResolvedValueOnce({
-        response: Response.json(
-          preparationEnvelope('terminal', 'cleanup', 4, {
+          preparationEnvelope('cleanup_pending', 'cleanup', 4, {
             failure: {
               code: 'relayfile_mount_failed',
               error: 'Relayfile mount failed during relayfile_mount. Retry provisioning the sandbox.',
               phase: 'relayfile_mount',
+              causeStage: 'initial_sync_deadline',
+            },
+          }),
+          { status: 202 }
+        ),
+        auth,
+      })
+      .mockResolvedValueOnce({
+        response: Response.json(
+          preparationEnvelope('terminal', 'cleanup', 5, {
+            failure: {
+              code: 'relayfile_mount_failed',
+              error: 'Relayfile mount failed during relayfile_mount. Retry provisioning the sandbox.',
+              phase: 'relayfile_mount',
+              causeStage: 'initial_sync_deadline',
             },
           }),
           { status: 502 }
@@ -1434,13 +1438,144 @@ describe('Cloud fleet sandbox client', () => {
       },
     });
     expect((error as Error).message).toContain('relayfile_mount_failed, initial_sync_deadline');
-    // The typed 503 is reconciled through the exact identity's read-only status;
-    // ensure is never replayed and Cloud-owned cleanup is never advanced.
+    // One ensure, never replayed; Cloud-owned cleanup is observed, never advanced.
     expect(mocks.authorizedApiFetch.mock.calls.slice(1).map((call) => [call[1], call[2]?.method])).toEqual([
       ['/api/v1/fleet/nodes/sandbox/ensure', 'POST'],
       [`${preparationPath}?workspaceId=${CLOUD_WORKSPACE_ID}`, 'GET'],
+      [preparationPath, 'POST'],
       [`${preparationPath}?workspaceId=${CLOUD_WORKSPACE_ID}`, 'GET'],
     ]);
+  });
+
+  it('paces preparation by the Retry-After that Cloud sends with pending progress', async () => {
+    const pending = () =>
+      new Response(JSON.stringify(preparationEnvelope('pending', 'relayfile_mount', 3)), {
+        status: 202,
+        headers: { 'content-type': 'application/json', 'retry-after': '0' },
+      });
+    mocks.authorizedApiFetch
+      .mockResolvedValueOnce({
+        response: Response.json({ cloudWorkspaceId: CLOUD_WORKSPACE_ID }),
+        auth,
+      })
+      .mockResolvedValueOnce({ response: pending(), auth })
+      .mockResolvedValueOnce({ response: pending(), auth })
+      .mockResolvedValueOnce({
+        response: Response.json(
+          preparationEnvelope('ready', 'broker_visible', 4, {
+            result: {
+              outcome: 'provisioned',
+              providerId: 'agent37',
+              nodeId: 'node-paced',
+              nodeName: SANDBOX_NAME,
+              sandboxId: SANDBOX_ID,
+              providerSandboxId: 'provider-paced',
+              relayWorkspaceId: 'rw_abc',
+              relaycastTarget: RELAYCAST_TARGET,
+              relayfileMounted: true,
+            },
+          })
+        ),
+        auth,
+      });
+
+    // A 60 s default interval would time this test out if Retry-After were ignored.
+    await expect(
+      ensureCloudFleetSandbox(
+        {
+          workspaceId: 'rw_abc',
+          name: SANDBOX_NAME,
+          sandboxId: SANDBOX_ID,
+          requiredCapability: 'spawn:codex',
+          forceProvision: true,
+          preparationMode: 'async-v1',
+        },
+        { preparationPollIntervalMs: 60_000 }
+      )
+    ).resolves.toMatchObject({ nodeId: 'node-paced' });
+  });
+
+  it('surfaces an older Cloud typed relayfile_mount_failed 503 immediately instead of polling a missing status route', async () => {
+    mocks.authorizedApiFetch
+      .mockResolvedValueOnce({
+        response: Response.json({ cloudWorkspaceId: CLOUD_WORKSPACE_ID }),
+        auth,
+      })
+      // An older Cloud ignores preparationMode and answers synchronously with
+      // the production smoke B failure.
+      .mockResolvedValueOnce({
+        response: Response.json(
+          {
+            error:
+              'Relayfile mount failed during relayfile_mount: initial sync deadline exceeded. Retry provisioning the sandbox.',
+            code: 'relayfile_mount_failed',
+            phase: 'relayfile_mount',
+            causeStage: 'initial_sync_deadline',
+            sandboxId: SANDBOX_ID,
+          },
+          { status: 503 }
+        ),
+        auth,
+      });
+
+    const error = await ensureCloudFleetSandbox(
+      {
+        workspaceId: 'rw_abc',
+        name: SANDBOX_NAME,
+        sandboxId: SANDBOX_ID,
+        requiredCapability: 'spawn:codex',
+        forceProvision: true,
+        preparationMode: 'async-v1',
+      },
+      { preparationPollIntervalMs: 1 }
+    ).catch((caught: unknown) => caught);
+
+    expect(error).toBeInstanceOf(CloudFleetSandboxProvisionError);
+    expect(error).toMatchObject({ sandboxId: SANDBOX_ID, sandboxAbsent: false });
+    expect((error as Error).message).toContain('(relayfile_mount_failed, initial_sync_deadline)');
+    // No status reads: the typed body is a complete synchronous answer.
+    expect(mocks.authorizedApiFetch).toHaveBeenCalledTimes(2);
+  });
+
+  it('surfaces an older Cloud typed capacity 503 as a definitive pre-allocation rejection without polling', async () => {
+    mocks.authorizedApiFetch
+      .mockResolvedValueOnce({
+        response: Response.json({ cloudWorkspaceId: CLOUD_WORKSPACE_ID }),
+        auth,
+      })
+      .mockResolvedValueOnce({
+        response: Response.json(
+          {
+            error: 'Sandbox capacity is exhausted before allocation; no sandbox was created',
+            code: 'sandbox_capacity_exhausted',
+            capacity: [{ provider: 'agent37', current: 14, limit: 10 }],
+            retryable: true,
+            no_sandbox_created: true,
+          },
+          { status: 503 }
+        ),
+        auth,
+      });
+
+    const error = await ensureCloudFleetSandbox(
+      {
+        workspaceId: 'rw_abc',
+        name: SANDBOX_NAME,
+        sandboxId: SANDBOX_ID,
+        requiredCapability: 'spawn:codex',
+        forceProvision: true,
+        preparationMode: 'async-v1',
+      },
+      { preparationPollIntervalMs: 1 }
+    ).catch((caught: unknown) => caught);
+
+    expect(error).toMatchObject({
+      code: 'sandbox_capacity_exhausted',
+      noSandboxCreated: true,
+      retryable: true,
+      capacity: [{ provider: 'agent37', current: 14, limit: 10 }],
+    });
+    expect(mocks.authorizedApiFetch).toHaveBeenCalledTimes(2);
   });
 
   it('reconciles a lost final advance response by exact identity before reporting terminal', async () => {

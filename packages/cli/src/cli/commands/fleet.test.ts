@@ -1378,9 +1378,13 @@ describe('fleet command support', () => {
       phase: 'relayfile_mount_bootstrap',
       generation: 2,
     });
+    // The generated identity is printed before Cloud work so an interrupted
+    // run can be resumed with --sandbox-id instead of creating a second sandbox.
     expect(warnings).toEqual([
+      `Cloud sandbox identity: ${String(ensureInput.sandboxId)}. If this command is interrupted, re-run it with --sandbox-id ${String(ensureInput.sandboxId)} to resume the same sandbox instead of creating another.`,
       'Cloud sandbox preparation: relayfile_mount_bootstrap (pending, generation 2).',
     ]);
+    expect(ensureInput.sandboxId).toMatch(/^sbx_[0-9a-f-]{36}$/);
     expect(ensureInput.repos).toBeUndefined();
     expect(ensureInput.repoRevisions).toBeUndefined();
     expect(placement.spawn).toHaveBeenCalledWith(

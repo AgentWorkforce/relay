@@ -469,6 +469,19 @@ function endpointError(action: string, response: Response, payload: unknown): Er
   );
 }
 
+/** A Cloud error body that names its failure, as opposed to a gateway page. */
+function isTypedErrorBody(payload: unknown): boolean {
+  return isObject(payload) && readString(payload, 'code') !== undefined;
+}
+
+function typedCauseSuffix(payload: unknown): string {
+  if (!isObject(payload)) return '';
+  const code = readString(payload, 'code');
+  if (!code) return '';
+  const causeStage = readString(payload, 'causeStage');
+  return ` (${code}${causeStage === undefined ? '' : `, ${causeStage}`})`;
+}
+
 function retryAfterDelayMs(response: Response): number | null {
   const value = response.headers.get('retry-after')?.trim();
   if (!value) return null;
@@ -1232,10 +1245,6 @@ export async function ensureCloudFleetSandbox(
   const ensureBody = JSON.stringify(ensureRequest);
 
   let sawAcceptedPreparation = false;
-  // A typed ensure failure (e.g. a 503 relayfile_mount_failed carrying
-  // causeStage initial_sync_deadline) is only a label; the durable status
-  // record decides the outcome. Keep it to name the cause of a terminal record.
-  let ensureFailureHint: { code: string; causeStage?: string } | undefined;
   // Before Cloud confirms an async record, an older Cloud may have routed the
   // request synchronously, so only the caller's own provider is attributable.
   const attributedProvider = (): { providerId?: CloudFleetSandboxProviderId } => {
@@ -1295,11 +1304,9 @@ export async function ensureCloudFleetSandbox(
       // Cloud writes terminal only after it rejected allocation, abandoned
       // dispatch, or proved the provider sandbox absent; it owns that cleanup.
       const failure = envelope.failure;
-      const causeStage =
-        failure?.causeStage ??
-        (failure !== undefined && ensureFailureHint?.code === failure.code
-          ? ensureFailureHint.causeStage
-          : undefined);
+      // Cloud persists the safe mount cause stage (e.g. initial_sync_deadline)
+      // in the durable failure record (cloud#4137 839d71e1b).
+      const causeStage = failure?.causeStage;
       const typed = failure
         ? [failure.code, ...(causeStage === undefined ? [] : [causeStage])].join(', ')
         : '';
@@ -1330,11 +1337,14 @@ export async function ensureCloudFleetSandbox(
     return null;
   };
 
-  const pollPreparation = async (initialPayload?: unknown): Promise<EnsureCloudFleetSandboxResult> => {
+  const pollPreparation = async (
+    initialPayload?: unknown,
+    initialDelayMs: number | null = null
+  ): Promise<EnsureCloudFleetSandboxResult> => {
     const unconfirmedDeadline = Date.now() + ASYNC_PREPARATION_REQUEST_TIMEOUT_MS;
     let payload = initialPayload;
     let method: 'GET' | 'POST' = initialPayload === undefined ? 'GET' : 'POST';
-    let nextPollDelayMs: number | null = null;
+    let nextPollDelayMs: number | null = initialDelayMs;
     for (;;) {
       if (payload !== undefined) {
         const ready = consumePreparation(payload);
@@ -1411,6 +1421,8 @@ export async function ensureCloudFleetSandbox(
         // terminal result; advancing here could race the reaper or restart work
         // on a sandbox that is already being destroyed.
         method = envelope.state === 'cleanup_pending' ? 'GET' : 'POST';
+        // Each advance goes through Cloud's ensure limiter; pace by its hint.
+        nextPollDelayMs = retryAfterDelayMs(pollResponse);
         payload = undefined;
         continue;
       }
@@ -1438,7 +1450,9 @@ export async function ensureCloudFleetSandbox(
         throw endpointError('read fleet sandbox preparation status', pollResponse, payload);
       }
       // A truncated or malformed success may hide a committed tick. Treat it as
-      // a lost response: read durable status before any further advance.
+      // a lost response: read durable status before any further advance. This
+      // also covers Cloud's bare `{ state }` fallback body (no `mode`/`version`),
+      // returned when it cannot re-read the record after a failed tick.
       method = 'GET';
       payload = undefined;
     }
@@ -1506,14 +1520,6 @@ export async function ensureCloudFleetSandbox(
     );
   }
   let payload = await readJson(response);
-  if (asyncPreparation && !response.ok && isObject(payload)) {
-    const code = readString(payload, 'code');
-    const hintSandboxId = readString(payload, 'sandboxId');
-    if (code && (hintSandboxId === undefined || hintSandboxId === sandboxIdentity.sandboxId)) {
-      const causeStage = readString(payload, 'causeStage');
-      ensureFailureHint = { code, ...(causeStage === undefined ? {} : { causeStage }) };
-    }
-  }
   let legacyCompatibilityResponse = asyncPreparation && response.ok && isLegacyEnsureOutcome(payload);
   if (asyncPreparation && rejectsAsyncPreparationMode(response, payload)) {
     try {
@@ -1568,7 +1574,7 @@ export async function ensureCloudFleetSandbox(
       const ready = consumePreparation(payload);
       if (ready) return ready;
       try {
-        return await pollPreparation();
+        return await pollPreparation(undefined, retryAfterDelayMs(response));
       } catch (pollError) {
         if (pollError instanceof CloudFleetSandboxProvisionError) throw pollError;
         if (pollError instanceof CloudAuthError) throw pollError;
@@ -1591,10 +1597,13 @@ export async function ensureCloudFleetSandbox(
       }
     }
     // A successful/accepted response can still lose or truncate its body after
-    // Cloud durably recorded the preparation. Reconcile every non-envelope
-    // async response through the declared sandbox's status endpoint instead of
-    // falling through to legacy response parsing or replaying ensure.
-    if (response.ok || response.status >= 500) {
+    // Cloud durably recorded the preparation, and a gateway 5xx can hide an
+    // accepted request. Reconcile those through the declared sandbox's status
+    // endpoint instead of replaying ensure. A typed 5xx error body (`code`) is
+    // a complete synchronous answer, e.g. from an older Cloud that ignored
+    // preparationMode: parse it below so its cause and capacity detail
+    // surface immediately instead of polling a status route it lacks.
+    if (response.ok || (response.status >= 500 && !isTypedErrorBody(payload))) {
       try {
         return await pollPreparation();
       } catch (pollError) {
@@ -1656,7 +1665,7 @@ export async function ensureCloudFleetSandbox(
     // replayable as an unknown outcome, even for legacy custom-name callers;
     // never copy an unverified response ID into cleanup authority.
     if (response.status >= 500) {
-      throw new CloudFleetSandboxProvisionError(error.message, {
+      throw new CloudFleetSandboxProvisionError(`${error.message}${typedCauseSuffix(payload)}`, {
         cloudWorkspaceId: resolved.cloudWorkspaceId,
         ...(sandboxIdentity.sandboxId === undefined ? {} : { sandboxId: sandboxIdentity.sandboxId }),
         ...(sandboxIdentity.name === undefined ? {} : { nodeName: sandboxIdentity.name }),

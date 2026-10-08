@@ -458,7 +458,10 @@ export function registerFleetCommands(
         '--sandbox-name <name>',
         'Explicit sandbox node name (custom unless --sandbox-id requires matching fleet-sandbox-<UUID>)'
       )
-      .option('--sandbox-id <id>', 'Reuse a caller-declared sbx_<UUID> identity for an exact replay')
+      .option(
+        '--sandbox-id <id>',
+        'Reuse a caller-declared sbx_<UUID> identity for an exact replay; re-run an interrupted --sandbox spawn with the identity it printed to resume it'
+      )
       .option('--workspace-id <id>', 'Explicit Relay workspace identity required for sandbox provisioning')
       .option('--sandbox-provider <provider>', 'Sandbox provider: daytona, e2b, or agent37')
       .option(
@@ -793,6 +796,13 @@ export function registerFleetCommands(
             : 'standard-long-running-agent';
         const useAsyncPreparation =
           sandboxId !== undefined && (sandboxProvider === undefined || sandboxProvider === 'agent37');
+        if (useAsyncPreparation && sandboxIdOption === undefined) {
+          // The generated identity is not persisted. Print it before Cloud work
+          // starts so an interrupted run can be resumed instead of duplicated.
+          deps.warn(
+            `Cloud sandbox identity: ${sandboxId}. If this command is interrupted, re-run it with --sandbox-id ${sandboxId} to resume the same sandbox instead of creating another.`
+          );
+        }
         try {
           const ensureInput: EnsureCloudFleetSandboxInput = {
             workspaceId: relayWorkspaceId,

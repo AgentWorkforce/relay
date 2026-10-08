@@ -16,6 +16,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - When Cloud ends a sandbox preparation (for example `relayfile_mount_failed` / `initial_sync_deadline`), `fleet spawn --sandbox` names the cause and confirms no sandbox was left running, without a redundant cleanup call or unknown-outcome guidance.
 - A lost Cloud response during sandbox preparation is reconciled through read-only status for the same sandbox identity; the CLI never resubmits the spawn or a preparation step blindly.
+- `fleet spawn --sandbox` prints the generated sandbox identity before provisioning; re-running an interrupted spawn with `--sandbox-id <id>` resumes that sandbox instead of creating a second one.
+- Against a Cloud that does not support async preparation, a typed failure such as `relayfile_mount_failed` or a capacity rejection is reported at once with its cause instead of after a status-polling wait.
 
 ## [13.1.5] - 2026-10-08
 
