@@ -75,6 +75,6 @@
     "@relaycast/sdk": "^8.0.7",
     "@relaycast/types": "^8.0.7",
     "zod": "^4.4.3",
-    "@agent-relay/cloud": "13.1.5"
+    "@agent-relay/cloud": "13.2.0"
   }
 }

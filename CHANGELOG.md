@@ -7,14 +7,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-## [13.2.0] - 2026-10-08
-
 ### Added
 
 - `@agent-relay/sdk/fleet` exports `spawnFleetSandbox`, which provisions a Cloud fleet sandbox, starts an agent harness on it, confirms the node the agent landed on, and returns a handle to the live agent that can be attached to immediately and torn down idempotently. `agent-relay fleet spawn --sandbox` uses the same path.
 - `@agent-relay/cloud/attach` and `@agent-relay/sdk/attach` expose fleet terminal attachment with a private local stdio socket and completion promise.
 - `@agent-relay/cloud/fleet` and `@agent-relay/sdk/fleet` expose the sandbox ensure and deletion primitives.
 - Fleet sandbox ensure and `fleet spawn --sandbox-readonly-path` forward explicit read-only Relayfile subtree requests to Cloud for server-side enforcement.
+
+## [13.2.0] - 2026-10-08
+
+### Added
+
 - `agent-relay fleet spawn --sandbox` (unpinned or `--sandbox-provider agent37`) now uses Cloud's durable `async-v1` preparation and prints each preparation phase, so a slow Relayfile initial sync no longer ends as an unknown outcome. Older Cloud deployments keep working through the synchronous response.
 - `@agent-relay/cloud` `ensureCloudFleetSandbox` accepts `preparationMode: 'async-v1'` and an `onPreparationProgress` callback; `CloudFleetSandboxProvisionError` exposes `sandboxAbsent` and a typed `preparationFailure` (`code`, `phase`, `causeStage`).
 
