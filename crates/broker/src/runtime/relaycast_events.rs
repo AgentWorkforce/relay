@@ -171,7 +171,9 @@ pub(super) fn relaycast_spawn_spec_session_id(
         })
 }
 
-fn relaycast_harness_config(value: &Value) -> Result<Option<ResolvedHarnessConfig>, String> {
+pub(super) fn relaycast_harness_config(
+    value: &Value,
+) -> Result<Option<ResolvedHarnessConfig>, String> {
     let agent = value.get("agent");
     let harness_id = agent
         .and_then(|agent| {

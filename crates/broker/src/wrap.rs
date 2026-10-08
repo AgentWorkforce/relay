@@ -320,13 +320,36 @@ fn format_wrap_injection(
         limit = crate::injection_wire::MAX_INJECTION_BODY_BYTES,
         "wrap: injection_too_large; delivering a pointer instead of the body"
     );
-    format(&format!(
-        "[Message body not shown: {} bytes exceeds the {}-byte terminal delivery limit. \
-         The full message is stored in Relay as message {event_id}; read it with your Relay \
-         message tools before replying.]",
-        body.len(),
-        crate::injection_wire::MAX_INJECTION_BODY_BYTES
-    ))
+    let pointer = |event_id: &str| {
+        format!(
+            "[Message body not shown: {} bytes exceeds the {}-byte terminal delivery limit. \
+             The full message is stored in Relay as message {event_id}; read it with your Relay \
+             message tools before replying.]",
+            body.len(),
+            crate::injection_wire::MAX_INJECTION_BODY_BYTES
+        )
+    };
+    let injection = format(&pointer(event_id));
+    if injection.len() <= crate::injection_wire::MAX_INJECTION_BODY_BYTES {
+        return injection;
+    }
+    // Oversized sender, target or workspace metadata. A write that cannot fit
+    // is re-queued at the head of the queue, so the last resort must always
+    // fit: clip every field and drop the optional reminder and workspace label.
+    fn clip(value: &str) -> &str {
+        &value[..crate::util::ansi::floor_char_boundary(value, 256)]
+    }
+    format_injection_for_worker_with_workspace(
+        clip(from),
+        clip(event_id),
+        &pointer(clip(event_id)),
+        clip(target),
+        false,
+        true,
+        None,
+        None,
+        None,
+    )
 }
 
 fn wrap_timeout_outcome(
@@ -2811,6 +2834,27 @@ sys.stdout.flush()"#;
                 "{injection}"
             );
         }
+    }
+
+    /// relay#1930 review (cubic): the pointer replaces only the body, so
+    /// oversized sender, target or workspace metadata kept the envelope over
+    /// the limit, failing submit and re-queuing the delivery at the head of
+    /// the queue forever. The final fallback must always fit.
+    #[test]
+    fn oversized_wrap_metadata_still_yields_a_bounded_pointer() {
+        let limit = crate::injection_wire::MAX_INJECTION_BODY_BYTES;
+        let huge = "é".repeat(limit);
+        let injection = super::format_wrap_injection(
+            &huge,
+            "evt_meta",
+            &"x".repeat(limit),
+            &huge,
+            true,
+            Some(&huge),
+            Some(&huge),
+        );
+        assert!(injection.len() <= limit, "{} bytes", injection.len());
+        assert!(injection.contains("message evt_meta"), "{injection}");
     }
 
     #[test]

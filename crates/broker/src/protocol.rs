@@ -419,9 +419,11 @@ pub enum BrokerEvent {
         /// whole envelope verbatim) and "echo_normalized" (the whole envelope
         /// once the TUI's wrapping whitespace is removed) confirm full
         /// receipt. "echo_incomplete" (head and tail without the payload
-        /// between them), "paste_summary" (the harness collapsed the paste, so
-        /// no content was echoed) and "timeout_fallback" (no echo at all) are
-        /// acks without proof of receipt. A tail without its head is a
+        /// between them, or a tail without its head when the observation
+        /// window was trimmed so head loss cannot be proven), "paste_summary"
+        /// (the harness collapsed the paste, so no content was echoed) and
+        /// "timeout_fallback" (no echo at all) are acks without proof of
+        /// receipt. A tail without its head in an untrimmed window is a
         /// `DeliveryFailed` with reason "echo_head_missing", never a
         /// verification label.
         #[serde(default, skip_serializing_if = "Option::is_none")]

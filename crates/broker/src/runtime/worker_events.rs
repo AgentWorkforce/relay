@@ -953,8 +953,17 @@ impl BrokerRuntime {
                                 "name": name,
                                 "delivery_id": delivery_id,
                                 "event_id": event_id,
-                                "verification": verification.unwrap_or("echo"),
                             });
+                            // An unlabelled frame (a headless exit) proves no
+                            // echo, so its label stays absent rather than "echo".
+                            if let (Some(verification), Some(map)) =
+                                (verification, verified_event.as_object_mut())
+                            {
+                                map.insert(
+                                    "verification".to_string(),
+                                    Value::String(verification.to_string()),
+                                );
+                            }
                             if let (Some(reason), Some(map)) =
                                 (reason, verified_event.as_object_mut())
                             {

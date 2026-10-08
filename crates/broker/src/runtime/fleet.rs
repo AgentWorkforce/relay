@@ -296,6 +296,18 @@ pub(super) fn already_ready_spawn_result(
     }
 }
 
+/// Whether a fleet spawn's initial task will be injected through a PTY, the
+/// only path the envelope limit applies to. An explicit headless or native
+/// harness config hands the task over without a terminal; an absent or
+/// invalid config keeps the conservative PTY answer (the spawn path rejects an
+/// invalid config on its own).
+pub(super) fn spawn_task_is_pty_injected(input: &Value) -> bool {
+    super::relaycast_events::relaycast_harness_config(input)
+        .ok()
+        .flatten()
+        .is_none_or(|config| config.runtime() == AgentRuntime::Pty)
+}
+
 /// The spawn error for an initial task that cannot reach the worker: a PTY
 /// task must fit the injection envelope, while Muse takes its startup task as
 /// one argv entry and is bounded by its portable argv limit instead.
@@ -1681,6 +1693,7 @@ impl BrokerRuntime {
         // worker exists, costing a launch and a release for a known outcome.
         if let Some(error) = task
             .as_deref()
+            .filter(|_| spawn_task_is_pty_injected(&invoke.input))
             .and_then(|task| spawn_task_too_large(&cli, task))
         {
             self.reply_action_error(&invoke.invocation_id, &error).await;

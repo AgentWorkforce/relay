@@ -929,29 +929,28 @@ fn read_was_cancelled(error: &io::Error) -> bool {
 }
 
 /// Whether the grid currently has bracketed-paste mode (DECSET 2004) set.
-/// Finds the DECSET 2004 parameter in PTY output, including one split across
-/// reads, by carrying the previous read's last three bytes.
+/// Finds the DECSET 2004 private-mode parameter (`?2004` or `;2004`) in PTY
+/// output, including one split across reads, by carrying the previous read's
+/// last four bytes. Plain text that merely contains `2004` does not match.
 #[derive(Default)]
 struct Decset2004Scan {
-    tail: [u8; 3],
+    tail: [u8; 4],
     tail_len: usize,
 }
 
 impl Decset2004Scan {
     fn may_carry(&mut self, bytes: &[u8]) -> bool {
-        let head = bytes.len().min(3);
-        let mut seam = [0u8; 6];
+        let is_parameter = |window: &[u8]| matches!(window, [b'?' | b';', b'2', b'0', b'0', b'4']);
+        let head = bytes.len().min(4);
+        let mut seam = [0u8; 8];
         seam[..self.tail_len].copy_from_slice(&self.tail[..self.tail_len]);
         seam[self.tail_len..self.tail_len + head].copy_from_slice(&bytes[..head]);
-        let found = seam[..self.tail_len + head]
-            .windows(4)
-            .chain(bytes.windows(4))
-            .any(|window| window == b"2004");
         let joined = &seam[..self.tail_len + head];
-        let carried = if bytes.len() >= 3 {
-            &bytes[bytes.len() - 3..]
+        let found = joined.windows(5).chain(bytes.windows(5)).any(is_parameter);
+        let carried = if bytes.len() >= 4 {
+            &bytes[bytes.len() - 4..]
         } else {
-            &joined[joined.len().saturating_sub(3)..]
+            &joined[joined.len().saturating_sub(4)..]
         };
         self.tail_len = carried.len();
         self.tail[..self.tail_len].copy_from_slice(carried);
@@ -1973,24 +1972,32 @@ mod tests {
 
     #[test]
     fn decset_2004_scan_sees_the_parameter_across_every_split() {
-        let stream = b"ab\x1b[?2004hcd";
-        for split in 0..=stream.len() {
-            let mut scan = Decset2004Scan::default();
-            let first = scan.may_carry(&stream[..split]);
-            let second = scan.may_carry(&stream[split..]);
-            assert!(first || second, "split at {split} hid the parameter");
+        for stream in [&b"ab\x1b[?2004hcd"[..], &b"ab\x1b[?1;2004hcd"[..]] {
+            for split in 0..=stream.len() {
+                let mut scan = Decset2004Scan::default();
+                let first = scan.may_carry(&stream[..split]);
+                let second = scan.may_carry(&stream[split..]);
+                assert!(first || second, "split at {split} hid the parameter");
+            }
         }
         let mut scan = Decset2004Scan::default();
-        assert!(!scan.may_carry(b"200"));
+        assert!(!scan.may_carry(b"?200"));
         assert!(
             scan.may_carry(b"4"),
             "a one-byte read completes the parameter"
         );
         assert!(!scan.may_carry(b"x"));
-        assert!(!scan.may_carry(b"2"));
+        assert!(!scan.may_carry(b"?2"));
         assert!(!scan.may_carry(b"00"));
-        assert!(scan.may_carry(b"4h"), "three short reads carry the prefix");
-        assert!(!scan.may_carry(b"2005"));
+        assert!(scan.may_carry(b"4h"), "short reads carry the prefix");
+        assert!(!scan.may_carry(b"?2005"));
+        // relay#1930 review (cubic): ordinary text that merely contains 2004
+        // (a year, a port) is not a private-mode parameter, so it must keep
+        // the bulk parse instead of a per-byte parse on every such read.
+        let mut scan = Decset2004Scan::default();
+        assert!(!scan.may_carry(b"released in 2004, port 2004"));
+        assert!(!scan.may_carry(b" 200"));
+        assert!(!scan.may_carry(b"4"));
     }
 
     #[tokio::test]

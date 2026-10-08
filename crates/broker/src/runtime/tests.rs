@@ -1009,6 +1009,40 @@ async fn a_spawn_task_proven_received_reports_spawned_and_ready() {
     }
 }
 
+/// relay#1930 review (cubic): a `delivery_verified` frame without a label is
+/// already treated as unconfirmed for spawn receipt, so the SDK event must not
+/// synthesize the confirming "echo" label for it.
+#[tokio::test]
+async fn an_unlabelled_delivery_verified_event_does_not_claim_an_echo() {
+    let worker_name = "unlabelled-verify";
+    let registry = make_worker_registry_with_worker(worker_name).await;
+    let generation = registry.workers[worker_name].generation;
+    let mut fixture = worker_event_runtime_fixture(registry, HashMap::new());
+    for verification in [None, Some("echo_normalized")] {
+        fixture
+            .runtime
+            .handle_worker_event(delivery_verified_worker_event(
+                worker_name,
+                generation,
+                "evt_unlabelled",
+                verification,
+            ))
+            .await;
+        let mut verified = None;
+        while let Ok(frame) = fixture._sdk_out_rx.try_recv() {
+            if frame.payload["kind"] == "delivery_verified" {
+                verified = Some(frame.payload);
+            }
+        }
+        let verified = verified.expect("the SDK must still see the delivery_verified event");
+        assert_eq!(
+            verified.get("verification").and_then(Value::as_str),
+            verification,
+            "the event label must be the worker's label, never a synthesized echo"
+        );
+    }
+}
+
 fn pending_spawn_with_task(
     generation: Uuid,
     event_id: &str,
@@ -1182,6 +1216,71 @@ fn an_already_ready_worker_with_an_unbound_pty_task_is_not_reported_ready() {
         super::fleet::already_ready_spawn_result("inv".into(), &name, false).result,
         ActionResultPayload::Output(_)
     ));
+}
+
+/// relay#1930 review (cubic): the early fleet size guard is a PTY envelope
+/// limit, so a spawn whose harness config selects a headless or native
+/// runtime must not be rejected by it. Absent or invalid configs stay PTY.
+#[test]
+fn early_spawn_task_guard_applies_only_to_pty_injected_spawns() {
+    assert!(super::fleet::spawn_task_is_pty_injected(
+        &json!({"cli": "codex"})
+    ));
+    assert!(super::fleet::spawn_task_is_pty_injected(&json!({
+        "harnessConfig": {"runtime": "pty", "command": "codex", "args": []}
+    })));
+    assert!(super::fleet::spawn_task_is_pty_injected(
+        &json!({"harnessId": "x"})
+    ));
+    assert!(!super::fleet::spawn_task_is_pty_injected(&json!({
+        "agent": {"harnessConfig": {
+            "runtime": "headless", "protocol": "opencode",
+            "endpoint": "http://127.0.0.1:4096", "sessionId": "ses_1", "release": "abort"
+        }}
+    })));
+}
+
+#[tokio::test]
+async fn an_oversized_task_for_a_headless_fleet_spawn_skips_the_pty_guard() {
+    let temp = tempfile::tempdir().unwrap();
+    let (tx, _rx) = mpsc::channel(16);
+    let workers = WorkerRegistry::new(tx, vec![], temp.path().into(), Instant::now());
+    let mut fixture = worker_event_runtime_fixture(workers, HashMap::new());
+    // The guard replies at once; a spawn past it may wait on registration, so
+    // bound the call and inspect only what was replied in that window.
+    let _ = tokio::time::timeout(
+        Duration::from_secs(2),
+        fixture.runtime.handle_fleet_control_event(
+            crate::node_control::FleetControlEvent::Message(
+                crate::fleet_wire::RelaycastToBroker::ActionInvoke(
+                    crate::fleet_wire::ActionInvoke {
+                        task_execution: None,
+                        v: FLEET_WIRE_VERSION,
+                        invocation_id: "headless-task".into(),
+                        action: "spawn".into(),
+                        input: json!({"name":"headless", "cli":"opencode", "cwd":temp.path(),
+                    "task":"x".repeat(crate::injection_wire::MAX_BODY_BYTES + 1),
+                    "harnessConfig": {"runtime": "headless", "protocol": "opencode",
+                        "endpoint": "http://127.0.0.1:9", "sessionId": "ses_1"}}),
+                        agent_name: Some("headless".into()),
+                        agent_id: None,
+                    },
+                ),
+            ),
+        ),
+    )
+    .await;
+    while let Ok(command) = fixture.fleet_control_rx.try_recv() {
+        if let FleetControlCommand::Send(BrokerToRelaycast::ActionResult(result)) = command {
+            if let crate::fleet_wire::ActionResultPayload::Error(error) = &result.result {
+                assert!(
+                    !error.error.contains("spawn_task_too_large"),
+                    "a headless spawn never types its task into a PTY: {}",
+                    error.error
+                );
+            }
+        }
+    }
 }
 
 /// relay#1893 review (Cursor): a task that cannot fit the PTY envelope used to

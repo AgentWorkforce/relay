@@ -57,13 +57,18 @@ pub(crate) fn effective_limit(wire: InjectionWire, pace: Duration) -> usize {
         MAX_TYPED_BYTES.min((MAX_TYPED_WRITE_TIME.as_millis() / pace.as_millis().max(1)) as usize)
     }
 }
-pub(crate) fn can_inject(cli: &str, pty: &PtySession) -> bool {
+/// Harnesses whose composer readiness `cli_prompt_ready` can prove, so an
+/// injection waits for it instead of writing into a login or other interstitial.
+fn readiness_gated(cli: &str) -> bool {
     let lower = cli.to_lowercase();
-    let known = ["claude", "codex", "gemini"]
+    ["claude", "codex", "gemini"]
         .iter()
         .any(|name| lower.contains(name))
-        || crate::readiness::is_devin_cli(cli);
-    !known
+        || crate::readiness::is_devin_cli(cli)
+        || crate::readiness::is_muse_cli(cli)
+}
+pub(crate) fn can_inject(cli: &str, pty: &PtySession) -> bool {
+    !readiness_gated(cli)
         || crate::readiness::cli_prompt_ready(
             cli,
             crate::readiness::GridReadinessSnapshot {
@@ -75,6 +80,16 @@ pub(crate) fn can_inject(cli: &str, pty: &PtySession) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn muse_waits_for_its_composer_like_the_other_known_harnesses() {
+        for cli in ["muse", "/Users/khaliqgant/.local/bin/muse", "MUSE.exe"] {
+            assert!(readiness_gated(cli), "{cli}");
+        }
+        for cli in ["claude", "codex", "gemini", "devin"] {
+            assert!(readiness_gated(cli), "{cli}");
+        }
+        assert!(!readiness_gated("bash"));
+    }
     #[test]
     fn body_cannot_submit_or_close_paste() {
         for ch in (0..=0x10ffff).filter_map(char::from_u32) {
