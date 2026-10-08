@@ -38,6 +38,7 @@ env:
 
 jobs:
   evals:
+    if: (github.event_name != 'pull_request' && github.event_name != 'pull_request_target') || (github.head_ref == 'trunk' && github.event.pull_request.head.repo.full_name == github.repository && github.base_ref == 'main')
     name: Offline evals
     runs-on: ubuntu-latest
 
