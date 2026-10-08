@@ -3,6 +3,11 @@ use crate::pty::PtySession;
 use std::time::Duration;
 
 pub(crate) const MAX_INJECTION_BODY_BYTES: usize = 16 * 1024;
+/// Room kept for the attribution line and MCP reminder the worker wraps around
+/// a body. Body-level caps use `MAX_BODY_BYTES` so a body accepted up front
+/// still fits `MAX_INJECTION_BODY_BYTES` once formatted.
+pub(crate) const ENVELOPE_RESERVE_BYTES: usize = 2 * 1024;
+pub(crate) const MAX_BODY_BYTES: usize = MAX_INJECTION_BODY_BYTES - ENVELOPE_RESERVE_BYTES;
 // At the default 5 ms/byte, leaves room for readiness, prompt recheck and verification.
 pub(crate) const MAX_TYPED_WRITE_TIME: Duration = Duration::from_millis(7680);
 pub(crate) const MAX_TYPED_BYTES: usize = MAX_TYPED_WRITE_TIME.as_millis() as usize / 5;
@@ -71,6 +76,29 @@ mod tests {
                 assert_eq!(bytes.iter().filter(|&&b| b == 27).count(), expected_escapes);
             }
         }
+    }
+    /// A body accepted at `MAX_BODY_BYTES` must still fit the PTY limit once the
+    /// worker adds the attribution line and the full MCP reminder (relay#1893
+    /// review: the body cap used to ignore the envelope).
+    #[test]
+    fn a_body_at_the_body_cap_fits_the_pty_limit_with_its_envelope() {
+        let long = "n".repeat(128);
+        let envelope = crate::broker::injection_format::format_injection_for_worker_with_workspace(
+            &long,
+            &format!("init_{long}"),
+            &"x".repeat(MAX_BODY_BYTES),
+            &format!("#{long}"),
+            true,
+            false,
+            Some(&long),
+            Some(&format!("rw_{long}")),
+            Some(&long),
+        );
+        assert!(
+            envelope.len() <= MAX_INJECTION_BODY_BYTES,
+            "{} > {MAX_INJECTION_BODY_BYTES}",
+            envelope.len()
+        );
     }
     #[test]
     fn capability_and_override() {

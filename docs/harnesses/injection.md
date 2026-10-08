@@ -11,8 +11,10 @@ for the session, independently of composer readiness. Devin also uses this wire.
 `RELAY_INJECT_PASTE=0` forces the typed fallback. Wrap sessions retain bulk writes.
 Codex initial tasks retain their existing chunked delivery path.
 
-The broker-wide ceiling is **16,384 UTF-8 bytes**. The formatted envelope must fit
-this ceiling as well, so leave room for attribution and broker reminders. Paced
+The broker-wide ceiling is **16,384 UTF-8 bytes** for the formatted envelope. Bodies
+are capped at **14,336 bytes** (`fleet spawn` task input, the fleet spawn action
+before any launch, and broker PTY delivery), leaving 2 KiB for attribution and
+broker reminders so an accepted body still fits once formatted. Paced
 fallback input has an effective limit of **1,536 bytes including the envelope** at
 the default 5 ms pace. A slower `RELAY_INJECT_RATE_MS` lowers that limit to keep
 writing within 7.68 seconds. Unpaced fallback uses the global ceiling. Codex uses

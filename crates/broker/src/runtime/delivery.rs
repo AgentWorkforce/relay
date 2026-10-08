@@ -862,8 +862,9 @@ pub(crate) async fn queue_and_try_delivery_raw(
     withheld_fleet_ack_floor: Option<u64>,
 ) -> Result<DeliveryId> {
     anyhow::ensure!(
-        body.len() <= crate::injection_wire::MAX_INJECTION_BODY_BYTES,
-        "injection_too_large: global body limit is {} bytes; use a brief file pointer",
+        body.len() <= crate::injection_wire::MAX_BODY_BYTES,
+        "injection_too_large: body limit is {} bytes so the formatted envelope fits the {}-byte PTY limit; use a brief file pointer",
+        crate::injection_wire::MAX_BODY_BYTES,
         crate::injection_wire::MAX_INJECTION_BODY_BYTES
     );
     // Fleet delivery IDs are stable across Relaycast retries. Preserve that

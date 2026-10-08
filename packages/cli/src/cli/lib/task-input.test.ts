@@ -2,7 +2,7 @@ import { mkdtemp, writeFile, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { describe, it, expect } from 'vitest';
-import { readTaskInput, MAX_INJECTION_BODY_BYTES } from './task-input.js';
+import { readTaskInput, MAX_INJECTION_BODY_BYTES, MAX_TASK_BODY_BYTES } from './task-input.js';
 describe('task input', () => {
   it('requires exactly one source for fleet, allows neither locally', async () => {
     await expect(readTaskInput(undefined, undefined, true)).rejects.toThrow('exactly one');
@@ -23,10 +23,15 @@ describe('task input', () => {
     }
   });
   it('counts UTF-8 bytes', async () => {
-    expect(await readTaskInput('a'.repeat(MAX_INJECTION_BODY_BYTES), undefined)).toHaveLength(
-      MAX_INJECTION_BODY_BYTES
-    );
-    await expect(readTaskInput('é'.repeat(MAX_INJECTION_BODY_BYTES), undefined)).rejects.toThrow(
+    expect(await readTaskInput('a'.repeat(MAX_TASK_BODY_BYTES), undefined)).toHaveLength(MAX_TASK_BODY_BYTES);
+    await expect(readTaskInput('é'.repeat(MAX_TASK_BODY_BYTES), undefined)).rejects.toThrow('UTF-8 bytes');
+  });
+  // The broker caps the formatted envelope at 16 KiB, so a body at that size
+  // would launch a worker and only then fail; leave room for the envelope.
+  it('rejects a body that only fits the PTY limit before its envelope is added', async () => {
+    expect(MAX_TASK_BODY_BYTES).toBeLessThan(MAX_INJECTION_BODY_BYTES);
+    await expect(readTaskInput('a'.repeat(MAX_INJECTION_BODY_BYTES), undefined)).rejects.toThrow('envelope');
+    await expect(readTaskInput('a'.repeat(MAX_TASK_BODY_BYTES + 1), undefined)).rejects.toThrow(
       'UTF-8 bytes'
     );
   });

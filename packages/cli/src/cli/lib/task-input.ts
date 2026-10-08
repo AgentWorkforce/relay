@@ -1,7 +1,11 @@
 import { readFile } from 'node:fs/promises';
 
-/** Broker-wide ceiling; a harness may reject a lower effective wire limit. */
+/** Broker-wide PTY ceiling for the formatted envelope; a harness may reject a lower effective wire limit. */
 export const MAX_INJECTION_BODY_BYTES = 16 * 1024;
+/** Room the broker keeps for attribution and its MCP reminder around a body. */
+export const ENVELOPE_RESERVE_BYTES = 2 * 1024;
+/** Largest body that still fits {@link MAX_INJECTION_BODY_BYTES} once formatted. */
+export const MAX_TASK_BODY_BYTES = MAX_INJECTION_BODY_BYTES - ENVELOPE_RESERVE_BYTES;
 export async function readTaskInput(
   task: unknown,
   taskFile: unknown,
@@ -20,9 +24,9 @@ export async function readTaskInput(
 }
 
 export function validateInjectionSize(text: string): void {
-  if (Buffer.byteLength(text, 'utf8') > MAX_INJECTION_BODY_BYTES) {
+  if (Buffer.byteLength(text, 'utf8') > MAX_TASK_BODY_BYTES) {
     throw new Error(
-      `Injection exceeds ${MAX_INJECTION_BODY_BYTES} UTF-8 bytes; use a brief file on the node and send a short pointer`
+      `Task exceeds ${MAX_TASK_BODY_BYTES} UTF-8 bytes (the ${MAX_INJECTION_BODY_BYTES}-byte PTY limit less room for the message envelope); use a brief file on the node and send a short pointer`
     );
   }
 }

@@ -59,7 +59,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
-- Task and PTY-injected relay-message bodies are capped at 16 KiB. `fleet spawn` and the broker's PTY delivery reject larger input naming the limit, and the paced fallback wire rejects above 1,536 bytes; write the brief to a file and send a pointer instead. `message post|reply|dm send` are not capped, and a wrapped agent receives an oversized message as a notice pointing to it in Relay.
+- PTY injections are capped at 16 KiB including their envelope, and task and PTY-delivered message bodies at 14 KiB so the envelope always fits. `fleet spawn`, the fleet spawn action (before launching any worker) and the broker's PTY delivery reject larger input naming the limit, and the paced fallback wire rejects above 1,536 bytes; write the brief to a file and send a pointer instead. `message post|reply|dm send` are not capped, and a wrapped agent receives an oversized message as a notice pointing to it in Relay.
 
 ### Fixed
 

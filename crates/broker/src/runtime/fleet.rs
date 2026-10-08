@@ -288,6 +288,18 @@ pub(super) fn already_ready_spawn_result(
     }
 }
 
+/// The spawn error for an initial task whose body cannot fit the PTY envelope.
+pub(super) fn spawn_task_too_large(task: &str) -> Option<String> {
+    (task.len() > crate::injection_wire::MAX_BODY_BYTES).then(|| {
+        format!(
+            "spawn_task_too_large: task is {} bytes; the limit is {} bytes so its envelope fits the {}-byte PTY limit. Write the brief to a file on the node and send a short pointer.",
+            task.len(),
+            crate::injection_wire::MAX_BODY_BYTES,
+            crate::injection_wire::MAX_INJECTION_BODY_BYTES
+        )
+    })
+}
+
 pub(super) fn verified_spawn_failed_result(invocation_id: String, error: &str) -> ActionResult {
     ActionResult {
         task: None,
@@ -1657,6 +1669,12 @@ impl BrokerRuntime {
         };
         let task = action_invoke_string(&invoke.input, &["task", "initial_task", "prompt"]);
         let carries_task = task.is_some();
+        // Reject before launching: an oversized task can only fail after the
+        // worker exists, costing a launch and a release for a known outcome.
+        if let Some(error) = task.as_deref().and_then(spawn_task_too_large) {
+            self.reply_action_error(&invoke.invocation_id, &error).await;
+            return;
+        }
         let channel = action_invoke_string(&invoke.input, &["channel"]);
         let model = action_invoke_string(&invoke.input, &["model"]);
 

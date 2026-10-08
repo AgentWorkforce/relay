@@ -2144,9 +2144,6 @@ pub(crate) async fn run_pty_worker(cmd: PtyCommand) -> Result<()> {
                             inj.pending.delivery.workspace_alias.as_deref(),
                         );
                         let injection = String::from_utf8(crate::injection_wire::injection_bytes(crate::injection_wire::InjectionWire::Typed, &injection))?;
-                        if include_mcp_reminder {
-                            mcp_reminder_throttle.note_sent(Instant::now());
-                        }
                         let wire = crate::injection_wire::injection_wire(&resolved_cli, &pty);
                         let limit = if initial_codex_delivery(&resolved_cli, &inj.pending.delivery) {
                             initial_codex_max_body_bytes().min(crate::injection_wire::MAX_INJECTION_BODY_BYTES)
@@ -2158,6 +2155,11 @@ pub(crate) async fn run_pty_worker(cmd: PtyCommand) -> Result<()> {
                             let _ = send_frame(&out_tx, "worker_error", inj.pending.request_id, json!({"code": "injection_too_large", "retryable": false, "message": reason})).await;
                             // Retain the pending id; terminal failure is never a successful replay.
                             continue;
+                        }
+                        // Only an envelope that passed the size gate is written,
+                        // so only it may consume the reminder throttle.
+                        if include_mcp_reminder {
+                            mcp_reminder_throttle.note_sent(Instant::now());
                         }
                         if initial_codex_delivery(&resolved_cli, &inj.pending.delivery) {
                             // Reject before any byte is written rather than after

@@ -1184,6 +1184,56 @@ fn an_already_ready_worker_with_an_unbound_pty_task_is_not_reported_ready() {
     ));
 }
 
+/// relay#1893 review (Cursor): a task that cannot fit the PTY envelope used to
+/// launch a worker that then failed `injection_too_large` and was released.
+/// It must be rejected before any registration or launch.
+#[tokio::test]
+async fn an_oversized_spawn_task_is_rejected_before_launch() {
+    let temp = tempfile::tempdir().unwrap();
+    let (tx, _rx) = mpsc::channel(16);
+    let workers = WorkerRegistry::new(tx, vec![], temp.path().into(), Instant::now());
+    let mut fixture = worker_event_runtime_fixture(workers, HashMap::new());
+    assert!(
+        super::fleet::spawn_task_too_large(&"x".repeat(crate::injection_wire::MAX_BODY_BYTES))
+            .is_none()
+    );
+    fixture
+        .runtime
+        .handle_fleet_control_event(crate::node_control::FleetControlEvent::Message(
+            crate::fleet_wire::RelaycastToBroker::ActionInvoke(crate::fleet_wire::ActionInvoke {
+                task_execution: None,
+                v: FLEET_WIRE_VERSION,
+                invocation_id: "oversized-task".into(),
+                action: "spawn".into(),
+                input: json!({"name":"oversized", "cli":"codex", "verify_ready":true,
+                    "cwd":temp.path(), "task":"x".repeat(crate::injection_wire::MAX_BODY_BYTES + 1)}),
+                agent_name: Some("oversized".into()),
+                agent_id: None,
+            }),
+        ))
+        .await;
+    let mut found = false;
+    while let Ok(command) = fixture.fleet_control_rx.try_recv() {
+        match command {
+            FleetControlCommand::RegisterAgent { .. } => panic!("must reject before registration"),
+            FleetControlCommand::Send(BrokerToRelaycast::ActionResult(result)) => {
+                let crate::fleet_wire::ActionResultPayload::Error(error) = &result.result else {
+                    panic!("expected fleet error: {result:?}");
+                };
+                assert!(
+                    error.error.starts_with("spawn_task_too_large: "),
+                    "{}",
+                    error.error
+                );
+                found = true;
+            }
+            _ => {}
+        }
+    }
+    assert!(found);
+    assert!(fixture.runtime.workers.workers.is_empty());
+}
+
 fn inbound_ctx<'a>(event_id: &'a str) -> InboundContext<'a> {
     InboundContext {
         from: "Alice",

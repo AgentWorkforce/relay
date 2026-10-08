@@ -178,6 +178,26 @@ fn over_limit_and_typed_fallback_reject_before_writing() {
         assert!(f.transcript().is_empty());
     }
 }
+/// relay#1893 review (Cursor): the reminder throttle was marked sent before the
+/// size gate, so a rejected envelope stole the reminder from the next delivery.
+#[test]
+fn rejected_injection_does_not_consume_the_reminder() {
+    let mut f = Fixture::new("echo");
+    f.deliver("relay_big", &"x".repeat(17_000));
+    assert!(f.wait("delivery_failed")["payload"]["reason"]
+        .as_str()
+        .unwrap()
+        .contains("injection_too_large"));
+    f.deliver("relay_next", "small follow-up");
+    f.wait("delivery_verified");
+    let transcript = String::from_utf8_lossy(&f.transcript()).into_owned();
+    assert!(transcript.contains("small follow-up"), "{transcript}");
+    // The full reminder, not the short hint sent while it is throttled.
+    assert!(
+        transcript.contains("Self-termination is not automatic"),
+        "{transcript}"
+    );
+}
 #[test]
 fn absent_echo_preserves_timeout_fallback() {
     let mut f = Fixture::new("silent");
