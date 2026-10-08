@@ -18,6 +18,8 @@ import {
 export interface SdkClientOptions {
   workspaceKey?: string;
   token?: string;
+  /** Non-authoritative session URL used only when no persisted route or explicit URL exists. */
+  fallbackBaseUrl?: string;
   baseUrl?: string;
   env?: NodeJS.ProcessEnv;
   /** Explicit project root for nested invocations such as packages/web. */
@@ -99,7 +101,8 @@ function resolveBaseUrlForSelection(
 ): string | undefined {
   const persisted = validatePersistedRelaycastBaseUrl(selection);
   const explicit = trimOrUndefined(options.baseUrl);
-  const requested = explicit ?? trimOrUndefined(env(options).RELAY_BASE_URL);
+  const fallback = trimOrUndefined(options.fallbackBaseUrl) ?? trimOrUndefined(env(options).RELAY_BASE_URL);
+  const requested = explicit ?? fallback;
   // A persisted server-selected route and its credential are one transport
   // pair. Only an explicit --base-url may challenge that route; an ambient
   // RELAY_BASE_URL remains the fallback when no route has been persisted.

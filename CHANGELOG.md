@@ -9,7 +9,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
-- `agent-relay fleet release` and other workspace-scoped CLI commands honor a persisted server-selected Relaycast route over ambient `RELAY_BASE_URL`, while still rejecting an explicit conflicting `--base-url`.
+- Workspace-scoped commands such as `agent-relay fleet release` continue using the workspace's Relaycast server when `--base-url` is omitted; explicit conflicting `--base-url` values are still rejected.
 
 ## [13.1.5] - 2026-10-08
 

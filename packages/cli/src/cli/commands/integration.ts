@@ -419,7 +419,7 @@ function localRetryOptions(options: SdkClientOptions, local: LocalRelayOptions):
   return {
     ...options,
     workspaceKey: local.workspaceKey,
-    baseUrl: options.baseUrl ?? local.baseUrl,
+    ...(options.baseUrl === undefined && local.baseUrl ? { fallbackBaseUrl: local.baseUrl } : {}),
   };
 }
 
@@ -547,12 +547,12 @@ function parseRelayfileInboundTargetResponse(body: unknown): { url: string; secr
 function resolveInboundTargetTransport(options: SdkClientOptions, callerOptions: SdkClientOptions) {
   const selected = { ...options };
   // A legacy broker session can advertise its loopback HTTP API. It is not
-  // the Relaycast gateway. Preserve genuine HTTPS session origins, including
-  // custom self-hosts, and let persisted workspace routing validate the pair.
-  if (!callerOptions.baseUrl && selected.baseUrl) {
-    const url = new URL(selected.baseUrl);
+  // the Relaycast gateway. Preserve genuine HTTPS session fallbacks, including
+  // custom self-hosts, while keeping them subordinate to persisted routing.
+  if (!callerOptions.baseUrl && selected.fallbackBaseUrl) {
+    const url = new URL(selected.fallbackBaseUrl);
     if (url.protocol === 'http:' && ['localhost', '127.0.0.1', '[::1]'].includes(url.hostname)) {
-      selected.baseUrl = undefined;
+      selected.fallbackBaseUrl = undefined;
     }
   }
   const transport = resolveWorkspaceTransport(selected);

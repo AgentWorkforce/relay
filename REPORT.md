@@ -16,7 +16,8 @@ The fix keeps the two sources distinct:
 
 - an explicit conflicting `--base-url` still fails closed with `The requested Relaycast base URL does not match the persisted workspace route.`;
 - without the flag, a validated persisted server-selected route wins over ambient `RELAY_BASE_URL`;
-- without a persisted route, explicit then ambient precedence is unchanged;
+- an authenticated broker-session URL is retained as a non-authoritative fallback, so it also cannot challenge a persisted route;
+- without a persisted route or broker-session fallback, explicit then ambient precedence is unchanged;
 - `resolveWorkspaceTransport` continues to return the persisted route and `relaycastApiKey` together, so the origin and route-scoped credential cannot be split.
 
 Because the change is in the shared helper, the corrected precedence applies to every workspace-scoped caller found by grep, not just `fleet release`:
@@ -58,10 +59,12 @@ Tests       45 passed (45)
 
 The explicit-conflict and no-persisted-route cases already passed before the source change and remain regression guardrails for the required unchanged behavior. The three source-dependent cases above fail when the helper change is reverted.
 
+Review also identified a second path that could supply the local broker session's canonical URL through the explicit `baseUrl` field during an authentication retry. A dedicated `fallbackBaseUrl` preserves that URL's provenance and keeps it subordinate to a persisted route. Before that source change, `prefers a persisted route over a conflicting broker-session fallback` failed with the same persisted-route mismatch error; afterward it passes and verifies the request uses the isolated origin with its route-scoped credential.
+
 ### Verification
 
-- CLI package suite (serialized): `96 passed, 1 skipped` test files; `1,992 passed, 11 skipped` tests.
-- Affected-area suite: `6 passed` files; `226 passed` tests.
+- CLI package suite (serialized): `96 passed, 1 skipped` test files; `1,993 passed, 11 skipped` tests.
+- Route and integration affected-area suites: `146 passed` tests, including the broker-session fallback regression; the broader original affected-area suite passed `226` tests.
 - `npm run typecheck`: passed.
 - CLI ESLint: passed.
 - Prettier check for changed files: passed.
