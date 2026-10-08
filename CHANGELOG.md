@@ -5,7 +5,17 @@ All notable changes to Agent Relay will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
+## [Unreleased - Minor]
+
+### Added
+
+- `agent-relay fleet spawn --sandbox` (unpinned or `--sandbox-provider agent37`) prepares the sandbox through Cloud's durable `async-v1` preparation: it prints each preparation phase and polls by the exact sandbox identity instead of holding one long request open, so a slow Relayfile initial sync no longer ends as an unknown outcome. Older Cloud deployments keep working through the synchronous response.
+- `@agent-relay/cloud` `ensureCloudFleetSandbox` accepts `preparationMode: 'async-v1'` and an `onPreparationProgress` callback; `CloudFleetSandboxProvisionError` exposes `sandboxAbsent` and a typed `preparationFailure` (`code`, `phase`, `causeStage`).
+
+### Fixed
+
+- When Cloud ends a sandbox preparation (for example `relayfile_mount_failed` / `initial_sync_deadline`), `fleet spawn --sandbox` names the cause and confirms no sandbox was left running, without a redundant cleanup call or unknown-outcome guidance.
+- A lost Cloud response during sandbox preparation is reconciled through read-only status for the same sandbox identity; the CLI never resubmits the spawn or a preparation step blindly.
 
 ## [13.1.5] - 2026-10-08
 

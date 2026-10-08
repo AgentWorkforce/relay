@@ -1300,7 +1300,9 @@ export async function ensureCloudFleetSandbox(
         (failure !== undefined && ensureFailureHint?.code === failure.code
           ? ensureFailureHint.causeStage
           : undefined);
-      const typed = failure ? [failure.code, ...(causeStage === undefined ? [] : [causeStage])].join(', ') : '';
+      const typed = failure
+        ? [failure.code, ...(causeStage === undefined ? [] : [causeStage])].join(', ')
+        : '';
       throw new CloudFleetSandboxProvisionError(
         redactCredentialValues(
           failure

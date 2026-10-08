@@ -2211,7 +2211,12 @@ describe('fleet command support', () => {
     expect(findProjectRoot).toHaveBeenCalledWith(path.resolve(process.cwd(), 'packages/web'));
     expect(selectionOptions[0]).toMatchObject({ projectRoot: "/local/cloud/packages/web team's" });
     const ensureInput = ensureCloudFleetSandbox.mock.calls[0]?.[0] as Record<string, unknown>;
+    // The exact checkout revision is part of the durable async request, so a
+    // resumed preparation clones the same commit it was accepted for.
     expect(ensureInput).toMatchObject({
+      preparationMode: 'async-v1',
+      forceProvision: true,
+      providerId: 'agent37',
       repos: ['AgentWorkforce/cloud'],
       repoRevisions: { 'AgentWorkforce/cloud': revision },
     });
@@ -2693,6 +2698,10 @@ describe('fleet command support', () => {
       { from: 'user' }
     );
 
+    expect(ensureCloudFleetSandbox).toHaveBeenCalledWith(
+      expect.objectContaining({ preparationMode: 'async-v1', providerId: 'agent37', mountRelayfile: false }),
+      expect.objectContaining({ onPreparationProgress: expect.any(Function) })
+    );
     expect(createWorkspaceRelay).toHaveBeenCalledWith({
       projectRoot: process.cwd(),
       token: undefined,
