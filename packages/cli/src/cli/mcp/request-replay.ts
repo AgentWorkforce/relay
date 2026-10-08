@@ -1,7 +1,31 @@
+import { createHash } from 'node:crypto';
+
+const REPLAY_SCOPE = Symbol('agentRelay.replayScope');
+
+/**
+ * Tag a Relay client with the replay scope of the agent token it acts with.
+ * The token decides both the acting identity and the workspace a write reaches,
+ * so a key reused after either changes cannot replay another context's
+ * receipt. Only a SHA-256 digest is kept, in a non-enumerable property.
+ */
+export function withReplayScope<T extends object>(client: T, agentToken: string): T {
+  Object.defineProperty(client, REPLAY_SCOPE, {
+    value: createHash('sha256').update(agentToken).digest('hex'),
+    enumerable: false,
+  });
+  return client;
+}
+
+/** The replay scope a client was tagged with, or '' for an untagged client. */
+export function replayScopeOf(client: object): string {
+  const scope = (client as { [REPLAY_SCOPE]?: unknown })[REPLAY_SCOPE];
+  return typeof scope === 'string' ? scope : '';
+}
+
 /**
  * Coalesce a transport replay of one MCP request before it can repeat a
  * state-changing Relay call. A typed JSON-RPC request ID, scoped by MCP
- * session and tool, identifies only an in-flight logical request because
+ * session, acting identity and tool, identifies only an in-flight logical request because
  * JSON-RPC permits IDs to be reused after a response. Clients that need to
  * retry after a lost response provide an explicit idempotency key; that key
  * retains the completed result briefly. Arguments deliberately do not
@@ -14,7 +38,8 @@ export class McpRequestReplay {
     tool: string,
     extra: unknown,
     idempotencyKey: string | undefined,
-    operation: () => Promise<T>
+    operation: () => Promise<T>,
+    scope = ''
   ): Promise<T> {
     const request = extra as { requestId?: unknown; sessionId?: unknown } | undefined;
     const requestId = request?.requestId;
@@ -26,6 +51,7 @@ export class McpRequestReplay {
 
     const key = JSON.stringify([
       sessionId,
+      scope,
       tool,
       hasIdempotencyKey ? 'idempotency' : typeof requestId,
       hasIdempotencyKey ? idempotencyKey : requestId,

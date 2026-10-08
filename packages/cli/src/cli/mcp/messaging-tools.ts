@@ -11,7 +11,7 @@ import {
 } from '../lib/message-delivery-receipts.js';
 import { jsonContent, jsonResult, textContent } from './tool-results.js';
 import { identityOverrideInputShape, messageResult } from './tool-shapes.js';
-import { McpRequestReplay } from './request-replay.js';
+import { McpRequestReplay, replayScopeOf } from './request-replay.js';
 import type { AgentClientLike } from './types.js';
 
 const directMessageResult = z.looseObject({
@@ -265,15 +265,20 @@ export function registerMessagingTools(
       // Bind the acting identity now: a register_agent that moves the session
       // default must not reroute a write that is already in flight.
       const client = getAgentClient(as);
-      return replay.run('post_message', extra, idempotency_key, async () =>
-        jsonContent(
-          await client.send(channel, text, {
-            attachments,
-            data: replayMessageMetadata(),
-            mode,
-            idempotencyKey: idempotency_key,
-          })
-        )
+      return replay.run(
+        'post_message',
+        extra,
+        idempotency_key,
+        async () =>
+          jsonContent(
+            await client.send(channel, text, {
+              attachments,
+              data: replayMessageMetadata(),
+              mode,
+              idempotencyKey: idempotency_key,
+            })
+          ),
+        replayScopeOf(client)
       );
     }
   );
@@ -326,13 +331,18 @@ export function registerMessagingTools(
     },
     async ({ message_id, text, idempotency_key, as }, extra) => {
       const client = getAgentClient(as);
-      return replay.run('reply_to_thread', extra, idempotency_key, async () =>
-        jsonContent(
-          await client.reply(message_id, text, {
-            data: replayMessageMetadata(),
-            idempotencyKey: idempotency_key,
-          })
-        )
+      return replay.run(
+        'reply_to_thread',
+        extra,
+        idempotency_key,
+        async () =>
+          jsonContent(
+            await client.reply(message_id, text, {
+              data: replayMessageMetadata(),
+              idempotencyKey: idempotency_key,
+            })
+          ),
+        replayScopeOf(client)
       );
     }
   );
@@ -390,22 +400,30 @@ export function registerMessagingTools(
         openWorldHint: true,
       },
     },
-    async ({ to, text, mode, attachments, idempotency_key, as }, extra) =>
-      replay.run('send_dm', extra, idempotency_key, async () => {
-        const agents = await listAgentsForRecipientResolution?.();
-        const resolvedRecipient = agents ? resolveExactAgentName(agents, to) : undefined;
-        const message = await getAgentClient(as).dm(to, text, {
-          idempotencyKey: idempotency_key,
-          mode,
-          attachments,
-          data: replayMessageMetadata(),
-        });
-        const receipt = compactDirectMessageReceipt(
-          directMessageReceipt(message, to, mode, resolvedRecipient)
-        );
-        const result = jsonContent(receipt);
-        return directMessageDeliveryFailure(receipt) ? { ...result, isError: true as const } : result;
-      })
+    async ({ to, text, mode, attachments, idempotency_key, as }, extra) => {
+      const client = getAgentClient(as);
+      return replay.run(
+        'send_dm',
+        extra,
+        idempotency_key,
+        async () => {
+          const agents = await listAgentsForRecipientResolution?.();
+          const resolvedRecipient = agents ? resolveExactAgentName(agents, to) : undefined;
+          const message = await client.dm(to, text, {
+            idempotencyKey: idempotency_key,
+            mode,
+            attachments,
+            data: replayMessageMetadata(),
+          });
+          const receipt = compactDirectMessageReceipt(
+            directMessageReceipt(message, to, mode, resolvedRecipient)
+          );
+          const result = jsonContent(receipt);
+          return directMessageDeliveryFailure(receipt) ? { ...result, isError: true as const } : result;
+        },
+        replayScopeOf(client)
+      );
+    }
   );
 
   server.registerTool(

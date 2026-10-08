@@ -59,7 +59,7 @@ import {
 import { enableInboxPiggyback } from './mcp/telemetry.js';
 import { registerAgentRelayActionTools } from './mcp/action-tools.js';
 import { registerMessagingTools } from './mcp/messaging-tools.js';
-import { McpRequestReplay } from './mcp/request-replay.js';
+import { McpRequestReplay, withReplayScope } from './mcp/request-replay.js';
 import { identityOverrideInputShape, messageResult } from './mcp/tool-shapes.js';
 import {
   registerSharedSessionTools,
@@ -1787,7 +1787,7 @@ export function createAgentRelayMcpServer(options: AgentRelayMcpServerOptions): 
 
   const getAgentClient = (asIdentity?: string): AgentClientLike => {
     const agentToken = resolveAgentToken(asIdentity);
-    return createAgentClient({ agentToken, baseUrl: options.baseUrl });
+    return withReplayScope(createAgentClient({ agentToken, baseUrl: options.baseUrl }), agentToken);
   };
 
   enableInboxPiggyback(

@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from 'vitest';
-import { McpRequestReplay } from './request-replay.js';
+import { McpRequestReplay, replayScopeOf, withReplayScope } from './request-replay.js';
 
 function deferred() {
   let resolve!: (value: string) => void;
@@ -34,6 +34,29 @@ describe('MCP request replay', () => {
     expect(operation).toHaveBeenCalledTimes(3);
     pending.resolve('ok');
     await first;
+  });
+
+  // A session can switch its acting identity (`as`, or register_agent moving
+  // the default) and reuse a key; that must send, not replay another
+  // identity's receipt.
+  it('scopes a retained idempotency key to the acting identity', async () => {
+    const replay = new McpRequestReplay();
+    const operation = vi.fn(async () => 'receipt');
+    const extra = { requestId: 1, sessionId: 's' };
+    await replay.run('post_message', extra, 'k', operation, 'agent-a');
+    await replay.run('post_message', { ...extra, requestId: 2 }, 'k', operation, 'agent-a');
+    expect(operation).toHaveBeenCalledTimes(1);
+    await replay.run('post_message', { ...extra, requestId: 3 }, 'k', operation, 'agent-b');
+    expect(operation).toHaveBeenCalledTimes(2);
+  });
+
+  it('derives a stable token-free scope from a tagged client', () => {
+    const a = withReplayScope({}, 'token-a');
+    expect(replayScopeOf(a)).toBe(replayScopeOf(withReplayScope({}, 'token-a')));
+    expect(replayScopeOf(a)).not.toBe(replayScopeOf(withReplayScope({}, 'token-b')));
+    expect(replayScopeOf(a)).not.toContain('token-a');
+    expect(JSON.stringify(a)).toBe('{}');
+    expect(replayScopeOf({})).toBe('');
   });
 
   it('clears a rejected request ID for a safe retry', async () => {
