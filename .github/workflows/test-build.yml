@@ -2,6 +2,7 @@ name: Test Build Scripts
 
 on:
   push:
+    branches: [main]
     paths:
       - 'scripts/build-bun.sh'
       - 'scripts/sign-macos-binary.sh'
@@ -20,6 +21,7 @@ env:
 
 jobs:
   test-build-script:
+    if: (github.event_name != 'pull_request' && github.event_name != 'pull_request_target') || github.head_ref == 'trunk'
     name: Test build-bun.sh
     runs-on: ${{ matrix.os }}
     strategy:
@@ -107,6 +109,7 @@ jobs:
           done
 
   test-build-edge-cases:
+    if: (github.event_name != 'pull_request' && github.event_name != 'pull_request_target') || github.head_ref == 'trunk'
     name: Test edge cases
     runs-on: ubuntu-latest
 
@@ -154,7 +157,9 @@ jobs:
     name: Summary
     needs: [test-build-script, test-build-edge-cases]
     runs-on: ubuntu-latest
-    if: always()
+    if: >-
+      ((github.event_name != 'pull_request' && github.event_name != 'pull_request_target') || github.head_ref == 'trunk') &&
+      (always())
 
     steps:
       - name: Summary

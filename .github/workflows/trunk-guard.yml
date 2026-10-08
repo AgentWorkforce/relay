@@ -1,0 +1,17 @@
+name: Trunk guard
+
+# Only the `trunk` branch may merge into main. Feature branches merge into
+# `trunk` (via the merge train); CI runs only on the trunk -> main PR.
+on:
+  pull_request:
+    branches: [main]
+
+jobs:
+  only-trunk-merges-to-main:
+    if: github.head_ref != 'trunk'
+    runs-on: ubuntu-latest
+    timeout-minutes: 1
+    steps:
+      - run: |
+          echo "::error::Only the 'trunk' branch may merge into main. Retarget this PR to 'trunk'."
+          exit 1
