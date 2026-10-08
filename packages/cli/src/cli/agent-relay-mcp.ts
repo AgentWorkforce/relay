@@ -1839,7 +1839,11 @@ export async function resolveStdioBootstrapOptionsOrDegrade(
     const reason = conflict
       ? `agent "${options.agentName}" already exists and registration is create-only; ` +
         "set RELAY_AGENT_TOKEN to that identity's existing token or register a different name"
-      : redactCredentials(safeRelayErrorMessage(error), [options.apiKey, options.agentToken]);
+      : redactCredentials(safeRelayErrorMessage(error), [
+          options.workspaceKey,
+          options.apiKey,
+          options.agentToken,
+        ]);
     const who = options.agentName ? ` as "${options.agentName}"` : '';
     writeStderr(
       `[agent-relay mcp] Startup registration${who} failed: ${reason}. ` +

@@ -2171,13 +2171,17 @@ describe('startAgentRelayMcpStdio', () => {
       throw new Error(
         'POST /v1/agents failed: Authorization: Bearer abc.def.ghi key=rk_live_workspace_secret ' +
           'token=at_live_agent_secret jwt=eyJhbGciOiJSUzI1NiJ9.eyJzdWIiOiJ4In0.sig ' +
-          'url=https://relay-user:url-password-secret@cast.example/v1'
+          'url=https://relay-user:url-password-secret@cast.example/v1 ' +
+          'query=https://cast.example/v1/agents?api_key=opaque-query-secret&x=1 ' +
+          'node=nt_live_node_credential_secret short=k9z'
       );
     });
     const stderr = vi.spyOn(process.stderr, 'write').mockImplementation(() => true);
     try {
       await mod.startAgentRelayMcpStdio({
         apiKey: 'rk_live_workspace_secret',
+        // A short, unprefixed declared key is still removed.
+        workspaceKey: 'k9z',
         agentName: 'WorkerA',
         sharedSessionTools: [],
       });
@@ -2191,11 +2195,15 @@ describe('startAgentRelayMcpStdio', () => {
         'abc.def.ghi',
         'url-password-secret',
         'relay-user',
+        'opaque-query-secret',
+        'node_credential_secret',
+        'k9z',
       ]) {
         expect(written).not.toContain(secret);
       }
       expect(written).toContain('Bearer <redacted>');
       expect(written).toContain('https://<redacted>@cast.example/v1');
+      expect(written).toContain('?api_key=<redacted>&x=1');
     } finally {
       stderr.mockRestore();
     }
