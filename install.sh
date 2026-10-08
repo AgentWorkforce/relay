@@ -1279,17 +1279,27 @@ verify_installation() {
 
 # Print usage instructions
 print_usage() {
+    # The broker commands moved under `node` in 9.2.2. A pinned older install
+    # (AGENT_RELAY_VERSION) still has only the top-level `up`/`down` forms.
+    local node_group="node "
+    local major minor patch
+    if [[ "$VERSION" =~ ^([0-9]+)\.([0-9]+)\.([0-9]+) ]]; then
+        major=${BASH_REMATCH[1]}; minor=${BASH_REMATCH[2]}; patch=${BASH_REMATCH[3]}
+        if (( major < 9 || (major == 9 && (minor < 2 || (minor == 2 && patch < 2))) )); then
+            node_group=""
+        fi
+    fi
     echo ""
     echo -e "${BOLD}Quick Start:${NC}"
     echo ""
     echo "  # Start the local broker (detached so this terminal stays free)"
-    echo "  agent-relay node up --background"
+    echo "  agent-relay ${node_group}up --background"
     echo ""
     echo "  # Check status"
     echo "  agent-relay status"
     echo ""
     echo "  # Stop the broker"
-    echo "  agent-relay node down"
+    echo "  agent-relay ${node_group}down"
     echo ""
     echo -e "${BOLD}Documentation:${NC} https://github.com/AgentWorkforce/relay"
     echo ""
