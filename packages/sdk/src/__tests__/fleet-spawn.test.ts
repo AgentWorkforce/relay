@@ -177,14 +177,17 @@ describe('spawnFleetSandbox', () => {
     expect(h.deleteCloudFleetSandbox).not.toHaveBeenCalled();
   });
 
-  it('fails closed and cleans up when the agent lands on a different node', async () => {
+  it('fails closed and cleans up when the dispatch receipt names a different node', async () => {
     const h = harness({
       spawn: async () => ({
         id: 'inv_1',
         status: 'completed',
+        // A targeted placement echoes the requested node; only the receipt is evidence.
+        dispatchedNodeId: 'node_other',
+        node: { id: 'node_1', name: 'fleet-sandbox-node', status: 'online', capabilities: [] },
         placement: {
           capability: 'spawn:claude',
-          node: 'some-other-node',
+          node: 'fleet-sandbox-node',
           attempts: 1,
           queued: false,
           state: 'ready',
@@ -198,6 +201,56 @@ describe('spawnFleetSandbox', () => {
     });
     expect(h.calls).toContain('release:sandbox-worker');
     expect(h.deleteCloudFleetSandbox).toHaveBeenCalledTimes(1);
+  });
+
+  it('cleans up the sandbox when a caller hook throws', async () => {
+    const h = harness();
+    await expect(
+      spawnFleetSandbox(
+        {
+          ...base,
+          resolveTask: () => {
+            throw new Error('bad context');
+          },
+        },
+        h.deps
+      )
+    ).rejects.toThrow('bad context');
+    expect(h.spawn).not.toHaveBeenCalled();
+    expect(h.deleteCloudFleetSandbox).toHaveBeenCalledTimes(1);
+  });
+
+  it('never lets spawnMetadata replace the lifecycle fields', async () => {
+    const h = harness();
+    const handle = await spawnFleetSandbox(
+      { ...base, spawnMetadata: { name: 'other-agent', worker_cwd: '/tmp', session_ref: 'ref-1' } },
+      h.deps
+    );
+    expect((h.spawn.mock.calls[0][0] as Record<string, any>).input).toMatchObject({
+      name: 'sandbox-worker',
+      worker_cwd: '/workspace',
+      session_ref: 'ref-1',
+    });
+    expect(handle.agentName).toBe('sandbox-worker');
+  });
+
+  it('refuses a reused node without a sandbox identity', async () => {
+    const h = harness({
+      ensure: async () => ({
+        outcome: 'reused',
+        cloudWorkspaceId: 'cw_1',
+        nodeId: 'node_1',
+        nodeName: 'existing-node',
+        status: 'online',
+        activeAgents: 0,
+        maxAgents: 1,
+      }),
+    });
+    await expect(
+      spawnFleetSandbox({ ...base, sandboxName: 'existing-node', mountRelayfile: false }, h.deps)
+    ).rejects.toMatchObject({ code: 'sandbox_identity_unknown' });
+    expect(h.spawn).not.toHaveBeenCalled();
+    expect(h.deleteCloudFleetSandbox).not.toHaveBeenCalled();
   });
 
   it('deletes the provisioned sandbox when the harness fails to start', async () => {

@@ -1256,10 +1256,14 @@ describe('fleet command support', () => {
     });
   });
 
-  it('fleet spawn --sandbox rejects an agent that lands on another node and tears the sandbox down', async () => {
+  it('fleet spawn --sandbox rejects an agent dispatched to another node and tears the sandbox down', async () => {
     vi.stubEnv('RELAY_AGENT_TOKEN', undefined);
     const placement = {
-      spawn: vi.fn(async () => ({ invocationId: 'inv_sandbox', node: { name: 'some-other-node' } })),
+      spawn: vi.fn(async () => ({
+        invocationId: 'inv_sandbox',
+        node: { name: 'e2b-codex' },
+        dispatchedNodeId: 'node-2',
+      })),
     };
     const release = vi.fn(async () => ({ released: true, deleted: true }));
     const createWorkspaceRelay = vi.fn(() => ({
@@ -1330,7 +1334,7 @@ describe('fleet command support', () => {
         { from: 'user' }
       )
     ).rejects.toThrow('__exit__');
-    expect(errors.join('\n')).toContain("landed on node 'some-other-node', not sandbox node 'e2b-codex'");
+    expect(errors.join('\n')).toContain("landed on node 'node-2', not sandbox node 'e2b-codex'");
     expect(release).toHaveBeenCalledWith(
       expect.objectContaining({ name: 'sandbox-worker', deleteAgent: true })
     );

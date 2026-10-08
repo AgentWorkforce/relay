@@ -19,7 +19,11 @@ import { join } from 'node:path';
 
 import WebSocket, { WebSocketServer } from 'ws';
 
-import { AGENT37_RELAYCAST_ORIGIN, CANONICAL_RELAYCAST_ORIGIN } from './fleet-sandbox.js';
+import {
+  AGENT37_RELAYCAST_ORIGIN,
+  CANONICAL_RELAYCAST_ORIGIN,
+  DEV_RELAYCAST_ORIGIN,
+} from './fleet-sandbox.js';
 import type { AttachMode } from './attach-mode.js';
 import { collectWithRetry } from './collect-with-retry.js';
 import { resolveWorkspaceTransport } from './workspace-transport.js';
@@ -177,7 +181,11 @@ export class FleetNodeAttachError extends Error {
   }
 }
 
-const TRUSTED_RELAYCAST_ORIGINS = new Set([CANONICAL_RELAYCAST_ORIGIN, AGENT37_RELAYCAST_ORIGIN]);
+const TRUSTED_RELAYCAST_ORIGINS = new Set([
+  CANONICAL_RELAYCAST_ORIGIN,
+  AGENT37_RELAYCAST_ORIGIN,
+  DEV_RELAYCAST_ORIGIN,
+]);
 
 export function validateFleetAttachBaseUrl(value: string): string {
   let parsed: URL;
@@ -688,6 +696,18 @@ export async function startFleetNodeAttachProxy(
   const inputSockets = new Set<WebSocket>();
   const outputHistory: Array<{ chunk: string; offset?: number }> = [];
   let outputHistoryBytes = 0;
+  // Output since the latest terminal.ready snapshot, held for a raw socket
+  // client that has not yet become ready. Kept apart from `outputHistory`,
+  // which event listeners drain, so neither consumer can starve the other.
+  const rawPending: string[] = [];
+  let rawPendingBytes = 0;
+  const retainRawOutput = (chunk: string) => {
+    rawPending.push(chunk);
+    rawPendingBytes += Buffer.byteLength(chunk, 'utf8');
+    while (rawPendingBytes > MAX_BUFFERED_BYTES && rawPending.length > 0) {
+      rawPendingBytes -= Buffer.byteLength(rawPending.shift()!, 'utf8');
+    }
+  };
   let remote: WebSocket | undefined;
   let rawSocket: Socket | undefined;
   let rawConnected = false;
@@ -1155,9 +1175,9 @@ export async function startFleetNodeAttachProxy(
       () => {
         if (socket.destroyed || stopped || terminalEnded) return;
         if (snapshot.screenAnsi) socket.write(snapshot.screenAnsi);
-        for (const entry of outputHistory) socket.write(entry.chunk);
-        outputHistory.length = 0;
-        outputHistoryBytes = 0;
+        for (const chunk of rawPending) socket.write(chunk);
+        rawPending.length = 0;
+        rawPendingBytes = 0;
         rawReady = true;
         socket.resume();
       },
@@ -1405,6 +1425,9 @@ export async function startFleetNodeAttachProxy(
         // so no later consumer can render it; the HTTP snapshot still serves
         // the bytes verbatim and lets its own decoder report the problem.
         snapshot.screenAnsi = decodeAnsiScreenPayload(snapshot.screenBase64) ?? '';
+        // The fresh snapshot already contains everything retained so far.
+        rawPending.length = 0;
+        rawPendingBytes = 0;
         snapshot.rows = typeof frame.rows === 'number' ? frame.rows : 24;
         snapshot.cols = typeof frame.cols === 'number' ? frame.cols : 80;
         snapshot.offset = typeof frame.offset === 'number' ? frame.offset : 0;
@@ -1444,6 +1467,8 @@ export async function startFleetNodeAttachProxy(
             return;
           }
           rawSocket.write(frame.chunk);
+        } else {
+          retainRawOutput(frame.chunk);
         }
         if (!broadcast(eventSockets, workerStreamEvent(frame.chunk, offset)) && !rawReady) {
           if (!retainOutput(frame.chunk, offset)) {

@@ -154,6 +154,7 @@ export type FleetSandboxSpawnErrorCode =
   | 'provisioning_timeout'
   | 'relayfile_unmounted'
   | 'relaycast_target_unverified'
+  | 'sandbox_identity_unknown'
   | 'placement_mismatch';
 
 export class FleetSandboxSpawnError extends Error {
@@ -505,9 +506,14 @@ export async function spawnFleetSandbox(
     ready.outcome === 'provisioned' && ready.relayfileMounted
       ? (ready.relayfileMountPath ?? '/workspace')
       : undefined;
-  const workerCwd = input.resolveWorkerCwd?.(ready) ?? input.workerCwd ?? mountPath;
-  const task = input.resolveTask?.(ready, workerCwd) ?? input.task ?? '';
-  const sandboxIdentity = 'sandboxId' in ready ? ready.sandboxId : (sandboxId ?? '');
+  const sandboxIdentity = 'sandboxId' in ready ? ready.sandboxId : sandboxId;
+  if (sandboxIdentity === undefined) {
+    // A reused node is not owned by this call, so there is nothing to clean up.
+    throw new FleetSandboxSpawnError(
+      'sandbox_identity_unknown',
+      `Cloud reused node '${ready.nodeName}' without a sandbox identity; pass sandboxId to resume a known sandbox.`
+    );
+  }
   const ownsSandbox = shouldCleanupSandbox && ready.outcome === 'provisioned';
   const confirm = input.confirm !== false;
   const workspaceRelayFor = () =>
@@ -517,7 +523,12 @@ export async function spawnFleetSandbox(
 
   let launcherName: string | undefined;
   let invocation: RelaySpawnPlacementAck;
+  let workerCwd: string | undefined;
   try {
+    // Caller hooks run inside the cleanup boundary: a throwing hook must not
+    // strand the sandbox this call just provisioned.
+    workerCwd = input.resolveWorkerCwd?.(ready) ?? input.workerCwd ?? mountPath;
+    const task = input.resolveTask?.(ready, workerCwd) ?? input.task ?? '';
     // Agent tokens are scoped to a Relaycast deployment. Mint a temporary
     // launcher on the transport Cloud selected (or the canonical
     // compatibility transport when an older non-Agent37 response omitted the
@@ -550,29 +561,37 @@ export async function spawnFleetSandbox(
       confirm,
       ...(confirm ? { confirmTimeoutMs: input.confirmTimeoutMs ?? DEFAULT_CONFIRM_TIMEOUT_MS } : {}),
       input: {
+        // Metadata first: it must never replace the lifecycle fields the
+        // handle attaches to and releases.
+        ...(input.spawnMetadata ?? {}),
         name,
         cli,
         task,
         ...(input.channels?.length ? { channels: input.channels } : {}),
         ...(input.model ? { model: input.model } : {}),
         ...(workerCwd ? { worker_cwd: workerCwd } : {}),
-        ...(input.spawnMetadata ?? {}),
       },
     });
-    // Confirm the agent landed on the sandbox this call ensured, not merely
-    // on some node advertising the same capability.
-    const landedNodeName = invocation.placement?.node ?? invocation.node?.name;
-    const landedNodeId = invocation.node?.id ?? invocation.node?.nodeId;
-    if (
-      (landedNodeName !== undefined && landedNodeName !== ready.nodeName) ||
-      (landedNodeId !== undefined && landedNodeId !== ready.nodeId)
-    ) {
+    // Confirm the agent landed on the sandbox this call ensured. For a
+    // targeted spawn, `invocation.node` and `placement.node` echo the
+    // requested roster node, so only the engine's dispatch receipt is
+    // evidence of where the action actually ran.
+    const sandboxNodeIds = new Set(
+      [
+        ready.nodeId,
+        ...(invocation.node?.name === ready.nodeName ? [invocation.node.id, invocation.node.nodeId] : []),
+      ].filter((id): id is string => typeof id === 'string' && id.length > 0)
+    );
+    const landedNodeId = [invocation.dispatchedNodeId, invocation.handlerNodeId].find(
+      (id): id is string => typeof id === 'string' && id.length > 0 && !sandboxNodeIds.has(id)
+    );
+    if (landedNodeId !== undefined) {
       await releaseAgent('Fleet sandbox spawn landed on an unexpected node').catch((error) => {
         deps.warn(`Releasing the misplaced agent '${name}' failed: ${errorMessage(error)}`);
       });
       throw new FleetSandboxSpawnError(
         'placement_mismatch',
-        `Agent '${name}' landed on node '${landedNodeName ?? landedNodeId}', not sandbox node '${ready.nodeName}'.`
+        `Agent '${name}' landed on node '${landedNodeId}', not sandbox node '${ready.nodeName}' (${ready.nodeId}).`
       );
     }
   } catch (error) {

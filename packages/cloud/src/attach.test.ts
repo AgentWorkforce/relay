@@ -68,6 +68,23 @@ it('discovers one agent and pipes raw bytes through a private socket, then remov
   await expect(stat(socketPath)).rejects.toMatchObject({ code: 'ENOENT' });
 });
 
+it('replays output to a late raw client even when an event listener already consumed it', async () => {
+  const { remote } = await setup();
+  const events = new (await import('ws')).default(`${proxy!.brokerUrl.replace('http', 'ws')}/ws`, {
+    headers: { authorization: `Bearer ${proxy!.apiKey}` },
+  });
+  await once(events, 'open');
+  send(remote, 'terminal.ready', { screen: Buffer.from('hello').toString('base64') });
+  const consumed = once(events, 'message');
+  send(remote, 'terminal.output', { chunk: ' early' });
+  await consumed;
+  local = connect(proxy!.socketPath);
+  let received = '';
+  local.on('data', (data: Buffer) => (received += data.toString()));
+  await vi.waitFor(() => expect(received).toBe('hello early'));
+  events.close();
+});
+
 it('settles finished on explicit close before terminal.ready', async () => {
   await setup();
   await proxy!.close();
@@ -108,3 +125,11 @@ it.each([[], [{ agentName: 'a' }, { agentName: 'b' }]])(
     ).rejects.toMatchObject({ code: 'ambiguous_agent' });
   }
 );
+
+it('trusts the DEV Relaycast origin for attach, alongside canonical and Agent37', async () => {
+  const { validateFleetAttachBaseUrl } = await import('./attach.js');
+  expect(validateFleetAttachBaseUrl('https://dev-cast.agentrelay.com/')).toBe(
+    'https://dev-cast.agentrelay.com'
+  );
+  expect(() => validateFleetAttachBaseUrl('https://evil.example.com')).toThrow('trusted Relaycast origin');
+});
