@@ -110,4 +110,4 @@ This is smaller and safer than `--teardown`: the current release command does no
 
 ## PR and CI
 
-To be updated after the PR is opened and all workflows settle.
+[Relay PR #1923](https://github.com/AgentWorkforce/relay/pull/1923) carries the route-selection fix and this report. GitHub workflow results on the final head are the authoritative CI record and are monitored to completion before handoff.
