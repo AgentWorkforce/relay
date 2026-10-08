@@ -1270,17 +1270,25 @@ async fn an_oversized_task_for_a_headless_fleet_spawn_skips_the_pty_guard() {
         ),
     )
     .await;
+    let mut registered = false;
     while let Ok(command) = fixture.fleet_control_rx.try_recv() {
-        if let FleetControlCommand::Send(BrokerToRelaycast::ActionResult(result)) = command {
-            if let crate::fleet_wire::ActionResultPayload::Error(error) = &result.result {
-                assert!(
-                    !error.error.contains("spawn_task_too_large"),
-                    "a headless spawn never types its task into a PTY: {}",
-                    error.error
-                );
+        match command {
+            FleetControlCommand::RegisterAgent { .. } => registered = true,
+            FleetControlCommand::Send(BrokerToRelaycast::ActionResult(result)) => {
+                if let crate::fleet_wire::ActionResultPayload::Error(error) = &result.result {
+                    assert!(
+                        !error.error.contains("spawn_task_too_large"),
+                        "a headless spawn never types its task into a PTY: {}",
+                        error.error
+                    );
+                }
             }
+            _ => {}
         }
     }
+    // Registration is the next awaited step after the guard, so observing it
+    // proves the oversized headless task passed the guard.
+    assert!(registered, "the headless spawn must reach registration");
 }
 
 /// relay#1893 review (Cursor): a task that cannot fit the PTY envelope used to
@@ -4318,6 +4326,35 @@ async fn pty_body_cap_applies_only_to_pty_recipients() {
             }
         }
     }
+    // Headless providers receive the body as one argv entry, so they keep
+    // the portable single-argument ceiling instead of no bound at all.
+    let mut workers = make_worker_registry_with_worker("Worker").await;
+    workers
+        .workers
+        .get_mut(&WorkerName::from("Worker"))
+        .unwrap()
+        .spec
+        .runtime = AgentRuntime::Headless;
+    let error = super::queue_and_try_delivery_raw(
+        &mut workers,
+        &mut HashMap::new(),
+        "Worker",
+        "evt_argv",
+        "orchestrator",
+        "Worker",
+        &"x".repeat(crate::worker::MUSE_STARTUP_PROMPT_MAX_BYTES + 1),
+        None,
+        Some(WorkspaceId::new("ws_demo")),
+        None,
+        2,
+        MessageInjectionMode::Wait,
+        Duration::from_secs(1),
+        None,
+        None,
+    )
+    .await
+    .expect_err("a headless body past the argv ceiling fails before delivery");
+    assert!(error.to_string().contains("injection_too_large"), "{error}");
 }
 
 #[tokio::test]

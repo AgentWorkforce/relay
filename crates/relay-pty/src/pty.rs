@@ -928,7 +928,6 @@ fn read_was_cancelled(error: &io::Error) -> bool {
     error.raw_os_error() == Some(ERROR_OPERATION_ABORTED as i32)
 }
 
-/// Whether the grid currently has bracketed-paste mode (DECSET 2004) set.
 /// Finds the DECSET 2004 private-mode parameter (`?2004` or `;2004`) in PTY
 /// output, including one split across reads, by carrying the previous read's
 /// last four bytes. Plain text that merely contains `2004` does not match.
@@ -958,6 +957,7 @@ impl Decset2004Scan {
     }
 }
 
+/// Whether the grid currently has bracketed-paste mode (DECSET 2004) set.
 fn paste_mode_enabled(term: &Term<RelayEventListener>) -> bool {
     term.mode()
         .contains(alacritty_terminal::term::TermMode::BRACKETED_PASTE)

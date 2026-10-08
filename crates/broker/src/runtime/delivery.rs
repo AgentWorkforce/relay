@@ -862,18 +862,27 @@ pub(crate) async fn queue_and_try_delivery_raw(
     withheld_fleet_ack_floor: Option<u64>,
 ) -> Result<DeliveryId> {
     // The envelope-sized cap exists because PTY delivery types the message into
-    // a terminal. Headless recipients never do, so only a known non-PTY worker
-    // skips it; an unknown recipient keeps the conservative check.
+    // a terminal, so it applies to PTY and unknown recipients. A headless
+    // provider instead receives the body as one argv entry, which is bounded
+    // by the portable single-argument ceiling rather than the PTY envelope.
     let pty_recipient = workers
         .workers
         .get(worker_name)
         .is_none_or(|handle| handle.spec.runtime == AgentRuntime::Pty);
-    anyhow::ensure!(
-        !pty_recipient || body.len() <= crate::injection_wire::MAX_BODY_BYTES,
-        "injection_too_large: body limit is {} bytes so the formatted envelope fits the {}-byte PTY limit; use a brief file pointer",
-        crate::injection_wire::MAX_BODY_BYTES,
-        crate::injection_wire::MAX_INJECTION_BODY_BYTES
-    );
+    if pty_recipient {
+        anyhow::ensure!(
+            body.len() <= crate::injection_wire::MAX_BODY_BYTES,
+            "injection_too_large: body limit is {} bytes so the formatted envelope fits the {}-byte PTY limit; use a brief file pointer",
+            crate::injection_wire::MAX_BODY_BYTES,
+            crate::injection_wire::MAX_INJECTION_BODY_BYTES
+        );
+    } else {
+        anyhow::ensure!(
+            body.len() <= crate::worker::MUSE_STARTUP_PROMPT_MAX_BYTES,
+            "injection_too_large: a headless agent receives the body as one process argument, limited to {} bytes; use a brief file pointer",
+            crate::worker::MUSE_STARTUP_PROMPT_MAX_BYTES
+        );
+    }
     // Fleet delivery IDs are stable across Relaycast retries. Preserve that
     // identity all the way into the worker so its completed-delivery cache can
     // re-ACK a replay without pasting the instruction a second time. Local
