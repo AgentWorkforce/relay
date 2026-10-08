@@ -674,7 +674,7 @@ export interface RelaySpawnPlacementInput {
    * How long to wait for that terminal result. Must exceed the node's own
    * readiness window (the broker's `verify_ready` mode holds the action open
    * for up to 90s, and starts that clock only once the launch completes).
-   * Defaults to 120000; `fleet spawn` enforces a 95000 floor for verified
+   * Defaults to 360000; `fleet spawn` enforces a 95000 floor for verified
    * targeted spawns so the two windows nest.
    */
   confirmTimeoutMs?: number;

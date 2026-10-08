@@ -519,3 +519,39 @@ describe('targeted spawn readiness contract', () => {
     }
   });
 });
+
+it('confirms a five-minute launch using the default budget without dispatching again', async () => {
+  vi.useFakeTimers();
+  try {
+    const started = Date.now();
+    const { client, invoke } = createClient(async (name, invocationId) => ({
+      invocation_id: invocationId,
+      action_name: name,
+      status: Date.now() - started >= 300_000 ? 'completed' : 'invoked',
+      output: { spawned: true, ready: true },
+    }));
+    const pending = client.placement.spawn(spawnInput({ confirm: true }));
+    await vi.advanceTimersByTimeAsync(300_500);
+    expect((await pending).placement.confirmed).toBe(true);
+    expect(invoke).toHaveBeenCalledTimes(1);
+  } finally {
+    vi.useRealTimers();
+  }
+});
+
+it('returns a pollable invocation ID when the extended default budget expires', async () => {
+  vi.useFakeTimers();
+  try {
+    const { client, invoke } = createClient(async () => ({ status: 'invoked' }));
+    const pending = client.placement.spawn(spawnInput({ confirm: true })).catch((error) => error);
+    await vi.advanceTimersByTimeAsync(360_500);
+    const error = await pending;
+    expect(error.code).toBe('spawn_unconfirmed');
+    expect(error.state).toBe('unconfirmed_may_be_running');
+    expect(error.invocationId).toBe('inv-1430');
+    expect(error.message).toContain('fleet spawn-status inv-1430');
+    expect(invoke).toHaveBeenCalledTimes(1);
+  } finally {
+    vi.useRealTimers();
+  }
+});
