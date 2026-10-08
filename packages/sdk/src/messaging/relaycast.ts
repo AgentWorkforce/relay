@@ -49,7 +49,9 @@ import {
   normalizeReadReceipt,
   normalizeSearchResult,
   normalizeThread,
+  normalizeFileInfo,
 } from './normalize.js';
+import { downloadRelayFile, uploadRelayFile } from './files.js';
 import { currentReplaySessionRef, replayMessageMetadata, resolveReplaySessionRef } from './session-ref.js';
 import type { AgentSessionEvent } from '../session/index.js';
 import type {
@@ -57,6 +59,9 @@ import type {
   RelayActionInvocationAck,
   RelayCompleteInvocationInput,
   RelayAgent,
+  RelayDownloadedFile,
+  RelayFileInfo,
+  RelayUploadFileInput,
   RelayAgentPresence,
   RelayAgentRegistration,
   RelayChannel,
@@ -1137,6 +1142,15 @@ export class RelaycastMessagingClient implements RelayMessagingClient {
     },
   };
 
+  readonly files = {
+    upload: async (input: RelayUploadFileInput): Promise<RelayFileInfo> =>
+      uploadRelayFile(this.requireAgentFiles('files.upload'), input),
+    get: async (id: string): Promise<RelayFileInfo> =>
+      normalizeFileInfo(await this.requireAgentFiles('files.get').get(id)),
+    download: async (id: string): Promise<RelayDownloadedFile> =>
+      downloadRelayFile(this.requireAgentFiles('files.download'), id),
+  };
+
   private resolvePlacementNode(node: string | 'self' | undefined, selfNodeName?: string): string | undefined {
     if (!node) return undefined;
     if (node !== 'self') return nonEmptyPlacement(node, 'placement node');
@@ -1363,6 +1377,14 @@ export class RelaycastMessagingClient implements RelayMessagingClient {
       throw new Error(`RelaycastMessagingClient.${operation} requires agentToken or agentClient.`);
     }
     return this.agentClient;
+  }
+
+  private requireAgentFiles(operation: string): NonNullable<RelaycastAgentLike['files']> {
+    const files = this.requireAgentClient(operation).files;
+    if (!files) {
+      throw new Error(`RelaycastMessagingClient.${operation} requires a relaycast agent client with the files API.`);
+    }
+    return files;
   }
 
   private requireWorkspaceDmMessages(): NonNullable<RelaycastWorkspaceLike['dmMessages']> {

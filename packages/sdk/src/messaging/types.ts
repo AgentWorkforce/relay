@@ -139,6 +139,31 @@ export interface RelayStoredAttachment {
   sizeBytes?: wire.FileAttachment['size_bytes'];
 }
 
+/** A stored Relaycast file, as returned by `files.upload`/`files.get`. */
+export interface RelayFileInfo {
+  id: wire.FileInfo['id'];
+  filename: wire.FileInfo['filename'];
+  contentType: wire.FileInfo['content_type'];
+  sizeBytes: wire.FileInfo['size_bytes'];
+  status?: NonNullable<wire.FileInfo['status']>;
+  /** Short-lived URL to GET the bytes; present once the upload is complete. */
+  downloadUrl?: string;
+  uploadedBy?: NonNullable<wire.FileInfo['uploaded_by']>;
+  createdAt?: NonNullable<wire.FileInfo['created_at']>;
+}
+
+export interface RelayUploadFileInput {
+  filename: string;
+  /** Defaults to `application/octet-stream`. */
+  contentType?: string;
+  data: Uint8Array | ArrayBuffer;
+}
+
+export interface RelayDownloadedFile {
+  file: RelayFileInfo;
+  data: Uint8Array;
+}
+
 export interface RelayTextAttachment {
   type: 'text';
   text: string;
@@ -1069,6 +1094,16 @@ export interface RelayMessagingClient {
   };
   readonly workspace: {
     info(): Promise<RelayWorkspaceInfo>;
+  };
+  /**
+   * Stored file attachments. `upload` runs the full upload (request, byte
+   * PUT, complete) and returns a file whose `id` can be passed in a message's
+   * `attachments`.
+   */
+  readonly files?: {
+    upload(input: RelayUploadFileInput): Promise<RelayFileInfo>;
+    get(id: string): Promise<RelayFileInfo>;
+    download(id: string): Promise<RelayDownloadedFile>;
   };
 }
 
