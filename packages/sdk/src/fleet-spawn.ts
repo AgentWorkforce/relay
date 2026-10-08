@@ -96,11 +96,11 @@ export interface SpawnFleetSandboxInput {
   confirm?: boolean;
   confirmTimeoutMs?: number;
   /** Validate the ensured sandbox before any agent is started; throwing aborts and cleans up. */
-  verifySandbox?: (sandbox: EnsureCloudFleetSandboxResult) => void;
+  verifySandbox?: (sandbox: EnsureCloudFleetSandboxResult) => void | Promise<void>;
   /** Compute the worker cwd once the sandbox mount is known. */
-  resolveWorkerCwd?: (sandbox: FleetSandboxReadyResult) => string | undefined;
+  resolveWorkerCwd?: (sandbox: FleetSandboxReadyResult) => string | undefined | Promise<string | undefined>;
   /** Compute the task once the sandbox and worker cwd are known. */
-  resolveTask?: (sandbox: FleetSandboxReadyResult, workerCwd: string | undefined) => string;
+  resolveTask?: (sandbox: FleetSandboxReadyResult, workerCwd: string | undefined) => string | Promise<string>;
 }
 
 type WorkspaceRelayLike = Pick<AgentRelayAgent, 'workspace'>;
@@ -337,7 +337,7 @@ export async function spawnFleetSandbox(
           },
         })
       : await deps.ensureCloudFleetSandbox(ensureInput);
-    input.verifySandbox?.(sandbox);
+    await input.verifySandbox?.(sandbox);
   } catch (error) {
     if (error instanceof CloudFleetSandboxProvisionError && error.sandboxAbsent) {
       // Cloud's terminal record for this exact identity already proves the
@@ -527,8 +527,8 @@ export async function spawnFleetSandbox(
   try {
     // Caller hooks run inside the cleanup boundary: a throwing hook must not
     // strand the sandbox this call just provisioned.
-    workerCwd = input.resolveWorkerCwd?.(ready) ?? input.workerCwd ?? mountPath;
-    const task = input.resolveTask?.(ready, workerCwd) ?? input.task ?? '';
+    workerCwd = (await input.resolveWorkerCwd?.(ready)) ?? input.workerCwd ?? mountPath;
+    const task = (await input.resolveTask?.(ready, workerCwd)) ?? input.task ?? '';
     // Agent tokens are scoped to a Relaycast deployment. Mint a temporary
     // launcher on the transport Cloud selected (or the canonical
     // compatibility transport when an older non-Agent37 response omitted the

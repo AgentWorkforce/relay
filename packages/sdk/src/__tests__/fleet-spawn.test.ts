@@ -220,6 +220,32 @@ describe('spawnFleetSandbox', () => {
     expect(h.deleteCloudFleetSandbox).toHaveBeenCalledTimes(1);
   });
 
+  it('awaits async hooks and cleans up when async verification rejects', async () => {
+    const h = harness();
+    await expect(
+      spawnFleetSandbox(
+        { ...base, verifySandbox: async () => Promise.reject(new Error('stale revision')) },
+        h.deps
+      )
+    ).rejects.toThrow('stale revision');
+    expect(h.spawn).not.toHaveBeenCalled();
+    expect(h.deleteCloudFleetSandbox).toHaveBeenCalledTimes(1);
+
+    const ok = harness();
+    await spawnFleetSandbox(
+      {
+        ...base,
+        resolveWorkerCwd: async () => '/workspace/repo',
+        resolveTask: async (_s, cwd) => `work in ${cwd}`,
+      },
+      ok.deps
+    );
+    expect((ok.spawn.mock.calls[0][0] as Record<string, any>).input).toMatchObject({
+      worker_cwd: '/workspace/repo',
+      task: 'work in /workspace/repo',
+    });
+  });
+
   it('never lets spawnMetadata replace the lifecycle fields', async () => {
     const h = harness();
     const handle = await spawnFleetSandbox(
