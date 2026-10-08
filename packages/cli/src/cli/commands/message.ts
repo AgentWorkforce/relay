@@ -1,4 +1,3 @@
-import { validateInjectionSize } from '../lib/task-input.js';
 import { InvalidArgumentError, type Command } from 'commander';
 
 import {
@@ -54,7 +53,6 @@ export function registerMessageCommands(
       .argument('<text>', 'Message text')
   ).action(async (channel: string, text: string, o: Record<string, unknown>) => {
     await runSdk(deps, async () => {
-      validateInjectionSize(text);
       printJson(deps, await deps.createAgentRelay(opts(o)).messages.send({ channel, text }));
     });
   });
@@ -82,7 +80,6 @@ export function registerMessageCommands(
       .argument('<text>', 'Reply text')
   ).action(async (messageId: string, text: string, o: Record<string, unknown>) => {
     await runSdk(deps, async () => {
-      validateInjectionSize(text);
       printJson(deps, await deps.createAgentRelay(opts(o)).messages.reply({ messageId, text }));
     });
   });
@@ -135,7 +132,6 @@ export function registerMessageCommands(
       )
   ).action(async (agent: string, text: string, o: Record<string, unknown>) => {
     await runSdk(deps, async () => {
-      validateInjectionSize(text);
       const mode = o.mode as 'wait' | 'steer' | undefined;
       const options = opts(o);
       const relay = deps.createAgentRelay(options);

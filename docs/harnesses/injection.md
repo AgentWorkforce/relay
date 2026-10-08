@@ -18,6 +18,11 @@ the default 5 ms pace. A slower `RELAY_INJECT_RATE_MS` lowers that limit to keep
 writing within 7.68 seconds. Unpaced fallback uses the global ceiling. Codex uses
 the smaller of the global ceiling and its deadline-derived limit. Rejections name
 the harness and effective limit; oversized bodies are never partially written.
+Wrap sessions have no failure channel back to the sender, so an oversized relay
+message is delivered as a short notice naming the sender, size, limit and message
+ID instead of its body; the full message stays readable in Relay. The limit is
+enforced only at the PTY boundary: `message post|reply|dm send` publish any size
+to Relaycast, since recipients may be native agents or history only.
 For longer briefs, create a file on the node and send a short instruction to read it.
 
 The input wire normalizes CRLF to LF and strips bare carriage returns and ESC
@@ -48,8 +53,10 @@ between them), `paste_summary` (the harness collapsed the paste, so no content
 was echoed at all) and `timeout_fallback` (no echo), the last with a warning and
 a process-local fallback counter.
 
-Verified fleet PTY spawns with a task wait for its delivery verdict after proven
-startup readiness. A failed task fails the spawn action. A task acked without
+Verified fleet PTY spawns with a task wait for its delivery verdict and for
+proven startup readiness, in either order. A failed task releases the worker and
+its fleet identity, then fails the spawn action with `spawn_task_failed`, so a
+corrected retry can reuse the name. A task acked without
 confirmed receipt resolves the action as `spawn_task_unconfirmed`, naming the
 live agent: the spawn must not be retried (that duplicates the agent), so resend
 the task or point the agent at a brief file. Wrap uses the same echo evidence and

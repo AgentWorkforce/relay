@@ -156,6 +156,20 @@ pub(super) struct PendingVerifiedSpawn {
     pub(super) generation: Uuid,
     pub(super) readiness_proven: bool,
     pub(super) task_event_id: Option<String>,
+    /// The initial task's verdict, recorded when it arrives before harness
+    /// readiness is proven (for example after a startup-fallback
+    /// `worker_ready`). The proven `worker_ready` that follows resolves the
+    /// action from it, so the order of the two frames cannot strand a spawn
+    /// whose task was already delivered.
+    pub(super) task_verification: Option<TaskVerification>,
+}
+
+/// What the worker reported for a verified spawn's initial task.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(super) struct TaskVerification {
+    /// Whether the label is whole-payload evidence of receipt.
+    pub(super) confirmed: bool,
+    pub(super) label: Option<String>,
 }
 
 impl PendingVerifiedSpawn {
@@ -163,7 +177,42 @@ impl PendingVerifiedSpawn {
         self.generation == generation && self.task_event_id.as_deref() == Some(event_id)
     }
     pub(super) fn can_report_ready(&self, generation: Uuid) -> bool {
-        self.generation == generation && self.readiness_proven && self.task_event_id.is_none()
+        self.generation == generation
+            && self.readiness_proven
+            && self.task_event_id.is_none()
+            && self.failure_reason.is_none()
+    }
+    /// Record the initial task's verdict; the task is no longer outstanding.
+    pub(super) fn record_task_verification(&mut self, confirmed: bool, label: Option<&str>) {
+        self.task_event_id = None;
+        self.task_verification = Some(TaskVerification {
+            confirmed,
+            label: label.map(str::to_string),
+        });
+    }
+    /// The initial task failed. Expire the entry with a specific reason so
+    /// maintenance releases the worker and cleans up its fleet identity before
+    /// reporting, exactly as for a readiness timeout. Replying here instead
+    /// would leave a registered, running worker holding the name.
+    pub(super) fn initial_task_failed(&mut self, generation: Uuid, reason: &str) {
+        if self.generation == generation && self.failure_reason.is_none() {
+            self.deadline = Instant::now();
+            self.failure_reason = Some(format!(
+                "spawn_task_failed: initial task was not delivered ({reason}); the worker was released"
+            ));
+        }
+    }
+    /// The action result once readiness is proven and the task is resolved.
+    pub(super) fn completion(self, name: &WorkerName) -> ActionResult {
+        match self.task_verification {
+            Some(TaskVerification {
+                confirmed: false,
+                label,
+            }) => {
+                verified_spawn_task_unconfirmed_result(self.invocation_id, name, label.as_deref())
+            }
+            _ => verified_spawn_ready_result(self.invocation_id, name),
+        }
     }
 }
 
@@ -217,6 +266,26 @@ pub(super) fn verified_spawn_task_unconfirmed_result(
             verification.unwrap_or("none")
         ),
     )
+}
+
+/// Result for a verified spawn whose worker had already reported
+/// `worker_ready` before this action's pending entry existed.
+///
+/// The runtime loop is serial, so for a fresh worker that cannot happen; it is
+/// reached only when the launch resolved to a worker that was already up. Its
+/// initial PTY task, if any, was then queued without being bound to this
+/// action, so no task verdict can reach it: report the live agent as
+/// unconfirmed rather than claim `spawned:true, ready:true` (relay#1893 review).
+pub(super) fn already_ready_spawn_result(
+    invocation_id: String,
+    name: &WorkerName,
+    unbound_pty_task: bool,
+) -> ActionResult {
+    if unbound_pty_task {
+        verified_spawn_task_unconfirmed_result(invocation_id, name, Some("unbound"))
+    } else {
+        verified_spawn_ready_result(invocation_id, name)
+    }
 }
 
 pub(super) fn verified_spawn_failed_result(invocation_id: String, error: &str) -> ActionResult {
@@ -1587,6 +1656,7 @@ impl BrokerRuntime {
             }
         };
         let task = action_invoke_string(&invoke.input, &["task", "initial_task", "prompt"]);
+        let carries_task = task.is_some();
         let channel = action_invoke_string(&invoke.input, &["channel"]);
         let model = action_invoke_string(&invoke.input, &["model"]);
 
@@ -1685,21 +1755,26 @@ impl BrokerRuntime {
                 // while maintenance fails it after an early exit/readiness timeout
                 // and performs cleanup.
                 if verify_ready {
-                    let (already_ready, generation) = {
+                    let (already_ready, generation, is_pty) = {
                         let worker = self
                             .workers
                             .workers
                             .get(&name)
                             .expect("verified spawn worker must still exist");
-                        (worker.ready_at.is_some(), worker.generation)
+                        (
+                            worker.ready_at.is_some(),
+                            worker.generation,
+                            worker.spec.runtime == AgentRuntime::Pty,
+                        )
                     };
                     if already_ready {
                         tracing::info!(invocation_id = %invoke.invocation_id, worker = %name,
                             verify_ready, elapsed_ms = started.elapsed().as_millis() as u64,
                             "sending verified fleet spawn result");
-                        self.send_fleet_action_result(verified_spawn_ready_result(
+                        self.send_fleet_action_result(already_ready_spawn_result(
                             invoke.invocation_id,
                             &name,
+                            is_pty && carries_task,
                         ))
                         .await;
                     } else {
@@ -1713,6 +1788,7 @@ impl BrokerRuntime {
                                 generation,
                                 readiness_proven: false,
                                 task_event_id: None,
+                                task_verification: None,
                             },
                         );
                     }
@@ -3409,9 +3485,11 @@ mod tests {
             invocation_id: "test".into(),
             deadline: Instant::now(),
             started: Instant::now(),
+            failure_reason: None,
             generation,
             readiness_proven: false,
             task_event_id: Some("init_test".into()),
+            task_verification: None,
         };
         assert!(!pending.can_report_ready(generation));
         pending.readiness_proven = true;

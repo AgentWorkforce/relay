@@ -1,6 +1,6 @@
 use super::fleet::{
     confirm_pending_delivery_and_resolve_fleet_ack, fail_terminal_session,
-    refresh_fleet_inventory_session_ref, try_send_terminal, verified_spawn_ready_result,
+    refresh_fleet_inventory_session_ref, try_send_terminal,
 };
 use super::*;
 use crate::terminal_control::{TerminalControlCommand, TerminalToCloud};
@@ -880,43 +880,46 @@ impl BrokerRuntime {
                             let receipt_confirmed = verification.is_some_and(
                                 crate::broker::delivery_verification::verification_label_confirms_receipt,
                             );
-                            if pending_verified_spawns.get(&name).is_some_and(|pending| {
-                                pending.readiness_proven
-                                    && pending.matches_task(generation, event_id)
-                            }) {
-                                if let Some(pending) = pending_verified_spawns.remove(&name) {
-                                    // A spawn carrying a task succeeds only when
-                                    // that task is proven received. An ack the
-                                    // worker could not verify leaves the agent
-                                    // live, so the action resolves as explicitly
-                                    // unconfirmed rather than as either a success
-                                    // or a retryable failure.
-                                    let result = if receipt_confirmed {
-                                        verified_spawn_ready_result(pending.invocation_id, &name)
-                                    } else {
-                                        tracing::warn!(
-                                            target = "agent_relay::broker",
-                                            worker = %name,
-                                            delivery_id = %delivery_id,
-                                            event_id = %event_id,
-                                            verification = verification.unwrap_or("none"),
-                                            "verified spawn's initial task was acked without \
-                                             proof of full receipt; reporting it unconfirmed"
-                                        );
-                                        super::fleet::verified_spawn_task_unconfirmed_result(
-                                            pending.invocation_id,
-                                            &name,
-                                            verification,
-                                        )
-                                    };
-                                    let _ = fleet_control_tx
-                                        .send(FleetControlCommand::Send(
-                                            crate::fleet_wire::BrokerToRelaycast::ActionResult(
-                                                result,
-                                            ),
-                                        ))
-                                        .await;
+                            // Record the verdict whenever it belongs to this
+                            // spawn's task, even before readiness is proven: a
+                            // startup-fallback `worker_ready` releases the task
+                            // first, and the proven frame that follows resolves
+                            // the action from what was recorded here.
+                            if let Some(pending) = pending_verified_spawns
+                                .get_mut(&name)
+                                .filter(|pending| pending.matches_task(generation, event_id))
+                            {
+                                pending.record_task_verification(receipt_confirmed, verification);
+                                if !receipt_confirmed {
+                                    tracing::warn!(
+                                        target = "agent_relay::broker",
+                                        worker = %name,
+                                        delivery_id = %delivery_id,
+                                        event_id = %event_id,
+                                        verification = verification.unwrap_or("none"),
+                                        "verified spawn's initial task was acked without \
+                                         proof of full receipt; reporting it unconfirmed"
+                                    );
                                 }
+                            }
+                            // A spawn carrying a task succeeds only when that
+                            // task is proven received. An ack the worker could
+                            // not verify leaves the agent live, so the action
+                            // resolves as explicitly unconfirmed rather than as
+                            // either a success or a retryable failure.
+                            let resolved = pending_verified_spawns
+                                .get(&name)
+                                .is_some_and(|pending| pending.can_report_ready(generation))
+                                .then(|| pending_verified_spawns.remove(&name))
+                                .flatten();
+                            if let Some(pending) = resolved {
+                                let _ = fleet_control_tx
+                                    .send(FleetControlCommand::Send(
+                                        crate::fleet_wire::BrokerToRelaycast::ActionResult(
+                                            pending.completion(&name),
+                                        ),
+                                    ))
+                                    .await;
                             }
 
                             if !receipt_confirmed {
@@ -1004,26 +1007,20 @@ impl BrokerRuntime {
                                 .get("event_id")
                                 .and_then(Value::as_str)
                                 .unwrap_or("");
-                            if pending_verified_spawns
-                                .get(&name)
-                                .is_some_and(|pending| pending.matches_task(generation, event_id))
+                            // Expire rather than reply: maintenance releases the
+                            // worker and its fleet identity, then reports this
+                            // reason, so a corrected retry can reuse the name.
+                            if let Some(pending) = pending_verified_spawns
+                                .get_mut(&name)
+                                .filter(|pending| pending.matches_task(generation, event_id))
                             {
-                                if let Some(pending) = pending_verified_spawns.remove(&name) {
-                                    let result = super::fleet::verified_spawn_failed_result(
-                                        pending.invocation_id,
-                                        payload
-                                            .get("reason")
-                                            .and_then(Value::as_str)
-                                            .unwrap_or("initial_task_failed"),
-                                    );
-                                    let _ = fleet_control_tx
-                                        .send(FleetControlCommand::Send(
-                                            crate::fleet_wire::BrokerToRelaycast::ActionResult(
-                                                result,
-                                            ),
-                                        ))
-                                        .await;
-                                }
+                                pending.initial_task_failed(
+                                    generation,
+                                    payload
+                                        .get("reason")
+                                        .and_then(Value::as_str)
+                                        .unwrap_or("initial_task_failed"),
+                                );
                             }
 
                             let reason = payload
@@ -1521,7 +1518,7 @@ impl BrokerRuntime {
                             let _ = fleet_control_tx
                                 .send(FleetControlCommand::Send(
                                     crate::fleet_wire::BrokerToRelaycast::ActionResult(
-                                        verified_spawn_ready_result(pending.invocation_id, &name),
+                                        pending.completion(&name),
                                     ),
                                 ))
                                 .await;
@@ -1570,18 +1567,8 @@ impl BrokerRuntime {
                             .await
                             {
                                 tracing::warn!(worker = %name, error = %e, "failed to deliver initial_task");
-                                if let Some(pending) = pending_verified_spawns.remove(&name) {
-                                    let result = super::fleet::verified_spawn_failed_result(
-                                        pending.invocation_id,
-                                        &e.to_string(),
-                                    );
-                                    let _ = fleet_control_tx
-                                        .send(FleetControlCommand::Send(
-                                            crate::fleet_wire::BrokerToRelaycast::ActionResult(
-                                                result,
-                                            ),
-                                        ))
-                                        .await;
+                                if let Some(pending) = pending_verified_spawns.get_mut(&name) {
+                                    pending.initial_task_failed(generation, &e.to_string());
                                 }
                             }
                             // The initial task bypasses the delivery-mode queue, but the

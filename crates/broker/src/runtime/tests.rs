@@ -901,8 +901,10 @@ async fn a_spawn_task_acked_without_proof_of_receipt_never_reports_success() {
                 deadline: Instant::now() + Duration::from_secs(90),
                 started: Instant::now(),
                 generation,
+                failure_reason: None,
                 readiness_proven: true,
                 task_event_id: Some(event_id.to_string()),
+                task_verification: None,
             },
         );
 
@@ -973,8 +975,10 @@ async fn a_spawn_task_proven_received_reports_spawned_and_ready() {
                 deadline: Instant::now() + Duration::from_secs(90),
                 started: Instant::now(),
                 generation,
+                failure_reason: None,
                 readiness_proven: true,
                 task_event_id: Some(event_id.to_string()),
+                task_verification: None,
             },
         );
 
@@ -1003,6 +1007,181 @@ async fn a_spawn_task_proven_received_reports_spawned_and_ready() {
             json!({"spawned": true, "ready": true, "name": worker_name})
         );
     }
+}
+
+fn pending_spawn_with_task(
+    generation: Uuid,
+    event_id: &str,
+    readiness_proven: bool,
+) -> super::fleet::PendingVerifiedSpawn {
+    super::fleet::PendingVerifiedSpawn {
+        invocation_id: "inv-order".to_string(),
+        deadline: Instant::now() + Duration::from_secs(90),
+        started: Instant::now(),
+        failure_reason: None,
+        generation,
+        readiness_proven,
+        task_event_id: Some(event_id.to_string()),
+        task_verification: None,
+    }
+}
+
+fn drain_action_results(
+    rx: &mut mpsc::Receiver<FleetControlCommand>,
+) -> Vec<crate::fleet_wire::ActionResult> {
+    let mut results = Vec::new();
+    while let Ok(command) = rx.try_recv() {
+        if let FleetControlCommand::Send(crate::fleet_wire::BrokerToRelaycast::ActionResult(
+            result,
+        )) = command
+        {
+            results.push(result);
+        }
+    }
+    results
+}
+
+/// relay#1893 review (Cursor, high): a startup-fallback `worker_ready` releases
+/// the initial task before readiness is proven. Its verdict used to be ignored
+/// because the spawn required proven readiness first, and the later proven
+/// `worker_ready` could not resolve it either, so a delivered task timed out
+/// and the worker was released. Either order must resolve exactly once.
+#[tokio::test]
+async fn a_task_verdict_before_proven_readiness_resolves_on_the_proven_ready() {
+    use crate::fleet_wire::ActionResultPayload;
+    for (verification, expect_success) in [("echo", true), ("timeout_fallback", false)] {
+        let worker_name = "spawn-order";
+        let registry = make_worker_registry_with_worker(worker_name).await;
+        let generation = registry.workers[worker_name].generation;
+        let mut fixture = worker_event_runtime_fixture(registry, HashMap::new());
+        let name = WorkerName::from(worker_name);
+        fixture.runtime.pending_verified_spawns.insert(
+            name.clone(),
+            pending_spawn_with_task(generation, "init_order", false),
+        );
+
+        fixture
+            .runtime
+            .handle_worker_event(delivery_verified_worker_event(
+                worker_name,
+                generation,
+                "init_order",
+                Some(verification),
+            ))
+            .await;
+        assert!(
+            drain_action_results(&mut fixture.fleet_control_rx).is_empty(),
+            "readiness is not proven yet, so the action stays open"
+        );
+        assert!(fixture.runtime.pending_verified_spawns.contains_key(&name));
+
+        fixture
+            .runtime
+            .handle_worker_event(WorkerEvent::Message {
+                name: name.clone(),
+                generation,
+                value: json!({"type":"worker_ready", "payload":{"readiness_proven":true}}),
+            })
+            .await;
+        let results = drain_action_results(&mut fixture.fleet_control_rx);
+        assert_eq!(results.len(), 1, "{verification}: resolved exactly once");
+        match (&results[0].result, expect_success) {
+            (ActionResultPayload::Output(output), true) => assert_eq!(
+                output.output,
+                json!({"spawned": true, "ready": true, "name": worker_name})
+            ),
+            (ActionResultPayload::Error(error), false) => {
+                assert!(
+                    error.error.starts_with("spawn_task_unconfirmed: "),
+                    "{}",
+                    error.error
+                );
+                assert!(error.error.contains(verification), "{}", error.error);
+            }
+            (other, _) => panic!("{verification}: unexpected result {other:?}"),
+        }
+        assert!(!fixture.runtime.pending_verified_spawns.contains_key(&name));
+    }
+}
+
+/// relay#1893 review (Devin): a verified spawn whose initial task fails used to
+/// get its error while the worker stayed registered and running, so a
+/// corrected retry collided with the name. The failure must expire the spawn
+/// so maintenance releases the worker before reporting the specific reason.
+#[tokio::test]
+async fn a_failed_initial_task_releases_the_worker_before_failing_the_spawn() {
+    use crate::fleet_wire::ActionResultPayload;
+    let worker_name = "spawn-task-failed";
+    let registry = make_worker_registry_with_worker(worker_name).await;
+    let generation = registry.workers[worker_name].generation;
+    let mut fixture = worker_event_runtime_fixture(registry, HashMap::new());
+    let name = WorkerName::from(worker_name);
+    fixture.runtime.pending_verified_spawns.insert(
+        name.clone(),
+        pending_spawn_with_task(generation, "init_failed", true),
+    );
+
+    fixture
+        .runtime
+        .handle_worker_event(WorkerEvent::Message {
+            name: name.clone(),
+            generation,
+            value: json!({"type":"delivery_failed", "payload":{
+                "delivery_id":"del_init_failed", "event_id":"init_failed",
+                "reason":"injection_too_large"}}),
+        })
+        .await;
+    assert!(
+        drain_action_results(&mut fixture.fleet_control_rx).is_empty(),
+        "the failure is reported only after the worker is released"
+    );
+    let pending = &fixture.runtime.pending_verified_spawns[&name];
+    assert!(pending.deadline <= Instant::now());
+
+    fixture.runtime.handle_maintenance_tick().await;
+    assert!(
+        !fixture.runtime.workers.has_worker(&name),
+        "worker released"
+    );
+    assert!(!fixture.runtime.pending_verified_spawns.contains_key(&name));
+    let results = drain_action_results(&mut fixture.fleet_control_rx);
+    assert_eq!(results.len(), 1);
+    let ActionResultPayload::Error(error) = &results[0].result else {
+        panic!("a failed task must fail the spawn: {:?}", results[0]);
+    };
+    assert!(
+        error.error.starts_with("spawn_task_failed: "),
+        "{}",
+        error.error
+    );
+    assert!(
+        error.error.contains("injection_too_large"),
+        "{}",
+        error.error
+    );
+}
+
+/// relay#1893 review (Cursor, medium): a worker already ready when the launch
+/// returns has its PTY task queued without a binding to this action, so the
+/// action cannot learn the task's verdict and must not report plain success.
+#[test]
+fn an_already_ready_worker_with_an_unbound_pty_task_is_not_reported_ready() {
+    use crate::fleet_wire::ActionResultPayload;
+    let name = WorkerName::from("already-ready");
+    let ActionResultPayload::Error(error) =
+        super::fleet::already_ready_spawn_result("inv".into(), &name, true).result
+    else {
+        panic!("an unbound PTY task must not report success");
+    };
+    assert!(
+        error.error.starts_with("spawn_task_unconfirmed: "),
+        "{}",
+        error.error
+    );
+    assert!(matches!(
+        super::fleet::already_ready_spawn_result("inv".into(), &name, false).result,
+        ActionResultPayload::Output(_)
+    ));
 }
 
 fn inbound_ctx<'a>(event_id: &'a str) -> InboundContext<'a> {
@@ -9473,6 +9652,9 @@ async fn muse_provider_auth_error_expires_verified_spawn_and_releases_capacity()
             started: Instant::now(),
             generation,
             failure_reason: None,
+            readiness_proven: false,
+            task_event_id: None,
+            task_verification: None,
         },
     );
     for event_generation in [Uuid::new_v4(), generation] {

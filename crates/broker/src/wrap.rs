@@ -280,6 +280,55 @@ fn prepare_wrap_retry(
 // the one unconfirmed verdict that is not evidence of anything going wrong —
 // the harness simply never echoes content — so it must not drive the injection
 // delay up on every delivery to a paste-collapsing TUI.
+/// Format a wrap injection, replacing a body whose envelope would exceed the
+/// PTY injection limit with a bounded pointer to the message.
+///
+/// The entry has already left `pending_wrap_injections`, and wrap has no
+/// channel back to the sender, so skipping the write would make the message
+/// vanish silently. The notice tells the agent the message exists and where to
+/// read it; the full text stays in Relay (relay#1893 review).
+#[allow(clippy::too_many_arguments)]
+fn format_wrap_injection(
+    from: &str,
+    event_id: &str,
+    body: &str,
+    target: &str,
+    include_reminder: bool,
+    workspace_id: Option<&str>,
+    workspace_alias: Option<&str>,
+) -> String {
+    let format = |body: &str| {
+        format_injection_for_worker_with_workspace(
+            from,
+            event_id,
+            body,
+            target,
+            include_reminder,
+            true, // pre_registered
+            None, // assigned_name
+            workspace_id,
+            workspace_alias,
+        )
+    };
+    let injection = format(body);
+    if injection.len() <= crate::injection_wire::MAX_INJECTION_BODY_BYTES {
+        return injection;
+    }
+    tracing::warn!(
+        event_id,
+        bytes = injection.len(),
+        limit = crate::injection_wire::MAX_INJECTION_BODY_BYTES,
+        "wrap: injection_too_large; delivering a pointer instead of the body"
+    );
+    format(&format!(
+        "[Message body not shown: {} bytes exceeds the {}-byte terminal delivery limit. \
+         The full message is stored in Relay as message {event_id}; read it with your Relay \
+         message tools before replying.]",
+        body.len(),
+        crate::injection_wire::MAX_INJECTION_BODY_BYTES
+    ))
+}
+
 fn wrap_timeout_outcome(
     verdict: crate::broker::delivery_verification::EchoVerdict,
 ) -> DeliveryOutcome {
@@ -2162,22 +2211,15 @@ pub(crate) async fn run_wrap(
                     tracing::debug!("relay from {} → {}", pending.from, pending.target);
                     let include_reminder = !skip_prompt
                         && mcp_reminder_throttle.should_include(Instant::now());
-                    let injection = format_injection_for_worker_with_workspace(
+                    let injection = format_wrap_injection(
                         &pending.from,
                         &pending.event_id,
                         &pending.body,
                         &pending.target,
                         include_reminder,
-                        true, // pre_registered
-                        None, // assigned_name
                         pending.workspace_id.as_deref(),
                         pending.workspace_alias.as_deref(),
                     );
-                    if injection.len() > crate::injection_wire::MAX_INJECTION_BODY_BYTES {
-                        tracing::warn!(limit = crate::injection_wire::MAX_INJECTION_BODY_BYTES, "wrap: injection_too_large; body was not written and will not be replayed");
-                        throttle.record(DeliveryOutcome::Failed);
-                        continue;
-                    }
                     let bytes = crate::injection_wire::injection_bytes(crate::injection_wire::injection_wire(&resolved_cli, &pty), &injection);
                     let write = submit_injection_body(&pty, &resolved_cli, bytes, Duration::ZERO);
                     match write {
@@ -2377,22 +2419,15 @@ pub(crate) async fn run_wrap(
                     // a fresh one within the cooldown is redundant.
                     let include_reminder = !skip_prompt
                         && mcp_reminder_throttle.should_include(Instant::now());
-                    let injection = format_injection_for_worker_with_workspace(
+                    let injection = format_wrap_injection(
                         &pv.from,
                         &pv.event_id,
                         &pv.body,
                         &pv.target,
                         include_reminder,
-                        true,
-                        None,
                         pv.workspace_id.as_deref(),
                         pv.workspace_alias.as_deref(),
                     );
-                    if injection.len() > crate::injection_wire::MAX_INJECTION_BODY_BYTES {
-                        tracing::warn!(limit = crate::injection_wire::MAX_INJECTION_BODY_BYTES, "wrap: injection_too_large; body was not written and will not be replayed");
-                        throttle.record(DeliveryOutcome::Failed);
-                        continue;
-                    }
                     let bytes = crate::injection_wire::injection_bytes(crate::injection_wire::injection_wire(&resolved_cli, &pty), &injection);
                     let write = submit_injection_body(&pty, &resolved_cli, bytes, Duration::ZERO);
                     match write {
@@ -2746,6 +2781,36 @@ sys.stdout.flush()"#;
             Instant::now()
         ));
         assert_eq!(verification.attempts, 2);
+    }
+
+    #[test]
+    fn oversized_wrap_messages_are_delivered_as_a_bounded_pointer() {
+        let limit = crate::injection_wire::MAX_INJECTION_BODY_BYTES;
+        let normal =
+            super::format_wrap_injection("alice", "evt_ok", "hello", "bob", true, None, None);
+        assert!(normal.contains("Relay message from alice [evt_ok]: hello"));
+        // A body that fits on its own but whose reminder and attribution push
+        // the envelope past the limit (the reviewer's 16,000-byte DM), and one
+        // far over it.
+        for len in [limit - 384, limit * 2] {
+            let body = format!("UNIQUE-BODY-MARKER{}", "x".repeat(len));
+            let injection =
+                super::format_wrap_injection("alice", "evt_big", &body, "bob", true, None, None);
+            assert!(injection.len() <= limit, "{len}: {} bytes", injection.len());
+            assert!(
+                !injection.contains("UNIQUE-BODY-MARKER"),
+                "{len}: body leaked"
+            );
+            assert!(
+                injection.contains("Relay message from alice [evt_big]"),
+                "{injection}"
+            );
+            assert!(injection.contains("message evt_big"), "{injection}");
+            assert!(
+                injection.contains(&format!("{} bytes exceeds", body.len())),
+                "{injection}"
+            );
+        }
     }
 
     #[test]
