@@ -9812,6 +9812,9 @@ async fn devin_directory_trust_error_expires_verified_spawn_and_releases_capacit
             started: Instant::now(),
             generation,
             failure_reason: None,
+            readiness_proven: false,
+            task_event_id: None,
+            task_verification: None,
         },
     );
     for event_generation in [Uuid::new_v4(), generation] {
