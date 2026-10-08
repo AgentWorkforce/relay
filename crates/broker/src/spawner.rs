@@ -30,7 +30,9 @@ pub(crate) use relay_pty::credentials::INHERITED_RELAY_CREDENTIAL_ENV_KEYS;
 /// to hold: its own `RELAY_AGENT_TOKEN`, its own result callback token, and the
 /// workspace credentials the broker explicitly delegates to agents through its
 /// worker environment.
-pub(crate) use relay_pty::credentials::{remove_inherited_relay_credentials, scrubbed_command};
+pub(crate) use relay_pty::credentials::{
+    remove_inherited_relay_credentials, scrubbed_command, NODE_IDENTITY_ENV_KEYS,
+};
 
 /// Standard client-side git hooks (see githooks(5)). `core.hooksPath` is a
 /// single directory that replaces git's entire hook lookup, not just
@@ -405,6 +407,11 @@ impl Spawner {
         if let Some(token) = agent_token {
             cmd.env("RELAY_AGENT_TOKEN", token);
         }
+        // Node identity belongs to the broker/provider process, never to an
+        // agent worker. Explicit spawn env must not be able to add it back.
+        for key in NODE_IDENTITY_ENV_KEYS {
+            cmd.env_remove(key);
+        }
         // Disable Claude Code auto-suggestions to prevent accidental acceptance
         // when relay messages are injected into the PTY.
         cmd.env("CLAUDE_CODE_ENABLE_PROMPT_SUGGESTION", "false");
@@ -599,6 +606,8 @@ mod tests {
         for key in [
             "RELAY_BROKER_API_KEY",
             "RELAY_NODE_TOKEN",
+            "RELAY_NODE_ID",
+            "AGENT_RELAY_ENROLLED_NODE_ID",
             "RELAY_AGENT_IDENTITY_KEY",
             "RELAY_AGENT_TOKEN",
             "AGENT_RELAY_RESULT_TOKEN",

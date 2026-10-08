@@ -1260,6 +1260,65 @@ pub fn muse_auth_path(clean_home: &Path, shared_auth: Option<&Path>) -> PathBuf 
         .unwrap_or_else(|| clean_home.join("muse").join("auth.json"))
 }
 
+/// Filesystem usability only; Muse remains responsible for token validity.
+#[derive(Debug, PartialEq, Eq)]
+pub enum MuseAuthState {
+    Usable(PathBuf),
+    Unusable {
+        path: Option<PathBuf>,
+        reason: &'static str,
+    },
+}
+
+pub fn muse_auth_state(
+    lookup: &dyn Fn(&str) -> Option<std::ffi::OsString>,
+    clean_home: Option<&Path>,
+) -> MuseAuthState {
+    let shared = lookup("RELAY_MUSE_SHARED_AUTH_PATH");
+    let isolated = lookup("RELAY_MUSE_ISOLATED_AUTH");
+    let auth = lookup("MUSE_AUTH_PATH");
+    let xdg = lookup("XDG_CONFIG_HOME");
+    let home = lookup("HOME");
+    let profile = lookup("USERPROFILE");
+    let resolved = muse_shared_auth_path(MuseAuthEnv {
+        shared_auth_path: clean_home.and(shared.as_deref()),
+        isolated_auth: clean_home.and(isolated.as_deref()),
+        muse_auth_path: auth.as_deref(),
+        xdg_config_home: xdg.as_deref(),
+        home: home.as_deref(),
+        userprofile: profile.as_deref(),
+    });
+    let path = match clean_home {
+        Some(home) => Some(muse_auth_path(home, resolved.as_deref())),
+        None => resolved,
+    };
+    let Some(path) = path else {
+        return MuseAuthState::Unusable {
+            path: None,
+            reason: "unresolved",
+        };
+    };
+    // Follow symlinks: host logins may legitimately be managed through one.
+    let reason = match std::fs::metadata(&path) {
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => "missing",
+        Err(_) => "unreadable",
+        Ok(metadata) if !metadata.is_file() => "not a regular file",
+        Ok(_) => match std::fs::File::open(&path) {
+            Err(_) => "unreadable",
+            Ok(file) => match serde_json::from_reader::<_, serde_json::Value>(file) {
+                Ok(serde_json::Value::Object(value)) if !value.is_empty() => {
+                    return MuseAuthState::Usable(path);
+                }
+                _ => "not a non-empty JSON object",
+            },
+        },
+    };
+    MuseAuthState::Unusable {
+        path: Some(path),
+        reason,
+    }
+}
+
 pub fn muse_clean_home_env_with_auth(
     clean_home: &Path,
     shared_auth: Option<&Path>,
@@ -2252,6 +2311,92 @@ fn write_pretty_json(path: &Path, value: &Value) -> io::Result<()> {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn muse_auth_state_checks_files_without_interpreting_tokens() {
+        use super::{muse_auth_state, MuseAuthState};
+        let temp = tempfile::tempdir().unwrap();
+        let path = temp.path().join("auth.json");
+        let lookup = |key: &str| (key == "MUSE_AUTH_PATH").then(|| path.as_os_str().to_owned());
+        assert!(matches!(
+            muse_auth_state(&lookup, None),
+            MuseAuthState::Unusable {
+                reason: "missing",
+                ..
+            }
+        ));
+        for contents in [
+            "",
+            "{}",
+            "[]",
+            "null",
+            "not-json",
+            r#"{"token":"secret",broken}"#,
+        ] {
+            std::fs::write(&path, contents).unwrap();
+            let state = muse_auth_state(&lookup, None);
+            assert!(matches!(
+                state,
+                MuseAuthState::Unusable {
+                    reason: "not a non-empty JSON object",
+                    ..
+                }
+            ));
+            assert!(!format!("{state:?}").contains("secret"));
+        }
+        std::fs::write(&path, r#"{"token":"expired-or-valid"}"#).unwrap();
+        assert_eq!(
+            muse_auth_state(&lookup, None),
+            MuseAuthState::Usable(path.clone())
+        );
+        std::fs::remove_file(&path).unwrap();
+        std::fs::create_dir(&path).unwrap();
+        assert!(matches!(
+            muse_auth_state(&lookup, None),
+            MuseAuthState::Unusable {
+                reason: "not a regular file",
+                ..
+            }
+        ));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn muse_auth_state_accepts_host_login_symlinks() {
+        let temp = tempfile::tempdir().unwrap();
+        let target = temp.path().join("managed-auth.json");
+        let link = temp.path().join("auth.json");
+        std::fs::write(&target, r#"{"token":"fixture"}"#).unwrap();
+        std::os::unix::fs::symlink(target, &link).unwrap();
+        let lookup = |key: &str| (key == "MUSE_AUTH_PATH").then(|| link.as_os_str().to_owned());
+        assert_eq!(
+            super::muse_auth_state(&lookup, None),
+            super::MuseAuthState::Usable(link)
+        );
+    }
+
+    #[test]
+    fn muse_auth_state_isolation_only_applies_to_clean_home() {
+        let temp = tempfile::tempdir().unwrap();
+        let auth = temp.path().join("auth.json");
+        std::fs::write(&auth, r#"{"token":"fixture"}"#).unwrap();
+        let lookup = |key: &str| match key {
+            "MUSE_AUTH_PATH" => Some(auth.as_os_str().to_owned()),
+            "RELAY_MUSE_ISOLATED_AUTH" => Some("1".into()),
+            _ => None,
+        };
+        assert_eq!(
+            super::muse_auth_state(&lookup, None),
+            super::MuseAuthState::Usable(auth.clone())
+        );
+        assert!(matches!(
+            super::muse_auth_state(&lookup, Some(temp.path())),
+            super::MuseAuthState::Unusable {
+                reason: "missing",
+                ..
+            }
+        ));
+    }
+
     use std::{env, ffi::OsString, fs};
 
     #[cfg(unix)]
