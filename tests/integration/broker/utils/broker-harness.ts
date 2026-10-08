@@ -23,25 +23,134 @@ import { RelayCast } from '@relaycast/sdk';
 
 let _cachedApiKey: string | undefined;
 
+export function buildEphemeralWorkspaceName(
+  nowMs: number = Date.now(),
+  pid: number = process.pid,
+  entropy: string = Math.random().toString(36).slice(2, 10)
+): string {
+  return `test-${nowMs.toString(36)}-${pid.toString(36)}-${entropy}`;
+}
+
+const UNSAFE_CALLER_CREDENTIALS = [
+  'RELAY_NODE_ID',
+  'RELAY_NODE_TOKEN',
+  'AGENT_RELAY_ENROLLED_NODE_ID',
+  'RELAY_WORKSPACE_KEY',
+  'AGENT_RELAY_WORKSPACE_KEY',
+  'RELAY_API_KEY',
+] as const;
+
+const HARNESS_CHILD_ENV_ALLOWLIST = [
+  'PATH',
+  'HOME',
+  'USER',
+  'LOGNAME',
+  'SHELL',
+  'TMPDIR',
+  'TEMP',
+  'TMP',
+  'SystemRoot',
+  'WINDIR',
+  'COMSPEC',
+  'PATHEXT',
+  'LANG',
+  'LC_ALL',
+  'TERM',
+  'CI',
+  'NO_COLOR',
+  'FORCE_COLOR',
+  'RUST_LOG',
+  'RUST_BACKTRACE',
+  'RELAY_BASE_URL',
+  'RELAYCAST_BASE_URL',
+  'AGENT_RELAY_LOCAL_ONLY',
+  'AGENT_RELAY_TELEMETRY_DISABLED',
+  'AGENT_RELAY_NO_DEBUG_FILES',
+  'RELAY_INTEGRATION_REAL_CLI',
+  'RELAY_OBLIGATION_BOOMERANG',
+  'RELAY_OBLIGATION_INTERVAL_MS',
+  'OPENCODE_MODEL',
+  'ANTHROPIC_API_KEY',
+  'OPENAI_API_KEY',
+  'GEMINI_API_KEY',
+  'AGENT_RELAY_MCP_COMMAND',
+  'AGENT_RELAY_INSTALL_DIR',
+  'AGENT_RELAY_BIN_DIR',
+] as const;
+
+export function rejectUnsafeHarnessEnvironment(env: NodeJS.ProcessEnv): void {
+  const present = UNSAFE_CALLER_CREDENTIALS.filter(
+    (name) => typeof env[name] === 'string' && env[name]!.trim() !== ''
+  );
+  if (present.length > 0) {
+    throw new Error(
+      `Broker integration harness refuses caller-owned Relay credentials: ${present.join(', ')}. ` +
+        'Unset them; the harness provisions an isolated ephemeral workspace.'
+    );
+  }
+}
+
+export function buildHarnessChildEnv(
+  parentEnv: NodeJS.ProcessEnv,
+  overrides: NodeJS.ProcessEnv = {}
+): NodeJS.ProcessEnv {
+  rejectUnsafeHarnessEnvironment(parentEnv);
+  rejectUnsafeHarnessEnvironment(overrides);
+  const source = { ...parentEnv, ...overrides };
+  const childEnv: NodeJS.ProcessEnv = {};
+  for (const name of HARNESS_CHILD_ENV_ALLOWLIST) {
+    if (source[name] !== undefined) childEnv[name] = source[name];
+  }
+  return childEnv;
+}
+
 /**
- * Ensure RELAY_API_KEY is available, creating an ephemeral workspace if needed.
+ * Create an isolated ephemeral workspace for this test process.
  * Caches the key for the lifetime of the process.
  */
 export async function ensureApiKey(): Promise<string> {
   if (_cachedApiKey) return _cachedApiKey;
-  if (process.env.RELAY_API_KEY?.trim()) {
-    const apiKey = process.env.RELAY_API_KEY.trim();
-    _cachedApiKey = apiKey;
-    return apiKey;
-  }
-  const ws = await RelayCast.createWorkspace(`test-${Date.now().toString(36)}`);
+  const ws = await RelayCast.createWorkspace(buildEphemeralWorkspaceName());
   const apiKey = ws.apiKey;
   if (!apiKey) {
     throw new Error('Relaycast workspace did not return an API key');
   }
   _cachedApiKey = apiKey;
-  process.env.RELAY_API_KEY = apiKey;
   return apiKey;
+}
+
+type SpawnHarnessClient = (options: RuntimeSpawnOptions) => Promise<HarnessDriverClient>;
+
+export function spawnHarnessClientOnce(
+  options: RuntimeSpawnOptions,
+  spawnClient: SpawnHarnessClient = (spawnOptions) => HarnessDriverClient.spawn(spawnOptions)
+): Promise<HarnessDriverClient> {
+  return spawnClient(options);
+}
+
+type ReadinessDelay = (delayMs: number) => Promise<void>;
+
+export async function waitForNodeRegistration(
+  nodeName: string,
+  lookupNode: () => Promise<unknown>,
+  delay: ReadinessDelay = (delayMs) => new Promise((resolve) => setTimeout(resolve, delayMs)),
+  maxAttempts = 20
+): Promise<void> {
+  let lastError: unknown;
+  for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
+    try {
+      const node = await lookupNode();
+      if (node == null) throw new Error(`Broker node '${nodeName}' is not visible yet`);
+      return;
+    } catch (error) {
+      lastError = error;
+      if (attempt < maxAttempts) await delay(500);
+    }
+  }
+
+  throw new Error(`Broker node '${nodeName}' did not become visible after ${maxAttempts} read-only checks`, {
+    cause: lastError,
+  });
 }
 
 // ── Types ────────────────────────────────────────────────────────────────────
@@ -83,8 +192,10 @@ export class BrokerHarness {
   private eventListeners: Array<(event: BrokerEvent) => void> = [];
   private unsubEvent?: () => void;
   private started = false;
+  private ephemeralWorkspaceKey?: string;
 
   constructor(options: BrokerHarnessOptions = {}) {
+    const childEnv = buildHarnessChildEnv(process.env, options.env);
     this.opts = {
       binaryPath: options.binaryPath ?? resolveBinaryPath(),
       binaryArgs: options.binaryArgs ?? {},
@@ -95,7 +206,7 @@ export class BrokerHarness {
       cwd: options.cwd ?? process.cwd(),
       requestTimeoutMs: options.requestTimeoutMs ?? 10_000,
       shutdownTimeoutMs: options.shutdownTimeoutMs ?? 3_000,
-      env: options.env ?? process.env,
+      env: childEnv,
     };
   }
 
@@ -107,9 +218,10 @@ export class BrokerHarness {
   async start(): Promise<void> {
     if (this.started) return;
 
-    // Ensure we have an API key (creates ephemeral workspace if needed)
+    // Fail closed if credentials appeared after construction, then create a
+    // workspace owned only by this test process.
+    rejectUnsafeHarnessEnvironment(process.env);
     const apiKey = await ensureApiKey();
-    this.opts.env = { ...this.opts.env, RELAY_API_KEY: apiKey };
 
     const clientOpts: RuntimeSpawnOptions = {
       binaryPath: this.opts.binaryPath,
@@ -118,10 +230,25 @@ export class BrokerHarness {
       channels: this.opts.channels,
       cwd: this.opts.cwd,
       env: this.opts.env,
+      workspaceKey: apiKey,
+      inheritParentEnv: false,
     };
 
     // Start the low-level client (spawns broker process)
-    this.client = await HarnessDriverClient.spawn(clientOpts);
+    const client = await spawnHarnessClientOnce(clientOpts);
+    try {
+      const relay = new RelayCast({ apiKey });
+      await waitForNodeRegistration(this.opts.brokerName, () => relay.nodes.get(this.opts.brokerName));
+    } catch (error) {
+      try {
+        await client.shutdown();
+      } catch {
+        // The readiness failure is the useful error; the broker may already be down.
+      }
+      throw error;
+    }
+    this.client = client;
+    this.ephemeralWorkspaceKey = apiKey;
 
     // Wire event collection
     this.unsubEvent = this.client.onEvent((event: BrokerEvent) => {
@@ -132,6 +259,14 @@ export class BrokerHarness {
     });
 
     this.started = true;
+  }
+
+  /** Return the isolated workspace key provisioned by a successful start. */
+  getEphemeralWorkspaceKey(): string {
+    if (!this.started || !this.ephemeralWorkspaceKey) {
+      throw new Error('Broker harness has not started its ephemeral workspace');
+    }
+    return this.ephemeralWorkspaceKey;
   }
 
   /**
@@ -181,7 +316,22 @@ export class BrokerHarness {
    * Release an agent by name via the low-level client.
    */
   async releaseAgent(name: string): Promise<{ name: string }> {
-    return this.client.release(name);
+    // The broker reports an identity cleanup it could not confirm yet (for
+    // example Relaycast answering `d1_pressure`) at once, keeps retrying it
+    // every 5s, and expects API callers to release again. Until its retry
+    // lands, a repeated release answers "cleanup is in progress".
+    const deadline = Date.now() + 60_000;
+    for (;;) {
+      try {
+        return await this.client.release(name);
+      } catch (error) {
+        const message = error instanceof Error ? error.message : String(error);
+        const pendingCleanup =
+          /owned identity cleanup unconfirmed/.test(message) || /cleanup is in progress/.test(message);
+        if (!pendingCleanup || Date.now() >= deadline) throw error;
+        await new Promise((resolve) => setTimeout(resolve, 3_000));
+      }
+    }
   }
 
   /**
@@ -324,8 +474,8 @@ export function resolveBinaryPath(): string {
 /**
  * Check if the relay binary exists.
  * Returns a skip reason string if prerequisites are missing, or null if OK.
- * Note: RELAY_API_KEY is no longer checked here — ensureApiKey() creates one
- * dynamically if not set.
+ * Relay credentials are checked when the harness is constructed and started;
+ * ensureApiKey() always creates an isolated ephemeral workspace.
  */
 export function checkPrerequisites(): string | null {
   const bin = process.env.AGENT_RELAY_BIN ?? resolveBinaryPath();

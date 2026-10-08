@@ -194,6 +194,122 @@ impl RecipientReachability {
 }
 
 impl RelaycastHttpClient {
+    /// Prove that the exact immutable identity returned by node-control
+    /// registration is readable through the worker-authenticated HTTP plane.
+    ///
+    /// Channel reconciliation uses that HTTP plane immediately afterwards. A
+    /// transient `agent_not_found` here is read-after-write lag, not evidence
+    /// that registration failed. Retrying this single exact-token probe keeps
+    /// later channel writes and cleanup generation-safe.
+    pub(crate) async fn await_node_registered_agent_visibility(
+        &self,
+        expected_name: &str,
+        expected_agent_id: &str,
+        token: &str,
+    ) -> Result<()> {
+        self.await_node_registered_agent_visibility_with_backoffs(
+            expected_name,
+            expected_agent_id,
+            token,
+            &NODE_REGISTER_VISIBILITY_BACKOFFS_MS,
+        )
+        .await
+    }
+
+    async fn await_node_registered_agent_visibility_with_backoffs(
+        &self,
+        expected_name: &str,
+        expected_agent_id: &str,
+        token: &str,
+        backoffs_ms: &[u64],
+    ) -> Result<()> {
+        self.await_node_registered_agent_visibility_with_policy(
+            expected_name,
+            expected_agent_id,
+            token,
+            backoffs_ms,
+            NODE_REGISTER_VISIBILITY_REQUEST_TIMEOUT,
+        )
+        .await
+    }
+
+    async fn await_node_registered_agent_visibility_with_policy(
+        &self,
+        expected_name: &str,
+        expected_agent_id: &str,
+        token: &str,
+        backoffs_ms: &[u64],
+        request_timeout: Duration,
+    ) -> Result<()> {
+        let relay = self
+            .relay_client()
+            .context("SDK relay client not initialized")?;
+        let total_budget = identity_visibility_total_budget(backoffs_ms, request_timeout);
+        let deadline = tokio::time::Instant::now() + total_budget;
+        for (attempt, delay_ms) in std::iter::once(0)
+            .chain(backoffs_ms.iter().copied())
+            .enumerate()
+        {
+            if delay_ms > 0 {
+                let remaining = deadline.saturating_duration_since(tokio::time::Instant::now());
+                anyhow::ensure!(
+                    !remaining.is_zero(),
+                    "node-registered identity visibility exceeded its {total_budget:?} total budget"
+                );
+                tokio::time::timeout(
+                    remaining,
+                    tokio::time::sleep(Duration::from_millis(delay_ms)),
+                )
+                .await
+                .context(
+                    "node-registered identity visibility budget expired during retry backoff",
+                )?;
+            }
+            let remaining = deadline.saturating_duration_since(tokio::time::Instant::now());
+            anyhow::ensure!(
+                !remaining.is_zero(),
+                "node-registered identity visibility exceeded its {total_budget:?} total budget"
+            );
+            let request_budget = request_timeout.min(remaining);
+            match tokio::time::timeout(request_budget, relay.get_current_agent(token.to_string()))
+                .await
+            {
+                Err(_) => {
+                    anyhow::bail!(
+                        "node-registered identity visibility request timed out after {request_budget:?} within a {total_budget:?} total budget"
+                    );
+                }
+                Ok(Ok(agent)) => {
+                    anyhow::ensure!(
+                        agent.name == expected_name && agent.id == expected_agent_id,
+                        "node-registered identity mismatch: expected {expected_name}/{expected_agent_id}, got {}/{}",
+                        agent.name,
+                        agent.id
+                    );
+                    return Ok(());
+                }
+                Ok(Err(RelayError::Api {
+                    status: 404,
+                    ref code,
+                    ..
+                })) if code == "agent_not_found" && attempt < backoffs_ms.len() => {
+                    tracing::warn!(
+                        worker = %expected_name,
+                        agent_id = %expected_agent_id,
+                        attempt = attempt + 1,
+                        "node-registered identity is not yet visible on the HTTP plane; retrying"
+                    );
+                }
+                Ok(Err(error)) => {
+                    return Err(anyhow::anyhow!(
+                        "node-registered identity visibility failed: {error}"
+                    ));
+                }
+            }
+        }
+        unreachable!("visibility loop returns on its final attempt")
+    }
+
     /// A client with no transport or credentials. Local-only runtime paths cannot
     /// accidentally publish presence, register workers, or route remote messages.
     pub fn local_only(agent_name: impl Into<String>) -> Self {
@@ -804,16 +920,22 @@ impl RelaycastHttpClient {
     ///
     /// Callers treat this as best-effort: the agent is registered and running
     /// either way, so a failure here must be logged, not fatal.
+    ///
+    /// `spawned` is what this broker knows about the worker it spawned (see
+    /// [`spawned_worker_metadata`]); it rides the same PATCH so a spawn costs
+    /// one request either way.
     pub async fn publish_declared_metadata(
         &self,
         agent_name: &str,
         declared: &AgentRegistrationMetadata,
+        spawned: &serde_json::Map<String, Value>,
     ) -> std::result::Result<(), RelaycastRegistrationError> {
         let name = agent_name.trim();
         if name.is_empty() {
             return Err(RelaycastRegistrationError::InvalidAgentName);
         }
-        let declared_metadata = declared_metadata_map(declared);
+        let mut declared_metadata = spawned.clone();
+        declared_metadata.extend(declared_metadata_map(declared));
         if declared_metadata.is_empty() {
             return Ok(());
         }
@@ -823,7 +945,8 @@ impl RelaycastHttpClient {
                 agent_name: name.to_string(),
                 detail: "SDK relay client not initialized".to_string(),
             })?;
-        // Send ONLY the declared keys. `PATCH /v1/agents/:name` merges them over
+        // Send ONLY the declared keys and the spawned worker's `cli`, `host` and
+        // `owner_hash`. `PATCH /v1/agents/:name` merges them over
         // the record's existing metadata server-side — verified in the engine at
         // both the ref fleet-e2e pins (v7.0.0, eb7563ff) and relaycast `main`
         // (`packages/engine/src/routes/agent.ts`:
@@ -1107,6 +1230,48 @@ impl RelaycastHttpClient {
         delete_identity: bool,
         expected_token_hash: Option<&str>,
     ) -> Result<()> {
+        self.release_agent_identity_guarded_with_backoffs(
+            agent_name,
+            reason,
+            delete_identity,
+            expected_token_hash,
+            &NODE_REGISTER_VISIBILITY_BACKOFFS_MS,
+        )
+        .await
+    }
+
+    async fn release_agent_identity_guarded_with_backoffs(
+        &self,
+        agent_name: &str,
+        reason: Option<&str>,
+        delete_identity: bool,
+        expected_token_hash: Option<&str>,
+        visibility_backoffs_ms: &[u64],
+    ) -> Result<()> {
+        let total_budget = identity_visibility_total_budget(
+            visibility_backoffs_ms,
+            NODE_REGISTER_VISIBILITY_REQUEST_TIMEOUT,
+        );
+        self.release_agent_identity_guarded_with_budget(
+            agent_name,
+            reason,
+            delete_identity,
+            expected_token_hash,
+            visibility_backoffs_ms,
+            total_budget,
+        )
+        .await
+    }
+
+    async fn release_agent_identity_guarded_with_budget(
+        &self,
+        agent_name: &str,
+        reason: Option<&str>,
+        delete_identity: bool,
+        expected_token_hash: Option<&str>,
+        visibility_backoffs_ms: &[u64],
+        total_budget: Duration,
+    ) -> Result<()> {
         if let Some(relay) = (*self.relay).as_ref() {
             let reason = reason
                 .map(str::trim)
@@ -1127,45 +1292,100 @@ impl RelaycastHttpClient {
                 let mut body = serde_json::to_value(&request)?;
                 body["expected_token_hash"] = Value::String(expected_token_hash.to_string());
                 let started = Instant::now();
-                let mut attempts = 0usize;
+                let deadline = tokio::time::Instant::now() + total_budget;
+                let client = reqwest::Client::new();
+                let mut busy_attempts = 0usize;
+                let mut agent_not_found_retries = 0usize;
                 let (status, result): (reqwest::StatusCode, Value) = 'cleanup: loop {
-                    attempts += 1;
-                    let response = reqwest::Client::new()
-                        .post(format!(
-                            "{}/v1/agents/release",
-                            self.base_url
-                                .as_deref()
-                                .unwrap_or("https://cast.agentrelay.com")
-                                .trim_end_matches('/')
-                        ))
-                        .bearer_auth(&self.api_key)
-                        .json(&body)
-                        .timeout(Duration::from_secs(30))
-                        .send()
-                        .await
-                        .context("owned identity cleanup request failed")?;
-                    let status = response.status();
-                    let retry_after = reconcile_cooldown(
-                        response
-                            .headers()
-                            .get(reqwest::header::RETRY_AFTER)
-                            .and_then(|value| value.to_str().ok())
-                            .and_then(|value| value.trim().parse::<u64>().ok())
-                            .map(Duration::from_secs),
+                    let remaining = deadline.saturating_duration_since(tokio::time::Instant::now());
+                    anyhow::ensure!(
+                        !remaining.is_zero(),
+                        "owned identity cleanup for '{agent_name}' exceeded its {total_budget:?} total budget"
                     );
-                    let result: Value = response
-                        .json()
-                        .await
-                        .context("invalid identity cleanup response")?;
+                    let request_budget = NODE_REGISTER_VISIBILITY_REQUEST_TIMEOUT.min(remaining);
+                    let request = async {
+                        let response = client
+                            .post(format!(
+                                "{}/v1/agents/release",
+                                self.base_url
+                                    .as_deref()
+                                    .unwrap_or("https://cast.agentrelay.com")
+                                    .trim_end_matches('/')
+                            ))
+                            .bearer_auth(&self.api_key)
+                            .json(&body)
+                            .timeout(request_budget)
+                            .send()
+                            .await
+                            .context("owned identity cleanup request failed")?;
+                        let status = response.status();
+                        let retry_after = reconcile_cooldown(
+                            response
+                                .headers()
+                                .get(reqwest::header::RETRY_AFTER)
+                                .and_then(|value| value.to_str().ok())
+                                .and_then(|value| value.trim().parse::<u64>().ok())
+                                .map(Duration::from_secs),
+                        );
+                        let result: Value = response
+                            .json()
+                            .await
+                            .context("invalid identity cleanup response")?;
+                        Ok::<_, anyhow::Error>((status, retry_after, result))
+                    };
+                    let (status, retry_after, result) =
+                        tokio::time::timeout(remaining, request)
+                            .await
+                            .with_context(|| {
+                                format!(
+                                    "owned identity cleanup for '{agent_name}' exceeded its {total_budget:?} total budget"
+                                )
+                            })??;
                     let workspace_busy = matches!(status.as_u16(), 429 | 503)
                         && result["error"]["code"] == "workspace_busy";
+                    if workspace_busy {
+                        busy_attempts += 1;
+                    }
+                    let agent_not_found = status == reqwest::StatusCode::NOT_FOUND
+                        && result["error"]["code"] == "agent_not_found";
+                    if agent_not_found && agent_not_found_retries < visibility_backoffs_ms.len() {
+                        let delay_ms = visibility_backoffs_ms[agent_not_found_retries];
+                        agent_not_found_retries += 1;
+                        tracing::warn!(
+                            agent = %agent_name,
+                            attempt = agent_not_found_retries,
+                            delay_ms,
+                            "owned identity is not yet visible to the guarded release path; retrying"
+                        );
+                        let remaining =
+                            deadline.saturating_duration_since(tokio::time::Instant::now());
+                        tokio::time::timeout(
+                            remaining,
+                            tokio::time::sleep(Duration::from_millis(delay_ms)),
+                        )
+                        .await
+                        .with_context(|| {
+                            format!(
+                                "owned identity cleanup for '{agent_name}' exceeded its {total_budget:?} total budget during visibility backoff"
+                            )
+                        })?;
+                        continue 'cleanup;
+                    }
                     if let Some(retry_after) = retry_after.filter(|retry_after| {
                         workspace_busy
-                            && attempts < WORKSPACE_BUSY_RECONCILE_SAFETY_CAP
+                            && busy_attempts < WORKSPACE_BUSY_RECONCILE_SAFETY_CAP
                             && started.elapsed().saturating_add(*retry_after)
                                 <= WORKSPACE_BUSY_RECONCILE_BUDGET
                     }) {
-                        tokio::time::sleep(retry_after).await;
+                        let remaining =
+                            deadline.saturating_duration_since(tokio::time::Instant::now());
+                        tokio::time::timeout(remaining, tokio::time::sleep(retry_after))
+                            .await
+                            .with_context(|| {
+                                format!(
+                                    "owned identity cleanup for '{agent_name}' exceeded its {total_budget:?} total budget during workspace backoff"
+                                )
+                            })?;
                         continue 'cleanup;
                     }
                     break 'cleanup (status, result);
@@ -1511,16 +1731,85 @@ impl RelaycastHttpClient {
         name: &str,
         channels: &[crate::ids::ChannelName],
     ) -> Result<()> {
+        self.verify_agent_channel_scope_with_backoffs(
+            name,
+            channels,
+            &NODE_REGISTER_VISIBILITY_BACKOFFS_MS,
+        )
+        .await
+    }
+
+    async fn verify_agent_channel_scope_with_backoffs(
+        &self,
+        name: &str,
+        channels: &[crate::ids::ChannelName],
+        backoffs_ms: &[u64],
+    ) -> Result<()> {
         let relay = self
             .relay
             .as_ref()
             .as_ref()
             .context("SDK relay client not initialized")?;
         let client = relay.as_agent(&self.api_key)?;
-        let agent: Value = client
-            .http_client()
-            .get(&format!("/v1/agents/{name}"), None, None)
-            .await?;
+        let path = format!("/v1/agents/{name}");
+        let mut agent: Option<Value> = None;
+        let total_budget =
+            identity_visibility_total_budget(backoffs_ms, NODE_REGISTER_VISIBILITY_REQUEST_TIMEOUT);
+        let deadline = tokio::time::Instant::now() + total_budget;
+        for (attempt, delay_ms) in std::iter::once(0)
+            .chain(backoffs_ms.iter().copied())
+            .enumerate()
+        {
+            if delay_ms > 0 {
+                let remaining = deadline.saturating_duration_since(tokio::time::Instant::now());
+                anyhow::ensure!(
+                    !remaining.is_zero(),
+                    "live channel scope lookup for worker '{name}' exceeded its {total_budget:?} total budget"
+                );
+                tokio::time::timeout(
+                    remaining,
+                    tokio::time::sleep(Duration::from_millis(delay_ms)),
+                )
+                .await
+                .context("live channel scope lookup budget expired during retry backoff")?;
+            }
+            let remaining = deadline.saturating_duration_since(tokio::time::Instant::now());
+            anyhow::ensure!(
+                !remaining.is_zero(),
+                "live channel scope lookup for worker '{name}' exceeded its {total_budget:?} total budget"
+            );
+            let request_budget = NODE_REGISTER_VISIBILITY_REQUEST_TIMEOUT.min(remaining);
+            match tokio::time::timeout(request_budget, client.http_client().get(&path, None, None))
+                .await
+            {
+                Err(_) => {
+                    anyhow::bail!(
+                        "live channel scope lookup for worker '{name}' timed out after {request_budget:?} within a {total_budget:?} total budget"
+                    );
+                }
+                Ok(Ok(value)) => {
+                    agent = Some(value);
+                    break;
+                }
+                Ok(Err(RelayError::Api {
+                    status: 404,
+                    ref code,
+                    ..
+                })) if code == "agent_not_found" && attempt < backoffs_ms.len() => {
+                    tracing::warn!(
+                        worker = %name,
+                        attempt = attempt + 1,
+                        "node-registered identity is not yet visible to the workspace-key channel-scope lookup; retrying"
+                    );
+                }
+                Ok(Err(error)) => {
+                    return Err(anyhow::anyhow!(
+                        "live channel scope lookup for worker '{name}' failed: {error}"
+                    ));
+                }
+            }
+        }
+        let agent = agent.context("live channel scope lookup exhausted without a response")?;
         let memberships = agent
             .get("channels")
             .and_then(Value::as_array)
@@ -1543,6 +1832,131 @@ impl RelaycastHttpClient {
             "worker '{name}' live channel isolation failed: expected {expected:?}, got {actual:?}"
         );
         Ok(())
+    }
+
+    /// Verify a node-created worker through its own token-scoped identity.
+    ///
+    /// The workspace-key by-name endpoint can retain a negative cache after
+    /// node `agent.register`, even while `GET /v1/agent` already resolves the
+    /// exact token/id. Keep that eventually-consistent index out of the spawn
+    /// critical path and prove both identity and channel scope on the plane
+    /// the worker itself will use.
+    pub(crate) async fn verify_node_registered_agent_channel_scope(
+        &self,
+        name: &str,
+        expected_agent_id: &str,
+        token: &str,
+        channels: &[crate::ids::ChannelName],
+    ) -> Result<()> {
+        self.verify_node_registered_agent_channel_scope_with_backoffs(
+            name,
+            expected_agent_id,
+            token,
+            channels,
+            &NODE_REGISTER_VISIBILITY_BACKOFFS_MS,
+        )
+        .await
+    }
+
+    async fn verify_node_registered_agent_channel_scope_with_backoffs(
+        &self,
+        name: &str,
+        expected_agent_id: &str,
+        token: &str,
+        channels: &[crate::ids::ChannelName],
+        backoffs_ms: &[u64],
+    ) -> Result<()> {
+        let relay = self
+            .relay_client()
+            .context("SDK relay client not initialized")?;
+        let expected = channels
+            .iter()
+            .map(|channel| channel.as_str())
+            .collect::<BTreeSet<_>>();
+        let total_budget =
+            identity_visibility_total_budget(backoffs_ms, NODE_REGISTER_VISIBILITY_REQUEST_TIMEOUT);
+        let deadline = tokio::time::Instant::now() + total_budget;
+        for (attempt, delay_ms) in std::iter::once(0)
+            .chain(backoffs_ms.iter().copied())
+            .enumerate()
+        {
+            if delay_ms > 0 {
+                let remaining = deadline.saturating_duration_since(tokio::time::Instant::now());
+                anyhow::ensure!(
+                    !remaining.is_zero(),
+                    "worker-token channel scope lookup for '{name}' exceeded its {total_budget:?} total budget"
+                );
+                tokio::time::timeout(
+                    remaining,
+                    tokio::time::sleep(Duration::from_millis(delay_ms)),
+                )
+                .await
+                .context("worker-token channel scope lookup budget expired during retry backoff")?;
+            }
+            let remaining = deadline.saturating_duration_since(tokio::time::Instant::now());
+            anyhow::ensure!(
+                !remaining.is_zero(),
+                "worker-token channel scope lookup for '{name}' exceeded its {total_budget:?} total budget"
+            );
+            let request_budget = NODE_REGISTER_VISIBILITY_REQUEST_TIMEOUT.min(remaining);
+            match tokio::time::timeout(request_budget, relay.get_current_agent(token.to_string()))
+                .await
+            {
+                Err(_) => {
+                    anyhow::bail!(
+                        "worker-token channel scope lookup for '{name}' timed out after {request_budget:?} within a {total_budget:?} total budget"
+                    );
+                }
+                Ok(Ok(agent)) => {
+                    anyhow::ensure!(
+                        agent.name == name && agent.id == expected_agent_id,
+                        "node-registered channel-scope identity mismatch: expected {name}/{expected_agent_id}, got {}/{}",
+                        agent.name,
+                        agent.id
+                    );
+                    let actual = agent
+                        .channels
+                        .iter()
+                        .map(|membership| membership.name.as_str())
+                        .collect::<BTreeSet<_>>();
+                    if actual == expected {
+                        return Ok(());
+                    }
+                    if attempt < backoffs_ms.len() {
+                        tracing::warn!(
+                            worker = %name,
+                            agent_id = %expected_agent_id,
+                            attempt = attempt + 1,
+                            expected = ?expected,
+                            actual = ?actual,
+                            "node-registered channel scope is not yet converged; retrying"
+                        );
+                        continue;
+                    }
+                    anyhow::bail!(
+                        "worker-token channel scope mismatch for '{name}': expected {expected:?}, got {actual:?}"
+                    );
+                }
+                Ok(Err(RelayError::Api {
+                    status: 404,
+                    ref code,
+                    ..
+                })) if code == "agent_not_found" && attempt < backoffs_ms.len() => {
+                    tracing::warn!(
+                        worker = %name,
+                        agent_id = %expected_agent_id,
+                        attempt = attempt + 1,
+                        "node-registered identity is not yet visible to its worker token; retrying"
+                    );
+                }
+                Ok(Err(error)) => {
+                    return Err(anyhow::anyhow!(
+                        "worker-token channel scope lookup for '{name}' failed: {error}"
+                    ));
+                }
+            }
+        }
+        unreachable!("worker-token channel-scope loop returns on its final attempt")
     }
 
     /// Reconcile worker-side Relaycast membership when the broker removes
@@ -1988,6 +2402,23 @@ const WORKSPACE_BUSY_ACTION_SAFETY_CAP: usize = 256;
 const WORKSPACE_BUSY_RECONCILE_SAFETY_CAP: usize = 8;
 const WORKSPACE_BUSY_RECONCILE_BUDGET: Duration = Duration::from_secs(60);
 const WORKSPACE_BUSY_RECONCILE_MAX_DELAY: Duration = Duration::from_secs(5);
+/// `agent.register` commits on the node-control transport, while the first
+/// worker-authenticated REST request may land on an HTTP isolate whose D1 view
+/// has not observed that commit yet. These waits total 15.85s. The cadence is
+/// shared by exact worker-token identity/channel checks, the HTTP-registration
+/// fallback's workspace-key scope check, and guarded cleanup's typed by-name
+/// `agent_not_found` retry. Every visibility read also has a request timeout;
+/// [`identity_visibility_total_budget`] bounds request time plus backoffs.
+const NODE_REGISTER_VISIBILITY_BACKOFFS_MS: [u64; 7] = [100, 250, 500, 1_000, 2_000, 4_000, 8_000];
+const NODE_REGISTER_VISIBILITY_REQUEST_TIMEOUT: Duration = Duration::from_secs(5);
+
+fn identity_visibility_total_budget(backoffs_ms: &[u64], request_timeout: Duration) -> Duration {
+    let request_count = u32::try_from(backoffs_ms.len().saturating_add(1)).unwrap_or(u32::MAX);
+    backoffs_ms.iter().fold(
+        request_timeout.saturating_mul(request_count),
+        |budget, delay_ms| budget.saturating_add(Duration::from_millis(*delay_ms)),
+    )
+}
 /// Total wall-clock budget the bounded retry loops in this module honor
 /// before returning a typed `RetryableExhausted` diagnostic. Five minutes is
 /// deliberately longer than the observed 240-second/5-attempt engine envelope
@@ -2544,6 +2975,85 @@ async fn register_new_spawn_identity_inner(
     }
 }
 
+/// What a broker knows about a worker it spawned, as roster metadata: the
+/// CLI it runs (`cli`), this machine's name (`host`) and the signed-in Cloud
+/// person who runs this broker (`owner_hash`, the SHA-256 hex of their Cloud
+/// user id). These are the keys Agent Relay Desktop stamps on the sessions it
+/// registers, so a worker spawned on someone's fleet node is listed as theirs
+/// and on that machine instead of as an unowned agent. A key whose value is
+/// unknown is omitted, never sent blank.
+pub fn spawned_worker_metadata(cli: &str) -> serde_json::Map<String, Value> {
+    let host = hostname::get()
+        .ok()
+        .and_then(|name| name.into_string().ok());
+    spawned_worker_metadata_from(cli, host.as_deref(), signed_in_user_id().as_deref())
+}
+
+fn spawned_worker_metadata_from(
+    cli: &str,
+    host: Option<&str>,
+    user_id: Option<&str>,
+) -> serde_json::Map<String, Value> {
+    let mut metadata = serde_json::Map::new();
+    let cli = crate::cli::command_parse::parse_cli_command(cli)
+        .map(|(command, _)| crate::cli::command_parse::normalize_cli_name(&command))
+        .unwrap_or_default();
+    if !cli.is_empty() {
+        metadata.insert("cli".into(), Value::String(cli));
+    }
+    // The desktop's label: no trailing dot or `.local` (macOS Bonjour names).
+    if let Some(host) = host.map(|host| host.trim().trim_end_matches('.')) {
+        let host = match host.len().checked_sub(".local".len()) {
+            Some(cut)
+                if host.is_char_boundary(cut) && host[cut..].eq_ignore_ascii_case(".local") =>
+            {
+                &host[..cut]
+            }
+            _ => host,
+        };
+        if !host.is_empty() {
+            metadata.insert("host".into(), Value::String(host.to_string()));
+        }
+    }
+    if let Some(user_id) = user_id.map(str::trim).filter(|id| !id.is_empty()) {
+        let hash = Sha256::digest(user_id.as_bytes())
+            .iter()
+            .map(|byte| format!("{byte:02x}"))
+            .collect::<String>();
+        metadata.insert("owner_hash".into(), Value::String(hash));
+    }
+    metadata
+}
+
+/// The Cloud user this broker runs for: the CLI's stored sign-in, read at
+/// each spawn, so signing in or out takes effect for the next worker without a
+/// broker restart. `AGENT_RELAY_USER_ID` is deliberately not used: it is a
+/// copy taken when the broker started, which outlives a sign-out, and a broker
+/// started by a service manager has none.
+fn signed_in_user_id() -> Option<String> {
+    let data_dir = std::env::var("AGENT_RELAY_DATA_DIR")
+        .ok()
+        .map(|dir| dir.trim().to_string())
+        .filter(|dir| !dir.is_empty())
+        .map(std::path::PathBuf::from)
+        .or_else(|| dirs::home_dir().map(|home| home.join(".agentworkforce/relay")))?;
+    let file = std::fs::read_to_string(data_dir.join("cloud-identity.json")).ok()?;
+    user_id_from_identity(&file)
+}
+
+/// The `userId` of a stored identity, held to the CLI's own rules: printable
+/// ASCII, at most 128 bytes once trimmed.
+fn user_id_from_identity(file: &str) -> Option<String> {
+    let identity: Value = serde_json::from_str(file).ok()?;
+    identity["userId"]
+        .as_str()
+        .map(str::trim)
+        .filter(|id| {
+            !id.is_empty() && id.len() <= 128 && id.chars().all(|c| (' '..='~').contains(&c))
+        })
+        .map(str::to_string)
+}
+
 /// The declared fields alone, trimmed, with blanks omitted.
 ///
 /// Omitting rather than sending `""` matters because both callers merge this
@@ -2673,6 +3183,336 @@ mod tests {
         );
         client.seed_agent_token("broker", "at_live_test");
         client
+    }
+
+    #[tokio::test]
+    async fn node_registered_agent_visibility_retries_read_after_write_lag() {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let base_url = format!("http://{}", listener.local_addr().unwrap());
+        let server = tokio::spawn(async move {
+            for attempt in 0..2 {
+                let (mut stream, _) = listener.accept().await.unwrap();
+                let mut request = [0_u8; 4096];
+                let bytes = stream.read(&mut request).await.unwrap();
+                let request = String::from_utf8_lossy(&request[..bytes]);
+                assert!(request.starts_with("GET /v1/agent "), "{request}");
+                assert!(
+                    request
+                        .to_ascii_lowercase()
+                        .contains("authorization: bearer at_live_visibility"),
+                    "{request}"
+                );
+                let (status, body) = if attempt == 0 {
+                    (
+                        "404 Not Found",
+                        r#"{"ok":false,"error":{"code":"agent_not_found","message":"not visible yet"}}"#,
+                    )
+                } else {
+                    (
+                        "200 OK",
+                        r#"{"ok":true,"data":{"id":"agent-visibility","workspace_id":"ws-test","name":"cloud-zero-config","type":"agent","status":"online","persona":null,"metadata":{},"channels":[]}}"#,
+                    )
+                };
+                let response = format!(
+                    "HTTP/1.1 {status}\r\ncontent-type: application/json\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{body}",
+                    body.len()
+                );
+                stream.write_all(response.as_bytes()).await.unwrap();
+            }
+        });
+        let client = RelaycastHttpClient::new(Some(base_url), "rk_live_test", "broker", "codex");
+
+        client
+            .await_node_registered_agent_visibility(
+                "cloud-zero-config",
+                "agent-visibility",
+                "at_live_visibility",
+            )
+            .await
+            .expect("the exact node-created identity should become readable");
+        server.await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn node_registered_agent_visibility_bounds_a_hung_identity_lookup() {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let base_url = format!("http://{}", listener.local_addr().unwrap());
+        let server = tokio::spawn(async move {
+            let (mut stream, _) = listener.accept().await.unwrap();
+            let mut request = [0_u8; 4096];
+            let bytes = stream.read(&mut request).await.unwrap();
+            let request = String::from_utf8_lossy(&request[..bytes]);
+            assert!(request.starts_with("GET /v1/agent "), "{request}");
+            std::future::pending::<()>().await;
+        });
+        let client = RelaycastHttpClient::new(Some(base_url), "rk_live_test", "broker", "codex");
+
+        let started = tokio::time::Instant::now();
+        let error = tokio::time::timeout(
+            Duration::from_secs(1),
+            client.await_node_registered_agent_visibility_with_policy(
+                "cloud-zero-config",
+                "agent-hung",
+                "at_live_hung",
+                &[],
+                Duration::from_millis(25),
+            ),
+        )
+        .await
+        .expect("the visibility helper itself must retain control of the timeout")
+        .expect_err("a hung identity read must fail closed");
+
+        assert!(error.to_string().contains("request timed out"), "{error:#}");
+        assert!(
+            started.elapsed() < Duration::from_millis(500),
+            "the per-request timeout must keep a hung read off the broker event loop"
+        );
+        server.abort();
+    }
+
+    #[tokio::test]
+    async fn workspace_key_channel_scope_retries_read_after_write_lag() {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let base_url = format!("http://{}", listener.local_addr().unwrap());
+        let server = tokio::spawn(async move {
+            for attempt in 0..3 {
+                let (mut stream, _) = listener.accept().await.unwrap();
+                let mut request = [0_u8; 4096];
+                let bytes = stream.read(&mut request).await.unwrap();
+                let request = String::from_utf8_lossy(&request[..bytes]);
+                assert!(
+                    request.starts_with("GET /v1/agents/cloud-zero-config "),
+                    "{request}"
+                );
+                assert!(
+                    request
+                        .to_ascii_lowercase()
+                        .contains("authorization: bearer rk_live_test"),
+                    "{request}"
+                );
+                let (status, body) = if attempt < 2 {
+                    (
+                        "404 Not Found",
+                        r#"{"ok":false,"error":{"code":"agent_not_found","message":"not visible by name yet"}}"#,
+                    )
+                } else {
+                    (
+                        "200 OK",
+                        r#"{"ok":true,"data":{"channels":[{"name":"engineering"},{"name":"general"}]}}"#,
+                    )
+                };
+                let response = format!(
+                    "HTTP/1.1 {status}\r\ncontent-type: application/json\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{body}",
+                    body.len()
+                );
+                stream.write_all(response.as_bytes()).await.unwrap();
+            }
+        });
+        let client = RelaycastHttpClient::new(Some(base_url), "rk_live_test", "broker", "codex");
+
+        client
+            .verify_agent_channel_scope_with_backoffs(
+                "cloud-zero-config",
+                &["general".into(), "engineering".into()],
+                &[0, 0],
+            )
+            .await
+            .expect("the workspace-key by-name lookup should tolerate bounded propagation lag");
+        server.await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn node_registered_channel_scope_uses_worker_token_not_by_name_index() {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let base_url = format!("http://{}", listener.local_addr().unwrap());
+        let server = tokio::spawn(async move {
+            for attempt in 0..3 {
+                let (mut stream, _) = listener.accept().await.unwrap();
+                let mut request = [0_u8; 4096];
+                let bytes = stream.read(&mut request).await.unwrap();
+                let request = String::from_utf8_lossy(&request[..bytes]);
+                assert!(request.starts_with("GET /v1/agent "), "{request}");
+                assert!(
+                    request
+                        .to_ascii_lowercase()
+                        .contains("authorization: bearer at_live_worker"),
+                    "{request}"
+                );
+                assert!(
+                    !request.contains("/v1/agents/cloud-zero-config"),
+                    "{request}"
+                );
+                let (status, body) = if attempt < 2 {
+                    (
+                        "404 Not Found",
+                        r#"{"ok":false,"error":{"code":"agent_not_found","message":"worker token not visible yet"}}"#,
+                    )
+                } else {
+                    (
+                        "200 OK",
+                        r#"{"ok":true,"data":{"id":"agent-node-created","workspace_id":"ws-dev","name":"cloud-zero-config","type":"agent","status":"online","persona":null,"metadata":{},"channels":[{"id":"ch-general","name":"general","role":"member","joined_at":"2026-10-05T00:00:00Z"}]}}"#,
+                    )
+                };
+                let response = format!(
+                    "HTTP/1.1 {status}\r\ncontent-type: application/json\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{body}",
+                    body.len()
+                );
+                stream.write_all(response.as_bytes()).await.unwrap();
+            }
+        });
+        let client = RelaycastHttpClient::new(Some(base_url), "rk_live_test", "broker", "codex");
+
+        client
+            .verify_node_registered_agent_channel_scope_with_backoffs(
+                "cloud-zero-config",
+                "agent-node-created",
+                "at_live_worker",
+                &["general".into()],
+                &[0, 0],
+            )
+            .await
+            .expect("worker-token scope should tolerate bounded visibility lag");
+        server.await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn node_registered_channel_scope_retries_a_lagging_successful_read() {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let base_url = format!("http://{}", listener.local_addr().unwrap());
+        let server = tokio::spawn(async move {
+            for attempt in 0..2 {
+                let (mut stream, _) = listener.accept().await.unwrap();
+                let mut request = [0_u8; 4096];
+                let bytes = stream.read(&mut request).await.unwrap();
+                let request = String::from_utf8_lossy(&request[..bytes]);
+                assert!(request.starts_with("GET /v1/agent "), "{request}");
+                let channels = if attempt == 0 {
+                    r#"[{"id":"ch-general","name":"general","role":"member","joined_at":"2026-10-05T00:00:00Z"}]"#
+                } else {
+                    r#"[{"id":"ch-engineering","name":"engineering","role":"member","joined_at":"2026-10-05T00:00:00Z"}]"#
+                };
+                let body = format!(
+                    r#"{{"ok":true,"data":{{"id":"agent-node-created","workspace_id":"ws-dev","name":"cloud-zero-config","type":"agent","status":"online","persona":null,"metadata":{{}},"channels":{channels}}}}}"#
+                );
+                let response = format!(
+                    "HTTP/1.1 200 OK\r\ncontent-type: application/json\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{body}",
+                    body.len()
+                );
+                stream.write_all(response.as_bytes()).await.unwrap();
+            }
+        });
+        let client = RelaycastHttpClient::new(Some(base_url), "rk_live_test", "broker", "codex");
+
+        client
+            .verify_node_registered_agent_channel_scope_with_backoffs(
+                "cloud-zero-config",
+                "agent-node-created",
+                "at_live_scope_lag",
+                &["engineering".into()],
+                &[0],
+            )
+            .await
+            .expect("a recent channel join may lag one successful identity read");
+        server.await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn node_registered_channel_scope_mismatch_fails_after_bounded_retries() {
+        let server = MockServer::start();
+        let scope = server.mock(|when, then| {
+            when.method(GET)
+                .path("/v1/agent")
+                .header("authorization", "Bearer at_live_scope_mismatch");
+            then.status(200).json_body(json!({"ok":true,"data":{
+                "id":"agent-node-created","workspace_id":"ws-dev",
+                "name":"cloud-zero-config","type":"agent","status":"online",
+                "persona":null,"metadata":{},
+                "channels":[{"id":"ch-general","name":"general","role":"member",
+                    "joined_at":"2026-10-05T00:00:00Z"}]
+            }}));
+        });
+        let client =
+            RelaycastHttpClient::new(Some(server.base_url()), "rk_live_test", "broker", "codex");
+
+        let error = client
+            .verify_node_registered_agent_channel_scope_with_backoffs(
+                "cloud-zero-config",
+                "agent-node-created",
+                "at_live_scope_mismatch",
+                &["engineering".into()],
+                &[0, 0],
+            )
+            .await
+            .expect_err("a genuine channel-set mismatch must fail closed after bounded retries");
+
+        assert!(
+            error.to_string().contains("channel scope mismatch"),
+            "{error:#}"
+        );
+        scope.assert_hits(3);
+    }
+
+    #[tokio::test]
+    async fn node_registered_agent_visibility_fails_closed_across_split_servers() {
+        let node_control_server = MockServer::start();
+        let worker_http_server = MockServer::start();
+        let visible_on_node_control = node_control_server.mock(|when, then| {
+            when.method(GET)
+                .path("/v1/agent")
+                .header("authorization", "Bearer at_live_split");
+            then.status(200).json_body(json!({"ok":true,"data":{
+                "id":"agent-split","workspace_id":"ws-node-control",
+                "name":"cloud-zero-config","type":"agent","status":"online",
+                "persona":null,"metadata":{},"channels":[]
+            }}));
+        });
+        let absent_on_worker_http = worker_http_server.mock(|when, then| {
+            when.method(GET)
+                .path("/v1/agent")
+                .header("authorization", "Bearer at_live_split");
+            then.status(404).json_body(json!({"ok":false,"error":{
+                "code":"agent_not_found","message":"not present on this Relaycast target"
+            }}));
+        });
+
+        let node_client = RelaycastHttpClient::new(
+            Some(node_control_server.base_url()),
+            "rk_live_node_control",
+            "broker",
+            "codex",
+        );
+        node_client
+            .await_node_registered_agent_visibility_with_backoffs(
+                "cloud-zero-config",
+                "agent-split",
+                "at_live_split",
+                &[],
+            )
+            .await
+            .expect("the node-control target contains the identity");
+
+        let worker_http = RelaycastHttpClient::new(
+            Some(worker_http_server.base_url()),
+            "rk_live_worker_http",
+            "broker",
+            "codex",
+        );
+        let error = worker_http
+            .await_node_registered_agent_visibility_with_backoffs(
+                "cloud-zero-config",
+                "agent-split",
+                "at_live_split",
+                &[0, 0],
+            )
+            .await
+            .expect_err("a different HTTP target must never be mistaken for propagation lag");
+
+        assert!(
+            error.to_string().contains("agent_not_found"),
+            "split-target failure should retain the terminal API code: {error:#}"
+        );
+        visible_on_node_control.assert_hits(1);
+        absent_on_worker_http.assert_hits(3);
     }
 
     #[test]
@@ -3667,6 +4507,7 @@ mod tests {
                     role: None,
                     objective: Some("Publish registration metadata".to_string()),
                 },
+                &serde_json::Map::new(),
             )
             .await
             .expect("publishing declared metadata should succeed");
@@ -3700,12 +4541,98 @@ mod tests {
                     project: Some("   ".to_string()),
                     ..Default::default()
                 },
+                &serde_json::Map::new(),
             )
             .await
             .expect("an empty declaration is a no-op, not an error");
 
         any_read.assert_hits(0);
         any_write.assert_hits(0);
+    }
+
+    /// The worker's CLI, machine and owner ride the declared-metadata PATCH,
+    /// so the roster can show whose worker it is, where it runs and its icon.
+    #[tokio::test]
+    async fn publish_declared_metadata_carries_the_spawned_worker_keys() {
+        let server = MockServer::start();
+        let update = server.mock(|when, then| {
+            when.method(PATCH)
+                .path("/v1/agents/worker-a")
+                .json_body(json!({
+                    "metadata": {
+                        "cli": "claude",
+                        "host": "Finn-Mac-Mini",
+                        "owner_hash": "abc",
+                        "objective": "Check the roster"
+                    }
+                }));
+            then.status(200).json_body(json!({
+                "ok": true,
+                "data": {
+                    "id": "agent_worker_a",
+                    "name": "worker-a",
+                    "type": "agent",
+                    "status": "online",
+                    "persona": null,
+                    "metadata": {}
+                }
+            }));
+        });
+        let spawned = json!({"cli": "claude", "host": "Finn-Mac-Mini", "owner_hash": "abc"});
+
+        let client = seeded_http_client(&server.base_url());
+        client
+            .publish_declared_metadata(
+                "worker-a",
+                &AgentRegistrationMetadata {
+                    objective: Some("Check the roster".to_string()),
+                    ..Default::default()
+                },
+                spawned.as_object().unwrap(),
+            )
+            .await
+            .expect("publishing spawned worker metadata should succeed");
+
+        update.assert_hits(1);
+    }
+
+    #[test]
+    fn spawned_worker_metadata_matches_the_desktop_keys() {
+        let metadata = super::spawned_worker_metadata_from(
+            "/opt/homebrew/bin/claude --model opus",
+            Some("Finn-Mac-Mini.local."),
+            Some(" user-1 "),
+        );
+        assert_eq!(
+            serde_json::Value::Object(metadata),
+            json!({
+                "cli": "claude",
+                "host": "Finn-Mac-Mini",
+                // SHA-256 of "user-1", the desktop's `identity_hash`.
+                "owner_hash": "c6c289e49e9c05b2145860387b73bcb18df43fb09a1e4a4a9713c76c88bb541b"
+            })
+        );
+    }
+
+    #[test]
+    fn spawned_worker_metadata_omits_what_it_does_not_know() {
+        let metadata = super::spawned_worker_metadata_from("  ", Some(" .local "), Some(""));
+        assert!(metadata.is_empty(), "unexpected keys: {metadata:?}");
+        let metadata = super::spawned_worker_metadata_from("codex", Some("éabcde"), None);
+        assert_eq!(metadata["host"], "éabcde");
+        let metadata = super::spawned_worker_metadata_from("codex", None, None);
+        assert_eq!(serde_json::Value::Object(metadata), json!({"cli": "codex"}));
+    }
+
+    #[test]
+    fn stored_identity_user_id_follows_the_cli_rules() {
+        let id = |file: &str| super::user_id_from_identity(file);
+        assert_eq!(id(r#"{"userId":" user-1 "}"#).as_deref(), Some("user-1"));
+        assert_eq!(id(r#"{"userId":"bad\u0007id"}"#), None);
+        assert_eq!(id(&format!(r#"{{"userId":"{}"}}"#, "u".repeat(129))), None);
+        assert_eq!(id(r#"{"userId":""}"#), None);
+        assert_eq!(id(r#"{"email":"a@b"}"#), None);
+        assert_eq!(id("not json"), None);
     }
 
     /// A presence update used to call POST /v1/agents/release with no reason.
@@ -4329,6 +5256,132 @@ mod tests {
         assert!(error.to_string().contains("HTTP 403"));
         cleanup.assert_hits(1);
         assert!(client.owned_identity_token_hash("owned-worker").is_ok());
+    }
+
+    #[tokio::test]
+    async fn owned_identity_cleanup_retries_only_agent_not_found_visibility_lag() {
+        use sha2::{Digest, Sha256};
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let base_url = format!("http://{}", listener.local_addr().unwrap());
+        let expected_hash = format!("{:x}", Sha256::digest(b"owned-token"));
+        let server_hash = expected_hash.clone();
+        let server = tokio::spawn(async move {
+            for attempt in 0..3 {
+                let (mut stream, _) = listener.accept().await.unwrap();
+                let mut request = [0_u8; 8192];
+                let bytes = stream.read(&mut request).await.unwrap();
+                let request = String::from_utf8_lossy(&request[..bytes]);
+                assert!(request.starts_with("POST /v1/agents/release "), "{request}");
+                assert!(request.contains(&server_hash), "{request}");
+                let (status, body) = if attempt < 2 {
+                    (
+                        "404 Not Found",
+                        r#"{"ok":false,"error":{"code":"agent_not_found","message":"not visible by name yet"}}"#,
+                    )
+                } else {
+                    ("200 OK", r#"{"ok":true,"data":{"status":"completed"}}"#)
+                };
+                let response = format!(
+                    "HTTP/1.1 {status}\r\ncontent-type: application/json\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{body}",
+                    body.len()
+                );
+                stream.write_all(response.as_bytes()).await.unwrap();
+            }
+        });
+        let client = RelaycastHttpClient::new(Some(base_url), "rk_live_test", "broker", "codex");
+        client.seed_agent_token("owned-worker", "owned-token");
+
+        client
+            .release_agent_identity_guarded("owned-worker", None, true, Some(&expected_hash))
+            .await
+            .expect("guarded cleanup should retry transient by-name absence");
+        server.await.unwrap();
+        assert!(client.owned_identity_token_hash("owned-worker").is_err());
+    }
+
+    #[tokio::test]
+    async fn owned_identity_cleanup_has_one_overall_deadline() {
+        use sha2::{Digest, Sha256};
+        let server = MockServer::start();
+        let cleanup = server.mock(|when, then| {
+            when.method(POST).path("/v1/agents/release");
+            then.status(404).json_body(json!({"ok":false,"error":{
+                "code":"agent_not_found","message":"not visible by name yet"
+            }}));
+        });
+        let client = seeded_http_client(&server.base_url());
+        client.seed_agent_token("owned-worker", "owned-token");
+        let expected_hash = format!("{:x}", Sha256::digest(b"owned-token"));
+        let started = tokio::time::Instant::now();
+
+        let error = client
+            .release_agent_identity_guarded_with_budget(
+                "owned-worker",
+                None,
+                true,
+                Some(&expected_hash),
+                &[5_000],
+                Duration::from_millis(50),
+            )
+            .await
+            .expect_err("the guarded release loop must honor one overall deadline");
+
+        assert!(error.to_string().contains("total budget"), "{error:#}");
+        assert!(started.elapsed() < Duration::from_millis(500));
+        cleanup.assert_hits(1);
+    }
+
+    #[tokio::test]
+    async fn owned_identity_cleanup_visibility_retries_do_not_spend_busy_retry_cap() {
+        use sha2::{Digest, Sha256};
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let base_url = format!("http://{}", listener.local_addr().unwrap());
+        let expected_hash = format!("{:x}", Sha256::digest(b"owned-token"));
+        let server_hash = expected_hash.clone();
+        let server = tokio::spawn(async move {
+            for attempt in 0..9 {
+                let (mut stream, _) = listener.accept().await.unwrap();
+                let mut request = [0_u8; 8192];
+                let bytes = stream.read(&mut request).await.unwrap();
+                let request = String::from_utf8_lossy(&request[..bytes]);
+                assert!(request.starts_with("POST /v1/agents/release "), "{request}");
+                assert!(request.contains(&server_hash), "{request}");
+                let (status, headers, body) = match attempt {
+                    0..=6 => (
+                        "404 Not Found",
+                        "",
+                        r#"{"ok":false,"error":{"code":"agent_not_found","message":"not visible by name yet"}}"#,
+                    ),
+                    7 => (
+                        "503 Service Unavailable",
+                        "retry-after: 1\r\n",
+                        r#"{"ok":false,"error":{"code":"workspace_busy","message":"retry later"}}"#,
+                    ),
+                    _ => ("200 OK", "", r#"{"ok":true,"data":{"status":"completed"}}"#),
+                };
+                let response = format!(
+                    "HTTP/1.1 {status}\r\n{headers}content-type: application/json\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{body}",
+                    body.len()
+                );
+                stream.write_all(response.as_bytes()).await.unwrap();
+            }
+        });
+        let client = RelaycastHttpClient::new(Some(base_url), "rk_live_test", "broker", "codex");
+        client.seed_agent_token("owned-worker", "owned-token");
+
+        client
+            .release_agent_identity_guarded_with_backoffs(
+                "owned-worker",
+                None,
+                true,
+                Some(&expected_hash),
+                &[0; 7],
+            )
+            .await
+            .expect("visibility lag must not consume the independent workspace-busy retry cap");
+
+        server.await.unwrap();
+        assert!(client.owned_identity_token_hash("owned-worker").is_err());
     }
 
     #[tokio::test]

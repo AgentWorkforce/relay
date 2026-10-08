@@ -152,7 +152,18 @@ pub(super) struct PendingVerifiedSpawn {
     pub(super) invocation_id: String,
     pub(super) deadline: Instant,
     pub(super) started: Instant,
+    pub(super) failure_reason: Option<String>,
     pub(super) generation: Uuid,
+}
+
+impl PendingVerifiedSpawn {
+    pub(super) fn provider_auth_failed(&mut self, generation: Uuid) {
+        if self.generation == generation {
+            self.deadline = Instant::now();
+            // Do not copy provider output: it may contain device codes or tokens.
+            self.failure_reason = Some("spawn_provider_auth_required: Muse requires authentication; run `muse` on the selected node and complete device login, then retry".into());
+        }
+    }
 }
 
 pub(super) fn verified_spawn_ready_result(
@@ -1660,6 +1671,7 @@ impl BrokerRuntime {
                                 invocation_id: invoke.invocation_id,
                                 deadline: Instant::now() + VERIFIED_SPAWN_READY_TIMEOUT,
                                 started,
+                                failure_reason: None,
                                 generation,
                             },
                         );
@@ -2372,18 +2384,46 @@ pub(super) async fn reconcile_blocked_flush_predecessor(
 /// either — a failure is logged at error level with the agent name and the
 /// underlying error, and it is not retried, because the honest signal is worth
 /// more than a hidden retry loop on a non-critical publish.
+///
+/// The same PATCH carries the worker's CLI, this machine's name and the
+/// broker's signed-in owner, so the roster can show whose agent it is, where
+/// it runs and which CLI's icon to draw.
 pub(super) fn spawn_declared_metadata_publish(
     relaycast_http: &RelaycastHttpClient,
     name: &str,
+    spec: &crate::protocol::AgentSpec,
     declared: AgentRegistrationMetadata,
 ) {
-    if declared.is_empty() {
-        return;
-    }
     let http = relaycast_http.clone();
     let agent = name.to_string();
+    let cli = launched_cli(spec).to_string();
     tokio::spawn(async move {
-        match http.publish_declared_metadata(&agent, &declared).await {
+        // The hostname call and the identity file read block; keep them off
+        // the runtime's async workers too.
+        // A failed lookup still publishes the declared fields, and says so.
+        let spawned = match tokio::task::spawn_blocking(move || {
+            crate::relaycast::spawned_worker_metadata(&cli)
+        })
+        .await
+        {
+            Ok(spawned) => spawned,
+            Err(error) => {
+                tracing::error!(
+                    worker = %agent,
+                    error = %error,
+                    "could not read the spawned worker's cli/host/owner; publishing its \
+                     declared workforce metadata without them"
+                );
+                serde_json::Map::new()
+            }
+        };
+        if declared.is_empty() && spawned.is_empty() {
+            return;
+        }
+        match http
+            .publish_declared_metadata(&agent, &declared, &spawned)
+            .await
+        {
             Ok(()) => tracing::debug!(
                 worker = %agent,
                 "published declared workforce metadata for spawned agent"
@@ -2392,11 +2432,55 @@ pub(super) fn spawn_declared_metadata_publish(
                 worker = %agent,
                 error = %error,
                 "failed to publish declared workforce metadata; the agent is registered and \
-                 running but its declared organization/project/workstream/role/objective are \
-                 not visible to the engine"
+                 running but its declared organization/project/workstream/role/objective and \
+                 its cli/host/owner are not visible to the engine"
             ),
         }
     });
+}
+
+/// The CLI a launched worker actually runs: a PTY harness's own command,
+/// which can differ from the requested `cli`, else the requested `cli`, else
+/// the CLI a provider-only headless spawn runs.
+fn launched_cli(spec: &crate::protocol::AgentSpec) -> &str {
+    match spec.harness_config.as_ref() {
+        Some(crate::protocol::ResolvedHarnessConfig::Pty(config)) => config.command.as_str(),
+        _ => spec
+            .cli
+            .as_deref()
+            .or_else(|| {
+                spec.provider
+                    .as_ref()
+                    .map(crate::runtime::headless::headless_provider_cli_name)
+            })
+            .unwrap_or_default(),
+    }
+}
+
+#[cfg(test)]
+mod launched_cli_tests {
+    use super::launched_cli;
+    use crate::protocol::AgentSpec;
+    use serde_json::json;
+
+    fn spec(value: serde_json::Value) -> AgentSpec {
+        serde_json::from_value(value).expect("a valid agent spec")
+    }
+
+    #[test]
+    fn the_roster_cli_is_what_the_worker_runs() {
+        let requested = spec(json!({"name": "w", "runtime": "pty", "cli": "codex"}));
+        assert_eq!(launched_cli(&requested), "codex");
+        let harness = spec(json!({
+            "name": "w", "runtime": "pty", "cli": "codex",
+            "harnessConfig": {"runtime": "pty", "command": "/usr/local/bin/claude"}
+        }));
+        assert_eq!(launched_cli(&harness), "/usr/local/bin/claude");
+        let headless = spec(json!({"name": "w", "runtime": "headless", "provider": "opencode"}));
+        assert_eq!(launched_cli(&headless), "opencode");
+        let unknown = spec(json!({"name": "w", "runtime": "pty"}));
+        assert_eq!(launched_cli(&unknown), "");
+    }
 }
 
 /// Bind an agent to this node by sending node-control `agent.register` and

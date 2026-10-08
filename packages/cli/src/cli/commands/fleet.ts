@@ -5,6 +5,8 @@ import { InvalidArgumentError, type Command } from 'commander';
 import { findProjectRoot } from '@agent-relay/config';
 import {
   CloudFleetSandboxProvisionError,
+  DEV_CLOUD_API_URL,
+  DEV_RELAYCAST_ORIGIN,
   deleteCloudFleetSandbox,
   ensureCloudFleetSandbox,
   materializeCloudRelayfileRepository,
@@ -132,31 +134,45 @@ function pathContains(parent: string, child: string): boolean {
   );
 }
 
-function liveRelayfileMountPaths(
-  materialization: CloudRelayfileRepositoryMaterialization,
-  requested: readonly string[] | undefined
+function liveRelayfileRepositoryRoots(repository: string): {
+  contentRoot: string;
+  sentinelRoot: string;
+} {
+  // Mirror of expectedRelayfileRepositoryPaths in @agent-relay/cloud; the
+  // materialization response is asserted against the same paths, so the
+  // predicted roots are authoritative even before materialization runs.
+  const [owner, repo] = repository.split('/');
+  const root = `/github/repos/${encodeURIComponent(owner!)}/${encodeURIComponent(repo!)}`;
+  return { contentRoot: `${root}/contents`, sentinelRoot: `${root}/.relayfile` };
+}
+
+function liveRelayfileMountPaths(roots: { contentRoot: string; sentinelRoot: string }): string[] {
+  return [`${roots.contentRoot}/**`, `${roots.sentinelRoot}/**`, '/.skills/**'];
+}
+
+function scopedSandboxRelayfilePaths(
+  requested: readonly string[],
+  inferredContentRoot: string | undefined
 ): string[] {
-  const contentRoot = materialization.contentRoot;
-  const sentinelRoot = path.posix.dirname(materialization.sentinelPath);
-  const requestedPaths = requested ?? [];
-  if (requestedPaths.length > 13) {
-    throw new Error(
-      '--sandbox-relayfile-path accepts at most 13 paths when a live repository, its source metadata, and workspace skills are mounted.'
-    );
+  // Cloud accepts at most 16 mount paths; an explicit list carries no implicit
+  // repository roots, so the full budget is available here.
+  if (requested.length > 16) {
+    throw new Error('--sandbox-relayfile-path accepts at most 16 paths.');
   }
-  const contentAncestor = requestedPaths.find((candidate) => {
-    const root = candidate
-      .trim()
-      .replace(/\/\*\*$/, '')
-      .replace(/\/$/, '');
-    return contentRoot === root || contentRoot.startsWith(`${root}/`);
-  });
-  if (contentAncestor && contentAncestor.trim() !== `${contentRoot}/**`) {
-    throw new Error(
-      `Relayfile path ${JSON.stringify(contentAncestor)} contains the repository source root; omit it so Relay can mount ${contentRoot}/** as a decoded working tree.`
-    );
+  if (inferredContentRoot !== undefined) {
+    const contentAncestor = requested.find((candidate) => {
+      const normalized = candidate.trim();
+      if (normalized === `${inferredContentRoot}/**`) return false;
+      const root = normalized.replace(/\/\*\*$/, '').replace(/\/$/, '');
+      return inferredContentRoot === root || inferredContentRoot.startsWith(`${root}/`);
+    });
+    if (contentAncestor) {
+      throw new Error(
+        `Relayfile path ${JSON.stringify(contentAncestor)} contains the repository source root; mount ${inferredContentRoot}/** explicitly to include the decoded working tree.`
+      );
+    }
   }
-  return [...new Set([`${contentRoot}/**`, `${sentinelRoot}/**`, '/.skills/**', ...requestedPaths])];
+  return [...new Set(requested)];
 }
 
 function liveRelayfileWorkerCwd(
@@ -370,6 +386,7 @@ function mergeFleetNodeListOptions(
   return merged;
 }
 
+/** Register fleet lifecycle and sandbox commands on the root CLI program. */
 export function registerFleetCommands(
   program: Command,
   overrides: Partial<FleetCommandDependencies> = {}
@@ -577,6 +594,7 @@ export function registerFleetCommands(
       let sandbox: EnsureCloudFleetSandboxResult | undefined;
       let sandboxRepository: SandboxRepositorySelection | undefined;
       let liveRepository: CloudRelayfileRepositoryMaterialization | undefined;
+      let sandboxMountPaths: string[] | undefined;
       let attachProjectRoot: string | undefined;
       let workspaceRelay: ReturnType<FleetCommandDependencies['sdk']['createWorkspaceRelay']> | undefined;
       let relaycastClientOptions = clientOptions;
@@ -586,13 +604,23 @@ export function registerFleetCommands(
         const hasExplicitProjectOverride = Boolean(
           deps.core.env?.AGENT_RELAY_PROJECT?.trim() || process.env.AGENT_RELAY_PROJECT?.trim()
         );
+        // AGENT_RELAY_PROJECT selects the workspace namespace, while static
+        // checkout and live Relayfile source inference remain anchored to
+        // the actual Git tree. This also lets --cwd point at a sibling
+        // checkout when explicitly asked.
+        const repositoryRootHint = hasExplicitProjectOverride ? process.cwd() : coreProjectRoot;
+        // An explicit --sandbox-relayfile-path list only needs the repository
+        // identity for mount scoping and project inference — a clean, pushed
+        // HEAD is re-verified strictly below only when the repository is
+        // actually materialized or checked out.
+        const repositoryIdentityOnly = !checkoutRepository && sandboxRelayfilePaths !== undefined;
         if (checkoutRepository || mountSandboxRelayfile) {
-          // AGENT_RELAY_PROJECT selects the workspace namespace, while static
-          // checkout and live Relayfile source inference remain anchored to
-          // the actual Git tree. This also lets --cwd point at a sibling
-          // checkout when explicitly asked.
-          const repositoryRootHint = hasExplicitProjectOverride ? process.cwd() : coreProjectRoot;
-          sandboxRepository = deps.resolveSandboxRepository(repositoryRootHint, requestedCwd);
+          sandboxRepository = deps.resolveSandboxRepository(
+            repositoryRootHint,
+            requestedCwd,
+            undefined,
+            repositoryIdentityOnly ? 'identity' : 'strict'
+          );
           if (checkoutRepository && !sandboxRepository) {
             throw new Error('--checkout requires a GitHub checkout with a clean, pushed commit.');
           }
@@ -608,11 +636,11 @@ export function registerFleetCommands(
                 : undefined;
           }
         }
+        const localCwdIsHostPath =
+          requestedCwd !== undefined && !/^\/(?:srv\/agent-workforce|workspace)(?:\/|$)/.test(requestedCwd);
         const localRequestedCwd =
-          sandboxRepository &&
-          requestedCwd &&
-          !/^\/(?:srv\/agent-workforce|workspace)(?:\/|$)/.test(requestedCwd)
-            ? path.resolve(process.cwd(), requestedCwd)
+          sandboxRepository && localCwdIsHostPath
+            ? path.resolve(process.cwd(), requestedCwd as string)
             : undefined;
         // With --checkout, `--cwd` selects both the local checkout subdirectory
         // and its Relay project namespace. Resolve an intentional nested pin
@@ -685,7 +713,56 @@ export function registerFleetCommands(
         ) {
           throw new Error('--workspace-id does not match the captured workspace identity.');
         }
-        if (!checkoutRepository && mountSandboxRelayfile && sandboxRepository) {
+        const inferredRelayfileRoots =
+          !checkoutRepository && mountSandboxRelayfile && sandboxRepository
+            ? liveRelayfileRepositoryRoots(sandboxRepository.repository)
+            : undefined;
+        // --sandbox-relayfile-path is the complete subtree list: an explicit
+        // selection replaces the inferred repository/skills roots instead of
+        // unioning with them, so a scoped spawn from inside a large checkout
+        // is not forced to mount the whole repository.
+        sandboxMountPaths =
+          sandboxRelayfilePaths === undefined
+            ? inferredRelayfileRoots
+              ? liveRelayfileMountPaths(inferredRelayfileRoots)
+              : undefined
+            : scopedSandboxRelayfilePaths(sandboxRelayfilePaths, inferredRelayfileRoots?.contentRoot);
+        const mountsInferredRepository =
+          inferredRelayfileRoots !== undefined &&
+          (sandboxMountPaths?.includes(`${inferredRelayfileRoots.contentRoot}/**`) ?? false);
+        // A local --cwd is only meaningful when it maps into a mounted
+        // repository. With an explicit scoped list it must be rejected whether
+        // the repository was resolved-but-excluded or never resolved at all —
+        // otherwise the host path leaks through verbatim as worker_cwd.
+        if (
+          localCwdIsHostPath &&
+          sandboxRelayfilePaths !== undefined &&
+          !checkoutRepository &&
+          !mountsInferredRepository
+        ) {
+          throw new Error(
+            inferredRelayfileRoots !== undefined
+              ? `--cwd ${JSON.stringify(requestedCwd)} resolves inside the inferred repository, but --sandbox-relayfile-path does not mount it; include ${inferredRelayfileRoots.contentRoot}/** or omit --cwd.`
+              : `--cwd ${JSON.stringify(requestedCwd)} is a local path and no repository is mounted; use an absolute sandbox path or omit --cwd.`
+          );
+        }
+        if (sandboxRepository && mountsInferredRepository) {
+          if (repositoryIdentityOnly) {
+            // The scoped mount does include the inferred repository, so the
+            // exact pushed HEAD is required after all — re-resolve strictly.
+            const strictSelection = deps.resolveSandboxRepository(repositoryRootHint, requestedCwd);
+            if (!strictSelection) {
+              throw new Error(
+                'The inferred repository is no longer resolvable; run from its checkout or remove its contents/** path from --sandbox-relayfile-path.'
+              );
+            }
+            if (strictSelection.repository !== sandboxRepository.repository) {
+              throw new Error(
+                'The repository identity changed between mount planning and materialization; retry the spawn.'
+              );
+            }
+            sandboxRepository = strictSelection;
+          }
           liveRepository = await deps.materializeCloudRelayfileRepository({
             workspaceId: relayWorkspaceId,
             repository: sandboxRepository.repository,
@@ -723,11 +800,7 @@ export function registerFleetCommands(
             ...(useAsyncPreparation ? { preparationMode: 'async-v1' as const } : {}),
             maxAgents: 1,
             mountRelayfile: mountSandboxRelayfile,
-            ...(liveRepository
-              ? { relayfilePaths: liveRelayfileMountPaths(liveRepository, sandboxRelayfilePaths) }
-              : sandboxRelayfilePaths === undefined
-                ? {}
-                : { relayfilePaths: sandboxRelayfilePaths }),
+            ...(sandboxMountPaths === undefined ? {} : { relayfilePaths: sandboxMountPaths }),
             ...(sandboxId === undefined ? {} : { sandboxId }),
             forceProvision: true,
             ...(sandboxProvider === undefined ? {} : { providerId: sandboxProvider }),
@@ -770,6 +843,8 @@ export function registerFleetCommands(
                   }`
                 );
               });
+          } else if (error instanceof CloudFleetSandboxProvisionError && error.noSandboxCreated) {
+            deps.warn(error.message);
           } else if (error instanceof CloudFleetSandboxProvisionError && error.outcomeUnknown) {
             deps.warn(
               `Cloud did not return a complete provisioning response. The outcome is unknown; check Cloud Fleet for node '${
@@ -826,16 +901,11 @@ export function registerFleetCommands(
             const returnedRelayWorkspaceId =
               'relayWorkspaceId' in sandbox ? sandbox.relayWorkspaceId?.trim() : undefined;
             if (
-              (sandboxProvider === 'agent37' && target.route !== 'agent37-isolated') ||
               (returnedRelayWorkspaceId !== undefined &&
                 target.workspaceId.trim() !== returnedRelayWorkspaceId) ||
               (sandbox.outcome === 'provisioned' && !returnedRelayWorkspaceId)
             ) {
-              throw new Error(
-                sandboxProvider === 'agent37' && target.route !== 'agent37-isolated'
-                  ? 'Explicit Agent37 provisioning requires the isolated Agent37 Relaycast target.'
-                  : 'Cloud returned a Relaycast target for a different workspace.'
-              );
+              throw new Error('Cloud returned a Relaycast target for a different workspace.');
             }
             relaycastClientOptions = {
               ...relaycastClientOptions,
@@ -854,7 +924,19 @@ export function registerFleetCommands(
                 'Cloud returned a Relaycast workspace that could not be verified on the selected gateway.'
               );
             }
-            if (!deps.persistWorkspaceRelaycastTarget(workspaceSelection, target)) {
+            const persistedTarget = sandbox.relaycastCloudApiUrl
+              ? deps.persistWorkspaceRelaycastTarget(workspaceSelection, target, sandbox.relaycastCloudApiUrl)
+              : deps.persistWorkspaceRelaycastTarget(workspaceSelection, target);
+            if (!persistedTarget) {
+              if (
+                target.route === 'canonical' &&
+                target.baseUrl === DEV_RELAYCAST_ORIGIN &&
+                sandbox.relaycastCloudApiUrl !== DEV_CLOUD_API_URL
+              ) {
+                throw new Error(
+                  `Cloud returned the DEV canonical Relaycast target, but relaycastCloudApiUrl was not exactly ${DEV_CLOUD_API_URL}; refusing to persist an untrusted route.`
+                );
+              }
               throw new Error(
                 'Cloud returned a Relaycast target, but no durable project session is available for follow-up attach.'
               );
@@ -991,17 +1073,30 @@ export function registerFleetCommands(
           const confirm = options.confirm !== false;
           const liveSandboxContext =
             sandbox?.outcome === 'provisioned' && liveRepository && sandboxRepository
-              ? `Agent Relay sandbox context: ${liveRepository.repository} is mounted as a live Relayfile working tree at ${liveRelayfileWorkerCwd(
-                  sandbox.relayfileMountPath ?? '/workspace',
-                  liveRepository,
-                  ''
-                )}. Its exact source revision is ${liveRepository.revision}; the same attestation is recorded at ${mountedRelayfilePath(
-                  sandbox.relayfileMountPath ?? '/workspace',
-                  liveRepository.sentinelPath
-                )}. Workspace skills are under ${mountedRelayfilePath(
-                  sandbox.relayfileMountPath ?? '/workspace',
-                  '/.skills'
-                )}. The Relayfile daemon synchronizes this tree; it intentionally has no .git directory.`
+              ? [
+                  `Agent Relay sandbox context: ${liveRepository.repository} is mounted as a live Relayfile working tree at ${liveRelayfileWorkerCwd(
+                    sandbox.relayfileMountPath ?? '/workspace',
+                    liveRepository,
+                    ''
+                  )}. Its exact source revision is ${liveRepository.revision}.`,
+                  ...(sandboxMountPaths?.includes(`${path.posix.dirname(liveRepository.sentinelPath)}/**`)
+                    ? [
+                        `The same attestation is recorded at ${mountedRelayfilePath(
+                          sandbox.relayfileMountPath ?? '/workspace',
+                          liveRepository.sentinelPath
+                        )}.`,
+                      ]
+                    : []),
+                  ...(sandboxMountPaths?.includes('/.skills/**')
+                    ? [
+                        `Workspace skills are under ${mountedRelayfilePath(
+                          sandbox.relayfileMountPath ?? '/workspace',
+                          '/.skills'
+                        )}.`,
+                      ]
+                    : []),
+                  'The Relayfile daemon synchronizes this tree; it intentionally has no .git directory.',
+                ].join(' ')
               : undefined;
           const invocation = await relay.messaging.placement.spawn({
             capability: `spawn:${cli}`,

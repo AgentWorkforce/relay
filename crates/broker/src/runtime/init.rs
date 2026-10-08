@@ -291,8 +291,11 @@ pub(crate) async fn run_init(cmd: InitCommand, telemetry: TelemetryClient) -> Re
     // it next to the node id so it rotates with the machine identity.
     // The node token is scoped to the workspace (and engine) it was minted
     // against. Thread the resolved workspace id and base URL through so the
-    // cached token is only reused when both match, and so a re-mint after a
-    // node-control 401 rewrites the correctly-scoped cache.
+    // cached token is only reused when both match. A re-mint after a node-control
+    // 401 presents that token as proof before rewriting the correctly-scoped
+    // cache; if Relaycast rejects the proof, recovery adopts a different token
+    // concurrently written to that cache once, then stops for explicit
+    // re-enrollment instead of trying to take over the established row.
     let node_base_url = configured_base.clone();
     // Resolve only the fast, local token sources here (RELAY_NODE_TOKEN override
     // and the on-disk cache). The network mint (create_node) is deliberately NOT
@@ -302,6 +305,7 @@ pub(crate) async fn run_init(cmd: InitCommand, telemetry: TelemetryClient) -> Re
     // node-control client mints one in the background (it holds the same minter)
     // and publishes it to `session_node_token`, so realtime delivery still comes
     // online without gating startup on it.
+    let explicit_node_token_override = explicit_env_node_token_present();
     let node_token = if local_only {
         None
     } else {
@@ -355,10 +359,11 @@ pub(crate) async fn run_init(cmd: InitCommand, telemetry: TelemetryClient) -> Re
     let session_node_token = std::sync::Arc::new(std::sync::RwLock::new(node_token.clone()));
     // Wire the token minter used by the node-control client both for the initial
     // mint (when no token is cached, off the readiness path) and to recover from
-    // a node-control 401 (stale/wrong-scoped token) by discarding the cached
-    // token and minting a fresh one instead of looping forever on the rejected
-    // token. Absent when no workspace RelayCast client is available (then a 401
-    // surfaces a hard error rather than recovering).
+    // a node-control 401 by presenting the rejected token as current-node proof,
+    // then replacing the cache only if Relaycast accepts the rotation. A named
+    // proof conflict first re-reads a concurrently rotated cache, then becomes
+    // terminal if no newer token exists. Absent when no workspace RelayCast
+    // client is available (then a 401 surfaces a hard error rather than recovering).
     let token_minter = Some(crate::node_control::NodeTokenMinter {
         workspace_key: relay_workspace_key.clone(),
         workspace_id: node_workspace_id.clone(),
@@ -367,8 +372,11 @@ pub(crate) async fn run_init(cmd: InitCommand, telemetry: TelemetryClient) -> Re
         node_name: node_name.clone(),
         broker_version: broker_version.clone(),
         token_path: crate::node_control::default_node_token_path(&node_id),
+        adopt_cached_token_after_conflict: !explicit_node_token_override,
     });
     let (fleet_control_tx, fleet_control_rx) = mpsc::channel::<FleetControlCommand>(256);
+    let (fleet_completion_tx, fleet_completion_rx) =
+        mpsc::unbounded_channel::<crate::node_control::RetainedFleetCompletion>();
     let (fleet_event_tx, fleet_event_rx) = mpsc::channel::<FleetControlEvent>(256);
     // The terminal queue is deliberately bounded. A wedged remote attach must
     // fail its session rather than accumulating unbounded PTY output in the
@@ -386,22 +394,25 @@ pub(crate) async fn run_init(cmd: InitCommand, telemetry: TelemetryClient) -> Re
     let node_delivery_probe =
         std::sync::Arc::new(crate::node_delivery_probe::NodeDeliveryProbe::new());
     if !local_only {
-        tokio::spawn(crate::node_control::run_node_control_client(
-            crate::node_control::FleetControlConfig {
-                ws_url: fleet_ws_url,
-                node_token,
-                node_id,
-                node_name,
-                broker_version,
-                token_minter,
-                session_token: Some(session_node_token.clone()),
-                read_idle_timeout: None,
-                probe: Some(node_delivery_probe.clone()),
-                terminal_reconnect_tx: Some(terminal_reconnect_tx.clone()),
-            },
-            fleet_control_rx,
-            fleet_event_tx,
-        ));
+        tokio::spawn(
+            crate::node_control::run_node_control_client_with_completions(
+                crate::node_control::FleetControlConfig {
+                    ws_url: fleet_ws_url,
+                    node_token,
+                    node_id,
+                    node_name,
+                    broker_version,
+                    token_minter,
+                    session_token: Some(session_node_token.clone()),
+                    read_idle_timeout: None,
+                    probe: Some(node_delivery_probe.clone()),
+                    terminal_reconnect_tx: Some(terminal_reconnect_tx.clone()),
+                },
+                fleet_control_rx,
+                fleet_completion_rx,
+                fleet_event_tx,
+            ),
+        );
         tokio::spawn(crate::terminal_control::run_terminal_control_client(
             crate::terminal_control::TerminalControlConfig {
                 ws_url: terminal_ws_url,
@@ -426,6 +437,7 @@ pub(crate) async fn run_init(cmd: InitCommand, telemetry: TelemetryClient) -> Re
         }
     } else {
         drop(fleet_control_rx);
+        drop(fleet_completion_rx);
         drop(fleet_event_tx);
         drop(terminal_control_rx);
         drop(terminal_event_tx);
@@ -802,6 +814,8 @@ pub(crate) async fn run_init(cmd: InitCommand, telemetry: TelemetryClient) -> Re
         ws_inbound_rx,
         relaycast_open: true,
         fleet_control_tx,
+        fleet_completion_tx,
+        fleet_completion_acks: Vec::new(),
         fleet_node_name,
         node_delivery_token_present,
         node_delivery_probe,

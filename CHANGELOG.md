@@ -7,6 +7,78 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [13.1.5] - 2026-10-08
+
+### Fixed
+
+- Workers started with `agent-relay fleet spawn` now appear in Agent Relay Desktop as your agents, on the machine that runs them, with their CLI's icon, instead of under "Other live agents".
+
+## [13.1.4] - 2026-10-07
+
+### Fixed
+
+- `agent-relay fleet spawn --sandbox` reports provider capacity and confirms no sandbox was created when Cloud rejects before allocation, without misleading leak-check guidance.
+
+## [13.1.3] - 2026-10-07
+
+### Fixed
+
+- Broker recovery preserves the cached node credential when an environment-supplied token is rejected, and `/api/session` reports the actionable terminal reason `env_override_rejected` until the stale override is removed or the Cloud node is re-enrolled.
+- Broker recovery retries once with a concurrently rotated cached token after a proof conflict, unless an environment override is active.
+- Concurrent node-token rotations retain the newest cached credential when an older response arrives late.
+- Node-token rotations reuse request-bound idempotency keys after lost responses, including process-local recovery for environment tokens and durable recovery across restarts when the node name and broker version are unchanged.
+- `/api/session` reports node control as `connecting`, `backoff`, `ok`, or `terminal` so operators can diagnose stopped realtime delivery.
+- `agent-relay fleet spawn --sandbox --sandbox-relayfile-path <path...>` now mounts exactly the listed subtrees — a scoped spawn from inside a large checkout no longer force-mounts the whole repository. The flag accepts up to Cloud's 16-path limit; the inferred repository is materialized and mounted only when its `contents/**` root is in the list (or the flag is omitted, which keeps the repository + `.relayfile` + `.skills` defaults).
+- Scoped `fleet spawn --sandbox` runs that exclude the repository no longer require a clean, pushed checkout — only repository identity is resolved.
+- A repo-relative `--cwd` whose repository is excluded from the scoped mount is now rejected instead of silently starting the worker at the mount root.
+
+## [13.1.2] - 2026-10-06
+
+### Fixed
+
+- Verified Fleet Muse spawns reject missing or unusable node login files before creating a worker, including fresh isolated-auth homes; reported provider-auth errors release capacity through spawn cleanup.
+- Fleet-spawned Muse workers no longer report themselves ready on an interactive device-login screen. Muse readiness now requires a visible prompt rather than output volume, and a recognised login screen fails the spawn with `provider_auth_required` and releases the worker instead of holding node capacity.
+- Broker recovery now stops with a clear re-enrollment error when Relaycast refuses node-token rotation proof, while retaining the last in-memory and durable credential for operator recovery. Accepted rotations use an atomically persisted idempotency key so a lost response or restart can recover the committed replacement.
+- `agent-relay fleet spawn --sandbox` accepts the canonical DEV Relaycast target only when authenticated against the exact DEV Cloud API URL (`https://dev.agentrelay.com/cloud`), while production trust remains unchanged.
+- `agent-relay fleet spawn --sandbox` makes bounded visibility checks for a node-created identity on both the worker-token and workspace-key read paths during channel reconciliation, absorbing Relaycast read-after-write lag without rotating the new worker credential.
+- Failed Fleet spawns keep owned identity cleanup alive for up to 5 attempts before returning the action failure, so teardown cannot strand a same-name identity.
+- A Fleet cleanup still in flight when the broker stops now reports an explicit cleanup-unconfirmed error instead of ending silently, so the caller can retry the cleanup.
+- `agent-relay fleet spawn --sandbox` for a node-created identity now finishes channel reconciliation within a 60-second budget, tolerates bounded read-after-write lag, and fails closed on a sustained channel mismatch.
+- Identity release retried for a node-created Fleet spawn now stops once the shared retry budget is exhausted.
+
+### Security
+
+- Broker-spawned agents and helper processes can no longer use the node's control-plane identity.
+
+## [13.1.1] - 2026-10-04
+
+### Added
+
+- `node agent list|spawn|new|release|set-model` and `node tail` accept `--state-dir`, `--broker-url`, and `--api-key`, so brokers started with `node up --state-dir` — such as fleet nodes — can be managed from any directory. Without these flags, `RELAY_BROKER_URL` / `RELAY_BROKER_API_KEY` or the enclosing project's broker is used.
+
+### Fixed
+
+- Broker fleet control keeps a healthy node WebSocket open when Relaycast returns retryable `d1_pressure` for `node.register` or `inventory.sync`, retrying the same frame with bounded exponential backoff while the existing registration and application-liveness deadlines remain fail-closed.
+- `--state-dir` on `node agent` commands, `node status`, and `node down` also accepts a fleet node directory whose broker state lives in `state/`.
+- An explicit `--state-dir` on `node agent` commands is no longer overridden by `RELAY_BROKER_URL` / `RELAY_BROKER_API_KEY`.
+- "No broker connection" errors name the path searched and whether it was the project default or `--state-dir`, instead of implying a running broker is down.
+- `node down --force --state-dir <dir>` can verify and stop brokers started from another working directory.
+- `node status` and `node down` name a missing broker identity record and how to create one.
+- `install.sh` now verifies what it downloads and installs it atomically, so updating over a running broker no longer breaks it. A corrupt or failed update is rejected; the standalone installer then rolls back to your existing install, while an npm install reports the rejection without rolling back.
+
+## [13.1.0] - 2026-10-03
+
+### Changed
+
+- `npx -y @agent-relay/connect install` installs a signed standalone probe on a clean Mac without installing the GUI app.
+
+### Fixed
+
+- `agent-relay mcp` standalone binaries no longer dispatch each tool call twice.
+- MCP `send_dm` now forwards idempotency keys so keyed retries do not store duplicate messages.
+- `@agent-relay/connect join` returns as soon as the probe admits the participant.
+- Timed-out or still-pending `@agent-relay/connect join` calls exit with status 8 and instruct the caller to retry the same request.
+
 ## [13.0.1] - 2026-10-02
 
 ### Added

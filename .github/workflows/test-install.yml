@@ -5,11 +5,13 @@ on:
     paths:
       - 'install.sh'
       - 'install.test.sh'
+      - 'scripts/test-install-atomic.sh'
       - '.github/workflows/test-install.yml'
   pull_request:
     paths:
       - 'install.sh'
       - 'install.test.sh'
+      - 'scripts/test-install-atomic.sh'
       - '.github/workflows/test-install.yml'
   workflow_dispatch:
     inputs:
@@ -101,6 +103,11 @@ jobs:
         run: |
           ./install.test.sh
           echo "✓ Version parsing tests passed"
+
+      - name: Run atomic install tests
+        run: |
+          bash scripts/test-install-atomic.sh
+          echo "✓ Atomic install tests passed"
 
       - name: Test install script with Node.js
         if: matrix.node == 'with-node'
@@ -304,7 +311,7 @@ jobs:
 
       - name: Run shellcheck
         run: |
-          shellcheck -e SC2034,SC2086 install.sh || true
+          shellcheck -e SC2034,SC2086 install.sh scripts/test-install-atomic.sh || true
           echo "✓ Shellcheck completed"
 
       - name: Test all helper functions exist

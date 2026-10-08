@@ -29,7 +29,8 @@ export interface SandboxRepositoryDependencies {
 export function resolveSandboxRepository(
   projectRoot: string,
   requestedCwd: string | undefined,
-  deps: SandboxRepositoryDependencies = {}
+  deps: SandboxRepositoryDependencies = {},
+  mode: 'strict' | 'identity' = 'strict'
 ): SandboxRepositorySelection | undefined {
   const run = deps.execFileSync ?? execFileSync;
   const resolveRealpath = deps.realpathSync ?? realpathSync;
@@ -59,7 +60,7 @@ export function resolveSandboxRepository(
       // Prefer the actual invocation repository, then honor that project root
       // only when Git confirms that the invocation itself is outside a repo.
       if (!requestedCwd && path.resolve(projectRoot) !== invocationCwd) {
-        return resolveSandboxRepository(projectRoot, undefined, { ...deps, cwd: () => projectRoot });
+        return resolveSandboxRepository(projectRoot, undefined, { ...deps, cwd: () => projectRoot }, mode);
       }
       return undefined;
     }
@@ -98,6 +99,7 @@ export function resolveSandboxRepository(
       timeout: 10_000,
     }).trim();
   } catch {
+    if (mode === 'identity') return undefined;
     throw new Error('Sandbox checkout has no usable origin remote; configure origin before retrying.');
   }
   try {
@@ -109,16 +111,42 @@ export function resolveSandboxRepository(
       .trim()
       .toLowerCase();
   } catch {
+    if (mode === 'identity') return undefined;
     throw new Error('Sandbox checkout has no committed HEAD; create or check out a commit before retrying.');
   }
   const repository = parseRepository(remote);
   if (!repository) {
+    if (mode === 'identity') return undefined;
     throw new Error('Sandbox checkout origin must be a GitHub owner/name repository.');
   }
   if (!REVISION_PATTERN.test(revision)) {
+    if (mode === 'identity') return undefined;
     throw new Error(
       'Sandbox checkout HEAD is not a complete commit SHA; check out a committed revision first.'
     );
+  }
+  if (mode === 'identity') {
+    // Identity mode only establishes which repository the invocation belongs
+    // to (for mount scoping and project inference). Revision attestation and
+    // cleanliness are re-verified strictly if the repository is actually
+    // materialized or checked out.
+    const relative = path.relative(canonicalRoot, localCwd);
+    if (relative === '..' || relative.startsWith(`..${path.sep}`) || path.isAbsolute(relative)) {
+      throw new Error(
+        '--cwd is outside the checked-out repository; use a repository-relative cwd or an explicit remote sandbox path.'
+      );
+    }
+    const repositoryName = repository.slice(repository.indexOf('/') + 1);
+    const remoteRoot = `/srv/agent-workforce/${repositoryName}`;
+    const relativePosix = relative.split(path.sep).filter(Boolean).join('/');
+    return {
+      repository,
+      repositoryName,
+      revision,
+      projectRoot: canonicalRoot,
+      repositoryRelativeCwd: relativePosix,
+      workerCwd: remoteCwd ?? (relativePosix ? `${remoteRoot}/${relativePosix}` : remoteRoot),
+    };
   }
 
   let status: string;

@@ -14,6 +14,8 @@ import {
   AGENT37_RELAYCAST_ORIGIN,
   CANONICAL_RELAYCAST_ORIGIN,
   CloudFleetSandboxProvisionError,
+  DEV_CLOUD_API_URL,
+  DEV_RELAYCAST_ORIGIN,
   deleteCloudFleetSandbox,
   ensureCloudFleetSandbox,
   materializeCloudRelayfileRepository,
@@ -28,6 +30,7 @@ const auth = {
   apiUrl: 'https://agentrelay.test/cloud',
 };
 const refreshedAuth = { ...auth, accessToken: 'refreshed' };
+const devAuth = { ...auth, apiUrl: DEV_CLOUD_API_URL };
 const CLOUD_WORKSPACE_ID = '50587328-441d-4acb-b8f3-dbe1b3c5de99';
 const SANDBOX_ID = 'sbx_123e4567-e89b-42d3-a456-426614174000';
 const DAYTONA_PROVIDER_SANDBOX_ID = '223e4567-e89b-42d3-a456-426614174000';
@@ -43,6 +46,12 @@ const CANONICAL_RELAYCAST_TARGET = {
   baseUrl: CANONICAL_RELAYCAST_ORIGIN,
   workspaceId: 'rw_abc',
   relaycastApiKey: 'rk_live_canonical',
+};
+const DEV_RELAYCAST_TARGET = {
+  route: 'canonical' as const,
+  baseUrl: DEV_RELAYCAST_ORIGIN,
+  workspaceId: 'rw_abc',
+  relaycastApiKey: 'rk_live_dev',
 };
 const NON_AGENT_PROVIDER_IDS = ['daytona', 'e2b', 'vercel', 'freestyle', 'microsandbox'] as const;
 const PROVIDER_OUTCOME_MATRIX = NON_AGENT_PROVIDER_IDS.flatMap((providerId) =>
@@ -88,6 +97,24 @@ describe('Cloud fleet sandbox client', () => {
         relaycastApiKey: 'rk_live_canonical',
       })
     ).toMatchObject({ route: 'canonical', baseUrl: CANONICAL_RELAYCAST_ORIGIN });
+  });
+
+  it('trusts the dev canonical Relaycast origin only for the exact dev Cloud API', () => {
+    expect(normalizeRelaycastTarget(DEV_RELAYCAST_TARGET, DEV_CLOUD_API_URL)).toEqual(DEV_RELAYCAST_TARGET);
+
+    for (const apiUrl of [
+      undefined,
+      'https://agentrelay.com/cloud',
+      'https://dev.agentrelay.com',
+      'https://dev.agentrelay.com/cloud/',
+      'https://dev.agentrelay.com/cloud/other',
+      'https://dev.agentrelay.com/cloud?redirect=https://evil.example',
+      'https://user:pass@dev.agentrelay.com/cloud',
+    ]) {
+      expect(() => normalizeRelaycastTarget(DEV_RELAYCAST_TARGET, apiUrl)).toThrow(
+        /untrusted relaycastTarget.baseUrl/
+      );
+    }
   });
 
   it.each([
@@ -340,6 +367,88 @@ describe('Cloud fleet sandbox client', () => {
     ).rejects.toThrow(/mapped Agent37 to a non-isolated/);
   });
 
+  it('accepts the canonical dev target for Agent37 only when authenticated to dev Cloud', async () => {
+    mocks.ensureCloudSession.mockResolvedValue({ auth: devAuth, client: {} });
+    mocks.authorizedApiFetch
+      .mockResolvedValueOnce({
+        response: Response.json({ cloudWorkspaceId: CLOUD_WORKSPACE_ID }),
+        auth: devAuth,
+      })
+      .mockResolvedValueOnce({
+        response: Response.json(
+          {
+            outcome: 'provisioned',
+            providerId: 'agent37',
+            nodeId: 'node-dev',
+            nodeName: SANDBOX_NAME,
+            sandboxId: SANDBOX_ID,
+            providerSandboxId: 'provider-dev',
+            relayWorkspaceId: 'rw_abc',
+            relaycastTarget: DEV_RELAYCAST_TARGET,
+            relayfileMounted: true,
+          },
+          { status: 201 }
+        ),
+        auth: devAuth,
+      });
+
+    await expect(
+      ensureCloudFleetSandbox(
+        {
+          workspaceId: 'rw_abc',
+          name: SANDBOX_NAME,
+          sandboxId: SANDBOX_ID,
+          requiredCapability: 'spawn:codex',
+          providerId: 'agent37',
+          forceProvision: true,
+          workloadProfile: 'long-running-agent',
+        },
+        { apiUrl: DEV_CLOUD_API_URL }
+      )
+    ).resolves.toMatchObject({
+      outcome: 'provisioned',
+      providerId: 'agent37',
+      relaycastTarget: DEV_RELAYCAST_TARGET,
+    });
+  });
+
+  it('validates the target against the auth returned by the ensure request', async () => {
+    mocks.authorizedApiFetch
+      .mockResolvedValueOnce({
+        response: Response.json({ cloudWorkspaceId: CLOUD_WORKSPACE_ID }),
+        auth,
+      })
+      .mockResolvedValueOnce({
+        response: Response.json(
+          {
+            outcome: 'provisioned',
+            providerId: 'agent37',
+            nodeId: 'node-refreshed-dev',
+            nodeName: SANDBOX_NAME,
+            sandboxId: SANDBOX_ID,
+            providerSandboxId: 'provider-refreshed-dev',
+            relayWorkspaceId: 'rw_abc',
+            relaycastTarget: DEV_RELAYCAST_TARGET,
+            relayfileMounted: true,
+          },
+          { status: 201 }
+        ),
+        auth: devAuth,
+      });
+
+    await expect(
+      ensureCloudFleetSandbox({
+        workspaceId: 'rw_abc',
+        name: SANDBOX_NAME,
+        sandboxId: SANDBOX_ID,
+        requiredCapability: 'spawn:codex',
+        providerId: 'agent37',
+        forceProvision: true,
+        workloadProfile: 'long-running-agent',
+      })
+    ).resolves.toMatchObject({ relaycastTarget: DEV_RELAYCAST_TARGET });
+  });
+
   it('resolves the unified workspace and provisions a ready mounted sandbox', async () => {
     mocks.authorizedApiFetch
       .mockResolvedValueOnce({
@@ -407,6 +516,7 @@ describe('Cloud fleet sandbox client', () => {
       providerSandboxId: 'provider-sandbox-1',
       relayWorkspaceId: 'rw_abc',
       relaycastTarget: RELAYCAST_TARGET,
+      relaycastCloudApiUrl: refreshedAuth.apiUrl,
       relayfileMounted: true,
       relayfileMountPath: '/workspace',
       providerId: 'agent37',
@@ -1360,6 +1470,99 @@ describe('Cloud fleet sandbox client', () => {
         providerId: 'agent37',
       });
       expect(result).not.toHaveProperty('providerSandboxId');
+    }
+  );
+
+  it('classifies a capacity 503 as a definitive pre-allocation rejection', async () => {
+    mocks.authorizedApiFetch
+      .mockResolvedValueOnce({
+        response: Response.json({ cloudWorkspaceId: CLOUD_WORKSPACE_ID }),
+        auth,
+      })
+      .mockResolvedValueOnce({
+        response: Response.json(
+          {
+            error: 'Sandbox capacity is exhausted before allocation; no sandbox was created',
+            code: 'sandbox_capacity_exhausted',
+            capacity: [{ provider: 'agent37', current: 14, limit: 10 }],
+            retryable: true,
+            no_sandbox_created: true,
+          },
+          { status: 503 }
+        ),
+        auth,
+      });
+
+    const error = await ensureCloudFleetSandbox({
+      workspaceId: 'rw_abc',
+      requiredCapability: 'spawn:codex',
+      sandboxId: SANDBOX_ID,
+      name: SANDBOX_NAME,
+      forceProvision: true,
+      providerId: 'agent37',
+      workloadProfile: 'long-running-agent',
+    }).catch((caught: unknown) => caught);
+
+    expect(error).toBeInstanceOf(CloudFleetSandboxProvisionError);
+    expect(error).toMatchObject({
+      code: 'sandbox_capacity_exhausted',
+      providerId: 'agent37',
+      sandboxId: undefined,
+      confirmedProvisioned: false,
+      outcomeUnknown: false,
+      noSandboxCreated: true,
+      retryable: true,
+      capacity: [{ provider: 'agent37', current: 14, limit: 10 }],
+    });
+    expect(String(error)).toContain('agent37: 14 current / 10 limit');
+    expect(String(error)).toContain('No sandbox was created');
+  });
+
+  it.each([
+    ['current', 14.5, 10],
+    ['limit', 14, 10.5],
+  ])(
+    'keeps a capacity 503 with fractional %s on the conservative unknown path',
+    async (_field, current, limit) => {
+      mocks.authorizedApiFetch
+        .mockResolvedValueOnce({
+          response: Response.json({ cloudWorkspaceId: CLOUD_WORKSPACE_ID }),
+          auth,
+        })
+        .mockResolvedValueOnce({
+          response: Response.json(
+            {
+              error: 'Sandbox capacity is exhausted before allocation; no sandbox was created',
+              code: 'sandbox_capacity_exhausted',
+              capacity: [{ provider: 'agent37', current, limit }],
+              retryable: true,
+              no_sandbox_created: true,
+            },
+            { status: 503 }
+          ),
+          auth,
+        });
+
+      const error = await ensureCloudFleetSandbox({
+        workspaceId: 'rw_abc',
+        requiredCapability: 'spawn:codex',
+        sandboxId: SANDBOX_ID,
+        name: SANDBOX_NAME,
+        forceProvision: true,
+        providerId: 'agent37',
+        workloadProfile: 'long-running-agent',
+      }).catch((caught: unknown) => caught);
+
+      expect(error).toBeInstanceOf(CloudFleetSandboxProvisionError);
+      expect(error).toMatchObject({
+        code: undefined,
+        sandboxId: SANDBOX_ID,
+        confirmedProvisioned: false,
+        outcomeUnknown: true,
+        noSandboxCreated: false,
+        retryable: false,
+        capacity: [],
+      });
     }
   );
 

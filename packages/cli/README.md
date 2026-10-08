@@ -45,6 +45,8 @@ agent-relay node agent attach <name> --mode view
 agent-relay node agent release <name>
 ```
 
+Local-broker `node agent` subcommands and `node tail` accept `--state-dir <dir>`, `--broker-url <url>`, and `--api-key <key>` to target a broker other than the current project's — for example a fleet node started with `node up --state-dir`. `--state-dir` may name the broker state dir or a fleet node directory whose broker state lives in `state/`. An explicit `--state-dir` reads only that broker's `connection.json` (`--broker-url` may still override its URL), ignoring `RELAY_BROKER_URL` / `RELAY_BROKER_API_KEY`. Without flags, a nonblank `RELAY_BROKER_URL` or `RELAY_BROKER_API_KEY` selects the local broker; otherwise the enclosing project's broker is used, except that flag-free `attach` and `message flush|hold|auto` may auto-route to a live fleet placement. Remote routes differ: `attach --node` rejects these flags, `attach --ssh-host` rejects `--broker-url` / `--api-key`, and `message … --node` ignores them.
+
 `node agent spawn` and `node agent new` accept `--runtime auto|native|pty`. `auto` is the default and keeps experimental dual-runtime adapters on PTY. Claude Code, Codex, and OpenCode support explicit native or PTY selection; Pi and Deep Agents are experimental native-only harnesses and require `--runtime native`.
 
 For AI SDK native harnesses, attach renders structured activity, text, tools, approvals, files, usage, and lifecycle events. Add `--json` for NDJSON, `--reasoning` for reasoning events, or `--diagnostics` for sidecar diagnostics. Native harness `drive` is line-oriented and acknowledged; native harness `passthrough` is unsupported because no terminal stream exists. PTY attach behavior is unchanged.
@@ -449,9 +451,15 @@ through Cloud at spawn time. The key travels in an authenticated POST body,
 never a URL. Nested packages share the repository pin; an existing subproject
 pin or `AGENT_RELAY_PROJECT` remains an explicit workspace override.
 
-Large workspaces can add only the other live subtrees an agent needs. Pass one
-or more explicit directory roots after `--sandbox-relayfile-path`; the inferred
-repository, its source metadata, and `.skills` remain mounted automatically.
+Large workspaces can be scoped to only the live subtrees an agent needs. Pass
+one or more explicit directory roots after `--sandbox-relayfile-path`; the
+supplied list is the complete mount set — nothing else is added. To include the
+inferred repository, list its `contents/**` root explicitly (for example
+`/github/repos/Owner/repo/contents/**`); when the flag is omitted the inferred
+repository, its source metadata, and `.skills` are mounted automatically. When
+the list omits the repository root, the worker starts at the mount root
+(`/workspace`) rather than the repository tree, and a repo-relative `--cwd` is
+rejected.
 Cloud validates the `/path/**` form and materializes those roots before the
 agent starts:
 
@@ -489,6 +497,13 @@ agent-relay cloud workspaces
 agent-relay cloud enroll --workspace "Chief HQ"
 agent-relay node up
 ```
+
+If `/api/session` reports node control as `terminal` with reason
+`env_override_rejected`, the active `RELAY_NODE_TOKEN` is stale and shadows a
+different credential in the broker's scoped cache. Re-enroll the Cloud node and
+restart it, or unset a manually exported `RELAY_NODE_TOKEN`. Deleting only the
+Relaycast node row is not enough for a Cloud-enrolled node: its Fleet enrollment
+record restores the stored token on the next `agent-relay node up`.
 
 `agent-relay cloud whoami` also prints the current organization and workspace IDs.
 
