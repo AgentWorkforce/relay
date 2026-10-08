@@ -739,6 +739,17 @@ async function promptSubscribeOptions(
   provider: string | undefined,
   opts: Record<string, unknown>
 ): Promise<{ provider: string; resource: string; to: string }> {
+  // Fleet PTYs have a broker-assigned identity but need not be discoverable
+  // through the desktop session socket. Use the existing owner-authorized
+  // agent subscription route, which verifies the identity in this workspace.
+  if (opts.to === 'self') {
+    if (opts.spawn) throw new Error('--to self cannot be combined with --spawn.');
+    const name = process.env.RELAY_AGENT_NAME?.trim();
+    if (!name) {
+      throw new Error('--to self requires RELAY_AGENT_NAME from a relay worker; otherwise use --to @agent.');
+    }
+    opts = { ...opts, to: `@${name}` };
+  }
   if (provider && typeof opts.resource === 'string' && typeof opts.to === 'string') {
     return { provider, resource: opts.resource, to: opts.to };
   }
@@ -2093,7 +2104,7 @@ export function registerIntegrationCommands(
       .command('subscribe [provider]')
       .description('Subscribe a relay recipient to a relayfile integration')
       .option('--resource <value>', 'Provider-native resource (channel, project, label, etc.)')
-      .option('--to <target>', 'Relay recipient, e.g. @agent or #channel')
+      .option('--to <target>', 'Relay recipient: @agent, #channel, or self (broker worker identity)')
       .option('--spawn <cli>', 'Launch and confirm a live recipient before subscribing the explicit resource')
       .option(
         '--spawn-arg <value>',

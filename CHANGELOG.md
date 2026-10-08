@@ -5,7 +5,11 @@ All notable changes to Agent Relay will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
+## [Unreleased - Minor]
+
+### Added
+
+- `agent-relay integration subscribe --to self` routes provider events to the broker worker's registered identity, allowing fleet workers to subscribe without desktop session detection.
 
 ## [13.2.0] - 2026-10-08
 
