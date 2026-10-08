@@ -15,7 +15,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
-- Unconfirmed `fleet spawn` results report `spawn_pending` with invocation diagnostics and exit 8. Node heartbeat presence is reported as liveness evidence but never confirms the spawn, because heartbeats cannot tell this invocation's worker from an earlier one with the same name.
+- Unconfirmed `fleet spawn` results keep the `spawn_unconfirmed` code, now with `state: "pending"`, invocation diagnostics, liveness evidence and exit 8. Node heartbeat presence is reported as liveness evidence but never confirms the spawn, because heartbeats cannot tell this invocation's worker from an earlier one with the same name.
 - Removal waits exit 8 if the registration remains present; scripts must handle nonzero exits beyond `$? -eq 1`. Waits remain opt-in, and unavailable verification reads preserve the asynchronous acknowledgement.
 
 ### Fixed

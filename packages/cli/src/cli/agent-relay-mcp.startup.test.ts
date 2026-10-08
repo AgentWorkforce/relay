@@ -1172,7 +1172,7 @@ describe('createAgentRelayMcpServer', () => {
         isError: true,
         structuredContent: {
           error: {
-            code: 'spawn_pending',
+            code: 'spawn_unconfirmed',
             invocationId: 'inv_nested',
             dispatchState: 'dispatched',
             node: 'nested-node',
@@ -1217,7 +1217,7 @@ describe('createAgentRelayMcpServer', () => {
         isError: true,
         structuredContent: {
           error: {
-            code: 'spawn_pending',
+            code: 'spawn_unconfirmed',
             state: 'pending',
             dispatchState: 'unknown',
             message: expect.stringContaining('outcome is pending'),
@@ -1246,7 +1246,7 @@ describe('createAgentRelayMcpServer', () => {
       isError: true,
       structuredContent: {
         error: {
-          code: 'spawn_pending',
+          code: 'spawn_unconfirmed',
           state: 'pending',
           dispatchState: 'unknown',
           invocationId: 'inv_1',
@@ -1287,7 +1287,7 @@ describe('createAgentRelayMcpServer', () => {
       .handler({ name: 'worker', persona: 'reviewer' });
     expect(result).toMatchObject({
       isError: true,
-      structuredContent: { error: { code: 'spawn_pending', invocationId: 'inv_child', node: 'child-node' } },
+      structuredContent: { error: { code: 'spawn_unconfirmed', invocationId: 'inv_child', node: 'child-node' } },
     });
   });
 
@@ -1315,7 +1315,7 @@ describe('createAgentRelayMcpServer', () => {
       // so even fresh target-node presence leaves the spawn pending.
       expect(result).toMatchObject({
         isError: true,
-        structuredContent: { error: { code: 'spawn_pending', state: 'pending', liveness: { evidence } } },
+        structuredContent: { error: { code: 'spawn_unconfirmed', state: 'pending', liveness: { evidence } } },
       });
     }
   );
@@ -1402,7 +1402,7 @@ describe('createAgentRelayMcpServer', () => {
       isError: true,
       structuredContent: {
         error: {
-          code: 'spawn_pending',
+          code: 'spawn_unconfirmed',
           invocationId: 'inv_nested',
           dispatchState: 'dispatched',
           node: 'nested-node',

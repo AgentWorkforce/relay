@@ -1092,7 +1092,7 @@ describe('fleet command support', () => {
 
     const rendered = errors.join('\n');
     expect(rendered).toContain('do not retry blindly');
-    expect(rendered).toContain('"code":"spawn_pending"');
+    expect(rendered).toContain('"code":"spawn_unconfirmed"');
     expect(rendered).toContain('"state":"pending"');
     expect(rendered).toContain('"dispatchState":"dispatched"');
     expect(rendered).toContain(`"invocationId":"${invocationId}"`);
@@ -1187,7 +1187,7 @@ describe('fleet command support', () => {
         expect(exit).toHaveBeenCalledWith(8);
         expect(logs).toEqual([]);
         const rendered = errors.join('');
-        expect(rendered).toContain('"code":"spawn_pending"');
+        expect(rendered).toContain('"code":"spawn_unconfirmed"');
         expect(rendered).toContain(`"invocationId":"${invocationId}"`);
         expect(rendered).toContain('"evidence":"live"');
         expect(rendered).toContain('may be an earlier worker');
@@ -3374,7 +3374,7 @@ describe('fleet command support', () => {
     ).rejects.toThrow('__exit__');
 
     expect(errors.join('\n')).toContain('dispatch may still be running');
-    expect(errors.join('\n')).toContain('"code":"spawn_pending"');
+    expect(errors.join('\n')).toContain('"code":"spawn_unconfirmed"');
     expect(ensureCloudFleetSandbox).toHaveBeenCalledWith(
       expect.objectContaining({
         workloadProfile: 'long-running-agent',

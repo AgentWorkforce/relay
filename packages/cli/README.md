@@ -589,7 +589,8 @@ Hosted equivalents live under `agent-relay cloud …`.
 
 ### Pending fleet spawns and name reuse
 
-An accepted spawn whose result is still unknown returns `spawn_pending` (exit 8),
+An accepted spawn whose result is still unknown returns `spawn_unconfirmed` with
+`state: "pending"` (exit 8),
 with its invocation ID, dispatch state, and available liveness evidence. Check
 `agent-relay fleet agent list --node <node>` before retrying. A heartbeat that
 lists a worker with the requested name is reported as evidence but keeps the

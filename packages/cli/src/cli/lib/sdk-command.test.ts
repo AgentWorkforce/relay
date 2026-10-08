@@ -98,7 +98,7 @@ describe('runSdk structured error output', () => {
       );
     });
     expect(sdkDeps.exit).toHaveBeenCalledWith(8);
-    expect(errors.join('')).toContain('"code":"spawn_pending"');
+    expect(errors.join('')).toContain('"code":"spawn_unconfirmed"');
     expect(errors.join('')).toContain('"liveness":{"evidence":"unknown"}');
     await runSdk(sdkDeps, async () => {
       throw Object.assign(new Error('plain'), { exitCode: 0 });

@@ -31,15 +31,18 @@ export class FleetSpawnError extends Error {
   readonly dispatchState?: string;
   readonly receipt?: Record<string, unknown>;
   constructor(
-    readonly code: 'spawn_pending' | 'spawn_name_taken',
+    // `spawn_unconfirmed` is the established public code for an accepted spawn
+    // whose outcome is unknown (relay#1563); keep it so callers keyed on it keep
+    // working, and carry the pending outcome in `state` and the exit code.
+    readonly code: 'spawn_unconfirmed' | 'spawn_name_taken',
     message: string,
     context: SpawnContext,
     readonly liveness?: SpawnLiveness,
     readonly diagnostic?: string
   ) {
     super(message);
-    this.state = code === 'spawn_pending' ? 'pending' : 'failed';
-    this.exitCode = code === 'spawn_pending' ? 8 : 1;
+    this.state = code === 'spawn_unconfirmed' ? 'pending' : 'failed';
+    this.exitCode = code === 'spawn_unconfirmed' ? 8 : 1;
     this.invocationId = context.invocationId;
     this.node = context.node;
     this.dispatchState = context.dispatchState;
@@ -50,7 +53,7 @@ export class FleetSpawnError extends Error {
 export function mayStillBeRunning(error: unknown): boolean {
   return (
     (error instanceof RelayPlacementError && error.state === 'unconfirmed_may_be_running') ||
-    (error instanceof FleetSpawnError && error.code === 'spawn_pending')
+    (error instanceof FleetSpawnError && error.code === 'spawn_unconfirmed')
   );
 }
 
@@ -68,12 +71,12 @@ export function pendingSpawnError(
       ? `A worker with this name is listed by a node heartbeat, but heartbeats do not identify the invocation that started it, so it may be an earlier worker rather than this spawn. `
       : '';
   return new FleetSpawnError(
-    'spawn_pending',
+    'spawn_unconfirmed',
     `Spawn of ${JSON.stringify(name)} was accepted; its outcome is pending. ` +
       `Evidence: ${liveness.evidence}${liveness.node ? ` on ${JSON.stringify(liveness.node)}` : ''}. ` +
       attribution +
       `Invocation: ${context.invocationId ?? 'unavailable'}; dispatch: ${context.dispatchState ?? 'unknown'}. ` +
-      `Check \`agent-relay fleet agent list${nodeOption}\` before retrying. ` +
+      `Do not retry blindly: check \`agent-relay fleet agent list${nodeOption}\` first. ` +
       `Only if no worker is running and you intend to reclaim the name, run \`agent-relay agent remove ${shellQuote(name)} --wait\` and wait for clearance before respawning.`,
     context,
     liveness,

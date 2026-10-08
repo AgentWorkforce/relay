@@ -126,7 +126,7 @@ describe('spawn liveness resolution', () => {
       { invocationId: 'inv', node: 'target', dispatchState: 'dispatched' },
       { evidence: 'live', node: 'target', heartbeatAgeMs: 0 }
     );
-    expect(pending.code).toBe('spawn_pending');
+    expect(pending.code).toBe('spawn_unconfirmed');
     expect(pending.message).toContain('may be an earlier worker');
     expect(pending.message).toContain('Invocation: inv');
   });
