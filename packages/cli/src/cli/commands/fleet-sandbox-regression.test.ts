@@ -42,6 +42,17 @@ function registerSandboxCommand(overrides: {
   placement?: ReturnType<typeof vi.fn>;
 }): Command {
   const placement = overrides.placement ?? vi.fn(async () => ({ invocationId: 'inv_test' }));
+  // Like the engine, the dispatch receipt names the node the spawn ran on.
+  let ensuredNodeId: string | undefined;
+  const ensureCloudFleetSandbox = async (...args: unknown[]) => {
+    const result = await overrides.ensureCloudFleetSandbox(...args);
+    ensuredNodeId = (result as { nodeId?: string } | undefined)?.nodeId;
+    return result;
+  };
+  const spawn = async (input: unknown) => ({
+    dispatchedNodeId: ensuredNodeId,
+    ...((await placement(input)) as Record<string, unknown>),
+  });
   const register = vi.fn(async () => ({ token: 'at_live_launcher' }));
   const release = vi.fn(async () => ({ released: true, deleted: true }));
   const createWorkspaceRelay = vi.fn(() => ({
@@ -69,7 +80,7 @@ function registerSandboxCommand(overrides: {
     ...(overrides.materializeCloudRelayfileRepository
       ? { materializeCloudRelayfileRepository: overrides.materializeCloudRelayfileRepository as never }
       : {}),
-    ensureCloudFleetSandbox: overrides.ensureCloudFleetSandbox as never,
+    ensureCloudFleetSandbox: ensureCloudFleetSandbox as never,
     resolveWorkspaceSelection: () => ({
       key: 'rk_live_workspace',
       source: 'project',
@@ -79,7 +90,7 @@ function registerSandboxCommand(overrides: {
     persistWorkspaceRelaycastTarget: () => true,
     deleteCloudFleetSandbox: vi.fn(async () => undefined),
     sdk: {
-      createAgentRelay: vi.fn(() => ({ messaging: { placement: { spawn: placement } } })) as never,
+      createAgentRelay: vi.fn(() => ({ messaging: { placement: { spawn } } })) as never,
       createWorkspaceRelay: createWorkspaceRelay as never,
       createWorkspace: vi.fn() as never,
       log: vi.fn(),

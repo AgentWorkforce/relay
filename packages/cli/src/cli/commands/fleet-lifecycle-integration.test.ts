@@ -101,7 +101,11 @@ describe('fleet CLI lifecycle routing', () => {
       } as never;
     });
     const placement = {
-      spawn: vi.fn(async () => ({ invocationId: 'inv_lifecycle', node: { name: nodeName } })),
+      spawn: vi.fn(async () => ({
+        invocationId: 'inv_lifecycle',
+        dispatchedNodeId: 'node-1',
+        node: { name: nodeName },
+      })),
     };
     const ensureCloudFleetSandbox = vi.fn(async () => ({
       outcome: 'provisioned' as const,

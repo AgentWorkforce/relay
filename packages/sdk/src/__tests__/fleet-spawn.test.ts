@@ -50,6 +50,8 @@ function harness(
     return {
       id: 'inv_1',
       status: 'completed',
+      dispatchedNodeId: 'node_1',
+      handlerNodeId: 'node_1',
       node: { id: 'node_1', name: 'fleet-sandbox-node', status: 'online', capabilities: [] },
       placement: {
         capability: 'spawn:claude',
@@ -76,6 +78,8 @@ function harness(
     createWorkspaceRelay,
     createAgentRelay,
     startFleetNodeAttachProxy,
+    // Never let a test persist a Relaycast target into a real project session.
+    persistRelaycastTarget: vi.fn(),
     warn: vi.fn(),
   } as unknown as SpawnFleetSandboxDependencies;
   return {
@@ -155,6 +159,28 @@ describe('spawnFleetSandbox', () => {
     );
   });
 
+  it('returns the sandbox without its Relaycast credential', async () => {
+    const h = harness({
+      ensure: async () =>
+        provisioned({
+          relaycastTarget: {
+            route: 'canonical',
+            baseUrl: 'https://cast.agentrelay.com',
+            workspaceId: 'rw_1',
+            relaycastApiKey: 'rk_live_secret',
+          },
+        }),
+    });
+    const handle = await spawnFleetSandbox(base, h.deps);
+    expect(handle.sandbox.relaycastTarget).toEqual({
+      route: 'canonical',
+      baseUrl: 'https://cast.agentrelay.com',
+      workspaceId: 'rw_1',
+    });
+    // @ts-expect-error the redacted type has no credential field
+    expect(handle.sandbox.relaycastTarget?.relaycastApiKey).toBeUndefined();
+  });
+
   it('tears down idempotently: releases the agent, then deletes the sandbox it provisioned', async () => {
     const h = harness();
     const handle = await spawnFleetSandbox(base, h.deps);
@@ -199,6 +225,27 @@ describe('spawnFleetSandbox', () => {
       name: 'FleetSandboxSpawnError',
       code: 'placement_mismatch',
     });
+    expect(h.calls).toContain('release:sandbox-worker');
+    expect(h.deleteCloudFleetSandbox).toHaveBeenCalledTimes(1);
+  });
+
+  it('fails closed when no dispatch receipt proves the sandbox node', async () => {
+    const h = harness({
+      spawn: async () => ({
+        id: 'inv_1',
+        status: 'completed',
+        node: { id: 'node_1', name: 'fleet-sandbox-node', status: 'online', capabilities: [] },
+        placement: {
+          capability: 'spawn:claude',
+          node: 'fleet-sandbox-node',
+          attempts: 1,
+          queued: false,
+          state: 'ready',
+          confirmed: true,
+        },
+      }),
+    });
+    await expect(spawnFleetSandbox(base, h.deps)).rejects.toMatchObject({ code: 'placement_mismatch' });
     expect(h.calls).toContain('release:sandbox-worker');
     expect(h.deleteCloudFleetSandbox).toHaveBeenCalledTimes(1);
   });

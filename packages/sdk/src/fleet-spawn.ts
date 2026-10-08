@@ -48,6 +48,16 @@ export type FleetSandboxReadyResult = Exclude<
   { outcome: 'provisioning_timeout' }
 >;
 
+/** A Relaycast target without its credential. */
+export type RedactedCloudFleetRelaycastTarget = Omit<CloudFleetRelaycastTarget, 'relaycastApiKey'>;
+
+/** An ensured sandbox with the Relaycast credential removed. */
+export type RedactedFleetSandboxResult = EnsureCloudFleetSandboxResult extends infer Result
+  ? Result extends { relaycastTarget?: CloudFleetRelaycastTarget }
+    ? Omit<Result, 'relaycastTarget'> & { relaycastTarget?: RedactedCloudFleetRelaycastTarget }
+    : Result
+  : never;
+
 export interface SpawnFleetSandboxInput {
   /** Agent harness to start, e.g. `claude` or `codex`. */
   cli: string;
@@ -139,7 +149,7 @@ export interface FleetSandboxHandle {
   /** True when this call provisioned the sandbox and `destroy()` deletes it. */
   ownsSandbox: boolean;
   /** The ensured sandbox, with the Relaycast credential removed. */
-  sandbox: EnsureCloudFleetSandboxResult;
+  sandbox: RedactedFleetSandboxResult;
   invocation: RelaySpawnPlacementAck;
   /** Attach to the live agent's terminal through a private local socket. */
   attach(options?: { mode?: FleetNodeAttachOptions['mode'] }): Promise<FleetNodeAttachProxy>;
@@ -204,10 +214,10 @@ function nonEmpty(value: string | undefined): string | undefined {
 }
 
 /** Remove the Relaycast credential so the result can be logged or returned. */
-export function redactFleetSandbox(sandbox: EnsureCloudFleetSandboxResult): EnsureCloudFleetSandboxResult {
-  if (!sandbox.relaycastTarget) return sandbox;
+export function redactFleetSandbox(sandbox: EnsureCloudFleetSandboxResult): RedactedFleetSandboxResult {
+  if (!sandbox.relaycastTarget) return sandbox as RedactedFleetSandboxResult;
   const { relaycastApiKey: _secret, ...target } = sandbox.relaycastTarget;
-  return { ...sandbox, relaycastTarget: target } as EnsureCloudFleetSandboxResult;
+  return { ...sandbox, relaycastTarget: target } as RedactedFleetSandboxResult;
 }
 
 export async function spawnFleetSandbox(
@@ -582,16 +592,21 @@ export async function spawnFleetSandbox(
         ...(invocation.node?.name === ready.nodeName ? [invocation.node.id, invocation.node.nodeId] : []),
       ].filter((id): id is string => typeof id === 'string' && id.length > 0)
     );
-    const landedNodeId = [invocation.dispatchedNodeId, invocation.handlerNodeId].find(
-      (id): id is string => typeof id === 'string' && id.length > 0 && !sandboxNodeIds.has(id)
+    const receiptNodeIds = [invocation.dispatchedNodeId, invocation.handlerNodeId].filter(
+      (id): id is string => typeof id === 'string' && id.length > 0
     );
-    if (landedNodeId !== undefined) {
-      await releaseAgent('Fleet sandbox spawn landed on an unexpected node').catch((error) => {
-        deps.warn(`Releasing the misplaced agent '${name}' failed: ${errorMessage(error)}`);
+    const landedNodeId = receiptNodeIds.find((id) => !sandboxNodeIds.has(id));
+    if (receiptNodeIds.length === 0 || landedNodeId !== undefined) {
+      // No receipt proves the sandbox node, or one names another node: fail
+      // closed so an agent routed elsewhere never escapes the sandbox.
+      await releaseAgent('Fleet sandbox spawn landed on an unverified node').catch((error) => {
+        deps.warn(`Releasing the unverified agent '${name}' failed: ${errorMessage(error)}`);
       });
       throw new FleetSandboxSpawnError(
         'placement_mismatch',
-        `Agent '${name}' landed on node '${landedNodeId}', not sandbox node '${ready.nodeName}' (${ready.nodeId}).`
+        landedNodeId === undefined
+          ? `Agent '${name}' was dispatched without a node receipt proving sandbox node '${ready.nodeName}' (${ready.nodeId}).`
+          : `Agent '${name}' landed on node '${landedNodeId}', not sandbox node '${ready.nodeName}' (${ready.nodeId}).`
       );
     }
   } catch (error) {

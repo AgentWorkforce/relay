@@ -1103,6 +1103,7 @@ describe('fleet command support', () => {
     const placement = {
       spawn: vi.fn(async () => ({
         invocationId: 'inv_sandbox',
+        dispatchedNodeId: 'node-1',
         node: { name: 'e2b-codex' },
       })),
     };
@@ -2223,7 +2224,11 @@ describe('fleet command support', () => {
     const selectionOptions: Record<string, unknown>[] = [];
     const persistWorkspaceRelaycastTarget = vi.fn(() => true);
     const placement = {
-      spawn: vi.fn(async () => ({ invocationId: 'inv_inferred', node: { name: 'cloud-node' } })),
+      spawn: vi.fn(async () => ({
+        invocationId: 'inv_inferred',
+        dispatchedNodeId: 'node-1',
+        node: { name: 'cloud-node' },
+      })),
     };
     const register = vi.fn(async () => ({ token: 'at_live_launcher' }));
     const release = vi.fn(async () => ({ released: true, deleted: true }));
