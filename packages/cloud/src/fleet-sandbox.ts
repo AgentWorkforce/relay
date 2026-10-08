@@ -1169,10 +1169,12 @@ export async function ensureCloudFleetSandbox(
   if (asyncPreparation && sandboxIdentity.sandboxId === undefined) {
     throw new Error('Async Cloud fleet preparation requires a caller-declared sandboxId.');
   }
-  // Async-v1 is the replay-safe Agent37 contract. Make the implicit default
-  // explicit on the wire and in cleanup proof so a malformed ready result can
-  // never lose the provider identity merely because the CLI omitted --provider.
-  const requestedProviderId = asyncPreparation ? (input.providerId ?? 'agent37') : input.providerId;
+  // Cloud routes an unpinned async-v1 request to Agent37 itself, so the wire
+  // carries only the caller's provider: pinning the implied default would turn
+  // capability routing into the strict explicit-provider path. Once Cloud has
+  // confirmed a durable async record, attribute it to Agent37 so a malformed
+  // ready result can never lose the provider needed for exact cleanup.
+  const asyncProviderId = asyncPreparation ? (input.providerId ?? 'agent37') : input.providerId;
   const preparationPollIntervalMs = normalizeTimerMs(
     options.preparationPollIntervalMs ?? DEFAULT_ASYNC_PREPARATION_POLL_INTERVAL_MS,
     false,
@@ -1200,7 +1202,7 @@ export async function ensureCloudFleetSandbox(
     ...(input.mountRelayfile !== undefined ? { mountRelayfile: input.mountRelayfile } : {}),
     ...(input.relayfilePaths === undefined ? {} : { relayfilePaths: [...input.relayfilePaths] }),
     ...(input.forceProvision !== undefined ? { forceProvision: input.forceProvision } : {}),
-    ...(requestedProviderId !== undefined ? { providerId: requestedProviderId } : {}),
+    ...(input.providerId !== undefined ? { providerId: input.providerId } : {}),
     ...(input.workloadProfile !== undefined ? { workloadProfile: input.workloadProfile } : {}),
     ...(input.waitTimeoutMs !== undefined ? { waitTimeoutMs: input.waitTimeoutMs } : {}),
     ...(input.repos !== undefined && input.repos.length > 0 ? { repos: [...input.repos] } : {}),
@@ -1209,6 +1211,12 @@ export async function ensureCloudFleetSandbox(
   const ensureBody = JSON.stringify(ensureRequest);
 
   let sawAcceptedPreparation = false;
+  // Before Cloud confirms an async record, an older Cloud may have routed the
+  // request synchronously, so only the caller's own provider is attributable.
+  const attributedProvider = (): { providerId?: CloudFleetSandboxProviderId } => {
+    const providerId = sawAcceptedPreparation ? asyncProviderId : input.providerId;
+    return providerId === undefined ? {} : { providerId };
+  };
   let lastProgressSignature: string | undefined;
   const consumePreparation = (payload: unknown): EnsureCloudFleetSandboxResult | null => {
     const envelope = readAsyncPreparationEnvelope(payload, sandboxIdentity.sandboxId!);
@@ -1234,7 +1242,7 @@ export async function ensureCloudFleetSandbox(
           resolved.cloudWorkspaceId,
           sandboxIdentity.sandboxId!,
           sandboxIdentity.name,
-          requestedProviderId,
+          asyncProviderId,
           repoRevisions,
           activeAuth.apiUrl
         );
@@ -1243,7 +1251,7 @@ export async function ensureCloudFleetSandbox(
           envelope.result,
           sandboxIdentity.sandboxId!,
           sandboxIdentity.name,
-          requestedProviderId
+          asyncProviderId
         );
         throw new CloudFleetSandboxProvisionError(
           error instanceof Error ? error.message : 'Cloud fleet sandbox preparation result was invalid.',
@@ -1251,7 +1259,7 @@ export async function ensureCloudFleetSandbox(
             cloudWorkspaceId: resolved.cloudWorkspaceId,
             sandboxId: sandboxIdentity.sandboxId,
             ...(sandboxIdentity.name === undefined ? {} : { nodeName: sandboxIdentity.name }),
-            ...(requestedProviderId === undefined ? {} : { providerId: requestedProviderId }),
+            ...(asyncProviderId === undefined ? {} : { providerId: asyncProviderId }),
             ...(confirmedProvisioned ? { confirmedProvisioned: true } : { outcomeUnknown: true }),
             cause: error,
           }
@@ -1270,7 +1278,7 @@ export async function ensureCloudFleetSandbox(
           cloudWorkspaceId: resolved.cloudWorkspaceId,
           sandboxId: sandboxIdentity.sandboxId,
           ...(sandboxIdentity.name === undefined ? {} : { nodeName: sandboxIdentity.name }),
-          ...(requestedProviderId === undefined ? {} : { providerId: requestedProviderId }),
+          ...(asyncProviderId === undefined ? {} : { providerId: asyncProviderId }),
           confirmedProvisioned: true,
         }
       );
@@ -1420,7 +1428,7 @@ export async function ensureCloudFleetSandbox(
             cloudWorkspaceId: resolved.cloudWorkspaceId,
             sandboxId: sandboxIdentity.sandboxId,
             ...(sandboxIdentity.name === undefined ? {} : { nodeName: sandboxIdentity.name }),
-            ...(requestedProviderId === undefined ? {} : { providerId: requestedProviderId }),
+            ...attributedProvider(),
             ...(sawAcceptedPreparation ? { confirmedProvisioned: true } : { outcomeUnknown: true }),
             cause: pollError,
           }
@@ -1472,7 +1480,7 @@ export async function ensureCloudFleetSandbox(
           cloudWorkspaceId: resolved.cloudWorkspaceId,
           sandboxId: sandboxIdentity.sandboxId,
           ...(sandboxIdentity.name === undefined ? {} : { nodeName: sandboxIdentity.name }),
-          ...(requestedProviderId === undefined ? {} : { providerId: requestedProviderId }),
+          ...(input.providerId === undefined ? {} : { providerId: input.providerId }),
           outcomeUnknown: true,
           cause: error,
         }
@@ -1509,7 +1517,7 @@ export async function ensureCloudFleetSandbox(
             cloudWorkspaceId: resolved.cloudWorkspaceId,
             sandboxId: sandboxIdentity.sandboxId,
             ...(sandboxIdentity.name === undefined ? {} : { nodeName: sandboxIdentity.name }),
-            ...(requestedProviderId === undefined ? {} : { providerId: requestedProviderId }),
+            ...(asyncProviderId === undefined ? {} : { providerId: asyncProviderId }),
             confirmedProvisioned: true,
             cause: pollError,
           }
@@ -1537,7 +1545,7 @@ export async function ensureCloudFleetSandbox(
             cloudWorkspaceId: resolved.cloudWorkspaceId,
             sandboxId: sandboxIdentity.sandboxId,
             ...(sandboxIdentity.name === undefined ? {} : { nodeName: sandboxIdentity.name }),
-            ...(requestedProviderId === undefined ? {} : { providerId: requestedProviderId }),
+            ...attributedProvider(),
             ...(sawAcceptedPreparation ? { confirmedProvisioned: true } : { outcomeUnknown: true }),
             cause: pollError,
           }
@@ -1558,7 +1566,7 @@ export async function ensureCloudFleetSandbox(
       throw new CloudFleetSandboxProvisionError(mismatch.message, {
         cloudWorkspaceId: resolved.cloudWorkspaceId,
         ...(sandboxIdentity.name === undefined ? {} : { nodeName: sandboxIdentity.name }),
-        ...(requestedProviderId === undefined ? {} : { providerId: requestedProviderId }),
+        ...(input.providerId === undefined ? {} : { providerId: input.providerId }),
         outcomeUnknown: true,
         cause: mismatch,
       });
@@ -1586,7 +1594,7 @@ export async function ensureCloudFleetSandbox(
         cloudWorkspaceId: resolved.cloudWorkspaceId,
         ...(sandboxIdentity.sandboxId === undefined ? {} : { sandboxId: sandboxIdentity.sandboxId }),
         ...(sandboxIdentity.name === undefined ? {} : { nodeName: sandboxIdentity.name }),
-        ...(requestedProviderId === undefined ? {} : { providerId: requestedProviderId }),
+        ...(input.providerId === undefined ? {} : { providerId: input.providerId }),
         outcomeUnknown: true,
         cause: error,
       });
@@ -1596,7 +1604,7 @@ export async function ensureCloudFleetSandbox(
         cloudWorkspaceId: resolved.cloudWorkspaceId,
         ...(sandboxIdentity.sandboxId === undefined ? {} : { sandboxId: sandboxIdentity.sandboxId }),
         ...(sandboxIdentity.name === undefined ? {} : { nodeName: sandboxIdentity.name }),
-        ...(requestedProviderId === undefined ? {} : { providerId: requestedProviderId }),
+        ...(input.providerId === undefined ? {} : { providerId: input.providerId }),
         outcomeUnknown: true,
         cause: error,
       });
@@ -1609,7 +1617,7 @@ export async function ensureCloudFleetSandbox(
       resolved.cloudWorkspaceId,
       sandboxIdentity.sandboxId,
       sandboxIdentity.name,
-      requestedProviderId,
+      input.providerId,
       repoRevisions,
       activeAuth.apiUrl
     );
@@ -1618,7 +1626,7 @@ export async function ensureCloudFleetSandbox(
       payload,
       sandboxIdentity.sandboxId,
       sandboxIdentity.name,
-      requestedProviderId
+      input.providerId
     );
     throw new CloudFleetSandboxProvisionError(
       error instanceof Error ? error.message : 'Cloud fleet sandbox response was invalid.',
@@ -1626,7 +1634,7 @@ export async function ensureCloudFleetSandbox(
         cloudWorkspaceId: resolved.cloudWorkspaceId,
         ...(sandboxIdentity.sandboxId === undefined ? {} : { sandboxId: sandboxIdentity.sandboxId }),
         ...(sandboxIdentity.name === undefined ? {} : { nodeName: sandboxIdentity.name }),
-        ...(requestedProviderId === undefined ? {} : { providerId: requestedProviderId }),
+        ...(input.providerId === undefined ? {} : { providerId: input.providerId }),
         ...(confirmedProvisioned ? { confirmedProvisioned: true } : { outcomeUnknown: true }),
         cause: error,
       }

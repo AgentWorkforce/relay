@@ -644,16 +644,61 @@ describe('Cloud fleet sandbox client', () => {
       [`/api/v1/fleet/nodes/sandbox/${SANDBOX_ID}/preparation`, 'POST'],
       [`/api/v1/fleet/nodes/sandbox/${SANDBOX_ID}/preparation`, 'POST'],
     ]);
-    expect(JSON.parse(String(requests[0]?.[2]?.body))).toMatchObject({
+    const ensureBody = JSON.parse(String(requests[0]?.[2]?.body));
+    expect(ensureBody).toMatchObject({
       preparationMode: 'async-v1',
       sandboxId: SANDBOX_ID,
-      providerId: 'agent37',
     });
+    // Cloud routes unpinned async-v1 to Agent37 itself; naming the provider
+    // would switch Cloud to the strict explicit-provider path (relay#1656).
+    expect(ensureBody).not.toHaveProperty('providerId');
     expect(progress.mock.calls.map(([value]) => value)).toEqual([
       expect.objectContaining({ state: 'pending', phase: 'agent_relay_cli_bootstrap', generation: 0 }),
       expect.objectContaining({ state: 'pending', phase: 'relayfile_mount_bootstrap', generation: 1 }),
       expect.objectContaining({ state: 'ready', phase: 'broker_visible', generation: 2 }),
     ]);
+  });
+
+  it('accepts an older Cloud capability-routing an unpinned async request to another provider', async () => {
+    mocks.authorizedApiFetch
+      .mockResolvedValueOnce({
+        response: Response.json({ cloudWorkspaceId: CLOUD_WORKSPACE_ID }),
+        auth,
+      })
+      .mockResolvedValueOnce({
+        response: Response.json(
+          {
+            outcome: 'provisioned',
+            nodeId: 'node-routed',
+            nodeName: SANDBOX_NAME,
+            sandboxId: SANDBOX_ID,
+            providerSandboxId: DAYTONA_PROVIDER_SANDBOX_ID,
+            relayWorkspaceId: 'rw_abc',
+            relayfileMounted: true,
+            providerId: 'daytona',
+          },
+          { status: 201 }
+        ),
+        auth,
+      });
+
+    await expect(
+      ensureCloudFleetSandbox({
+        workspaceId: 'rw_abc',
+        name: SANDBOX_NAME,
+        sandboxId: SANDBOX_ID,
+        requiredCapability: 'spawn:codex',
+        forceProvision: true,
+        preparationMode: 'async-v1',
+      })
+    ).resolves.toMatchObject({
+      outcome: 'provisioned',
+      sandboxId: SANDBOX_ID,
+      providerId: 'daytona',
+    });
+    expect(JSON.parse(String(mocks.authorizedApiFetch.mock.calls[1]?.[2]?.body))).not.toHaveProperty(
+      'providerId'
+    );
   });
 
   it('accepts a synchronous 201 result when an older Cloud ignores async preparation mode', async () => {
@@ -1060,7 +1105,7 @@ describe('Cloud fleet sandbox client', () => {
     expect(error).toBeInstanceOf(CloudFleetSandboxProvisionError);
     expect(error).toMatchObject({
       sandboxId: SANDBOX_ID,
-      providerId: 'agent37',
+      providerId: undefined,
       outcomeUnknown: true,
       confirmedProvisioned: false,
     });
@@ -1099,6 +1144,75 @@ describe('Cloud fleet sandbox client', () => {
       confirmedProvisioned: true,
       outcomeUnknown: false,
     });
+  });
+
+  it('attributes Agent37 cleanup identity once status confirms a lost unpinned async ensure', async () => {
+    mocks.authorizedApiFetch
+      .mockResolvedValueOnce({
+        response: Response.json({ cloudWorkspaceId: CLOUD_WORKSPACE_ID }),
+        auth,
+      })
+      .mockRejectedValueOnce(new TypeError('fetch failed'))
+      .mockResolvedValueOnce({
+        response: Response.json(preparationEnvelope('pending', 'provider_allocation', 0)),
+        auth,
+      });
+
+    const error = await ensureCloudFleetSandbox(
+      {
+        workspaceId: 'rw_abc',
+        name: SANDBOX_NAME,
+        sandboxId: SANDBOX_ID,
+        requiredCapability: 'spawn:codex',
+        forceProvision: true,
+        preparationMode: 'async-v1',
+      },
+      { timeoutMs: 40, preparationPollIntervalMs: 1 }
+    ).catch((caught: unknown) => caught);
+
+    expect(error).toBeInstanceOf(CloudFleetSandboxProvisionError);
+    expect(error).toMatchObject({
+      sandboxId: SANDBOX_ID,
+      providerId: 'agent37',
+      confirmedProvisioned: true,
+      outcomeUnknown: false,
+    });
+  });
+
+  it('rejects a confirmed unpinned async ready result attributed to another provider', async () => {
+    mocks.authorizedApiFetch
+      .mockResolvedValueOnce({
+        response: Response.json({ cloudWorkspaceId: CLOUD_WORKSPACE_ID }),
+        auth,
+      })
+      .mockResolvedValueOnce({
+        response: Response.json(
+          preparationEnvelope('ready', 'broker_visible', 1, {
+            result: {
+              outcome: 'provisioned',
+              nodeId: 'node-wrong-provider',
+              nodeName: SANDBOX_NAME,
+              sandboxId: SANDBOX_ID,
+              providerSandboxId: DAYTONA_PROVIDER_SANDBOX_ID,
+              relayWorkspaceId: 'rw_abc',
+              relayfileMounted: true,
+              providerId: 'daytona',
+            },
+          })
+        ),
+        auth,
+      });
+
+    await expect(
+      ensureCloudFleetSandbox({
+        workspaceId: 'rw_abc',
+        name: SANDBOX_NAME,
+        sandboxId: SANDBOX_ID,
+        requiredCapability: 'spawn:codex',
+        forceProvision: true,
+        preparationMode: 'async-v1',
+      })
+    ).rejects.toThrow('Cloud returned provider daytona instead of requested provider agent37.');
   });
 
   it('preserves caller cancellation after async preparation was accepted', async () => {
