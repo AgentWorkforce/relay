@@ -5,7 +5,11 @@ All notable changes to Agent Relay will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
+## [Unreleased - Patch]
+
+### Fixed
+
+- The installer's Quick Start now prints `agent-relay node up --background` and `agent-relay node down`, which exist, instead of the removed `agent-relay up` form that failed with "unknown command 'up'".
 
 ## [13.1.5] - 2026-10-08
 

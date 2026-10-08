@@ -492,7 +492,9 @@ describe('install.sh quick start', () => {
     const program = createProgram();
     for (const command of commands) {
       let current: Command = program;
-      for (const word of command.split(/\s+/).filter((part) => !part.startsWith('-'))) {
+      // Flags, <placeholders>, and anything after a leaf command are arguments, not command words.
+      for (const word of command.split(/\s+/).filter((part) => !part.startsWith('-') && !/^<[^>]+>$/.test(part))) {
+        if (current !== program && current.commands.length === 0) break;
         const next = current.commands.find((sub) => sub.name() === word || sub.aliases().includes(word));
         expect(next, `agent-relay ${command}: no "${word}" command`).toBeDefined();
         current = next as Command;
