@@ -621,7 +621,9 @@ export type BrokerEvent =
        * 'paste_summary' (the harness collapsed the paste, so no content was
        * echoed) and 'timeout_fallback' (no echo at all) are acks without proof
        * of receipt. A tail without its head is a 'delivery_failed' with reason
-       * 'echo_head_missing'.
+       * 'echo_head_missing'. Workers that predate this contract report only
+       * 'echo' (verbatim) and 'timeout_fallback'; treat any value not listed
+       * here as an ack without proof of receipt.
        */
       verification?: string;
       reason?: string;

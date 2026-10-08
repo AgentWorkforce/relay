@@ -1,4 +1,4 @@
-import { readFile } from 'node:fs/promises';
+import { open } from 'node:fs/promises';
 
 /** Broker-wide PTY ceiling for the formatted envelope; a harness may reject a lower effective wire limit. */
 export const MAX_INJECTION_BODY_BYTES = 16 * 1024;
@@ -27,12 +27,39 @@ export async function readTaskInput(
     if (required) throw new Error('Specify exactly one of --task or --task-file');
     return undefined;
   }
-  const text = taskFile === undefined ? task : await readFile(String(taskFile), 'utf8');
-  if (typeof text !== 'string' || !text.trim()) throw new Error('Task must not be empty');
   // Muse receives its startup task through argv, not the PTY envelope.
+  const muse = cli !== undefined && isMuseExecutable(cli);
+  const limit = muse ? MUSE_STARTUP_PROMPT_MAX_BYTES : MAX_TASK_BODY_BYTES;
+  const text = taskFile === undefined ? task : await readFilePrefix(String(taskFile), limit + 1);
+  if (typeof text !== 'string' || !text.trim()) throw new Error('Task must not be empty');
+  validateTaskSize(text, cli);
+  return text;
+}
+
+/** Validate a task as the given CLI receives it; recheck after anything is appended to it. */
+export function validateTaskSize(text: string, cli?: string): void {
   if (cli !== undefined && isMuseExecutable(cli)) validateMuseStartupPromptSize(text);
   else validateInjectionSize(text);
-  return text;
+}
+
+/**
+ * Read at most `maxBytes` of a UTF-8 file. Reading one byte past a size limit
+ * is enough to reject an oversized file without materializing all of it.
+ */
+async function readFilePrefix(path: string, maxBytes: number): Promise<string> {
+  const handle = await open(path, 'r');
+  try {
+    const buffer = Buffer.alloc(maxBytes);
+    let length = 0;
+    while (length < maxBytes) {
+      const { bytesRead } = await handle.read(buffer, length, maxBytes - length, null);
+      if (bytesRead === 0) break;
+      length += bytesRead;
+    }
+    return buffer.subarray(0, length).toString('utf8');
+  } finally {
+    await handle.close();
+  }
 }
 
 function validateMuseStartupPromptSize(text: string): void {

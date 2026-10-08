@@ -63,7 +63,9 @@ export function pendingSpawnError(
   liveness: SpawnLiveness,
   diagnostic?: string
 ): FleetSpawnError {
-  const nodeOption = context.node ? ` --node ${shellQuote(context.node)}` : '';
+  // A worker found elsewhere is invisible to a node-scoped check.
+  const nodeOption =
+    context.node && liveness.evidence !== 'live_elsewhere' ? ` --node ${shellQuote(context.node)}` : '';
   // Heartbeats carry worker names, not invocation IDs, so presence cannot be
   // attributed to this spawn: it may be a worker that was already running.
   const attribution =
@@ -136,13 +138,21 @@ export async function probeSpawnLiveness(options: {
   try {
     const client = options.createClient();
     try {
+      const now = options.now?.() ?? Date.now();
       const target = options.targetNode ? await read(() => client.nodes.get(options.targetNode!)) : undefined;
       const nodes = options.targetNode && target ? [target] : await read(() => client.nodes.list());
-      // Prefer the targeted read; consult the fleet only if it doesn't claim this name.
+      // Prefer the targeted read; consult the fleet unless the target is an
+      // available node whose fresh heartbeat claims this name.
+      const targetAge = target ? heartbeatAgeMs(target, now) : null;
       if (
         options.targetNode &&
         target &&
-        !readRemoteLiveAgents(target).agents.some((a) => a.name === options.name)
+        !(
+          isAvailableFleetNode(target) &&
+          targetAge !== null &&
+          targetAge <= MAX_LIVE_HEARTBEAT_AGE_MS &&
+          readRemoteLiveAgents(target).agents.some((a) => a.name === options.name)
+        )
       ) {
         nodes.push(...(await read(() => client.nodes.list())));
       }
@@ -153,7 +163,7 @@ export async function probeSpawnLiveness(options: {
           !readRemoteLiveAgents(node).agents.some((agent) => agent.name === options.name)
         )
           continue;
-        const age = heartbeatAgeMs(node, options.now?.() ?? Date.now());
+        const age = heartbeatAgeMs(node, now);
         const evidence =
           age === null || age > MAX_LIVE_HEARTBEAT_AGE_MS
             ? 'stale'
@@ -162,7 +172,8 @@ export async function probeSpawnLiveness(options: {
               : 'live';
         const result: SpawnLiveness = { evidence, node: node.name, heartbeatAgeMs: age };
         if (evidence === 'live') return result;
-        weaker ??= result;
+        // Fresh evidence elsewhere outranks a stale entry.
+        if (!weaker || (weaker.evidence === 'stale' && evidence === 'live_elsewhere')) weaker = result;
       }
       if (weaker) return weaker;
     } catch (error) {

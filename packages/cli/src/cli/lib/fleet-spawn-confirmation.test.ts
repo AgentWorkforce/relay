@@ -140,15 +140,18 @@ describe('fleet spawn confirmation is observable from the requester (#1430)', ()
   // success before this change, because nothing read the action result. The
   // broker's detail (startup exit status and worker log path) must survive.
   it.each([
-    'spawn_failed: provider_auth_required',
-    'spawn_provider_auth_required',
-    'spawn_directory_trust_required',
-  ])('preserves %s from the node', async (reason) => {
+    ['spawn_failed: provider_auth_required', 'run muse on the selected node to log in'],
+    ['spawn_provider_auth_required', 'run muse on the selected node to log in'],
+    [
+      'spawn_directory_trust_required',
+      'Devin requires directory trust; run `devin` in the explicit spawn working directory on the selected node, trust that directory, then retry',
+    ],
+  ])('preserves %s and its remediation from the node', async (reason, detail) => {
     const { client } = createClient(async (name, id) => ({
       invocation_id: id,
       action_name: name,
       status: 'failed',
-      error: `${reason}: run muse on the selected node to log in`,
+      error: `${reason}: ${detail}`,
     }));
     const error = await client.placement
       .spawn(spawnInput({ confirm: true, confirmTimeoutMs: 60, confirmPollIntervalMs: 10 }))
@@ -156,6 +159,7 @@ describe('fleet spawn confirmation is observable from the requester (#1430)', ()
     expect(error).toBeInstanceOf(RelayPlacementError);
     expect((error as RelayPlacementError).code).toBe('spawn_failed');
     expect((error as Error).message).toContain(reason);
+    expect((error as Error).message).toContain(detail);
   });
 
   it('fails with spawn_failed and preserves the node-reported detail', async () => {

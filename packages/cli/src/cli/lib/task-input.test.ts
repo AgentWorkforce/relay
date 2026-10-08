@@ -27,6 +27,16 @@ describe('task input', () => {
       await rm(dir, { recursive: true, force: true });
     }
   });
+  // Only one byte past the limit is ever read, so an oversized or endless
+  // --task-file fails cheaply instead of being materialized in memory.
+  it.skipIf(process.platform === 'win32')(
+    'reads at most one byte past the limit from a task file',
+    async () => {
+      await expect(readTaskInput(undefined, '/dev/zero')).rejects.toThrow('UTF-8 bytes');
+      await expect(readTaskInput(undefined, '/dev/zero', false, 'muse')).rejects.toThrow('argv');
+    },
+    2000
+  );
   it('counts UTF-8 bytes', async () => {
     expect(await readTaskInput('a'.repeat(MAX_TASK_BODY_BYTES), undefined)).toHaveLength(MAX_TASK_BODY_BYTES);
     await expect(readTaskInput('é'.repeat(MAX_TASK_BODY_BYTES), undefined)).rejects.toThrow('UTF-8 bytes');

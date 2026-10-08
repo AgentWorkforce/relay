@@ -44,6 +44,7 @@ function createRelayMock(opts: { inboundWebhooks?: InboundWebhook[] } = {}) {
           return row;
         }),
         get: vi.fn(async (id: string) => subscriptions.get(id) ?? { id }),
+        list: vi.fn(async () => [...subscriptions.values()]),
         delete: vi.fn(async () => undefined),
       },
     },
@@ -2231,11 +2232,9 @@ describe('subscription writeback verification', () => {
 
 it('reports outbound configuration separately from inferred inbound activity', async () => {
   const relay = createRelayMock();
-  relay.integrations.subscriptions.get.mockResolvedValue({
-    id: 'sub_existing',
-    events: ['thread.reply'],
-    isActive: false,
-  });
+  relay.integrations.subscriptions.list.mockResolvedValue([
+    { id: 'sub_existing', events: ['thread.reply'], isActive: false },
+  ] as never);
   relay.messages.list.mockResolvedValue([{ createdAt: '2026-10-05T00:00:00Z' }] as never);
   const relayfile = createRelayfileMock([
     {
@@ -2257,10 +2256,37 @@ it('reports outbound configuration separately from inferred inbound activity', a
       deliveryStatus: null,
     },
   });
-  relay.integrations.subscriptions.get.mockRejectedValue(new Error('unavailable'));
+  relay.integrations.subscriptions.list.mockRejectedValue(new Error('unavailable'));
   log.mockClear();
   await program.parseAsync(['integration', 'subscribe', '--list'], { from: 'user' });
   expect(JSON.parse(log.mock.calls[0][0]).bindings[0].writebackSubscription).toBeNull();
+});
+
+// One collection read serves every bound row, so a large workspace cannot
+// turn --list into one subscription request per binding.
+it('reads writeback subscriptions once for all bound rows', async () => {
+  const relay = createRelayMock();
+  relay.integrations.subscriptions.list.mockResolvedValue([
+    { id: 'sub_a', events: ['thread.reply'], isActive: true },
+    { id: 'sub_b', events: ['message.created'], isActive: true },
+  ] as never);
+  const relayfile = createRelayfileMock(
+    ['sub_a', 'sub_b', 'sub_missing'].map((subscriptionId, index) => ({
+      provider: 'github',
+      resource: `/github/repos/AgentWorkforce/relaycast/pulls/${index}/**`,
+      channel: 'general',
+      subscriptionId,
+      webhookId: `in_${index}`,
+    }))
+  );
+  const { program, log } = harness({ relay, relayfile });
+  await program.parseAsync(['integration', 'subscribe', '--list'], { from: 'user' });
+  const rows = JSON.parse(log.mock.calls[0][0]).bindings;
+  expect(
+    rows.map((row: { writebackSubscription: { id: string } | null }) => row.writebackSubscription?.id ?? null)
+  ).toEqual(['sub_a', 'sub_b', null]);
+  expect(relay.integrations.subscriptions.list).toHaveBeenCalledTimes(1);
+  expect(relay.integrations.subscriptions.get).not.toHaveBeenCalled();
 });
 
 it.each([

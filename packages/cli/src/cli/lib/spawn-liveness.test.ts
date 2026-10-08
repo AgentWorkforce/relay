@@ -48,6 +48,42 @@ describe('spawn liveness resolution', () => {
     ).toMatchObject({ evidence });
     if (evidence === 'live') expect(workspace.nodes.list).not.toHaveBeenCalled();
   });
+  // relay#1930 review (cubic): a stale or unavailable target entry must not
+  // hide a fresh same-named worker on another node.
+  it.each([
+    ['stale target', node('target', 36_001)],
+    ['unavailable target', { ...node(), status: 'offline' }],
+  ] as const)(
+    'scans the fleet past a %s and prefers fresh live_elsewhere evidence',
+    async (_label, target) => {
+      const workspace = client([target, node('other')]);
+      workspace.nodes.get.mockResolvedValue(target);
+      workspace.nodes.list.mockResolvedValue([node('other')]);
+      expect(
+        await probeSpawnLiveness({
+          name: 'worker',
+          targetNode: 'target',
+          createClient: () => workspace,
+          now: () => now,
+        })
+      ).toMatchObject({ evidence: 'live_elsewhere', node: 'other' });
+      expect(workspace.nodes.list).toHaveBeenCalledOnce();
+    }
+  );
+  it('points a live_elsewhere recovery check at the whole fleet, not the requested node', () => {
+    const pending = pendingSpawnError(
+      'worker',
+      { invocationId: 'inv', node: 'target' },
+      { evidence: 'live_elsewhere', node: 'other', heartbeatAgeMs: 0 }
+    );
+    expect(pending.message).toContain('check `agent-relay fleet agent list` first');
+    const targeted = pendingSpawnError(
+      'worker',
+      { invocationId: 'inv', node: 'target' },
+      { evidence: 'stale' }
+    );
+    expect(targeted.message).toContain('fleet agent list --node');
+  });
   it('folds construction errors into unknown without replacing accepted dispatch evidence', async () => {
     const result = await probeSpawnLiveness({
       name: 'worker',

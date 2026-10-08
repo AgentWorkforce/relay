@@ -1624,16 +1624,24 @@ function registerAgentRelayTools(
         }
       }
       if (delete_agent && wait) {
-        const workspace = () => {
+        // Clearance reads need workspace authority. Without it every read
+        // would fail, so keep the accepted removal and say why at once.
+        let workspace: AgentRelay | undefined;
+        let unavailable: string | undefined;
+        try {
           requireWorkspaceKey(session);
-          return new AgentRelay({ workspaceKey: session.workspaceKey!, baseUrl });
-        };
-        const removal = await waitForAgentRemoval({
-          name,
-          getAgent: (name) => workspace().agents.get(name),
-          listAgents: () => workspace().agents.list(),
-          timeoutMs: wait_timeout_ms,
-        });
+          workspace = new AgentRelay({ workspaceKey: session.workspaceKey!, baseUrl });
+        } catch (error) {
+          unavailable = error instanceof Error ? error.message : String(error);
+        }
+        const removal = workspace
+          ? await waitForAgentRemoval({
+              name,
+              getAgent: (name) => workspace.agents.get(name),
+              listAgents: () => workspace.agents.list(),
+              timeoutMs: wait_timeout_ms,
+            })
+          : { cleared: false, waitedMs: 0, observedPresent: false, readError: unavailable };
         return {
           ...jsonContent({
             invocation,

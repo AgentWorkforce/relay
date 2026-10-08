@@ -49,6 +49,7 @@ vi.mock('@agent-relay/harness-driver', async (importOriginal) => ({
 import { registerFleetCommands } from './fleet.js';
 import { writeProjectWorkspaceKey } from '../lib/project-workspace-key.js';
 import { spawnPlacementReceipt } from '../lib/spawn-lifecycle.js';
+import { MAX_TASK_BODY_BYTES } from '../lib/task-input.js';
 
 const REPLAY_SANDBOX_ID = 'sbx_123e4567-e89b-42d3-a456-426614174000';
 const REPLAY_SANDBOX_NAME = 'fleet-sandbox-123e4567-e89b-42d3-a456-426614174000';
@@ -1355,6 +1356,116 @@ describe('fleet command support', () => {
       invocation: { invocationId: 'inv_sandbox' },
       attachCommand: "agent-relay node agent attach 'sandbox-worker' --mode drive",
     });
+  });
+
+  // relay#1930 review (cubic): the sandbox context is appended after
+  // readTaskInput accepted the task, so the composed task is what must fit.
+  it('rejects a sandbox task whose appended context pushes it past the PTY body limit, and cleans up the sandbox', async () => {
+    vi.stubEnv('RELAY_AGENT_TOKEN', undefined);
+    const revision = '0123456789abcdef0123456789abcdef01234567';
+    const repositorySelection = {
+      repository: 'AgentWorkforce/cloud',
+      repositoryName: 'cloud',
+      revision,
+      projectRoot: '/local/cloud',
+      repositoryRelativeCwd: 'packages/web',
+      workerCwd: '/srv/agent-workforce/cloud/packages/web',
+    };
+    const events: string[] = [];
+    const warnings: string[] = [];
+    const materializeCloudRelayfileRepository = vi.fn(async () => {
+      events.push('materialize');
+      return {
+        cloudWorkspaceId: 'cloud-workspace',
+        repository: 'AgentWorkforce/cloud',
+        revision,
+        filesWritten: 4312,
+        sourceProfile: 'complete-v1' as const,
+        contentRoot: '/github/repos/AgentWorkforce/cloud/contents',
+        sentinelPath: '/github/repos/AgentWorkforce/cloud/.relayfile/clone.json',
+      };
+    });
+    const ensureCloudFleetSandbox = vi.fn(async () => {
+      events.push('ensure');
+      return {
+        outcome: 'provisioned' as const,
+        providerId: 'agent37' as const,
+        cloudWorkspaceId: 'cloud-workspace',
+        nodeId: 'node-live',
+        nodeName: 'live-node',
+        sandboxId: 'sandbox-live',
+        providerSandboxId: 'provider-live',
+        relayWorkspaceId: 'rw_abc',
+        relaycastTarget: AGENT37_RELAYCAST_TARGET,
+        relayfileMounted: true,
+        relayfileMountPath: '/workspace',
+      };
+    });
+    const placement = {
+      spawn: vi.fn(async () => {
+        events.push('spawn');
+        return { invocationId: 'inv_live', node: { name: 'live-node' } };
+      }),
+    };
+    const createWorkspaceRelay = vi.fn(() => ({
+      workspace: {
+        info: vi.fn(async () => ({ id: 'rw_abc' })),
+        register: vi.fn(async () => ({ token: 'at_live_launcher' })),
+        release: vi.fn(async () => ({ released: true, deleted: true })),
+      },
+    }));
+    const deleteCloudFleetSandbox = vi.fn(async () => undefined);
+    const sdkError = vi.fn();
+    const program = new Command();
+    program.exitOverride();
+    registerFleetCommands(program, {
+      resolveSandboxRepository: vi.fn(() => repositorySelection),
+      materializeCloudRelayfileRepository,
+      ensureCloudFleetSandbox,
+      sdk: {
+        createAgentRelay: vi.fn(() => ({ messaging: { placement } })) as never,
+        createWorkspaceRelay: createWorkspaceRelay as never,
+        createWorkspace: vi.fn() as never,
+        log: vi.fn(),
+        error: sdkError,
+        exit: vi.fn() as never,
+      },
+      resolveWorkspaceSelection: () => ({
+        key: 'rk_live_test',
+        source: 'project',
+        origin: '/local/cloud/.agentworkforce/relay/workspace-key.json',
+        workspaceId: 'rw_abc',
+      }),
+      persistWorkspaceRelaycastTarget: () => true,
+      deleteCloudFleetSandbox,
+      createFleetWorkspaceClient: vi.fn() as never,
+      log: () => undefined,
+      warn: (message) => warnings.push(message),
+      error: () => undefined,
+    });
+
+    await program.parseAsync(
+      [
+        'fleet',
+        'spawn',
+        'codex',
+        '--sandbox',
+        '--sandbox-provider',
+        'agent37',
+        '--name',
+        'cloud-live',
+        '--task',
+        'x'.repeat(MAX_TASK_BODY_BYTES),
+        '--workspace-key',
+        'rk_live_test',
+      ],
+      { from: 'user' }
+    );
+    expect(sdkError.mock.calls.flat().join(' ')).toContain('UTF-8 bytes');
+    expect(placement.spawn).not.toHaveBeenCalled();
+    expect(deleteCloudFleetSandbox).toHaveBeenCalledWith(
+      expect.objectContaining({ sandboxId: 'sandbox-live' })
+    );
   });
 
   it('plain --sandbox materializes the inferred repository through Relayfile and starts in its live relative cwd', async () => {
@@ -5360,6 +5471,46 @@ describe('fleet command support', () => {
       removal: { cleared: true },
     });
   });
+
+  // relay#1930 review (cubic): Number('abc') is NaN, which the wait helper
+  // silently normalized to its default instead of reporting invalid input.
+  it.each(['abc', '0', '-5'])(
+    'fleet release --wait-timeout %s is rejected before anything is released',
+    async (timeout) => {
+      const release = vi.fn(async () => ({ status: 'dispatched' }));
+      const sdkError = vi.fn();
+      const program = new Command();
+      registerFleetCommands(program, {
+        sdk: {
+          createWorkspaceRelay: vi.fn() as never,
+          createAgentRelay: vi.fn() as never,
+          createWorkspace: vi.fn() as never,
+          log: vi.fn(),
+          error: sdkError,
+          exit: vi.fn() as never,
+        },
+        createFleetWorkspaceClient: vi.fn(() => ({ agents: { release } })) as never,
+        retireOwnedBindings: vi.fn(async () => undefined),
+        warn: vi.fn(),
+      });
+      await program.parseAsync(
+        [
+          'fleet',
+          'release',
+          'worker',
+          '--delete-agent',
+          '--wait',
+          '--wait-timeout',
+          timeout,
+          '--workspace-key',
+          'rk_test',
+        ],
+        { from: 'user' }
+      );
+      expect(sdkError.mock.calls.flat().join(' ')).toContain('--wait-timeout');
+      expect(release).not.toHaveBeenCalled();
+    }
+  );
 
   it('fleet release --delete-agent aborts without deleting when binding retirement fails', async () => {
     const release = vi.fn(async () => ({

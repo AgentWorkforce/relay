@@ -8,7 +8,12 @@ import {
   withSdkDefaults,
   type SdkCommandDeps,
 } from '../lib/sdk-command.js';
-import { AgentRemovalPendingError, isNotFoundError, waitForAgentRemoval } from '../lib/agent-removal.js';
+import {
+  AgentRemovalPendingError,
+  isNotFoundError,
+  parseRemovalWaitTimeout,
+  waitForAgentRemoval,
+} from '../lib/agent-removal.js';
 
 import { withAgentRegistrationDeadline, withDeadline } from '../lib/agent-registration.js';
 import { attributableReleaseReason } from '../lib/release-reason.js';
@@ -154,20 +159,26 @@ export function registerAgentCommands(
         process.env.RELAY_AGENT_NAME ?? 'agent-relay CLI',
         'agent removed'
       );
+      const waitTimeoutMs = opts.wait === true ? parseRemovalWaitTimeout(opts.waitTimeout) : undefined;
       const result = await relay.workspace.release({ name, reason, deleteAgent: true });
-      if (opts.wait === true) {
+      if (waitTimeoutMs !== undefined) {
         const removal = await waitForAgentRemoval({
           name,
           getAgent: (name) => relay.agents.get(name),
           listAgents: () => relay.agents.list(),
-          timeoutMs: Number(opts.waitTimeout),
+          timeoutMs: waitTimeoutMs,
         });
         if (removal.cleared) {
           deps.log(`Removed agent ${name}.`);
           return;
         }
         if (removal.observedPresent) throw new AgentRemovalPendingError(name);
+        // Unverifiable clearance keeps the asynchronous acknowledgement.
         deps.error(`Could not verify removal: ${removal.readError ?? 'registration unavailable'}`);
+        deps.log(
+          `Removal of agent ${name} was initiated (status: ${result.status ?? 'pending'}) and is processed asynchronously; registration clearance could not be verified.`
+        );
+        return;
       }
       deps.log(
         `Removal of agent ${name} was initiated (status: ${result.status ?? 'pending'}) and is processed asynchronously. Use --wait to verify the name is reusable.`

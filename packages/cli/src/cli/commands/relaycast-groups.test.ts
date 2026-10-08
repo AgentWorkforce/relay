@@ -707,6 +707,9 @@ describe('SDK-backed CLI groups', () => {
       relayfile,
       cleanupJournal: memoryJournal(),
     } satisfies Partial<IntegrationCommandDependencies>);
+    relay.integrations.subscriptions.list.mockResolvedValueOnce([
+      { id: 'sub1', events: ['message.created', 'thread.reply'] } as never,
+    ]);
 
     await program.parseAsync(['integration', 'subscribe', '--list'], { from: 'user' });
 

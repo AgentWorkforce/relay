@@ -13,6 +13,17 @@ export function isNotFoundError(error: unknown): boolean {
   return Number(status) === 404;
 }
 
+/** Parse `--wait-timeout`; reject what the wait would otherwise silently replace with its default. */
+export function parseRemovalWaitTimeout(value: unknown): number {
+  const timeoutMs = Number(value);
+  if (!Number.isFinite(timeoutMs) || timeoutMs <= 0) {
+    throw new Error(
+      `--wait-timeout must be a positive number of milliseconds (got ${JSON.stringify(value)}).`
+    );
+  }
+  return timeoutMs;
+}
+
 export interface RemovalResult {
   cleared: boolean;
   waitedMs: number;

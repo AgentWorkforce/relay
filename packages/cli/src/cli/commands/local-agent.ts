@@ -1,4 +1,4 @@
-import { readTaskInput } from '../lib/task-input.js';
+import { readTaskInput, validateTaskSize } from '../lib/task-input.js';
 import type { Command } from 'commander';
 
 import { AGENT37_RELAYCAST_ORIGIN } from '@agent-relay/cloud';
@@ -61,6 +61,8 @@ function resolveAutoSpawn(
   const assessment = classifyTask(task);
   const team = composeTeam(assessment, task);
   const directorPrompt = buildDirectorPrompt(task, team);
+  // The Director prompt repeats the task, so it is what must fit.
+  validateTaskSize(directorPrompt, provider);
   return {
     name: name === provider ? 'Director' : name,
     task: directorPrompt,
@@ -933,12 +935,19 @@ export function registerLocalAgentCommands(
         return;
       const brokerOptions = brokerOptionsFromOpts(options);
       const baseName = (options.name as string | undefined) ?? provider;
-      const resolved = resolveAutoSpawn(
-        provider,
-        baseName,
-        await readTaskInput(options.task, options.taskFile, false, provider),
-        options.model as string | undefined
-      );
+      let resolved: ReturnType<typeof resolveAutoSpawn>;
+      try {
+        resolved = resolveAutoSpawn(
+          provider,
+          baseName,
+          await readTaskInput(options.task, options.taskFile, false, provider),
+          options.model as string | undefined
+        );
+      } catch (err) {
+        deps.error(err instanceof Error ? err.message : String(err));
+        deps.exit(1);
+        return;
+      }
       await run(
         deps,
         async (client) => {

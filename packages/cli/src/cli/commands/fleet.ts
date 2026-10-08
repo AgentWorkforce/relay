@@ -1,4 +1,4 @@
-import { readTaskInput } from '../lib/task-input.js';
+import { readTaskInput, validateTaskSize } from '../lib/task-input.js';
 import { randomUUID } from 'node:crypto';
 import path from 'node:path';
 
@@ -39,7 +39,11 @@ import { readBrokerConnection } from '../lib/broker-lifecycle.js';
 import { spawnAgentWithClient } from '../lib/client-factory.js';
 import { formatRelativeTime, sanitizeForTerminalLine } from '../lib/formatting.js';
 import { connectProjectBrokerClient } from '../lib/project-broker-client.js';
-import { AgentRemovalPendingError, waitForAgentRemoval } from '../lib/agent-removal.js';
+import {
+  AgentRemovalPendingError,
+  parseRemovalWaitTimeout,
+  waitForAgentRemoval,
+} from '../lib/agent-removal.js';
 import {
   classifySpawnFailure,
   mayStillBeRunning,
@@ -1128,6 +1132,19 @@ export function registerFleetCommands(
                   'The Relayfile daemon synchronizes this tree; it intentionally has no .git directory.',
                 ].join(' ')
               : undefined;
+          const spawnTask =
+            sandbox &&
+            checkoutRepository &&
+            sandboxRepository &&
+            mountSandboxRelayfile &&
+            sandbox.outcome === 'provisioned'
+              ? `${task}\n\nAgent Relay sandbox context: Relayfile records are available at ${sandbox.relayfileMountPath ?? '/workspace'}. The source checkout is separate; use ${workerCwd ?? 'the worker checkout'} for repository files and the mount for Relayfile records.`
+              : liveSandboxContext
+                ? `${task}\n\n${liveSandboxContext}`
+                : task;
+          // The sandbox context is appended after readTaskInput accepted the
+          // task, so the composed task is what the worker must receive.
+          validateTaskSize(spawnTask, cli);
           let invocation;
           try {
             invocation = await relay.messaging.placement.spawn({
@@ -1139,16 +1156,7 @@ export function registerFleetCommands(
               input: {
                 name,
                 cli,
-                task:
-                  sandbox &&
-                  checkoutRepository &&
-                  sandboxRepository &&
-                  mountSandboxRelayfile &&
-                  sandbox.outcome === 'provisioned'
-                    ? `${task}\n\nAgent Relay sandbox context: Relayfile records are available at ${sandbox.relayfileMountPath ?? '/workspace'}. The source checkout is separate; use ${workerCwd ?? 'the worker checkout'} for repository files and the mount for Relayfile records.`
-                    : liveSandboxContext
-                      ? `${task}\n\n${liveSandboxContext}`
-                      : task,
+                task: spawnTask,
                 ...(channel ? { channels: [channel] } : {}),
                 ...(model ? { model } : {}),
                 ...(workerCwd ? { worker_cwd: workerCwd } : {}),
@@ -1315,6 +1323,8 @@ export function registerFleetCommands(
       warnIfInferredFromProjectSession(options, deps.warn);
       const workerName = requiredText(name, 'Worker name');
       const deleteAgent = options.deleteAgent === true;
+      const waitTimeoutMs =
+        deleteAgent && options.wait === true ? parseRemovalWaitTimeout(options.waitTimeout) : undefined;
       const sdkOpts = sdkOptionsFromOpts(options);
       // One transport for both cleanup and release. Cleanup otherwise
       // substitutes the local broker session whenever --workspace-key is
@@ -1363,13 +1373,13 @@ export function registerFleetCommands(
           reason,
           deleteAgent: true,
         });
-        if (options.wait === true) {
+        if (waitTimeoutMs !== undefined) {
           // Construct/read on the same selected transport; unavailable credentials are uncertainty.
           const removal = await waitForAgentRemoval({
             name: workerName,
             getAgent: (name) => deps.sdk.createWorkspaceRelay(transport).agents.get(name),
             listAgents: () => deps.sdk.createWorkspaceRelay(transport).agents.list(),
-            timeoutMs: Number(options.waitTimeout),
+            timeoutMs: waitTimeoutMs,
           });
           printJson(deps.sdk, { ...deleted, removal });
           if (!removal.cleared && removal.observedPresent) throw new AgentRemovalPendingError(workerName);

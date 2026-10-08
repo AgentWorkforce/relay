@@ -671,6 +671,15 @@ async function enrichBindingsForList(
   ).catch(() => [] as Array<{ name: string; metadata?: Record<string, unknown> }>);
   const channelByName = new Map(channels.map((channel) => [channel.name, channel]));
 
+  // One collection read for every bound row; per-row reads would burst one
+  // request per binding. Missing or unavailable engine status stays unknown.
+  const subscriptionById = bindings.some((binding) => binding.subscriptionId)
+    ? await relay.integrations.subscriptions
+        .list()
+        .then((rows) => new Map(rows.map((raw) => [String(raw.id), raw])))
+        .catch(() => new Map<string, Awaited<ReturnType<typeof relay.integrations.subscriptions.get>>>())
+    : new Map<string, Awaited<ReturnType<typeof relay.integrations.subscriptions.get>>>();
+
   return Promise.all(
     bindings.map(async (binding) => {
       const channelMeta = channelByName.get(binding.channel);
@@ -700,9 +709,9 @@ async function enrichBindingsForList(
         : undefined;
       const health = cloudRow?.health;
       let writebackSubscription: ListedBinding['writebackSubscription'] = null;
-      if (binding.subscriptionId) {
+      const raw = binding.subscriptionId ? subscriptionById.get(binding.subscriptionId) : undefined;
+      if (raw) {
         try {
-          const raw = await relay.integrations.subscriptions.get(binding.subscriptionId);
           const subscription = normalizeWebhookSubscription(raw);
           const active = raw.isActive ?? raw.is_active;
           writebackSubscription = {
@@ -713,7 +722,7 @@ async function enrichBindingsForList(
             deliveryStatus: null,
           };
         } catch {
-          /* Missing or unavailable engine status remains unknown. */
+          /* A malformed engine row remains unknown. */
         }
       }
       return {

@@ -62,11 +62,6 @@ function resolveEmoji(input: string): string {
   return aliases[normalized] ?? input;
 }
 
-/**
- * Register the channel, message, thread, DM, reaction, search, and inbox MCP
- * tools. These all act through a single agent client resolved per-call from the
- * optional `as` identity override.
- */
 const idempotencyKeyInput = z
   .string()
   // Relaycast trims this key upstream, so trim before both the local replay
@@ -80,6 +75,11 @@ const idempotencyKeyInput = z
     'Stable key for retrying this same message after a lost response; use a new key for a new message. Surrounding whitespace is trimmed and a whitespace-only key is rejected.'
   );
 
+/**
+ * Register the channel, message, thread, DM, reaction, search, and inbox MCP
+ * tools. These all act through a single agent client resolved per-call from the
+ * optional `as` identity override.
+ */
 export function registerMessagingTools(
   server: McpServer,
   getAgentClient: (asIdentity?: string) => AgentClientLike,

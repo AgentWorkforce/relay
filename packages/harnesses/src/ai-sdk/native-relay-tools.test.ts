@@ -86,6 +86,26 @@ it.each([
   expect(write).toHaveBeenCalledTimes(5);
 });
 
+// A replay that arrives after the first write settled (for example while its
+// tool result is still being submitted) reaches Relay again, so the write
+// carries a key derived from the tool call for Relay to deduplicate.
+it.each([
+  ['post_message', 'send', { channel: 'events', text: 'ACK' }, 'events'],
+  ['reply_to_thread', 'reply', { message_id: 'parent', text: 'ACK' }, 'parent'],
+] as const)('sends native %s with a tool-call idempotency key', async (tool, method, args, target) => {
+  const write = vi.fn(async () => ({ id: 'm1' }));
+  const execute = createNativeRelayTools({
+    env: { RELAY_AGENT_TOKEN: 'test' },
+    agentClient: { [method]: write } as never,
+  }).find((item) => item.spec.name === tool)!.execute;
+  await execute(args, { toolCallId: 'call-1' });
+  await execute(args, { toolCallId: 'call-1' });
+  await execute(args, {});
+  expect(write).toHaveBeenNthCalledWith(1, target, 'ACK', { idempotencyKey: `native:${tool}:call-1` });
+  expect(write).toHaveBeenNthCalledWith(2, target, 'ACK', { idempotencyKey: `native:${tool}:call-1` });
+  expect(write).toHaveBeenNthCalledWith(3, target, 'ACK');
+});
+
 it('clears a rejected native reply so the same tool call can be retried', async () => {
   const reply = vi.fn().mockRejectedValueOnce(new Error('offline')).mockResolvedValue({ id: 'retry' });
   const execute = createNativeRelayTools({

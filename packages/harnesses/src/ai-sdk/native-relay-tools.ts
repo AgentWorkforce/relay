@@ -56,14 +56,21 @@ export function createNativeRelayTools(options: NativeRelayToolOptions = {}): Ha
   // One map per native session, keyed by the model's tool call ID so only a
   // replay of the same invocation joins a pending write. Text never forms the
   // key: independent identical replies are separate messages. A completed
-  // write is never retained.
+  // write is never retained locally; a replay after it settled reaches Relay
+  // with the same tool-call idempotency key, which Relay deduplicates.
   const pendingWrites = new Map<string, Promise<unknown>>();
-  function write(tool: string, toolCallId: string | undefined, operation: () => Promise<unknown>) {
-    if (!toolCallId) return Promise.resolve().then(operation);
+  function write(
+    tool: string,
+    toolCallId: string | undefined,
+    operation: (options?: { idempotencyKey: string }) => Promise<unknown>
+  ) {
+    if (!toolCallId) return Promise.resolve().then(() => operation());
     const key = JSON.stringify([tool, toolCallId]);
     const existing = pendingWrites.get(key);
     if (existing) return existing;
-    const pending = Promise.resolve().then(operation);
+    const pending = Promise.resolve().then(() =>
+      operation({ idempotencyKey: `native:${tool}:${toolCallId}` })
+    );
     pendingWrites.set(key, pending);
     void pending.then(
       () => pendingWrites.delete(key),
@@ -110,7 +117,9 @@ export function createNativeRelayTools(options: NativeRelayToolOptions = {}): Ha
         const input = objectInput(value);
         const target = requiredString(input, 'channel');
         const text = requiredString(input, 'text');
-        return write('post_message', toolCallId, () => agent.send(target, text));
+        return write('post_message', toolCallId, (options) =>
+          options ? agent.send(target, text, options) : agent.send(target, text)
+        );
       },
     },
     {
@@ -173,7 +182,9 @@ export function createNativeRelayTools(options: NativeRelayToolOptions = {}): Ha
         const input = objectInput(value);
         const target = requiredString(input, 'message_id');
         const text = requiredString(input, 'text');
-        return write('reply_to_thread', toolCallId, () => agent.reply(target, text));
+        return write('reply_to_thread', toolCallId, (options) =>
+          options ? agent.reply(target, text, options) : agent.reply(target, text)
+        );
       },
     },
     {
