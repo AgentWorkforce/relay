@@ -159,6 +159,20 @@ it('holds raw input during a transient reconnect and delivers it once the termin
   expect(settled).toBe(false);
 });
 
+it('refuses raw clients after a connection-fatal session error', async () => {
+  const { remote } = await setup();
+  send(remote, 'terminal.ready', { screen: Buffer.from('hello').toString('base64') });
+  await new Promise((resolve) => setTimeout(resolve, 20));
+  send(remote, 'terminal.error', { code: 'node_unreachable', message: 'node went away' });
+  await expect(proxy!.finished).resolves.toBe(1);
+  local = connect(proxy!.socketPath);
+  let received = '';
+  local.on('data', (data: Buffer) => (received += data.toString()));
+  local.on('error', () => undefined);
+  await once(local, 'close');
+  expect(received).toBe('');
+});
+
 it('settles finished on explicit close before terminal.ready', async () => {
   await setup();
   await proxy!.close();

@@ -711,6 +711,8 @@ export async function startFleetNodeAttachProxy(
   let remote: WebSocket | undefined;
   let rawSocket: Socket | undefined;
   let rawConnected = false;
+  // Set once a connection-fatal session error was reported through `finished`.
+  let rawRefused = false;
   let rawReady = false;
   let finish!: (code: number) => void;
   const finished = new Promise<number>((resolve) => {
@@ -1149,7 +1151,7 @@ export async function startFleetNodeAttachProxy(
   let socketDirectory: string | undefined;
   let socketPath: string;
   const rawServer = createSocketServer((socket) => {
-    if (rawConnected || stopped || terminalEnded) {
+    if (rawConnected || rawRefused || stopped || terminalEnded) {
       socket.destroy();
       return;
     }
@@ -1567,6 +1569,7 @@ export async function startFleetNodeAttachProxy(
             // The raw stdio client has no error frame to read: close it and
             // report the failure so callers stop writing to a dead session.
             finish(1);
+            rawRefused = true;
             rawSocket?.end();
           }
         }

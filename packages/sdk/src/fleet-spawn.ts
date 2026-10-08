@@ -531,6 +531,19 @@ export async function spawnFleetSandbox(
   const releaseAgent = (reason: string) =>
     workspaceRelayFor().workspace.release({ name, reason, deleteAgent: true });
 
+  // Pin the credential/origin pair the agent was launched with: a later
+  // project rebind or environment change must not redirect attach.
+  let spawnTransport: { workspaceKey: string; baseUrl?: string } | Error;
+  if (verifiedTarget) {
+    spawnTransport = { workspaceKey: verifiedTarget.relaycastApiKey, baseUrl: verifiedTarget.baseUrl };
+  } else {
+    try {
+      const { workspaceKey, baseUrl } = resolveWorkspaceTransport(legacyTransport);
+      spawnTransport = { workspaceKey, ...(baseUrl === undefined ? {} : { baseUrl }) };
+    } catch (error) {
+      spawnTransport = error instanceof Error ? error : new Error(String(error));
+    }
+  }
   let launcherName: string | undefined;
   let invocation: RelaySpawnPlacementAck;
   let workerCwd: string | undefined;
@@ -556,9 +569,12 @@ export async function spawnFleetSandbox(
     // The launcher token is already scoped to the exact workspace and
     // deployment Cloud selected; keep the workspace key only on
     // `workspaceRelay`, where it mints and releases that token.
+    // The launcher token is valid only on the gateway that minted it.
+    const launcherBaseUrl =
+      spawnTransport instanceof Error ? relaycastTransport.baseUrl : spawnTransport.baseUrl;
     const relay = deps.createAgentRelay({
       token: agentToken,
-      ...(relaycastTransport.baseUrl === undefined ? {} : { baseUrl: relaycastTransport.baseUrl }),
+      ...(launcherBaseUrl === undefined ? {} : { baseUrl: launcherBaseUrl }),
     });
     // Placement alone only proves the node accepted the dispatch. A node
     // running an obsolete broker advertises `spawn:<cli>` capacity, acks the
@@ -636,19 +652,6 @@ export async function spawnFleetSandbox(
     }
   }
 
-  // Pin the credential/origin pair the agent was launched with: a later
-  // project rebind or environment change must not redirect attach.
-  let spawnTransport: { workspaceKey: string; baseUrl?: string } | Error;
-  if (verifiedTarget) {
-    spawnTransport = { workspaceKey: verifiedTarget.relaycastApiKey, baseUrl: verifiedTarget.baseUrl };
-  } else {
-    try {
-      const { workspaceKey, baseUrl } = resolveWorkspaceTransport(legacyTransport);
-      spawnTransport = { workspaceKey, ...(baseUrl === undefined ? {} : { baseUrl }) };
-    } catch (error) {
-      spawnTransport = error instanceof Error ? error : new Error(String(error));
-    }
-  }
   let destroyed: Promise<void> | undefined;
   let agentReleased = false;
   let sandboxDeleted = false;

@@ -215,6 +215,24 @@ describe('spawnFleetSandbox', () => {
     );
   });
 
+  it('creates the launcher client on the transport the spawn resolved', async () => {
+    const h = harness();
+    const { workspaceKey: _key, ...rest } = base;
+    await spawnFleetSandbox(
+      {
+        ...rest,
+        transport: {
+          env: { RELAY_WORKSPACE_KEY: 'rk_live_spawned', RELAY_BASE_URL: 'https://cast.agentrelay.com' },
+        },
+      },
+      h.deps
+    );
+    expect(h.createAgentRelay).toHaveBeenCalledWith({
+      token: 'launcher-token',
+      baseUrl: 'https://cast.agentrelay.com',
+    });
+  });
+
   it('tears down idempotently: releases the agent, then deletes the sandbox it provisioned', async () => {
     const h = harness();
     const handle = await spawnFleetSandbox(base, h.deps);
