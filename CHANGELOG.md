@@ -9,7 +9,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
-- `agent-relay agent register` no longer rotates an existing agent's token by default. For a name that already exists it now fails and leaves that identity's token unchanged. Pass the new `--rotate` flag to replace the token deliberately. `--strict` is still accepted but now does nothing.
+- `agent-relay agent register` no longer rotates an existing agent's token by default. For a name that already exists it now fails and leaves that identity's token unchanged. Pass the new `--rotate` flag to replace the token deliberately. `--strict` is still accepted; it has no effect on its own and can't be combined with `--rotate`.
 
 ### Fixed
 

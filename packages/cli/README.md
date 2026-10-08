@@ -516,8 +516,9 @@ identity's token alone. Pass `--rotate` only when you mean to replace the
 existing token: any session still using the old token is disconnected, and
 Relay servers that enforce create-only registration refuse the rotation.
 `agent-relay agent rotate <name>` is the same explicit rotation for a name that
-must already exist. `--strict` is still accepted, but it does nothing now that
-create-only is the default.
+must already exist. `--strict` is still accepted for older scripts. On its own
+it changes nothing, because create-only is the default. It can't be combined
+with `--rotate`.
 
 To act as an identity a session already holds, keep using its existing token
 (`RELAY_AGENT_TOKEN`), the Agent Relay desktop session socket, or the Agent
