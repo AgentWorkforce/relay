@@ -1,17 +1,23 @@
 name: Trunk guard
 
-# Only the `trunk` branch may merge into main. Feature branches merge into
-# `trunk`; CI runs only on the trunk -> main PR.
+# Only the `trunk` branch of THIS repository may merge into main. Feature
+# branches merge into `trunk`; CI runs only on the trunk -> main PR.
+#
+# The head-repo check is load-bearing: `github.head_ref` is just the branch
+# name, so a fork whose head branch is also called `trunk` would otherwise
+# skip the guard and merge straight into main.
 on:
   pull_request:
     branches: [main]
 
 jobs:
   only-trunk-merges-to-main:
-    if: github.head_ref != 'trunk'
+    if: >-
+      github.event.pull_request.head.repo.full_name != github.repository
+      || github.head_ref != 'trunk'
     runs-on: ubuntu-latest
     timeout-minutes: 1
     steps:
       - run: |
-          echo "::error::Only the 'trunk' branch may merge into main. Retarget this PR to 'trunk'."
+          echo "::error::Only the 'trunk' branch of ${{ github.repository }} may merge into main. Retarget this PR to 'trunk'."
           exit 1
