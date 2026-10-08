@@ -49,7 +49,7 @@ it('discovers one agent and pipes raw bytes through a private socket, then remov
   expect((await stat(proxy!.socketPath)).mode & 0o777).toBe(0o600);
   local = connect(proxy!.socketPath);
   await once(local, 'connect');
-  send(remote, 'terminal.ready', { screen: 'hello' });
+  send(remote, 'terminal.ready', { screen: Buffer.from('hello').toString('base64') });
   expect((await once(local, 'data'))[0].toString()).toBe('hello');
   const frame = once(remote, 'message');
   const bytes = Buffer.from([0x00, 0x1b, 0xff, 0xc3, 0xa9]);
@@ -84,7 +84,7 @@ it('view sockets cannot send terminal input and reject additional clients', asyn
   const { remote } = await setup('view');
   local = connect(proxy!.socketPath);
   await once(local, 'connect');
-  send(remote, 'terminal.ready', { screen: 'ready' });
+  send(remote, 'terminal.ready', { screen: Buffer.from('ready').toString('base64') });
   await once(local, 'data');
   const received = vi.fn();
   remote.on('message', received);

@@ -150,6 +150,37 @@ the result when the engine acknowledgment can be matched to the current
 roster. A successful dispatch remains successful if that optional metadata is
 missing or the roster read lags; the raw acknowledgment IDs remain available.
 
+## Fleet sandboxes
+
+`@agent-relay/sdk/fleet` exports `spawnFleetSandbox`, the same path
+`agent-relay fleet spawn --sandbox` uses. It provisions a Cloud sandbox, starts
+the agent harness on it, waits for the node to confirm the launch, checks that
+the agent landed on that sandbox's node, and returns a handle to the live agent:
+
+```ts
+import { spawnFleetSandbox } from '@agent-relay/sdk/fleet';
+
+const agent = await spawnFleetSandbox({
+  cli: 'claude',
+  name: 'reviewer',
+  task: 'Review the draft under /workspace/docs',
+  provider: 'e2b',
+  relayfilePaths: ['/docs/**', '/work/**'],
+  readonlyPaths: ['/docs/**'], // Cloud mounts these subtrees read-only
+});
+
+const terminal = await agent.attach({ mode: 'drive' }); // { socketPath, finished, close }
+// ... pipe stdio to terminal.socketPath ...
+await terminal.close();
+await agent.destroy(); // releases the agent; deletes the sandbox when this call provisioned it
+```
+
+The handle carries `sandboxId`, `nodeId`, `nodeName`, and `agentName`. A
+caller-declared `sandboxId` is retained: failure cleanup and `destroy()` never
+delete it. A non-empty `env` is rejected, because fleet spawn cannot deliver a
+per-agent environment yet. `@agent-relay/sdk/attach` exports
+`startFleetNodeAttachProxy` for attaching to any fleet node agent.
+
 ## Events
 
 `relay.addListener(selector, handler)` accepts a dotted event name, a `*`/prefix wildcard, or a fluent predicate, and always hands the handler one discriminated event object. It returns an unsubscribe function.

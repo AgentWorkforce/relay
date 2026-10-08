@@ -1,23 +1,17 @@
-import path from 'node:path';
-
 import { AgentRelay, type AgentRelayAgent } from '@agent-relay/sdk';
-import { DEV_CLOUD_API_URL, DEV_RELAYCAST_ORIGIN } from '@agent-relay/cloud';
 import {
   resolveBaseUrl,
   resolveWorkspaceSelection,
   resolveWorkspaceTransport,
 } from '@agent-relay/cloud/workspace-transport';
 export {
+  persistWorkspaceRelaycastTarget,
   resolveBaseUrl,
   resolveWorkspaceSelection,
   resolveWorkspaceTransport,
   type WorkspaceTransport,
 } from '@agent-relay/cloud/workspace-transport';
-import {
-  writeProjectWorkspaceTargetIfSelectionCurrent,
-  type WorkspaceSelection,
-  type WorkspaceKeySource,
-} from '@agent-relay/cloud/workspace-key';
+import { type WorkspaceSelection, type WorkspaceKeySource } from '@agent-relay/cloud/workspace-key';
 
 /** Options shared by the SDK-backed (Relaycast) CLI command groups. */
 export interface SdkClientOptions {
@@ -63,39 +57,6 @@ export function resolveWorkspaceKeyWithSource(options: SdkClientOptions = {}): {
 
 export function resolveWorkspaceKey(options: SdkClientOptions = {}): string {
   return resolveWorkspaceKeyWithSource(options).key;
-}
-
-/** Persist a server-selected target only while the captured project selection is still current. */
-export function persistWorkspaceRelaycastTarget(
-  selection: WorkspaceSelection | undefined,
-  target: {
-    route: 'canonical' | 'agent37-isolated';
-    baseUrl: string;
-    workspaceId: string;
-    relaycastApiKey: string;
-  },
-  relaycastCloudApiUrl?: string
-): boolean {
-  if (!selection) return false;
-  if (
-    target.route === 'canonical' &&
-    target.baseUrl === DEV_RELAYCAST_ORIGIN &&
-    relaycastCloudApiUrl !== DEV_CLOUD_API_URL
-  ) {
-    return false;
-  }
-  const selectionWithProjectDir = selection as WorkspaceSelection & { projectDataDir?: string };
-  const dataDir =
-    selectionWithProjectDir?.projectDataDir ??
-    (selection?.source === 'project' && selection.origin ? path.dirname(selection.origin) : undefined);
-  if (!dataDir) return false;
-  return writeProjectWorkspaceTargetIfSelectionCurrent(dataDir, selection, {
-    workspaceId: target.workspaceId,
-    relaycastRoute: target.route,
-    relaycastBaseUrl: target.baseUrl,
-    ...(relaycastCloudApiUrl ? { relaycastCloudApiUrl } : {}),
-    relaycastApiKey: target.relaycastApiKey,
-  });
 }
 
 export function resolveAgentToken(options: SdkClientOptions = {}): string | undefined {

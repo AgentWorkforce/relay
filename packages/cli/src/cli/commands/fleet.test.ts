@@ -1256,6 +1256,91 @@ describe('fleet command support', () => {
     });
   });
 
+  it('fleet spawn --sandbox rejects an agent that lands on another node and tears the sandbox down', async () => {
+    vi.stubEnv('RELAY_AGENT_TOKEN', undefined);
+    const placement = {
+      spawn: vi.fn(async () => ({ invocationId: 'inv_sandbox', node: { name: 'some-other-node' } })),
+    };
+    const release = vi.fn(async () => ({ released: true, deleted: true }));
+    const createWorkspaceRelay = vi.fn(() => ({
+      workspace: {
+        info: vi.fn(async () => ({ id: 'rw_abc' })),
+        register: vi.fn(async () => ({ token: 'at_live_launcher' })),
+        release,
+      },
+    }));
+    const deleteCloudFleetSandbox = vi.fn(async () => undefined);
+    const errors: string[] = [];
+    const program = new Command();
+    program.exitOverride();
+    registerFleetCommands(program, {
+      resolveSandboxRepository: vi.fn(() => undefined),
+      sdk: {
+        createAgentRelay: vi.fn(() => ({ messaging: { placement } })) as never,
+        createWorkspaceRelay: createWorkspaceRelay as never,
+        createWorkspace: vi.fn() as never,
+        log: vi.fn(),
+        error: (message: unknown) => errors.push(String(message)),
+        exit: vi.fn(() => {
+          throw new Error('__exit__');
+        }) as never,
+      },
+      ensureCloudFleetSandbox: vi.fn(async () => ({
+        outcome: 'provisioned' as const,
+        providerId: 'e2b' as const,
+        cloudWorkspaceId: 'cloud-workspace',
+        nodeId: 'node-1',
+        nodeName: 'e2b-codex',
+        sandboxId: 'sandbox-1',
+        relayWorkspaceId: 'rw_abc',
+        relayfileMounted: true,
+        relayfileMountPath: '/workspace',
+      })),
+      resolveWorkspaceSelection: () => ({
+        key: 'rk_live_test',
+        source: 'project',
+        origin: '/tmp/agent-relay-test/workspace-key.json',
+        workspaceId: 'rw_abc',
+      }),
+      persistWorkspaceRelaycastTarget: () => true,
+      deleteCloudFleetSandbox,
+      createFleetWorkspaceClient: vi.fn() as never,
+      log: () => undefined,
+      warn: () => undefined,
+      error: () => undefined,
+    });
+
+    await expect(
+      program.parseAsync(
+        [
+          'fleet',
+          'spawn',
+          'codex',
+          '--sandbox',
+          '--sandbox-provider',
+          'e2b',
+          '--no-sandbox-relayfile',
+          '--name',
+          'sandbox-worker',
+          '--task',
+          'Wait for VERIFY',
+          '--workspace-key',
+          'rk_live_test',
+        ],
+        { from: 'user' }
+      )
+    ).rejects.toThrow('__exit__');
+    expect(errors.join('\n')).toContain("landed on node 'some-other-node', not sandbox node 'e2b-codex'");
+    expect(release).toHaveBeenCalledWith(
+      expect.objectContaining({ name: 'sandbox-worker', deleteAgent: true })
+    );
+    expect(deleteCloudFleetSandbox).toHaveBeenCalledWith({
+      cloudWorkspaceId: 'cloud-workspace',
+      sandboxId: 'sandbox-1',
+      providerId: 'e2b',
+    });
+  });
+
   it('plain --sandbox materializes the inferred repository through Relayfile and starts in its live relative cwd', async () => {
     vi.stubEnv('RELAY_AGENT_TOKEN', undefined);
     const revision = '0123456789abcdef0123456789abcdef01234567';

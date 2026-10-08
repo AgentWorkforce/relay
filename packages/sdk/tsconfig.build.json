@@ -30,7 +30,8 @@
     "src/actions/**/*.ts",
     "src/session/**/*.ts",
     "src/attach.ts",
-    "src/fleet.ts"
+    "src/fleet.ts",
+    "src/fleet-spawn.ts"
   ],
   "exclude": ["src/__tests__/**"]
 }

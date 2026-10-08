@@ -388,7 +388,13 @@ export {
   ensureCloudFleetSandbox,
   deleteCloudFleetSandbox,
   CloudFleetSandboxProvisionError,
+  DEV_CLOUD_API_URL,
+  DEV_RELAYCAST_ORIGIN,
+  type CloudFleetRelaycastTarget,
+  type CloudFleetSandboxProviderId,
+  type DeleteCloudFleetSandboxInput,
   type EnsureCloudFleetSandboxInput,
   type EnsureCloudFleetSandboxResult,
   type CloudFleetSandboxRequestOptions,
 } from './fleet-sandbox.js';
+export { resolveWorkspaceByKey } from './workspaces.js';

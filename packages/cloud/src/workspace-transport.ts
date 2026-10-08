@@ -7,6 +7,7 @@ import {
 } from './fleet-sandbox.js';
 import {
   resolveWorkspaceSelection as resolveCloudWorkspaceSelection,
+  writeProjectWorkspaceTargetIfSelectionCurrent,
   type WorkspaceSelection,
   type WorkspaceKeySource,
 } from './workspace-key.js';
@@ -174,4 +175,37 @@ function validatePersistedRelaycastBaseUrl(selection: WorkspaceSelection | undef
     throw new Error('The persisted Relaycast workspace route is not trusted.');
   }
   return parsed.origin;
+}
+
+/** Persist a server-selected target only while the captured project selection is still current. */
+export function persistWorkspaceRelaycastTarget(
+  selection: WorkspaceSelection | undefined,
+  target: {
+    route: 'canonical' | 'agent37-isolated';
+    baseUrl: string;
+    workspaceId: string;
+    relaycastApiKey: string;
+  },
+  relaycastCloudApiUrl?: string
+): boolean {
+  if (!selection) return false;
+  if (
+    target.route === 'canonical' &&
+    target.baseUrl === DEV_RELAYCAST_ORIGIN &&
+    relaycastCloudApiUrl !== DEV_CLOUD_API_URL
+  ) {
+    return false;
+  }
+  const selectionWithProjectDir = selection as WorkspaceSelection & { projectDataDir?: string };
+  const dataDir =
+    selectionWithProjectDir?.projectDataDir ??
+    (selection?.source === 'project' && selection.origin ? path.dirname(selection.origin) : undefined);
+  if (!dataDir) return false;
+  return writeProjectWorkspaceTargetIfSelectionCurrent(dataDir, selection, {
+    workspaceId: target.workspaceId,
+    relaycastRoute: target.route,
+    relaycastBaseUrl: target.baseUrl,
+    ...(relaycastCloudApiUrl ? { relaycastCloudApiUrl } : {}),
+    relaycastApiKey: target.relaycastApiKey,
+  });
 }
