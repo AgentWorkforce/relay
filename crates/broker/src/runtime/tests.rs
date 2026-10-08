@@ -3786,8 +3786,15 @@ async fn delivery_retry_transient_blip_emits_failed_event_for_present_worker() {
         },
     )]);
 
+    // A write to the exited child's pipe usually fails, but some platforms
+    // (macOS in particular) accept an occasional write after exit. An accepted
+    // write resets the consecutive-failure budget, so count failures the way
+    // the retry path does: the delivery must fail exactly when
+    // MAX_DELIVERY_RETRIES writes in a row have failed, and never earlier.
     let mut final_outcome = None;
-    for retry_index in 1..=MAX_DELIVERY_RETRIES + 1 {
+    let mut consecutive_failures = 0;
+    let mut total_attempts = 0;
+    for _ in 0..MAX_DELIVERY_RETRIES * 4 {
         match retry_pending_delivery(
             &DeliveryId::new("del_blip"),
             &mut workers,
@@ -3800,35 +3807,34 @@ async fn delivery_retry_transient_blip_emits_failed_event_for_present_worker() {
                 let DeliveryAttemptOutcome::Failed { ref pending, .. } = outcome else {
                     unreachable!();
                 };
-                assert_eq!(pending.attempts, MAX_DELIVERY_RETRIES);
-                // Some platforms can accept a final pipe write after the child exits,
-                // so terminal failure may arrive on the immediate post-cap check.
-                assert!(
-                    retry_index >= MAX_DELIVERY_RETRIES,
-                    "delivery should not fail before the retry cap is exhausted"
+                total_attempts += 1;
+                consecutive_failures += 1;
+                assert_eq!(
+                    consecutive_failures, MAX_DELIVERY_RETRIES,
+                    "delivery must fail exactly when the consecutive retry cap is exhausted"
                 );
+                assert_eq!(pending.failed_attempts, MAX_DELIVERY_RETRIES);
+                assert_eq!(pending.attempts, total_attempts);
                 final_outcome = Some(outcome);
                 break;
             }
             Ok(DeliveryAttemptOutcome::Attempted { attempts, .. }) => {
-                assert!(
-                    attempts <= MAX_DELIVERY_RETRIES,
-                    "retry attempts must stay within the retry cap"
-                );
-                assert!(
-                    retry_index <= MAX_DELIVERY_RETRIES,
-                    "the retry after the cap should return a terminal failure"
-                );
+                total_attempts += 1;
+                consecutive_failures = 0;
+                assert_eq!(attempts, total_attempts);
             }
             Ok(DeliveryAttemptOutcome::Noop) => {
+                total_attempts += 1;
+                consecutive_failures += 1;
                 assert!(
-                    retry_index < MAX_DELIVERY_RETRIES,
-                    "the final bounded retry should return a terminal failure"
+                    consecutive_failures < MAX_DELIVERY_RETRIES,
+                    "the write that exhausts the cap should return a terminal failure"
                 );
                 let pending = pending_deliveries
                     .get("del_blip")
                     .expect("delivery remains pending before terminal failure");
-                assert_eq!(pending.attempts, retry_index);
+                assert_eq!(pending.attempts, total_attempts);
+                assert_eq!(pending.failed_attempts, consecutive_failures);
                 assert!(pending
                     .last_error
                     .as_deref()
@@ -3870,7 +3876,7 @@ async fn delivery_retry_transient_blip_emits_failed_event_for_present_worker() {
     assert_eq!(frame.payload["to"], worker_name);
     assert_eq!(
         frame.payload["attempts"].as_u64(),
-        Some(u64::from(MAX_DELIVERY_RETRIES))
+        Some(u64::from(total_attempts))
     );
     let last_error = frame.payload["lastError"].as_str().unwrap_or_default();
     assert!(
@@ -3895,7 +3901,7 @@ async fn delivery_retry_transient_blip_emits_failed_event_for_present_worker() {
     );
     let entry = dead_letters.get("del_blip").expect("dead letter by id");
     assert_eq!(entry.delivery.body, "transient auth blip");
-    assert_eq!(entry.attempts, MAX_DELIVERY_RETRIES);
+    assert_eq!(entry.attempts, total_attempts);
 }
 
 #[tokio::test]
@@ -8463,13 +8469,25 @@ async fn assert_http_spawn_metadata_publication(supplied_token: bool, valid_cwd:
         then.status(200)
             .json_body(json!({"ok":true,"data":{"channels":[]}}));
     });
+    // The same PATCH carries this machine's `host` and, when the test machine
+    // is signed in, its `owner_hash`; both are exactly what the broker
+    // computes for this process, so the body is still matched in full.
+    let mut expected = serde_json::Map::new();
+    expected.extend(crate::relaycast::spawned_worker_metadata("cat"));
+    expected.extend(
+        json!({
+            "organization":"demo-org", "project":"demo-project",
+            "workstream":"subscriptions", "role":"reviewer", "objective":"prove delivery"
+        })
+        .as_object()
+        .unwrap()
+        .clone(),
+    );
+    assert_eq!(expected["cli"], "cat");
     let metadata = server.mock(|when, then| {
         when.method(PATCH)
             .path("/v1/agents/metadata-worker")
-            .json_body(json!({"metadata":{
-                "organization":"demo-org", "project":"demo-project",
-                "workstream":"subscriptions", "role":"reviewer", "objective":"prove delivery"
-            }}));
+            .json_body(json!({ "metadata": expected }));
         then.status(200)
             .json_body(json!({"ok":true,"data":identity}));
     });
