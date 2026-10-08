@@ -193,22 +193,6 @@ describe('SDK-backed CLI groups', () => {
 
   // MUST-FIRE: retaining the created message and receipt must not make an
   // unresolved recipient look like CLI success.
-  it('message dm send without an agent token points at the non-rotating paths, not re-registering', async () => {
-    const { program, relay, error, exit } = harness(registerMessageCommands);
-    relay.messages.direct.mockRejectedValueOnce(
-      new Error('RelaycastMessagingClient.messages.direct requires agentToken or agentClient.')
-    );
-
-    await program.parseAsync(['message', 'dm', 'send', 'lead', 'hi'], { from: 'user' });
-
-    const rendered = error.mock.calls.flat().join('\n');
-    expect(rendered).toContain('needs an agent token');
-    expect(rendered).toContain('agent token --current --from-file');
-    expect(rendered).toContain('Do not re-register your own name');
-    expect(rendered).not.toContain('RelaycastMessagingClient');
-    expect(exit).toHaveBeenCalledWith(1);
-  });
-
   it('message dm send exits non-zero after printing an unresolved-recipient receipt', async () => {
     const { program, relay, workspaceRelay, log, error, exit } = harness(registerMessageCommands);
     workspaceRelay.agents.list.mockResolvedValueOnce([]);

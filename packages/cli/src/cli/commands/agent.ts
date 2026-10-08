@@ -1,5 +1,3 @@
-import { spawn } from 'node:child_process';
-
 import { Option, type Command } from 'commander';
 
 import {
@@ -13,9 +11,7 @@ import {
 import { RelayError, safeRelayErrorMessage } from '@agent-relay/sdk';
 
 import { withAgentRegistrationDeadline, withDeadline } from '../lib/agent-registration.js';
-import { readAgentTokenFile, writeAgentTokenFile } from '../lib/agent-token-file.js';
 import { attributableReleaseReason } from '../lib/release-reason.js';
-import { resolveAgentToken } from '../lib/sdk-client.js';
 
 function isNotFoundError(error: unknown): boolean {
   if (error instanceof RelayError) return error.code === 'not_found' || error.statusCode === 404;
@@ -31,45 +27,28 @@ function isCurrentIdentityName(env: NodeJS.ProcessEnv, name: string): boolean {
   return Boolean(current) && current!.toLowerCase() === name.trim().replace(/^@/, '').toLowerCase();
 }
 
-function safeErrorDetail(error: unknown): string {
-  // Never echo a credential that an upstream error might quote back.
-  return safeRelayErrorMessage(error).replace(/\b(at|rk)_live_[A-Za-z0-9_-]+/g, '<redacted>');
-}
-
 function isNameConflictError(error: unknown): boolean {
   if (!error || typeof error !== 'object') return false;
   const { code, rawCode } = error as { code?: unknown; rawCode?: unknown };
   return code === 'name_conflict' || code === 'agent_already_exists' || rawCode === 'agent_already_exists';
 }
 
-/** Run `command` with `env` and resolve with its exit code. */
-export type RunWithEnv = (command: string, args: string[], env: NodeJS.ProcessEnv) => Promise<number>;
-
 export interface AgentCommandDependencies extends SdkCommandDeps {
-  /** Environment used to find the current identity (`RELAY_AGENT_NAME`, `RELAY_AGENT_TOKEN`). */
+  /** Environment used to recognise this session's own identity (`RELAY_AGENT_NAME`). */
   env: NodeJS.ProcessEnv;
-  runWithEnv: RunWithEnv;
 }
-
-const defaultRunWithEnv: RunWithEnv = (command, args, env) =>
-  new Promise((resolve, reject) => {
-    const child = spawn(command, args, { env, stdio: 'inherit' });
-    child.once('error', reject);
-    child.once('exit', (code, signal) => resolve(code ?? (signal ? 1 : 0)));
-  });
 
 function withAgentDefaults(overrides: Partial<AgentCommandDependencies> = {}): AgentCommandDependencies {
   return {
     env: process.env,
-    runWithEnv: defaultRunWithEnv,
     ...withSdkDefaults(overrides),
     ...overrides,
   };
 }
 
 const CURRENT_IDENTITY_HINT =
-  'To act as an identity you already hold, run "agent-relay agent token --current" ' +
-  '(it reads the token this session already has and never mints or rotates one).';
+  'To act as an identity you already hold, keep using its existing token (RELAY_AGENT_TOKEN), the ' +
+  'Agent Relay desktop session socket, or the Agent Relay MCP tools; do not re-register its name.';
 
 function existingNameError(name: string): Error {
   return new Error(
@@ -83,28 +62,6 @@ function rotationRefusedError(name: string): Error {
   return new Error(
     `The Relay service refused to rotate "${name}": it no longer lets a workspace key rotate an ` +
       `existing agent's token, and its current token was left unchanged. ${CURRENT_IDENTITY_HINT}`
-  );
-}
-
-function resolveCurrentToken(
-  opts: Record<string, unknown>,
-  env: NodeJS.ProcessEnv
-): { token: string | undefined; source: 'file' | 'flag' | 'env' } {
-  const fromFile = typeof opts.fromFile === 'string' ? opts.fromFile : undefined;
-  const flagToken = typeof opts.token === 'string' && opts.token.trim() ? opts.token : undefined;
-  if (fromFile && flagToken) {
-    throw new Error('Pass either --from-file or --token, not both.');
-  }
-  if (fromFile) return { token: readAgentTokenFile(fromFile), source: 'file' };
-  return { token: resolveAgentToken({ token: flagToken, env }), source: flagToken ? 'flag' : 'env' };
-}
-
-function noCurrentTokenError(): Error {
-  return new Error(
-    'This session has no agent token: neither --from-file, --token, nor RELAY_AGENT_TOKEN is set. ' +
-      'Nothing was minted or rotated. Do not re-register your own name to get one. Instead: send through ' +
-      'the Agent Relay desktop session socket, use the Agent Relay MCP tools (for example send_dm) if they ' +
-      'are loaded, or register a new, unused name with "agent-relay agent register <new-name>".'
   );
 }
 
@@ -133,8 +90,8 @@ export function registerAgentCommands(
       .addOption(new Option('--strict', 'Deprecated: registration is create-only by default').hideHelp())
       .addHelpText(
         'after',
-        '\nTo act as an identity this session already holds, use "agent-relay agent token --current" ' +
-          'instead; it never mints or rotates a token.'
+        '\nTo act as an identity this session already holds, keep using its existing token ' +
+          '(RELAY_AGENT_TOKEN), the desktop session socket, or the MCP tools; never re-register its name.'
       )
   ).action(async (name: string, opts: Record<string, unknown>) => {
     await runSdk(deps, async () => {
@@ -216,90 +173,6 @@ export function registerAgentCommands(
       printJson(deps, { id: registration.id, name: registration.name, token: registration.token });
     });
   });
-
-  group
-    .command('token')
-    .description(
-      "Use this session's existing agent identity without printing, minting, or rotating its token"
-    )
-    .option('--current', "Required: act on this session's existing identity")
-    .option('--from-file <path>', 'Read the token from an owner-only (0600) file written by --out')
-    .option('--out <path>', 'Write the token to a new owner-only (0600) file and print only its path')
-    .option('--force', 'With --out, replace an existing regular file')
-    .option('--token <token>', 'Agent token (defaults to RELAY_AGENT_TOKEN); prefer --from-file')
-    .option('--base-url <url>', 'Override the API base URL (defaults to RELAY_BASE_URL)')
-    .argument('[command...]', 'After "--": run this command with RELAY_AGENT_TOKEN set to the token')
-    .addHelpText(
-      'after',
-      [
-        '',
-        'The token comes from --from-file, --token, or RELAY_AGENT_TOKEN, and is verified with a read-only',
-        'identity lookup. It is never written to stdout or stderr.',
-        '',
-        'Examples:',
-        '  agent-relay agent token --current',
-        '  agent-relay agent token --current --out ~/.config/agent-relay/me.token',
-        '  agent-relay agent token --current --from-file ~/.config/agent-relay/me.token -- \\',
-        '    agent-relay message dm send reviewer "Ready for review"',
-      ].join('\n')
-    )
-    .action(async (command: string[], opts: Record<string, unknown>) => {
-      let childExitCode = 0;
-      await runSdk(deps, async () => {
-        if (opts.current !== true) {
-          throw new Error(
-            'Pass --current. "agent token" only uses the identity this session already holds; ' +
-              'it never mints or rotates a token.'
-          );
-        }
-        const { token, source } = resolveCurrentToken(opts, deps.env);
-        if (!token) throw noCurrentTokenError();
-
-        const relay = deps.createAgentRelay({ token, baseUrl: opts.baseUrl as string | undefined });
-        const me = await withDeadline(
-          () => relay.agents.me(),
-          (effectiveTimeoutMs) =>
-            new Error(`Verifying the current agent identity did not complete within ${effectiveTimeoutMs}ms.`)
-        ).catch((error: unknown) => {
-          if (error instanceof Error && error.message.startsWith('Verifying the current agent identity')) {
-            throw error;
-          }
-          throw new Error(
-            `The current agent token was rejected (${safeErrorDetail(error)}). It may have been rotated or ` +
-              'revoked. Nothing was minted or rotated.'
-          );
-        });
-
-        const expectedName = deps.env.RELAY_AGENT_NAME?.trim();
-        if (expectedName && me.name && me.name !== expectedName) {
-          deps.error(
-            `Warning: the token belongs to "${me.name}", but RELAY_AGENT_NAME is "${expectedName}".`
-          );
-        }
-
-        const tokenFile =
-          typeof opts.out === 'string'
-            ? writeAgentTokenFile(opts.out, token, { force: opts.force === true })
-            : undefined;
-
-        if (command.length > 0) {
-          const [executable, ...args] = command;
-          const env: NodeJS.ProcessEnv = { ...deps.env, RELAY_AGENT_TOKEN: token };
-          if (me.name) env.RELAY_AGENT_NAME = me.name;
-          childExitCode = await deps.runWithEnv(executable, args, env);
-          return;
-        }
-
-        printJson(deps, {
-          id: me.id,
-          name: me.name,
-          source,
-          ...(tokenFile ? { tokenFile } : {}),
-        });
-      });
-      // Outside runSdk so the wrapped command's own exit code is preserved.
-      if (childExitCode !== 0) deps.exit(childExitCode);
-    });
 
   addSdkOptions(
     group.command('list').description('List agents').option('--status <status>', 'Filter by status')

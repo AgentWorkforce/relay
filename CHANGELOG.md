@@ -5,20 +5,15 @@ All notable changes to Agent Relay will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
-
-### Added
-
-- `agent-relay agent token --current` lets a session use the agent identity it already holds without printing, minting, or rotating its token. It checks the token with a read-only lookup. `--out <file>` writes the token to a new owner-only (0600) file, and `--from-file <file> -- <command>` runs the next command with `RELAY_AGENT_TOKEN` set. This is a safe fallback when the desktop session socket is unavailable.
+## [Unreleased - Minor]
 
 ### Changed
 
-- `agent-relay agent register` is now create-only. For a name that already exists it fails, leaves that identity's token unchanged, and points to `agent token --current`. Pass `--rotate` to replace the existing token deliberately. `--strict` is still accepted but now does nothing.
+- `agent-relay agent register` no longer rotates an existing agent's token by default. For a name that already exists it now fails and leaves that identity's token unchanged. Pass the new `--rotate` flag to replace the token deliberately. `--strict` is still accepted but now does nothing.
 
 ### Fixed
 
-- The `agent-relay mcp` stdio server no longer exits before the MCP handshake when its startup registration fails, for example when the agent name already exists or Relaycast is unreachable. Before this fix, Claude Code reported "Connection closed". The server now starts without an agent identity, writes the reason to stderr, and returns that reason from identity-scoped tools until `register_agent` succeeds.
-- Agent-scoped `agent-relay message` commands run without an agent token now explain the non-rotating options instead of failing with an internal SDK error.
+- The `agent-relay mcp` stdio server no longer exits before the MCP handshake when its startup registration fails, for example when the agent name already exists or Relaycast is unreachable. Claude Code used to report this as "Connection closed". The server now starts without an agent identity, logs the reason to stderr with credentials redacted, and identity-scoped tools return that reason until `register_agent` succeeds.
 
 ## [13.1.5] - 2026-10-08
 

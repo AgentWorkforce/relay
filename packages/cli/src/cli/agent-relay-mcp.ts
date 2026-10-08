@@ -63,6 +63,7 @@ import {
   resolveWorkspaceSessionKey,
   validateWorkspaceSessionName,
 } from './lib/workspace-session.js';
+import { redactCredentials } from './lib/redact-credentials.js';
 import type {
   AgentClientLike,
   AgentRelayMcpServerOptions,
@@ -1590,7 +1591,12 @@ export function createAgentRelayMcpServer(options: AgentRelayMcpServerOptions): 
     }
   };
 
+  // Reported only until this session first gets an identity; after that the
+  // startup failure is history and normal recovery guidance applies.
+  let startupRegistrationError = options.startupRegistrationError;
+
   const setSession: SessionSetter = (partial) => {
+    if (partial.agentToken) startupRegistrationError = undefined;
     const switchingWorkspace =
       partial.workspaceKey !== undefined && partial.workspaceKey !== session.workspaceKey;
     const changingToken = partial.agentToken !== undefined && partial.agentToken !== session.agentToken;
@@ -1662,9 +1668,9 @@ export function createAgentRelayMcpServer(options: AgentRelayMcpServerOptions): 
     }
 
     if (!session.agentToken) {
-      if (options.startupRegistrationError) {
+      if (startupRegistrationError) {
         throw new Error(
-          `Not registered: startup registration failed (${options.startupRegistrationError}). Call the "register_agent" tool to retry.`
+          `Not registered: startup registration failed (${startupRegistrationError}). Call the "register_agent" tool to retry.`
         );
       }
       throw new Error('Not registered. Call the "register_agent" tool first.');
@@ -1833,7 +1839,7 @@ export async function resolveStdioBootstrapOptionsOrDegrade(
     const reason = conflict
       ? `agent "${options.agentName}" already exists and registration is create-only; ` +
         "set RELAY_AGENT_TOKEN to that identity's existing token or register a different name"
-      : safeRelayErrorMessage(error);
+      : redactCredentials(safeRelayErrorMessage(error), [options.apiKey, options.agentToken]);
     const who = options.agentName ? ` as "${options.agentName}"` : '';
     writeStderr(
       `[agent-relay mcp] Startup registration${who} failed: ${reason}. ` +

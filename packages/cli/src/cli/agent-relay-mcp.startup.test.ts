@@ -2151,6 +2151,51 @@ describe('startAgentRelayMcpStdio', () => {
       await expect(server.tools.get('send_dm')!.handler({ to: 'peer', text: 'hi' })).rejects.toThrow(
         /startup registration failed .*already exists.*register_agent/
       );
+
+      // Once register_agent succeeds the startup failure is no longer reported.
+      mocks.behavior.registerImpl = vi.fn(async () => ({
+        id: 'agent_b',
+        name: 'WorkerB',
+        token: 'at_live_workerb',
+      }));
+      await server.tools.get('register_agent')!.handler({ name: 'WorkerB' });
+      await server.tools.get('send_dm')!.handler({ to: 'peer', text: 'hi' });
+    } finally {
+      stderr.mockRestore();
+    }
+  });
+
+  it('redacts credentials an upstream startup error quotes back on stderr', async () => {
+    const { mod, mocks } = await loadAgentRelayMcpModule();
+    mocks.behavior.registerImpl = vi.fn(async () => {
+      throw new Error(
+        'POST /v1/agents failed: Authorization: Bearer abc.def.ghi key=rk_live_workspace_secret ' +
+          'token=at_live_agent_secret jwt=eyJhbGciOiJSUzI1NiJ9.eyJzdWIiOiJ4In0.sig ' +
+          'url=https://relay-user:url-password-secret@cast.example/v1'
+      );
+    });
+    const stderr = vi.spyOn(process.stderr, 'write').mockImplementation(() => true);
+    try {
+      await mod.startAgentRelayMcpStdio({
+        apiKey: 'rk_live_workspace_secret',
+        agentName: 'WorkerA',
+        sharedSessionTools: [],
+      });
+      expect(mocks.serverInstances[0].connect).toHaveBeenCalledTimes(1);
+      const written = stderr.mock.calls.map((call) => String(call[0])).join('');
+      expect(written).toContain('Startup registration as "WorkerA" failed');
+      for (const secret of [
+        'rk_live_workspace_secret',
+        'at_live_agent_secret',
+        'eyJhbGciOiJSUzI1NiJ9',
+        'abc.def.ghi',
+        'url-password-secret',
+        'relay-user',
+      ]) {
+        expect(written).not.toContain(secret);
+      }
+      expect(written).toContain('Bearer <redacted>');
+      expect(written).toContain('https://<redacted>@cast.example/v1');
     } finally {
       stderr.mockRestore();
     }
