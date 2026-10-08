@@ -10,10 +10,19 @@ const REPLAY_SCOPE = Symbol('agentRelay.replayScope');
  */
 export function withReplayScope<T extends object>(client: T, agentToken: string): T {
   Object.defineProperty(client, REPLAY_SCOPE, {
-    value: createHash('sha256').update(agentToken).digest('hex'),
+    value: replayScopeForCredentials(agentToken),
     enumerable: false,
   });
   return client;
+}
+
+/**
+ * A replay scope for whatever credentials decide who a write acts as and where
+ * it lands. Only a SHA-256 digest is kept, never the credentials themselves.
+ */
+export function replayScopeForCredentials(...credentials: string[]): string {
+  const material = credentials.length === 1 ? credentials[0] : JSON.stringify(credentials);
+  return createHash('sha256').update(material).digest('hex');
 }
 
 /** The replay scope a client was tagged with, or '' for an untagged client. */

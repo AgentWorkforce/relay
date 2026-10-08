@@ -421,6 +421,32 @@ afterEach(() => {
 });
 
 describe('agent-relay-mcp startup helpers', () => {
+  // relay#1930 review (CodeRabbit): a retained spawn key is scoped to the
+  // acting identity, so a key reused after register_agent moves the session
+  // default starts that identity's own spawn instead of replaying the first.
+  it('scopes a retained spawn idempotency key to the acting identity', async () => {
+    const { mod, mocks } = await loadAgentRelayMcpModule();
+    mod.createAgentRelayMcpServer({
+      workspaceKey: 'rk_live_scope',
+      agentToken: 'at_live_fleet',
+      agentName: 'orchestrator',
+    });
+    const server = mocks.serverInstances[0];
+    const spawn = server.tools.get('spawn')!.handler;
+    const input = { name: 'ScopedWorker', cli: 'codex', idempotency_key: 'same-key' };
+    await spawn(input, { sessionId: 'mcp-session', requestId: 1 });
+    await spawn(input, { sessionId: 'mcp-session', requestId: 2 });
+    expect(mocks.agentRelayMessagingCommands.invoke).toHaveBeenCalledTimes(1);
+
+    await server.tools.get('register_agent')!.handler({ name: 'WorkerB' });
+    mocks.agentRelayMessagingCommands.invoke.mockResolvedValueOnce({
+      invocationId: 'inv_scoped',
+      actionName: 'spawn',
+    });
+    await spawn(input, { sessionId: 'mcp-session', requestId: 3 });
+    expect(mocks.agentRelayMessagingCommands.invoke).toHaveBeenCalledTimes(2);
+  });
+
   it('coalesces replayed MCP request ids without collapsing separate same-name spawns', async () => {
     const { mod, mocks } = await loadAgentRelayMcpModule();
     mod.createAgentRelayMcpServer({ agentToken: 'at_live_fleet', agentName: 'orchestrator' });

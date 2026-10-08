@@ -59,7 +59,7 @@ import {
 import { enableInboxPiggyback } from './mcp/telemetry.js';
 import { registerAgentRelayActionTools } from './mcp/action-tools.js';
 import { registerMessagingTools } from './mcp/messaging-tools.js';
-import { McpRequestReplay, withReplayScope } from './mcp/request-replay.js';
+import { McpRequestReplay, replayScopeForCredentials, withReplayScope } from './mcp/request-replay.js';
 import { identityOverrideInputShape, messageResult } from './mcp/tool-shapes.js';
 import {
   registerSharedSessionTools,
@@ -1057,6 +1057,12 @@ function registerAgentRelayTools(
   forcedAgentType: AgentType | undefined,
   requestReplay: McpRequestReplay
 ): void {
+  // A retained spawn key belongs to the workspace and the identity it acts as.
+  const spawnReplayScope = (as?: string): string => {
+    const session = getSession();
+    const agentToken = (as ? session.agents.get(as)?.agentToken : session.agentToken) ?? '';
+    return replayScopeForCredentials(session.workspaceKey ?? '', agentToken);
+  };
   server.registerTool(
     'create_workspace',
     {
@@ -1424,28 +1430,34 @@ function registerAgentRelayTools(
       { name, cli, task, channel, persona, model, spawn_mode, exit_after_task, idempotency_key },
       extra
     ) =>
-      requestReplay.run('add_agent', extra, idempotency_key, async () => {
-        const invocation = await getRelay().agents.spawn({
-          name,
-          cli,
-          task:
-            exit_after_task ||
-            spawn_mode === 'task_exit' ||
-            spawn_mode === 'task-exit' ||
-            spawn_mode === 'single_shot' ||
-            spawn_mode === 'single-shot'
-              ? withExitAfterTaskInstruction(task)
-              : task,
-          channel,
-          persona,
-          // SpawnAgentRequest has no top-level model field; pass via metadata
-          // so the broker can extract it and forward --model to the launched CLI.
-          metadata: model ? { model } : undefined,
-        });
-        const failure = terminalSpawnFailureResult(invocation);
-        if (failure) return failure;
-        return jsonContent({ ...invocation, placement: spawnReceipt(invocation) });
-      })
+      requestReplay.run(
+        'add_agent',
+        extra,
+        idempotency_key,
+        async () => {
+          const invocation = await getRelay().agents.spawn({
+            name,
+            cli,
+            task:
+              exit_after_task ||
+              spawn_mode === 'task_exit' ||
+              spawn_mode === 'task-exit' ||
+              spawn_mode === 'single_shot' ||
+              spawn_mode === 'single-shot'
+                ? withExitAfterTaskInstruction(task)
+                : task,
+            channel,
+            persona,
+            // SpawnAgentRequest has no top-level model field; pass via metadata
+            // so the broker can extract it and forward --model to the launched CLI.
+            metadata: model ? { model } : undefined,
+          });
+          const failure = terminalSpawnFailureResult(invocation);
+          if (failure) return failure;
+          return jsonContent({ ...invocation, placement: spawnReceipt(invocation) });
+        },
+        replayScopeForCredentials(getSession().workspaceKey ?? '')
+      )
   );
 
   server.registerTool(
@@ -1529,43 +1541,49 @@ function registerAgentRelayTools(
       },
       extra
     ) =>
-      requestReplay.run('spawn', extra, idempotency_key, async () => {
-        const request = {
-          name,
-          cli,
-          persona,
-          task,
-          cwd,
-          personaCwd: persona_cwd,
-          workerCwd: worker_cwd,
-          channel,
-          channels,
-          model,
-          organization,
-          project,
-          workstream,
-          role,
-          objective,
-          sessionRef: session_ref,
-          targetNode: target_node,
-        };
-        validateSpawnRequest(request);
-        const actionInput = buildSpawnActionInput(request);
-        try {
-          const invocation = await invokeVerifiedSpawn(getSession(), as, baseUrl, actionInput);
-          return jsonContent({
-            invocation,
-            placement: recordValue(invocation).placement ?? {
-              state: 'ready',
-              ...spawnReceipt(recordValue(invocation)),
-            },
-          });
-        } catch (error) {
-          if (error instanceof VerifiedSpawnError || error instanceof FleetSpawnError)
-            return verifiedSpawnErrorResult(error);
-          throw error;
-        }
-      })
+      requestReplay.run(
+        'spawn',
+        extra,
+        idempotency_key,
+        async () => {
+          const request = {
+            name,
+            cli,
+            persona,
+            task,
+            cwd,
+            personaCwd: persona_cwd,
+            workerCwd: worker_cwd,
+            channel,
+            channels,
+            model,
+            organization,
+            project,
+            workstream,
+            role,
+            objective,
+            sessionRef: session_ref,
+            targetNode: target_node,
+          };
+          validateSpawnRequest(request);
+          const actionInput = buildSpawnActionInput(request);
+          try {
+            const invocation = await invokeVerifiedSpawn(getSession(), as, baseUrl, actionInput);
+            return jsonContent({
+              invocation,
+              placement: recordValue(invocation).placement ?? {
+                state: 'ready',
+                ...spawnReceipt(recordValue(invocation)),
+              },
+            });
+          } catch (error) {
+            if (error instanceof VerifiedSpawnError || error instanceof FleetSpawnError)
+              return verifiedSpawnErrorResult(error);
+            throw error;
+          }
+        },
+        spawnReplayScope(as)
+      )
   );
 
   server.registerTool(
