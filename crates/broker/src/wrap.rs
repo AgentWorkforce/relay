@@ -103,7 +103,20 @@ pub(crate) fn submit_injection_body(
     bytes: Vec<u8>,
     pace: Duration,
 ) -> anyhow::Result<(tokio::sync::oneshot::Receiver<std::io::Result<()>>, u64)> {
-    if let Some(delay) = injection_submit_followup_delay(resolved_cli) {
+    // Follow the already-selected wire. Capability can latch between body
+    // construction and queue admission; re-probing here could bulk-type raw bytes.
+    let wire = if bytes.starts_with(b"\x1b[200~") && bytes.ends_with(b"\x1b[201~") {
+        crate::injection_wire::InjectionWire::Paste
+    } else {
+        crate::injection_wire::InjectionWire::Typed
+    };
+    let limit = crate::injection_wire::effective_limit(wire, pace);
+    anyhow::ensure!(bytes.len().saturating_sub(if wire == crate::injection_wire::InjectionWire::Paste { 12 } else { 0 }) <= limit, "injection_too_large: {resolved_cli} effective limit is {limit} bytes; use a brief file pointer");
+    let paste = wire == crate::injection_wire::InjectionWire::Paste;
+    let pace = if paste { Duration::ZERO } else { pace };
+    if let Some(delay) = injection_submit_followup_delay(resolved_cli)
+        .or_else(|| paste.then_some(PASTE_INJECTION_SUBMIT_DELAY))
+    {
         pty.submit_write_paced_with_followup_and_output_boundary(bytes, pace, delay, b"\r".to_vec())
     } else {
         let mut burst = bytes;
@@ -260,6 +273,71 @@ fn prepare_wrap_retry(
     }
     verification.attempts += 1;
     true
+}
+
+// Wrap has no delivery protocol. Preserve its existing failed-throttle timeout
+// policy, including absent echoes and evidence of loss. A collapsed paste is
+// the one unconfirmed verdict that is not evidence of anything going wrong —
+// the harness simply never echoes content — so it must not drive the injection
+// delay up on every delivery to a paste-collapsing TUI.
+/// Format a wrap injection, replacing a body whose envelope would exceed the
+/// PTY injection limit with a bounded pointer to the message.
+///
+/// The entry has already left `pending_wrap_injections`, and wrap has no
+/// channel back to the sender, so skipping the write would make the message
+/// vanish silently. The notice tells the agent the message exists and where to
+/// read it; the full text stays in Relay (relay#1893 review).
+#[allow(clippy::too_many_arguments)]
+fn format_wrap_injection(
+    from: &str,
+    event_id: &str,
+    body: &str,
+    target: &str,
+    include_reminder: bool,
+    workspace_id: Option<&str>,
+    workspace_alias: Option<&str>,
+) -> String {
+    let format = |body: &str| {
+        format_injection_for_worker_with_workspace(
+            from,
+            event_id,
+            body,
+            target,
+            include_reminder,
+            true, // pre_registered
+            None, // assigned_name
+            workspace_id,
+            workspace_alias,
+        )
+    };
+    let injection = format(body);
+    if injection.len() <= crate::injection_wire::MAX_INJECTION_BODY_BYTES {
+        return injection;
+    }
+    tracing::warn!(
+        event_id,
+        bytes = injection.len(),
+        limit = crate::injection_wire::MAX_INJECTION_BODY_BYTES,
+        "wrap: injection_too_large; delivering a pointer instead of the body"
+    );
+    format(&format!(
+        "[Message body not shown: {} bytes exceeds the {}-byte terminal delivery limit. \
+         The full message is stored in Relay as message {event_id}; read it with your Relay \
+         message tools before replying.]",
+        body.len(),
+        crate::injection_wire::MAX_INJECTION_BODY_BYTES
+    ))
+}
+
+fn wrap_timeout_outcome(
+    verdict: crate::broker::delivery_verification::EchoVerdict,
+) -> DeliveryOutcome {
+    use crate::broker::delivery_verification::EchoVerdict;
+    match verdict {
+        _ if verdict.confirmed() => DeliveryOutcome::Success,
+        EchoVerdict::PasteSummary => DeliveryOutcome::Unverified,
+        _ => DeliveryOutcome::Failed,
+    }
 }
 
 /// Start echo verification after a PTY write ack without missing output that
@@ -2133,18 +2211,16 @@ pub(crate) async fn run_wrap(
                     tracing::debug!("relay from {} → {}", pending.from, pending.target);
                     let include_reminder = !skip_prompt
                         && mcp_reminder_throttle.should_include(Instant::now());
-                    let injection = format_injection_for_worker_with_workspace(
+                    let injection = format_wrap_injection(
                         &pending.from,
                         &pending.event_id,
                         &pending.body,
                         &pending.target,
                         include_reminder,
-                        true, // pre_registered
-                        None, // assigned_name
                         pending.workspace_id.as_deref(),
                         pending.workspace_alias.as_deref(),
                     );
-                    let bytes = crate::devin::injection_bytes(&resolved_cli, &injection);
+                    let bytes = crate::injection_wire::injection_bytes(crate::injection_wire::injection_wire(&resolved_cli, &pty), &injection);
                     let write = submit_injection_body(&pty, &resolved_cli, bytes, Duration::ZERO);
                     match write {
                         Ok((ack_rx, output_boundary)) => {
@@ -2306,7 +2382,8 @@ pub(crate) async fn run_wrap(
                                 attempts = pv.attempts,
                                 "wrap: delivery verification failed after max retries"
                             );
-                            throttle.record(DeliveryOutcome::Failed);
+                            throttle.record(wrap_timeout_outcome(crate::broker::delivery_verification::echo_verdict(
+                                &echo_buffer.since(pv.output_boundary), &pv.expected_echo)));
                         }
                     } else {
                         i += 1;
@@ -2342,18 +2419,16 @@ pub(crate) async fn run_wrap(
                     // a fresh one within the cooldown is redundant.
                     let include_reminder = !skip_prompt
                         && mcp_reminder_throttle.should_include(Instant::now());
-                    let injection = format_injection_for_worker_with_workspace(
+                    let injection = format_wrap_injection(
                         &pv.from,
                         &pv.event_id,
                         &pv.body,
                         &pv.target,
                         include_reminder,
-                        true,
-                        None,
                         pv.workspace_id.as_deref(),
                         pv.workspace_alias.as_deref(),
                     );
-                    let bytes = crate::devin::injection_bytes(&resolved_cli, &injection);
+                    let bytes = crate::injection_wire::injection_bytes(crate::injection_wire::injection_wire(&resolved_cli, &pty), &injection);
                     let write = submit_injection_body(&pty, &resolved_cli, bytes, Duration::ZERO);
                     match write {
                         Ok((ack_rx, output_boundary)) => {
@@ -2706,6 +2781,66 @@ sys.stdout.flush()"#;
             Instant::now()
         ));
         assert_eq!(verification.attempts, 2);
+    }
+
+    #[test]
+    fn oversized_wrap_messages_are_delivered_as_a_bounded_pointer() {
+        let limit = crate::injection_wire::MAX_INJECTION_BODY_BYTES;
+        let normal =
+            super::format_wrap_injection("alice", "evt_ok", "hello", "bob", true, None, None);
+        assert!(normal.contains("Relay message from alice [evt_ok]: hello"));
+        // A body that fits on its own but whose reminder and attribution push
+        // the envelope past the limit (the reviewer's 16,000-byte DM), and one
+        // far over it.
+        for len in [limit - 384, limit * 2] {
+            let body = format!("UNIQUE-BODY-MARKER{}", "x".repeat(len));
+            let injection =
+                super::format_wrap_injection("alice", "evt_big", &body, "bob", true, None, None);
+            assert!(injection.len() <= limit, "{len}: {} bytes", injection.len());
+            assert!(
+                !injection.contains("UNIQUE-BODY-MARKER"),
+                "{len}: body leaked"
+            );
+            assert!(
+                injection.contains("Relay message from alice [evt_big]"),
+                "{injection}"
+            );
+            assert!(injection.contains("message evt_big"), "{injection}");
+            assert!(
+                injection.contains(&format!("{} bytes exceeds", body.len())),
+                "{injection}"
+            );
+        }
+    }
+
+    #[test]
+    fn wrap_timeout_stays_failed_without_confirming_evidence() {
+        use crate::broker::delivery_verification::{DeliveryOutcome, EchoVerdict};
+        for verdict in [
+            EchoVerdict::Absent,
+            EchoVerdict::HeadMissing,
+            EchoVerdict::Incomplete,
+        ] {
+            assert!(matches!(
+                super::wrap_timeout_outcome(verdict),
+                DeliveryOutcome::Failed
+            ));
+        }
+        // Neither a success (nothing was verified) nor a failure (nothing
+        // indicates loss) — exactly what `Unverified` exists for.
+        assert!(matches!(
+            super::wrap_timeout_outcome(EchoVerdict::PasteSummary),
+            DeliveryOutcome::Unverified
+        ));
+        assert!(matches!(
+            super::wrap_timeout_outcome(EchoVerdict::Normalized),
+            DeliveryOutcome::Success
+        ));
+        // Wrap always uses bulk writes, including its Typed fallback. Its
+        // write acknowledgement budget must cover the delayed submit only.
+        assert!(
+            Duration::ZERO + super::PASTE_INJECTION_SUBMIT_DELAY < super::WRAP_WRITE_ACK_TIMEOUT
+        );
     }
 
     #[test]

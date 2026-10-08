@@ -168,6 +168,7 @@ enum InjectionStage {
 struct ActiveInjection {
     pending: PendingWorkerInjection,
     stage: InjectionStage,
+    prompt_wait_started: Instant,
     next_at: tokio::time::Instant,
     injection_text: Option<String>,
     /// Receive-time PTY-output sequence captured atomically with submitting
@@ -762,6 +763,28 @@ fn restore_hold_exemption(
     } else {
         *hold_exempt_injections += 1;
     }
+}
+
+/// Wire `verification` label for a delivery the output arm just confirmed.
+///
+/// Both output arms confirm through `pending_verification_echo_seen`, which
+/// accepts only whole-payload evidence, so re-deriving the label here cannot
+/// report anything weaker. The assertion keeps that true if the ladder gains a
+/// rung: a label the runtime does not treat as receipt must never be emitted
+/// from a path that already acted on confirmation (relay#1893 review).
+fn confirmed_verification_label(
+    output: &crate::broker::delivery_verification::VerificationOutput,
+    pv: &PendingVerification,
+) -> &'static str {
+    let verdict = crate::broker::delivery_verification::echo_verdict(
+        &output.since(pv.output_boundary),
+        &pv.expected_echo,
+    );
+    debug_assert!(
+        verdict.confirmed(),
+        "output-arm confirmation emitted a non-confirming verdict: {verdict:?}"
+    );
+    verdict.label()
 }
 
 /// Relay command detection must stay disabled for the entire injection lifecycle.
@@ -1892,7 +1915,10 @@ pub(crate) async fn run_pty_worker(cmd: PtyCommand) -> Result<()> {
                                 json!({
                                     "delivery_id": delivery_id,
                                     "event_id": event_id,
-                                    "verification": "echo"
+                                    // Output-arm confirmation is gated on
+                                    // `confirmed()`, so this label can only be
+                                    // whole-payload evidence.
+                                    "verification": confirmed_verification_label(&echo_buffer, &pv)
                                 }),
                             )
                             .await;
@@ -2070,6 +2096,7 @@ pub(crate) async fn run_pty_worker(cmd: PtyCommand) -> Result<()> {
                             active_injection = Some(ActiveInjection {
                                 pending,
                                 stage: InjectionStage::Escape,
+                                prompt_wait_started: Instant::now(),
                                 next_at: tokio::time::Instant::now() + throttle.delay(),
                                 injection_text: None,
                                 output_boundary: None,
@@ -2139,7 +2166,14 @@ pub(crate) async fn run_pty_worker(cmd: PtyCommand) -> Result<()> {
                     InjectionStage::Body => {
                         // Recheck after throttling/steer delay: never paste
                         // into a dialog that replaced the previously idle UI.
-                        if !crate::devin::can_inject(&resolved_cli, &pty) {
+                        if !crate::injection_wire::can_inject(&resolved_cli, &pty) {
+                            if inj.prompt_wait_started.elapsed() >= crate::injection_wire::INJECTION_PROMPT_WAIT {
+                                let delivery = &inj.pending.delivery;
+                                let _ = send_frame(&out_tx, "delivery_failed", None, json!({"delivery_id": delivery.delivery_id, "event_id": delivery.event_id, "reason": "prompt_unproven"})).await;
+                                let _ = send_frame(&out_tx, "worker_error", inj.pending.request_id, json!({"code": "prompt_unproven", "retryable": false, "message": "Composer readiness could not be proven; body was not written"})).await;
+                                // Retain the pending id: a retry must never turn failure into an ack.
+                                continue;
+                            }
                             inj.next_at = tokio::time::Instant::now() + Duration::from_millis(50);
                             active_injection = Some(inj);
                             continue;
@@ -2158,6 +2192,21 @@ pub(crate) async fn run_pty_worker(cmd: PtyCommand) -> Result<()> {
                             inj.pending.delivery.workspace_id.as_deref(),
                             inj.pending.delivery.workspace_alias.as_deref(),
                         );
+                        let injection = String::from_utf8(crate::injection_wire::injection_bytes(crate::injection_wire::InjectionWire::Typed, &injection))?;
+                        let wire = crate::injection_wire::injection_wire(&resolved_cli, &pty);
+                        let limit = if initial_codex_delivery(&resolved_cli, &inj.pending.delivery) {
+                            initial_codex_max_body_bytes().min(crate::injection_wire::MAX_INJECTION_BODY_BYTES)
+                        } else { crate::injection_wire::effective_limit(wire, inject_rate) };
+                        if injection.len() > limit {
+                            let delivery = &inj.pending.delivery;
+                            let reason = format!("injection_too_large: {resolved_cli} effective limit is {limit} bytes including envelope; use a brief file pointer");
+                            let _ = send_frame(&out_tx, "delivery_failed", None, json!({"delivery_id": delivery.delivery_id, "event_id": delivery.event_id, "reason": reason})).await;
+                            let _ = send_frame(&out_tx, "worker_error", inj.pending.request_id, json!({"code": "injection_too_large", "retryable": false, "message": reason})).await;
+                            // Retain the pending id; terminal failure is never a successful replay.
+                            continue;
+                        }
+                        // Only an envelope that passed the size gate is written,
+                        // so only it may consume the reminder throttle.
                         if include_mcp_reminder {
                             mcp_reminder_throttle.note_sent(Instant::now());
                         }
@@ -2219,7 +2268,7 @@ pub(crate) async fn run_pty_worker(cmd: PtyCommand) -> Result<()> {
                         // bracketed-paste body shape; the shared helper then
                         // selects the harness-specific delayed Enter. Finalization
                         // still waits for this ack in the injection-ack arm.
-                        let bytes = crate::devin::injection_bytes(&resolved_cli, &injection);
+                        let bytes = crate::injection_wire::injection_bytes(wire, &injection);
                         let write =
                             submit_injection_body(&pty, &resolved_cli, bytes, inject_rate);
                         match write {
@@ -2366,7 +2415,7 @@ pub(crate) async fn run_pty_worker(cmd: PtyCommand) -> Result<()> {
                                     json!({
                                         "delivery_id": delivery_id,
                                         "event_id": event_id,
-                                        "verification": "echo"
+                                        "verification": confirmed_verification_label(&echo_buffer, &pv)
                                     }),
                                 )
                                 .await;
@@ -2457,12 +2506,43 @@ pub(crate) async fn run_pty_worker(cmd: PtyCommand) -> Result<()> {
                         let pv = pending_verifications.remove(i).unwrap();
                         let delivery_id = pv.delivery_id.clone();
                         let event_id = pv.event_id.clone();
+                        let verdict = crate::broker::delivery_verification::echo_verdict(
+                            &echo_buffer.since(pv.output_boundary), &pv.expected_echo);
+                        let disposition = crate::broker::delivery_verification::verification_timeout(
+                            verdict,
+                            echo_buffer.retains_boundary(pv.output_boundary),
+                            verification_window,
+                        );
+                        let (verification, reason) = match disposition {
+                            crate::broker::delivery_verification::VerificationTimeout::HeadLoss => {
+                                let _ = send_frame(&out_tx, "delivery_failed", None, json!({"delivery_id": delivery_id, "event_id": event_id, "reason": "echo_head_missing"})).await;
+                                let _ = send_frame(&out_tx, "worker_error", pv.request_id, json!({"code": "echo_head_missing", "retryable": false, "message": "Task echo contains its tail without its head; inspect the agent before retrying"})).await;
+                                throttle.record(DeliveryOutcome::Failed);
+                                // Retain the pending id, matching initial_injection_incomplete.
+                                continue;
+                            }
+                            crate::broker::delivery_verification::VerificationTimeout::Confirmed { label } => (label, None),
+                            crate::broker::delivery_verification::VerificationTimeout::Unconfirmed { label, reason } => (label, Some(reason)),
+                        };
+                        let outcome = match reason {
+                            None => DeliveryOutcome::Success,
+                            // An unconfirmed ack is not a verified delivery:
+                            // keep it out of the throttle's success signal.
+                            Some(_) => DeliveryOutcome::Unverified,
+                        };
+                        if let Some(reason) = reason.as_deref() {
+                            static TIMEOUT_FALLBACKS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+                            let fallback_count = TIMEOUT_FALLBACKS.fetch_add(1, Ordering::Relaxed) + 1;
+                            tracing::warn!(fallback_count, %delivery_id, %verification, %reason, "delivery receipt unconfirmed; acking without claiming verification");
+                        }
                         // Do not re-inject on verification timeout. Re-injection can duplicate
                         // already-delivered messages when terminal echo parsing is noisy.
                         tracing::info!(
                             delivery_id = %delivery_id,
                             attempts = pv.attempts,
-                            "delivery echo not detected within verification window; acknowledging via timeout fallback (unverified)"
+                            %verification,
+                            confirmed = reason.is_none(),
+                            "verification window closed; acknowledging the delivery"
                         );
                         let _ = send_frame(
                             &out_tx,
@@ -2474,21 +2554,22 @@ pub(crate) async fn run_pty_worker(cmd: PtyCommand) -> Result<()> {
                             }),
                         )
                         .await;
+                        let mut verified = json!({
+                            "delivery_id": delivery_id,
+                            "event_id": event_id,
+                            "verification": verification,
+                        });
+                        if let Some(reason) = reason {
+                            verified["reason"] = json!(reason);
+                        }
                         let _ = send_frame(
                             &out_tx,
                             "delivery_verified",
                             pv.request_id.clone(),
-                            json!({
-                                "delivery_id": delivery_id,
-                                "event_id": event_id,
-                                "verification": "timeout_fallback",
-                                "reason": format!("echo not detected within {}s window", verification_window.as_secs())
-                            }),
+                            verified,
                         )
                         .await;
-                        // Timeout-fallback acks are not verified deliveries:
-                        // keep them out of the throttle's success signal.
-                        throttle.record(DeliveryOutcome::Unverified);
+                        throttle.record(outcome);
                         pending_worker_delivery_ids.remove(&delivery_id);
                         completed_worker_deliveries.insert(delivery_id, event_id);
                     } else {
@@ -3824,6 +3905,7 @@ mod tests {
         let targeted = ActiveInjection {
             pending: test_pending_injection("init_task"),
             stage: InjectionStage::Escape,
+            prompt_wait_started: Instant::now(),
             next_at: tokio::time::Instant::now(),
             injection_text: None,
             output_boundary: None,
@@ -3863,6 +3945,7 @@ mod tests {
         let mut injection = ActiveInjection {
             pending: test_pending_injection("init_task"),
             stage: InjectionStage::Escape,
+            prompt_wait_started: Instant::now(),
             next_at: tokio::time::Instant::now(),
             injection_text: None,
             output_boundary: None,

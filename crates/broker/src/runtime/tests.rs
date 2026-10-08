@@ -852,6 +852,430 @@ fn delivery_lifecycle_worker_event(
     }
 }
 
+fn delivery_verified_worker_event(
+    name: &str,
+    generation: Uuid,
+    event_id: &str,
+    verification: Option<&str>,
+) -> WorkerEvent {
+    let mut payload = json!({
+        "delivery_id": format!("del_{event_id}"),
+        "event_id": event_id,
+    });
+    if let Some(verification) = verification {
+        payload["verification"] = json!(verification);
+    }
+    WorkerEvent::Message {
+        name: WorkerName::from(name),
+        generation,
+        value: json!({ "type": "delivery_verified", "payload": payload }),
+    }
+}
+
+/// relay#1893 review, P1: the spawn-completion branch checked readiness and the
+/// task's event id, then reported `spawned:true, ready:true` without ever
+/// looking at *what* confirmed the delivery. A worker that acked through the
+/// timeout fallback — i.e. an agent that may have swallowed the whole task —
+/// produced a result identical to one that echoed every byte.
+#[tokio::test]
+async fn a_spawn_task_acked_without_proof_of_receipt_never_reports_success() {
+    use crate::fleet_wire::{ActionResultPayload, BrokerToRelaycast};
+
+    // Every label a worker can ack with that is not whole-payload evidence.
+    for verification in [
+        Some("timeout_fallback"),
+        Some("paste_summary"),
+        Some("echo_incomplete"),
+        // A worker frame that omits the field entirely claims nothing.
+        None,
+    ] {
+        let worker_name = "spawn-receipt";
+        let registry = make_worker_registry_with_worker(worker_name).await;
+        let generation = registry.workers[worker_name].generation;
+        let mut fixture = worker_event_runtime_fixture(registry, HashMap::new());
+        let event_id = "init_receipt";
+        fixture.runtime.pending_verified_spawns.insert(
+            WorkerName::from(worker_name),
+            super::fleet::PendingVerifiedSpawn {
+                invocation_id: "inv-receipt".to_string(),
+                deadline: Instant::now() + Duration::from_secs(90),
+                started: Instant::now(),
+                generation,
+                failure_reason: None,
+                readiness_proven: true,
+                task_event_id: Some(event_id.to_string()),
+                task_verification: None,
+            },
+        );
+
+        fixture
+            .runtime
+            .handle_worker_event(delivery_verified_worker_event(
+                worker_name,
+                generation,
+                event_id,
+                verification,
+            ))
+            .await;
+
+        let frame = fixture
+            .fleet_control_rx
+            .try_recv()
+            .expect("an unconfirmed task must still resolve the open spawn action");
+        let FleetControlCommand::Send(BrokerToRelaycast::ActionResult(result)) = frame else {
+            panic!("spawn completion must send an action result");
+        };
+        assert_eq!(result.invocation_id, "inv-receipt");
+        let ActionResultPayload::Error(error) = result.result else {
+            panic!("{verification:?} is not proof of receipt and must not succeed");
+        };
+        assert!(
+            error.error.starts_with("spawn_task_unconfirmed: "),
+            "{}",
+            error.error
+        );
+        // The agent is live: name it so the caller can reach it, and say not to
+        // retry, because a retry duplicates it.
+        assert!(error.error.contains(worker_name), "{}", error.error);
+        assert!(error.error.contains("Do not retry"), "{}", error.error);
+        assert!(
+            error.error.contains(verification.unwrap_or("none")),
+            "{}",
+            error.error
+        );
+        // Resolved, so maintenance's readiness deadline can no longer release
+        // the live worker this spawn produced.
+        assert!(!fixture
+            .runtime
+            .pending_verified_spawns
+            .contains_key(&WorkerName::from(worker_name)));
+    }
+}
+
+/// The other half of the gate: whole-payload evidence still succeeds, and the
+/// labels that do so are exactly the ones the verdict ladder confirms.
+#[tokio::test]
+async fn a_spawn_task_proven_received_reports_spawned_and_ready() {
+    use crate::fleet_wire::{ActionResultPayload, BrokerToRelaycast};
+
+    for verification in ["echo", "echo_normalized"] {
+        assert!(
+            crate::broker::delivery_verification::verification_label_confirms_receipt(verification),
+            "{verification} must be a confirming label"
+        );
+        let worker_name = "spawn-receipt-ok";
+        let registry = make_worker_registry_with_worker(worker_name).await;
+        let generation = registry.workers[worker_name].generation;
+        let mut fixture = worker_event_runtime_fixture(registry, HashMap::new());
+        let event_id = "init_receipt_ok";
+        fixture.runtime.pending_verified_spawns.insert(
+            WorkerName::from(worker_name),
+            super::fleet::PendingVerifiedSpawn {
+                invocation_id: "inv-receipt-ok".to_string(),
+                deadline: Instant::now() + Duration::from_secs(90),
+                started: Instant::now(),
+                generation,
+                failure_reason: None,
+                readiness_proven: true,
+                task_event_id: Some(event_id.to_string()),
+                task_verification: None,
+            },
+        );
+
+        fixture
+            .runtime
+            .handle_worker_event(delivery_verified_worker_event(
+                worker_name,
+                generation,
+                event_id,
+                Some(verification),
+            ))
+            .await;
+
+        let frame = fixture
+            .fleet_control_rx
+            .try_recv()
+            .expect("a confirmed task must resolve the open spawn action");
+        let FleetControlCommand::Send(BrokerToRelaycast::ActionResult(result)) = frame else {
+            panic!("spawn completion must send an action result");
+        };
+        let ActionResultPayload::Output(output) = result.result else {
+            panic!("{verification} proves receipt and must succeed");
+        };
+        assert_eq!(
+            output.output,
+            json!({"spawned": true, "ready": true, "name": worker_name})
+        );
+    }
+}
+
+fn pending_spawn_with_task(
+    generation: Uuid,
+    event_id: &str,
+    readiness_proven: bool,
+) -> super::fleet::PendingVerifiedSpawn {
+    super::fleet::PendingVerifiedSpawn {
+        invocation_id: "inv-order".to_string(),
+        deadline: Instant::now() + Duration::from_secs(90),
+        started: Instant::now(),
+        failure_reason: None,
+        generation,
+        readiness_proven,
+        task_event_id: Some(event_id.to_string()),
+        task_verification: None,
+    }
+}
+
+fn drain_action_results(
+    rx: &mut mpsc::Receiver<FleetControlCommand>,
+) -> Vec<crate::fleet_wire::ActionResult> {
+    let mut results = Vec::new();
+    while let Ok(command) = rx.try_recv() {
+        if let FleetControlCommand::Send(crate::fleet_wire::BrokerToRelaycast::ActionResult(
+            result,
+        )) = command
+        {
+            results.push(result);
+        }
+    }
+    results
+}
+
+/// relay#1893 review (Cursor, high): a startup-fallback `worker_ready` releases
+/// the initial task before readiness is proven. Its verdict used to be ignored
+/// because the spawn required proven readiness first, and the later proven
+/// `worker_ready` could not resolve it either, so a delivered task timed out
+/// and the worker was released. Either order must resolve exactly once.
+#[tokio::test]
+async fn a_task_verdict_before_proven_readiness_resolves_on_the_proven_ready() {
+    use crate::fleet_wire::ActionResultPayload;
+    for (verification, expect_success) in [("echo", true), ("timeout_fallback", false)] {
+        let worker_name = "spawn-order";
+        let registry = make_worker_registry_with_worker(worker_name).await;
+        let generation = registry.workers[worker_name].generation;
+        let mut fixture = worker_event_runtime_fixture(registry, HashMap::new());
+        let name = WorkerName::from(worker_name);
+        fixture.runtime.pending_verified_spawns.insert(
+            name.clone(),
+            pending_spawn_with_task(generation, "init_order", false),
+        );
+
+        fixture
+            .runtime
+            .handle_worker_event(delivery_verified_worker_event(
+                worker_name,
+                generation,
+                "init_order",
+                Some(verification),
+            ))
+            .await;
+        assert!(
+            drain_action_results(&mut fixture.fleet_control_rx).is_empty(),
+            "readiness is not proven yet, so the action stays open"
+        );
+        assert!(fixture.runtime.pending_verified_spawns.contains_key(&name));
+
+        fixture
+            .runtime
+            .handle_worker_event(WorkerEvent::Message {
+                name: name.clone(),
+                generation,
+                value: json!({"type":"worker_ready", "payload":{"readiness_proven":true}}),
+            })
+            .await;
+        let results = drain_action_results(&mut fixture.fleet_control_rx);
+        assert_eq!(results.len(), 1, "{verification}: resolved exactly once");
+        match (&results[0].result, expect_success) {
+            (ActionResultPayload::Output(output), true) => assert_eq!(
+                output.output,
+                json!({"spawned": true, "ready": true, "name": worker_name})
+            ),
+            (ActionResultPayload::Error(error), false) => {
+                assert!(
+                    error.error.starts_with("spawn_task_unconfirmed: "),
+                    "{}",
+                    error.error
+                );
+                assert!(error.error.contains(verification), "{}", error.error);
+            }
+            (other, _) => panic!("{verification}: unexpected result {other:?}"),
+        }
+        assert!(!fixture.runtime.pending_verified_spawns.contains_key(&name));
+    }
+}
+
+/// relay#1893 review (Devin): a verified spawn whose initial task fails used to
+/// get its error while the worker stayed registered and running, so a
+/// corrected retry collided with the name. The failure must expire the spawn
+/// so maintenance releases the worker before reporting the specific reason.
+#[tokio::test]
+async fn a_failed_initial_task_releases_the_worker_before_failing_the_spawn() {
+    use crate::fleet_wire::ActionResultPayload;
+    let worker_name = "spawn-task-failed";
+    let registry = make_worker_registry_with_worker(worker_name).await;
+    let generation = registry.workers[worker_name].generation;
+    let mut fixture = worker_event_runtime_fixture(registry, HashMap::new());
+    let name = WorkerName::from(worker_name);
+    fixture.runtime.pending_verified_spawns.insert(
+        name.clone(),
+        pending_spawn_with_task(generation, "init_failed", true),
+    );
+
+    fixture
+        .runtime
+        .handle_worker_event(WorkerEvent::Message {
+            name: name.clone(),
+            generation,
+            value: json!({"type":"delivery_failed", "payload":{
+                "delivery_id":"del_init_failed", "event_id":"init_failed",
+                "reason":"injection_too_large"}}),
+        })
+        .await;
+    assert!(
+        drain_action_results(&mut fixture.fleet_control_rx).is_empty(),
+        "the failure is reported only after the worker is released"
+    );
+    let pending = &fixture.runtime.pending_verified_spawns[&name];
+    assert!(pending.deadline <= Instant::now());
+
+    fixture.runtime.handle_maintenance_tick().await;
+    assert!(
+        !fixture.runtime.workers.has_worker(&name),
+        "worker released"
+    );
+    assert!(!fixture.runtime.pending_verified_spawns.contains_key(&name));
+    let results = drain_action_results(&mut fixture.fleet_control_rx);
+    assert_eq!(results.len(), 1);
+    let ActionResultPayload::Error(error) = &results[0].result else {
+        panic!("a failed task must fail the spawn: {:?}", results[0]);
+    };
+    assert!(
+        error.error.starts_with("spawn_task_failed: "),
+        "{}",
+        error.error
+    );
+    assert!(
+        error.error.contains("injection_too_large"),
+        "{}",
+        error.error
+    );
+}
+
+/// relay#1893 review (Cursor, medium): a worker already ready when the launch
+/// returns has its PTY task queued without a binding to this action, so the
+/// action cannot learn the task's verdict and must not report plain success.
+#[test]
+fn an_already_ready_worker_with_an_unbound_pty_task_is_not_reported_ready() {
+    use crate::fleet_wire::ActionResultPayload;
+    let name = WorkerName::from("already-ready");
+    let ActionResultPayload::Error(error) =
+        super::fleet::already_ready_spawn_result("inv".into(), &name, true).result
+    else {
+        panic!("an unbound PTY task must not report success");
+    };
+    assert!(
+        error.error.starts_with("spawn_task_unconfirmed: "),
+        "{}",
+        error.error
+    );
+    assert!(matches!(
+        super::fleet::already_ready_spawn_result("inv".into(), &name, false).result,
+        ActionResultPayload::Output(_)
+    ));
+}
+
+/// relay#1893 review (Cursor): a task that cannot fit the PTY envelope used to
+/// launch a worker that then failed `injection_too_large` and was released.
+/// It must be rejected before any registration or launch.
+#[tokio::test]
+async fn an_oversized_spawn_task_is_rejected_before_launch() {
+    let temp = tempfile::tempdir().unwrap();
+    let (tx, _rx) = mpsc::channel(16);
+    let workers = WorkerRegistry::new(tx, vec![], temp.path().into(), Instant::now());
+    let mut fixture = worker_event_runtime_fixture(workers, HashMap::new());
+    assert!(
+        super::fleet::spawn_task_too_large(&"x".repeat(crate::injection_wire::MAX_BODY_BYTES))
+            .is_none()
+    );
+    fixture
+        .runtime
+        .handle_fleet_control_event(crate::node_control::FleetControlEvent::Message(
+            crate::fleet_wire::RelaycastToBroker::ActionInvoke(crate::fleet_wire::ActionInvoke {
+                task_execution: None,
+                v: FLEET_WIRE_VERSION,
+                invocation_id: "oversized-task".into(),
+                action: "spawn".into(),
+                input: json!({"name":"oversized", "cli":"codex", "verify_ready":true,
+                    "cwd":temp.path(), "task":"x".repeat(crate::injection_wire::MAX_BODY_BYTES + 1)}),
+                agent_name: Some("oversized".into()),
+                agent_id: None,
+            }),
+        ))
+        .await;
+    let mut found = false;
+    while let Ok(command) = fixture.fleet_control_rx.try_recv() {
+        match command {
+            FleetControlCommand::RegisterAgent { .. } => panic!("must reject before registration"),
+            FleetControlCommand::Send(BrokerToRelaycast::ActionResult(result)) => {
+                let crate::fleet_wire::ActionResultPayload::Error(error) = &result.result else {
+                    panic!("expected fleet error: {result:?}");
+                };
+                assert!(
+                    error.error.starts_with("spawn_task_too_large: "),
+                    "{}",
+                    error.error
+                );
+                found = true;
+            }
+            _ => {}
+        }
+    }
+    assert!(found);
+    assert!(fixture.runtime.workers.workers.is_empty());
+
+    // relay#1893 review (Cursor): the raw task fits, but the exit-after-task
+    // contract appended by the spawn path pushes the injected task past the
+    // cap. That must also fail before registration, not after launch.
+    fixture
+        .runtime
+        .handle_fleet_control_event(crate::node_control::FleetControlEvent::Message(
+            crate::fleet_wire::RelaycastToBroker::ActionInvoke(crate::fleet_wire::ActionInvoke {
+                task_execution: None,
+                v: FLEET_WIRE_VERSION,
+                invocation_id: "decorated-task".into(),
+                action: "spawn".into(),
+                input: json!({"name":"decorated", "cli":"codex", "verify_ready":true,
+                    "exit_after_task": true, "cwd":temp.path(),
+                    "task":"x".repeat(crate::injection_wire::MAX_BODY_BYTES)}),
+                agent_name: Some("decorated".into()),
+                agent_id: None,
+            }),
+        ))
+        .await;
+    let mut found = false;
+    while let Ok(command) = fixture.fleet_control_rx.try_recv() {
+        match command {
+            FleetControlCommand::RegisterAgent { .. } => {
+                panic!("a decorated task over the cap must fail before registration")
+            }
+            FleetControlCommand::Send(BrokerToRelaycast::ActionResult(result)) => {
+                let crate::fleet_wire::ActionResultPayload::Error(error) = &result.result else {
+                    panic!("expected fleet error: {result:?}");
+                };
+                assert!(
+                    error.error.contains("spawn_task_too_large: "),
+                    "{}",
+                    error.error
+                );
+                found = true;
+            }
+            _ => {}
+        }
+    }
+    assert!(found);
+    assert!(fixture.runtime.workers.workers.is_empty());
+}
+
 fn inbound_ctx<'a>(event_id: &'a str) -> InboundContext<'a> {
     InboundContext {
         from: "Alice",
@@ -9320,6 +9744,9 @@ async fn muse_provider_auth_error_expires_verified_spawn_and_releases_capacity()
             started: Instant::now(),
             generation,
             failure_reason: None,
+            readiness_proven: false,
+            task_event_id: None,
+            task_verification: None,
         },
     );
     for event_generation in [Uuid::new_v4(), generation] {

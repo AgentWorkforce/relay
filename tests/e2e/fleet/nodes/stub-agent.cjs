@@ -35,10 +35,28 @@ function recordBriefNonce(nonce) {
   );
 }
 
+// Invoked as `codex`, model Codex's composer closely enough for the broker's
+// chunked initial-task path: raw input (no kernel echo, so discarded
+// pre-ready keystrokes never appear), typed text rendered after the `›`
+// prompt, and Enter submitting the turn and redrawing an empty composer. A
+// composer that keeps the submitted text visible looks like a parked task, so
+// the broker would retry the submit and report the delivery incomplete.
+const codexComposer = path.basename(process.argv[1]) === 'codex';
+if (codexComposer && process.stdin.isTTY) process.stdin.setRawMode(true);
+
+function renderCodexComposer(text) {
+  for (const ch of text) {
+    if (ch === '\r') process.stdout.write('\r\n› ');
+    else if (ch === '\n') process.stdout.write('\r\n  ');
+    else process.stdout.write(ch);
+  }
+}
+
 try {
   process.stdin.resume();
   process.stdin.on('data', (chunk) => {
     if (!ready) return;
+    if (codexComposer) renderCodexComposer(chunk.toString());
     input += chunk.toString();
     // Require a delimiter after the nonce. PTY chunks can split anywhere, so
     // treating the current buffer end as a complete token could record a

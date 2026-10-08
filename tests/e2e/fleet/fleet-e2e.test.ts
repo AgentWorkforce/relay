@@ -556,7 +556,10 @@ describe.skipIf(!pre.ok)('two-node fleet scenario matrix', () => {
           const inv = await getInvocation(engine, driverToken, 'spawn', first.invocationId!);
           return inv.status === 'completed' || inv.status === 'failed' ? inv : null;
         },
-        { label: 'resumable spawn settled', timeoutMs: 30_000, intervalMs: 300 }
+        // A verified spawn carrying a task now completes only once that task's
+        // receipt is verified, after readiness. node-a's stub delays readiness
+        // by 27 s, so allow for readiness plus delivery verification.
+        { label: 'resumable spawn settled', timeoutMs: 60_000, intervalMs: 300 }
       );
       expect(firstDone.status).toBe('completed'); // resumable spawn carried session_ref through token authority
       expect(firstDone.output).toMatchObject({ spawned: true, ready: true, name });
@@ -620,7 +623,7 @@ describe.skipIf(!pre.ok)('two-node fleet scenario matrix', () => {
           const inv = await getInvocation(engine, driverToken, 'spawn', resume.invocationId!);
           return ['completed', 'failed'].includes(inv.status) ? inv : null;
         },
-        { label: 'resumed worker confirmed ready', timeoutMs: 30_000 }
+        { label: 'resumed worker confirmed ready', timeoutMs: 60_000 }
       );
       expect(resumed.status).toBe('completed');
       expect(resumed.output).toMatchObject({ spawned: true, ready: true, name });

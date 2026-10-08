@@ -170,6 +170,23 @@ describe('SDK-backed CLI groups', () => {
     expect(relay.channels.update).toHaveBeenCalledWith('ops', { topic: 'New topic' });
   });
 
+  // The 16 KiB ceiling is a PTY injection limit enforced where the broker
+  // types into a terminal. Relaycast messages may target native agents or be
+  // stored for history only, so the generic message commands must not apply it.
+  it('message post, reply and dm send publish bodies larger than the PTY injection limit', async () => {
+    const text = 'x'.repeat(20 * 1024);
+    const { program, relay, error } = harness(registerMessageCommands);
+    const reply = vi.fn(async (i: unknown) => ({ id: 'r1', ...(i as object) }));
+    (relay.messages as Record<string, unknown>).reply = reply;
+    await program.parseAsync(['message', 'post', 'ops', text], { from: 'user' });
+    await program.parseAsync(['message', 'reply', 'm1', text], { from: 'user' });
+    await program.parseAsync(['message', 'dm', 'send', 'lead', text], { from: 'user' });
+    expect(error).not.toHaveBeenCalled();
+    expect(relay.messages.send).toHaveBeenCalledWith({ channel: 'ops', text });
+    expect(reply).toHaveBeenCalledWith({ messageId: 'm1', text });
+    expect(relay.messages.direct).toHaveBeenCalledWith({ to: 'lead', text });
+  });
+
   it('message post routes to messages.send with the channel', async () => {
     const { program, relay } = harness(registerMessageCommands);
     await program.parseAsync(['message', 'post', 'ops', 'hello'], { from: 'user' });

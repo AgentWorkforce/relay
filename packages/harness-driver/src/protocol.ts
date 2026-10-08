@@ -613,7 +613,16 @@ export type BrokerEvent =
       name: string;
       delivery_id: string;
       event_id: string;
-      /** 'echo' when confirmed in PTY output, 'timeout_fallback' when acked unverified. */
+      /**
+       * What the PTY output proved about this delivery. Only 'echo' (the whole
+       * envelope verbatim) and 'echo_normalized' (the whole envelope once the
+       * TUI's wrapping whitespace is removed) confirm full receipt.
+       * 'echo_incomplete' (head and tail without the payload between them),
+       * 'paste_summary' (the harness collapsed the paste, so no content was
+       * echoed) and 'timeout_fallback' (no echo at all) are acks without proof
+       * of receipt. A tail without its head is a 'delivery_failed' with reason
+       * 'echo_head_missing'.
+       */
       verification?: string;
       reason?: string;
     }
@@ -838,10 +847,17 @@ export type WorkerToBroker =
     }
   | {
       type: 'delivery_verified';
+      /** See the `delivery_verified` broker event for `verification` values. */
       payload: { delivery_id: string; event_id: string; verification?: string; reason?: string };
     }
   | {
       type: 'delivery_failed';
+      /**
+       * Terminal and never replayed. PTY injection adds 'prompt_unproven' (no
+       * composer was recognized in time), 'echo_head_missing' (the echo lost
+       * its head) and 'injection_too_large: …' (rejected before any byte was
+       * written).
+       */
       payload: { delivery_id: string; event_id: string; reason: string };
     }
   | {
