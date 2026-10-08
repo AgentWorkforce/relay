@@ -4355,6 +4355,41 @@ async fn pty_body_cap_applies_only_to_pty_recipients() {
     .await
     .expect_err("a headless body past the argv ceiling fails before delivery");
     assert!(error.to_string().contains("injection_too_large"), "{error}");
+    // An app-server headless worker receives deliveries as frames, never as a
+    // process argument, so neither ceiling applies to it.
+    let handle = workers
+        .workers
+        .get_mut(&WorkerName::from("Worker"))
+        .unwrap();
+    handle.spec.harness_config = Some(ResolvedHarnessConfig::Headless(HeadlessHarnessConfig {
+        driver: HeadlessHarnessDriver::AppServer,
+        protocol: "opencode".to_string(),
+        endpoint: "http://127.0.0.1:4096".to_string(),
+        session_id: "session-endpoint".to_string(),
+        auth: None,
+        host: None,
+        release: Some(HarnessReleasePolicy::Abort),
+        metadata: None,
+    }));
+    super::queue_and_try_delivery_raw(
+        &mut workers,
+        &mut HashMap::new(),
+        "Worker",
+        "evt_frame",
+        "orchestrator",
+        "Worker",
+        &"x".repeat(crate::worker::MUSE_STARTUP_PROMPT_MAX_BYTES + 1),
+        None,
+        Some(WorkspaceId::new("ws_demo")),
+        None,
+        2,
+        MessageInjectionMode::Wait,
+        Duration::from_secs(1),
+        None,
+        None,
+    )
+    .await
+    .expect("frame-delivered headless workers have no argv ceiling");
 }
 
 #[tokio::test]

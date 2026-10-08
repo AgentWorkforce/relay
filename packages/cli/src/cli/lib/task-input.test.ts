@@ -7,6 +7,7 @@ import {
   MAX_INJECTION_BODY_BYTES,
   MAX_TASK_BODY_BYTES,
   MAX_ARGV_TASK_BYTES,
+  MAX_NATIVE_TASK_BYTES,
 } from './task-input.js';
 describe('task input', () => {
   it('requires exactly one source for fleet, allows neither locally', async () => {
@@ -63,20 +64,20 @@ describe('task input', () => {
     await expect(readTaskInput(between, undefined, false, { cli: 'musey' })).rejects.toThrow('envelope');
     await expect(readTaskInput(between, undefined, false, { cli: 'claude' })).rejects.toThrow('envelope');
   });
-  // A native runtime hands the task over without the PTY envelope, so only
-  // the portable single-argument ceiling applies, including to file reads.
-  it('applies the argv ceiling, not the PTY body limit, to native-runtime tasks', async () => {
-    const between = 'a'.repeat(MAX_TASK_BODY_BYTES + 1);
+  // A native runtime receives its task as a delivery frame: neither the PTY
+  // envelope nor the argv ceiling applies, only a bound on what is read.
+  it('does not apply PTY or argv limits to native-runtime tasks', async () => {
+    const overArgv = 'a'.repeat(MAX_ARGV_TASK_BYTES + 1);
     const native = { cli: 'claude', runtime: 'native' } as const;
-    expect(await readTaskInput(between, undefined, false, native)).toBe(between);
+    expect(await readTaskInput(overArgv, undefined, false, native)).toBe(overArgv);
     await expect(
-      readTaskInput('a'.repeat(MAX_ARGV_TASK_BYTES + 1), undefined, false, native)
-    ).rejects.toThrow('argument');
+      readTaskInput('a'.repeat(MAX_NATIVE_TASK_BYTES + 1), undefined, false, native)
+    ).rejects.toThrow(`${MAX_NATIVE_TASK_BYTES} UTF-8 bytes`);
     const dir = await mkdtemp(join(tmpdir(), 'relay-task-'));
     try {
       const file = join(dir, 'brief.md');
-      await writeFile(file, between);
-      expect(await readTaskInput(undefined, file, false, native)).toBe(between);
+      await writeFile(file, overArgv);
+      expect(await readTaskInput(undefined, file, false, native)).toBe(overArgv);
       await expect(readTaskInput(undefined, file, false, { cli: 'claude', runtime: 'pty' })).rejects.toThrow(
         'envelope'
       );

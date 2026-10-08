@@ -12,10 +12,16 @@ export const MAX_TASK_BODY_BYTES = MAX_INJECTION_BODY_BYTES - ENVELOPE_RESERVE_B
  */
 export const MAX_ARGV_TASK_BYTES = 16 * 1024;
 
+/**
+ * A native runtime receives its task as a delivery frame, so no wire limit
+ * applies; this only bounds how much of a `--task-file` the CLI will read.
+ */
+export const MAX_NATIVE_TASK_BYTES = 1024 * 1024;
+
 /** Who receives a task: the CLI, and the runtime once it is resolved. */
 export interface TaskTarget {
   cli: string;
-  /** `native` hands the task over without the PTY envelope; omitted means PTY. */
+  /** `native` delivers the task as a frame, without the PTY envelope; omitted means PTY. */
   runtime?: 'native' | 'pty';
 }
 
@@ -25,9 +31,13 @@ function isMuseExecutable(cli: string): boolean {
   return basename.toLowerCase().replace(/\.(exe|cmd|bat)$/, '') === 'muse';
 }
 
-/** Muse and native runtimes take the task as one argument, never through the PTY envelope. */
-function usesPtyEnvelope(target: TaskTarget | undefined): boolean {
-  return !target || (target.runtime !== 'native' && !isMuseExecutable(target.cli));
+type TaskLimit = 'pty' | 'argv' | 'native';
+
+/** Muse takes its task as one argument; a native runtime as a frame; everything else through the PTY envelope. */
+function taskLimitKind(target: TaskTarget | undefined): TaskLimit {
+  if (target?.runtime === 'native') return 'native';
+  if (target && isMuseExecutable(target.cli)) return 'argv';
+  return 'pty';
 }
 
 export async function readTaskInput(
@@ -50,13 +60,24 @@ export async function readTaskInput(
 }
 
 function taskByteLimit(target: TaskTarget | undefined): number {
-  return usesPtyEnvelope(target) ? MAX_TASK_BODY_BYTES : MAX_ARGV_TASK_BYTES;
+  const kind = taskLimitKind(target);
+  return kind === 'pty' ? MAX_TASK_BODY_BYTES : kind === 'argv' ? MAX_ARGV_TASK_BYTES : MAX_NATIVE_TASK_BYTES;
 }
 
 /** Validate a task as its target receives it; recheck after anything is appended to it. */
 export function validateTaskSize(text: string, target?: TaskTarget): void {
-  if (usesPtyEnvelope(target)) validateInjectionSize(text);
-  else validateArgvTaskSize(Buffer.byteLength(text, 'utf8'));
+  validateTaskBytes(Buffer.byteLength(text, 'utf8'), target);
+}
+
+function validateTaskBytes(bytes: number, target: TaskTarget | undefined): void {
+  const kind = taskLimitKind(target);
+  if (kind === 'pty' && bytes > MAX_TASK_BODY_BYTES) throwInjectionTooLarge();
+  if (kind === 'argv') validateArgvTaskSize(bytes);
+  if (kind === 'native' && bytes > MAX_NATIVE_TASK_BYTES) {
+    throw new Error(
+      `Task exceeds ${MAX_NATIVE_TASK_BYTES} UTF-8 bytes; use a brief file on the node and send a short pointer`
+    );
+  }
 }
 
 /**
@@ -76,10 +97,7 @@ async function readTaskFile(path: string, limit: number, target: TaskTarget | un
       if (bytesRead === 0) break;
       length += bytesRead;
     }
-    if (length > limit) {
-      if (usesPtyEnvelope(target)) throwInjectionTooLarge();
-      validateArgvTaskSize(length);
-    }
+    if (length > limit) validateTaskBytes(length, target);
     try {
       return new TextDecoder('utf-8', { fatal: true }).decode(buffer.subarray(0, length));
     } catch {
