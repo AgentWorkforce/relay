@@ -26,6 +26,9 @@ fn run_fixture(mode: &str) {
     let cwd = directory.path().join("worktree");
     std::fs::create_dir_all(&home).unwrap();
     std::fs::create_dir_all(&cwd).unwrap();
+    // The fixture compares its trust record with os.getcwd(), which reports
+    // the resolved path; on macOS the temp dir sits behind /var -> /private/var.
+    let cwd = std::fs::canonicalize(&cwd).unwrap();
     let trusted = mode == "trusted";
     if trusted {
         std::fs::write(home.join("fixture-trust"), cwd.to_str().unwrap()).unwrap();
