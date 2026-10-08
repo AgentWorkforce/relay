@@ -929,6 +929,36 @@ fn read_was_cancelled(error: &io::Error) -> bool {
 }
 
 /// Whether the grid currently has bracketed-paste mode (DECSET 2004) set.
+/// Finds the DECSET 2004 parameter in PTY output, including one split across
+/// reads, by carrying the previous read's last three bytes.
+#[derive(Default)]
+struct Decset2004Scan {
+    tail: [u8; 3],
+    tail_len: usize,
+}
+
+impl Decset2004Scan {
+    fn may_carry(&mut self, bytes: &[u8]) -> bool {
+        let head = bytes.len().min(3);
+        let mut seam = [0u8; 6];
+        seam[..self.tail_len].copy_from_slice(&self.tail[..self.tail_len]);
+        seam[self.tail_len..self.tail_len + head].copy_from_slice(&bytes[..head]);
+        let found = seam[..self.tail_len + head]
+            .windows(4)
+            .chain(bytes.windows(4))
+            .any(|window| window == b"2004");
+        let joined = &seam[..self.tail_len + head];
+        let carried = if bytes.len() >= 3 {
+            &bytes[bytes.len() - 3..]
+        } else {
+            &joined[joined.len().saturating_sub(3)..]
+        };
+        self.tail_len = carried.len();
+        self.tail[..self.tail_len].copy_from_slice(carried);
+        found
+    }
+}
+
 fn paste_mode_enabled(term: &Term<RelayEventListener>) -> bool {
     term.mode()
         .contains(alacritty_terminal::term::TermMode::BRACKETED_PASTE)
@@ -1084,6 +1114,7 @@ impl PtySession {
         let write_admission_pending_reader = write_admission_pending.clone();
         let reader_thread = thread::spawn(move || {
             let mut buf = [0u8; 4096];
+            let mut decset_2004_scan = Decset2004Scan::default();
             loop {
                 #[cfg(unix)]
                 if wait_for_pty_readable(&poll_fd_reader).is_err() {
@@ -1144,13 +1175,13 @@ impl PtySession {
                     // time is the only way to see a transition that does not
                     // survive to the end of the chunk, but it costs the reader
                     // thread a parser call per byte, so it is reserved for chunks
-                    // that can actually carry the DECSET 2004 parameter. Every
-                    // other chunk is parsed in bulk and then checked once, which
-                    // still latches a `2004h` split across reads.
+                    // that can actually carry the DECSET 2004 parameter, counting
+                    // one split across the previous read. Every other chunk is
+                    // parsed in bulk and then checked once.
                     if paste_capable_reader.load(Ordering::Acquire) {
                         processor_guard.advance(&mut *term_guard, bytes);
                     } else {
-                        if bytes.windows(4).any(|window| window == b"2004") {
+                        if decset_2004_scan.may_carry(bytes) {
                             for byte in bytes {
                                 processor_guard
                                     .advance(&mut *term_guard, std::slice::from_ref(byte));
@@ -1714,8 +1745,8 @@ mod tests {
         UnixOutputReservations,
     };
     use super::{
-        read_and_tag_output, GridSize, Mutex, PtyOutput, PtySession, PtyWriteSubmitError,
-        DEFAULT_NO_PID_EXIT_THRESHOLD,
+        read_and_tag_output, Decset2004Scan, GridSize, Mutex, PtyOutput, PtySession,
+        PtyWriteSubmitError, DEFAULT_NO_PID_EXIT_THRESHOLD,
     };
     use crate::snapshot::Snapshot;
     use alacritty_terminal::event::VoidListener;
@@ -1909,6 +1940,57 @@ mod tests {
         assert!(pty.bracketed_paste_enabled());
         pty.shutdown().unwrap();
         drain.abort();
+    }
+
+    /// A split `2004h` that a full reset (RIS, which never spells `2004`)
+    /// clears in the same second read never survives to the end of either
+    /// chunk, so the read boundary must still select the byte-by-byte path.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn paste_capability_latches_split_enable_reset_in_the_next_read() {
+        let (pty, mut rx) = PtySession::spawn(
+            "sh",
+            &[
+                "-c".into(),
+                "printf '\\033[?20'; sleep 0.3; printf '04h\\033cREADY'; sleep 2".into(),
+            ],
+            24,
+            80,
+        )
+        .unwrap();
+        let drain = tokio::spawn(async move { while rx.recv().await.is_some() {} });
+        tokio::time::timeout(Duration::from_secs(3), async {
+            while !pty.screen_text().contains("READY") {
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+        })
+        .await
+        .unwrap();
+        assert!(pty.bracketed_paste_enabled());
+        pty.shutdown().unwrap();
+        drain.abort();
+    }
+
+    #[test]
+    fn decset_2004_scan_sees_the_parameter_across_every_split() {
+        let stream = b"ab\x1b[?2004hcd";
+        for split in 0..=stream.len() {
+            let mut scan = Decset2004Scan::default();
+            let first = scan.may_carry(&stream[..split]);
+            let second = scan.may_carry(&stream[split..]);
+            assert!(first || second, "split at {split} hid the parameter");
+        }
+        let mut scan = Decset2004Scan::default();
+        assert!(!scan.may_carry(b"200"));
+        assert!(
+            scan.may_carry(b"4"),
+            "a one-byte read completes the parameter"
+        );
+        assert!(!scan.may_carry(b"x"));
+        assert!(!scan.may_carry(b"2"));
+        assert!(!scan.may_carry(b"00"));
+        assert!(scan.may_carry(b"4h"), "three short reads carry the prefix");
+        assert!(!scan.may_carry(b"2005"));
     }
 
     #[tokio::test]
