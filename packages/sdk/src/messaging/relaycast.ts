@@ -759,7 +759,16 @@ export class RelaycastMessagingClient implements RelayMessagingClient {
           attempts += 1;
           const decision = await this.selectPlacementNode({ capability, repo, targetNode, sandboxOnly });
           if (decision.node) {
-            const actionName = input.actionName ?? placementActionName(capability);
+            // A served spawn capability is an action owned by the node's
+            // provider. Invoke it directly for targeted placement rather than
+            // asking the generic spawn dispatcher to resolve the harness.
+            // Native capacity and automatic placement still use engine spawn.
+            const targetedSpawnAction =
+              targetNode &&
+              capability.startsWith('spawn:') &&
+              decision.node.capabilities.some((item) => item.name === capability && item.kind === 'action');
+            const actionName =
+              input.actionName ?? (targetedSpawnAction ? capability : placementActionName(capability));
             // Preserve the engine's atomic, least-loaded placement when there
             // are no client-side repo or sandbox constraints. Retargeting every
             // automatic request to the SDK's roster snapshot creates a TOCTOU:

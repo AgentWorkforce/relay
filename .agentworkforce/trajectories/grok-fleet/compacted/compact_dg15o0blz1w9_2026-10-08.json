@@ -1,0 +1,37 @@
+{
+  "id": "compact_dg15o0blz1w9",
+  "version": 1,
+  "type": "compacted",
+  "compactedAt": "2026-10-08T23:50:59.254Z",
+  "sourceTrajectories": [
+    "traj_n47aoxvqx0f3"
+  ],
+  "dateRange": {
+    "start": "2026-10-08T23:50:35.545Z",
+    "end": "2026-10-08T23:50:58.841Z"
+  },
+  "summary": {
+    "totalDecisions": 1,
+    "totalEvents": 1,
+    "uniqueAgents": [
+      "default"
+    ]
+  },
+  "decisionGroups": [
+    {
+      "category": "tooling",
+      "decisions": [
+        {
+          "question": "Dispatch targeted served spawn actions by their advertised name",
+          "chosen": "Dispatch targeted served spawn actions by their advertised name",
+          "reasoning": "Keep native capacity and automatic engine placement on generic spawn; preserve readiness polling and explicit action overrides.",
+          "fromTrajectory": "traj_n47aoxvqx0f3"
+        }
+      ]
+    }
+  ],
+  "keyLearnings": [],
+  "keyFindings": [],
+  "filesAffected": [],
+  "commits": []
+}
