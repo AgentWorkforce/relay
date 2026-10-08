@@ -7896,21 +7896,16 @@ mod tests {
         let _ = command_tx.send(FleetControlCommand::Shutdown).await;
     }
 
-    #[tokio::test]
-    async fn node_control_agent_register_persistent_d1_pressure_fails_closed_and_cleans_late_success(
+    async fn assert_agent_register_pressure_exhaustion_fails_closed_and_cleans_late_success(
+        retry_policy: ControlRetryPolicy,
+        expected_attempts: Option<u32>,
     ) {
         let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
         let ws_url = format!("ws://{}/v1/node/ws", listener.local_addr().unwrap());
         let (command_tx, mut command_rx) = mpsc::channel(32);
         let (event_tx, mut event_rx) = mpsc::channel(32);
-        let (late_success_tx, late_success_rx) = oneshot::channel();
+        let (late_success_tx, mut late_success_rx) = oneshot::channel();
         let (cleanup_seen_tx, cleanup_seen_rx) = oneshot::channel();
-        let retry_policy = ControlRetryPolicy {
-            initial_delay: Duration::from_millis(10),
-            max_delay: Duration::from_millis(20),
-            max_retries: 2,
-            budget: Duration::from_millis(100),
-        };
         let server_max_retries = retry_policy.max_retries;
 
         let server = tokio::spawn(async move {
@@ -7929,37 +7924,66 @@ mod tests {
                 BrokerToRelaycast::NodeHeartbeat(_)
             ));
 
-            let mut initial = None;
-            for _ in 0..=server_max_retries {
-                let request = match next_non_heartbeat_node_to_server(&mut ws).await {
-                    BrokerToRelaycast::AgentRegister(request) => request,
-                    other => panic!("expected agent.register, got {other:?}"),
-                };
-                if let Some(initial) = initial.as_ref() {
-                    assert_eq!(
-                        &request, initial,
-                        "every retry must preserve the exact frame"
-                    );
-                } else {
-                    initial = Some(request.clone());
+            let mut initial: Option<AgentRegister> = None;
+            let mut attempts = 0u32;
+            loop {
+                enum ServerEvent {
+                    LateSuccess,
+                    Frame(BrokerToRelaycast),
                 }
-                ws.send(Message::Text(
-                    json!({
-                        "v": 1,
-                        "id": request.id,
-                        "type": "error",
-                        "ok": false,
-                        "code": "d1_pressure",
-                        "message": "Node liveness retry pending"
-                    })
-                    .to_string(),
-                ))
-                .await
-                .unwrap();
+                let event = tokio::select! {
+                    result = &mut late_success_rx => {
+                        result.unwrap();
+                        ServerEvent::LateSuccess
+                    }
+                    frame = next_non_heartbeat_node_to_server(&mut ws) => {
+                        ServerEvent::Frame(frame)
+                    }
+                };
+                match event {
+                    ServerEvent::LateSuccess => {
+                        assert!(attempts > 0, "pressure must be observed before exhaustion");
+                        if let Some(expected) = expected_attempts {
+                            assert_eq!(attempts, expected, "retry-count exhaustion attempt count");
+                        } else {
+                            assert!(
+                                attempts < server_max_retries + 1,
+                                "budget exhaustion must preempt retry-count exhaustion"
+                            );
+                        }
+                        break;
+                    }
+                    ServerEvent::Frame(BrokerToRelaycast::AgentRegister(request)) => {
+                        attempts = attempts.saturating_add(1);
+                        if let Some(initial) = initial.as_ref() {
+                            assert_eq!(
+                                &request, initial,
+                                "every retry must preserve the exact frame"
+                            );
+                        } else {
+                            initial = Some(request.clone());
+                        }
+                        ws.send(Message::Text(
+                            json!({
+                                "v": 1,
+                                "id": request.id,
+                                "type": "error",
+                                "ok": false,
+                                "code": "d1_pressure",
+                                "message": "Node liveness retry pending"
+                            })
+                            .to_string(),
+                        ))
+                        .await
+                        .unwrap();
+                    }
+                    ServerEvent::Frame(other) => {
+                        panic!("expected agent.register, got {other:?}")
+                    }
+                }
             }
             let initial = initial.expect("initial agent.register frame");
             let request_id = initial.id.expect("agent.register request id");
-            late_success_rx.await.unwrap();
             ws.send(Message::Text(
                 serde_json::to_string(&RelaycastToBroker::Reply(crate::fleet_wire::Reply {
                     v: FLEET_WIRE_VERSION,
@@ -8050,10 +8074,7 @@ mod tests {
                 .unwrap();
             error
         };
-        // This is only a deadlock watchdog: the retry policy above still bounds
-        // the behavior under test. Leave enough wall-clock slack for saturated
-        // shared CI runners executing this test alongside the full shard.
-        let ((result, error), ()) = tokio::time::timeout(Duration::from_secs(60), async {
+        let ((result, error), ()) = tokio::time::timeout(Duration::from_secs(5), async {
             let (result, error) = tokio::join!(session, driver);
             ((result, error), server.await.unwrap())
         })
@@ -8064,6 +8085,41 @@ mod tests {
             error.starts_with("d1_pressure:"),
             "spawn caller must see the retryable root cause, got {error}"
         );
+    }
+
+    #[tokio::test]
+    async fn node_control_agent_register_persistent_d1_pressure_fails_closed_and_cleans_late_success(
+    ) {
+        let retry_policy = ControlRetryPolicy {
+            initial_delay: Duration::from_millis(10),
+            max_delay: Duration::from_millis(20),
+            max_retries: 2,
+            // This case proves retry-count exhaustion. Keep the independent
+            // wall-clock guard nonbinding even on a heavily loaded runner.
+            budget: Duration::from_secs(30),
+        };
+        assert_agent_register_pressure_exhaustion_fails_closed_and_cleans_late_success(
+            retry_policy,
+            Some(retry_policy.max_retries + 1),
+        )
+        .await;
+    }
+
+    #[tokio::test]
+    async fn node_control_agent_register_budget_exhaustion_fails_closed_and_cleans_late_success() {
+        let retry_policy = ControlRetryPolicy {
+            initial_delay: Duration::from_millis(10),
+            max_delay: Duration::from_millis(20),
+            max_retries: 100,
+            // Shorter than the first retry delay, so the budget path wins by
+            // construction rather than depending on runner scheduling.
+            budget: Duration::from_millis(1),
+        };
+        assert_agent_register_pressure_exhaustion_fails_closed_and_cleans_late_success(
+            retry_policy,
+            None,
+        )
+        .await;
     }
 
     #[tokio::test]
