@@ -71,6 +71,11 @@ pub struct Snapshot {
     pub rows: u16,
     pub cols: u16,
     pub cursor: (u16, u16),
+    /// The cursor cell contains the final character of an autowrapped line.
+    /// Alacritty keeps the cursor on that occupied cell until the next input
+    /// character performs the wrap, so cursor-bounded rendering must include
+    /// it rather than treating it as the insertion point.
+    input_needs_wrap: bool,
     cells: Vec<Vec<SnapshotCell>>,
     /// Terminal mode flags captured at the same locked point as the grid.
     /// `to_ansi` re-emits the relevant ones so an attaching client's terminal
@@ -112,6 +117,7 @@ impl Snapshot {
         // visible viewport.
         let cursor_row = (cursor_point.line.0.max(0) as u16).saturating_add(1);
         let cursor_col = (cursor_point.column.0 as u16).saturating_add(1);
+        let input_needs_wrap = grid.cursor.input_needs_wrap;
 
         let mut cells = Vec::with_capacity(rows as usize);
         for row_index in 0..(rows as usize) {
@@ -127,6 +133,7 @@ impl Snapshot {
             rows,
             cols,
             cursor: (cursor_row, cursor_col),
+            input_needs_wrap,
             cells,
             // Copy the mode flags out under the same lock as the cells so the
             // captured modes match the captured grid exactly.
@@ -150,6 +157,49 @@ impl Snapshot {
             out.push('\n');
         }
         out
+    }
+
+    /// Plain text from the top-left of the viewport through the cell directly
+    /// before the cursor. Rows below the cursor and cells to its right are
+    /// excluded so composer detection cannot mistake stale right-side cells
+    /// for text the user is currently editing.
+    pub fn to_plain_through_cursor(&self) -> String {
+        let cursor_row = self.cursor.0.saturating_sub(1) as usize;
+        let cursor_col = self.cursor.1.saturating_sub(1) as usize;
+        let mut out = String::with_capacity(
+            (cursor_row.saturating_add(1)) * ((self.cols as usize).saturating_add(1)),
+        );
+        for (row_index, row) in self.cells.iter().enumerate().take(cursor_row + 1) {
+            let limit = if row_index == cursor_row {
+                cursor_col
+                    .saturating_add(usize::from(self.input_needs_wrap))
+                    .min(row.len())
+            } else {
+                row.len()
+            };
+            let row_start = out.len();
+            for cell in row.iter().take(limit) {
+                out.push(cell.c);
+            }
+            while out.len() > row_start && out.ends_with(' ') {
+                out.pop();
+            }
+            out.push('\n');
+        }
+        out
+    }
+
+    /// Whether the cursor row contains visible cells at or to the right of
+    /// the cursor. A cursor-bounded composer can look like a bare prompt while
+    /// a draft remains in cells to its right, so callers must not classify it
+    /// as empty in that state.
+    pub fn has_visible_text_at_or_after_cursor(&self) -> bool {
+        let cursor_row = self.cursor.0.saturating_sub(1) as usize;
+        let cursor_col = (self.cursor.1.saturating_sub(1) as usize)
+            .saturating_add(usize::from(self.input_needs_wrap));
+        self.cells
+            .get(cursor_row)
+            .is_some_and(|row| row.iter().skip(cursor_col).any(|cell| cell.c != ' '))
     }
 
     /// ANSI bytes that redraw the captured grid on a fresh terminal.
@@ -581,6 +631,30 @@ mod tests {
         let plain = snap.to_plain();
         let lines: Vec<&str> = plain.split('\n').collect();
         assert_eq!(lines[2], "    hello", "row 3 should be {:?}", lines[2]);
+    }
+
+    #[test]
+    fn plain_through_cursor_excludes_stale_right_and_lower_cells() {
+        let term = parse_into(4, 20, &[b"abcSTALE\r\nLOWER\x1b[1;4H"]);
+        let snap = Snapshot::from_term(&term);
+        assert_eq!(snap.cursor, (1, 4));
+        assert_eq!(snap.to_plain_through_cursor(), "abc\n");
+        assert!(snap.has_visible_text_at_or_after_cursor());
+
+        let term = parse_into(4, 20, &[b"abc"]);
+        let snap = Snapshot::from_term(&term);
+        assert!(!snap.has_visible_text_at_or_after_cursor());
+    }
+
+    #[test]
+    fn plain_through_cursor_includes_occupied_cell_while_wrap_is_pending() {
+        let term = parse_into(2, 5, &[b"abcde"]);
+        let snap = Snapshot::from_term(&term);
+
+        assert_eq!(snap.cursor, (1, 5));
+        assert!(snap.input_needs_wrap);
+        assert_eq!(snap.to_plain_through_cursor(), "abcde\n");
+        assert!(!snap.has_visible_text_at_or_after_cursor());
     }
 
     #[test]
