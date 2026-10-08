@@ -1,7 +1,6 @@
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { replayMessageMetadata } from '@agent-relay/sdk';
 import { z } from 'zod';
-import { track } from '../telemetry/index.js';
 
 import {
   compactDirectMessageReceipt,
@@ -68,6 +67,19 @@ function resolveEmoji(input: string): string {
  * tools. These all act through a single agent client resolved per-call from the
  * optional `as` identity override.
  */
+const idempotencyKeyInput = z
+  .string()
+  // Relaycast trims this key upstream, so trim before both the local replay
+  // cache and the forwarded call to keep one logical send on one key; a
+  // whitespace-only key would otherwise become an unkeyed send.
+  .trim()
+  .min(1)
+  .max(255)
+  .optional()
+  .describe(
+    'Stable key for retrying this same message after a lost response; use a new key for a new message. Surrounding whitespace is trimmed and a whitespace-only key is rejected.'
+  );
+
 export function registerMessagingTools(
   server: McpServer,
   getAgentClient: (asIdentity?: string) => AgentClientLike,
@@ -238,6 +250,7 @@ export function registerMessagingTools(
           .describe(
             'wait (default): queue delivery until each recipient reaches a safe idle boundary; steer: request immediate injection, which may interrupt active work.'
           ),
+        idempotency_key: idempotencyKeyInput,
         ...identityOverrideInputShape,
       },
       outputSchema: jsonResult,
@@ -248,23 +261,21 @@ export function registerMessagingTools(
         openWorldHint: true,
       },
     },
-    async ({ channel, text, attachments, mode, as }, extra) =>
-      replay.run('post_message', extra, undefined, () =>
-        replay.coalesceWrite(
-          'post_message',
-          extra,
-          [as ?? null, channel, text, attachments ?? [], mode ?? 'wait'],
-          async () =>
-            jsonContent(
-              await getAgentClient(as).send(channel, text, {
-                attachments,
-                data: replayMessageMetadata(),
-                mode,
-              })
-            ),
-          () => track('agent_relay_write_coalesced', { tool_name: 'post_message' })
+    async ({ channel, text, attachments, mode, idempotency_key, as }, extra) => {
+      // Bind the acting identity now: a register_agent that moves the session
+      // default must not reroute a write that is already in flight.
+      const client = getAgentClient(as);
+      return replay.run('post_message', extra, idempotency_key, async () =>
+        jsonContent(
+          await client.send(channel, text, {
+            attachments,
+            data: replayMessageMetadata(),
+            mode,
+            idempotencyKey: idempotency_key,
+          })
         )
-      )
+      );
+    }
   );
 
   server.registerTool(
@@ -302,6 +313,7 @@ export function registerMessagingTools(
       inputSchema: {
         message_id: z.string().describe('Parent message ID'),
         text: z.string().describe('Reply text'),
+        idempotency_key: idempotencyKeyInput,
         ...identityOverrideInputShape,
       },
       outputSchema: jsonResult,
@@ -312,17 +324,17 @@ export function registerMessagingTools(
         openWorldHint: true,
       },
     },
-    async ({ message_id, text, as }, extra) =>
-      replay.run('reply_to_thread', extra, undefined, () =>
-        replay.coalesceWrite(
-          'reply_to_thread',
-          extra,
-          [as ?? null, message_id, text],
-          async () =>
-            jsonContent(await getAgentClient(as).reply(message_id, text, { data: replayMessageMetadata() })),
-          () => track('agent_relay_write_coalesced', { tool_name: 'reply_to_thread' })
+    async ({ message_id, text, idempotency_key, as }, extra) => {
+      const client = getAgentClient(as);
+      return replay.run('reply_to_thread', extra, idempotency_key, async () =>
+        jsonContent(
+          await client.reply(message_id, text, {
+            data: replayMessageMetadata(),
+            idempotencyKey: idempotency_key,
+          })
         )
-      )
+      );
+    }
   );
 
   server.registerTool(
@@ -367,18 +379,7 @@ export function registerMessagingTools(
             'wait (default): queue until the recipient reaches a safe idle boundary; steer: request immediate injection, which may interrupt active work. Both modes return before reading is confirmed.'
           ),
         attachments: z.array(z.string()).optional().describe('File attachment IDs'),
-        idempotency_key: z
-          .string()
-          // Relaycast trims this key upstream, so trim before both the local
-          // replay cache and the forwarded call to keep one logical send on one
-          // key; a whitespace-only key would otherwise become an unkeyed send.
-          .trim()
-          .min(1)
-          .max(255)
-          .optional()
-          .describe(
-            'Stable key for retrying this same message after a lost response; use a new key for a new message. Surrounding whitespace is trimmed and a whitespace-only key is rejected.'
-          ),
+        idempotency_key: idempotencyKeyInput,
         ...identityOverrideInputShape,
       },
       outputSchema: directMessageResult,

@@ -29,12 +29,13 @@ message inbox check` reports no workspace key. No authenticated message,
 
 ## Changes and boundaries
 
-MCP posts/replies use request replay and pending-only argument coalescing.
-Native tools use a per-session pending map. Concurrent identical writes join;
-settled writes, different identities, targets, options, and sessions remain
-separate. MCP joins emit `agent_relay_write_coalesced` with only the tool name.
-This cannot deduplicate distinct processes or sequential unkeyed retries after a
-lost response.
+MCP posts/replies use request replay keyed on the JSON-RPC request ID (or an
+explicit `idempotency_key`, also forwarded to Relaycast), matching `send_dm`.
+Native tools join only a replay of the same model tool call ID. Message text
+never forms a key: independent writes with identical text, including
+concurrent ones, remain separate messages. Unkeyed retries after a lost
+response, or from a distinct process, are not deduplicated; callers that retry
+must pass `idempotency_key`.
 
 Subscription setup reads persisted event coverage before binding, rejects
 unsupported events and inactive/mismatched subscriptions, and uses the existing

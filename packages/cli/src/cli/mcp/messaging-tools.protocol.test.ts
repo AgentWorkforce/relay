@@ -315,39 +315,105 @@ describe('messaging delivery receipts over MCP', () => {
 });
 
 describe('channel and thread writes over MCP', () => {
-  it.each([
-    ['post_message', 'send', { channel: 'events', text: 'ACK' }],
-    ['reply_to_thread', 'reply', { message_id: 'provider-parent', text: 'ACK' }],
-  ] as const)('coalesces parallel %s calls but permits sequential repeats', async (tool, method, args) => {
+  function gatedWrite() {
     let release!: () => void;
     const gate = new Promise<void>((resolve) => {
       release = resolve;
     });
+    let n = 0;
     const write = vi.fn(async () => {
       await gate;
-      return { id: 'reply-1' };
+      n += 1;
+      return { id: `message-${n}` };
     });
+    return { write, release };
+  }
+
+  async function connect(getAgentClient: Parameters<typeof registerMessagingTools>[1]) {
     const server = new McpServer({ name: 'write-test', version: '1' });
-    registerMessagingTools(server, () => ({ [method]: write }) as never);
+    registerMessagingTools(server, getAgentClient);
     const client = new Client({ name: 'write-client', version: '1' });
     const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
+    await server.connect(serverTransport);
+    await client.connect(clientTransport);
+    return {
+      client,
+      close: async () => {
+        await client.close();
+        await server.close();
+      },
+    };
+  }
+
+  it.each([
+    ['post_message', 'send', { channel: 'events', text: 'ACK' }],
+    ['reply_to_thread', 'reply', { message_id: 'provider-parent', text: 'ACK' }],
+  ] as const)(
+    'keeps independent parallel %s calls with identical text separate',
+    async (tool, method, args) => {
+      const { write, release } = gatedWrite();
+      const { client, close } = await connect(() => ({ [method]: write }) as never);
+      try {
+        const first = client.callTool({ name: tool, arguments: args });
+        const second = client.callTool({ name: tool, arguments: args });
+        await vi.waitFor(() => expect(write).toHaveBeenCalledTimes(2));
+        release();
+        const results = await Promise.all([first, second]);
+        expect(results.map((result) => result.isError)).toEqual([undefined, undefined]);
+        expect(results[0].structuredContent).not.toEqual(results[1].structuredContent);
+      } finally {
+        release();
+        await close();
+      }
+    }
+  );
+
+  it.each([
+    ['post_message', 'send', { channel: 'events', text: 'ACK' }],
+    ['reply_to_thread', 'reply', { message_id: 'provider-parent', text: 'ACK' }],
+  ] as const)('joins %s calls that share an idempotency key and forwards it', async (tool, method, args) => {
+    const { write, release } = gatedWrite();
+    const { client, close } = await connect(() => ({ [method]: write }) as never);
     try {
-      await server.connect(serverTransport);
-      await client.connect(clientTransport);
-      const first = client.callTool({ name: tool, arguments: args });
-      const second = client.callTool({ name: tool, arguments: args });
+      const keyed = { ...args, idempotency_key: ' retry-1 ' };
+      const first = client.callTool({ name: tool, arguments: keyed });
+      const retry = client.callTool({ name: tool, arguments: keyed });
       await vi.waitFor(() => expect(write).toHaveBeenCalledTimes(1));
       release();
-      const results = await Promise.all([first, second]);
-      expect(results[0].isError).not.toBe(true);
+      const results = await Promise.all([first, retry]);
       expect(results[0].structuredContent).toEqual(results[1].structuredContent);
       expect(write).toHaveBeenCalledTimes(1);
-      await client.callTool({ name: tool, arguments: args });
-      expect(write).toHaveBeenCalledTimes(2);
+      expect(write.mock.calls[0]).toContainEqual(expect.objectContaining({ idempotencyKey: 'retry-1' }));
     } finally {
       release();
-      await client.close();
-      await server.close();
+      await close();
+    }
+  });
+
+  it('keeps an in-flight write on the identity that was active when it was called', async () => {
+    const alice = gatedWrite();
+    const bob = gatedWrite();
+    let current = 'alice';
+    const { client, close } = await connect(
+      () => ({ reply: current === 'alice' ? alice.write : bob.write }) as never
+    );
+    try {
+      const pending = client.callTool({
+        name: 'reply_to_thread',
+        arguments: { message_id: 'parent', text: 'ACK' },
+      });
+      await vi.waitFor(() => expect(alice.write).toHaveBeenCalledTimes(1));
+      current = 'bob';
+      alice.release();
+      bob.release();
+      await pending;
+      await client.callTool({ name: 'reply_to_thread', arguments: { message_id: 'parent', text: 'ACK' } });
+      expect(alice.write).toHaveBeenCalledTimes(1);
+      expect(bob.write).toHaveBeenCalledTimes(1);
+    } finally {
+      alice.release();
+      bob.release();
+      await close();
     }
   });
 });

@@ -11,70 +11,36 @@ function deferred() {
   return { promise, resolve, reject };
 }
 
-describe('pending message write coalescing', () => {
-  it('joins concurrent aliases, reports coalescing, and permits a sequential repeat', async () => {
+describe('MCP request replay', () => {
+  it('runs distinct request IDs separately even while an identical write is pending', async () => {
     const replay = new McpRequestReplay();
     const pending = deferred();
     const operation = vi.fn(() => pending.promise);
-    const coalesced = vi.fn();
-    const send = (requestId: number) =>
-      replay.run('reply_to_thread', { requestId, sessionId: 's' }, undefined, () =>
-        replay.coalesceWrite(
-          'reply_to_thread',
-          { sessionId: 's' },
-          ['agent', 'parent', 'ACK'],
-          operation,
-          coalesced
-        )
-      );
-    const first = send(1);
-    const alias = send(2);
-    await Promise.resolve();
-    expect(operation).toHaveBeenCalledTimes(1);
-    expect(coalesced).toHaveBeenCalledTimes(1);
-    pending.resolve('reply');
-    expect(await first).toBe(await alias);
-    await send(3);
+    const first = replay.run('reply_to_thread', { requestId: 1, sessionId: 's' }, undefined, operation);
+    const second = replay.run('reply_to_thread', { requestId: 2, sessionId: 's' }, undefined, operation);
     expect(operation).toHaveBeenCalledTimes(2);
+    pending.resolve('reply');
+    await Promise.all([first, second]);
   });
 
-  it('separates sessions, identities, targets, tools, and write options', async () => {
+  it('joins a transport replay of one request ID within a session and tool', async () => {
     const replay = new McpRequestReplay();
     const pending = deferred();
     const operation = vi.fn(() => pending.promise);
-    const writes = [
-      replay.coalesceWrite('post_message', { sessionId: 'a' }, ['alice', 'c', 'ACK', [], 'wait'], operation),
-      replay.coalesceWrite('post_message', { sessionId: 'b' }, ['alice', 'c', 'ACK', [], 'wait'], operation),
-      replay.coalesceWrite('post_message', { sessionId: 'a' }, ['bob', 'c', 'ACK', [], 'wait'], operation),
-      replay.coalesceWrite('post_message', { sessionId: 'a' }, ['alice', 'd', 'ACK', [], 'wait'], operation),
-      replay.coalesceWrite(
-        'reply_to_thread',
-        { sessionId: 'a' },
-        ['alice', 'c', 'ACK', [], 'wait'],
-        operation
-      ),
-      replay.coalesceWrite(
-        'post_message',
-        { sessionId: 'a' },
-        ['alice', 'c', 'ACK', ['file'], 'wait'],
-        operation
-      ),
-      replay.coalesceWrite('post_message', { sessionId: 'a' }, ['alice', 'c', 'ACK', [], 'steer'], operation),
-    ];
-    await Promise.resolve();
-    expect(operation).toHaveBeenCalledTimes(7);
+    const first = replay.run('post_message', { requestId: 7, sessionId: 'a' }, undefined, operation);
+    expect(replay.run('post_message', { requestId: 7, sessionId: 'a' }, undefined, operation)).toBe(first);
+    void replay.run('post_message', { requestId: 7, sessionId: 'b' }, undefined, operation);
+    void replay.run('reply_to_thread', { requestId: 7, sessionId: 'a' }, undefined, operation);
+    expect(operation).toHaveBeenCalledTimes(3);
     pending.resolve('ok');
-    await Promise.all(writes);
+    await first;
   });
 
-  it('clears rejected writes and transport request IDs for a safe retry', async () => {
+  it('clears a rejected request ID for a safe retry', async () => {
     const replay = new McpRequestReplay();
     const pending = deferred();
     const operation = vi.fn(() => pending.promise);
-    const send = () =>
-      replay.run('reply_to_thread', { requestId: 1 }, undefined, () =>
-        replay.coalesceWrite('reply_to_thread', {}, ['a', 'p', 'ACK'], operation)
-      );
+    const send = () => replay.run('reply_to_thread', { requestId: 1 }, undefined, operation);
     const first = send();
     expect(send()).toBe(first);
     const assertion = expect(first).rejects.toThrow('unavailable');

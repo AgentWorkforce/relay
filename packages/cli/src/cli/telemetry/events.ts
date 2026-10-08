@@ -487,7 +487,6 @@ export type TelemetryEventName =
   | 'cli_install'
   | 'cli_update'
   | 'agent_relay_tool_call'
-  | 'agent_relay_write_coalesced'
   | 'workflow_run'
   | 'cloud_auth'
   | 'cloud_workflow_run'
@@ -511,7 +510,6 @@ export interface TelemetryEventMap {
   cli_install: CliInstallEvent;
   cli_update: CliUpdateEvent;
   agent_relay_tool_call: AgentRelayToolCallEvent;
-  agent_relay_write_coalesced: { tool_name: 'post_message' | 'reply_to_thread' };
   workflow_run: WorkflowRunEvent;
   cloud_auth: CloudAuthEvent;
   cloud_workflow_run: CloudWorkflowRunEvent;

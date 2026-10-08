@@ -7,7 +7,11 @@ import {
 import { createHash, pbkdf2Sync, randomBytes } from 'node:crypto';
 import { hostname } from 'node:os';
 import { getProjectPaths } from '@agent-relay/config';
-import { normalizeWebhookSubscription, type AgentRelayAgent } from '@agent-relay/sdk';
+import {
+  SUBSCRIBABLE_EVENT_TYPES,
+  normalizeWebhookSubscription,
+  type AgentRelayAgent,
+} from '@agent-relay/sdk';
 
 import {
   cleanupEntryKey,
@@ -1608,10 +1612,11 @@ async function runSubscribeSetup(
 
   const requestedEvents = commaList(opts.events);
   const events = [...new Set(requestedEvents.length ? requestedEvents : ['message.created', 'thread.reply'])];
-  const unsupported = events.filter((event) => !['message.created', 'thread.reply'].includes(event));
+  const supported: readonly string[] = SUBSCRIBABLE_EVENT_TYPES;
+  const unsupported = events.filter((event) => !supported.includes(event));
   if (unsupported.length)
     throw new Error(
-      `Unsupported subscription events: ${unsupported.join(', ')}. Supported events: message.created, thread.reply.`
+      `Unsupported subscription events: ${unsupported.join(', ')}. Supported events: ${supported.join(', ')}.`
     );
   const { provider, resource, to } = await promptSubscribeOptions(deps, providerArg, opts);
   const local = await deps.resolveLocalRelayOptions();

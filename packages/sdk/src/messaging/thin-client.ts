@@ -103,6 +103,8 @@ export interface RelayAgentThinClient {
     channel: string,
     text: string,
     options?: {
+      /** Stable key for retries of one logical send, including across processes. */
+      idempotencyKey?: string;
       attachments?: string[];
       data?: Record<string, unknown> | null;
       mode?: RelayMessageMode;
@@ -112,7 +114,11 @@ export interface RelayAgentThinClient {
   reply(
     messageId: string,
     text: string,
-    options?: { data?: Record<string, unknown> | null }
+    options?: {
+      /** Stable key for retries of one logical reply, including across processes. */
+      idempotencyKey?: string;
+      data?: Record<string, unknown> | null;
+    }
   ): Promise<unknown>;
   thread(messageId: string, options?: { limit?: number }): Promise<unknown>;
   dm(

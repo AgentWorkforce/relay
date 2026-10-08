@@ -2132,6 +2132,21 @@ describe('subscription writeback verification', () => {
     expect(relayfile.createWebhookSubscription).not.toHaveBeenCalled();
   });
 
+  it.each(['action.completed', 'message.updated'])(
+    'provisions engine-supported %s subscriptions',
+    async (event) => {
+      const relay = createRelayMock();
+      relay.integrations.subscriptions.get.mockImplementation(async (id) => ({ id, events: [event] }));
+      const { program, relayfile, error } = harness({ relay });
+      await program.parseAsync(ARGS(['--events', event]), { from: 'user' });
+      expect(error.mock.calls.flat().join(' ')).not.toContain('Unsupported subscription events');
+      expect(relay.integrations.subscriptions.create).toHaveBeenCalledWith(
+        expect.objectContaining({ event, events: [event] })
+      );
+      expect(relayfile.bind).toHaveBeenCalledOnce();
+    }
+  );
+
   it('accepts singular thread.reply coverage', async () => {
     const relay = createRelayMock();
     relay.integrations.subscriptions.get.mockImplementation(async (id) => ({ id, event: 'thread.reply' }));
