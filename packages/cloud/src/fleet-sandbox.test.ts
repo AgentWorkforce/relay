@@ -449,6 +449,56 @@ describe('Cloud fleet sandbox client', () => {
     ).resolves.toMatchObject({ relaycastTarget: DEV_RELAYCAST_TARGET });
   });
 
+  it('validates an async-prepared Relaycast target against the auth that read the ready record', async () => {
+    mocks.authorizedApiFetch
+      .mockResolvedValueOnce({
+        response: Response.json({ cloudWorkspaceId: CLOUD_WORKSPACE_ID }),
+        auth,
+      })
+      .mockResolvedValueOnce({
+        response: Response.json(preparationEnvelope('pending', 'agent_relay_cli_bootstrap', 0), {
+          status: 202,
+        }),
+        auth: devAuth,
+      })
+      .mockResolvedValueOnce({
+        response: Response.json(
+          preparationEnvelope('ready', 'broker_visible', 1, {
+            result: {
+              outcome: 'provisioned',
+              providerId: 'agent37',
+              nodeId: 'node-async-dev',
+              nodeName: SANDBOX_NAME,
+              sandboxId: SANDBOX_ID,
+              providerSandboxId: 'provider-async-dev',
+              relayWorkspaceId: 'rw_abc',
+              relaycastTarget: DEV_RELAYCAST_TARGET,
+              relayfileMounted: true,
+            },
+          })
+        ),
+        auth: devAuth,
+      });
+
+    await expect(
+      ensureCloudFleetSandbox(
+        {
+          workspaceId: 'rw_abc',
+          name: SANDBOX_NAME,
+          sandboxId: SANDBOX_ID,
+          requiredCapability: 'spawn:codex',
+          forceProvision: true,
+          preparationMode: 'async-v1',
+        },
+        { preparationPollIntervalMs: 1 }
+      )
+    ).resolves.toMatchObject({
+      nodeId: 'node-async-dev',
+      relaycastTarget: DEV_RELAYCAST_TARGET,
+      relaycastCloudApiUrl: DEV_CLOUD_API_URL,
+    });
+  });
+
   it('resolves the unified workspace and provisions a ready mounted sandbox', async () => {
     mocks.authorizedApiFetch
       .mockResolvedValueOnce({
