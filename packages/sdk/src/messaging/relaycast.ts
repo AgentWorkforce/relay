@@ -655,12 +655,19 @@ export class RelaycastMessagingClient implements RelayMessagingClient {
         this.requireWebhooks().trigger(id, payload ?? {}),
     },
     subscriptions: {
-      create: async (input: RelayCreateSubscriptionInput): Promise<RelayEventSubscription> =>
-        (await this.requireSubscriptions().create(input)) as RelayEventSubscription,
+      create: async (input: RelayCreateSubscriptionInput): Promise<RelayEventSubscription> => {
+        const raw = (await this.requireSubscriptions().create(input)) as RelayEventSubscription;
+        return { ...raw, ...normalizeWebhookSubscription(raw) };
+      },
       list: async (): Promise<RelayEventSubscription[]> =>
-        (await this.requireSubscriptions().list()) as RelayEventSubscription[],
-      get: async (id: string): Promise<RelayEventSubscription> =>
-        (await this.requireSubscriptions().get(id)) as RelayEventSubscription,
+        ((await this.requireSubscriptions().list()) as RelayEventSubscription[]).map((raw) => ({
+          ...raw,
+          ...normalizeWebhookSubscription(raw),
+        })),
+      get: async (id: string): Promise<RelayEventSubscription> => {
+        const raw = (await this.requireSubscriptions().get(id)) as RelayEventSubscription;
+        return { ...raw, ...normalizeWebhookSubscription(raw) };
+      },
       delete: async (id: string): Promise<void> => {
         await this.requireSubscriptions().delete(id);
       },

@@ -57,3 +57,43 @@ describe('native Relay host tools', () => {
     expect(NATIVE_RELAY_INSTRUCTIONS).toContain('Do not ask the user how to use Relay');
   });
 });
+
+it.each([
+  ['post_message', 'send', { channel: 'events', text: 'ACK' }],
+  ['reply_to_thread', 'reply', { message_id: 'parent', text: 'ACK' }],
+] as const)('joins only a replay of the same native %s tool call', async (tool, method, args) => {
+  let release!: () => void;
+  const gate = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+  const write = vi.fn(async () => {
+    await gate;
+    return { id: `reply-${write.mock.calls.length}` };
+  });
+  const options = { env: { RELAY_AGENT_TOKEN: 'test' }, agentClient: { [method]: write } as never };
+  const execute = createNativeRelayTools(options).find((item) => item.spec.name === tool)!.execute;
+  const first = execute(args, { toolCallId: 'call-1' });
+  const replay = execute(args, { toolCallId: 'call-1' });
+  const independent = execute(args, { toolCallId: 'call-2' });
+  const unidentified = [execute(args, {}), execute(args, {})];
+  await Promise.resolve();
+  await Promise.resolve();
+  expect(write).toHaveBeenCalledTimes(4);
+  release();
+  expect(await first).toBe(await replay);
+  await Promise.all([independent, ...unidentified]);
+  await execute(args, { toolCallId: 'call-1' });
+  expect(write).toHaveBeenCalledTimes(5);
+});
+
+it('clears a rejected native reply so the same tool call can be retried', async () => {
+  const reply = vi.fn().mockRejectedValueOnce(new Error('offline')).mockResolvedValue({ id: 'retry' });
+  const execute = createNativeRelayTools({
+    env: { RELAY_AGENT_TOKEN: 'test' },
+    agentClient: { reply } as never,
+  }).find((item) => item.spec.name === 'reply_to_thread')!.execute;
+  const args = { message_id: 'parent', text: 'ACK' };
+  await expect(execute(args, { toolCallId: 'call-1' })).rejects.toThrow('offline');
+  await expect(execute(args, { toolCallId: 'call-1' })).resolves.toEqual({ id: 'retry' });
+  expect(reply).toHaveBeenCalledTimes(2);
+});

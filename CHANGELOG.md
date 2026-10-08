@@ -24,6 +24,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `agent-relay fleet spawn` reports registration `d1_pressure` as retryable only when the registration is proven to have failed before any change was made.
 - Verified Fleet Devin spawns fail with `directory_trust_required` when the directory-trust prompt persists, releasing the worker through spawn cleanup instead of leaving a live but blocked worker.
 
+### Fixed
+
+- Relay MCP `post_message` and `reply_to_thread` coalesce a transport replay of one request (and accept an `idempotency_key` for retries after a lost response), matching `send_dm`; native host tools key on the tool call ID. Independent writes with identical text remain separate messages.
+- `integration subscribe` validates `--events` against the engine's full subscribable event list, verifies persisted writeback events, rolls back incomplete subscriptions, and reports GitHub authorization uncertainty; `--list` distinguishes subscription configuration from delivery confirmation.
+
 ## [13.1.5] - 2026-10-08
 
 ### Fixed
