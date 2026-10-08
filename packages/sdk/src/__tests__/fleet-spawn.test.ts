@@ -203,6 +203,18 @@ describe('spawnFleetSandbox', () => {
     expect(h.deleteCloudFleetSandbox).toHaveBeenCalledTimes(1);
   });
 
+  it('pins the compatibility transport at spawn time for attach', async () => {
+    const h = harness();
+    const env: NodeJS.ProcessEnv = { RELAY_WORKSPACE_KEY: 'rk_live_spawned' };
+    const { workspaceKey: _key, ...rest } = base;
+    const handle = await spawnFleetSandbox({ ...rest, transport: { env } }, h.deps);
+    env.RELAY_WORKSPACE_KEY = 'rk_live_rebound';
+    await handle.attach();
+    expect(h.startFleetNodeAttachProxy).toHaveBeenCalledWith(
+      expect.objectContaining({ workspaceKey: 'rk_live_spawned' })
+    );
+  });
+
   it('tears down idempotently: releases the agent, then deletes the sandbox it provisioned', async () => {
     const h = harness();
     const handle = await spawnFleetSandbox(base, h.deps);

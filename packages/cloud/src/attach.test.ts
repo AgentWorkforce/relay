@@ -114,6 +114,51 @@ it('ends the raw attachment on a connection-fatal session error after ready', as
   await closed;
 });
 
+it('holds raw input during a transient reconnect and delivers it once the terminal is ready again', async () => {
+  server = new WebSocketServer({ host: '127.0.0.1', port: 0 });
+  await once(server, 'listening');
+  const connections: WebSocket[] = [];
+  server.on('connection', (socket) => connections.push(socket as WebSocket));
+  const fetch = vi.fn(async (url: string | URL | Request) =>
+    Response.json({
+      ok: true,
+      data: String(url).endsWith('/agents')
+        ? [{ agentName: 'worker' }]
+        : {
+            session_id: 'session',
+            resume_token: 'resume',
+            terminal_url: `ws://127.0.0.1:${(server!.address() as AddressInfo).port}/terminal`,
+          },
+    })
+  );
+  proxy = await startFleetNodeAttachProxy({
+    nodeId: 'node',
+    mode: 'drive',
+    workspaceKey: 'rk_test',
+    env: {},
+    fetch,
+    reconnectDelay: { initialMs: 300, maxMs: 300 },
+  });
+  await vi.waitFor(() => expect(connections).toHaveLength(1));
+  local = connect(proxy!.socketPath);
+  await once(local, 'connect');
+  send(connections[0]!, 'terminal.ready', { screen: Buffer.from('hello').toString('base64') });
+  await once(local, 'data');
+  connections[0]!.terminate();
+  await new Promise((resolve) => setTimeout(resolve, 50));
+  local.write('typed-during-reconnect');
+  await vi.waitFor(() => expect(connections).toHaveLength(2));
+  const input = once(connections[1]!, 'message');
+  send(connections[1]!, 'terminal.ready', { screen: Buffer.from('hello').toString('base64') });
+  const frame = JSON.parse(String((await input)[0]));
+  expect(frame).toMatchObject({ type: 'terminal.input' });
+  expect(Buffer.from(frame.data_base64, 'base64').toString()).toBe('typed-during-reconnect');
+  let settled = false;
+  void proxy!.finished.then(() => (settled = true));
+  await new Promise((resolve) => setTimeout(resolve, 20));
+  expect(settled).toBe(false);
+});
+
 it('settles finished on explicit close before terminal.ready', async () => {
   await setup();
   await proxy!.close();

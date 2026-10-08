@@ -1162,11 +1162,16 @@ export async function startFleetNodeAttachProxy(
     });
     socket.on('data', (data: Buffer) => {
       if (options.mode === 'view') return;
-      if (
-        !remote ||
-        remote.readyState !== WebSocket.OPEN ||
-        remote.bufferedAmount + data.length > MAX_BUFFERED_BYTES
-      ) {
+      if (stopped || terminalEnded) return;
+      if (!remote || remote.readyState !== WebSocket.OPEN || !activeReadiness.settled) {
+        // A transient reconnect is in progress: hold the keystrokes on the
+        // socket and resume at the next terminal.ready rather than ending a
+        // recoverable session.
+        socket.pause();
+        socket.unshift(data);
+        return;
+      }
+      if (remote.bufferedAmount + data.length > MAX_BUFFERED_BYTES) {
         endTerminal(new FleetNodeAttachError('terminal input transport unavailable', 'node_unreachable'));
         return;
       }
@@ -1456,6 +1461,8 @@ export async function startFleetNodeAttachProxy(
           // DECODED grid: a `worker_stream` chunk is raw PTY bytes that the
           // attach client writes straight to the terminal, so the base64 form
           // renders as a wall of text instead of a repaint (relay#1829).
+          // Release any input held while the transport was reconnecting.
+          if (rawReady && rawSocket && !rawSocket.destroyed) rawSocket.resume();
           if (readiness.generation > 1 && snapshot.screenAnsi) {
             broadcast(eventSockets, workerStreamEvent(snapshot.screenAnsi));
             rawSocket?.write(snapshot.screenAnsi);

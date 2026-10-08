@@ -636,6 +636,19 @@ export async function spawnFleetSandbox(
     }
   }
 
+  // Pin the credential/origin pair the agent was launched with: a later
+  // project rebind or environment change must not redirect attach.
+  let spawnTransport: { workspaceKey: string; baseUrl?: string } | Error;
+  if (verifiedTarget) {
+    spawnTransport = { workspaceKey: verifiedTarget.relaycastApiKey, baseUrl: verifiedTarget.baseUrl };
+  } else {
+    try {
+      const { workspaceKey, baseUrl } = resolveWorkspaceTransport(legacyTransport);
+      spawnTransport = { workspaceKey, ...(baseUrl === undefined ? {} : { baseUrl }) };
+    } catch (error) {
+      spawnTransport = error instanceof Error ? error : new Error(String(error));
+    }
+  }
   let destroyed: Promise<void> | undefined;
   let agentReleased = false;
   let sandboxDeleted = false;
@@ -652,9 +665,8 @@ export async function spawnFleetSandbox(
     sandbox: redactFleetSandbox(ready),
     invocation,
     attach: async (options = {}) => {
-      const attachTransport = verifiedTarget
-        ? { workspaceKey: verifiedTarget.relaycastApiKey, baseUrl: verifiedTarget.baseUrl }
-        : resolveWorkspaceTransport(legacyTransport);
+      if (spawnTransport instanceof Error) throw spawnTransport;
+      const attachTransport = spawnTransport;
       return deps.startFleetNodeAttachProxy({
         node: ready.nodeName,
         agent: name,
