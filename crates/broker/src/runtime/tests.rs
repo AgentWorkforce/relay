@@ -1232,6 +1232,48 @@ async fn an_oversized_spawn_task_is_rejected_before_launch() {
     }
     assert!(found);
     assert!(fixture.runtime.workers.workers.is_empty());
+
+    // relay#1893 review (Cursor): the raw task fits, but the exit-after-task
+    // contract appended by the spawn path pushes the injected task past the
+    // cap. That must also fail before registration, not after launch.
+    fixture
+        .runtime
+        .handle_fleet_control_event(crate::node_control::FleetControlEvent::Message(
+            crate::fleet_wire::RelaycastToBroker::ActionInvoke(crate::fleet_wire::ActionInvoke {
+                task_execution: None,
+                v: FLEET_WIRE_VERSION,
+                invocation_id: "decorated-task".into(),
+                action: "spawn".into(),
+                input: json!({"name":"decorated", "cli":"codex", "verify_ready":true,
+                    "exit_after_task": true, "cwd":temp.path(),
+                    "task":"x".repeat(crate::injection_wire::MAX_BODY_BYTES)}),
+                agent_name: Some("decorated".into()),
+                agent_id: None,
+            }),
+        ))
+        .await;
+    let mut found = false;
+    while let Ok(command) = fixture.fleet_control_rx.try_recv() {
+        match command {
+            FleetControlCommand::RegisterAgent { .. } => {
+                panic!("a decorated task over the cap must fail before registration")
+            }
+            FleetControlCommand::Send(BrokerToRelaycast::ActionResult(result)) => {
+                let crate::fleet_wire::ActionResultPayload::Error(error) = &result.result else {
+                    panic!("expected fleet error: {result:?}");
+                };
+                assert!(
+                    error.error.contains("spawn_task_too_large: "),
+                    "{}",
+                    error.error
+                );
+                found = true;
+            }
+            _ => {}
+        }
+    }
+    assert!(found);
+    assert!(fixture.runtime.workers.workers.is_empty());
 }
 
 fn inbound_ctx<'a>(event_id: &'a str) -> InboundContext<'a> {

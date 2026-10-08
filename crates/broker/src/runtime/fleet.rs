@@ -290,14 +290,7 @@ pub(super) fn already_ready_spawn_result(
 
 /// The spawn error for an initial task whose body cannot fit the PTY envelope.
 pub(super) fn spawn_task_too_large(task: &str) -> Option<String> {
-    (task.len() > crate::injection_wire::MAX_BODY_BYTES).then(|| {
-        format!(
-            "spawn_task_too_large: task is {} bytes; the limit is {} bytes so its envelope fits the {}-byte PTY limit. Write the brief to a file on the node and send a short pointer.",
-            task.len(),
-            crate::injection_wire::MAX_BODY_BYTES,
-            crate::injection_wire::MAX_INJECTION_BODY_BYTES
-        )
-    })
+    crate::injection_wire::task_too_large_error(task)
 }
 
 pub(super) fn verified_spawn_failed_result(invocation_id: String, error: &str) -> ActionResult {

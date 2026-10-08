@@ -8,6 +8,16 @@ pub(crate) const MAX_INJECTION_BODY_BYTES: usize = 16 * 1024;
 /// still fits `MAX_INJECTION_BODY_BYTES` once formatted.
 pub(crate) const ENVELOPE_RESERVE_BYTES: usize = 2 * 1024;
 pub(crate) const MAX_BODY_BYTES: usize = MAX_INJECTION_BODY_BYTES - ENVELOPE_RESERVE_BYTES;
+
+/// The spawn error for an initial PTY task that cannot fit its envelope.
+pub(crate) fn task_too_large_error(task: &str) -> Option<String> {
+    (task.len() > MAX_BODY_BYTES).then(|| {
+        format!(
+            "spawn_task_too_large: task is {} bytes; the limit is {MAX_BODY_BYTES} bytes so its envelope fits the {MAX_INJECTION_BODY_BYTES}-byte PTY limit. Write the brief to a file on the node and send a short pointer.",
+            task.len()
+        )
+    })
+}
 // At the default 5 ms/byte, leaves room for readiness, prompt recheck and verification.
 pub(crate) const MAX_TYPED_WRITE_TIME: Duration = Duration::from_millis(7680);
 pub(crate) const MAX_TYPED_BYTES: usize = MAX_TYPED_WRITE_TIME.as_millis() as usize / 5;
