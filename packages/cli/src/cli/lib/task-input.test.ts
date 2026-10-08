@@ -6,7 +6,7 @@ import {
   readTaskInput,
   MAX_INJECTION_BODY_BYTES,
   MAX_TASK_BODY_BYTES,
-  MUSE_STARTUP_PROMPT_MAX_BYTES,
+  MAX_ARGV_TASK_BYTES,
 } from './task-input.js';
 describe('task input', () => {
   it('requires exactly one source for fleet, allows neither locally', async () => {
@@ -33,7 +33,7 @@ describe('task input', () => {
     'reads at most one byte past the limit from a task file',
     async () => {
       await expect(readTaskInput(undefined, '/dev/zero')).rejects.toThrow('UTF-8 bytes');
-      await expect(readTaskInput(undefined, '/dev/zero', false, 'muse')).rejects.toThrow('argv');
+      await expect(readTaskInput(undefined, '/dev/zero', false, { cli: 'muse' })).rejects.toThrow('argv');
     },
     2000
   );
@@ -55,12 +55,47 @@ describe('task input', () => {
   it('applies the Muse argv limit, not the PTY body limit, to Muse tasks', async () => {
     const between = 'a'.repeat(MAX_TASK_BODY_BYTES + 1);
     for (const cli of ['muse', 'MUSE.exe', '/usr/local/bin/muse', 'C:\\Tools\\Muse.CMD']) {
-      expect(await readTaskInput(between, undefined, false, cli)).toBe(between);
+      expect(await readTaskInput(between, undefined, false, { cli })).toBe(between);
       await expect(
-        readTaskInput('a'.repeat(MUSE_STARTUP_PROMPT_MAX_BYTES + 1), undefined, false, cli)
+        readTaskInput('a'.repeat(MAX_ARGV_TASK_BYTES + 1), undefined, false, { cli })
       ).rejects.toThrow('argv');
     }
-    await expect(readTaskInput(between, undefined, false, 'musey')).rejects.toThrow('envelope');
-    await expect(readTaskInput(between, undefined, false, 'claude')).rejects.toThrow('envelope');
+    await expect(readTaskInput(between, undefined, false, { cli: 'musey' })).rejects.toThrow('envelope');
+    await expect(readTaskInput(between, undefined, false, { cli: 'claude' })).rejects.toThrow('envelope');
+  });
+  // A native runtime hands the task over without the PTY envelope, so only
+  // the portable single-argument ceiling applies, including to file reads.
+  it('applies the argv ceiling, not the PTY body limit, to native-runtime tasks', async () => {
+    const between = 'a'.repeat(MAX_TASK_BODY_BYTES + 1);
+    const native = { cli: 'claude', runtime: 'native' } as const;
+    expect(await readTaskInput(between, undefined, false, native)).toBe(between);
+    await expect(
+      readTaskInput('a'.repeat(MAX_ARGV_TASK_BYTES + 1), undefined, false, native)
+    ).rejects.toThrow('argument');
+    const dir = await mkdtemp(join(tmpdir(), 'relay-task-'));
+    try {
+      const file = join(dir, 'brief.md');
+      await writeFile(file, between);
+      expect(await readTaskInput(undefined, file, false, native)).toBe(between);
+      await expect(readTaskInput(undefined, file, false, { cli: 'claude', runtime: 'pty' })).rejects.toThrow(
+        'envelope'
+      );
+    } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
+  });
+  it('rejects a task file that is not valid UTF-8 instead of altering its text', async () => {
+    const dir = await mkdtemp(join(tmpdir(), 'relay-task-'));
+    try {
+      const file = join(dir, 'brief.md');
+      await writeFile(file, Buffer.from([0x68, 0x69, 0xff, 0x0a]));
+      await expect(readTaskInput(undefined, file)).rejects.toThrow('not valid UTF-8');
+      // An oversized file whose cut lands inside a character is reported by
+      // size, not as invalid UTF-8.
+      await writeFile(file, 'é'.repeat(MAX_TASK_BODY_BYTES));
+      await expect(readTaskInput(undefined, file)).rejects.toThrow('UTF-8 bytes');
+    } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
   });
 });

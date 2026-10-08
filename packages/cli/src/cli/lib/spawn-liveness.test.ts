@@ -48,6 +48,24 @@ describe('spawn liveness resolution', () => {
     ).toMatchObject({ evidence });
     if (evidence === 'live') expect(workspace.nodes.list).not.toHaveBeenCalled();
   });
+  // relay#1930 review (cubic): the clock is read when a heartbeat is judged,
+  // so read latency cannot make an old heartbeat look fresh.
+  it('measures heartbeat age after the bounded node reads, not before', async () => {
+    let clock = now;
+    const workspace = client([node('target', 30_000)]);
+    workspace.nodes.get.mockImplementation(async (name: string) => {
+      clock = now + 10_000;
+      return name === 'target' ? node('target', 30_000) : null;
+    });
+    expect(
+      await probeSpawnLiveness({
+        name: 'worker',
+        targetNode: 'target',
+        createClient: () => workspace,
+        now: () => clock,
+      })
+    ).toMatchObject({ evidence: 'stale', heartbeatAgeMs: 40_000 });
+  });
   // relay#1930 review (cubic): a stale or unavailable target entry must not
   // hide a fresh same-named worker on another node.
   it.each([

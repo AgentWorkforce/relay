@@ -13,15 +13,18 @@ export function isNotFoundError(error: unknown): boolean {
   return Number(status) === 404;
 }
 
-/** Parse `--wait-timeout`; reject what the wait would otherwise silently replace with its default. */
+/**
+ * Parse `--wait-timeout` as whole milliseconds within the timer limit; reject
+ * what the wait would otherwise silently replace with its default.
+ */
 export function parseRemovalWaitTimeout(value: unknown): number {
-  const timeoutMs = Number(value);
-  if (!Number.isFinite(timeoutMs) || timeoutMs <= 0) {
+  const timeoutMs = Math.floor(Number(value));
+  if (!Number.isFinite(timeoutMs) || timeoutMs < 1) {
     throw new Error(
-      `--wait-timeout must be a positive number of milliseconds (got ${JSON.stringify(value)}).`
+      `--wait-timeout must be a positive whole number of milliseconds (got ${JSON.stringify(value)}).`
     );
   }
-  return timeoutMs;
+  return normalizeTimeoutMs(timeoutMs);
 }
 
 export interface RemovalResult {

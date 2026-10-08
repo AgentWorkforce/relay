@@ -138,12 +138,14 @@ export async function probeSpawnLiveness(options: {
   try {
     const client = options.createClient();
     try {
-      const now = options.now?.() ?? Date.now();
+      // Read the clock when a heartbeat is judged, after the reads: sampling it
+      // first would let read latency make an old heartbeat look fresh.
+      const clock = () => options.now?.() ?? Date.now();
       const target = options.targetNode ? await read(() => client.nodes.get(options.targetNode!)) : undefined;
       const nodes = options.targetNode && target ? [target] : await read(() => client.nodes.list());
       // Prefer the targeted read; consult the fleet unless the target is an
       // available node whose fresh heartbeat claims this name.
-      const targetAge = target ? heartbeatAgeMs(target, now) : null;
+      const targetAge = target ? heartbeatAgeMs(target, clock()) : null;
       if (
         options.targetNode &&
         target &&
@@ -157,6 +159,7 @@ export async function probeSpawnLiveness(options: {
         nodes.push(...(await read(() => client.nodes.list())));
       }
       let weaker: SpawnLiveness | undefined;
+      const now = clock();
       for (const node of nodes) {
         if (
           !isAvailableFleetNode(node) ||

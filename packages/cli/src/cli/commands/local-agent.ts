@@ -1,4 +1,4 @@
-import { readTaskInput, validateTaskSize } from '../lib/task-input.js';
+import { readTaskInput, validateTaskSize, type TaskTarget } from '../lib/task-input.js';
 import type { Command } from 'commander';
 
 import { AGENT37_RELAYCAST_ORIGIN } from '@agent-relay/cloud';
@@ -53,7 +53,8 @@ function resolveAutoSpawn(
   provider: string,
   name: string,
   task: string | undefined,
-  model: string | undefined
+  model: string | undefined,
+  runtime?: TaskTarget['runtime']
 ): { name: string; task: string | undefined; model: string | undefined } {
   if (model !== 'auto' || provider !== 'claude' || !task) {
     return { name, task, model };
@@ -62,7 +63,7 @@ function resolveAutoSpawn(
   const team = composeTeam(assessment, task);
   const directorPrompt = buildDirectorPrompt(task, team);
   // The Director prompt repeats the task, so it is what must fit.
-  validateTaskSize(directorPrompt, provider);
+  validateTaskSize(directorPrompt, { cli: provider, runtime });
   return {
     name: name === provider ? 'Director' : name,
     task: directorPrompt,
@@ -877,8 +878,12 @@ export function registerLocalAgentCommands(
           const resolved = resolveAutoSpawn(
             provider,
             baseName,
-            await readTaskInput(opts.task, opts.taskFile, false, provider),
-            opts.model as string | undefined
+            await readTaskInput(opts.task, opts.taskFile, false, {
+              cli: provider,
+              runtime: runtime.selected,
+            }),
+            opts.model as string | undefined,
+            runtime.selected
           );
           await spawnAgentWithClient(client, {
             name: resolved.name,
@@ -940,8 +945,12 @@ export function registerLocalAgentCommands(
         resolved = resolveAutoSpawn(
           provider,
           baseName,
-          await readTaskInput(options.task, options.taskFile, false, provider),
-          options.model as string | undefined
+          await readTaskInput(options.task, options.taskFile, false, {
+            cli: provider,
+            runtime: runtime.selected,
+          }),
+          options.model as string | undefined,
+          runtime.selected
         );
       } catch (err) {
         deps.error(err instanceof Error ? err.message : String(err));

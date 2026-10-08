@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from 'vitest';
-import { waitForAgentRemoval } from './agent-removal.js';
+import { parseRemovalWaitTimeout, waitForAgentRemoval } from './agent-removal.js';
 
 function harness() {
   let time = 0;
@@ -60,6 +60,18 @@ describe('registration removal wait', () => {
       expect(await result).toMatchObject({ cleared: false, observedPresent: false, waitedMs: 2000 });
     } finally {
       vi.useRealTimers();
+    }
+  });
+});
+
+describe('parseRemovalWaitTimeout', () => {
+  // Timers take whole milliseconds; a fractional deadline would expire before
+  // the scheduled sleep, and a sub-millisecond one would wait not at all.
+  it('floors to whole milliseconds and clamps to the timer limit', () => {
+    expect(parseRemovalWaitTimeout('1500.9')).toBe(1500);
+    expect(parseRemovalWaitTimeout(1e12)).toBe(2_147_483_647);
+    for (const value of ['0.5', '0', '-1', 'abc', 'Infinity']) {
+      expect(() => parseRemovalWaitTimeout(value)).toThrow('--wait-timeout');
     }
   });
 });

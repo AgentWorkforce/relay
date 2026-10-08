@@ -20,7 +20,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - Unconfirmed `fleet spawn` results keep the `spawn_unconfirmed` code, now with `state: "pending"`, invocation diagnostics, liveness evidence and exit 8. Node heartbeat presence is reported as liveness evidence but never confirms the spawn, because heartbeats cannot tell this invocation's worker from an earlier one with the same name.
 - Removal waits exit 8 if the registration remains present; scripts must handle nonzero exits beyond `$? -eq 1`. Waits remain opt-in, and unavailable verification reads preserve the asynchronous acknowledgement.
-- PTY-delivered tasks and messages are limited to 14 KiB (16 KiB with the message envelope); `fleet spawn`, `agent spawn` and PTY delivery reject larger input and name the limit, so write the brief to a file and send a pointer. Agents whose terminal lacks bracketed paste accept at most 1,536 bytes per injection. Muse startup tasks keep their 16 KiB argument limit, headless agents are not capped, `message post|reply|dm send` are not capped, and a wrapped agent receives an oversized message as a pointer to it in Relay.
+- PTY-delivered tasks and messages are limited to 14 KiB (16 KiB with the message envelope); `fleet spawn`, `agent spawn` and PTY delivery reject larger input and name the limit, so write the brief to a file and send a pointer. Agents whose terminal lacks bracketed paste accept at most 1,536 bytes per injection. Muse startup tasks, native-runtime tasks and messages to headless agents, which travel as a single process argument, are limited to 16 KiB instead; `message post|reply|dm send` are not capped, and a wrapped agent receives an oversized message as a pointer to it in Relay.
 
 ### Fixed
 
@@ -41,7 +41,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Fleet registration collisions use readable `spawn_name_taken` guidance covering asynchronous removal and failed-spawn cleanup, instead of Rust `Fatal(AlreadyExists {...})` text.
 - Pending fleet spawns preserve provisioned sandboxes and distinguish live, stale, elsewhere, registered, absent, and unknown evidence before advising a retry.
 - PTY tasks and relay messages use atomic bracketed paste when supported, wait for the composer, and prevent embedded carriage returns from submitting partial input. Oversized bodies and tail-only echoes fail explicitly without replay.
-- `fleet spawn --task` reports success only when the agent's terminal echoed the whole task; a task that fails to deliver releases the worker before the spawn fails with `spawn_task_failed`. A task acked without that proof fails with `spawn_task_unconfirmed`, which names the live agent and says not to retry, and `delivery_verified` now reports what was observed (`echo_incomplete`, `paste_summary`, `timeout_fallback`) instead of treating head/tail anchors or a collapsed-paste marker as receipt.
+- `fleet spawn --task` succeeds only once the agent has visibly received the whole task. If the task cannot be delivered, the worker is released and the spawn fails with `spawn_task_failed`. If delivery cannot be confirmed, the spawn fails with `spawn_task_unconfirmed`, names the agent that is still running, and says not to retry.
 
 ## [13.1.5] - 2026-10-08
 
