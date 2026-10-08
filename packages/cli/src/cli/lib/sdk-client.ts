@@ -95,6 +95,7 @@ function selectionForTransport(options: SdkClientOptions): WorkspaceSelection | 
   return canonicalSelection;
 }
 
+/** Resolve an origin while keeping a persisted route paired with its credential. */
 function resolveBaseUrlForSelection(
   selection: WorkspaceSelection | undefined,
   options: SdkClientOptions
@@ -103,9 +104,9 @@ function resolveBaseUrlForSelection(
   const explicit = trimOrUndefined(options.baseUrl);
   const fallback = trimOrUndefined(options.fallbackBaseUrl) ?? trimOrUndefined(env(options).RELAY_BASE_URL);
   const requested = explicit ?? fallback;
-  // A persisted server-selected route and its credential are one transport
-  // pair. Only an explicit --base-url may challenge that route; an ambient
-  // RELAY_BASE_URL remains the fallback when no route has been persisted.
+  // Precedence is explicit --base-url (validated against a persisted route),
+  // then the persisted route, fallbackBaseUrl, and finally RELAY_BASE_URL.
+  // This keeps a server-selected route paired with its credential.
   if (persisted && explicit) {
     let parsed: URL;
     try {

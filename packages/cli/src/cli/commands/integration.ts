@@ -415,6 +415,7 @@ function shouldRetryWithLocalWorkspaceKey(error: unknown): boolean {
   );
 }
 
+/** Add a local session as a non-authoritative retry fallback. */
 function localRetryOptions(options: SdkClientOptions, local: LocalRelayOptions): SdkClientOptions {
   return {
     ...options,
@@ -544,6 +545,7 @@ function parseRelayfileInboundTargetResponse(body: unknown): { url: string; secr
   return { url: parsedUrl.toString(), secret };
 }
 
+/** Resolve the HTTPS Relaycast transport used to provision an inbound target. */
 function resolveInboundTargetTransport(options: SdkClientOptions, callerOptions: SdkClientOptions) {
   const selected = { ...options };
   // A legacy broker session can advertise its loopback HTTP API. It is not
