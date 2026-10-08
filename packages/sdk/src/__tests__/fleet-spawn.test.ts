@@ -217,6 +217,17 @@ describe('spawnFleetSandbox', () => {
     });
   });
 
+  it('retries only the teardown step that failed', async () => {
+    const h = harness();
+    const handle = await spawnFleetSandbox(base, h.deps);
+    h.release.mockRejectedValueOnce(new Error('relaycast busy'));
+    h.calls.length = 0;
+    await expect(handle.destroy()).rejects.toThrow('agent release failed: relaycast busy');
+    await handle.destroy();
+    expect(h.deleteCloudFleetSandbox).toHaveBeenCalledTimes(1);
+    expect(h.release.mock.calls.filter(([input]) => input.name === 'sandbox-worker')).toHaveLength(2);
+  });
+
   it('retains a caller-declared sandbox on destroy', async () => {
     const h = harness();
     const handle = await spawnFleetSandbox({ ...base, sandboxId: SANDBOX_ID }, h.deps);

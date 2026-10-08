@@ -637,6 +637,8 @@ export async function spawnFleetSandbox(
   }
 
   let destroyed: Promise<void> | undefined;
+  let agentReleased = false;
+  let sandboxDeleted = false;
   return {
     sandboxId: sandboxIdentity,
     nodeId: ready.nodeId,
@@ -663,14 +665,28 @@ export async function spawnFleetSandbox(
     },
     destroy: () =>
       (destroyed ??= (async () => {
+        // Each step is recorded once it succeeds, so a retry only replays
+        // the step that failed (a deleted sandbox would otherwise 404).
         const failures: string[] = [];
-        await releaseAgent('Fleet sandbox handle destroyed').catch((error) => {
-          failures.push(`agent release failed: ${errorMessage(error)}`);
-        });
-        if (ownsSandbox) {
-          await deleteSandbox(ready).catch((error) => {
-            failures.push(`sandbox deletion failed: ${errorMessage(error)}`);
-          });
+        if (!agentReleased) {
+          await releaseAgent('Fleet sandbox handle destroyed').then(
+            () => {
+              agentReleased = true;
+            },
+            (error) => {
+              failures.push(`agent release failed: ${errorMessage(error)}`);
+            }
+          );
+        }
+        if (ownsSandbox && !sandboxDeleted) {
+          await deleteSandbox(ready).then(
+            () => {
+              sandboxDeleted = true;
+            },
+            (error) => {
+              failures.push(`sandbox deletion failed: ${errorMessage(error)}`);
+            }
+          );
         }
         if (failures.length > 0) {
           destroyed = undefined;
