@@ -38,11 +38,13 @@ use crate::broker::{
 };
 use crate::cli::command_parse::parse_cli_command;
 use crate::cli::PtyCommand;
-use crate::readiness::{detect_cli_ready, GridReadinessSnapshot};
+use crate::readiness::{detect_cli_ready, is_muse_cli, GridReadinessSnapshot};
 use crate::runtime::{get_terminal_size, send_frame};
 use crate::snapshot::Snapshot;
 use crate::util::ansi::{floor_char_boundary, strip_ansi, AnsiStripper};
-use crate::util::terminal::{detect_claude_trust_prompt, detect_codex_trust_prompt};
+use crate::util::terminal::{
+    detect_claude_trust_prompt, detect_codex_trust_prompt, detect_muse_device_auth_prompt,
+};
 use crate::util::utf8_stream::Utf8StreamDecoder;
 use crate::worker::detection::ActivityDetector;
 use crate::wrap::{
@@ -507,6 +509,7 @@ struct StartupReadinessState {
     ready_sent: bool,
     fallback_sent: bool,
     wait_warned: bool,
+    auth_error_sent: bool,
 }
 
 fn append_bounded(buf: &mut String, text: &str, max: usize, keep: usize) {
@@ -613,30 +616,56 @@ pub(crate) enum StartupGate {
     /// A known blocking dialog is on screen — the harness is deliberately not
     /// accepting input. Never released by any deadline.
     Blocked,
+    /// The harness is waiting on an interactive provider login. Blocking like
+    /// `Blocked`, but also terminal for an unattended spawn: nothing on this
+    /// node will ever answer a device prompt, so the worker reports
+    /// `provider_auth_required` rather than waiting out the deadline.
+    ProviderAuthRequired,
 }
 
-/// Whether a KNOWN blocking dialog is on screen, as opposed to a prompt we
-/// simply failed to recognise.
+impl StartupGate {
+    /// Whether the harness is deliberately refusing input, as opposed to
+    /// showing a prompt we failed to recognise. No deadline may release
+    /// queued work past either blocking verdict.
+    fn is_blocking(self) -> bool {
+        matches!(self, Self::Blocked | Self::ProviderAuthRequired)
+    }
+}
+
+/// Which KNOWN blocking dialog is on screen, if any, as opposed to a prompt
+/// we simply failed to recognise.
 ///
 /// The two must not be conflated. An unrecognised prompt means our heuristic is
 /// blind and the timeout should eventually release the brief anyway. A trust
 /// interstitial means the harness is deliberately not accepting work yet, and
 /// typing into it would answer a security question on the operator's behalf.
 /// `evaluate_startup_gate` vetoes it for exactly that reason.
-fn startup_gate_blocked(pty: &PtySession) -> bool {
-    let screen = pty.screen_text();
-    detect_codex_trust_prompt(&screen) || detect_claude_trust_prompt(&screen) == (true, true)
+/// Muse's device login is the third such dialog, and the only one no
+/// operator action on this node can clear — the approval happens in a
+/// browser elsewhere. `detect_cli_ready` already refuses to prove readiness
+/// on that screen; this names it as deliberate so the deadline cannot
+/// release the brief into a login form.
+fn startup_gate_block_reason(resolved_cli: &str, screen: &str) -> Option<StartupGate> {
+    if is_muse_cli(resolved_cli) && detect_muse_device_auth_prompt(screen) {
+        return Some(StartupGate::ProviderAuthRequired);
+    }
+    if detect_codex_trust_prompt(screen) || detect_claude_trust_prompt(screen) == (true, true) {
+        return Some(StartupGate::Blocked);
+    }
+    None
 }
 
-fn startup_gate_ready(
+/// Classify the harness's startup state from a single grid render, so the
+/// readiness and blocking verdicts cannot straddle two repaints.
+fn startup_gate(
     resolved_cli: &str,
     startup_output: &str,
     startup_total_bytes: usize,
     output_quiet: Duration,
     pty: &PtySession,
-) -> bool {
+) -> StartupGate {
     let screen = pty.screen_text();
-    evaluate_startup_gate(
+    if evaluate_startup_gate(
         resolved_cli,
         startup_output,
         startup_total_bytes,
@@ -645,7 +674,10 @@ fn startup_gate_ready(
             screen: &screen,
             cursor: Some(pty.cursor_position()),
         },
-    )
+    ) {
+        return StartupGate::Ready;
+    }
+    startup_gate_block_reason(resolved_cli, &screen).unwrap_or(StartupGate::Unrecognised)
 }
 
 /// Whether the loop may pop and start the next pending injection this tick.
@@ -783,11 +815,38 @@ async fn try_emit_worker_ready(
     }
 
     let startup_ready = gate == StartupGate::Ready;
+
+    // An interactive provider login cannot be waited out: the approval happens
+    // in someone else's browser, and until then the harness accepts no task.
+    // Report it once, specifically, so a verified spawn fails closed now
+    // instead of presenting a live worker that holds capacity and never works.
+    if gate == StartupGate::ProviderAuthRequired && !readiness.auth_error_sent {
+        readiness.auth_error_sent = true;
+        tracing::warn!(
+            target: "agent_relay::worker::pty",
+            worker = %worker_name,
+            "harness is waiting on an interactive provider login; reporting provider_auth_required instead of readiness"
+        );
+        // The screen carries a device code, so no harness output is copied
+        // into the frame — only the fixed remediation.
+        let _ = send_frame(
+            out_tx,
+            "worker_error",
+            None,
+            json!({
+                "code": "provider_auth_required",
+                "message": "harness is waiting on an interactive provider login; run the harness on this node and complete the device login, then retry",
+                "retryable": false
+            }),
+        )
+        .await;
+    }
+
     // A deliberate veto is not a blind spot: never time out past a known
     // blocking dialog, or the brief is typed into a trust prompt and answers a
     // security question nobody asked us to answer.
     let timed_out = !readiness.fallback_sent
-        && gate != StartupGate::Blocked
+        && !gate.is_blocking()
         && init_received_at.is_some_and(|started| started.elapsed() >= STARTUP_READY_TIMEOUT);
 
     if !startup_ready && !timed_out {
@@ -1190,20 +1249,13 @@ pub(crate) async fn run_pty_worker(cmd: PtyCommand) -> Result<()> {
                                     pty.child_pid(),
                                 )
                                 .await;
-                                let startup_ready = startup_gate_ready(
+                                let gate = startup_gate(
                                     &resolved_cli,
                                     &startup_output,
                                     startup_total_bytes,
                                     last_pty_output_time.elapsed(),
                                     &pty,
                                 );
-                                let gate = if startup_ready {
-                                    StartupGate::Ready
-                                } else if startup_gate_blocked(&pty) {
-                                    StartupGate::Blocked
-                                } else {
-                                    StartupGate::Unrecognised
-                                };
                                 try_emit_worker_ready(
                                     &out_tx,
                                     &worker_name,
@@ -1625,20 +1677,13 @@ pub(crate) async fn run_pty_worker(cmd: PtyCommand) -> Result<()> {
                         if initial_injection_cancel.is_none() {
                             pty_auto.handle_codex_trust(&text, &pty).await;
                         }
-                        let startup_ready = startup_gate_ready(
+                        let gate = startup_gate(
                             &resolved_cli,
                             &startup_output,
                             startup_total_bytes,
                             last_pty_output_time.elapsed(),
                             &pty,
                         );
-                        let gate = if startup_ready {
-                            StartupGate::Ready
-                        } else if startup_gate_blocked(&pty) {
-                            StartupGate::Blocked
-                        } else {
-                            StartupGate::Unrecognised
-                        };
                         try_emit_worker_ready(
                             &out_tx,
                             &worker_name,
@@ -2339,20 +2384,13 @@ pub(crate) async fn run_pty_worker(cmd: PtyCommand) -> Result<()> {
 
             // --- Verification tick: check for timed-out verifications ---
             _ = verification_tick.tick() => {
-                let startup_ready = startup_gate_ready(
+                let gate = startup_gate(
                     &resolved_cli,
                     &startup_output,
                     startup_total_bytes,
                     last_pty_output_time.elapsed(),
                     &pty,
                 );
-                let gate = if startup_ready {
-                    StartupGate::Ready
-                } else if startup_gate_blocked(&pty) {
-                    StartupGate::Blocked
-                } else {
-                    StartupGate::Unrecognised
-                };
                 try_emit_worker_ready(
                     &out_tx,
                     &worker_name,
@@ -3253,6 +3291,74 @@ mod tests {
         assert!(
             rx.try_recv().is_err(),
             "no worker_ready frame may escape a trust prompt"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_provider_login_fails_closed_instead_of_reporting_readiness() {
+        // The reported fleet stall: a Muse worker sat on a Meta device-login
+        // screen, was reported live, and held node capacity until someone
+        // attached by hand. A login nobody on this node can answer is not a
+        // blind spot to wait out — it is reported once, specifically, so the
+        // verified spawn fails closed and releases its capacity.
+        let (tx, mut rx) = mpsc::channel(4);
+        let mut request_id = None;
+        let started = Instant::now() - STARTUP_READY_TIMEOUT - Duration::from_secs(60);
+        let mut readiness = StartupReadinessState::default();
+
+        for _ in 0..3 {
+            try_emit_worker_ready(
+                &tx,
+                "muse-device-auth",
+                Some(42),
+                &mut request_id,
+                Some(started),
+                &mut readiness,
+                StartupGate::ProviderAuthRequired,
+            )
+            .await;
+        }
+
+        assert!(
+            !readiness.ready_sent,
+            "an unanswerable login must never read as readiness"
+        );
+        let frame = rx.try_recv().expect("worker_error must be emitted");
+        assert_eq!(frame.msg_type, "worker_error");
+        assert_eq!(frame.payload["code"], "provider_auth_required");
+        assert_eq!(frame.payload["retryable"], false);
+        let message = frame.payload["message"].as_str().expect("message");
+        assert!(
+            message.contains("device login"),
+            "the error must name the remediation: {message}"
+        );
+        assert!(
+            rx.try_recv().is_err(),
+            "no worker_ready frame may escape a provider login, and the error is reported once"
+        );
+    }
+
+    #[test]
+    fn provider_login_and_trust_dialogs_are_classified_apart() {
+        let device_auth = "Sign in to continue\nVisit https://www.facebook.com/device\n›\n";
+        assert_eq!(
+            startup_gate_block_reason("/usr/local/bin/muse", device_auth),
+            Some(StartupGate::ProviderAuthRequired)
+        );
+        // Only Muse carries the device-login arm; another harness rendering
+        // the same words keeps its existing unrecognised-prompt behaviour.
+        assert_eq!(startup_gate_block_reason("codex", device_auth), None);
+        assert_eq!(
+            startup_gate_block_reason(
+                "codex",
+                "Do you trust the contents of this directory?\n> Yes, continue\n  No, quit\n"
+            ),
+            Some(StartupGate::Blocked)
+        );
+        // An authenticated composer is neither.
+        assert_eq!(
+            startup_gate_block_reason("muse", "muse  signed in as relay-node\n/login\n›\n"),
+            None
         );
     }
 

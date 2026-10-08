@@ -1009,6 +1009,13 @@ impl BrokerRuntime {
                             }
                         }
                     } else if msg_type == "worker_error" {
+                        if value.pointer("/payload/code").and_then(Value::as_str)
+                            == Some("provider_auth_required")
+                        {
+                            if let Some(pending) = pending_verified_spawns.get_mut(&name) {
+                                pending.provider_auth_failed(generation);
+                            }
+                        }
                         let is_pty = workers
                             .workers
                             .get(&name)
@@ -1398,6 +1405,13 @@ impl BrokerRuntime {
                             );
                         }
                     } else if msg_type == "worker_ready" {
+                        // An auth failure is terminal for this verified spawn,
+                        // even if another frame arrives before maintenance runs.
+                        if pending_verified_spawns.get(&name).is_some_and(|pending| {
+                            pending.generation == generation && pending.failure_reason.is_some()
+                        }) {
+                            return;
+                        }
                         let readiness_proven = value
                             .get("payload")
                             .and_then(|payload| payload.get("readiness_proven"))
