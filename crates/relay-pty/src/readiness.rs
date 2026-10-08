@@ -1,6 +1,6 @@
 use crate::{
     ansi::{floor_char_boundary, strip_ansi},
-    terminal::detect_muse_device_auth_prompt,
+    terminal::{detect_devin_trust_prompt, detect_muse_device_auth_prompt},
     wait::{for_cli, WaitSnapshot},
 };
 
@@ -146,6 +146,16 @@ pub fn is_devin_cli(cli: &str) -> bool {
     matches!(base.as_str(), "devin" | "devin.exe")
 }
 
+/// Whether Devin's directory-trust dialog is the active screen.
+///
+/// Trust text alone is not enough: a resumed or uncleared screen can keep an
+/// answered trust question visible above the live idle composer. The exact
+/// idle placeholder holding the cursor proves the dialog is history, since a
+/// trust menu never renders that placeholder.
+pub fn devin_trust_prompt_active(grid: GridReadinessSnapshot<'_>) -> bool {
+    detect_devin_trust_prompt(grid.screen) && !devin_prompt_ready(grid)
+}
+
 fn devin_prompt_ready(grid: GridReadinessSnapshot<'_>) -> bool {
     let Some((row, _)) = grid.cursor else {
         return false;
@@ -275,6 +285,25 @@ mod tests {
         assert!(!is_devin_cli("not-devin"));
         assert!(!is_devin_cli("devin.cmd"));
         assert!(!is_devin_cli("devin.bat"));
+    }
+
+    #[test]
+    fn devin_trust_history_above_live_composer_is_not_active() {
+        let screen = "Do you trust this directory?\n1 Yes, trust\n2 No, exit\n❭ Ask Devin to build features, fix bugs, or work on your code\nSWE-2 High";
+        assert!(!devin_trust_prompt_active(GridReadinessSnapshot {
+            screen,
+            cursor: Some((4, 3)),
+        }));
+        for cursor in [Some((2, 1)), None] {
+            assert!(devin_trust_prompt_active(GridReadinessSnapshot {
+                screen,
+                cursor
+            }));
+        }
+        assert!(devin_trust_prompt_active(GridReadinessSnapshot {
+            screen: "Do you trust the authors of this directory?\n❭ 1 Yes, trust\n2 No, exit",
+            cursor: Some((2, 3)),
+        }));
     }
 
     #[test]

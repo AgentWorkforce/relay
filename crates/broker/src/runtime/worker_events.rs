@@ -1016,6 +1016,13 @@ impl BrokerRuntime {
                                 pending.provider_auth_failed(generation);
                             }
                         }
+                        if value.pointer("/payload/code").and_then(Value::as_str)
+                            == Some("directory_trust_required")
+                        {
+                            if let Some(pending) = pending_verified_spawns.get_mut(&name) {
+                                pending.directory_trust_failed(generation);
+                            }
+                        }
                         let is_pty = workers
                             .workers
                             .get(&name)

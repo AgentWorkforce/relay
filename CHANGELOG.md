@@ -22,6 +22,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Fleet spawns now recover from transient Relaycast `d1_pressure`; persistent registration pressure returns a named `d1_pressure` error within 25 seconds, and any success arriving after retry-count or wall-clock exhaustion is explicitly deregistered.
 - Acknowledged `agent.deregister`, cumulative `delivery.ack`, and non-task action results now recover from transient Relaycast `d1_pressure`; exhausted non-task action results are replayed after reconnect.
 - `agent-relay fleet spawn` reports registration `d1_pressure` as retryable only when the registration is proven to have failed before any change was made.
+- Verified Fleet Devin spawns fail with `directory_trust_required` when the directory-trust prompt persists, releasing the worker through spawn cleanup instead of leaving a live but blocked worker.
 
 ## [13.1.5] - 2026-10-08
 
