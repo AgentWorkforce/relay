@@ -17,12 +17,15 @@ env:
 
 jobs:
   changes:
+    if: (github.event_name != 'pull_request' && github.event_name != 'pull_request_target') || (github.head_ref == 'trunk' && github.event.pull_request.head.repo.full_name == github.repository && github.base_ref == 'main')
     uses: ./.github/workflows/detect-changes.yml
 
   rust-test:
     name: Rust Tests (${{ matrix.os }})
     needs: changes
-    if: needs.changes.outputs.rust_changed == 'true'
+    if: >-
+      ((github.event_name != 'pull_request' && github.event_name != 'pull_request_target') || (github.head_ref == 'trunk' && github.event.pull_request.head.repo.full_name == github.repository && github.base_ref == 'main')) &&
+      (needs.changes.outputs.rust_changed == 'true')
     runs-on: ${{ matrix.os }}
     strategy:
       fail-fast: false
@@ -42,7 +45,9 @@ jobs:
   relay-pty-windows-test:
     name: Relay PTY Synchronization Tests (windows-latest)
     needs: changes
-    if: needs.changes.outputs.rust_changed == 'true'
+    if: >-
+      ((github.event_name != 'pull_request' && github.event_name != 'pull_request_target') || (github.head_ref == 'trunk' && github.event.pull_request.head.repo.full_name == github.repository && github.base_ref == 'main')) &&
+      (needs.changes.outputs.rust_changed == 'true')
     runs-on: windows-latest
     timeout-minutes: 10
     steps:
@@ -62,7 +67,9 @@ jobs:
   rust-cross-compile:
     name: Cross-compile check (${{ matrix.target }})
     needs: changes
-    if: needs.changes.outputs.rust_changed == 'true'
+    if: >-
+      ((github.event_name != 'pull_request' && github.event_name != 'pull_request_target') || (github.head_ref == 'trunk' && github.event.pull_request.head.repo.full_name == github.repository && github.base_ref == 'main')) &&
+      (needs.changes.outputs.rust_changed == 'true')
     runs-on: ${{ matrix.os }}
     strategy:
       fail-fast: false
@@ -96,7 +103,9 @@ jobs:
   rust-clippy:
     name: Clippy (${{ matrix.os }})
     needs: changes
-    if: needs.changes.outputs.rust_changed == 'true'
+    if: >-
+      ((github.event_name != 'pull_request' && github.event_name != 'pull_request_target') || (github.head_ref == 'trunk' && github.event.pull_request.head.repo.full_name == github.repository && github.base_ref == 'main')) &&
+      (needs.changes.outputs.rust_changed == 'true')
     runs-on: ${{ matrix.os }}
     strategy:
       fail-fast: false
@@ -115,7 +124,9 @@ jobs:
   rust-fmt:
     name: Format
     needs: changes
-    if: needs.changes.outputs.rust_changed == 'true'
+    if: >-
+      ((github.event_name != 'pull_request' && github.event_name != 'pull_request_target') || (github.head_ref == 'trunk' && github.event.pull_request.head.repo.full_name == github.repository && github.base_ref == 'main')) &&
+      (needs.changes.outputs.rust_changed == 'true')
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -127,7 +138,9 @@ jobs:
   sdk-check:
     name: SDK TypeScript Check
     needs: changes
-    if: needs.changes.outputs.node_changed == 'true'
+    if: >-
+      ((github.event_name != 'pull_request' && github.event_name != 'pull_request_target') || (github.head_ref == 'trunk' && github.event.pull_request.head.repo.full_name == github.repository && github.base_ref == 'main')) &&
+      (needs.changes.outputs.node_changed == 'true')
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
