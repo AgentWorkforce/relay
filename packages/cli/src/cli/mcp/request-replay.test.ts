@@ -69,12 +69,18 @@ describe('MCP request replay', () => {
       await replay.run('post_message', { requestId: 1 }, 'k', operation);
       await Promise.resolve();
       expect(vi.getTimerCount()).toBe(0);
-      vi.setSystemTime(Date.now() + 5 * 60 * 1000 - 1);
+      vi.advanceTimersByTime(5 * 60 * 1000 - 1);
       await replay.run('post_message', { requestId: 2 }, 'k', operation);
       expect(operation).toHaveBeenCalledTimes(1);
-      vi.setSystemTime(Date.now() + 1);
+      vi.advanceTimersByTime(1);
       await replay.run('post_message', { requestId: 3 }, 'k', operation);
       expect(operation).toHaveBeenCalledTimes(2);
+      // Retention follows the monotonic clock: stepping the wall clock back
+      // cannot keep a key alive past its window.
+      vi.setSystemTime(Date.now() - 60 * 60 * 1000);
+      vi.advanceTimersByTime(5 * 60 * 1000);
+      await replay.run('post_message', { requestId: 4 }, 'k', operation);
+      expect(operation).toHaveBeenCalledTimes(3);
     } finally {
       vi.useRealTimers();
     }

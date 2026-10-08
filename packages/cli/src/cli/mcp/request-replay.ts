@@ -36,8 +36,8 @@ const RETAIN_COMPLETED_MS = 5 * 60 * 1000;
 export class McpRequestReplay {
   private readonly requests = new Map<string, Promise<unknown>>();
   /**
-   * Retained keys in settlement order. Every key keeps the same retention, so
-   * this is also expiry order: pruning pops expired keys off the front, with
+   * Retained keys in settlement order. Every key keeps the same retention on a
+   * monotonic clock, so this is also expiry order: pruning pops expired keys off the front, with
    * no timer and no scan of live entries.
    */
   private readonly retained: Array<{ key: string; pending: Promise<unknown>; expiresAt: number }> = [];
@@ -76,7 +76,7 @@ export class McpRequestReplay {
     void pending.then(
       () => {
         if (hasIdempotencyKey) {
-          this.retained.push({ key, pending, expiresAt: Date.now() + RETAIN_COMPLETED_MS });
+          this.retained.push({ key, pending, expiresAt: performance.now() + RETAIN_COMPLETED_MS });
         } else this.requests.delete(key);
       },
       () => this.requests.delete(key)
@@ -85,7 +85,7 @@ export class McpRequestReplay {
   }
 
   private pruneExpired(): void {
-    const now = Date.now();
+    const now = performance.now();
     while (this.retainedHead < this.retained.length && this.retained[this.retainedHead].expiresAt <= now) {
       const { key, pending } = this.retained[this.retainedHead++];
       if (this.requests.get(key) === pending) this.requests.delete(key);
