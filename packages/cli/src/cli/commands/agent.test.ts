@@ -287,6 +287,40 @@ describe('agent identity lifecycle commands', () => {
     expect(rendered).not.toContain('Removed agent');
   });
 
+  it('waits for not-found even when the release acknowledgement says completed', async () => {
+    const { program, workspaceRelay, log } = createHarness();
+    workspaceRelay.agents.get.mockRejectedValueOnce({ status: 404 });
+    await program.parseAsync(['agent', 'remove', 'worker', '--wait'], { from: 'user' });
+    expect(workspaceRelay.agents.get).toHaveBeenCalledWith('worker');
+    expect(log).toHaveBeenCalledWith('Removed agent worker.');
+  });
+
+  it('exits 8 while a released registration still owns the name', async () => {
+    const { program, workspaceRelay, log } = createHarness();
+    workspaceRelay.agents.get.mockResolvedValue({ id: 'old', name: 'worker', status: 'released' });
+    await expect(
+      program.parseAsync(['agent', 'remove', 'worker', '--wait', '--wait-timeout', '1'], { from: 'user' })
+    ).rejects.toThrow('exit:8');
+    expect(log.mock.calls.flat().join('')).not.toContain('Removed agent');
+  });
+
+  it('keeps the asynchronous acknowledgement when every verification read is unavailable', async () => {
+    const { program, workspaceRelay, log, error } = createHarness();
+    workspaceRelay.agents.get.mockRejectedValue(new Error('403 forbidden'));
+    await program.parseAsync(['agent', 'remove', 'worker', '--wait', '--wait-timeout', '1'], {
+      from: 'user',
+    });
+    expect(log.mock.calls.flat().join('')).toContain('initiated');
+    expect(error.mock.calls.flat().join('')).toContain('Could not verify');
+  });
+
+  it('does not claim clearance or poll with --no-wait', async () => {
+    const { program, workspaceRelay, log } = createHarness();
+    await program.parseAsync(['agent', 'remove', 'worker', '--no-wait'], { from: 'user' });
+    expect(workspaceRelay.agents.get).not.toHaveBeenCalled();
+    expect(log.mock.calls.flat().join('')).toContain('initiated');
+  });
+
   it('redacts SQL and bound parameters when removal fails', async () => {
     const { program, workspaceRelay, error } = createHarness();
     workspaceRelay.workspace.release.mockRejectedValueOnce(

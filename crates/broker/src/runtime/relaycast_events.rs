@@ -936,7 +936,12 @@ pub(super) async fn spawn_worker_from_request(
                             }
                             Some(token)
                         }
-                        Err(error) => anyhow::bail!("WS spawn registration failed: {error:?}"),
+                        Err(
+                            RegRetryOutcome::RetryableExhausted(error)
+                            | RegRetryOutcome::Fatal(error),
+                        ) => {
+                            anyhow::bail!("{}", format_worker_preregistration_error(&name, &error));
+                        }
                     }
                 }
             }
@@ -1126,6 +1131,19 @@ pub(super) async fn spawn_worker_from_request(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn duplicate_registration_keeps_already_exists_for_debug_log_classification() {
+        let error = ::relaycast::AgentRegistrationError::AlreadyExists {
+            agent_name: "worker-a".to_string(),
+        };
+        let message = format_worker_preregistration_error("worker-a", &error);
+        assert!(message.contains("already exists"), "{message}");
+        assert!(message.contains("worker-a"));
+        assert!(!message.contains("Fatal("));
+        assert!(!message.contains("AlreadyExists"));
+    }
+
     use crate::terminal_control::TerminalToCloud;
     use ::relaycast::WsEvent;
 

@@ -8,19 +8,10 @@ import {
   withSdkDefaults,
   type SdkCommandDeps,
 } from '../lib/sdk-command.js';
-import { RelayError } from '@agent-relay/sdk';
+import { AgentRemovalPendingError, isNotFoundError, waitForAgentRemoval } from '../lib/agent-removal.js';
 
 import { withAgentRegistrationDeadline, withDeadline } from '../lib/agent-registration.js';
 import { attributableReleaseReason } from '../lib/release-reason.js';
-
-function isNotFoundError(error: unknown): boolean {
-  if (error instanceof RelayError) return error.code === 'not_found' || error.statusCode === 404;
-  const statusCode =
-    error && typeof error === 'object'
-      ? ((error as { statusCode?: unknown }).statusCode ?? (error as { status?: unknown }).status)
-      : undefined;
-  return Number(statusCode) === 404;
-}
 
 export type AgentCommandDependencies = SdkCommandDeps;
 
@@ -152,6 +143,9 @@ export function registerAgentCommands(
       .description('Remove an agent while preserving attributed message history')
       .argument('<name>', 'Agent name')
       .option('--reason <reason>', 'Removal reason')
+      .option('--wait', 'Wait until the registration is cleared', false)
+      .option('--no-wait', 'Return after the removal is accepted')
+      .option('--wait-timeout <ms>', 'Registration clearance timeout', '30000')
   ).action(async (name: string, opts: Record<string, unknown>) => {
     await runSdk(deps, async () => {
       const relay = deps.createWorkspaceRelay(sdkOptionsFromOpts(opts));
@@ -161,17 +155,23 @@ export function registerAgentCommands(
         'agent removed'
       );
       const result = await relay.workspace.release({ name, reason, deleteAgent: true });
-      // The release endpoint acknowledges an async action invocation — a
-      // resolved promise means the request was accepted, not that the
-      // deletion has finished. Only claim "Removed" once the invocation
-      // itself reports completion; otherwise say what actually happened.
-      if (result.status === 'completed') {
-        deps.log(`Removed agent ${name}.`);
-      } else {
-        deps.log(
-          `Removal of agent ${name} was initiated (status: ${result.status ?? 'pending'}) and is processed asynchronously.`
-        );
+      if (opts.wait === true) {
+        const removal = await waitForAgentRemoval({
+          name,
+          getAgent: (name) => relay.agents.get(name),
+          listAgents: () => relay.agents.list(),
+          timeoutMs: Number(opts.waitTimeout),
+        });
+        if (removal.cleared) {
+          deps.log(`Removed agent ${name}.`);
+          return;
+        }
+        if (removal.observedPresent) throw new AgentRemovalPendingError(name);
+        deps.error(`Could not verify removal: ${removal.readError ?? 'registration unavailable'}`);
       }
+      deps.log(
+        `Removal of agent ${name} was initiated (status: ${result.status ?? 'pending'}) and is processed asynchronously. Use --wait to verify the name is reusable.`
+      );
     });
   });
 }

@@ -79,3 +79,10 @@ export function isAvailableFleetNode(node: {
   const isLive = node.live === undefined ? node.status === 'online' : node.live === true;
   return isLive && node.handlersLive !== false && !isDirectPseudoNode;
 }
+
+export const MAX_LIVE_HEARTBEAT_AGE_MS = 36_000;
+
+export function heartbeatAgeMs(node: { lastHeartbeatAt?: string }, now = Date.now()): number | null {
+  const timestamp = Date.parse(node.lastHeartbeatAt ?? '');
+  return Number.isFinite(timestamp) ? Math.max(0, now - timestamp) : null;
+}
