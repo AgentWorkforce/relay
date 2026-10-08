@@ -15,7 +15,13 @@ const EXTRA_PATTERNS: Array<[RegExp, string]> = [
   // JWTs, e.g. RelayAuth tokens.
   [/\beyJ[A-Za-z0-9_-]*\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]*/g, '<redacted>'],
   // Authorization header values.
-  [/\b(Bearer)\s+[A-Za-z0-9._~+/=-]+/gi, '$1 <redacted>'],
+  [/\b(Bearer|Basic)\s+[A-Za-z0-9._~+/=-]+/gi, '$1 <redacted>'],
+  // Quoted credential fields in echoed JSON, e.g. {"authToken":"..."}: any key
+  // ending in token, key, secret, password, or signature.
+  [
+    /("[A-Za-z0-9_-]*(?:token|key|secret|password|passwd|signature)"\s*:\s*")(?:[^"\\]|\\.)*(")/gi,
+    '$1<redacted>$2',
+  ],
   // Credentials embedded in a URL, e.g. https://user:secret@host.
   [/(?<=[a-z][a-z0-9+.-]*:\/\/)[^\s/@:]+(?::[^\s/@]*)?@/gi, '<redacted>@'],
   // Credential-bearing query or form parameters, e.g. ?api_key=... or &token=...

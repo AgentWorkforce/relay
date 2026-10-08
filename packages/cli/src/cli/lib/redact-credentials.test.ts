@@ -15,4 +15,14 @@ describe('redactCredentials', () => {
     expect(out).not.toMatch(/k9z|p4ss|t0k/);
     expect(out).toContain('?token=<redacted>&y=1');
   });
+
+  it('removes Basic authorization values and quoted JSON credential fields', () => {
+    const out = redactCredentials(
+      'Authorization: Basic dXNlcjpwYXNz body={"authToken":"opaque-secret","apiKey":"k-1","name":"ok"}'
+    );
+    expect(out).not.toMatch(/dXNlcjpwYXNz|opaque-secret|k-1/);
+    expect(out).toContain('Basic <redacted>');
+    expect(out).toContain('"authToken":"<redacted>"');
+    expect(out).toContain('"name":"ok"');
+  });
 });
