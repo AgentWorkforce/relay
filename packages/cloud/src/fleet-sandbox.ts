@@ -1396,7 +1396,14 @@ export async function ensureCloudFleetSandbox(
         continue;
       }
       payload = await readJson(pollResponse);
-      const envelope = readAsyncPreparationEnvelope(payload, sandboxIdentity.sandboxId!);
+      let envelope: AsyncPreparationEnvelope | null;
+      try {
+        envelope = readAsyncPreparationEnvelope(payload, sandboxIdentity.sandboxId!);
+      } catch (error) {
+        // A record for another identity is a diagnostic, not a lost response.
+        if (error instanceof CloudFleetSandboxIdentityMismatchError) throw error;
+        envelope = null;
+      }
       if (envelope) {
         const ready = consumePreparation(payload);
         if (ready) return ready;
@@ -1430,7 +1437,10 @@ export async function ensureCloudFleetSandbox(
         }
         throw endpointError('read fleet sandbox preparation status', pollResponse, payload);
       }
-      throw new Error('Cloud fleet sandbox preparation response was invalid.');
+      // A truncated or malformed success may hide a committed tick. Treat it as
+      // a lost response: read durable status before any further advance.
+      method = 'GET';
+      payload = undefined;
     }
   };
 

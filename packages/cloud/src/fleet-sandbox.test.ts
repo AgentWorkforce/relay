@@ -1627,6 +1627,63 @@ describe('Cloud fleet sandbox client', () => {
     expect(mocks.authorizedApiFetch.mock.calls[2]?.[2]?.method).toBe('GET');
   });
 
+  it('reconciles a truncated successful advance through durable status instead of failing the sandbox', async () => {
+    const preparationPath = `/api/v1/fleet/nodes/sandbox/${SANDBOX_ID}/preparation`;
+    mocks.authorizedApiFetch
+      .mockResolvedValueOnce({
+        response: Response.json({ cloudWorkspaceId: CLOUD_WORKSPACE_ID }),
+        auth,
+      })
+      .mockResolvedValueOnce({
+        response: Response.json(preparationEnvelope('pending', 'relayfile_mount', 3), { status: 202 }),
+        auth,
+      })
+      .mockResolvedValueOnce({
+        response: Response.json(preparationEnvelope('pending', 'relayfile_mount', 3), { status: 202 }),
+        auth,
+      })
+      // The advance committed its tick, but the body was cut off in transit.
+      .mockResolvedValueOnce({ response: new Response('{"version":1,"mo', { status: 200 }), auth })
+      .mockResolvedValueOnce({
+        response: Response.json(
+          preparationEnvelope('ready', 'broker_visible', 4, {
+            result: {
+              outcome: 'provisioned',
+              providerId: 'agent37',
+              nodeId: 'node-after-truncated-advance',
+              nodeName: SANDBOX_NAME,
+              sandboxId: SANDBOX_ID,
+              providerSandboxId: 'provider-after-truncated-advance',
+              relayWorkspaceId: 'rw_abc',
+              relaycastTarget: RELAYCAST_TARGET,
+              relayfileMounted: true,
+            },
+          })
+        ),
+        auth,
+      });
+
+    await expect(
+      ensureCloudFleetSandbox(
+        {
+          workspaceId: 'rw_abc',
+          name: SANDBOX_NAME,
+          sandboxId: SANDBOX_ID,
+          requiredCapability: 'spawn:codex',
+          forceProvision: true,
+          preparationMode: 'async-v1',
+        },
+        { preparationPollIntervalMs: 1 }
+      )
+    ).resolves.toMatchObject({ nodeId: 'node-after-truncated-advance', sandboxId: SANDBOX_ID });
+    expect(mocks.authorizedApiFetch.mock.calls.slice(1).map((call) => [call[1], call[2]?.method])).toEqual([
+      ['/api/v1/fleet/nodes/sandbox/ensure', 'POST'],
+      [`${preparationPath}?workspaceId=${CLOUD_WORKSPACE_ID}`, 'GET'],
+      [preparationPath, 'POST'],
+      [`${preparationPath}?workspaceId=${CLOUD_WORKSPACE_ID}`, 'GET'],
+    ]);
+  });
+
   it('surfaces a compatibility-retry authentication failure unchanged', async () => {
     const authError = new CloudAuthError('AUTH_REFRESH_EXPIRED', 'Sign in again.');
     mocks.authorizedApiFetch
