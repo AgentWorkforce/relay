@@ -8050,7 +8050,10 @@ mod tests {
                 .unwrap();
             error
         };
-        let ((result, error), ()) = tokio::time::timeout(Duration::from_secs(15), async {
+        // This is only a deadlock watchdog: the retry policy above still bounds
+        // the behavior under test. Leave enough wall-clock slack for saturated
+        // shared CI runners executing this test alongside the full shard.
+        let ((result, error), ()) = tokio::time::timeout(Duration::from_secs(60), async {
             let (result, error) = tokio::join!(session, driver);
             ((result, error), server.await.unwrap())
         })
