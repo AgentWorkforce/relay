@@ -13,6 +13,7 @@ import {
   resolveWorkspaceByKey,
   type CloudFleetSandboxProviderId,
   type CloudRelayfileRepositoryMaterialization,
+  type EnsureCloudFleetSandboxInput,
   type EnsureCloudFleetSandboxResult,
 } from '@agent-relay/cloud';
 import { HarnessDriverClient } from '@agent-relay/harness-driver';
@@ -457,7 +458,10 @@ export function registerFleetCommands(
         '--sandbox-name <name>',
         'Explicit sandbox node name (custom unless --sandbox-id requires matching fleet-sandbox-<UUID>)'
       )
-      .option('--sandbox-id <id>', 'Reuse a caller-declared sbx_<UUID> identity for an exact replay')
+      .option(
+        '--sandbox-id <id>',
+        'Reuse a caller-declared sbx_<UUID> identity for an exact replay; re-run an interrupted --sandbox spawn with the identity it printed to resume it'
+      )
       .option('--workspace-id <id>', 'Explicit Relay workspace identity required for sandbox provisioning')
       .option('--sandbox-provider <provider>', 'Sandbox provider: daytona, e2b, or agent37')
       .option(
@@ -790,10 +794,20 @@ export function registerFleetCommands(
           sandboxProvider === undefined || sandboxProvider === 'agent37'
             ? 'long-running-agent'
             : 'standard-long-running-agent';
+        const useAsyncPreparation =
+          sandboxId !== undefined && (sandboxProvider === undefined || sandboxProvider === 'agent37');
+        if (useAsyncPreparation && sandboxIdOption === undefined) {
+          // The generated identity is not persisted. Print it before Cloud work
+          // starts so an interrupted run can be resumed instead of duplicated.
+          deps.warn(
+            `Cloud sandbox identity: ${sandboxId}. If this command is interrupted, re-run it with --sandbox-id ${sandboxId} to resume the same sandbox instead of creating another.`
+          );
+        }
         try {
-          sandbox = await deps.ensureCloudFleetSandbox({
+          const ensureInput: EnsureCloudFleetSandboxInput = {
             workspaceId: relayWorkspaceId,
             requiredCapability: `spawn:${cli}`,
+            ...(useAsyncPreparation ? { preparationMode: 'async-v1' as const } : {}),
             maxAgents: 1,
             mountRelayfile: mountSandboxRelayfile,
             ...(sandboxMountPaths === undefined ? {} : { relayfilePaths: sandboxMountPaths }),
@@ -807,10 +821,27 @@ export function registerFleetCommands(
             ...(checkoutRepository && sandboxRepository
               ? { repoRevisions: { [sandboxRepository.repository]: sandboxRepository.revision } }
               : {}),
-          });
+          };
+          sandbox = useAsyncPreparation
+            ? await deps.ensureCloudFleetSandbox(ensureInput, {
+                onPreparationProgress: (progress) => {
+                  deps.warn(
+                    `Cloud sandbox preparation: ${progress.phase} (${progress.state}, generation ${progress.generation}).`
+                  );
+                },
+              })
+            : await deps.ensureCloudFleetSandbox(ensureInput);
           assertSandboxRepositoryRevision(sandbox, checkoutRepository ? sandboxRepository : undefined);
         } catch (error) {
-          if (
+          if (error instanceof CloudFleetSandboxProvisionError && error.sandboxAbsent) {
+            // Cloud's terminal record for this exact identity already proves the
+            // provider sandbox is gone; a delete here would only race its reaper.
+            deps.warn(
+              `${error.message} Cloud confirmed sandbox '${
+                error.sandboxId ?? sandboxId ?? 'the requested sandbox'
+              }' is not running; no sandbox was left running.`
+            );
+          } else if (
             shouldCleanupSandbox &&
             error instanceof CloudFleetSandboxProvisionError &&
             error.confirmedProvisioned &&
