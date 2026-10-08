@@ -5,14 +5,10 @@ All notable changes to Agent Relay will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
-
-## [13.2.0] - 2026-10-08
+## [Unreleased - Minor]
 
 ### Added
 
-- `agent-relay fleet spawn --sandbox` (unpinned or `--sandbox-provider agent37`) now uses Cloud's durable `async-v1` preparation and prints each preparation phase, so a slow Relayfile initial sync no longer ends as an unknown outcome. Older Cloud deployments keep working through the synchronous response.
-- `@agent-relay/cloud` `ensureCloudFleetSandbox` accepts `preparationMode: 'async-v1'` and an `onPreparationProgress` callback; `CloudFleetSandboxProvisionError` exposes `sandboxAbsent` and a typed `preparationFailure` (`code`, `phase`, `causeStage`).
 - MCP `spawn` reports pending/liveness evidence, and `remove_agent` accepts optional registration-clearance waits.
 - `agent remove --wait` and `fleet release --delete-agent --wait` verify registration clearance before name reuse, with `--wait-timeout` and `--no-wait` controls. Fleet release adds `removal` evidence when waiting.
 - `fleet agent list` JSON includes node heartbeat timestamps and ages, with warnings for stale snapshots.
@@ -26,14 +22,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
-- When Cloud ends a sandbox preparation (for example `relayfile_mount_failed` / `initial_sync_deadline`), `fleet spawn --sandbox` names the cause and confirms no sandbox was left running, without a redundant cleanup call or unknown-outcome guidance.
-- A lost Cloud response during `fleet spawn --sandbox` preparation no longer causes the spawn or a preparation step to be resubmitted.
-- `fleet spawn --sandbox` prints the generated sandbox identity before provisioning; re-running an interrupted spawn with `--sandbox-id <id>` resumes that sandbox instead of creating a second one.
-- Against a Cloud that does not support async preparation, a typed failure such as `relayfile_mount_failed` or a capacity rejection is reported at once with its cause instead of after a status-polling wait.
-- Workspace-scoped commands such as `agent-relay fleet release` continue using the workspace's Relaycast server when `--base-url` is omitted; explicit conflicting `--base-url` values are still rejected.
-- Fleet spawns now recover from transient Relaycast `d1_pressure`; persistent registration pressure returns a named `d1_pressure` error within 25 seconds, and any success arriving after retry-count or wall-clock exhaustion is explicitly deregistered.
-- Acknowledged `agent.deregister`, cumulative `delivery.ack`, and non-task action results now recover from transient Relaycast `d1_pressure`; exhausted non-task action results are replayed after reconnect.
-- `agent-relay fleet spawn` reports registration `d1_pressure` as retryable only when the registration is proven to have failed before any change was made.
 - Verified Fleet Devin spawns fail with `directory_trust_required` when the directory-trust prompt persists, releasing the worker through spawn cleanup instead of leaving a live but blocked worker.
 - Relay MCP `post_message` and `reply_to_thread` coalesce a transport replay of one request (and accept an `idempotency_key` for retries after a lost response), matching `send_dm`; native host tools key on the tool call ID. Independent writes with identical text remain separate messages.
 - `integration subscribe` rejects `--events` values the engine cannot subscribe to.
@@ -44,6 +32,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Pending fleet spawns preserve provisioned sandboxes and distinguish live, stale, elsewhere, registered, absent, and unknown evidence before advising a retry.
 - PTY tasks and relay messages use atomic bracketed paste when supported, wait for the composer, and prevent embedded carriage returns from submitting partial input. Oversized bodies and tail-only echoes fail explicitly without replay.
 - A confirmed `fleet spawn --task` (the default) succeeds only once the agent has visibly received the whole task. If the task cannot be delivered, the worker is released and the spawn fails with `spawn_task_failed`. If delivery cannot be confirmed, the spawn fails with `spawn_task_unconfirmed`, names the agent that is still running, and says not to retry. With `--no-confirm` the spawn reports as soon as the node accepts it, without waiting for the task to arrive.
+
+## [13.2.0] - 2026-10-08
+
+### Added
+
+- `agent-relay fleet spawn --sandbox` (unpinned or `--sandbox-provider agent37`) now uses Cloud's durable `async-v1` preparation and prints each preparation phase, so a slow Relayfile initial sync no longer ends as an unknown outcome. Older Cloud deployments keep working through the synchronous response.
+- `@agent-relay/cloud` `ensureCloudFleetSandbox` accepts `preparationMode: 'async-v1'` and an `onPreparationProgress` callback; `CloudFleetSandboxProvisionError` exposes `sandboxAbsent` and a typed `preparationFailure` (`code`, `phase`, `causeStage`).
+
+### Fixed
+
+- When Cloud ends a sandbox preparation (for example `relayfile_mount_failed` / `initial_sync_deadline`), `fleet spawn --sandbox` names the cause and confirms no sandbox was left running, without a redundant cleanup call or unknown-outcome guidance.
+- A lost Cloud response during `fleet spawn --sandbox` preparation no longer causes the spawn or a preparation step to be resubmitted.
+- `fleet spawn --sandbox` prints the generated sandbox identity before provisioning; re-running an interrupted spawn with `--sandbox-id <id>` resumes that sandbox instead of creating a second one.
+- Against a Cloud that does not support async preparation, a typed failure such as `relayfile_mount_failed` or a capacity rejection is reported at once with its cause instead of after a status-polling wait.
+- Workspace-scoped commands such as `agent-relay fleet release` continue using the workspace's Relaycast server when `--base-url` is omitted; explicit conflicting `--base-url` values are still rejected.
+- Fleet spawns now recover from transient Relaycast `d1_pressure`; persistent registration pressure returns a named `d1_pressure` error within 25 seconds, and any success arriving after retry-count or wall-clock exhaustion is explicitly deregistered.
+- Acknowledged `agent.deregister`, cumulative `delivery.ack`, and non-task action results now recover from transient Relaycast `d1_pressure`; exhausted non-task action results are replayed after reconnect.
+- `agent-relay fleet spawn` reports registration `d1_pressure` as retryable only when the registration is proven to have failed before any change was made.
 
 ## [13.1.5] - 2026-10-08
 
