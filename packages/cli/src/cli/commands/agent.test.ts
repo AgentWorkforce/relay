@@ -1,9 +1,13 @@
+import fs from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
+
 import { Command } from 'commander';
-import { describe, expect, it, vi } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import { registerAgentCommands } from './agent.js';
 
-function createHarness() {
+function createHarness(env: NodeJS.ProcessEnv = {}) {
   const agentRelay = {
     agents: {
       me: vi.fn(async () => ({ id: 'agent_1', name: 'room-human' })),
@@ -27,11 +31,14 @@ function createHarness() {
   const createWorkspaceRelay = vi.fn(() => workspaceRelay);
   const log = vi.fn();
   const error = vi.fn();
+  const runWithEnv = vi.fn(async (_command: string, _args: string[], _env: NodeJS.ProcessEnv) => 0);
   const program = new Command();
   program.exitOverride();
   registerAgentCommands(program, {
     createAgentRelay: createAgentRelay as never,
     createWorkspaceRelay: createWorkspaceRelay as never,
+    env,
+    runWithEnv,
     log,
     error,
     exit: ((code: number) => {
@@ -46,7 +53,29 @@ function createHarness() {
     createWorkspaceRelay,
     log,
     error,
+    runWithEnv,
   };
+}
+
+function nameConflict(name: string): Error {
+  return Object.assign(new Error(`Agent "${name}" already exists in this workspace`), {
+    code: 'name_conflict',
+    statusCode: 409,
+  });
+}
+
+function helpFor(program: Command, ...names: string[]): string {
+  let command: Command | undefined = program;
+  for (const name of names) command = command?.commands.find((candidate) => candidate.name() === name);
+  if (!command) throw new Error(`no command ${names.join(' ')}`);
+  let rendered = '';
+  command.configureOutput({ writeOut: (text) => (rendered += text) });
+  command.outputHelp();
+  return rendered;
+}
+
+function everythingPrinted(harness: { log: ReturnType<typeof vi.fn>; error: ReturnType<typeof vi.fn> }) {
+  return [...harness.log.mock.calls, ...harness.error.mock.calls].flat().map(String).join('\n');
 }
 
 describe('agent-scoped identity commands', () => {
@@ -80,7 +109,7 @@ describe('agent-scoped identity commands', () => {
 });
 
 describe('agent identity lifecycle commands', () => {
-  it('register adopts an existing name by rotating its token', async () => {
+  it('register is create-only: a new name is registered without the rotation path', async () => {
     const { program, workspaceRelay, log } = createHarness();
 
     await program.parseAsync([
@@ -93,9 +122,10 @@ describe('agent identity lifecycle commands', () => {
       'rk_live_test',
     ]);
 
+    expect(workspaceRelay.workspace.register).toHaveBeenCalledTimes(1);
     expect(workspaceRelay.workspace.register).toHaveBeenCalledWith(
       { name: 'chief', type: undefined, persona: undefined },
-      { strict: false }
+      { strict: true }
     );
     expect(JSON.parse(String(log.mock.calls[0]?.[0]))).toEqual({
       id: 'agent_rotated',
@@ -104,7 +134,122 @@ describe('agent identity lifecycle commands', () => {
     });
   });
 
-  it('register --strict fails on a name conflict instead of rotating', async () => {
+  it('register refuses to rotate an existing name without --rotate and explains why', async () => {
+    const harness = createHarness();
+    harness.workspaceRelay.workspace.register.mockRejectedValueOnce(nameConflict('chief'));
+
+    await expect(
+      harness.program.parseAsync([
+        'node',
+        'agent-relay',
+        'agent',
+        'register',
+        'chief',
+        '--workspace-key',
+        'rk_live_test',
+      ])
+    ).rejects.toThrow('exit:1');
+
+    // Exactly one create-only attempt; the rotating path is never reached.
+    expect(harness.workspaceRelay.workspace.register).toHaveBeenCalledTimes(1);
+    expect(harness.workspaceRelay.workspace.register).toHaveBeenCalledWith(expect.anything(), {
+      strict: true,
+    });
+    const rendered = everythingPrinted(harness);
+    expect(rendered).toContain('already exists');
+    expect(rendered).toContain('left its token unchanged');
+    expect(rendered).toContain('agent token --current');
+    expect(rendered).toContain('--rotate');
+    expect(rendered).not.toContain('at_live_');
+  });
+
+  it("register refuses to rotate this session's own identity without --rotate", async () => {
+    const harness = createHarness({ RELAY_AGENT_NAME: 'Chief' });
+    harness.workspaceRelay.workspace.register.mockRejectedValueOnce(nameConflict('chief'));
+
+    await expect(
+      harness.program.parseAsync([
+        'node',
+        'agent-relay',
+        'agent',
+        'register',
+        'chief',
+        '--wk',
+        'rk_live_test',
+      ])
+    ).rejects.toThrow('exit:1');
+
+    expect(harness.workspaceRelay.workspace.register).toHaveBeenCalledTimes(1);
+    expect(everythingPrinted(harness)).toContain('agent token --current');
+  });
+
+  it('register --rotate rotates an existing name only when asked', async () => {
+    const harness = createHarness();
+    harness.workspaceRelay.workspace.register.mockRejectedValueOnce(nameConflict('chief'));
+
+    await harness.program.parseAsync([
+      'node',
+      'agent-relay',
+      'agent',
+      'register',
+      'chief',
+      '--rotate',
+      '--workspace-key',
+      'rk_live_test',
+    ]);
+
+    expect(harness.workspaceRelay.workspace.register).toHaveBeenNthCalledWith(1, expect.anything(), {
+      strict: true,
+    });
+    expect(harness.workspaceRelay.workspace.register).toHaveBeenNthCalledWith(2, expect.anything(), {
+      strict: false,
+    });
+    expect(JSON.parse(String(harness.log.mock.calls[0]?.[0]))).toMatchObject({ name: 'chief' });
+  });
+
+  it("register --rotate warns before rotating this session's own identity", async () => {
+    const harness = createHarness({ RELAY_AGENT_NAME: 'chief' });
+    harness.workspaceRelay.workspace.register.mockRejectedValueOnce(nameConflict('chief'));
+
+    await harness.program.parseAsync([
+      'node',
+      'agent-relay',
+      'agent',
+      'register',
+      'chief',
+      '--rotate',
+      '--workspace-key',
+      'rk_live_test',
+    ]);
+
+    expect(harness.error.mock.calls.flat().join('\n')).toContain("this session's own identity");
+  });
+
+  it('register --rotate reports a create-only server refusal without claiming a rotation', async () => {
+    const harness = createHarness();
+    harness.workspaceRelay.workspace.register
+      .mockRejectedValueOnce(nameConflict('chief'))
+      .mockRejectedValueOnce(nameConflict('chief'));
+
+    await expect(
+      harness.program.parseAsync([
+        'node',
+        'agent-relay',
+        'agent',
+        'register',
+        'chief',
+        '--rotate',
+        '--workspace-key',
+        'rk_live_test',
+      ])
+    ).rejects.toThrow('exit:1');
+
+    const rendered = everythingPrinted(harness);
+    expect(rendered).toContain('refused to rotate');
+    expect(rendered).toContain('left unchanged');
+  });
+
+  it('register --strict stays accepted as a deprecated create-only alias', async () => {
     const { program, workspaceRelay } = createHarness();
 
     await program.parseAsync([
@@ -122,6 +267,35 @@ describe('agent identity lifecycle commands', () => {
       { name: 'chief', type: undefined, persona: undefined },
       { strict: true }
     );
+  });
+
+  it('register rejects --strict combined with --rotate', async () => {
+    const harness = createHarness();
+
+    await expect(
+      harness.program.parseAsync([
+        'node',
+        'agent-relay',
+        'agent',
+        'register',
+        'chief',
+        '--strict',
+        '--rotate',
+        '--workspace-key',
+        'rk_live_test',
+      ])
+    ).rejects.toThrow('exit:1');
+    expect(harness.workspaceRelay.workspace.register).not.toHaveBeenCalled();
+  });
+
+  it('register help states create-only, the explicit --rotate flag, and the non-rotating path', () => {
+    const { program } = createHarness();
+    const help = helpFor(program, 'agent', 'register');
+
+    expect(help).toContain('Create-only');
+    expect(help).toContain('--rotate');
+    expect(help).toContain('agent token --current');
+    expect(help).not.toContain('--strict');
   });
 
   it('register surfaces the bounded-registration timeout instead of hanging on a broken existing name', async () => {
@@ -310,5 +484,183 @@ describe('agent identity lifecycle commands', () => {
     expect(rendered).not.toContain('delete from');
     expect(rendered).not.toContain('params:');
     expect(rendered).not.toContain('214015171589668864');
+  });
+});
+
+describe('agent token --current', () => {
+  const tempDirs: string[] = [];
+  const TOKEN = 'at_live_current_session_secret';
+
+  function tempDir(): string {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'agent-token-'));
+    tempDirs.push(dir);
+    return dir;
+  }
+
+  afterEach(() => {
+    for (const dir of tempDirs.splice(0)) fs.rmSync(dir, { recursive: true, force: true });
+  });
+
+  it('verifies the existing identity read-only and never prints the token', async () => {
+    const harness = createHarness({ RELAY_AGENT_TOKEN: TOKEN });
+
+    await harness.program.parseAsync(['node', 'agent-relay', 'agent', 'token', '--current']);
+
+    expect(harness.createAgentRelay).toHaveBeenCalledWith({ token: TOKEN, baseUrl: undefined });
+    expect(harness.agentRelay.agents.me).toHaveBeenCalledTimes(1);
+    expect(harness.createWorkspaceRelay).not.toHaveBeenCalled();
+    expect(harness.workspaceRelay.workspace.register).not.toHaveBeenCalled();
+    expect(JSON.parse(String(harness.log.mock.calls[0]?.[0]))).toEqual({
+      id: 'agent_1',
+      name: 'room-human',
+      source: 'env',
+    });
+    expect(everythingPrinted(harness)).not.toContain(TOKEN);
+  });
+
+  it('requires --current', async () => {
+    const harness = createHarness({ RELAY_AGENT_TOKEN: TOKEN });
+
+    await expect(harness.program.parseAsync(['node', 'agent-relay', 'agent', 'token'])).rejects.toThrow(
+      'exit:1'
+    );
+    expect(harness.error.mock.calls.flat().join('\n')).toContain('Pass --current');
+    expect(harness.agentRelay.agents.me).not.toHaveBeenCalled();
+  });
+
+  it('fails without minting anything when the session has no token', async () => {
+    const harness = createHarness({ RELAY_AGENT_NAME: 'chief' });
+
+    await expect(
+      harness.program.parseAsync(['node', 'agent-relay', 'agent', 'token', '--current'])
+    ).rejects.toThrow('exit:1');
+
+    const rendered = harness.error.mock.calls.flat().join('\n');
+    expect(rendered).toContain('no agent token');
+    expect(rendered).toContain('Nothing was minted or rotated');
+    expect(harness.createAgentRelay).not.toHaveBeenCalled();
+    expect(harness.createWorkspaceRelay).not.toHaveBeenCalled();
+  });
+
+  it('reports a rejected token without echoing it', async () => {
+    const harness = createHarness({ RELAY_AGENT_TOKEN: TOKEN });
+    harness.agentRelay.agents.me.mockRejectedValueOnce(
+      new Error(`agent_token_invalid: token ${TOKEN} is not valid`)
+    );
+
+    await expect(
+      harness.program.parseAsync(['node', 'agent-relay', 'agent', 'token', '--current'])
+    ).rejects.toThrow('exit:1');
+
+    const rendered = everythingPrinted(harness);
+    expect(rendered).toContain('was rejected');
+    expect(rendered).not.toContain(TOKEN);
+  });
+
+  it('writes the token to a new 0600 file and prints only the path', async () => {
+    const harness = createHarness({ RELAY_AGENT_TOKEN: TOKEN });
+    const file = path.join(tempDir(), 'me.token');
+
+    await harness.program.parseAsync(['node', 'agent-relay', 'agent', 'token', '--current', '--out', file]);
+
+    expect(fs.readFileSync(file, 'utf8').trim()).toBe(TOKEN);
+    if (process.platform !== 'win32') expect(fs.statSync(file).mode & 0o777).toBe(0o600);
+    expect(JSON.parse(String(harness.log.mock.calls[0]?.[0]))).toMatchObject({ tokenFile: file });
+    expect(everythingPrinted(harness)).not.toContain(TOKEN);
+  });
+
+  it('refuses to overwrite an existing file unless --force is passed', async () => {
+    const harness = createHarness({ RELAY_AGENT_TOKEN: TOKEN });
+    const file = path.join(tempDir(), 'me.token');
+    fs.writeFileSync(file, 'keep me');
+
+    await expect(
+      harness.program.parseAsync(['node', 'agent-relay', 'agent', 'token', '--current', '--out', file])
+    ).rejects.toThrow('exit:1');
+    expect(fs.readFileSync(file, 'utf8')).toBe('keep me');
+
+    const forced = createHarness({ RELAY_AGENT_TOKEN: TOKEN });
+    await forced.program.parseAsync([
+      'node',
+      'agent-relay',
+      'agent',
+      'token',
+      '--current',
+      '--out',
+      file,
+      '--force',
+    ]);
+    expect(fs.readFileSync(file, 'utf8').trim()).toBe(TOKEN);
+  });
+
+  it('runs the next command with the token from a file in its environment, without printing it', async () => {
+    const file = path.join(tempDir(), 'me.token');
+    fs.writeFileSync(file, `${TOKEN}\n`, { mode: 0o600 });
+    const harness = createHarness({ PATH: '/usr/bin' });
+
+    await harness.program.parseAsync([
+      'node',
+      'agent-relay',
+      'agent',
+      'token',
+      '--current',
+      '--from-file',
+      file,
+      '--',
+      'agent-relay',
+      'message',
+      'dm',
+      'send',
+      'reviewer',
+      'ready',
+      '--mode',
+      'steer',
+    ]);
+
+    expect(harness.createAgentRelay).toHaveBeenCalledWith({ token: TOKEN, baseUrl: undefined });
+    expect(harness.runWithEnv).toHaveBeenCalledTimes(1);
+    const [command, args, env] = harness.runWithEnv.mock.calls[0]!;
+    expect(command).toBe('agent-relay');
+    expect(args).toEqual(['message', 'dm', 'send', 'reviewer', 'ready', '--mode', 'steer']);
+    expect(env).toMatchObject({ PATH: '/usr/bin', RELAY_AGENT_TOKEN: TOKEN, RELAY_AGENT_NAME: 'room-human' });
+    expect(harness.log).not.toHaveBeenCalled();
+    expect(everythingPrinted(harness)).not.toContain(TOKEN);
+  });
+
+  it('propagates a non-zero exit code from the wrapped command', async () => {
+    const harness = createHarness({ RELAY_AGENT_TOKEN: TOKEN });
+    harness.runWithEnv.mockResolvedValueOnce(3);
+
+    await expect(
+      harness.program.parseAsync(['node', 'agent-relay', 'agent', 'token', '--current', '--', 'false'])
+    ).rejects.toThrow('exit:3');
+  });
+
+  it('refuses a token file that other users can read', async () => {
+    if (process.platform === 'win32') return;
+    const file = path.join(tempDir(), 'me.token');
+    fs.writeFileSync(file, TOKEN);
+    fs.chmodSync(file, 0o644);
+    const harness = createHarness();
+
+    await expect(
+      harness.program.parseAsync(['node', 'agent-relay', 'agent', 'token', '--current', '--from-file', file])
+    ).rejects.toThrow('exit:1');
+
+    expect(harness.error.mock.calls.flat().join('\n')).toContain('chmod 600');
+    expect(harness.agentRelay.agents.me).not.toHaveBeenCalled();
+    expect(everythingPrinted(harness)).not.toContain(TOKEN);
+  });
+
+  it('help says it never prints, mints, or rotates the token', () => {
+    const { program } = createHarness();
+    const help = helpFor(program, 'agent', 'token');
+
+    expect(help).toContain('--current');
+    expect(help).toContain('--out <path>');
+    expect(help).toContain('--from-file <path>');
+    expect(help).toContain('never written to stdout or stderr');
+    expect(help).toMatch(/without\s+printing,\s+minting,\s+or\s+rotating/);
+    expect(help).not.toContain('--workspace-key');
   });
 });

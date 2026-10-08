@@ -71,12 +71,30 @@ export function printJson(deps: SdkCommandDeps, value: unknown): void {
   deps.log(JSON.stringify(value, null, 2));
 }
 
+/**
+ * Guidance for an agent-scoped command run without an agent token. The SDK's
+ * own error names an internal client; point at the non-rotating paths instead
+ * of leaving `agent register` (which cannot hand back an existing identity) as
+ * the only apparent way to get a token.
+ */
+export const MISSING_AGENT_TOKEN_MESSAGE =
+  'This command needs an agent token: pass --token or set RELAY_AGENT_TOKEN. Do not re-register your ' +
+  'own name to get one. If you already hold a token in a file, run it through ' +
+  '"agent-relay agent token --current --from-file <path> -- <command>". Otherwise send through the ' +
+  'Agent Relay desktop session socket, use the Agent Relay MCP tools if they are loaded, or register a ' +
+  'new, unused name with "agent-relay agent register <new-name>".';
+
+function missingAgentToken(message: string): boolean {
+  return /requires agentToken or agentClient/.test(message);
+}
+
 /** Run an SDK command body, formatting errors consistently and exiting non-zero. */
 export async function runSdk(deps: SdkCommandDeps, fn: () => Promise<void>): Promise<void> {
   try {
     await fn();
   } catch (err) {
-    const message = safeRelayErrorMessage(err);
+    const rawMessage = safeRelayErrorMessage(err);
+    const message = missingAgentToken(rawMessage) ? MISSING_AGENT_TOKEN_MESSAGE : rawMessage;
     if (err instanceof RelayPlacementError) {
       const structured = {
         error: {

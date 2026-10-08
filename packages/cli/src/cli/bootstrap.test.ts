@@ -95,6 +95,7 @@ const expectedLeafCommands = [
   // workspace agents
   'agent register',
   'agent rotate',
+  'agent token',
   'agent list',
   'agent add',
   'agent remove',

@@ -308,7 +308,8 @@ agent-relay fleet release api-worker --reason "Work accepted"
 Commands use the workspace session pinned to the current project. Exact-node
 spawn and messaging operations also need an agent identity: pass `--token` or
 set `RELAY_AGENT_TOKEN` to the token returned by
-`agent-relay agent register <lead-name>`. `fleet spawn --sandbox` needs a Cloud
+`agent-relay agent register <lead-name>` (see
+[Agent identity tokens](#agent-identity-tokens)). `fleet spawn --sandbox` needs a Cloud
 login (`agent-relay cloud login`) but does not need an agent token: when one is
 absent, it creates and removes a short-lived launcher identity automatically.
 
@@ -506,6 +507,45 @@ Relaycast node row is not enough for a Cloud-enrolled node: its Fleet enrollment
 record restores the stored token on the next `agent-relay node up`.
 
 `agent-relay cloud whoami` also prints the current organization and workspace IDs.
+
+## Agent identity tokens
+
+`agent-relay agent register <name>` is create-only. It prints the new
+identity's token once. For a name that already exists it fails and leaves that
+identity's token alone. Pass `--rotate` only when you mean to replace the
+existing token: any session still using the old token is disconnected, and
+Relay servers that enforce create-only registration refuse the rotation.
+`agent-relay agent rotate <name>` is the same explicit rotation for a name that
+must already exist. `--strict` is still accepted, but it does nothing now that
+create-only is the default.
+
+To act as an identity a session already holds, for example a broker-spawned
+worker with `RELAY_AGENT_TOKEN` set, or a fallback when the desktop session
+socket is unavailable, use `agent token --current`. It never mints or rotates
+a token, and it never writes the token to stdout or stderr:
+
+```bash
+# Confirm which identity this shell already has (read-only lookup).
+agent-relay agent token --current
+
+# Hand it to a later command without printing it: write a new 0600 file...
+agent-relay agent token --current --out ~/.config/agent-relay/me.token
+
+# ...and run a command with RELAY_AGENT_TOKEN set from that file.
+agent-relay agent token --current --from-file ~/.config/agent-relay/me.token -- \
+  agent-relay message dm send reviewer "Ready for review"
+```
+
+If the session has no token, the command fails without contacting the
+service. Don't re-register your own name to get one. Send through the desktop
+session socket or the Agent Relay MCP tools instead, or register a new, unused
+name.
+
+The `agent-relay mcp` stdio server also keeps running when its startup
+registration fails, for example when the name already exists or Relaycast is
+unreachable. It answers the MCP handshake without an agent identity, writes the
+reason to stderr, and identity-scoped tools return that reason until
+`register_agent` succeeds.
 
 ## Cloud multiplayer rooms
 

@@ -152,14 +152,12 @@ describe('SDK-backed CLI groups', () => {
   it('agent register calls workspace.register and prints the registration', async () => {
     const { program, workspaceRelay, log } = harness(registerAgentCommands);
     await program.parseAsync(['agent', 'register', 'reviewer', '--type', 'agent'], { from: 'user' });
-    // `agent register` resolves its client through createWorkspaceRelay (hence
-    // workspaceRelay, from main) and calls workspace.register with an explicit
-    // strict flag (hence this shape, from #1527). Taking either side of the
-    // merge alone asserts against a method or an object the implementation no
-    // longer uses.
+    // `agent register` resolves its client through createWorkspaceRelay and is
+    // create-only: it calls workspace.register strictly so an existing name is
+    // never rotated without `--rotate` (relay#1920).
     expect(workspaceRelay.workspace.register).toHaveBeenCalledWith(
       expect.objectContaining({ name: 'reviewer', type: 'agent' }),
-      { strict: false }
+      { strict: true }
     );
     expect(log).toHaveBeenCalled();
   });
@@ -195,6 +193,22 @@ describe('SDK-backed CLI groups', () => {
 
   // MUST-FIRE: retaining the created message and receipt must not make an
   // unresolved recipient look like CLI success.
+  it('message dm send without an agent token points at the non-rotating paths, not re-registering', async () => {
+    const { program, relay, error, exit } = harness(registerMessageCommands);
+    relay.messages.direct.mockRejectedValueOnce(
+      new Error('RelaycastMessagingClient.messages.direct requires agentToken or agentClient.')
+    );
+
+    await program.parseAsync(['message', 'dm', 'send', 'lead', 'hi'], { from: 'user' });
+
+    const rendered = error.mock.calls.flat().join('\n');
+    expect(rendered).toContain('needs an agent token');
+    expect(rendered).toContain('agent token --current --from-file');
+    expect(rendered).toContain('Do not re-register your own name');
+    expect(rendered).not.toContain('RelaycastMessagingClient');
+    expect(exit).toHaveBeenCalledWith(1);
+  });
+
   it('message dm send exits non-zero after printing an unresolved-recipient receipt', async () => {
     const { program, relay, workspaceRelay, log, error, exit } = harness(registerMessageCommands);
     workspaceRelay.agents.list.mockResolvedValueOnce([]);
