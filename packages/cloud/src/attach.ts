@@ -138,6 +138,8 @@ export interface FleetNodeAttachOptions {
   env?: NodeJS.ProcessEnv;
   baseUrl?: string;
   workspaceKey?: string;
+  /** Use workspaceKey/baseUrl exactly as given instead of resolving the selection. */
+  pinnedTransport?: boolean;
   fetch?: typeof globalThis.fetch;
   /** Deterministic test seam for the bounded session-request retry delay. */
   sessionRequest?: {
@@ -438,11 +440,22 @@ export async function startFleetNodeAttachProxy(
   }
   const env = options.env ?? process.env;
   const fetchFn = options.fetch ?? globalThis.fetch;
-  const { workspaceKey, baseUrl: requestedBaseUrl } = resolveWorkspaceTransport({
-    workspaceKey: options.workspaceKey,
-    baseUrl: options.baseUrl,
-    env,
-  });
+  // A pinned credential/origin pair (e.g. the one a spawn verified) is used
+  // exactly as given. Otherwise an explicit key is a selector that may bind to
+  // the project's persisted route and credential.
+  const pinnedKey = options.pinnedTransport ? options.workspaceKey?.trim() : undefined;
+  const pinnedBaseUrl = options.pinnedTransport ? options.baseUrl?.trim() : undefined;
+  if (options.pinnedTransport && (!pinnedKey || !pinnedBaseUrl)) {
+    throw new FleetNodeAttachError('pinnedTransport requires both workspaceKey and baseUrl.');
+  }
+  const { workspaceKey, baseUrl: requestedBaseUrl } =
+    pinnedKey && pinnedBaseUrl
+      ? { workspaceKey: pinnedKey, baseUrl: pinnedBaseUrl }
+      : resolveWorkspaceTransport({
+          workspaceKey: options.workspaceKey,
+          baseUrl: options.baseUrl,
+          env,
+        });
   const baseUrl = validateFleetAttachBaseUrl(requestedBaseUrl ?? CANONICAL_RELAYCAST_ORIGIN);
   const nodePath = safeNodePath(options.node);
   if (!options.agent) {

@@ -9,6 +9,7 @@
 import { randomUUID } from 'node:crypto';
 
 import {
+  CANONICAL_RELAYCAST_ORIGIN,
   CloudFleetSandboxProvisionError,
   DEV_CLOUD_API_URL,
   DEV_RELAYCAST_ORIGIN,
@@ -674,8 +675,11 @@ export async function spawnFleetSandbox(
         node: ready.nodeName,
         agent: name,
         mode: options.mode ?? 'drive',
+        // Keep attach on the exact pair the spawn resolved and verified; a
+        // transport without an origin used Relaycast's canonical default.
+        pinnedTransport: true,
         workspaceKey: attachTransport.workspaceKey,
-        ...(attachTransport.baseUrl === undefined ? {} : { baseUrl: attachTransport.baseUrl }),
+        baseUrl: attachTransport.baseUrl ?? CANONICAL_RELAYCAST_ORIGIN,
       });
     },
     destroy: () =>

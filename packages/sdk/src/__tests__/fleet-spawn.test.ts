@@ -155,6 +155,8 @@ describe('spawnFleetSandbox', () => {
         agent: 'sandbox-worker',
         mode: 'drive',
         workspaceKey: 'rk_live_test',
+        pinnedTransport: true,
+        baseUrl: 'https://cast.agentrelay.com',
       })
     );
   });

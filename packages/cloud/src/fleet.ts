@@ -388,6 +388,7 @@ export {
   ensureCloudFleetSandbox,
   deleteCloudFleetSandbox,
   CloudFleetSandboxProvisionError,
+  CANONICAL_RELAYCAST_ORIGIN,
   DEV_CLOUD_API_URL,
   DEV_RELAYCAST_ORIGIN,
   type CloudFleetRelaycastTarget,

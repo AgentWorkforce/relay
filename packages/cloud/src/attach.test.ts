@@ -183,6 +183,43 @@ it('settles finished with 0 when the raw client detaches', async () => {
   await expect(proxy!.finished).resolves.toBe(0);
 });
 
+it('uses a pinned workspaceKey and baseUrl as given, ignoring a persisted project route', async () => {
+  const { mkdtemp, mkdir, writeFile } = await import('node:fs/promises');
+  const { tmpdir } = await import('node:os');
+  const { join } = await import('node:path');
+  const project = await mkdtemp(join(tmpdir(), 'attach-explicit-'));
+  await mkdir(join(project, '.agentworkforce', 'relay'), { recursive: true });
+  await writeFile(
+    join(project, '.agentworkforce', 'relay', 'workspace-key.json'),
+    JSON.stringify({
+      workspaceKey: 'rk_live_project',
+      workspaceId: 'rw_project',
+      relaycastRoute: 'canonical',
+      relaycastBaseUrl: 'https://cast.agentrelay.com',
+    })
+  );
+  const fetch = vi.fn(async () =>
+    Response.json({ ok: false, error: { code: 'stop', message: 'stop' } }, { status: 400 })
+  );
+  await expect(
+    startFleetNodeAttachProxy({
+      node: 'node',
+      agent: 'worker',
+      mode: 'drive',
+      workspaceKey: 'rk_live_project',
+      baseUrl: 'https://agent37-cast.agentrelay.com',
+      pinnedTransport: true,
+      env: { AGENT_RELAY_PROJECT: project },
+      fetch,
+      sessionRequest: { timeoutMs: 50, totalTimeoutMs: 50 },
+    })
+  ).rejects.toBeInstanceOf(Error);
+  expect(fetch).toHaveBeenCalled();
+  const [url, init] = fetch.mock.calls[0] as unknown as [string, RequestInit];
+  expect(url.startsWith('https://agent37-cast.agentrelay.com/')).toBe(true);
+  expect((init.headers as Record<string, string>).Authorization).toBe('Bearer rk_live_project');
+});
+
 it('settles finished on explicit close before terminal.ready', async () => {
   await setup();
   await proxy!.close();
