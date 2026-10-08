@@ -105,6 +105,7 @@ export {
   type CloudFleetSandboxWorkloadProfile,
   type DeleteCloudFleetSandboxInput,
   type CloudFleetSandboxRequestOptions,
+  type CloudFleetSandboxPreparationFailure,
   type CloudFleetSandboxPreparationProgress,
   type CloudFleetRelaycastRoute,
   type CloudFleetRelaycastTarget,

@@ -823,7 +823,15 @@ export function registerFleetCommands(
             : await deps.ensureCloudFleetSandbox(ensureInput);
           assertSandboxRepositoryRevision(sandbox, checkoutRepository ? sandboxRepository : undefined);
         } catch (error) {
-          if (
+          if (error instanceof CloudFleetSandboxProvisionError && error.sandboxAbsent) {
+            // Cloud's terminal record for this exact identity already proves the
+            // provider sandbox is gone; a delete here would only race its reaper.
+            deps.warn(
+              `${error.message} Cloud confirmed sandbox '${
+                error.sandboxId ?? sandboxId ?? 'the requested sandbox'
+              }' is not running; no sandbox was left running.`
+            );
+          } else if (
             shouldCleanupSandbox &&
             error instanceof CloudFleetSandboxProvisionError &&
             error.confirmedProvisioned &&

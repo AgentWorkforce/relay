@@ -88,6 +88,14 @@ export type CloudFleetSandboxCapacityExhaustion = {
   readonly limit: number;
 };
 
+/** Credential-free typed failure from a terminal async-v1 preparation record. */
+export type CloudFleetSandboxPreparationFailure = {
+  readonly code: string;
+  readonly phase: string;
+  /** Mount command boundary, e.g. initial_sync_deadline, when Cloud reported one. */
+  readonly causeStage?: string;
+};
+
 /** Describes provisioning failure without granting unproven cleanup authority. */
 export class CloudFleetSandboxProvisionError extends Error {
   readonly cloudWorkspaceId?: string;
@@ -106,6 +114,15 @@ export class CloudFleetSandboxProvisionError extends Error {
   readonly retryable: boolean;
   /** Safe aggregate counts for each provider that blocked allocation. */
   readonly capacity: readonly CloudFleetSandboxCapacityExhaustion[];
+  /**
+   * Cloud's durable async-v1 record for this exact sandbox identity is
+   * terminal, which Cloud writes only after the provider rejected allocation,
+   * dispatch was abandoned, or the provider sandbox was proven absent. No
+   * sandbox for this identity is left running and no cleanup is owed.
+   */
+  readonly sandboxAbsent: boolean;
+  /** Typed Cloud failure for a terminal preparation, e.g. relayfile_mount_failed. */
+  readonly preparationFailure?: CloudFleetSandboxPreparationFailure;
 
   constructor(
     message: string,
@@ -120,6 +137,8 @@ export class CloudFleetSandboxProvisionError extends Error {
       noSandboxCreated?: boolean;
       retryable?: boolean;
       capacity?: readonly CloudFleetSandboxCapacityExhaustion[];
+      sandboxAbsent?: boolean;
+      preparationFailure?: CloudFleetSandboxPreparationFailure;
       cause?: unknown;
     } = {}
   ) {
@@ -135,6 +154,9 @@ export class CloudFleetSandboxProvisionError extends Error {
     this.noSandboxCreated = !this.confirmedProvisioned && identity.noSandboxCreated === true;
     this.retryable = identity.retryable === true;
     this.capacity = identity.capacity?.map((entry) => ({ ...entry })) ?? [];
+    this.sandboxAbsent = !this.confirmedProvisioned && identity.sandboxAbsent === true;
+    this.preparationFailure =
+      identity.preparationFailure === undefined ? undefined : { ...identity.preparationFailure };
   }
 }
 
@@ -909,20 +931,17 @@ function normalizeEnsureResult(
 }
 
 const ASYNC_PREPARATION_STATES = new Set(['pending', 'ready', 'terminal', 'cleanup_pending']);
-const ASYNC_PREPARATION_PHASES = new Set([
-  'provider_allocation',
-  'agent_relay_cli_bootstrap',
-  'relayfile_mount_bootstrap',
-  'spawn_cli_bootstrap',
-  'repo_clone',
-  'finalize',
-  'broker_visible',
-  'cleanup',
-]);
+// Phase is progress metadata only: state decides the outcome. Cloud's async-v1
+// record currently reports provider_allocation, agent_relay_cli_bootstrap,
+// relayfile_mount_bootstrap, spawn_cli_bootstrap, repo_clone,
+// cli_credential_setup, relayfile_mount, workspace_skills, fleet_enrollment,
+// finalize, broker_visible and cleanup. Accept any bounded phase token so a
+// newer Cloud adding a phase is not misread as an invalid (unknown) outcome.
+const ASYNC_PREPARATION_PHASE_TOKEN = /^[a-z][a-z0-9_]{0,63}$/;
 
 type AsyncPreparationEnvelope = CloudFleetSandboxPreparationProgress & {
   result?: JsonRecord;
-  failure?: { code: string; error: string; phase: string; causeDetail?: string };
+  failure?: { code: string; error: string; phase: string; causeDetail?: string; causeStage?: string };
 };
 
 function readAsyncPreparationEnvelope(
@@ -943,7 +962,7 @@ function readAsyncPreparationEnvelope(
     !state ||
     !ASYNC_PREPARATION_STATES.has(state) ||
     !phase ||
-    !ASYNC_PREPARATION_PHASES.has(phase) ||
+    !ASYNC_PREPARATION_PHASE_TOKEN.test(phase) ||
     generation === undefined ||
     !Number.isSafeInteger(generation) ||
     generation < 0
@@ -970,6 +989,7 @@ function readAsyncPreparationEnvelope(
     const error = readString(payload.failure, 'error');
     const failurePhase = readString(payload.failure, 'phase');
     const causeDetail = readString(payload.failure, 'causeDetail');
+    const causeStage = readString(payload.failure, 'causeStage');
     if (!code || !error || !failurePhase) {
       throw new Error('Cloud fleet sandbox preparation failure was invalid.');
     }
@@ -978,6 +998,7 @@ function readAsyncPreparationEnvelope(
       error,
       phase: failurePhase,
       ...(causeDetail === undefined ? {} : { causeDetail }),
+      ...(causeStage === undefined ? {} : { causeStage }),
     };
   }
   return envelope;
@@ -1211,6 +1232,10 @@ export async function ensureCloudFleetSandbox(
   const ensureBody = JSON.stringify(ensureRequest);
 
   let sawAcceptedPreparation = false;
+  // A typed ensure failure (e.g. a 503 relayfile_mount_failed carrying
+  // causeStage initial_sync_deadline) is only a label; the durable status
+  // record decides the outcome. Keep it to name the cause of a terminal record.
+  let ensureFailureHint: { code: string; causeStage?: string } | undefined;
   // Before Cloud confirms an async record, an older Cloud may have routed the
   // request synchronously, so only the caller's own provider is attributable.
   const attributedProvider = (): { providerId?: CloudFleetSandboxProviderId } => {
@@ -1267,11 +1292,19 @@ export async function ensureCloudFleetSandbox(
       }
     }
     if (envelope.state === 'terminal') {
+      // Cloud writes terminal only after it rejected allocation, abandoned
+      // dispatch, or proved the provider sandbox absent; it owns that cleanup.
       const failure = envelope.failure;
+      const causeStage =
+        failure?.causeStage ??
+        (failure !== undefined && ensureFailureHint?.code === failure.code
+          ? ensureFailureHint.causeStage
+          : undefined);
+      const typed = failure ? [failure.code, ...(causeStage === undefined ? [] : [causeStage])].join(', ') : '';
       throw new CloudFleetSandboxProvisionError(
         redactCredentialValues(
           failure
-            ? `Cloud fleet sandbox preparation failed during ${failure.phase}: ${failure.error}`
+            ? `Cloud fleet sandbox preparation failed during ${failure.phase} (${typed}): ${failure.error}`
             : 'Cloud fleet sandbox preparation failed.'
         ),
         {
@@ -1279,7 +1312,16 @@ export async function ensureCloudFleetSandbox(
           sandboxId: sandboxIdentity.sandboxId,
           ...(sandboxIdentity.name === undefined ? {} : { nodeName: sandboxIdentity.name }),
           ...(asyncProviderId === undefined ? {} : { providerId: asyncProviderId }),
-          confirmedProvisioned: true,
+          sandboxAbsent: true,
+          ...(failure === undefined
+            ? {}
+            : {
+                preparationFailure: {
+                  code: failure.code,
+                  phase: failure.phase,
+                  ...(causeStage === undefined ? {} : { causeStage }),
+                },
+              }),
         }
       );
     }
@@ -1452,6 +1494,14 @@ export async function ensureCloudFleetSandbox(
     );
   }
   let payload = await readJson(response);
+  if (asyncPreparation && !response.ok && isObject(payload)) {
+    const code = readString(payload, 'code');
+    const hintSandboxId = readString(payload, 'sandboxId');
+    if (code && (hintSandboxId === undefined || hintSandboxId === sandboxIdentity.sandboxId)) {
+      const causeStage = readString(payload, 'causeStage');
+      ensureFailureHint = { code, ...(causeStage === undefined ? {} : { causeStage }) };
+    }
+  }
   let legacyCompatibilityResponse = asyncPreparation && response.ok && isLegacyEnsureOutcome(payload);
   if (asyncPreparation && rejectsAsyncPreparationMode(response, payload)) {
     try {

@@ -3919,6 +3919,7 @@ describe('fleet command support', () => {
 
     expect(deleteCloudFleetSandbox).not.toHaveBeenCalled();
     expect(warnings.join('\n')).toContain(`check Cloud Fleet for node '${REPLAY_SANDBOX_NAME}'`);
+    expect(warnings.join('\n')).not.toContain('no sandbox was left running');
     expect(warnings.join('\n')).toContain(`--sandbox-id '${REPLAY_SANDBOX_ID}'`);
   });
 
@@ -3991,6 +3992,81 @@ describe('fleet command support', () => {
     expect(warnings).toEqual([capacityMessage]);
     expect(warnings.join('\n')).not.toContain('outcome is unknown');
     expect(warnings.join('\n')).not.toContain('check Cloud Fleet');
+  });
+
+  it('names a terminal relayfile_mount_failed cause and reports no sandbox left running without cleanup', async () => {
+    const warnings: string[] = [];
+    const deleteCloudFleetSandbox = vi.fn(async () => undefined);
+    const terminalMessage =
+      'Cloud fleet sandbox preparation failed during relayfile_mount (relayfile_mount_failed, initial_sync_deadline): Relayfile mount failed during relayfile_mount. Retry provisioning the sandbox.';
+    const program = new Command();
+    program.exitOverride();
+    registerFleetCommands(program, {
+      resolveSandboxRepository: () => undefined,
+      sdk: {
+        createAgentRelay: vi.fn() as never,
+        createWorkspaceRelay: vi.fn(() => ({
+          workspace: { info: vi.fn(async () => ({ id: 'rw_abc' })) },
+        })) as never,
+        createWorkspace: vi.fn() as never,
+        log: vi.fn(),
+        error: vi.fn(),
+        exit: (() => {
+          throw new Error('__exit__');
+        }) as never,
+      },
+      ensureCloudFleetSandbox: vi.fn(async () => {
+        throw new CloudFleetSandboxProvisionError(terminalMessage, {
+          cloudWorkspaceId: '50587328-441d-4acb-b8f3-dbe1b3c5de99',
+          sandboxId: REPLAY_SANDBOX_ID,
+          nodeName: REPLAY_SANDBOX_NAME,
+          providerId: 'agent37',
+          sandboxAbsent: true,
+          preparationFailure: {
+            code: 'relayfile_mount_failed',
+            phase: 'relayfile_mount',
+            causeStage: 'initial_sync_deadline',
+          },
+        });
+      }),
+      deleteCloudFleetSandbox,
+      createFleetWorkspaceClient: vi.fn() as never,
+      log: () => undefined,
+      warn: (...args: unknown[]) => warnings.push(args.join(' ')),
+      error: () => undefined,
+    });
+
+    await expect(
+      program.parseAsync(
+        [
+          'fleet',
+          'spawn',
+          'codex',
+          '--sandbox',
+          '--sandbox-id',
+          REPLAY_SANDBOX_ID,
+          '--sandbox-name',
+          REPLAY_SANDBOX_NAME,
+          '--workspace-id',
+          'rw_abc',
+          '--name',
+          'sandbox-worker',
+          '--task',
+          'Work',
+          '--workspace-key',
+          'rk_live_test',
+          '--token',
+          'at_live_lead',
+        ],
+        { from: 'user' }
+      )
+    ).rejects.toThrow('__exit__');
+
+    expect(deleteCloudFleetSandbox).not.toHaveBeenCalled();
+    expect(warnings).toEqual([
+      `${terminalMessage} Cloud confirmed sandbox '${REPLAY_SANDBOX_ID}' is not running; no sandbox was left running.`,
+    ]);
+    expect(warnings.join('\n')).not.toContain('outcome is unknown');
   });
 
   it('preserves the caller Daytona ID after a matched malformed provisioned response', async () => {
