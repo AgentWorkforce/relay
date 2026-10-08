@@ -765,6 +765,7 @@ async fn listen_api_session(
         "node_id": state.node_id,
         "node_name": state.node_name,
         "node_token": state.node_token.read().ok().and_then(|token| token.clone()),
+        "node_control_health": state.node_delivery_probe.node_control_health(),
         "mode": if state.persist { "persist" } else { "ephemeral" },
         "uptime_secs": state.started_at.elapsed().as_secs(),
     }))
@@ -5467,6 +5468,33 @@ mod auth_tests {
         assert_eq!(body["protocol_version"], 2);
         assert_eq!(body["relay_base_url"], "https://relay.test");
         assert_eq!(body["mode"], "ephemeral");
+        assert_eq!(body["node_control_health"]["state"], "connecting");
+    }
+
+    #[tokio::test]
+    async fn session_route_surfaces_terminal_node_token_proof_conflict() {
+        let (router, _rx, probe) = test_router_with_probe(Some("secret"));
+        probe.record_node_token_proof_conflict_terminal();
+
+        let response = router
+            .oneshot(
+                Request::builder()
+                    .uri("/api/session")
+                    .method("GET")
+                    .header("x-api-key", "secret")
+                    .body(Body::empty())
+                    .expect("request should build"),
+            )
+            .await
+            .expect("request should succeed");
+
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = response_json(response).await;
+        assert_eq!(body["node_control_health"]["state"], "terminal");
+        assert_eq!(
+            body["node_control_health"]["reason"],
+            "node_token_proof_required"
+        );
     }
 
     #[tokio::test]

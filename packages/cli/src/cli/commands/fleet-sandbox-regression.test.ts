@@ -172,7 +172,7 @@ describe('fleet sandbox command regressions', () => {
       { from: 'user' }
     );
 
-    expect(resolveRepository).toHaveBeenCalledWith(outsideGit, undefined);
+    expect(resolveRepository).toHaveBeenCalledWith(outsideGit, undefined, undefined, 'strict');
     expect(materialize).not.toHaveBeenCalled();
     expect(ensure).toHaveBeenCalledWith(expect.objectContaining({ mountRelayfile: true }));
     expect((ensure.mock.calls[0]?.[0] as Record<string, unknown>).relayfilePaths).toBeUndefined();

@@ -1,5 +1,31 @@
 use super::*;
 
+/// Run before dedup, registration, or token creation for a remote spawn.
+fn preflight_muse_auth(
+    cli: &str,
+    verify_ready: bool,
+    node: &str,
+    clean_home: Option<&std::path::Path>,
+    lookup: &dyn Fn(&str) -> Option<std::ffi::OsString>,
+) -> Result<()> {
+    if !crate::snippets::is_muse_executable(cli) {
+        return Ok(());
+    }
+    if let crate::snippets::MuseAuthState::Unusable { path, reason } =
+        crate::snippets::muse_auth_state(lookup, clean_home)
+    {
+        let path = path
+            .map(|p| p.display().to_string())
+            .unwrap_or_else(|| "<unresolved>".into());
+        let message = format!("provider_auth_required: muse is not authenticated on node '{node}'; the login at {path} is {reason}. Run `muse` on that node and complete the device login, or set RELAY_MUSE_SHARED_AUTH_PATH to an existing auth.json. Fresh isolated-auth workers require their own login.");
+        if verify_ready {
+            anyhow::bail!(message);
+        }
+        tracing::warn!("{message}");
+    }
+    Ok(())
+}
+
 impl BrokerRuntime {
     /// Drain a workspace-firehose event for the broker runtime.
     ///
@@ -325,6 +351,84 @@ pub(super) async fn bind_http_registered_agent_to_node(
     }
 }
 
+const SPAWN_CHANNEL_RECONCILIATION_TIMEOUT: Duration = Duration::from_secs(60);
+
+/// Reconcile the HTTP-plane state for a freshly spawned worker.
+///
+/// Only an identity minted by node-control needs the read-after-write
+/// visibility barrier. The HTTP fallback already created the identity on this
+/// plane; requiring a node receipt there regresses otherwise-usable fallback
+/// spawns when bind or token-resolution could not populate fleet inventory.
+async fn reconcile_spawned_agent_channels(
+    workspace_http: &RelaycastHttpClient,
+    name: &WorkerName,
+    cli: &str,
+    channels: &[ChannelName],
+    token: &str,
+    node_registered_agent_id: Option<&str>,
+    owns_identity: bool,
+) -> Result<()> {
+    reconcile_spawned_agent_channels_with_timeout(
+        workspace_http,
+        name,
+        cli,
+        channels,
+        token,
+        node_registered_agent_id,
+        owns_identity,
+        SPAWN_CHANNEL_RECONCILIATION_TIMEOUT,
+    )
+    .await
+}
+
+#[allow(clippy::too_many_arguments)]
+pub(super) async fn reconcile_spawned_agent_channels_with_timeout(
+    workspace_http: &RelaycastHttpClient,
+    name: &WorkerName,
+    cli: &str,
+    channels: &[ChannelName],
+    token: &str,
+    node_registered_agent_id: Option<&str>,
+    owns_identity: bool,
+    total_budget: Duration,
+) -> Result<()> {
+    seed_supplied_agent_token(workspace_http, name, token);
+    tokio::time::timeout(total_budget, async {
+        if let Some(agent_id) = node_registered_agent_id {
+            workspace_http
+                .await_node_registered_agent_visibility(name.as_str(), agent_id, token)
+                .await?;
+        }
+        workspace_http
+            .ensure_agent_channels(name, Some(cli), channels)
+            .await?;
+        if owns_identity {
+            if let Some(agent_id) = node_registered_agent_id {
+                workspace_http
+                    .verify_node_registered_agent_channel_scope(
+                        name.as_str(),
+                        agent_id,
+                        token,
+                        channels,
+                    )
+                    .await?;
+            } else {
+                workspace_http
+                    .verify_agent_channel_scope(name, channels)
+                    .await?;
+            }
+        }
+        Ok::<(), anyhow::Error>(())
+    })
+    .await
+    .with_context(|| {
+        format!(
+            "spawned agent channel reconciliation for '{name}' exceeded its {total_budget:?} total budget"
+        )
+    })??;
+    Ok(())
+}
+
 /// Outcome of a local release request, so callers can report a faithful
 /// `action.result` to the node control plane.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -544,6 +648,58 @@ pub(super) async fn spawn_worker_from_request(
     // registration side effects. A remote Fleet cwd cannot be validated by the
     // caller because the path belongs to this node's filesystem.
     let worker_cwd = relaycast_spawn_worker_cwd(ws_value)?;
+    let harness_config = match relaycast_harness_config(ws_value) {
+        Ok(config) => config,
+        Err(error) => {
+            tracing::warn!(
+                worker = %name,
+                error = %error,
+                "rejecting relaycast spawn with invalid harness config"
+            );
+            eprintln!(
+                "[agent-relay] rejecting spawn request for '{}': {}",
+                name, error
+            );
+            return Err(anyhow::anyhow!(error));
+        }
+    };
+    let harness_env = match harness_config.as_ref() {
+        Some(ResolvedHarnessConfig::Pty(config)) => config.env.as_ref(),
+        _ => None,
+    };
+    let effective_cli = match harness_config.as_ref() {
+        Some(ResolvedHarnessConfig::Pty(config)) => config.command.as_str(),
+        _ => cli.as_str(),
+    };
+    let (effective_cli, _) = crate::cli::command_parse::parse_cli_command(effective_cli)?;
+    let normalized_cli = crate::cli::command_parse::normalize_cli_name(&effective_cli);
+    let clean_home = (workers.env_value("AGENT_RELAY_LOCAL_ONLY") != Some("1")).then(|| {
+        crate::snippets::muse_clean_home_dir(
+            std::path::Path::new(
+                worker_cwd
+                    .as_deref()
+                    .or(match harness_config.as_ref() {
+                        Some(ResolvedHarnessConfig::Pty(config)) => config.cwd.as_deref(),
+                        _ => None,
+                    })
+                    .unwrap_or("."),
+            ),
+            &name,
+        )
+    });
+    preflight_muse_auth(
+        &normalized_cli,
+        relaycast_spawn_verifies_ready(ws_value),
+        node_name,
+        clean_home.as_deref(),
+        &|key| {
+            harness_env
+                .and_then(|env| env.get(key))
+                .map(std::ffi::OsString::from)
+                .or_else(|| workers.env_value(key).map(std::ffi::OsString::from))
+                .or_else(|| std::env::var_os(key))
+        },
+    )?;
     let local_spawn_echo_key = relaycast_spawn_control_dedup_key(workspace_id, &name);
     if relaycast_ws_should_apply_local_spawn_echo_dedup(control_dedup_key, &local_spawn_echo_key)
         && !dedup.insert_if_new(&local_spawn_echo_key, Instant::now())
@@ -564,21 +720,6 @@ pub(super) async fn spawn_worker_from_request(
     // started with `--model` (see worker.rs). An empty/blank
     // model is treated as unset.
     let model = model.filter(|value| !value.trim().is_empty());
-    let harness_config = match relaycast_harness_config(ws_value) {
-        Ok(config) => config,
-        Err(error) => {
-            tracing::warn!(
-                worker = %name,
-                error = %error,
-                "rejecting relaycast spawn with invalid harness config"
-            );
-            eprintln!(
-                "[agent-relay] rejecting spawn request for '{}': {}",
-                name, error
-            );
-            return Err(anyhow::anyhow!(error));
-        }
-    };
     let commit_attestation = match relaycast_spawn_commit_attestation(ws_value) {
         Ok(Some(attestation)) => Some(attestation),
         Ok(None) => None,
@@ -674,6 +815,11 @@ pub(super) async fn spawn_worker_from_request(
     // the worker MCP never re-registers over HTTP. Falls back to HTTP
     // pre-registration when node binding is unavailable.
     let mut fleet_registration = None;
+    // This is deliberately distinct from `fleet_registration`: the latter is
+    // also populated after a successful HTTP fallback bind so reconnect
+    // inventory can be restored. Only a receipt returned directly by
+    // node-control requires the HTTP visibility barrier below.
+    let mut node_registered_agent_id = None;
     let mut owns_identity = true;
     let registration_metadata =
         crate::fleet_wire::AgentRegistrationMetadata::from_spawn_input(ws_value, task.as_deref());
@@ -720,12 +866,8 @@ pub(super) async fn spawn_worker_from_request(
                         worker = %name,
                         "bound agent to node via agent.register for action.invoke spawn"
                     );
-                    super::fleet::spawn_declared_metadata_publish(
-                        workspace_http,
-                        name.as_str(),
-                        registration_metadata,
-                    );
                     let relay_key = token.token.clone();
+                    node_registered_agent_id = Some(token.agent_id.clone());
                     fleet_registration = Some((token, invocation_id.clone(), session_ref.clone()));
                     Some(relay_key)
                 }
@@ -753,14 +895,6 @@ pub(super) async fn spawn_worker_from_request(
                     .await
                     {
                         Ok(token) => {
-                            // Declared metadata is published over the agent API
-                            // exactly as on the node path; registration itself
-                            // stays on the cache- and rate-limit-aware call.
-                            super::fleet::spawn_declared_metadata_publish(
-                                workspace_http,
-                                name.as_str(),
-                                registration_metadata,
-                            );
                             tracing::info!(
                                 worker = %name,
                                 "pre-registered agent via broker for WS spawn"
@@ -813,18 +947,15 @@ pub(super) async fn spawn_worker_from_request(
     }
     let channel_membership_warning: Option<String> =
         if let Some(token) = worker_relay_key.as_deref() {
-            seed_supplied_agent_token(workspace_http, &name, token);
-            if let Err(error) = async {
-                workspace_http
-                    .ensure_agent_channels(&name, Some(&cli), &channels)
-                    .await?;
-                if owns_identity {
-                    workspace_http
-                        .verify_agent_channel_scope(&name, &channels)
-                        .await?;
-                }
-                anyhow::Ok(())
-            }
+            if let Err(error) = reconcile_spawned_agent_channels(
+                workspace_http,
+                &name,
+                &cli,
+                &channels,
+                token,
+                node_registered_agent_id.as_deref(),
+                owns_identity,
+            )
             .await
             {
                 tracing::error!(
@@ -873,6 +1004,17 @@ pub(super) async fn spawn_worker_from_request(
         .await
     {
         Ok(effective_spec) => {
+            // Every hosted credential path (node bind, HTTP fallback or a
+            // supplied token) publishes declared metadata, only once the worker
+            // launched, as the API spawn does.
+            if worker_relay_key.is_some() {
+                super::fleet::spawn_declared_metadata_publish(
+                    workspace_http,
+                    name.as_str(),
+                    &effective_spec,
+                    registration_metadata,
+                );
+            }
             if owns_identity {
                 if let Some(worker) = workers.workers.get(&name) {
                     workers
@@ -986,6 +1128,200 @@ mod tests {
     use super::*;
     use crate::terminal_control::TerminalToCloud;
     use ::relaycast::WsEvent;
+
+    #[test]
+    fn muse_preflight_only_rejects_verified_muse_spawns() {
+        let temp = tempfile::tempdir().unwrap();
+        let lookup = |key: &str| (key == "HOME").then(|| temp.path().as_os_str().to_owned());
+        assert!(preflight_muse_auth("claude", true, "node", None, &lookup).is_ok());
+        assert!(preflight_muse_auth("muse", false, "node", None, &lookup).is_ok());
+        let error = preflight_muse_auth("muse", true, "node", None, &lookup).unwrap_err();
+        assert!(error.to_string().contains("provider_auth_required"));
+        assert!(error.to_string().contains("missing"));
+        let auth = temp.path().join(".config/muse/auth.json");
+        std::fs::create_dir_all(auth.parent().unwrap()).unwrap();
+        std::fs::write(auth, r#"{"credential":"private-fixture"}"#).unwrap();
+        assert!(preflight_muse_auth("muse", true, "node", None, &lookup).is_ok());
+    }
+
+    #[tokio::test]
+    async fn http_registration_fallback_does_not_require_a_node_receipt() {
+        use httpmock::{
+            Method::{GET, POST},
+            MockServer,
+        };
+
+        let server = MockServer::start();
+        let unexpected_node_visibility = server.mock(|when, then| {
+            when.method(GET).path("/v1/agent");
+            then.status(500);
+        });
+        let scope = server.mock(|when, then| {
+            when.method(GET)
+                .path("/v1/agents/cloud-zero-config")
+                .header("authorization", "Bearer rk_live_test");
+            then.status(200).json_body(json!({"ok":true,"data":{
+                "channels":[{"name":"agent37-ga"}]
+            }}));
+        });
+        let create_channel = server.mock(|when, then| {
+            when.method(POST)
+                .path("/v1/channels")
+                .header("authorization", "Bearer at_live_http_fallback")
+                .body_contains("\"name\":\"agent37-ga\"");
+            then.status(409).json_body(json!({"ok":false,"error":{
+                "code":"channel_already_exists","message":"exists"
+            }}));
+        });
+        let join_channel = server.mock(|when, then| {
+            when.method(POST)
+                .path("/v1/channels/agent37-ga/join")
+                .header("authorization", "Bearer at_live_http_fallback");
+            then.status(409).json_body(json!({"ok":false,"error":{
+                "code":"already_member","message":"joined"
+            }}));
+        });
+        let channel_members = server.mock(|when, then| {
+            when.method(GET)
+                .path("/v1/channels/agent37-ga/members")
+                .header("authorization", "Bearer at_live_http_fallback");
+            then.status(200).json_body(json!({"ok":true,"data":[{
+                "agent_id":"agent-http","agent_name":"cloud-zero-config",
+                "role":"member","joined_at":"2026-10-04T00:00:00Z"
+            }]}));
+        });
+        let http =
+            RelaycastHttpClient::new(Some(server.base_url()), "rk_live_test", "broker", "codex");
+        let name = WorkerName::from("cloud-zero-config");
+
+        reconcile_spawned_agent_channels(
+            &http,
+            &name,
+            "codex",
+            &[ChannelName::from("agent37-ga")],
+            "at_live_http_fallback",
+            None,
+            true,
+        )
+        .await
+        .expect("an HTTP-created identity must reconcile without a node registration receipt");
+
+        unexpected_node_visibility.assert_hits(0);
+        create_channel.assert_hits(1);
+        join_channel.assert_hits(1);
+        channel_members.assert_hits(1);
+        scope.assert_hits(1);
+    }
+
+    #[tokio::test]
+    async fn node_registration_visibility_precedes_nonempty_channel_reconciliation() {
+        use httpmock::{
+            Method::{GET, POST},
+            MockServer,
+        };
+
+        let server = MockServer::start();
+        let visibility = server.mock(|when, then| {
+            when.method(GET)
+                .path("/v1/agent")
+                .header("authorization", "Bearer at_live_node");
+            then.status(200).json_body(json!({"ok":true,"data":{
+                "id":"agent-node","workspace_id":"ws-test","name":"cloud-zero-config",
+                "type":"agent","status":"online","persona":null,"metadata":{},
+                "channels":[{"id":"ch-agent37","name":"agent37-ga","role":"member",
+                    "joined_at":"2026-10-04T00:00:00Z"}]
+            }}));
+        });
+        let create_channel = server.mock(|when, then| {
+            when.method(POST)
+                .path("/v1/channels")
+                .header("authorization", "Bearer at_live_node")
+                .body_contains("\"name\":\"agent37-ga\"");
+            then.status(409).json_body(json!({"ok":false,"error":{
+                "code":"channel_already_exists","message":"exists"
+            }}));
+        });
+        let join_channel = server.mock(|when, then| {
+            when.method(POST)
+                .path("/v1/channels/agent37-ga/join")
+                .header("authorization", "Bearer at_live_node");
+            then.status(409).json_body(json!({"ok":false,"error":{
+                "code":"already_member","message":"joined"
+            }}));
+        });
+        let channel_members = server.mock(|when, then| {
+            when.method(GET)
+                .path("/v1/channels/agent37-ga/members")
+                .header("authorization", "Bearer at_live_node");
+            then.status(200).json_body(json!({"ok":true,"data":[{
+                "agent_id":"agent-node","agent_name":"cloud-zero-config",
+                "role":"member","joined_at":"2026-10-04T00:00:00Z"
+            }]}));
+        });
+        let laggy_workspace_scope = server.mock(|when, then| {
+            when.method(GET).path("/v1/agents/cloud-zero-config");
+            then.status(404).json_body(json!({"ok":false,"error":{
+                "code":"agent_not_found","message":"negative-cache lag"
+            }}));
+        });
+        let http =
+            RelaycastHttpClient::new(Some(server.base_url()), "rk_live_test", "broker", "codex");
+        let name = WorkerName::from("cloud-zero-config");
+
+        reconcile_spawned_agent_channels(
+            &http,
+            &name,
+            "codex",
+            &[ChannelName::from("agent37-ga")],
+            "at_live_node",
+            Some("agent-node"),
+            true,
+        )
+        .await
+        .expect("the node receipt should become visible before channel reconciliation");
+
+        visibility.assert_hits(2);
+        create_channel.assert_hits(1);
+        join_channel.assert_hits(1);
+        channel_members.assert_hits(1);
+        laggy_workspace_scope.assert_hits(0);
+    }
+
+    #[tokio::test]
+    async fn spawned_channel_reconciliation_has_one_combined_budget() {
+        use httpmock::{Method::GET, MockServer};
+
+        let server = MockServer::start();
+        let absent = server.mock(|when, then| {
+            when.method(GET)
+                .path("/v1/agent")
+                .header("authorization", "Bearer at_live_budget");
+            then.status(404).json_body(json!({"ok":false,"error":{
+                "code":"agent_not_found","message":"not visible yet"
+            }}));
+        });
+        let http =
+            RelaycastHttpClient::new(Some(server.base_url()), "rk_live_test", "broker", "codex");
+        let name = WorkerName::from("cloud-zero-config");
+        let started = Instant::now();
+
+        let error = reconcile_spawned_agent_channels_with_timeout(
+            &http,
+            &name,
+            "codex",
+            &[],
+            "at_live_budget",
+            Some("agent-budget"),
+            true,
+            Duration::from_millis(50),
+        )
+        .await
+        .expect_err("the combined spawn reconciliation deadline must interrupt real backoffs");
+
+        assert!(error.to_string().contains("total budget"), "{error:#}");
+        assert!(started.elapsed() < Duration::from_millis(500));
+        absent.assert_hits(1);
+    }
 
     #[cfg(unix)]
     #[tokio::test]

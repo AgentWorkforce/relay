@@ -1,0 +1,21 @@
+{
+  "version": 1,
+  "id": "1916-sandbox-capacity-rejection",
+  "kind": "bugfix",
+  "title": "Classify a pre-allocation sandbox capacity rejection as definitive",
+  "runner": {
+    "command": ["node", "tests/relayflows/cases/1916-sandbox-capacity-rejection/run.mjs"]
+  },
+  "requirements": [],
+  "timeoutSeconds": 900,
+  "expected": {
+    "base": {
+      "outcome": "bug",
+      "signature": "capacity_503_reported_as_unknown"
+    },
+    "head": {
+      "outcome": "fixed",
+      "signature": "capacity_503_definitive_no_sandbox_created"
+    }
+  }
+}
