@@ -139,6 +139,24 @@ describe('fleet spawn confirmation is observable from the requester (#1430)', ()
   // MUST-FIRE — a node that reports its failure honestly still surfaced as
   // success before this change, because nothing read the action result. The
   // broker's detail (startup exit status and worker log path) must survive.
+  it.each(['spawn_failed: provider_auth_required', 'spawn_provider_auth_required'])(
+    'preserves %s from the node',
+    async (reason) => {
+      const { client } = createClient(async (name, id) => ({
+        invocation_id: id,
+        action_name: name,
+        status: 'failed',
+        error: `${reason}: run muse on the selected node to log in`,
+      }));
+      const error = await client.placement
+        .spawn(spawnInput({ confirm: true, confirmTimeoutMs: 60, confirmPollIntervalMs: 10 }))
+        .catch((caught: unknown) => caught);
+      expect(error).toBeInstanceOf(RelayPlacementError);
+      expect((error as RelayPlacementError).code).toBe('spawn_failed');
+      expect((error as Error).message).toContain(reason);
+    }
+  );
+
   it('fails with spawn_failed and preserves the node-reported detail', async () => {
     const { client } = createClient(async (name, invocationId) => ({
       invocation_id: invocationId,
@@ -156,6 +174,42 @@ describe('fleet spawn confirmation is observable from the requester (#1430)', ()
     expect((error as RelayPlacementError).code).toBe('spawn_failed');
     expect((error as Error).message).toContain('exit status: 19');
     expect((error as Error).message).toContain('/tmp/worker-1430.log');
+  });
+
+  it('maps exhausted agent registration pressure to a retryable spawn error', async () => {
+    const { client } = createClient(async (name, invocationId) => ({
+      invocation_id: invocationId,
+      action_name: name,
+      status: 'failed',
+      error:
+        "node agent.register failed for agent 'worker-pressure': d1_pressure: Node liveness retry pending (retry budget exhausted)",
+    }));
+
+    const error = await client.placement
+      .spawn(spawnInput({ confirm: true, confirmTimeoutMs: 1_000, confirmPollIntervalMs: 10 }))
+      .catch((caught: unknown) => caught);
+
+    expect(error).toBeInstanceOf(RelayPlacementError);
+    expect((error as RelayPlacementError).code).toBe('spawn_retryable');
+    expect((error as Error).message).toContain('d1_pressure');
+    expect((error as Error).message).toContain('retry the spawn');
+  });
+
+  it('does not call a later free-form d1_pressure detail pre-mutation', async () => {
+    const { client } = createClient(async (name, invocationId) => ({
+      invocation_id: invocationId,
+      action_name: name,
+      status: 'failed',
+      error: 'spawn cleanup failed after mutation: d1_pressure remained elevated',
+    }));
+
+    const error = await client.placement
+      .spawn(spawnInput({ confirm: true, confirmTimeoutMs: 1_000, confirmPollIntervalMs: 10 }))
+      .catch((caught: unknown) => caught);
+
+    expect(error).toBeInstanceOf(RelayPlacementError);
+    expect((error as RelayPlacementError).code).toBe('spawn_failed');
+    expect((error as Error).message).not.toContain('No registration mutation was applied');
   });
 
   // MUST-NOT-FIRE — a healthy node. This is the arm a repaired node represents:

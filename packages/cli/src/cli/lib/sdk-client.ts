@@ -1,7 +1,12 @@
 import path from 'node:path';
 
 import { AgentRelay, type AgentRelayAgent } from '@agent-relay/sdk';
-import { AGENT37_RELAYCAST_ORIGIN, CANONICAL_RELAYCAST_ORIGIN } from '@agent-relay/cloud';
+import {
+  AGENT37_RELAYCAST_ORIGIN,
+  CANONICAL_RELAYCAST_ORIGIN,
+  DEV_CLOUD_API_URL,
+  DEV_RELAYCAST_ORIGIN,
+} from '@agent-relay/cloud';
 import {
   resolveWorkspaceSelection as resolveCloudWorkspaceSelection,
   writeProjectWorkspaceTargetIfSelectionCurrent,
@@ -13,6 +18,8 @@ import {
 export interface SdkClientOptions {
   workspaceKey?: string;
   token?: string;
+  /** Non-authoritative session URL used only when no persisted route or explicit URL exists. */
+  fallbackBaseUrl?: string;
   baseUrl?: string;
   env?: NodeJS.ProcessEnv;
   /** Explicit project root for nested invocations such as packages/web. */
@@ -88,22 +95,28 @@ function selectionForTransport(options: SdkClientOptions): WorkspaceSelection | 
   return canonicalSelection;
 }
 
+/** Resolve an origin while keeping a persisted route paired with its credential. */
 function resolveBaseUrlForSelection(
   selection: WorkspaceSelection | undefined,
   options: SdkClientOptions
 ): string | undefined {
   const persisted = validatePersistedRelaycastBaseUrl(selection);
-  const requested = trimOrUndefined(options.baseUrl) ?? trimOrUndefined(env(options).RELAY_BASE_URL);
-  if (persisted && requested) {
+  const explicit = trimOrUndefined(options.baseUrl);
+  const fallback = trimOrUndefined(options.fallbackBaseUrl) ?? trimOrUndefined(env(options).RELAY_BASE_URL);
+  const requested = explicit ?? fallback;
+  // Precedence is explicit --base-url (validated against a persisted route),
+  // then the persisted route, fallbackBaseUrl, and finally RELAY_BASE_URL.
+  // This keeps a server-selected route paired with its credential.
+  if (persisted && explicit) {
     let parsed: URL;
     try {
-      parsed = new URL(requested);
+      parsed = new URL(explicit);
     } catch {
       throw new Error('The requested Relaycast base URL is invalid.');
     }
-    const authority = /^https:\/\/([^/?#]+)/i.exec(requested)?.[1] ?? '';
+    const authority = /^https:\/\/([^/?#]+)/i.exec(explicit)?.[1] ?? '';
     if (
-      !/^https:\/\/[^/?#]+\/?$/i.test(requested) ||
+      !/^https:\/\/[^/?#]+\/?$/i.test(explicit) ||
       parsed.protocol !== 'https:' ||
       parsed.username ||
       parsed.password ||
@@ -152,6 +165,7 @@ function validatePersistedRelaycastBaseUrl(selection: WorkspaceSelection | undef
   const baseUrl = trimOrUndefined(selection?.relaycastBaseUrl);
   const route = selection?.relaycastRoute;
   const relaycastApiKey = trimOrUndefined(selection?.relaycastApiKey);
+  const relaycastCloudApiUrl = trimOrUndefined(selection?.relaycastCloudApiUrl);
   if (!baseUrl && !route && !relaycastApiKey) return undefined;
   if (!baseUrl || !route) {
     throw new Error('The persisted Relaycast workspace route is incomplete.');
@@ -164,7 +178,9 @@ function validatePersistedRelaycastBaseUrl(selection: WorkspaceSelection | undef
   }
   const expectedOrigin =
     route === 'canonical'
-      ? CANONICAL_RELAYCAST_ORIGIN
+      ? relaycastCloudApiUrl === DEV_CLOUD_API_URL
+        ? DEV_RELAYCAST_ORIGIN
+        : CANONICAL_RELAYCAST_ORIGIN
       : route === 'agent37-isolated'
         ? AGENT37_RELAYCAST_ORIGIN
         : undefined;
@@ -192,9 +208,17 @@ export function persistWorkspaceRelaycastTarget(
     baseUrl: string;
     workspaceId: string;
     relaycastApiKey: string;
-  }
+  },
+  relaycastCloudApiUrl?: string
 ): boolean {
   if (!selection) return false;
+  if (
+    target.route === 'canonical' &&
+    target.baseUrl === DEV_RELAYCAST_ORIGIN &&
+    relaycastCloudApiUrl !== DEV_CLOUD_API_URL
+  ) {
+    return false;
+  }
   const selectionWithProjectDir = selection as WorkspaceSelection & { projectDataDir?: string };
   const dataDir =
     selectionWithProjectDir?.projectDataDir ??
@@ -204,6 +228,7 @@ export function persistWorkspaceRelaycastTarget(
     workspaceId: target.workspaceId,
     relaycastRoute: target.route,
     relaycastBaseUrl: target.baseUrl,
+    ...(relaycastCloudApiUrl ? { relaycastCloudApiUrl } : {}),
     relaycastApiKey: target.relaycastApiKey,
   });
 }

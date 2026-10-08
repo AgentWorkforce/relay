@@ -1,6 +1,7 @@
 use std::{
     collections::{BTreeMap, HashMap, HashSet, VecDeque},
     fs,
+    io::Write,
     path::Path,
     sync::OnceLock,
     time::{Duration, Instant},
@@ -57,6 +58,12 @@ const INITIAL_RECONNECT_DELAY: Duration = Duration::from_secs(1);
 const MAX_RECONNECT_DELAY: Duration = Duration::from_secs(30);
 const D1_PRESSURE_RETRY_INITIAL_DELAY: Duration = Duration::from_secs(1);
 const D1_PRESSURE_RETRY_MAX_DELAY: Duration = Duration::from_secs(8);
+// Five retries consume 1 + 2 + 4 + 8 + 8 = 23 seconds. Keep the wall-clock
+// budget below the 30-second fleet registration waiter so persistent pressure
+// reaches the spawn caller as a named d1_pressure failure, not a generic
+// agent_register_timeout.
+const CONTROL_D1_PRESSURE_MAX_RETRIES: u32 = 5;
+const CONTROL_D1_PRESSURE_RETRY_BUDGET: Duration = Duration::from_secs(25);
 const REGISTER_AGENT_PENDING_TTL: Duration = Duration::from_secs(300);
 const RELAYCAST_DEFAULT_BASE_URL: &str = "https://cast.agentrelay.com";
 const CREATE_NODE_RETRY_BACKOFFS_MS: [u64; 3] = [200, 400, 800];
@@ -67,6 +74,28 @@ const MAX_UNAUTHORIZED_BEFORE_GIVING_UP: u32 = 5;
 fn d1_pressure_retry_delay(retry_attempts: u32) -> Duration {
     let multiplier = 1u32 << retry_attempts.saturating_sub(1).min(3);
     (D1_PRESSURE_RETRY_INITIAL_DELAY * multiplier).min(D1_PRESSURE_RETRY_MAX_DELAY)
+}
+
+#[derive(Clone, Copy)]
+struct ControlRetryPolicy {
+    initial_delay: Duration,
+    max_delay: Duration,
+    max_retries: u32,
+    budget: Duration,
+}
+
+impl ControlRetryPolicy {
+    const DEFAULT: Self = Self {
+        initial_delay: D1_PRESSURE_RETRY_INITIAL_DELAY,
+        max_delay: D1_PRESSURE_RETRY_MAX_DELAY,
+        max_retries: CONTROL_D1_PRESSURE_MAX_RETRIES,
+        budget: CONTROL_D1_PRESSURE_RETRY_BUDGET,
+    };
+
+    fn retry_delay(self, retry_attempts: u32) -> Duration {
+        let multiplier = 1u32 << retry_attempts.saturating_sub(1).min(3);
+        (self.initial_delay * multiplier).min(self.max_delay)
+    }
 }
 
 /// Whether a fresh re-mint should still be attempted at this consecutive-401
@@ -126,19 +155,52 @@ pub(crate) struct NodeTokenMinter {
     /// Path of the persisted, workspace-scoped token cache (`None` when the data
     /// dir is unavailable; the freshly minted token is still used in memory).
     pub(crate) token_path: Option<std::path::PathBuf>,
+    /// Whether a proof conflict may adopt a different token found in the cache.
+    /// Disabled when the active token came from `RELAY_NODE_TOKEN`: that override
+    /// shadows the cache, whose different value can be arbitrarily old.
+    pub(crate) adopt_cached_token_after_conflict: bool,
 }
 
 impl NodeTokenMinter {
     /// Mint a fresh node token via `POST /v1/nodes` and persist it to the
-    /// workspace-scoped cache. Returns the new token on success, or `None` after
-    /// logging the failure so the caller can back off and retry. Used for the
-    /// initial mint (no cached token) and as the shared body of [`Self::remint`].
-    async fn mint(&self) -> Option<String> {
+    /// workspace-scoped cache. Existing-node rotation sends `current_node_token`
+    /// as proof; a genuinely new node is minted with `None`.
+    async fn mint(
+        &self,
+        current_node_token: Option<&str>,
+    ) -> std::result::Result<String, CreateNodeMintError> {
+        let token = self.mint_with_idempotency(current_node_token, None).await?;
+        if let Some(path) = self.token_path.as_deref() {
+            if let Err(error) = persist_node_token(
+                path,
+                &self.node_id,
+                &self.workspace_id,
+                self.base_url.as_deref(),
+                &token,
+            ) {
+                tracing::warn!(
+                    target = "relay_broker::fleet",
+                    node_id = %self.node_id,
+                    error = %error,
+                    "failed to persist minted node token"
+                );
+            }
+        }
+        Ok(token)
+    }
+
+    async fn mint_with_idempotency(
+        &self,
+        current_node_token: Option<&str>,
+        idempotency_key: Option<&str>,
+    ) -> std::result::Result<String, CreateNodeMintError> {
         let request = create_node_request(&self.node_id, &self.node_name, &self.broker_version);
         match mint_node_token(
             &self.workspace_key,
             self.base_url.as_deref(),
             request,
+            current_node_token,
+            idempotency_key,
             MintNodeTokenLogContext {
                 node_id: &self.node_id,
                 workspace_id: &self.workspace_id,
@@ -147,29 +209,13 @@ impl NodeTokenMinter {
         .await
         {
             Ok(token) => {
-                if let Some(path) = self.token_path.as_deref() {
-                    if let Err(error) = persist_node_token(
-                        path,
-                        &self.node_id,
-                        &self.workspace_id,
-                        self.base_url.as_deref(),
-                        &token,
-                    ) {
-                        tracing::warn!(
-                            target = "relay_broker::fleet",
-                            node_id = %self.node_id,
-                            error = %error,
-                            "failed to persist minted node token"
-                        );
-                    }
-                }
                 tracing::info!(
                     target = "relay_broker::fleet",
                     node_id = %self.node_id,
                     workspace_id = %self.workspace_id,
                     "minted node token via create_node"
                 );
-                Some(token)
+                Ok(token)
             }
             Err(error) => {
                 log_create_node_mint_error(
@@ -179,31 +225,149 @@ impl NodeTokenMinter {
                     &error,
                     "failed to mint node token via create_node",
                 );
-                None
+                Err(error)
             }
         }
     }
 
-    /// Discard the cached token for this workspace and mint a fresh one. Returns
-    /// the new token on success. On failure the caller surfaces a loud error and
-    /// backs off rather than looping on the rejected token.
-    async fn remint(&self) -> Option<String> {
-        // Drop the rejected cache eagerly so a crash mid-mint doesn't leave the
-        // stale token behind for the next start.
-        if let Some(path) = self.token_path.as_deref() {
-            if let Err(error) = fs::remove_file(path) {
-                if error.kind() != std::io::ErrorKind::NotFound {
+    /// Prove the cached token and replace it only after Relaycast returns a new
+    /// one. On a named proof conflict the caller first checks for a sibling's
+    /// newer cached token, then goes terminal if none exists; other failures
+    /// fall through to its reconnect backoff. Every failure leaves the last
+    /// durable proof on disk so a restart can retry recovery.
+    async fn remint(
+        &self,
+        rejected_token: &str,
+    ) -> std::result::Result<String, CreateNodeMintError> {
+        let request_digest =
+            create_node_request_digest(&self.node_id, &self.node_name, &self.broker_version);
+        let preparation = self.token_path.as_deref().map(|path| {
+            prepare_node_rotation(
+                path,
+                &self.node_id,
+                &self.workspace_id,
+                self.base_url.as_deref(),
+                rejected_token,
+                &request_digest,
+            )
+        });
+        self.remint_after_preparation(rejected_token, &request_digest, preparation)
+            .await
+    }
+
+    async fn remint_after_preparation(
+        &self,
+        rejected_token: &str,
+        request_digest: &str,
+        preparation: Option<Result<NodeRotationPreparation>>,
+    ) -> std::result::Result<String, CreateNodeMintError> {
+        let preparation = match preparation {
+            Some(Ok(preparation)) => Some(preparation),
+            Some(Err(error)) => {
+                tracing::warn!(
+                    target = "relay_broker::fleet",
+                    node_id = %self.node_id,
+                    error = %error,
+                    "failed to persist node rotation recovery key; retry is process-local and a successful replacement will be persisted best-effort"
+                );
+                Some(NodeRotationPreparation {
+                    idempotency_key: None,
+                    expected_cache: self.token_path.as_deref().and_then(|path| {
+                        load_scoped_node_token(
+                            path,
+                            &self.node_id,
+                            &self.workspace_id,
+                            self.base_url.as_deref(),
+                        )
+                    }),
+                })
+            }
+            None => None,
+        };
+        let process_key = preparation
+            .as_ref()
+            .and_then(|preparation| preparation.idempotency_key.clone())
+            .unwrap_or_else(|| {
+                process_node_rotation_idempotency_key(
+                    &self.node_id,
+                    &self.workspace_id,
+                    self.base_url.as_deref(),
+                    rejected_token,
+                    request_digest,
+                )
+            });
+        let minted = self
+            .mint_with_idempotency(Some(rejected_token), Some(&process_key))
+            .await?;
+
+        let effective = match (self.token_path.as_deref(), preparation.as_ref()) {
+            (Some(path), Some(preparation)) => match persist_node_token_after_rotation(
+                path,
+                &self.node_id,
+                &self.workspace_id,
+                self.base_url.as_deref(),
+                preparation,
+                &minted,
+            ) {
+                Ok(token) => token,
+                Err(error) => {
                     tracing::warn!(
                         target = "relay_broker::fleet",
                         node_id = %self.node_id,
                         error = %error,
-                        "failed to clear rejected node token cache before re-mint"
+                        "failed to reconcile minted node token with the durable cache"
                     );
+                    minted
                 }
-            }
-        }
-        self.mint().await
+            },
+            _ => minted,
+        };
+        clear_process_node_rotation_idempotency_key(
+            &self.node_id,
+            &self.workspace_id,
+            self.base_url.as_deref(),
+            rejected_token,
+            request_digest,
+        );
+        Ok(effective)
     }
+
+    /// Re-read the durable cache after a proof conflict. Another broker process
+    /// may have won the rotation race while this process's request was in
+    /// flight. Only a different token is useful; returning the rejected token
+    /// would turn a terminal conflict into an infinite retry loop.
+    fn load_different_cached_token(&self, rejected_token: Option<&str>) -> Option<String> {
+        if !self.adopt_cached_token_after_conflict {
+            return None;
+        }
+        self.different_cached_token(rejected_token)
+    }
+
+    fn env_override_shadows_different_cached_token(&self, rejected_token: Option<&str>) -> bool {
+        !self.adopt_cached_token_after_conflict
+            && self.different_cached_token(rejected_token).is_some()
+    }
+
+    fn different_cached_token(&self, rejected_token: Option<&str>) -> Option<String> {
+        let cached = self.token_path.as_deref().and_then(|path| {
+            load_node_token(
+                path,
+                &self.node_id,
+                &self.workspace_id,
+                self.base_url.as_deref(),
+            )
+        })?;
+        rejected_token
+            .is_none_or(|rejected| cached.trim() != rejected.trim())
+            .then_some(cached)
+    }
+}
+
+fn create_node_request_digest(node_id: &str, node_name: &str, broker_version: &str) -> String {
+    let request = create_node_request(node_id, node_name, broker_version);
+    let body = serde_json::to_vec(&request)
+        .expect("CreateNodeRequest contains only infallibly serializable fields");
+    format!("sha256:{:x}", Sha256::digest(body))
 }
 
 pub(crate) fn create_node_request(
@@ -267,6 +431,10 @@ impl CreateNodeMintError {
     }
 }
 
+fn is_node_token_proof_conflict(error: &CreateNodeMintError) -> bool {
+    error.status() == Some(409) && error.code() == Some("node_token_proof_required")
+}
+
 pub(crate) struct MintNodeTokenLogContext<'a> {
     pub(crate) node_id: &'a str,
     pub(crate) workspace_id: &'a str,
@@ -289,6 +457,8 @@ pub(crate) async fn mint_node_token(
     workspace_key: &str,
     base_url: Option<&str>,
     request: relaycast::CreateNodeRequest,
+    current_node_token: Option<&str>,
+    idempotency_key: Option<&str>,
     context: MintNodeTokenLogContext<'_>,
 ) -> std::result::Result<String, CreateNodeMintError> {
     let url = format!(
@@ -319,6 +489,14 @@ pub(crate) async fn mint_node_token(
         // server telemetry can report real users rather than only workspaces.
         for (name, value) in crate::telemetry::cloud_identity_headers() {
             builder = builder.header(name, value);
+        }
+        if let Some(current_node_token) =
+            current_node_token.filter(|token| !token.trim().is_empty())
+        {
+            builder = builder.header("X-Relaycast-Node-Token", current_node_token);
+        }
+        if let Some(idempotency_key) = idempotency_key.filter(|key| !key.trim().is_empty()) {
+            builder = builder.header("Idempotency-Key", idempotency_key);
         }
 
         let response = match builder.json(&request).send().await {
@@ -574,8 +752,12 @@ pub(crate) struct AgentRegistrationToken {
 struct PendingAgentRegistration {
     isolates_channels: bool,
     name: String,
-    reply: oneshot::Sender<Result<AgentRegistrationToken, String>>,
+    request: AgentRegister,
+    reply: Option<oneshot::Sender<Result<AgentRegistrationToken, String>>>,
     created_at: Instant,
+    d1_pressure_retry_attempts: u32,
+    d1_pressure_retry_at: Option<Instant>,
+    last_d1_pressure: Option<String>,
 }
 
 #[derive(Debug)]
@@ -588,6 +770,7 @@ pub(crate) enum FleetControlCommand {
     UpdateLoad(FleetLoadSnapshot),
     HeartbeatNow,
     Send(BrokerToRelaycast),
+    RetainedSend(RetainedFleetCompletion),
     DeregisterAgent {
         request: AgentDeregister,
         reply: oneshot::Sender<Result<(), String>>,
@@ -597,6 +780,12 @@ pub(crate) enum FleetControlCommand {
         reply: oneshot::Sender<Result<AgentRegistrationToken, String>>,
     },
     Shutdown,
+}
+
+#[derive(Debug)]
+pub(crate) struct RetainedFleetCompletion {
+    pub(crate) message: BrokerToRelaycast,
+    pub(crate) delivered: oneshot::Sender<()>,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -1609,7 +1798,7 @@ fn sanitize_node_id_for_filename(node_id: &str) -> String {
     }
 }
 
-#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 struct PersistedNodeToken {
     node_id: String,
     /// Workspace this token was minted for. A node token is only valid against
@@ -1622,6 +1811,117 @@ struct PersistedNodeToken {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     base_url: Option<String>,
     token: String,
+    /// CSPRNG capability for replaying the exact in-flight rotation after a
+    /// lost response or process restart. Cleared only when the replacement
+    /// token has been atomically persisted.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pending_rotation_idempotency_key: Option<String>,
+    /// Digest of the exact create-node request body associated with the pending
+    /// key. Reusing a key for a changed name/version could replay stale data.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pending_rotation_request_digest: Option<String>,
+}
+
+#[derive(Debug, Clone)]
+struct NodeRotationPreparation {
+    idempotency_key: Option<String>,
+    expected_cache: Option<PersistedNodeToken>,
+}
+
+#[derive(Debug, Clone, Copy)]
+enum PendingNodeRotation<'a> {
+    None,
+    Bound {
+        key: &'a str,
+        request_digest: &'a str,
+    },
+    LegacyKey(&'a str),
+}
+
+static PROCESS_NODE_ROTATION_KEYS: OnceLock<std::sync::Mutex<HashMap<String, String>>> =
+    OnceLock::new();
+
+fn process_node_rotation_fingerprint(
+    node_id: &str,
+    workspace_id: &str,
+    base_url: Option<&str>,
+    token: &str,
+    request_digest: &str,
+) -> String {
+    let mut hasher = Sha256::new();
+    for value in [
+        node_id,
+        workspace_id,
+        base_url.unwrap_or_default(),
+        token,
+        request_digest,
+    ] {
+        hasher.update((value.len() as u64).to_le_bytes());
+        hasher.update(value.as_bytes());
+    }
+    format!("{:x}", hasher.finalize())
+}
+
+fn process_node_rotation_idempotency_key(
+    node_id: &str,
+    workspace_id: &str,
+    base_url: Option<&str>,
+    token: &str,
+    request_digest: &str,
+) -> String {
+    let fingerprint =
+        process_node_rotation_fingerprint(node_id, workspace_id, base_url, token, request_digest);
+    let keys = PROCESS_NODE_ROTATION_KEYS.get_or_init(Default::default);
+    let Ok(mut keys) = keys.lock() else {
+        return format!("node-rotation:{}", Uuid::new_v4());
+    };
+    keys.entry(fingerprint)
+        .or_insert_with(|| format!("node-rotation:{}", Uuid::new_v4()))
+        .clone()
+}
+
+fn clear_process_node_rotation_idempotency_key(
+    node_id: &str,
+    workspace_id: &str,
+    base_url: Option<&str>,
+    token: &str,
+    request_digest: &str,
+) {
+    let Some(keys) = PROCESS_NODE_ROTATION_KEYS.get() else {
+        return;
+    };
+    let Ok(mut keys) = keys.lock() else {
+        return;
+    };
+    keys.remove(&process_node_rotation_fingerprint(
+        node_id,
+        workspace_id,
+        base_url,
+        token,
+        request_digest,
+    ));
+}
+
+fn load_scoped_node_token(
+    path: &Path,
+    node_id: &str,
+    workspace_id: &str,
+    base_url: Option<&str>,
+) -> Option<PersistedNodeToken> {
+    let raw = fs::read_to_string(path).ok()?;
+    let persisted: PersistedNodeToken = serde_json::from_str(&raw).ok()?;
+    if persisted.node_id != node_id || persisted.workspace_id != workspace_id {
+        return None;
+    }
+    // Only enforce the base URL when both the cache and the current run carry
+    // one; a cache written before base_url existed (None) stays usable so long
+    // as the workspace matches.
+    if let (Some(cached), Some(current)) = (persisted.base_url.as_deref(), base_url) {
+        if cached != current {
+            return None;
+        }
+    }
+    (!persisted.token.trim().is_empty()).then_some(persisted)
 }
 
 /// Load a previously minted node token, but only if it was minted for the same
@@ -1636,27 +1936,175 @@ pub(crate) fn load_node_token(
     workspace_id: &str,
     base_url: Option<&str>,
 ) -> Option<String> {
-    let raw = fs::read_to_string(path).ok()?;
-    let persisted: PersistedNodeToken = serde_json::from_str(&raw).ok()?;
-    if persisted.node_id != node_id {
-        return None;
-    }
-    if persisted.workspace_id != workspace_id {
-        return None;
-    }
-    // Only enforce the base URL when both the cache and the current run carry
-    // one; a cache written before base_url existed (None) stays usable so long
-    // as the workspace matches.
-    if let (Some(cached), Some(current)) = (persisted.base_url.as_deref(), base_url) {
-        if cached != current {
-            return None;
-        }
-    }
-    let token = persisted.token.trim();
-    (!token.is_empty()).then(|| token.to_string())
+    load_scoped_node_token(path, node_id, workspace_id, base_url)
+        .map(|persisted| persisted.token.trim().to_string())
 }
 
-/// Persist a minted node token next to the node id, scoped to `node_id`,
+/// Reuse a durable rotation capability if one is already pending; otherwise
+/// create and atomically persist it alongside the retained token before the
+/// request can commit. This closes both the lost-response and process-crash
+/// windows without deleting the only credential that can prove node ownership.
+fn prepare_node_rotation(
+    path: &Path,
+    node_id: &str,
+    workspace_id: &str,
+    base_url: Option<&str>,
+    token: &str,
+    request_digest: &str,
+) -> Result<NodeRotationPreparation> {
+    let _lock = lock_node_token_cache(path)?;
+    if let Some(persisted) = load_scoped_node_token(path, node_id, workspace_id, base_url) {
+        if persisted.token.trim() != token.trim() {
+            // The active credential came from a non-cache source (most notably
+            // RELAY_NODE_TOKEN, whose contract is "never persisted") or the
+            // cache was rotated by a sibling process. Never overwrite that
+            // durable credential with the token the server just rejected.
+            return Ok(NodeRotationPreparation {
+                idempotency_key: None,
+                expected_cache: Some(persisted),
+            });
+        }
+        if let Some(key) = persisted
+            .pending_rotation_idempotency_key
+            .as_deref()
+            .filter(|key| {
+                !key.trim().is_empty()
+                    && persisted.pending_rotation_request_digest.as_deref() == Some(request_digest)
+            })
+        {
+            return Ok(NodeRotationPreparation {
+                idempotency_key: Some(key.to_string()),
+                expected_cache: Some(persisted),
+            });
+        }
+    } else {
+        // Without a matching durable token, the rejected credential may be an
+        // environment override. Keep it process-local and omit the recovery
+        // key rather than materializing either value on disk.
+        return Ok(NodeRotationPreparation {
+            idempotency_key: None,
+            expected_cache: None,
+        });
+    }
+
+    let key = format!("node-rotation:{}", Uuid::new_v4());
+    persist_node_token_state(
+        path,
+        node_id,
+        workspace_id,
+        base_url,
+        token,
+        PendingNodeRotation::Bound {
+            key: &key,
+            request_digest,
+        },
+    )?;
+    Ok(NodeRotationPreparation {
+        idempotency_key: Some(key.clone()),
+        expected_cache: Some(PersistedNodeToken {
+            node_id: node_id.to_string(),
+            workspace_id: workspace_id.to_string(),
+            base_url: base_url.map(ToOwned::to_owned),
+            token: token.to_string(),
+            pending_rotation_idempotency_key: Some(key),
+            pending_rotation_request_digest: Some(request_digest.to_string()),
+        }),
+    })
+}
+
+fn lock_node_token_cache(path: &Path) -> Result<fs::File> {
+    let parent = path.parent().unwrap_or_else(|| Path::new("."));
+    fs::create_dir_all(parent)
+        .with_context(|| format!("failed to create node token dir {}", parent.display()))?;
+    let lock_path = path.with_extension("lock");
+    let mut options = fs::OpenOptions::new();
+    options.read(true).write(true).create(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        options.mode(0o600);
+    }
+    let lock = options
+        .open(&lock_path)
+        .with_context(|| format!("failed to open node token lock {}", lock_path.display()))?;
+    lock.lock()
+        .with_context(|| format!("failed to lock node token cache {}", path.display()))?;
+    Ok(lock)
+}
+
+fn persist_node_token_after_rotation(
+    path: &Path,
+    node_id: &str,
+    workspace_id: &str,
+    base_url: Option<&str>,
+    preparation: &NodeRotationPreparation,
+    minted_token: &str,
+) -> Result<String> {
+    let _lock = lock_node_token_cache(path)?;
+    let current = load_scoped_node_token(path, node_id, workspace_id, base_url);
+    if current.as_ref() != preparation.expected_cache.as_ref() {
+        if matches!(
+            (&preparation.expected_cache, &current),
+            (Some(expected), Some(current))
+                if current.token.trim() == expected.token.trim()
+        ) {
+            // A sibling may have replaced only the pending rotation metadata.
+            // Relaycast accepted this proof, so the minted credential is newer
+            // than the token both cache versions still hold.
+            let current = current.as_ref().expect("same-token match requires cache");
+            let concurrent_pending = match (
+                current.pending_rotation_idempotency_key.as_deref(),
+                current.pending_rotation_request_digest.as_deref(),
+            ) {
+                (Some(key), Some(request_digest)) => PendingNodeRotation::Bound {
+                    key,
+                    request_digest,
+                },
+                (Some(key), None) => PendingNodeRotation::LegacyKey(key),
+                (None, _) => PendingNodeRotation::None,
+            };
+            persist_node_token_state(
+                path,
+                node_id,
+                workspace_id,
+                base_url,
+                minted_token,
+                concurrent_pending,
+            )?;
+            return Ok(minted_token.to_string());
+        }
+        let cache_advanced = match (&preparation.expected_cache, &current) {
+            (Some(expected), Some(current)) => current.token.trim() != expected.token.trim(),
+            (None, Some(_)) => true,
+            _ => false,
+        };
+        if cache_advanced {
+            let current = current.expect("cache_advanced requires a current cache");
+            tracing::info!(
+                target = "relay_broker::fleet",
+                node_id,
+                workspace_id,
+                "node token cache advanced during rotation; retaining the newer cached credential"
+            );
+            return Ok(current.token.trim().to_string());
+        }
+        // A concurrent removal must not be overwritten. The minted token is
+        // still valid for this process.
+        return Ok(minted_token.to_string());
+    }
+
+    persist_node_token_state(
+        path,
+        node_id,
+        workspace_id,
+        base_url,
+        minted_token,
+        PendingNodeRotation::None,
+    )?;
+    Ok(minted_token.to_string())
+}
+
+/// Atomically persist a minted node token next to the node id, scoped to `node_id`,
 /// `workspace_id` and the engine `base_url` so an id rotation, a different
 /// workspace, or a different engine all invalidate it. Failures are surfaced as
 /// `Err` but are non-fatal to startup — the caller logs and continues with the
@@ -1668,19 +2116,119 @@ pub(crate) fn persist_node_token(
     base_url: Option<&str>,
     token: &str,
 ) -> Result<()> {
+    let _lock = lock_node_token_cache(path)?;
+    persist_node_token_state(
+        path,
+        node_id,
+        workspace_id,
+        base_url,
+        token,
+        PendingNodeRotation::None,
+    )
+}
+
+fn persist_node_token_state(
+    path: &Path,
+    node_id: &str,
+    workspace_id: &str,
+    base_url: Option<&str>,
+    token: &str,
+    pending_rotation: PendingNodeRotation<'_>,
+) -> Result<()> {
+    persist_node_token_state_with_sync(
+        path,
+        node_id,
+        workspace_id,
+        base_url,
+        token,
+        pending_rotation,
+        sync_parent_directory,
+    )
+}
+
+fn persist_node_token_state_with_sync<F>(
+    path: &Path,
+    node_id: &str,
+    workspace_id: &str,
+    base_url: Option<&str>,
+    token: &str,
+    pending_rotation: PendingNodeRotation<'_>,
+    sync_directory: F,
+) -> Result<()>
+where
+    F: FnOnce(&Path) -> Result<()>,
+{
     if let Some(parent) = path.parent() {
         fs::create_dir_all(parent)
             .with_context(|| format!("failed to create node token dir {}", parent.display()))?;
     }
+    let (pending_rotation_idempotency_key, pending_rotation_request_digest) = match pending_rotation
+    {
+        PendingNodeRotation::None => (None, None),
+        PendingNodeRotation::Bound {
+            key,
+            request_digest,
+        } => (Some(key.to_string()), Some(request_digest.to_string())),
+        PendingNodeRotation::LegacyKey(key) => (Some(key.to_string()), None),
+    };
     let body = serde_json::to_string(&PersistedNodeToken {
         node_id: node_id.to_string(),
         workspace_id: workspace_id.to_string(),
         base_url: base_url.map(ToOwned::to_owned),
         token: token.to_string(),
+        pending_rotation_idempotency_key,
+        pending_rotation_request_digest,
     })
     .context("failed to serialize node token")?;
-    fs::write(path, body)
-        .with_context(|| format!("failed to write node token file {}", path.display()))?;
+    let parent = path.parent().unwrap_or_else(|| Path::new("."));
+    let mut temporary = tempfile::NamedTempFile::new_in(parent).with_context(|| {
+        format!(
+            "failed to create node token temp file in {}",
+            parent.display()
+        )
+    })?;
+    temporary.write_all(body.as_bytes()).with_context(|| {
+        format!(
+            "failed to write node token temp file for {}",
+            path.display()
+        )
+    })?;
+    temporary
+        .as_file()
+        .sync_all()
+        .with_context(|| format!("failed to sync node token temp file for {}", path.display()))?;
+    temporary
+        .persist(path)
+        .map_err(|error| error.error)
+        .with_context(|| format!("failed to replace node token file {}", path.display()))?;
+    // The rename has committed at this point. A directory-sync failure means
+    // crash durability is uncertain, but returning Err would be worse: remint
+    // would generate a different process-local key from the one now visible on
+    // disk. Keep using the committed key and report the durability degradation.
+    if let Err(error) = sync_directory(parent) {
+        tracing::warn!(
+            target = "relay_broker::fleet",
+            path = %path.display(),
+            error = %error,
+            "node token replacement is visible but parent-directory sync failed"
+        );
+    }
+    Ok(())
+}
+
+#[cfg(unix)]
+fn sync_parent_directory(parent: &Path) -> Result<()> {
+    let directory = fs::File::open(parent)
+        .with_context(|| format!("failed to open node token directory {}", parent.display()))?;
+    directory
+        .sync_all()
+        .with_context(|| format!("failed to sync node token directory {}", parent.display()))
+}
+
+#[cfg(not(unix))]
+fn sync_parent_directory(_parent: &Path) -> Result<()> {
+    // Directory handles are not portably fsyncable outside Unix. The file
+    // content is still flushed before the atomic replacement above.
     Ok(())
 }
 
@@ -1704,6 +2252,7 @@ fn handle_disconnected_command(
     registration: &mut Option<NodeRegister>,
     load: &mut FleetLoadSnapshot,
     inventory: &mut Vec<InventoryAgent>,
+    retained_completion: &mut Option<RetainedFleetCompletion>,
     register_agent_error: &str,
 ) -> DisconnectedCommandOutcome {
     match command {
@@ -1740,15 +2289,52 @@ fn handle_disconnected_command(
                     "dropping fleet frame while disconnected");
             }
         }
+        Some(FleetControlCommand::RetainedSend(completion)) => {
+            *retained_completion = Some(completion);
+        }
         Some(FleetControlCommand::HeartbeatNow) => {}
         Some(FleetControlCommand::Shutdown) | None => return DisconnectedCommandOutcome::Shutdown,
     }
     DisconnectedCommandOutcome::Handled
 }
 
+async fn recv_control_command(
+    command_rx: &mut mpsc::Receiver<FleetControlCommand>,
+    completion_rx: &mut mpsc::UnboundedReceiver<RetainedFleetCompletion>,
+    retained_completion: &mut Option<RetainedFleetCompletion>,
+) -> Option<FleetControlCommand> {
+    if let Some(completion) = retained_completion.take() {
+        return Some(FleetControlCommand::RetainedSend(completion));
+    }
+    tokio::select! {
+        // Retained action results are terminal caller outcomes. Prefer them to
+        // ordinary bounded control traffic once they become ready, especially
+        // during broker shutdown when the normal queue may already be full.
+        biased;
+        completion = completion_rx.recv(), if !(completion_rx.is_closed() && completion_rx.is_empty()) => {
+            completion.map(FleetControlCommand::RetainedSend)
+        }
+        command = command_rx.recv() => command,
+    }
+}
+
+#[cfg(test)]
 pub(crate) async fn run_node_control_client(
+    config: FleetControlConfig,
+    command_rx: mpsc::Receiver<FleetControlCommand>,
+    event_tx: mpsc::Sender<FleetControlEvent>,
+) {
+    // Most callers, including focused node-control tests, do not need the
+    // retained-completion lane. Keep the ordinary entry point while production
+    // supplies the dedicated receiver below.
+    let (_completion_tx, completion_rx) = mpsc::unbounded_channel();
+    run_node_control_client_with_completions(config, command_rx, completion_rx, event_tx).await;
+}
+
+pub(crate) async fn run_node_control_client_with_completions(
     mut config: FleetControlConfig,
     mut command_rx: mpsc::Receiver<FleetControlCommand>,
+    mut completion_rx: mpsc::UnboundedReceiver<RetainedFleetCompletion>,
     event_tx: mpsc::Sender<FleetControlEvent>,
 ) {
     let mut registration: Option<NodeRegister> = None;
@@ -1762,8 +2348,17 @@ pub(crate) async fn run_node_control_client(
     // toward [`MAX_UNAUTHORIZED_BEFORE_GIVING_UP`] even when each mint succeeds,
     // and each retry honors the backoff sleep at the bottom of the loop.
     let mut consecutive_unauthorized: u32 = 0;
+    // A proof conflict can be the benign race where another broker process
+    // rotated the shared cache while our request was in flight. Adopt that
+    // token once, but never follow an unbounded chain of cache changes.
+    let mut proof_conflict_cache_retry_used = false;
+    let mut retained_completion: Option<RetainedFleetCompletion> = None;
+    let mut retained_pressure_frames: VecDeque<BrokerToRelaycast> = VecDeque::new();
 
     loop {
+        // Retained completion frames stay in their unbounded lane until a
+        // node session is registered. Treating them like ordinary commands
+        // here would drop them in `handle_disconnected_command`.
         while registration.is_none() {
             if matches!(
                 handle_disconnected_command(
@@ -1772,12 +2367,17 @@ pub(crate) async fn run_node_control_client(
                     &mut registration,
                     &mut load,
                     &mut inventory,
+                    &mut retained_completion,
                     "node_not_registered",
                 ),
                 DisconnectedCommandOutcome::Shutdown
             ) {
                 return;
             }
+        }
+
+        if let Some(probe) = &config.probe {
+            probe.record_node_control_connecting();
         }
 
         if config
@@ -1795,54 +2395,105 @@ pub(crate) async fn run_node_control_client(
             // rather than idling forever — realtime delivery self-heals once the
             // engine is reachable.
             if let Some(minter) = config.token_minter.as_ref() {
-                if let Some(fresh) = minter.mint().await {
-                    config.node_token = Some(fresh);
-                    if let Some(shared) = &config.session_token {
-                        if let Ok(mut guard) = shared.write() {
-                            guard.clone_from(&config.node_token);
+                match minter.mint(None).await {
+                    Ok(fresh) => {
+                        config.node_token = Some(fresh);
+                        if let Some(shared) = &config.session_token {
+                            if let Ok(mut guard) = shared.write() {
+                                guard.clone_from(&config.node_token);
+                            }
                         }
+                        // A successful mint proves the engine is reachable, so reset
+                        // the backoff any earlier mint failures grew — the first
+                        // `/v1/node/ws` connect should start from the minimum delay,
+                        // not inherit a bloated one.
+                        reconnect_delay = INITIAL_RECONNECT_DELAY;
                     }
-                    // A successful mint proves the engine is reachable, so reset
-                    // the backoff any earlier mint failures grew — the first
-                    // `/v1/node/ws` connect should start from the minimum delay,
-                    // not inherit a bloated one.
-                    reconnect_delay = INITIAL_RECONNECT_DELAY;
-                } else {
-                    tracing::warn!(
-                        target = "relay_broker::fleet",
-                        node_id = %config.node_id,
-                        "node token mint failed; retrying after backoff (realtime delivery pending)"
-                    );
-                    // Stay responsive during the backoff instead of a blind
-                    // sleep: a spawn's `RegisterAgent` must get an immediate
-                    // `node_token_missing` (so the caller falls back to HTTP
-                    // register) rather than blocking on the 30s register timeout,
-                    // and load/inventory updates must keep draining so the bounded
-                    // control channel can't fill during a Relaycast outage.
-                    let backoff = tokio::time::sleep(reconnect_delay);
-                    tokio::pin!(backoff);
-                    loop {
-                        tokio::select! {
-                            _ = &mut backoff => break,
-                            command = command_rx.recv() => {
-                                if matches!(
-                                    handle_disconnected_command(
-                                        command,
-                                        &config,
-                                        &mut registration,
-                                        &mut load,
-                                        &mut inventory,
-                                        "node_token_missing",
-                                    ),
-                                    DisconnectedCommandOutcome::Shutdown
-                                ) {
-                                    return;
+                    Err(error) => {
+                        if is_node_token_proof_conflict(&error) {
+                            let cached = (!proof_conflict_cache_retry_used)
+                                .then(|| minter.load_different_cached_token(None))
+                                .flatten();
+                            if let Some(cached) = cached {
+                                config.node_token = Some(cached);
+                                if let Some(shared) = &config.session_token {
+                                    if let Ok(mut guard) = shared.write() {
+                                        guard.clone_from(&config.node_token);
+                                    }
+                                }
+                                proof_conflict_cache_retry_used = true;
+                                tracing::warn!(
+                                    target = "relay_broker::fleet",
+                                    node_id = %config.node_id,
+                                    "node token cache changed during enrollment; adopting the cached credential and retrying once"
+                                );
+                                continue;
+                            }
+                            let env_override_rejected =
+                                minter.env_override_shadows_different_cached_token(None);
+                            if let Some(probe) = &config.probe {
+                                if env_override_rejected {
+                                    probe.record_env_node_token_rejected_terminal();
+                                } else {
+                                    probe.record_node_token_proof_conflict_terminal();
+                                }
+                            }
+                            if env_override_rejected {
+                                tracing::error!(
+                                    target = "relay_broker::fleet",
+                                    node_id = %config.node_id,
+                                    "NODE TOKEN ENROLLMENT TERMINAL: RELAY_NODE_TOKEN override was rejected; the scoped cache holds a different credential that cannot be used while the override is set. Re-enroll this Cloud node or unset RELAY_NODE_TOKEN; realtime delivery stopped"
+                                );
+                            } else {
+                                tracing::error!(
+                                    target = "relay_broker::fleet",
+                                    node_id = %config.node_id,
+                                    "NODE TOKEN ENROLLMENT TERMINAL: node_token_proof_required and no newer cached credential is available; realtime delivery stopped"
+                                );
+                            }
+                            let _ = event_tx.send(FleetControlEvent::Disconnected).await;
+                            return;
+                        }
+                        tracing::warn!(
+                            target = "relay_broker::fleet",
+                            node_id = %config.node_id,
+                            "node token mint failed; retrying after backoff (realtime delivery pending)"
+                        );
+                        if let Some(probe) = &config.probe {
+                            probe.record_node_control_backoff();
+                        }
+                        // Stay responsive during the backoff instead of a blind
+                        // sleep: a spawn's `RegisterAgent` must get an immediate
+                        // `node_token_missing` (so the caller falls back to HTTP
+                        // register) rather than blocking on the 30s register timeout,
+                        // and load/inventory updates must keep draining so the bounded
+                        // control channel can't fill during a Relaycast outage.
+                        let backoff = tokio::time::sleep(reconnect_delay);
+                        tokio::pin!(backoff);
+                        loop {
+                            tokio::select! {
+                                _ = &mut backoff => break,
+                                command = command_rx.recv() => {
+                                    if matches!(
+                                        handle_disconnected_command(
+                                            command,
+                                            &config,
+                                            &mut registration,
+                                            &mut load,
+                                            &mut inventory,
+                                            &mut retained_completion,
+                                            "node_token_missing",
+                                        ),
+                                        DisconnectedCommandOutcome::Shutdown
+                                    ) {
+                                        return;
+                                    }
                                 }
                             }
                         }
+                        reconnect_delay = (reconnect_delay * 2).min(MAX_RECONNECT_DELAY);
+                        continue;
                     }
-                    reconnect_delay = (reconnect_delay * 2).min(MAX_RECONNECT_DELAY);
-                    continue;
                 }
             } else {
                 // No minter available (e.g. no workspace RelayCast client). Can't
@@ -1854,6 +2505,7 @@ pub(crate) async fn run_node_control_client(
                         &mut registration,
                         &mut load,
                         &mut inventory,
+                        &mut retained_completion,
                         "node_token_missing",
                     ),
                     DisconnectedCommandOutcome::Shutdown
@@ -1864,14 +2516,18 @@ pub(crate) async fn run_node_control_client(
             }
         }
 
-        let result = run_connected_once(
+        let result = run_connected_once_with_completions(
             &config,
             &mut command_rx,
+            &mut completion_rx,
+            &mut retained_completion,
+            &mut retained_pressure_frames,
             &event_tx,
             &mut registration,
             &mut inventory,
             &mut load,
             INVENTORY_REFRESH_INTERVAL,
+            ControlRetryPolicy::DEFAULT,
         )
         .await;
         if matches!(result, ControlRunResult::Shutdown) {
@@ -1890,6 +2546,7 @@ pub(crate) async fn run_node_control_client(
             // must preserve both the 401 history and exponential backoff.
             consecutive_unauthorized = 0;
             reconnect_delay = INITIAL_RECONNECT_DELAY;
+            proof_conflict_cache_retry_used = false;
         }
         if matches!(result, ControlRunResult::Unauthorized) {
             // The engine rejected our current node token. Re-mint a fresh one
@@ -1897,24 +2554,74 @@ pub(crate) async fn run_node_control_client(
             consecutive_unauthorized = consecutive_unauthorized.saturating_add(1);
             if let Some(minter) = config.token_minter.as_ref() {
                 if should_attempt_remint(consecutive_unauthorized) {
-                    if let Some(fresh) = minter.remint().await {
-                        // Install the fresh token and retry, but fall through to
-                        // the shared backoff sleep at the bottom of the loop
-                        // rather than `continue`-ing past it. The delay throttles
-                        // the next connect attempt so a server that 401s every
-                        // freshly minted token can't be hammered. The counter is
-                        // intentionally NOT reset here; it only resets once a
-                        // correlated inventory reply establishes application readiness
-                        // (the `Disconnected` arm above), so repeated 401s still accumulate toward the cap
-                        // even when each mint succeeds.
-                        config.node_token = Some(fresh);
-                        // Mirror the fresh token to the HTTP session so a provider
-                        // reading it after this re-mint gets the valid token.
-                        if let Some(shared) = &config.session_token {
-                            if let Ok(mut guard) = shared.write() {
-                                guard.clone_from(&config.node_token);
+                    let rejected_token = config.node_token.as_deref().unwrap_or_default();
+                    match minter.remint(rejected_token).await {
+                        Ok(fresh) => {
+                            // Install the fresh token and retry, but fall through to
+                            // the shared backoff sleep at the bottom of the loop
+                            // rather than `continue`-ing past it. The delay throttles
+                            // the next connect attempt so a server that 401s every
+                            // freshly minted token can't be hammered. The counter is
+                            // intentionally NOT reset here; it only resets once a
+                            // correlated inventory reply establishes application readiness
+                            // (the `Disconnected` arm above), so repeated 401s still accumulate toward the cap
+                            // even when each mint succeeds.
+                            config.node_token = Some(fresh);
+                            // Mirror the fresh token to the HTTP session so a provider
+                            // reading it after this re-mint gets the valid token.
+                            if let Some(shared) = &config.session_token {
+                                if let Ok(mut guard) = shared.write() {
+                                    guard.clone_from(&config.node_token);
+                                }
                             }
                         }
+                        Err(error) if is_node_token_proof_conflict(&error) => {
+                            let cached = (!proof_conflict_cache_retry_used)
+                                .then(|| minter.load_different_cached_token(Some(rejected_token)))
+                                .flatten();
+                            if let Some(cached) = cached {
+                                config.node_token = Some(cached);
+                                if let Some(shared) = &config.session_token {
+                                    if let Ok(mut guard) = shared.write() {
+                                        guard.clone_from(&config.node_token);
+                                    }
+                                }
+                                proof_conflict_cache_retry_used = true;
+                                tracing::warn!(
+                                    target = "relay_broker::fleet",
+                                    node_id = %config.node_id,
+                                    "node token cache changed during recovery; adopting the cached credential and retrying once"
+                                );
+                            } else {
+                                let env_override_rejected = minter
+                                    .env_override_shadows_different_cached_token(Some(
+                                        rejected_token,
+                                    ));
+                                if let Some(probe) = &config.probe {
+                                    if env_override_rejected {
+                                        probe.record_env_node_token_rejected_terminal();
+                                    } else {
+                                        probe.record_node_token_proof_conflict_terminal();
+                                    }
+                                }
+                                if env_override_rejected {
+                                    tracing::error!(
+                                        target = "relay_broker::fleet",
+                                        node_id = %config.node_id,
+                                        "NODE TOKEN RECOVERY TERMINAL: RELAY_NODE_TOKEN override was rejected; the scoped cache holds a different credential that cannot be used while the override is set. Re-enroll this Cloud node or unset RELAY_NODE_TOKEN; realtime delivery stopped"
+                                    );
+                                } else {
+                                    tracing::error!(
+                                        target = "relay_broker::fleet",
+                                        node_id = %config.node_id,
+                                        "NODE TOKEN RECOVERY TERMINAL: node_token_proof_required and no newer cached credential is available; realtime delivery stopped"
+                                    );
+                                }
+                                let _ = event_tx.send(FleetControlEvent::Disconnected).await;
+                                return;
+                            }
+                        }
+                        Err(_) => {}
                     }
                 } else {
                     tracing::error!(
@@ -1947,6 +2654,9 @@ pub(crate) async fn run_node_control_client(
             reconnect_delay_ms = reconnect_delay.as_millis(),
             "node-control transition: unhealthy; reconnect scheduled"
         );
+        if let Some(probe) = &config.probe {
+            probe.record_node_control_backoff();
+        }
         let _ = event_tx.send(FleetControlEvent::Disconnected).await;
         tokio::time::sleep(reconnect_delay).await;
         if !application_ready {
@@ -1994,21 +2704,202 @@ struct PendingInventorySync {
     superseded: bool,
 }
 
+struct PendingRetryableControlFrame {
+    frame: BrokerToRelaycast,
+    created_at: Instant,
+    retry_attempts: u32,
+    retry_at: Option<Instant>,
+    last_d1_pressure: Option<String>,
+    replayed_after_pressure: bool,
+}
+
+#[derive(Debug, PartialEq, Eq)]
+enum ControlPressureRetry {
+    Unmatched,
+    Scheduled(Duration),
+    Exhausted,
+}
+
 struct ApplicationLiveness {
     deadline: Duration,
+    control_retry_policy: ControlRetryPolicy,
     last_acknowledged: Instant,
     pending_inventory_syncs: VecDeque<PendingInventorySync>,
+    pending_retryable_control_frames: HashMap<String, PendingRetryableControlFrame>,
+    exhausted_retryable_control_frames: HashMap<String, Instant>,
     ready: bool,
 }
 
 impl ApplicationLiveness {
+    #[cfg(test)]
     fn new(deadline: Duration) -> Self {
+        Self::new_with_retry_policy(deadline, ControlRetryPolicy::DEFAULT)
+    }
+
+    fn new_with_retry_policy(deadline: Duration, control_retry_policy: ControlRetryPolicy) -> Self {
         Self {
             deadline,
+            control_retry_policy,
             last_acknowledged: Instant::now(),
             pending_inventory_syncs: VecDeque::new(),
+            pending_retryable_control_frames: HashMap::new(),
+            exhausted_retryable_control_frames: HashMap::new(),
             ready: false,
         }
+    }
+
+    fn track_retryable_control_frame(&mut self, id: String, frame: BrokerToRelaycast) {
+        self.exhausted_retryable_control_frames.remove(&id);
+        self.pending_retryable_control_frames.insert(
+            id,
+            PendingRetryableControlFrame {
+                frame,
+                created_at: Instant::now(),
+                retry_attempts: 0,
+                retry_at: None,
+                last_d1_pressure: None,
+                replayed_after_pressure: false,
+            },
+        );
+    }
+
+    fn mark_retryable_control_frame_replayed(&mut self, id: &str) {
+        if let Some(pending) = self.pending_retryable_control_frames.get_mut(id) {
+            pending.replayed_after_pressure = true;
+        }
+    }
+
+    fn complete_retryable_control_frame(&mut self, id: &str) {
+        self.pending_retryable_control_frames.remove(id);
+    }
+
+    fn consume_exhausted_retryable_control_frame(&mut self, id: &str) -> bool {
+        self.exhausted_retryable_control_frames.remove(id).is_some()
+    }
+
+    fn schedule_control_d1_pressure_retry(
+        &mut self,
+        id: &str,
+        reason: &str,
+        now: Instant,
+    ) -> ControlPressureRetry {
+        let Some(pending) = self.pending_retryable_control_frames.get_mut(id) else {
+            return ControlPressureRetry::Unmatched;
+        };
+        pending.last_d1_pressure = Some(reason.to_string());
+        let deadline = pending.created_at + self.control_retry_policy.budget;
+        if pending.retry_attempts >= self.control_retry_policy.max_retries || now >= deadline {
+            return ControlPressureRetry::Exhausted;
+        }
+        let next_attempt = pending.retry_attempts.saturating_add(1);
+        let delay = self.control_retry_policy.retry_delay(next_attempt);
+        if now
+            .checked_add(delay)
+            .is_none_or(|retry_at| retry_at > deadline)
+        {
+            return ControlPressureRetry::Exhausted;
+        }
+        pending.retry_attempts = next_attempt;
+        pending.retry_at = Some(now + delay);
+        ControlPressureRetry::Scheduled(delay)
+    }
+
+    fn next_control_retry_event_delay(&self, now: Instant) -> Option<Duration> {
+        // Successful delivery acknowledgements and non-task action results are
+        // intentionally one-way: the engine sends no positive reply. Their
+        // entries therefore live until this bounded budget elapses. Memory is
+        // bounded to roughly one budget window of control traffic, and this
+        // O(n) deadline scan covers only that window rather than session age.
+        self.pending_retryable_control_frames
+            .values()
+            .flat_map(|pending| {
+                [
+                    pending.retry_at,
+                    Some(pending.created_at + self.control_retry_policy.budget),
+                ]
+            })
+            .flatten()
+            .chain(
+                self.exhausted_retryable_control_frames
+                    .values()
+                    .map(|exhausted_at| *exhausted_at + self.control_retry_policy.budget),
+            )
+            .map(|event_at| event_at.saturating_duration_since(now))
+            .min()
+    }
+
+    fn expire_retryable_control_frames(
+        &mut self,
+        now: Instant,
+    ) -> Vec<(String, String, BrokerToRelaycast, bool)> {
+        self.exhausted_retryable_control_frames
+            .retain(|_, exhausted_at| {
+                now.saturating_duration_since(*exhausted_at) < self.control_retry_policy.budget
+            });
+        let expired: Vec<String> = self
+            .pending_retryable_control_frames
+            .iter()
+            .filter(|(_, pending)| {
+                now.saturating_duration_since(pending.created_at)
+                    >= self.control_retry_policy.budget
+            })
+            .map(|(id, _)| id.clone())
+            .collect();
+        expired
+            .into_iter()
+            .filter_map(|id| {
+                let pending = self.pending_retryable_control_frames.remove(&id)?;
+                pending.last_d1_pressure.map(|reason| {
+                    // At most one response can still be in flight because a retry is
+                    // scheduled only after the previous pressure response arrives.
+                    // Keep a one-shot tombstone so that late terminal response cannot
+                    // produce a second task outcome after the timeout path below.
+                    self.exhausted_retryable_control_frames
+                        .insert(id.clone(), now);
+                    (
+                        id,
+                        format!("d1_pressure: {reason} (retry budget exhausted)"),
+                        pending.frame,
+                        pending.replayed_after_pressure,
+                    )
+                })
+            })
+            .collect()
+    }
+
+    fn take_retryable_control_frame(&mut self, id: &str) -> Option<PendingRetryableControlFrame> {
+        self.pending_retryable_control_frames.remove(id)
+    }
+
+    fn retain_non_task_action_results(
+        &mut self,
+        retained_pressure_frames: &mut VecDeque<BrokerToRelaycast>,
+    ) {
+        let retained_ids: Vec<String> = self
+            .pending_retryable_control_frames
+            .iter()
+            .filter(|(id, pending)| {
+                !id.starts_with(crate::runtime::task_request_prefix())
+                    && matches!(&pending.frame, BrokerToRelaycast::ActionResult(_))
+                    && pending.last_d1_pressure.is_some()
+            })
+            .map(|(id, _)| id.clone())
+            .collect();
+        for id in retained_ids {
+            if let Some(pending) = self.pending_retryable_control_frames.remove(&id) {
+                retained_pressure_frames.push_back(pending.frame);
+            }
+        }
+    }
+
+    fn take_due_control_retry(&mut self, now: Instant) -> Option<BrokerToRelaycast> {
+        let pending = self
+            .pending_retryable_control_frames
+            .values_mut()
+            .filter(|pending| pending.retry_at.is_some_and(|retry_at| retry_at <= now))
+            .min_by_key(|pending| pending.retry_at)?;
+        pending.retry_at = None;
+        Some(pending.frame.clone())
     }
 
     fn track_inventory_sync(&mut self, frame: InventorySync) {
@@ -2152,6 +3043,8 @@ impl Drop for ProbeSessionGuard<'_> {
 /// the main loop uses once this gate opens — preserving the ordering an
 /// `UpdateInventory`/`RegisterAgent`/etc. would have had if it had simply
 /// arrived a moment later, after the registration reply.
+/// Retained completion frames deliberately remain queued in their dedicated
+/// receiver during this gate and are consumed only after registration succeeds.
 async fn register_node_session<S, R>(
     sink: &mut S,
     stream: &mut R,
@@ -2276,6 +3169,8 @@ async fn handle_connected_command<S>(
     pending_agent_registrations: &mut HashMap<String, PendingAgentRegistration>,
     pending_deregistrations: &mut HashMap<String, oneshot::Sender<Result<(), String>>>,
     application_liveness: &mut ApplicationLiveness,
+    retained_completion: &mut Option<RetainedFleetCompletion>,
+    retained_pressure_frames: &mut VecDeque<BrokerToRelaycast>,
 ) -> std::ops::ControlFlow<ControlRunResult>
 where
     S: Sink<Message> + Unpin,
@@ -2343,13 +3238,16 @@ where
             }
             Continue(())
         }
-        Some(FleetControlCommand::Send(message)) => {
+        Some(FleetControlCommand::Send(mut message)) => {
             // A `delivery_ack` is the engine's only evidence that a
             // frame was consumed. The runtime records the *decision*
             // to ack before handing it here and cannot wait for the
             // wire, so the probe learns the outcome at the one place
             // that knows it. See `NodeDeliveryProbe::record_ack_sent`.
             let is_ack = matches!(message, BrokerToRelaycast::DeliveryAck(_));
+            if let Some((request_id, _)) = prepare_retryable_control_frame(&mut message) {
+                application_liveness.track_retryable_control_frame(request_id, message.clone());
+            }
             let sent = send_wire(sink, &message).await;
             if let (true, Some(probe)) = (is_ack, config.probe.as_ref()) {
                 if sent.is_ok() {
@@ -2361,7 +3259,18 @@ where
             if sent.is_err() {
                 if let BrokerToRelaycast::ActionResult(result) = &message {
                     tracing::warn!(invocation_id = %result.invocation_id, frame_kind = "action.result",
-                        "dropping fleet frame after wire send failure");
+                        "retaining fleet result for replay after reconnect");
+                    if result.task.is_none()
+                        && !result
+                            .id
+                            .as_deref()
+                            .is_some_and(|id| id.starts_with(crate::runtime::task_request_prefix()))
+                    {
+                        if let Some(id) = result.id.as_deref() {
+                            application_liveness.complete_retryable_control_frame(id);
+                        }
+                        retained_pressure_frames.push_back(message);
+                    }
                 }
                 return Break(ControlRunResult::Disconnected {
                     application_ready: application_liveness.ready,
@@ -2369,15 +3278,33 @@ where
             }
             Continue(())
         }
+        Some(FleetControlCommand::RetainedSend(mut completion)) => {
+            let retry_id = prepare_retryable_control_frame(&mut completion.message)
+                .map(|(request_id, _)| request_id);
+            if let Some(request_id) = retry_id.as_ref() {
+                application_liveness
+                    .track_retryable_control_frame(request_id.clone(), completion.message.clone());
+            }
+            if send_wire(sink, &completion.message).await.is_err() {
+                if let Some(request_id) = retry_id {
+                    application_liveness.complete_retryable_control_frame(&request_id);
+                }
+                *retained_completion = Some(completion);
+                return Break(ControlRunResult::Disconnected {
+                    application_ready: application_liveness.ready,
+                });
+            }
+            let _ = completion.delivered.send(());
+            Continue(())
+        }
         Some(FleetControlCommand::DeregisterAgent { mut request, reply }) => {
             let request_id = format!("agent_deregister_{}", Uuid::new_v4().simple());
             request.id = Some(request_id.clone());
             pending_deregistrations.retain(|_, pending| !pending.is_closed());
-            pending_deregistrations.insert(request_id, reply);
-            if send_wire(sink, &BrokerToRelaycast::AgentDeregister(request))
-                .await
-                .is_err()
-            {
+            pending_deregistrations.insert(request_id.clone(), reply);
+            let message = BrokerToRelaycast::AgentDeregister(request);
+            application_liveness.track_retryable_control_frame(request_id, message.clone());
+            if send_wire(sink, &message).await.is_err() {
                 return Break(ControlRunResult::Disconnected {
                     application_ready: application_liveness.ready,
                 });
@@ -2390,16 +3317,21 @@ where
                 .clone()
                 .unwrap_or_else(|| format!("agent_register_{}", Uuid::new_v4().simple()));
             request.id = Some(request_id.clone());
+            let wire_request = request.clone();
             pending_agent_registrations.insert(
                 request_id,
                 PendingAgentRegistration {
                     isolates_channels: request.auto_join_general == Some(false),
                     name: request.name.clone(),
-                    reply,
+                    request,
+                    reply: Some(reply),
                     created_at: Instant::now(),
+                    d1_pressure_retry_attempts: 0,
+                    d1_pressure_retry_at: None,
+                    last_d1_pressure: None,
                 },
             );
-            if send_wire(sink, &BrokerToRelaycast::AgentRegister(request))
+            if send_wire(sink, &BrokerToRelaycast::AgentRegister(wire_request))
                 .await
                 .is_err()
             {
@@ -2417,6 +3349,7 @@ where
     }
 }
 
+#[cfg(test)]
 async fn run_connected_once(
     config: &FleetControlConfig,
     command_rx: &mut mpsc::Receiver<FleetControlCommand>,
@@ -2425,6 +3358,70 @@ async fn run_connected_once(
     inventory: &mut Vec<InventoryAgent>,
     load: &mut FleetLoadSnapshot,
     inventory_refresh_interval: Duration,
+) -> ControlRunResult {
+    let (_completion_tx, mut completion_rx) = mpsc::unbounded_channel();
+    let mut retained_completion = None;
+    let mut retained_pressure_frames = VecDeque::new();
+    run_connected_once_with_completions(
+        config,
+        command_rx,
+        &mut completion_rx,
+        &mut retained_completion,
+        &mut retained_pressure_frames,
+        event_tx,
+        registration,
+        inventory,
+        load,
+        inventory_refresh_interval,
+        ControlRetryPolicy::DEFAULT,
+    )
+    .await
+}
+
+#[cfg(test)]
+#[allow(clippy::too_many_arguments)]
+async fn run_connected_once_with_retry_policy(
+    config: &FleetControlConfig,
+    command_rx: &mut mpsc::Receiver<FleetControlCommand>,
+    event_tx: &mpsc::Sender<FleetControlEvent>,
+    registration: &mut Option<NodeRegister>,
+    inventory: &mut Vec<InventoryAgent>,
+    load: &mut FleetLoadSnapshot,
+    inventory_refresh_interval: Duration,
+    retry_policy: ControlRetryPolicy,
+    retained_pressure_frames: &mut VecDeque<BrokerToRelaycast>,
+) -> ControlRunResult {
+    let (_completion_tx, mut completion_rx) = mpsc::unbounded_channel();
+    let mut retained_completion = None;
+    run_connected_once_with_completions(
+        config,
+        command_rx,
+        &mut completion_rx,
+        &mut retained_completion,
+        retained_pressure_frames,
+        event_tx,
+        registration,
+        inventory,
+        load,
+        inventory_refresh_interval,
+        retry_policy,
+    )
+    .await
+}
+
+#[allow(clippy::too_many_arguments)]
+async fn run_connected_once_with_completions(
+    config: &FleetControlConfig,
+    command_rx: &mut mpsc::Receiver<FleetControlCommand>,
+    completion_rx: &mut mpsc::UnboundedReceiver<RetainedFleetCompletion>,
+    retained_completion: &mut Option<RetainedFleetCompletion>,
+    retained_pressure_frames: &mut VecDeque<BrokerToRelaycast>,
+    event_tx: &mpsc::Sender<FleetControlEvent>,
+    registration: &mut Option<NodeRegister>,
+    inventory: &mut Vec<InventoryAgent>,
+    load: &mut FleetLoadSnapshot,
+    inventory_refresh_interval: Duration,
+    control_retry_policy: ControlRetryPolicy,
 ) -> ControlRunResult {
     let Some(mut node_register) = registration.clone() else {
         return ControlRunResult::ConnectFailed;
@@ -2520,7 +3517,10 @@ async fn run_connected_once(
         .checked_mul(2)
         .unwrap_or(Duration::MAX)
         .max(read_idle_timeout);
-    let mut application_liveness = ApplicationLiveness::new(application_liveness_timeout);
+    let mut application_liveness = ApplicationLiveness::new_with_retry_policy(
+        application_liveness_timeout,
+        control_retry_policy,
+    );
 
     let deferred_commands = match register_node_session(
         &mut sink,
@@ -2568,6 +3568,20 @@ async fn run_connected_once(
             application_ready: false,
         };
     }
+    while let Some(mut frame) = retained_pressure_frames.pop_front() {
+        let request_id = prepare_retryable_control_frame(&mut frame)
+            .map(|(id, _)| id)
+            .expect("pressure-retained control frames must remain retryable");
+        application_liveness.track_retryable_control_frame(request_id.clone(), frame.clone());
+        application_liveness.mark_retryable_control_frame_replayed(&request_id);
+        if send_wire(&mut sink, &frame).await.is_err() {
+            application_liveness.complete_retryable_control_frame(&request_id);
+            retained_pressure_frames.push_front(frame);
+            return ControlRunResult::Disconnected {
+                application_ready: false,
+            };
+        }
+    }
 
     // The idle check runs on the heartbeat tick, so the tick must be shorter
     // than the window it polices; an overridden (test) window keeps that ratio.
@@ -2603,6 +3617,8 @@ async fn run_connected_once(
             &mut pending_agent_registrations,
             &mut pending_deregistrations,
             &mut application_liveness,
+            retained_completion,
+            retained_pressure_frames,
         )
         .await
         {
@@ -2617,6 +3633,9 @@ async fn run_connected_once(
                 "node_control_disconnected"
             };
             fail_deferred_commands(deferred_commands.collect(), reason, inventory, load);
+            if matches!(result, ControlRunResult::Disconnected { .. }) {
+                application_liveness.retain_non_task_action_results(retained_pressure_frames);
+            }
             return result;
         }
     }
@@ -2626,17 +3645,109 @@ async fn run_connected_once(
         let inventory_retry =
             tokio::time::sleep(inventory_retry_delay.unwrap_or(application_liveness.deadline));
         tokio::pin!(inventory_retry);
+        let agent_registration_retry_delay = next_agent_registration_retry_event_delay(
+            &pending_agent_registrations,
+            Instant::now(),
+            application_liveness.control_retry_policy,
+        );
+        let agent_registration_retry = tokio::time::sleep(
+            agent_registration_retry_delay.unwrap_or(application_liveness.deadline),
+        );
+        tokio::pin!(agent_registration_retry);
+        let control_retry_delay =
+            application_liveness.next_control_retry_event_delay(Instant::now());
+        let control_retry =
+            tokio::time::sleep(control_retry_delay.unwrap_or(application_liveness.deadline));
+        tokio::pin!(control_retry);
         tokio::select! {
+            _ = &mut control_retry, if control_retry_delay.is_some() => {
+                let now = Instant::now();
+                let mut reconnect_for_retained_result = false;
+                for (id, reason, frame, replayed_after_pressure) in application_liveness.expire_retryable_control_frames(now) {
+                    let mut surfaced_to_owner = false;
+                    if let Some(pending) = pending_deregistrations.remove(&id) {
+                        let _ = pending.send(Err(reason.clone()));
+                        surfaced_to_owner = true;
+                    }
+                    if id.starts_with(crate::runtime::task_request_prefix()) {
+                        let _ = event_tx.send(FleetControlEvent::Message(RelaycastToBroker::Error(
+                            crate::fleet_wire::Error {
+                                v: FLEET_WIRE_VERSION,
+                                id: id.clone(),
+                                ok: false,
+                                code: "d1_pressure".to_string(),
+                                message: reason.clone(),
+                            },
+                        ))).await;
+                        surfaced_to_owner = true;
+                    }
+                    if !id.starts_with(crate::runtime::task_request_prefix())
+                        && matches!(&frame, BrokerToRelaycast::ActionResult(_))
+                    {
+                        retained_pressure_frames.push_back(frame);
+                        reconnect_for_retained_result |= !replayed_after_pressure;
+                        surfaced_to_owner = true;
+                        tracing::warn!(
+                            target = "relay_broker::fleet",
+                            node_id = %config.node_id,
+                            id,
+                            reason,
+                            replayed_after_pressure,
+                            "retaining action.result after d1_pressure exhaustion"
+                        );
+                    }
+                    if !surfaced_to_owner {
+                        tracing::error!(
+                            target = "relay_broker::fleet",
+                            node_id = %config.node_id,
+                            id,
+                            reason,
+                            "control frame d1_pressure retry budget exhausted"
+                        );
+                    }
+                }
+                if reconnect_for_retained_result {
+                    application_liveness.retain_non_task_action_results(retained_pressure_frames);
+                    drain_agent_registrations(&mut pending_agent_registrations, "node_control_disconnected");
+                    return ControlRunResult::Disconnected { application_ready: application_liveness.ready };
+                }
+                if let Some(frame) = application_liveness.take_due_control_retry(now) {
+                    if send_wire(&mut sink, &frame).await.is_err() {
+                        application_liveness.retain_non_task_action_results(retained_pressure_frames);
+                        drain_agent_registrations(&mut pending_agent_registrations, "node_control_disconnected");
+                        return ControlRunResult::Disconnected { application_ready: application_liveness.ready };
+                    }
+                }
+            }
+            _ = &mut agent_registration_retry, if agent_registration_retry_delay.is_some() => {
+                let now = Instant::now();
+                expire_d1_pressure_agent_registrations(
+                    &mut pending_agent_registrations,
+                    now,
+                    application_liveness.control_retry_policy,
+                );
+                if let Some(frame) = take_due_agent_registration_retry(
+                    &mut pending_agent_registrations,
+                    now,
+                ) {
+                    if send_wire(&mut sink, &BrokerToRelaycast::AgentRegister(frame)).await.is_err() {
+                        application_liveness.retain_non_task_action_results(retained_pressure_frames);
+                        drain_agent_registrations(&mut pending_agent_registrations, "node_control_disconnected");
+                        return ControlRunResult::Disconnected { application_ready: application_liveness.ready };
+                    }
+                }
+            }
             _ = &mut inventory_retry, if inventory_retry_delay.is_some() => {
                 let Some(frame) = application_liveness.take_due_retry(Instant::now()) else {
                     continue;
                 };
                 if send_wire(&mut sink, &BrokerToRelaycast::InventorySync(frame)).await.is_err() {
+                    application_liveness.retain_non_task_action_results(retained_pressure_frames);
                     drain_agent_registrations(&mut pending_agent_registrations, "node_control_disconnected");
                     return ControlRunResult::Disconnected { application_ready: application_liveness.ready };
                 }
             }
-            command = command_rx.recv() => {
+            command = recv_control_command(command_rx, completion_rx, retained_completion) => {
                 if let std::ops::ControlFlow::Break(result) = handle_connected_command(
                     command,
                     &mut sink,
@@ -2649,9 +3760,14 @@ async fn run_connected_once(
                     &mut pending_agent_registrations,
                     &mut pending_deregistrations,
                     &mut application_liveness,
+                    retained_completion,
+                    retained_pressure_frames,
                 )
                 .await
                 {
+                    if matches!(result, ControlRunResult::Disconnected { .. }) {
+                        application_liveness.retain_non_task_action_results(retained_pressure_frames);
+                    }
                     return result;
                 }
             }
@@ -2673,6 +3789,7 @@ async fn run_connected_once(
                         idle_secs = idle.as_secs(),
                         "no inbound node-control frame within the read-idle window; reconnecting"
                     );
+                    application_liveness.retain_non_task_action_results(retained_pressure_frames);
                     drain_agent_registrations(&mut pending_agent_registrations, "node_control_disconnected");
                     return ControlRunResult::Disconnected { application_ready: application_liveness.ready };
                 }
@@ -2687,16 +3804,19 @@ async fn run_connected_once(
                         pending_inventory_syncs = application_liveness.pending_inventory_syncs.len(),
                         "node-control application acknowledgement deadline exceeded while transport remained active; reconnecting"
                     );
+                    application_liveness.retain_non_task_action_results(retained_pressure_frames);
                     drain_agent_registrations(&mut pending_agent_registrations, "node_control_disconnected");
                     return ControlRunResult::Disconnected { application_ready: application_liveness.ready };
                 }
                 if send_wire(&mut sink, &BrokerToRelaycast::NodeHeartbeat(load.heartbeat(&node_register))).await.is_err() {
+                    application_liveness.retain_non_task_action_results(retained_pressure_frames);
                     drain_agent_registrations(&mut pending_agent_registrations, "node_control_disconnected");
                     return ControlRunResult::Disconnected { application_ready: application_liveness.ready };
                 }
                 // Guarantees the peer owes us a frame every interval, so an idle
                 // engine is distinguishable from a dead connection.
                 if send_ws_frame(&mut sink, Message::Ping(Vec::new())).await.is_err() {
+                    application_liveness.retain_non_task_action_results(retained_pressure_frames);
                     drain_agent_registrations(&mut pending_agent_registrations, "node_control_disconnected");
                     return ControlRunResult::Disconnected { application_ready: application_liveness.ready };
                 }
@@ -2710,11 +3830,13 @@ async fn run_connected_once(
                 )
                 .await
                 {
+                    application_liveness.retain_non_task_action_results(retained_pressure_frames);
                     return ControlRunResult::Disconnected { application_ready: application_liveness.ready };
                 }
             }
             message = stream.next() => {
                 let Some(message) = message else {
+                    application_liveness.retain_non_task_action_results(retained_pressure_frames);
                     drain_agent_registrations(&mut pending_agent_registrations, "node_control_disconnected");
                     return ControlRunResult::Disconnected { application_ready: application_liveness.ready };
                 };
@@ -2722,6 +3844,7 @@ async fn run_connected_once(
                     Ok(message) => message,
                     Err(error) => {
                         tracing::warn!(target = "relay_broker::fleet", error = %error, "fleet node ws read failed");
+                        application_liveness.retain_non_task_action_results(retained_pressure_frames);
                         drain_agent_registrations(&mut pending_agent_registrations, "node_control_disconnected");
                         return ControlRunResult::Disconnected { application_ready: application_liveness.ready };
                     }
@@ -2736,6 +3859,7 @@ async fn run_connected_once(
                     &mut pending_agent_registrations,
                     &mut pending_deregistrations,
                     &mut application_liveness,
+                    retained_pressure_frames,
                     &config.node_id,
                     &mut sink,
                     config.probe.as_ref(),
@@ -2743,6 +3867,7 @@ async fn run_connected_once(
                 )
                 .await
                 {
+                    application_liveness.retain_non_task_action_results(retained_pressure_frames);
                     drain_agent_registrations(&mut pending_agent_registrations, "node_control_disconnected");
                     return ControlRunResult::Disconnected { application_ready: application_liveness.ready };
                 }
@@ -2786,6 +3911,7 @@ async fn handle_server_message<S>(
     pending_agent_registrations: &mut HashMap<String, PendingAgentRegistration>,
     pending_deregistrations: &mut HashMap<String, oneshot::Sender<Result<(), String>>>,
     application_liveness: &mut ApplicationLiveness,
+    retained_pressure_frames: &mut VecDeque<BrokerToRelaycast>,
     node_id: &str,
     sink: &mut S,
     probe: Option<&std::sync::Arc<crate::node_delivery_probe::NodeDeliveryProbe>>,
@@ -2828,6 +3954,18 @@ where
                     }
                     match frame {
                         RelaycastToBroker::Reply(reply) => {
+                            if application_liveness
+                                .consume_exhausted_retryable_control_frame(&reply.id)
+                            {
+                                tracing::debug!(
+                                    target = "relay_broker::fleet",
+                                    node_id,
+                                    id = %reply.id,
+                                    "consumed late reply for an exhausted control-frame retry"
+                                );
+                                return true;
+                            }
+                            application_liveness.complete_retryable_control_frame(&reply.id);
                             if reply.id.starts_with(crate::runtime::task_request_prefix()) {
                                 return event_tx
                                     .send(FleetControlEvent::Message(RelaycastToBroker::Reply(
@@ -2871,13 +4009,105 @@ where
                                     complete_agent_registration(
                                         reply,
                                         pending_agent_registrations,
+                                        application_liveness,
                                         sink,
                                     )
                                     .await
                                 }
                             }
                         }
-                        RelaycastToBroker::Error(error) => {
+                        RelaycastToBroker::Error(mut error) => {
+                            if error.code == "d1_pressure" {
+                                match application_liveness.schedule_control_d1_pressure_retry(
+                                    &error.id,
+                                    &error.message,
+                                    Instant::now(),
+                                ) {
+                                    ControlPressureRetry::Scheduled(delay) => {
+                                        tracing::warn!(
+                                            target = "relay_broker::fleet",
+                                            node_id,
+                                            id = %error.id,
+                                            retry_delay_ms = delay.as_millis(),
+                                            "retryable d1_pressure on a control frame; retry scheduled on the live control socket"
+                                        );
+                                        return true;
+                                    }
+                                    ControlPressureRetry::Exhausted => {
+                                        let exhausted = application_liveness
+                                            .take_retryable_control_frame(&error.id);
+                                        let reason = format!(
+                                            "d1_pressure: {} (retry budget exhausted)",
+                                            error.message,
+                                        );
+                                        if !error
+                                            .id
+                                            .starts_with(crate::runtime::task_request_prefix())
+                                            && exhausted.as_ref().is_some_and(|pending| {
+                                                matches!(
+                                                    &pending.frame,
+                                                    BrokerToRelaycast::ActionResult(_)
+                                                )
+                                            })
+                                        {
+                                            let exhausted =
+                                                exhausted.expect("checked action.result");
+                                            let replayed_after_pressure =
+                                                exhausted.replayed_after_pressure;
+                                            retained_pressure_frames.push_back(exhausted.frame);
+                                            tracing::warn!(
+                                                target = "relay_broker::fleet",
+                                                node_id,
+                                                id = %error.id,
+                                                reason,
+                                                replayed_after_pressure,
+                                                "retaining action.result after d1_pressure exhaustion"
+                                            );
+                                            return replayed_after_pressure;
+                                        }
+                                        if let Some(pending) =
+                                            pending_deregistrations.remove(&error.id)
+                                        {
+                                            let _ = pending.send(Err(reason));
+                                            return true;
+                                        }
+                                        if error
+                                            .id
+                                            .starts_with(crate::runtime::task_request_prefix())
+                                        {
+                                            error.code = "d1_pressure".to_string();
+                                            error.message = reason;
+                                            return event_tx
+                                                .send(FleetControlEvent::Message(
+                                                    RelaycastToBroker::Error(error),
+                                                ))
+                                                .await
+                                                .is_ok();
+                                        }
+                                        tracing::error!(
+                                            target = "relay_broker::fleet",
+                                            node_id,
+                                            id = %error.id,
+                                            reason,
+                                            "control frame d1_pressure retry budget exhausted"
+                                        );
+                                        return true;
+                                    }
+                                    ControlPressureRetry::Unmatched => {}
+                                }
+                            }
+                            if application_liveness
+                                .consume_exhausted_retryable_control_frame(&error.id)
+                            {
+                                tracing::debug!(
+                                    target = "relay_broker::fleet",
+                                    node_id,
+                                    id = %error.id,
+                                    "consumed late error for an exhausted control-frame retry"
+                                );
+                                return true;
+                            }
+                            application_liveness.complete_retryable_control_frame(&error.id);
                             if error.id.starts_with(crate::runtime::task_request_prefix()) {
                                 return event_tx
                                     .send(FleetControlEvent::Message(RelaycastToBroker::Error(
@@ -2897,23 +4127,40 @@ where
                                     pending_agent_registrations,
                                 );
                             }
-                            // Surface every engine rejection at error level. A node.register or
-                            // heartbeat rejection (e.g. node_name_conflict) matches no pending
-                            // agent registration below, so without this it vanishes silently —
-                            // leaving the node half-registered with dead heartbeats and no signal.
-                            tracing::error!(
-                                target = "relay_broker::fleet",
-                                code = %error.code,
-                                message = %error.message,
-                                id = %error.id,
-                                "engine rejected a node control frame"
-                            );
-                            fail_agent_registration(
-                                &error.id,
-                                format!("{}: {}", error.code, error.message),
-                                pending_agent_registrations,
-                            );
                             if error.code == "d1_pressure" {
+                                let reason = error.message.clone();
+                                match schedule_agent_registration_d1_pressure_retry(
+                                    &error.id,
+                                    &reason,
+                                    pending_agent_registrations,
+                                    Instant::now(),
+                                    application_liveness.control_retry_policy,
+                                ) {
+                                    AgentRegistrationPressureRetry::Scheduled(delay) => {
+                                        tracing::warn!(
+                                            target = "relay_broker::fleet",
+                                            node_id,
+                                            id = %error.id,
+                                            retry_delay_ms = delay.as_millis(),
+                                            "retryable d1_pressure on agent registration; retry scheduled on the live control socket"
+                                        );
+                                        return true;
+                                    }
+                                    AgentRegistrationPressureRetry::Exhausted => {
+                                        tracing::error!(
+                                            target = "relay_broker::fleet",
+                                            node_id,
+                                            id = %error.id,
+                                            "agent registration d1_pressure retry budget exhausted"
+                                        );
+                                        fail_agent_registration_d1_pressure_exhausted(
+                                            &error.id,
+                                            pending_agent_registrations,
+                                        );
+                                        return true;
+                                    }
+                                    AgentRegistrationPressureRetry::Unmatched => {}
+                                }
                                 if application_liveness.discard_superseded(&error.id) {
                                     tracing::debug!(
                                         target = "relay_broker::fleet",
@@ -2936,6 +4183,22 @@ where
                                     return true;
                                 }
                             }
+                            // Surface every unhandled engine rejection at error level. A
+                            // node.register or heartbeat rejection (e.g. node_name_conflict)
+                            // matches no pending operation below, so without this it vanishes
+                            // silently. Expected, retryable pressure returned above at WARN.
+                            tracing::error!(
+                                target = "relay_broker::fleet",
+                                code = %error.code,
+                                message = %error.message,
+                                id = %error.id,
+                                "engine rejected a node control frame"
+                            );
+                            fail_agent_registration(
+                                &error.id,
+                                format!("{}: {}", error.code, error.message),
+                                pending_agent_registrations,
+                            );
                             let rejected_liveness_probe = application_liveness.reject(&error.id);
                             // A reply proves the application is responsive, but rejecting
                             // the authoritative inventory probe means the control session
@@ -2969,6 +4232,7 @@ where
 async fn complete_agent_registration<S>(
     reply: crate::fleet_wire::Reply,
     pending_agent_registrations: &mut HashMap<String, PendingAgentRegistration>,
+    application_liveness: &mut ApplicationLiveness,
     sink: &mut S,
 ) -> bool
 where
@@ -2993,7 +4257,12 @@ where
             let name = data.as_ref()?.name.as_deref()?;
             let key = pending_agent_registrations
                 .iter()
-                .find(|(_, pending)| pending.name == name)
+                .find(|(_, pending)| pending.reply.is_some() && pending.name == name)
+                .or_else(|| {
+                    pending_agent_registrations
+                        .iter()
+                        .find(|(_, pending)| pending.name == name)
+                })
                 .map(|(key, _)| key.clone())?;
             pending_agent_registrations
                 .remove(&key)
@@ -3010,9 +4279,9 @@ where
     let data = match data {
         Some(data) => data,
         None => {
-            let _ = pending
-                .reply
-                .send(Err("invalid_agent_register_reply_data".to_string()));
+            if let Some(reply) = pending.reply {
+                let _ = reply.send(Err("invalid_agent_register_reply_data".to_string()));
+            }
             return true;
         }
     };
@@ -3022,30 +4291,29 @@ where
         token: data.token,
         delivery_ack_seq: data.delivery_ack_seq,
     };
-    match pending.reply.send(Ok(token.clone())) {
-        Ok(()) => true,
-        Err(Ok(token)) => {
-            tracing::warn!(
-                target = "relay_broker::fleet",
-                id = %request_id,
-                name = %pending.name,
-                agent_id = %token.agent_id,
-                "late agent.register success after caller stopped waiting; sending compensating agent.deregister"
-            );
-            send_wire(
-                sink,
-                &BrokerToRelaycast::AgentDeregister(AgentDeregister {
-                    v: FLEET_WIRE_VERSION,
-                    id: Some(request_id),
-                    agent_id: token.agent_id,
-                    name: Some(pending.name),
-                }),
-            )
-            .await
-            .is_ok()
-        }
-        Err(Err(_)) => true,
-    }
+    let late_token = match pending.reply {
+        Some(reply) => match reply.send(Ok(token.clone())) {
+            Ok(()) => return true,
+            Err(Ok(token)) => token,
+            Err(Err(_)) => return true,
+        },
+        None => token,
+    };
+    tracing::warn!(
+        target = "relay_broker::fleet",
+        id = %request_id,
+        name = %pending.name,
+        agent_id = %late_token.agent_id,
+        "late agent.register success after caller stopped waiting; sending compensating agent.deregister"
+    );
+    let cleanup = BrokerToRelaycast::AgentDeregister(AgentDeregister {
+        v: FLEET_WIRE_VERSION,
+        id: Some(request_id.clone()),
+        agent_id: late_token.agent_id,
+        name: Some(pending.name),
+    });
+    application_liveness.track_retryable_control_frame(request_id, cleanup.clone());
+    send_wire(sink, &cleanup).await.is_ok()
 }
 
 fn fail_agent_registration(
@@ -3054,7 +4322,9 @@ fn fail_agent_registration(
     pending_agent_registrations: &mut HashMap<String, PendingAgentRegistration>,
 ) {
     if let Some(pending) = pending_agent_registrations.remove(id) {
-        let _ = pending.reply.send(Err(reason));
+        if let Some(reply) = pending.reply {
+            let _ = reply.send(Err(reason));
+        }
     }
 }
 
@@ -3093,6 +4363,114 @@ fn fail_unsupported_channel_isolation(
     }
 }
 
+#[derive(Debug, PartialEq, Eq)]
+enum AgentRegistrationPressureRetry {
+    Unmatched,
+    Scheduled(Duration),
+    Exhausted,
+}
+
+fn schedule_agent_registration_d1_pressure_retry(
+    id: &str,
+    reason: &str,
+    pending_agent_registrations: &mut HashMap<String, PendingAgentRegistration>,
+    now: Instant,
+    retry_policy: ControlRetryPolicy,
+) -> AgentRegistrationPressureRetry {
+    let Some(pending) = pending_agent_registrations.get_mut(id) else {
+        return AgentRegistrationPressureRetry::Unmatched;
+    };
+    pending.last_d1_pressure = Some(reason.to_string());
+    let deadline = pending.created_at + retry_policy.budget;
+    if pending.d1_pressure_retry_attempts >= retry_policy.max_retries || now >= deadline {
+        return AgentRegistrationPressureRetry::Exhausted;
+    }
+
+    let next_attempt = pending.d1_pressure_retry_attempts.saturating_add(1);
+    let delay = retry_policy.retry_delay(next_attempt);
+    if now
+        .checked_add(delay)
+        .is_none_or(|retry_at| retry_at > deadline)
+    {
+        return AgentRegistrationPressureRetry::Exhausted;
+    }
+    pending.d1_pressure_retry_attempts = next_attempt;
+    pending.d1_pressure_retry_at = Some(now + delay);
+    AgentRegistrationPressureRetry::Scheduled(delay)
+}
+
+fn next_agent_registration_retry_event_delay(
+    pending_agent_registrations: &HashMap<String, PendingAgentRegistration>,
+    now: Instant,
+    retry_policy: ControlRetryPolicy,
+) -> Option<Duration> {
+    pending_agent_registrations
+        .values()
+        .filter(|pending| pending.last_d1_pressure.is_some())
+        .flat_map(|pending| {
+            [
+                pending.d1_pressure_retry_at,
+                Some(pending.created_at + retry_policy.budget),
+            ]
+        })
+        .flatten()
+        .map(|event_at| event_at.saturating_duration_since(now))
+        .min()
+}
+
+fn expire_d1_pressure_agent_registrations(
+    pending_agent_registrations: &mut HashMap<String, PendingAgentRegistration>,
+    now: Instant,
+    retry_policy: ControlRetryPolicy,
+) {
+    let expired: Vec<String> = pending_agent_registrations
+        .iter()
+        .filter(|(_, pending)| {
+            pending.last_d1_pressure.is_some()
+                && now.saturating_duration_since(pending.created_at) >= retry_policy.budget
+        })
+        .map(|(id, _)| id.clone())
+        .collect();
+    for id in expired {
+        fail_agent_registration_d1_pressure_exhausted(&id, pending_agent_registrations);
+    }
+}
+
+fn fail_agent_registration_d1_pressure_exhausted(
+    id: &str,
+    pending_agent_registrations: &mut HashMap<String, PendingAgentRegistration>,
+) {
+    let Some(pending) = pending_agent_registrations.get_mut(id) else {
+        return;
+    };
+    let reason = pending
+        .last_d1_pressure
+        .take()
+        .unwrap_or_else(|| "Node liveness retry pending".to_string());
+    pending.d1_pressure_retry_at = None;
+    if let Some(reply) = pending.reply.take() {
+        let _ = reply.send(Err(format!(
+            "d1_pressure: {reason} (retry budget exhausted)"
+        )));
+    }
+}
+
+fn take_due_agent_registration_retry(
+    pending_agent_registrations: &mut HashMap<String, PendingAgentRegistration>,
+    now: Instant,
+) -> Option<AgentRegister> {
+    let pending = pending_agent_registrations
+        .values_mut()
+        .filter(|pending| {
+            pending
+                .d1_pressure_retry_at
+                .is_some_and(|retry_at| retry_at <= now)
+        })
+        .min_by_key(|pending| pending.d1_pressure_retry_at)?;
+    pending.d1_pressure_retry_at = None;
+    Some(pending.request.clone())
+}
+
 fn expire_agent_registrations(
     pending_agent_registrations: &mut HashMap<String, PendingAgentRegistration>,
     now: Instant,
@@ -3113,9 +4491,9 @@ fn expire_agent_registrations(
                 name = %pending.name,
                 "agent.register pending reply expired without engine response"
             );
-            let _ = pending
-                .reply
-                .send(Err("agent_register_pending_expired".to_string()));
+            if let Some(reply) = pending.reply {
+                let _ = reply.send(Err("agent_register_pending_expired".to_string()));
+            }
         }
     }
 }
@@ -3125,7 +4503,9 @@ fn drain_agent_registrations(
     reason: &str,
 ) {
     for (_, pending) in pending_agent_registrations.drain() {
-        let _ = pending.reply.send(Err(reason.to_string()));
+        if let Some(reply) = pending.reply {
+            let _ = reply.send(Err(reason.to_string()));
+        }
     }
 }
 
@@ -3158,10 +4538,63 @@ fn fail_deferred_commands(
             FleetControlCommand::UpdateLoad(next) => *load = next,
             FleetControlCommand::RegisterNode { .. }
             | FleetControlCommand::Send(_)
+            | FleetControlCommand::RetainedSend(_)
             | FleetControlCommand::HeartbeatNow => {}
             FleetControlCommand::Shutdown => {}
         }
     }
+}
+
+/// Tracks safely replayable steady-state control frames which also have a
+/// concrete recovery owner. The engine's `d1_pressure` contract guarantees
+/// that the rejected operation was not applied, so exact replay is safe for:
+///
+/// - acknowledged `agent.deregister`,
+/// - cumulative `delivery.ack` (a missed terminal ack is recovered by durable
+///   redelivery), and
+/// - non-task `action.result`, which gets a stable id and is retained for
+///   redelivery after reconnect if the bounded pressure budget is exhausted.
+///
+/// `node.register`, `inventory.sync`, and `agent.register` have dedicated
+/// pending state because their successful replies open liveness or return a
+/// token. Heartbeats intentionally are not retried: a newer periodic snapshot
+/// supersedes them. No separate channel-join frame exists; the only join sent
+/// by this broker is part of the exact `agent.register` frame. One-way
+/// deregistrations remain untracked because they have no retained owner.
+fn prepare_retryable_control_frame(
+    message: &mut BrokerToRelaycast,
+) -> Option<(String, &'static str)> {
+    let (id, kind) = match message {
+        BrokerToRelaycast::AgentDeregister(request) => (request.id.as_mut()?, "agent.deregister"),
+        BrokerToRelaycast::DeliveryAck(request) => (
+            request
+                .id
+                .get_or_insert_with(|| format!("delivery_ack_{}", Uuid::new_v4().simple())),
+            "delivery.ack",
+        ),
+        BrokerToRelaycast::ActionResult(request)
+            if request.task.is_some()
+                || request
+                    .id
+                    .as_deref()
+                    .is_some_and(|id| id.starts_with(crate::runtime::task_request_prefix())) =>
+        {
+            return None;
+        }
+        BrokerToRelaycast::ActionResult(request) => (
+            request
+                .id
+                .get_or_insert_with(|| format!("action_result_{}", Uuid::new_v4().simple())),
+            "action.result",
+        ),
+        // Task owners have a shorter acknowledgement deadline than this
+        // socket's pressure budget. Surface their correlated d1_pressure
+        // immediately so the owner, rather than a stale socket timer, decides
+        // whether to retry the task.
+        BrokerToRelaycast::ActionAccept(_) => return None,
+        _ => return None,
+    };
+    Some((id.clone(), kind))
 }
 
 async fn send_wire<S>(sink: &mut S, message: &BrokerToRelaycast) -> Result<()>
@@ -3213,13 +4646,182 @@ mod tests {
     use httpmock::{Method::POST, MockServer};
     use serde_json::{json, Value};
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
-    use tokio::net::TcpListener;
-    use tokio_tungstenite::accept_async;
+    use tokio::net::{TcpListener, TcpStream};
+    use tokio_tungstenite::tungstenite::handshake::server::{Request, Response};
+    use tokio_tungstenite::{accept_async, accept_hdr_async};
 
     use super::*;
     use crate::fleet_wire::{
-        ActionInvoke, ActionResultOutput, DeliveryMode, TerminalReconnectRequested,
+        ActionInvoke, ActionResult, ActionResultError, ActionResultOutput, ActionResultPayload,
+        DeliveryMode, TerminalReconnectRequested,
     };
+
+    #[tokio::test]
+    async fn retained_completion_lane_preempts_a_full_control_queue() {
+        let (command_tx, mut command_rx) = mpsc::channel(1);
+        command_tx
+            .try_send(FleetControlCommand::UpdateInventory(Vec::new()))
+            .unwrap();
+        let (completion_tx, mut completion_rx) = mpsc::unbounded_channel();
+        let (delivered, _delivered_rx) = oneshot::channel();
+        completion_tx
+            .send(RetainedFleetCompletion {
+                message: BrokerToRelaycast::ActionResult(ActionResult {
+                    v: FLEET_WIRE_VERSION,
+                    id: None,
+                    invocation_id: "inv-retained".to_string(),
+                    result: ActionResultPayload::Error(ActionResultError {
+                        error: "cleanup unconfirmed".to_string(),
+                    }),
+                    task: None,
+                }),
+                delivered,
+            })
+            .unwrap();
+
+        let mut retained_completion = None;
+        let command = recv_control_command(
+            &mut command_rx,
+            &mut completion_rx,
+            &mut retained_completion,
+        )
+        .await
+        .expect("the dedicated completion lane should stay readable");
+        assert!(matches!(
+            command,
+            FleetControlCommand::RetainedSend(RetainedFleetCompletion {
+                message: BrokerToRelaycast::ActionResult(ActionResult { invocation_id, .. }),
+                ..
+            }) if invocation_id == "inv-retained"
+        ));
+        assert!(matches!(
+            command_rx.try_recv(),
+            Ok(FleetControlCommand::UpdateInventory(inventory)) if inventory.is_empty()
+        ));
+    }
+
+    #[tokio::test]
+    async fn retained_completion_lane_drains_buffer_after_sender_closes() {
+        let (_command_tx, mut command_rx) = mpsc::channel(1);
+        let (completion_tx, mut completion_rx) = mpsc::unbounded_channel();
+        let (delivered, _delivered_rx) = oneshot::channel();
+        completion_tx
+            .send(RetainedFleetCompletion {
+                message: BrokerToRelaycast::ActionResult(ActionResult {
+                    v: FLEET_WIRE_VERSION,
+                    id: None,
+                    invocation_id: "inv-buffered-before-close".to_string(),
+                    result: ActionResultPayload::Error(ActionResultError {
+                        error: "cleanup unconfirmed".to_string(),
+                    }),
+                    task: None,
+                }),
+                delivered,
+            })
+            .unwrap();
+        drop(completion_tx);
+
+        let mut retained_completion = None;
+        let command = recv_control_command(
+            &mut command_rx,
+            &mut completion_rx,
+            &mut retained_completion,
+        )
+        .await
+        .expect("a buffered completion must remain readable after sender close");
+        assert!(matches!(
+            command,
+            FleetControlCommand::RetainedSend(RetainedFleetCompletion {
+                message: BrokerToRelaycast::ActionResult(ActionResult { invocation_id, .. }),
+                ..
+            }) if invocation_id == "inv-buffered-before-close"
+        ));
+    }
+
+    #[tokio::test]
+    async fn retained_completion_requeues_when_the_socket_write_fails() {
+        let mut sink = Box::pin(futures_util::sink::unfold((), |(), _: Message| async {
+            Err::<(), std::io::Error>(std::io::Error::new(
+                std::io::ErrorKind::BrokenPipe,
+                "fixture socket closed",
+            ))
+        }));
+        let config = FleetControlConfig {
+            ws_url: "ws://127.0.0.1:1/v1/node/ws".to_string(),
+            node_token: Some("nt_test".to_string()),
+            node_id: "node-test".to_string(),
+            node_name: "host-test".to_string(),
+            broker_version: "broker/test".to_string(),
+            token_minter: None,
+            session_token: None,
+            read_idle_timeout: None,
+            probe: None,
+            terminal_reconnect_tx: None,
+        };
+        let provider = FleetProviderIdentity {
+            name: BROKER_PROVIDER_NAME.to_string(),
+            instance_id: "broker-fixture".to_string(),
+        };
+        let node_register = build_node_register(
+            &test_manifest(),
+            "node-test",
+            "host-test",
+            "broker/test",
+            None,
+        );
+        let mut registration = Some(node_register.clone());
+        let mut load = FleetLoadSnapshot::default();
+        let mut inventory = Vec::new();
+        let mut pending_agent_registrations = HashMap::new();
+        let mut pending_deregistrations = HashMap::new();
+        let mut application_liveness = ApplicationLiveness::new(Duration::from_secs(1));
+        let (delivered, mut delivery_ack) = oneshot::channel();
+        let mut retained_completion = None;
+        let mut retained_pressure_frames = VecDeque::new();
+        let result = handle_connected_command(
+            Some(FleetControlCommand::RetainedSend(RetainedFleetCompletion {
+                message: BrokerToRelaycast::ActionResult(ActionResult {
+                    v: FLEET_WIRE_VERSION,
+                    id: None,
+                    invocation_id: "inv-retry-after-write".to_string(),
+                    result: ActionResultPayload::Error(ActionResultError {
+                        error: "cleanup unconfirmed".to_string(),
+                    }),
+                    task: None,
+                }),
+                delivered,
+            })),
+            &mut sink,
+            &config,
+            &provider,
+            &node_register,
+            &mut registration,
+            &mut load,
+            &mut inventory,
+            &mut pending_agent_registrations,
+            &mut pending_deregistrations,
+            &mut application_liveness,
+            &mut retained_completion,
+            &mut retained_pressure_frames,
+        )
+        .await;
+
+        assert!(matches!(
+            result,
+            std::ops::ControlFlow::Break(ControlRunResult::Disconnected { .. })
+        ));
+        assert!(matches!(
+            delivery_ack.try_recv(),
+            Err(oneshot::error::TryRecvError::Empty)
+        ));
+        assert!(matches!(
+            retained_completion,
+            Some(RetainedFleetCompletion {
+                message: BrokerToRelaycast::ActionResult(ActionResult { invocation_id, .. }),
+                ..
+            }) if invocation_id == "inv-retry-after-write"
+        ));
+    }
 
     fn seed_authoritative_cursor(
         book: &mut FleetDeliveryBook,
@@ -3250,6 +4852,76 @@ mod tests {
             id: Some(id.to_string()),
             agents: Vec::new(),
         }
+    }
+
+    fn test_pending_agent_registration(
+        name: &str,
+        isolates_channels: bool,
+        id: &str,
+        reply: oneshot::Sender<Result<AgentRegistrationToken, String>>,
+        created_at: Instant,
+    ) -> PendingAgentRegistration {
+        PendingAgentRegistration {
+            isolates_channels,
+            name: name.to_string(),
+            request: AgentRegister {
+                auto_join_general: isolates_channels.then_some(false),
+                v: FLEET_WIRE_VERSION,
+                id: Some(id.to_string()),
+                name: name.to_string(),
+                invocation_id: None,
+                session_ref: None,
+                resumable: None,
+            },
+            reply: Some(reply),
+            created_at,
+            d1_pressure_retry_attempts: 0,
+            d1_pressure_retry_at: None,
+            last_d1_pressure: None,
+        }
+    }
+
+    async fn read_http_request(socket: &mut TcpStream) -> String {
+        let mut buffer = [0_u8; 8192];
+        let read = socket.read(&mut buffer).await.unwrap();
+        String::from_utf8_lossy(&buffer[..read]).into_owned()
+    }
+
+    fn http_request_header(request: &str, name: &str) -> Option<String> {
+        request.lines().find_map(|line| {
+            let (found_name, value) = line.split_once(':')?;
+            found_name
+                .eq_ignore_ascii_case(name)
+                .then(|| value.trim().to_string())
+        })
+    }
+
+    async fn write_create_node_success(socket: &mut TcpStream, token: &str) {
+        let body = json!({
+            "ok": true,
+            "data": {
+                "id": "node-test",
+                "name": "host-test",
+                "kind": "ws",
+                "role": "broker",
+                "version": "broker/test",
+                "status": "online",
+                "live": true,
+                "handlers_live": true,
+                "load": 0.0,
+                "active_agents": 0,
+                "max_agents": 0,
+                "created_at": "2026-10-04T00:00:00Z",
+                "token": token
+            }
+        })
+        .to_string();
+        let response = format!(
+            "HTTP/1.1 201 Created\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+            body.len(),
+            body
+        );
+        socket.write_all(response.as_bytes()).await.unwrap();
     }
 
     #[test]
@@ -3335,6 +5007,8 @@ mod tests {
             "rk_live_test",
             Some(&server.base_url()),
             create_node_request("node_abc", "local-node", "relay-broker/test"),
+            None,
+            None,
             MintNodeTokenLogContext {
                 node_id: "node_abc",
                 workspace_id: "ws_test",
@@ -3352,6 +5026,79 @@ mod tests {
                 .is_some_and(|body| body.contains("node creation is not allowed")),
             "error should preserve response body: {error:?}"
         );
+    }
+
+    #[tokio::test]
+    async fn mint_node_token_sends_current_node_token_as_header_proof() {
+        let server = MockServer::start();
+        let create_node = server.mock(|when, then| {
+            when.method(POST)
+                .path("/v1/nodes")
+                .header("authorization", "Bearer rk_live_test")
+                .header("x-relaycast-node-token", "nt_live_current")
+                .header(
+                    "idempotency-key",
+                    "node-rotation:00000000-0000-4000-8000-000000000001",
+                );
+            then.status(201).json_body(json!({
+                "ok": true,
+                "data": {
+                    "id": "node_abc",
+                    "name": "local-node",
+                    "kind": "ws",
+                    "role": "broker",
+                    "version": "relay-broker/test",
+                    "status": "offline",
+                    "live": false,
+                    "handlers_live": false,
+                    "load": null,
+                    "active_agents": 0,
+                    "max_agents": 0,
+                    "created_at": "2026-10-04T00:00:00Z",
+                    "token": "nt_live_rotated"
+                }
+            }));
+        });
+
+        let token = mint_node_token(
+            "rk_live_test",
+            Some(&server.base_url()),
+            create_node_request("node_abc", "local-node", "relay-broker/test"),
+            Some("nt_live_current"),
+            Some("node-rotation:00000000-0000-4000-8000-000000000001"),
+            MintNodeTokenLogContext {
+                node_id: "node_abc",
+                workspace_id: "ws_test",
+            },
+        )
+        .await
+        .expect("current node token should be sent as rotation proof");
+
+        create_node.assert_hits(1);
+        assert_eq!(token, "nt_live_rotated");
+    }
+
+    #[test]
+    fn node_token_proof_conflict_is_terminal_only_for_the_named_server_error() {
+        let proof_conflict = CreateNodeMintError::Api {
+            status: 409,
+            code: "node_token_proof_required".to_string(),
+            message: "current token required".to_string(),
+            body: String::new(),
+        };
+        assert!(is_node_token_proof_conflict(&proof_conflict));
+
+        for (status, code) in [
+            (403, "node_token_proof_required"),
+            (409, "node_name_conflict"),
+        ] {
+            assert!(!is_node_token_proof_conflict(&CreateNodeMintError::Api {
+                status,
+                code: code.to_string(),
+                message: "not the terminal proof conflict".to_string(),
+                body: String::new(),
+            }));
+        }
     }
 
     #[tokio::test]
@@ -3374,6 +5121,8 @@ mod tests {
             "rk_live_test",
             Some(&server.base_url()),
             create_node_request("node_abc", "local-node", "relay-broker/test"),
+            None,
+            None,
             MintNodeTokenLogContext {
                 node_id: "node_abc",
                 workspace_id: "ws_test",
@@ -3430,6 +5179,8 @@ mod tests {
             "rk_live_test",
             Some(&base_url),
             create_node_request("node_abc", "local-node", "relay-broker/test"),
+            None,
+            None,
             MintNodeTokenLogContext {
                 node_id: "node_abc",
                 workspace_id: "ws_test",
@@ -4244,21 +5995,23 @@ mod tests {
         let mut pending = HashMap::from([
             (
                 "isolated".to_string(),
-                PendingAgentRegistration {
-                    isolates_channels: true,
-                    name: "isolated".to_string(),
-                    reply: isolated_tx,
-                    created_at: Instant::now(),
-                },
+                test_pending_agent_registration(
+                    "isolated",
+                    true,
+                    "isolated",
+                    isolated_tx,
+                    Instant::now(),
+                ),
             ),
             (
                 "legacy".to_string(),
-                PendingAgentRegistration {
-                    isolates_channels: false,
-                    name: "legacy".to_string(),
-                    reply: legacy_tx,
-                    created_at: Instant::now(),
-                },
+                test_pending_agent_registration(
+                    "legacy",
+                    false,
+                    "legacy",
+                    legacy_tx,
+                    Instant::now(),
+                ),
             ),
         ]);
         let (events, _) = mpsc::channel(1);
@@ -4273,6 +6026,7 @@ mod tests {
                     &mut pending,
                     &mut deregistrations,
                     &mut ApplicationLiveness::new(Duration::from_secs(1)),
+                    &mut VecDeque::new(),
                     "node-test",
                     &mut sink,
                     None,
@@ -4324,6 +6078,7 @@ mod tests {
             &mut HashMap::new(),
             &mut HashMap::new(),
             &mut liveness,
+            &mut VecDeque::new(),
             "node-test",
             &mut futures_util::sink::drain(),
             None,
@@ -4364,6 +6119,7 @@ mod tests {
                 &mut HashMap::new(),
                 &mut HashMap::new(),
                 &mut ApplicationLiveness::new(Duration::from_secs(1)),
+                &mut VecDeque::new(),
                 "node-test",
                 &mut futures_util::sink::drain(),
                 None,
@@ -4440,6 +6196,94 @@ mod tests {
     }
 
     #[test]
+    fn d1_pressure_safe_control_frame_audit_assigns_ids_and_replays_exact_frames() {
+        let frames = vec![
+            BrokerToRelaycast::AgentDeregister(AgentDeregister {
+                v: FLEET_WIRE_VERSION,
+                id: Some("agent_deregister_1".to_string()),
+                agent_id: "agt-1".to_string(),
+                name: Some("agent-a".to_string()),
+            }),
+            delivery_ack("agent-a", 7),
+        ];
+
+        for mut frame in frames {
+            let (id, _) = prepare_retryable_control_frame(&mut frame)
+                .expect("audited frame must be retryable");
+            let mut state = ApplicationLiveness::new(Duration::from_secs(30));
+            state.track_retryable_control_frame(id.clone(), frame.clone());
+            let now = Instant::now();
+            assert_eq!(
+                state.schedule_control_d1_pressure_retry(&id, "Node liveness retry pending", now,),
+                ControlPressureRetry::Scheduled(Duration::from_secs(1))
+            );
+            assert_eq!(
+                state.take_due_control_retry(now + Duration::from_secs(1)),
+                Some(frame),
+                "the retry must preserve every field and correlation id"
+            );
+        }
+
+        let mut heartbeat = BrokerToRelaycast::NodeHeartbeat(
+            FleetLoadSnapshot::default().heartbeat(&build_node_register(
+                &test_manifest(),
+                "node-test",
+                "host-test",
+                "broker/test",
+                None,
+            )),
+        );
+        assert_eq!(prepare_retryable_control_frame(&mut heartbeat), None);
+
+        let mut task_result = BrokerToRelaycast::ActionResult(ActionResult {
+            v: FLEET_WIRE_VERSION,
+            id: Some(format!("{}result_1", crate::runtime::task_request_prefix())),
+            invocation_id: "inv-1".to_string(),
+            result: ActionResultPayload::Output(ActionResultOutput {
+                output: json!({"ok": true}),
+            }),
+            task: None,
+        });
+        assert_eq!(prepare_retryable_control_frame(&mut task_result), None);
+        let mut task_accept = BrokerToRelaycast::ActionAccept(crate::fleet_wire::ActionAccept {
+            v: FLEET_WIRE_VERSION,
+            id: "task_request_1".to_string(),
+            invocation_id: "inv-task".to_string(),
+            execution_id: "exec-1".to_string(),
+            worker_generation: "generation-1".to_string(),
+        });
+        assert_eq!(prepare_retryable_control_frame(&mut task_accept), None);
+
+        let mut one_way_result = BrokerToRelaycast::ActionResult(ActionResult {
+            v: FLEET_WIRE_VERSION,
+            id: None,
+            invocation_id: "inv-spawn".to_string(),
+            result: ActionResultPayload::Output(ActionResultOutput {
+                output: json!({"ok": true}),
+            }),
+            task: None,
+        });
+        let (result_id, kind) = prepare_retryable_control_frame(&mut one_way_result)
+            .expect("non-task action.result must gain a retained retry owner");
+        assert_eq!(kind, "action.result");
+        assert!(result_id.starts_with("action_result_"));
+        assert!(matches!(
+            one_way_result,
+            BrokerToRelaycast::ActionResult(ActionResult { id: Some(id), .. }) if id == result_id
+        ));
+        let mut one_way_deregister = BrokerToRelaycast::AgentDeregister(AgentDeregister {
+            v: FLEET_WIRE_VERSION,
+            id: None,
+            agent_id: "agt-one-way".to_string(),
+            name: Some("agent-one-way".to_string()),
+        });
+        assert_eq!(
+            prepare_retryable_control_frame(&mut one_way_deregister),
+            None
+        );
+    }
+
+    #[test]
     fn newer_inventory_snapshot_cancels_an_older_retry_payload() {
         let mut liveness = ApplicationLiveness::new(Duration::from_secs(120));
         let old = test_inventory_sync("inventory-old");
@@ -4488,6 +6332,7 @@ mod tests {
             &mut HashMap::new(),
             &mut HashMap::new(),
             &mut liveness,
+            &mut VecDeque::new(),
             "node-test",
             &mut futures_util::sink::drain(),
             None,
@@ -4514,18 +6359,208 @@ mod tests {
         );
     }
 
+    #[tokio::test]
+    async fn late_d1_pressure_after_control_retry_timeout_is_consumed_once() {
+        let mut liveness = ApplicationLiveness::new(Duration::from_secs(120));
+        let id = format!("{}late-pressure", crate::runtime::task_request_prefix());
+        let frame = BrokerToRelaycast::ActionAccept(crate::fleet_wire::ActionAccept {
+            v: FLEET_WIRE_VERSION,
+            id: id.clone(),
+            invocation_id: "inv-late-pressure".to_string(),
+            execution_id: "exec-late-pressure".to_string(),
+            worker_generation: "generation-late-pressure".to_string(),
+        });
+        liveness.track_retryable_control_frame(id.clone(), frame);
+        let now = Instant::now();
+        assert!(matches!(
+            liveness.schedule_control_d1_pressure_retry(&id, "Node liveness retry pending", now,),
+            ControlPressureRetry::Scheduled(_)
+        ));
+        assert_eq!(
+            liveness
+                .expire_retryable_control_frames(now + CONTROL_D1_PRESSURE_RETRY_BUDGET)
+                .len(),
+            1
+        );
+
+        let (events, mut receiver) = mpsc::channel(1);
+        let healthy = handle_server_message(
+            Message::Text(
+                json!({
+                    "v": 1,
+                    "id": id.clone(),
+                    "type": "error",
+                    "ok": false,
+                    "code": "d1_pressure",
+                    "message": "Node liveness retry pending"
+                })
+                .to_string(),
+            ),
+            &events,
+            &mut HashMap::new(),
+            &mut HashMap::new(),
+            &mut liveness,
+            &mut VecDeque::new(),
+            "node-test",
+            &mut futures_util::sink::drain(),
+            None,
+            None,
+        )
+        .await;
+
+        assert!(healthy);
+        assert!(matches!(
+            receiver.try_recv(),
+            Err(mpsc::error::TryRecvError::Empty)
+        ));
+        assert!(!liveness.consume_exhausted_retryable_control_frame(&id));
+    }
+
+    #[test]
+    fn exhausted_control_retry_tombstone_has_its_own_cleanup_deadline() {
+        let policy = ControlRetryPolicy {
+            initial_delay: Duration::from_millis(5),
+            max_delay: Duration::from_millis(5),
+            max_retries: 1,
+            budget: Duration::from_millis(50),
+        };
+        let mut liveness =
+            ApplicationLiveness::new_with_retry_policy(Duration::from_secs(1), policy);
+        let id = format!("{}tombstone", crate::runtime::task_request_prefix());
+        liveness.track_retryable_control_frame(
+            id.clone(),
+            BrokerToRelaycast::ActionAccept(crate::fleet_wire::ActionAccept {
+                v: FLEET_WIRE_VERSION,
+                id: id.clone(),
+                invocation_id: "inv-tombstone".to_string(),
+                execution_id: "exec-tombstone".to_string(),
+                worker_generation: "generation-tombstone".to_string(),
+            }),
+        );
+        let now = Instant::now();
+        assert!(matches!(
+            liveness.schedule_control_d1_pressure_retry(&id, "Node liveness retry pending", now,),
+            ControlPressureRetry::Scheduled(_)
+        ));
+        assert_eq!(
+            liveness
+                .expire_retryable_control_frames(now + policy.budget)
+                .len(),
+            1
+        );
+        assert_eq!(
+            liveness.next_control_retry_event_delay(now + policy.budget),
+            Some(policy.budget)
+        );
+        assert!(liveness
+            .expire_retryable_control_frames(now + policy.budget + policy.budget)
+            .is_empty());
+        assert!(liveness.exhausted_retryable_control_frames.is_empty());
+    }
+
+    #[test]
+    fn disconnect_retains_only_action_results_that_observed_pressure() {
+        let mut liveness = ApplicationLiveness::new(Duration::from_secs(1));
+        let id = "action_result_disconnect".to_string();
+        let frame = BrokerToRelaycast::ActionResult(ActionResult {
+            v: FLEET_WIRE_VERSION,
+            id: Some(id.clone()),
+            invocation_id: "inv-disconnect".to_string(),
+            result: ActionResultPayload::Output(ActionResultOutput {
+                output: json!({"ok": true}),
+            }),
+            task: None,
+        });
+        liveness.track_retryable_control_frame(id.clone(), frame.clone());
+        let mut retained = VecDeque::new();
+        liveness.retain_non_task_action_results(&mut retained);
+        assert!(
+            retained.is_empty(),
+            "a successful write has no replay proof"
+        );
+
+        assert!(matches!(
+            liveness.schedule_control_d1_pressure_retry(
+                &id,
+                "Node liveness retry pending",
+                Instant::now(),
+            ),
+            ControlPressureRetry::Scheduled(_)
+        ));
+        liveness.retain_non_task_action_results(&mut retained);
+        assert_eq!(retained, VecDeque::from([frame]));
+    }
+
+    #[tokio::test]
+    async fn replayed_action_result_exhaustion_waits_for_an_organic_reconnect() {
+        let policy = ControlRetryPolicy {
+            initial_delay: Duration::from_millis(1),
+            max_delay: Duration::from_millis(1),
+            max_retries: 0,
+            budget: Duration::from_millis(10),
+        };
+        let mut liveness =
+            ApplicationLiveness::new_with_retry_policy(Duration::from_secs(1), policy);
+        let id = "action_result_replayed".to_string();
+        liveness.track_retryable_control_frame(
+            id.clone(),
+            BrokerToRelaycast::ActionResult(ActionResult {
+                v: FLEET_WIRE_VERSION,
+                id: Some(id.clone()),
+                invocation_id: "inv-replayed".to_string(),
+                result: ActionResultPayload::Output(ActionResultOutput {
+                    output: json!({"ok": true}),
+                }),
+                task: None,
+            }),
+        );
+        liveness.mark_retryable_control_frame_replayed(&id);
+        let (events, _receiver) = mpsc::channel(1);
+        let mut retained = VecDeque::new();
+        let stays_connected = handle_server_message(
+            Message::Text(
+                json!({
+                    "v": 1,
+                    "id": id,
+                    "type": "error",
+                    "ok": false,
+                    "code": "d1_pressure",
+                    "message": "Node liveness retry pending"
+                })
+                .to_string(),
+            ),
+            &events,
+            &mut HashMap::new(),
+            &mut HashMap::new(),
+            &mut liveness,
+            &mut retained,
+            "node-test",
+            &mut futures_util::sink::drain(),
+            None,
+            None,
+        )
+        .await;
+        assert!(stays_connected, "a replay must not start a reconnect loop");
+        assert_eq!(
+            retained.len(),
+            1,
+            "the result remains queued for a later reconnect"
+        );
+    }
+
     #[test]
     fn expire_agent_registrations_bounds_pending_map() {
         let created_at = Instant::now();
         let (reply_tx, mut reply_rx) = oneshot::channel();
         let mut pending = HashMap::from([(
             "agent_register_1".to_string(),
-            PendingAgentRegistration {
-                isolates_channels: false,
-                name: "agent-a".to_string(),
-                reply: reply_tx,
+            test_pending_agent_registration(
+                "agent-a",
+                false,
+                "agent_register_1",
+                reply_tx,
                 created_at,
-            },
+            ),
         )]);
 
         expire_agent_registrations(
@@ -4551,12 +6586,13 @@ mod tests {
         let (reply_tx, reply_rx) = oneshot::channel();
         let mut pending = HashMap::from([(
             "agent_register_req".to_string(),
-            PendingAgentRegistration {
-                isolates_channels: false,
-                name: "agent-a".to_string(),
-                reply: reply_tx,
-                created_at: Instant::now(),
-            },
+            test_pending_agent_registration(
+                "agent-a",
+                false,
+                "agent_register_req",
+                reply_tx,
+                Instant::now(),
+            ),
         )]);
         let mut sink = futures_util::sink::drain();
         let reply = crate::fleet_wire::Reply {
@@ -4570,7 +6606,8 @@ mod tests {
             }),
         };
 
-        assert!(complete_agent_registration(reply, &mut pending, &mut sink).await);
+        let mut liveness = ApplicationLiveness::new(Duration::from_secs(30));
+        assert!(complete_agent_registration(reply, &mut pending, &mut liveness, &mut sink).await);
         assert!(
             pending.is_empty(),
             "the pending registration must be consumed by the name-based fallback"
@@ -4587,6 +6624,101 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn complete_agent_registration_name_fallback_skips_exhausted_same_name_request() {
+        let (stale_tx, _stale_rx) = oneshot::channel();
+        let mut stale = test_pending_agent_registration(
+            "agent-a",
+            false,
+            "agent_register_stale",
+            stale_tx,
+            Instant::now(),
+        );
+        stale.reply = None;
+        let (active_tx, active_rx) = oneshot::channel();
+        let active = test_pending_agent_registration(
+            "agent-a",
+            false,
+            "agent_register_active",
+            active_tx,
+            Instant::now(),
+        );
+        let mut pending = HashMap::from([
+            ("agent_register_stale".to_string(), stale),
+            ("agent_register_active".to_string(), active),
+        ]);
+        let reply = crate::fleet_wire::Reply {
+            v: FLEET_WIRE_VERSION,
+            id: "196331520553345024".to_string(),
+            ok: true,
+            data: json!({
+                "name": "agent-a",
+                "agent_id": "agt-active",
+                "token": "at_active"
+            }),
+        };
+        let mut liveness = ApplicationLiveness::new(Duration::from_secs(30));
+
+        assert!(
+            complete_agent_registration(
+                reply,
+                &mut pending,
+                &mut liveness,
+                &mut futures_util::sink::drain(),
+            )
+            .await
+        );
+        assert!(pending.contains_key("agent_register_stale"));
+        assert!(!pending.contains_key("agent_register_active"));
+        assert_eq!(active_rx.await.unwrap().unwrap().agent_id, "agt-active");
+    }
+
+    #[tokio::test]
+    async fn late_agent_registration_cleanup_is_tracked_for_pressure_retry() {
+        let (reply_tx, _reply_rx) = oneshot::channel();
+        let mut exhausted = test_pending_agent_registration(
+            "agent-a",
+            false,
+            "agent_register_late",
+            reply_tx,
+            Instant::now(),
+        );
+        exhausted.reply = None;
+        let mut pending = HashMap::from([("agent_register_late".to_string(), exhausted)]);
+        let reply = crate::fleet_wire::Reply {
+            v: FLEET_WIRE_VERSION,
+            id: "196331520553345024".to_string(),
+            ok: true,
+            data: json!({
+                "name": "agent-a",
+                "agent_id": "agt-late",
+                "token": "at_late"
+            }),
+        };
+        let mut liveness = ApplicationLiveness::new(Duration::from_secs(30));
+
+        assert!(
+            complete_agent_registration(
+                reply,
+                &mut pending,
+                &mut liveness,
+                &mut futures_util::sink::drain(),
+            )
+            .await
+        );
+        let tracked = liveness
+            .pending_retryable_control_frames
+            .get("agent_register_late")
+            .expect("compensating deregistration must retain a retry owner");
+        assert!(matches!(
+            &tracked.frame,
+            BrokerToRelaycast::AgentDeregister(request)
+                if request.id.as_deref() == Some("agent_register_late")
+                    && request.agent_id == "agt-late"
+                    && request.name.as_deref() == Some("agent-a")
+        ));
+    }
+
+    #[tokio::test]
     async fn complete_agent_registration_ignores_non_agent_reply() {
         // A `node.register`/`inventory.sync` reply carries a fresh engine
         // snowflake id and no agent-register-shaped data, so it resolves to no
@@ -4595,12 +6727,13 @@ mod tests {
         let (reply_tx, mut reply_rx) = oneshot::channel();
         let mut pending = HashMap::from([(
             "agent_register_req".to_string(),
-            PendingAgentRegistration {
-                isolates_channels: false,
-                name: "agent-a".to_string(),
-                reply: reply_tx,
-                created_at: Instant::now(),
-            },
+            test_pending_agent_registration(
+                "agent-a",
+                false,
+                "agent_register_req",
+                reply_tx,
+                Instant::now(),
+            ),
         )]);
         let mut sink = futures_util::sink::drain();
         let reply = crate::fleet_wire::Reply {
@@ -4610,7 +6743,8 @@ mod tests {
             data: json!({ "node_id": "node-test", "online": true }),
         };
 
-        assert!(complete_agent_registration(reply, &mut pending, &mut sink).await);
+        let mut liveness = ApplicationLiveness::new(Duration::from_secs(30));
+        assert!(complete_agent_registration(reply, &mut pending, &mut liveness, &mut sink).await);
         assert_eq!(
             pending.len(),
             1,
@@ -4760,8 +6894,17 @@ mod tests {
             ))
             .await
             .unwrap();
-            let ack = next_non_heartbeat_node_to_server(&mut ws).await;
-            assert_eq!(ack, delivery_ack("agent-a", 1));
+            match next_non_heartbeat_node_to_server(&mut ws).await {
+                BrokerToRelaycast::DeliveryAck(ack) => {
+                    assert_eq!(ack.agent, "agent-a");
+                    assert_eq!(ack.up_to_seq, 1);
+                    assert!(ack
+                        .id
+                        .as_deref()
+                        .is_some_and(|id| id.starts_with("delivery_ack_")));
+                }
+                other => panic!("expected delivery.ack, got {other:?}"),
+            }
 
             ws.send(Message::Text(
                 serde_json::to_string(&RelaycastToBroker::ActionInvoke(ActionInvoke {
@@ -4996,6 +7139,399 @@ mod tests {
         server.abort();
     }
 
+    #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+    enum SafeControlRetryCase {
+        DeliveryAck,
+        ActionResult,
+        AgentDeregister,
+    }
+
+    async fn assert_safe_control_frame_socket_retry(
+        case: SafeControlRetryCase,
+        persistent: bool,
+        disconnect_during_backoff: bool,
+    ) {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let ws_url = format!("ws://{}/v1/node/ws", listener.local_addr().unwrap());
+        let (command_tx, mut command_rx) = mpsc::channel(8);
+        let (event_tx, mut event_rx) = mpsc::channel(8);
+        let (server_done_tx, server_done_rx) = oneshot::channel();
+        let retry_policy = ControlRetryPolicy {
+            initial_delay: Duration::from_millis(100),
+            max_delay: Duration::from_millis(100),
+            max_retries: 2,
+            budget: Duration::from_millis(350),
+        };
+        let server_max_retries = retry_policy.max_retries;
+        let server = tokio::spawn(async move {
+            let (stream, _) = listener.accept().await.unwrap();
+            let mut ws = accept_async(stream).await.unwrap();
+            assert!(matches!(
+                next_node_to_server(&mut ws).await,
+                BrokerToRelaycast::NodeRegister(_)
+            ));
+            assert!(matches!(
+                next_node_to_server(&mut ws).await,
+                BrokerToRelaycast::InventorySync(_)
+            ));
+            assert!(matches!(
+                next_node_to_server(&mut ws).await,
+                BrokerToRelaycast::NodeHeartbeat(_)
+            ));
+
+            let initial = next_non_heartbeat_node_to_server(&mut ws).await;
+            match (&case, &initial) {
+                (SafeControlRetryCase::DeliveryAck, BrokerToRelaycast::DeliveryAck(_))
+                | (SafeControlRetryCase::ActionResult, BrokerToRelaycast::ActionResult(_))
+                | (SafeControlRetryCase::AgentDeregister, BrokerToRelaycast::AgentDeregister(_)) => {
+                }
+                _ => panic!("unexpected frame for {case:?}: {initial:?}"),
+            }
+            let id = match &initial {
+                BrokerToRelaycast::DeliveryAck(frame) => frame.id.clone(),
+                BrokerToRelaycast::ActionResult(frame) => frame.id.clone(),
+                BrokerToRelaycast::AgentDeregister(frame) => frame.id.clone(),
+                _ => unreachable!(),
+            }
+            .expect("retryable control frame must carry a stable id");
+
+            let pressure_responses = if persistent {
+                server_max_retries + 1
+            } else {
+                1
+            };
+            for response_index in 0..pressure_responses {
+                ws.send(Message::Text(
+                    json!({
+                        "v": 1,
+                        "id": id.clone(),
+                        "type": "error",
+                        "ok": false,
+                        "code": "d1_pressure",
+                        "message": "Node liveness retry pending"
+                    })
+                    .to_string(),
+                ))
+                .await
+                .unwrap();
+                if !disconnect_during_backoff
+                    && (response_index < pressure_responses - 1 || !persistent)
+                {
+                    if response_index == 0 {
+                        assert!(
+                            tokio::time::timeout(
+                                Duration::from_millis(20),
+                                next_non_heartbeat_node_to_server(&mut ws),
+                            )
+                            .await
+                            .is_err(),
+                            "{case:?} retried without backoff"
+                        );
+                    }
+                    let retry = tokio::time::timeout(
+                        Duration::from_millis(500),
+                        next_non_heartbeat_node_to_server(&mut ws),
+                    )
+                    .await
+                    .expect("retry should arrive inside the short test budget");
+                    assert_eq!(retry, initial, "{case:?} retry changed the frame");
+                }
+            }
+
+            if disconnect_during_backoff {
+                ws.close(None).await.unwrap();
+            } else if persistent {
+                if case == SafeControlRetryCase::DeliveryAck {
+                    assert!(
+                        tokio::time::timeout(
+                            Duration::from_millis(150),
+                            next_non_heartbeat_node_to_server(&mut ws),
+                        )
+                        .await
+                        .is_err(),
+                        "delivery.ack exceeded its retry bound"
+                    );
+                }
+            } else {
+                ws.send(Message::Text(
+                    json!({"v": 1, "id": id.clone(), "type": "reply", "ok": true, "data": {}})
+                        .to_string(),
+                ))
+                .await
+                .unwrap();
+            }
+            server_done_tx.send(()).unwrap();
+            if !disconnect_during_backoff {
+                while ws.next().await.is_some() {}
+            }
+        });
+
+        let config = FleetControlConfig {
+            ws_url,
+            node_token: Some("nt_test".to_string()),
+            node_id: "node-test".to_string(),
+            node_name: "host-test".to_string(),
+            broker_version: "broker/test".to_string(),
+            token_minter: None,
+            session_token: None,
+            read_idle_timeout: None,
+            probe: None,
+            terminal_reconnect_tx: None,
+        };
+        let mut registration = Some(build_node_register(
+            &test_manifest(),
+            "node-test",
+            "host-test",
+            "broker/test",
+            None,
+        ));
+        let mut inventory = Vec::new();
+        let mut load = FleetLoadSnapshot::default();
+        let mut retained_pressure_frames = VecDeque::new();
+        let session = run_connected_once_with_retry_policy(
+            &config,
+            &mut command_rx,
+            &event_tx,
+            &mut registration,
+            &mut inventory,
+            &mut load,
+            Duration::from_secs(3_600),
+            retry_policy,
+            &mut retained_pressure_frames,
+        );
+        // Keep the command lane open while a pressure-triggered reconnect is
+        // expected; otherwise dropping the driver's sender can race the close
+        // frame and make the session report an intentional shutdown instead.
+        let _command_lane_guard = command_tx.clone();
+        let driver = async move {
+            assert_eq!(event_rx.recv().await.unwrap(), FleetControlEvent::Connected);
+            let deregistration_reply = match case {
+                SafeControlRetryCase::DeliveryAck => {
+                    command_tx
+                        .send(FleetControlCommand::Send(delivery_ack("agent-a", 7)))
+                        .await
+                        .unwrap();
+                    None
+                }
+                SafeControlRetryCase::ActionResult => {
+                    let message = BrokerToRelaycast::ActionResult(ActionResult {
+                        v: FLEET_WIRE_VERSION,
+                        id: None,
+                        invocation_id: "inv-pressure".to_string(),
+                        result: ActionResultPayload::Output(ActionResultOutput {
+                            output: json!({"spawned": true}),
+                        }),
+                        task: None,
+                    });
+                    if persistent {
+                        command_tx
+                            .send(FleetControlCommand::Send(message))
+                            .await
+                            .unwrap();
+                    } else {
+                        let (delivered, _delivery_rx) = oneshot::channel();
+                        command_tx
+                            .send(FleetControlCommand::RetainedSend(RetainedFleetCompletion {
+                                message,
+                                delivered,
+                            }))
+                            .await
+                            .unwrap();
+                    }
+                    None
+                }
+                SafeControlRetryCase::AgentDeregister => {
+                    let (reply, receiver) = oneshot::channel();
+                    command_tx
+                        .send(FleetControlCommand::DeregisterAgent {
+                            request: AgentDeregister {
+                                v: FLEET_WIRE_VERSION,
+                                id: None,
+                                agent_id: "agt-pressure".to_string(),
+                                name: Some("agent-pressure".to_string()),
+                            },
+                            reply,
+                        })
+                        .await
+                        .unwrap();
+                    Some(receiver)
+                }
+            };
+            server_done_rx.await.unwrap();
+            let deregistration_result = match deregistration_reply {
+                Some(receiver) => Some(receiver.await.unwrap()),
+                None => None,
+            };
+            if !((persistent || disconnect_during_backoff)
+                && case == SafeControlRetryCase::ActionResult)
+            {
+                command_tx
+                    .send(FleetControlCommand::Shutdown)
+                    .await
+                    .unwrap();
+            }
+            deregistration_result
+        };
+
+        let ((result, deregistration_result), ()) =
+            tokio::time::timeout(Duration::from_secs(5), async {
+                let (result, deregistration_result) = tokio::join!(session, driver);
+                ((result, deregistration_result), server.await.unwrap())
+            })
+            .await
+            .expect("safe control retry case must finish inside its short test budget");
+
+        if (persistent || disconnect_during_backoff) && case == SafeControlRetryCase::ActionResult {
+            assert!(matches!(result, ControlRunResult::Disconnected { .. }));
+            assert_eq!(retained_pressure_frames.len(), 1);
+            assert!(matches!(
+                retained_pressure_frames.front(),
+                Some(BrokerToRelaycast::ActionResult(result))
+                    if result.id.as_deref().is_some_and(|id| id.starts_with("action_result_"))
+                        && result.invocation_id == "inv-pressure"
+            ));
+
+            let expected = retained_pressure_frames
+                .front()
+                .cloned()
+                .expect("retained action.result");
+            let reconnect_listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+            let reconnect_ws_url = format!(
+                "ws://{}/v1/node/ws",
+                reconnect_listener.local_addr().unwrap()
+            );
+            let (reconnect_done_tx, reconnect_done_rx) = oneshot::channel();
+            let reconnect_server = tokio::spawn(async move {
+                let (stream, _) = reconnect_listener.accept().await.unwrap();
+                let mut ws = accept_async(stream).await.unwrap();
+                assert!(matches!(
+                    next_node_to_server(&mut ws).await,
+                    BrokerToRelaycast::NodeRegister(_)
+                ));
+                assert!(matches!(
+                    next_node_to_server(&mut ws).await,
+                    BrokerToRelaycast::InventorySync(_)
+                ));
+                assert!(matches!(
+                    next_node_to_server(&mut ws).await,
+                    BrokerToRelaycast::NodeHeartbeat(_)
+                ));
+                let replayed = next_non_heartbeat_node_to_server(&mut ws).await;
+                assert_eq!(replayed, expected, "reconnect must replay the exact result");
+                let id = match replayed {
+                    BrokerToRelaycast::ActionResult(result) => result.id.unwrap(),
+                    _ => unreachable!(),
+                };
+                ws.send(Message::Text(
+                    json!({"v": 1, "id": id, "type": "reply", "ok": true, "data": {}}).to_string(),
+                ))
+                .await
+                .unwrap();
+                reconnect_done_tx.send(()).unwrap();
+                while ws.next().await.is_some() {}
+            });
+            let reconnect_config = FleetControlConfig {
+                ws_url: reconnect_ws_url,
+                node_token: Some("nt_test".to_string()),
+                node_id: "node-test".to_string(),
+                node_name: "host-test".to_string(),
+                broker_version: "broker/test".to_string(),
+                token_minter: None,
+                session_token: None,
+                read_idle_timeout: None,
+                probe: None,
+                terminal_reconnect_tx: None,
+            };
+            let (reconnect_command_tx, mut reconnect_command_rx) = mpsc::channel(2);
+            let (reconnect_event_tx, mut reconnect_event_rx) = mpsc::channel(2);
+            let reconnect_session = run_connected_once_with_retry_policy(
+                &reconnect_config,
+                &mut reconnect_command_rx,
+                &reconnect_event_tx,
+                &mut registration,
+                &mut inventory,
+                &mut load,
+                Duration::from_secs(3_600),
+                retry_policy,
+                &mut retained_pressure_frames,
+            );
+            let reconnect_driver = async move {
+                assert_eq!(
+                    reconnect_event_rx.recv().await.unwrap(),
+                    FleetControlEvent::Connected
+                );
+                reconnect_done_rx.await.unwrap();
+                reconnect_command_tx
+                    .send(FleetControlCommand::Shutdown)
+                    .await
+                    .unwrap();
+            };
+            let (reconnect_result, ()) = tokio::time::timeout(Duration::from_secs(5), async {
+                let (result, ()) = tokio::join!(reconnect_session, reconnect_driver);
+                (result, reconnect_server.await.unwrap())
+            })
+            .await
+            .expect("retained result must replay after reconnect");
+            assert_eq!(reconnect_result, ControlRunResult::Shutdown);
+            assert!(retained_pressure_frames.is_empty());
+        } else {
+            assert_eq!(result, ControlRunResult::Shutdown);
+        }
+        match (case, persistent, deregistration_result) {
+            (SafeControlRetryCase::AgentDeregister, false, Some(Ok(()))) => {}
+            (SafeControlRetryCase::AgentDeregister, true, Some(Err(reason))) => {
+                assert!(reason.starts_with("d1_pressure:"), "got {reason}");
+            }
+            (SafeControlRetryCase::AgentDeregister, _, other) => {
+                panic!("unexpected deregistration result: {other:?}")
+            }
+            (_, _, None) => {}
+            (_, _, other) => panic!("unexpected reply owner: {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn delivery_ack_retries_transient_pressure_on_same_socket() {
+        assert_safe_control_frame_socket_retry(SafeControlRetryCase::DeliveryAck, false, false)
+            .await;
+    }
+
+    #[tokio::test]
+    async fn delivery_ack_stops_after_persistent_pressure_budget() {
+        assert_safe_control_frame_socket_retry(SafeControlRetryCase::DeliveryAck, true, false)
+            .await;
+    }
+
+    #[tokio::test]
+    async fn action_result_retries_transient_pressure_on_same_socket() {
+        assert_safe_control_frame_socket_retry(SafeControlRetryCase::ActionResult, false, false)
+            .await;
+    }
+
+    #[tokio::test]
+    async fn action_result_is_retained_after_persistent_pressure_budget() {
+        assert_safe_control_frame_socket_retry(SafeControlRetryCase::ActionResult, true, false)
+            .await;
+    }
+
+    #[tokio::test]
+    async fn action_result_is_retained_when_socket_drops_during_pressure_backoff() {
+        assert_safe_control_frame_socket_retry(SafeControlRetryCase::ActionResult, false, true)
+            .await;
+    }
+
+    #[tokio::test]
+    async fn agent_deregister_retries_transient_pressure_on_same_socket() {
+        assert_safe_control_frame_socket_retry(SafeControlRetryCase::AgentDeregister, false, false)
+            .await;
+    }
+
+    #[tokio::test]
+    async fn agent_deregister_fails_named_after_persistent_pressure_budget() {
+        assert_safe_control_frame_socket_retry(SafeControlRetryCase::AgentDeregister, true, false)
+            .await;
+    }
+
     #[tokio::test]
     async fn registration_d1_pressure_backoff_remains_shutdown_interruptible() {
         let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
@@ -5221,6 +7757,372 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn node_control_agent_register_retries_d1_pressure_then_succeeds() {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let ws_url = format!("ws://{}/v1/node/ws", listener.local_addr().unwrap());
+        let (command_tx, command_rx) = mpsc::channel(32);
+        let (event_tx, mut event_rx) = mpsc::channel(32);
+
+        tokio::spawn(run_node_control_client(
+            FleetControlConfig {
+                ws_url,
+                node_token: Some("nt_test".to_string()),
+                node_id: "node-test".to_string(),
+                node_name: "host-test".to_string(),
+                broker_version: "broker/test".to_string(),
+                token_minter: None,
+                session_token: None,
+                read_idle_timeout: None,
+                probe: None,
+                terminal_reconnect_tx: None,
+            },
+            command_rx,
+            event_tx,
+        ));
+
+        let server = tokio::spawn(async move {
+            let (stream, _) = listener.accept().await.unwrap();
+            let mut ws = accept_async(stream).await.unwrap();
+
+            assert!(matches!(
+                next_node_to_server(&mut ws).await,
+                BrokerToRelaycast::NodeRegister(_)
+            ));
+            assert!(matches!(
+                next_node_to_server(&mut ws).await,
+                BrokerToRelaycast::InventorySync(_)
+            ));
+            assert!(matches!(
+                next_node_to_server(&mut ws).await,
+                BrokerToRelaycast::NodeHeartbeat(_)
+            ));
+
+            let initial = match next_non_heartbeat_node_to_server(&mut ws).await {
+                BrokerToRelaycast::AgentRegister(request) => request,
+                other => panic!("expected agent.register, got {other:?}"),
+            };
+            let request_id = initial.id.clone().expect("agent.register id");
+
+            for (attempt, no_retry_before, retry_within) in [
+                (1, Duration::from_millis(500), Duration::from_secs(2)),
+                (2, Duration::from_millis(1_500), Duration::from_secs(3)),
+            ] {
+                ws.send(Message::Text(
+                    json!({
+                        "v": 1,
+                        "id": request_id,
+                        "type": "error",
+                        "ok": false,
+                        "code": "d1_pressure",
+                        "message": "Node liveness retry pending"
+                    })
+                    .to_string(),
+                ))
+                .await
+                .unwrap();
+                assert!(
+                    tokio::time::timeout(
+                        no_retry_before,
+                        next_non_heartbeat_node_to_server(&mut ws),
+                    )
+                    .await
+                    .is_err(),
+                    "agent.register retry {attempt} must honor exponential backoff"
+                );
+                let retried =
+                    tokio::time::timeout(retry_within, next_non_heartbeat_node_to_server(&mut ws))
+                        .await
+                        .expect(
+                            "retryable agent.register d1_pressure should retry on the live socket",
+                        );
+                assert_eq!(retried, BrokerToRelaycast::AgentRegister(initial.clone()));
+            }
+
+            ws.send(Message::Text(
+                serde_json::to_string(&RelaycastToBroker::Reply(crate::fleet_wire::Reply {
+                    v: FLEET_WIRE_VERSION,
+                    id: request_id,
+                    ok: true,
+                    data: json!({
+                        "name": "agent-a",
+                        "agent_id": "agt-1",
+                        "token": "at_test"
+                    }),
+                }))
+                .unwrap(),
+            ))
+            .await
+            .unwrap();
+        });
+
+        command_tx
+            .send(FleetControlCommand::RegisterNode {
+                manifest: test_manifest(),
+                resume_cursor: None,
+            })
+            .await
+            .unwrap();
+        assert_eq!(event_rx.recv().await.unwrap(), FleetControlEvent::Connected);
+
+        let (reply_tx, reply_rx) = oneshot::channel();
+        command_tx
+            .send(FleetControlCommand::RegisterAgent {
+                request: AgentRegister {
+                    auto_join_general: Some(false),
+                    v: FLEET_WIRE_VERSION,
+                    id: None,
+                    name: "agent-a".to_string(),
+                    invocation_id: Some("inv-1".to_string()),
+                    session_ref: Some("session-1".to_string()),
+                    resumable: Some(true),
+                },
+                reply: reply_tx,
+            })
+            .await
+            .unwrap();
+
+        let token = tokio::time::timeout(Duration::from_secs(8), reply_rx)
+            .await
+            .expect("agent.register retry budget elapsed")
+            .unwrap()
+            .expect("transient d1_pressure must not fail the spawn");
+        assert_eq!(token.agent_id, "agt-1");
+        assert_eq!(token.token, "at_test");
+
+        tokio::time::timeout(Duration::from_secs(8), server)
+            .await
+            .unwrap()
+            .unwrap();
+        let _ = command_tx.send(FleetControlCommand::Shutdown).await;
+    }
+
+    async fn assert_agent_register_pressure_exhaustion_fails_closed_and_cleans_late_success(
+        retry_policy: ControlRetryPolicy,
+        expected_attempts: Option<u32>,
+    ) {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let ws_url = format!("ws://{}/v1/node/ws", listener.local_addr().unwrap());
+        let (command_tx, mut command_rx) = mpsc::channel(32);
+        let (event_tx, mut event_rx) = mpsc::channel(32);
+        let (late_success_tx, mut late_success_rx) = oneshot::channel();
+        let (cleanup_seen_tx, cleanup_seen_rx) = oneshot::channel();
+        let server_max_retries = retry_policy.max_retries;
+
+        let server = tokio::spawn(async move {
+            let (stream, _) = listener.accept().await.unwrap();
+            let mut ws = accept_async(stream).await.unwrap();
+            assert!(matches!(
+                next_node_to_server(&mut ws).await,
+                BrokerToRelaycast::NodeRegister(_)
+            ));
+            assert!(matches!(
+                next_node_to_server(&mut ws).await,
+                BrokerToRelaycast::InventorySync(_)
+            ));
+            assert!(matches!(
+                next_node_to_server(&mut ws).await,
+                BrokerToRelaycast::NodeHeartbeat(_)
+            ));
+
+            let mut initial: Option<AgentRegister> = None;
+            let mut attempts = 0u32;
+            loop {
+                enum ServerEvent {
+                    LateSuccess,
+                    Frame(BrokerToRelaycast),
+                }
+                let event = tokio::select! {
+                    result = &mut late_success_rx => {
+                        result.unwrap();
+                        ServerEvent::LateSuccess
+                    }
+                    frame = next_non_heartbeat_node_to_server(&mut ws) => {
+                        ServerEvent::Frame(frame)
+                    }
+                };
+                match event {
+                    ServerEvent::LateSuccess => {
+                        assert!(attempts > 0, "pressure must be observed before exhaustion");
+                        if let Some(expected) = expected_attempts {
+                            assert_eq!(attempts, expected, "retry-count exhaustion attempt count");
+                        } else {
+                            assert!(
+                                attempts < server_max_retries + 1,
+                                "budget exhaustion must preempt retry-count exhaustion"
+                            );
+                        }
+                        break;
+                    }
+                    ServerEvent::Frame(BrokerToRelaycast::AgentRegister(request)) => {
+                        attempts = attempts.saturating_add(1);
+                        if let Some(initial) = initial.as_ref() {
+                            assert_eq!(
+                                &request, initial,
+                                "every retry must preserve the exact frame"
+                            );
+                        } else {
+                            initial = Some(request.clone());
+                        }
+                        ws.send(Message::Text(
+                            json!({
+                                "v": 1,
+                                "id": request.id,
+                                "type": "error",
+                                "ok": false,
+                                "code": "d1_pressure",
+                                "message": "Node liveness retry pending"
+                            })
+                            .to_string(),
+                        ))
+                        .await
+                        .unwrap();
+                    }
+                    ServerEvent::Frame(other) => {
+                        panic!("expected agent.register, got {other:?}")
+                    }
+                }
+            }
+            let initial = initial.expect("initial agent.register frame");
+            let request_id = initial.id.expect("agent.register request id");
+            ws.send(Message::Text(
+                serde_json::to_string(&RelaycastToBroker::Reply(crate::fleet_wire::Reply {
+                    v: FLEET_WIRE_VERSION,
+                    id: request_id.clone(),
+                    ok: true,
+                    data: json!({
+                        "name": "agent-a",
+                        "agent_id": "agt-late",
+                        "token": "at-late"
+                    }),
+                }))
+                .unwrap(),
+            ))
+            .await
+            .unwrap();
+            match next_non_heartbeat_node_to_server(&mut ws).await {
+                BrokerToRelaycast::AgentDeregister(deregister) => {
+                    assert_eq!(deregister.id.as_deref(), Some(request_id.as_str()));
+                    assert_eq!(deregister.agent_id, "agt-late");
+                    assert_eq!(deregister.name.as_deref(), Some("agent-a"));
+                }
+                other => panic!("expected compensating agent.deregister, got {other:?}"),
+            }
+            cleanup_seen_tx.send(()).unwrap();
+            while ws.next().await.is_some() {}
+        });
+
+        let config = FleetControlConfig {
+            ws_url,
+            node_token: Some("nt_test".to_string()),
+            node_id: "node-test".to_string(),
+            node_name: "host-test".to_string(),
+            broker_version: "broker/test".to_string(),
+            token_minter: None,
+            session_token: None,
+            read_idle_timeout: None,
+            probe: None,
+            terminal_reconnect_tx: None,
+        };
+        let mut registration = Some(build_node_register(
+            &test_manifest(),
+            "node-test",
+            "host-test",
+            "broker/test",
+            None,
+        ));
+        let mut inventory = Vec::new();
+        let mut load = FleetLoadSnapshot::default();
+        let mut retained_pressure_frames = VecDeque::new();
+        let session = run_connected_once_with_retry_policy(
+            &config,
+            &mut command_rx,
+            &event_tx,
+            &mut registration,
+            &mut inventory,
+            &mut load,
+            Duration::from_secs(3_600),
+            retry_policy,
+            &mut retained_pressure_frames,
+        );
+        let driver = async move {
+            assert_eq!(event_rx.recv().await.unwrap(), FleetControlEvent::Connected);
+            let (reply_tx, reply_rx) = oneshot::channel();
+            command_tx
+                .send(FleetControlCommand::RegisterAgent {
+                    request: AgentRegister {
+                        auto_join_general: Some(false),
+                        v: FLEET_WIRE_VERSION,
+                        id: None,
+                        name: "agent-a".to_string(),
+                        invocation_id: Some("inv-1".to_string()),
+                        session_ref: Some("session-1".to_string()),
+                        resumable: Some(true),
+                    },
+                    reply: reply_tx,
+                })
+                .await
+                .unwrap();
+            let error = reply_rx
+                .await
+                .unwrap()
+                .expect_err("persistent d1_pressure must fail closed");
+            late_success_tx.send(()).unwrap();
+            cleanup_seen_rx.await.unwrap();
+            command_tx
+                .send(FleetControlCommand::Shutdown)
+                .await
+                .unwrap();
+            error
+        };
+        let ((result, error), ()) = tokio::time::timeout(Duration::from_secs(5), async {
+            let (result, error) = tokio::join!(session, driver);
+            ((result, error), server.await.unwrap())
+        })
+        .await
+        .expect("short persistent-pressure policy must finish reliably");
+        assert_eq!(result, ControlRunResult::Shutdown);
+        assert!(
+            error.starts_with("d1_pressure:"),
+            "spawn caller must see the retryable root cause, got {error}"
+        );
+    }
+
+    #[tokio::test]
+    async fn node_control_agent_register_persistent_d1_pressure_fails_closed_and_cleans_late_success(
+    ) {
+        let retry_policy = ControlRetryPolicy {
+            initial_delay: Duration::from_millis(10),
+            max_delay: Duration::from_millis(20),
+            max_retries: 2,
+            // This case proves retry-count exhaustion. Keep the independent
+            // wall-clock guard nonbinding even on a heavily loaded runner.
+            budget: Duration::from_secs(30),
+        };
+        assert_agent_register_pressure_exhaustion_fails_closed_and_cleans_late_success(
+            retry_policy,
+            Some(retry_policy.max_retries + 1),
+        )
+        .await;
+    }
+
+    #[tokio::test]
+    async fn node_control_agent_register_budget_exhaustion_fails_closed_and_cleans_late_success() {
+        let retry_policy = ControlRetryPolicy {
+            initial_delay: Duration::from_millis(10),
+            max_delay: Duration::from_millis(20),
+            max_retries: 100,
+            // Shorter than the first retry delay, so the budget path wins by
+            // construction rather than depending on runner scheduling.
+            budget: Duration::from_millis(1),
+        };
+        assert_agent_register_pressure_exhaustion_fails_closed_and_cleans_late_success(
+            retry_policy,
+            None,
+        )
+        .await;
+    }
+
+    #[tokio::test]
     async fn node_control_client_mints_initial_token_when_none_supplied() {
         // Broker startup no longer mints the node token on the API-readiness
         // path; the client mints it in the background. Started with no token but
@@ -5270,6 +8172,7 @@ mod tests {
                     node_name: "host-test".to_string(),
                     broker_version: "broker/test".to_string(),
                     token_path: None,
+                    adopt_cached_token_after_conflict: true,
                 }),
                 session_token: Some(session_token.clone()),
                 read_idle_timeout: None,
@@ -5317,6 +8220,716 @@ mod tests {
             "the background mint must publish the token to the shared HTTP session"
         );
         let _ = command_tx.send(FleetControlCommand::Shutdown).await;
+    }
+
+    #[tokio::test]
+    async fn node_control_stops_when_initial_enrollment_requires_existing_node_proof() {
+        let mint_server = MockServer::start();
+        let create_node = mint_server.mock(|when, then| {
+            when.method(POST).path("/v1/nodes");
+            then.status(409).json_body(json!({
+                "ok": false,
+                "error": {
+                    "code": "node_token_proof_required",
+                    "message": "Node already exists; its current node token is required"
+                }
+            }));
+        });
+
+        let (command_tx, command_rx) = mpsc::channel(32);
+        let (event_tx, mut event_rx) = mpsc::channel(32);
+        let session_token = Arc::new(std::sync::RwLock::new(None));
+        let control = tokio::spawn(run_node_control_client(
+            FleetControlConfig {
+                // A terminal enrollment conflict returns before any WebSocket
+                // connection is attempted, so no listener is required.
+                ws_url: "ws://127.0.0.1:9/v1/node/ws".to_string(),
+                node_token: None,
+                node_id: "node-test".to_string(),
+                node_name: "host-test".to_string(),
+                broker_version: "broker/test".to_string(),
+                token_minter: Some(NodeTokenMinter {
+                    workspace_key: "rk_live_test".to_string(),
+                    workspace_id: "ws_test".to_string(),
+                    base_url: Some(mint_server.base_url()),
+                    node_id: "node-test".to_string(),
+                    node_name: "host-test".to_string(),
+                    broker_version: "broker/test".to_string(),
+                    token_path: None,
+                    adopt_cached_token_after_conflict: true,
+                }),
+                session_token: Some(session_token.clone()),
+                read_idle_timeout: None,
+                probe: None,
+                terminal_reconnect_tx: None,
+            },
+            command_rx,
+            event_tx,
+        ));
+
+        command_tx
+            .send(FleetControlCommand::RegisterNode {
+                manifest: test_manifest(),
+                resume_cursor: None,
+            })
+            .await
+            .unwrap();
+
+        tokio::time::timeout(Duration::from_secs(5), control)
+            .await
+            .expect("terminal initial enrollment conflict must stop the control loop")
+            .unwrap();
+        create_node.assert_hits(1);
+        assert_eq!(event_rx.recv().await, Some(FleetControlEvent::Disconnected));
+        assert!(session_token.read().unwrap().is_none());
+    }
+
+    #[tokio::test]
+    async fn node_control_stops_after_server_rejects_rejected_token_as_rotation_proof() {
+        let mint_server = MockServer::start();
+        let create_node = mint_server.mock(|when, then| {
+            when.method(POST)
+                .path("/v1/nodes")
+                .header("x-relaycast-node-token", "nt_live_rejected");
+            then.status(409).json_body(json!({
+                "ok": false,
+                "error": {
+                    "code": "node_token_proof_required",
+                    "message": "Node already exists; its current node token is required"
+                }
+            }));
+        });
+
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let ws_url = format!("ws://{}/v1/node/ws", listener.local_addr().unwrap());
+        let rejected_handshake = tokio::spawn(async move {
+            let (mut socket, _) = listener.accept().await.unwrap();
+            let mut buffer = [0_u8; 4096];
+            let _ = socket.read(&mut buffer).await.unwrap();
+            socket
+                .write_all(
+                    b"HTTP/1.1 401 Unauthorized\r\nContent-Length: 0\r\nConnection: close\r\n\r\n",
+                )
+                .await
+                .unwrap();
+        });
+
+        let token_dir = tempfile::tempdir().unwrap();
+        let token_path = token_dir.path().join("node-token.json");
+        persist_node_token(
+            &token_path,
+            "node-test",
+            "ws_test",
+            Some(&mint_server.base_url()),
+            "nt_live_rejected",
+        )
+        .unwrap();
+
+        let (command_tx, command_rx) = mpsc::channel(32);
+        let (event_tx, mut event_rx) = mpsc::channel(32);
+        let session_token = Arc::new(std::sync::RwLock::new(Some("nt_live_rejected".to_string())));
+        let probe = Arc::new(crate::node_delivery_probe::NodeDeliveryProbe::new());
+        let control = tokio::spawn(run_node_control_client(
+            FleetControlConfig {
+                ws_url,
+                node_token: Some("nt_live_rejected".to_string()),
+                node_id: "node-test".to_string(),
+                node_name: "host-test".to_string(),
+                broker_version: "broker/test".to_string(),
+                token_minter: Some(NodeTokenMinter {
+                    workspace_key: "rk_live_test".to_string(),
+                    workspace_id: "ws_test".to_string(),
+                    base_url: Some(mint_server.base_url()),
+                    node_id: "node-test".to_string(),
+                    node_name: "host-test".to_string(),
+                    broker_version: "broker/test".to_string(),
+                    token_path: Some(token_path.clone()),
+                    adopt_cached_token_after_conflict: true,
+                }),
+                session_token: Some(session_token.clone()),
+                read_idle_timeout: None,
+                probe: Some(probe.clone()),
+                terminal_reconnect_tx: None,
+            },
+            command_rx,
+            event_tx,
+        ));
+
+        command_tx
+            .send(FleetControlCommand::RegisterNode {
+                manifest: test_manifest(),
+                resume_cursor: None,
+            })
+            .await
+            .unwrap();
+
+        tokio::time::timeout(Duration::from_secs(5), control)
+            .await
+            .expect("terminal proof conflict must stop the control loop")
+            .unwrap();
+        rejected_handshake.await.unwrap();
+        create_node.assert_hits(1);
+        assert_eq!(event_rx.recv().await, Some(FleetControlEvent::Disconnected));
+        assert_eq!(
+            session_token.read().unwrap().as_deref(),
+            Some("nt_live_rejected"),
+            "terminal recovery must retain the last in-memory proof"
+        );
+        assert_eq!(
+            load_node_token(
+                &token_path,
+                "node-test",
+                "ws_test",
+                Some(&mint_server.base_url()),
+            )
+            .as_deref(),
+            Some("nt_live_rejected"),
+            "terminal recovery must retain the last durable proof"
+        );
+        assert_eq!(probe.node_control_health()["state"], "terminal");
+        assert_eq!(
+            probe.node_control_health()["reason"],
+            "node_token_proof_required"
+        );
+    }
+
+    #[tokio::test]
+    async fn env_token_proof_conflict_does_not_adopt_shadowed_cache() {
+        let mint_server = MockServer::start();
+        let create_node = mint_server.mock(|when, then| {
+            when.method(POST)
+                .path("/v1/nodes")
+                .header("x-relaycast-node-token", "nt_live_env_override");
+            then.status(409).json_body(json!({
+                "ok": false,
+                "error": {
+                    "code": "node_token_proof_required",
+                    "message": "Node already exists; its current node token is required"
+                }
+            }));
+        });
+
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let ws_url = format!("ws://{}/v1/node/ws", listener.local_addr().unwrap());
+        let rejected_handshake = tokio::spawn(async move {
+            let (mut socket, _) = listener.accept().await.unwrap();
+            let mut buffer = [0_u8; 4096];
+            let _ = socket.read(&mut buffer).await.unwrap();
+            socket
+                .write_all(
+                    b"HTTP/1.1 401 Unauthorized\r\nContent-Length: 0\r\nConnection: close\r\n\r\n",
+                )
+                .await
+                .unwrap();
+        });
+
+        let token_dir = tempfile::tempdir().unwrap();
+        let token_path = token_dir.path().join("node-token.json");
+        persist_node_token(
+            &token_path,
+            "node-test",
+            "ws_test",
+            Some(&mint_server.base_url()),
+            "nt_live_older_cache",
+        )
+        .unwrap();
+
+        let (command_tx, command_rx) = mpsc::channel(32);
+        let (event_tx, mut event_rx) = mpsc::channel(32);
+        let session_token = Arc::new(std::sync::RwLock::new(Some(
+            "nt_live_env_override".to_string(),
+        )));
+        let probe = Arc::new(crate::node_delivery_probe::NodeDeliveryProbe::new());
+        let control = tokio::spawn(run_node_control_client(
+            FleetControlConfig {
+                ws_url,
+                node_token: Some("nt_live_env_override".to_string()),
+                node_id: "node-test".to_string(),
+                node_name: "host-test".to_string(),
+                broker_version: "broker/test".to_string(),
+                token_minter: Some(NodeTokenMinter {
+                    workspace_key: "rk_live_test".to_string(),
+                    workspace_id: "ws_test".to_string(),
+                    base_url: Some(mint_server.base_url()),
+                    node_id: "node-test".to_string(),
+                    node_name: "host-test".to_string(),
+                    broker_version: "broker/test".to_string(),
+                    token_path: Some(token_path.clone()),
+                    adopt_cached_token_after_conflict: false,
+                }),
+                session_token: Some(session_token.clone()),
+                read_idle_timeout: None,
+                probe: Some(probe.clone()),
+                terminal_reconnect_tx: None,
+            },
+            command_rx,
+            event_tx,
+        ));
+
+        command_tx
+            .send(FleetControlCommand::RegisterNode {
+                manifest: test_manifest(),
+                resume_cursor: None,
+            })
+            .await
+            .unwrap();
+
+        tokio::time::timeout(Duration::from_secs(5), control)
+            .await
+            .expect("env-token proof conflict must not retry the shadowed cache")
+            .unwrap();
+        rejected_handshake.await.unwrap();
+        create_node.assert_hits(1);
+        assert_eq!(event_rx.recv().await, Some(FleetControlEvent::Disconnected));
+        assert_eq!(
+            session_token.read().unwrap().as_deref(),
+            Some("nt_live_env_override")
+        );
+        assert_eq!(
+            load_node_token(
+                &token_path,
+                "node-test",
+                "ws_test",
+                Some(&mint_server.base_url()),
+            )
+            .as_deref(),
+            Some("nt_live_older_cache")
+        );
+        assert_eq!(probe.node_control_health()["state"], "terminal");
+        assert_eq!(
+            probe.node_control_health()["reason"],
+            "env_override_rejected"
+        );
+    }
+
+    #[tokio::test]
+    async fn node_control_adopts_sibling_rotated_cache_after_proof_conflict() {
+        let mint_listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let mint_base_url = format!("http://{}", mint_listener.local_addr().unwrap());
+        let (mint_seen_tx, mint_seen_rx) = oneshot::channel();
+        let (cache_replaced_tx, cache_replaced_rx) = oneshot::channel();
+        let mint_server = tokio::spawn(async move {
+            let (mut socket, _) = mint_listener.accept().await.unwrap();
+            let mut buffer = [0_u8; 8192];
+            let read = socket.read(&mut buffer).await.unwrap();
+            let request = String::from_utf8_lossy(&buffer[..read]).to_ascii_lowercase();
+            assert!(request.contains("x-relaycast-node-token: nt_live_rejected"));
+            mint_seen_tx.send(()).unwrap();
+            cache_replaced_rx.await.unwrap();
+
+            let body = json!({
+                "ok": false,
+                "error": {
+                    "code": "node_token_proof_required",
+                    "message": "Node token changed before enrollment"
+                }
+            })
+            .to_string();
+            let response = format!(
+                "HTTP/1.1 409 Conflict\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+                body.len(),
+                body
+            );
+            socket.write_all(response.as_bytes()).await.unwrap();
+        });
+
+        let ws_listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let ws_url = format!("ws://{}/v1/node/ws", ws_listener.local_addr().unwrap());
+        let ws_server = tokio::spawn(async move {
+            let (mut rejected_socket, _) = ws_listener.accept().await.unwrap();
+            let mut buffer = [0_u8; 4096];
+            let _ = rejected_socket.read(&mut buffer).await.unwrap();
+            rejected_socket
+                .write_all(
+                    b"HTTP/1.1 401 Unauthorized\r\nContent-Length: 0\r\nConnection: close\r\n\r\n",
+                )
+                .await
+                .unwrap();
+
+            let (stream, _) = ws_listener.accept().await.unwrap();
+            let mut ws = accept_hdr_async(stream, |request: &Request, response: Response| {
+                assert_eq!(
+                    request
+                        .headers()
+                        .get("authorization")
+                        .and_then(|value| value.to_str().ok()),
+                    Some("Bearer nt_live_sibling_rotated")
+                );
+                Ok(response)
+            })
+            .await
+            .unwrap();
+            assert!(matches!(
+                next_node_to_server(&mut ws).await,
+                BrokerToRelaycast::NodeRegister(_)
+            ));
+            while ws.next().await.is_some() {}
+        });
+
+        let token_dir = tempfile::tempdir().unwrap();
+        let token_path = token_dir.path().join("node-token.json");
+        persist_node_token(
+            &token_path,
+            "node-test",
+            "ws_test",
+            Some(&mint_base_url),
+            "nt_live_rejected",
+        )
+        .unwrap();
+
+        let (command_tx, command_rx) = mpsc::channel(32);
+        let (event_tx, mut event_rx) = mpsc::channel(32);
+        let session_token = Arc::new(std::sync::RwLock::new(Some("nt_live_rejected".to_string())));
+        let control = tokio::spawn(run_node_control_client(
+            FleetControlConfig {
+                ws_url,
+                node_token: Some("nt_live_rejected".to_string()),
+                node_id: "node-test".to_string(),
+                node_name: "host-test".to_string(),
+                broker_version: "broker/test".to_string(),
+                token_minter: Some(NodeTokenMinter {
+                    workspace_key: "rk_live_test".to_string(),
+                    workspace_id: "ws_test".to_string(),
+                    base_url: Some(mint_base_url.clone()),
+                    node_id: "node-test".to_string(),
+                    node_name: "host-test".to_string(),
+                    broker_version: "broker/test".to_string(),
+                    token_path: Some(token_path.clone()),
+                    adopt_cached_token_after_conflict: true,
+                }),
+                session_token: Some(session_token.clone()),
+                read_idle_timeout: None,
+                probe: None,
+                terminal_reconnect_tx: None,
+            },
+            command_rx,
+            event_tx,
+        ));
+
+        command_tx
+            .send(FleetControlCommand::RegisterNode {
+                manifest: test_manifest(),
+                resume_cursor: None,
+            })
+            .await
+            .unwrap();
+
+        tokio::time::timeout(Duration::from_secs(5), mint_seen_rx)
+            .await
+            .expect("rotation request should reach the server")
+            .unwrap();
+        persist_node_token(
+            &token_path,
+            "node-test",
+            "ws_test",
+            Some(&mint_base_url),
+            "nt_live_sibling_rotated",
+        )
+        .unwrap();
+        cache_replaced_tx.send(()).unwrap();
+
+        tokio::time::timeout(Duration::from_secs(5), async {
+            loop {
+                match event_rx.recv().await {
+                    Some(FleetControlEvent::Connected) => break,
+                    Some(FleetControlEvent::Disconnected) => {}
+                    None => panic!("control task stopped instead of adopting the cached token"),
+                    Some(other) => panic!("unexpected control event: {other:?}"),
+                }
+            }
+        })
+        .await
+        .expect("the sibling-rotated token should reconnect");
+
+        assert_eq!(
+            session_token.read().unwrap().as_deref(),
+            Some("nt_live_sibling_rotated")
+        );
+        assert_eq!(
+            load_node_token(&token_path, "node-test", "ws_test", Some(&mint_base_url)).as_deref(),
+            Some("nt_live_sibling_rotated")
+        );
+
+        let _ = command_tx.send(FleetControlCommand::Shutdown).await;
+        tokio::time::timeout(Duration::from_secs(5), control)
+            .await
+            .expect("control task should shut down")
+            .unwrap();
+        mint_server.await.unwrap();
+        ws_server.await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn late_rotation_response_does_not_overwrite_newer_cached_token() {
+        let mint_listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let mint_base_url = format!("http://{}", mint_listener.local_addr().unwrap());
+        let (first_request_tx, first_request_rx) = oneshot::channel();
+        let (release_first_tx, release_first_rx) = oneshot::channel();
+        let mint_server = tokio::spawn(async move {
+            let (mut first_socket, _) = mint_listener.accept().await.unwrap();
+            let first_request = read_http_request(&mut first_socket).await;
+            let first_key = http_request_header(&first_request, "idempotency-key")
+                .expect("cache-backed rotation must send a durable key");
+            first_request_tx.send(first_key.clone()).unwrap();
+
+            let (mut replay_socket, _) = mint_listener.accept().await.unwrap();
+            let replay_request = read_http_request(&mut replay_socket).await;
+            assert_eq!(
+                http_request_header(&replay_request, "idempotency-key").as_deref(),
+                Some(first_key.as_str())
+            );
+            write_create_node_success(&mut replay_socket, "nt_live_rotated_once").await;
+
+            let (mut newer_socket, _) = mint_listener.accept().await.unwrap();
+            let newer_request = read_http_request(&mut newer_socket).await;
+            assert_ne!(
+                http_request_header(&newer_request, "idempotency-key").as_deref(),
+                Some(first_key.as_str())
+            );
+            write_create_node_success(&mut newer_socket, "nt_live_rotated_twice").await;
+
+            release_first_rx.await.unwrap();
+            write_create_node_success(&mut first_socket, "nt_live_rotated_once").await;
+        });
+
+        let token_dir = tempfile::tempdir().unwrap();
+        let token_path = token_dir.path().join("node-token.json");
+        persist_node_token(
+            &token_path,
+            "node-test",
+            "ws_test",
+            Some(&mint_base_url),
+            "nt_live_original",
+        )
+        .unwrap();
+        let minter = NodeTokenMinter {
+            workspace_key: "rk_live_test".to_string(),
+            workspace_id: "ws_test".to_string(),
+            base_url: Some(mint_base_url.clone()),
+            node_id: "node-test".to_string(),
+            node_name: "host-test".to_string(),
+            broker_version: "broker/test".to_string(),
+            token_path: Some(token_path.clone()),
+            adopt_cached_token_after_conflict: true,
+        };
+
+        let first_minter = minter.clone();
+        let first_rotation =
+            tokio::spawn(async move { first_minter.remint("nt_live_original").await });
+        first_request_rx.await.unwrap();
+
+        assert_eq!(
+            minter.remint("nt_live_original").await.unwrap(),
+            "nt_live_rotated_once"
+        );
+        assert_eq!(
+            minter.remint("nt_live_rotated_once").await.unwrap(),
+            "nt_live_rotated_twice"
+        );
+        release_first_tx.send(()).unwrap();
+
+        assert_eq!(
+            first_rotation.await.unwrap().unwrap(),
+            "nt_live_rotated_twice",
+            "the late caller must reconcile to the cache that advanced while its response was in flight"
+        );
+        assert_eq!(
+            load_node_token(&token_path, "node-test", "ws_test", Some(&mint_base_url)).as_deref(),
+            Some("nt_live_rotated_twice")
+        );
+        mint_server.await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn env_token_rotation_reuses_process_key_after_lost_responses() {
+        let mint_listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let mint_base_url = format!("http://{}", mint_listener.local_addr().unwrap());
+        let seen_keys = Arc::new(std::sync::Mutex::new(Vec::new()));
+        let server_keys = seen_keys.clone();
+        let mint_server = tokio::spawn(async move {
+            for attempt in 0..5 {
+                let (mut socket, _) = mint_listener.accept().await.unwrap();
+                let request = read_http_request(&mut socket).await;
+                server_keys
+                    .lock()
+                    .unwrap()
+                    .push(http_request_header(&request, "idempotency-key"));
+                if attempt == 4 {
+                    write_create_node_success(&mut socket, "nt_live_recovered").await;
+                }
+            }
+        });
+
+        let token_dir = tempfile::tempdir().unwrap();
+        let token_path = token_dir.path().join("node-token.json");
+        persist_node_token(
+            &token_path,
+            "node-test",
+            "ws_test",
+            Some(&mint_base_url),
+            "nt_live_cached_other",
+        )
+        .unwrap();
+        let minter = NodeTokenMinter {
+            workspace_key: "rk_live_test".to_string(),
+            workspace_id: "ws_test".to_string(),
+            base_url: Some(mint_base_url.clone()),
+            node_id: "node-test".to_string(),
+            node_name: "host-test".to_string(),
+            broker_version: "broker/test".to_string(),
+            token_path: Some(token_path.clone()),
+            adopt_cached_token_after_conflict: true,
+        };
+
+        minter
+            .remint("nt_live_env")
+            .await
+            .expect_err("four lost responses should exhaust the request retry loop");
+        assert_eq!(
+            minter.remint("nt_live_env").await.unwrap(),
+            "nt_live_recovered"
+        );
+        mint_server.await.unwrap();
+
+        let keys = seen_keys.lock().unwrap();
+        let first = keys[0]
+            .as_deref()
+            .expect("environment-token rotation must use a process-local key");
+        assert!(
+            keys.iter().all(|key| key.as_deref() == Some(first)),
+            "all retries, including the later outer retry, must replay the same rotation"
+        );
+        assert_eq!(
+            load_node_token(&token_path, "node-test", "ws_test", Some(&mint_base_url)).as_deref(),
+            Some("nt_live_recovered")
+        );
+    }
+
+    #[tokio::test]
+    async fn successful_rotation_is_persisted_after_preparation_failure() {
+        let mint_listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let mint_base_url = format!("http://{}", mint_listener.local_addr().unwrap());
+        let mint_server = tokio::spawn(async move {
+            let (mut socket, _) = mint_listener.accept().await.unwrap();
+            let request = read_http_request(&mut socket).await;
+            assert_eq!(
+                http_request_header(&request, "x-relaycast-node-token").as_deref(),
+                Some("nt_live_original")
+            );
+            assert!(http_request_header(&request, "idempotency-key").is_some());
+            write_create_node_success(&mut socket, "nt_live_recovered").await;
+        });
+
+        let token_dir = tempfile::tempdir().unwrap();
+        let token_path = token_dir.path().join("node-token.json");
+        persist_node_token(
+            &token_path,
+            "node-test",
+            "ws_test",
+            Some(&mint_base_url),
+            "nt_live_original",
+        )
+        .unwrap();
+        let minter = NodeTokenMinter {
+            workspace_key: "rk_live_test".to_string(),
+            workspace_id: "ws_test".to_string(),
+            base_url: Some(mint_base_url.clone()),
+            node_id: "node-test".to_string(),
+            node_name: "host-test".to_string(),
+            broker_version: "broker/test".to_string(),
+            token_path: Some(token_path.clone()),
+            adopt_cached_token_after_conflict: true,
+        };
+        let request_digest =
+            create_node_request_digest(&minter.node_id, &minter.node_name, &minter.broker_version);
+
+        assert_eq!(
+            minter
+                .remint_after_preparation(
+                    "nt_live_original",
+                    &request_digest,
+                    Some(Err(anyhow::anyhow!("simulated preparation failure"))),
+                )
+                .await
+                .unwrap(),
+            "nt_live_recovered"
+        );
+        mint_server.await.unwrap();
+        assert_eq!(
+            load_node_token(&token_path, "node-test", "ws_test", Some(&mint_base_url)).as_deref(),
+            Some("nt_live_recovered"),
+            "a successful rotation must repair the cache even when pending-key preparation failed"
+        );
+    }
+
+    #[tokio::test]
+    async fn preparation_failure_does_not_overwrite_advanced_cache() {
+        let mint_listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let mint_base_url = format!("http://{}", mint_listener.local_addr().unwrap());
+        let (request_seen_tx, request_seen_rx) = oneshot::channel();
+        let (release_response_tx, release_response_rx) = oneshot::channel();
+        let mint_server = tokio::spawn(async move {
+            let (mut socket, _) = mint_listener.accept().await.unwrap();
+            let _request = read_http_request(&mut socket).await;
+            request_seen_tx.send(()).unwrap();
+            release_response_rx.await.unwrap();
+            write_create_node_success(&mut socket, "nt_live_late").await;
+        });
+
+        let token_dir = tempfile::tempdir().unwrap();
+        let token_path = token_dir.path().join("node-token.json");
+        persist_node_token(
+            &token_path,
+            "node-test",
+            "ws_test",
+            Some(&mint_base_url),
+            "nt_live_original",
+        )
+        .unwrap();
+        let minter = NodeTokenMinter {
+            workspace_key: "rk_live_test".to_string(),
+            workspace_id: "ws_test".to_string(),
+            base_url: Some(mint_base_url.clone()),
+            node_id: "node-test".to_string(),
+            node_name: "host-test".to_string(),
+            broker_version: "broker/test".to_string(),
+            token_path: Some(token_path.clone()),
+            adopt_cached_token_after_conflict: true,
+        };
+        let request_digest =
+            create_node_request_digest(&minter.node_id, &minter.node_name, &minter.broker_version);
+        let rotating_minter = minter.clone();
+        let rotation = tokio::spawn(async move {
+            rotating_minter
+                .remint_after_preparation(
+                    "nt_live_original",
+                    &request_digest,
+                    Some(Err(anyhow::anyhow!("simulated preparation failure"))),
+                )
+                .await
+        });
+
+        request_seen_rx.await.unwrap();
+        persist_node_token(
+            &token_path,
+            "node-test",
+            "ws_test",
+            Some(&mint_base_url),
+            "nt_live_sibling",
+        )
+        .unwrap();
+        release_response_tx.send(()).unwrap();
+
+        assert_eq!(
+            rotation.await.unwrap().unwrap(),
+            "nt_live_sibling",
+            "the late caller must reconcile to the cache that advanced during its mint"
+        );
+        mint_server.await.unwrap();
+        assert_eq!(
+            load_node_token(&token_path, "node-test", "ws_test", Some(&mint_base_url)).as_deref(),
+            Some("nt_live_sibling")
+        );
     }
 
     #[tokio::test]
@@ -6749,6 +10362,7 @@ mod tests {
     fn load_node_token_round_trips_when_node_and_workspace_match() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("node-token.json");
+        let request_digest = create_node_request_digest("node-a", "host-a", "broker/test");
         persist_node_token(
             &path,
             "node-a",
@@ -6760,6 +10374,357 @@ mod tests {
 
         let loaded = load_node_token(&path, "node-a", "ws-a", Some("https://engine.test"));
         assert_eq!(loaded.as_deref(), Some("nt_123"));
+
+        let pending = prepare_node_rotation(
+            &path,
+            "node-a",
+            "ws-a",
+            Some("https://engine.test"),
+            "nt_123",
+            &request_digest,
+        )
+        .unwrap()
+        .idempotency_key
+        .expect("a cached token should get a durable rotation key");
+        assert!(pending.starts_with("node-rotation:"));
+        assert_eq!(
+            prepare_node_rotation(
+                &path,
+                "node-a",
+                "ws-a",
+                Some("https://engine.test"),
+                "nt_123",
+                &request_digest,
+            )
+            .unwrap()
+            .idempotency_key
+            .as_deref(),
+            Some(pending.as_str()),
+            "a restart must reuse the durable in-flight recovery key"
+        );
+        let with_pending: PersistedNodeToken =
+            serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
+        assert_eq!(
+            with_pending.pending_rotation_idempotency_key.as_deref(),
+            Some(pending.as_str())
+        );
+        assert_eq!(
+            with_pending.pending_rotation_request_digest.as_deref(),
+            Some(request_digest.as_str())
+        );
+
+        persist_node_token(
+            &path,
+            "node-a",
+            "ws-a",
+            Some("https://engine.test"),
+            "nt_456",
+        )
+        .unwrap();
+        let replaced = load_node_token(&path, "node-a", "ws-a", Some("https://engine.test"));
+        assert_eq!(replaced.as_deref(), Some("nt_456"));
+        let replaced_state: PersistedNodeToken =
+            serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
+        assert!(replaced_state.pending_rotation_idempotency_key.is_none());
+        assert_eq!(
+            std::fs::read_dir(dir.path()).unwrap().count(),
+            2,
+            "only the credential and its stable lock file should remain"
+        );
+    }
+
+    #[test]
+    fn stale_env_token_never_replaces_cached_token_across_restarts() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("node-token.json");
+        let request_digest = create_node_request_digest("node-a", "host-a", "broker/test");
+        // First run: the configured token is also the cached token, so an
+        // accepted rotation may durably retain its replay key and then replace
+        // the cache with the server-issued credential.
+        persist_node_token(
+            &path,
+            "node-a",
+            "ws-a",
+            Some("https://engine.test"),
+            "nt_live_stale_env",
+        )
+        .unwrap();
+        assert!(prepare_node_rotation(
+            &path,
+            "node-a",
+            "ws-a",
+            Some("https://engine.test"),
+            "nt_live_stale_env",
+            &request_digest,
+        )
+        .unwrap()
+        .idempotency_key
+        .is_some());
+        persist_node_token(
+            &path,
+            "node-a",
+            "ws-a",
+            Some("https://engine.test"),
+            "nt_live_cached_current",
+        )
+        .unwrap();
+
+        // Two later starts still prefer the pinned environment value in
+        // memory. Neither rejected attempt may write it over the good cache.
+        for restart in 1..=2 {
+            let key = prepare_node_rotation(
+                &path,
+                "node-a",
+                "ws-a",
+                Some("https://engine.test"),
+                "nt_live_stale_env",
+                &request_digest,
+            )
+            .unwrap()
+            .idempotency_key;
+            assert!(
+                key.is_none(),
+                "restart {restart} must keep env-token recovery process-local"
+            );
+            let persisted: PersistedNodeToken =
+                serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
+            assert_eq!(
+                persisted.token, "nt_live_cached_current",
+                "restart {restart} must retain the known-good cached token"
+            );
+            assert!(
+                persisted.pending_rotation_idempotency_key.is_none(),
+                "restart {restart} must not persist a rotation key for an env token"
+            );
+        }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn persist_node_token_atomically_replaces_and_syncs_parent_directory() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("node-token.json");
+        persist_node_token(&path, "node-a", "ws-a", None, "nt_old").unwrap();
+        persist_node_token(&path, "node-a", "ws-a", None, "nt_new").unwrap();
+
+        assert_eq!(
+            load_node_token(&path, "node-a", "ws-a", None).as_deref(),
+            Some("nt_new")
+        );
+        assert_eq!(
+            std::fs::read_dir(dir.path()).unwrap().count(),
+            2,
+            "only the credential and its stable lock file should remain"
+        );
+        // The production path invokes this immediately after the rename; keep
+        // the platform durability primitive covered explicitly as well.
+        sync_parent_directory(dir.path()).unwrap();
+    }
+
+    #[test]
+    fn post_rename_sync_failure_reuses_the_committed_rotation_key() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("node-token.json");
+        let key = "node-rotation:00000000-0000-4000-8000-000000000006";
+        let request_digest = create_node_request_digest("node-a", "host-a", "broker/test");
+
+        persist_node_token_state_with_sync(
+            &path,
+            "node-a",
+            "ws-a",
+            None,
+            "nt_current",
+            PendingNodeRotation::Bound {
+                key,
+                request_digest: &request_digest,
+            },
+            |_| anyhow::bail!("simulated directory sync failure"),
+        )
+        .expect("a post-rename sync failure must not discard committed state");
+
+        assert_eq!(
+            prepare_node_rotation(&path, "node-a", "ws-a", None, "nt_current", &request_digest,)
+                .unwrap()
+                .idempotency_key
+                .as_deref(),
+            Some(key),
+            "remint must reuse the key already visible in the replaced cache"
+        );
+    }
+
+    #[test]
+    fn changed_create_node_body_does_not_reuse_pending_rotation_key() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("node-token.json");
+        persist_node_token(&path, "node-a", "ws-a", None, "nt_current").unwrap();
+
+        let original_digest = create_node_request_digest("node-a", "host-a", "broker/v1");
+        let original_key = prepare_node_rotation(
+            &path,
+            "node-a",
+            "ws-a",
+            None,
+            "nt_current",
+            &original_digest,
+        )
+        .unwrap()
+        .idempotency_key
+        .unwrap();
+        assert_eq!(
+            prepare_node_rotation(
+                &path,
+                "node-a",
+                "ws-a",
+                None,
+                "nt_current",
+                &original_digest,
+            )
+            .unwrap()
+            .idempotency_key
+            .as_deref(),
+            Some(original_key.as_str())
+        );
+
+        let mut previous_key = original_key;
+        for changed_digest in [
+            create_node_request_digest("node-a", "host-b", "broker/v1"),
+            create_node_request_digest("node-a", "host-b", "broker/v2"),
+        ] {
+            let changed_key =
+                prepare_node_rotation(&path, "node-a", "ws-a", None, "nt_current", &changed_digest)
+                    .unwrap()
+                    .idempotency_key
+                    .unwrap();
+            assert_ne!(changed_key, previous_key);
+            let persisted: PersistedNodeToken =
+                serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
+            assert_eq!(
+                persisted.pending_rotation_request_digest.as_deref(),
+                Some(changed_digest.as_str())
+            );
+            previous_key = changed_key;
+        }
+    }
+
+    #[test]
+    fn rotation_persists_minted_token_after_metadata_only_cache_change() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("node-token.json");
+        persist_node_token(&path, "node-a", "ws-a", None, "nt_current").unwrap();
+
+        let original_digest = create_node_request_digest("node-a", "host-a", "broker/v1");
+        let preparation = prepare_node_rotation(
+            &path,
+            "node-a",
+            "ws-a",
+            None,
+            "nt_current",
+            &original_digest,
+        )
+        .unwrap();
+        let sibling_digest = create_node_request_digest("node-a", "host-b", "broker/v2");
+        let sibling_key = "node-rotation:00000000-0000-4000-8000-000000000007";
+        persist_node_token_state(
+            &path,
+            "node-a",
+            "ws-a",
+            None,
+            "nt_current",
+            PendingNodeRotation::Bound {
+                key: sibling_key,
+                request_digest: &sibling_digest,
+            },
+        )
+        .unwrap();
+
+        assert_eq!(
+            persist_node_token_after_rotation(
+                &path,
+                "node-a",
+                "ws-a",
+                None,
+                &preparation,
+                "nt_rotated",
+            )
+            .unwrap(),
+            "nt_rotated"
+        );
+        let persisted: PersistedNodeToken =
+            serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
+        assert_eq!(persisted.token, "nt_rotated");
+        assert_eq!(
+            persisted.pending_rotation_idempotency_key.as_deref(),
+            Some(sibling_key),
+            "the sibling must retain its replay capability"
+        );
+        assert_eq!(
+            persisted.pending_rotation_request_digest.as_deref(),
+            Some(sibling_digest.as_str())
+        );
+
+        let sibling_replay =
+            prepare_node_rotation(&path, "node-a", "ws-a", None, "nt_rotated", &sibling_digest)
+                .unwrap();
+        assert_eq!(sibling_replay.idempotency_key.as_deref(), Some(sibling_key));
+        assert_eq!(
+            persist_node_token_after_rotation(
+                &path,
+                "node-a",
+                "ws-a",
+                None,
+                &sibling_replay,
+                "nt_sibling_rotated",
+            )
+            .unwrap(),
+            "nt_sibling_rotated"
+        );
+        assert_eq!(
+            load_node_token(&path, "node-a", "ws-a", None).as_deref(),
+            Some("nt_sibling_rotated")
+        );
+    }
+
+    #[test]
+    fn rotation_persists_minted_token_and_preserves_legacy_pending_key() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("node-token.json");
+        persist_node_token(&path, "node-a", "ws-a", None, "nt_current").unwrap();
+
+        let request_digest = create_node_request_digest("node-a", "host-a", "broker/v2");
+        let preparation =
+            prepare_node_rotation(&path, "node-a", "ws-a", None, "nt_current", &request_digest)
+                .unwrap();
+        let legacy_key = "node-rotation:00000000-0000-4000-8000-000000000008";
+        persist_node_token_state(
+            &path,
+            "node-a",
+            "ws-a",
+            None,
+            "nt_current",
+            PendingNodeRotation::LegacyKey(legacy_key),
+        )
+        .unwrap();
+
+        assert_eq!(
+            persist_node_token_after_rotation(
+                &path,
+                "node-a",
+                "ws-a",
+                None,
+                &preparation,
+                "nt_rotated",
+            )
+            .unwrap(),
+            "nt_rotated"
+        );
+        let persisted: PersistedNodeToken =
+            serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
+        assert_eq!(persisted.token, "nt_rotated");
+        assert_eq!(
+            persisted.pending_rotation_idempotency_key.as_deref(),
+            Some(legacy_key)
+        );
+        assert!(persisted.pending_rotation_request_digest.is_none());
     }
 
     #[test]
@@ -6933,6 +10898,7 @@ mod tests {
                     &mut registrations,
                     &mut deregistrations,
                     &mut liveness,
+                    &mut VecDeque::new(),
                     "node-test",
                     &mut sink,
                     None,

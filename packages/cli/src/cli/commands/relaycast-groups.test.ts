@@ -329,7 +329,10 @@ describe('SDK-backed CLI groups', () => {
     expect(resolveLocalRelayOptions).toHaveBeenCalled();
     expect(createAgentRelay).toHaveBeenNthCalledWith(
       2,
-      expect.objectContaining({ workspaceKey: 'rk_live_local', baseUrl: 'https://relay.local' })
+      expect.objectContaining({
+        workspaceKey: 'rk_live_local',
+        fallbackBaseUrl: 'https://relay.local',
+      })
     );
     expect(secondRelay.integrations.webhooks.create).toHaveBeenCalledWith({
       channel: 'deploy-status',
@@ -379,7 +382,10 @@ describe('SDK-backed CLI groups', () => {
     expect(resolveLocalRelayOptions).toHaveBeenCalled();
     expect(createAgentRelay).toHaveBeenNthCalledWith(
       2,
-      expect.objectContaining({ workspaceKey: 'rk_live_local', baseUrl: 'https://relay.local' })
+      expect.objectContaining({
+        workspaceKey: 'rk_live_local',
+        fallbackBaseUrl: 'https://relay.local',
+      })
     );
     expect(secondRelay.webhooks.createInbound).toHaveBeenCalledWith({
       channel: 'general',
