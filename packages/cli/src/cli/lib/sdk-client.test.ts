@@ -21,6 +21,7 @@ let dir: string;
 let projectRoot: string;
 const original = process.env.AGENT_RELAY_HOME;
 const originalProject = process.env.AGENT_RELAY_PROJECT;
+const originalBaseUrl = process.env.RELAY_BASE_URL;
 
 beforeEach(() => {
   dir = fs.mkdtempSync(path.join(os.tmpdir(), 'relay-sdk-client-'));
@@ -29,6 +30,7 @@ beforeEach(() => {
   // `resolveWorkspaceKey` reads the CWD broker key from) to a temp dir.
   projectRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'relay-sdk-project-'));
   process.env.AGENT_RELAY_PROJECT = projectRoot;
+  delete process.env.RELAY_BASE_URL;
 });
 
 afterEach(() => {
@@ -36,6 +38,8 @@ afterEach(() => {
   else process.env.AGENT_RELAY_HOME = original;
   if (originalProject === undefined) delete process.env.AGENT_RELAY_PROJECT;
   else process.env.AGENT_RELAY_PROJECT = originalProject;
+  if (originalBaseUrl === undefined) delete process.env.RELAY_BASE_URL;
+  else process.env.RELAY_BASE_URL = originalBaseUrl;
   fs.rmSync(dir, { recursive: true, force: true });
   fs.rmSync(projectRoot, { recursive: true, force: true });
 });
@@ -501,6 +505,98 @@ describe('sdk client option resolution', () => {
       workspaceKey: 'rk_live_dev',
       baseUrl: 'https://dev-cast.agentrelay.com',
       source: 'project',
+    });
+  });
+
+  it('prefers a persisted isolated route over an ambient canonical base URL', () => {
+    writeProjectWorkspaceKey(projectDataDir(), 'rk_live_canonical', {
+      workspaceId: 'rw_abc',
+      relaycastRoute: 'agent37-isolated',
+      relaycastBaseUrl: 'https://agent37-cast.agentrelay.com',
+      relaycastApiKey: 'rk_live_agent37',
+    });
+
+    expect(
+      resolveWorkspaceTransport({
+        env: {
+          AGENT_RELAY_HOME: dir,
+          AGENT_RELAY_PROJECT: projectRoot,
+          RELAY_BASE_URL: 'https://cast.agentrelay.com',
+        },
+      })
+    ).toEqual({
+      workspaceKey: 'rk_live_agent37',
+      baseUrl: 'https://agent37-cast.agentrelay.com',
+      source: 'project',
+    });
+  });
+
+  it('rejects an explicit base URL that conflicts with the persisted route', () => {
+    writeProjectWorkspaceKey(projectDataDir(), 'rk_live_canonical', {
+      workspaceId: 'rw_abc',
+      relaycastRoute: 'agent37-isolated',
+      relaycastBaseUrl: 'https://agent37-cast.agentrelay.com',
+      relaycastApiKey: 'rk_live_agent37',
+    });
+
+    expect(() =>
+      resolveWorkspaceTransport({
+        baseUrl: 'https://cast.agentrelay.com',
+        env: { AGENT_RELAY_HOME: dir, AGENT_RELAY_PROJECT: projectRoot },
+      })
+    ).toThrow('The requested Relaycast base URL does not match the persisted workspace route.');
+  });
+
+  it('keeps explicit and ambient base URL precedence when no route is persisted', () => {
+    writeProjectWorkspaceKey(projectDataDir(), 'rk_live_canonical', { workspaceId: 'rw_abc' });
+    const baseEnv = {
+      AGENT_RELAY_HOME: dir,
+      AGENT_RELAY_PROJECT: projectRoot,
+      RELAY_BASE_URL: 'https://ambient.example.test',
+    };
+
+    expect(resolveWorkspaceTransport({ env: baseEnv })).toEqual({
+      workspaceKey: 'rk_live_canonical',
+      baseUrl: 'https://ambient.example.test',
+      source: 'project',
+    });
+    expect(
+      resolveWorkspaceTransport({
+        baseUrl: 'https://explicit.example.test',
+        env: baseEnv,
+      })
+    ).toEqual({
+      workspaceKey: 'rk_live_canonical',
+      baseUrl: 'https://explicit.example.test',
+      source: 'project',
+    });
+  });
+
+  it('constructs the client with the persisted origin and its route-scoped credential', () => {
+    writeProjectWorkspaceKey(projectDataDir(), 'rk_live_canonical', {
+      workspaceId: 'rw_abc',
+      relaycastRoute: 'agent37-isolated',
+      relaycastBaseUrl: 'https://agent37-cast.agentrelay.com',
+      relaycastApiKey: 'rk_live_agent37',
+    });
+
+    const relay = createAgentRelay({
+      env: {
+        AGENT_RELAY_HOME: dir,
+        AGENT_RELAY_PROJECT: projectRoot,
+        RELAY_BASE_URL: 'https://cast.agentrelay.com',
+      },
+    }) as unknown as {
+      workspaceKey?: string;
+      messagingOptions: { baseUrl?: string };
+    };
+
+    expect({
+      workspaceKey: relay.workspaceKey,
+      baseUrl: relay.messagingOptions.baseUrl,
+    }).toEqual({
+      workspaceKey: 'rk_live_agent37',
+      baseUrl: 'https://agent37-cast.agentrelay.com',
     });
   });
 

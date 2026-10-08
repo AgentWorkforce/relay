@@ -98,17 +98,21 @@ function resolveBaseUrlForSelection(
   options: SdkClientOptions
 ): string | undefined {
   const persisted = validatePersistedRelaycastBaseUrl(selection);
-  const requested = trimOrUndefined(options.baseUrl) ?? trimOrUndefined(env(options).RELAY_BASE_URL);
-  if (persisted && requested) {
+  const explicit = trimOrUndefined(options.baseUrl);
+  const requested = explicit ?? trimOrUndefined(env(options).RELAY_BASE_URL);
+  // A persisted server-selected route and its credential are one transport
+  // pair. Only an explicit --base-url may challenge that route; an ambient
+  // RELAY_BASE_URL remains the fallback when no route has been persisted.
+  if (persisted && explicit) {
     let parsed: URL;
     try {
-      parsed = new URL(requested);
+      parsed = new URL(explicit);
     } catch {
       throw new Error('The requested Relaycast base URL is invalid.');
     }
-    const authority = /^https:\/\/([^/?#]+)/i.exec(requested)?.[1] ?? '';
+    const authority = /^https:\/\/([^/?#]+)/i.exec(explicit)?.[1] ?? '';
     if (
-      !/^https:\/\/[^/?#]+\/?$/i.test(requested) ||
+      !/^https:\/\/[^/?#]+\/?$/i.test(explicit) ||
       parsed.protocol !== 'https:' ||
       parsed.username ||
       parsed.password ||
