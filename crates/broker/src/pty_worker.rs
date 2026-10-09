@@ -1411,7 +1411,7 @@ pub(crate) async fn run_pty_worker(cmd: PtyCommand) -> Result<()> {
                                             "retryable": false,
                                         })).await;
                                     }
-                                } else if failed_written_deliveries.get(&delivery.delivery_id).is_some() {
+                                } else if failed_written_deliveries.contains_key(&delivery.delivery_id) {
                                     tracing::warn!(
                                         delivery_id = %delivery.delivery_id,
                                         event_id = %delivery.event_id,
