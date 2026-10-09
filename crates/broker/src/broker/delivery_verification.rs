@@ -251,17 +251,18 @@ fn end_of_compact_match(text: &str, compact_needle: &str) -> Option<usize> {
     ends.get(matched_chars - 1).copied()
 }
 
-/// Whether the delivery's compact tail sits immediately at the cursor:
-/// ending just before it, starting at it, or straddling it. Any of these
+/// Whether the delivery's compact tail may still be in an editor around the
+/// cursor: ending just before it, straddling it, or anywhere after it (the
+/// cursor can sit at the start of a draft longer than the tail). Any of these
 /// means the editor may still hold the draft, regardless of which prompt
 /// glyph (or body line that looks like one) the composer parser anchored on.
-fn tail_touches_cursor(snapshot: &Snapshot, tail: &str) -> bool {
+fn tail_near_cursor(snapshot: &Snapshot, tail: &str) -> bool {
     if tail.is_empty() {
         return false;
     }
     let before = compact_render(&snapshot.to_plain_through_cursor());
     let after = compact_render(&snapshot.to_plain_from_cursor());
-    if before.ends_with(tail) || after.starts_with(tail) {
+    if before.ends_with(tail) || after.contains(tail) {
         return true;
     }
     tail.char_indices()
@@ -424,20 +425,15 @@ fn composer_is_idle(snapshot: &Snapshot, cli: &str) -> bool {
             .unwrap_or(false)
 }
 
-/// Whether a terminally failed delivery's body has left the live composer.
+/// Whether a terminally failed delivery's body has provably left the composer.
 ///
 /// A failed body can remain typed in the editor. Injecting the next delivery
 /// on top of it would append to that draft or submit both as one turn, so the
-/// worker holds injection until the composer is proven idle, or the failed
-/// tail is neither in the parsed composer nor touching the cursor.
+/// worker holds injection until the composer is proven idle. The tail being
+/// absent from the viewport is not proof: a long draft can scroll it out of
+/// view. An operator `flush_injections` is the explicit override.
 pub(crate) fn failed_draft_released(cli: &str, expected_echo: &str, snapshot: &Snapshot) -> bool {
-    let tail = expected_tail(expected_echo);
-    if tail.is_empty() || composer_is_idle(snapshot, cli) {
-        return true;
-    }
-    let in_composer = current_composer(snapshot, cli)
-        .is_some_and(|composer| compact_render(&composer).contains(&tail));
-    !in_composer && !tail_touches_cursor(snapshot, &tail)
+    expected_tail(expected_echo).is_empty() || composer_is_idle(snapshot, cli)
 }
 
 /// Distinguish terminal echo from actual harness acceptance.
@@ -473,11 +469,13 @@ pub(crate) fn assess_harness_acceptance(
     }
     // Harnesses without a turn-start marker fall back to post-echo output, but
     // a repaint of a still-unsent draft is output too. Only accept it once the
-    // body has left the cursor: a tail ending at, starting at, or straddling
-    // the cursor stays inconclusive.
+    // body has left the cursor: a tail ending at, straddling, or anywhere after
+    // the cursor, or any text to the cursor's right (a draft whose tail has
+    // scrolled out of view), stays inconclusive.
     if verification.echo_seen
         && !verification.detector.has_explicit_patterns()
-        && !tail_touches_cursor(snapshot, &tail)
+        && !tail_near_cursor(snapshot, &tail)
+        && !snapshot.has_visible_text_at_or_after_cursor()
     {
         if let Some(pattern) = verification
             .detector
@@ -1054,6 +1052,34 @@ mod tests {
         let (idle_pty, idle) = codex_snapshot("› Ask Codex to do anything").await;
         assert!(failed_draft_released("codex", expected, &idle));
         idle_pty.shutdown().unwrap();
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn generic_output_cannot_confirm_a_long_draft_with_cursor_at_its_start() {
+        let expected = format!("Relay message from Lead [evt]: {}", "x".repeat(170));
+        let (pty, snapshot) = codex_snapshot(&format!("› {expected}\x1b[1;3H")).await;
+        let mut verification = codex_verification(&expected);
+        verification.detector = ActivityDetector::for_cli("muse");
+        verification.activity_buffer.push_str("repaint");
+
+        assert_eq!(
+            assess_harness_acceptance("muse", &verification, &snapshot),
+            HarnessAcceptance::Inconclusive,
+            "a tail far to the right of the cursor is still an unsent draft"
+        );
+        pty.shutdown().unwrap();
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn a_tail_missing_from_the_viewport_does_not_release_the_latch() {
+        // The failed draft's head is visible but its tail has scrolled away;
+        // only a provably idle composer may release the latch.
+        let expected = "Relay message from Lead [evt]: head ... TAIL_SCROLLED_OFF";
+        let (pty, snapshot) = codex_snapshot("› Relay message from Lead [evt]: head").await;
+        assert!(!failed_draft_released("codex", expected, &snapshot));
+        pty.shutdown().unwrap();
     }
 
     #[test]

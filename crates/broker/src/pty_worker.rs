@@ -116,7 +116,7 @@ struct FailedComposerLatch {
 /// composer: fence its id against replay for the PTY's lifetime and latch
 /// injection until the composer releases the draft.
 fn latch_failed_written_delivery(
-    failed_written_deliveries: &mut CompletedWorkerDeliveries,
+    failed_written_deliveries: &mut HashMap<DeliveryId, EventId>,
     failed_composer_latch: &mut Option<FailedComposerLatch>,
     delivery_id: &DeliveryId,
     event_id: &EventId,
@@ -1098,7 +1098,9 @@ pub(crate) async fn run_pty_worker(cmd: PtyCommand) -> Result<()> {
     let mut completed_worker_deliveries = CompletedWorkerDeliveries::default();
     // Deliveries written to this PTY that then failed terminally. A replay of
     // one of these ids is refused rather than pasted over the failed draft.
-    let mut failed_written_deliveries = CompletedWorkerDeliveries::default();
+    // Unbounded on purpose: entries exist only for failures, and an evicted id
+    // would let a late retry paste the same body again.
+    let mut failed_written_deliveries: HashMap<DeliveryId, EventId> = HashMap::new();
     let mut failed_composer_latch: Option<FailedComposerLatch> = None;
     // The injection currently being written across paced stages, if any. Only
     // one injection is in flight at a time; the pending-injection interval arm
@@ -1658,6 +1660,19 @@ pub(crate) async fn run_pty_worker(cmd: PtyCommand) -> Result<()> {
                                     .and_then(Value::as_str)
                                     .filter(|event_id| !event_id.is_empty())
                                     .map(str::to_string);
+                                // An operator-wide flush is the explicit override
+                                // for a failed draft the worker cannot prove has
+                                // left the composer.
+                                if targeted_event_id.is_none() {
+                                    if let Some(latch) = failed_composer_latch.take() {
+                                        tracing::warn!(
+                                            target: "agent_relay::worker::pty",
+                                            worker = %worker_name,
+                                            delivery_id = %latch.delivery_id,
+                                            "operator flush released the failed-draft injection latch"
+                                        );
+                                    }
+                                }
                                 if pty_auto.interactive_hold {
                                     if let Some(event_id) = targeted_event_id {
                                         if let Some(inj) = active_injection.as_mut() {
@@ -4416,7 +4431,7 @@ mod tests {
 
     #[test]
     fn failed_written_delivery_latches_injection_and_fences_replay() {
-        let mut failed = CompletedWorkerDeliveries::default();
+        let mut failed = HashMap::new();
         let mut latch = None;
         let delivery_id = DeliveryId::from("del_parked_failure");
         let event_id = EventId::from("evt_parked_failure");
