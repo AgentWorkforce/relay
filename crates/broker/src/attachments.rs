@@ -700,10 +700,10 @@ async fn prepare_root(root: &Path) -> Result<PathBuf, ()> {
     // exists without the catch-all rule.
     let gitignore = root.join(".gitignore");
     // Never follow a planted .gitignore symlink into a file outside the
-    // attachments root. The ignore rule is best-effort, so leaving a symlink
-    // untouched is safer than making attachment delivery fail altogether.
+    // attachments root. Refuse this root so the caller selects its configured
+    // fallback, where downloaded files cannot accidentally become tracked.
     if is_symlink(&gitignore).await {
-        return Ok(root);
+        return Err(());
     }
     match tokio::fs::read_to_string(&gitignore).await {
         Ok(existing) if existing.lines().any(|line| line.trim() == "*") => {}
@@ -1042,7 +1042,7 @@ mod tests {
         std::fs::write(&target, "keep me").unwrap();
         std::os::unix::fs::symlink(&target, root.join(".gitignore")).unwrap();
 
-        prepare_root(&root).await.unwrap();
+        assert!(prepare_root(&root).await.is_err());
 
         assert_eq!(std::fs::read_to_string(&target).unwrap(), "keep me");
         assert!(std::fs::symlink_metadata(root.join(".gitignore"))
