@@ -215,9 +215,15 @@ pub(crate) fn sanitize_filename(raw: &str) -> String {
     if trimmed.is_empty() || trimmed == "." || trimmed == ".." {
         return FALLBACK_FILENAME.to_string();
     }
-    if is_windows_reserved_name(trimmed) {
-        return format!("_{trimmed}");
-    }
+    // Prefix a reserved device name, then apply the same length cap as any
+    // other name.
+    let prefixed;
+    let trimmed = if is_windows_reserved_name(trimmed) {
+        prefixed = format!("_{trimmed}");
+        prefixed.as_str()
+    } else {
+        trimmed
+    };
     if trimmed.len() <= MAX_FILENAME_BYTES {
         return trimmed.to_string();
     }
@@ -693,6 +699,12 @@ async fn prepare_root(root: &Path) -> Result<PathBuf, ()> {
     // Keep downloads out of version control even if an ignore file already
     // exists without the catch-all rule.
     let gitignore = root.join(".gitignore");
+    // Never follow a planted .gitignore symlink into a file outside the
+    // attachments root. The ignore rule is best-effort, so leaving a symlink
+    // untouched is safer than making attachment delivery fail altogether.
+    if is_symlink(&gitignore).await {
+        return Ok(root);
+    }
     match tokio::fs::read_to_string(&gitignore).await {
         Ok(existing) if existing.lines().any(|line| line.trim() == "*") => {}
         Ok(existing) => {
@@ -1019,6 +1031,26 @@ mod tests {
         );
     }
 
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn never_updates_a_symlinked_gitignore() {
+        let temp = tempfile::tempdir().unwrap();
+        let outside = tempfile::tempdir().unwrap();
+        let root = temp.path().join("attachments");
+        let target = outside.path().join("keep.txt");
+        std::fs::create_dir_all(&root).unwrap();
+        std::fs::write(&target, "keep me").unwrap();
+        std::os::unix::fs::symlink(&target, root.join(".gitignore")).unwrap();
+
+        prepare_root(&root).await.unwrap();
+
+        assert_eq!(std::fs::read_to_string(&target).unwrap(), "keep me");
+        assert!(std::fs::symlink_metadata(root.join(".gitignore"))
+            .unwrap()
+            .file_type()
+            .is_symlink());
+    }
+
     #[test]
     fn sanitized_names_save_on_windows_too() {
         assert_eq!(sanitize_filename("what?*\"<>|.png"), "what______.png");
@@ -1027,6 +1059,9 @@ mod tests {
         assert_eq!(sanitize_filename("com1"), "_com1");
         assert_eq!(sanitize_filename("COM0.txt"), "COM0.txt");
         assert_eq!(sanitize_filename("console.log"), "console.log");
+        let long_reserved = sanitize_filename(&format!("CON.{}", "x".repeat(400)));
+        assert!(long_reserved.starts_with("_CON."));
+        assert!(long_reserved.len() <= MAX_FILENAME_BYTES);
     }
 
     #[cfg(unix)]
