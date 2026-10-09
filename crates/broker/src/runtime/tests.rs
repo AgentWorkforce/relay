@@ -850,6 +850,8 @@ fn delivery_lifecycle_worker_event(
                 "delivery_id": delivery_id,
                 "event_id": event_id,
                 "reason": "test terminal disposition",
+                "attempts": 1,
+                "max_attempts": 3,
             },
         }),
     }
@@ -2931,7 +2933,8 @@ async fn a_worker_confirmed_ack_becomes_visible_on_the_node_delivery_endpoint() 
         ..withheld_ack_for(delivery_id.as_str())
     };
 
-    // The state right after an injection: received, ack withheld pending echo.
+    // The state right after an injection: received, ack withheld pending
+    // harness acceptance.
     fixture
         .runtime
         .fleet_delivery_book
@@ -3175,9 +3178,8 @@ async fn every_terminal_disposition_drops_its_withheld_fleet_ack() {
     cleanup_worker_registry(fixture.runtime.workers).await;
 }
 
-// relay#1310 MUST-NOT-FIRE: once the worker confirms the injection landed
-// (echo-verified, or its bounded timeout fallback — pty_worker.rs sends the
-// same internal `delivery_ack` event either way), the engine ack must still
+// relay#1310 MUST-NOT-FIRE: once the worker confirms harness acceptance, the
+// engine ack must still
 // fire, with the delivery's own (agent, up_to_seq) — i.e. the happy path is
 // unchanged, just correctly gated on confirmation instead of write-enqueue.
 // Exercises the full wiring: a real handoff through
@@ -3231,7 +3233,7 @@ async fn worker_confirmation_ack_diagnostics(closed: bool) {
             .expect("the delivery must be tracked pending the worker's confirmation")
             .withheld_fleet_ack
             .is_some(),
-        "a successful handoff must still withhold the ack pending echo confirmation"
+        "a successful handoff must still withhold the ack pending harness acceptance"
     );
 
     fixture
@@ -4333,6 +4335,150 @@ fn worker_reported_delivery_failures_use_the_dead_letter_path() {
         failure_branch.contains("emit_dropped_delivery_failures"),
         "worker-reported terminal failures must be retained in the dead-letter store"
     );
+}
+
+#[tokio::test]
+async fn unconfirmed_pty_delivery_is_visible_as_blocked_on_send() {
+    let worker_name = "worker-a";
+    let registry = make_worker_registry_with_worker(worker_name).await;
+    let generation = registry.workers[worker_name].generation;
+    let delivery_id = DeliveryId::new("del_blocked_on_send");
+    let pending = make_pending_delivery(delivery_id.as_str(), worker_name);
+    let event_id = pending.delivery.event_id.clone();
+    let mut fixture =
+        worker_event_runtime_fixture(registry, HashMap::from([(delivery_id.clone(), pending)]));
+
+    fixture
+        .runtime
+        .handle_worker_event(delivery_lifecycle_worker_event(
+            worker_name,
+            generation,
+            "delivery_unconfirmed",
+            delivery_id.as_str(),
+            event_id.as_str(),
+        ))
+        .await;
+
+    assert_eq!(
+        fixture.runtime.workers.workers[worker_name].state,
+        AgentWorkState::BlockedOnSend
+    );
+    let mut kinds = Vec::new();
+    while let Ok(frame) = fixture._sdk_out_rx.try_recv() {
+        if let Some(kind) = frame.payload.get("kind").and_then(Value::as_str) {
+            if kind == "delivery_unconfirmed" {
+                assert_eq!(frame.payload["attempts"], 1);
+                assert_eq!(frame.payload["max_attempts"], 3);
+            }
+            kinds.push(kind.to_string());
+        }
+    }
+    assert!(kinds.iter().any(|kind| kind == "delivery_unconfirmed"));
+    assert!(kinds.iter().any(|kind| kind == "agent_blocked_on_send"));
+    cleanup_worker_registry(fixture.runtime.workers).await;
+}
+
+#[tokio::test]
+async fn prior_delivery_activity_does_not_clear_blocked_on_send() {
+    let worker_name = "worker-a";
+    let registry = make_worker_registry_with_worker(worker_name).await;
+    let generation = registry.workers[worker_name].generation;
+    let delivery_id = DeliveryId::new("del_blocked_with_prior_activity");
+    let pending = make_pending_delivery(delivery_id.as_str(), worker_name);
+    let event_id = pending.delivery.event_id.clone();
+    let mut fixture =
+        worker_event_runtime_fixture(registry, HashMap::from([(delivery_id.clone(), pending)]));
+
+    fixture
+        .runtime
+        .handle_worker_event(delivery_lifecycle_worker_event(
+            worker_name,
+            generation,
+            "delivery_unconfirmed",
+            delivery_id.as_str(),
+            event_id.as_str(),
+        ))
+        .await;
+    fixture
+        .runtime
+        .handle_worker_event(delivery_lifecycle_worker_event(
+            worker_name,
+            generation,
+            "delivery_active",
+            "del_prior_delivery",
+            "event_prior_delivery",
+        ))
+        .await;
+
+    assert_eq!(
+        fixture.runtime.workers.workers[worker_name].state,
+        AgentWorkState::BlockedOnSend,
+        "late activity from an earlier accepted delivery must not clear recovery state"
+    );
+    cleanup_worker_registry(fixture.runtime.workers).await;
+}
+
+#[tokio::test]
+async fn stale_recovery_progress_does_not_block_the_worker() {
+    let worker_name = "worker-a";
+    let registry = make_worker_registry_with_worker(worker_name).await;
+    let generation = registry.workers[worker_name].generation;
+    let mut fixture = worker_event_runtime_fixture(registry, HashMap::new());
+
+    fixture
+        .runtime
+        .handle_worker_event(delivery_lifecycle_worker_event(
+            worker_name,
+            generation,
+            "delivery_unconfirmed",
+            "del_already_complete",
+            "evt_already_complete",
+        ))
+        .await;
+
+    assert_eq!(
+        fixture.runtime.workers.workers[worker_name].state,
+        AgentWorkState::Working
+    );
+    cleanup_worker_registry(fixture.runtime.workers).await;
+}
+
+#[tokio::test]
+async fn submit_recovery_progress_defers_broker_delivery_retry() {
+    let worker_name = "worker-a";
+    let registry = make_worker_registry_with_worker(worker_name).await;
+    let generation = registry.workers[worker_name].generation;
+    let delivery_id = DeliveryId::new("del_recovery_progress");
+    let mut pending = make_pending_delivery(delivery_id.as_str(), worker_name);
+    pending.delivery.injection_mode = MessageInjectionMode::Steer;
+    let event_id = pending.delivery.event_id.clone();
+    let mut fixture =
+        worker_event_runtime_fixture(registry, HashMap::from([(delivery_id.clone(), pending)]));
+    let before = Instant::now();
+
+    fixture
+        .runtime
+        .handle_worker_event(delivery_lifecycle_worker_event(
+            worker_name,
+            generation,
+            "delivery_unconfirmed",
+            delivery_id.as_str(),
+            event_id.as_str(),
+        ))
+        .await;
+
+    let deadline = fixture.runtime.pending_deliveries[&delivery_id].next_retry_at;
+    assert!(
+        deadline
+            .checked_duration_since(before)
+            .is_some_and(|delay| {
+                delay
+                    >= crate::broker::delivery_verification::VERIFICATION_WINDOW
+                        + crate::broker::delivery_verification::VERIFICATION_WINDOW
+            }),
+        "broker retry must wait through the in-flight submit write and verification window"
+    );
+    cleanup_worker_registry(fixture.runtime.workers).await;
 }
 
 #[test]

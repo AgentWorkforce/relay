@@ -859,6 +859,82 @@ impl BrokerRuntime {
                             )
                             .await;
                         }
+                    } else if msg_type == "delivery_unconfirmed"
+                        || msg_type == "delivery_resubmitted"
+                    {
+                        if let Some(payload) = value.get("payload") {
+                            let delivery_id = payload
+                                .get("delivery_id")
+                                .and_then(Value::as_str)
+                                .unwrap_or("");
+                            let event_id = payload
+                                .get("event_id")
+                                .and_then(Value::as_str)
+                                .unwrap_or("");
+                            let matching_pending = pending_deliveries
+                                .get_mut(delivery_id)
+                                .filter(|pending| pending.delivery.event_id.as_str() == event_id)
+                                .map(|pending| {
+                                    pending.next_retry_at = Instant::now()
+                                        + delivery_recovery_ack_timeout(
+                                            &pending.delivery.injection_mode,
+                                            delivery_retry_interval,
+                                        );
+                                })
+                                .is_some();
+                            if matching_pending {
+                                if let Some(handle) = workers.workers.get_mut(&name) {
+                                    handle.last_activity_at = Instant::now();
+                                    handle.state = AgentWorkState::BlockedOnSend;
+                                }
+                                if msg_type == "delivery_unconfirmed" {
+                                    let pending_delivery_count = pending_deliveries
+                                        .values()
+                                        .filter(|pending| pending.worker_name == name)
+                                        .count();
+                                    let _ = send_broker_event(
+                                        sdk_out_tx,
+                                        BrokerEvent::AgentBlockedOnSend {
+                                            name: name.clone(),
+                                            blocked_secs: 0,
+                                            pending_delivery_count,
+                                        },
+                                    )
+                                    .await;
+                                    publish_agent_state_transition(
+                                        ws_control_tx,
+                                        &name,
+                                        "stuck",
+                                        Some("blocked_on_send"),
+                                    )
+                                    .await;
+                                }
+                            }
+                            tracing::warn!(
+                                target = "agent_relay::broker",
+                                worker = %name,
+                                delivery_id = %delivery_id,
+                                event_id = %event_id,
+                                attempts = ?payload.get("attempts").or_else(|| payload.get("attempt")),
+                                kind = msg_type,
+                                "delivery is not yet accepted by the harness"
+                            );
+                            let _ = send_event(
+                                sdk_out_tx,
+                                json!({
+                                    "kind": msg_type,
+                                    "name": name,
+                                    "delivery_id": payload.get("delivery_id"),
+                                    "event_id": payload.get("event_id"),
+                                    "reason": payload.get("reason"),
+                                    "attempts": payload.get("attempts"),
+                                    "attempt": payload.get("attempt"),
+                                    "max_attempts": payload.get("max_attempts"),
+                                    "strategy": payload.get("strategy"),
+                                }),
+                            )
+                            .await;
+                        }
                     } else if msg_type == "delivery_verified" {
                         if let Some(payload) = value.get("payload") {
                             let delivery_id = payload
@@ -869,32 +945,21 @@ impl BrokerRuntime {
                                 .get("event_id")
                                 .and_then(Value::as_str)
                                 .unwrap_or("");
-                            // "echo" when the injection was confirmed in PTY
-                            // output; "timeout_fallback" when the worker acked
-                            // without ever seeing the echo.
+                            // Modern PTY workers use "harness_acceptance":
+                            // editor echo alone is never delivery confirmation.
                             let verification = payload
                                 .get("verification")
                                 .and_then(Value::as_str)
-                                .unwrap_or("echo");
+                                .unwrap_or("worker_confirmation");
                             let reason = payload.get("reason").and_then(Value::as_str);
-                            if verification == "timeout_fallback" {
-                                tracing::info!(
-                                    target = "agent_relay::broker",
-                                    worker = %name,
-                                    delivery_id = %delivery_id,
-                                    event_id = %event_id,
-                                    reason = reason.unwrap_or(""),
-                                    "delivery acked via timeout fallback — echo never verified"
-                                );
-                            } else {
-                                tracing::debug!(
-                                    target = "agent_relay::broker",
-                                    worker = %name,
-                                    delivery_id = %delivery_id,
-                                    event_id = %event_id,
-                                    "delivery verified by echo detection"
-                                );
-                            }
+                            tracing::debug!(
+                                target = "agent_relay::broker",
+                                worker = %name,
+                                delivery_id = %delivery_id,
+                                event_id = %event_id,
+                                verification = %verification,
+                                "delivery acceptance verified"
+                            );
                             let pending_for_confirmation = clear_pending_delivery_if_event_matches(
                                 pending_deliveries,
                                 delivery_id,
@@ -908,6 +973,8 @@ impl BrokerRuntime {
                                 "delivery_id": delivery_id,
                                 "event_id": event_id,
                                 "verification": verification,
+                                "evidence": payload.get("evidence"),
+                                "attempts": payload.get("attempts"),
                             });
                             if let (Some(reason), Some(map)) =
                                 (reason, verified_event.as_object_mut())
@@ -937,7 +1004,9 @@ impl BrokerRuntime {
                         if let Some(payload) = value.get("payload") {
                             if let Some(handle) = workers.workers.get_mut(&name) {
                                 handle.last_activity_at = Instant::now();
-                                handle.state = AgentWorkState::Working;
+                                if handle.state != AgentWorkState::BlockedOnSend {
+                                    handle.state = AgentWorkState::Working;
+                                }
                             }
                             let _ = send_event(
                                 sdk_out_tx,
@@ -971,7 +1040,7 @@ impl BrokerRuntime {
                                 delivery_id = %delivery_id,
                                 event_id = %event_id,
                                 reason = %reason,
-                                "delivery failed — echo not detected"
+                                "delivery failed — harness acceptance not confirmed"
                             );
                             let pending_for_failure = clear_pending_delivery_if_event_matches(
                                 pending_deliveries,
@@ -997,8 +1066,28 @@ impl BrokerRuntime {
                             if let Some(pending) = pending_for_failure {
                                 if let Some(handle) = workers.workers.get_mut(&name) {
                                     handle.last_activity_at = Instant::now();
-                                    handle.state = AgentWorkState::Working;
+                                    handle.state = AgentWorkState::BlockedOnSend;
                                 }
+                                let pending_delivery_count = pending_deliveries
+                                    .values()
+                                    .filter(|candidate| candidate.worker_name == name)
+                                    .count();
+                                let _ = send_broker_event(
+                                    sdk_out_tx,
+                                    BrokerEvent::AgentBlockedOnSend {
+                                        name: name.clone(),
+                                        blocked_secs: 0,
+                                        pending_delivery_count,
+                                    },
+                                )
+                                .await;
+                                publish_agent_state_transition(
+                                    ws_control_tx,
+                                    &name,
+                                    "stuck",
+                                    Some("blocked_on_send"),
+                                )
+                                .await;
                                 let _ = emit_dropped_delivery_failures(
                                     sdk_out_tx,
                                     dead_letters,
@@ -1351,7 +1440,9 @@ impl BrokerRuntime {
                             .is_some_and(|handle| handle.spec.runtime == AgentRuntime::Pty);
                         if let Some(handle) = workers.workers.get_mut(&name) {
                             handle.last_activity_at = Instant::now();
-                            handle.state = AgentWorkState::Working;
+                            if handle.state != AgentWorkState::BlockedOnSend {
+                                handle.state = AgentWorkState::Working;
+                            }
                         }
                         if is_pty {
                             publish_pty_busy(pty_observability, hosted_agent_event_tx, &name);
@@ -1600,13 +1691,20 @@ impl BrokerRuntime {
                             .unwrap_or(0);
                         let since =
                             chrono::Utc::now() - chrono::Duration::seconds(idle_secs as i64);
-                        if let Some(handle) = workers.workers.get_mut(&name) {
-                            handle.state = AgentWorkState::Idle;
-                        }
-                        if workers
+                        let remains_blocked = workers
                             .workers
                             .get(&name)
-                            .is_some_and(|handle| handle.spec.runtime == AgentRuntime::Pty)
+                            .is_some_and(|handle| handle.state == AgentWorkState::BlockedOnSend);
+                        if !remains_blocked {
+                            if let Some(handle) = workers.workers.get_mut(&name) {
+                                handle.state = AgentWorkState::Idle;
+                            }
+                        }
+                        if !remains_blocked
+                            && workers
+                                .workers
+                                .get(&name)
+                                .is_some_and(|handle| handle.spec.runtime == AgentRuntime::Pty)
                         {
                             publish_pty_idle(pty_observability, hosted_agent_event_tx, &name);
                         }
@@ -1621,13 +1719,15 @@ impl BrokerRuntime {
                             }),
                         )
                         .await;
-                        publish_agent_state_transition(
-                            ws_control_tx,
-                            &name,
-                            "idle",
-                            Some("idle_threshold"),
-                        )
-                        .await;
+                        if !remains_blocked {
+                            publish_agent_state_transition(
+                                ws_control_tx,
+                                &name,
+                                "idle",
+                                Some("idle_threshold"),
+                            )
+                            .await;
+                        }
                     } else if msg_type == "agent_blocked_on_send" {
                         let blocked_secs = value
                             .get("payload")
