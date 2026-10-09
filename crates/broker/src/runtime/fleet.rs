@@ -909,7 +909,7 @@ impl BrokerRuntime {
                 );
             }
             FleetControlEvent::Message(RelaycastToBroker::Deliver(deliver)) => {
-                self.handle_fleet_deliver(deliver).await;
+                self.stage_fleet_deliver(deliver).await;
             }
             FleetControlEvent::Message(RelaycastToBroker::ActionInvoke(invoke)) => {
                 self.handle_fleet_action_invoke(invoke).await;
@@ -934,7 +934,96 @@ impl BrokerRuntime {
         }
     }
 
-    async fn handle_fleet_deliver(&mut self, deliver: Deliver) {
+    /// Admit a node `deliver` frame, first downloading any file attachments
+    /// it carries. Downloads run off the event loop; the frame (and every
+    /// later frame for the same agent) is held in
+    /// [`crate::attachments::AttachmentStaging`] until they finish, so the
+    /// per-agent delivery order the sequence book relies on is preserved.
+    /// Frames are neither observed by the book nor acknowledged while held:
+    /// a broker that exits mid-download leaves them for Relaycast to replay.
+    async fn stage_fleet_deliver(&mut self, deliver: Deliver) {
+        let key = deliver.agent.clone();
+        let attachments = fleet_delivery_attachments(&deliver.payload);
+        if attachments.is_empty() {
+            if self.attachment_staging.is_busy(&key) {
+                self.attachment_staging.push_ready(key, deliver);
+            } else {
+                self.handle_fleet_deliver(deliver, None).await;
+            }
+            return;
+        }
+
+        let base = self.attachment_base_dir(&deliver.agent);
+        let root = crate::attachments::attachments_root(&base);
+        let fallback_root = self
+            .attachment_staging
+            .fallback_base
+            .as_deref()
+            .map(crate::attachments::attachments_root)
+            .filter(|fallback| *fallback != root);
+        let downloader = crate::attachments::AttachmentDownloader::new(
+            self.attachment_staging.http.clone(),
+            self.relaycast_http
+                .base_url
+                .as_deref()
+                .unwrap_or(crate::relaycast::auth::DEFAULT_RELAYCAST_BASE_URL),
+            &self.relaycast_http.api_key,
+        );
+        tracing::info!(
+            target = "relay_broker::fleet",
+            agent = %deliver.agent,
+            msg_id = %deliver.msg_id,
+            attachments = attachments.len(),
+            "holding node delivery while its attachments download"
+        );
+        let (token, done_tx) = self.attachment_staging.push_preparing(key.clone(), deliver);
+        tokio::spawn(async move {
+            let resolved = downloader
+                .materialize(&attachments, &root, fallback_root.as_deref())
+                .await;
+            let block = crate::attachments::render_attachment_block(&resolved);
+            let _ = done_tx.send(crate::attachments::StagedAttachments { key, token, block });
+        });
+    }
+
+    /// Release node deliveries whose attachment downloads finished, in
+    /// per-agent arrival order.
+    pub(super) async fn handle_staged_attachments(
+        &mut self,
+        staged: crate::attachments::StagedAttachments,
+    ) {
+        for (deliver, block) in self.attachment_staging.complete(staged) {
+            self.handle_fleet_deliver(deliver, block.as_deref()).await;
+        }
+    }
+
+    /// Where a worker can read its downloaded attachments: its working
+    /// directory (the harness sandbox root for Claude Code / Codex), else the
+    /// broker's own directory it inherited, else the home fallback.
+    fn attachment_base_dir(&self, agent: &str) -> PathBuf {
+        if let Some(handle) = self.workers.workers.get(&WorkerName::from(agent)) {
+            if let Some(cwd) = handle
+                .spec
+                .cwd
+                .as_deref()
+                .map(Path::new)
+                .filter(|cwd| cwd.is_absolute())
+            {
+                return cwd.to_path_buf();
+            }
+            if let Ok(cwd) = std::env::current_dir() {
+                return cwd;
+            }
+        }
+        self.attachment_staging
+            .fallback_base
+            .clone()
+            .unwrap_or_else(std::env::temp_dir)
+    }
+
+    /// `block` is the rendered `Attachments:` block appended to the injected
+    /// body, when the message carried attachments.
+    async fn handle_fleet_deliver(&mut self, deliver: Deliver, block: Option<&str>) {
         let decision = self.fleet_delivery_book.observe(&deliver);
         // Record the book's verdict before acting on it, so a frame that is
         // about to be dropped without an ack is still visible over
@@ -979,7 +1068,7 @@ impl BrokerRuntime {
             plan_fleet_delivery(decision)
         };
         let up_to_seq = match plan {
-            FleetDeliveryPlan::Surface => match self.surface_fleet_deliver(&deliver).await {
+            FleetDeliveryPlan::Surface => match self.surface_fleet_deliver(&deliver, block).await {
                 Ok(FleetDeliverySurfaceOutcome::Acknowledge) => {
                     self.node_delivery_probe
                         .record_disposition(&deliver, DeliverDisposition::SurfacedAndAcked);
@@ -1109,6 +1198,7 @@ impl BrokerRuntime {
     async fn surface_fleet_deliver(
         &mut self,
         deliver: &Deliver,
+        attachment_block: Option<&str>,
     ) -> Result<FleetDeliverySurfaceOutcome, anyhow::Error> {
         let payload_type = deliver
             .payload
@@ -1127,6 +1217,10 @@ impl BrokerRuntime {
                     .fleet_delivery_book
                     .next_ack_seq(deliver.agent_id.as_str());
                 let fields = fleet_delivery_fields(&deliver.payload, &deliver.agent);
+                // The dashboard mirror below keeps the sender's text; the
+                // worker additionally gets the downloaded-attachment block.
+                let injected_body =
+                    crate::attachments::append_attachment_block(&fields.body, attachment_block);
 
                 // Mirror the `relay_inbound` dashboard event that the HTTP
                 // `Send` handler (`ListenApiRequest::Send` in runtime/api.rs)
@@ -1169,7 +1263,7 @@ impl BrokerRuntime {
                     &deliver.agent,
                     InboundContext {
                         from: &fields.from,
-                        body: &fields.body,
+                        body: &injected_body,
                         target: &fields.target,
                         thread_id: fields.thread_id.as_deref(),
                         workspace_id: self.default_workspace_id.as_deref(),
@@ -1323,7 +1417,7 @@ impl BrokerRuntime {
                         // paths if the worker disappears before echoing. A
                         // one-shot `workers.deliver` outside `pending_deliveries`
                         // had no such guarantee — see relay#1543.
-                        let relay_delivery = self.fleet_relay_delivery(deliver);
+                        let relay_delivery = self.fleet_relay_delivery(deliver, attachment_block);
                         insert_and_attempt_delivery(
                             &mut self.workers,
                             &mut self.pending_deliveries,
@@ -1387,7 +1481,11 @@ impl BrokerRuntime {
         }
     }
 
-    fn fleet_relay_delivery(&self, deliver: &Deliver) -> RelayDelivery {
+    fn fleet_relay_delivery(
+        &self,
+        deliver: &Deliver,
+        attachment_block: Option<&str>,
+    ) -> RelayDelivery {
         let fields = fleet_delivery_fields(&deliver.payload, &deliver.agent);
         RelayDelivery {
             delivery_id: DeliveryId::new(deliver.delivery_id.clone()),
@@ -1396,7 +1494,7 @@ impl BrokerRuntime {
             workspace_alias: self.default_workspace.workspace_alias.clone(),
             from: fields.from,
             target: MessageTarget::new(fields.target),
-            body: fields.body,
+            body: crate::attachments::append_attachment_block(&fields.body, attachment_block),
             thread_id: fields.thread_id,
             priority: fields.priority,
             injection_mode: match deliver.mode {
@@ -3134,7 +3232,31 @@ struct FleetDeliveryFields {
 /// older or test payloads still map. `fallback_target` (the recipient agent
 /// name) is used only when no channel/target is present, i.e. for direct
 /// messages.
+/// Attachment arrays in node `deliver` payloads: the engine spreads the
+/// message record into `data`; older/flat shapes are accepted too.
+const FLEET_ATTACHMENT_POINTERS: &[&str] = &[
+    "/data/attachments",
+    "/attachments",
+    "/message/attachments",
+    "/data/message/attachments",
+    "/payload/message/attachments",
+    "/payload/attachments",
+];
+
+/// File attachments of a message-class node delivery (empty otherwise).
+fn fleet_delivery_attachments(payload: &Value) -> Vec<crate::attachments::InboundAttachment> {
+    let payload_type = payload.get("type").and_then(Value::as_str).unwrap_or("");
+    if !matches!(
+        classify_fleet_delivery(payload_type),
+        FleetDeliverySurfacing::Inject
+    ) {
+        return Vec::new();
+    }
+    crate::attachments::attachments_at(payload, FLEET_ATTACHMENT_POINTERS)
+}
+
 fn fleet_delivery_fields(payload: &Value, fallback_target: &str) -> FleetDeliveryFields {
+    let has_attachments = !fleet_delivery_attachments(payload).is_empty();
     let body = first_string(
         payload,
         &[
@@ -3150,7 +3272,15 @@ fn fleet_delivery_fields(payload: &Value, fallback_target: &str) -> FleetDeliver
             "/data/error",
         ],
     )
-    .unwrap_or_else(|| payload.to_string());
+    // An attachment-only message has empty text; inject just the attachment
+    // block rather than the raw payload JSON.
+    .unwrap_or_else(|| {
+        if has_attachments {
+            String::new()
+        } else {
+            payload.to_string()
+        }
+    });
     let from = first_string(
         payload,
         &[

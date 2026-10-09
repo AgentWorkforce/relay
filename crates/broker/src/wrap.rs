@@ -2080,7 +2080,12 @@ pub(crate) async fn run_wrap(
                             event_id: mapped.event_id,
                             workspace_id: Some(mapped.workspace_id),
                             workspace_alias: mapped.workspace_alias,
-                            body: mapped.text,
+                            // The wrap path does not download attachments;
+                            // the agent gets each file id and a fetch command.
+                            body: crate::relaycast::bridge::text_with_attachment_references(
+                                &mapped.text,
+                                &mapped.attachments,
+                            ),
                             target: mapped.target,
                             queued_at: Instant::now(),
                         });

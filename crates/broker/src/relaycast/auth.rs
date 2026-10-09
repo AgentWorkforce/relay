@@ -1164,7 +1164,7 @@ fn auth_http_status(err: &anyhow::Error) -> Option<StatusCode> {
         })
 }
 
-const DEFAULT_RELAYCAST_BASE_URL: &str = "https://cast.agentrelay.com";
+pub(crate) const DEFAULT_RELAYCAST_BASE_URL: &str = "https://cast.agentrelay.com";
 const RELAYCAST_HTTP_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(30);
 
 /// Broker-owned retry budget for transient Relaycast server failures on the

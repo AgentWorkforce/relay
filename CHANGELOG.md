@@ -5,7 +5,11 @@ All notable changes to Agent Relay will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
+## [Unreleased - Minor]
+
+### Added
+
+- The broker now passes Relaycast message attachments to PTY agents. Each file is downloaded (25 MiB cap, 20 s timeout) to `<agent cwd>/.agent-relay/attachments/<file_id>/<filename>`, and an `Attachments:` block after the message body gives its local path. If a file is not downloaded, the block gives its file id and an `agent-relay message file download <file_id>` command instead. Attachment-only messages are now injected rather than dropped.
 
 ## [13.2.0] - 2026-10-08
 
