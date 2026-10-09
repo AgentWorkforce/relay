@@ -23,7 +23,7 @@ jobs:
   test-build-script:
     if: (github.event_name != 'pull_request' && github.event_name != 'pull_request_target') || (github.head_ref == 'trunk' && github.event.pull_request.head.repo.full_name == github.repository && github.base_ref == 'main')
     name: Test build-bun.sh
-    runs-on: ${{ matrix.os }}
+    runs-on: ${{ matrix.os == 'ubuntu-latest' && (vars.CI_LINUX_RUNNER || 'ubuntu-latest') || matrix.os }}
     strategy:
       fail-fast: false
       matrix:
@@ -111,7 +111,7 @@ jobs:
   test-build-edge-cases:
     if: (github.event_name != 'pull_request' && github.event_name != 'pull_request_target') || (github.head_ref == 'trunk' && github.event.pull_request.head.repo.full_name == github.repository && github.base_ref == 'main')
     name: Test edge cases
-    runs-on: ubuntu-latest
+    runs-on: ${{ vars.CI_LINUX_RUNNER || 'ubuntu-latest' }}
 
     steps:
       - name: Checkout code
