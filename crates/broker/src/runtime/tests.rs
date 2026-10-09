@@ -4483,7 +4483,10 @@ async fn terminal_failure_without_remaining_work_does_not_block_the_worker() {
         ))
         .await;
 
-    assert!(!fixture.runtime.pending_deliveries.contains_key(&delivery_id));
+    assert!(!fixture
+        .runtime
+        .pending_deliveries
+        .contains_key(&delivery_id));
     assert_eq!(
         fixture.runtime.workers.workers[worker_name].state,
         AgentWorkState::Working,
@@ -4556,7 +4559,10 @@ async fn pty_delivery_verified_requires_harness_acceptance() {
             ))
             .await;
         assert!(
-            fixture.runtime.pending_deliveries.contains_key(&delivery_id),
+            fixture
+                .runtime
+                .pending_deliveries
+                .contains_key(&delivery_id),
             "PTY verification {legacy:?} must not clear delivery custody"
         );
     }
@@ -4577,7 +4583,10 @@ async fn pty_delivery_verified_requires_harness_acceptance() {
             Some("harness_acceptance"),
         ))
         .await;
-    assert!(!fixture.runtime.pending_deliveries.contains_key(&delivery_id));
+    assert!(!fixture
+        .runtime
+        .pending_deliveries
+        .contains_key(&delivery_id));
     cleanup_worker_registry(fixture.runtime.workers).await;
 }
 

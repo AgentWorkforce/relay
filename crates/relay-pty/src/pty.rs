@@ -2086,6 +2086,7 @@ mod tests {
                 b"same-echo\n".to_vec(),
                 Duration::ZERO,
                 None,
+                None,
             )
             .unwrap();
             submitted_tx.send((boundary, ack)).unwrap();
@@ -2846,6 +2847,7 @@ mod tests {
             b"queued\n".to_vec(),
             Duration::ZERO,
             None,
+            None,
         )
         .expect("submit path accepts the write");
         // Block until the drainer has dequeued the message and is wedged inside
@@ -3198,7 +3200,7 @@ mod tests {
             super::drain_write_queue(writer, rx, Arc::new(AtomicU32::new(0)))
         });
 
-        let cancel = Arc::new(AtomicBool::new(false));
+        let cancel = Arc::new(std::sync::atomic::AtomicBool::new(false));
         let (ack_tx, ack_rx) = oneshot::channel::<std::io::Result<()>>();
         tx.send(WriteMsg::UserInput {
             bytes: b"\x1b[F".to_vec(),
@@ -3219,11 +3221,12 @@ mod tests {
             .expect("drainer resolves the cancelled write")
             .expect("ack sender not dropped");
         assert_eq!(
-            ack.expect_err("cancelled follow-up must not ack success").kind(),
+            ack.expect_err("cancelled follow-up must not ack success")
+                .kind(),
             std::io::ErrorKind::Interrupted
         );
 
-        let skipped = Arc::new(AtomicBool::new(true));
+        let skipped = Arc::new(std::sync::atomic::AtomicBool::new(true));
         let (skip_tx, skip_rx) = oneshot::channel::<std::io::Result<()>>();
         tx.send(WriteMsg::UserInput {
             bytes: b"\r".to_vec(),
@@ -3244,7 +3247,10 @@ mod tests {
             ack: human_tx,
         })
         .expect("queue accepts the human write");
-        assert!(human_rx.await.unwrap().is_ok(), "drainer survives cancellation");
+        assert!(
+            human_rx.await.unwrap().is_ok(),
+            "drainer survives cancellation"
+        );
 
         drop(tx);
         drainer.join().expect("drainer thread joins cleanly");

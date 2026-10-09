@@ -29,9 +29,10 @@ use crate::broker::{
     continuity::parse_continuity_command,
     delivery_verification::{
         assess_harness_acceptance, current_timestamp_ms, delivery_injected_event_payload,
-        delivery_queued_event_payload, failed_draft_released, DeliveryOutcome, HarnessAcceptance, PendingActivity,
-        PendingVerification, ThrottleState, VerificationOutput, ACTIVITY_BUFFER_KEEP_BYTES,
-        ACTIVITY_BUFFER_MAX_BYTES, ACTIVITY_WINDOW, MAX_VERIFICATION_ATTEMPTS, VERIFICATION_WINDOW,
+        delivery_queued_event_payload, failed_draft_released, DeliveryOutcome, HarnessAcceptance,
+        PendingActivity, PendingVerification, ThrottleState, VerificationOutput,
+        ACTIVITY_BUFFER_KEEP_BYTES, ACTIVITY_BUFFER_MAX_BYTES, ACTIVITY_WINDOW,
+        MAX_VERIFICATION_ATTEMPTS, VERIFICATION_WINDOW,
     },
     injection_format::{format_injection_for_worker_with_workspace, McpReminderThrottle},
 };
@@ -48,8 +49,7 @@ use crate::util::utf8_stream::Utf8StreamDecoder;
 use crate::worker::detection::{is_codex_busy_status_line, ActivityDetector};
 use crate::wrap::{
     cancel_recovery_writes, new_recovery_cancel, submit_injection_body, submit_injection_recovery,
-    warn_on_auto_response_write, PtyAutoState,
-    AUTO_SUGGESTION_BLOCK_TIMEOUT,
+    warn_on_auto_response_write, PtyAutoState, AUTO_SUGGESTION_BLOCK_TIMEOUT,
 };
 use base64::Engine;
 
@@ -128,6 +128,25 @@ fn latch_failed_written_delivery(
         event_id: event_id.clone(),
         expected_echo: expected_echo.to_string(),
     });
+}
+
+/// Whether the composer is owned by an unresolved delivery: one awaiting
+/// acceptance, one whose submit-key recovery is in flight, or a failed body that
+/// may still be typed there. The next injection must wait in every case.
+fn composer_owned_by_delivery(
+    pending_verifications_empty: bool,
+    pending_recovery_writes_empty: bool,
+    failed_composer_latch: Option<&FailedComposerLatch>,
+) -> bool {
+    !pending_verifications_empty
+        || !pending_recovery_writes_empty
+        || failed_composer_latch.is_some()
+}
+
+/// Only a non-empty `write_pty` that the drainer admitted can change the
+/// composer, so only that write takes ownership away from relay deliveries.
+fn human_write_takes_ownership(byte_len: usize, admitted: bool) -> bool {
+    byte_len > 0 && admitted
 }
 
 /// Default per-atom gap for escape-aware paced injection, in milliseconds.
@@ -1477,7 +1496,7 @@ pub(crate) async fn run_pty_worker(cmd: PtyCommand) -> Result<()> {
                                         // An empty frame changes nothing in the
                                         // composer, and a rejected write never
                                         // reached it: neither takes ownership.
-                                        if byte_len > 0 && admitted.is_ok() {
+                                        if human_write_takes_ownership(byte_len, admitted.is_ok()) {
                                             // Withdraw queued recovery keys first so
                                             // a delayed submit cannot send the
                                             // human's draft.
@@ -2153,9 +2172,11 @@ pub(crate) async fn run_pty_worker(cmd: PtyCommand) -> Result<()> {
                 if let Some(index) = next_injection_index(
                     &pending_worker_injections,
                     active_injection.is_some(),
-                    !pending_verifications.is_empty()
-                        || !pending_recovery_writes.is_empty()
-                        || failed_composer_latch.is_some(),
+                    composer_owned_by_delivery(
+                        pending_verifications.is_empty(),
+                        pending_recovery_writes.is_empty(),
+                        failed_composer_latch.as_ref(),
+                    ),
                     pty_auto.interactive_hold,
                     hold_exempt_injections,
                     &hold_exempt_event_ids,
@@ -3660,9 +3681,13 @@ mod tests {
                     if attempt_started.elapsed() >= VERIFICATION_WINDOW
                         && verification.attempts < verification.max_attempts =>
                 {
-                    let (recovery_ack, boundary) =
-                        submit_injection_recovery(pty, "codex", verification.attempts, Default::default())
-                            .expect("queue submit-key recovery");
+                    let (recovery_ack, boundary) = submit_injection_recovery(
+                        pty,
+                        "codex",
+                        verification.attempts,
+                        Default::default(),
+                    )
+                    .expect("queue submit-key recovery");
                     tokio::time::timeout(Duration::from_secs(5), recovery_ack)
                         .await
                         .expect("submit-key recovery ack timed out")
@@ -3833,7 +3858,8 @@ mod tests {
         let mut accepted_after = None;
         for completed_attempts in [1, 2] {
             let (recovery_ack, boundary) =
-                submit_injection_recovery(&pty, "codex", completed_attempts, Default::default()).unwrap();
+                submit_injection_recovery(&pty, "codex", completed_attempts, Default::default())
+                    .unwrap();
             recovery_ack.await.unwrap().unwrap();
             verification.attempts += 1;
             verification.output_boundary = boundary;
@@ -4386,6 +4412,55 @@ mod tests {
             next_injection_index(&VecDeque::new(), false, false, false, 0, &targeted),
             None
         );
+    }
+
+    #[test]
+    fn failed_written_delivery_latches_injection_and_fences_replay() {
+        let mut failed = CompletedWorkerDeliveries::default();
+        let mut latch = None;
+        let delivery_id = DeliveryId::from("del_parked_failure");
+        let event_id = EventId::from("evt_parked_failure");
+        assert!(!composer_owned_by_delivery(true, true, latch.as_ref()));
+
+        latch_failed_written_delivery(
+            &mut failed,
+            &mut latch,
+            &delivery_id,
+            &event_id,
+            "Relay message from Lead [evt]: parked",
+        );
+
+        assert_eq!(failed.get(&delivery_id), Some(&event_id));
+        assert!(
+            composer_owned_by_delivery(true, true, latch.as_ref()),
+            "a failed body still in the composer must block the next injection"
+        );
+        let mut pending = VecDeque::new();
+        pending.push_back(test_pending_injection("evt_next"));
+        assert_eq!(
+            next_injection_index(
+                &pending,
+                false,
+                composer_owned_by_delivery(true, true, latch.as_ref()),
+                false,
+                0,
+                &HashSet::new(),
+            ),
+            None
+        );
+    }
+
+    #[test]
+    fn only_an_admitted_nonempty_human_write_takes_ownership() {
+        assert!(
+            !human_write_takes_ownership(0, true),
+            "empty write_pty frame"
+        );
+        assert!(
+            !human_write_takes_ownership(5, false),
+            "write rejected by a full queue"
+        );
+        assert!(human_write_takes_ownership(5, true));
     }
 
     #[test]

@@ -1024,6 +1024,38 @@ mod tests {
         pty.shutdown().unwrap();
     }
 
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn opencode_output_cannot_confirm_a_draft_at_the_cursor() {
+        let expected = "Relay message from Lead [evt]: opencode draft";
+        let (pty, snapshot) = codex_snapshot(&format!("┃ {expected}")).await;
+        let mut verification = codex_verification(expected);
+        verification.detector = ActivityDetector::for_cli("opencode");
+        verification
+            .activity_buffer
+            .push_str("Thinking about the tool");
+
+        assert_eq!(
+            assess_harness_acceptance("opencode", &verification, &snapshot),
+            HarnessAcceptance::Inconclusive,
+            "OpenCode transcript words must not confirm a typed-but-unsent body"
+        );
+        pty.shutdown().unwrap();
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn failed_draft_latch_holds_until_the_composer_releases_it() {
+        let expected = "Relay message from Lead [evt]: parked after recovery";
+        let (parked_pty, parked) = codex_snapshot(&format!("› {expected}")).await;
+        assert!(!failed_draft_released("codex", expected, &parked));
+        parked_pty.shutdown().unwrap();
+
+        let (idle_pty, idle) = codex_snapshot("› Ask Codex to do anything").await;
+        assert!(failed_draft_released("codex", expected, &idle));
+        idle_pty.shutdown().unwrap();
+    }
+
     #[test]
     fn wrapped_echo_preserves_same_chunk_acceptance_activity() {
         let expected = "Relay message from Lead [evt]: Reply with exactly WRAPPED_CODEX_ACK";

@@ -2654,13 +2654,15 @@ mod tests {
         let drain = tokio::spawn(async move { while rx.recv().await.is_some() {} });
         tokio::time::sleep(Duration::from_millis(100)).await;
 
-        let (first_ack, _) = submit_injection_recovery(&pty, "codex", 1, Default::default()).unwrap();
+        let (first_ack, _) =
+            submit_injection_recovery(&pty, "codex", 1, Default::default()).unwrap();
         tokio::time::timeout(Duration::from_secs(3), first_ack)
             .await
             .expect("End+CR recovery timed out")
             .expect("drainer exited")
             .expect("End+CR recovery failed");
-        let (second_ack, _) = submit_injection_recovery(&pty, "codex", 2, Default::default()).unwrap();
+        let (second_ack, _) =
+            submit_injection_recovery(&pty, "codex", 2, Default::default()).unwrap();
         tokio::time::timeout(Duration::from_secs(3), second_ack)
             .await
             .expect("LF recovery timed out")
