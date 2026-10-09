@@ -25,7 +25,7 @@ concurrency:
   # merges landing together cannot cancel each other. A `labeled` event for any
   # label other than `ci:run` runs nothing, so it gets its own throwaway group:
   # it must never cancel the PR's in-progress run.
-  group: rust-ci-${{ github.event_name != 'pull_request' && format('push-{0}', github.sha) || ((github.event.action == 'labeled' && github.event.label.name != 'ci:run') && format('ignored-{0}', github.run_id) || format('pr-{0}', github.event.pull_request.number)) }}
+  group: rust-ci-${{ github.event_name == 'push' && format('push-{0}', github.sha) || github.event_name != 'pull_request' && format('run-{0}', github.run_id) || ((github.event.action == 'labeled' && github.event.label.name != 'ci:run') && format('ignored-{0}', github.run_id) || format('pr-{0}', github.event.pull_request.number)) }}
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:

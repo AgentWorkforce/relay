@@ -1984,17 +1984,22 @@ describe('trusted dispatcher source contract', () => {
     expect(triggerSection).toContain('  schedule:');
     expect(triggerSection).toContain("cron: '17 3 * * 1'");
     expect(triggerSection).toContain(
-      "  pull_request:\n    paths:\n      - '.github/workflows/relayflow-pr-proof-broker.yml'"
+      "    types: [opened, reopened, labeled]\n    paths:\n      - '.github/workflows/relayflow-pr-proof-broker.yml'"
     );
     expect(triggerSection).toContain('  pull_request_target:');
-    expect(triggerSection).toContain('types: [opened, synchronize, reopened, edited, ready_for_review]');
+    // Merge train: the trunk -> main PR runs on opened/reopened/`ci:run` only, never synchronize.
+    expect(triggerSection).toContain('  pull_request_target:\n');
+    expect(triggerSection.slice(triggerSection.indexOf('  pull_request_target:'))).toContain(
+      'types: [opened, reopened, labeled]'
+    );
+    expect(triggerSection).not.toMatch(/types: \[[^\]]*synchronize/);
     expect(triggerSection).not.toContain('  workflow_dispatch:');
     expect(source).toContain('SOURCE_SHA: ${{ github.event.pull_request.head.sha || github.sha }}');
     expect(source).toContain('ref: ${{ env.SOURCE_SHA }}');
     expect(source).toContain('persist-credentials: false');
     expect(source).toContain('permissions:\n  contents: read');
     expect(source).toContain(
-      'group: relayflow-pr-proof-broker-${{ github.event_name }}-${{ github.event.pull_request.head.sha || github.sha }}'
+      "group: relayflow-pr-proof-broker-${{ github.event_name }}-${{ (github.event.action == 'labeled' && github.event.label.name != 'ci:run') && format('ignored-{0}', github.run_id) || (github.event.pull_request.head.sha || github.sha) }}"
     );
     expect(source).toContain('cancel-in-progress: true');
     expect(source).toContain(
