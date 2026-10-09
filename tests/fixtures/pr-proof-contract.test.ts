@@ -1993,6 +1993,10 @@ describe('trusted dispatcher source contract', () => {
       'types: [labeled]'
     );
     expect(triggerSection).not.toMatch(/types: \[[^\]]*synchronize/);
+    // The build job runs only for a `ci:run` label event on this repo's trunk -> main PR.
+    expect(source).toContain(
+      "(github.head_ref == 'trunk' && github.event.pull_request.head.repo.full_name == github.repository && github.base_ref == 'main' && github.event.action == 'labeled' && github.event.label.name == 'ci:run')"
+    );
     expect(triggerSection).not.toContain('  workflow_dispatch:');
     expect(source).toContain('SOURCE_SHA: ${{ github.event.pull_request.head.sha || github.sha }}');
     expect(source).toContain('ref: ${{ env.SOURCE_SHA }}');
