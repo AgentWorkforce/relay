@@ -163,11 +163,7 @@ impl PendingVerification {
         if self.echo_seen {
             return;
         }
-        let tail = expected_tail(&self.expected_echo);
-        if !tail.is_empty()
-            && current_composer(snapshot, cli)
-                .is_some_and(|composer| compact_render(&composer).contains(&tail))
-        {
+        if composer_holds_tail(snapshot, cli, &expected_tail(&self.expected_echo)) {
             self.echo_seen = true;
             self.activity_buffer.clear();
         }
@@ -250,12 +246,18 @@ fn gemini_composer_row(line: &str) -> &str {
         .unwrap_or(bordered)
 }
 
-fn current_composer(snapshot: &Snapshot, cli: &str) -> Option<String> {
+/// Live-composer readings for the rows through the cursor, latest prompt
+/// anchor first. Earlier anchors only matter when a draft itself contains a
+/// prompt-looking row (for example a quoted `> b` line); see
+/// [`composer_holds_tail`].
+fn composer_candidates(snapshot: &Snapshot, cli: &str) -> Vec<String> {
     let plain = snapshot.to_plain_through_cursor();
     let lines: Vec<_> = plain.lines().collect();
-    let end = snapshot.cursor.0.checked_sub(1)? as usize;
+    let Some(end) = snapshot.cursor.0.checked_sub(1).map(|row| row as usize) else {
+        return Vec::new();
+    };
     if end >= lines.len() {
-        return None;
+        return Vec::new();
     }
     let lower = cli.to_ascii_lowercase();
     if lower.contains("gemini") {
@@ -263,26 +265,29 @@ fn current_composer(snapshot: &Snapshot, cli: &str) -> Option<String> {
             .get(end)
             .is_some_and(|line| cursor_row_is_activity(cli, line))
         {
-            return None;
+            return Vec::new();
         }
         // Gemini renders its live input with a `> ` prefix (inside a `│`
         // border on terminals that cannot use the background-colour frame).
         // Anchor to that boundary instead of treating arbitrary transcript
         // rows near the cursor as the composer. Keeping every row through the
         // cursor also preserves long, wrapped drafts beyond four rows.
-        let start = lines.iter().take(end + 1).rposition(|line| {
-            let input = gemini_composer_row(line);
-            input == ">" || input.starts_with("> ")
-        })?;
-        return Some(
-            lines[start..=end]
-                .iter()
-                .map(|line| gemini_composer_row(line))
-                .collect::<Vec<_>>()
-                .join("\n"),
-        );
+        return (0..=end)
+            .rev()
+            .filter(|&start| {
+                let input = gemini_composer_row(lines[start]);
+                input == ">" || input.starts_with("> ")
+            })
+            .map(|start| {
+                lines[start..=end]
+                    .iter()
+                    .map(|line| gemini_composer_row(line))
+                    .collect::<Vec<_>>()
+                    .join("\n")
+            })
+            .collect();
     }
-    let is_prompt = |line: &&str| {
+    let is_prompt = |line: &str| {
         let trimmed = line.trim_start();
         if lower.contains("codex") {
             trimmed == "›"
@@ -309,20 +314,56 @@ fn current_composer(snapshot: &Snapshot, cli: &str) -> Option<String> {
                 || trimmed.starts_with("❯ ")
         }
     };
-    let start = lines.iter().take(end + 1).rposition(is_prompt)?;
-    let composer_lines = &lines[start..=end];
-    if composer_lines.len() > 1
-        && composer_lines
-            .last()
-            .is_some_and(|line| cursor_row_is_activity(cli, line))
+    let starts: Vec<usize> = (0..=end)
+        .rev()
+        .filter(|&row| is_prompt(lines[row]))
+        .collect();
+    let Some(&latest) = starts.first() else {
+        return Vec::new();
+    };
+    if lines
+        .get(end)
+        .is_some_and(|line| cursor_row_is_activity(cli, line))
     {
-        // The latest prompt-looking line is part of the submitted transcript;
-        // a distinctive harness status row owns the cursor. Do not use the
-        // broader ActivityDetector patterns here because ordinary multiline
-        // draft text can contain Tool:, Write(, or shell prompts.
-        return None;
+        if latest < end {
+            // The latest prompt-looking line is part of the submitted
+            // transcript; a distinctive harness status row owns the cursor. Do
+            // not use the broader ActivityDetector patterns here because
+            // ordinary multiline draft text can contain Tool:, Write(, or shell
+            // prompts.
+            return Vec::new();
+        }
+        return vec![lines[latest].to_string()];
     }
-    Some(composer_lines.join("\n"))
+    starts
+        .into_iter()
+        .map(|start| lines[start..=end].join("\n"))
+        .collect()
+}
+
+fn current_composer(snapshot: &Snapshot, cli: &str) -> Option<String> {
+    composer_candidates(snapshot, cli).into_iter().next()
+}
+
+/// Whether the delivery's tail is still in the live composer.
+///
+/// The latest prompt anchor keeps the original containment check. A draft
+/// can itself contain prompt-looking rows, which moves that anchor into the
+/// body, so an earlier anchor also counts, but only when the composer it
+/// yields *ends* with the tail at the cursor. A submitted body in the
+/// transcript above a fresh prompt never ends at the cursor.
+fn composer_holds_tail(snapshot: &Snapshot, cli: &str, tail: &str) -> bool {
+    if tail.is_empty() {
+        return false;
+    }
+    let mut candidates = composer_candidates(snapshot, cli)
+        .into_iter()
+        .map(|composer| compact_render(&composer));
+    match candidates.next() {
+        Some(latest) if latest.contains(tail) => true,
+        Some(_) => candidates.any(|composer| composer.ends_with(tail)),
+        None => false,
+    }
 }
 
 fn cursor_row_is_activity(cli: &str, line: &str) -> bool {
@@ -391,11 +432,7 @@ pub(crate) fn assess_harness_acceptance(
     snapshot: &Snapshot,
 ) -> HarnessAcceptance {
     let tail = expected_tail(&verification.expected_echo);
-    let parked = !tail.is_empty()
-        && current_composer(snapshot, cli)
-            .map(|composer| compact_render(&composer).contains(&tail))
-            .unwrap_or(false);
-    if parked {
+    if composer_holds_tail(snapshot, cli, &tail) {
         return HarnessAcceptance::Parked;
     }
     if let Some(pattern) = verification.accepted_activity() {
@@ -826,6 +863,45 @@ mod tests {
         assert_eq!(
             assess_harness_acceptance("claude", &verification, &snapshot),
             HarnessAcceptance::Parked
+        );
+        pty.shutdown().unwrap();
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn prompt_like_body_rows_do_not_hide_a_parked_draft() {
+        let expected = "Relay message from Lead [evt]: quote this\n> b\nthen continue";
+        let screen = "❯ Relay message from Lead [evt]: quote this\n> b\nthen continue";
+        let (pty, snapshot) = codex_snapshot(screen).await;
+        let mut verification = codex_verification(expected);
+        verification.echo_seen = false;
+        verification.detector = ActivityDetector::for_cli("claude");
+
+        verification.observe_visible_composer(&snapshot, "claude");
+        assert!(
+            verification.echo_seen,
+            "a `> ` row inside the body must not cut the draft off from its prompt"
+        );
+        assert_eq!(
+            assess_harness_acceptance("claude", &verification, &snapshot),
+            HarnessAcceptance::Parked
+        );
+        pty.shutdown().unwrap();
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn submitted_prompt_like_body_above_a_fresh_prompt_is_not_parked() {
+        let expected = "Relay message from Lead [evt]: quote this\n> b\nthen continue";
+        let screen = "❯ Relay message from Lead [evt]: quote this\n> b\nthen continue\n\nDone.\n❯ ";
+        let (pty, snapshot) = codex_snapshot(screen).await;
+        let mut verification = codex_verification(expected);
+        verification.detector = ActivityDetector::for_cli("claude");
+
+        assert_ne!(
+            assess_harness_acceptance("claude", &verification, &snapshot),
+            HarnessAcceptance::Parked,
+            "the transcript copy of a submitted body is not the live composer"
         );
         pty.shutdown().unwrap();
     }
