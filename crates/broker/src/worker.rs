@@ -906,7 +906,7 @@ impl WorkerRegistry {
         if self.workers.contains_key(&spec.name) {
             anyhow::bail!("agent '{}' already exists", spec.name);
         }
-        validate_muse_startup_prompt_for_spec(&spec, initial_task.as_deref())?;
+        validate_pty_startup_prompt_for_spec(&spec, initial_task.as_deref())?;
 
         tracing::info!(
             target = "broker::spawn",
@@ -1134,7 +1134,7 @@ impl WorkerRegistry {
 
                 let startup_prompt = muse_startup_prompt(&cli_lower, initial_task.as_deref());
                 initial_task_in_argv = startup_prompt.is_some();
-                let pty_cli_args = ordered_pty_cli_args(
+                let mut pty_cli_args = ordered_pty_cli_args(
                     bypass_flag,
                     muse_flag,
                     model_flag.as_deref(),
@@ -1142,6 +1142,11 @@ impl WorkerRegistry {
                     &effective_args,
                     &harness_session_args,
                     startup_prompt,
+                );
+                initial_task_in_argv |= append_native_startup_prompt(
+                    &mut pty_cli_args,
+                    &resolved_cli,
+                    initial_task.as_deref(),
                 );
                 if !pty_cli_args.is_empty() {
                     command.arg("--");
@@ -1392,7 +1397,7 @@ impl WorkerRegistry {
 
                     let startup_prompt = muse_startup_prompt(&cli_lower, initial_task.as_deref());
                     initial_task_in_argv = startup_prompt.is_some();
-                    let pty_cli_args = ordered_pty_cli_args(
+                    let mut pty_cli_args = ordered_pty_cli_args(
                         bypass_flag,
                         muse_flag,
                         model_flag.as_deref(),
@@ -1400,6 +1405,11 @@ impl WorkerRegistry {
                         &effective_args,
                         &harness_session_args,
                         startup_prompt,
+                    );
+                    initial_task_in_argv |= append_native_startup_prompt(
+                        &mut pty_cli_args,
+                        &resolved_cli,
+                        initial_task.as_deref(),
                     );
                     if !pty_cli_args.is_empty() {
                         command.arg("--");
@@ -1734,6 +1744,7 @@ impl WorkerRegistry {
                 None,
                 json!({
                     "agent": spec,
+                    "startup_task_in_argv": initial_task_in_argv,
                 }),
             )
             .await
@@ -1901,9 +1912,9 @@ impl WorkerRegistry {
     }
 
     /// Remove a startup task once the harness is ready and return it only when
-    /// the broker still needs to inject it through the PTY. Muse receives its
-    /// startup task as an argv prompt, but remains present in `initial_tasks`
-    /// until readiness so follow-up deliveries cannot race the assigned work.
+    /// the broker still needs to inject it through the PTY. Claude, Codex and
+    /// Muse receive their startup task as an argv prompt, which remains in
+    /// `initial_tasks` until readiness so follow-up deliveries cannot race it.
     pub(crate) fn take_initial_task_for_injection(&mut self, name: &str) -> Option<String> {
         let task = self.initial_tasks.remove(name);
         if self.argv_initial_tasks.remove(name) {
@@ -2443,10 +2454,33 @@ fn muse_yolo_flag(cli_lower: &str, effective_args: &[String]) -> Option<&'static
     Some("--yolo")
 }
 
-/// Muse only begins a broker-assigned task deterministically when the prompt is
-/// present at process startup. Keep the prompt as one argv value (including
-/// newlines) and leave every other harness on the established post-ready PTY
-/// injection path.
+/// Native startup prompts are parsed by the harness before its TUI starts.
+/// Never type the initial brief into a booting composer. The option terminator
+/// also keeps leading dashes and variadic options (e.g. Codex --image) from
+/// consuming the task. For Codex resume, this follows the session ID.
+fn append_native_startup_prompt(args: &mut Vec<String>, cli: &str, task: Option<&str>) -> bool {
+    if !native_startup_prompt_cli(cli) {
+        return false;
+    }
+    let Some(task) = task.filter(|task| !task.trim().is_empty()) else {
+        return false;
+    };
+    args.push("--".to_string());
+    args.push(task.to_string());
+    true
+}
+
+fn native_startup_prompt_cli(cli: &str) -> bool {
+    matches!(
+        cli.rsplit(['/', '\\'])
+            .next()
+            .unwrap_or(cli)
+            .to_ascii_lowercase()
+            .as_str(),
+        "claude" | "claude.exe" | "codex" | "codex.exe"
+    )
+}
+
 fn muse_startup_prompt<'a>(cli_lower: &str, initial_task: Option<&'a str>) -> Option<&'a str> {
     if !is_muse_executable(cli_lower) {
         return None;
@@ -2454,16 +2488,16 @@ fn muse_startup_prompt<'a>(cli_lower: &str, initial_task: Option<&'a str>) -> Op
     initial_task.filter(|task| !task.trim().is_empty())
 }
 
-/// Portable ceiling for Muse's single-argument startup prompt. Windows limits
+/// Portable ceiling for a single-argument startup prompt. Windows limits
 /// the complete command line to roughly 32 Ki UTF-16 code units; reserving half
 /// for the executable and broker/user flags keeps accepted prompts portable.
-pub(crate) const MUSE_STARTUP_PROMPT_MAX_BYTES: usize = 16 * 1024;
+pub(crate) const PTY_STARTUP_PROMPT_MAX_BYTES: usize = 16 * 1024;
 
-/// Validate text that must cross Muse's argv startup boundary. Callers perform
+/// Validate text that must cross the harness argv startup boundary. Callers perform
 /// this check before registering a remote worker identity; `spawn` repeats it
 /// as a final defense for restart and direct registry callers.
-pub(crate) fn validate_muse_startup_prompt(cli: &str, task: Option<&str>) -> Result<()> {
-    if !is_muse_executable(cli) {
+pub(crate) fn validate_pty_startup_prompt(cli: &str, task: Option<&str>) -> Result<()> {
+    if !is_muse_executable(cli) && !native_startup_prompt_cli(cli) {
         return Ok(());
     }
     let Some(task) = task.filter(|task| !task.trim().is_empty()) else {
@@ -2471,23 +2505,23 @@ pub(crate) fn validate_muse_startup_prompt(cli: &str, task: Option<&str>) -> Res
     };
     if task.contains('\0') {
         anyhow::bail!(
-            "Muse startup task contains a NUL byte and cannot be passed as a process argument"
+            "PTY startup task contains a NUL byte and cannot be passed as a process argument"
         );
     }
-    if task.len() > MUSE_STARTUP_PROMPT_MAX_BYTES {
+    if task.len() > PTY_STARTUP_PROMPT_MAX_BYTES {
         anyhow::bail!(
-            "Muse startup task is {} bytes; the portable argv limit is {} bytes",
+            "PTY startup task is {} bytes; the portable argv limit is {} bytes",
             task.len(),
-            MUSE_STARTUP_PROMPT_MAX_BYTES
+            PTY_STARTUP_PROMPT_MAX_BYTES
         );
     }
     Ok(())
 }
 
 /// Resolve the command that a PTY spec will actually launch before validating
-/// its Muse prompt. Explicit PTY harness configs own the executable; ordinary
+/// its startup prompt. Explicit PTY harness configs own the executable; ordinary
 /// PTY specs use `spec.cli`.
-pub(crate) fn validate_muse_startup_prompt_for_spec(
+pub(crate) fn validate_pty_startup_prompt_for_spec(
     spec: &AgentSpec,
     task: Option<&str>,
 ) -> Result<()> {
@@ -2508,7 +2542,7 @@ pub(crate) fn validate_muse_startup_prompt_for_spec(
         _ => None,
     };
     match cli {
-        Some(cli) => validate_muse_startup_prompt(&cli, task),
+        Some(cli) => validate_pty_startup_prompt(&cli, task),
         None => Ok(()),
     }
 }
@@ -4760,6 +4794,57 @@ sleep 30
     }
 
     #[test]
+    fn native_startup_prompt_preserves_task_bytes_after_options_and_resume() {
+        for cli in ["claude", "/bin/claude", "codex", r"C:\tools\codex.exe"] {
+            for size in [400, 8192] {
+                let task = format!("--{}\n  é🙂\t ", "x".repeat(size));
+                let mut args = ordered_pty_cli_args(
+                    None,
+                    None,
+                    None,
+                    &[],
+                    &["--image".into(), "screenshot.png".into()],
+                    &["resume".into(), "thread-id".into()],
+                    None,
+                );
+                assert!(append_native_startup_prompt(&mut args, cli, Some(&task)));
+                assert_eq!(
+                    args,
+                    vec![
+                        "resume",
+                        "thread-id",
+                        "--image",
+                        "screenshot.png",
+                        "--",
+                        &task
+                    ]
+                );
+                assert!(validate_pty_startup_prompt(cli, Some(&task)).is_ok());
+                assert!(validate_pty_startup_prompt(cli, Some("bad\0task")).is_err());
+                assert!(validate_pty_startup_prompt(
+                    cli,
+                    Some(&"x".repeat(PTY_STARTUP_PROMPT_MAX_BYTES + 1))
+                )
+                .is_err());
+            }
+        }
+    }
+
+    #[test]
+    fn native_startup_prompt_does_not_change_other_harnesses_or_empty_tasks() {
+        for (cli, task) in [
+            ("gemini", Some("task")),
+            ("muse", Some("task")),
+            ("claude", None),
+            ("codex", Some(" \n")),
+        ] {
+            let mut args = vec!["--model".into(), "existing".into()];
+            assert!(!append_native_startup_prompt(&mut args, cli, task));
+            assert_eq!(args, vec!["--model", "existing"]);
+        }
+    }
+
+    #[test]
     fn muse_startup_prompt_is_not_used_for_other_harnesses_or_empty_tasks() {
         assert_eq!(muse_startup_prompt("codex", Some("task")), None);
         assert_eq!(muse_startup_prompt("muse", None), None);
@@ -4768,22 +4853,22 @@ sleep 30
 
     #[test]
     fn muse_startup_prompt_rejects_nonportable_argv_text() {
-        assert!(validate_muse_startup_prompt("muse", Some("valid task")).is_ok());
-        assert!(validate_muse_startup_prompt("codex", Some("nul\0is fine off argv")).is_ok());
+        assert!(validate_pty_startup_prompt("muse", Some("valid task")).is_ok());
+        assert!(validate_pty_startup_prompt("gemini", Some("nul\0is fine off argv")).is_ok());
 
-        let nul = validate_muse_startup_prompt("muse", Some("invalid\0task"))
+        let nul = validate_pty_startup_prompt("muse", Some("invalid\0task"))
             .expect_err("Muse argv cannot contain NUL")
             .to_string();
         assert!(nul.contains("NUL byte"), "{nul}");
 
-        let maximum = "x".repeat(MUSE_STARTUP_PROMPT_MAX_BYTES);
-        assert!(validate_muse_startup_prompt("muse", Some(&maximum)).is_ok());
+        let maximum = "x".repeat(PTY_STARTUP_PROMPT_MAX_BYTES);
+        assert!(validate_pty_startup_prompt("muse", Some(&maximum)).is_ok());
         let oversized = format!("{maximum}x");
-        let error = validate_muse_startup_prompt("muse", Some(&oversized))
+        let error = validate_pty_startup_prompt("muse", Some(&oversized))
             .expect_err("oversized Muse argv must fail before process spawn")
             .to_string();
         assert!(
-            error.contains(&MUSE_STARTUP_PROMPT_MAX_BYTES.to_string()),
+            error.contains(&PTY_STARTUP_PROMPT_MAX_BYTES.to_string()),
             "{error}"
         );
     }
@@ -4806,9 +4891,9 @@ sleep 30
             channels: Vec::new(),
             restart_policy: None,
         };
-        let oversized = "x".repeat(MUSE_STARTUP_PROMPT_MAX_BYTES + 1);
+        let oversized = "x".repeat(PTY_STARTUP_PROMPT_MAX_BYTES + 1);
         assert!(
-            validate_muse_startup_prompt_for_spec(&spec, Some(&oversized)).is_err(),
+            validate_pty_startup_prompt_for_spec(&spec, Some(&oversized)).is_err(),
             "inline Muse commands must not bypass argv prompt validation"
         );
     }

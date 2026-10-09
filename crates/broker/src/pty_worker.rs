@@ -655,6 +655,20 @@ fn startup_gate_block_reason(resolved_cli: &str, screen: &str) -> Option<Startup
     None
 }
 
+fn native_startup_turn_running(cli: &str, screen: &str) -> bool {
+    match cli_basename(cli).to_ascii_lowercase().as_str() {
+        "codex" | "codex.exe" => screen.lines().any(is_codex_busy_status_line),
+        "claude" | "claude.exe" => screen.lines().any(|line| {
+            let lower = line.to_ascii_lowercase();
+            lower.contains("esc to interrupt")
+                && line
+                    .trim_start()
+                    .starts_with(['✻', '✽', '✶', '✳', '✢', '·'])
+        }),
+        _ => false,
+    }
+}
+
 /// Classify the harness's startup state from a single grid render, so the
 /// readiness and blocking verdicts cannot straddle two repaints.
 fn startup_gate(
@@ -663,8 +677,19 @@ fn startup_gate(
     startup_total_bytes: usize,
     output_quiet: Duration,
     pty: &PtySession,
+    startup_task_in_argv: bool,
 ) -> StartupGate {
     let screen = pty.screen_text();
+    if let Some(blocked) = startup_gate_block_reason(resolved_cli, &screen) {
+        return blocked;
+    }
+    // A native argv task can already be running before an idle composer is
+    // ever drawn. Its busy status proves startup without waiting for that
+    // first (potentially long) turn to finish. PTY-injected tasks still require
+    // the idle prompt, and trust/auth dialogs always veto this path.
+    if startup_task_in_argv && native_startup_turn_running(resolved_cli, &screen) {
+        return StartupGate::Ready;
+    }
     if evaluate_startup_gate(
         resolved_cli,
         startup_output,
@@ -1066,6 +1091,7 @@ pub(crate) async fn run_pty_worker(cmd: PtyCommand) -> Result<()> {
     let mut startup_total_bytes = 0usize;
     let mut init_request_id: Option<RequestId> = None;
     let mut init_received_at: Option<Instant> = None;
+    let mut startup_task_in_argv = false;
     let mut startup_readiness = StartupReadinessState::default();
     let suppress_multiline_mcp_reminder = cli_basename(&resolved_cli).eq_ignore_ascii_case("agent")
         || cli_basename(&resolved_cli).eq_ignore_ascii_case("cursor-agent")
@@ -1234,6 +1260,10 @@ pub(crate) async fn run_pty_worker(cmd: PtyCommand) -> Result<()> {
                                             .map(ToOwned::to_owned)
                                     })
                                     .unwrap_or_else(|| "pty-worker".to_string());
+                                startup_task_in_argv = frame.payload
+                                    .get("startup_task_in_argv")
+                                    .and_then(Value::as_bool)
+                                    .unwrap_or(false);
                                 init_request_id = frame.request_id;
                                 init_received_at = Some(Instant::now());
                                 // Process liveness and safe input readiness are
@@ -1255,6 +1285,7 @@ pub(crate) async fn run_pty_worker(cmd: PtyCommand) -> Result<()> {
                                     startup_total_bytes,
                                     last_pty_output_time.elapsed(),
                                     &pty,
+                                    startup_task_in_argv,
                                 );
                                 try_emit_worker_ready(
                                     &out_tx,
@@ -1683,6 +1714,7 @@ pub(crate) async fn run_pty_worker(cmd: PtyCommand) -> Result<()> {
                             startup_total_bytes,
                             last_pty_output_time.elapsed(),
                             &pty,
+                            startup_task_in_argv,
                         );
                         try_emit_worker_ready(
                             &out_tx,
@@ -2390,6 +2422,7 @@ pub(crate) async fn run_pty_worker(cmd: PtyCommand) -> Result<()> {
                     startup_total_bytes,
                     last_pty_output_time.elapsed(),
                     &pty,
+                    startup_task_in_argv,
                 );
                 try_emit_worker_ready(
                     &out_tx,
@@ -2638,6 +2671,56 @@ pub(crate) async fn run_pty_worker(cmd: PtyCommand) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn native_startup_busy_gate_requires_argv_task_and_respects_trust() {
+        for (cli, screen) in [
+            ("codex", "Working (1s • esc to interrupt)"),
+            ("claude", "✻ Thinking… (esc to interrupt)"),
+            ("codex", "Do you trust the contents of this directory?\n› 1. Yes, continue\n2. No, quit\nWorking (esc to interrupt)"),
+        ] {
+            let blocked = screen.contains("Do you trust");
+            let script = format!("printf '%s' '{}' ; sleep 5", screen);
+            let (pty, mut rx) = PtySession::spawn("/bin/sh", &["-c".into(), script], 24, 120).unwrap();
+            let drain = tokio::spawn(async move { while rx.recv().await.is_some() {} });
+            for _ in 0..100 {
+                if pty.screen_text().contains("esc to interrupt") { break; }
+                tokio::time::sleep(Duration::from_millis(20)).await;
+            }
+            assert!(pty.screen_text().contains("esc to interrupt"));
+            let expected = if blocked { StartupGate::Blocked } else { StartupGate::Unrecognised };
+            assert_eq!(startup_gate(cli, "", 0, Duration::ZERO, &pty, false), expected);
+            let expected = if blocked { StartupGate::Blocked } else { StartupGate::Ready };
+            assert_eq!(startup_gate(cli, "", 0, Duration::ZERO, &pty, true), expected);
+            pty.shutdown().unwrap();
+            drain.abort();
+        }
+    }
+
+    #[test]
+    fn native_startup_turn_requires_harness_specific_busy_status() {
+        assert!(native_startup_turn_running(
+            "codex",
+            "Working (1s • esc to interrupt)"
+        ));
+        assert!(native_startup_turn_running(
+            "claude",
+            "✻ Thinking… (esc to interrupt)"
+        ));
+        assert!(!native_startup_turn_running(
+            "claude",
+            "Task says esc to interrupt"
+        ));
+        assert!(!native_startup_turn_running(
+            "codex",
+            "› Ask Codex to do anything"
+        ));
+        assert!(!native_startup_turn_running(
+            "gemini",
+            "Working (esc to interrupt)"
+        ));
+    }
 
     #[test]
     fn completed_delivery_replay_retains_the_original_event_identity() {

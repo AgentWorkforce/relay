@@ -572,7 +572,7 @@ impl BrokerRuntime {
                         );
                     }
                 }
-                if let Err(error) = crate::worker::validate_muse_startup_prompt_for_spec(
+                if let Err(error) = crate::worker::validate_pty_startup_prompt_for_spec(
                     &spec,
                     effective_task.as_deref(),
                 ) {

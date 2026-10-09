@@ -1,0 +1,43 @@
+{
+  "id": "compact_vh1unpxve3p7",
+  "version": 1,
+  "type": "compacted",
+  "compactedAt": "2026-10-09T00:06:51.822Z",
+  "sourceTrajectories": [
+    "traj_q94ajuue54aw"
+  ],
+  "dateRange": {
+    "start": "2026-10-08T23:57:27.648Z",
+    "end": "2026-10-09T00:06:30.759Z"
+  },
+  "summary": {
+    "totalDecisions": 2,
+    "totalEvents": 3,
+    "uniqueAgents": [
+      "default"
+    ]
+  },
+  "decisionGroups": [
+    {
+      "category": "other",
+      "decisions": [
+        {
+          "question": "Pass Claude and Codex startup briefs through native argv prompts",
+          "chosen": "Pass Claude and Codex startup briefs through native argv prompts",
+          "reasoning": "PTY startup typing can lose a prefix; argv preserves the complete task and existing argv bookkeeping prevents duplicate injection.",
+          "fromTrajectory": "traj_q94ajuue54aw"
+        },
+        {
+          "question": "Preserve task whitespace and recognize active argv startup turns",
+          "chosen": "Preserve task whitespace and recognize active argv startup turns",
+          "reasoning": "Fleet task parsing previously trimmed bytes; native prompts may start working before an idle composer appears, so readiness must accept a busy harness while still vetoing trust dialogs.",
+          "fromTrajectory": "traj_q94ajuue54aw"
+        }
+      ]
+    }
+  ],
+  "keyLearnings": [],
+  "keyFindings": [],
+  "filesAffected": [],
+  "commits": []
+}

@@ -1548,7 +1548,7 @@ impl BrokerRuntime {
                 return;
             }
         };
-        let task = action_invoke_string(&invoke.input, &["task", "initial_task", "prompt"]);
+        let task = action_invoke_task(&invoke.input);
         let channel = action_invoke_string(&invoke.input, &["channel"]);
         let model = action_invoke_string(&invoke.input, &["model"]);
 
@@ -3075,6 +3075,21 @@ fn action_invoke_agent_name(invoke: &ActionInvoke) -> Option<WorkerName> {
         })
 }
 
+/// Task text is opaque: use trimming only to reject empty values, never to
+/// change the bytes that become the harness's first turn.
+fn action_invoke_task(input: &Value) -> Option<String> {
+    for source in [Some(input), input.get("agent")].into_iter().flatten() {
+        for key in ["task", "initial_task", "prompt"] {
+            if let Some(value) = source.get(key).and_then(Value::as_str) {
+                if !value.trim().is_empty() {
+                    return Some(value.to_string());
+                }
+            }
+        }
+    }
+    None
+}
+
 /// Read the first non-empty string at any of the given top-level keys of an
 /// `action.invoke` input object (also checks under a nested `agent` object,
 /// mirroring the firehose payload shape).
@@ -3757,6 +3772,30 @@ mod tests {
             action_invoke_agent_name(&action_invoke(json!({}), Some("  "), None)),
             None
         );
+    }
+
+    #[test]
+    fn action_invoke_task_preserves_whitespace_and_alias_precedence() {
+        let task = "  implement issue #34\n\t trailing  ";
+        for key in ["task", "initial_task", "prompt"] {
+            assert_eq!(
+                action_invoke_task(&json!({key: task})),
+                Some(task.to_string())
+            );
+            assert_eq!(
+                action_invoke_task(&json!({"agent": {key: task}})),
+                Some(task.to_string())
+            );
+        }
+        assert_eq!(
+            action_invoke_task(&json!({"task": "  ", "agent": {"task": task}})),
+            Some(task.to_string())
+        );
+        assert_eq!(
+            action_invoke_task(&json!({"task": "top", "agent": {"task": "nested"}})),
+            Some("top".to_string())
+        );
+        assert_eq!(action_invoke_task(&json!({"task": "\n\t"})), None);
     }
 
     #[test]

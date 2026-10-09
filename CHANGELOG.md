@@ -5,7 +5,11 @@ All notable changes to Agent Relay will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
+## [Unreleased - Patch]
+
+### Fixed
+
+- `fleet spawn --task` passes Claude and Codex initial briefs directly to the harness at startup, preventing task prefixes from being lost while the terminal composer loads. Startup prompts containing NUL or exceeding 16 KiB fail explicitly before registration.
 
 ## [13.2.0] - 2026-10-08
 
