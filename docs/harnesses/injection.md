@@ -28,8 +28,11 @@ to Relaycast, since recipients may be native agents or history only.
 For longer briefs, create a file on the node and send a short instruction to read it.
 
 The input wire normalizes CRLF to LF and strips bare carriage returns and ESC
-characters. These bytes cannot submit the composer early or close a paste from
-inside its body. Other UTF-8 content is preserved.
+characters, so they cannot submit the composer early or close a paste from
+inside its body. LF stays in the payload: inside a bracketed paste it is a
+newline, but on the typed fallback wire a harness may treat it as Enter, so
+multiline tasks are only safe on paste-capable harnesses. Other UTF-8 content
+is preserved.
 
 ```sh
 agent-relay fleet spawn claude --node my-node --name reviewer --task-file ./brief.md

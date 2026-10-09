@@ -121,7 +121,3 @@ function throwInjectionTooLarge(): never {
     `Task exceeds ${MAX_TASK_BODY_BYTES} UTF-8 bytes (the ${MAX_INJECTION_BODY_BYTES}-byte PTY limit less room for the message envelope); use a brief file on the node and send a short pointer`
   );
 }
-
-export function validateInjectionSize(text: string): void {
-  if (Buffer.byteLength(text, 'utf8') > MAX_TASK_BODY_BYTES) throwInjectionTooLarge();
-}

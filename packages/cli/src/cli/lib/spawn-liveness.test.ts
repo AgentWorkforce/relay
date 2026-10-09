@@ -50,6 +50,26 @@ describe('spawn liveness resolution', () => {
   });
   // relay#1930 review (cubic): the clock is read when a heartbeat is judged,
   // so read latency cannot make an old heartbeat look fresh.
+  // relay#1930 review (cubic): a failed invocation re-read must survive into
+  // roster-derived evidence, as it already does for registered/absent.
+  it('keeps a failed invocation read on live and stale evidence', async () => {
+    for (const [record, evidence] of [
+      [node(), 'live'],
+      [node('target', 36_001), 'stale'],
+    ] as const) {
+      expect(
+        await probeSpawnLiveness({
+          name: 'worker',
+          targetNode: 'target',
+          getInvocation: async () => {
+            throw new Error('invocation read failed');
+          },
+          createClient: () => client([record]),
+          now: () => now,
+        })
+      ).toMatchObject({ evidence, readError: expect.stringContaining('invocation read failed') });
+    }
+  });
   it('measures heartbeat age after the bounded node reads, not before', async () => {
     let clock = now;
     const workspace = client([node('target', 30_000)]);

@@ -140,6 +140,8 @@ export interface RelayAgentThinClient {
       conversationId: string,
       text: string,
       options?: {
+        /** Stable key for retries of one logical send, including across processes. */
+        idempotencyKey?: string;
         attachments?: string[];
         data?: Record<string, unknown> | null;
         mode?: RelayMessageMode;

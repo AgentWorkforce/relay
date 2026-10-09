@@ -173,7 +173,13 @@ export async function probeSpawnLiveness(options: {
             : options.targetNode && node.name !== options.targetNode
               ? 'live_elsewhere'
               : 'live';
-        const result: SpawnLiveness = { evidence, node: node.name, heartbeatAgeMs: age };
+        // Keep a failed invocation read visible next to roster evidence.
+        const result: SpawnLiveness = {
+          evidence,
+          node: node.name,
+          heartbeatAgeMs: age,
+          ...(readError ? { readError } : {}),
+        };
         if (evidence === 'live') return result;
         // Fresh evidence elsewhere outranks a stale entry.
         if (!weaker || (weaker.evidence === 'stale' && evidence === 'live_elsewhere')) weaker = result;

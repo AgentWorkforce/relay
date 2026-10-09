@@ -933,7 +933,7 @@ async function invokeVerifiedSpawn(
             dispatchState: nested.dispatchState,
           },
           { evidence: 'unknown' },
-          'The persona handler returned a nested spawn invocation after the confirmation budget.'
+          `The persona handler's invocation ${context.invocationId ?? '(unknown)'}${context.node ? ` on ${context.node}` : ''} completed with a nested spawn invocation after the confirmation budget.`
         );
       }
       try {

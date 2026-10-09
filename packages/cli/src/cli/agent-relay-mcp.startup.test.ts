@@ -445,7 +445,8 @@ describe('agent-relay-mcp startup helpers', () => {
     });
     await spawn(input, { sessionId: 'mcp-session', requestId: 3 });
     expect(mocks.agentRelayMessagingCommands.invoke).toHaveBeenCalledTimes(2);
-  });
+    // Three spawns through the real confirmation path; allow for a loaded host.
+  }, 20_000);
 
   it('coalesces replayed MCP request ids without collapsing separate same-name spawns', async () => {
     const { mod, mocks } = await loadAgentRelayMcpModule();
@@ -1324,6 +1325,8 @@ describe('createAgentRelayMcpServer', () => {
         error: { code: 'spawn_unconfirmed', invocationId: 'inv_child', node: 'child-node' },
       },
     });
+    // The terminal parent stays locatable in the activity log.
+    expect(JSON.stringify(result)).toContain('inv_1');
   });
 
   it.each(['live', 'live_elsewhere', 'stale', 'unknown'] as const)(

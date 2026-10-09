@@ -557,8 +557,8 @@ describe.skipIf(!pre.ok)('two-node fleet scenario matrix', () => {
           return inv.status === 'completed' || inv.status === 'failed' ? inv : null;
         },
         // A verified spawn carrying a task now completes only once that task's
-        // receipt is verified, after readiness. node-a's stub delays readiness
-        // by 27 s, so allow for readiness plus delivery verification.
+        // receipt is verified after readiness, so allow for readiness plus
+        // delivery verification rather than readiness alone.
         { label: 'resumable spawn settled', timeoutMs: 60_000, intervalMs: 300 }
       );
       expect(firstDone.status).toBe('completed'); // resumable spawn carried session_ref through token authority
