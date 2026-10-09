@@ -1,0 +1,65 @@
+name: Merge-train ready check
+
+# Lightweight gate for feature PRs into `trunk` (full CI runs only on the
+# trunk -> main promotion PR). It runs once the author adds the `mergeable`
+# label, and again on every push while the label is on. The merge-train sweeper
+# (AgentWorkforce/cloud packages/web/lib/merge-train) merges a feature PR into
+# trunk only when this check is green on the PR's CURRENT head.
+#
+# Fork PRs run it too. `pull_request` gives a fork no secrets and a read-only
+# token, and nothing here uses a secret or persists credentials. Never switch
+# this to `pull_request_target`. Trust is the sweeper's job: it merges an
+# external PR only after a maintainer's APPROVED review on its exact head.
+#
+# A labelled PR with no run for its head (labelled before this workflow
+# existed, or retargeted onto trunk, which emits `edited`) is kicked by the
+# sweeper re-adding the `ready:check` label: any label event runs this job while
+# `mergeable` is on. `edited` is deliberately not a trigger, since body edits
+# would re-run it constantly.
+on:
+  pull_request:
+    branches: [trunk]
+    types: [labeled, synchronize, reopened]
+
+concurrency:
+  # One run per PR: a newer push or label event supersedes the in-flight run.
+  # An event the job will skip (`mergeable` absent) gets a throwaway group, so
+  # it can never cancel a real run and leave `cancelled` as the head's verdict.
+  group: merge-train-ready-${{ contains(github.event.pull_request.labels.*.name, 'mergeable') && format('pr-{0}', github.event.pull_request.number) || format('ignored-{0}', github.run_id) }}
+  cancel-in-progress: true
+
+permissions: {}
+
+jobs:
+  ready:
+    # The sweeper reads this exact check name (cloud lib/merge-train/config.ts).
+    name: Merge-train ready check
+    # Any label event re-runs it while `mergeable` is present (not just the
+    # `mergeable` event): a skipped run would otherwise become the latest check
+    # for the head and mask the real verdict.
+    if: >-
+      github.base_ref == 'trunk' &&
+      contains(github.event.pull_request.labels.*.name, 'mergeable')
+    runs-on: ${{ vars.CI_LINUX_RUNNER || 'ubuntu-latest' }}
+    timeout-minutes: 30
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22.14.0
+          cache: 'npm'
+      - run: npm ci
+      - name: Ensure rollup optional dependencies are installed
+        run: npm install --no-save rollup || true
+      - name: Merge-train workflow contract
+        run: node --test scripts/merge-train-ci-workflows.test.mjs
+      - name: Lint
+        run: npm run lint
+      - name: Check formatting
+        run: npm run format:check
+      - name: Typecheck
+        run: npm run typecheck

@@ -13,6 +13,11 @@ on:
       - 'package.json'
       - '.github/workflows/e2e-tests.yml'
   pull_request:
+    # Trunk -> main promotion PR only, batched by the merge train (AgentWorkforce/cloud
+    # packages/web/lib/merge-train): opened, reopened, or the sweeper's `ci:run`
+    # label once per new trunk head. Never on synchronize; other label events
+    # skip every job.
+    types: [opened, reopened, labeled]
     branches: [main]
     paths:
       - 'packages/**'
@@ -27,15 +32,19 @@ on:
   workflow_dispatch:
 
 concurrency:
-  group: ${{ github.workflow }}-${{ github.ref }}
-  cancel-in-progress: true
+  # PR runs collapse per pull request; push runs key off the commit sha so two
+  # merges landing together cannot cancel each other. A `labeled` event for any
+  # label other than `ci:run` runs nothing, so it gets its own throwaway group:
+  # it must never cancel the PR's in-progress run.
+  group: e2e-tests-${{ github.event_name != 'pull_request' && format('push-{0}', github.sha) || ((github.event.action == 'labeled' && github.event.label.name != 'ci:run') && format('ignored-{0}', github.run_id) || format('pr-{0}', github.event.pull_request.number)) }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 env:
   AGENT_RELAY_TELEMETRY_DISABLED: 1
 
 jobs:
   e2e-test:
-    if: (github.event_name != 'pull_request' && github.event_name != 'pull_request_target') || (github.head_ref == 'trunk' && github.event.pull_request.head.repo.full_name == github.repository && github.base_ref == 'main')
+    if: (github.event_name != 'pull_request' && github.event_name != 'pull_request_target') || (github.head_ref == 'trunk' && github.event.pull_request.head.repo.full_name == github.repository && github.base_ref == 'main' && (github.event.action != 'labeled' || github.event.label.name == 'ci:run'))
     name: E2E Integration Test
     runs-on: ${{ matrix.os }}
     strategy:
