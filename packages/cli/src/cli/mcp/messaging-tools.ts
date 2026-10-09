@@ -1,5 +1,10 @@
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
-import { downloadRelayFile, replayMessageMetadata, uploadRelayFile, type RelayFilesApiLike } from '@agent-relay/sdk';
+import {
+  downloadRelayFile,
+  replayMessageMetadata,
+  uploadRelayFile,
+  type RelayFilesApiLike,
+} from '@agent-relay/sdk';
 import { z } from 'zod';
 
 import {
@@ -9,12 +14,7 @@ import {
   messageReadersReceipt,
   resolveExactAgentName,
 } from '../lib/message-delivery-receipts.js';
-import {
-  MAX_ATTACHMENT_BYTES,
-  contentTypeFor,
-  readAttachment,
-  saveAttachment,
-} from '../lib/attachments.js';
+import { MAX_ATTACHMENT_BYTES, contentTypeFor, readAttachment, saveAttachment } from '../lib/attachments.js';
 import { jsonContent, jsonResult, textContent } from './tool-results.js';
 import { identityOverrideInputShape, messageResult } from './tool-shapes.js';
 import { McpRequestReplay } from './request-replay.js';
@@ -468,17 +468,28 @@ export function registerMessagingTools(
         ...identityOverrideInputShape,
       },
       outputSchema: jsonResult,
-      annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: false, openWorldHint: true },
+      annotations: {
+        readOnlyHint: false,
+        destructiveHint: false,
+        idempotentHint: false,
+        openWorldHint: true,
+      },
     },
     async ({ path: filePath, content_base64, filename, content_type, as }) => {
       let file: { filename: string; contentType: string; data: Uint8Array };
       if (filePath) {
         const read = await readAttachment(filePath);
-        file = { ...read, filename: filename ?? read.filename, contentType: content_type ?? read.contentType };
+        file = {
+          ...read,
+          filename: filename ?? read.filename,
+          contentType: content_type ?? read.contentType,
+        };
       } else if (content_base64 !== undefined && filename) {
         const data = Buffer.from(content_base64, 'base64');
         if (data.byteLength > MAX_ATTACHMENT_BYTES) {
-          throw new Error(`Cannot attach ${filename}: ${data.byteLength} bytes exceeds the ${MAX_ATTACHMENT_BYTES}-byte limit.`);
+          throw new Error(
+            `Cannot attach ${filename}: ${data.byteLength} bytes exceeds the ${MAX_ATTACHMENT_BYTES}-byte limit.`
+          );
         }
         file = { filename, contentType: content_type ?? contentTypeFor(filename), data };
       } else {
@@ -494,7 +505,7 @@ export function registerMessagingTools(
       title: 'Download File',
       description:
         'Download a message attachment to a local file and return its `path`, so you can open it (for example, read an attached screenshot). ' +
-        'Use the `file_id` (or `id`) from a message\'s attachments. By default the file is saved under .agent-relay/attachments/<file_id>/ in the working directory.',
+        "Use the `file_id` (or `id`) from a message's attachments. By default the file is saved under .agent-relay/attachments/<file_id>/ in the working directory.",
       inputSchema: {
         file_id: z.string().describe('Attachment file ID'),
         path: z.string().optional().describe('Output file or existing directory'),

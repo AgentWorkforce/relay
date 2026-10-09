@@ -1382,7 +1382,9 @@ export class RelaycastMessagingClient implements RelayMessagingClient {
   private requireAgentFiles(operation: string): NonNullable<RelaycastAgentLike['files']> {
     const files = this.requireAgentClient(operation).files;
     if (!files) {
-      throw new Error(`RelaycastMessagingClient.${operation} requires a relaycast agent client with the files API.`);
+      throw new Error(
+        `RelaycastMessagingClient.${operation} requires a relaycast agent client with the files API.`
+      );
     }
     return files;
   }

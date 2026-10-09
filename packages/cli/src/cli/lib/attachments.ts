@@ -30,7 +30,10 @@ export function contentTypeFor(filename: string): string {
 export function safeAttachmentFilename(name: string): string {
   const base = path.basename(name.replace(/\\/g, '/'));
   // eslint-disable-next-line no-control-regex
-  const cleaned = base.replace(/[\u0000-\u001f\u007f]/g, '').replace(/^\.+/, '').trim();
+  const cleaned = base
+    .replace(/[\u0000-\u001f\u007f]/g, '')
+    .replace(/^\.+/, '')
+    .trim();
   return cleaned || 'attachment';
 }
 
@@ -46,7 +49,9 @@ export async function readAttachment(
     throw new Error(`Cannot attach ${filePath}: the file is empty.`);
   }
   if (info.size > MAX_ATTACHMENT_BYTES) {
-    throw new Error(`Cannot attach ${filePath}: ${info.size} bytes exceeds the ${MAX_ATTACHMENT_BYTES}-byte limit.`);
+    throw new Error(
+      `Cannot attach ${filePath}: ${info.size} bytes exceeds the ${MAX_ATTACHMENT_BYTES}-byte limit.`
+    );
   }
   const filename = path.basename(filePath);
   return { filename, contentType: contentTypeFor(filename), data: await readFile(filePath) };

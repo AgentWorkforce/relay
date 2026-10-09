@@ -13,7 +13,11 @@ function createWorkspace() {
 function createAgentFiles() {
   return {
     // @relaycast/sdk camelizes response keys.
-    upload: vi.fn(async () => ({ id: 'file-1', uploadUrl: UPLOAD_URL, expiresAt: '2026-10-08T23:00:00.000Z' })),
+    upload: vi.fn(async () => ({
+      id: 'file-1',
+      uploadUrl: UPLOAD_URL,
+      expiresAt: '2026-10-08T23:00:00.000Z',
+    })),
     complete: vi.fn(async () => ({
       id: 'file-1',
       filename: 'shot.png',
@@ -57,7 +61,11 @@ describe('RelaycastMessagingClient files', () => {
       data: PNG_BYTES,
     });
 
-    expect(files.upload).toHaveBeenCalledWith({ filename: 'shot.png', content_type: 'image/png', size_bytes: 4 });
+    expect(files.upload).toHaveBeenCalledWith({
+      filename: 'shot.png',
+      content_type: 'image/png',
+      size_bytes: 4,
+    });
     expect(fetchMock).toHaveBeenCalledTimes(1);
     const [url, init] = fetchMock.mock.calls[0] as unknown as [string, RequestInit];
     expect(url).toBe(UPLOAD_URL);
@@ -78,7 +86,10 @@ describe('RelaycastMessagingClient files', () => {
 
   it('does not complete an upload whose bytes were rejected and keeps the signature out of the error', async () => {
     const files = createAgentFiles();
-    vi.stubGlobal('fetch', vi.fn(async () => new Response('<Error><Code>AccessDenied</Code></Error>', { status: 403 })));
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async () => new Response('<Error><Code>AccessDenied</Code></Error>', { status: 403 }))
+    );
 
     const error = await clientWith(files)
       .files.upload({ filename: 'shot.png', contentType: 'image/png', data: PNG_BYTES })
@@ -93,7 +104,10 @@ describe('RelaycastMessagingClient files', () => {
 
   it('defaults the content type and rejects empty files and blank names before any request', async () => {
     const files = createAgentFiles();
-    vi.stubGlobal('fetch', vi.fn(async () => new Response(null, { status: 200 })));
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async () => new Response(null, { status: 200 }))
+    );
     const client = clientWith(files);
 
     await client.files.upload({ filename: 'notes.bin', data: new Uint8Array([1]).buffer });
@@ -104,7 +118,9 @@ describe('RelaycastMessagingClient files', () => {
     });
 
     files.upload.mockClear();
-    await expect(client.files.upload({ filename: 'empty.png', data: new Uint8Array() })).rejects.toThrow(/empty/);
+    await expect(client.files.upload({ filename: 'empty.png', data: new Uint8Array() })).rejects.toThrow(
+      /empty/
+    );
     await expect(client.files.upload({ filename: '  ', data: PNG_BYTES })).rejects.toThrow(/filename/);
     expect(files.upload).not.toHaveBeenCalled();
   });

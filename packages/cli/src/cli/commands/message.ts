@@ -42,7 +42,10 @@ function collectFile(value: string, previous: string[] = []): string[] {
 }
 
 /** Upload local files and return the stored files whose ids a message can attach. */
-async function uploadFiles(relay: AgentRelayAgent, filePaths: string[] | undefined): Promise<RelayFileInfo[]> {
+async function uploadFiles(
+  relay: AgentRelayAgent,
+  filePaths: string[] | undefined
+): Promise<RelayFileInfo[]> {
   if (!filePaths || filePaths.length === 0) return [];
   const files = relay.files;
   if (!files) {
@@ -347,7 +350,10 @@ export function registerMessageCommands(
       .command('download')
       .description('Download a message attachment to a local file and print its path')
       .argument('<fileId>', 'File id')
-      .option('--out <path>', 'Output file, or an existing directory (default: .agent-relay/attachments/<fileId>/)')
+      .option(
+        '--out <path>',
+        'Output file, or an existing directory (default: .agent-relay/attachments/<fileId>/)'
+      )
   ).action(async (fileId: string, o: Record<string, unknown>) => {
     await runSdk(deps, async () => {
       const files = deps.createAgentRelay(opts(o)).files;

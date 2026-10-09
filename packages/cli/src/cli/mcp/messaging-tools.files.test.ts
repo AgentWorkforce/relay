@@ -45,7 +45,11 @@ function createAgentClient() {
 
 async function connect(agentClient: ReturnType<typeof createAgentClient>) {
   const server = new McpServer({ name: 'files-test', version: '1.0.0' });
-  registerMessagingTools(server, () => agentClient as never, async () => [{ name: 'linux-agent' }]);
+  registerMessagingTools(
+    server,
+    () => agentClient as never,
+    async () => [{ name: 'linux-agent' }]
+  );
   const client = new Client({ name: 'files-client', version: '1.0.0' });
   const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
   await server.connect(serverTransport);
@@ -107,7 +111,10 @@ describe('file attachments over MCP', () => {
   });
 
   it('upload_file accepts inline base64 bytes and refuses a missing file without uploading', async () => {
-    vi.stubGlobal('fetch', vi.fn(async () => new Response(null, { status: 200 })));
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async () => new Response(null, { status: 200 }))
+    );
     const client = await connect(agentClient);
 
     await client.callTool({

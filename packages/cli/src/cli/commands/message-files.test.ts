@@ -37,7 +37,12 @@ function harness() {
         sizeBytes: i.data.byteLength,
         status: 'complete',
       })),
-      get: vi.fn(async (id: string) => ({ id, filename: 'shot.png', contentType: 'image/png', sizeBytes: 8 })),
+      get: vi.fn(async (id: string) => ({
+        id,
+        filename: 'shot.png',
+        contentType: 'image/png',
+        sizeBytes: 8,
+      })),
       download: vi.fn(async (id: string) => ({
         file: { id, filename: '../../evil/shot.png', contentType: 'image/png', sizeBytes: 8 },
         data: new Uint8Array(PNG_BYTES),
@@ -117,9 +122,12 @@ describe('message file attachments', () => {
     const first = await png('one.png');
     const second = await png('two.pdf');
 
-    await program.parseAsync(['message', 'dm', 'send', 'lead', 'see these', '--file', first, '--file', second], {
-      from: 'user',
-    });
+    await program.parseAsync(
+      ['message', 'dm', 'send', 'lead', 'see these', '--file', first, '--file', second],
+      {
+        from: 'user',
+      }
+    );
 
     expect(relay.files.upload.mock.calls.map(([i]) => [i.filename, i.contentType])).toEqual([
       ['one.png', 'image/png'],
@@ -137,11 +145,18 @@ describe('message file attachments', () => {
     const file = await png();
 
     await program.parseAsync(['message', 'post', 'ops', 'hello', '--file', file], { from: 'user' });
-    await program.parseAsync(['message', 'dm', 'send_group', 'hi team', '--to', 'lead', 'worker', '--file', file], {
-      from: 'user',
-    });
+    await program.parseAsync(
+      ['message', 'dm', 'send_group', 'hi team', '--to', 'lead', 'worker', '--file', file],
+      {
+        from: 'user',
+      }
+    );
 
-    expect(relay.messages.send).toHaveBeenCalledWith({ channel: 'ops', text: 'hello', attachments: ['file-shot.png'] });
+    expect(relay.messages.send).toHaveBeenCalledWith({
+      channel: 'ops',
+      text: 'hello',
+      attachments: ['file-shot.png'],
+    });
     expect(relay.messages.groupDirect).toHaveBeenCalledWith({
       participants: ['lead', 'worker'],
       text: 'hi team',
@@ -152,9 +167,12 @@ describe('message file attachments', () => {
   it('does not send the message when a file cannot be read', async () => {
     const { program, relay, error, exit } = harness();
 
-    await program.parseAsync(['message', 'dm', 'send', 'lead', 'hi', '--file', path.join(dir, 'missing.png')], {
-      from: 'user',
-    });
+    await program.parseAsync(
+      ['message', 'dm', 'send', 'lead', 'hi', '--file', path.join(dir, 'missing.png')],
+      {
+        from: 'user',
+      }
+    );
 
     expect(error).toHaveBeenCalledWith(expect.stringContaining('not a readable file'));
     expect(exit).toHaveBeenCalledWith(1);
