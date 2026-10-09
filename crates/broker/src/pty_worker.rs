@@ -2447,6 +2447,15 @@ pub(crate) async fn run_pty_worker(cmd: PtyCommand) -> Result<()> {
                             "event_id": inj.pending.delivery.event_id,
                             "reason": "initial_injection_incomplete; body will not be replayed"
                         })).await;
+                        // A partial chunked body may sit in the composer; the
+                        // next delivery must not be pasted onto it.
+                        latch_failed_written_delivery(
+                            &mut failed_written_deliveries,
+                            &mut failed_composer_latch,
+                            &inj.pending.delivery.delivery_id,
+                            &inj.pending.delivery.event_id,
+                            inj.injection_text.as_deref().unwrap_or_default(),
+                        );
                         let _ = send_frame(&out_tx, "worker_error", inj.pending.request_id, json!({
                             "code": "initial_injection_incomplete", "retryable": false,
                             "message": "Initial task delivery interrupted or timed out; inspect the composer before retrying"

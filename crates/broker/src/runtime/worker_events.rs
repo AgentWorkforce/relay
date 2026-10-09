@@ -199,6 +199,38 @@ fn accepted_delivery_verification(verification: Option<&str>, is_pty: bool) -> O
     }
 }
 
+/// Worker state after a terminal `delivery_failed`, as `(state, published
+/// state, reason)`. The failed delivery is already dead-lettered, so the
+/// worker stays blocked only while another delivery for it awaits acceptance;
+/// otherwise later output and idle events must be able to move it on.
+fn state_after_terminal_delivery_failure(
+    pending_delivery_count: usize,
+) -> (AgentWorkState, &'static str, &'static str) {
+    if pending_delivery_count > 0 {
+        (AgentWorkState::BlockedOnSend, "stuck", "blocked_on_send")
+    } else {
+        (AgentWorkState::Working, "working", "delivery_failed")
+    }
+}
+
+#[cfg(test)]
+mod terminal_delivery_failure_state_tests {
+    use super::*;
+
+    #[test]
+    fn last_failed_delivery_publishes_a_non_stuck_state() {
+        assert_eq!(
+            state_after_terminal_delivery_failure(0),
+            (AgentWorkState::Working, "working", "delivery_failed"),
+            "a worker with no remaining deliveries must publish its way out of `stuck`"
+        );
+        assert_eq!(
+            state_after_terminal_delivery_failure(2),
+            (AgentWorkState::BlockedOnSend, "stuck", "blocked_on_send")
+        );
+    }
+}
+
 fn worker_event_is_current(current_generation: Option<Uuid>, event_generation: Uuid) -> bool {
     current_generation == Some(event_generation)
 }
@@ -1096,21 +1128,13 @@ impl BrokerRuntime {
                                     .values()
                                     .filter(|candidate| candidate.worker_name == name)
                                     .count();
-                                // The failed delivery is already dead-lettered.
-                                // Stay blocked only while another delivery for
-                                // this worker still awaits acceptance; otherwise
-                                // later output and idle events must be able to
-                                // move the worker on.
-                                let still_blocked = pending_delivery_count > 0;
+                                let (state, published_state, transition_reason) =
+                                    state_after_terminal_delivery_failure(pending_delivery_count);
                                 if let Some(handle) = workers.workers.get_mut(&name) {
                                     handle.last_activity_at = Instant::now();
-                                    handle.state = if still_blocked {
-                                        AgentWorkState::BlockedOnSend
-                                    } else {
-                                        AgentWorkState::Working
-                                    };
+                                    handle.state = state;
                                 }
-                                if still_blocked {
+                                if state == AgentWorkState::BlockedOnSend {
                                     let _ = send_broker_event(
                                         sdk_out_tx,
                                         BrokerEvent::AgentBlockedOnSend {
@@ -1120,14 +1144,17 @@ impl BrokerRuntime {
                                         },
                                     )
                                     .await;
-                                    publish_agent_state_transition(
-                                        ws_control_tx,
-                                        &name,
-                                        "stuck",
-                                        Some("blocked_on_send"),
-                                    )
-                                    .await;
                                 }
+                                // Always publish: an earlier delivery_unconfirmed
+                                // may have published `stuck`, and an in-memory
+                                // reset alone would leave that status visible.
+                                publish_agent_state_transition(
+                                    ws_control_tx,
+                                    &name,
+                                    published_state,
+                                    Some(transition_reason),
+                                )
+                                .await;
                                 let _ = emit_dropped_delivery_failures(
                                     sdk_out_tx,
                                     dead_letters,

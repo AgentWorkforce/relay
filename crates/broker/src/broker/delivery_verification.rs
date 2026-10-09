@@ -270,6 +270,23 @@ fn tail_near_cursor(snapshot: &Snapshot, tail: &str) -> bool {
         .any(|(split, _)| before.ends_with(&tail[..split]) && after.starts_with(&tail[split..]))
 }
 
+/// Whether the cells right of the cursor on its row are part of this body.
+/// A cursor parked at the start of a draft whose tail has scrolled out of
+/// view shows body text there; harness chrome (a placeholder or status hint)
+/// does not appear in the body and is ignored.
+fn body_text_right_of_cursor(snapshot: &Snapshot, expected_echo: &str) -> bool {
+    let from_cursor = snapshot.to_plain_from_cursor();
+    let row = compact_render(from_cursor.lines().next().unwrap_or_default());
+    if row.is_empty() {
+        return false;
+    }
+    let probe_end = row
+        .char_indices()
+        .nth(32)
+        .map_or(row.len(), |(index, _)| index);
+    compact_render(expected_echo).contains(&row[..probe_end])
+}
+
 fn is_cat_process(cli: &str) -> bool {
     cli.rsplit(['/', '\\'])
         .next()
@@ -471,11 +488,12 @@ pub(crate) fn assess_harness_acceptance(
     // a repaint of a still-unsent draft is output too. Only accept it once the
     // body has left the cursor: a tail ending at, straddling, or anywhere after
     // the cursor, or any text to the cursor's right (a draft whose tail has
-    // scrolled out of view), stays inconclusive.
+    // scrolled out of view), stays inconclusive. Placeholder or status text
+    // on the cursor row is not body text and does not block acceptance.
     if verification.echo_seen
         && !verification.detector.has_explicit_patterns()
         && !tail_near_cursor(snapshot, &tail)
-        && !snapshot.has_visible_text_at_or_after_cursor()
+        && !body_text_right_of_cursor(snapshot, &verification.expected_echo)
     {
         if let Some(pattern) = verification
             .detector
@@ -1067,6 +1085,27 @@ mod tests {
             assess_harness_acceptance("muse", &verification, &snapshot),
             HarnessAcceptance::Inconclusive,
             "a tail far to the right of the cursor is still an unsent draft"
+        );
+        pty.shutdown().unwrap();
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn cursor_row_placeholder_does_not_block_generic_acceptance() {
+        let expected = "Relay message from Lead [evt]: fix idle injection";
+        let (pty, snapshot) =
+            codex_snapshot("Processing accepted turn\n› Type a message\x1b[2;3H").await;
+        assert!(snapshot.has_visible_text_at_or_after_cursor());
+        let mut verification = codex_verification(expected);
+        verification.detector = ActivityDetector::for_cli("muse");
+        verification
+            .activity_buffer
+            .push_str("Processing accepted turn");
+
+        assert_eq!(
+            assess_harness_acceptance("muse", &verification, &snapshot),
+            HarnessAcceptance::Accepted("activity:any_output".to_string()),
+            "placeholder chrome right of the cursor is not an unsent draft"
         );
         pty.shutdown().unwrap();
     }
