@@ -1091,6 +1091,29 @@ mod tests {
 
     #[cfg(unix)]
     #[tokio::test]
+    async fn generic_output_cannot_confirm_a_draft_whose_tail_scrolled_away() {
+        // Only the draft's head is in the viewport, right of the cursor; its
+        // tail has scrolled out of view, so no tail match is possible.
+        let expected = format!(
+            "Relay message from Lead [evt]: head {} TAIL_SCROLLED_OFF",
+            "y".repeat(160)
+        );
+        let (pty, snapshot) =
+            codex_snapshot("› Relay message from Lead [evt]: head\x1b[1;3H").await;
+        let mut verification = codex_verification(&expected);
+        verification.detector = ActivityDetector::for_cli("muse");
+        verification.activity_buffer.push_str("repaint");
+
+        assert_eq!(
+            assess_harness_acceptance("muse", &verification, &snapshot),
+            HarnessAcceptance::Inconclusive,
+            "body text right of the cursor is an unsent draft even without its tail"
+        );
+        pty.shutdown().unwrap();
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
     async fn cursor_row_placeholder_does_not_block_generic_acceptance() {
         let expected = "Relay message from Lead [evt]: fix idle injection";
         let (pty, snapshot) =
