@@ -5,11 +5,15 @@ All notable changes to Agent Relay will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased - Patch]
+## [Unreleased - Minor]
+
+### Added
+
+- `agent-relay fleet spawn-status <invocation-id>` reads a recorded spawn dispatch without spawning again, separating confirmed readiness, a node-reported failure, and an outcome the node has not reported yet.
 
 ### Fixed
 
-- `fleet spawn` waits up to six minutes for late launch confirmation by default; `fleet spawn-status <invocation-id>` reads the original dispatch to distinguish readiness, reported failure, and an outcome still awaiting confirmation without retrying the spawn.
+- `fleet spawn` (and SDK placement confirmation) now waits six minutes for launch confirmation instead of two, so agents that register minutes after dispatch are confirmed rather than reported as unconfirmed; the timeout error names the `fleet spawn-status` poll for its invocation id instead of suggesting a redispatch.
 
 ## [13.2.0] - 2026-10-08
 

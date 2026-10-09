@@ -312,6 +312,23 @@ set `RELAY_AGENT_TOKEN` to the token returned by
 login (`agent-relay cloud login`) but does not need an agent token: when one is
 absent, it creates and removes a short-lived launcher identity automatically.
 
+A targeted spawn waits for the node to confirm the launch, for six minutes by
+default (`--confirm-timeout <ms>`, minimum 95000). Agents that take minutes to
+register are confirmed inside that window rather than reported as unconfirmed.
+If the window does expire, the error carries the invocation id: read that
+dispatch instead of spawning again, because a retry under the same name
+collides with a worker that may still be starting.
+
+```bash
+agent-relay fleet spawn-status inv_01J...
+```
+
+The reply's `placement.state` separates the outcomes: `ready` (launched and
+confirmed), `failed` (the node reported a terminal failure), `accepted`
+(launched, readiness unverified), and `unconfirmed_may_be_running` (the node
+still has not reported — not evidence that nothing started). Polling never
+dispatches another agent.
+
 Without placement options, `fleet spawn` connects to the local project's broker
 and passes the caller's exact directory, including a nested package, to the
 worker. Start the local broker with `agent-relay node up` if it is not running;

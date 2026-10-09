@@ -5464,34 +5464,77 @@ describe('fleet spawn-status', () => {
     expect(logs.join('')).not.toContain('raw-secret');
     expect(logs.join('')).not.toContain('private-task');
   });
-});
 
-it('mints and releases a temporary reader for spawn-status with workspace credentials', async () => {
-  vi.stubEnv('RELAY_AGENT_TOKEN', '');
-  const register = vi.fn(async () => ({ token: 'at_reader' }));
-  const release = vi.fn(async () => undefined);
-  const getInvocation = vi.fn(async () => ({ invocationId: 'inv_late', status: 'failed' }));
-  const createAgentRelay = vi.fn(() => ({ messaging: { commands: { getInvocation } } }));
-  const program = new Command();
-  program.exitOverride();
-  registerFleetCommands(program, {
-    sdk: {
-      createWorkspaceRelay: vi.fn(() => ({ workspace: { register, release } })) as never,
-      createAgentRelay: createAgentRelay as never,
-      log: vi.fn(),
-      error: vi.fn(),
-      exit: vi.fn() as never,
-    },
+  // #1430 follow-up: the reported failure was a caller unable to tell a worker
+  // that launched late from one that never started. The state alone is not that
+  // evidence — the launch proof and the node that answered have to survive the
+  // read, and a silent dispatch must not acquire a launch claim it never made.
+  it.each([
+    [
+      'a node that has not reported yet',
+      { invocationId: 'inv_late', status: 'invoked', dispatched_node_id: 'node_sf_mini' },
+      { state: 'unconfirmed_may_be_running', dispatchState: 'dispatched', dispatchedNodeId: 'node_sf_mini' },
+      undefined,
+    ],
+    [
+      'a launch confirmed after the spawn gave up',
+      {
+        invocationId: 'inv_late',
+        status: 'completed',
+        handler_node_id: 'node_sf_mini',
+        output: { spawned: true, ready: true },
+      },
+      { state: 'ready', dispatchState: 'dispatched', handlerNodeId: 'node_sf_mini' },
+      { spawned: true, ready: true },
+    ],
+  ])('keeps the launch evidence for %s', async (_label, invocation, placement, output) => {
+    const logs: string[] = [];
+    const program = new Command();
+    program.exitOverride();
+    registerFleetCommands(program, {
+      sdk: {
+        createAgentRelay: vi.fn(() => ({
+          messaging: { commands: { getInvocation: vi.fn(async () => invocation) } },
+        })) as never,
+        log: (message: unknown) => logs.push(String(message)),
+        error: vi.fn(),
+        exit: vi.fn() as never,
+      },
+    });
+    await program.parseAsync(['fleet', 'spawn-status', 'inv_late', '--token', 'at_test'], { from: 'user' });
+
+    const reported = JSON.parse(logs[0]!).invocation;
+    expect(reported.placement).toMatchObject(placement);
+    expect(reported.output).toEqual(output);
   });
-  await program.parseAsync(['fleet', 'spawn-status', 'inv_late', '--workspace-key', 'rk_test'], {
-    from: 'user',
+
+  it('mints and releases a temporary reader for spawn-status with workspace credentials', async () => {
+    vi.stubEnv('RELAY_AGENT_TOKEN', '');
+    const register = vi.fn(async () => ({ token: 'at_reader' }));
+    const release = vi.fn(async () => undefined);
+    const getInvocation = vi.fn(async () => ({ invocationId: 'inv_late', status: 'failed' }));
+    const createAgentRelay = vi.fn(() => ({ messaging: { commands: { getInvocation } } }));
+    const program = new Command();
+    program.exitOverride();
+    registerFleetCommands(program, {
+      sdk: {
+        createWorkspaceRelay: vi.fn(() => ({ workspace: { register, release } })) as never,
+        createAgentRelay: createAgentRelay as never,
+        log: vi.fn(),
+        error: vi.fn(),
+        exit: vi.fn() as never,
+      },
+    });
+    await program.parseAsync(['fleet', 'spawn-status', 'inv_late', '--workspace-key', 'rk_test'], {
+      from: 'user',
+    });
+    expect(register).toHaveBeenCalledWith(
+      expect.objectContaining({ metadata: { purpose: 'fleet-spawn-status' } }),
+      { strict: true }
+    );
+    expect(createAgentRelay).toHaveBeenCalledWith(expect.objectContaining({ token: 'at_reader' }));
+    expect(release).toHaveBeenCalledWith(
+      expect.objectContaining({ name: register.mock.calls[0]![0].name, deleteAgent: true })
+    );
   });
-  expect(register).toHaveBeenCalledWith(
-    expect.objectContaining({ metadata: { purpose: 'fleet-spawn-status' } }),
-    { strict: true }
-  );
-  expect(createAgentRelay).toHaveBeenCalledWith(expect.objectContaining({ token: 'at_reader' }));
-  expect(release).toHaveBeenCalledWith(
-    expect.objectContaining({ name: register.mock.calls[0]![0].name, deleteAgent: true })
-  );
 });
