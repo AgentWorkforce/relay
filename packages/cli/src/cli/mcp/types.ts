@@ -20,6 +20,12 @@ export interface AgentRelayMcpServerOptions {
   strictAgentName?: boolean;
   telemetryTransport?: 'stdio' | 'http';
   skipBootstrap?: boolean;
+  /**
+   * Redacted reason the stdio startup registration failed. When set, the
+   * server still completes the MCP handshake and identity-scoped tools report
+   * this reason instead of the process exiting before `initialize`.
+   */
+  startupRegistrationError?: string;
   /** Expose only hosted shared-session tools; used by the installable plugin. */
   sessionsOnly?: boolean;
   /** Test/embedding seam for the hosted MCP client. */

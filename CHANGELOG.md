@@ -5,7 +5,16 @@ All notable changes to Agent Relay will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
+## [Unreleased - Major]
+
+### Changed
+
+- `agent-relay agent register` no longer rotates an existing agent's token by default. For a name that already exists it now fails and leaves that identity's token unchanged. Pass the new `--rotate` flag to replace the token deliberately. `--strict` is still accepted; it has no effect on its own and can't be combined with `--rotate`.
+
+### Fixed
+
+- `agent-relay mcp` now completes its stdio handshake when startup registration fails (for example, the agent name already exists or Relaycast is unreachable). Claude Code used to report this as "Connection closed". The server now starts without an agent identity and writes the reason to stderr with credentials redacted.
+- Identity-scoped `agent-relay mcp` tools return that startup failure until `register_agent` succeeds.
 
 ## [13.2.0] - 2026-10-08
 

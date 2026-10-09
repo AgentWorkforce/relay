@@ -152,14 +152,12 @@ describe('SDK-backed CLI groups', () => {
   it('agent register calls workspace.register and prints the registration', async () => {
     const { program, workspaceRelay, log } = harness(registerAgentCommands);
     await program.parseAsync(['agent', 'register', 'reviewer', '--type', 'agent'], { from: 'user' });
-    // `agent register` resolves its client through createWorkspaceRelay (hence
-    // workspaceRelay, from main) and calls workspace.register with an explicit
-    // strict flag (hence this shape, from #1527). Taking either side of the
-    // merge alone asserts against a method or an object the implementation no
-    // longer uses.
+    // `agent register` resolves its client through createWorkspaceRelay and is
+    // create-only: it calls workspace.register strictly so an existing name is
+    // never rotated without `--rotate` (relay#1920).
     expect(workspaceRelay.workspace.register).toHaveBeenCalledWith(
       expect.objectContaining({ name: 'reviewer', type: 'agent' }),
-      { strict: false }
+      { strict: true }
     );
     expect(log).toHaveBeenCalled();
   });

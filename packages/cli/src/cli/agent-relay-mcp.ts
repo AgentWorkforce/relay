@@ -63,6 +63,8 @@ import {
   resolveWorkspaceSessionKey,
   validateWorkspaceSessionName,
 } from './lib/workspace-session.js';
+import { isAgentNameConflict } from './lib/agent-name-conflict.js';
+import { redactCredentials } from './lib/redact-credentials.js';
 import type {
   AgentClientLike,
   AgentRelayMcpServerOptions,
@@ -1590,7 +1592,12 @@ export function createAgentRelayMcpServer(options: AgentRelayMcpServerOptions): 
     }
   };
 
+  // Reported only until this session first gets an identity; after that the
+  // startup failure is history and normal recovery guidance applies.
+  let startupRegistrationError = options.startupRegistrationError;
+
   const setSession: SessionSetter = (partial) => {
+    if (partial.agentToken) startupRegistrationError = undefined;
     const switchingWorkspace =
       partial.workspaceKey !== undefined && partial.workspaceKey !== session.workspaceKey;
     const changingToken = partial.agentToken !== undefined && partial.agentToken !== session.agentToken;
@@ -1662,6 +1669,11 @@ export function createAgentRelayMcpServer(options: AgentRelayMcpServerOptions): 
     }
 
     if (!session.agentToken) {
+      if (startupRegistrationError) {
+        throw new Error(
+          `Not registered: startup registration failed (${startupRegistrationError}). Call the "register_agent" tool to retry.`
+        );
+      }
       throw new Error('Not registered. Call the "register_agent" tool first.');
     }
 
@@ -1799,9 +1811,50 @@ export async function resolveStdioBootstrapOptions(
   };
 }
 
+/**
+ * Run the startup registration, but never let its failure kill the stdio
+ * server before the MCP `initialize` handshake. An exit here is what MCP
+ * clients such as Claude Code report as "Connection closed" (an unreachable
+ * Relaycast, a stale workspace key, or a registration timeout all used to
+ * end the process). The server starts without an agent identity instead, and
+ * identity-scoped tools report the redacted reason until `register_agent`
+ * succeeds.
+ */
+export async function resolveStdioBootstrapOptionsOrDegrade(
+  options: AgentRelayMcpServerOptions,
+  writeStderr: (line: string) => void = (line) => {
+    process.stderr.write(line);
+  }
+): Promise<AgentRelayMcpServerOptions> {
+  try {
+    return await resolveStdioBootstrapOptions(options);
+  } catch (error) {
+    if (options.sessionsOnly) throw error;
+    const conflict = isAgentNameConflict(error);
+    const reason = conflict
+      ? `agent "${options.agentName}" already exists and registration is create-only; ` +
+        "set RELAY_AGENT_TOKEN to that identity's existing token or register a different name"
+      : redactCredentials(safeRelayErrorMessage(error), [
+          options.workspaceKey,
+          options.apiKey,
+          options.agentToken,
+        ]);
+    const who = options.agentName ? ` as "${options.agentName}"` : '';
+    writeStderr(
+      `[agent-relay mcp] Startup registration${who} failed: ${reason}. ` +
+        'Starting without an agent identity; call register_agent to retry.\n'
+    );
+    // Never fall back to a non-Relaycast token (for example a RelayAuth JWT):
+    // bootstrap exists to replace it, so keeping it would only fail later.
+    const { agentToken: _discarded, ...rest } = options;
+    void _discarded;
+    return { ...rest, startupRegistrationError: reason };
+  }
+}
+
 export async function startAgentRelayMcpStdio(options: AgentRelayMcpServerOptions): Promise<void> {
   initMcpTelemetry();
-  const bootstrappedOptions = await resolveStdioBootstrapOptions(options);
+  const bootstrappedOptions = await resolveStdioBootstrapOptionsOrDegrade(options);
   const sharedSessionsClient = bootstrappedOptions.sharedSessionsClient ?? new SharedSessionsMcpClient();
   let sharedSessionTools = bootstrappedOptions.sharedSessionTools;
   if (!sharedSessionTools) {

@@ -1,4 +1,4 @@
-import type { Command } from 'commander';
+import { Option, type Command } from 'commander';
 
 import {
   addSdkOptions,
@@ -8,9 +8,10 @@ import {
   withSdkDefaults,
   type SdkCommandDeps,
 } from '../lib/sdk-command.js';
-import { RelayError } from '@agent-relay/sdk';
+import { RelayError, safeRelayErrorMessage } from '@agent-relay/sdk';
 
 import { withAgentRegistrationDeadline, withDeadline } from '../lib/agent-registration.js';
+import { isAgentNameConflict } from '../lib/agent-name-conflict.js';
 import { attributableReleaseReason } from '../lib/release-reason.js';
 
 function isNotFoundError(error: unknown): boolean {
@@ -22,13 +23,41 @@ function isNotFoundError(error: unknown): boolean {
   return Number(statusCode) === 404;
 }
 
-export type AgentCommandDependencies = SdkCommandDeps;
+function isCurrentIdentityName(env: NodeJS.ProcessEnv, name: string): boolean {
+  const current = env.RELAY_AGENT_NAME?.trim().replace(/^@/, '');
+  return Boolean(current) && current!.toLowerCase() === name.trim().replace(/^@/, '').toLowerCase();
+}
+
+export interface AgentCommandDependencies extends SdkCommandDeps {
+  /** Environment used to recognise this session's own identity (`RELAY_AGENT_NAME`). */
+  env: NodeJS.ProcessEnv;
+}
 
 function withAgentDefaults(overrides: Partial<AgentCommandDependencies> = {}): AgentCommandDependencies {
   return {
+    env: process.env,
     ...withSdkDefaults(overrides),
     ...overrides,
   };
+}
+
+const CURRENT_IDENTITY_HINT =
+  'To act as an identity you already hold, keep using its existing token (RELAY_AGENT_TOKEN), the ' +
+  'Agent Relay desktop session socket, or the Agent Relay MCP tools; do not re-register its name.';
+
+function existingNameError(name: string): Error {
+  return new Error(
+    `Agent "${name}" already exists. "agent register" is create-only and left its token unchanged. ` +
+      `${CURRENT_IDENTITY_HINT} To register a separate identity, choose a new name. ` +
+      `Pass --rotate only if you mean to replace "${name}"'s token and disconnect any session still using it.`
+  );
+}
+
+function rotationRefusedError(name: string): Error {
+  return new Error(
+    `The Relay service refused to rotate "${name}": it no longer lets a workspace key rotate an ` +
+      `existing agent's token, and its current token was left unchanged. ${CURRENT_IDENTITY_HINT}`
+  );
 }
 
 export function registerAgentCommands(
@@ -41,26 +70,58 @@ export function registerAgentCommands(
   addSdkOptions(
     group
       .command('register')
-      .description('Register an agent, rotating an existing identity token when needed')
+      .description(
+        'Register a new agent identity and print its token. Create-only: an existing name fails ' +
+          'and keeps its token unless --rotate is passed'
+      )
       .argument('<name>', 'Agent name')
       .option('--type <type>', 'Agent type (agent | human | system)')
       .option('--persona <persona>', 'Persona string')
-      .option('--strict', 'Fail instead of rotating the token when the name already exists')
+      .option(
+        '--rotate',
+        'If the name already exists, replace its token instead of failing. Any session still using the ' +
+          'old token is disconnected; servers that enforce create-only registration refuse this'
+      )
+      .addOption(new Option('--strict', 'Deprecated: registration is create-only by default').hideHelp())
+      .addHelpText(
+        'after',
+        '\nTo act as an identity this session already holds, keep using its existing token ' +
+          '(RELAY_AGENT_TOKEN), the desktop session socket, or the MCP tools; never re-register its name.'
+      )
   ).action(async (name: string, opts: Record<string, unknown>) => {
     await runSdk(deps, async () => {
+      const rotate = opts.rotate === true;
+      if (rotate && opts.strict === true) {
+        throw new Error('--rotate and --strict cannot be combined.');
+      }
       const relay = deps.createWorkspaceRelay(sdkOptionsFromOpts(opts));
-      const registration = await withAgentRegistrationDeadline(
-        () =>
-          relay.workspace.register(
-            {
-              name,
-              type: opts.type as 'agent' | 'human' | 'system' | undefined,
-              persona: opts.persona as string | undefined,
-            },
-            { strict: opts.strict === true }
-          ),
-        name
-      );
+      const input = {
+        name,
+        type: opts.type as 'agent' | 'human' | 'system' | undefined,
+        persona: opts.persona as string | undefined,
+      };
+      let registration;
+      try {
+        registration = await withAgentRegistrationDeadline(
+          () => relay.workspace.register(input, { strict: true }),
+          name
+        );
+      } catch (error) {
+        if (!isAgentNameConflict(error)) throw error;
+        if (!rotate) throw existingNameError(name);
+        if (isCurrentIdentityName(deps.env, name)) {
+          deps.error(
+            `Warning: rotating "${name}", this session's own identity (RELAY_AGENT_NAME). ` +
+              'The token this session is using stops working.'
+          );
+        }
+        registration = await withAgentRegistrationDeadline(
+          () => relay.workspace.register(input, { strict: false }),
+          name
+        ).catch((rotateError: unknown) => {
+          throw isAgentNameConflict(rotateError) ? rotationRefusedError(name) : rotateError;
+        });
+      }
       printJson(deps, { id: registration.id, name: registration.name, token: registration.token });
     });
   });
@@ -68,7 +129,10 @@ export function registerAgentCommands(
   addSdkOptions(
     group
       .command('rotate')
-      .description('Rotate the token for an existing agent name')
+      .description(
+        'Explicitly rotate the token for an existing agent name. Any session still using the old token ' +
+          'is disconnected; servers that enforce create-only registration refuse this'
+      )
       .argument('<name>', 'Agent name')
   ).action(async (name: string, opts: Record<string, unknown>) => {
     await runSdk(deps, async () => {
@@ -98,7 +162,9 @@ export function registerAgentCommands(
       const registration = await withAgentRegistrationDeadline(
         () => relay.workspace.register({ name }),
         name
-      );
+      ).catch((error: unknown) => {
+        throw isAgentNameConflict(error) ? rotationRefusedError(name) : error;
+      });
       printJson(deps, { id: registration.id, name: registration.name, token: registration.token });
     });
   });

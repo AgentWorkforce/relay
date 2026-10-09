@@ -2121,6 +2121,113 @@ describe('startAgentRelayMcpStdio', () => {
     );
   });
 
+  it('completes the stdio handshake when startup registration hits an existing name', async () => {
+    // relay#1920: a create-only server returns agent_already_exists for a
+    // name an earlier session registered. Exiting here is what Claude Code
+    // reports as "Connection closed"; the server must start degraded instead.
+    const { mod, mocks } = await loadAgentRelayMcpModule();
+    mocks.behavior.registerImpl = vi.fn(async () => {
+      throw Object.assign(new Error('Agent "WorkerA" already exists in this workspace'), {
+        code: 'name_conflict',
+      });
+    });
+    const stderr = vi.spyOn(process.stderr, 'write').mockImplementation(() => true);
+    try {
+      await mod.startAgentRelayMcpStdio({
+        apiKey: 'rk_live_workspace',
+        agentName: 'WorkerA',
+        agentToken: 'eyJhbGciOiJSUzI1NiJ9.payload.sig',
+        sharedSessionTools: [],
+      });
+
+      const server = mocks.serverInstances[0];
+      expect(server.connect).toHaveBeenCalledTimes(1);
+      const warning = stderr.mock.calls.map((call) => String(call[0])).join('');
+      expect(warning).toContain('Startup registration as "WorkerA" failed');
+      expect(warning).toContain('already exists');
+      expect(warning).not.toContain('rk_live_workspace');
+      expect(warning).not.toContain('eyJhbGciOiJSUzI1NiJ9');
+
+      await expect(server.tools.get('send_dm')!.handler({ to: 'peer', text: 'hi' })).rejects.toThrow(
+        /startup registration failed .*already exists.*register_agent/
+      );
+
+      // Once register_agent succeeds the startup failure is no longer reported.
+      mocks.behavior.registerImpl = vi.fn(async () => ({
+        id: 'agent_b',
+        name: 'WorkerB',
+        token: 'at_live_workerb',
+      }));
+      await server.tools.get('register_agent')!.handler({ name: 'WorkerB' });
+      await server.tools.get('send_dm')!.handler({ to: 'peer', text: 'hi' });
+    } finally {
+      stderr.mockRestore();
+    }
+  });
+
+  it('redacts credentials an upstream startup error quotes back on stderr', async () => {
+    const { mod, mocks } = await loadAgentRelayMcpModule();
+    mocks.behavior.registerImpl = vi.fn(async () => {
+      throw new Error(
+        'POST /v1/agents failed: Authorization: Bearer abc.def.ghi key=rk_live_workspace_secret ' +
+          'token=at_live_agent_secret jwt=eyJhbGciOiJSUzI1NiJ9.eyJzdWIiOiJ4In0.sig ' +
+          'url=https://relay-user:url-password-secret@cast.example/v1 ' +
+          'query=https://cast.example/v1/agents?api_key=opaque-query-secret&x=1 ' +
+          'node=nt_live_node_credential_secret short=k9z'
+      );
+    });
+    const stderr = vi.spyOn(process.stderr, 'write').mockImplementation(() => true);
+    try {
+      await mod.startAgentRelayMcpStdio({
+        apiKey: 'rk_live_workspace_secret',
+        // A short, unprefixed declared key is still removed.
+        workspaceKey: 'k9z',
+        agentName: 'WorkerA',
+        sharedSessionTools: [],
+      });
+      expect(mocks.serverInstances[0].connect).toHaveBeenCalledTimes(1);
+      const written = stderr.mock.calls.map((call) => String(call[0])).join('');
+      expect(written).toContain('Startup registration as "WorkerA" failed');
+      for (const secret of [
+        'rk_live_workspace_secret',
+        'at_live_agent_secret',
+        'eyJhbGciOiJSUzI1NiJ9',
+        'abc.def.ghi',
+        'url-password-secret',
+        'relay-user',
+        'opaque-query-secret',
+        'node_credential_secret',
+        'k9z',
+      ]) {
+        expect(written).not.toContain(secret);
+      }
+      expect(written).toContain('Bearer <redacted>');
+      expect(written).toContain('https://<redacted>@cast.example/v1');
+      expect(written).toContain('?api_key=<redacted>&x=1');
+    } finally {
+      stderr.mockRestore();
+    }
+  });
+
+  it('completes the stdio handshake when Relaycast is unreachable at startup', async () => {
+    const { mod, mocks } = await loadAgentRelayMcpModule();
+    mocks.behavior.registerImpl = vi.fn(async () => {
+      throw new Error('Network request failed: fetch failed');
+    });
+    const stderr = vi.spyOn(process.stderr, 'write').mockImplementation(() => true);
+    try {
+      await mod.startAgentRelayMcpStdio({
+        apiKey: 'rk_live_workspace',
+        agentName: 'WorkerA',
+        sharedSessionTools: [],
+      });
+      expect(mocks.serverInstances[0].connect).toHaveBeenCalledTimes(1);
+      expect(stderr.mock.calls.map((call) => String(call[0])).join('')).toContain('Network request failed');
+    } finally {
+      stderr.mockRestore();
+    }
+  });
+
   it('starts sessions-only MCP without Relaycast registration or messaging tools', async () => {
     const { mod, mocks } = await loadAgentRelayMcpModule();
 
