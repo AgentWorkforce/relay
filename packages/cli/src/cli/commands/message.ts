@@ -15,7 +15,7 @@ import {
   messageReadersReceipt,
   resolveExactAgentName,
 } from '../lib/message-delivery-receipts.js';
-import { readAttachment, saveAttachment } from '../lib/attachments.js';
+import { checkAttachment, readAttachment, saveAttachment } from '../lib/attachments.js';
 
 export type MessageCommandDependencies = SdkCommandDeps;
 
@@ -41,21 +41,27 @@ function collectFile(value: string, previous: string[] = []): string[] {
   return [...previous, value];
 }
 
+/** The relay's file API; only a custom messaging backend can lack one. */
+function requireFiles(relay: AgentRelayAgent): NonNullable<AgentRelayAgent['files']> {
+  if (!relay.files) {
+    throw new Error('This Relay client does not support file attachments.');
+  }
+  return relay.files;
+}
+
 /** Upload local files and return the stored files whose ids a message can attach. */
 async function uploadFiles(
   relay: AgentRelayAgent,
   filePaths: string[] | undefined
 ): Promise<RelayFileInfo[]> {
   if (!filePaths || filePaths.length === 0) return [];
-  const files = relay.files;
-  if (!files) {
-    throw new Error('File attachments require an agent token (--token or RELAY_AGENT_TOKEN).');
-  }
-  // Read every file before uploading any, so one bad path sends nothing.
-  const attachments = await Promise.all(filePaths.map((filePath) => readAttachment(filePath)));
+  const files = requireFiles(relay);
+  // Check every path before uploading any, so one bad path sends nothing,
+  // then read and upload one file at a time to bound memory.
+  for (const filePath of filePaths) await checkAttachment(filePath);
   const uploaded: RelayFileInfo[] = [];
-  for (const attachment of attachments) {
-    uploaded.push(await files.upload(attachment));
+  for (const filePath of filePaths) {
+    uploaded.push(await files.upload(await readAttachment(filePath)));
   }
   return uploaded;
 }
@@ -337,10 +343,7 @@ export function registerMessageCommands(
       .argument('<fileId>', 'File id')
   ).action(async (fileId: string, o: Record<string, unknown>) => {
     await runSdk(deps, async () => {
-      const files = deps.createAgentRelay(opts(o)).files;
-      if (!files) {
-        throw new Error('Reading files requires an agent token (--token or RELAY_AGENT_TOKEN).');
-      }
+      const files = requireFiles(deps.createAgentRelay(opts(o)));
       printJson(deps, await files.get(fileId));
     });
   });
@@ -356,10 +359,7 @@ export function registerMessageCommands(
       )
   ).action(async (fileId: string, o: Record<string, unknown>) => {
     await runSdk(deps, async () => {
-      const files = deps.createAgentRelay(opts(o)).files;
-      if (!files) {
-        throw new Error('Downloading files requires an agent token (--token or RELAY_AGENT_TOKEN).');
-      }
+      const files = requireFiles(deps.createAgentRelay(opts(o)));
       const { file: info, data } = await files.download(fileId);
       const target = await saveAttachment(fileId, info.filename, data, o.out as string | undefined);
       printJson(deps, {

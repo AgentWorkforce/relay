@@ -26,15 +26,25 @@ export function contentTypeFor(filename: string): string {
   return CONTENT_TYPES[path.extname(filename).toLowerCase()] ?? 'application/octet-stream';
 }
 
-/** A sender-supplied file name reduced to one safe path segment. */
+/** Device names Windows reserves, with or without an extension. */
+const WINDOWS_RESERVED = /^(con|prn|aux|nul|com[1-9]|lpt[1-9])(\..*)?$/i;
+
+/**
+ * A sender-supplied file name reduced to one safe path segment that also
+ * saves on Windows: no control characters, no `<>:"|?*`, no leading dot, no
+ * trailing dots or spaces, and no reserved device name.
+ */
 export function safeAttachmentFilename(name: string): string {
   const base = path.basename(name.replace(/\\/g, '/'));
-  // eslint-disable-next-line no-control-regex
   const cleaned = base
+    // eslint-disable-next-line no-control-regex
     .replace(/[\u0000-\u001f\u007f]/g, '')
+    .replace(/[<>:"|?*]/g, '_')
     .replace(/^\.+/, '')
+    .replace(/[. ]+$/, '')
     .trim();
-  return cleaned || 'attachment';
+  if (!cleaned) return 'attachment';
+  return WINDOWS_RESERVED.test(cleaned) ? `_${cleaned}` : cleaned;
 }
 
 /**
@@ -42,8 +52,12 @@ export function safeAttachmentFilename(name: string): string {
  * ignored). `Buffer.from(..., 'base64')` silently skips invalid characters,
  * which would upload different bytes than the caller meant.
  */
-export function decodeBase64Strict(value: string): Buffer {
+export function decodeBase64Strict(value: string, maxBytes = MAX_ATTACHMENT_BYTES): Buffer {
   const compact = value.replace(/\s+/g, '');
+  // Refuse oversized input by its encoded length, before decoding it.
+  if (Math.floor((compact.length * 3) / 4) - 2 > maxBytes) {
+    throw new Error(`content_base64 exceeds the ${maxBytes}-byte limit.`);
+  }
   if (!/^[A-Za-z0-9+/]*={0,2}$/.test(compact) || compact.length % 4 === 1) {
     throw new Error('content_base64 is not valid base64.');
   }
@@ -54,10 +68,8 @@ export function decodeBase64Strict(value: string): Buffer {
   return data;
 }
 
-/** Read a local file to attach, enforcing that it is a non-empty regular file under the size cap. */
-export async function readAttachment(
-  filePath: string
-): Promise<{ filename: string; contentType: string; data: Buffer }> {
+/** Check that a local file can be attached: a non-empty regular file under the size cap. */
+export async function checkAttachment(filePath: string): Promise<void> {
   const info = await stat(filePath).catch(() => undefined);
   if (!info?.isFile()) {
     throw new Error(`Cannot attach ${filePath}: not a readable file.`);
@@ -70,8 +82,25 @@ export async function readAttachment(
       `Cannot attach ${filePath}: ${info.size} bytes exceeds the ${MAX_ATTACHMENT_BYTES}-byte limit.`
     );
   }
+}
+
+/** Read a local file to attach, enforcing the same rules on the bytes actually read. */
+export async function readAttachment(
+  filePath: string
+): Promise<{ filename: string; contentType: string; data: Buffer }> {
+  await checkAttachment(filePath);
+  // The file can change between stat and read; check what was read.
+  const data = await readFile(filePath);
+  if (data.byteLength === 0) {
+    throw new Error(`Cannot attach ${filePath}: the file is empty.`);
+  }
+  if (data.byteLength > MAX_ATTACHMENT_BYTES) {
+    throw new Error(
+      `Cannot attach ${filePath}: ${data.byteLength} bytes exceeds the ${MAX_ATTACHMENT_BYTES}-byte limit.`
+    );
+  }
   const filename = path.basename(filePath);
-  return { filename, contentType: contentTypeFor(filename), data: await readFile(filePath) };
+  return { filename, contentType: contentTypeFor(filename), data };
 }
 
 /**
@@ -85,6 +114,11 @@ export async function saveAttachment(
   data: Uint8Array,
   out?: string
 ): Promise<string> {
+  if (data.byteLength > MAX_ATTACHMENT_BYTES) {
+    throw new Error(
+      `Cannot save attachment ${fileId}: ${data.byteLength} bytes exceeds the ${MAX_ATTACHMENT_BYTES}-byte limit.`
+    );
+  }
   const name = safeAttachmentFilename(filename);
   let target: string;
   if (!out) {

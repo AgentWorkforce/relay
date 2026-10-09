@@ -1,6 +1,11 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
-import { RelaycastMessagingClient, downloadRelayFile, type RelaycastAgentLike } from '../messaging/index.js';
+import {
+  RelaycastMessagingClient,
+  downloadRelayFile,
+  normalizeFileInfo,
+  type RelaycastAgentLike,
+} from '../messaging/index.js';
 import { AgentRelay } from '../index.js';
 
 const UPLOAD_URL = 'https://files.example.test/_relayfiles?token=secret-signature';
@@ -185,5 +190,18 @@ describe('RelaycastMessagingClient files', () => {
     const messaging = clientWith(files);
     await expect(downloadRelayFile(files, 'file-1', { maxBytes: 20 })).rejects.toThrow(/download limit/);
     await expect(messaging.files.download('file-1')).resolves.toMatchObject({ file: { id: 'file-1' } });
+  });
+
+  it('treats a file record without a status but with a download URL as complete', () => {
+    expect(
+      normalizeFileInfo({
+        id: 'f',
+        filename: 'a.png',
+        contentType: 'image/png',
+        sizeBytes: 1,
+        downloadUrl: 'https://x',
+      }).status
+    ).toBe('complete');
+    expect(normalizeFileInfo({ id: 'f', filename: 'a.png' }).status).toBeUndefined();
   });
 });

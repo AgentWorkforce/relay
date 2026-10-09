@@ -195,7 +195,9 @@ pub(crate) fn sanitize_filename(raw: &str) -> String {
         .chars()
         .filter(|c| !c.is_control() && !is_invisible_format(*c))
         .map(|c| match c {
-            ':' => '_',
+            // Characters Windows forbids in file names (the broker ships for
+            // Windows too), so a POSIX sender's name still saves everywhere.
+            ':' | '<' | '>' | '"' | '|' | '?' | '*' => '_',
             // Keep the saved name free of characters the injected line would
             // otherwise have to rewrite, so the path can be shown verbatim.
             '[' => '(',
@@ -204,9 +206,17 @@ pub(crate) fn sanitize_filename(raw: &str) -> String {
             c => c,
         })
         .collect();
-    let trimmed = cleaned.trim().trim_start_matches('.').trim();
+    // Windows also drops trailing dots and spaces from names.
+    let trimmed = cleaned
+        .trim()
+        .trim_start_matches('.')
+        .trim_end_matches(['.', ' '])
+        .trim();
     if trimmed.is_empty() || trimmed == "." || trimmed == ".." {
         return FALLBACK_FILENAME.to_string();
+    }
+    if is_windows_reserved_name(trimmed) {
+        return format!("_{trimmed}");
     }
     if trimmed.len() <= MAX_FILENAME_BYTES {
         return trimmed.to_string();
@@ -226,6 +236,18 @@ pub(crate) fn sanitize_filename(raw: &str) -> String {
     } else {
         shortened
     }
+}
+
+/// `CON`, `NUL`, `COM1`, … (with or without an extension) name devices on
+/// Windows rather than files.
+fn is_windows_reserved_name(name: &str) -> bool {
+    let stem = name.split('.').next().unwrap_or_default().trim_end();
+    let upper = stem.to_ascii_uppercase();
+    matches!(upper.as_str(), "CON" | "PRN" | "AUX" | "NUL")
+        || ((upper.starts_with("COM") || upper.starts_with("LPT"))
+            && upper.len() == 4
+            && upper.as_bytes()[3].is_ascii_digit()
+            && upper.as_bytes()[3] != b'0')
 }
 
 /// Human-readable size: `B` below 1 KiB, otherwise `KB`/`MB` (1024-based)
@@ -454,6 +476,10 @@ impl AttachmentDownloader {
         }
         let dir = root.join(&attachment.file_id);
         let final_path = dir.join(sanitize_filename(&attachment.filename));
+        // Never follow a pre-existing symlink out of the attachments tree.
+        if is_symlink(&dir).await {
+            return Err("attachment directory is not a plain directory".to_string());
+        }
         if reusable_file(&final_path, attachment.size_bytes).await {
             return Ok(final_path);
         }
@@ -482,6 +508,9 @@ impl AttachmentDownloader {
         tokio::fs::create_dir_all(&dir)
             .await
             .map_err(|_| "could not create attachment directory".to_string())?;
+        if is_symlink(&dir).await {
+            return Err("attachment directory is not a plain directory".to_string());
+        }
         let partial =
             PartialFile::new(dir.join(format!(".partial-{}", uuid::Uuid::new_v4().simple())));
         let mut file = tokio::fs::File::create(partial.path())
@@ -618,14 +647,21 @@ fn describe_request_error(error: reqwest::Error) -> String {
     }
 }
 
+async fn is_symlink(path: &Path) -> bool {
+    tokio::fs::symlink_metadata(path)
+        .await
+        .is_ok_and(|metadata| metadata.file_type().is_symlink())
+}
+
 /// A previous download is reused only when the expected size is known and
 /// matches; without a size there is nothing to verify it against.
 async fn reusable_file(path: &Path, expected_size: Option<u64>) -> bool {
     let Some(expected) = expected_size else {
         return false;
     };
-    match tokio::fs::metadata(path).await {
-        Ok(metadata) if metadata.is_file() => metadata.len() == expected,
+    // `symlink_metadata`: a symlink planted at the path is never "reused".
+    match tokio::fs::symlink_metadata(path).await {
+        Ok(metadata) if metadata.file_type().is_file() => metadata.len() == expected,
         _ => false,
     }
 }
@@ -639,6 +675,11 @@ async fn prepare_root(root: &Path) -> Result<PathBuf, ()> {
         std::env::current_dir().map_err(|_| ())?.join(root)
     };
     tokio::fs::create_dir_all(&root).await.map_err(|_| ())?;
+    // An existing but read-only directory must fail here, so the caller falls
+    // back instead of failing every attachment write.
+    let probe = root.join(format!(".write-probe-{}", uuid::Uuid::new_v4().simple()));
+    tokio::fs::write(&probe, b"").await.map_err(|_| ())?;
+    let _ = tokio::fs::remove_file(&probe).await;
     let gitignore = root.join(".gitignore");
     if tokio::fs::metadata(&gitignore).await.is_err() {
         let _ = tokio::fs::write(&gitignore, "*\n").await;
@@ -895,6 +936,64 @@ mod tests {
             sanitize_filename("shot [1] final.png"),
             "shot (1) final.png"
         );
+    }
+
+    #[test]
+    fn sanitized_names_save_on_windows_too() {
+        assert_eq!(sanitize_filename("what?*\"<>|.png"), "what______.png");
+        assert_eq!(sanitize_filename("report. . "), "report");
+        assert_eq!(sanitize_filename("CON.txt"), "_CON.txt");
+        assert_eq!(sanitize_filename("com1"), "_com1");
+        assert_eq!(sanitize_filename("COM0.txt"), "COM0.txt");
+        assert_eq!(sanitize_filename("console.log"), "console.log");
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn never_writes_or_reuses_through_a_symlinked_file_directory() {
+        let temp = tempfile::tempdir().unwrap();
+        let outside = tempfile::tempdir().unwrap();
+        std::fs::write(outside.path().join("shot.png"), b"12345").unwrap();
+        let root = attachments_root(temp.path());
+        std::fs::create_dir_all(&root).unwrap();
+        std::os::unix::fs::symlink(outside.path(), root.join("file_1")).unwrap();
+        let server = MockServer::start_async().await;
+        let resolved = downloader(&server)
+            .materialize(
+                &[InboundAttachment {
+                    size_bytes: Some(5),
+                    ..shot()
+                }],
+                &root,
+                None,
+            )
+            .await;
+        assert_eq!(
+            resolved[0].disposition,
+            AttachmentDisposition::NotDownloaded(
+                "attachment directory is not a plain directory".into()
+            )
+        );
+        let link = root.join("file_1").join("shot.png");
+        std::fs::remove_file(root.join("file_1")).unwrap();
+        std::fs::create_dir_all(root.join("file_1")).unwrap();
+        std::os::unix::fs::symlink(outside.path().join("shot.png"), &link).unwrap();
+        assert!(!reusable_file(&link, Some(5)).await);
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn a_read_only_root_falls_back() {
+        use std::os::unix::fs::PermissionsExt;
+        let temp = tempfile::tempdir().unwrap();
+        let primary = temp.path().join("primary");
+        std::fs::create_dir_all(&primary).unwrap();
+        std::fs::set_permissions(&primary, std::fs::Permissions::from_mode(0o555)).unwrap();
+        let fallback = temp.path().join("fallback");
+        let refused = prepare_root(&primary).await.is_err();
+        std::fs::set_permissions(&primary, std::fs::Permissions::from_mode(0o755)).unwrap();
+        assert!(refused, "a read-only attachments root must be refused");
+        assert!(prepare_root(&fallback).await.is_ok());
     }
 
     #[tokio::test]

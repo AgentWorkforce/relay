@@ -9765,7 +9765,7 @@ async fn fleet_delivery_downloads_attachment_into_worker_cwd_before_injection() 
     release_next_staged(&mut fixture).await;
 
     let saved = cwd.join(".agent-relay/attachments/file_1/shot.png");
-    assert_eq!(std::fs::metadata(&saved).unwrap().len(), 156748);
+    assert_eq!(std::fs::read(&saved).unwrap(), vec![7u8; 156748]);
     let bodies: Vec<String> = fixture.runtime.delivery_states[&worker_name]
         .pending_snapshot()
         .into_iter()

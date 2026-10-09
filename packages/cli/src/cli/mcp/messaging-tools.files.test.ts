@@ -111,10 +111,8 @@ describe('file attachments over MCP', () => {
   });
 
   it('upload_file accepts inline base64 bytes and refuses a missing file without uploading', async () => {
-    vi.stubGlobal(
-      'fetch',
-      vi.fn(async () => new Response(null, { status: 200 }))
-    );
+    const fetchMock = vi.fn(async () => new Response(null, { status: 200 }));
+    vi.stubGlobal('fetch', fetchMock);
     const client = await connect(agentClient);
 
     await client.callTool({
@@ -122,6 +120,10 @@ describe('file attachments over MCP', () => {
       arguments: { filename: 'shot.png', content_base64: PNG_BYTES.toString('base64') },
     });
     expect(agentClient.files.upload).toHaveBeenCalledTimes(1);
+    const [url, init] = fetchMock.mock.calls[0] as unknown as [string, RequestInit];
+    expect(url).toBe(UPLOAD_URL);
+    expect(init.method).toBe('PUT');
+    expect(Buffer.from(init.body as Uint8Array)).toEqual(PNG_BYTES);
 
     const corrupt = (await client.callTool({
       name: 'upload_file',

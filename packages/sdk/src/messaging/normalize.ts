@@ -291,7 +291,13 @@ export function normalizeFileInfo(input: unknown): RelayFileInfo {
     filename: str(file, 'filename') ?? '',
     contentType: str(file, 'content_type') ?? 'application/octet-stream',
     sizeBytes: num(file, 'size_bytes') ?? 0,
-    status: status === 'pending' || status === 'complete' || status === 'deleted' ? status : undefined,
+    // A record that omits `status` but carries a download URL is complete.
+    status:
+      status === 'pending' || status === 'complete' || status === 'deleted'
+        ? status
+        : status === undefined && str(file, 'download_url')
+          ? 'complete'
+          : undefined,
     downloadUrl: opt(str(file, 'download_url')),
     uploadedBy: opt(str(file, 'uploaded_by')),
     createdAt: opt(str(file, 'created_at')),
