@@ -189,6 +189,32 @@ impl Snapshot {
         out
     }
 
+    /// Plain text from the cursor cell through the bottom of the viewport: the
+    /// complement of [`Self::to_plain_through_cursor`]. Together they let a
+    /// caller ask whether specific text sits immediately around the cursor.
+    pub fn to_plain_from_cursor(&self) -> String {
+        let cursor_row = self.cursor.0.saturating_sub(1) as usize;
+        let cursor_col = (self.cursor.1.saturating_sub(1) as usize)
+            .saturating_add(usize::from(self.input_needs_wrap));
+        let mut out = String::new();
+        for (row_index, row) in self.cells.iter().enumerate().skip(cursor_row) {
+            let skip = if row_index == cursor_row {
+                cursor_col.min(row.len())
+            } else {
+                0
+            };
+            let row_start = out.len();
+            for cell in row.iter().skip(skip) {
+                out.push(cell.c);
+            }
+            while out.len() > row_start && out.ends_with(' ') {
+                out.pop();
+            }
+            out.push('\n');
+        }
+        out
+    }
+
     /// Whether the cursor row contains visible cells at or to the right of
     /// the cursor. A cursor-bounded composer can look like a bare prompt while
     /// a draft remains in cells to its right, so callers must not classify it

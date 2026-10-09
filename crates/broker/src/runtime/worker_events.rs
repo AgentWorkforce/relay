@@ -183,6 +183,22 @@ fn record_started_harness_pid(
     true
 }
 
+/// Validate a worker's `delivery_verified` frame before it clears custody.
+///
+/// PTY workers must name harness acceptance (or a replay of an already
+/// completed delivery). Legacy `echo` and `timeout_fallback` frames prove only
+/// that bytes reached the terminal, so they never confirm a delivery. Headless
+/// workers report process success without a verification field.
+fn accepted_delivery_verification(verification: Option<&str>, is_pty: bool) -> Option<&str> {
+    match verification {
+        Some("harness_acceptance" | "completed_replay") => verification,
+        Some("echo" | "timeout_fallback") => None,
+        Some(_) | None if is_pty => None,
+        Some(other) => Some(other),
+        None => Some("worker_confirmation"),
+    }
+}
+
 fn worker_event_is_current(current_generation: Option<Uuid>, event_generation: Uuid) -> bool {
     current_generation == Some(event_generation)
 }
@@ -945,12 +961,24 @@ impl BrokerRuntime {
                                 .get("event_id")
                                 .and_then(Value::as_str)
                                 .unwrap_or("");
-                            // Modern PTY workers use "harness_acceptance":
-                            // editor echo alone is never delivery confirmation.
-                            let verification = payload
-                                .get("verification")
-                                .and_then(Value::as_str)
-                                .unwrap_or("worker_confirmation");
+                            let is_pty = workers
+                                .workers
+                                .get(&name)
+                                .is_some_and(|handle| handle.spec.runtime == AgentRuntime::Pty);
+                            let Some(verification) = accepted_delivery_verification(
+                                payload.get("verification").and_then(Value::as_str),
+                                is_pty,
+                            ) else {
+                                tracing::warn!(
+                                    target = "agent_relay::broker",
+                                    worker = %name,
+                                    delivery_id = %delivery_id,
+                                    event_id = %event_id,
+                                    verification = ?payload.get("verification"),
+                                    "ignoring delivery_verified without harness-acceptance evidence"
+                                );
+                                return;
+                            };
                             let reason = payload.get("reason").and_then(Value::as_str);
                             tracing::debug!(
                                 target = "agent_relay::broker",
@@ -1064,30 +1092,42 @@ impl BrokerRuntime {
                             )
                             .await;
                             if let Some(pending) = pending_for_failure {
-                                if let Some(handle) = workers.workers.get_mut(&name) {
-                                    handle.last_activity_at = Instant::now();
-                                    handle.state = AgentWorkState::BlockedOnSend;
-                                }
                                 let pending_delivery_count = pending_deliveries
                                     .values()
                                     .filter(|candidate| candidate.worker_name == name)
                                     .count();
-                                let _ = send_broker_event(
-                                    sdk_out_tx,
-                                    BrokerEvent::AgentBlockedOnSend {
-                                        name: name.clone(),
-                                        blocked_secs: 0,
-                                        pending_delivery_count,
-                                    },
-                                )
-                                .await;
-                                publish_agent_state_transition(
-                                    ws_control_tx,
-                                    &name,
-                                    "stuck",
-                                    Some("blocked_on_send"),
-                                )
-                                .await;
+                                // The failed delivery is already dead-lettered.
+                                // Stay blocked only while another delivery for
+                                // this worker still awaits acceptance; otherwise
+                                // later output and idle events must be able to
+                                // move the worker on.
+                                let still_blocked = pending_delivery_count > 0;
+                                if let Some(handle) = workers.workers.get_mut(&name) {
+                                    handle.last_activity_at = Instant::now();
+                                    handle.state = if still_blocked {
+                                        AgentWorkState::BlockedOnSend
+                                    } else {
+                                        AgentWorkState::Working
+                                    };
+                                }
+                                if still_blocked {
+                                    let _ = send_broker_event(
+                                        sdk_out_tx,
+                                        BrokerEvent::AgentBlockedOnSend {
+                                            name: name.clone(),
+                                            blocked_secs: 0,
+                                            pending_delivery_count,
+                                        },
+                                    )
+                                    .await;
+                                    publish_agent_state_transition(
+                                        ws_control_tx,
+                                        &name,
+                                        "stuck",
+                                        Some("blocked_on_send"),
+                                    )
+                                    .await;
+                                }
                                 let _ = emit_dropped_delivery_failures(
                                     sdk_out_tx,
                                     dead_letters,

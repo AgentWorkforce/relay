@@ -185,6 +185,12 @@ impl PendingVerification {
             if let Some(index) = clean.rfind(&self.expected_echo) {
                 self.activity_buffer
                     .push_str(&clean[index + self.expected_echo.len()..]);
+            } else if let Some(end) =
+                end_of_compact_match(&clean, &expected_tail(&self.expected_echo))
+            {
+                // A wrapped echo matched only by its compact tail still
+                // carries any same-read turn marker after that tail.
+                self.activity_buffer.push_str(&clean[end..]);
             }
         } else if self.echo_seen {
             self.activity_buffer.push_str(text);
@@ -222,6 +228,45 @@ fn compact_render(text: &str) -> String {
     text.chars()
         .filter(|character| !character.is_whitespace())
         .collect()
+}
+
+/// Byte offset in `text` just past the last occurrence of `compact_needle`
+/// when whitespace in `text` is ignored, matching [`compact_render`].
+fn end_of_compact_match(text: &str, compact_needle: &str) -> Option<usize> {
+    if compact_needle.is_empty() {
+        return None;
+    }
+    let mut compact = String::with_capacity(text.len());
+    let mut ends = Vec::with_capacity(text.len());
+    for (index, character) in text.char_indices() {
+        if !character.is_whitespace() {
+            compact.push(character);
+            ends.push(index + character.len_utf8());
+        }
+    }
+    let start = compact.rfind(compact_needle)?;
+    // `ends` is indexed by compact character, so count characters (not bytes)
+    // through the final matched one.
+    let matched_chars = compact[..start + compact_needle.len()].chars().count();
+    ends.get(matched_chars - 1).copied()
+}
+
+/// Whether the delivery's compact tail sits immediately at the cursor:
+/// ending just before it, starting at it, or straddling it. Any of these
+/// means the editor may still hold the draft, regardless of which prompt
+/// glyph (or body line that looks like one) the composer parser anchored on.
+fn tail_touches_cursor(snapshot: &Snapshot, tail: &str) -> bool {
+    if tail.is_empty() {
+        return false;
+    }
+    let before = compact_render(&snapshot.to_plain_through_cursor());
+    let after = compact_render(&snapshot.to_plain_from_cursor());
+    if before.ends_with(tail) || after.starts_with(tail) {
+        return true;
+    }
+    tail.char_indices()
+        .skip(1)
+        .any(|(split, _)| before.ends_with(&tail[..split]) && after.starts_with(&tail[split..]))
 }
 
 fn is_cat_process(cli: &str) -> bool {
@@ -379,6 +424,22 @@ fn composer_is_idle(snapshot: &Snapshot, cli: &str) -> bool {
             .unwrap_or(false)
 }
 
+/// Whether a terminally failed delivery's body has left the live composer.
+///
+/// A failed body can remain typed in the editor. Injecting the next delivery
+/// on top of it would append to that draft or submit both as one turn, so the
+/// worker holds injection until the composer is proven idle, or the failed
+/// tail is neither in the parsed composer nor touching the cursor.
+pub(crate) fn failed_draft_released(cli: &str, expected_echo: &str, snapshot: &Snapshot) -> bool {
+    let tail = expected_tail(expected_echo);
+    if tail.is_empty() || composer_is_idle(snapshot, cli) {
+        return true;
+    }
+    let in_composer = current_composer(snapshot, cli)
+        .is_some_and(|composer| compact_render(&composer).contains(&tail));
+    !in_composer && !tail_touches_cursor(snapshot, &tail)
+}
+
 /// Distinguish terminal echo from actual harness acceptance.
 ///
 /// Activity is definitive acceptance. A body is considered parked only when
@@ -410,7 +471,14 @@ pub(crate) fn assess_harness_acceptance(
     if verification.echo_seen && is_cat_process(cli) {
         return HarnessAcceptance::Accepted("process_echo".to_string());
     }
-    if verification.echo_seen && !verification.detector.has_explicit_patterns() {
+    // Harnesses without a turn-start marker fall back to post-echo output, but
+    // a repaint of a still-unsent draft is output too. Only accept it once the
+    // body has left the cursor: a tail ending at, starting at, or straddling
+    // the cursor stays inconclusive.
+    if verification.echo_seen
+        && !verification.detector.has_explicit_patterns()
+        && !tail_touches_cursor(snapshot, &tail)
+    {
         if let Some(pattern) = verification
             .detector
             .detect_activity(&verification.activity_buffer, &verification.expected_echo)
@@ -933,6 +1001,53 @@ mod tests {
             HarnessAcceptance::Accepted("activity:any_output".to_string())
         );
         pty.shutdown().unwrap();
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn generic_repaint_cannot_confirm_a_draft_straddling_the_cursor() {
+        let expected = "Relay message from Lead [evt]: fix idle injection";
+        // The cursor sits inside the draft, so the parser's through-cursor
+        // composer cannot see the tail, yet the body is still unsent.
+        let (pty, snapshot) = codex_snapshot(&format!("› {expected}\x1b[1;20H")).await;
+        let mut verification = codex_verification(expected);
+        verification.detector = ActivityDetector::for_cli("muse");
+        verification
+            .activity_buffer
+            .push_str("composer repaint after echo");
+
+        assert_eq!(
+            assess_harness_acceptance("muse", &verification, &snapshot),
+            HarnessAcceptance::Inconclusive,
+            "generic output must not confirm a body that still sits at the cursor"
+        );
+        pty.shutdown().unwrap();
+    }
+
+    #[test]
+    fn wrapped_echo_preserves_same_chunk_acceptance_activity() {
+        let expected = "Relay message from Lead [evt]: Reply with exactly WRAPPED_CODEX_ACK";
+        let mut verification = codex_verification(expected);
+        verification.echo_seen = false;
+        let mut output = VerificationOutput::default();
+        let chunk = "Relay message from Lead [evt]: Reply with exactly\r\n  WRAPPED_CODEX_ACK\r\nWorking (1s • esc to interrupt)";
+        output.push_str(chunk);
+        verification.observe(&output, chunk);
+
+        assert!(verification.echo_seen);
+        assert_eq!(
+            verification.accepted_activity(),
+            Some("Working+esc to interrupt".to_string()),
+            "a turn marker in the same read as a wrapped echo must be retained"
+        );
+    }
+
+    #[test]
+    fn compact_match_end_maps_back_to_raw_offsets() {
+        let text = "a b\r\n  cé d tail";
+        let end = end_of_compact_match(text, "abcéd").unwrap();
+        assert_eq!(&text[end..], " tail");
+        assert_eq!(end_of_compact_match(text, "zzz"), None);
     }
 
     #[test]

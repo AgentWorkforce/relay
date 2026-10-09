@@ -1,6 +1,10 @@
 use std::collections::VecDeque;
 use std::future::Future;
 use std::pin::Pin;
+use std::sync::{
+    atomic::{AtomicBool, Ordering},
+    Arc,
+};
 use std::time::{Duration, Instant};
 
 use crate::{
@@ -119,10 +123,14 @@ pub(crate) fn injection_submit_followup_delay(cli: &str) -> Option<Duration> {
 /// Retry only the submit gesture for a body proven to remain in the live
 /// composer. Never write the body twice: an accepted first write whose activity
 /// marker was missed would otherwise create a duplicate turn.
+///
+/// `cancel` lets human input withdraw the gesture until it reaches the child:
+/// the drainer skips a not-yet-started key and withholds Codex's delayed CR.
 pub(crate) fn submit_injection_recovery(
     pty: &PtySession,
     resolved_cli: &str,
     completed_attempts: usize,
+    cancel: Arc<AtomicBool>,
 ) -> anyhow::Result<(tokio::sync::oneshot::Receiver<std::io::Result<()>>, u64)> {
     let lower = resolved_cli.to_ascii_lowercase();
     if lower.contains("codex") && completed_attempts == 1 {
@@ -131,11 +139,10 @@ pub(crate) fn submit_injection_recovery(
         // later LF submitted it. First reproduce the non-destructive
         // End+Enter half; the final bounded attempt below sends LF only if the
         // same delivery is still visibly parked.
-        return pty.submit_write_paced_with_followup_and_output_boundary(
+        return pty.submit_cancellable_write_with_output_boundary(
             b"\x1b[F".to_vec(),
-            Duration::ZERO,
-            Duration::from_secs(1),
-            b"\r".to_vec(),
+            Some((Duration::from_secs(1), b"\r".to_vec())),
+            cancel,
         );
     }
 
@@ -144,7 +151,22 @@ pub(crate) fn submit_injection_recovery(
     } else {
         b'\r'
     };
-    pty.submit_write_paced_with_output_boundary(vec![key], Duration::ZERO)
+    pty.submit_cancellable_write_with_output_boundary(vec![key], None, cancel)
+}
+
+/// Cancel every queued submit-key recovery because a human now owns the input.
+pub(crate) fn cancel_recovery_writes(cancels: &mut Vec<Arc<AtomicBool>>) {
+    for cancel in cancels.drain(..) {
+        cancel.store(true, Ordering::Release);
+    }
+}
+
+/// Start a cancellable recovery, pruning flags whose writes already settled.
+pub(crate) fn new_recovery_cancel(cancels: &mut Vec<Arc<AtomicBool>>) -> Arc<AtomicBool> {
+    cancels.retain(|cancel| Arc::strong_count(cancel) > 1);
+    let cancel = Arc::new(AtomicBool::new(false));
+    cancels.push(cancel.clone());
+    cancel
 }
 
 /// Warn (without retrying) when a one-shot auto-response keystroke can't be
@@ -1566,6 +1588,7 @@ pub(crate) async fn run_wrap(
     // is hit (at which point the child is not consuming input anyway).
     let mut stdin_pending: VecDeque<Vec<u8>> = VecDeque::new();
     let mut human_input_generation = 0u64;
+    let mut recovery_cancels: Vec<Arc<AtomicBool>> = Vec::new();
     let mut stdin_retry_deadline: Option<tokio::time::Instant> = None;
     const STDIN_RETRY_INTERVAL: Duration = Duration::from_millis(4);
 
@@ -1582,6 +1605,7 @@ pub(crate) async fn run_wrap(
             // keystrokes are never dropped or reordered under back-pressure.
             Some(data) = stdin_rx.recv() => {
                 human_input_generation = human_input_generation.saturating_add(1);
+                cancel_recovery_writes(&mut recovery_cancels);
                 if !pending_verifications.is_empty() {
                     for verification in pending_verifications.drain(..) {
                         tracing::warn!(
@@ -2393,6 +2417,7 @@ pub(crate) async fn run_wrap(
                                     &pty,
                                     &resolved_cli,
                                     completed_attempts,
+                                    new_recovery_cancel(&mut recovery_cancels),
                                 ) {
                                     Ok((ack_rx, output_boundary)) => {
                                         let pending_write = PendingWrapWrite::Retry {
@@ -2629,13 +2654,13 @@ mod tests {
         let drain = tokio::spawn(async move { while rx.recv().await.is_some() {} });
         tokio::time::sleep(Duration::from_millis(100)).await;
 
-        let (first_ack, _) = submit_injection_recovery(&pty, "codex", 1).unwrap();
+        let (first_ack, _) = submit_injection_recovery(&pty, "codex", 1, Default::default()).unwrap();
         tokio::time::timeout(Duration::from_secs(3), first_ack)
             .await
             .expect("End+CR recovery timed out")
             .expect("drainer exited")
             .expect("End+CR recovery failed");
-        let (second_ack, _) = submit_injection_recovery(&pty, "codex", 2).unwrap();
+        let (second_ack, _) = submit_injection_recovery(&pty, "codex", 2, Default::default()).unwrap();
         tokio::time::timeout(Duration::from_secs(3), second_ack)
             .await
             .expect("LF recovery timed out")

@@ -132,8 +132,21 @@ enum WriteMsg {
         /// Relay still must prevent a terminal reply or human keystroke from
         /// splicing into that boundary.
         followup: Option<FollowupWrite>,
+        /// Optional cancellation shared with the submitter. The drainer checks
+        /// it before the primary bytes and again after the follow-up delay, so
+        /// a later owner of the input (a human typing) can stop a queued submit
+        /// key from reaching the child. A cancelled write acks
+        /// [`io::ErrorKind::Interrupted`] and leaves the drainer running.
+        cancel: Option<Arc<AtomicBool>>,
         ack: oneshot::Sender<io::Result<()>>,
     },
+}
+
+fn write_cancelled() -> io::Error {
+    io::Error::new(
+        io::ErrorKind::Interrupted,
+        "queued PTY write cancelled before it reached the child",
+    )
 }
 
 struct FollowupWrite {
@@ -656,10 +669,20 @@ fn drain_write_queue<W: Write>(
                 bytes,
                 pace,
                 followup,
+                cancel,
                 ack,
             } => {
                 if bytes.is_empty() && followup.as_ref().is_none_or(|part| part.bytes.is_empty()) {
                     let _ = ack.send(Ok(()));
+                    continue;
+                }
+                let is_cancelled = || {
+                    cancel
+                        .as_ref()
+                        .is_some_and(|flag| flag.load(Ordering::Acquire))
+                };
+                if is_cancelled() {
+                    let _ = ack.send(Err(write_cancelled()));
                     continue;
                 }
                 if matches!(bytes.as_slice(), b"\x1b[B" | b"\x1b[A" | b"\r" | b"\n") {
@@ -682,6 +705,9 @@ fn drain_write_queue<W: Write>(
                         return Ok(());
                     }
                     thread::sleep(part.delay);
+                    if is_cancelled() {
+                        return Err(write_cancelled());
+                    }
                     writer.write_all(&part.bytes).and_then(|_| writer.flush())
                 });
                 match result {
@@ -691,6 +717,10 @@ fn drain_write_queue<W: Write>(
                         // silence counter.
                         no_pid_alive_checks.store(0, Ordering::Relaxed);
                         let _ = ack.send(Ok(()));
+                    }
+                    Err(err) if err.kind() == io::ErrorKind::Interrupted && is_cancelled() => {
+                        // Only the follow-up was withheld; the PTY is healthy.
+                        let _ = ack.send(Err(err));
                     }
                     Err(err) => {
                         let _ = ack.send(Err(err));
@@ -712,12 +742,14 @@ fn enqueue_user_write(
     bytes: Vec<u8>,
     pace: Duration,
     followup: Option<FollowupWrite>,
+    cancel: Option<Arc<AtomicBool>>,
 ) -> Result<oneshot::Receiver<io::Result<()>>> {
     let (ack_tx, ack_rx) = oneshot::channel::<io::Result<()>>();
     match write_tx.try_send(WriteMsg::UserInput {
         bytes,
         pace,
         followup,
+        cancel,
         ack: ack_tx,
     }) {
         Ok(()) => Ok(ack_rx),
@@ -933,6 +965,7 @@ impl PtySession {
         bytes: Vec<u8>,
         pace: Duration,
         followup: Option<FollowupWrite>,
+        cancel: Option<Arc<AtomicBool>>,
     ) -> Result<(oneshot::Receiver<io::Result<()>>, u64)> {
         #[cfg(unix)]
         let _order_guard = {
@@ -974,6 +1007,7 @@ impl PtySession {
             bytes,
             pace,
             followup,
+            cancel,
         )?;
         Ok((ack, boundary))
     }
@@ -1221,6 +1255,7 @@ impl PtySession {
             bytes,
             Duration::ZERO,
             None,
+            None,
         )
     }
 
@@ -1247,7 +1282,14 @@ impl PtySession {
         bytes: Vec<u8>,
         pace: Duration,
     ) -> Result<oneshot::Receiver<io::Result<()>>> {
-        enqueue_user_write(&self.write_tx, &self.no_pid_alive_checks, bytes, pace, None)
+        enqueue_user_write(
+            &self.write_tx,
+            &self.no_pid_alive_checks,
+            bytes,
+            pace,
+            None,
+            None,
+        )
     }
 
     /// Queue a paced input atomically with the receive-time output watermark.
@@ -1261,7 +1303,7 @@ impl PtySession {
         bytes: Vec<u8>,
         pace: Duration,
     ) -> Result<(oneshot::Receiver<io::Result<()>>, u64)> {
-        self.enqueue_write_with_output_boundary(bytes, pace, None)
+        self.enqueue_write_with_output_boundary(bytes, pace, None, None)
     }
 
     /// Submit a paced primary payload followed by a delayed second write as
@@ -1288,6 +1330,7 @@ impl PtySession {
                 delay: followup_delay,
                 bytes: followup_bytes,
             }),
+            None,
         )
     }
 
@@ -1307,6 +1350,26 @@ impl PtySession {
                 delay: followup_delay,
                 bytes: followup_bytes,
             }),
+            None,
+        )
+    }
+
+    /// Queue a submit-key write, with an optional delayed follow-up, that the
+    /// caller can cancel until each part reaches the child. Setting `cancel`
+    /// before the drainer starts the entry skips it entirely; setting it during
+    /// the follow-up delay withholds the follow-up. Either way the ack resolves
+    /// to [`io::ErrorKind::Interrupted`].
+    pub fn submit_cancellable_write_with_output_boundary(
+        &self,
+        bytes: Vec<u8>,
+        followup: Option<(Duration, Vec<u8>)>,
+        cancel: Arc<AtomicBool>,
+    ) -> Result<(oneshot::Receiver<io::Result<()>>, u64)> {
+        self.enqueue_write_with_output_boundary(
+            bytes,
+            Duration::ZERO,
+            followup.map(|(delay, bytes)| FollowupWrite { delay, bytes }),
+            Some(cancel),
         )
     }
 
@@ -2421,6 +2484,7 @@ mod tests {
             bytes: b"injection-body".to_vec(),
             pace: Duration::ZERO,
             followup: None,
+            cancel: None,
             ack: ack_tx_1,
         })
         .unwrap();
@@ -2430,6 +2494,7 @@ mod tests {
             bytes: b"\r".to_vec(),
             pace: Duration::ZERO,
             followup: None,
+            cancel: None,
             ack: ack_tx_2,
         })
         .unwrap();
@@ -2505,6 +2570,7 @@ mod tests {
             bytes: b"should-fail\n".to_vec(),
             pace: Duration::ZERO,
             followup: None,
+            cancel: None,
             ack: ack_tx,
         })
         .expect("queue accepts user input");
@@ -2544,6 +2610,7 @@ mod tests {
             bytes: b"flush-should-fail\n".to_vec(),
             pace: Duration::ZERO,
             followup: None,
+            cancel: None,
             ack: ack_tx,
         })
         .expect("queue accepts user input");
@@ -2961,6 +3028,7 @@ mod tests {
             bytes: b"go\x1b[A\r".to_vec(),
             pace: StdDuration::from_millis(1),
             followup: None,
+            cancel: None,
             ack: ack_tx,
         })
         .expect("queue accepts paced user input");
@@ -3017,6 +3085,7 @@ mod tests {
                 delay: StdDuration::from_millis(5),
                 bytes: b"\r".to_vec(),
             }),
+            cancel: None,
             ack: ack_tx,
         })
         .expect("queue accepts the compound write");
@@ -3083,6 +3152,7 @@ mod tests {
                 delay: StdDuration::ZERO,
                 bytes: b"\r".to_vec(),
             }),
+            cancel: None,
             ack: ack_tx,
         })
         .expect("queue accepts the compound write");
@@ -3098,6 +3168,91 @@ mod tests {
 
         drop(tx);
         drainer.join().expect("drainer thread joins cleanly");
+    }
+
+    /// A human taking over the composer during a delayed submit recovery must
+    /// stop the queued follow-up key, not merely relabel its ack afterwards.
+    #[tokio::test]
+    async fn cancelled_followup_is_withheld_and_drainer_keeps_running() {
+        use std::sync::Mutex as StdMutex;
+
+        struct RecordingWriter {
+            chunks: Arc<StdMutex<Vec<Vec<u8>>>>,
+        }
+        impl std::io::Write for RecordingWriter {
+            fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+                self.chunks.lock().unwrap().push(buf.to_vec());
+                Ok(buf.len())
+            }
+            fn flush(&mut self) -> std::io::Result<()> {
+                Ok(())
+            }
+        }
+
+        let chunks = Arc::new(StdMutex::new(Vec::new()));
+        let (tx, rx) = std_mpsc::sync_channel::<WriteMsg>(WRITE_QUEUE_DEPTH);
+        let writer = RecordingWriter {
+            chunks: chunks.clone(),
+        };
+        let drainer = std::thread::spawn(move || {
+            super::drain_write_queue(writer, rx, Arc::new(AtomicU32::new(0)))
+        });
+
+        let cancel = Arc::new(AtomicBool::new(false));
+        let (ack_tx, ack_rx) = oneshot::channel::<std::io::Result<()>>();
+        tx.send(WriteMsg::UserInput {
+            bytes: b"\x1b[F".to_vec(),
+            pace: StdDuration::ZERO,
+            followup: Some(FollowupWrite {
+                delay: StdDuration::from_millis(200),
+                bytes: b"\r".to_vec(),
+            }),
+            cancel: Some(cancel.clone()),
+            ack: ack_tx,
+        })
+        .expect("queue accepts the recovery write");
+        tokio::time::sleep(Duration::from_millis(50)).await;
+        cancel.store(true, Ordering::Release);
+
+        let ack = tokio::time::timeout(Duration::from_secs(1), ack_rx)
+            .await
+            .expect("drainer resolves the cancelled write")
+            .expect("ack sender not dropped");
+        assert_eq!(
+            ack.expect_err("cancelled follow-up must not ack success").kind(),
+            std::io::ErrorKind::Interrupted
+        );
+
+        let skipped = Arc::new(AtomicBool::new(true));
+        let (skip_tx, skip_rx) = oneshot::channel::<std::io::Result<()>>();
+        tx.send(WriteMsg::UserInput {
+            bytes: b"\r".to_vec(),
+            pace: StdDuration::ZERO,
+            followup: None,
+            cancel: Some(skipped),
+            ack: skip_tx,
+        })
+        .expect("queue accepts a pre-cancelled write");
+        assert!(skip_rx.await.unwrap().is_err());
+
+        let (human_tx, human_rx) = oneshot::channel::<std::io::Result<()>>();
+        tx.send(WriteMsg::UserInput {
+            bytes: b"human".to_vec(),
+            pace: StdDuration::ZERO,
+            followup: None,
+            cancel: None,
+            ack: human_tx,
+        })
+        .expect("queue accepts the human write");
+        assert!(human_rx.await.unwrap().is_ok(), "drainer survives cancellation");
+
+        drop(tx);
+        drainer.join().expect("drainer thread joins cleanly");
+        assert_eq!(
+            chunks.lock().unwrap().as_slice(),
+            [b"\x1b[F".to_vec(), b"human".to_vec()],
+            "neither the cancelled follow-up CR nor the pre-cancelled CR reaches the child"
+        );
     }
 
     /// Regression: mise/asdf/rtx expose provider CLIs (codex, claude, gemini)
