@@ -194,7 +194,15 @@ pub(crate) fn sanitize_filename(raw: &str) -> String {
     let cleaned: String = base
         .chars()
         .filter(|c| !c.is_control() && !is_invisible_format(*c))
-        .map(|c| if c == ':' { '_' } else { c })
+        .map(|c| match c {
+            ':' => '_',
+            // Keep the saved name free of characters the injected line would
+            // otherwise have to rewrite, so the path can be shown verbatim.
+            '[' => '(',
+            ']' => ')',
+            c if c.is_whitespace() => ' ',
+            c => c,
+        })
         .collect();
     let trimmed = cleaned.trim().trim_start_matches('.').trim();
     if trimmed.is_empty() || trimmed == "." || trimmed == ".." {
@@ -275,6 +283,17 @@ fn describe_attachment(attachment: &InboundAttachment) -> String {
     }
 }
 
+/// A saved path as the worker must type it, or `None` when it cannot sit on
+/// one injected line (a control or invisible character in the operator's
+/// working directory). The file name part is already sanitized.
+fn verbatim_path(path: &Path) -> Option<String> {
+    let path = path.to_str()?;
+    let safe = !path
+        .chars()
+        .any(|c| c.is_control() || is_invisible_format(c) || c == '\n' || c == '\r');
+    safe.then(|| path.to_string())
+}
+
 /// Render the `Attachments:` block, or `None` when there are none.
 pub(crate) fn render_attachment_block(items: &[ResolvedAttachment]) -> Option<String> {
     if items.is_empty() {
@@ -285,10 +304,14 @@ pub(crate) fn render_attachment_block(items: &[ResolvedAttachment]) -> Option<St
         let description = describe_attachment(&item.attachment);
         let file_id = display_line(&item.attachment.file_id);
         let line = match &item.disposition {
-            AttachmentDisposition::Saved(path) => format!(
-                "- {description} saved to {}",
-                display_line(&path.to_string_lossy())
-            ),
+            AttachmentDisposition::Saved(path) => match verbatim_path(path) {
+                // The worker must be able to open exactly this path, so it is
+                // never truncated or rewritten.
+                Some(path) => format!("- {description} saved to {path}"),
+                None => format!(
+                    "- {description} file {file_id} (not downloaded: the saved path cannot be shown on one line); fetch with: agent-relay message file download {file_id}"
+                ),
+            },
             AttachmentDisposition::NotDownloaded(reason) => format!(
                 "- {description} file {file_id} (not downloaded: {}); fetch with: agent-relay message file download {file_id}",
                 display_line(reason)
@@ -440,11 +463,14 @@ impl AttachmentDownloader {
             self.check_size(size)?;
         }
         let url = self.resolve_download_url(&info.download_url)?;
-        let mut request = self.client.get(url.clone());
-        if self.is_relaycast_origin(&url) {
-            request = request.bearer_auth(&self.auth_token);
-        }
-        let mut response = request.send().await.map_err(describe_request_error)?;
+        // The signed download URL is its own credential: never attach the
+        // workspace key, so no redirect can carry it to another host.
+        let mut response = self
+            .client
+            .get(url)
+            .send()
+            .await
+            .map_err(describe_request_error)?;
         let status = response.status();
         if !status.is_success() {
             return Err(format!("download returned HTTP {}", status.as_u16()));
@@ -542,14 +568,6 @@ impl AttachmentDownloader {
         }
         Err(unsupported())
     }
-
-    /// Only send Relaycast credentials back to Relaycast itself; a signed
-    /// storage URL on another origin authenticates through its query string.
-    fn is_relaycast_origin(&self, url: &reqwest::Url) -> bool {
-        reqwest::Url::parse(&self.base_url)
-            .map(|base| base.origin() == url.origin())
-            .unwrap_or(false)
-    }
 }
 
 struct FileInfo {
@@ -600,11 +618,14 @@ fn describe_request_error(error: reqwest::Error) -> String {
     }
 }
 
+/// A previous download is reused only when the expected size is known and
+/// matches; without a size there is nothing to verify it against.
 async fn reusable_file(path: &Path, expected_size: Option<u64>) -> bool {
+    let Some(expected) = expected_size else {
+        return false;
+    };
     match tokio::fs::metadata(path).await {
-        Ok(metadata) if metadata.is_file() => {
-            expected_size.is_none_or(|expected| metadata.len() == expected)
-        }
+        Ok(metadata) if metadata.is_file() => metadata.len() == expected,
         _ => false,
     }
 }
@@ -859,6 +880,34 @@ mod tests {
     }
 
     #[test]
+    fn saved_paths_are_shown_verbatim_however_long() {
+        let long_dir = format!("/work/{}/[team] repo", "d".repeat(260));
+        let path = PathBuf::from(format!(
+            "{long_dir}/.agent-relay/attachments/file_1/shot.png"
+        ));
+        let block = render_attachment_block(&[ResolvedAttachment {
+            attachment: shot(),
+            disposition: AttachmentDisposition::Saved(path.clone()),
+        }])
+        .unwrap();
+        assert!(block.ends_with(&format!("saved to {}", path.display())));
+        assert_eq!(
+            sanitize_filename("shot [1] final.png"),
+            "shot (1) final.png"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_previous_download_without_a_known_size_is_not_reused() {
+        let temp = tempfile::tempdir().unwrap();
+        let path = temp.path().join("shot.png");
+        std::fs::write(&path, b"stale").unwrap();
+        assert!(!reusable_file(&path, None).await);
+        assert!(!reusable_file(&path, Some(4)).await);
+        assert!(reusable_file(&path, Some(5)).await);
+    }
+
+    #[test]
     fn renders_saved_and_failed_lines() {
         let block = render_attachment_block(&[
             ResolvedAttachment {
@@ -937,6 +986,16 @@ mod tests {
                 }));
             })
             .await;
+        // The signed URL is its own credential: a request carrying the
+        // workspace key would hit this trap and fail the download.
+        let credential_trap = server
+            .mock_async(|when, then| {
+                when.method(GET)
+                    .path("/blob/file_1")
+                    .header_exists("authorization");
+                then.status(500);
+            })
+            .await;
         let blob = server
             .mock_async(|when, then| {
                 when.method(GET)
@@ -960,6 +1019,7 @@ mod tests {
             AttachmentDisposition::Saved(expected.clone())
         );
         assert_eq!(std::fs::read_to_string(&expected).unwrap(), "hello");
+        credential_trap.assert_hits_async(0).await;
         assert_eq!(
             std::fs::read_to_string(root.join(".gitignore")).unwrap(),
             "*\n"
@@ -1018,9 +1078,7 @@ mod tests {
             .await;
         let blob = server
             .mock_async(|when, then| {
-                when.method(GET)
-                    .path("/blob/file_1")
-                    .header("authorization", "Bearer rk_test_key");
+                when.method(GET).path("/blob/file_1");
                 then.status(200).body("0123456789");
             })
             .await;

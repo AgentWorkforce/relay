@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
-import { RelaycastMessagingClient, type RelaycastAgentLike } from '../messaging/index.js';
+import { RelaycastMessagingClient, downloadRelayFile, type RelaycastAgentLike } from '../messaging/index.js';
 import { AgentRelay } from '../index.js';
 
 const UPLOAD_URL = 'https://files.example.test/_relayfiles?token=secret-signature';
@@ -165,5 +165,25 @@ describe('RelaycastMessagingClient files', () => {
     const messaging = clientWith(createAgentFiles());
     const relay = new AgentRelay({ messaging });
     expect(relay.files).toBe(messaging.files);
+  });
+
+  it('refuses a download whose body exceeds the limit even when the record claims it is small', async () => {
+    const files = createAgentFiles();
+    const body = () =>
+      new ReadableStream<Uint8Array>({
+        start(controller) {
+          controller.enqueue(new Uint8Array(16));
+          controller.enqueue(new Uint8Array(16));
+          controller.close();
+        },
+      });
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async () => new Response(body(), { status: 200 }))
+    );
+
+    const messaging = clientWith(files);
+    await expect(downloadRelayFile(files, 'file-1', { maxBytes: 20 })).rejects.toThrow(/download limit/);
+    await expect(messaging.files.download('file-1')).resolves.toMatchObject({ file: { id: 'file-1' } });
   });
 });

@@ -123,6 +123,13 @@ describe('file attachments over MCP', () => {
     });
     expect(agentClient.files.upload).toHaveBeenCalledTimes(1);
 
+    const corrupt = (await client.callTool({
+      name: 'upload_file',
+      arguments: { filename: 'shot.png', content_base64: 'iVBOR!!w0KGgo=' },
+    })) as { isError?: boolean; content: Array<{ text: string }> };
+    expect(corrupt.isError).toBe(true);
+    expect(corrupt.content[0].text).toContain('not valid base64');
+
     const missing = (await client.callTool({
       name: 'upload_file',
       arguments: { path: path.join(dir, 'missing.png') },

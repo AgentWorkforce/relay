@@ -14,7 +14,13 @@ import {
   messageReadersReceipt,
   resolveExactAgentName,
 } from '../lib/message-delivery-receipts.js';
-import { MAX_ATTACHMENT_BYTES, contentTypeFor, readAttachment, saveAttachment } from '../lib/attachments.js';
+import {
+  MAX_ATTACHMENT_BYTES,
+  contentTypeFor,
+  decodeBase64Strict,
+  readAttachment,
+  saveAttachment,
+} from '../lib/attachments.js';
 import { jsonContent, jsonResult, textContent } from './tool-results.js';
 import { identityOverrideInputShape, messageResult } from './tool-shapes.js';
 import { McpRequestReplay } from './request-replay.js';
@@ -485,7 +491,7 @@ export function registerMessagingTools(
           contentType: content_type ?? read.contentType,
         };
       } else if (content_base64 !== undefined && filename) {
-        const data = Buffer.from(content_base64, 'base64');
+        const data = decodeBase64Strict(content_base64);
         if (data.byteLength > MAX_ATTACHMENT_BYTES) {
           throw new Error(
             `Cannot attach ${filename}: ${data.byteLength} bytes exceeds the ${MAX_ATTACHMENT_BYTES}-byte limit.`

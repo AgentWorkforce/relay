@@ -37,6 +37,23 @@ export function safeAttachmentFilename(name: string): string {
   return cleaned || 'attachment';
 }
 
+/**
+ * Decode strict base64 (standard alphabet, optional padding, whitespace
+ * ignored). `Buffer.from(..., 'base64')` silently skips invalid characters,
+ * which would upload different bytes than the caller meant.
+ */
+export function decodeBase64Strict(value: string): Buffer {
+  const compact = value.replace(/\s+/g, '');
+  if (!/^[A-Za-z0-9+/]*={0,2}$/.test(compact) || compact.length % 4 === 1) {
+    throw new Error('content_base64 is not valid base64.');
+  }
+  const data = Buffer.from(compact, 'base64');
+  if (data.toString('base64').replace(/=+$/, '') !== compact.replace(/=+$/, '')) {
+    throw new Error('content_base64 is not valid base64.');
+  }
+  return data;
+}
+
 /** Read a local file to attach, enforcing that it is a non-empty regular file under the size cap. */
 export async function readAttachment(
   filePath: string

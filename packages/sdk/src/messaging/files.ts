@@ -46,17 +46,52 @@ export async function uploadRelayFile(
   return { ...normalizeFileInfo(await files.complete(id)), status: 'complete' };
 }
 
-/** Fetch a completed file's bytes through its short-lived download URL. */
-export async function downloadRelayFile(files: RelayFilesApiLike, id: string): Promise<RelayDownloadedFile> {
+/** Default largest attachment `downloadRelayFile` reads (25 MiB), matching the injectors' cap. */
+export const RELAY_FILE_DOWNLOAD_MAX_BYTES = 25 * 1024 * 1024;
+
+/**
+ * Fetch a completed file's bytes through its short-lived download URL,
+ * refusing the body as soon as it exceeds `maxBytes`.
+ */
+export async function downloadRelayFile(
+  files: RelayFilesApiLike,
+  id: string,
+  options: { maxBytes?: number } = {}
+): Promise<RelayDownloadedFile> {
+  const maxBytes = options.maxBytes ?? RELAY_FILE_DOWNLOAD_MAX_BYTES;
   const file = normalizeFileInfo(await files.get(id));
   if (file.status !== 'complete' || !file.downloadUrl) {
     throw new Error(`files.download: file ${id} has no completed upload to download.`);
   }
+  const tooLarge = () => new Error(`files.download: file ${id} is over the ${maxBytes}-byte download limit.`);
+  if (file.sizeBytes > maxBytes) throw tooLarge();
   const response = await fetch(file.downloadUrl);
   if (!response.ok) {
     throw new Error(
       `files.download: fetching file ${id} failed with HTTP ${response.status} at ${new URL(file.downloadUrl).origin}.`
     );
   }
-  return { file, data: new Uint8Array(await response.arrayBuffer()) };
+  const declared = Number(response.headers.get('content-length'));
+  if (Number.isFinite(declared) && declared > maxBytes) throw tooLarge();
+  if (!response.body) return { file, data: new Uint8Array(0) };
+  const reader = response.body.getReader();
+  const chunks: Uint8Array[] = [];
+  let total = 0;
+  for (;;) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    total += value.byteLength;
+    if (total > maxBytes) {
+      await reader.cancel();
+      throw tooLarge();
+    }
+    chunks.push(value);
+  }
+  const data = new Uint8Array(total);
+  let offset = 0;
+  for (const chunk of chunks) {
+    data.set(chunk, offset);
+    offset += chunk.byteLength;
+  }
+  return { file, data };
 }
