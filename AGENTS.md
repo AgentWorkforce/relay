@@ -334,12 +334,12 @@ agent batches ready PRs into `trunk`, gets that one PR green, and merges it.
    typecheck, tests and lint this repo uses, and list the exact commands and
    results in the PR body.
 
-**When the PR is ready** 3. Add the label **`mergeable`** once all of these are true:
+**When the PR is ready**
 
-- The change is complete and the local checks above pass.
-- Review feedback (human and bot) is addressed or answered.
-- It is not a draft and does not depend on an unmerged PR.
-
+3. Add the label **`mergeable`** once all of these are true:
+   - The change is complete and the local checks above pass.
+   - Review feedback (human and bot) is addressed or answered.
+   - It is not a draft and does not depend on an unmerged PR.
 4. Remove `mergeable` if the PR stops being ready (new work, a failing check, a
    blocking question). The label is read live from GitHub on every sweep.
 

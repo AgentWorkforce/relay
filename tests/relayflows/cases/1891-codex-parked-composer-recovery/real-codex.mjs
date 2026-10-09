@@ -18,7 +18,7 @@
  */
 
 import { constants as fsConstants } from 'node:fs';
-import { access, chmod, copyFile, mkdtemp, mkdir, rm, writeFile } from 'node:fs/promises';
+import { access, chmod, copyFile, mkdtemp, mkdir, rm, stat, writeFile } from 'node:fs/promises';
 import { spawn } from 'node:child_process';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
@@ -415,11 +415,13 @@ function sendFrame(child, frame) {
 
 function option(name, fallback) {
   const index = process.argv.indexOf(name);
-  return index >= 0 ? process.argv[index + 1] : fallback;
+  const value = index >= 0 ? process.argv[index + 1] : undefined;
+  return value === undefined || value.startsWith('--') ? fallback : value;
 }
 
 async function assertExecutable(candidate, name) {
   try {
+    if (!(await stat(candidate)).isFile()) throw new Error('not a file');
     await access(candidate, fsConstants.X_OK);
   } catch {
     throw new Error(`${name} must be an executable file: ${candidate}`);
