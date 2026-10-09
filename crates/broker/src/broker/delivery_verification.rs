@@ -326,6 +326,25 @@ mod tests {
     use super::*;
 
     #[test]
+    fn check_echo_matches_injection_with_attachment_block() {
+        // The attachment block is part of the body, so the expected echo is
+        // the full multi-line injection exactly like any multi-line message.
+        let body = crate::attachments::append_attachment_block(
+            "see this",
+            Some("Attachments:\n- shot.png (image/png, 153.1 KB) saved to /w/.agent-relay/attachments/f1/shot.png"),
+        );
+        let expected =
+            crate::broker::injection_format::format_injection("Alice", "evt_1", &body, "Lead");
+        assert!(expected
+            .contains("Relay message from Alice [evt_1]: see this\n\nAttachments:\n- shot.png"));
+        let output = format!("prompt\n\x1b[32m{expected}\x1b[0m\n> ");
+        assert!(check_echo_in_output(&output, &expected));
+        // A truncated echo that stops before the block is not a match.
+        let header_only = format!("{}\n", expected.split("\n\nAttachments:").next().unwrap());
+        assert!(!check_echo_in_output(&header_only, &expected));
+    }
+
+    #[test]
     fn check_echo_clean_text() {
         let output = "some preamble\nRelay message from Alice [evt_1]: hello world\nmore output";
         assert!(check_echo_in_output(

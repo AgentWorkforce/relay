@@ -12,6 +12,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `agent-relay message dm send`, `message post` and `message dm send_group` take a repeatable `--file <path>` that uploads and attaches local files (for example screenshots); `message file upload` accepts `--to <agent>` for a DM.
 - `agent-relay message file download <file_id>` saves a received attachment (default `.agent-relay/attachments/<file_id>/`) and prints its path; `message file get <file_id>` shows it with a short-lived download URL.
 - The `agent-relay mcp` server adds `upload_file` (local path or base64) and `download_file`, and `send_group_dm` accepts `attachments`.
+- The broker now passes Relaycast message attachments to PTY agents. Each file is downloaded (25 MiB cap, 20 s timeout) to `<agent cwd>/.agent-relay/attachments/<file_id>/<filename>`, and an `Attachments:` block after the message body gives its local path. If a file is not downloaded, the block gives its file id and an `agent-relay message file download <file_id>` command instead. Attachment-only messages are now injected rather than dropped.
 - `@agent-relay/sdk` adds `files.upload` / `files.get` / `files.download` on `AgentRelay` and `RelaycastMessagingClient`, plus `uploadRelayFile` / `downloadRelayFile` helpers.
 
 ### Fixed

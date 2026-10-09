@@ -682,6 +682,9 @@ fn worker_event_runtime_fixture_with_relay(
         terminal_snapshot_requests: HashMap::new(),
         terminal_input_requests: HashMap::new(),
         fleet_delivery_book: FleetDeliveryBook::default(),
+        attachment_staging: crate::attachments::AttachmentStaging::new(Some(
+            temp_dir.path().join("attachment-home"),
+        )),
         fleet_max_agents: 0,
         fleet_inventory: HashMap::new(),
         fleet_inventory_reconcile_retry_after: HashMap::new(),
@@ -9444,4 +9447,213 @@ async fn muse_fleet_missing_auth_fails_before_registration_and_dedup() {
         assert!(fixture.runtime.workers.workers.is_empty());
         assert!(fixture.runtime.pending_verified_spawns.is_empty());
     }
+}
+
+fn attachment_deliver(msg_id: &str, seq: u64, payload: Value) -> Deliver {
+    attachment_deliver_to("ghost", msg_id, seq, payload)
+}
+
+fn attachment_deliver_to(agent: &str, msg_id: &str, seq: u64, payload: Value) -> Deliver {
+    Deliver {
+        v: FLEET_WIRE_VERSION,
+        agent: agent.into(),
+        agent_id: format!("{agent}-id"),
+        delivery_id: format!("delivery-{msg_id}"),
+        msg_id: msg_id.into(),
+        seq,
+        mode: DeliveryMode::Wait,
+        payload,
+    }
+}
+
+fn pending_body_for(fixture: &WorkerEventRuntimeFixture, msg_id: &str) -> String {
+    fixture
+        .runtime
+        .pending_deliveries
+        .values()
+        .find(|pending| pending.delivery.event_id.as_str() == msg_id)
+        .map(|pending| pending.delivery.body.clone())
+        .unwrap_or_else(|| panic!("delivery {msg_id} should be pending"))
+}
+
+async fn deliver_and_release_staged(fixture: &mut WorkerEventRuntimeFixture, deliver: Deliver) {
+    fixture
+        .runtime
+        .handle_fleet_control_event(crate::node_control::FleetControlEvent::Message(
+            crate::fleet_wire::RelaycastToBroker::Deliver(deliver),
+        ))
+        .await;
+}
+
+async fn release_next_staged(fixture: &mut WorkerEventRuntimeFixture) {
+    let staged = tokio::time::timeout(
+        Duration::from_secs(10),
+        fixture.runtime.attachment_staging.recv(),
+    )
+    .await
+    .expect("attachment preparation should finish")
+    .expect("staging channel stays open");
+    fixture.runtime.handle_staged_attachments(staged).await;
+}
+
+fn attachment_fixture(server: &httpmock::MockServer) -> WorkerEventRuntimeFixture {
+    let (tx, _rx) = mpsc::channel(16);
+    let workers = WorkerRegistry::new(tx, Vec::new(), std::env::temp_dir(), Instant::now());
+    worker_event_runtime_fixture_with_relay(workers, HashMap::new(), Some(server.base_url()))
+}
+
+fn shot_dm_payload(text: &str) -> Value {
+    json!({
+        "type": "dm.received",
+        "data": {
+            "id": "msg-attach-1",
+            "agent_name": "alice",
+            "text": text,
+            "attachments": [{
+                "file_id": "file_1",
+                "filename": "shot.png",
+                "content_type": "image/png",
+                "size_bytes": 156748
+            }]
+        }
+    })
+}
+
+#[tokio::test]
+async fn fleet_delivery_with_attachment_injects_attachment_reference() {
+    let server = httpmock::MockServer::start_async().await;
+    server
+        .mock_async(|when, then| {
+            when.method(httpmock::Method::GET).path("/v1/files/file_1");
+            then.status(404);
+        })
+        .await;
+    let mut fixture = attachment_fixture(&server);
+    deliver_and_release_staged(
+        &mut fixture,
+        attachment_deliver("msg-attach-1", 1, shot_dm_payload("see screenshot")),
+    )
+    .await;
+    release_next_staged(&mut fixture).await;
+    let body = pending_body_for(&fixture, "msg-attach-1");
+    assert_eq!(
+        body,
+        "see screenshot\n\nAttachments:\n\
+         - shot.png (image/png, 153.1 KB) file file_1 (not downloaded: file lookup returned HTTP 404); \
+         fetch with: agent-relay message file download file_1"
+    );
+}
+
+#[tokio::test]
+async fn fleet_delivery_downloads_attachment_into_worker_cwd_before_injection() {
+    let server = httpmock::MockServer::start_async().await;
+    let lookup = server
+        .mock_async(|when, then| {
+            when.method(httpmock::Method::GET)
+                .path("/v1/files/file_1")
+                .header("authorization", "Bearer rk_live_test");
+            then.status(200).json_body(json!({
+                "ok": true,
+                "data": {
+                    "id": "file_1",
+                    "size_bytes": 156748,
+                    "status": "uploaded",
+                    "download_url": server.url("/blob/file_1?sig=s3cr3t")
+                }
+            }));
+        })
+        .await;
+    server
+        .mock_async(|when, then| {
+            when.method(httpmock::Method::GET).path("/blob/file_1");
+            then.status(200).body(vec![7u8; 156748]);
+        })
+        .await;
+    let worker_name = WorkerName::from("worker-a");
+    let workers = make_worker_registry_with_worker(&worker_name).await;
+    let mut fixture =
+        worker_event_runtime_fixture_with_relay(workers, HashMap::new(), Some(server.base_url()));
+    let cwd = fixture._temp_dir.path().join("agent-cwd");
+    std::fs::create_dir_all(&cwd).unwrap();
+    fixture
+        .runtime
+        .workers
+        .workers
+        .get_mut(&worker_name)
+        .unwrap()
+        .spec
+        .cwd = Some(cwd.to_string_lossy().into_owned());
+    // Hold injected messages in the manual queue so their bodies and order
+    // can be inspected.
+    fixture.runtime.delivery_states.insert(
+        worker_name.clone(),
+        InboundDeliveryState::new(InboundDeliveryMode::ManualFlush),
+    );
+
+    // An attachment-only message (empty text) must still be injected.
+    deliver_and_release_staged(
+        &mut fixture,
+        attachment_deliver_to("worker-a", "msg-attach-1", 1, shot_dm_payload("")),
+    )
+    .await;
+    assert_eq!(
+        fixture.runtime.delivery_states[&worker_name].pending_len(),
+        0,
+        "delivery must wait for its attachments"
+    );
+    // A later text-only delivery for the same agent queues behind it.
+    deliver_and_release_staged(
+        &mut fixture,
+        attachment_deliver_to(
+            "worker-a",
+            "msg-after",
+            2,
+            json!({"type": "dm.received", "data": {"agent_name": "alice", "text": "second"}}),
+        ),
+    )
+    .await;
+    assert_eq!(
+        fixture.runtime.delivery_states[&worker_name].pending_len(),
+        0
+    );
+    release_next_staged(&mut fixture).await;
+
+    let saved = cwd.join(".agent-relay/attachments/file_1/shot.png");
+    assert_eq!(std::fs::metadata(&saved).unwrap().len(), 156748);
+    let bodies: Vec<String> = fixture.runtime.delivery_states[&worker_name]
+        .pending_snapshot()
+        .into_iter()
+        .map(|message| message.body)
+        .collect();
+    assert_eq!(
+        bodies,
+        vec![
+            format!(
+                "Attachments:\n- shot.png (image/png, 153.1 KB) saved to {}",
+                saved.display()
+            ),
+            "second".to_string(),
+        ],
+        "attachment block is injected and arrival order is preserved"
+    );
+    lookup.assert_hits_async(1).await;
+    let workers = std::mem::replace(&mut fixture.runtime.workers, empty_worker_registry());
+    cleanup_worker_registry(workers).await;
+}
+
+#[tokio::test]
+async fn fleet_delivery_without_attachments_is_not_staged() {
+    let server = httpmock::MockServer::start_async().await;
+    let mut fixture = attachment_fixture(&server);
+    deliver_and_release_staged(
+        &mut fixture,
+        attachment_deliver(
+            "msg-plain",
+            1,
+            json!({"type": "dm.received", "data": {"agent_name": "alice", "text": "plain"}}),
+        ),
+    )
+    .await;
+    assert_eq!(pending_body_for(&fixture, "msg-plain"), "plain");
+    assert!(!fixture.runtime.attachment_staging.is_busy("ghost"));
 }

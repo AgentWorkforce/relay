@@ -2,6 +2,9 @@ use serde::Deserialize;
 use serde_json::Value;
 
 use super::wire::{self, TypedInbound};
+use crate::attachments::{
+    append_attachment_block, attachments_at, render_reference_block, InboundAttachment,
+};
 use crate::ids::{AgentId, EventId, MessageTarget, ThreadId, WorkspaceAlias, WorkspaceId};
 use crate::types::{
     BrokerCommandPayload, InboundKind, InboundRelayEvent, InjectRequest, RelayPriority,
@@ -27,8 +30,8 @@ pub fn map_ws_event(
     workspace_id: &str,
     workspace_alias: Option<&str>,
 ) -> Option<InboundRelayEvent> {
-    let event = match wire::parse_typed_inbound(value) {
-        Some(TypedInbound::Event(event)) => event,
+    let (event, attachments) = match wire::parse_typed_inbound(value) {
+        Some(TypedInbound::Event(event, attachments)) => (event, attachments),
         Some(TypedInbound::Ignored) => return None,
         None => {
             let event = relaycast::normalize_inbound_event(value)?;
@@ -38,7 +41,8 @@ pub fn map_ws_event(
                 event_id = %event.event_id,
                 "WS event did not match the typed wire contract; mapped via tolerant fallback"
             );
-            event
+            let attachments = fallback_attachments(value);
+            (event, attachments)
         }
     };
     let kind = map_sdk_event_kind(event.kind);
@@ -63,7 +67,33 @@ pub fn map_ws_event(
         text: event.text,
         thread_id: event.thread_id.map(ThreadId::from),
         priority: map_sdk_priority(event.priority),
+        attachments,
     })
+}
+
+/// Attachment arrays in the top-level and payload-wrapped event shapes the
+/// tolerant fallback accepts.
+pub(crate) const WS_ATTACHMENT_POINTERS: &[&str] = &[
+    "/message/attachments",
+    "/payload/message/attachments",
+    "/data/attachments",
+    "/data/message/attachments",
+    "/payload/attachments",
+    "/attachments",
+];
+
+/// Tolerant attachment probe for events that miss the typed wire contract.
+pub(crate) fn fallback_attachments(value: &Value) -> Vec<InboundAttachment> {
+    attachments_at(value, WS_ATTACHMENT_POINTERS)
+}
+
+/// Message text plus an attachment reference block, for delivery paths that
+/// do not download attachments themselves.
+pub(crate) fn text_with_attachment_references(
+    text: &str,
+    attachments: &[InboundAttachment],
+) -> String {
+    append_attachment_block(text, render_reference_block(attachments).as_deref())
 }
 
 /// A parsed `action.invoked` WebSocket event.
@@ -247,7 +277,7 @@ pub fn to_inject_request(event: InboundRelayEvent) -> Option<InjectRequest> {
         workspace_alias: event.workspace_alias,
         from: event.from,
         target: event.target,
-        body: event.text,
+        body: text_with_attachment_references(&event.text, &event.attachments),
         priority: event.priority,
         attempts: 0,
     })
@@ -306,18 +336,23 @@ mod tests {
             // the tolerant fallback.
             let typed = parse_typed_inbound(event);
             assert!(
-                matches!(typed, Some(TypedInbound::Event(_))),
+                matches!(typed, Some(TypedInbound::Event(..))),
                 "fixture case {name:?} must parse via the typed wire contract"
             );
 
             // And the typed result must be identical to what the tolerant
             // parser (the behavior oracle) produces.
-            if let Some(TypedInbound::Event(typed_event)) = typed {
+            if let Some(TypedInbound::Event(typed_event, typed_attachments)) = typed {
                 let tolerant = relaycast::normalize_inbound_event(event)
                     .expect("tolerant parser should map fixture case");
                 assert_eq!(
                     typed_event, tolerant,
                     "typed and tolerant parse diverged for fixture case {name:?}"
+                );
+                assert_eq!(
+                    typed_attachments,
+                    super::fallback_attachments(event),
+                    "typed and tolerant attachments diverged for fixture case {name:?}"
                 );
             }
 
@@ -449,6 +484,62 @@ mod tests {
         assert_eq!(event.target, "#general");
         assert_eq!(event.text, "hello");
         assert!(to_inject_request(event).is_some());
+    }
+
+    #[test]
+    fn dm_with_attachments_injects_attachment_reference() {
+        let event = map_event(&json!({
+            "id": "evt_attach_dm",
+            "type": "dm.received",
+            "conversation_id": "dm_1",
+            "message": {
+                "id": "m_attach",
+                "agent_id": "a1",
+                "agent_name": "alice",
+                "text": "see screenshot",
+                "attachments": [{
+                    "file_id": "file_1",
+                    "filename": "shot.png",
+                    "content_type": "image/png",
+                    "size_bytes": 156748
+                }]
+            }
+        }))
+        .expect("dm with attachments should map");
+        let request = to_inject_request(event).expect("dm should be injectable");
+        assert!(
+            request.body.starts_with(
+                "see screenshot\n\nAttachments:\n- shot.png (image/png, 153.1 KB) file file_1"
+            ),
+            "{}",
+            request.body
+        );
+    }
+
+    #[test]
+    fn tolerant_fallback_carries_attachments() {
+        // Payload-wrapped legacy shape: misses the typed contract.
+        let event = map_event(&json!({
+            "type": "message.created",
+            "payload": {
+                "id": "evt-legacy",
+                "channel": "#ops",
+                "message": {
+                    "id": "m4",
+                    "from": {"name": "alice"},
+                    "body": "",
+                    "attachments": [{"file_id": "file_7", "filename": "log.txt"}]
+                }
+            }
+        }))
+        .expect("legacy shape should map via tolerant fallback");
+        assert_eq!(event.attachments.len(), 1);
+        assert_eq!(event.attachments[0].file_id, "file_7");
+        let request = to_inject_request(event).expect("message should inject");
+        assert_eq!(
+            request.body,
+            "Attachments:\n- log.txt file file_7 (not downloaded: download not attempted); fetch with: agent-relay message file download file_7"
+        );
     }
 
     #[test]
