@@ -4,11 +4,11 @@ on:
   push:
     branches: [main]
   pull_request:
-    # Trunk -> main promotion PR only, batched by the merge train (AgentWorkforce/cloud
-    # packages/web/lib/merge-train): opened, reopened, or the sweeper's `ci:run`
-    # label once per new trunk head. Never on synchronize; other label events
-    # skip every job.
-    types: [opened, reopened, labeled]
+    # Trunk -> main promotion PR only, and only on purpose: CI runs when the
+    # `ci:run` label is added (by the merge train, or an agent once the PR is
+    # ready). Opened, reopened and synchronize run nothing; any other label
+    # skips every job.
+    types: [labeled]
     branches: [main]
   schedule:
     # Run weekly on Sundays at midnight
@@ -30,7 +30,7 @@ concurrency:
 
 jobs:
   changes:
-    if: (github.event_name != 'pull_request' && github.event_name != 'pull_request_target') || (github.head_ref == 'trunk' && github.event.pull_request.head.repo.full_name == github.repository && github.base_ref == 'main' && (github.event.action != 'labeled' || github.event.label.name == 'ci:run'))
+    if: (github.event_name != 'pull_request' && github.event_name != 'pull_request_target') || (github.head_ref == 'trunk' && github.event.pull_request.head.repo.full_name == github.repository && github.base_ref == 'main' && github.event.action == 'labeled' && github.event.label.name == 'ci:run')
     uses: ./.github/workflows/detect-changes.yml
 
   # NPM audit for known vulnerabilities
@@ -38,7 +38,7 @@ jobs:
     name: NPM Audit
     needs: changes
     if: >-
-      ((github.event_name != 'pull_request' && github.event_name != 'pull_request_target') || (github.head_ref == 'trunk' && github.event.pull_request.head.repo.full_name == github.repository && github.base_ref == 'main' && (github.event.action != 'labeled' || github.event.label.name == 'ci:run'))) &&
+      ((github.event_name != 'pull_request' && github.event_name != 'pull_request_target') || (github.head_ref == 'trunk' && github.event.pull_request.head.repo.full_name == github.repository && github.base_ref == 'main' && github.event.action == 'labeled' && github.event.label.name == 'ci:run')) &&
       (needs.changes.outputs.node_changed == 'true')
     runs-on: ubuntu-latest
     steps:
@@ -69,7 +69,7 @@ jobs:
     name: Dependency Review
     runs-on: ubuntu-latest
     if: >-
-      ((github.event_name != 'pull_request' && github.event_name != 'pull_request_target') || (github.head_ref == 'trunk' && github.event.pull_request.head.repo.full_name == github.repository && github.base_ref == 'main' && (github.event.action != 'labeled' || github.event.label.name == 'ci:run'))) &&
+      ((github.event_name != 'pull_request' && github.event_name != 'pull_request_target') || (github.head_ref == 'trunk' && github.event.pull_request.head.repo.full_name == github.repository && github.base_ref == 'main' && github.event.action == 'labeled' && github.event.label.name == 'ci:run')) &&
       (github.event_name == 'pull_request')
     # This job requires the dependency graph to be enabled in repo settings
     # Make it non-blocking until that's configured
@@ -91,7 +91,7 @@ jobs:
     name: CodeQL Analysis
     needs: changes
     if: >-
-      ((github.event_name != 'pull_request' && github.event_name != 'pull_request_target') || (github.head_ref == 'trunk' && github.event.pull_request.head.repo.full_name == github.repository && github.base_ref == 'main' && (github.event.action != 'labeled' || github.event.label.name == 'ci:run'))) &&
+      ((github.event_name != 'pull_request' && github.event_name != 'pull_request_target') || (github.head_ref == 'trunk' && github.event.pull_request.head.repo.full_name == github.repository && github.base_ref == 'main' && github.event.action == 'labeled' && github.event.label.name == 'ci:run')) &&
       (needs.changes.outputs.node_changed == 'true')
     runs-on: ubuntu-latest
     permissions:
@@ -119,7 +119,7 @@ jobs:
 
   # Secret scanning (check for accidentally committed secrets)
   secrets-scan:
-    if: (github.event_name != 'pull_request' && github.event_name != 'pull_request_target') || (github.head_ref == 'trunk' && github.event.pull_request.head.repo.full_name == github.repository && github.base_ref == 'main' && (github.event.action != 'labeled' || github.event.label.name == 'ci:run'))
+    if: (github.event_name != 'pull_request' && github.event_name != 'pull_request_target') || (github.head_ref == 'trunk' && github.event.pull_request.head.repo.full_name == github.repository && github.base_ref == 'main' && github.event.action == 'labeled' && github.event.label.name == 'ci:run')
     name: Secret Scanning
     runs-on: ubuntu-latest
     # Make non-blocking - review findings manually
@@ -152,7 +152,7 @@ jobs:
     name: License Compliance
     needs: changes
     if: >-
-      ((github.event_name != 'pull_request' && github.event_name != 'pull_request_target') || (github.head_ref == 'trunk' && github.event.pull_request.head.repo.full_name == github.repository && github.base_ref == 'main' && (github.event.action != 'labeled' || github.event.label.name == 'ci:run'))) &&
+      ((github.event_name != 'pull_request' && github.event_name != 'pull_request_target') || (github.head_ref == 'trunk' && github.event.pull_request.head.repo.full_name == github.repository && github.base_ref == 'main' && github.event.action == 'labeled' && github.event.label.name == 'ci:run')) &&
       (needs.changes.outputs.node_changed == 'true')
     runs-on: ubuntu-latest
     steps:

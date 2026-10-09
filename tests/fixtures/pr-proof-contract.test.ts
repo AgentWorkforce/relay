@@ -1984,13 +1984,13 @@ describe('trusted dispatcher source contract', () => {
     expect(triggerSection).toContain('  schedule:');
     expect(triggerSection).toContain("cron: '17 3 * * 1'");
     expect(triggerSection).toContain(
-      "    types: [opened, reopened, labeled]\n    paths:\n      - '.github/workflows/relayflow-pr-proof-broker.yml'"
+      "    types: [labeled]\n    paths:\n      - '.github/workflows/relayflow-pr-proof-broker.yml'"
     );
     expect(triggerSection).toContain('  pull_request_target:');
-    // Merge train: the trunk -> main PR runs on opened/reopened/`ci:run` only, never synchronize.
+    // Merge train: the trunk -> main PR runs only when `ci:run` is added.
     expect(triggerSection).toContain('  pull_request_target:\n');
     expect(triggerSection.slice(triggerSection.indexOf('  pull_request_target:'))).toContain(
-      'types: [opened, reopened, labeled]'
+      'types: [labeled]'
     );
     expect(triggerSection).not.toMatch(/types: \[[^\]]*synchronize/);
     expect(triggerSection).not.toContain('  workflow_dispatch:');

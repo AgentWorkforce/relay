@@ -19,10 +19,10 @@ const load = (file) => parse(readFileSync(path.join(DIR, file), 'utf8'));
 
 /** The complete trunk-PR + ci:run gate. Asserted exactly, never as a substring. */
 const TRUNK_CI_GATE =
-  "(github.event_name != 'pull_request' && github.event_name != 'pull_request_target') || (github.head_ref == 'trunk' && github.event.pull_request.head.repo.full_name == github.repository && github.base_ref == 'main' && (github.event.action != 'labeled' || github.event.label.name == 'ci:run'))";
+  "(github.event_name != 'pull_request' && github.event_name != 'pull_request_target') || (github.head_ref == 'trunk' && github.event.pull_request.head.repo.full_name == github.repository && github.base_ref == 'main' && github.event.action == 'labeled' && github.event.label.name == 'ci:run')";
 const IGNORED_GROUP =
   "(github.event.action == 'labeled' && github.event.label.name != 'ci:run') && format('ignored-{0}', github.run_id)";
-const PROMOTION_TYPES = ['opened', 'reopened', 'labeled'];
+const PROMOTION_TYPES = ['labeled'];
 
 /** True when `expr` has an `||` outside any parentheses. */
 function hasTopLevelOr(expr) {
@@ -66,7 +66,7 @@ const promotion = workflows.filter(({ file, workflow }) => {
   return !prEvents.every(closedOnly);
 });
 
-test('every promotion workflow runs the trunk PR only on opened/reopened/ci:run, never on synchronize', () => {
+test('every promotion workflow runs the trunk PR only when the ci:run label is added, never on opened/reopened/synchronize', () => {
   assert.ok(promotion.length >= 15, `expected the promotion workflows, found ${promotion.length}`);
   for (const { file, workflow } of promotion) {
     for (const event of ['pull_request', 'pull_request_target']) {

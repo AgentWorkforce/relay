@@ -9,11 +9,11 @@ on:
       - 'scripts/test-install-atomic.sh'
       - '.github/workflows/test-install.yml'
   pull_request:
-    # Trunk -> main promotion PR only, batched by the merge train (AgentWorkforce/cloud
-    # packages/web/lib/merge-train): opened, reopened, or the sweeper's `ci:run`
-    # label once per new trunk head. Never on synchronize; other label events
-    # skip every job.
-    types: [opened, reopened, labeled]
+    # Trunk -> main promotion PR only, and only on purpose: CI runs when the
+    # `ci:run` label is added (by the merge train, or an agent once the PR is
+    # ready). Opened, reopened and synchronize run nothing; any other label
+    # skips every job.
+    types: [labeled]
     paths:
       - 'install.sh'
       - 'install.test.sh'
@@ -39,7 +39,7 @@ concurrency:
 
 jobs:
   test-install:
-    if: (github.event_name != 'pull_request' && github.event_name != 'pull_request_target') || (github.head_ref == 'trunk' && github.event.pull_request.head.repo.full_name == github.repository && github.base_ref == 'main' && (github.event.action != 'labeled' || github.event.label.name == 'ci:run'))
+    if: (github.event_name != 'pull_request' && github.event_name != 'pull_request_target') || (github.head_ref == 'trunk' && github.event.pull_request.head.repo.full_name == github.repository && github.base_ref == 'main' && github.event.action == 'labeled' && github.event.label.name == 'ci:run')
     name: Test on ${{ matrix.os }} (${{ matrix.node }})
     runs-on: ${{ matrix.os }}
     strategy:
@@ -196,7 +196,7 @@ jobs:
 
   # Test fallback when gunzip is not available
   test-no-gunzip:
-    if: (github.event_name != 'pull_request' && github.event_name != 'pull_request_target') || (github.head_ref == 'trunk' && github.event.pull_request.head.repo.full_name == github.repository && github.base_ref == 'main' && (github.event.action != 'labeled' || github.event.label.name == 'ci:run'))
+    if: (github.event_name != 'pull_request' && github.event_name != 'pull_request_target') || (github.head_ref == 'trunk' && github.event.pull_request.head.repo.full_name == github.repository && github.base_ref == 'main' && github.event.action == 'labeled' && github.event.label.name == 'ci:run')
     name: Test without gunzip
     runs-on: ubuntu-latest
 
@@ -241,7 +241,7 @@ jobs:
           '
 
   test-install-alpine:
-    if: (github.event_name != 'pull_request' && github.event_name != 'pull_request_target') || (github.head_ref == 'trunk' && github.event.pull_request.head.repo.full_name == github.repository && github.base_ref == 'main' && (github.event.action != 'labeled' || github.event.label.name == 'ci:run'))
+    if: (github.event_name != 'pull_request' && github.event_name != 'pull_request_target') || (github.head_ref == 'trunk' && github.event.pull_request.head.repo.full_name == github.repository && github.base_ref == 'main' && github.event.action == 'labeled' && github.event.label.name == 'ci:run')
     name: Test on Alpine Linux
     runs-on: ubuntu-latest
 
@@ -281,7 +281,7 @@ jobs:
           '
 
   test-install-fedora:
-    if: (github.event_name != 'pull_request' && github.event_name != 'pull_request_target') || (github.head_ref == 'trunk' && github.event.pull_request.head.repo.full_name == github.repository && github.base_ref == 'main' && (github.event.action != 'labeled' || github.event.label.name == 'ci:run'))
+    if: (github.event_name != 'pull_request' && github.event_name != 'pull_request_target') || (github.head_ref == 'trunk' && github.event.pull_request.head.repo.full_name == github.repository && github.base_ref == 'main' && github.event.action == 'labeled' && github.event.label.name == 'ci:run')
     name: Test on Fedora
     runs-on: ubuntu-latest
 
@@ -317,7 +317,7 @@ jobs:
 
   # Test script syntax and edge cases
   test-script-quality:
-    if: (github.event_name != 'pull_request' && github.event_name != 'pull_request_target') || (github.head_ref == 'trunk' && github.event.pull_request.head.repo.full_name == github.repository && github.base_ref == 'main' && (github.event.action != 'labeled' || github.event.label.name == 'ci:run'))
+    if: (github.event_name != 'pull_request' && github.event_name != 'pull_request_target') || (github.head_ref == 'trunk' && github.event.pull_request.head.repo.full_name == github.repository && github.base_ref == 'main' && github.event.action == 'labeled' && github.event.label.name == 'ci:run')
     name: Script Quality Checks
     runs-on: ubuntu-latest
 
@@ -365,7 +365,7 @@ jobs:
     needs: [test-install, test-install-alpine, test-install-fedora, test-no-gunzip, test-script-quality]
     runs-on: ubuntu-latest
     if: >-
-      ((github.event_name != 'pull_request' && github.event_name != 'pull_request_target') || (github.head_ref == 'trunk' && github.event.pull_request.head.repo.full_name == github.repository && github.base_ref == 'main' && (github.event.action != 'labeled' || github.event.label.name == 'ci:run'))) &&
+      ((github.event_name != 'pull_request' && github.event_name != 'pull_request_target') || (github.head_ref == 'trunk' && github.event.pull_request.head.repo.full_name == github.repository && github.base_ref == 'main' && github.event.action == 'labeled' && github.event.label.name == 'ci:run')) &&
       (always())
 
     steps:

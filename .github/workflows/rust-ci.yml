@@ -2,11 +2,11 @@ name: CI
 
 on:
   pull_request:
-    # Trunk -> main promotion PR only, batched by the merge train (AgentWorkforce/cloud
-    # packages/web/lib/merge-train): opened, reopened, or the sweeper's `ci:run`
-    # label once per new trunk head. Never on synchronize; other label events
-    # skip every job.
-    types: [opened, reopened, labeled]
+    # Trunk -> main promotion PR only, and only on purpose: CI runs when the
+    # `ci:run` label is added (by the merge train, or an agent once the PR is
+    # ready). Opened, reopened and synchronize run nothing; any other label
+    # skips every job.
+    types: [labeled]
   push:
     branches: [main]
 
@@ -30,14 +30,14 @@ concurrency:
 
 jobs:
   changes:
-    if: (github.event_name != 'pull_request' && github.event_name != 'pull_request_target') || (github.head_ref == 'trunk' && github.event.pull_request.head.repo.full_name == github.repository && github.base_ref == 'main' && (github.event.action != 'labeled' || github.event.label.name == 'ci:run'))
+    if: (github.event_name != 'pull_request' && github.event_name != 'pull_request_target') || (github.head_ref == 'trunk' && github.event.pull_request.head.repo.full_name == github.repository && github.base_ref == 'main' && github.event.action == 'labeled' && github.event.label.name == 'ci:run')
     uses: ./.github/workflows/detect-changes.yml
 
   rust-test:
     name: Rust Tests (${{ matrix.os }})
     needs: changes
     if: >-
-      ((github.event_name != 'pull_request' && github.event_name != 'pull_request_target') || (github.head_ref == 'trunk' && github.event.pull_request.head.repo.full_name == github.repository && github.base_ref == 'main' && (github.event.action != 'labeled' || github.event.label.name == 'ci:run'))) &&
+      ((github.event_name != 'pull_request' && github.event_name != 'pull_request_target') || (github.head_ref == 'trunk' && github.event.pull_request.head.repo.full_name == github.repository && github.base_ref == 'main' && github.event.action == 'labeled' && github.event.label.name == 'ci:run')) &&
       (needs.changes.outputs.rust_changed == 'true')
     runs-on: ${{ matrix.os == 'ubuntu-latest' && (vars.CI_LINUX_RUNNER || 'ubuntu-latest') || matrix.os }}
     strategy:
@@ -59,7 +59,7 @@ jobs:
     name: Relay PTY Synchronization Tests (windows-latest)
     needs: changes
     if: >-
-      ((github.event_name != 'pull_request' && github.event_name != 'pull_request_target') || (github.head_ref == 'trunk' && github.event.pull_request.head.repo.full_name == github.repository && github.base_ref == 'main' && (github.event.action != 'labeled' || github.event.label.name == 'ci:run'))) &&
+      ((github.event_name != 'pull_request' && github.event_name != 'pull_request_target') || (github.head_ref == 'trunk' && github.event.pull_request.head.repo.full_name == github.repository && github.base_ref == 'main' && github.event.action == 'labeled' && github.event.label.name == 'ci:run')) &&
       (needs.changes.outputs.rust_changed == 'true')
     runs-on: windows-latest
     timeout-minutes: 10
@@ -81,7 +81,7 @@ jobs:
     name: Cross-compile check (${{ matrix.target }})
     needs: changes
     if: >-
-      ((github.event_name != 'pull_request' && github.event_name != 'pull_request_target') || (github.head_ref == 'trunk' && github.event.pull_request.head.repo.full_name == github.repository && github.base_ref == 'main' && (github.event.action != 'labeled' || github.event.label.name == 'ci:run'))) &&
+      ((github.event_name != 'pull_request' && github.event_name != 'pull_request_target') || (github.head_ref == 'trunk' && github.event.pull_request.head.repo.full_name == github.repository && github.base_ref == 'main' && github.event.action == 'labeled' && github.event.label.name == 'ci:run')) &&
       (needs.changes.outputs.rust_changed == 'true')
     runs-on: ${{ matrix.os == 'ubuntu-latest' && (vars.CI_LINUX_RUNNER || 'ubuntu-latest') || matrix.os }}
     strategy:
@@ -117,7 +117,7 @@ jobs:
     name: Clippy (${{ matrix.os }})
     needs: changes
     if: >-
-      ((github.event_name != 'pull_request' && github.event_name != 'pull_request_target') || (github.head_ref == 'trunk' && github.event.pull_request.head.repo.full_name == github.repository && github.base_ref == 'main' && (github.event.action != 'labeled' || github.event.label.name == 'ci:run'))) &&
+      ((github.event_name != 'pull_request' && github.event_name != 'pull_request_target') || (github.head_ref == 'trunk' && github.event.pull_request.head.repo.full_name == github.repository && github.base_ref == 'main' && github.event.action == 'labeled' && github.event.label.name == 'ci:run')) &&
       (needs.changes.outputs.rust_changed == 'true')
     runs-on: ${{ matrix.os == 'ubuntu-latest' && (vars.CI_LINUX_RUNNER || 'ubuntu-latest') || matrix.os }}
     strategy:
@@ -138,7 +138,7 @@ jobs:
     name: Format
     needs: changes
     if: >-
-      ((github.event_name != 'pull_request' && github.event_name != 'pull_request_target') || (github.head_ref == 'trunk' && github.event.pull_request.head.repo.full_name == github.repository && github.base_ref == 'main' && (github.event.action != 'labeled' || github.event.label.name == 'ci:run'))) &&
+      ((github.event_name != 'pull_request' && github.event_name != 'pull_request_target') || (github.head_ref == 'trunk' && github.event.pull_request.head.repo.full_name == github.repository && github.base_ref == 'main' && github.event.action == 'labeled' && github.event.label.name == 'ci:run')) &&
       (needs.changes.outputs.rust_changed == 'true')
     runs-on: ${{ vars.CI_LINUX_RUNNER || 'ubuntu-latest' }}
     steps:
@@ -152,7 +152,7 @@ jobs:
     name: SDK TypeScript Check
     needs: changes
     if: >-
-      ((github.event_name != 'pull_request' && github.event_name != 'pull_request_target') || (github.head_ref == 'trunk' && github.event.pull_request.head.repo.full_name == github.repository && github.base_ref == 'main' && (github.event.action != 'labeled' || github.event.label.name == 'ci:run'))) &&
+      ((github.event_name != 'pull_request' && github.event_name != 'pull_request_target') || (github.head_ref == 'trunk' && github.event.pull_request.head.repo.full_name == github.repository && github.base_ref == 'main' && github.event.action == 'labeled' && github.event.label.name == 'ci:run')) &&
       (needs.changes.outputs.node_changed == 'true')
     runs-on: ubuntu-latest
     steps:
