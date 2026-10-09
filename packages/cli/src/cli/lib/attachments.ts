@@ -120,14 +120,31 @@ export async function saveAttachment(
     );
   }
   const name = safeAttachmentFilename(filename);
-  let target: string;
   if (!out) {
-    target = path.resolve('.agent-relay', 'attachments', safeAttachmentFilename(fileId), name);
-  } else {
-    const outInfo = await stat(out).catch(() => undefined);
-    target = path.resolve(outInfo?.isDirectory() ? path.join(out, name) : out);
+    const target = path.resolve('.agent-relay', 'attachments', safeAttachmentFilename(fileId), name);
+    await mkdir(path.dirname(target), { recursive: true });
+    await writeFile(target, data);
+    return target;
   }
-  await mkdir(path.dirname(target), { recursive: true });
-  await writeFile(target, data);
-  return target;
+  const outInfo = await stat(out).catch(() => undefined);
+  if (!outInfo?.isDirectory()) {
+    // An explicit output file is the caller's choice to overwrite.
+    const target = path.resolve(out);
+    await mkdir(path.dirname(target), { recursive: true });
+    await writeFile(target, data);
+    return target;
+  }
+  // In a directory, the sender chose the name: never replace an existing file
+  // (or follow a link); pick the first free `name (n).ext` instead.
+  const { name: stem, ext } = path.parse(name);
+  for (let n = 0; n < 1000; n += 1) {
+    const target = path.resolve(out, n === 0 ? name : `${stem} (${n})${ext}`);
+    try {
+      await writeFile(target, data, { flag: 'wx' });
+      return target;
+    } catch (err) {
+      if ((err as NodeJS.ErrnoException).code !== 'EEXIST') throw err;
+    }
+  }
+  throw new Error(`Cannot save attachment ${fileId}: no free file name in ${out}.`);
 }

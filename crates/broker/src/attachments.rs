@@ -524,6 +524,16 @@ impl AttachmentDownloader {
                 .await
                 .map_err(|_| "could not write attachment file".to_string())?;
         }
+        // A response that ends early (or carries other bytes) is not the file.
+        if let Some(expected) = info.size_bytes.or(attachment.size_bytes) {
+            if written != expected {
+                return Err(format!(
+                    "received {} of {}",
+                    format_size(written),
+                    format_size(expected)
+                ));
+            }
+        }
         file.flush()
             .await
             .map_err(|_| "could not write attachment file".to_string())?;
@@ -680,9 +690,22 @@ async fn prepare_root(root: &Path) -> Result<PathBuf, ()> {
     let probe = root.join(format!(".write-probe-{}", uuid::Uuid::new_v4().simple()));
     tokio::fs::write(&probe, b"").await.map_err(|_| ())?;
     let _ = tokio::fs::remove_file(&probe).await;
+    // Keep downloads out of version control even if an ignore file already
+    // exists without the catch-all rule.
     let gitignore = root.join(".gitignore");
-    if tokio::fs::metadata(&gitignore).await.is_err() {
-        let _ = tokio::fs::write(&gitignore, "*\n").await;
+    match tokio::fs::read_to_string(&gitignore).await {
+        Ok(existing) if existing.lines().any(|line| line.trim() == "*") => {}
+        Ok(existing) => {
+            let separator = if existing.is_empty() || existing.ends_with('\n') {
+                ""
+            } else {
+                "\n"
+            };
+            let _ = tokio::fs::write(&gitignore, format!("{existing}{separator}*\n")).await;
+        }
+        Err(_) => {
+            let _ = tokio::fs::write(&gitignore, "*\n").await;
+        }
     }
     Ok(root)
 }
@@ -699,6 +722,9 @@ enum StageState {
     Preparing,
     Ready(Option<String>),
 }
+
+/// Messages whose attachments download concurrently; later ones wait.
+pub(crate) const MAX_CONCURRENT_ATTACHMENT_MESSAGES: usize = 2;
 
 struct StagedEntry<T> {
     token: u64,
@@ -718,6 +744,10 @@ pub(crate) struct AttachmentStaging<T> {
     rx: mpsc::UnboundedReceiver<StagedAttachments>,
     /// Shared HTTP client for attachment downloads.
     pub(crate) http: reqwest::Client,
+    /// Bounds how many messages download attachments at once, so a burst of
+    /// attachment-bearing deliveries cannot fan out unbounded network and
+    /// disk work.
+    pub(crate) download_slots: std::sync::Arc<tokio::sync::Semaphore>,
     /// Base directory used when the recipient's working directory is unknown
     /// or not writable (`~` in production).
     pub(crate) fallback_base: Option<PathBuf>,
@@ -732,6 +762,9 @@ impl<T> AttachmentStaging<T> {
             tx,
             rx,
             http: reqwest::Client::new(),
+            download_slots: std::sync::Arc::new(tokio::sync::Semaphore::new(
+                MAX_CONCURRENT_ATTACHMENT_MESSAGES,
+            )),
             fallback_base,
         }
     }
@@ -935,6 +968,54 @@ mod tests {
         assert_eq!(
             sanitize_filename("shot [1] final.png"),
             "shot (1) final.png"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_response_shorter_than_the_file_is_not_saved() {
+        let server = MockServer::start_async().await;
+        server
+            .mock_async(|when, then| {
+                when.method(GET).path("/v1/files/file_1");
+                then.status(200).json_body(json!({
+                    "ok": true,
+                    "data": {"download_url": "/blob/file_1", "size_bytes": 10, "status": "complete"}
+                }));
+            })
+            .await;
+        server
+            .mock_async(|when, then| {
+                when.method(GET).path("/blob/file_1");
+                then.status(200).body("01234");
+            })
+            .await;
+        let temp = tempfile::tempdir().unwrap();
+        let root = attachments_root(temp.path());
+        let resolved = downloader(&server)
+            .materialize(&[shot()], &root, None)
+            .await;
+        assert_eq!(
+            resolved[0].disposition,
+            AttachmentDisposition::NotDownloaded("received 5 B of 10 B".into())
+        );
+        assert!(!root.join("file_1").join("shot.png").exists());
+    }
+
+    #[tokio::test]
+    async fn an_existing_gitignore_gains_the_catch_all_rule() {
+        let temp = tempfile::tempdir().unwrap();
+        let root = temp.path().join("attachments");
+        std::fs::create_dir_all(&root).unwrap();
+        std::fs::write(root.join(".gitignore"), "*.log").unwrap();
+        prepare_root(&root).await.unwrap();
+        assert_eq!(
+            std::fs::read_to_string(root.join(".gitignore")).unwrap(),
+            "*.log\n*\n"
+        );
+        prepare_root(&root).await.unwrap();
+        assert_eq!(
+            std::fs::read_to_string(root.join(".gitignore")).unwrap(),
+            "*.log\n*\n"
         );
     }
 

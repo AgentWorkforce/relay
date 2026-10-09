@@ -106,6 +106,19 @@ describe('message file attachments', () => {
     expect(relay.messages.send).not.toHaveBeenCalled();
   });
 
+  it('file upload --to reports an unresolved recipient and exits non-zero, like dm send', async () => {
+    const { program, relay, error, exit, log } = harness();
+    const file = await png();
+
+    await program.parseAsync(['message', 'file', 'upload', file, '--to', 'lea'], { from: 'user' });
+
+    expect(relay.messages.direct).toHaveBeenCalled();
+    const receipt = JSON.parse(log.mock.calls[0][0] as string) as { delivery: { status: string } };
+    expect(receipt.delivery.status).not.toBe('queued_unconfirmed');
+    expect(error).toHaveBeenCalled();
+    expect(exit).toHaveBeenCalledWith(1);
+  });
+
   it('file upload requires exactly one destination', async () => {
     const { program, relay, error, exit } = harness();
     const file = await png();
@@ -189,6 +202,18 @@ describe('message file attachments', () => {
     const printed = JSON.parse(log.mock.calls[0][0] as string) as { path: string; contentType: string };
     expect(printed.path).toBe(path.join(dir, 'shot.png'));
     expect(printed.contentType).toBe('image/png');
+    expect(await readFile(printed.path)).toEqual(PNG_BYTES);
+  });
+
+  it('file download into a directory never replaces an existing file', async () => {
+    const { program, log } = harness();
+    await writeFile(path.join(dir, 'shot.png'), 'mine');
+
+    await program.parseAsync(['message', 'file', 'download', 'file-1', '--out', dir], { from: 'user' });
+
+    const printed = JSON.parse(log.mock.calls[0][0] as string) as { path: string };
+    expect(printed.path).toBe(path.join(dir, 'shot (1).png'));
+    expect(await readFile(path.join(dir, 'shot.png'), 'utf8')).toBe('mine');
     expect(await readFile(printed.path)).toEqual(PNG_BYTES);
   });
 

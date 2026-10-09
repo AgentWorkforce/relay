@@ -977,7 +977,10 @@ impl BrokerRuntime {
             "holding node delivery while its attachments download"
         );
         let (token, done_tx) = self.attachment_staging.push_preparing(key.clone(), deliver);
+        let slots = self.attachment_staging.download_slots.clone();
         tokio::spawn(async move {
+            // Held (unacknowledged) until a download slot frees up.
+            let _slot = slots.acquire_owned().await;
             let resolved = downloader
                 .materialize(&attachments, &root, fallback_root.as_deref())
                 .await;

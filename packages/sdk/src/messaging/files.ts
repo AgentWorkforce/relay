@@ -59,6 +59,9 @@ export async function downloadRelayFile(
   options: { maxBytes?: number } = {}
 ): Promise<RelayDownloadedFile> {
   const maxBytes = options.maxBytes ?? RELAY_FILE_DOWNLOAD_MAX_BYTES;
+  if (!Number.isFinite(maxBytes) || maxBytes < 0) {
+    throw new Error('files.download: maxBytes must be a non-negative finite number.');
+  }
   const file = normalizeFileInfo(await files.get(id));
   if (file.status !== 'complete' || !file.downloadUrl) {
     throw new Error(`files.download: file ${id} has no completed upload to download.`);
@@ -73,11 +76,11 @@ export async function downloadRelayFile(
   }
   const declared = Number(response.headers.get('content-length'));
   if (Number.isFinite(declared) && declared > maxBytes) throw tooLarge();
-  if (!response.body) return { file, data: new Uint8Array(0) };
-  const reader = response.body.getReader();
+  const reader = response.body?.getReader();
   const chunks: Uint8Array[] = [];
   let total = 0;
   for (;;) {
+    if (!reader) break;
     const { done, value } = await reader.read();
     if (done) break;
     total += value.byteLength;
@@ -86,6 +89,10 @@ export async function downloadRelayFile(
       throw tooLarge();
     }
     chunks.push(value);
+  }
+  // A body that ends early (or is missing) is not the file the record describes.
+  if (file.sizeBytes > 0 && total !== file.sizeBytes) {
+    throw new Error(`files.download: file ${id} arrived with ${total} of ${file.sizeBytes} bytes.`);
   }
   const data = new Uint8Array(total);
   let offset = 0;

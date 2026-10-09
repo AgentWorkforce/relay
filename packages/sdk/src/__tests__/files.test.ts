@@ -189,7 +189,20 @@ describe('RelaycastMessagingClient files', () => {
 
     const messaging = clientWith(files);
     await expect(downloadRelayFile(files, 'file-1', { maxBytes: 20 })).rejects.toThrow(/download limit/);
-    await expect(messaging.files.download('file-1')).resolves.toMatchObject({ file: { id: 'file-1' } });
+    // Under the cap, 32 bytes still don't match the 4-byte record.
+    await expect(messaging.files.download('file-1')).rejects.toThrow(/arrived with 32 of 4 bytes/);
+  });
+
+  it('refuses a truncated body and an invalid maxBytes', async () => {
+    const files = createAgentFiles();
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async () => new Response(new Uint8Array([0x89, 0x50]), { status: 200 }))
+    );
+
+    await expect(downloadRelayFile(files, 'file-1')).rejects.toThrow(/arrived with 2 of 4 bytes/);
+    await expect(downloadRelayFile(files, 'file-1', { maxBytes: Number.NaN })).rejects.toThrow(/maxBytes/);
+    await expect(downloadRelayFile(files, 'file-1', { maxBytes: -1 })).rejects.toThrow(/maxBytes/);
   });
 
   it('treats a file record without a status but with a download URL as complete', () => {

@@ -76,6 +76,36 @@ export function registerMessageCommands(
 ): void {
   const deps = withSdkDefaults(overrides);
   const opts = (o: Record<string, unknown>) => sdkOptionsFromOpts(o);
+
+  /**
+   * Send a DM and print its delivery receipt, exiting non-zero when the
+   * recipient could not be verified. Sending stays agent-scoped for
+   * attribution, while recipient resolution is a workspace-wide roster read;
+   * those credentials stay on independent clients so an ambient/explicit
+   * agent token cannot shadow the workspace key supplied alongside it.
+   */
+  const sendDirectWithReceipt = async (
+    relay: AgentRelayAgent,
+    options: ReturnType<typeof opts>,
+    input: Parameters<AgentRelayAgent['messages']['direct']>[0]
+  ): Promise<void> => {
+    const resolvedRecipient = await Promise.resolve()
+      .then(() => deps.createWorkspaceRelay(options).agents.list())
+      .then((agents) => resolveExactAgentName(agents, input.to))
+      .catch(() => undefined);
+    const receipt = directMessageReceipt(
+      await relay.messages.direct(input),
+      input.to,
+      input.mode,
+      resolvedRecipient
+    );
+    printJson(deps, receipt);
+    const failure = directMessageDeliveryFailure(receipt);
+    if (failure) {
+      deps.error(failure);
+      deps.exit(1);
+    }
+  };
   const group = program
     .command('message')
     .description('Post, read, and react to messages (requires agent token)');
@@ -175,31 +205,12 @@ export function registerMessageCommands(
       const options = opts(o);
       const relay = deps.createAgentRelay(options);
       const uploaded = await uploadFiles(relay, o.file as string[] | undefined);
-      // Sending must remain agent-scoped for attribution, while recipient
-      // resolution is a workspace-wide roster read. Keep those credentials on
-      // independent clients so an ambient/explicit agent token cannot shadow
-      // the workspace key supplied alongside it.
-      const resolvedRecipient = await Promise.resolve()
-        .then(() => deps.createWorkspaceRelay(options).agents.list())
-        .then((agents) => resolveExactAgentName(agents, agent))
-        .catch(() => undefined);
-      const receipt = directMessageReceipt(
-        await relay.messages.direct({
-          to: agent,
-          text,
-          ...(mode ? { mode } : {}),
-          ...attachmentIds(uploaded),
-        }),
-        agent,
-        mode,
-        resolvedRecipient
-      );
-      printJson(deps, receipt);
-      const failure = directMessageDeliveryFailure(receipt);
-      if (failure) {
-        deps.error(failure);
-        deps.exit(1);
-      }
+      await sendDirectWithReceipt(relay, options, {
+        to: agent,
+        text,
+        ...(mode ? { mode } : {}),
+        ...attachmentIds(uploaded),
+      });
     });
   });
 
@@ -326,13 +337,15 @@ export function registerMessageCommands(
       if (Boolean(channel) === Boolean(to)) {
         throw new Error('Pass exactly one of --channel <channel> or --to <agent>.');
       }
-      const relay = deps.createAgentRelay(opts(o));
+      const options = opts(o);
+      const relay = deps.createAgentRelay(options);
       const uploaded = await uploadFiles(relay, [filePath]);
       const text = (o.text as string | undefined)?.trim() ? (o.text as string) : uploaded[0].filename;
-      const message = channel
-        ? await relay.messages.send({ channel, text, ...attachmentIds(uploaded) })
-        : await relay.messages.direct({ to: to as string, text, ...attachmentIds(uploaded) });
-      printJson(deps, message);
+      if (channel) {
+        printJson(deps, await relay.messages.send({ channel, text, ...attachmentIds(uploaded) }));
+      } else {
+        await sendDirectWithReceipt(relay, options, { to: to as string, text, ...attachmentIds(uploaded) });
+      }
     });
   });
 
