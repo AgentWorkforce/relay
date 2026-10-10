@@ -7,7 +7,11 @@ import {
 import { createHash, pbkdf2Sync, randomBytes } from 'node:crypto';
 import { hostname } from 'node:os';
 import { getProjectPaths } from '@agent-relay/config';
-import type { AgentRelayAgent } from '@agent-relay/sdk';
+import {
+  SUBSCRIBABLE_EVENT_TYPES,
+  normalizeWebhookSubscription,
+  type AgentRelayAgent,
+} from '@agent-relay/sdk';
 
 import {
   cleanupEntryKey,
@@ -415,11 +419,12 @@ function shouldRetryWithLocalWorkspaceKey(error: unknown): boolean {
   );
 }
 
+/** Add a local session as a non-authoritative retry fallback. */
 function localRetryOptions(options: SdkClientOptions, local: LocalRelayOptions): SdkClientOptions {
   return {
     ...options,
     workspaceKey: local.workspaceKey,
-    baseUrl: options.baseUrl ?? local.baseUrl,
+    ...(options.baseUrl === undefined && local.baseUrl ? { fallbackBaseUrl: local.baseUrl } : {}),
   };
 }
 
@@ -544,15 +549,16 @@ function parseRelayfileInboundTargetResponse(body: unknown): { url: string; secr
   return { url: parsedUrl.toString(), secret };
 }
 
+/** Resolve the HTTPS Relaycast transport used to provision an inbound target. */
 function resolveInboundTargetTransport(options: SdkClientOptions, callerOptions: SdkClientOptions) {
   const selected = { ...options };
   // A legacy broker session can advertise its loopback HTTP API. It is not
-  // the Relaycast gateway. Preserve genuine HTTPS session origins, including
-  // custom self-hosts, and let persisted workspace routing validate the pair.
-  if (!callerOptions.baseUrl && selected.baseUrl) {
-    const url = new URL(selected.baseUrl);
+  // the Relaycast gateway. Preserve genuine HTTPS session fallbacks, including
+  // custom self-hosts, while keeping them subordinate to persisted routing.
+  if (!callerOptions.baseUrl && selected.fallbackBaseUrl) {
+    const url = new URL(selected.fallbackBaseUrl);
     if (url.protocol === 'http:' && ['localhost', '127.0.0.1', '[::1]'].includes(url.hostname)) {
-      selected.baseUrl = undefined;
+      selected.fallbackBaseUrl = undefined;
     }
   }
   const transport = resolveWorkspaceTransport(selected);
@@ -636,6 +642,13 @@ type ListedBinding = RelayfileBinding & {
   lastSuccessAt: string | null;
   lastError: string | null;
   lastChannelMessageAt: string | null;
+  lastDeliverySource: 'control-plane' | 'channel-inferred' | null;
+  writebackSubscription: {
+    id: string;
+    events: string[] | null;
+    active: boolean | null;
+    deliveryStatus: null;
+  } | null;
   githubPrIdentityAuthorized: boolean | null;
 };
 
@@ -657,6 +670,15 @@ async function enrichBindingsForList(
       : []
   ).catch(() => [] as Array<{ name: string; metadata?: Record<string, unknown> }>);
   const channelByName = new Map(channels.map((channel) => [channel.name, channel]));
+
+  // One collection read for every bound row; per-row reads would burst one
+  // request per binding. Missing or unavailable engine status stays unknown.
+  const subscriptionById = bindings.some((binding) => binding.subscriptionId)
+    ? await relay.integrations.subscriptions
+        .list()
+        .then((rows) => new Map(rows.map((raw) => [String(raw.id), raw])))
+        .catch(() => new Map<string, Awaited<ReturnType<typeof relay.integrations.subscriptions.get>>>())
+    : new Map<string, Awaited<ReturnType<typeof relay.integrations.subscriptions.get>>>();
 
   return Promise.all(
     bindings.map(async (binding) => {
@@ -686,6 +708,23 @@ async function enrichBindingsForList(
         ? cloudById.get(binding.webhookSubscriptionId)
         : undefined;
       const health = cloudRow?.health;
+      let writebackSubscription: ListedBinding['writebackSubscription'] = null;
+      const raw = binding.subscriptionId ? subscriptionById.get(binding.subscriptionId) : undefined;
+      if (raw) {
+        try {
+          const subscription = normalizeWebhookSubscription(raw);
+          const active = raw.isActive ?? raw.is_active;
+          writebackSubscription = {
+            id: subscription.id,
+            events: subscription.events ?? null,
+            active: typeof active === 'boolean' ? active : null,
+            // The pinned engine contract exposes configuration, not delivery attempts.
+            deliveryStatus: null,
+          };
+        } catch {
+          /* A malformed engine row remains unknown. */
+        }
+      }
       return {
         ...binding,
         to: agent ? `@${agent.name}` : null,
@@ -696,6 +735,12 @@ async function enrichBindingsForList(
         lastSuccessAt: health?.lastSuccessAt ?? null,
         lastError: health?.lastError ?? null,
         lastChannelMessageAt,
+        lastDeliverySource: health?.lastDeliveryAt
+          ? 'control-plane'
+          : lastChannelMessageAt
+            ? 'channel-inferred'
+            : null,
+        writebackSubscription,
         githubPrIdentityAuthorized: cloudRow?.githubPrIdentityAuthorized ?? null,
       };
     })
@@ -1576,6 +1621,14 @@ async function runSubscribeSetup(
     return;
   }
 
+  const requestedEvents = commaList(opts.events);
+  const events = [...new Set(requestedEvents.length ? requestedEvents : ['message.created', 'thread.reply'])];
+  const supported: readonly string[] = SUBSCRIBABLE_EVENT_TYPES;
+  const unsupported = events.filter((event) => !supported.includes(event));
+  if (unsupported.length)
+    throw new Error(
+      `Unsupported subscription events: ${unsupported.join(', ')}. Supported events: ${supported.join(', ')}.`
+    );
   const { provider, resource, to } = await promptSubscribeOptions(deps, providerArg, opts);
   const local = await deps.resolveLocalRelayOptions();
   await ensureProviderConnected(deps, provider, opts);
@@ -1617,7 +1670,6 @@ async function runSubscribeSetup(
         baseUrl: resolveInboundTargetTransport(effectiveRelayOptions, relayOptions).baseUrl,
       })
     : targetChannel(to);
-  const events = commaList(opts.events);
   const writeback = await resolveWriteback(deps, opts, channel);
   const inboundTarget = await createRelayfileInboundTarget(opts, local, {
     channel,
@@ -1754,13 +1806,26 @@ async function runSubscribeSetup(
     });
     lease.assertHealthy(`${provider} ${pathGlob}`);
     subscription = await relay.integrations.subscriptions.create({
-      event: events.length === 1 ? events[0]! : 'message.created',
-      events: events.length ? events : ['message.created', 'thread.reply'],
+      event: events[0]!,
+      events,
       filter: { channel },
       url: subscriptionTargetUrl,
       secret: writeback.secret,
     });
     await upgradeAttempt({ subscriptionId: subscription.id });
+    const persistedRaw = await relay.integrations.subscriptions.get(subscription.id);
+    const persisted = normalizeWebhookSubscription(persistedRaw);
+    if (persisted.id !== subscription.id || (persistedRaw.isActive ?? persistedRaw.is_active) === false) {
+      throw new Error(
+        'Writeback subscription read-back returned a different or inactive subscription. Aborting and rolling back.'
+      );
+    }
+    const missingEvents = events.filter((event) => !persisted.events?.includes(event));
+    if (missingEvents.length) {
+      throw new Error(
+        `Writeback subscription did not confirm requested events: ${missingEvents.join(', ')}. Aborting and rolling back.`
+      );
+    }
     lease.assertHealthy(`${provider} ${pathGlob}`);
     bindingInput = {
       provider,
@@ -1873,7 +1938,17 @@ async function runSubscribeSetup(
   const boundLabel = pathGlob === resource ? resource : `${resource} (${pathGlob})`;
   deps.log(`✓ ${provider} ${boundLabel} bound -> ${to}`);
   deps.log('✓ Server-side inbound webhook subscription created.');
-  deps.log('✓ Listening. Replies will post back in-thread.');
+  const cloudRows = await listWebhookSubscriptionsForBindings(deps.relayfile, [bindingInput]);
+  const authorized = cloudRows.get(bindingInput.webhookSubscriptionId!)?.githubPrIdentityAuthorized;
+  if (!events.includes('thread.reply')) {
+    deps.log('✓ Listening. In-thread writeback is disabled: thread.reply was not requested.');
+  } else if (provider === 'github' && authorized !== true) {
+    deps.log(
+      `✓ Listening. GitHub in-thread writeback is unverified: GitHub PR identity authorization is ${authorized === false ? 'not granted' : 'not reported'}.`
+    );
+  } else {
+    deps.log('✓ Listening. In-thread writeback is configured; provider delivery is not yet confirmed.');
+  }
 }
 
 async function runUnsubscribeOwnedBy(

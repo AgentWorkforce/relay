@@ -47,6 +47,7 @@ const expectedLeafCommands = [
   'fleet nodes list',
   'fleet release',
   'fleet spawn',
+  'fleet spawn-status',
   'fleet status',
   // cloud
   'cloud login',
@@ -124,6 +125,8 @@ const expectedLeafCommands = [
   'message inbox mark_read',
   'message inbox get_readers',
   'message file upload',
+  'message file get',
+  'message file download',
   // integration
   'integration subscribe',
   'integration unsubscribe',
