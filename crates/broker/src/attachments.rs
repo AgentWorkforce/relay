@@ -1347,9 +1347,23 @@ mod tests {
         std::fs::create_dir_all(&primary).unwrap();
         std::fs::set_permissions(&primary, std::fs::Permissions::from_mode(0o555)).unwrap();
         let fallback = temp.path().join("fallback");
+        // Some CI runners bypass directory permission bits (root, a granted
+        // CAP_DAC_OVERRIDE, or a filesystem that ignores modes). There the
+        // 0o555 directory really is writable, so accepting it is correct and
+        // refusal must be exercised with a root that cannot be written at all.
+        let mode_enforced = std::fs::write(primary.join(".mode-probe"), b"").is_err();
         let refused = prepare_root(&primary).await.is_err();
         std::fs::set_permissions(&primary, std::fs::Permissions::from_mode(0o755)).unwrap();
-        assert!(refused, "a read-only attachments root must be refused");
+        if mode_enforced {
+            assert!(refused, "a read-only attachments root must be refused");
+        } else {
+            let not_a_directory = temp.path().join("not-a-directory");
+            std::fs::write(&not_a_directory, b"").unwrap();
+            assert!(
+                prepare_root(&not_a_directory).await.is_err(),
+                "an unwritable attachments root must be refused"
+            );
+        }
         assert!(prepare_root(&fallback).await.is_ok());
     }
 
