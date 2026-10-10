@@ -37,6 +37,14 @@ data=b''
 while True:
  chunk=os.read(0,65536)
  with open(os.environ['TRANSCRIPT'],'ab') as f: f.write(chunk)
+ if mode == 'opaque':
+  # Consumes input but never shows it, never repaints: no evidence either way.
+  continue
+ if mode == 'stuck':
+  # Shows typed text in the composer but swallows every submit key.
+  shown=chunk.replace(b'\x1b[200~',b'').replace(b'\x1b[201~',b'').replace(b'\r',b'').replace(b'\n',b'')
+  if shown: os.write(1,shown)
+  continue
  data+=chunk
  if mode == 'hostile' and b'\x1b\x1b' in data:
   os.write(1,b'\x1b[2J\x1b[HTrust prompt, no composer')
@@ -53,6 +61,7 @@ while True:
         let mut child = Command::new(env!("CARGO_BIN_EXE_agent-relay-broker"))
             .args(["pty", "--agent-name", "integrity", script.to_str().unwrap()])
             .env("FIXTURE_MODE", mode)
+            .env("RELAY_FAILED_DRAFT_ESCALATION_MS", "2000")
             .env("TRANSCRIPT", dir.path().join("transcript"))
             .env("AGENT_RELAY_LOCAL_ONLY", "1")
             .env(
@@ -96,6 +105,21 @@ while True:
                 .expect(kind);
             if let Ok(frame) = serde_json::from_str::<Value>(&line) {
                 if frame["type"] == kind {
+                    return frame;
+                }
+            }
+        }
+    }
+    /// The next frame whose type is one of `kinds`, skipping everything else.
+    fn wait_any(&self, kinds: &[&str], secs: u64) -> Value {
+        let deadline = Instant::now() + Duration::from_secs(secs);
+        loop {
+            let line = self
+                .rx
+                .recv_timeout(deadline.saturating_duration_since(Instant::now()))
+                .unwrap_or_else(|_| panic!("timed out waiting for {kinds:?}"));
+            if let Ok(frame) = serde_json::from_str::<Value>(&line) {
+                if kinds.iter().any(|kind| frame["type"] == *kind) {
                     return frame;
                 }
             }
@@ -186,4 +210,81 @@ fn disappearing_composer_fails_before_body_injection() {
         "prompt_unproven"
     );
     assert!(!String::from_utf8_lossy(&f.transcript()).contains("must not type"));
+}
+
+/// Khaliq's #1959 policy: a harness that gives no evidence either way still
+/// receives every delivery, each reported unconfirmed, never failed, and an
+/// unproven delivery never latches the next one.
+#[test]
+fn opaque_harness_keeps_receiving_consecutive_deliveries_as_unconfirmed() {
+    let mut f = Fixture::new("opaque");
+    for id in ["opaque_one", "opaque_two", "opaque_three"] {
+        let body = format!("OPAQUE-BODY-{id}");
+        f.deliver(id, &body);
+        let frame = f.wait_any(
+            &[
+                "delivery_unconfirmed",
+                "delivery_failed",
+                "delivery_verified",
+            ],
+            30,
+        );
+        assert_eq!(frame["type"], "delivery_unconfirmed", "{frame}");
+        assert_eq!(frame["payload"]["terminal"], true, "{frame}");
+        assert_eq!(frame["payload"]["outcome"], "unconfirmed", "{frame}");
+        assert!(
+            String::from_utf8_lossy(&f.transcript()).contains(&body),
+            "every delivery is written to an opaque harness"
+        );
+    }
+}
+
+/// A body still visibly parked after bounded recovery latches the composer:
+/// the next delivery queues and is never typed over the draft, and after the
+/// bounded timeout the worker sends one terminal stuck signal.
+#[test]
+fn visibly_stuck_draft_latches_queue_and_escalates_without_typing_over_it() {
+    let mut f = Fixture::new("stuck");
+    f.deliver("stuck_first", "STUCK-DRAFT-first-delivery");
+    let failed = f.wait_any(
+        &[
+            "delivery_failed",
+            "delivery_verified",
+            "delivery_unconfirmed",
+        ],
+        60,
+    );
+    // Mid-recovery progress frames are non-terminal delivery_unconfirmed.
+    let failed =
+        if failed["type"] == "delivery_unconfirmed" && failed["payload"]["terminal"] != true {
+            f.wait_any(&["delivery_failed", "delivery_verified"], 60)
+        } else {
+            failed
+        };
+    assert_eq!(failed["type"], "delivery_failed", "{failed}");
+    assert!(
+        failed["payload"]["reason"]
+            .as_str()
+            .unwrap_or_default()
+            .contains("parked"),
+        "{failed}"
+    );
+    f.deliver("stuck_second", "QUEUED-BEHIND-the-stuck-draft");
+    let blocked = f.wait_any(&["agent_blocked_on_send"], 30);
+    let blocked = if blocked["payload"]["reason"] == "failed_draft_latched"
+        && blocked["payload"]["terminal"] != true
+    {
+        f.wait_any(&["agent_blocked_on_send"], 30)
+    } else {
+        blocked
+    };
+    assert_eq!(
+        blocked["payload"]["reason"], "failed_draft_latched",
+        "{blocked}"
+    );
+    assert_eq!(blocked["payload"]["terminal"], true, "{blocked}");
+    assert!(
+        !String::from_utf8_lossy(&f.transcript()).contains("QUEUED-BEHIND"),
+        "the queued delivery must never be typed over the stuck draft"
+    );
 }
