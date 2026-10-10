@@ -153,6 +153,21 @@ fn composer_owned_by_delivery(
         || failed_composer_latch.is_some()
 }
 
+/// Whether the failed-draft latch alone holds a newly queued delivery. Another
+/// blocker (a verification, a recovery write, an active injection) already
+/// explains the wait; reporting the latch then would be redundant.
+fn failed_draft_latch_is_sole_blocker(
+    failed_composer_latch: Option<&FailedComposerLatch>,
+    pending_verifications_empty: bool,
+    pending_recovery_writes_empty: bool,
+    active_injection_present: bool,
+) -> bool {
+    failed_composer_latch.is_some()
+        && pending_verifications_empty
+        && pending_recovery_writes_empty
+        && !active_injection_present
+}
+
 /// Only a non-empty `write_pty` that the drainer admitted can change the
 /// composer, so only that write takes ownership away from relay deliveries.
 fn human_write_takes_ownership(byte_len: usize, admitted: bool) -> bool {
@@ -1451,6 +1466,21 @@ pub(crate) async fn run_pty_worker(cmd: PtyCommand) -> Result<()> {
                                         request_id: frame.request_id,
                                         queued_at: Instant::now(),
                                     });
+                                    if failed_draft_latch_is_sole_blocker(
+                                        failed_composer_latch.as_ref(),
+                                        pending_verifications.is_empty(),
+                                        pending_recovery_writes.is_empty(),
+                                        active_injection.is_some(),
+                                    ) {
+                                        // The broker marks a worker Working on
+                                        // delivery_queued, but this delivery
+                                        // will wait behind the failed draft.
+                                        let _ = send_frame(&out_tx, "agent_blocked_on_send", None, json!({
+                                            "reason": "failed_draft_latched",
+                                            "blocked_secs": 0,
+                                            "pending_delivery_count": pending_worker_injections.len(),
+                                        })).await;
+                                    }
                                 } else {
                                     tracing::debug!(
                                         delivery_id = %delivery.delivery_id,
@@ -4523,6 +4553,41 @@ mod tests {
             ),
             None
         );
+    }
+
+    #[test]
+    fn latched_worker_reports_blocked_only_when_the_latch_is_the_sole_blocker() {
+        let latch = FailedComposerLatch {
+            delivery_id: DeliveryId::from("del_failed"),
+            event_id: EventId::from("evt_failed"),
+            expected_echo: "Relay message from Lead [evt]: failed".to_string(),
+            operator_release_only: false,
+        };
+        assert!(failed_draft_latch_is_sole_blocker(
+            Some(&latch),
+            true,
+            true,
+            false
+        ));
+        assert!(!failed_draft_latch_is_sole_blocker(None, true, true, false));
+        assert!(!failed_draft_latch_is_sole_blocker(
+            Some(&latch),
+            false,
+            true,
+            false
+        ));
+        assert!(!failed_draft_latch_is_sole_blocker(
+            Some(&latch),
+            true,
+            false,
+            false
+        ));
+        assert!(!failed_draft_latch_is_sole_blocker(
+            Some(&latch),
+            true,
+            true,
+            true
+        ));
     }
 
     #[test]
