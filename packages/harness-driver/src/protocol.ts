@@ -613,7 +613,11 @@ export type BrokerEvent =
       name: string;
       delivery_id: string;
       event_id: string;
-      /** 'harness_acceptance' for current PTY workers; legacy workers may report 'echo' or 'timeout_fallback'. */
+      /**
+       * 'harness_acceptance' for accepted PTY deliveries and 'completed_replay'
+       * for duplicate completed deliveries; legacy workers may report 'echo'
+       * or 'timeout_fallback'.
+       */
       verification?: string;
       reason?: string;
       evidence?: string | null;

@@ -1009,8 +1009,21 @@ impl BrokerRuntime {
                                     verification = ?payload.get("verification"),
                                     "ignoring delivery_verified without harness-acceptance evidence"
                                 );
+                                let _ = send_event(
+                                    sdk_out_tx,
+                                    json!({
+                                        "kind": "delivery_unconfirmed",
+                                        "name": name,
+                                        "delivery_id": delivery_id,
+                                        "event_id": event_id,
+                                        "reason": "PTY delivery verification did not prove harness acceptance",
+                                        "verification": payload.get("verification"),
+                                    }),
+                                )
+                                .await;
                                 return;
                             };
+                            let completed_replay = verification == "completed_replay";
                             let reason = payload.get("reason").and_then(Value::as_str);
                             tracing::debug!(
                                 target = "agent_relay::broker",
@@ -1020,13 +1033,21 @@ impl BrokerRuntime {
                                 verification = %verification,
                                 "delivery acceptance verified"
                             );
-                            let pending_for_confirmation = clear_pending_delivery_if_event_matches(
-                                pending_deliveries,
-                                delivery_id,
-                                Some(event_id),
-                                &name,
-                                "delivery_verified",
-                            );
+                            // `completed_replay` accompanies a replayed
+                            // delivery_ack; it is useful lifecycle evidence but
+                            // must never independently confirm a fresh pending
+                            // delivery if frames are malformed or reordered.
+                            let pending_for_confirmation = (!completed_replay)
+                                .then(|| {
+                                    clear_pending_delivery_if_event_matches(
+                                        pending_deliveries,
+                                        delivery_id,
+                                        Some(event_id),
+                                        &name,
+                                        "delivery_verified",
+                                    )
+                                })
+                                .flatten();
                             let mut verified_event = json!({
                                 "kind": "delivery_verified",
                                 "name": name,
@@ -1062,9 +1083,14 @@ impl BrokerRuntime {
                         }
                     } else if msg_type == "delivery_active" {
                         if let Some(payload) = value.get("payload") {
+                            let has_pending_delivery = pending_deliveries
+                                .values()
+                                .any(|pending| pending.worker_name == name);
                             if let Some(handle) = workers.workers.get_mut(&name) {
                                 handle.last_activity_at = Instant::now();
-                                if handle.state != AgentWorkState::BlockedOnSend {
+                                if handle.state != AgentWorkState::BlockedOnSend
+                                    || !has_pending_delivery
+                                {
                                     handle.state = AgentWorkState::Working;
                                 }
                             }
@@ -1505,9 +1531,14 @@ impl BrokerRuntime {
                             .workers
                             .get(&name)
                             .is_some_and(|handle| handle.spec.runtime == AgentRuntime::Pty);
+                        let has_pending_delivery = pending_deliveries
+                            .values()
+                            .any(|pending| pending.worker_name == name);
                         if let Some(handle) = workers.workers.get_mut(&name) {
                             handle.last_activity_at = Instant::now();
-                            if handle.state != AgentWorkState::BlockedOnSend {
+                            if handle.state != AgentWorkState::BlockedOnSend
+                                || !has_pending_delivery
+                            {
                                 handle.state = AgentWorkState::Working;
                             }
                         }
@@ -1758,10 +1789,12 @@ impl BrokerRuntime {
                             .unwrap_or(0);
                         let since =
                             chrono::Utc::now() - chrono::Duration::seconds(idle_secs as i64);
-                        let remains_blocked = workers
-                            .workers
-                            .get(&name)
-                            .is_some_and(|handle| handle.state == AgentWorkState::BlockedOnSend);
+                        let remains_blocked =
+                            workers.workers.get(&name).is_some_and(|handle| {
+                                handle.state == AgentWorkState::BlockedOnSend
+                            }) && pending_deliveries
+                                .values()
+                                .any(|pending| pending.worker_name == name);
                         if !remains_blocked {
                             if let Some(handle) = workers.workers.get_mut(&name) {
                                 handle.state = AgentWorkState::Idle;

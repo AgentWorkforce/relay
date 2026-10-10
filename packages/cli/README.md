@@ -301,6 +301,11 @@ agent-relay message dm send api-worker "Detailed task instructions"
 # injection and may interrupt active work. A send ID confirms enqueue only;
 # use `message inbox get_readers <id>` to confirm that the recipient consumed it.
 agent-relay message dm send api-worker "Please check Relay now." --mode steer
+# Attach files (repeatable --file) to a DM, a channel post, or a group DM.
+agent-relay message dm send api-worker "Repro screenshot" --file ./shot.png
+agent-relay message file upload ./shot.png --channel ops --text "Build is red"
+# Save an attachment you received (its file_id) and print the local path.
+agent-relay message file download <file_id>
 agent-relay message inbox check --limit 20
 agent-relay fleet release api-worker --reason "Work accepted"
 ```

@@ -199,7 +199,12 @@ async function settleCodexComposer(worker, frames, settleMs) {
     const snapshot = await snapshotPty(worker, frames, `real-codex-settle-${snapshotIndex++}`);
     const screen = String(snapshot.payload?.screen ?? '');
     lastScreen = screen;
-    if (screen.includes('Trust this folder?') && screen.includes('Trust and continue')) {
+    if (
+      (screen.includes('Trust this folder?') && screen.includes('Trust and continue')) ||
+      (screen.includes('Do you trust the contents of this directory?') &&
+        screen.includes('2. No, quit') &&
+        /(?:›|>)\s*1\. Yes, continue/.test(screen))
+    ) {
       // The cwd was created by this test and contains no project files.
       await writePty(worker, frames, 'real-codex-trust-disposable-folder', '\r');
       acceptedDisposableFolder = true;
@@ -222,6 +227,7 @@ async function settleCodexComposer(worker, frames, settleMs) {
     } else {
       cleanSince = undefined;
     }
+    if (cleanSince && Date.now() - cleanSince >= 5_000) return dismissed;
     const remaining = deadline - Date.now();
     if (remaining <= 0) {
       if (cleanSince && Date.now() - cleanSince >= 5_000) return dismissed;
@@ -401,8 +407,11 @@ function createFrameQueue(child, getStderr) {
     async waitFor(predicate, timeoutMs, label) {
       const deadline = Date.now() + timeoutMs;
       while (Date.now() < deadline) {
-        const frame = await this.next(Math.min(500, deadline - Date.now()));
-        if (frame && predicate(frame)) return frame;
+        if (parseError) throw parseError;
+        if (exitError) throw exitError;
+        const index = queue.findIndex(predicate);
+        if (index >= 0) return queue.splice(index, 1)[0];
+        await awaitChange(Math.min(500, Math.max(1, deadline - Date.now())));
       }
       throw new Error(`Timed out waiting for ${label}: ${getStderr()}`);
     },

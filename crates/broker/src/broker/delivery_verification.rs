@@ -177,10 +177,11 @@ impl PendingVerification {
             // marker; that marker cannot prove this delivery was accepted.
             self.echo_seen = true;
             self.activity_buffer.clear();
-            let clean = strip_ansi(&output.since(self.output_boundary));
-            if let Some(index) = clean.rfind(&self.expected_echo) {
+            let clean = strip_ansi(&output.since(self.output_boundary)).replace("\r\n", "\n");
+            let expected_echo = self.expected_echo.replace("\r\n", "\n");
+            if let Some(index) = clean.rfind(&expected_echo) {
                 self.activity_buffer
-                    .push_str(&clean[index + self.expected_echo.len()..]);
+                    .push_str(&clean[index + expected_echo.len()..]);
             } else if let Some(end) =
                 end_of_compact_match(&clean, &expected_tail(&self.expected_echo))
             {
@@ -516,7 +517,9 @@ pub(crate) fn failed_draft_released(cli: &str, expected_echo: &str, snapshot: &S
 /// Activity is definitive acceptance. A body is considered parked only when
 /// its tail is still in the live composer at the cursor. Once echo was seen,
 /// a proven empty composer is also acceptance. Every other state is
-/// inconclusive and must fail or wait — never blindly press a key.
+/// inconclusive and must fail or wait — never blindly press a key. Harnesses
+/// without explicit activity markers need post-echo output once the body has
+/// left the cursor; see the generic branch below.
 pub(crate) fn assess_harness_acceptance(
     cli: &str,
     verification: &PendingVerification,
@@ -1096,7 +1099,7 @@ mod tests {
 
     #[cfg(unix)]
     #[tokio::test]
-    async fn generic_post_echo_output_confirms_after_composer_disappears() {
+    async fn generic_post_echo_output_accepts_after_body_leaves_composer() {
         let expected = "Relay message from Lead [evt]: fix idle injection";
         let (pty, snapshot) = codex_snapshot("Processing accepted turn").await;
         let mut verification = codex_verification(expected);
@@ -1345,6 +1348,24 @@ mod tests {
     }
 
     #[test]
+    fn crlf_echo_preserves_same_chunk_acceptance_activity() {
+        let expected = "Relay message from Lead [evt]: line one\nline two";
+        let mut verification = codex_verification(expected);
+        verification.echo_seen = false;
+        let mut output = VerificationOutput::default();
+        let observed =
+            "Relay message from Lead [evt]: line one\r\nline two\r\nWorking (1s • esc to interrupt)";
+        output.push_output(1, observed.as_bytes());
+        verification.observe(&output, observed);
+
+        assert!(verification.echo_seen);
+        assert_eq!(
+            verification.accepted_activity(),
+            Some("Working+esc to interrupt".to_string())
+        );
+    }
+
+    #[test]
     fn wrapped_tui_echo_is_scoped_to_delivery_output_boundary() {
         let expected = "Relay message from Lead [evt]: Reply with exactly WRAPPED_CODEX_ACK";
         let mut verification = codex_verification(expected);
@@ -1369,6 +1390,55 @@ mod tests {
         verification.verification_started_at = Instant::now() - MAX_ACCEPTANCE_LIFETIME;
         verification.injected_at = Instant::now();
         assert!(verification.acceptance_expired());
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn attachment_delivery_to_no_marker_harness_is_confirmed_by_guarded_rule() {
+        // #1945 attachments ride the same PTY injection with an `Attachments:`
+        // block appended; the long path wraps on screen. A harness without
+        // turn markers must still confirm once the body has left the cursor
+        // and the harness produced post-echo output.
+        let body = crate::attachments::append_attachment_block(
+            "see this",
+            Some("Attachments:\n- shot.png (image/png, 153.1 KB) saved to /w/.agent-relay/attachments/f1/a-very-long-directory-name/shot.png"),
+        );
+        let expected =
+            crate::broker::injection_format::format_injection("Alice", "evt_1", &body, "Lead");
+        let (pty, snapshot) =
+            codex_snapshot("› see this\n  Attachments:\n  - shot.png\nProcessing accepted turn")
+                .await;
+        let mut verification = codex_verification(&expected);
+        verification.detector = ActivityDetector::for_cli("muse");
+        verification
+            .activity_buffer
+            .push_str("Processing accepted turn");
+
+        assert_eq!(
+            assess_harness_acceptance("muse", &verification, &snapshot),
+            HarnessAcceptance::Accepted("activity:any_output".to_string()),
+            "attachment deliveries need no echo_left_composer shortcut"
+        );
+        pty.shutdown().unwrap();
+    }
+
+    #[test]
+    fn check_echo_matches_injection_with_attachment_block() {
+        // The attachment block is part of the body, so the expected echo is
+        // the full multi-line injection exactly like any multi-line message.
+        let body = crate::attachments::append_attachment_block(
+            "see this",
+            Some("Attachments:\n- shot.png (image/png, 153.1 KB) saved to /w/.agent-relay/attachments/f1/shot.png"),
+        );
+        let expected =
+            crate::broker::injection_format::format_injection("Alice", "evt_1", &body, "Lead");
+        assert!(expected
+            .contains("Relay message from Alice [evt_1]: see this\n\nAttachments:\n- shot.png"));
+        let output = format!("prompt\n\x1b[32m{expected}\x1b[0m\n> ");
+        assert!(check_echo_in_output(&output, &expected));
+        // A truncated echo that stops before the block is not a match.
+        let header_only = format!("{}\n", expected.split("\n\nAttachments:").next().unwrap());
+        assert!(!check_echo_in_output(&header_only, &expected));
     }
 
     #[test]

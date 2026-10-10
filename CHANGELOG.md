@@ -7,8 +7,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased - Minor]
 
+### Added
+
+- `agent-relay message dm send`, `message post` and `message dm send_group` take a repeatable `--file <path>` that uploads and attaches local files (for example screenshots); `message file upload` accepts `--to <agent>` for a DM.
+- `agent-relay message file download <file_id>` saves a received attachment (default `.agent-relay/attachments/<file_id>/`) and prints its path; `message file get <file_id>` shows it with a short-lived download URL.
+- The `agent-relay mcp` server adds `upload_file` (local path or base64) and `download_file`, and `send_group_dm` accepts `attachments`.
+- Agents spawned by the broker receive message attachments (up to 25 MiB each) as local files: the injected message ends with an `Attachments:` list giving each file's path under `.agent-relay/attachments/` in the agent's working directory, or an `agent-relay message file download <file_id>` command when a file could not be fetched. Messages that carry only attachments are now delivered too.
+- `@agent-relay/sdk` adds `files.upload` / `files.get` / `files.download` on `AgentRelay` and `RelaycastMessagingClient`, plus `uploadRelayFile` / `downloadRelayFile` helpers.
+
 ### Fixed
 
+- `agent-relay message file upload` now uploads and attaches the file; it always failed with "Invalid attachments: file ids must exist in workspace and be complete".
 - Broker-managed PTY messages now stay pending until the harness accepts them, instead of being acknowledged while still parked in the composer.
 - A PTY delivery the harness never accepts blocks further sends to that agent and is retried by pressing submit only, never by resending the body, for up to three total attempts before it is reported as failed.
 - Typing into an agent's terminal while a delivery is being retried takes over the terminal and cancels the retries.
