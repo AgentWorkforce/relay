@@ -273,10 +273,15 @@ fn tail_near_cursor(snapshot: &Snapshot, tail: &str) -> bool {
 /// Whether the cells right of the cursor on its row are part of this body.
 /// A cursor parked at the start of a draft whose tail has scrolled out of
 /// view shows body text there; harness chrome (a placeholder or status hint)
-/// does not appear in the body and is ignored.
+/// does not appear in the body and is ignored. A placeholder whose exact text
+/// also appears in the body still reads as a draft: that errs inconclusive,
+/// never toward confirming an unsent message.
 fn body_text_right_of_cursor(snapshot: &Snapshot, expected_echo: &str) -> bool {
     let from_cursor = snapshot.to_plain_from_cursor();
-    let row = compact_render(from_cursor.lines().next().unwrap_or_default());
+    let compact_row = compact_render(from_cursor.lines().next().unwrap_or_default());
+    // Prompt glyphs and box borders (`›`, `┃`, `│`) can bracket the text
+    // under the cursor; they are never part of the body, so ignore them.
+    let row = compact_row.trim_matches(|character: char| !character.is_alphanumeric());
     if row.is_empty() {
         return false;
     }
@@ -1108,6 +1113,29 @@ mod tests {
             assess_harness_acceptance("muse", &verification, &snapshot),
             HarnessAcceptance::Inconclusive,
             "body text right of the cursor is an unsent draft even without its tail"
+        );
+        pty.shutdown().unwrap();
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn bordered_draft_head_right_of_cursor_stays_inconclusive() {
+        // The cursor sits on a box border; the draft's head follows it and its
+        // tail has scrolled out of view.
+        let expected = format!(
+            "Relay message from Lead [evt]: head {} TAIL_SCROLLED_OFF",
+            "y".repeat(160)
+        );
+        let (pty, snapshot) =
+            codex_snapshot("┃ Relay message from Lead [evt]: head ┃\x1b[1;1H").await;
+        let mut verification = codex_verification(&expected);
+        verification.detector = ActivityDetector::for_cli("muse");
+        verification.activity_buffer.push_str("repaint");
+
+        assert_eq!(
+            assess_harness_acceptance("muse", &verification, &snapshot),
+            HarnessAcceptance::Inconclusive,
+            "border chrome around the cursor must not hide an unsent draft"
         );
         pty.shutdown().unwrap();
     }
