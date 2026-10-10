@@ -500,8 +500,15 @@ fn composer_is_idle(snapshot: &Snapshot, cli: &str) -> bool {
 /// worker holds injection until the composer is proven idle. The tail being
 /// absent from the viewport is not proof: a long draft can scroll it out of
 /// view. An operator `flush_injections` is the explicit override.
+///
+/// An idle-looking composer is not enough on its own: a body whose last line
+/// is a bare prompt glyph parses as an idle prompt while the whole draft is
+/// still in the editor, so the tail must also be absent from every composer
+/// candidate that ends at the cursor.
 pub(crate) fn failed_draft_released(cli: &str, expected_echo: &str, snapshot: &Snapshot) -> bool {
-    expected_tail(expected_echo).is_empty() || composer_is_idle(snapshot, cli)
+    let tail = expected_tail(expected_echo);
+    tail.is_empty()
+        || (composer_is_idle(snapshot, cli) && !composer_holds_tail(snapshot, cli, &tail))
 }
 
 /// Distinguish terminal echo from actual harness acceptance.
@@ -1143,6 +1150,26 @@ mod tests {
             "OpenCode transcript words must not confirm a typed-but-unsent body"
         );
         pty.shutdown().unwrap();
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn failed_draft_ending_in_a_bare_prompt_line_stays_latched() {
+        // The failed body's last line is a bare prompt glyph. The composer
+        // parser anchors on that line and sees an idle prompt, but the whole
+        // draft is still in the editor and ends at the cursor.
+        for (cli, glyph) in [("codex", "›"), ("claude", ">")] {
+            let expected = format!("Relay message from Lead [evt]: quote this\n{glyph}");
+            let (pty, snapshot) = codex_snapshot(&format!(
+                "{glyph} Relay message from Lead [evt]: quote this\n{glyph}"
+            ))
+            .await;
+            assert!(
+                !failed_draft_released(cli, &expected, &snapshot),
+                "{cli}: a draft ending in a bare `{glyph}` row must not release the latch"
+            );
+            pty.shutdown().unwrap();
+        }
     }
 
     #[cfg(unix)]
