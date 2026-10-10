@@ -2059,10 +2059,10 @@ describe('complete Daytona Fleet board', () => {
     const actual = await collectFleetCliInventory('packages/cli/dist/cli/index.js');
     // The trusted verifier runs from current main while the candidate CLI is
     // hydrated separately. Keep this assertion pinned to main's known
-    // 30-executable-leaf/36-record surface; candidate inventory equality is checked in
+    // 31-executable-leaf/37-record surface; candidate inventory equality is checked in
     // the qualification job against the hydrated artifact.
-    expect(actual.commands).toHaveLength(36);
-    expect(actual.commands.filter(({ leaf }: { leaf: boolean }) => leaf)).toHaveLength(30);
+    expect(actual.commands).toHaveLength(37);
+    expect(actual.commands.filter(({ leaf }: { leaf: boolean }) => leaf)).toHaveLength(31);
     expect(inventorySha256(actual)).toMatch(/^[a-f0-9]{64}$/);
     for (const verb of ['config', 'enable', 'disable', 'inherit']) {
       expect(actual.commands.find(({ path }: { path: string }) => path === `fleet ${verb}`)).toMatchObject({
@@ -2082,6 +2082,15 @@ describe('complete Daytona Fleet board', () => {
       hidden: false,
       leaf: true,
     });
+    // The read-only poll for a spawn whose confirmation window expired. It has
+    // to be on the published surface for the timeout error that names it to be
+    // actionable.
+    expect(actual.commands.find(({ path }: { path: string }) => path === 'fleet spawn-status')).toMatchObject(
+      {
+        hidden: false,
+        leaf: true,
+      }
+    );
     expect(
       actual.commands
         .find(({ path }: { path: string }) => path === 'node up')

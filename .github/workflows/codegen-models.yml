@@ -4,15 +4,14 @@ on:
   push:
     paths:
       - 'packages/utils/cli-registry.yaml'
-    branches:
-      [main]
+    branches: [main]
   pull_request:
     paths:
       - 'packages/utils/cli-registry.yaml'
 
 jobs:
   codegen:
-    if: (github.event_name != 'pull_request' && github.event_name != 'pull_request_target') || (github.head_ref == 'trunk' && github.event.pull_request.head.repo.full_name == github.repository && github.base_ref == 'main')
+    if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
     runs-on: ubuntu-latest
     permissions:
       contents: write
