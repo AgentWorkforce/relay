@@ -275,23 +275,6 @@
       "sourceFormat": "claude",
       "sourceSubtype": "skill",
       "installedPath": ".agents/skills/writing-relayflows/SKILL.md"
-    },
-    "@agent-relay/merge-train-snippet#agents.md:AGENTS.md": {
-      "version": "1.0.1",
-      "resolved": "https://registry.prpm.dev/api/v1/packages/%40agent-relay%2Fmerge-train-snippet/1.0.1.tar.gz",
-      "integrity": "sha256-b993f4fd7a737b5788f10fca8b02d6eea02c803b1d4483f6536f3cfd3f85126e",
-      "format": "agents.md",
-      "subtype": "snippet",
-      "sourceFormat": "generic",
-      "sourceSubtype": "snippet",
-      "installedPath": "AGENTS.md",
-      "snippetMetadata": {
-        "targetPath": "AGENTS.md",
-        "config": {
-          "target": "AGENTS.md",
-          "position": "append"
-        }
-      }
     }
   },
   "generated": "2026-10-08T23:07:11.486Z"

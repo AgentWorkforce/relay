@@ -1,0 +1,21 @@
+{
+  "version": 1,
+  "id": "1891-codex-parked-composer-recovery",
+  "kind": "bugfix",
+  "title": "Recover a Relay delivery that Codex leaves in its composer",
+  "requirements": ["broker-linux-x64"],
+  "runner": {
+    "command": ["node", "tests/relayflows/cases/1891-codex-parked-composer-recovery/run.mjs"]
+  },
+  "timeoutSeconds": 300,
+  "expected": {
+    "base": {
+      "outcome": "bug",
+      "signature": "codex_delivery_left_in_composer"
+    },
+    "head": {
+      "outcome": "fixed",
+      "signature": "codex_parked_delivery_recovers_once"
+    }
+  }
+}

@@ -124,6 +124,8 @@ const expectedLeafCommands = [
   'message inbox mark_read',
   'message inbox get_readers',
   'message file upload',
+  'message file get',
+  'message file download',
   // integration
   'integration subscribe',
   'integration unsubscribe',

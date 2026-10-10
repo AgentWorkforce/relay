@@ -204,6 +204,7 @@ async fn cleanup_worker_registry(mut registry: WorkerRegistry) {
 struct WorkerEventRuntimeFixture {
     runtime: BrokerRuntime,
     api_tx: mpsc::Sender<ListenApiRequest>,
+    worker_event_tx: mpsc::Sender<WorkerEvent>,
     fleet_control_rx: mpsc::Receiver<FleetControlCommand>,
     fleet_completion_rx: mpsc::UnboundedReceiver<crate::node_control::RetainedFleetCompletion>,
     _sdk_out_rx: mpsc::Receiver<ProtocolEnvelope<Value>>,
@@ -630,7 +631,7 @@ fn worker_event_runtime_fixture_with_relay(
     let (terminal_reconnect_tx, _terminal_reconnect_rx) = tokio::sync::watch::channel(None);
     let (_terminal_event_tx, terminal_event_rx) = mpsc::channel(4);
     let (sdk_out_tx, sdk_out_rx) = mpsc::channel(64);
-    let (_worker_event_tx, worker_event_rx) = mpsc::channel(4);
+    let (worker_event_tx, worker_event_rx) = mpsc::channel(4);
     let (hosted_agent_event_tx, _hosted_agent_event_rx) = mpsc::channel(4);
     let mut reap_tick = tokio::time::interval(Duration::from_secs(60));
     reap_tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
@@ -682,6 +683,9 @@ fn worker_event_runtime_fixture_with_relay(
         terminal_snapshot_requests: HashMap::new(),
         terminal_input_requests: HashMap::new(),
         fleet_delivery_book: FleetDeliveryBook::default(),
+        attachment_staging: crate::attachments::AttachmentStaging::new(Some(
+            temp_dir.path().join("attachment-home"),
+        )),
         fleet_max_agents: 0,
         fleet_inventory: HashMap::new(),
         fleet_inventory_reconcile_retry_after: HashMap::new(),
@@ -718,6 +722,7 @@ fn worker_event_runtime_fixture_with_relay(
     WorkerEventRuntimeFixture {
         runtime,
         api_tx,
+        worker_event_tx,
         fleet_control_rx,
         fleet_completion_rx,
         _sdk_out_rx: sdk_out_rx,
@@ -847,6 +852,8 @@ fn delivery_lifecycle_worker_event(
                 "delivery_id": delivery_id,
                 "event_id": event_id,
                 "reason": "test terminal disposition",
+                "attempts": 1,
+                "max_attempts": 3,
             },
         }),
     }
@@ -2928,7 +2935,8 @@ async fn a_worker_confirmed_ack_becomes_visible_on_the_node_delivery_endpoint() 
         ..withheld_ack_for(delivery_id.as_str())
     };
 
-    // The state right after an injection: received, ack withheld pending echo.
+    // The state right after an injection: received, ack withheld pending
+    // harness acceptance.
     fixture
         .runtime
         .fleet_delivery_book
@@ -3172,9 +3180,76 @@ async fn every_terminal_disposition_drops_its_withheld_fleet_ack() {
     cleanup_worker_registry(fixture.runtime.workers).await;
 }
 
-// relay#1310 MUST-NOT-FIRE: once the worker confirms the injection landed
-// (echo-verified, or its bounded timeout fallback — pty_worker.rs sends the
-// same internal `delivery_ack` event either way), the engine ack must still
+#[tokio::test]
+async fn terminally_failed_fleet_replay_is_not_surfaced_again() {
+    let worker_name = "worker-a";
+    let registry = make_worker_registry_with_worker(worker_name).await;
+    let deliver = attachment_deliver_to(
+        worker_name,
+        "terminal-replay",
+        1,
+        shot_dm_payload("must not be pasted twice"),
+    );
+    let mut fixture = worker_event_runtime_fixture(registry, HashMap::new());
+    fixture
+        .runtime
+        .terminal_failed_deliveries
+        .insert(DeliveryId::from(&deliver.delivery_id));
+
+    fixture
+        .runtime
+        .handle_fleet_control_event(crate::node_control::FleetControlEvent::Message(
+            crate::fleet_wire::RelaycastToBroker::Deliver(deliver),
+        ))
+        .await;
+
+    assert!(fixture.runtime.pending_deliveries.is_empty());
+    assert!(fixture.runtime.delivery_states.is_empty());
+    assert!(!fixture.runtime.attachment_staging.is_busy(worker_name));
+    assert!(fixture.fleet_control_rx.try_recv().is_err());
+    assert!(fixture._sdk_out_rx.try_recv().is_err());
+    cleanup_worker_registry(fixture.runtime.workers).await;
+}
+
+#[tokio::test]
+async fn maintenance_drains_queued_confirmation_before_retry_sweep() {
+    let worker_name = "worker-a";
+    let registry = make_worker_registry_with_worker(worker_name).await;
+    let generation = registry.workers[worker_name].generation;
+    let delivery_id = DeliveryId::new("del_queued_confirmation");
+    let pending = make_pending_delivery(delivery_id.as_str(), worker_name);
+    let event_id = pending.delivery.event_id.clone();
+    let mut fixture =
+        worker_event_runtime_fixture(registry, HashMap::from([(delivery_id.clone(), pending)]));
+    fixture
+        .worker_event_tx
+        .send(WorkerEvent::Message {
+            name: WorkerName::from(worker_name),
+            generation,
+            value: json!({
+                "type": "delivery_verified",
+                "payload": {
+                    "delivery_id": delivery_id,
+                    "event_id": event_id,
+                    "verification": "harness_acceptance",
+                },
+            }),
+        })
+        .await
+        .unwrap();
+
+    fixture.runtime.handle_maintenance_tick().await;
+
+    assert!(!fixture
+        .runtime
+        .pending_deliveries
+        .contains_key(&delivery_id));
+    assert!(fixture.runtime.dead_letters.is_empty());
+    cleanup_worker_registry(fixture.runtime.workers).await;
+}
+
+// relay#1310 MUST-NOT-FIRE: once the worker confirms harness acceptance, the
+// engine ack must still
 // fire, with the delivery's own (agent, up_to_seq) — i.e. the happy path is
 // unchanged, just correctly gated on confirmation instead of write-enqueue.
 // Exercises the full wiring: a real handoff through
@@ -3228,7 +3303,7 @@ async fn worker_confirmation_ack_diagnostics(closed: bool) {
             .expect("the delivery must be tracked pending the worker's confirmation")
             .withheld_fleet_ack
             .is_some(),
-        "a successful handoff must still withhold the ack pending echo confirmation"
+        "a successful handoff must still withhold the ack pending harness acceptance"
     );
 
     fixture
@@ -4330,6 +4405,300 @@ fn worker_reported_delivery_failures_use_the_dead_letter_path() {
         failure_branch.contains("emit_dropped_delivery_failures"),
         "worker-reported terminal failures must be retained in the dead-letter store"
     );
+}
+
+#[tokio::test]
+async fn unconfirmed_pty_delivery_is_visible_as_blocked_on_send() {
+    let worker_name = "worker-a";
+    let registry = make_worker_registry_with_worker(worker_name).await;
+    let generation = registry.workers[worker_name].generation;
+    let delivery_id = DeliveryId::new("del_blocked_on_send");
+    let pending = make_pending_delivery(delivery_id.as_str(), worker_name);
+    let event_id = pending.delivery.event_id.clone();
+    let mut fixture =
+        worker_event_runtime_fixture(registry, HashMap::from([(delivery_id.clone(), pending)]));
+
+    fixture
+        .runtime
+        .handle_worker_event(delivery_lifecycle_worker_event(
+            worker_name,
+            generation,
+            "delivery_unconfirmed",
+            delivery_id.as_str(),
+            event_id.as_str(),
+        ))
+        .await;
+
+    assert_eq!(
+        fixture.runtime.workers.workers[worker_name].state,
+        AgentWorkState::BlockedOnSend
+    );
+    let mut kinds = Vec::new();
+    while let Ok(frame) = fixture._sdk_out_rx.try_recv() {
+        if let Some(kind) = frame.payload.get("kind").and_then(Value::as_str) {
+            if kind == "delivery_unconfirmed" {
+                assert_eq!(frame.payload["attempts"], 1);
+                assert_eq!(frame.payload["max_attempts"], 3);
+            }
+            kinds.push(kind.to_string());
+        }
+    }
+    assert!(kinds.iter().any(|kind| kind == "delivery_unconfirmed"));
+    assert!(kinds.iter().any(|kind| kind == "agent_blocked_on_send"));
+    cleanup_worker_registry(fixture.runtime.workers).await;
+}
+
+#[tokio::test]
+async fn terminal_delivery_failure_unblocks_worker_after_pending_is_removed() {
+    let worker_name = "worker-a";
+    let mut registry = make_worker_registry_with_worker(worker_name).await;
+    registry.workers.get_mut(worker_name).unwrap().state = AgentWorkState::BlockedOnSend;
+    let generation = registry.workers[worker_name].generation;
+    let delivery_id = DeliveryId::new("del_terminal_failure");
+    let pending = make_pending_delivery(delivery_id.as_str(), worker_name);
+    let event_id = pending.delivery.event_id.clone();
+    let mut fixture =
+        worker_event_runtime_fixture(registry, HashMap::from([(delivery_id.clone(), pending)]));
+
+    fixture
+        .runtime
+        .handle_worker_event(delivery_lifecycle_worker_event(
+            worker_name,
+            generation,
+            "delivery_failed",
+            delivery_id.as_str(),
+            event_id.as_str(),
+        ))
+        .await;
+
+    assert!(fixture.runtime.pending_deliveries.is_empty());
+    assert_eq!(
+        fixture.runtime.workers.workers[worker_name].state,
+        AgentWorkState::Working,
+        "a terminal failure with no remaining delivery must release blocked-on-send"
+    );
+    let kinds = std::iter::from_fn(|| fixture._sdk_out_rx.try_recv().ok())
+        .filter_map(|frame| {
+            frame
+                .payload
+                .get("kind")
+                .and_then(Value::as_str)
+                .map(str::to_owned)
+        })
+        .collect::<Vec<_>>();
+    assert!(!kinds.iter().any(|kind| kind == "agent_blocked_on_send"));
+    cleanup_worker_registry(fixture.runtime.workers).await;
+}
+
+#[tokio::test]
+async fn pty_delivery_verification_requires_harness_acceptance() {
+    let worker_name = "worker-a";
+    let registry = make_worker_registry_with_worker(worker_name).await;
+    let generation = registry.workers[worker_name].generation;
+    let delivery_id = DeliveryId::new("del_legacy_verification");
+    let pending = make_pending_delivery(delivery_id.as_str(), worker_name);
+    let event_id = pending.delivery.event_id.clone();
+    let mut fixture =
+        worker_event_runtime_fixture(registry, HashMap::from([(delivery_id.clone(), pending)]));
+
+    fixture
+        .runtime
+        .handle_worker_event(WorkerEvent::Message {
+            name: WorkerName::from(worker_name),
+            generation,
+            value: json!({
+                "type": "delivery_verified",
+                "payload": {
+                    "delivery_id": delivery_id,
+                    "event_id": event_id,
+                    "verification": "echo",
+                },
+            }),
+        })
+        .await;
+
+    assert!(fixture
+        .runtime
+        .pending_deliveries
+        .contains_key("del_legacy_verification"));
+    assert!(
+        std::iter::from_fn(|| fixture._sdk_out_rx.try_recv().ok()).any(|frame| {
+            frame.payload.get("kind").and_then(Value::as_str) == Some("delivery_unconfirmed")
+        })
+    );
+    cleanup_worker_registry(fixture.runtime.workers).await;
+}
+
+#[tokio::test]
+async fn completed_replay_is_reported_without_confirming_a_fresh_pending_delivery() {
+    let worker_name = "worker-a";
+    let registry = make_worker_registry_with_worker(worker_name).await;
+    let generation = registry.workers[worker_name].generation;
+    let delivery_id = DeliveryId::new("del_completed_replay");
+    let pending = make_pending_delivery(delivery_id.as_str(), worker_name);
+    let event_id = pending.delivery.event_id.clone();
+    let mut fixture =
+        worker_event_runtime_fixture(registry, HashMap::from([(delivery_id.clone(), pending)]));
+
+    fixture
+        .runtime
+        .handle_worker_event(WorkerEvent::Message {
+            name: WorkerName::from(worker_name),
+            generation,
+            value: json!({
+                "type": "delivery_verified",
+                "payload": {
+                    "delivery_id": delivery_id,
+                    "event_id": event_id,
+                    "verification": "completed_replay",
+                },
+            }),
+        })
+        .await;
+
+    assert!(fixture
+        .runtime
+        .pending_deliveries
+        .contains_key("del_completed_replay"));
+    assert!(
+        std::iter::from_fn(|| fixture._sdk_out_rx.try_recv().ok()).any(|frame| {
+            frame.payload.get("kind").and_then(Value::as_str) == Some("delivery_verified")
+                && frame.payload.get("verification").and_then(Value::as_str)
+                    == Some("completed_replay")
+        })
+    );
+    cleanup_worker_registry(fixture.runtime.workers).await;
+}
+
+#[tokio::test]
+async fn agent_idle_clears_stale_blocked_state_without_pending_delivery() {
+    let worker_name = "worker-a";
+    let mut registry = make_worker_registry_with_worker(worker_name).await;
+    registry.workers.get_mut(worker_name).unwrap().state = AgentWorkState::BlockedOnSend;
+    let generation = registry.workers[worker_name].generation;
+    let mut fixture = worker_event_runtime_fixture(registry, HashMap::new());
+
+    fixture
+        .runtime
+        .handle_worker_event(WorkerEvent::Message {
+            name: WorkerName::from(worker_name),
+            generation,
+            value: json!({
+                "type": "agent_idle",
+                "payload": { "idle_secs": 1 },
+            }),
+        })
+        .await;
+
+    assert_eq!(
+        fixture.runtime.workers.workers[worker_name].state,
+        AgentWorkState::Idle,
+        "blocked-on-send is meaningful only while a delivery remains pending"
+    );
+    cleanup_worker_registry(fixture.runtime.workers).await;
+}
+
+#[tokio::test]
+async fn prior_delivery_activity_does_not_clear_blocked_on_send() {
+    let worker_name = "worker-a";
+    let registry = make_worker_registry_with_worker(worker_name).await;
+    let generation = registry.workers[worker_name].generation;
+    let delivery_id = DeliveryId::new("del_blocked_with_prior_activity");
+    let pending = make_pending_delivery(delivery_id.as_str(), worker_name);
+    let event_id = pending.delivery.event_id.clone();
+    let mut fixture =
+        worker_event_runtime_fixture(registry, HashMap::from([(delivery_id.clone(), pending)]));
+
+    fixture
+        .runtime
+        .handle_worker_event(delivery_lifecycle_worker_event(
+            worker_name,
+            generation,
+            "delivery_unconfirmed",
+            delivery_id.as_str(),
+            event_id.as_str(),
+        ))
+        .await;
+    fixture
+        .runtime
+        .handle_worker_event(delivery_lifecycle_worker_event(
+            worker_name,
+            generation,
+            "delivery_active",
+            "del_prior_delivery",
+            "event_prior_delivery",
+        ))
+        .await;
+
+    assert_eq!(
+        fixture.runtime.workers.workers[worker_name].state,
+        AgentWorkState::BlockedOnSend,
+        "late activity from an earlier accepted delivery must not clear recovery state"
+    );
+    cleanup_worker_registry(fixture.runtime.workers).await;
+}
+
+#[tokio::test]
+async fn stale_recovery_progress_does_not_block_the_worker() {
+    let worker_name = "worker-a";
+    let registry = make_worker_registry_with_worker(worker_name).await;
+    let generation = registry.workers[worker_name].generation;
+    let mut fixture = worker_event_runtime_fixture(registry, HashMap::new());
+
+    fixture
+        .runtime
+        .handle_worker_event(delivery_lifecycle_worker_event(
+            worker_name,
+            generation,
+            "delivery_unconfirmed",
+            "del_already_complete",
+            "evt_already_complete",
+        ))
+        .await;
+
+    assert_eq!(
+        fixture.runtime.workers.workers[worker_name].state,
+        AgentWorkState::Working
+    );
+    cleanup_worker_registry(fixture.runtime.workers).await;
+}
+
+#[tokio::test]
+async fn submit_recovery_progress_defers_broker_delivery_retry() {
+    let worker_name = "worker-a";
+    let registry = make_worker_registry_with_worker(worker_name).await;
+    let generation = registry.workers[worker_name].generation;
+    let delivery_id = DeliveryId::new("del_recovery_progress");
+    let mut pending = make_pending_delivery(delivery_id.as_str(), worker_name);
+    pending.delivery.injection_mode = MessageInjectionMode::Steer;
+    let event_id = pending.delivery.event_id.clone();
+    let mut fixture =
+        worker_event_runtime_fixture(registry, HashMap::from([(delivery_id.clone(), pending)]));
+    let before = Instant::now();
+
+    fixture
+        .runtime
+        .handle_worker_event(delivery_lifecycle_worker_event(
+            worker_name,
+            generation,
+            "delivery_unconfirmed",
+            delivery_id.as_str(),
+            event_id.as_str(),
+        ))
+        .await;
+
+    let deadline = fixture.runtime.pending_deliveries[&delivery_id].next_retry_at;
+    assert!(
+        deadline
+            .checked_duration_since(before)
+            .is_some_and(|delay| {
+                delay
+                    >= crate::broker::delivery_verification::VERIFICATION_WINDOW
+                        + crate::broker::delivery_verification::VERIFICATION_WINDOW
+            }),
+        "broker retry must wait through the in-flight submit write and verification window"
+    );
+    cleanup_worker_registry(fixture.runtime.workers).await;
 }
 
 #[test]
@@ -9444,4 +9813,244 @@ async fn muse_fleet_missing_auth_fails_before_registration_and_dedup() {
         assert!(fixture.runtime.workers.workers.is_empty());
         assert!(fixture.runtime.pending_verified_spawns.is_empty());
     }
+}
+
+fn attachment_deliver(msg_id: &str, seq: u64, payload: Value) -> Deliver {
+    attachment_deliver_to("ghost", msg_id, seq, payload)
+}
+
+fn attachment_deliver_to(agent: &str, msg_id: &str, seq: u64, payload: Value) -> Deliver {
+    Deliver {
+        v: FLEET_WIRE_VERSION,
+        agent: agent.into(),
+        agent_id: format!("{agent}-id"),
+        delivery_id: format!("delivery-{msg_id}"),
+        msg_id: msg_id.into(),
+        seq,
+        mode: DeliveryMode::Wait,
+        payload,
+    }
+}
+
+fn pending_body_for(fixture: &WorkerEventRuntimeFixture, msg_id: &str) -> String {
+    fixture
+        .runtime
+        .pending_deliveries
+        .values()
+        .find(|pending| pending.delivery.event_id.as_str() == msg_id)
+        .map(|pending| pending.delivery.body.clone())
+        .unwrap_or_else(|| panic!("delivery {msg_id} should be pending"))
+}
+
+async fn deliver_and_release_staged(fixture: &mut WorkerEventRuntimeFixture, deliver: Deliver) {
+    fixture
+        .runtime
+        .handle_fleet_control_event(crate::node_control::FleetControlEvent::Message(
+            crate::fleet_wire::RelaycastToBroker::Deliver(deliver),
+        ))
+        .await;
+}
+
+async fn release_next_staged(fixture: &mut WorkerEventRuntimeFixture) {
+    let staged = tokio::time::timeout(
+        Duration::from_secs(10),
+        fixture.runtime.attachment_staging.recv(),
+    )
+    .await
+    .expect("attachment preparation should finish")
+    .expect("staging channel stays open");
+    fixture.runtime.handle_staged_attachments(staged).await;
+}
+
+fn attachment_fixture(server: &httpmock::MockServer) -> WorkerEventRuntimeFixture {
+    let (tx, _rx) = mpsc::channel(16);
+    let workers = WorkerRegistry::new(tx, Vec::new(), std::env::temp_dir(), Instant::now());
+    worker_event_runtime_fixture_with_relay(workers, HashMap::new(), Some(server.base_url()))
+}
+
+fn shot_dm_payload(text: &str) -> Value {
+    json!({
+        "type": "dm.received",
+        "data": {
+            "id": "msg-attach-1",
+            "agent_name": "alice",
+            "text": text,
+            "attachments": [{
+                "file_id": "file_1",
+                "filename": "shot.png",
+                "content_type": "image/png",
+                "size_bytes": 156748
+            }]
+        }
+    })
+}
+
+#[tokio::test]
+async fn fleet_delivery_with_attachment_injects_attachment_reference() {
+    let server = httpmock::MockServer::start_async().await;
+    server
+        .mock_async(|when, then| {
+            when.method(httpmock::Method::GET).path("/v1/files/file_1");
+            then.status(404);
+        })
+        .await;
+    let mut fixture = attachment_fixture(&server);
+    deliver_and_release_staged(
+        &mut fixture,
+        attachment_deliver("msg-attach-1", 1, shot_dm_payload("see screenshot")),
+    )
+    .await;
+    release_next_staged(&mut fixture).await;
+    let body = pending_body_for(&fixture, "msg-attach-1");
+    assert_eq!(
+        body,
+        "see screenshot\n\nAttachments:\n\
+         - shot.png (image/png, 153.1 KB) file file_1 (not downloaded: file lookup returned HTTP 404); \
+         fetch with: agent-relay message file download file_1"
+    );
+}
+
+#[tokio::test]
+async fn fleet_delivery_downloads_attachment_into_worker_cwd_before_injection() {
+    let server = httpmock::MockServer::start_async().await;
+    let lookup = server
+        .mock_async(|when, then| {
+            when.method(httpmock::Method::GET)
+                .path("/v1/files/file_1")
+                .header("authorization", "Bearer rk_live_test");
+            then.status(200).json_body(json!({
+                "ok": true,
+                "data": {
+                    "id": "file_1",
+                    "size_bytes": 156748,
+                    "status": "uploaded",
+                    "download_url": server.url("/blob/file_1?sig=s3cr3t")
+                }
+            }));
+        })
+        .await;
+    server
+        .mock_async(|when, then| {
+            when.method(httpmock::Method::GET).path("/blob/file_1");
+            then.status(200).body(vec![7u8; 156748]);
+        })
+        .await;
+    let worker_name = WorkerName::from("worker-a");
+    let workers = make_worker_registry_with_worker(&worker_name).await;
+    let mut fixture =
+        worker_event_runtime_fixture_with_relay(workers, HashMap::new(), Some(server.base_url()));
+    let cwd = fixture._temp_dir.path().join("agent-cwd");
+    std::fs::create_dir_all(&cwd).unwrap();
+    fixture
+        .runtime
+        .workers
+        .workers
+        .get_mut(&worker_name)
+        .unwrap()
+        .spec
+        .cwd = Some(cwd.to_string_lossy().into_owned());
+    // Hold injected messages in the manual queue so their bodies and order
+    // can be inspected.
+    fixture.runtime.delivery_states.insert(
+        worker_name.clone(),
+        InboundDeliveryState::new(InboundDeliveryMode::ManualFlush),
+    );
+
+    // An attachment-only message (empty text) must still be injected.
+    deliver_and_release_staged(
+        &mut fixture,
+        attachment_deliver_to("worker-a", "msg-attach-1", 1, shot_dm_payload("")),
+    )
+    .await;
+    assert_eq!(
+        fixture.runtime.delivery_states[&worker_name].pending_len(),
+        0,
+        "delivery must wait for its attachments"
+    );
+    // A later text-only delivery for the same agent queues behind it.
+    deliver_and_release_staged(
+        &mut fixture,
+        attachment_deliver_to(
+            "worker-a",
+            "msg-after",
+            2,
+            json!({"type": "dm.received", "data": {"agent_name": "alice", "text": "second"}}),
+        ),
+    )
+    .await;
+    assert_eq!(
+        fixture.runtime.delivery_states[&worker_name].pending_len(),
+        0
+    );
+    release_next_staged(&mut fixture).await;
+
+    let saved = cwd.join(".agent-relay/attachments/file_1/shot.png");
+    assert_eq!(std::fs::read(&saved).unwrap(), vec![7u8; 156748]);
+    let bodies: Vec<String> = fixture.runtime.delivery_states[&worker_name]
+        .pending_snapshot()
+        .into_iter()
+        .map(|message| message.body)
+        .collect();
+    assert_eq!(
+        bodies,
+        vec![
+            format!(
+                "Attachments:\n- shot.png (image/png, 153.1 KB) saved to {}",
+                saved.display()
+            ),
+            "second".to_string(),
+        ],
+        "attachment block is injected and arrival order is preserved"
+    );
+    lookup.assert_hits_async(1).await;
+    let workers = std::mem::replace(&mut fixture.runtime.workers, empty_worker_registry());
+    cleanup_worker_registry(workers).await;
+}
+
+#[tokio::test]
+async fn fleet_delivery_without_attachments_is_not_staged() {
+    let server = httpmock::MockServer::start_async().await;
+    let mut fixture = attachment_fixture(&server);
+    deliver_and_release_staged(
+        &mut fixture,
+        attachment_deliver(
+            "msg-plain",
+            1,
+            json!({"type": "dm.received", "data": {"agent_name": "alice", "text": "plain"}}),
+        ),
+    )
+    .await;
+    assert_eq!(pending_body_for(&fixture, "msg-plain"), "plain");
+    assert!(!fixture.runtime.attachment_staging.is_busy("ghost"));
+}
+
+#[tokio::test]
+async fn already_acked_attachment_replay_bypasses_download_staging() {
+    let server = httpmock::MockServer::start_async().await;
+    let lookup = server
+        .mock_async(|when, then| {
+            when.method(httpmock::Method::GET).path("/v1/files/file_1");
+            then.status(500);
+        })
+        .await;
+    let mut fixture = attachment_fixture(&server);
+    let deliver = attachment_deliver("msg-attach-1", 1, shot_dm_payload("see screenshot"));
+    let decision = fixture.runtime.fleet_delivery_book.observe(&deliver);
+    assert!(matches!(
+        decision,
+        crate::node_control::DeliveryDecision::Deliver { .. }
+    ));
+    fixture
+        .runtime
+        .fleet_delivery_book
+        .commit_delivered(&deliver);
+
+    deliver_and_release_staged(&mut fixture, deliver).await;
+
+    assert!(!fixture.runtime.attachment_staging.is_busy("ghost"));
+    lookup.assert_hits_async(0).await;
+    assert!(matches!(
+        fixture.fleet_control_rx.try_recv(),
+        Ok(FleetControlCommand::Send(BrokerToRelaycast::DeliveryAck(_)))
+    ));
 }

@@ -30,8 +30,11 @@ an approval or other dialog occupies the composer.
 
 Both initial tasks and follow-up messages use bracketed paste, then a separate
 Enter after 250 ms. In the installed CLI, a paste and Enter in one terminal
-write left the prompt in the composer; a later Enter submitted it. Relay does
-not send repeated recovery Enters that might accidentally approve a tool.
+write left the prompt in the composer; a later Enter submitted it. Relay
+fleet PTY workers retry submit only while the compacted message tail remains
+visibly parked, and never while an approval dialog or human input owns the
+composer. Interactive `relay wrap` sessions fail an unconfirmed parked write
+instead of pressing a key when the Devin readiness gate is no longer idle.
 
 ## MCP configuration
 

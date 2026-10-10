@@ -9,10 +9,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- `agent-relay message dm send`, `message post` and `message dm send_group` take a repeatable `--file <path>` that uploads and attaches local files (for example screenshots); `message file upload` accepts `--to <agent>` for a DM.
+- `agent-relay message file download <file_id>` saves a received attachment (default `.agent-relay/attachments/<file_id>/`) and prints its path; `message file get <file_id>` shows it with a short-lived download URL.
+- The `agent-relay mcp` server adds `upload_file` (local path or base64) and `download_file`, and `send_group_dm` accepts `attachments`.
+- Agents spawned by the broker receive message attachments (up to 25 MiB each) as local files: the injected message ends with an `Attachments:` list giving each file's path under `.agent-relay/attachments/` in the agent's working directory, or an `agent-relay message file download <file_id>` command when a file could not be fetched. Messages that carry only attachments are now delivered too.
+- `@agent-relay/sdk` adds `files.upload` / `files.get` / `files.download` on `AgentRelay` and `RelaycastMessagingClient`, plus `uploadRelayFile` / `downloadRelayFile` helpers.
 - `agent-relay fleet spawn-status <invocation-id>` reads a recorded spawn dispatch without spawning again, separating confirmed readiness, a node-reported failure, and an outcome the node has not reported yet.
 
 ### Fixed
 
+- `agent-relay message file upload` now uploads and attaches the file; it always failed with "Invalid attachments: file ids must exist in workspace and be complete".
+- Broker-managed messages retry failed delivery up to three times, and later sends wait until delivery succeeds.
 - `fleet spawn` (and SDK placement confirmation) now waits six minutes for launch confirmation instead of two, so agents that register minutes after dispatch are confirmed rather than reported as unconfirmed; the timeout error names the `fleet spawn-status` poll for its invocation id instead of suggesting a redispatch.
 
 ## [13.2.0] - 2026-10-08
