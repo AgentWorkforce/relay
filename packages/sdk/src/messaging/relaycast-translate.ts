@@ -232,6 +232,12 @@ export function normalizeActionInvocation(raw: unknown): RelayActionInvocation {
     actionName: readStr(record, 'actionName', 'action_name') ?? '',
     callerId: (readStr(record, 'callerId', 'caller_id') ?? null) as string | null,
     callerName: (readStr(record, 'callerName', 'caller_name') ?? null) as string | null,
+    ...(readStr(record, 'handlerNodeId', 'handler_node_id')
+      ? { handlerNodeId: readStr(record, 'handlerNodeId', 'handler_node_id') }
+      : {}),
+    ...(readStr(record, 'dispatchedNodeId', 'dispatched_node_id')
+      ? { dispatchedNodeId: readStr(record, 'dispatchedNodeId', 'dispatched_node_id') }
+      : {}),
     input: readRecord(record, 'input') ?? {},
     output: readRecord(record, 'output') ?? null,
     status: readStr(record, 'status') ?? 'invoked',

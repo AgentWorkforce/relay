@@ -58,7 +58,7 @@ import { redactSecrets } from '../lib/redact.js';
 import { attributableReleaseReason } from '../lib/release-reason.js';
 import { retireOwnedIntegrationBindings } from './integration.js';
 import { resolveSandboxRepository, type SandboxRepositorySelection } from '../lib/sandbox-repo.js';
-import { spawnPlacementReceipt } from '../lib/spawn-lifecycle.js';
+import { sanitizedSpawnReceipt, spawnPlacementReceipt } from '../lib/spawn-lifecycle.js';
 import {
   resolveAgentToken,
   resolveWorkspaceSelection,
@@ -453,6 +453,66 @@ export function registerFleetCommands(
 
   addSdkOptions(
     group
+      .command('spawn-status')
+      .description('Read an existing spawn dispatch without launching another agent')
+      .argument('<invocation-id>', 'Invocation ID returned by fleet spawn')
+  ).action(async (invocationId: string, options: Record<string, unknown>) => {
+    await runSdk(deps.sdk, async () => {
+      const clientOptions = sdkOptionsFromOpts(options);
+      let token = resolveAgentToken(clientOptions);
+      let launcherName: string | undefined;
+      let workspace: ReturnType<FleetCommandDependencies['sdk']['createWorkspaceRelay']> | undefined;
+      try {
+        if (!token) {
+          workspace = deps.sdk.createWorkspaceRelay(clientOptions);
+          const name = `fleet-status-launcher-${randomUUID().slice(0, 8)}`;
+          const launcher = await workspace.workspace.register(
+            { name, metadata: { purpose: 'fleet-spawn-status' } },
+            { strict: true }
+          );
+          launcherName = name;
+          token = launcher.token;
+          if (!token) throw new Error('The temporary fleet status launcher did not receive an agent token.');
+        }
+        // A minted launcher token must read from the gateway that minted it, and
+        // never alongside the workspace key that minted it (createAgentRelay
+        // rejects that pair), matching the spawn path's minted-token client.
+        const relay = deps.sdk.createAgentRelay(
+          launcherName
+            ? { token, baseUrl: resolveWorkspaceTransport(clientOptions).baseUrl }
+            : { ...clientOptions, token }
+        );
+        const invocation = await relay.messaging.commands.getInvocation('spawn', invocationId);
+        // Keep this read-only surface on the existing safe receipt projection.
+        const receipt = sanitizedSpawnReceipt(invocation as unknown as Record<string, unknown>);
+        const result = spawnInvocationWithPlacement(receipt);
+        const output = receipt.output as Record<string, unknown> | undefined;
+        // --no-confirm dispatches may legitimately report launch without readiness.
+        // Preserve that evidence instead of claiming the launched worker failed.
+        if (
+          ['completed', 'success', 'succeeded'].includes(String(receipt.status).toLowerCase()) &&
+          output?.spawned === true &&
+          output.ready === false
+        ) {
+          result.placement = { ...spawnPlacementReceipt(receipt), state: 'accepted' };
+        }
+        printJson(deps.sdk, { invocation: result });
+      } finally {
+        if (launcherName && workspace) {
+          await workspace.workspace
+            .release({
+              name: launcherName,
+              reason: 'Temporary fleet spawn status launcher completed',
+              deleteAgent: true,
+            })
+            .catch((error) => deps.warn(redactSecrets(String(error))));
+        }
+      }
+    });
+  });
+
+  addSdkOptions(
+    group
       .command('spawn')
       .description('Spawn locally by default, or select a fleet node or Cloud sandbox explicitly')
       .argument('<cli>', 'AI CLI to launch', parseFleetCli)
@@ -505,7 +565,7 @@ export function registerFleetCommands(
       .option(
         '--confirm-timeout <ms>',
         `How long a targeted spawn waits for harness readiness (minimum ${MIN_VERIFIED_CONFIRM_TIMEOUT_MS}ms)`,
-        '120000'
+        '360000'
       )
   ).action(async (cli: string, options: Record<string, unknown>) => {
     await runSdk(deps.sdk, async () => {
@@ -592,7 +652,7 @@ export function registerFleetCommands(
         { organization, project, workstream, role, objective },
         task
       );
-      const confirmTimeoutText = optionalText(options.confirmTimeout, 'Confirm timeout') ?? '120000';
+      const confirmTimeoutText = optionalText(options.confirmTimeout, 'Confirm timeout') ?? '360000';
       const confirmTimeoutMs = Number(confirmTimeoutText);
       if (!Number.isFinite(confirmTimeoutMs) || confirmTimeoutMs <= 0) {
         throw new Error('--confirm-timeout must be a positive number of milliseconds.');
