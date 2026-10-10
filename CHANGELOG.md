@@ -10,14 +10,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Added
 
 - `agent-relay integration subscribe --to self` routes provider events to the broker worker's registered identity, allowing fleet workers to subscribe without desktop session detection.
-- Broker events report PTY submit recovery: `delivery_unconfirmed` (the harness has not accepted a write yet, with `attempts` / `max_attempts`) and `delivery_resubmitted` (a submit-only retry, with `attempt` and `strategy`); `delivery_verified` adds `evidence` and `attempts`. `@agent-relay/harness-driver` and the Python and Swift SDK protocol types include both new events.
+- Broker events report PTY submit recovery: `delivery_unconfirmed` (no acceptance evidence for a write, with `attempts` / `max_attempts`; `terminal: true` when the delivery ends unconfirmed) and `delivery_resubmitted` (a submit-only retry, with `attempt` and `strategy`); `delivery_verified` adds `evidence` and `attempts`. `@agent-relay/harness-driver` and the Python and Swift SDK protocol types include both new events.
+
+### Changed
+
+- A PTY delivery the broker can neither confirm nor see still parked in the agent's input box is now delivered as unconfirmed (a terminal `delivery_unconfirmed` with `outcome: "unconfirmed"`) instead of failing, and later messages to that agent are no longer held behind it. Agents whose terminal shows no acceptance signal keep receiving messages.
+- A confirmed `fleet spawn --task` whose task was written but never visibly accepted now succeeds (`spawned: true`) with `warning.code: "spawn_task_unconfirmed"`, instead of failing with `spawn_task_unconfirmed` and exit 8. Only a task that could not be delivered fails the spawn, with `spawn_task_failed`.
 
 ### Fixed
 
 - `agent-relay fleet spawn` explains how to reuse a retained agent name with `fleet release <name> --delete-agent --wait` when registration fails with `agent_already_exists`.
 - The installer's Quick Start now prints `agent-relay node up --background` and `agent-relay node down`, which exist, instead of the removed `agent-relay up` form that failed with "unknown command 'up'". An install pinned with `AGENT_RELAY_VERSION` to a release older than 9.2.2 still prints the top-level `up`/`down` forms that release has.
-- Broker-managed PTY messages now stay pending until the harness accepts them, instead of being acknowledged while still parked in the composer.
-- A PTY delivery the harness never accepts blocks further sends to that agent and is retried by pressing submit only, never by resending the body, for up to three total attempts before it is reported as failed.
+- A PTY message still visible in the agent's input box after submit is retried by pressing submit only, never by resending the body, for up to three total attempts. Later messages queue behind it instead of being typed on top of it, and if it is still stuck after 60 seconds the broker reports a terminal `agent_blocked_on_send` with reason `failed_draft_latched`.
 - Typing into an agent's terminal while a delivery is being retried takes over the terminal and cancels the retries.
 
 ## [13.3.0] - 2026-10-10
