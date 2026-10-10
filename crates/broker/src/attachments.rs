@@ -38,9 +38,10 @@ pub(crate) const ATTACHMENT_DOWNLOAD_TIMEOUT: Duration = Duration::from_secs(20)
 /// Upper bound for all attachments of one message, so a message with many
 /// slow attachments still reaches the agent in bounded time.
 pub(crate) const ATTACHMENT_MESSAGE_BUDGET: Duration = Duration::from_secs(60);
-/// A staging task gets a little scheduling margin beyond the downloader's own
-/// message budget. The runtime maintenance sweep force-releases anything
-/// older, covering task panic/abort and a saturated semaphore.
+/// A running staging task gets a little scheduling margin beyond the
+/// downloader's own message budget. Time waiting for a download slot is not
+/// counted; the runtime sweep aborts a task that exceeds this bound after it
+/// starts.
 pub(crate) const ATTACHMENT_STAGING_MAX_HOLD: Duration = Duration::from_secs(65);
 /// Attachments beyond this count are ignored for one message.
 const MAX_ATTACHMENTS_PER_MESSAGE: usize = 20;
@@ -784,7 +785,10 @@ pub(crate) struct StagedAttachments {
 }
 
 enum StageState {
-    Preparing,
+    Preparing {
+        started_at: std::sync::Arc<std::sync::Mutex<Option<Instant>>>,
+        abort_handle: Option<tokio::task::AbortHandle>,
+    },
     Ready(Option<String>),
 }
 
@@ -796,7 +800,6 @@ struct StagedEntry<T> {
     item: T,
     state: StageState,
     fallback_block: Option<String>,
-    staged_at: Instant,
 }
 
 /// Holds deliveries while their attachments download, without blocking the
@@ -849,7 +852,6 @@ impl<T> AttachmentStaging<T> {
             item,
             state: StageState::Ready(None),
             fallback_block: None,
-            staged_at: Instant::now(),
         });
     }
 
@@ -860,16 +862,50 @@ impl<T> AttachmentStaging<T> {
         key: String,
         item: T,
         fallback_block: Option<String>,
-    ) -> (u64, mpsc::UnboundedSender<StagedAttachments>) {
+    ) -> (
+        u64,
+        mpsc::UnboundedSender<StagedAttachments>,
+        std::sync::Arc<std::sync::Mutex<Option<Instant>>>,
+    ) {
         let token = self.allocate_token();
+        let started_at = std::sync::Arc::new(std::sync::Mutex::new(None));
         self.queues.entry(key).or_default().push_back(StagedEntry {
             token,
             item,
-            state: StageState::Preparing,
+            state: StageState::Preparing {
+                started_at: started_at.clone(),
+                abort_handle: None,
+            },
             fallback_block,
-            staged_at: Instant::now(),
         });
-        (token, self.tx.clone())
+        (token, self.tx.clone(), started_at)
+    }
+
+    /// Tie the spawned download task to its staged entry so expiry can stop
+    /// work that will no longer be represented in the injected message.
+    pub(crate) fn set_abort_handle(
+        &mut self,
+        key: &str,
+        token: u64,
+        abort_handle: tokio::task::AbortHandle,
+    ) {
+        let Some(entry) = self
+            .queues
+            .get_mut(key)
+            .and_then(|queue| queue.iter_mut().find(|entry| entry.token == token))
+        else {
+            abort_handle.abort();
+            return;
+        };
+        if let StageState::Preparing {
+            abort_handle: stored,
+            ..
+        } = &mut entry.state
+        {
+            *stored = Some(abort_handle);
+        } else {
+            abort_handle.abort();
+        }
     }
 
     /// Wait for the next finished preparation. Never resolves to `None`
@@ -918,9 +954,21 @@ impl<T> AttachmentStaging<T> {
             .iter()
             .filter_map(|(key, queue)| {
                 queue.front().and_then(|entry| {
-                    (matches!(entry.state, StageState::Preparing)
-                        && now.saturating_duration_since(entry.staged_at) >= max_age)
-                        .then(|| key.clone())
+                    let StageState::Preparing {
+                        started_at,
+                        abort_handle,
+                    } = &entry.state
+                    else {
+                        return None;
+                    };
+                    let started_at = started_at.lock().ok().and_then(|started| *started);
+                    let expired = started_at
+                        .is_some_and(|started| now.saturating_duration_since(started) >= max_age);
+                    let stopped_before_start = started_at.is_none()
+                        && abort_handle
+                            .as_ref()
+                            .is_some_and(tokio::task::AbortHandle::is_finished);
+                    (expired || stopped_before_start).then(|| key.clone())
                 })
             })
             .collect();
@@ -930,6 +978,13 @@ impl<T> AttachmentStaging<T> {
                 continue;
             };
             if let Some(front) = queue.front_mut() {
+                if let StageState::Preparing {
+                    abort_handle: Some(abort_handle),
+                    ..
+                } = &front.state
+                {
+                    abort_handle.abort();
+                }
                 front.state = StageState::Ready(front.fallback_block.take());
             }
             while queue
@@ -1567,11 +1622,14 @@ mod tests {
     fn staging_releases_in_arrival_order_per_key() {
         let mut staging: AttachmentStaging<&str> = AttachmentStaging::new(None);
         assert!(!staging.is_busy("a"));
-        let (first, _tx) = staging.push_preparing("a".into(), "a1", Some("a1-ref".into()));
+        let (first, _tx, _started) =
+            staging.push_preparing("a".into(), "a1", Some("a1-ref".into()));
         assert!(staging.is_busy("a"));
         staging.push_ready("a".into(), "a2");
-        let (third, _tx) = staging.push_preparing("a".into(), "a3", Some("a3-ref".into()));
-        let (other, _tx) = staging.push_preparing("b".into(), "b1", Some("b1-ref".into()));
+        let (third, _tx, _started) =
+            staging.push_preparing("a".into(), "a3", Some("a3-ref".into()));
+        let (other, _tx, _started) =
+            staging.push_preparing("b".into(), "b1", Some("b1-ref".into()));
 
         // Out-of-order completion holds later items behind earlier ones.
         assert!(staging
@@ -1612,19 +1670,37 @@ mod tests {
             .is_empty());
     }
 
-    #[test]
-    fn staging_expiry_releases_reference_and_ready_followers() {
+    #[tokio::test]
+    async fn staging_expiry_starts_after_a_slot_and_aborts_the_download() {
         let mut staging: AttachmentStaging<&str> = AttachmentStaging::new(None);
-        staging.push_preparing("a".into(), "a1", Some("reference".into()));
+        let queued_at = Instant::now();
+        let (token, _tx, started_at) =
+            staging.push_preparing("a".into(), "a1", Some("reference".into()));
         staging.push_ready("a".into(), "a2");
+        let task = tokio::spawn(std::future::pending::<()>());
+        staging.set_abort_handle("a", token, task.abort_handle());
+
+        // Time in the semaphore queue does not consume the transfer budget.
+        assert!(staging
+            .expire_stalled(
+                queued_at + ATTACHMENT_STAGING_MAX_HOLD * 2,
+                ATTACHMENT_STAGING_MAX_HOLD,
+            )
+            .is_empty());
+        assert!(staging.is_busy("a"));
+
+        let transfer_started = queued_at + ATTACHMENT_STAGING_MAX_HOLD * 2;
+        *started_at.lock().unwrap() = Some(transfer_started);
 
         assert_eq!(
             staging.expire_stalled(
-                Instant::now() + ATTACHMENT_STAGING_MAX_HOLD,
+                transfer_started + ATTACHMENT_STAGING_MAX_HOLD,
                 ATTACHMENT_STAGING_MAX_HOLD,
             ),
             vec![("a1", Some("reference".into())), ("a2", None)]
         );
         assert!(!staging.is_busy("a"));
+        tokio::task::yield_now().await;
+        assert!(task.is_finished());
     }
 }

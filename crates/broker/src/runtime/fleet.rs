@@ -986,19 +986,31 @@ impl BrokerRuntime {
             "holding node delivery while its attachments download"
         );
         let fallback_block = crate::attachments::render_reference_block(&attachments);
-        let (token, done_tx) =
+        let (token, done_tx, started_at) =
             self.attachment_staging
                 .push_preparing(key.clone(), deliver, fallback_block);
         let slots = self.attachment_staging.download_slots.clone();
-        tokio::spawn(async move {
+        let task_key = key.clone();
+        let task = tokio::spawn(async move {
             // Held (unacknowledged) until a download slot frees up.
-            let _slot = slots.acquire_owned().await;
+            let Ok(_slot) = slots.acquire_owned().await else {
+                return;
+            };
+            if let Ok(mut started) = started_at.lock() {
+                *started = Some(Instant::now());
+            }
             let resolved = downloader
                 .materialize(&attachments, &root, fallback_root.as_deref())
                 .await;
             let block = crate::attachments::render_attachment_block(&resolved);
-            let _ = done_tx.send(crate::attachments::StagedAttachments { key, token, block });
+            let _ = done_tx.send(crate::attachments::StagedAttachments {
+                key: task_key,
+                token,
+                block,
+            });
         });
+        self.attachment_staging
+            .set_abort_handle(&key, token, task.abort_handle());
     }
 
     /// Release node deliveries whose attachment downloads finished, in
