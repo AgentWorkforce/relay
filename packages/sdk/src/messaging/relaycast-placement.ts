@@ -93,6 +93,8 @@ export class RelayPlacementError extends Error {
     | 'unmapped_repo'
     /** The node ran the action and reported a failure. */
     | 'spawn_failed'
+    /** The node rejected spawn setup before mutation and a caller may retry. */
+    | 'spawn_retryable'
     /**
      * The node accepted the invocation but never reported a terminal result.
      * A node running an obsolete broker advertises `spawn:<harness>` capacity

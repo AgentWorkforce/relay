@@ -2,6 +2,7 @@ name: Test Install Script
 
 on:
   push:
+    branches: [main]
     paths:
       - 'install.sh'
       - 'install.test.sh'
@@ -25,6 +26,7 @@ env:
 
 jobs:
   test-install:
+    if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
     name: Test on ${{ matrix.os }} (${{ matrix.node }})
     runs-on: ${{ matrix.os }}
     strategy:
@@ -181,6 +183,7 @@ jobs:
 
   # Test fallback when gunzip is not available
   test-no-gunzip:
+    if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
     name: Test without gunzip
     runs-on: ubuntu-latest
 
@@ -225,6 +228,7 @@ jobs:
           '
 
   test-install-alpine:
+    if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
     name: Test on Alpine Linux
     runs-on: ubuntu-latest
 
@@ -264,6 +268,7 @@ jobs:
           '
 
   test-install-fedora:
+    if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
     name: Test on Fedora
     runs-on: ubuntu-latest
 
@@ -299,6 +304,7 @@ jobs:
 
   # Test script syntax and edge cases
   test-script-quality:
+    if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
     name: Script Quality Checks
     runs-on: ubuntu-latest
 
@@ -345,7 +351,9 @@ jobs:
     name: Test Summary
     needs: [test-install, test-install-alpine, test-install-fedora, test-no-gunzip, test-script-quality]
     runs-on: ubuntu-latest
-    if: always()
+    if: >-
+      (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository) &&
+      (always())
 
     steps:
       - name: Summary

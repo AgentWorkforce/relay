@@ -29,6 +29,7 @@ concurrency:
 
 jobs:
   stress-test-orchestrator:
+    if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
     name: Orchestrator Stress Tests
     runs-on: ${{ matrix.os }}
     strategy:
@@ -78,6 +79,7 @@ jobs:
           fi
 
   stress-test-orchestrator-integration:
+    if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
     name: Orchestrator Integration Stress Tests
     runs-on: ${{ matrix.os }}
     strategy:
@@ -161,7 +163,9 @@ jobs:
     name: Stress Test Summary
     needs: [stress-test-orchestrator, stress-test-orchestrator-integration]
     runs-on: ubuntu-latest
-    if: always()
+    if: >-
+      (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository) &&
+      (always())
 
     steps:
       - name: Download all artifacts

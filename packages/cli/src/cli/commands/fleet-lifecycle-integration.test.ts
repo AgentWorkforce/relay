@@ -41,6 +41,9 @@ describe('fleet CLI lifecycle routing', () => {
     relayHome = fs.mkdtempSync(path.join(os.tmpdir(), 'relay-fleet-lifecycle-home-'));
     vi.stubEnv('AGENT_RELAY_PROJECT', projectRoot);
     vi.stubEnv('AGENT_RELAY_HOME', relayHome);
+    vi.stubEnv('RELAY_WORKSPACE_KEY', 'rk_live_workspace');
+    vi.stubEnv('RELAY_API_KEY', '');
+    vi.stubEnv('RELAY_BASE_URL', 'https://cast.agentrelay.com');
     const dataDir = path.join(projectRoot, '.agentworkforce', 'relay');
     writeProjectWorkspaceKey(dataDir, 'rk_live_workspace', { workspaceId: TARGET.workspaceId });
 

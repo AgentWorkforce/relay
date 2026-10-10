@@ -1,4 +1,13 @@
 #!/usr/bin/env node
+import { waitForAgentRemoval } from './lib/agent-removal.js';
+import {
+  FleetSpawnError,
+  classifySpawnFailure,
+  nameTakenSpawnError,
+  pendingSpawnError,
+  probeSpawnLiveness,
+  terminalSpawnOutcome,
+} from './lib/spawn-liveness.js';
 
 import fs from 'node:fs';
 import path from 'node:path';
@@ -50,7 +59,7 @@ import {
 import { enableInboxPiggyback } from './mcp/telemetry.js';
 import { registerAgentRelayActionTools } from './mcp/action-tools.js';
 import { registerMessagingTools } from './mcp/messaging-tools.js';
-import { McpRequestReplay } from './mcp/request-replay.js';
+import { McpRequestReplay, replayScopeForCredentials, withReplayScope } from './mcp/request-replay.js';
 import { identityOverrideInputShape, messageResult } from './mcp/tool-shapes.js';
 import {
   registerSharedSessionTools,
@@ -97,6 +106,7 @@ const VERIFIED_SPAWN_FAILURE_STATUSES = new Set(['failed', 'error', 'cancelled',
 
 class VerifiedSpawnError extends Error {
   readonly code: 'spawn_unconfirmed' | 'spawn_failed';
+  readonly actionName?: string;
   readonly invocationId?: string;
   readonly state: SpawnLifecycleState;
   readonly dispatchState: SpawnDispatchState;
@@ -107,6 +117,7 @@ class VerifiedSpawnError extends Error {
     message: string,
     context: {
       code?: 'spawn_unconfirmed' | 'spawn_failed';
+      actionName?: string;
       state: SpawnLifecycleState;
       dispatchState?: SpawnDispatchState;
       invocationId?: string;
@@ -116,6 +127,7 @@ class VerifiedSpawnError extends Error {
   ) {
     super(message);
     this.name = 'VerifiedSpawnError';
+    this.actionName = context.actionName;
     this.code = context.code ?? (context.state === 'failed' ? 'spawn_failed' : 'spawn_unconfirmed');
     this.state = context.state;
     this.dispatchState = context.dispatchState ?? 'unknown';
@@ -270,6 +282,7 @@ async function pollInvocation(
             code: 'spawn_unconfirmed',
             state: 'unconfirmed_may_be_running',
             invocationId: current.invocationId,
+            actionName: current.actionName,
             dispatchState: current.dispatchState,
             ...(current.node ? { node: current.node } : {}),
           }
@@ -281,6 +294,7 @@ async function pollInvocation(
           {
             state: 'unconfirmed_may_be_running',
             invocationId: current.invocationId,
+            actionName: current.actionName,
             dispatchState: current.dispatchState,
             ...(current.node ? { node: current.node } : {}),
             receipt: { status: 'unknown' },
@@ -335,6 +349,7 @@ async function waitForVerifiedSpawn(
             state: 'failed',
             dispatchState: dispatchStateForRecord(record, current.dispatchState),
             invocationId: current.invocationId,
+            actionName: current.actionName,
             receipt: record,
           });
         }
@@ -349,6 +364,7 @@ async function waitForVerifiedSpawn(
           state: 'failed',
           dispatchState: dispatchStateForRecord(record, current.dispatchState),
           invocationId: current.invocationId,
+          actionName: current.actionName,
           node:
             invocationText(record, 'handlerNodeId', 'handler_node_id') ??
             invocationText(record, 'dispatchedNodeId', 'dispatched_node_id') ??
@@ -364,6 +380,7 @@ async function waitForVerifiedSpawn(
         state: 'failed',
         dispatchState: dispatchStateForRecord(record, current.dispatchState),
         invocationId: current.invocationId,
+        actionName: current.actionName,
         node:
           invocationText(record, 'handlerNodeId', 'handler_node_id') ??
           invocationText(record, 'dispatchedNodeId', 'dispatched_node_id') ??
@@ -379,6 +396,7 @@ async function waitForVerifiedSpawn(
           state: 'unconfirmed_may_be_running',
           dispatchState: dispatchStateForRecord(record, current.dispatchState),
           invocationId: current.invocationId,
+          actionName: current.actionName,
           node:
             invocationText(record, 'handlerNodeId', 'handler_node_id') ??
             invocationText(record, 'dispatchedNodeId', 'dispatched_node_id') ??
@@ -876,15 +894,79 @@ async function invokeVerifiedSpawn(
   }
   const commands = new AgentRelay({ agentToken, baseUrl }).messaging.commands;
   const invocation = await commands.invoke('spawn', actionInput);
-  return waitForVerifiedSpawn(commands, invocation);
+  try {
+    return await waitForVerifiedSpawn(commands, invocation);
+  } catch (error) {
+    if (!(error instanceof VerifiedSpawnError)) throw error;
+    const name = String(actionInput.name);
+    if (error.code === 'spawn_failed' && classifySpawnFailure(error.message))
+      throw nameTakenSpawnError(name, error);
+    if (error.code !== 'spawn_unconfirmed') throw error;
+    const requestedNode = typeof actionInput.target_node === 'string' ? actionInput.target_node : undefined;
+    const targetNode = actionInput.persona ? (error.node ?? requestedNode) : (requestedNode ?? error.node);
+    const context = { ...error, node: targetNode };
+    const liveness = await probeSpawnLiveness({
+      name,
+      targetNode,
+      ...(error.invocationId
+        ? { getInvocation: () => commands.getInvocation(error.actionName ?? 'spawn', error.invocationId!) }
+        : {}),
+      createClient: () => {
+        requireWorkspaceKey(session);
+        const workspace = new AgentRelay({ workspaceKey: session.workspaceKey!, baseUrl });
+        return { nodes: workspace.nodes, agents: workspace.agents };
+      },
+    });
+    if (liveness.evidence === 'invocation_terminal') {
+      const nested = VERIFIED_SPAWN_SUCCESS_STATUSES.has(String(liveness.invocation!.status).toLowerCase())
+        ? nestedPersonaSpawnRef(liveness.invocation!)
+        : undefined;
+      if (nested) {
+        // A late persona result can be only an acknowledgement of its child.
+        // It is neither missing readiness proof nor a terminal worker failure.
+        throw pendingSpawnError(
+          name,
+          {
+            ...context,
+            invocationId: nested.invocationId,
+            node: nested.node ?? targetNode,
+            dispatchState: nested.dispatchState,
+          },
+          { evidence: 'unknown' },
+          `The persona handler's invocation ${context.invocationId ?? '(unknown)'}${context.node ? ` on ${context.node}` : ''} completed with a nested spawn invocation after the confirmation budget.`
+        );
+      }
+      try {
+        return terminalSpawnOutcome(liveness.invocation!, context, true);
+      } catch (terminalError) {
+        const message = terminalError instanceof Error ? terminalError.message : String(terminalError);
+        if (classifySpawnFailure(message))
+          throw nameTakenSpawnError(name, Object.assign(new Error(message), context));
+        throw new VerifiedSpawnError(message, {
+          ...error,
+          code: 'spawn_failed',
+          state: 'failed',
+          receipt: liveness.invocation,
+        });
+      }
+    }
+    throw pendingSpawnError(name, context, liveness, error.message);
+  }
 }
 
-function verifiedSpawnErrorResult(error: VerifiedSpawnError) {
+function verifiedSpawnErrorResult(error: VerifiedSpawnError | FleetSpawnError) {
   return {
     ...jsonContent({
       ok: false,
       error: {
         code: error.code,
+        ...(error instanceof FleetSpawnError
+          ? {
+              exitCode: error.exitCode,
+              liveness: error.liveness,
+              diagnostic: error.diagnostic ? safeRelayErrorMessage(new Error(error.diagnostic)) : undefined,
+            }
+          : {}),
         state: error.state,
         dispatchState: error.dispatchState,
         ...(error.invocationId ? { invocationId: error.invocationId } : {}),
@@ -975,6 +1057,12 @@ function registerAgentRelayTools(
   forcedAgentType: AgentType | undefined,
   requestReplay: McpRequestReplay
 ): void {
+  // A retained spawn key belongs to the workspace and the identity it acts as.
+  const spawnReplayScope = (as?: string): string => {
+    const session = getSession();
+    const agentToken = (as ? session.agents.get(as)?.agentToken : session.agentToken) ?? '';
+    return replayScopeForCredentials(session.workspaceKey ?? '', agentToken);
+  };
   server.registerTool(
     'create_workspace',
     {
@@ -1342,28 +1430,34 @@ function registerAgentRelayTools(
       { name, cli, task, channel, persona, model, spawn_mode, exit_after_task, idempotency_key },
       extra
     ) =>
-      requestReplay.run('add_agent', extra, idempotency_key, async () => {
-        const invocation = await getRelay().agents.spawn({
-          name,
-          cli,
-          task:
-            exit_after_task ||
-            spawn_mode === 'task_exit' ||
-            spawn_mode === 'task-exit' ||
-            spawn_mode === 'single_shot' ||
-            spawn_mode === 'single-shot'
-              ? withExitAfterTaskInstruction(task)
-              : task,
-          channel,
-          persona,
-          // SpawnAgentRequest has no top-level model field; pass via metadata
-          // so the broker can extract it and forward --model to the launched CLI.
-          metadata: model ? { model } : undefined,
-        });
-        const failure = terminalSpawnFailureResult(invocation);
-        if (failure) return failure;
-        return jsonContent({ ...invocation, placement: spawnReceipt(invocation) });
-      })
+      requestReplay.run(
+        'add_agent',
+        extra,
+        idempotency_key,
+        async () => {
+          const invocation = await getRelay().agents.spawn({
+            name,
+            cli,
+            task:
+              exit_after_task ||
+              spawn_mode === 'task_exit' ||
+              spawn_mode === 'task-exit' ||
+              spawn_mode === 'single_shot' ||
+              spawn_mode === 'single-shot'
+                ? withExitAfterTaskInstruction(task)
+                : task,
+            channel,
+            persona,
+            // SpawnAgentRequest has no top-level model field; pass via metadata
+            // so the broker can extract it and forward --model to the launched CLI.
+            metadata: model ? { model } : undefined,
+          });
+          const failure = terminalSpawnFailureResult(invocation);
+          if (failure) return failure;
+          return jsonContent({ ...invocation, placement: spawnReceipt(invocation) });
+        },
+        replayScopeForCredentials(getSession().workspaceKey ?? '')
+      )
   );
 
   server.registerTool(
@@ -1372,7 +1466,7 @@ function registerAgentRelayTools(
       title: 'Spawn Agent',
       description:
         'Invoke the fleet spawn action with either a raw `cli` or an AgentWorkforce `persona` name/path. ' +
-        'Persona requests route to a node exposing `spawn:persona` (for example, `defineWorkforcePersonaSpawnNode` from `@agentworkforce/local-surface`). Both forms return only after broker registration and harness readiness are verified.',
+        'Persona requests route to a node exposing `spawn:persona` (for example, `defineWorkforcePersonaSpawnNode` from `@agentworkforce/local-surface`). Both forms wait for broker registration and harness readiness. Unconfirmed outcomes return error code `spawn_unconfirmed` with `state: "pending"` and `liveness` evidence; a fresh worker heartbeat is evidence, not readiness proof, so do not retry a pending spawn.',
       inputSchema: {
         name: z.string().describe('Agent name'),
         cli: z
@@ -1447,39 +1541,49 @@ function registerAgentRelayTools(
       },
       extra
     ) =>
-      requestReplay.run('spawn', extra, idempotency_key, async () => {
-        const request = {
-          name,
-          cli,
-          persona,
-          task,
-          cwd,
-          personaCwd: persona_cwd,
-          workerCwd: worker_cwd,
-          channel,
-          channels,
-          model,
-          organization,
-          project,
-          workstream,
-          role,
-          objective,
-          sessionRef: session_ref,
-          targetNode: target_node,
-        };
-        validateSpawnRequest(request);
-        const actionInput = buildSpawnActionInput(request);
-        try {
-          const invocation = await invokeVerifiedSpawn(getSession(), as, baseUrl, actionInput);
-          return jsonContent({
-            invocation,
-            placement: { state: 'ready', ...spawnReceipt(recordValue(invocation)) },
-          });
-        } catch (error) {
-          if (error instanceof VerifiedSpawnError) return verifiedSpawnErrorResult(error);
-          throw error;
-        }
-      })
+      requestReplay.run(
+        'spawn',
+        extra,
+        idempotency_key,
+        async () => {
+          const request = {
+            name,
+            cli,
+            persona,
+            task,
+            cwd,
+            personaCwd: persona_cwd,
+            workerCwd: worker_cwd,
+            channel,
+            channels,
+            model,
+            organization,
+            project,
+            workstream,
+            role,
+            objective,
+            sessionRef: session_ref,
+            targetNode: target_node,
+          };
+          validateSpawnRequest(request);
+          const actionInput = buildSpawnActionInput(request);
+          try {
+            const invocation = await invokeVerifiedSpawn(getSession(), as, baseUrl, actionInput);
+            return jsonContent({
+              invocation,
+              placement: recordValue(invocation).placement ?? {
+                state: 'ready',
+                ...spawnReceipt(recordValue(invocation)),
+              },
+            });
+          } catch (error) {
+            if (error instanceof VerifiedSpawnError || error instanceof FleetSpawnError)
+              return verifiedSpawnErrorResult(error);
+            throw error;
+          }
+        },
+        spawnReplayScope(as)
+      )
   );
 
   server.registerTool(
@@ -1488,7 +1592,7 @@ function registerAgentRelayTools(
       title: 'Remove Agent',
       description:
         'Release a worker agent from active duty, optionally deleting it outright. ' +
-        'Returns an `invocation` record acknowledging the request, which is processed asynchronously. Releasing keeps the agent registered and re-spawnable; passing `delete_agent` removes the identity permanently.',
+        'Returns an `invocation` record acknowledging the request, which is processed asynchronously. Releasing keeps the agent registered; passing `delete_agent` requests permanent deletion. Use `wait` with `delete_agent` to verify the name is reusable.',
       inputSchema: {
         name: z.string().describe('Agent name'),
         reason: z
@@ -1496,12 +1600,18 @@ function registerAgentRelayTools(
           .optional()
           .describe('Removal reason; defaults to an attributable Agent Relay MCP reason'),
         delete_agent: z.boolean().optional().describe('Permanently delete the agent'),
+        wait: z.boolean().optional().describe('With delete_agent, wait for registration clearance'),
+        wait_timeout_ms: z
+          .number()
+          .positive()
+          .optional()
+          .describe('Clearance timeout in milliseconds (default 30000)'),
         ...identityOverrideInputShape,
       },
       outputSchema: jsonResult,
       annotations: { readOnlyHint: false, destructiveHint: true, idempotentHint: true, openWorldHint: true },
     },
-    async ({ name, reason, delete_agent, as }) => {
+    async ({ name, reason, delete_agent, wait, wait_timeout_ms, as }) => {
       const session = getSession();
       const selected = as ? session.agents.get(as) : undefined;
       if (as && !selected) {
@@ -1530,6 +1640,39 @@ function registerAgentRelayTools(
         } else {
           throw error;
         }
+      }
+      if (delete_agent && wait) {
+        // Clearance reads need workspace authority. Without it every read
+        // would fail, so keep the accepted removal and say why at once.
+        let workspace: AgentRelay | undefined;
+        let unavailable: string | undefined;
+        try {
+          requireWorkspaceKey(session);
+          workspace = new AgentRelay({ workspaceKey: session.workspaceKey!, baseUrl });
+        } catch (error) {
+          unavailable = error instanceof Error ? error.message : String(error);
+        }
+        const removal = workspace
+          ? await waitForAgentRemoval({
+              name,
+              getAgent: (name) => workspace.agents.get(name),
+              listAgents: () => workspace.agents.list(),
+              timeoutMs: wait_timeout_ms,
+            })
+          : { cleared: false, waitedMs: 0, observedPresent: false, readError: unavailable };
+        return {
+          ...jsonContent({
+            invocation,
+            removal,
+            ...(!removal.cleared
+              ? {
+                  message:
+                    'Removal was initiated asynchronously; verify registration clearance before respawning.',
+                }
+              : {}),
+          }),
+          ...(!removal.cleared && removal.observedPresent ? { isError: true as const } : {}),
+        };
       }
       return jsonContent({ invocation });
     }
@@ -1670,7 +1813,7 @@ export function createAgentRelayMcpServer(options: AgentRelayMcpServerOptions): 
 
   const getAgentClient = (asIdentity?: string): AgentClientLike => {
     const agentToken = resolveAgentToken(asIdentity);
-    return createAgentClient({ agentToken, baseUrl: options.baseUrl });
+    return withReplayScope(createAgentClient({ agentToken, baseUrl: options.baseUrl }), agentToken);
   };
 
   enableInboxPiggyback(
