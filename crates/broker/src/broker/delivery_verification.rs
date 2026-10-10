@@ -270,6 +270,11 @@ fn tail_near_cursor(snapshot: &Snapshot, tail: &str) -> bool {
         .any(|(split, _)| before.ends_with(&tail[..split]) && after.starts_with(&tail[split..]))
 }
 
+/// Prompt glyphs and box-drawing borders that frame a composer row.
+const CURSOR_ROW_CHROME: &[char] = &[
+    '›', '❯', '❭', '>', '$', '│', '┃', '║', '▌', '▎', '▏', '╎', '╏', '┆', '┇',
+];
+
 /// Whether the cells right of the cursor on its row are part of this body.
 /// A cursor parked at the start of a draft whose tail has scrolled out of
 /// view shows body text there; harness chrome (a placeholder or status hint)
@@ -279,9 +284,9 @@ fn tail_near_cursor(snapshot: &Snapshot, tail: &str) -> bool {
 fn body_text_right_of_cursor(snapshot: &Snapshot, expected_echo: &str) -> bool {
     let from_cursor = snapshot.to_plain_from_cursor();
     let compact_row = compact_render(from_cursor.lines().next().unwrap_or_default());
-    // Prompt glyphs and box borders (`›`, `┃`, `│`) can bracket the text
-    // under the cursor; they are never part of the body, so ignore them.
-    let row = compact_row.trim_matches(|character: char| !character.is_alphanumeric());
+    // Prompt glyphs and box borders can bracket the text under the cursor.
+    // Strip only those: a draft can itself start with punctuation or symbols.
+    let row = compact_row.trim_matches(CURSOR_ROW_CHROME);
     if row.is_empty() {
         return false;
     }
@@ -1136,6 +1141,24 @@ mod tests {
             assess_harness_acceptance("muse", &verification, &snapshot),
             HarnessAcceptance::Inconclusive,
             "border chrome around the cursor must not hide an unsent draft"
+        );
+        pty.shutdown().unwrap();
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn symbolic_draft_head_right_of_cursor_stays_inconclusive() {
+        // The visible head is punctuation only; the tail has scrolled away.
+        let expected = format!("~~~ *** ### {} TAIL_SCROLLED_OFF", "y".repeat(160));
+        let (pty, snapshot) = codex_snapshot("┃ ~~~ *** ### ┃\x1b[1;1H").await;
+        let mut verification = codex_verification(&expected);
+        verification.detector = ActivityDetector::for_cli("muse");
+        verification.activity_buffer.push_str("repaint");
+
+        assert_eq!(
+            assess_harness_acceptance("muse", &verification, &snapshot),
+            HarnessAcceptance::Inconclusive,
+            "a draft head made of symbols is still body text"
         );
         pty.shutdown().unwrap();
     }
