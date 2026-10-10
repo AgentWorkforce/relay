@@ -13,13 +13,13 @@ pub(crate) struct PendingDelivery {
     pub(super) queued_at_ms: u64,
     pub(super) last_error: Option<String>,
     /// Fleet (engine-facing) `delivery_ack` withheld until the worker confirms
-    /// this specific PTY injection landed — echo-verified, or its bounded
-    /// timeout fallback — rather than acked the instant the write is merely
-    /// handed to the worker. See relay#1310.
+    /// this specific PTY injection was accepted by the harness, rather than
+    /// acked the instant the write is merely handed to the worker. See
+    /// relay#1310.
     ///
     /// Lives on the `PendingDelivery` itself, not a second map keyed by
     /// `DeliveryId`, so it cannot outlive the delivery it belongs to: every
-    /// path that disposes of a `PendingDelivery` (echo confirmation, dead
+    /// path that disposes of a `PendingDelivery` (acceptance confirmation, dead
     /// letter, worker teardown) disposes of its withheld ack with it, by
     /// construction, instead of needing a matching removal remembered at
     /// every one of those call sites. See relay#1543.
@@ -1063,6 +1063,17 @@ pub(crate) fn delivery_ack_timeout(
         MessageInjectionMode::Steer => crate::broker::delivery_verification::VERIFICATION_WINDOW,
     };
     std::cmp::max(retry_interval, minimum)
+}
+
+/// A worker recovery progress event starts another bounded verification window
+/// after its submit key reaches the PTY. Keep the broker from replaying the
+/// delivery while that write and verification are in flight.
+pub(crate) fn delivery_recovery_ack_timeout(
+    injection_mode: &MessageInjectionMode,
+    retry_interval: Duration,
+) -> Duration {
+    delivery_ack_timeout(injection_mode, retry_interval)
+        .saturating_add(crate::broker::delivery_verification::VERIFICATION_WINDOW)
 }
 
 pub(crate) async fn emit_delivery_attempt_outcome(

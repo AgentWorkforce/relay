@@ -18,13 +18,13 @@ concurrency:
 
 jobs:
   changes:
-    if: (github.event_name != 'pull_request' && github.event_name != 'pull_request_target') || (github.head_ref == 'trunk' && github.event.pull_request.head.repo.full_name == github.repository && github.base_ref == 'main')
+    if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
     uses: ./.github/workflows/detect-changes.yml
   install-test:
     name: Install Test (Node ${{ matrix.node-version }})
     needs: changes
     if: >-
-      ((github.event_name != 'pull_request' && github.event_name != 'pull_request_target') || (github.head_ref == 'trunk' && github.event.pull_request.head.repo.full_name == github.repository && github.base_ref == 'main')) &&
+      (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository) &&
       (needs.changes.outputs.node_changed == 'true')
     runs-on: ubuntu-latest
     strategy:
@@ -87,7 +87,7 @@ jobs:
     name: Fresh Install (Node ${{ matrix.node-version }})
     needs: changes
     if: >-
-      ((github.event_name != 'pull_request' && github.event_name != 'pull_request_target') || (github.head_ref == 'trunk' && github.event.pull_request.head.repo.full_name == github.repository && github.base_ref == 'main')) &&
+      (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository) &&
       (needs.changes.outputs.node_changed == 'true')
     runs-on: ubuntu-latest
     strategy:

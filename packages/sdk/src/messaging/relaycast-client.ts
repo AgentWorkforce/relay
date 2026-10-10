@@ -13,6 +13,7 @@ import type { AgentClientOptions, RelayCastOptions } from '@relaycast/sdk';
 import type { DeliveryStatus } from '@relaycast/types';
 
 import { relaycastTelemetryOptions, type RelaycastTelemetryOptions } from '../relaycast-telemetry.js';
+import type { RelayFilesApiLike } from './files.js';
 import { definedOptions } from './relaycast-translate.js';
 import type {
   RelayCreateChannelInput,
@@ -177,6 +178,7 @@ export type RelaycastAgentLike = {
   ackDelivery?(deliveryId: string): Promise<unknown>;
   failDelivery?(deliveryId: string, options?: { error?: string; retryable?: boolean }): Promise<unknown>;
   deferDelivery?(deliveryId: string, options: { availableAt: string; reason?: string }): Promise<unknown>;
+  files?: RelayFilesApiLike;
   markRead(messageId: string): Promise<unknown>;
   readers(messageId: string): Promise<unknown[]>;
   readStatus(channel: string): Promise<unknown[]>;
