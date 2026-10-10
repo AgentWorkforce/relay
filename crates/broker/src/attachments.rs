@@ -714,6 +714,25 @@ fn gitignore_open_options(create_new: bool) -> tokio::fs::OpenOptions {
     options
 }
 
+fn gitignore_read_options() -> tokio::fs::OpenOptions {
+    let mut options = tokio::fs::OpenOptions::new();
+    options.read(true);
+    #[cfg(unix)]
+    options.custom_flags(libc::O_NOFOLLOW);
+    #[cfg(windows)]
+    {
+        const FILE_FLAG_OPEN_REPARSE_POINT: u32 = 0x0020_0000;
+        options.custom_flags(FILE_FLAG_OPEN_REPARSE_POINT);
+    }
+    options
+}
+
+async fn gitignore_has_catch_all(file: &mut tokio::fs::File) -> Result<bool, ()> {
+    let mut existing = String::new();
+    file.read_to_string(&mut existing).await.map_err(|_| ())?;
+    Ok(existing.lines().any(|line| line.trim() == "*"))
+}
+
 /// Open `.gitignore` once and perform the read/update through that same file
 /// descriptor. The create path is exclusive and the existing path is opened
 /// without following its final symlink component, closing the validation/write
@@ -721,6 +740,17 @@ fn gitignore_open_options(create_new: bool) -> tokio::fs::OpenOptions {
 async fn ensure_gitignore_catch_all(path: &Path) -> Result<(), ()> {
     let mut file = match gitignore_open_options(false).open(path).await {
         Ok(file) => file,
+        Err(error) if error.kind() == std::io::ErrorKind::PermissionDenied => {
+            // An existing read-only file is sufficient when it already has
+            // the rule. Never reopen it by path for a write: that would
+            // reintroduce the symlink-substitution race this helper prevents.
+            let mut file = gitignore_read_options().open(path).await.map_err(|_| ())?;
+            return if gitignore_has_catch_all(&mut file).await? {
+                Ok(())
+            } else {
+                Err(())
+            };
+        }
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
             match gitignore_open_options(true).open(path).await {
                 Ok(mut file) => {
@@ -1189,6 +1219,22 @@ mod tests {
             std::fs::read_to_string(root.join(".gitignore")).unwrap(),
             "*.log\n*\n"
         );
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn accepts_a_read_only_gitignore_that_already_has_the_catch_all_rule() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let temp = tempfile::tempdir().unwrap();
+        let root = attachments_root(temp.path());
+        std::fs::create_dir_all(&root).unwrap();
+        let gitignore = root.join(".gitignore");
+        std::fs::write(&gitignore, "*\n").unwrap();
+        std::fs::set_permissions(&gitignore, std::fs::Permissions::from_mode(0o400)).unwrap();
+
+        assert_eq!(prepare_root(&root).await.unwrap(), root);
+        assert_eq!(std::fs::read_to_string(gitignore).unwrap(), "*\n");
     }
 
     #[cfg(unix)]

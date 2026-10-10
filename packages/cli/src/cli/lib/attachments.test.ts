@@ -1,4 +1,4 @@
-import { mkdir, mkdtemp, readFile, rm, symlink, writeFile } from 'node:fs/promises';
+import { chmod, mkdir, mkdtemp, readFile, rm, stat, symlink, writeFile } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 
@@ -60,6 +60,16 @@ describe('attachment helpers', () => {
     expect(second).toBe(path.join(defaultSaveDir, 'report (1).png'));
     expect(await readFile(first, 'utf8')).toBe('first');
     expect(await readFile(second, 'utf8')).toBe('second');
+  });
+
+  it.skipIf(process.platform === 'win32')('tightens an existing default directory to mode 0700', async () => {
+    const fileId = path.basename(dir);
+    await mkdir(defaultSaveDir, { recursive: true });
+    await chmod(defaultSaveDir, 0o755);
+
+    await saveAttachment(fileId, 'report.png', Buffer.from('private'));
+
+    expect((await stat(defaultSaveDir)).mode & 0o077).toBe(0);
   });
 
   it.skipIf(process.platform === 'win32')(

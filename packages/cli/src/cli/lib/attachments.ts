@@ -124,6 +124,36 @@ async function ensurePlainDefaultDirectory(fileId: string): Promise<{ path: stri
     if (resolved !== expected) {
       throw new Error(`Cannot save attachment ${fileId}: default destination escaped its root.`);
     }
+    if (process.platform !== 'win32') {
+      const directory = await open(
+        currentPath,
+        constants.O_RDONLY | constants.O_DIRECTORY | constants.O_NOFOLLOW
+      );
+      try {
+        const [opened, visible, pinnedReal] = await Promise.all([
+          directory.stat(),
+          lstat(currentPath),
+          realpath(currentPath),
+        ]);
+        if (
+          pinnedReal !== expected ||
+          !opened.isDirectory() ||
+          !visible.isDirectory() ||
+          visible.isSymbolicLink() ||
+          visible.dev !== opened.dev ||
+          visible.ino !== opened.ino
+        ) {
+          throw new Error(`Cannot save attachment ${fileId}: default destination changed while opening.`);
+        }
+        if ((opened.mode & 0o077) !== 0) await directory.chmod(0o700);
+        const privateInfo = await directory.stat();
+        if ((privateInfo.mode & 0o077) !== 0) {
+          throw new Error(`Cannot save attachment ${fileId}: default destination is not private.`);
+        }
+      } finally {
+        await directory.close();
+      }
+    }
     currentReal = resolved;
   }
   return { path: currentPath, real: currentReal };
