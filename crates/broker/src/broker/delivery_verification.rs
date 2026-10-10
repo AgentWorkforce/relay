@@ -385,7 +385,9 @@ fn composer_is_idle(snapshot: &Snapshot, cli: &str) -> bool {
 /// Activity is definitive acceptance. A body is considered parked only when
 /// its tail is still in the live composer at the cursor. Once echo was seen,
 /// a proven empty composer is also acceptance. Every other state is
-/// inconclusive and must fail or wait — never blindly press a key.
+/// inconclusive and must fail or wait — never blindly press a key. Harnesses
+/// without explicit activity markers fall back to echo-plus-body-departure:
+/// once their echoed body is no longer parked, the turn was accepted.
 pub(crate) fn assess_harness_acceptance(
     cli: &str,
     verification: &PendingVerification,
@@ -410,6 +412,9 @@ pub(crate) fn assess_harness_acceptance(
     // agent TUIs on the stronger gate.
     if verification.echo_seen && is_cat_process(cli) {
         return HarnessAcceptance::Accepted("process_echo".to_string());
+    }
+    if verification.echo_seen && !verification.detector.has_explicit_patterns() {
+        return HarnessAcceptance::Accepted("echo_left_composer".to_string());
     }
     HarnessAcceptance::Inconclusive
 }
@@ -912,7 +917,7 @@ mod tests {
 
     #[cfg(unix)]
     #[tokio::test]
-    async fn generic_post_echo_output_stays_inconclusive_after_composer_disappears() {
+    async fn generic_post_echo_output_accepts_after_body_leaves_composer() {
         let expected = "Relay message from Lead [evt]: fix idle injection";
         let (pty, snapshot) = codex_snapshot("Processing accepted turn").await;
         let mut verification = codex_verification(expected);
@@ -923,7 +928,7 @@ mod tests {
 
         assert_eq!(
             assess_harness_acceptance("muse", &verification, &snapshot),
-            HarnessAcceptance::Inconclusive
+            HarnessAcceptance::Accepted("echo_left_composer".to_string())
         );
         pty.shutdown().unwrap();
     }

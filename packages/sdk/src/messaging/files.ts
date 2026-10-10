@@ -8,12 +8,18 @@ import type {
 
 const DEFAULT_FILE_TRANSFER_TIMEOUT_MS = 30_000;
 
+interface ActiveFileTransfer {
+  response: Response;
+  signal: AbortSignal;
+  cleanup(): void;
+}
+
 async function fetchFileBytes(
   url: string,
   init: RequestInit,
   operation: 'upload' | 'download',
   options: RelayFileTransferOptions
-): Promise<Response> {
+): Promise<ActiveFileTransfer> {
   const timeoutMs = options.timeoutMs ?? DEFAULT_FILE_TRANSFER_TIMEOUT_MS;
   if (!Number.isFinite(timeoutMs) || timeoutMs <= 0) {
     throw new Error(`files.${operation}: timeoutMs must be a positive finite number.`);
@@ -24,14 +30,20 @@ async function fetchFileBytes(
   else options.signal?.addEventListener('abort', cancel, { once: true });
   const timeout = setTimeout(cancel, timeoutMs);
   (timeout as { unref?: () => void }).unref?.();
-  try {
-    return await fetch(url, { ...init, signal: controller.signal });
-  } catch {
-    const reason = controller.signal.aborted ? 'was cancelled or timed out' : 'failed';
-    throw new Error(`files.${operation}: signed byte transfer ${reason}.`);
-  } finally {
+  let cleanedUp = false;
+  const cleanup = () => {
+    if (cleanedUp) return;
+    cleanedUp = true;
     clearTimeout(timeout);
     options.signal?.removeEventListener('abort', cancel);
+  };
+  try {
+    const response = await fetch(url, { ...init, signal: controller.signal });
+    return { response, signal: controller.signal, cleanup };
+  } catch {
+    cleanup();
+    const reason = controller.signal.aborted ? 'was cancelled or timed out' : 'failed';
+    throw new Error(`files.${operation}: signed byte transfer ${reason}.`);
   }
 }
 
@@ -71,7 +83,7 @@ export async function uploadRelayFile(
   if (!id || !uploadUrl) {
     throw new Error('files.upload: the server did not return a file id and upload URL.');
   }
-  const response = await fetchFileBytes(
+  const transfer = await fetchFileBytes(
     uploadUrl,
     {
       method: 'PUT',
@@ -81,12 +93,16 @@ export async function uploadRelayFile(
     'upload',
     options
   );
-  if (!response.ok) {
-    await cancelResponseBody(response);
-    // The upload URL carries a signature in its query string; name only its origin.
-    throw new Error(
-      `files.upload: storing the bytes failed with HTTP ${response.status} at ${new URL(uploadUrl).origin}; the file was not attached.`
-    );
+  try {
+    if (!transfer.response.ok) {
+      await cancelResponseBody(transfer.response);
+      // The upload URL carries a signature in its query string; name only its origin.
+      throw new Error(
+        `files.upload: storing the bytes failed with HTTP ${transfer.response.status} at ${new URL(uploadUrl).origin}; the file was not attached.`
+      );
+    }
+  } finally {
+    transfer.cleanup();
   }
   return { ...normalizeFileInfo(await files.complete(id)), id, status: 'complete' };
 }
@@ -113,41 +129,51 @@ export async function downloadRelayFile(
   }
   const tooLarge = () => new Error(`files.download: file ${id} is over the ${maxBytes}-byte download limit.`);
   if (file.sizeBytes > maxBytes) throw tooLarge();
-  const response = await fetchFileBytes(file.downloadUrl, {}, 'download', options);
-  if (!response.ok) {
-    await cancelResponseBody(response);
-    throw new Error(
-      `files.download: fetching file ${id} failed with HTTP ${response.status} at ${new URL(file.downloadUrl).origin}.`
-    );
-  }
-  const declared = Number(response.headers.get('content-length'));
-  if (Number.isFinite(declared) && declared > maxBytes) {
-    await cancelResponseBody(response);
-    throw tooLarge();
-  }
-  const reader = response.body?.getReader();
-  const chunks: Uint8Array[] = [];
-  let total = 0;
-  for (;;) {
-    if (!reader) break;
-    const { done, value } = await reader.read();
-    if (done) break;
-    total += value.byteLength;
-    if (total > maxBytes) {
-      await reader.cancel();
+  const transfer = await fetchFileBytes(file.downloadUrl, {}, 'download', options);
+  try {
+    const response = transfer.response;
+    if (!response.ok) {
+      await cancelResponseBody(response);
+      throw new Error(
+        `files.download: fetching file ${id} failed with HTTP ${response.status} at ${new URL(file.downloadUrl).origin}.`
+      );
+    }
+    const declared = Number(response.headers.get('content-length'));
+    if (Number.isFinite(declared) && declared > maxBytes) {
+      await cancelResponseBody(response);
       throw tooLarge();
     }
-    chunks.push(value);
+    const reader = response.body?.getReader();
+    const chunks: Uint8Array[] = [];
+    let total = 0;
+    for (;;) {
+      if (!reader) break;
+      const { done, value } = await reader.read();
+      if (done) break;
+      total += value.byteLength;
+      if (total > maxBytes) {
+        await reader.cancel();
+        throw tooLarge();
+      }
+      chunks.push(value);
+    }
+    // A body that ends early (or is missing) is not the file the record describes.
+    if (file.sizeBytes > 0 && total !== file.sizeBytes) {
+      throw new Error(`files.download: file ${id} arrived with ${total} of ${file.sizeBytes} bytes.`);
+    }
+    const data = new Uint8Array(total);
+    let offset = 0;
+    for (const chunk of chunks) {
+      data.set(chunk, offset);
+      offset += chunk.byteLength;
+    }
+    return { file, data };
+  } catch (error) {
+    if (transfer.signal.aborted) {
+      throw new Error('files.download: signed byte transfer was cancelled or timed out.');
+    }
+    throw error;
+  } finally {
+    transfer.cleanup();
   }
-  // A body that ends early (or is missing) is not the file the record describes.
-  if (file.sizeBytes > 0 && total !== file.sizeBytes) {
-    throw new Error(`files.download: file ${id} arrived with ${total} of ${file.sizeBytes} bytes.`);
-  }
-  const data = new Uint8Array(total);
-  let offset = 0;
-  for (const chunk of chunks) {
-    data.set(chunk, offset);
-    offset += chunk.byteLength;
-  }
-  return { file, data };
 }

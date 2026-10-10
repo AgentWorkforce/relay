@@ -232,11 +232,16 @@ describe('RelaycastMessagingClient files', () => {
 
   it('lets a caller cancel a stalled signed-byte request', async () => {
     const files = createAgentFiles();
+    let markStarted: (() => void) | undefined;
+    const started = new Promise<void>((resolve) => {
+      markStarted = resolve;
+    });
     vi.stubGlobal(
       'fetch',
       vi.fn(
         async (_url: string | URL | Request, init?: RequestInit) =>
           await new Promise<Response>((_resolve, reject) => {
+            markStarted?.();
             if (init?.signal?.aborted) {
               reject(new Error('aborted'));
               return;
@@ -256,9 +261,31 @@ describe('RelaycastMessagingClient files', () => {
       { signal: controller.signal }
     );
 
+    await started;
     controller.abort();
     await expect(upload).rejects.toThrow(/cancelled or timed out/);
     expect(files.complete).not.toHaveBeenCalled();
+  });
+
+  it('times out a download whose body stalls after the response headers', async () => {
+    const files = createAgentFiles();
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async (_url: string | URL | Request, init?: RequestInit) => {
+        const body = new ReadableStream<Uint8Array>({
+          start(controller) {
+            const abort = () => controller.error(new Error('aborted'));
+            if (init?.signal?.aborted) abort();
+            else init?.signal?.addEventListener('abort', abort, { once: true });
+          },
+        });
+        return new Response(body, { status: 200 });
+      })
+    );
+
+    await expect(downloadRelayFile(files, 'file-1', { timeoutMs: 10 })).rejects.toThrow(
+      /cancelled or timed out/
+    );
   });
 
   it('refuses a truncated body and an invalid maxBytes', async () => {

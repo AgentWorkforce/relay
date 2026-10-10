@@ -26,7 +26,10 @@ use std::{
 
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
-use tokio::{io::AsyncWriteExt, sync::mpsc};
+use tokio::{
+    io::{AsyncReadExt, AsyncSeekExt, AsyncWriteExt},
+    sync::mpsc,
+};
 
 /// Downloads larger than this are skipped and rendered as a reference.
 pub(crate) const MAX_ATTACHMENT_BYTES: u64 = 25 * 1024 * 1024;
@@ -695,6 +698,62 @@ async fn reusable_file(path: &Path, expected_size: Option<u64>) -> bool {
     }
 }
 
+fn gitignore_open_options(create_new: bool) -> tokio::fs::OpenOptions {
+    let mut options = tokio::fs::OpenOptions::new();
+    options.read(true).write(true).create_new(create_new);
+    #[cfg(unix)]
+    options.custom_flags(libc::O_NOFOLLOW);
+    #[cfg(windows)]
+    {
+        // Open a reparse point itself instead of following it. A symlink or
+        // junction then fails the regular-file read/write path below.
+        const FILE_FLAG_OPEN_REPARSE_POINT: u32 = 0x0020_0000;
+        options.custom_flags(FILE_FLAG_OPEN_REPARSE_POINT);
+    }
+    options
+}
+
+/// Open `.gitignore` once and perform the read/update through that same file
+/// descriptor. The create path is exclusive and the existing path is opened
+/// without following its final symlink component, closing the validation/write
+/// race that a separate metadata check would leave.
+async fn ensure_gitignore_catch_all(path: &Path) -> Result<(), ()> {
+    let mut file = match gitignore_open_options(false).open(path).await {
+        Ok(file) => file,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+            match gitignore_open_options(true).open(path).await {
+                Ok(mut file) => {
+                    file.write_all(b"*\n").await.map_err(|_| ())?;
+                    file.flush().await.map_err(|_| ())?;
+                    return Ok(());
+                }
+                // A racing creator won. Re-open its entry with no-follow and
+                // inspect it rather than replacing it by path.
+                Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {
+                    gitignore_open_options(false)
+                        .open(path)
+                        .await
+                        .map_err(|_| ())?
+                }
+                Err(_) => return Err(()),
+            }
+        }
+        Err(_) => return Err(()),
+    };
+    let mut existing = String::new();
+    file.read_to_string(&mut existing).await.map_err(|_| ())?;
+    if existing.lines().any(|line| line.trim() == "*") {
+        return Ok(());
+    }
+    file.seek(std::io::SeekFrom::End(0)).await.map_err(|_| ())?;
+    if !existing.is_empty() && !existing.ends_with('\n') {
+        file.write_all(b"\n").await.map_err(|_| ())?;
+    }
+    file.write_all(b"*\n").await.map_err(|_| ())?;
+    file.flush().await.map_err(|_| ())?;
+    Ok(())
+}
+
 /// Create the attachments root (absolute) and keep it out of version control,
 /// since the default location is inside the agent's working tree.
 async fn prepare_root(root: &Path) -> Result<PathBuf, ()> {
@@ -712,29 +771,7 @@ async fn prepare_root(root: &Path) -> Result<PathBuf, ()> {
     // Keep downloads out of version control even if an ignore file already
     // exists without the catch-all rule.
     let gitignore = root.join(".gitignore");
-    // Never follow a planted .gitignore symlink into a file outside the
-    // attachments root. Refuse this root so the caller selects its configured
-    // fallback, where downloaded files cannot accidentally become tracked.
-    if is_symlink(&gitignore).await {
-        return Err(());
-    }
-    match tokio::fs::read_to_string(&gitignore).await {
-        Ok(existing) if existing.lines().any(|line| line.trim() == "*") => {}
-        Ok(existing) => {
-            let separator = if existing.is_empty() || existing.ends_with('\n') {
-                ""
-            } else {
-                "\n"
-            };
-            tokio::fs::write(&gitignore, format!("{existing}{separator}*\n"))
-                .await
-                .map_err(|_| ())?;
-        }
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
-            tokio::fs::write(&gitignore, "*\n").await.map_err(|_| ())?;
-        }
-        Err(_) => return Err(()),
-    }
+    ensure_gitignore_catch_all(&gitignore).await?;
     Ok(root)
 }
 
