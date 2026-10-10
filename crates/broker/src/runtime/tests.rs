@@ -884,9 +884,39 @@ fn delivery_verified_worker_event(
 /// looking at *what* confirmed the delivery. A worker that acked through the
 /// timeout fallback — i.e. an agent that may have swallowed the whole task —
 /// produced a result identical to one that echoed every byte.
+/// #1959 acceptance policy: an unconfirmed initial task is a delivered task, so
+/// the verified spawn succeeds and names the live agent with a warning.
+fn assert_unconfirmed_spawn_success(
+    result: &crate::fleet_wire::ActionResultPayload,
+    worker_name: &str,
+    verification: &str,
+) {
+    let crate::fleet_wire::ActionResultPayload::Output(output) = result else {
+        panic!("an unconfirmed task must resolve the spawn as success: {result:?}");
+    };
+    assert_eq!(output.output["spawned"], true, "{:?}", output.output);
+    assert_eq!(output.output["ready"], true, "{:?}", output.output);
+    assert_eq!(output.output["name"], worker_name, "{:?}", output.output);
+    assert_eq!(
+        output.output["warning"]["code"], "spawn_task_unconfirmed",
+        "{:?}",
+        output.output
+    );
+    assert_eq!(
+        output.output["warning"]["verification"], verification,
+        "{:?}",
+        output.output
+    );
+    let message = output.output["warning"]["message"]
+        .as_str()
+        .unwrap_or_default();
+    assert!(message.contains(worker_name), "{message}");
+    assert!(message.contains("Do not retry"), "{message}");
+}
+
 #[tokio::test]
-async fn a_spawn_task_acked_without_proof_of_receipt_never_reports_success() {
-    use crate::fleet_wire::{ActionResultPayload, BrokerToRelaycast};
+async fn a_spawn_task_acked_without_proof_of_receipt_succeeds_with_an_unconfirmed_warning() {
+    use crate::fleet_wire::BrokerToRelaycast;
 
     // Every label a worker can ack with that is not harness acceptance,
     // including the echo labels of workers that predate it: a body echoed in
@@ -936,22 +966,10 @@ async fn a_spawn_task_acked_without_proof_of_receipt_never_reports_success() {
             panic!("spawn completion must send an action result");
         };
         assert_eq!(result.invocation_id, "inv-receipt");
-        let ActionResultPayload::Error(error) = result.result else {
-            panic!("{verification:?} is not proof of receipt and must not succeed");
-        };
-        assert!(
-            error.error.starts_with("spawn_task_unconfirmed: "),
-            "{}",
-            error.error
-        );
-        // The agent is live: name it so the caller can reach it, and say not to
-        // retry, because a retry duplicates it.
-        assert!(error.error.contains(worker_name), "{}", error.error);
-        assert!(error.error.contains("Do not retry"), "{}", error.error);
-        assert!(
-            error.error.contains(verification.unwrap_or("none")),
-            "{}",
-            error.error
+        assert_unconfirmed_spawn_success(
+            &result.result,
+            worker_name,
+            verification.unwrap_or("none"),
         );
         // Resolved, so maintenance's readiness deadline can no longer release
         // the live worker this spawn produced.
@@ -1100,14 +1118,7 @@ async fn a_task_verdict_before_proven_readiness_resolves_on_the_proven_ready() {
                 output.output,
                 json!({"spawned": true, "ready": true, "name": worker_name})
             ),
-            (ActionResultPayload::Error(error), false) => {
-                assert!(
-                    error.error.starts_with("spawn_task_unconfirmed: "),
-                    "{}",
-                    error.error
-                );
-                assert!(error.error.contains(verification), "{}", error.error);
-            }
+            (result, false) => assert_unconfirmed_spawn_success(result, worker_name, verification),
             (other, _) => panic!("{verification}: unexpected result {other:?}"),
         }
         assert!(!fixture.runtime.pending_verified_spawns.contains_key(&name));
@@ -1176,8 +1187,7 @@ async fn a_failed_initial_task_releases_the_worker_before_failing_the_spawn() {
 /// must resolve as unconfirmed and keep the live worker, never release it as a
 /// failed task (which could kill the run and invite a duplicating retry).
 #[tokio::test]
-async fn an_unproven_acceptance_reports_the_spawn_unconfirmed_and_keeps_the_worker() {
-    use crate::fleet_wire::ActionResultPayload;
+async fn an_unproven_acceptance_succeeds_with_an_unconfirmed_warning_and_keeps_the_worker() {
     let worker_name = "spawn-task-unproven";
     let registry = make_worker_registry_with_worker(worker_name).await;
     let generation = registry.workers[worker_name].generation;
@@ -1200,15 +1210,11 @@ async fn an_unproven_acceptance_reports_the_spawn_unconfirmed_and_keeps_the_work
         .await;
     let results = drain_action_results(&mut fixture.fleet_control_rx);
     assert_eq!(results.len(), 1, "resolved exactly once");
-    let ActionResultPayload::Error(error) = &results[0].result else {
-        panic!("an unproven task must not succeed: {:?}", results[0]);
-    };
-    assert!(
-        error.error.starts_with("spawn_task_unconfirmed: "),
-        "{}",
-        error.error
+    assert_unconfirmed_spawn_success(
+        &results[0].result,
+        name.as_str(),
+        "harness_acceptance_unproven",
     );
-    assert!(error.error.contains("Do not retry"), "{}", error.error);
     assert!(!fixture.runtime.pending_verified_spawns.contains_key(&name));
     fixture.runtime.handle_maintenance_tick().await;
     assert!(fixture.runtime.workers.has_worker(&name), "worker kept");
@@ -1218,18 +1224,13 @@ async fn an_unproven_acceptance_reports_the_spawn_unconfirmed_and_keeps_the_work
 /// returns has its PTY task queued without a binding to this action, so the
 /// action cannot learn the task's verdict and must not report plain success.
 #[test]
-fn an_already_ready_worker_with_an_unbound_pty_task_is_not_reported_ready() {
+fn an_already_ready_worker_with_an_unbound_pty_task_succeeds_with_an_unconfirmed_warning() {
     use crate::fleet_wire::ActionResultPayload;
     let name = WorkerName::from("already-ready");
-    let ActionResultPayload::Error(error) =
-        super::fleet::already_ready_spawn_result("inv".into(), &name, true).result
-    else {
-        panic!("an unbound PTY task must not report success");
-    };
-    assert!(
-        error.error.starts_with("spawn_task_unconfirmed: "),
-        "{}",
-        error.error
+    assert_unconfirmed_spawn_success(
+        &super::fleet::already_ready_spawn_result("inv".into(), &name, true).result,
+        name.as_str(),
+        "unbound",
     );
     assert!(matches!(
         super::fleet::already_ready_spawn_result("inv".into(), &name, false).result,
@@ -5471,6 +5472,59 @@ async fn pty_delivery_verified_requires_harness_acceptance() {
         .runtime
         .pending_deliveries
         .contains_key(&delivery_id));
+    cleanup_worker_registry(fixture.runtime.workers).await;
+}
+
+#[tokio::test]
+async fn terminal_unconfirmed_delivery_never_blocks_the_worker() {
+    let worker_name = "worker-a";
+    let registry = make_worker_registry_with_worker(worker_name).await;
+    let generation = registry.workers[worker_name].generation;
+    let delivery_id = DeliveryId::new("del_unconfirmed_terminal");
+    let pending = make_pending_delivery(delivery_id.as_str(), worker_name);
+    let event_id = pending.delivery.event_id.clone();
+    let mut fixture =
+        worker_event_runtime_fixture(registry, HashMap::from([(delivery_id.clone(), pending)]));
+
+    fixture
+        .runtime
+        .handle_worker_event(WorkerEvent::Message {
+            name: WorkerName::from(worker_name),
+            generation,
+            value: json!({"type": "delivery_unconfirmed", "payload": {
+                "delivery_id": delivery_id.as_str(),
+                "event_id": event_id.as_str(),
+                "outcome": "unconfirmed",
+                "terminal": true,
+                "reason": crate::broker::delivery_verification::HARNESS_ACCEPTANCE_UNPROVEN,
+                "attempts": 1,
+            }}),
+        })
+        .await;
+
+    assert_ne!(
+        fixture.runtime.workers.workers[worker_name].state,
+        AgentWorkState::BlockedOnSend,
+        "Unconfirmed is a delivery, not a blocked send"
+    );
+    let mut kinds = Vec::new();
+    while let Ok(frame) = fixture._sdk_out_rx.try_recv() {
+        if let Some(kind) = frame.payload.get("kind").and_then(Value::as_str) {
+            kinds.push(kind.to_string());
+        }
+    }
+    assert!(
+        kinds.iter().any(|kind| kind == "delivery_unconfirmed"),
+        "{kinds:?}"
+    );
+    assert!(
+        !kinds.iter().any(|kind| kind == "agent_blocked_on_send"),
+        "{kinds:?}"
+    );
+    assert!(
+        !kinds.iter().any(|kind| kind == "delivery_failed"),
+        "{kinds:?}"
+    );
     cleanup_worker_registry(fixture.runtime.workers).await;
 }
 

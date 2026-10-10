@@ -27,8 +27,8 @@ use tokio::{sync::mpsc, time::MissedTickBehavior};
 
 use crate::broker::{
     delivery_verification::{
-        assess_harness_acceptance, failed_draft_released, DeliveryOutcome, HarnessAcceptance,
-        PendingActivity, PendingVerification, ThrottleState, VerificationOutput,
+        assess_harness_acceptance, draft_visible_at_cursor, failed_draft_released, DeliveryOutcome,
+        HarnessAcceptance, PendingActivity, PendingVerification, ThrottleState, VerificationOutput,
         ACTIVITY_BUFFER_KEEP_BYTES, ACTIVITY_BUFFER_MAX_BYTES, ACTIVITY_WINDOW,
         MAX_VERIFICATION_ATTEMPTS, VERIFICATION_WINDOW,
     },
@@ -2380,7 +2380,9 @@ pub(crate) async fn run_wrap(
                                 "wrap: human input followed the injection write; automatic verification cancelled"
                             );
                             throttle.record(DeliveryOutcome::Failed);
-                            wrap_failed_draft = Some(injection.clone());
+                            if draft_visible_at_cursor(&Snapshot::capture(&pty), &resolved_cli, &injection) {
+                                wrap_failed_draft = Some(injection.clone());
+                            }
                             continue;
                         }
 
@@ -2445,7 +2447,9 @@ pub(crate) async fn run_wrap(
                                 "wrap: human input followed submit-key recovery; further automatic recovery cancelled"
                             );
                             throttle.record(DeliveryOutcome::Failed);
-                            wrap_failed_draft = Some(verification.expected_echo.clone());
+                            if draft_visible_at_cursor(&Snapshot::capture(&pty), &resolved_cli, &verification.expected_echo) {
+                                wrap_failed_draft = Some(verification.expected_echo.clone());
+                            }
                             continue;
                         }
 
@@ -2456,7 +2460,9 @@ pub(crate) async fn run_wrap(
                                 "wrap: submit-key recovery was not confirmed; body left untouched"
                             );
                             throttle.record(DeliveryOutcome::Failed);
-                            wrap_failed_draft = Some(verification.expected_echo.clone());
+                            if draft_visible_at_cursor(&Snapshot::capture(&pty), &resolved_cli, &verification.expected_echo) {
+                                wrap_failed_draft = Some(verification.expected_echo.clone());
+                            }
                             continue;
                         }
 
@@ -2553,7 +2559,9 @@ pub(crate) async fn run_wrap(
                                             "wrap: failed to queue submit-key recovery; body left untouched"
                                         );
                                         throttle.record(DeliveryOutcome::Failed);
-                                        wrap_failed_draft = Some(pv.expected_echo.clone());
+                                        if draft_visible_at_cursor(&Snapshot::capture(&pty), &resolved_cli, &pv.expected_echo) {
+                                            wrap_failed_draft = Some(pv.expected_echo.clone());
+                                        }
                                     }
                                 }
                             }
@@ -2577,16 +2585,16 @@ pub(crate) async fn run_wrap(
                                     "wrap: body remained parked after bounded submit-key recovery"
                                 );
                                 throttle.record(DeliveryOutcome::Failed);
+                                // Parked is the positive evidence.
                                 wrap_failed_draft = Some(pv.expected_echo.clone());
                             }
                             HarnessAcceptance::Inconclusive => {
-                                tracing::error!(
+                                tracing::info!(
                                     event_id = %pv.event_id,
                                     attempts = pv.attempts,
-                                    "wrap: harness acceptance could not be proven; body left untouched"
+                                    "wrap: delivery unconfirmed; delivered without harness evidence"
                                 );
-                                throttle.record(DeliveryOutcome::Failed);
-                                wrap_failed_draft = Some(pv.expected_echo.clone());
+                                throttle.record(DeliveryOutcome::Unverified);
                             }
                         }
                     } else {

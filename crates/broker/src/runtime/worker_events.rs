@@ -231,6 +231,13 @@ mod terminal_delivery_failure_state_tests {
     }
 }
 
+/// Whether a worker's `delivery_unconfirmed` frame is the terminal Unconfirmed
+/// outcome (delivered without harness evidence) rather than a mid-recovery
+/// progress report for a body still awaiting acceptance.
+fn is_terminal_unconfirmed(payload: &Value) -> bool {
+    payload.get("terminal").and_then(Value::as_bool) == Some(true)
+}
+
 fn worker_event_is_current(current_generation: Option<Uuid>, event_generation: Uuid) -> bool {
     current_generation == Some(event_generation)
 }
@@ -919,6 +926,66 @@ impl BrokerRuntime {
                                 .get("event_id")
                                 .and_then(Value::as_str)
                                 .unwrap_or("");
+                            // A terminal `delivery_unconfirmed` is the
+                            // Unconfirmed outcome: the body was delivered
+                            // (custody already released by the preceding
+                            // delivery_ack) without harness evidence. It is
+                            // never a blocked worker and never `stuck`.
+                            let terminal_unconfirmed = msg_type == "delivery_unconfirmed"
+                                && is_terminal_unconfirmed(payload);
+                            if terminal_unconfirmed {
+                                if let Some(pending) = pending_verified_spawns
+                                    .get_mut(&name)
+                                    .filter(|pending| pending.matches_task(generation, event_id))
+                                {
+                                    pending.record_task_verification(
+                                        false,
+                                        Some("harness_acceptance_unproven"),
+                                    );
+                                }
+                                let resolved = pending_verified_spawns
+                                    .get(&name)
+                                    .is_some_and(|pending| pending.can_report_ready(generation))
+                                    .then(|| pending_verified_spawns.remove(&name))
+                                    .flatten();
+                                if let Some(pending) = resolved {
+                                    let _ = fleet_control_tx
+                                        .send(FleetControlCommand::Send(
+                                            crate::fleet_wire::BrokerToRelaycast::ActionResult(
+                                                pending.completion(&name),
+                                            ),
+                                        ))
+                                        .await;
+                                }
+                                if let Some(handle) = workers.workers.get_mut(&name) {
+                                    handle.last_activity_at = Instant::now();
+                                    if handle.state == AgentWorkState::BlockedOnSend {
+                                        handle.state = AgentWorkState::Working;
+                                    }
+                                }
+                                tracing::info!(
+                                    target = "agent_relay::broker",
+                                    worker = %name,
+                                    delivery_id = %delivery_id,
+                                    event_id = %event_id,
+                                    "delivery unconfirmed: delivered without harness evidence"
+                                );
+                                let _ = send_event(
+                                    sdk_out_tx,
+                                    json!({
+                                        "kind": "delivery_unconfirmed",
+                                        "name": name,
+                                        "delivery_id": payload.get("delivery_id"),
+                                        "event_id": payload.get("event_id"),
+                                        "outcome": "unconfirmed",
+                                        "terminal": true,
+                                        "reason": payload.get("reason"),
+                                        "attempts": payload.get("attempts"),
+                                    }),
+                                )
+                                .await;
+                                return;
+                            }
                             let matching_pending = pending_deliveries
                                 .get_mut(delivery_id)
                                 .filter(|pending| pending.delivery.event_id.as_str() == event_id)

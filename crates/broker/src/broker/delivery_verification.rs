@@ -494,6 +494,40 @@ fn composer_is_idle(snapshot: &Snapshot, cli: &str) -> bool {
             .unwrap_or(false)
 }
 
+/// Whether the cursor row's text left of the cursor is the end of this body.
+/// A partially written or unsubmitted draft leaves its latest characters just
+/// before the cursor; prompt glyphs and borders are ignored. Short rows are not
+/// evidence: a handful of characters can match any body by coincidence.
+fn body_text_left_of_cursor(snapshot: &Snapshot, expected_echo: &str) -> bool {
+    let through_cursor = snapshot.to_plain_through_cursor();
+    let compact_row = compact_render(through_cursor.lines().last().unwrap_or_default());
+    let row = compact_row.trim_matches(CURSOR_ROW_CHROME);
+    if row.chars().count() < 8 {
+        return false;
+    }
+    let probe_start = row
+        .char_indices()
+        .rev()
+        .nth(31)
+        .map_or(0, |(index, _)| index);
+    compact_render(expected_echo).contains(&row[probe_start..])
+}
+
+/// Positive evidence that a delivery's body is still typed in the composer:
+/// its tail is in the parsed composer or around the cursor, or body text sits
+/// directly left or right of the cursor. Only this arms the failed-draft
+/// latch; a delivery the broker merely cannot verify never does.
+pub(crate) fn draft_visible_at_cursor(snapshot: &Snapshot, cli: &str, expected_echo: &str) -> bool {
+    let tail = expected_tail(expected_echo);
+    if tail.is_empty() {
+        return false;
+    }
+    composer_holds_tail(snapshot, cli, &tail)
+        || tail_near_cursor(snapshot, &tail)
+        || body_text_right_of_cursor(snapshot, expected_echo)
+        || body_text_left_of_cursor(snapshot, expected_echo)
+}
+
 /// Whether a terminally failed delivery's body has provably left the composer.
 ///
 /// A failed body can remain typed in the editor. Injecting the next delivery
@@ -1321,6 +1355,32 @@ mod tests {
         let (pty, snapshot) = codex_snapshot("› Relay message from Lead [evt]: head").await;
         assert!(!failed_draft_released("codex", expected, &snapshot));
         pty.shutdown().unwrap();
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn draft_visibility_is_positive_evidence_only() {
+        let expected = "Relay message from Lead [evt]: please finish the parked draft";
+        let (typed_pty, typed) = codex_snapshot(&format!("› {expected}")).await;
+        assert!(
+            draft_visible_at_cursor(&typed, "codex", expected),
+            "draft left of the cursor"
+        );
+        typed_pty.shutdown().unwrap();
+
+        let (cleared_pty, cleared) = codex_snapshot("› Ask Codex to do anything\x1b[1;3H").await;
+        assert!(
+            !draft_visible_at_cursor(&cleared, "codex", expected),
+            "an idle composer"
+        );
+        cleared_pty.shutdown().unwrap();
+
+        let (other_pty, other) = codex_snapshot("› an unrelated human draft here").await;
+        assert!(
+            !draft_visible_at_cursor(&other, "codex", expected),
+            "someone else's text"
+        );
+        other_pty.shutdown().unwrap();
     }
 
     #[test]
