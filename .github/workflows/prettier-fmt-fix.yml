@@ -38,9 +38,7 @@ jobs:
     name: Auto-format Prettier files
     runs-on: ubuntu-latest
     # Only run on same-repo PRs where the bot can push back formatting commits.
-    if: >-
-      ((github.event_name != 'pull_request' && github.event_name != 'pull_request_target') || (github.head_ref == 'trunk' && github.event.pull_request.head.repo.full_name == github.repository && github.base_ref == 'main')) &&
-      (github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository)
+    if: github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository
     permissions:
       contents: write
     steps:
