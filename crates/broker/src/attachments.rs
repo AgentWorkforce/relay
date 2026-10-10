@@ -21,7 +21,7 @@
 use std::{
     collections::{HashMap, VecDeque},
     path::{Path, PathBuf},
-    time::Duration,
+    time::{Duration, Instant},
 };
 
 use serde::{Deserialize, Serialize};
@@ -35,6 +35,10 @@ pub(crate) const ATTACHMENT_DOWNLOAD_TIMEOUT: Duration = Duration::from_secs(20)
 /// Upper bound for all attachments of one message, so a message with many
 /// slow attachments still reaches the agent in bounded time.
 pub(crate) const ATTACHMENT_MESSAGE_BUDGET: Duration = Duration::from_secs(60);
+/// A staging task gets a little scheduling margin beyond the downloader's own
+/// message budget. The runtime maintenance sweep force-releases anything
+/// older, covering task panic/abort and a saturated semaphore.
+pub(crate) const ATTACHMENT_STAGING_MAX_HOLD: Duration = Duration::from_secs(65);
 /// Attachments beyond this count are ignored for one message.
 const MAX_ATTACHMENTS_PER_MESSAGE: usize = 20;
 /// Longest rendered sender-controlled field, in characters.
@@ -544,6 +548,15 @@ impl AttachmentDownloader {
             .await
             .map_err(|_| "could not write attachment file".to_string())?;
         drop(file);
+        // Windows rename does not replace an existing destination. A stale,
+        // truncated, or wrong-sized file was already rejected by
+        // `reusable_file`; remove that directory entry (including a planted
+        // final-component symlink) before installing the completed partial.
+        if tokio::fs::symlink_metadata(&final_path).await.is_ok() {
+            tokio::fs::remove_file(&final_path)
+                .await
+                .map_err(|_| "could not save attachment file".to_string())?;
+        }
         tokio::fs::rename(partial.path(), &final_path)
             .await
             .map_err(|_| "could not save attachment file".to_string())?;
@@ -745,6 +758,8 @@ struct StagedEntry<T> {
     token: u64,
     item: T,
     state: StageState,
+    fallback_block: Option<String>,
+    staged_at: Instant,
 }
 
 /// Holds deliveries while their attachments download, without blocking the
@@ -796,6 +811,8 @@ impl<T> AttachmentStaging<T> {
             token,
             item,
             state: StageState::Ready(None),
+            fallback_block: None,
+            staged_at: Instant::now(),
         });
     }
 
@@ -805,12 +822,15 @@ impl<T> AttachmentStaging<T> {
         &mut self,
         key: String,
         item: T,
+        fallback_block: Option<String>,
     ) -> (u64, mpsc::UnboundedSender<StagedAttachments>) {
         let token = self.allocate_token();
         self.queues.entry(key).or_default().push_back(StagedEntry {
             token,
             item,
             state: StageState::Preparing,
+            fallback_block,
+            staged_at: Instant::now(),
         });
         (token, self.tx.clone())
     }
@@ -843,6 +863,51 @@ impl<T> AttachmentStaging<T> {
         }
         if queue.is_empty() {
             self.queues.remove(&staged.key);
+        }
+        released
+    }
+
+    /// Force-release queues whose head preparation never reported completion.
+    /// The original reference block keeps every attachment fetchable without
+    /// claiming its bytes were saved. Later ready entries are released behind
+    /// the expired head in their original order.
+    pub(crate) fn expire_stalled(
+        &mut self,
+        now: Instant,
+        max_age: Duration,
+    ) -> Vec<(T, Option<String>)> {
+        let expired_keys: Vec<String> = self
+            .queues
+            .iter()
+            .filter_map(|(key, queue)| {
+                queue.front().and_then(|entry| {
+                    (matches!(entry.state, StageState::Preparing)
+                        && now.saturating_duration_since(entry.staged_at) >= max_age)
+                        .then(|| key.clone())
+                })
+            })
+            .collect();
+        let mut released = Vec::new();
+        for key in expired_keys {
+            let Some(queue) = self.queues.get_mut(&key) else {
+                continue;
+            };
+            if let Some(front) = queue.front_mut() {
+                front.state = StageState::Ready(front.fallback_block.take());
+            }
+            while queue
+                .front()
+                .is_some_and(|entry| matches!(entry.state, StageState::Ready(_)))
+            {
+                let entry = queue.pop_front().expect("front entry checked above");
+                let StageState::Ready(block) = entry.state else {
+                    unreachable!("front entry checked ready above");
+                };
+                released.push((entry.item, block));
+            }
+            if queue.is_empty() {
+                self.queues.remove(&key);
+            }
         }
         released
     }
@@ -1273,9 +1338,33 @@ mod tests {
         let again = downloader(&server)
             .materialize(&[attachment], &root, None)
             .await;
-        assert_eq!(again[0].disposition, AttachmentDisposition::Saved(expected));
+        assert_eq!(
+            again[0].disposition,
+            AttachmentDisposition::Saved(expected.clone())
+        );
         lookup.assert_hits_async(1).await;
         blob.assert_hits_async(1).await;
+
+        // A replay must replace a stale destination on every platform;
+        // Windows rename cannot overwrite it implicitly.
+        std::fs::write(&expected, "bad").unwrap();
+        let corrected = downloader(&server)
+            .materialize(
+                &[InboundAttachment {
+                    size_bytes: Some(5),
+                    ..shot()
+                }],
+                &root,
+                None,
+            )
+            .await;
+        assert_eq!(
+            corrected[0].disposition,
+            AttachmentDisposition::Saved(expected.clone())
+        );
+        assert_eq!(std::fs::read_to_string(&expected).unwrap(), "hello");
+        lookup.assert_hits_async(2).await;
+        blob.assert_hits_async(2).await;
     }
 
     #[tokio::test]
@@ -1441,11 +1530,11 @@ mod tests {
     fn staging_releases_in_arrival_order_per_key() {
         let mut staging: AttachmentStaging<&str> = AttachmentStaging::new(None);
         assert!(!staging.is_busy("a"));
-        let (first, _tx) = staging.push_preparing("a".into(), "a1");
+        let (first, _tx) = staging.push_preparing("a".into(), "a1", Some("a1-ref".into()));
         assert!(staging.is_busy("a"));
         staging.push_ready("a".into(), "a2");
-        let (third, _tx) = staging.push_preparing("a".into(), "a3");
-        let (other, _tx) = staging.push_preparing("b".into(), "b1");
+        let (third, _tx) = staging.push_preparing("a".into(), "a3", Some("a3-ref".into()));
+        let (other, _tx) = staging.push_preparing("b".into(), "b1", Some("b1-ref".into()));
 
         // Out-of-order completion holds later items behind earlier ones.
         assert!(staging
@@ -1484,5 +1573,21 @@ mod tests {
                 block: None,
             })
             .is_empty());
+    }
+
+    #[test]
+    fn staging_expiry_releases_reference_and_ready_followers() {
+        let mut staging: AttachmentStaging<&str> = AttachmentStaging::new(None);
+        staging.push_preparing("a".into(), "a1", Some("reference".into()));
+        staging.push_ready("a".into(), "a2");
+
+        assert_eq!(
+            staging.expire_stalled(
+                Instant::now() + ATTACHMENT_STAGING_MAX_HOLD,
+                ATTACHMENT_STAGING_MAX_HOLD,
+            ),
+            vec![("a1", Some("reference".into())), ("a2", None)]
+        );
+        assert!(!staging.is_busy("a"));
     }
 }

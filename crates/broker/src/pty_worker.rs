@@ -851,6 +851,13 @@ fn injected_output_command_detection_allowed(
     !active_injection_present && pending_verifications_empty && pending_recovery_writes_empty
 }
 
+/// A recovery key already admitted to the PTY FIFO cannot be cancelled. Hold
+/// later human input at the boundary so ownership is never reported as having
+/// preempted a key that may already have reached the child.
+fn human_input_admissible(pending_recovery_writes_empty: bool) -> bool {
+    pending_recovery_writes_empty
+}
+
 /// What to do with an in-flight injection once its combined Body+Enter write
 /// ack resolves. Keeps the ack-resolution policy pure and unit-testable,
 /// separate from the frame-sending / verification side effects in the select
@@ -1502,6 +1509,24 @@ pub(crate) async fn run_pty_worker(cmd: PtyCommand) -> Result<()> {
                                         })).await;
                                     }
                                     Some(data) => {
+                                        // Once an automated recovery key is in
+                                        // the PTY drainer, its ordering is
+                                        // fixed. Do not admit a human write
+                                        // behind it and then retroactively
+                                        // label that recovery a cancellation:
+                                        // the key may already have reached the
+                                        // child. A retryable refusal lets the
+                                        // caller resend after the short write
+                                        // acknowledgement settles.
+                                        if !human_input_admissible(pending_recovery_writes.is_empty()) {
+                                            let _ = send_frame(&out_tx, "write_pty_response", frame.request_id, json!({
+                                                "error": {
+                                                    "code": "pty_write_queue_full",
+                                                    "message": "automatic submit recovery is already in flight; retry the input",
+                                                }
+                                            })).await;
+                                            continue;
+                                        }
                                         // Non-blocking submission: never parks the
                                         // select loop even if the drainer is wedged
                                         // behind a child that stopped reading stdin.
@@ -2500,8 +2525,10 @@ pub(crate) async fn run_pty_worker(cmd: PtyCommand) -> Result<()> {
             }
 
             // Settle submit-key-only recovery writes without blocking PTY
-            // output or human input. A failed recovery is terminal because the
-            // body may already be in the composer and must never be replayed.
+            // output. Human writes receive a retryable refusal until this key
+            // settles, because an admitted key cannot be retroactively
+            // cancelled. A failed recovery is terminal because the body may
+            // already be in the composer and must never be replayed.
             Some((mut pv, output_boundary, submitted_generation, stage, ack)) = pending_recovery_writes.next(),
                 if !pending_recovery_writes.is_empty() => {
                 let delivery_id = pv.delivery_id.clone();
@@ -4171,6 +4198,12 @@ mod tests {
         assert!(!injected_output_command_detection_allowed(
             false, true, false
         ));
+    }
+
+    #[test]
+    fn human_input_waits_until_an_admitted_recovery_write_settles() {
+        assert!(!human_input_admissible(false));
+        assert!(human_input_admissible(true));
     }
 
     #[test]

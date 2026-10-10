@@ -106,6 +106,21 @@ describe('message file attachments', () => {
     expect(relay.messages.send).not.toHaveBeenCalled();
   });
 
+  it('file upload preserves an explicitly empty message', async () => {
+    const { program, relay } = harness();
+    const file = await png();
+
+    await program.parseAsync(['message', 'file', 'upload', file, '--channel', 'ops', '--text', ''], {
+      from: 'user',
+    });
+
+    expect(relay.messages.send).toHaveBeenCalledWith({
+      channel: 'ops',
+      text: '',
+      attachments: ['file-shot.png'],
+    });
+  });
+
   it('file upload --to reports an unresolved recipient and exits non-zero, like dm send', async () => {
     const { program, relay, error, exit, log } = harness();
     const file = await png();

@@ -88,7 +88,7 @@ export async function uploadRelayFile(
       `files.upload: storing the bytes failed with HTTP ${response.status} at ${new URL(uploadUrl).origin}; the file was not attached.`
     );
   }
-  return { ...normalizeFileInfo(await files.complete(id)), status: 'complete' };
+  return { ...normalizeFileInfo(await files.complete(id)), id, status: 'complete' };
 }
 
 /** Default largest attachment `downloadRelayFile` reads (25 MiB), matching the injectors' cap. */

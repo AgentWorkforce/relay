@@ -2499,12 +2499,14 @@ pub(crate) async fn run_wrap(
                                 if !pv.acceptance_expired()
                                     && (!stdin_pending.is_empty()
                                         || !pending_wrap_writes.is_empty()
-                                        || !pending_wrap_recovery_followups.is_empty()) =>
+                                        || !pending_wrap_recovery_followups.is_empty()
+                                        || !crate::devin::can_inject(&resolved_cli, &pty)) =>
                             {
-                                // An in-flight writer takes priority. Human
-                                // input already drains these verifications in
-                                // the stdin arm, so this deferral never resets
-                                // the total acceptance lifetime.
+                                // An in-flight writer or a temporarily busy
+                                // Devin prompt takes priority. Human input
+                                // already drains these verifications in the
+                                // stdin arm, so this deferral never resets the
+                                // total acceptance lifetime.
                                 pv.injected_at = Instant::now();
                                 pending_verifications.push_back(pv);
                             }

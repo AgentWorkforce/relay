@@ -142,6 +142,40 @@ describe('file attachments over MCP', () => {
     expect(agentClient.files.upload).toHaveBeenCalledTimes(1);
   });
 
+  it('upload_file rejects ambiguous path and base64 input', async () => {
+    const client = await connect(agentClient);
+    const file = path.join(dir, 'shot.png');
+    await writeFile(file, PNG_BYTES);
+
+    const result = (await client.callTool({
+      name: 'upload_file',
+      arguments: {
+        path: file,
+        filename: 'other.png',
+        content_base64: PNG_BYTES.toString('base64'),
+      },
+    })) as { isError?: boolean; content: Array<{ text: string }> };
+
+    expect(result.isError).toBe(true);
+    expect(result.content[0].text).toContain('not both');
+    expect(agentClient.files.upload).not.toHaveBeenCalled();
+  });
+
+  it('post_message forwards attachments', async () => {
+    const client = await connect(agentClient);
+
+    await client.callTool({
+      name: 'post_message',
+      arguments: { channel: 'screenshots', text: 'see screenshot', attachments: ['f1'] },
+    });
+
+    expect(agentClient.send).toHaveBeenCalledWith(
+      'screenshots',
+      'see screenshot',
+      expect.objectContaining({ attachments: ['f1'] })
+    );
+  });
+
   it('send_group_dm forwards attachments', async () => {
     const client = await connect(agentClient);
 

@@ -1,4 +1,4 @@
-import { mkdir, readFile, stat, writeFile } from 'node:fs/promises';
+import { lstat, mkdir, readFile, realpath, stat, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 
 /** Largest file sent or saved as a message attachment; recipients' injectors use the same cap. */
@@ -104,6 +104,30 @@ export async function readAttachment(
   return { filename, contentType: contentTypeFor(filename), data };
 }
 
+async function ensurePlainDefaultDirectory(fileId: string): Promise<{ path: string; real: string }> {
+  let currentPath = path.resolve('.');
+  let currentReal = await realpath(currentPath);
+  for (const segment of ['.agent-relay', 'attachments', safeAttachmentFilename(fileId)]) {
+    currentPath = path.join(currentPath, segment);
+    try {
+      await mkdir(currentPath, { mode: 0o700 });
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== 'EEXIST') throw error;
+    }
+    const info = await lstat(currentPath).catch(() => undefined);
+    if (!info?.isDirectory() || info.isSymbolicLink()) {
+      throw new Error(`Cannot save attachment ${fileId}: default destination contains a symlink.`);
+    }
+    const resolved = await realpath(currentPath);
+    const expected = path.join(currentReal, segment);
+    if (resolved !== expected) {
+      throw new Error(`Cannot save attachment ${fileId}: default destination escaped its root.`);
+    }
+    currentReal = resolved;
+  }
+  return { path: currentPath, real: currentReal };
+}
+
 /**
  * Write a downloaded attachment and return its absolute path. `out` may be a
  * file or an existing directory; by default the file lands in
@@ -121,9 +145,11 @@ export async function saveAttachment(
     );
   }
   const name = safeAttachmentFilename(filename);
+  let defaultDirectoryReal: string | undefined;
   if (!out) {
-    out = path.resolve('.agent-relay', 'attachments', safeAttachmentFilename(fileId));
-    await mkdir(out, { recursive: true });
+    const destination = await ensurePlainDefaultDirectory(fileId);
+    out = destination.path;
+    defaultDirectoryReal = destination.real;
   }
   const outInfo = await stat(out).catch(() => undefined);
   if (!outInfo?.isDirectory()) {
@@ -137,6 +163,9 @@ export async function saveAttachment(
   // (or follow a link); pick the first free `name (n).ext` instead.
   const { name: stem, ext } = path.parse(name);
   for (let n = 0; n < 1000; n += 1) {
+    if (defaultDirectoryReal && (await realpath(out)) !== defaultDirectoryReal) {
+      throw new Error(`Cannot save attachment ${fileId}: default destination changed while saving.`);
+    }
     const target = path.resolve(out, n === 0 ? name : `${stem} (${n})${ext}`);
     try {
       await writeFile(target, data, { flag: 'wx' });

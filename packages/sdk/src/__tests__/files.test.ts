@@ -91,6 +91,25 @@ describe('RelaycastMessagingClient files', () => {
     });
   });
 
+  it('accepts a camelized fileId ticket and preserves the known id when completion is minimal', async () => {
+    const files = createAgentFiles();
+    files.upload.mockResolvedValueOnce({
+      fileId: 'file-ticket',
+      uploadUrl: UPLOAD_URL,
+      expiresAt: '2026-10-08T23:00:00.000Z',
+    } as never);
+    files.complete.mockResolvedValueOnce({ status: 'complete' } as never);
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async () => new Response(null, { status: 200 }))
+    );
+
+    const uploaded = await clientWith(files).files.upload({ filename: 'shot.png', data: PNG_BYTES });
+
+    expect(files.complete).toHaveBeenCalledWith('file-ticket');
+    expect(uploaded).toMatchObject({ id: 'file-ticket', status: 'complete' });
+  });
+
   it('does not complete an upload whose bytes were rejected and keeps the signature out of the error', async () => {
     const files = createAgentFiles();
     vi.stubGlobal(

@@ -942,6 +942,15 @@ impl BrokerRuntime {
     /// Frames are neither observed by the book nor acknowledged while held:
     /// a broker that exits mid-download leaves them for Relaycast to replay.
     async fn stage_fleet_deliver(&mut self, deliver: Deliver) {
+        // Already-acked replays need only repeat the cumulative ACK. Sending
+        // them through attachment staging downloads the same bytes again and
+        // can unnecessarily block later frames for this agent.
+        if deliver.seq > 0
+            && deliver.seq <= self.fleet_delivery_book.acked_up_to_seq(&deliver.agent_id)
+        {
+            self.handle_fleet_deliver(deliver, None).await;
+            return;
+        }
         let key = deliver.agent.clone();
         let attachments = fleet_delivery_attachments(&deliver.payload);
         if attachments.is_empty() {
@@ -976,7 +985,10 @@ impl BrokerRuntime {
             attachments = attachments.len(),
             "holding node delivery while its attachments download"
         );
-        let (token, done_tx) = self.attachment_staging.push_preparing(key.clone(), deliver);
+        let fallback_block = crate::attachments::render_reference_block(&attachments);
+        let (token, done_tx) =
+            self.attachment_staging
+                .push_preparing(key.clone(), deliver, fallback_block);
         let slots = self.attachment_staging.download_slots.clone();
         tokio::spawn(async move {
             // Held (unacknowledged) until a download slot frees up.
@@ -1026,13 +1038,34 @@ impl BrokerRuntime {
 
     /// `block` is the rendered `Attachments:` block appended to the injected
     /// body, when the message carried attachments.
-    async fn handle_fleet_deliver(&mut self, deliver: Deliver, block: Option<&str>) {
+    pub(super) async fn handle_fleet_deliver(&mut self, deliver: Deliver, block: Option<&str>) {
         let decision = self.fleet_delivery_book.observe(&deliver);
         // Record the book's verdict before acting on it, so a frame that is
         // about to be dropped without an ack is still visible over
         // `GET /api/node-delivery`. See `crate::node_delivery_probe`.
         self.node_delivery_probe
             .record_decision(&deliver, &decision);
+        // A terminal worker failure deliberately withholds the engine ACK,
+        // but Relaycast may replay that frame on reconnect. The body can still
+        // be parked in the harness composer, so never surface it again within
+        // this broker lifetime. Keep withholding the ACK for operator recovery
+        // while using the terminal-failure fence to prevent a duplicate paste.
+        if self
+            .terminal_failed_deliveries
+            .contains(deliver.delivery_id.as_str())
+        {
+            self.node_delivery_probe
+                .record_disposition(&deliver, DeliverDisposition::SurfaceFailed);
+            tracing::warn!(
+                target = "relay_broker::fleet",
+                agent = %deliver.agent,
+                delivery_id = %deliver.delivery_id,
+                msg_id = %deliver.msg_id,
+                seq = deliver.seq,
+                "withholding replay of terminally failed delivery; body may remain in the composer"
+            );
+            return;
+        }
         // `seen_msg_ids` proves this exact frame once reached broker custody;
         // it does not prove that custody still exists or that the worker
         // received it. If custody disappeared before cumulative ACK, treating

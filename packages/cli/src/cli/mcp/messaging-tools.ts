@@ -482,6 +482,9 @@ export function registerMessagingTools(
       },
     },
     async ({ path: filePath, content_base64, filename, content_type, as }) => {
+      if (filePath && content_base64 !== undefined) {
+        throw new Error('Pass either a local `path` or `content_base64`, not both.');
+      }
       let file: { filename: string; contentType: string; data: Uint8Array };
       if (filePath) {
         const read = await readAttachment(filePath);

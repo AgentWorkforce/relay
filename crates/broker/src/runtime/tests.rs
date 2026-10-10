@@ -3178,6 +3178,23 @@ async fn every_terminal_disposition_drops_its_withheld_fleet_ack() {
     cleanup_worker_registry(fixture.runtime.workers).await;
 }
 
+#[tokio::test]
+async fn terminally_failed_fleet_replay_is_not_surfaced_again() {
+    let deliver = fleet_deliver(1);
+    let mut fixture = worker_event_runtime_fixture(empty_worker_registry(), HashMap::new());
+    fixture
+        .runtime
+        .terminal_failed_deliveries
+        .insert(DeliveryId::from(&deliver.delivery_id));
+
+    fixture.runtime.handle_fleet_deliver(deliver, None).await;
+
+    assert!(fixture.runtime.pending_deliveries.is_empty());
+    assert!(fixture.runtime.delivery_states.is_empty());
+    assert!(fixture.fleet_control_rx.try_recv().is_err());
+    assert!(fixture._sdk_out_rx.try_recv().is_err());
+}
+
 // relay#1310 MUST-NOT-FIRE: once the worker confirms harness acceptance, the
 // engine ack must still
 // fire, with the delivery's own (agent, up_to_seq) — i.e. the happy path is
@@ -4454,6 +4471,47 @@ async fn pty_delivery_verification_requires_harness_acceptance() {
     assert!(
         std::iter::from_fn(|| fixture._sdk_out_rx.try_recv().ok()).any(|frame| {
             frame.payload.get("kind").and_then(Value::as_str) == Some("delivery_unconfirmed")
+        })
+    );
+    cleanup_worker_registry(fixture.runtime.workers).await;
+}
+
+#[tokio::test]
+async fn completed_replay_is_reported_without_confirming_a_fresh_pending_delivery() {
+    let worker_name = "worker-a";
+    let registry = make_worker_registry_with_worker(worker_name).await;
+    let generation = registry.workers[worker_name].generation;
+    let delivery_id = DeliveryId::new("del_completed_replay");
+    let pending = make_pending_delivery(delivery_id.as_str(), worker_name);
+    let event_id = pending.delivery.event_id.clone();
+    let mut fixture =
+        worker_event_runtime_fixture(registry, HashMap::from([(delivery_id.clone(), pending)]));
+
+    fixture
+        .runtime
+        .handle_worker_event(WorkerEvent::Message {
+            name: WorkerName::from(worker_name),
+            generation,
+            value: json!({
+                "type": "delivery_verified",
+                "payload": {
+                    "delivery_id": delivery_id,
+                    "event_id": event_id,
+                    "verification": "completed_replay",
+                },
+            }),
+        })
+        .await;
+
+    assert!(fixture
+        .runtime
+        .pending_deliveries
+        .contains_key("del_completed_replay"));
+    assert!(
+        std::iter::from_fn(|| fixture._sdk_out_rx.try_recv().ok()).any(|frame| {
+            frame.payload.get("kind").and_then(Value::as_str) == Some("delivery_verified")
+                && frame.payload.get("verification").and_then(Value::as_str)
+                    == Some("completed_replay")
         })
     );
     cleanup_worker_registry(fixture.runtime.workers).await;
@@ -9911,4 +9969,35 @@ async fn fleet_delivery_without_attachments_is_not_staged() {
     .await;
     assert_eq!(pending_body_for(&fixture, "msg-plain"), "plain");
     assert!(!fixture.runtime.attachment_staging.is_busy("ghost"));
+}
+
+#[tokio::test]
+async fn already_acked_attachment_replay_bypasses_download_staging() {
+    let server = httpmock::MockServer::start_async().await;
+    let lookup = server
+        .mock_async(|when, then| {
+            when.method(httpmock::Method::GET).path("/v1/files/file_1");
+            then.status(500);
+        })
+        .await;
+    let mut fixture = attachment_fixture(&server);
+    let deliver = attachment_deliver("msg-attach-1", 1, shot_dm_payload("see screenshot"));
+    let decision = fixture.runtime.fleet_delivery_book.observe(&deliver);
+    assert!(matches!(
+        decision,
+        crate::node_control::DeliveryDecision::Deliver { .. }
+    ));
+    fixture
+        .runtime
+        .fleet_delivery_book
+        .commit_delivered(&deliver);
+
+    deliver_and_release_staged(&mut fixture, deliver).await;
+
+    assert!(!fixture.runtime.attachment_staging.is_busy("ghost"));
+    lookup.assert_hits_async(0).await;
+    assert!(matches!(
+        fixture.fleet_control_rx.try_recv(),
+        Ok(FleetControlCommand::Send(BrokerToRelaycast::DeliveryAck(_)))
+    ));
 }

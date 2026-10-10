@@ -431,7 +431,8 @@ pub enum BrokerEvent {
         delivery_id: DeliveryId,
         event_id: EventId,
         /// "harness_acceptance" when activity or a cleared composer proves
-        /// that the PTY harness accepted the turn. Older workers may report
+        /// that the PTY harness accepted the turn, and "completed_replay" when
+        /// an already-completed delivery is replayed. Older workers may report
         /// legacy values such as "echo" or "timeout_fallback".
         #[serde(default, skip_serializing_if = "Option::is_none")]
         verification: Option<String>,

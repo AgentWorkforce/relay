@@ -955,7 +955,8 @@ impl BrokerRuntime {
                                 .workers
                                 .get(&name)
                                 .is_some_and(|handle| handle.spec.runtime == AgentRuntime::Pty);
-                            if is_pty && verification != "harness_acceptance" {
+                            let completed_replay = verification == "completed_replay";
+                            if is_pty && verification != "harness_acceptance" && !completed_replay {
                                 tracing::warn!(
                                     target = "agent_relay::broker",
                                     worker = %name,
@@ -987,13 +988,21 @@ impl BrokerRuntime {
                                 verification = %verification,
                                 "delivery acceptance verified"
                             );
-                            let pending_for_confirmation = clear_pending_delivery_if_event_matches(
-                                pending_deliveries,
-                                delivery_id,
-                                Some(event_id),
-                                &name,
-                                "delivery_verified",
-                            );
+                            // `completed_replay` accompanies a replayed
+                            // delivery_ack; it is useful lifecycle evidence but
+                            // must never independently confirm a fresh pending
+                            // delivery if frames are malformed or reordered.
+                            let pending_for_confirmation = (!completed_replay)
+                                .then(|| {
+                                    clear_pending_delivery_if_event_matches(
+                                        pending_deliveries,
+                                        delivery_id,
+                                        Some(event_id),
+                                        &name,
+                                        "delivery_verified",
+                                    )
+                                })
+                                .flatten();
                             let mut verified_event = json!({
                                 "kind": "delivery_verified",
                                 "name": name,

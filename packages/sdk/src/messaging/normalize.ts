@@ -279,7 +279,10 @@ export function normalizeAgentChannel(input: unknown): RelayAgentChannel {
 export function normalizeFileUpload(input: unknown): { id?: string; uploadUrl?: string } {
   const wired = toWire(input);
   const upload = isRecord(wired) ? wired : {};
-  return { id: opt(str(upload, 'id')), uploadUrl: opt(str(upload, 'upload_url')) };
+  return {
+    id: opt(str(upload, 'id') ?? str(upload, 'file_id')),
+    uploadUrl: opt(str(upload, 'upload_url')),
+  };
 }
 
 export function normalizeFileInfo(input: unknown): RelayFileInfo {

@@ -78,4 +78,17 @@ describe('attachment helpers', () => {
       expect(await readFile(saved, 'utf8')).toBe('download');
     }
   );
+
+  it.skipIf(process.platform === 'win32')('rejects a symlinked default attachment directory', async () => {
+    const fileId = path.basename(dir);
+    const outside = path.join(dir, 'outside');
+    await mkdir(outside);
+    await mkdir(path.dirname(defaultSaveDir), { recursive: true });
+    await symlink(outside, defaultSaveDir);
+
+    await expect(saveAttachment(fileId, 'shot.png', Buffer.from('download'))).rejects.toThrow(
+      /contains a symlink/
+    );
+    await expect(readFile(path.join(outside, 'shot.png'))).rejects.toMatchObject({ code: 'ENOENT' });
+  });
 });

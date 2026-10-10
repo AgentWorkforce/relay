@@ -352,7 +352,7 @@ export function registerMessageCommands(
       const options = opts(o);
       const relay = deps.createAgentRelay(options);
       const uploaded = await uploadFiles(relay, [filePath]);
-      const text = (o.text as string | undefined)?.trim() ? (o.text as string) : uploaded[0].filename;
+      const text = (o.text as string | undefined) ?? uploaded[0].filename;
       if (channel) {
         printJson(deps, await relay.messages.send({ channel, text, ...attachmentIds(uploaded) }));
       } else {

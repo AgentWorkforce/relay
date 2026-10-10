@@ -18,7 +18,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Fixed
 
 - `agent-relay message file upload` now uploads and attaches the file; it always failed with "Invalid attachments: file ids must exist in workspace and be complete".
-- Broker-managed PTY messages now remain pending until the harness accepts them; failed delivery blocks further sends, with up to two submit-only retries (three total attempts) instead of silently parked input. Codex recovery uses `End`, a distinct carriage return, and a guarded line-feed fallback without replaying the body; human input takes ownership and cancels recovery.
+- Broker-managed messages retry failed delivery up to three times, and later sends wait until delivery succeeds.
 
 ## [13.2.0] - 2026-10-08
 

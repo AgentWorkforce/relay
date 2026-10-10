@@ -4,6 +4,19 @@ use crate::terminal_control::TerminalToCloud;
 
 impl BrokerRuntime {
     pub(super) async fn handle_maintenance_tick(&mut self) {
+        let expired_staging = self.attachment_staging.expire_stalled(
+            Instant::now(),
+            crate::attachments::ATTACHMENT_STAGING_MAX_HOLD,
+        );
+        for (deliver, block) in expired_staging {
+            tracing::warn!(
+                target = "relay_broker::attachments",
+                agent = %deliver.agent,
+                delivery_id = %deliver.delivery_id,
+                "attachment staging task did not complete; releasing delivery with fetch references"
+            );
+            self.handle_fleet_deliver(deliver, block.as_deref()).await;
+        }
         self.maintain_tasks().await;
         self.reconcile_identity_cleanups().await;
         let paths = &self.paths;
