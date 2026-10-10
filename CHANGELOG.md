@@ -14,6 +14,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - The `agent-relay mcp` server adds `upload_file` (local path or base64) and `download_file`, and `send_group_dm` accepts `attachments`.
 - Agents spawned by the broker receive message attachments (up to 25 MiB each) as local files: the injected message ends with an `Attachments:` list giving each file's path under `.agent-relay/attachments/` in the agent's working directory, or an `agent-relay message file download <file_id>` command when a file could not be fetched. Messages that carry only attachments are now delivered too.
 - `@agent-relay/sdk` adds `files.upload` / `files.get` / `files.download` on `AgentRelay` and `RelaycastMessagingClient`, plus `uploadRelayFile` / `downloadRelayFile` helpers.
+- `@agent-relay/sdk/fleet` exports `spawnFleetSandbox`, which provisions a Cloud fleet sandbox, starts an agent harness on it, confirms the node the agent landed on, and returns a handle to the live agent that can be attached to immediately and torn down idempotently. `agent-relay fleet spawn --sandbox` uses the same path.
+- `@agent-relay/cloud/attach` and `@agent-relay/sdk/attach` expose fleet terminal attachment with a private local stdio socket and completion promise.
+- `@agent-relay/cloud/fleet` and `@agent-relay/sdk/fleet` expose the sandbox ensure and deletion primitives.
+- Fleet sandbox ensure and `fleet spawn --sandbox-readonly-path` forward explicit read-only Relayfile subtree requests to Cloud for server-side enforcement.
 
 ### Fixed
 

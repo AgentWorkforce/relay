@@ -37,6 +37,16 @@
       "types": "./dist/capabilities.d.ts",
       "import": "./dist/capabilities.js",
       "default": "./dist/capabilities.js"
+    },
+    "./attach": {
+      "types": "./dist/attach.d.ts",
+      "import": "./dist/attach.js",
+      "default": "./dist/attach.js"
+    },
+    "./fleet": {
+      "types": "./dist/fleet.d.ts",
+      "import": "./dist/fleet.js",
+      "default": "./dist/fleet.js"
     }
   },
   "files": [
@@ -54,7 +64,7 @@
     "build": "node -e \"require('node:fs').rmSync('dist',{recursive:true,force:true})\" && npx tsc -p tsconfig.build.json",
     "build:full": "npm run build",
     "check": "tsc -p tsconfig.json --noEmit",
-    "test": "vitest run src/__tests__/activity-reducer.test.ts src/__tests__/agent-relay.test.ts src/__tests__/facade.test.ts src/__tests__/files.test.ts src/__tests__/listeners.test.ts src/__tests__/integrations.test.ts src/__tests__/messaging.test.ts src/__tests__/delivery-actions.test.ts src/__tests__/relaycast-errors.test.ts src/__tests__/register-action-relay.test.ts src/__tests__/thin-client.test.ts src/__tests__/typed-action-handle.test.ts src/__tests__/webhooks.test.ts src/__tests__/event-fanin.test.ts src/__tests__/observer-source.test.ts",
+    "test": "vitest run src/__tests__/activity-reducer.test.ts src/__tests__/agent-relay.test.ts src/__tests__/facade.test.ts src/__tests__/files.test.ts src/__tests__/listeners.test.ts src/__tests__/integrations.test.ts src/__tests__/messaging.test.ts src/__tests__/delivery-actions.test.ts src/__tests__/relaycast-errors.test.ts src/__tests__/register-action-relay.test.ts src/__tests__/thin-client.test.ts src/__tests__/typed-action-handle.test.ts src/__tests__/webhooks.test.ts src/__tests__/event-fanin.test.ts src/__tests__/observer-source.test.ts src/__tests__/fleet-spawn.test.ts",
     "test:types": "vitest run --typecheck.only --typecheck.tsconfig tsconfig.typetest.json",
     "prepack": "npm run build"
   },
@@ -64,6 +74,7 @@
   "dependencies": {
     "@relaycast/sdk": "^8.0.7",
     "@relaycast/types": "^8.0.7",
-    "zod": "^4.4.3"
+    "zod": "^4.4.3",
+    "@agent-relay/cloud": "13.2.0"
   }
 }

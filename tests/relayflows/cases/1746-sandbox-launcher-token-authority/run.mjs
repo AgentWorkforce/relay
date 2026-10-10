@@ -120,6 +120,8 @@ test('sandbox dispatch constructs an agent client with exactly one authority', a
     spawn: vi.fn(async () => ({
       invocationId: 'inv_relayflow_1746',
       node: { name: 'daytona-worker' },
+      // Sandbox spawns fail closed unless the dispatch receipt names the sandbox node.
+      dispatchedNodeId: 'node-daytona',
     })),
   };
   let constructorOptions: Record<string, unknown> | undefined;

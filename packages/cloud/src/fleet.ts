@@ -382,3 +382,20 @@ export function resolveActiveFleetNodeEnrollment(
     `Multiple fleet node enrollments match; pass baseUrl and workspaceId to disambiguate. Candidates: ${candidates}.`
   );
 }
+
+/** Fleet sandbox provisioning primitives. */
+export {
+  ensureCloudFleetSandbox,
+  deleteCloudFleetSandbox,
+  CloudFleetSandboxProvisionError,
+  CANONICAL_RELAYCAST_ORIGIN,
+  DEV_CLOUD_API_URL,
+  DEV_RELAYCAST_ORIGIN,
+  type CloudFleetRelaycastTarget,
+  type CloudFleetSandboxProviderId,
+  type DeleteCloudFleetSandboxInput,
+  type EnsureCloudFleetSandboxInput,
+  type EnsureCloudFleetSandboxResult,
+  type CloudFleetSandboxRequestOptions,
+} from './fleet-sandbox.js';
+export { resolveWorkspaceByKey } from './workspaces.js';

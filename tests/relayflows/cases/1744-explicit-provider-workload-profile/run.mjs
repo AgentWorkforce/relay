@@ -194,6 +194,8 @@ test('explicit provider selection emits the provider-compatible Cloud workload p
               spawn: vi.fn(async () => ({
                 invocationId: 'inv_' + provider,
                 node: { name: provider + '-worker' },
+                // Sandbox spawns fail closed unless the dispatch receipt names the sandbox node.
+                dispatchedNodeId: 'node-' + provider,
               })),
             },
           },

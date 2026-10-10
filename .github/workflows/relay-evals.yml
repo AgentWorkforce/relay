@@ -57,7 +57,7 @@ jobs:
         run: npm ci
 
       - name: Build SDK
-        run: npm run build:sdk
+        run: npm run build:session && npm run build:config && npm run build:cloud && npm run build:sdk
 
       - name: Run offline evals
         run: npm run evals:offline

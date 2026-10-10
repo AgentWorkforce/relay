@@ -1,0 +1,432 @@
+import { describe, expect, it, vi } from 'vitest';
+
+import { spawnFleetSandbox, FleetSandboxSpawnError, type SpawnFleetSandboxDependencies } from '../fleet.js';
+
+const SANDBOX_ID = 'sbx_3f2b8c4e-1d2a-4b5c-8d9e-0a1b2c3d4e5f';
+
+function provisioned(overrides: Record<string, unknown> = {}) {
+  return {
+    outcome: 'provisioned' as const,
+    cloudWorkspaceId: 'cw_1',
+    nodeId: 'node_1',
+    nodeName: 'fleet-sandbox-node',
+    sandboxId: SANDBOX_ID,
+    relayWorkspaceId: 'rw_1',
+    relayfileMounted: true,
+    relayfileMountPath: '/workspace',
+    providerId: 'e2b' as const,
+    ...overrides,
+  };
+}
+
+function harness(
+  options: {
+    ensure?: () => Promise<unknown>;
+    spawn?: (input: Record<string, unknown>) => Promise<unknown>;
+  } = {}
+) {
+  const calls: string[] = [];
+  const ensureCloudFleetSandbox = vi.fn(async (input: Record<string, unknown>) => {
+    calls.push('ensure');
+    void input;
+    return (options.ensure ?? (async () => provisioned()))();
+  });
+  const deleteCloudFleetSandbox = vi.fn(async (_input: Record<string, unknown>) => {
+    calls.push('delete-sandbox');
+  });
+  const release = vi.fn(async (input: { name: string }) => {
+    calls.push(`release:${input.name}`);
+  });
+  const register = vi.fn(async (input: { name: string }) => {
+    calls.push(`register:${input.name}`);
+    return { token: 'launcher-token' };
+  });
+  const workspaceRelay = {
+    workspace: { register, release, info: vi.fn(async () => ({ id: 'rw_1' })) },
+  };
+  const spawn = vi.fn(async (input: Record<string, unknown>) => {
+    calls.push('spawn');
+    if (options.spawn) return options.spawn(input);
+    return {
+      id: 'inv_1',
+      status: 'completed',
+      dispatchedNodeId: 'node_1',
+      handlerNodeId: 'node_1',
+      node: { id: 'node_1', name: 'fleet-sandbox-node', status: 'online', capabilities: [] },
+      placement: {
+        capability: 'spawn:claude',
+        node: 'fleet-sandbox-node',
+        attempts: 1,
+        queued: false,
+        state: 'ready',
+        confirmed: true,
+      },
+    };
+  });
+  const createWorkspaceRelay = vi.fn((_options: Record<string, unknown>) => workspaceRelay);
+  const createAgentRelay = vi.fn((_options: Record<string, unknown>) => ({
+    messaging: { placement: { spawn } },
+  }));
+  const startFleetNodeAttachProxy = vi.fn(async (_options: Record<string, unknown>) => ({
+    socketPath: '/tmp/attach.sock',
+    finished: Promise.resolve(0),
+    close: async () => undefined,
+  }));
+  const deps = {
+    ensureCloudFleetSandbox,
+    deleteCloudFleetSandbox,
+    createWorkspaceRelay,
+    createAgentRelay,
+    startFleetNodeAttachProxy,
+    // Never let a test persist a Relaycast target into a real project session.
+    persistRelaycastTarget: vi.fn(),
+    warn: vi.fn(),
+  } as unknown as SpawnFleetSandboxDependencies;
+  return {
+    deps,
+    calls,
+    ensureCloudFleetSandbox,
+    deleteCloudFleetSandbox,
+    release,
+    spawn,
+    createAgentRelay,
+    startFleetNodeAttachProxy,
+  };
+}
+
+const base = {
+  cli: 'claude',
+  name: 'sandbox-worker',
+  task: 'Review the repository',
+  workspaceId: 'rw_1',
+  workspaceKey: 'rk_live_test',
+  provider: 'e2b' as const,
+};
+
+describe('spawnFleetSandbox', () => {
+  it('provisions a sandbox, starts the harness on it, and returns a live attachable handle', async () => {
+    const h = harness();
+    const handle = await spawnFleetSandbox(
+      { ...base, readonlyPaths: ['/docs/**'], relayfilePaths: ['/docs/**', '/work/**'] },
+      h.deps
+    );
+
+    const ensureInput = h.ensureCloudFleetSandbox.mock.calls[0][0];
+    expect(ensureInput).toMatchObject({
+      workspaceId: 'rw_1',
+      requiredCapability: 'spawn:claude',
+      maxAgents: 1,
+      mountRelayfile: true,
+      readonlyPaths: ['/docs/**'],
+      relayfilePaths: ['/docs/**', '/work/**'],
+      providerId: 'e2b',
+      forceProvision: true,
+    });
+    expect(ensureInput.sandboxId).toMatch(/^sbx_[0-9a-f-]{36}$/);
+
+    const spawnInput = h.spawn.mock.calls[0][0] as Record<string, any>;
+    expect(spawnInput).toMatchObject({
+      capability: 'spawn:claude',
+      node: 'fleet-sandbox-node',
+      confirm: true,
+    });
+    expect(spawnInput.input).toMatchObject({
+      name: 'sandbox-worker',
+      cli: 'claude',
+      task: 'Review the repository',
+      worker_cwd: '/workspace',
+    });
+
+    expect(handle).toMatchObject({
+      sandboxId: SANDBOX_ID,
+      nodeId: 'node_1',
+      nodeName: 'fleet-sandbox-node',
+      agentName: 'sandbox-worker',
+      ownsSandbox: true,
+    });
+    // The temporary launcher identity never outlives the spawn.
+    expect(h.calls.filter((call) => call.startsWith('release:fleet-spawn-launcher-'))).toHaveLength(1);
+
+    const proxy = await handle.attach({ mode: 'drive' });
+    expect(proxy.socketPath).toBe('/tmp/attach.sock');
+    expect(h.startFleetNodeAttachProxy).toHaveBeenCalledWith(
+      expect.objectContaining({
+        node: 'fleet-sandbox-node',
+        agent: 'sandbox-worker',
+        mode: 'drive',
+        workspaceKey: 'rk_live_test',
+        pinnedTransport: true,
+        baseUrl: 'https://cast.agentrelay.com',
+      })
+    );
+  });
+
+  it('returns the sandbox without its Relaycast credential', async () => {
+    const h = harness({
+      ensure: async () =>
+        provisioned({
+          relaycastTarget: {
+            route: 'canonical',
+            baseUrl: 'https://cast.agentrelay.com',
+            workspaceId: 'rw_1',
+            relaycastApiKey: 'rk_live_secret',
+          },
+        }),
+    });
+    const handle = await spawnFleetSandbox(base, h.deps);
+    expect(handle.sandbox.relaycastTarget).toEqual({
+      route: 'canonical',
+      baseUrl: 'https://cast.agentrelay.com',
+      workspaceId: 'rw_1',
+    });
+    // @ts-expect-error the redacted type has no credential field
+    expect(handle.sandbox.relaycastTarget?.relaycastApiKey).toBeUndefined();
+  });
+
+  it('awaits async target persistence and cleans up when it rejects', async () => {
+    const h = harness({
+      ensure: async () =>
+        provisioned({
+          relaycastTarget: {
+            route: 'canonical',
+            baseUrl: 'https://cast.agentrelay.com',
+            workspaceId: 'rw_1',
+            relaycastApiKey: 'rk_live_secret',
+          },
+        }),
+    });
+    await expect(
+      spawnFleetSandbox(base, {
+        ...h.deps,
+        persistRelaycastTarget: async () => Promise.reject(new Error('session write failed')),
+      })
+    ).rejects.toThrow('session write failed');
+    expect(h.spawn).not.toHaveBeenCalled();
+    expect(h.deleteCloudFleetSandbox).toHaveBeenCalledTimes(1);
+  });
+
+  it('pins the compatibility transport at spawn time for attach', async () => {
+    const h = harness();
+    const env: NodeJS.ProcessEnv = { RELAY_WORKSPACE_KEY: 'rk_live_spawned' };
+    const { workspaceKey: _key, ...rest } = base;
+    const handle = await spawnFleetSandbox({ ...rest, transport: { env } }, h.deps);
+    env.RELAY_WORKSPACE_KEY = 'rk_live_rebound';
+    await handle.attach();
+    expect(h.startFleetNodeAttachProxy).toHaveBeenCalledWith(
+      expect.objectContaining({ workspaceKey: 'rk_live_spawned' })
+    );
+  });
+
+  it('creates the launcher client on the transport the spawn resolved', async () => {
+    const h = harness();
+    const { workspaceKey: _key, ...rest } = base;
+    await spawnFleetSandbox(
+      {
+        ...rest,
+        transport: {
+          env: { RELAY_WORKSPACE_KEY: 'rk_live_spawned', RELAY_BASE_URL: 'https://cast.agentrelay.com' },
+        },
+      },
+      h.deps
+    );
+    expect(h.createAgentRelay).toHaveBeenCalledWith({
+      token: 'launcher-token',
+      baseUrl: 'https://cast.agentrelay.com',
+    });
+  });
+
+  it('tears down idempotently: releases the agent, then deletes the sandbox it provisioned', async () => {
+    const h = harness();
+    const handle = await spawnFleetSandbox(base, h.deps);
+    h.calls.length = 0;
+    await Promise.all([handle.destroy(), handle.destroy()]);
+    await handle.destroy();
+    expect(h.calls).toEqual(['release:sandbox-worker', 'delete-sandbox']);
+    expect(h.deleteCloudFleetSandbox).toHaveBeenCalledWith({
+      cloudWorkspaceId: 'cw_1',
+      sandboxId: SANDBOX_ID,
+      providerId: 'e2b',
+    });
+  });
+
+  it('retries only the teardown step that failed', async () => {
+    const h = harness();
+    const handle = await spawnFleetSandbox(base, h.deps);
+    h.release.mockRejectedValueOnce(new Error('relaycast busy'));
+    h.calls.length = 0;
+    await expect(handle.destroy()).rejects.toThrow('agent release failed: relaycast busy');
+    await handle.destroy();
+    expect(h.deleteCloudFleetSandbox).toHaveBeenCalledTimes(1);
+    expect(h.release.mock.calls.filter(([input]) => input.name === 'sandbox-worker')).toHaveLength(2);
+  });
+
+  it('retains a caller-declared sandbox on destroy', async () => {
+    const h = harness();
+    const handle = await spawnFleetSandbox({ ...base, sandboxId: SANDBOX_ID }, h.deps);
+    expect(handle.ownsSandbox).toBe(false);
+    await handle.destroy();
+    expect(h.deleteCloudFleetSandbox).not.toHaveBeenCalled();
+  });
+
+  it('fails closed and cleans up when the dispatch receipt names a different node', async () => {
+    const h = harness({
+      spawn: async () => ({
+        id: 'inv_1',
+        status: 'completed',
+        // A targeted placement echoes the requested node; only the receipt is evidence.
+        dispatchedNodeId: 'node_other',
+        node: { id: 'node_1', name: 'fleet-sandbox-node', status: 'online', capabilities: [] },
+        placement: {
+          capability: 'spawn:claude',
+          node: 'fleet-sandbox-node',
+          attempts: 1,
+          queued: false,
+          state: 'ready',
+          confirmed: true,
+        },
+      }),
+    });
+    await expect(spawnFleetSandbox(base, h.deps)).rejects.toMatchObject({
+      name: 'FleetSandboxSpawnError',
+      code: 'placement_mismatch',
+    });
+    expect(h.calls).toContain('release:sandbox-worker');
+    expect(h.deleteCloudFleetSandbox).toHaveBeenCalledTimes(1);
+  });
+
+  it('fails closed when no dispatch receipt proves the sandbox node', async () => {
+    const h = harness({
+      spawn: async () => ({
+        id: 'inv_1',
+        status: 'completed',
+        node: { id: 'node_1', name: 'fleet-sandbox-node', status: 'online', capabilities: [] },
+        placement: {
+          capability: 'spawn:claude',
+          node: 'fleet-sandbox-node',
+          attempts: 1,
+          queued: false,
+          state: 'ready',
+          confirmed: true,
+        },
+      }),
+    });
+    await expect(spawnFleetSandbox(base, h.deps)).rejects.toMatchObject({ code: 'placement_mismatch' });
+    expect(h.calls).toContain('release:sandbox-worker');
+    expect(h.deleteCloudFleetSandbox).toHaveBeenCalledTimes(1);
+  });
+
+  it('cleans up the sandbox when a caller hook throws', async () => {
+    const h = harness();
+    await expect(
+      spawnFleetSandbox(
+        {
+          ...base,
+          resolveTask: () => {
+            throw new Error('bad context');
+          },
+        },
+        h.deps
+      )
+    ).rejects.toThrow('bad context');
+    expect(h.spawn).not.toHaveBeenCalled();
+    expect(h.deleteCloudFleetSandbox).toHaveBeenCalledTimes(1);
+  });
+
+  it('awaits async hooks and cleans up when async verification rejects', async () => {
+    const h = harness();
+    await expect(
+      spawnFleetSandbox(
+        { ...base, verifySandbox: async () => Promise.reject(new Error('stale revision')) },
+        h.deps
+      )
+    ).rejects.toThrow('stale revision');
+    expect(h.spawn).not.toHaveBeenCalled();
+    expect(h.deleteCloudFleetSandbox).toHaveBeenCalledTimes(1);
+
+    const ok = harness();
+    await spawnFleetSandbox(
+      {
+        ...base,
+        resolveWorkerCwd: async () => '/workspace/repo',
+        resolveTask: async (_s, cwd) => `work in ${cwd}`,
+      },
+      ok.deps
+    );
+    expect((ok.spawn.mock.calls[0][0] as Record<string, any>).input).toMatchObject({
+      worker_cwd: '/workspace/repo',
+      task: 'work in /workspace/repo',
+    });
+  });
+
+  it('never lets spawnMetadata replace the lifecycle fields', async () => {
+    const h = harness();
+    const handle = await spawnFleetSandbox(
+      { ...base, spawnMetadata: { name: 'other-agent', worker_cwd: '/tmp', session_ref: 'ref-1' } },
+      h.deps
+    );
+    expect((h.spawn.mock.calls[0][0] as Record<string, any>).input).toMatchObject({
+      name: 'sandbox-worker',
+      worker_cwd: '/workspace',
+      session_ref: 'ref-1',
+    });
+    expect(handle.agentName).toBe('sandbox-worker');
+  });
+
+  it('refuses a reused node without a sandbox identity', async () => {
+    const h = harness({
+      ensure: async () => ({
+        outcome: 'reused',
+        cloudWorkspaceId: 'cw_1',
+        nodeId: 'node_1',
+        nodeName: 'existing-node',
+        status: 'online',
+        activeAgents: 0,
+        maxAgents: 1,
+      }),
+    });
+    await expect(
+      spawnFleetSandbox({ ...base, sandboxName: 'existing-node', mountRelayfile: false }, h.deps)
+    ).rejects.toMatchObject({ code: 'sandbox_identity_unknown' });
+    expect(h.spawn).not.toHaveBeenCalled();
+    expect(h.deleteCloudFleetSandbox).not.toHaveBeenCalled();
+  });
+
+  it('deletes the provisioned sandbox when the harness fails to start', async () => {
+    const h = harness({
+      spawn: async () => {
+        throw new Error('spawn failed on node');
+      },
+    });
+    await expect(spawnFleetSandbox(base, h.deps)).rejects.toThrow('spawn failed on node');
+    expect(h.deleteCloudFleetSandbox).toHaveBeenCalledTimes(1);
+  });
+
+  it('deletes a timed-out sandbox and reports the timeout', async () => {
+    const h = harness({
+      ensure: async () => ({
+        outcome: 'provisioning_timeout',
+        cloudWorkspaceId: 'cw_1',
+        sandboxId: SANDBOX_ID,
+        relayWorkspaceId: 'rw_1',
+        nodeName: 'fleet-sandbox-node',
+        waitedMs: 90_000,
+        providerId: 'e2b',
+      }),
+    });
+    await expect(spawnFleetSandbox(base, h.deps)).rejects.toThrow(/did not become ready within 90000ms/);
+    expect(h.deleteCloudFleetSandbox).toHaveBeenCalledTimes(1);
+    expect(h.spawn).not.toHaveBeenCalled();
+  });
+
+  it('omits an empty readonlyPaths list and rejects env it cannot deliver', async () => {
+    const h = harness();
+    await spawnFleetSandbox({ ...base, readonlyPaths: [], env: {} }, h.deps);
+    expect(h.ensureCloudFleetSandbox.mock.calls[0][0]).not.toHaveProperty('readonlyPaths');
+
+    const rejected = harness();
+    await expect(spawnFleetSandbox({ ...base, env: { SECRET: 'x' } }, rejected.deps)).rejects.toBeInstanceOf(
+      FleetSandboxSpawnError
+    );
+    expect(rejected.ensureCloudFleetSandbox).not.toHaveBeenCalled();
+  });
+});
