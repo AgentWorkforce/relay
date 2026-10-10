@@ -17,8 +17,8 @@ use crate::{
 pub(crate) const ACTIVITY_WINDOW: Duration = Duration::from_secs(5);
 pub(crate) const ACTIVITY_BUFFER_MAX_BYTES: usize = 16_000;
 pub(crate) const ACTIVITY_BUFFER_KEEP_BYTES: usize = 12_000;
-const VERIFICATION_OUTPUT_MAX_BYTES: usize = 16_000;
-const VERIFICATION_OUTPUT_KEEP_BYTES: usize = 12_000;
+const VERIFICATION_OUTPUT_MAX_BYTES: usize = 64 * 1024;
+const VERIFICATION_OUTPUT_KEEP_BYTES: usize = 48 * 1024;
 
 #[derive(Debug, Clone, Copy)]
 pub(crate) enum DeliveryOutcome {
@@ -707,6 +707,28 @@ pub(crate) fn queue_or_take_detected_activity(
         pending_activities.push_back(activity);
         None
     }
+}
+
+/// The `delivery_verified` label a PTY worker reports once the harness has
+/// accepted the turn (activity, a cleared composer, or a raw process echo).
+pub(crate) const HARNESS_ACCEPTANCE: &str = "harness_acceptance";
+
+/// The `delivery_failed` reason a PTY worker reports when its acceptance window
+/// closed without evidence either way: the body is no longer visibly parked,
+/// but nothing proved the harness took the turn. Unlike a body still parked
+/// after recovery, this is not evidence that the input was lost.
+pub(crate) const HARNESS_ACCEPTANCE_UNPROVEN: &str = "harness acceptance could not be proven";
+
+/// Whether a `delivery_verified` label proves full receipt.
+///
+/// The broker runtime sees deliveries only as the worker's wire label, so this
+/// is the one place that decides which labels a caller — notably the verified
+/// fleet spawn completion in `runtime::worker_events` — may treat as receipt.
+/// Only harness acceptance does. `completed_replay` re-reports an earlier
+/// delivery and legacy labels (`echo`, `timeout_fallback`) come from workers
+/// whose echo matching could not tell a parked draft from a submitted turn.
+pub(crate) fn verification_label_confirms_receipt(label: &str) -> bool {
+    label == HARNESS_ACCEPTANCE
 }
 
 /// Check if the expected echo string appears in PTY output (after stripping ANSI).
@@ -1439,6 +1461,20 @@ mod tests {
         // A truncated echo that stops before the block is not a match.
         let header_only = format!("{}\n", expected.split("\n\nAttachments:").next().unwrap());
         assert!(!check_echo_in_output(&header_only, &expected));
+    }
+
+    #[test]
+    fn only_harness_acceptance_confirms_receipt() {
+        assert!(verification_label_confirms_receipt(HARNESS_ACCEPTANCE));
+        for label in [
+            "",
+            "completed_replay",
+            "worker_confirmation",
+            "echo",
+            "timeout_fallback",
+        ] {
+            assert!(!verification_label_confirms_receipt(label), "{label}");
+        }
     }
 
     #[test]

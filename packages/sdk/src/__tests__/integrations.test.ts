@@ -54,6 +54,28 @@ describe('SDK integrations / capabilities / workspace passthrough', () => {
     expect(subs).toHaveLength(1);
   });
 
+  it('normalizes subscription event coverage without losing engine configuration', async () => {
+    const relaycast = createRelaycastMock();
+    relaycast.subscriptions.get.mockResolvedValue({
+      id: 'sub1',
+      event_types: ['thread.reply'],
+      is_active: false,
+    } as never);
+    const client = new RelaycastMessagingClient({ relaycast: relaycast as never });
+    expect(await client.integrations.subscriptions.get('sub1')).toMatchObject({
+      id: 'sub1',
+      events: ['thread.reply'],
+      is_active: false,
+    });
+    expect(await client.integrations.subscriptions.create({ event: 'thread.reply' })).toMatchObject({
+      id: 'sub1',
+      events: ['thread.reply'],
+    });
+    expect(await client.integrations.subscriptions.list()).toEqual([
+      { id: 'sub1', event: 'message.created', events: ['message.created'] },
+    ]);
+  });
+
   it('delegates capability (command) operations to relaycast', async () => {
     const relaycast = createRelaycastMock();
     const client = new RelaycastMessagingClient({ relaycast: relaycast as never });

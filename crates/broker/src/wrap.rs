@@ -108,7 +108,20 @@ pub(crate) fn submit_injection_body(
     bytes: Vec<u8>,
     pace: Duration,
 ) -> anyhow::Result<(tokio::sync::oneshot::Receiver<std::io::Result<()>>, u64)> {
-    if let Some(delay) = injection_submit_followup_delay(resolved_cli) {
+    // Follow the already-selected wire. Capability can latch between body
+    // construction and queue admission; re-probing here could bulk-type raw bytes.
+    let wire = if bytes.starts_with(b"\x1b[200~") && bytes.ends_with(b"\x1b[201~") {
+        crate::injection_wire::InjectionWire::Paste
+    } else {
+        crate::injection_wire::InjectionWire::Typed
+    };
+    let limit = crate::injection_wire::effective_limit(wire, pace);
+    anyhow::ensure!(bytes.len().saturating_sub(if wire == crate::injection_wire::InjectionWire::Paste { 12 } else { 0 }) <= limit, "injection_too_large: {resolved_cli} effective limit is {limit} bytes; use a brief file pointer");
+    let paste = wire == crate::injection_wire::InjectionWire::Paste;
+    let pace = if paste { Duration::ZERO } else { pace };
+    if let Some(delay) = injection_submit_followup_delay(resolved_cli)
+        .or_else(|| paste.then_some(PASTE_INJECTION_SUBMIT_DELAY))
+    {
         pty.submit_write_paced_with_followup_and_output_boundary(bytes, pace, delay, b"\r".to_vec())
     } else {
         let mut burst = bytes;
@@ -320,6 +333,78 @@ fn prepare_wrap_retry(
     }
     verification.attempts += 1;
     true
+}
+
+/// Format a wrap injection, replacing a body whose envelope would exceed the
+/// PTY injection limit with a bounded pointer to the message.
+///
+/// The entry has already left `pending_wrap_injections`, and wrap has no
+/// channel back to the sender, so skipping the write would make the message
+/// vanish silently. The notice tells the agent the message exists and where to
+/// read it; the full text stays in Relay (relay#1893 review).
+#[allow(clippy::too_many_arguments)]
+fn format_wrap_injection(
+    from: &str,
+    event_id: &str,
+    body: &str,
+    target: &str,
+    include_reminder: bool,
+    workspace_id: Option<&str>,
+    workspace_alias: Option<&str>,
+) -> String {
+    let format = |body: &str| {
+        format_injection_for_worker_with_workspace(
+            from,
+            event_id,
+            body,
+            target,
+            include_reminder,
+            true, // pre_registered
+            None, // assigned_name
+            workspace_id,
+            workspace_alias,
+        )
+    };
+    let injection = format(body);
+    if injection.len() <= crate::injection_wire::MAX_INJECTION_BODY_BYTES {
+        return injection;
+    }
+    tracing::warn!(
+        event_id,
+        bytes = injection.len(),
+        limit = crate::injection_wire::MAX_INJECTION_BODY_BYTES,
+        "wrap: injection_too_large; delivering a pointer instead of the body"
+    );
+    let pointer = |event_id: &str| {
+        format!(
+            "[Message body not shown: {} bytes exceeds the {}-byte terminal delivery limit. \
+             The full message is stored in Relay as message {event_id}; read it with your Relay \
+             message tools before replying.]",
+            body.len(),
+            crate::injection_wire::MAX_INJECTION_BODY_BYTES
+        )
+    };
+    let injection = format(&pointer(event_id));
+    if injection.len() <= crate::injection_wire::MAX_INJECTION_BODY_BYTES {
+        return injection;
+    }
+    // Oversized sender, target or workspace metadata. A write that cannot fit
+    // is re-queued at the head of the queue, so the last resort must always
+    // fit: clip every field and drop the optional reminder and workspace label.
+    fn clip(value: &str) -> &str {
+        &value[..crate::util::ansi::floor_char_boundary(value, 256)]
+    }
+    format_injection_for_worker_with_workspace(
+        clip(from),
+        clip(event_id),
+        &pointer(clip(event_id)),
+        clip(target),
+        false,
+        true,
+        None,
+        None,
+        None,
+    )
 }
 
 /// Start echo verification after a PTY write ack without missing output that
@@ -2224,18 +2309,16 @@ pub(crate) async fn run_wrap(
                     tracing::debug!("relay from {} → {}", pending.from, pending.target);
                     let include_reminder = !skip_prompt
                         && mcp_reminder_throttle.should_include(Instant::now());
-                    let injection = format_injection_for_worker_with_workspace(
+                    let injection = format_wrap_injection(
                         &pending.from,
                         &pending.event_id,
                         &pending.body,
                         &pending.target,
                         include_reminder,
-                        true, // pre_registered
-                        None, // assigned_name
                         pending.workspace_id.as_deref(),
                         pending.workspace_alias.as_deref(),
                     );
-                    let bytes = crate::devin::injection_bytes(&resolved_cli, &injection);
+                    let bytes = crate::injection_wire::injection_bytes(crate::injection_wire::injection_wire(&resolved_cli, &pty), &injection);
                     let write = submit_injection_body(&pty, &resolved_cli, bytes, Duration::ZERO);
                     match write {
                         Ok((ack_rx, output_boundary)) => {
@@ -2901,6 +2984,57 @@ sys.stdout.flush()"#;
             Instant::now()
         ));
         assert_eq!(verification.attempts, 2);
+    }
+
+    #[test]
+    fn oversized_wrap_messages_are_delivered_as_a_bounded_pointer() {
+        let limit = crate::injection_wire::MAX_INJECTION_BODY_BYTES;
+        let normal =
+            super::format_wrap_injection("alice", "evt_ok", "hello", "bob", true, None, None);
+        assert!(normal.contains("Relay message from alice [evt_ok]: hello"));
+        // A body that fits on its own but whose reminder and attribution push
+        // the envelope past the limit (the reviewer's 16,000-byte DM), and one
+        // far over it.
+        for len in [limit - 384, limit * 2] {
+            let body = format!("UNIQUE-BODY-MARKER{}", "x".repeat(len));
+            let injection =
+                super::format_wrap_injection("alice", "evt_big", &body, "bob", true, None, None);
+            assert!(injection.len() <= limit, "{len}: {} bytes", injection.len());
+            assert!(
+                !injection.contains("UNIQUE-BODY-MARKER"),
+                "{len}: body leaked"
+            );
+            assert!(
+                injection.contains("Relay message from alice [evt_big]"),
+                "{injection}"
+            );
+            assert!(injection.contains("message evt_big"), "{injection}");
+            assert!(
+                injection.contains(&format!("{} bytes exceeds", body.len())),
+                "{injection}"
+            );
+        }
+    }
+
+    /// relay#1930 review (cubic): the pointer replaces only the body, so
+    /// oversized sender, target or workspace metadata kept the envelope over
+    /// the limit, failing submit and re-queuing the delivery at the head of
+    /// the queue forever. The final fallback must always fit.
+    #[test]
+    fn oversized_wrap_metadata_still_yields_a_bounded_pointer() {
+        let limit = crate::injection_wire::MAX_INJECTION_BODY_BYTES;
+        let huge = "é".repeat(limit);
+        let injection = super::format_wrap_injection(
+            &huge,
+            "evt_meta",
+            &"x".repeat(limit),
+            &huge,
+            true,
+            Some(&huge),
+            Some(&huge),
+        );
+        assert!(injection.len() <= limit, "{} bytes", injection.len());
+        assert!(injection.contains("message evt_meta"), "{injection}");
     }
 
     #[test]
