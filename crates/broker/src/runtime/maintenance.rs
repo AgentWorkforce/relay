@@ -19,6 +19,13 @@ impl BrokerRuntime {
         }
         self.maintain_tasks().await;
         self.reconcile_identity_cleanups().await;
+        // The awaited maintenance handoffs above give workers time to enqueue
+        // delivery confirmations. Apply those confirmations before taking the
+        // retry-deadline snapshot so an accepted delivery cannot be retried or
+        // dead-lettered merely because its event was already queued.
+        while let Ok(worker_event) = self.worker_event_rx.try_recv() {
+            self.handle_worker_event(worker_event).await;
+        }
         let paths = &self.paths;
         let state = &mut self.state;
         let sdk_out_tx = &self.sdk_out_tx;

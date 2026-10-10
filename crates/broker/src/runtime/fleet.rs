@@ -942,11 +942,15 @@ impl BrokerRuntime {
     /// Frames are neither observed by the book nor acknowledged while held:
     /// a broker that exits mid-download leaves them for Relaycast to replay.
     async fn stage_fleet_deliver(&mut self, deliver: Deliver) {
-        // Already-acked replays need only repeat the cumulative ACK. Sending
-        // them through attachment staging downloads the same bytes again and
-        // can unnecessarily block later frames for this agent.
-        if deliver.seq > 0
-            && deliver.seq <= self.fleet_delivery_book.acked_up_to_seq(&deliver.agent_id)
+        // Already-acked replays need only repeat the cumulative ACK, and a
+        // terminally failed replay must remain fenced without another body
+        // download. Sending either through attachment staging can redownload
+        // the same bytes and unnecessarily block later frames for this agent.
+        if self
+            .terminal_failed_deliveries
+            .contains(deliver.delivery_id.as_str())
+            || (deliver.seq > 0
+                && deliver.seq <= self.fleet_delivery_book.acked_up_to_seq(&deliver.agent_id))
         {
             self.handle_fleet_deliver(deliver, None).await;
             return;

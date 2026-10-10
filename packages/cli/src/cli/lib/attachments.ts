@@ -1,4 +1,5 @@
-import { lstat, mkdir, readFile, realpath, stat, writeFile } from 'node:fs/promises';
+import { constants } from 'node:fs';
+import { lstat, mkdir, open, readFile, realpath, stat, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 
 /** Largest file sent or saved as a message attachment; recipients' injectors use the same cap. */
@@ -128,6 +129,52 @@ async function ensurePlainDefaultDirectory(fileId: string): Promise<{ path: stri
   return { path: currentPath, real: currentReal };
 }
 
+async function writePinnedDefaultFile(
+  directory: string,
+  expectedDirectoryReal: string,
+  target: string,
+  data: Uint8Array
+): Promise<void> {
+  // Create the final file before validating the path again, then write only
+  // through that open descriptor. A directory or file substitution between
+  // validation and byte transfer can no longer redirect the write.
+  const noFollow = process.platform === 'win32' ? 0 : constants.O_NOFOLLOW;
+  const file = await open(
+    target,
+    constants.O_WRONLY | constants.O_CREAT | constants.O_EXCL | noFollow,
+    0o600
+  );
+  try {
+    const [directoryReal, visible, opened] = await Promise.all([
+      realpath(directory),
+      lstat(target),
+      file.stat(),
+    ]);
+    if (
+      directoryReal !== expectedDirectoryReal ||
+      !visible.isFile() ||
+      visible.isSymbolicLink() ||
+      visible.dev !== opened.dev ||
+      visible.ino !== opened.ino
+    ) {
+      throw new Error('default destination changed while opening the attachment file');
+    }
+    await file.writeFile(data);
+    const [directoryRealAfter, visibleAfter] = await Promise.all([realpath(directory), lstat(target)]);
+    if (
+      directoryRealAfter !== expectedDirectoryReal ||
+      !visibleAfter.isFile() ||
+      visibleAfter.isSymbolicLink() ||
+      visibleAfter.dev !== opened.dev ||
+      visibleAfter.ino !== opened.ino
+    ) {
+      throw new Error('default destination changed while saving the attachment file');
+    }
+  } finally {
+    await file.close();
+  }
+}
+
 /**
  * Write a downloaded attachment and return its absolute path. `out` may be a
  * file or an existing directory; by default the file lands in
@@ -163,12 +210,13 @@ export async function saveAttachment(
   // (or follow a link); pick the first free `name (n).ext` instead.
   const { name: stem, ext } = path.parse(name);
   for (let n = 0; n < 1000; n += 1) {
-    if (defaultDirectoryReal && (await realpath(out)) !== defaultDirectoryReal) {
-      throw new Error(`Cannot save attachment ${fileId}: default destination changed while saving.`);
-    }
     const target = path.resolve(out, n === 0 ? name : `${stem} (${n})${ext}`);
     try {
-      await writeFile(target, data, { flag: 'wx' });
+      if (defaultDirectoryReal) {
+        await writePinnedDefaultFile(out, defaultDirectoryReal, target, data);
+      } else {
+        await writeFile(target, data, { flag: 'wx' });
+      }
       return target;
     } catch (err) {
       if ((err as NodeJS.ErrnoException).code !== 'EEXIST') throw err;

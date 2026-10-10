@@ -204,6 +204,7 @@ async fn cleanup_worker_registry(mut registry: WorkerRegistry) {
 struct WorkerEventRuntimeFixture {
     runtime: BrokerRuntime,
     api_tx: mpsc::Sender<ListenApiRequest>,
+    worker_event_tx: mpsc::Sender<WorkerEvent>,
     fleet_control_rx: mpsc::Receiver<FleetControlCommand>,
     fleet_completion_rx: mpsc::UnboundedReceiver<crate::node_control::RetainedFleetCompletion>,
     _sdk_out_rx: mpsc::Receiver<ProtocolEnvelope<Value>>,
@@ -630,7 +631,7 @@ fn worker_event_runtime_fixture_with_relay(
     let (terminal_reconnect_tx, _terminal_reconnect_rx) = tokio::sync::watch::channel(None);
     let (_terminal_event_tx, terminal_event_rx) = mpsc::channel(4);
     let (sdk_out_tx, sdk_out_rx) = mpsc::channel(64);
-    let (_worker_event_tx, worker_event_rx) = mpsc::channel(4);
+    let (worker_event_tx, worker_event_rx) = mpsc::channel(4);
     let (hosted_agent_event_tx, _hosted_agent_event_rx) = mpsc::channel(4);
     let mut reap_tick = tokio::time::interval(Duration::from_secs(60));
     reap_tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
@@ -721,6 +722,7 @@ fn worker_event_runtime_fixture_with_relay(
     WorkerEventRuntimeFixture {
         runtime,
         api_tx,
+        worker_event_tx,
         fleet_control_rx,
         fleet_completion_rx,
         _sdk_out_rx: sdk_out_rx,
@@ -3180,19 +3182,70 @@ async fn every_terminal_disposition_drops_its_withheld_fleet_ack() {
 
 #[tokio::test]
 async fn terminally_failed_fleet_replay_is_not_surfaced_again() {
-    let deliver = fleet_deliver(1);
-    let mut fixture = worker_event_runtime_fixture(empty_worker_registry(), HashMap::new());
+    let worker_name = "worker-a";
+    let registry = make_worker_registry_with_worker(worker_name).await;
+    let deliver = attachment_deliver_to(
+        worker_name,
+        "terminal-replay",
+        1,
+        shot_dm_payload("must not be pasted twice"),
+    );
+    let mut fixture = worker_event_runtime_fixture(registry, HashMap::new());
     fixture
         .runtime
         .terminal_failed_deliveries
         .insert(DeliveryId::from(&deliver.delivery_id));
 
-    fixture.runtime.handle_fleet_deliver(deliver, None).await;
+    fixture
+        .runtime
+        .handle_fleet_control_event(crate::node_control::FleetControlEvent::Message(
+            crate::fleet_wire::RelaycastToBroker::Deliver(deliver),
+        ))
+        .await;
 
     assert!(fixture.runtime.pending_deliveries.is_empty());
     assert!(fixture.runtime.delivery_states.is_empty());
+    assert!(!fixture.runtime.attachment_staging.is_busy(worker_name));
     assert!(fixture.fleet_control_rx.try_recv().is_err());
     assert!(fixture._sdk_out_rx.try_recv().is_err());
+    cleanup_worker_registry(fixture.runtime.workers).await;
+}
+
+#[tokio::test]
+async fn maintenance_drains_queued_confirmation_before_retry_sweep() {
+    let worker_name = "worker-a";
+    let registry = make_worker_registry_with_worker(worker_name).await;
+    let generation = registry.workers[worker_name].generation;
+    let delivery_id = DeliveryId::new("del_queued_confirmation");
+    let pending = make_pending_delivery(delivery_id.as_str(), worker_name);
+    let event_id = pending.delivery.event_id.clone();
+    let mut fixture =
+        worker_event_runtime_fixture(registry, HashMap::from([(delivery_id.clone(), pending)]));
+    fixture
+        .worker_event_tx
+        .send(WorkerEvent::Message {
+            name: WorkerName::from(worker_name),
+            generation,
+            value: json!({
+                "type": "delivery_verified",
+                "payload": {
+                    "delivery_id": delivery_id,
+                    "event_id": event_id,
+                    "verification": "harness_acceptance",
+                },
+            }),
+        })
+        .await
+        .unwrap();
+
+    fixture.runtime.handle_maintenance_tick().await;
+
+    assert!(!fixture
+        .runtime
+        .pending_deliveries
+        .contains_key(&delivery_id));
+    assert!(fixture.runtime.dead_letters.is_empty());
+    cleanup_worker_registry(fixture.runtime.workers).await;
 }
 
 // relay#1310 MUST-NOT-FIRE: once the worker confirms harness acceptance, the
