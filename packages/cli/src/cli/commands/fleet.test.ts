@@ -5535,7 +5535,10 @@ describe('fleet spawn-status', () => {
     );
     // The minted token reads alone, from the gateway that minted it: passing
     // the workspace key too is rejected by createAgentRelay.
-    expect(createAgentRelay).toHaveBeenCalledWith({ token: 'at_reader', baseUrl: 'https://relay.isolated.test' });
+    expect(createAgentRelay).toHaveBeenCalledWith({
+      token: 'at_reader',
+      baseUrl: 'https://relay.isolated.test',
+    });
     expect(release).toHaveBeenCalledWith(
       expect.objectContaining({ name: register.mock.calls[0]![0].name, deleteAgent: true })
     );
