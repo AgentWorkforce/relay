@@ -14,6 +14,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - The `agent-relay mcp` server adds `upload_file` (local path or base64) and `download_file`, and `send_group_dm` accepts `attachments`.
 - Agents spawned by the broker receive message attachments (up to 25 MiB each) as local files: the injected message ends with an `Attachments:` list giving each file's path under `.agent-relay/attachments/` in the agent's working directory, or an `agent-relay message file download <file_id>` command when a file could not be fetched. Messages that carry only attachments are now delivered too.
 - `@agent-relay/sdk` adds `files.upload` / `files.get` / `files.download` on `AgentRelay` and `RelaycastMessagingClient`, plus `uploadRelayFile` / `downloadRelayFile` helpers.
+- Broker events report PTY submit recovery: `delivery_unconfirmed` (the harness has not accepted a write yet, with `attempts` / `max_attempts`) and `delivery_resubmitted` (a submit-only retry, with `attempt` and `strategy`); `delivery_verified` adds `evidence` and `attempts`. `@agent-relay/harness-driver` and the Python and Swift SDK protocol types include both new events.
 
 ### Fixed
 
