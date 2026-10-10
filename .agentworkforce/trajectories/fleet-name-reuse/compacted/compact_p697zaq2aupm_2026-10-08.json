@@ -1,0 +1,66 @@
+{
+  "id": "compact_p697zaq2aupm",
+  "version": 1,
+  "type": "compacted",
+  "compactedAt": "2026-10-08T23:53:12.788Z",
+  "sourceTrajectories": [
+    "traj_1kbrcmfcomhb"
+  ],
+  "dateRange": {
+    "start": "2026-10-08T23:52:49.311Z",
+    "end": "2026-10-08T23:53:12.377Z"
+  },
+  "summary": {
+    "totalDecisions": 1,
+    "totalEvents": 1,
+    "uniqueAgents": [
+      "default"
+    ]
+  },
+  "decisionGroups": [
+    {
+      "category": "naming",
+      "decisions": [
+        {
+          "question": "Preserve release identity retention and add actionable name-collision guidance",
+          "chosen": "Preserve release identity retention and add actionable name-collision guidance",
+          "reasoning": "The ticket accepts --delete-agent guidance; automatic deletion would discard retained identity and provider bindings.",
+          "fromTrajectory": "traj_1kbrcmfcomhb"
+        }
+      ]
+    }
+  ],
+  "keyLearnings": [],
+  "keyFindings": [],
+  "filesAffected": [
+    "packages/cli/src/cli/commands/fleet.ts",
+    "packages/cli/src/cli/commands/fleet.test.ts",
+    "CHANGELOG.md",
+    "summary.md"
+  ],
+  "commits": [],
+  "narrative": "Fleet release intentionally retains the Relaycast identity by default. Implemented the ticket\u2019s accepted error-guidance option: fleet spawn agent_already_exists errors explain release <name> --delete-agent in the same workspace, including permanent deletion and provider binding retirement. Preserved structured placement evidence and existing cleanup. Added targeted and automatic regression cases plus an unrelated-error assertion. Validation completed successfully: fleet.test.ts (89 tests), npm run typecheck, CLI lint (0 errors, 109 warnings), and git diff --check. The task used a separate trajectory directory because an unrelated active trajectory already existed.",
+  "decisions": [
+    {
+      "question": "Should fleet agent spawn auto-delete a previously released identity when a name collision is detected, or preserve it?",
+      "chosen": "Preserve the retained identity and provider bindings; surface a structured error directing the operator to use --delete-agent explicitly.",
+      "reasoning": "Automatic deletion on collision would silently discard retained identity and provider bindings without operator consent, which is a destructive, hard-to-reverse action.",
+      "impact": "Fleet spawn now treats name collisions with released identities as a guided error path rather than silent overwrite, affecting packages/cli/src/cli/commands/fleet.ts and its test coverage in fleet.test.ts."
+    }
+  ],
+  "conventions": [
+    {
+      "pattern": "Destructive identity/provider-binding cleanup requires explicit operator action (e.g., --delete-agent flag) rather than implicit automatic deletion on name collision.",
+      "rationale": "Prevents silent loss of retained release identity and provider bindings that may be needed later.",
+      "scope": "Fleet CLI commands (packages/cli/src/cli/commands/fleet.ts) handling agent name collisions after release."
+    }
+  ],
+  "lessons": [
+    {
+      "lesson": "When a ticket's acceptance criteria already names a specific flag (--delete-agent) as the resolution path, prefer wiring guidance toward that flag over introducing new automatic behavior.",
+      "context": "The decision explicitly notes 'the ticket accepts --delete-agent guidance,' indicating the fix should align with pre-specified acceptance criteria rather than inventing a new mechanism.",
+      "recommendation": "Check ticket/issue acceptance criteria for a named flag or mechanism before deciding between automatic vs. guided remediation for destructive operations."
+    }
+  ],
+  "openQuestions": []
+}
