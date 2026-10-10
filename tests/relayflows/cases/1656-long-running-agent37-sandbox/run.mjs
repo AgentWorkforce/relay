@@ -270,6 +270,9 @@ test('fleet spawn --sandbox replays and retains an exact provider-attributed ide
             spawn: vi.fn(async () => ({
               invocationId: 'inv_relayflow',
               node: { name: REPLAY_SANDBOX_NAME },
+              // The engine's dispatch receipt: sandbox spawns fail closed
+              // (placement_mismatch) unless it names the ensured sandbox node.
+              dispatchedNodeId: 'node-relayflow',
             })),
           },
         },
