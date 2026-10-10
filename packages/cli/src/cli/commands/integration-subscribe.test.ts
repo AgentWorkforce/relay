@@ -176,6 +176,7 @@ function harness(
     relayfile?: ReturnType<typeof createRelayfileMock>;
     journal?: ReturnType<typeof memoryJournal>;
     resolveLocalRelayOptions?: IntegrationCommandDependencies['resolveLocalRelayOptions'];
+    prompt?: IntegrationCommandDependencies['prompt'];
   } = {}
 ) {
   const relay = opts.relay ?? createRelayMock();
@@ -215,7 +216,8 @@ function harness(
     cleanupJournal: journal,
     resolveLocalRelayOptions:
       opts.resolveLocalRelayOptions ?? (async () => ({ workspaceKey: 'rk_live_test' })),
-    isInteractive: () => false,
+    isInteractive: () => opts.prompt !== undefined,
+    ...(opts.prompt ? { prompt: opts.prompt } : {}),
     log,
     error,
     exit: exit as never,
@@ -2025,6 +2027,44 @@ describe('confirmed agent subscription setup', () => {
     );
     expect(relay.integrations.subscriptions.create).toHaveBeenCalledWith(
       expect.objectContaining({ filter: { channel: 'agent-events-a1' } })
+    );
+  });
+
+  it.each([
+    ['a padded flag', ['--to', ' self '], undefined],
+    ['the recipient prompt', [], ' self '],
+  ])('routes self given through %s to the worker identity', async (_label, toArgs, prompted) => {
+    vi.stubEnv('RELAY_AGENT_NAME', 'dots-A');
+    vi.stubEnv('RELAY_AGENT_TOKEN', 'at_worker_token');
+    vi.stubEnv('RELAY_WORKSPACE_KEY', 'rk_live_worker_workspace');
+    const relay = createRelayMock();
+    relay.agents.list.mockResolvedValue([{ id: 'a1', name: 'dots-A' }]);
+    const resolveAgentChannel = vi.fn(async () => 'agent-events-a1');
+    const prompt = prompted === undefined ? undefined : vi.fn(async () => prompted);
+    const h = harness({
+      relay,
+      recipientDeps: { resolveAgentChannel },
+      resolveLocalRelayOptions: async () => undefined,
+      prompt,
+    });
+    const resource = '/github/repos/AgentWorkforce/relay/pulls/123/**';
+    await h.program.parseAsync(
+      [
+        'integration',
+        'subscribe',
+        'github',
+        '--resource',
+        resource,
+        ...toArgs,
+        ...(prompt ? [] : ['--no-input']),
+      ],
+      { from: 'user' }
+    );
+    expect(h.error).not.toHaveBeenCalled();
+    if (prompt) expect(prompt).toHaveBeenCalledWith('Relay recipient: ');
+    expect(resolveAgentChannel).toHaveBeenCalledWith('dots-A', expect.any(Object));
+    expect(h.relayfile.bind).toHaveBeenCalledWith(
+      expect.objectContaining({ provider: 'github', resource, channel: 'agent-events-a1' })
     );
   });
 

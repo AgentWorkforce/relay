@@ -782,19 +782,8 @@ async function promptSubscribeOptions(
   provider: string | undefined,
   opts: Record<string, unknown>
 ): Promise<{ provider: string; resource: string; to: string }> {
-  // Fleet PTYs have a broker-assigned identity but need not be discoverable
-  // through the desktop session socket. Use the existing owner-authorized
-  // agent subscription route, which verifies the identity in this workspace.
-  if (opts.to === 'self') {
-    if (opts.spawn) throw new Error('--to self cannot be combined with --spawn.');
-    const name = process.env.RELAY_AGENT_NAME?.trim();
-    if (!name) {
-      throw new Error('--to self requires RELAY_AGENT_NAME from a relay worker; otherwise use --to @agent.');
-    }
-    opts = { ...opts, to: `@${name}` };
-  }
   if (provider && typeof opts.resource === 'string' && typeof opts.to === 'string') {
-    return { provider, resource: opts.resource, to: opts.to };
+    return { provider, resource: opts.resource, to: resolveSelfRecipient(opts.to, opts) };
   }
   if (opts.input === false || !deps.isInteractive()) {
     throw new Error(
@@ -807,7 +796,23 @@ async function promptSubscribeOptions(
       ? opts.resource
       : await deps.prompt('Provider resource: ');
   const to = typeof opts.to === 'string' && opts.to.trim() ? opts.to : await deps.prompt('Relay recipient: ');
-  return { provider: resolvedProvider, resource, to };
+  return { provider: resolvedProvider, resource, to: resolveSelfRecipient(to, opts) };
+}
+
+/**
+ * Fleet PTYs have a broker-assigned identity but need not be discoverable
+ * through the desktop session socket. `self` (from the flag or the prompt,
+ * surrounding whitespace ignored like other recipients) becomes that identity,
+ * which the existing owner-authorized agent subscription route verifies.
+ */
+function resolveSelfRecipient(to: string, opts: Record<string, unknown>): string {
+  if (to.trim() !== 'self') return to;
+  if (opts.spawn) throw new Error('--to self cannot be combined with --spawn.');
+  const name = process.env.RELAY_AGENT_NAME?.trim();
+  if (!name) {
+    throw new Error('--to self requires RELAY_AGENT_NAME from a relay worker; otherwise use --to @agent.');
+  }
+  return `@${name}`;
 }
 
 async function runIntegrationOperation<T>(
