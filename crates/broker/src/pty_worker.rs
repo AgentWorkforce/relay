@@ -110,6 +110,15 @@ struct FailedComposerLatch {
     delivery_id: DeliveryId,
     event_id: EventId,
     expected_echo: String,
+    /// Only a written prefix of `expected_echo` reached the composer (an
+    /// incomplete chunked initial write), so its tail cannot prove the draft
+    /// is gone. Such a latch releases only on an operator `flush_injections`.
+    operator_release_only: bool,
+}
+
+/// Whether observing the composer may release this latch automatically.
+fn failed_latch_auto_releasable(latch: &FailedComposerLatch) -> bool {
+    !latch.operator_release_only
 }
 
 /// Record a terminal failure for a delivery whose body may remain in the
@@ -127,6 +136,7 @@ fn latch_failed_written_delivery(
         delivery_id: delivery_id.clone(),
         event_id: event_id.clone(),
         expected_echo: expected_echo.to_string(),
+        operator_release_only: false,
     });
 }
 
@@ -2456,10 +2466,28 @@ pub(crate) async fn run_pty_worker(cmd: PtyCommand) -> Result<()> {
                             &inj.pending.delivery.event_id,
                             inj.injection_text.as_deref().unwrap_or_default(),
                         );
+                        // Bytes were written (an oversize body rejected before
+                        // any write has no injection text): only an unknown
+                        // prefix is in the composer, so only an operator may
+                        // release the latch.
+                        let partial_body_written = inj.injection_text.is_some();
+                        if let Some(latch) = failed_composer_latch.as_mut() {
+                            latch.operator_release_only = partial_body_written;
+                        }
                         let _ = send_frame(&out_tx, "worker_error", inj.pending.request_id, json!({
                             "code": "initial_injection_incomplete", "retryable": false,
                             "message": "Initial task delivery interrupted or timed out; inspect the composer before retrying"
                         })).await;
+                        if partial_body_written {
+                            // Surface the hold: without this the broker shows
+                            // the worker as working while every later delivery
+                            // waits for the operator's flush.
+                            let _ = send_frame(&out_tx, "agent_blocked_on_send", None, json!({
+                                "reason": "failed_draft_requires_flush",
+                                "blocked_secs": 0,
+                                "pending_delivery_count": pending_worker_injections.len(),
+                            })).await;
+                        }
                         continue;
                     }
                     if inj.human_input_generation != human_input_generation {
@@ -2972,7 +3000,8 @@ pub(crate) async fn run_pty_worker(cmd: PtyCommand) -> Result<()> {
                 // holds that body (the harness took it late, or a human
                 // submitted or cleared it). Until then queued deliveries wait.
                 if let Some(latch) = failed_composer_latch.as_ref() {
-                    if pending_verifications.is_empty()
+                    if failed_latch_auto_releasable(latch)
+                        && pending_verifications.is_empty()
                         && pending_recovery_writes.is_empty()
                         && active_injection.is_none()
                         && failed_draft_released(
@@ -4435,6 +4464,28 @@ mod tests {
         assert_eq!(
             next_injection_index(&VecDeque::new(), false, false, false, 0, &targeted),
             None
+        );
+    }
+
+    #[test]
+    fn partially_written_initial_task_latch_waits_for_operator_flush() {
+        let mut failed = HashMap::new();
+        let mut latch = None;
+        latch_failed_written_delivery(
+            &mut failed,
+            &mut latch,
+            &DeliveryId::from("del_partial_initial"),
+            &EventId::from("evt_partial_initial"),
+            "Relay message from Lead [evt]: long initial task",
+        );
+        assert!(
+            failed_latch_auto_releasable(latch.as_ref().unwrap()),
+            "a fully written failed draft may be released by an idle composer"
+        );
+        latch.as_mut().unwrap().operator_release_only = true;
+        assert!(
+            !failed_latch_auto_releasable(latch.as_ref().unwrap()),
+            "a partially written draft's tail proves nothing; only a flush releases it"
         );
     }
 
