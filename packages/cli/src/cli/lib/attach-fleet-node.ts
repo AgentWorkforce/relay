@@ -468,7 +468,11 @@ export async function startFleetNodeAttachProxy(
         ticketResponse = await fetchFn(sessionEndpoint, {
           method: 'POST',
           headers: { Authorization: `Bearer ${workspaceKey}`, 'Content-Type': 'application/json' },
-          body: JSON.stringify({ agent: options.agent, mode: options.mode }),
+          // Fleet spawns can finish on-node just before their Cloud agent row
+          // is visible. This first-party attach request opts into the server's
+          // bounded visibility retry; the API still returns immediate 404s to
+          // callers that do not send this hint.
+          body: JSON.stringify({ agent: options.agent, mode: options.mode, recent_spawn: true }),
           signal: controller.signal,
         });
         const parsedPayload = (await ticketResponse.json()) as unknown;
