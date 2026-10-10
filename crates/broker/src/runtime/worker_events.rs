@@ -1002,9 +1002,14 @@ impl BrokerRuntime {
                         }
                     } else if msg_type == "delivery_active" {
                         if let Some(payload) = value.get("payload") {
+                            let has_pending_delivery = pending_deliveries
+                                .values()
+                                .any(|pending| pending.worker_name == name);
                             if let Some(handle) = workers.workers.get_mut(&name) {
                                 handle.last_activity_at = Instant::now();
-                                if handle.state != AgentWorkState::BlockedOnSend {
+                                if handle.state != AgentWorkState::BlockedOnSend
+                                    || !has_pending_delivery
+                                {
                                     handle.state = AgentWorkState::Working;
                                 }
                             }
@@ -1064,30 +1069,36 @@ impl BrokerRuntime {
                             )
                             .await;
                             if let Some(pending) = pending_for_failure {
-                                if let Some(handle) = workers.workers.get_mut(&name) {
-                                    handle.last_activity_at = Instant::now();
-                                    handle.state = AgentWorkState::BlockedOnSend;
-                                }
                                 let pending_delivery_count = pending_deliveries
                                     .values()
                                     .filter(|candidate| candidate.worker_name == name)
                                     .count();
-                                let _ = send_broker_event(
-                                    sdk_out_tx,
-                                    BrokerEvent::AgentBlockedOnSend {
-                                        name: name.clone(),
-                                        blocked_secs: 0,
-                                        pending_delivery_count,
-                                    },
-                                )
-                                .await;
-                                publish_agent_state_transition(
-                                    ws_control_tx,
-                                    &name,
-                                    "stuck",
-                                    Some("blocked_on_send"),
-                                )
-                                .await;
+                                if let Some(handle) = workers.workers.get_mut(&name) {
+                                    handle.last_activity_at = Instant::now();
+                                    handle.state = if pending_delivery_count > 0 {
+                                        AgentWorkState::BlockedOnSend
+                                    } else {
+                                        AgentWorkState::Working
+                                    };
+                                }
+                                if pending_delivery_count > 0 {
+                                    let _ = send_broker_event(
+                                        sdk_out_tx,
+                                        BrokerEvent::AgentBlockedOnSend {
+                                            name: name.clone(),
+                                            blocked_secs: 0,
+                                            pending_delivery_count,
+                                        },
+                                    )
+                                    .await;
+                                    publish_agent_state_transition(
+                                        ws_control_tx,
+                                        &name,
+                                        "stuck",
+                                        Some("blocked_on_send"),
+                                    )
+                                    .await;
+                                }
                                 let _ = emit_dropped_delivery_failures(
                                     sdk_out_tx,
                                     dead_letters,
@@ -1438,9 +1449,14 @@ impl BrokerRuntime {
                             .workers
                             .get(&name)
                             .is_some_and(|handle| handle.spec.runtime == AgentRuntime::Pty);
+                        let has_pending_delivery = pending_deliveries
+                            .values()
+                            .any(|pending| pending.worker_name == name);
                         if let Some(handle) = workers.workers.get_mut(&name) {
                             handle.last_activity_at = Instant::now();
-                            if handle.state != AgentWorkState::BlockedOnSend {
+                            if handle.state != AgentWorkState::BlockedOnSend
+                                || !has_pending_delivery
+                            {
                                 handle.state = AgentWorkState::Working;
                             }
                         }
@@ -1691,10 +1707,12 @@ impl BrokerRuntime {
                             .unwrap_or(0);
                         let since =
                             chrono::Utc::now() - chrono::Duration::seconds(idle_secs as i64);
-                        let remains_blocked = workers
-                            .workers
-                            .get(&name)
-                            .is_some_and(|handle| handle.state == AgentWorkState::BlockedOnSend);
+                        let remains_blocked =
+                            workers.workers.get(&name).is_some_and(|handle| {
+                                handle.state == AgentWorkState::BlockedOnSend
+                            }) && pending_deliveries
+                                .values()
+                                .any(|pending| pending.worker_name == name);
                         if !remains_blocked {
                             if let Some(handle) = workers.workers.get_mut(&name) {
                                 handle.state = AgentWorkState::Idle;

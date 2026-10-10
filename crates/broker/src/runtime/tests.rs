@@ -4379,6 +4379,76 @@ async fn unconfirmed_pty_delivery_is_visible_as_blocked_on_send() {
 }
 
 #[tokio::test]
+async fn terminal_delivery_failure_unblocks_worker_after_pending_is_removed() {
+    let worker_name = "worker-a";
+    let mut registry = make_worker_registry_with_worker(worker_name).await;
+    registry.workers.get_mut(worker_name).unwrap().state = AgentWorkState::BlockedOnSend;
+    let generation = registry.workers[worker_name].generation;
+    let delivery_id = DeliveryId::new("del_terminal_failure");
+    let pending = make_pending_delivery(delivery_id.as_str(), worker_name);
+    let event_id = pending.delivery.event_id.clone();
+    let mut fixture =
+        worker_event_runtime_fixture(registry, HashMap::from([(delivery_id.clone(), pending)]));
+
+    fixture
+        .runtime
+        .handle_worker_event(delivery_lifecycle_worker_event(
+            worker_name,
+            generation,
+            "delivery_failed",
+            delivery_id.as_str(),
+            event_id.as_str(),
+        ))
+        .await;
+
+    assert!(fixture.runtime.pending_deliveries.is_empty());
+    assert_eq!(
+        fixture.runtime.workers.workers[worker_name].state,
+        AgentWorkState::Working,
+        "a terminal failure with no remaining delivery must release blocked-on-send"
+    );
+    let kinds = std::iter::from_fn(|| fixture._sdk_out_rx.try_recv().ok())
+        .filter_map(|frame| {
+            frame
+                .payload
+                .get("kind")
+                .and_then(Value::as_str)
+                .map(str::to_owned)
+        })
+        .collect::<Vec<_>>();
+    assert!(!kinds.iter().any(|kind| kind == "agent_blocked_on_send"));
+    cleanup_worker_registry(fixture.runtime.workers).await;
+}
+
+#[tokio::test]
+async fn agent_idle_clears_stale_blocked_state_without_pending_delivery() {
+    let worker_name = "worker-a";
+    let mut registry = make_worker_registry_with_worker(worker_name).await;
+    registry.workers.get_mut(worker_name).unwrap().state = AgentWorkState::BlockedOnSend;
+    let generation = registry.workers[worker_name].generation;
+    let mut fixture = worker_event_runtime_fixture(registry, HashMap::new());
+
+    fixture
+        .runtime
+        .handle_worker_event(WorkerEvent::Message {
+            name: WorkerName::from(worker_name),
+            generation,
+            value: json!({
+                "type": "agent_idle",
+                "payload": { "idle_secs": 1 },
+            }),
+        })
+        .await;
+
+    assert_eq!(
+        fixture.runtime.workers.workers[worker_name].state,
+        AgentWorkState::Idle,
+        "blocked-on-send is meaningful only while a delivery remains pending"
+    );
+    cleanup_worker_registry(fixture.runtime.workers).await;
+}
+
+#[tokio::test]
 async fn prior_delivery_activity_does_not_clear_blocked_on_send() {
     let worker_name = "worker-a";
     let registry = make_worker_registry_with_worker(worker_name).await;

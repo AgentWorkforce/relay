@@ -1,4 +1,4 @@
-import { mkdtemp, rm } from 'node:fs/promises';
+import { mkdir, mkdtemp, readFile, rm, symlink, writeFile } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 
@@ -13,13 +13,16 @@ import {
 
 describe('attachment helpers', () => {
   let dir: string;
+  let defaultSaveDir: string;
 
   beforeEach(async () => {
     dir = await mkdtemp(path.join(os.tmpdir(), 'relay-attachments-'));
+    defaultSaveDir = path.resolve('.agent-relay', 'attachments', path.basename(dir));
   });
 
   afterEach(async () => {
     await rm(dir, { recursive: true, force: true });
+    await rm(defaultSaveDir, { recursive: true, force: true });
   });
 
   it('reduces sender file names to one segment that also saves on Windows', () => {
@@ -46,4 +49,32 @@ describe('attachment helpers', () => {
       saveAttachment('file-1', 'big.bin', new Uint8Array(MAX_ATTACHMENT_BYTES + 1), dir)
     ).rejects.toThrow(/exceeds/);
   });
+
+  it('uses a numbered name instead of replacing a default-path download', async () => {
+    const fileId = path.basename(dir);
+    const first = await saveAttachment(fileId, 'report.png', Buffer.from('first'));
+    const second = await saveAttachment(fileId, 'report.png', Buffer.from('second'));
+
+    expect(first).toBe(path.join(defaultSaveDir, 'report.png'));
+    expect(second).toBe(path.join(defaultSaveDir, 'report (1).png'));
+    expect(await readFile(first, 'utf8')).toBe('first');
+    expect(await readFile(second, 'utf8')).toBe('second');
+  });
+
+  it.skipIf(process.platform === 'win32')(
+    'does not follow a planted symlink at the default download path',
+    async () => {
+      const fileId = path.basename(dir);
+      const outside = path.join(dir, 'outside.png');
+      await writeFile(outside, 'outside');
+      await mkdir(defaultSaveDir, { recursive: true });
+      await symlink(outside, path.join(defaultSaveDir, 'shot.png'));
+
+      const saved = await saveAttachment(fileId, 'shot.png', Buffer.from('download'));
+
+      expect(saved).toBe(path.join(defaultSaveDir, 'shot (1).png'));
+      expect(await readFile(outside, 'utf8')).toBe('outside');
+      expect(await readFile(saved, 'utf8')).toBe('download');
+    }
+  );
 });

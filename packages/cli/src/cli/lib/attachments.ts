@@ -121,10 +121,8 @@ export async function saveAttachment(
   }
   const name = safeAttachmentFilename(filename);
   if (!out) {
-    const target = path.resolve('.agent-relay', 'attachments', safeAttachmentFilename(fileId), name);
-    await mkdir(path.dirname(target), { recursive: true });
-    await writeFile(target, data);
-    return target;
+    out = path.resolve('.agent-relay', 'attachments', safeAttachmentFilename(fileId));
+    await mkdir(out, { recursive: true });
   }
   const outInfo = await stat(out).catch(() => undefined);
   if (!outInfo?.isDirectory()) {
