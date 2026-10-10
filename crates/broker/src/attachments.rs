@@ -703,7 +703,7 @@ fn gitignore_open_options(create_new: bool) -> tokio::fs::OpenOptions {
     let mut options = tokio::fs::OpenOptions::new();
     options.read(true).write(true).create_new(create_new);
     #[cfg(unix)]
-    options.custom_flags(libc::O_NOFOLLOW);
+    options.custom_flags(libc::O_NOFOLLOW | libc::O_NONBLOCK);
     #[cfg(windows)]
     {
         // Open a reparse point itself instead of following it. A symlink or
@@ -718,7 +718,7 @@ fn gitignore_read_options() -> tokio::fs::OpenOptions {
     let mut options = tokio::fs::OpenOptions::new();
     options.read(true);
     #[cfg(unix)]
-    options.custom_flags(libc::O_NOFOLLOW);
+    options.custom_flags(libc::O_NOFOLLOW | libc::O_NONBLOCK);
     #[cfg(windows)]
     {
         const FILE_FLAG_OPEN_REPARSE_POINT: u32 = 0x0020_0000;
@@ -728,6 +728,9 @@ fn gitignore_read_options() -> tokio::fs::OpenOptions {
 }
 
 async fn gitignore_has_catch_all(file: &mut tokio::fs::File) -> Result<bool, ()> {
+    if !file.metadata().await.map_err(|_| ())?.is_file() {
+        return Err(());
+    }
     let mut existing = String::new();
     file.read_to_string(&mut existing).await.map_err(|_| ())?;
     Ok(existing.lines().any(|line| line.trim() == "*"))
@@ -771,6 +774,9 @@ async fn ensure_gitignore_catch_all(path: &Path) -> Result<(), ()> {
         }
         Err(_) => return Err(()),
     };
+    if !file.metadata().await.map_err(|_| ())?.is_file() {
+        return Err(());
+    }
     let mut existing = String::new();
     file.read_to_string(&mut existing).await.map_err(|_| ())?;
     if existing.lines().any(|line| line.trim() == "*") {
@@ -1235,6 +1241,26 @@ mod tests {
 
         assert_eq!(prepare_root(&root).await.unwrap(), root);
         assert_eq!(std::fs::read_to_string(gitignore).unwrap(), "*\n");
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn rejects_a_read_only_gitignore_fifo_without_blocking() {
+        use std::os::unix::ffi::OsStrExt;
+
+        let temp = tempfile::tempdir().unwrap();
+        let root = attachments_root(temp.path());
+        std::fs::create_dir_all(&root).unwrap();
+        let gitignore = root.join(".gitignore");
+        let fifo = std::ffi::CString::new(gitignore.as_os_str().as_bytes()).unwrap();
+        assert_eq!(unsafe { libc::mkfifo(fifo.as_ptr(), 0o444) }, 0);
+
+        assert!(
+            tokio::time::timeout(Duration::from_secs(1), prepare_root(&root))
+                .await
+                .expect("FIFO validation must not block")
+                .is_err()
+        );
     }
 
     #[cfg(unix)]
