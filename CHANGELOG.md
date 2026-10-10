@@ -5,7 +5,19 @@ All notable changes to Agent Relay will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased - Minor]
+## [Unreleased - Patch]
+
+### Added
+
+- Broker events report PTY submit recovery: `delivery_unconfirmed` (the harness has not accepted a write yet, with `attempts` / `max_attempts`) and `delivery_resubmitted` (a submit-only retry, with `attempt` and `strategy`); `delivery_verified` adds `evidence` and `attempts`. `@agent-relay/harness-driver` and the Python and Swift SDK protocol types include both new events.
+
+### Fixed
+
+- Broker-managed PTY messages now stay pending until the harness accepts them, instead of being acknowledged while still parked in the composer.
+- A PTY delivery the harness never accepts blocks further sends to that agent and is retried by pressing submit only, never by resending the body, for up to three total attempts before it is reported as failed.
+- Typing into an agent's terminal while a delivery is being retried takes over the terminal and cancels the retries.
+
+## [13.3.0] - 2026-10-10
 
 ### Added
 
@@ -18,7 +30,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - The `agent-relay mcp` server adds `upload_file` (local path or base64) and `download_file`, and `send_group_dm` accepts `attachments`.
 - Agents spawned by the broker receive message attachments (up to 25 MiB each) as local files: the injected message ends with an `Attachments:` list giving each file's path under `.agent-relay/attachments/` in the agent's working directory, or an `agent-relay message file download <file_id>` command when a file could not be fetched. Messages that carry only attachments are now delivered too.
 - `@agent-relay/sdk` adds `files.upload` / `files.get` / `files.download` on `AgentRelay` and `RelaycastMessagingClient`, plus `uploadRelayFile` / `downloadRelayFile` helpers.
-- Broker events report PTY submit recovery: `delivery_unconfirmed` (the harness has not accepted a write yet, with `attempts` / `max_attempts`) and `delivery_resubmitted` (a submit-only retry, with `attempt` and `strategy`); `delivery_verified` adds `evidence` and `attempts`. `@agent-relay/harness-driver` and the Python and Swift SDK protocol types include both new events.
+- `agent-relay fleet spawn-status <invocation-id>` reads a recorded spawn dispatch without spawning again, separating confirmed readiness, a node-reported failure, and an outcome the node has not reported yet.
 
 ### Changed
 
@@ -40,9 +52,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Control characters other than newline and tab (for example `Ctrl-C`) are removed from tasks and messages typed into an agent's terminal, so they can no longer interrupt or edit the agent's input line.
 - A confirmed `fleet spawn --task` (the default) succeeds only once the agent's harness has visibly accepted the task (activity or a cleared composer, not merely the task echoed into the composer). If the task cannot be delivered, the worker is released and the spawn fails with `spawn_task_failed`. If delivery cannot be confirmed, the spawn fails with `spawn_task_unconfirmed`, names the agent that is still running, and says not to retry. With `--no-confirm` the spawn reports as soon as the node accepts it, without waiting for the task to arrive.
 - `agent-relay message file upload` now uploads and attaches the file; it always failed with "Invalid attachments: file ids must exist in workspace and be complete".
-- Broker-managed PTY messages now stay pending until the harness accepts them, instead of being acknowledged while still parked in the composer.
-- A PTY delivery the harness never accepts blocks further sends to that agent and is retried by pressing submit only, never by resending the body, for up to three total attempts before it is reported as failed.
-- Typing into an agent's terminal while a delivery is being retried takes over the terminal and cancels the retries.
+- Broker-managed messages retry failed delivery up to three times, and later sends wait until delivery succeeds.
+- `fleet spawn` (and SDK placement confirmation) now waits six minutes for launch confirmation instead of two, so agents that register minutes after dispatch are confirmed rather than reported as unconfirmed; the timeout error names the `fleet spawn-status` poll for its invocation id instead of suggesting a redispatch.
 
 ## [13.2.0] - 2026-10-08
 

@@ -130,7 +130,7 @@ export { RelayPlacementError } from './relaycast-placement.js';
 export type { RelaySpawnDispatchState, RelaySpawnPlacementState } from './relaycast-placement.js';
 export type { RelaycastMessagingOptions } from './relaycast-client.js';
 
-const DEFAULT_CONFIRM_TIMEOUT_MS = 120_000;
+const DEFAULT_CONFIRM_TIMEOUT_MS = 360_000;
 const DEFAULT_CONFIRM_POLL_MS = 500;
 /** `setTimeout` clamps anything larger, firing immediately instead of waiting. */
 const MAX_CONFIRM_TIMEOUT_MS = 2_147_483_647;
@@ -1114,7 +1114,7 @@ export class RelaycastMessagingClient implements RelayMessagingClient {
           `node '${context.node}' accepted ${actionName} (invocation ${invocationId}) but never reported a result within ${budgetMs}ms. ` +
             `The node advertised capacity and acknowledged the dispatch; nothing confirmed that it launched. ` +
             `The invocation may still be running, so do not retry blindly. ` +
-            `Check that node's broker version, or re-run without confirmation to accept an unconfirmed dispatch.` +
+            `Poll this dispatch with agent-relay fleet spawn-status ${invocationId}; an unknown outcome is not proof that no process started.` +
             (lastReadError ? ` Last read error: ${lastReadError}` : ''),
           {
             ...errorContext,
