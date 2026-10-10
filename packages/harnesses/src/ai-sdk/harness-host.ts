@@ -66,7 +66,14 @@ export interface HarnessHostOptions {
 
 export interface HarnessHostTool {
   spec: HarnessV1ToolSpec;
-  execute(input: unknown, options: { abortSignal?: AbortSignal }): Promise<unknown> | unknown;
+  /**
+   * `toolCallId` is the model's ID for this invocation. A replay of one call
+   * carries the same ID; independent calls never share one.
+   */
+  execute(
+    input: unknown,
+    options: { abortSignal?: AbortSignal; toolCallId?: string }
+  ): Promise<unknown> | unknown;
 }
 
 export interface HarnessTurnHandle {
@@ -348,7 +355,10 @@ export class HarnessHost {
     const tool = this.#tools.get(call.toolName);
     if (!tool) return;
     try {
-      const output = await tool.execute(parseToolInput(call.input), { abortSignal });
+      const output = await tool.execute(parseToolInput(call.input), {
+        abortSignal,
+        toolCallId: call.toolCallId,
+      });
       const control = await controlReady;
       await control.submitToolResult({ toolCallId: call.toolCallId, output });
     } catch (error) {

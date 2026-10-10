@@ -830,6 +830,7 @@ pub(crate) async fn run_init(cmd: InitCommand, telemetry: TelemetryClient) -> Re
         terminal_snapshot_requests: HashMap::new(),
         terminal_input_requests: HashMap::new(),
         fleet_delivery_book: FleetDeliveryBook::default(),
+        attachment_staging: crate::attachments::AttachmentStaging::new(dirs::home_dir()),
         // Seed the live capacity with the configured max so heartbeats/load
         // updates keep reporting it (they overwrite load.max_agents from this
         // field); 0 means unlimited, matching the register manifest.

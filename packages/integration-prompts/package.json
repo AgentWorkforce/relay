@@ -1,6 +1,6 @@
 {
   "name": "@agent-relay/integration-prompts",
-  "version": "13.2.0",
+  "version": "13.3.0",
   "engines": {
     "node": ">=22.0.0"
   },

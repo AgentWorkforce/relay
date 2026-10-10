@@ -49,7 +49,9 @@ import {
   normalizeReadReceipt,
   normalizeSearchResult,
   normalizeThread,
+  normalizeFileInfo,
 } from './normalize.js';
+import { downloadRelayFile, uploadRelayFile } from './files.js';
 import { currentReplaySessionRef, replayMessageMetadata, resolveReplaySessionRef } from './session-ref.js';
 import type { AgentSessionEvent } from '../session/index.js';
 import type {
@@ -57,6 +59,9 @@ import type {
   RelayActionInvocationAck,
   RelayCompleteInvocationInput,
   RelayAgent,
+  RelayDownloadedFile,
+  RelayFileInfo,
+  RelayUploadFileInput,
   RelayAgentPresence,
   RelayAgentRegistration,
   RelayChannel,
@@ -125,7 +130,7 @@ export { RelayPlacementError } from './relaycast-placement.js';
 export type { RelaySpawnDispatchState, RelaySpawnPlacementState } from './relaycast-placement.js';
 export type { RelaycastMessagingOptions } from './relaycast-client.js';
 
-const DEFAULT_CONFIRM_TIMEOUT_MS = 120_000;
+const DEFAULT_CONFIRM_TIMEOUT_MS = 360_000;
 const DEFAULT_CONFIRM_POLL_MS = 500;
 /** `setTimeout` clamps anything larger, firing immediately instead of waiting. */
 const MAX_CONFIRM_TIMEOUT_MS = 2_147_483_647;
@@ -655,12 +660,19 @@ export class RelaycastMessagingClient implements RelayMessagingClient {
         this.requireWebhooks().trigger(id, payload ?? {}),
     },
     subscriptions: {
-      create: async (input: RelayCreateSubscriptionInput): Promise<RelayEventSubscription> =>
-        (await this.requireSubscriptions().create(input)) as RelayEventSubscription,
+      create: async (input: RelayCreateSubscriptionInput): Promise<RelayEventSubscription> => {
+        const raw = (await this.requireSubscriptions().create(input)) as RelayEventSubscription;
+        return { ...raw, ...normalizeWebhookSubscription(raw) };
+      },
       list: async (): Promise<RelayEventSubscription[]> =>
-        (await this.requireSubscriptions().list()) as RelayEventSubscription[],
-      get: async (id: string): Promise<RelayEventSubscription> =>
-        (await this.requireSubscriptions().get(id)) as RelayEventSubscription,
+        ((await this.requireSubscriptions().list()) as RelayEventSubscription[]).map((raw) => ({
+          ...raw,
+          ...normalizeWebhookSubscription(raw),
+        })),
+      get: async (id: string): Promise<RelayEventSubscription> => {
+        const raw = (await this.requireSubscriptions().get(id)) as RelayEventSubscription;
+        return { ...raw, ...normalizeWebhookSubscription(raw) };
+      },
       delete: async (id: string): Promise<void> => {
         await this.requireSubscriptions().delete(id);
       },
@@ -1111,7 +1123,7 @@ export class RelaycastMessagingClient implements RelayMessagingClient {
           `node '${context.node}' accepted ${actionName} (invocation ${invocationId}) but never reported a result within ${budgetMs}ms. ` +
             `The node advertised capacity and acknowledged the dispatch; nothing confirmed that it launched. ` +
             `The invocation may still be running, so do not retry blindly. ` +
-            `Check that node's broker version, or re-run without confirmation to accept an unconfirmed dispatch.` +
+            `Poll this dispatch with agent-relay fleet spawn-status ${invocationId}; an unknown outcome is not proof that no process started.` +
             (lastReadError ? ` Last read error: ${lastReadError}` : ''),
           {
             ...errorContext,
@@ -1144,6 +1156,20 @@ export class RelaycastMessagingClient implements RelayMessagingClient {
       }
       return (await this.relaycast.workspace.info()) as RelayWorkspaceInfo;
     },
+  };
+
+  readonly files = {
+    upload: async (
+      input: RelayUploadFileInput,
+      options?: import('./types.js').RelayFileTransferOptions
+    ): Promise<RelayFileInfo> => uploadRelayFile(this.requireAgentFiles('files.upload'), input, options),
+    get: async (id: string): Promise<RelayFileInfo> =>
+      normalizeFileInfo(await this.requireAgentFiles('files.get').get(id)),
+    download: async (
+      id: string,
+      options?: import('./types.js').RelayFileTransferOptions
+    ): Promise<RelayDownloadedFile> =>
+      downloadRelayFile(this.requireAgentFiles('files.download'), id, options),
   };
 
   private resolvePlacementNode(node: string | 'self' | undefined, selfNodeName?: string): string | undefined {
@@ -1372,6 +1398,16 @@ export class RelaycastMessagingClient implements RelayMessagingClient {
       throw new Error(`RelaycastMessagingClient.${operation} requires agentToken or agentClient.`);
     }
     return this.agentClient;
+  }
+
+  private requireAgentFiles(operation: string): NonNullable<RelaycastAgentLike['files']> {
+    const files = this.requireAgentClient(operation).files;
+    if (!files) {
+      throw new Error(
+        `RelaycastMessagingClient.${operation} requires a relaycast agent client with the files API.`
+      );
+    }
+    return files;
   }
 
   private requireWorkspaceDmMessages(): NonNullable<RelaycastWorkspaceLike['dmMessages']> {

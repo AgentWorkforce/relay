@@ -13,6 +13,7 @@ function createHarness() {
   const workspaceRelay = {
     agents: {
       get: vi.fn(async (name: string) => ({ id: 'agent_existing', name, status: 'online' })),
+      list: vi.fn(async () => [{ name: 'worker' }]),
     },
     workspace: {
       register: vi.fn(async ({ name }: { name: string }) => ({
@@ -285,6 +286,53 @@ describe('agent identity lifecycle commands', () => {
     const rendered = log.mock.calls.flat().join('\n');
     expect(rendered).toContain('initiated');
     expect(rendered).not.toContain('Removed agent');
+  });
+
+  it('waits for not-found even when the release acknowledgement says completed', async () => {
+    const { program, workspaceRelay, log } = createHarness();
+    workspaceRelay.agents.get.mockRejectedValueOnce({ status: 404 });
+    await program.parseAsync(['agent', 'remove', 'worker', '--wait'], { from: 'user' });
+    expect(workspaceRelay.agents.get).toHaveBeenCalledWith('worker');
+    expect(log).toHaveBeenCalledWith('Removed agent worker.');
+  });
+
+  it('exits 8 while a released registration still owns the name', async () => {
+    const { program, workspaceRelay, log } = createHarness();
+    workspaceRelay.agents.get.mockResolvedValue({ id: 'old', name: 'worker', status: 'released' });
+    await expect(
+      program.parseAsync(['agent', 'remove', 'worker', '--wait', '--wait-timeout', '1'], { from: 'user' })
+    ).rejects.toThrow('exit:8');
+    expect(log.mock.calls.flat().join('')).not.toContain('Removed agent');
+  });
+
+  it('keeps the asynchronous acknowledgement when every verification read is unavailable', async () => {
+    const { program, workspaceRelay, log, error } = createHarness();
+    workspaceRelay.agents.get.mockRejectedValue(new Error('403 forbidden'));
+    workspaceRelay.agents.list.mockRejectedValue(new Error('403 roster forbidden'));
+    await program.parseAsync(['agent', 'remove', 'worker', '--wait', '--wait-timeout', '1'], {
+      from: 'user',
+    });
+    expect(workspaceRelay.agents.list).toHaveBeenCalled();
+    expect(log.mock.calls.flat().join('')).toContain('initiated');
+    // --wait already ran; suggesting it again would misdescribe the outcome.
+    expect(log.mock.calls.flat().join('')).not.toContain('Use --wait');
+    expect(error.mock.calls.flat().join('')).toContain('Could not verify removal: 403 roster forbidden');
+  });
+
+  it('rejects a non-numeric --wait-timeout before removing anything', async () => {
+    const { program, workspaceRelay, error } = createHarness();
+    await expect(
+      program.parseAsync(['agent', 'remove', 'worker', '--wait', '--wait-timeout', 'abc'], { from: 'user' })
+    ).rejects.toThrow('exit:1');
+    expect(error.mock.calls.flat().join('')).toContain('--wait-timeout');
+    expect(workspaceRelay.workspace.release).not.toHaveBeenCalled();
+  });
+
+  it('does not claim clearance or poll with --no-wait', async () => {
+    const { program, workspaceRelay, log } = createHarness();
+    await program.parseAsync(['agent', 'remove', 'worker', '--no-wait'], { from: 'user' });
+    expect(workspaceRelay.agents.get).not.toHaveBeenCalled();
+    expect(log.mock.calls.flat().join('')).toContain('initiated');
   });
 
   it('redacts SQL and bound parameters when removal fails', async () => {
