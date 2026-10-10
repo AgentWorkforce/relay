@@ -2041,8 +2041,9 @@ pub(super) async fn enqueue_delivery_ack(
 /// confirmation of a specific PTY injection (relay#1310: the ack must not
 /// fire before the worker confirms the write landed). Called with the
 /// `delivery_id`/`event_id` from the worker's own internal `delivery_ack`
-/// event (`worker_events.rs`), which pty_worker.rs sends only after activity or
-/// a cleared composer proves harness acceptance — never at write-enqueue time.
+/// event (`worker_events.rs`), which pty_worker.rs sends only after activity, a
+/// cleared composer, or the explicitly supported `cat` process echo exception
+/// proves harness acceptance — never at write-enqueue time.
 ///
 /// Returns the `(agent, up_to_seq)` to send to the engine once resolved, or
 /// `None` when there is nothing withheld for `delivery_id` (already

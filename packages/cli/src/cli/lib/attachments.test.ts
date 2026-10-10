@@ -32,6 +32,7 @@ describe('attachment helpers', () => {
     expect(safeAttachmentFilename('CON.txt')).toBe('_CON.txt');
     expect(safeAttachmentFilename('lpt3')).toBe('_lpt3');
     expect(safeAttachmentFilename('console.log')).toBe('console.log');
+    expect(safeAttachmentFilename(' .env')).toBe('env');
     expect(safeAttachmentFilename('...')).toBe('attachment');
   });
 

@@ -1,5 +1,43 @@
 import { normalizeFileInfo, normalizeFileUpload } from './normalize.js';
-import type { RelayDownloadedFile, RelayFileInfo, RelayUploadFileInput } from './types.js';
+import type {
+  RelayDownloadedFile,
+  RelayFileInfo,
+  RelayFileTransferOptions,
+  RelayUploadFileInput,
+} from './types.js';
+
+const DEFAULT_FILE_TRANSFER_TIMEOUT_MS = 30_000;
+
+async function fetchFileBytes(
+  url: string,
+  init: RequestInit,
+  operation: 'upload' | 'download',
+  options: RelayFileTransferOptions
+): Promise<Response> {
+  const timeoutMs = options.timeoutMs ?? DEFAULT_FILE_TRANSFER_TIMEOUT_MS;
+  if (!Number.isFinite(timeoutMs) || timeoutMs <= 0) {
+    throw new Error(`files.${operation}: timeoutMs must be a positive finite number.`);
+  }
+  const controller = new AbortController();
+  const cancel = () => controller.abort();
+  if (options.signal?.aborted) cancel();
+  else options.signal?.addEventListener('abort', cancel, { once: true });
+  const timeout = setTimeout(cancel, timeoutMs);
+  (timeout as { unref?: () => void }).unref?.();
+  try {
+    return await fetch(url, { ...init, signal: controller.signal });
+  } catch {
+    const reason = controller.signal.aborted ? 'was cancelled or timed out' : 'failed';
+    throw new Error(`files.${operation}: signed byte transfer ${reason}.`);
+  } finally {
+    clearTimeout(timeout);
+    options.signal?.removeEventListener('abort', cancel);
+  }
+}
+
+async function cancelResponseBody(response: Response): Promise<void> {
+  await response.body?.cancel().catch(() => undefined);
+}
 
 /** The slice of the relaycast agent `files` API the upload and download helpers use. */
 export interface RelayFilesApiLike {
@@ -15,7 +53,8 @@ export interface RelayFilesApiLike {
  */
 export async function uploadRelayFile(
   files: RelayFilesApiLike,
-  input: RelayUploadFileInput
+  input: RelayUploadFileInput,
+  options: RelayFileTransferOptions = {}
 ): Promise<RelayFileInfo> {
   const filename = input.filename.trim();
   if (!filename) {
@@ -32,12 +71,18 @@ export async function uploadRelayFile(
   if (!id || !uploadUrl) {
     throw new Error('files.upload: the server did not return a file id and upload URL.');
   }
-  const response = await fetch(uploadUrl, {
-    method: 'PUT',
-    headers: { 'content-type': contentType },
-    body: data,
-  });
+  const response = await fetchFileBytes(
+    uploadUrl,
+    {
+      method: 'PUT',
+      headers: { 'content-type': contentType },
+      body: data,
+    },
+    'upload',
+    options
+  );
   if (!response.ok) {
+    await cancelResponseBody(response);
     // The upload URL carries a signature in its query string; name only its origin.
     throw new Error(
       `files.upload: storing the bytes failed with HTTP ${response.status} at ${new URL(uploadUrl).origin}; the file was not attached.`
@@ -56,7 +101,7 @@ export const RELAY_FILE_DOWNLOAD_MAX_BYTES = 25 * 1024 * 1024;
 export async function downloadRelayFile(
   files: RelayFilesApiLike,
   id: string,
-  options: { maxBytes?: number } = {}
+  options: RelayFileTransferOptions & { maxBytes?: number } = {}
 ): Promise<RelayDownloadedFile> {
   const maxBytes = options.maxBytes ?? RELAY_FILE_DOWNLOAD_MAX_BYTES;
   if (!Number.isFinite(maxBytes) || maxBytes < 0) {
@@ -68,14 +113,18 @@ export async function downloadRelayFile(
   }
   const tooLarge = () => new Error(`files.download: file ${id} is over the ${maxBytes}-byte download limit.`);
   if (file.sizeBytes > maxBytes) throw tooLarge();
-  const response = await fetch(file.downloadUrl);
+  const response = await fetchFileBytes(file.downloadUrl, {}, 'download', options);
   if (!response.ok) {
+    await cancelResponseBody(response);
     throw new Error(
       `files.download: fetching file ${id} failed with HTTP ${response.status} at ${new URL(file.downloadUrl).origin}.`
     );
   }
   const declared = Number(response.headers.get('content-length'));
-  if (Number.isFinite(declared) && declared > maxBytes) throw tooLarge();
+  if (Number.isFinite(declared) && declared > maxBytes) {
+    await cancelResponseBody(response);
+    throw tooLarge();
+  }
   const reader = response.body?.getReader();
   const chunks: Uint8Array[] = [];
   let total = 0;

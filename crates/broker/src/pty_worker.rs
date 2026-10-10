@@ -47,7 +47,8 @@ use crate::util::terminal::{
 use crate::util::utf8_stream::Utf8StreamDecoder;
 use crate::worker::detection::{is_codex_busy_status_line, ActivityDetector};
 use crate::wrap::{
-    submit_injection_body, submit_injection_recovery, warn_on_auto_response_write, PtyAutoState,
+    injection_recovery_followup_delay, submit_injection_body, submit_injection_recovery,
+    submit_injection_recovery_followup, warn_on_auto_response_write, PtyAutoState,
     AUTO_SUGGESTION_BLOCK_TIMEOUT,
 };
 use base64::Engine;
@@ -207,9 +208,19 @@ type RecoveryWriteAck = (
     PendingVerification,
     u64,
     u64,
+    RecoveryWriteStage,
     Result<std::io::Result<()>, tokio::sync::oneshot::error::RecvError>,
 );
 type RecoveryWriteAckFuture = Pin<Box<dyn Future<Output = RecoveryWriteAck> + Send>>;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum RecoveryWriteStage {
+    Primary,
+    Followup,
+}
+
+type RecoveryFollowup = (PendingVerification, u64);
+type RecoveryFollowupFuture = Pin<Box<dyn Future<Output = RecoveryFollowup> + Send>>;
 
 fn queue_post_acceptance_activity(
     verification: &PendingVerification,
@@ -230,6 +241,66 @@ fn queue_post_acceptance_activity(
         output_buffer: verification.activity_buffer.clone(),
         detector: detector.clone(),
     });
+}
+
+#[allow(clippy::too_many_arguments)]
+async fn confirm_harness_acceptance(
+    out_tx: &mpsc::Sender<ProtocolEnvelope<Value>>,
+    pv: PendingVerification,
+    evidence: String,
+    detector: Option<&ActivityDetector>,
+    pending_activities: &mut VecDeque<PendingActivity>,
+    throttle: &mut ThrottleState,
+    pending_delivery_ids: &mut HashSet<DeliveryId>,
+    completed_deliveries: &mut CompletedWorkerDeliveries,
+) {
+    let delivery_id = pv.delivery_id.clone();
+    let event_id = pv.event_id.clone();
+    tracing::debug!(
+        delivery_id = %delivery_id,
+        attempts = pv.attempts,
+        evidence = %evidence,
+        "delivery accepted by harness"
+    );
+    let activity_pattern = evidence.strip_prefix("activity:").map(str::to_string);
+    let _ = send_frame(
+        out_tx,
+        "delivery_ack",
+        pv.request_id.clone(),
+        json!({ "delivery_id": delivery_id, "event_id": event_id }),
+    )
+    .await;
+    let _ = send_frame(
+        out_tx,
+        "delivery_verified",
+        None,
+        json!({
+            "delivery_id": delivery_id,
+            "event_id": event_id,
+            "verification": "harness_acceptance",
+            "evidence": evidence,
+            "attempts": pv.attempts,
+        }),
+    )
+    .await;
+    if let Some(pattern) = activity_pattern {
+        let _ = send_frame(
+            out_tx,
+            "delivery_active",
+            None,
+            json!({
+                "delivery_id": delivery_id,
+                "event_id": event_id,
+                "pattern": pattern,
+            }),
+        )
+        .await;
+    } else {
+        queue_post_acceptance_activity(&pv, detector, pending_activities);
+    }
+    throttle.record(DeliveryOutcome::Success);
+    pending_delivery_ids.remove(&delivery_id);
+    completed_deliveries.insert(delivery_id, event_id);
 }
 
 fn cli_basename(command: &str) -> &str {
@@ -1092,6 +1163,10 @@ pub(crate) async fn run_pty_worker(cmd: PtyCommand) -> Result<()> {
     // the drainer proves the recovery key reached the child.
     let mut pending_recovery_writes: FuturesUnordered<RecoveryWriteAckFuture> =
         FuturesUnordered::new();
+    // A delayed recovery follow-up is kept outside the PTY write queue. This
+    // lets admitted human input advance the generation before the CR is sent.
+    let mut pending_recovery_followups: FuturesUnordered<RecoveryFollowupFuture> =
+        FuturesUnordered::new();
     let mut human_input_generation = 0u64;
     let mut startup_output = String::new();
     let mut startup_total_bytes = 0usize;
@@ -1418,30 +1493,15 @@ pub(crate) async fn run_pty_worker(cmd: PtyCommand) -> Result<()> {
                                 // write those bytes verbatim to the PTY so the
                                 // child process sees the keystrokes.
                                 match frame.payload.get("data").and_then(Value::as_str) {
+                                    Some("") => {
+                                        // An empty input neither changes the
+                                        // composer nor transfers ownership away
+                                        // from automatic delivery recovery.
+                                        let _ = send_frame(&out_tx, "write_pty_response", frame.request_id, json!({
+                                            "bytes_written": 0,
+                                        })).await;
+                                    }
                                     Some(data) => {
-                                        human_input_generation = human_input_generation.saturating_add(1);
-                                        if let Some(cancel) = &initial_injection_cancel { cancel.store(true, Ordering::Relaxed); }
-                                        // Once a human writes into the PTY we can
-                                        // no longer distinguish the broker body
-                                        // from their partial composer text. Give
-                                        // the human ownership and terminate every
-                                        // pending automatic verification without
-                                        // pressing a recovery key.
-                                        let mut cancelled_verification = false;
-                                        while let Some(pv) = pending_verifications.pop_front() {
-                                            cancelled_verification = true;
-                                            let delivery_id = pv.delivery_id.clone();
-                                            let _ = send_frame(&out_tx, "delivery_failed", None, json!({
-                                                "delivery_id": delivery_id,
-                                                "event_id": pv.event_id,
-                                                "reason": "human PTY input took ownership before harness acceptance",
-                                                "attempts": pv.attempts,
-                                            })).await;
-                                            pending_worker_delivery_ids.remove(&delivery_id);
-                                        }
-                                        if cancelled_verification {
-                                            throttle.record(DeliveryOutcome::Failed);
-                                        }
                                         // Non-blocking submission: never parks the
                                         // select loop even if the drainer is wedged
                                         // behind a child that stopped reading stdin.
@@ -1449,6 +1509,29 @@ pub(crate) async fn run_pty_worker(cmd: PtyCommand) -> Result<()> {
                                         let byte_len = bytes.len();
                                         match pty.submit_write(bytes) {
                                             Ok(ack_rx) => {
+                                                // Only an admitted, non-empty
+                                                // human write takes ownership.
+                                                // A full/closed queue has not
+                                                // changed the composer and must
+                                                // leave Relay's pending delivery
+                                                // and recovery state intact.
+                                                human_input_generation = human_input_generation.saturating_add(1);
+                                                if let Some(cancel) = &initial_injection_cancel { cancel.store(true, Ordering::Relaxed); }
+                                                let mut cancelled_verification = false;
+                                                while let Some(pv) = pending_verifications.pop_front() {
+                                                    cancelled_verification = true;
+                                                    let delivery_id = pv.delivery_id.clone();
+                                                    let _ = send_frame(&out_tx, "delivery_failed", None, json!({
+                                                        "delivery_id": delivery_id,
+                                                        "event_id": pv.event_id,
+                                                        "reason": "human PTY input took ownership before harness acceptance",
+                                                        "attempts": pv.attempts,
+                                                    })).await;
+                                                    pending_worker_delivery_ids.remove(&delivery_id);
+                                                }
+                                                if cancelled_verification {
+                                                    throttle.record(DeliveryOutcome::Failed);
+                                                }
                                                 // Defer the ack until the drainer confirms the
                                                 // write landed (or failed). The broker holds the
                                                 // SendInput reply / pty_input_ack until the
@@ -1768,7 +1851,8 @@ pub(crate) async fn run_pty_worker(cmd: PtyCommand) -> Result<()> {
                         if injected_output_command_detection_allowed(
                             active_injection.is_some(),
                             pending_verifications.is_empty(),
-                            pending_recovery_writes.is_empty(),
+                            pending_recovery_writes.is_empty()
+                                && pending_recovery_followups.is_empty(),
                         )
                             && clean_text.lines().any(|line| line.trim() == "/exit")
                         {
@@ -1822,7 +1906,8 @@ pub(crate) async fn run_pty_worker(cmd: PtyCommand) -> Result<()> {
                         if injected_output_command_detection_allowed(
                             active_injection.is_some(),
                             pending_verifications.is_empty(),
-                            pending_recovery_writes.is_empty(),
+                            pending_recovery_writes.is_empty()
+                                && pending_recovery_followups.is_empty(),
                         ) {
                             continuity_buffer.push_str(&clean_text);
                             if continuity_buffer.len() > CONTINUITY_BUFFER_MAX {
@@ -1885,62 +1970,17 @@ pub(crate) async fn run_pty_worker(cmd: PtyCommand) -> Result<()> {
                         // Remove verified entries in reverse order to preserve indices.
                         for (i, evidence) in verified_indices.into_iter().rev() {
                             let pv = pending_verifications.remove(i).unwrap();
-                            let delivery_id = pv.delivery_id.clone();
-                            let event_id = pv.event_id.clone();
-                            tracing::debug!(
-                                delivery_id = %delivery_id,
-                                attempts = pv.attempts,
-                                evidence = %evidence,
-                                "delivery accepted by harness"
-                            );
-                            let activity_pattern = evidence
-                                .strip_prefix("activity:")
-                                .map(str::to_string);
-                            let _ = send_frame(
+                            confirm_harness_acceptance(
                                 &out_tx,
-                                "delivery_ack",
-                                pv.request_id.clone(),
-                                json!({
-                                    "delivery_id": delivery_id,
-                                    "event_id": event_id
-                                }),
+                                pv,
+                                evidence,
+                                activity_detector.as_ref(),
+                                &mut pending_activities,
+                                &mut throttle,
+                                &mut pending_worker_delivery_ids,
+                                &mut completed_worker_deliveries,
                             )
                             .await;
-                            let _ = send_frame(
-                                &out_tx,
-                                "delivery_verified",
-                                None,
-                                json!({
-                                    "delivery_id": delivery_id,
-                                    "event_id": event_id,
-                                    "verification": "harness_acceptance",
-                                    "evidence": evidence,
-                                    "attempts": pv.attempts,
-                                }),
-                            )
-                            .await;
-                            throttle.record(DeliveryOutcome::Success);
-                            if let Some(pattern) = activity_pattern {
-                                let _ = send_frame(
-                                    &out_tx,
-                                    "delivery_active",
-                                    None,
-                                    json!({
-                                        "delivery_id": delivery_id,
-                                        "event_id": event_id,
-                                        "pattern": pattern,
-                                    }),
-                                )
-                                .await;
-                            } else {
-                                queue_post_acceptance_activity(
-                                    &pv,
-                                    activity_detector.as_ref(),
-                                    &mut pending_activities,
-                                );
-                            }
-                            pending_worker_delivery_ids.remove(&delivery_id);
-                            completed_worker_deliveries.insert(delivery_id, event_id);
                         }
 
                         if activity_detector.as_ref().is_some() {
@@ -2085,7 +2125,9 @@ pub(crate) async fn run_pty_worker(cmd: PtyCommand) -> Result<()> {
                 if let Some(index) = next_injection_index(
                     &pending_worker_injections,
                     active_injection.is_some(),
-                    !pending_verifications.is_empty() || !pending_recovery_writes.is_empty(),
+                    !pending_verifications.is_empty()
+                        || !pending_recovery_writes.is_empty()
+                        || !pending_recovery_followups.is_empty(),
                     pty_auto.interactive_hold,
                     hold_exempt_injections,
                     &hold_exempt_event_ids,
@@ -2413,62 +2455,17 @@ pub(crate) async fn run_pty_worker(cmd: PtyCommand) -> Result<()> {
                             );
                             if let HarnessAcceptance::Accepted(evidence) = acceptance {
                                 let pv = verification;
-                                let delivery_id = pv.delivery_id.clone();
-                                let event_id = pv.event_id.clone();
-                                tracing::debug!(
-                                    delivery_id = %delivery_id,
-                                    attempts = pv.attempts,
-                                    evidence = %evidence,
-                                    "delivery accepted before write ack was processed"
-                                );
-                                let activity_pattern = evidence
-                                    .strip_prefix("activity:")
-                                    .map(str::to_string);
-                                let _ = send_frame(
+                                confirm_harness_acceptance(
                                     &out_tx,
-                                    "delivery_ack",
-                                    pv.request_id.clone(),
-                                    json!({
-                                        "delivery_id": delivery_id,
-                                        "event_id": event_id
-                                    }),
-                                )
-                                .await;
-                                let _ = send_frame(
-                                    &out_tx,
-                                    "delivery_verified",
-                                    None,
-                                    json!({
-                                        "delivery_id": delivery_id,
-                                        "event_id": event_id,
-                                        "verification": "harness_acceptance",
-                                        "evidence": evidence,
-                                        "attempts": pv.attempts,
-                                    }),
-                                )
-                                .await;
-                                throttle.record(DeliveryOutcome::Success);
-                                if let Some(pattern) = activity_pattern {
-                                    let _ = send_frame(
-                                        &out_tx,
-                                        "delivery_active",
-                                        None,
-                                        json!({
-                                            "delivery_id": delivery_id,
-                                            "event_id": event_id,
-                                            "pattern": pattern,
-                                        }),
-                                    )
-                                    .await;
-                                } else {
-                                queue_post_acceptance_activity(
-                                    &pv,
+                                    pv,
+                                    evidence,
                                     activity_detector.as_ref(),
-                                        &mut pending_activities,
-                                    );
-                                }
-                                pending_worker_delivery_ids.remove(&delivery_id);
-                                completed_worker_deliveries.insert(delivery_id, event_id);
+                                    &mut pending_activities,
+                                    &mut throttle,
+                                    &mut pending_worker_delivery_ids,
+                                    &mut completed_worker_deliveries,
+                                )
+                                .await;
                             } else {
                                 pending_verifications.push_back(verification);
                             }
@@ -2505,7 +2502,7 @@ pub(crate) async fn run_pty_worker(cmd: PtyCommand) -> Result<()> {
             // Settle submit-key-only recovery writes without blocking PTY
             // output or human input. A failed recovery is terminal because the
             // body may already be in the composer and must never be replayed.
-            Some((mut pv, output_boundary, submitted_generation, ack)) = pending_recovery_writes.next(),
+            Some((mut pv, output_boundary, submitted_generation, stage, ack)) = pending_recovery_writes.next(),
                 if !pending_recovery_writes.is_empty() => {
                 let delivery_id = pv.delivery_id.clone();
                 let event_id = pv.event_id.clone();
@@ -2522,6 +2519,19 @@ pub(crate) async fn run_pty_worker(cmd: PtyCommand) -> Result<()> {
                 }
                 match ack {
                     Ok(Ok(())) => {
+                        if stage == RecoveryWriteStage::Primary {
+                            let completed_attempts = pv.attempts.saturating_sub(1);
+                            if let Some(delay) = injection_recovery_followup_delay(
+                                &resolved_cli,
+                                completed_attempts,
+                            ) {
+                                pending_recovery_followups.push(Box::pin(async move {
+                                    tokio::time::sleep(delay).await;
+                                    (pv, submitted_generation)
+                                }));
+                                continue;
+                            }
+                        }
                         pv.output_boundary = output_boundary;
                         pv.injected_at = Instant::now();
                         pv.activity_buffer.clear();
@@ -2536,51 +2546,17 @@ pub(crate) async fn run_pty_worker(cmd: PtyCommand) -> Result<()> {
                             &snapshot,
                         ) {
                             HarnessAcceptance::Accepted(evidence) => {
-                                let activity_pattern = evidence
-                                    .strip_prefix("activity:")
-                                    .map(str::to_string);
-                                let _ = send_frame(
+                                confirm_harness_acceptance(
                                     &out_tx,
-                                    "delivery_ack",
-                                    pv.request_id.clone(),
-                                    json!({ "delivery_id": delivery_id, "event_id": event_id }),
-                                )
-                                .await;
-                                let _ = send_frame(
-                                    &out_tx,
-                                    "delivery_verified",
-                                    None,
-                                    json!({
-                                        "delivery_id": delivery_id,
-                                        "event_id": event_id,
-                                        "verification": "harness_acceptance",
-                                        "evidence": evidence,
-                                        "attempts": pv.attempts,
-                                    }),
-                                )
-                                .await;
-                                if let Some(pattern) = activity_pattern {
-                                    let _ = send_frame(
-                                        &out_tx,
-                                        "delivery_active",
-                                        None,
-                                        json!({
-                                            "delivery_id": delivery_id,
-                                            "event_id": event_id,
-                                            "pattern": pattern,
-                                        }),
-                                    )
-                                    .await;
-                                } else {
-                                queue_post_acceptance_activity(
-                                    &pv,
+                                    pv,
+                                    evidence,
                                     activity_detector.as_ref(),
-                                        &mut pending_activities,
-                                    );
-                                }
-                                throttle.record(DeliveryOutcome::Success);
-                                pending_worker_delivery_ids.remove(&delivery_id);
-                                completed_worker_deliveries.insert(delivery_id, event_id);
+                                    &mut pending_activities,
+                                    &mut throttle,
+                                    &mut pending_worker_delivery_ids,
+                                    &mut completed_worker_deliveries,
+                                )
+                                .await;
                             }
                             HarnessAcceptance::Parked | HarnessAcceptance::Inconclusive => {
                                 pending_verifications.push_back(pv);
@@ -2600,6 +2576,50 @@ pub(crate) async fn run_pty_worker(cmd: PtyCommand) -> Result<()> {
                     }
                     Err(_) => {
                         let reason = "submit recovery drainer exited before acknowledging the key";
+                        let _ = send_frame(&out_tx, "delivery_failed", None, json!({
+                            "delivery_id": delivery_id,
+                            "event_id": event_id,
+                            "reason": reason,
+                            "attempts": pv.attempts,
+                        })).await;
+                        throttle.record(DeliveryOutcome::Failed);
+                        pending_worker_delivery_ids.remove(&delivery_id);
+                    }
+                }
+            }
+
+            // Codex recovery positions the cursor first, then waits before CR.
+            // Re-check ownership after that wait so an admitted human write
+            // cancels the submit key instead of splicing it into human text.
+            Some((pv, submitted_generation)) = pending_recovery_followups.next(),
+                if !pending_recovery_followups.is_empty() => {
+                let delivery_id = pv.delivery_id.clone();
+                let event_id = pv.event_id.clone();
+                if submitted_generation != human_input_generation {
+                    let _ = send_frame(&out_tx, "delivery_failed", None, json!({
+                        "delivery_id": delivery_id,
+                        "event_id": event_id,
+                        "reason": "human PTY input took ownership before delayed submit recovery",
+                        "attempts": pv.attempts,
+                    })).await;
+                    throttle.record(DeliveryOutcome::Failed);
+                    pending_worker_delivery_ids.remove(&delivery_id);
+                    continue;
+                }
+                match submit_injection_recovery_followup(&pty) {
+                    Ok((ack_rx, output_boundary)) => {
+                        pending_recovery_writes.push(Box::pin(async move {
+                            (
+                                pv,
+                                output_boundary,
+                                submitted_generation,
+                                RecoveryWriteStage::Followup,
+                                ack_rx.await,
+                            )
+                        }));
+                    }
+                    Err(error) => {
+                        let reason = format!("failed to queue delayed submit recovery: {error}");
                         let _ = send_frame(&out_tx, "delivery_failed", None, json!({
                             "delivery_id": delivery_id,
                             "event_id": event_id,
@@ -2647,51 +2667,17 @@ pub(crate) async fn run_pty_worker(cmd: PtyCommand) -> Result<()> {
                             &snapshot,
                         ) {
                             HarnessAcceptance::Accepted(evidence) => {
-                                let activity_pattern = evidence
-                                    .strip_prefix("activity:")
-                                    .map(str::to_string);
-                                let _ = send_frame(
+                                confirm_harness_acceptance(
                                     &out_tx,
-                                    "delivery_ack",
-                                    pv.request_id.clone(),
-                                    json!({ "delivery_id": delivery_id, "event_id": event_id }),
-                                )
-                                .await;
-                                let _ = send_frame(
-                                    &out_tx,
-                                    "delivery_verified",
-                                    None,
-                                    json!({
-                                        "delivery_id": delivery_id,
-                                        "event_id": event_id,
-                                        "verification": "harness_acceptance",
-                                        "evidence": evidence,
-                                        "attempts": pv.attempts,
-                                    }),
-                                )
-                                .await;
-                                if let Some(pattern) = activity_pattern {
-                                    let _ = send_frame(
-                                        &out_tx,
-                                        "delivery_active",
-                                        None,
-                                        json!({
-                                            "delivery_id": delivery_id,
-                                            "event_id": event_id,
-                                            "pattern": pattern,
-                                        }),
-                                    )
-                                    .await;
-                                } else {
-                                queue_post_acceptance_activity(
-                                    &pv,
+                                    pv,
+                                    evidence,
                                     activity_detector.as_ref(),
-                                        &mut pending_activities,
-                                    );
-                                }
-                                throttle.record(DeliveryOutcome::Success);
-                                pending_worker_delivery_ids.remove(&delivery_id);
-                                completed_worker_deliveries.insert(delivery_id, event_id);
+                                    &mut pending_activities,
+                                    &mut throttle,
+                                    &mut pending_worker_delivery_ids,
+                                    &mut completed_worker_deliveries,
+                                )
+                                .await;
                             }
                             HarnessAcceptance::Parked
                                 if pv.attempts < pv.max_attempts
@@ -2699,7 +2685,8 @@ pub(crate) async fn run_pty_worker(cmd: PtyCommand) -> Result<()> {
                                     && !pty_auto.interactive_hold
                                     && pending_pty_writes.is_empty()
                                     && active_injection.is_none()
-                                    && pending_recovery_writes.is_empty() =>
+                                    && pending_recovery_writes.is_empty()
+                                    && pending_recovery_followups.is_empty() =>
                             {
                                 let _ = send_frame(
                                     &out_tx,
@@ -2730,7 +2717,13 @@ pub(crate) async fn run_pty_worker(cmd: PtyCommand) -> Result<()> {
                                         )
                                         .await;
                                         pending_recovery_writes.push(Box::pin(async move {
-                                            (pv, output_boundary, human_input_generation, ack_rx.await)
+                                            (
+                                                pv,
+                                                output_boundary,
+                                                human_input_generation,
+                                                RecoveryWriteStage::Primary,
+                                                ack_rx.await,
+                                            )
                                         }));
                                     }
                                     Err(error) => {
@@ -2751,7 +2744,8 @@ pub(crate) async fn run_pty_worker(cmd: PtyCommand) -> Result<()> {
                                     && (pty_auto.interactive_hold
                                         || !pending_pty_writes.is_empty()
                                         || active_injection.is_some()
-                                        || !pending_recovery_writes.is_empty()) =>
+                                        || !pending_recovery_writes.is_empty()
+                                        || !pending_recovery_followups.is_empty()) =>
                             {
                                 // A human or another writer owns the input FIFO.
                                 // Keep the delivery pending and retry the check
@@ -2816,6 +2810,7 @@ pub(crate) async fn run_pty_worker(cmd: PtyCommand) -> Result<()> {
                 if active_injection.is_none()
                     && pending_verifications.is_empty()
                     && pending_recovery_writes.is_empty()
+                    && pending_recovery_followups.is_empty()
                 {
                     pty_auto.try_auto_enter(&pty);
                 }
@@ -2826,6 +2821,7 @@ pub(crate) async fn run_pty_worker(cmd: PtyCommand) -> Result<()> {
                     && pending_verifications.is_empty()
                     && pending_activities.is_empty()
                     && pending_recovery_writes.is_empty()
+                    && pending_recovery_followups.is_empty()
                     && active_injection.is_none()
                 {
                     if let Some(threshold) = idle_threshold {
@@ -3506,7 +3502,8 @@ mod tests {
                     if attempt_started.elapsed() >= VERIFICATION_WINDOW
                         && verification.attempts < verification.max_attempts =>
                 {
-                    let (recovery_ack, boundary) =
+                    let completed_attempts = verification.attempts;
+                    let (recovery_ack, mut boundary) =
                         submit_injection_recovery(pty, "codex", verification.attempts)
                             .expect("queue submit-key recovery");
                     tokio::time::timeout(Duration::from_secs(5), recovery_ack)
@@ -3514,6 +3511,19 @@ mod tests {
                         .expect("submit-key recovery ack timed out")
                         .expect("PTY drainer exited during recovery")
                         .expect("submit-key recovery failed");
+                    if let Some(delay) =
+                        injection_recovery_followup_delay("codex", completed_attempts)
+                    {
+                        tokio::time::sleep(delay).await;
+                        let (followup_ack, followup_boundary) =
+                            submit_injection_recovery_followup(pty)
+                                .expect("queue delayed submit recovery");
+                        followup_ack
+                            .await
+                            .expect("PTY drainer exited during delayed recovery")
+                            .expect("delayed submit recovery failed");
+                        boundary = followup_boundary;
+                    }
                     verification.attempts += 1;
                     verification.output_boundary = boundary;
                     verification.activity_buffer.clear();
@@ -3678,9 +3688,16 @@ mod tests {
 
         let mut accepted_after = None;
         for completed_attempts in [1, 2] {
-            let (recovery_ack, boundary) =
+            let (recovery_ack, mut boundary) =
                 submit_injection_recovery(&pty, "codex", completed_attempts).unwrap();
             recovery_ack.await.unwrap().unwrap();
+            if let Some(delay) = injection_recovery_followup_delay("codex", completed_attempts) {
+                tokio::time::sleep(delay).await;
+                let (followup_ack, followup_boundary) =
+                    submit_injection_recovery_followup(&pty).unwrap();
+                followup_ack.await.unwrap().unwrap();
+                boundary = followup_boundary;
+            }
             verification.attempts += 1;
             verification.output_boundary = boundary;
             verification.activity_buffer.clear();

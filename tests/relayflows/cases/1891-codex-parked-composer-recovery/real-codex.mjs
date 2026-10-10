@@ -222,6 +222,7 @@ async function settleCodexComposer(worker, frames, settleMs) {
     } else {
       cleanSince = undefined;
     }
+    if (cleanSince && Date.now() - cleanSince >= 5_000) return dismissed;
     const remaining = deadline - Date.now();
     if (remaining <= 0) {
       if (cleanSince && Date.now() - cleanSince >= 5_000) return dismissed;

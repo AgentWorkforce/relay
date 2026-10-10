@@ -181,10 +181,11 @@ impl PendingVerification {
             // marker; that marker cannot prove this delivery was accepted.
             self.echo_seen = true;
             self.activity_buffer.clear();
-            let clean = strip_ansi(&output.since(self.output_boundary));
-            if let Some(index) = clean.rfind(&self.expected_echo) {
+            let clean = strip_ansi(&output.since(self.output_boundary)).replace("\r\n", "\n");
+            let expected_echo = self.expected_echo.replace("\r\n", "\n");
+            if let Some(index) = clean.rfind(&expected_echo) {
                 self.activity_buffer
-                    .push_str(&clean[index + self.expected_echo.len()..]);
+                    .push_str(&clean[index + expected_echo.len()..]);
             }
         } else if self.echo_seen {
             self.activity_buffer.push_str(text);
@@ -409,14 +410,6 @@ pub(crate) fn assess_harness_acceptance(
     // agent TUIs on the stronger gate.
     if verification.echo_seen && is_cat_process(cli) {
         return HarnessAcceptance::Accepted("process_echo".to_string());
-    }
-    if verification.echo_seen && !verification.detector.has_explicit_patterns() {
-        if let Some(pattern) = verification
-            .detector
-            .detect_activity(&verification.activity_buffer, &verification.expected_echo)
-        {
-            return HarnessAcceptance::Accepted(format!("activity:{pattern}"));
-        }
     }
     HarnessAcceptance::Inconclusive
 }
@@ -919,7 +912,7 @@ mod tests {
 
     #[cfg(unix)]
     #[tokio::test]
-    async fn generic_post_echo_output_confirms_after_composer_disappears() {
+    async fn generic_post_echo_output_stays_inconclusive_after_composer_disappears() {
         let expected = "Relay message from Lead [evt]: fix idle injection";
         let (pty, snapshot) = codex_snapshot("Processing accepted turn").await;
         let mut verification = codex_verification(expected);
@@ -930,7 +923,7 @@ mod tests {
 
         assert_eq!(
             assess_harness_acceptance("muse", &verification, &snapshot),
-            HarnessAcceptance::Accepted("activity:any_output".to_string())
+            HarnessAcceptance::Inconclusive
         );
         pty.shutdown().unwrap();
     }
@@ -947,6 +940,24 @@ mod tests {
 
         output.push_output(2, "echo\nWorking (1s • esc to interrupt)".as_bytes());
         verification.observe(&output, "echo\nWorking (1s • esc to interrupt)");
+
+        assert!(verification.echo_seen);
+        assert_eq!(
+            verification.accepted_activity(),
+            Some("Working+esc to interrupt".to_string())
+        );
+    }
+
+    #[test]
+    fn crlf_echo_preserves_same_chunk_acceptance_activity() {
+        let expected = "Relay message from Lead [evt]: line one\nline two";
+        let mut verification = codex_verification(expected);
+        verification.echo_seen = false;
+        let mut output = VerificationOutput::default();
+        let observed =
+            "Relay message from Lead [evt]: line one\r\nline two\r\nWorking (1s • esc to interrupt)";
+        output.push_output(1, observed.as_bytes());
+        verification.observe(&output, observed);
 
         assert!(verification.echo_seen);
         assert_eq!(

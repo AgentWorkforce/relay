@@ -98,6 +98,7 @@ describe('file attachments over MCP', () => {
     expect(Buffer.from(init.body as Uint8Array)).toEqual(PNG_BYTES);
     expect(agentClient.files.complete).toHaveBeenCalledWith('f1');
     expect(uploaded).toMatchObject({ id: 'f1', filename: 'shot.png', status: 'complete' });
+    expect(uploaded).not.toHaveProperty('downloadUrl');
 
     await client.callTool({
       name: 'send_dm',
@@ -165,7 +166,10 @@ describe('file attachments over MCP', () => {
       await client.callTool({ name: 'download_file', arguments: { file_id: 'f1', path: dir } })
     );
 
-    expect(fetchMock).toHaveBeenCalledWith(DOWNLOAD_URL);
+    expect(fetchMock).toHaveBeenCalledWith(
+      DOWNLOAD_URL,
+      expect.objectContaining({ signal: expect.any(AbortSignal) })
+    );
     expect(saved.path).toBe(path.join(dir, 'shot.png'));
     expect(await readFile(saved.path as string)).toEqual(PNG_BYTES);
   });

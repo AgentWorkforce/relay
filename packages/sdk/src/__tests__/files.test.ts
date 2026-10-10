@@ -4,6 +4,7 @@ import {
   RelaycastMessagingClient,
   downloadRelayFile,
   normalizeFileInfo,
+  uploadRelayFile,
   type RelaycastAgentLike,
 } from '../messaging/index.js';
 import { AgentRelay } from '../index.js';
@@ -76,6 +77,7 @@ describe('RelaycastMessagingClient files', () => {
     expect(url).toBe(UPLOAD_URL);
     expect(init.method).toBe('PUT');
     expect(init.headers).toEqual({ 'content-type': 'image/png' });
+    expect(init.signal).toBeInstanceOf(AbortSignal);
     expect(Array.from(init.body as Uint8Array)).toEqual(Array.from(PNG_BYTES));
     expect(files.complete).toHaveBeenCalledWith('file-1');
     expect(fetchMock.mock.invocationCallOrder[0]).toBeLessThan(files.complete.mock.invocationCallOrder[0]);
@@ -138,7 +140,10 @@ describe('RelaycastMessagingClient files', () => {
     const downloaded = await clientWith(files).files.download('file-1');
 
     expect(files.get).toHaveBeenCalledWith('file-1');
-    expect(fetchMock).toHaveBeenCalledWith(DOWNLOAD_URL);
+    expect(fetchMock).toHaveBeenCalledWith(
+      DOWNLOAD_URL,
+      expect.objectContaining({ signal: expect.any(AbortSignal) })
+    );
     expect(downloaded.file).toMatchObject({ id: 'file-1', filename: 'shot.png', contentType: 'image/png' });
     expect(Array.from(downloaded.data)).toEqual(Array.from(PNG_BYTES));
   });
@@ -191,6 +196,50 @@ describe('RelaycastMessagingClient files', () => {
     await expect(downloadRelayFile(files, 'file-1', { maxBytes: 20 })).rejects.toThrow(/download limit/);
     // Under the cap, 32 bytes still don't match the 4-byte record.
     await expect(messaging.files.download('file-1')).rejects.toThrow(/arrived with 32 of 4 bytes/);
+  });
+
+  it('cancels a response body rejected by its declared length', async () => {
+    const files = createAgentFiles();
+    const cancelled = vi.fn();
+    const body = new ReadableStream<Uint8Array>({ cancel: cancelled });
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async () => new Response(body, { status: 200, headers: { 'content-length': '32' } }))
+    );
+
+    await expect(downloadRelayFile(files, 'file-1', { maxBytes: 20 })).rejects.toThrow(/download limit/);
+    expect(cancelled).toHaveBeenCalledOnce();
+  });
+
+  it('lets a caller cancel a stalled signed-byte request', async () => {
+    const files = createAgentFiles();
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(
+        async (_url: string | URL | Request, init?: RequestInit) =>
+          await new Promise<Response>((_resolve, reject) => {
+            if (init?.signal?.aborted) {
+              reject(new Error('aborted'));
+              return;
+            }
+            init?.signal?.addEventListener('abort', () => reject(new Error('aborted')), { once: true });
+          })
+      )
+    );
+    const controller = new AbortController();
+    const upload = uploadRelayFile(
+      files,
+      {
+        filename: 'shot.png',
+        contentType: 'image/png',
+        data: PNG_BYTES,
+      },
+      { signal: controller.signal }
+    );
+
+    controller.abort();
+    await expect(upload).rejects.toThrow(/cancelled or timed out/);
+    expect(files.complete).not.toHaveBeenCalled();
   });
 
   it('refuses a truncated body and an invalid maxBytes', async () => {

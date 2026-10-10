@@ -159,6 +159,13 @@ export interface RelayUploadFileInput {
   data: Uint8Array | ArrayBuffer;
 }
 
+/** Cancellation and timeout controls for the signed byte-transfer request. */
+export interface RelayFileTransferOptions {
+  signal?: AbortSignal;
+  /** Signed PUT/GET timeout in milliseconds. Defaults to 30 seconds. */
+  timeoutMs?: number;
+}
+
 export interface RelayDownloadedFile {
   file: RelayFileInfo;
   data: Uint8Array;
@@ -1101,9 +1108,9 @@ export interface RelayMessagingClient {
    * `attachments`.
    */
   readonly files?: {
-    upload(input: RelayUploadFileInput): Promise<RelayFileInfo>;
+    upload(input: RelayUploadFileInput, options?: RelayFileTransferOptions): Promise<RelayFileInfo>;
     get(id: string): Promise<RelayFileInfo>;
-    download(id: string): Promise<RelayDownloadedFile>;
+    download(id: string, options?: RelayFileTransferOptions): Promise<RelayDownloadedFile>;
   };
 }
 

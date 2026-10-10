@@ -501,7 +501,16 @@ export function registerMessagingTools(
       } else {
         throw new Error('Pass a local `path`, or `content_base64` with `filename`.');
       }
-      return jsonContent(await uploadRelayFile(requireFiles(getAgentClient(as)), file));
+      const uploaded = await uploadRelayFile(requireFiles(getAgentClient(as)), file);
+      // Signed download URLs are bearer credentials. MCP callers need only
+      // the stable metadata and id used to attach the completed upload.
+      return jsonContent({
+        id: uploaded.id,
+        filename: uploaded.filename,
+        contentType: uploaded.contentType,
+        sizeBytes: uploaded.sizeBytes,
+        status: uploaded.status,
+      });
     }
   );
 

@@ -337,7 +337,7 @@ pub(crate) fn render_attachment_block(items: &[ResolvedAttachment]) -> Option<St
                 // never truncated or rewritten.
                 Some(path) => format!("- {description} saved to {path}"),
                 None => format!(
-                    "- {description} file {file_id} (not downloaded: the saved path cannot be shown on one line); fetch with: agent-relay message file download {file_id}"
+                    "- {description} file {file_id} (downloaded, but the saved path cannot be shown on one line); save another copy with: agent-relay message file download {file_id}"
                 ),
             },
             AttachmentDisposition::NotDownloaded(reason) => format!(
@@ -713,11 +713,14 @@ async fn prepare_root(root: &Path) -> Result<PathBuf, ()> {
             } else {
                 "\n"
             };
-            let _ = tokio::fs::write(&gitignore, format!("{existing}{separator}*\n")).await;
+            tokio::fs::write(&gitignore, format!("{existing}{separator}*\n"))
+                .await
+                .map_err(|_| ())?;
         }
-        Err(_) => {
-            let _ = tokio::fs::write(&gitignore, "*\n").await;
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+            tokio::fs::write(&gitignore, "*\n").await.map_err(|_| ())?;
         }
+        Err(_) => return Err(()),
     }
     Ok(root)
 }
@@ -1051,6 +1054,15 @@ mod tests {
             .is_symlink());
     }
 
+    #[tokio::test]
+    async fn refuses_a_root_whose_gitignore_cannot_be_written() {
+        let temp = tempfile::tempdir().unwrap();
+        let root = temp.path().join("attachments");
+        std::fs::create_dir_all(root.join(".gitignore")).unwrap();
+
+        assert!(prepare_root(&root).await.is_err());
+    }
+
     #[test]
     fn sanitized_names_save_on_windows_too() {
         assert_eq!(sanitize_filename("what?*\"<>|.png"), "what______.png");
@@ -1144,6 +1156,18 @@ mod tests {
              - shot.png (image/png, 153.1 KB) file file_1 (not downloaded: HTTP 404); fetch with: agent-relay message file download file_1"
         );
         assert!(render_attachment_block(&[]).is_none());
+    }
+
+    #[test]
+    fn renders_an_unshowable_saved_path_as_downloaded() {
+        let block = render_attachment_block(&[ResolvedAttachment {
+            attachment: shot(),
+            disposition: AttachmentDisposition::Saved(PathBuf::from("/tmp/hidden\npath/shot.png")),
+        }])
+        .unwrap();
+
+        assert!(block.contains("downloaded, but the saved path cannot be shown on one line"));
+        assert!(!block.contains("not downloaded"));
     }
 
     #[test]

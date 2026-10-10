@@ -116,7 +116,11 @@ export function registerMessageCommands(
       .description('Post a message to a channel')
       .argument('<channel>', 'Channel name')
       .argument('<text>', 'Message text')
-      .option('--file <path>', 'Attach a local file (repeatable)', collectFile)
+      .option(
+        '--file <path>',
+        'Attach a local file (repeatable); an uploaded file may remain stored if sending later fails',
+        collectFile
+      )
   ).action(async (channel: string, text: string, o: Record<string, unknown>) => {
     await runSdk(deps, async () => {
       const relay = deps.createAgentRelay(opts(o));
@@ -198,7 +202,11 @@ export function registerMessageCommands(
         'wait (default): inject on idle; steer: inject immediately and may interrupt active work',
         parseMessageMode
       )
-      .option('--file <path>', 'Attach a local file (repeatable)', collectFile)
+      .option(
+        '--file <path>',
+        'Attach a local file (repeatable); an uploaded file may remain stored if sending later fails',
+        collectFile
+      )
   ).action(async (agent: string, text: string, o: Record<string, unknown>) => {
     await runSdk(deps, async () => {
       const mode = o.mode as 'wait' | 'steer' | undefined;
@@ -237,7 +245,11 @@ export function registerMessageCommands(
       .description('Send a direct message to multiple agents')
       .argument('<text>', 'Message text')
       .requiredOption('--to <agents...>', 'Recipient agents')
-      .option('--file <path>', 'Attach a local file (repeatable)', collectFile)
+      .option(
+        '--file <path>',
+        'Attach a local file (repeatable); an uploaded file may remain stored if sending later fails',
+        collectFile
+      )
   ).action(async (text: string, o: Record<string, unknown>) => {
     await runSdk(deps, async () => {
       const relay = deps.createAgentRelay(opts(o));

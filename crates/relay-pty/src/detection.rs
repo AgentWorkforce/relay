@@ -6,7 +6,10 @@ use crate::ansi::strip_ansi;
 /// text that mentions the interrupt hint as harness activity.
 pub fn is_codex_busy_status_line(line: &str) -> bool {
     let lower = line.to_ascii_lowercase();
-    lower.contains("working") && lower.contains("esc to interrupt")
+    lower
+        .split(|character: char| !character.is_ascii_alphanumeric() && character != '_')
+        .any(|word| word == "working")
+        && lower.contains("esc to interrupt")
 }
 
 #[derive(Debug, Clone)]
@@ -149,6 +152,9 @@ mod tests {
         assert!(is_codex_busy_status_line("Working (2s • esc to interrupt)"));
         assert!(!is_codex_busy_status_line(
             "task text mentions esc to interrupt"
+        ));
+        assert!(!is_codex_busy_status_line(
+            "networking (2s • esc to interrupt)"
         ));
     }
 

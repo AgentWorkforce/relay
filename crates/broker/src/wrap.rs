@@ -129,14 +129,11 @@ pub(crate) fn submit_injection_recovery(
         // Field recovery for Codex 0.150/0.160: a plain Enter left an idle
         // multiline composer parked, while End followed by a distinct CR and
         // later LF submitted it. First reproduce the non-destructive
-        // End+Enter half; the final bounded attempt below sends LF only if the
-        // same delivery is still visibly parked.
-        return pty.submit_write_paced_with_followup_and_output_boundary(
-            b"\x1b[F".to_vec(),
-            Duration::ZERO,
-            Duration::from_secs(1),
-            b"\r".to_vec(),
-        );
+        // End half. The event loop schedules the delayed CR separately so a
+        // human write during that delay can cancel it before it reaches the
+        // composer. The final bounded attempt below sends LF only if the same
+        // delivery is still visibly parked.
+        return pty.submit_write_paced_with_output_boundary(b"\x1b[F".to_vec(), Duration::ZERO);
     }
 
     let key = if completed_attempts >= 2 {
@@ -145,6 +142,23 @@ pub(crate) fn submit_injection_recovery(
         b'\r'
     };
     pty.submit_write_paced_with_output_boundary(vec![key], Duration::ZERO)
+}
+
+/// Codex's first parked-composer retry uses a delayed CR after cursor-end.
+/// Keeping the delay outside the PTY compound-write queue lets the worker
+/// re-check human composer ownership before it submits the follow-up key.
+pub(crate) fn injection_recovery_followup_delay(
+    resolved_cli: &str,
+    completed_attempts: usize,
+) -> Option<Duration> {
+    (resolved_cli.to_ascii_lowercase().contains("codex") && completed_attempts == 1)
+        .then_some(Duration::from_secs(1))
+}
+
+pub(crate) fn submit_injection_recovery_followup(
+    pty: &PtySession,
+) -> anyhow::Result<(tokio::sync::oneshot::Receiver<std::io::Result<()>>, u64)> {
+    pty.submit_write_paced_with_output_boundary(b"\r".to_vec(), Duration::ZERO)
 }
 
 /// Warn (without retrying) when a one-shot auto-response keystroke can't be
@@ -246,6 +260,7 @@ enum PendingWrapWrite {
         verification: PendingVerification,
         output_boundary: u64,
         human_input_generation: u64,
+        followup_after_ack: Option<Duration>,
     },
 }
 
@@ -256,6 +271,9 @@ type PendingWrapWriteAck = (
     std::result::Result<WrapWriteAck, tokio::time::error::Elapsed>,
 );
 type PendingWrapWriteAckFuture = Pin<Box<dyn Future<Output = PendingWrapWriteAck> + Send>>;
+type PendingWrapRecoveryFollowup = (PendingVerification, u64);
+type PendingWrapRecoveryFollowupFuture =
+    Pin<Box<dyn Future<Output = PendingWrapRecoveryFollowup> + Send>>;
 
 async fn await_wrap_write_ack(
     ack_rx: tokio::sync::oneshot::Receiver<std::io::Result<()>>,
@@ -1500,6 +1518,8 @@ pub(crate) async fn run_wrap(
     let mut pending_wrap_injections: VecDeque<PendingWrapInjection> = VecDeque::new();
     let mut pending_wrap_writes: FuturesUnordered<PendingWrapWriteAckFuture> =
         FuturesUnordered::new();
+    let mut pending_wrap_recovery_followups: FuturesUnordered<PendingWrapRecoveryFollowupFuture> =
+        FuturesUnordered::new();
     let mut mcp_reminder_throttle = McpReminderThrottle::new();
 
     // Echo verification state
@@ -2140,7 +2160,7 @@ pub(crate) async fn run_wrap(
 
             _ = pending_injection_interval.tick(),
                 if wrap_injection_timer_allowed(
-                    !pending_wrap_writes.is_empty(),
+                    !pending_wrap_writes.is_empty() || !pending_wrap_recovery_followups.is_empty(),
                     !pending_verifications.is_empty(),
                 ) => {
                 // Give backlogged human keystrokes priority onto the PTY FIFO
@@ -2311,6 +2331,7 @@ pub(crate) async fn run_wrap(
                         mut verification,
                         output_boundary,
                         human_input_generation: submitted_generation,
+                        followup_after_ack,
                     } => {
                         if submitted_generation != human_input_generation {
                             tracing::warn!(
@@ -2331,6 +2352,13 @@ pub(crate) async fn run_wrap(
                             continue;
                         }
 
+                        if let Some(delay) = followup_after_ack {
+                            pending_wrap_recovery_followups.push(Box::pin(async move {
+                                tokio::time::sleep(delay).await;
+                                (verification, submitted_generation)
+                            }));
+                            continue;
+                        }
 
                         tracing::debug!(
                             delivery_id = %verification.delivery_id,
@@ -2349,6 +2377,42 @@ pub(crate) async fn run_wrap(
                             &mut throttle,
                             &mut pending_verifications,
                         );
+                    }
+                }
+            }
+
+            Some((verification, submitted_generation)) = pending_wrap_recovery_followups.next(),
+                if !pending_wrap_recovery_followups.is_empty() => {
+                if submitted_generation != human_input_generation {
+                    tracing::warn!(
+                        event_id = %verification.event_id,
+                        "wrap: human input took ownership before delayed submit recovery"
+                    );
+                    throttle.record(DeliveryOutcome::Failed);
+                    continue;
+                }
+                match submit_injection_recovery_followup(&pty) {
+                    Ok((ack_rx, output_boundary)) => {
+                        let pending_write = PendingWrapWrite::Retry {
+                            verification,
+                            output_boundary,
+                            human_input_generation: submitted_generation,
+                            followup_after_ack: None,
+                        };
+                        pending_wrap_writes.push(Box::pin(async move {
+                            (
+                                pending_write,
+                                await_wrap_write_ack(ack_rx, WRAP_WRITE_ACK_TIMEOUT).await,
+                            )
+                        }));
+                    }
+                    Err(error) => {
+                        tracing::error!(
+                            event_id = %verification.event_id,
+                            error = %error,
+                            "wrap: failed to queue delayed submit recovery; body left untouched"
+                        );
+                        throttle.record(DeliveryOutcome::Failed);
                     }
                 }
             }
@@ -2382,6 +2446,7 @@ pub(crate) async fn run_wrap(
                                     && !pv.acceptance_expired()
                                     && stdin_pending.is_empty()
                                     && pending_wrap_writes.is_empty()
+                                    && pending_wrap_recovery_followups.is_empty()
                                     && crate::devin::can_inject(&resolved_cli, &pty) =>
                             {
                                 let completed_attempts = pv.attempts;
@@ -2404,6 +2469,10 @@ pub(crate) async fn run_wrap(
                                             verification: pv,
                                             output_boundary,
                                             human_input_generation,
+                                            followup_after_ack: injection_recovery_followup_delay(
+                                                &resolved_cli,
+                                                completed_attempts,
+                                            ),
                                         };
                                         pending_wrap_writes.push(Box::pin(async move {
                                             (
@@ -2429,7 +2498,8 @@ pub(crate) async fn run_wrap(
                             HarnessAcceptance::Parked
                                 if !pv.acceptance_expired()
                                     && (!stdin_pending.is_empty()
-                                        || !pending_wrap_writes.is_empty()) =>
+                                        || !pending_wrap_writes.is_empty()
+                                        || !pending_wrap_recovery_followups.is_empty()) =>
                             {
                                 // An in-flight writer takes priority. Human
                                 // input already drains these verifications in
@@ -2480,6 +2550,7 @@ pub(crate) async fn run_wrap(
                 if stdin_pending.is_empty()
                     && pending_verifications.is_empty()
                     && pending_wrap_writes.is_empty()
+                    && pending_wrap_recovery_followups.is_empty()
                 {
                     pty_auto.try_auto_enter(&pty);
                 }
@@ -2547,7 +2618,8 @@ mod tests {
     use super::{
         await_wrap_write_ack, buffer_and_drain_stdin, drain_stdin_buffer,
         injection_submit_followup_delay, submit_injection_body, submit_injection_recovery,
-        wrap_injection_timer_allowed, wrap_write_ack_error, STDIN_PENDING_MAX_CHUNKS,
+        submit_injection_recovery_followup, wrap_injection_timer_allowed, wrap_write_ack_error,
+        STDIN_PENDING_MAX_CHUNKS,
     };
     use crate::broker::delivery_verification::{PendingVerification, MAX_VERIFICATION_ATTEMPTS};
     use crate::ids::{DeliveryId, EventId, MessageTarget};
@@ -2637,9 +2709,26 @@ mod tests {
         let (first_ack, _) = submit_injection_recovery(&pty, "codex", 1).unwrap();
         tokio::time::timeout(Duration::from_secs(3), first_ack)
             .await
-            .expect("End+CR recovery timed out")
+            .expect("End recovery timed out")
             .expect("drainer exited")
-            .expect("End+CR recovery failed");
+            .expect("End recovery failed");
+        for _ in 0..50 {
+            if std::fs::read(&log).is_ok_and(|bytes| bytes.len() == 3) {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+        assert_eq!(
+            std::fs::read(&log).unwrap(),
+            b"\x1b[F",
+            "the delayed CR must not share the cursor-positioning write"
+        );
+        let (followup_ack, _) = submit_injection_recovery_followup(&pty).unwrap();
+        tokio::time::timeout(Duration::from_secs(3), followup_ack)
+            .await
+            .expect("CR recovery timed out")
+            .expect("drainer exited")
+            .expect("CR recovery failed");
         let (second_ack, _) = submit_injection_recovery(&pty, "codex", 2).unwrap();
         tokio::time::timeout(Duration::from_secs(3), second_ack)
             .await

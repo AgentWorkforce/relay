@@ -1143,12 +1143,17 @@ export class RelaycastMessagingClient implements RelayMessagingClient {
   };
 
   readonly files = {
-    upload: async (input: RelayUploadFileInput): Promise<RelayFileInfo> =>
-      uploadRelayFile(this.requireAgentFiles('files.upload'), input),
+    upload: async (
+      input: RelayUploadFileInput,
+      options?: import('./types.js').RelayFileTransferOptions
+    ): Promise<RelayFileInfo> => uploadRelayFile(this.requireAgentFiles('files.upload'), input, options),
     get: async (id: string): Promise<RelayFileInfo> =>
       normalizeFileInfo(await this.requireAgentFiles('files.get').get(id)),
-    download: async (id: string): Promise<RelayDownloadedFile> =>
-      downloadRelayFile(this.requireAgentFiles('files.download'), id),
+    download: async (
+      id: string,
+      options?: import('./types.js').RelayFileTransferOptions
+    ): Promise<RelayDownloadedFile> =>
+      downloadRelayFile(this.requireAgentFiles('files.download'), id, options),
   };
 
   private resolvePlacementNode(node: string | 'self' | undefined, selfNodeName?: string): string | undefined {

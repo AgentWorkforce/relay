@@ -40,9 +40,10 @@ export function safeAttachmentFilename(name: string): string {
     // eslint-disable-next-line no-control-regex
     .replace(/[\u0000-\u001f\u007f]/g, '')
     .replace(/[<>:"|?*]/g, '_')
-    .replace(/^\.+/, '')
-    .replace(/[. ]+$/, '')
-    .trim();
+    // Trim before removing leading dots so names such as ` .env` cannot
+    // become hidden only after the whitespace is stripped.
+    .replace(/^[. ]+/, '')
+    .replace(/[. ]+$/, '');
   if (!cleaned) return 'attachment';
   return WINDOWS_RESERVED.test(cleaned) ? `_${cleaned}` : cleaned;
 }

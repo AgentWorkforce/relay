@@ -951,6 +951,33 @@ impl BrokerRuntime {
                                 .get("verification")
                                 .and_then(Value::as_str)
                                 .unwrap_or("worker_confirmation");
+                            let is_pty = workers
+                                .workers
+                                .get(&name)
+                                .is_some_and(|handle| handle.spec.runtime == AgentRuntime::Pty);
+                            if is_pty && verification != "harness_acceptance" {
+                                tracing::warn!(
+                                    target = "agent_relay::broker",
+                                    worker = %name,
+                                    delivery_id = %delivery_id,
+                                    event_id = %event_id,
+                                    verification = %verification,
+                                    "ignoring PTY delivery verification without harness acceptance"
+                                );
+                                let _ = send_event(
+                                    sdk_out_tx,
+                                    json!({
+                                        "kind": "delivery_unconfirmed",
+                                        "name": name,
+                                        "delivery_id": delivery_id,
+                                        "event_id": event_id,
+                                        "reason": "PTY delivery verification did not prove harness acceptance",
+                                        "verification": verification,
+                                    }),
+                                )
+                                .await;
+                                return;
+                            }
                             let reason = payload.get("reason").and_then(Value::as_str);
                             tracing::debug!(
                                 target = "agent_relay::broker",
@@ -1096,6 +1123,14 @@ impl BrokerRuntime {
                                         &name,
                                         "stuck",
                                         Some("blocked_on_send"),
+                                    )
+                                    .await;
+                                } else {
+                                    publish_agent_state_transition(
+                                        ws_control_tx,
+                                        &name,
+                                        "working",
+                                        Some("delivery_failed"),
                                     )
                                     .await;
                                 }
