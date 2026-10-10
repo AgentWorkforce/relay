@@ -26,7 +26,7 @@ env:
 
 jobs:
   test-install:
-    if: (github.event_name != 'pull_request' && github.event_name != 'pull_request_target') || (github.head_ref == 'trunk' && github.event.pull_request.head.repo.full_name == github.repository && github.base_ref == 'main')
+    if: (github.event_name != 'pull_request' && github.event_name != 'pull_request_target') || github.event.pull_request.head.repo.full_name == github.repository
     name: Test on ${{ matrix.os }} (${{ matrix.node }})
     runs-on: ${{ matrix.os }}
     strategy:
@@ -183,7 +183,7 @@ jobs:
 
   # Test fallback when gunzip is not available
   test-no-gunzip:
-    if: (github.event_name != 'pull_request' && github.event_name != 'pull_request_target') || (github.head_ref == 'trunk' && github.event.pull_request.head.repo.full_name == github.repository && github.base_ref == 'main')
+    if: (github.event_name != 'pull_request' && github.event_name != 'pull_request_target') || github.event.pull_request.head.repo.full_name == github.repository
     name: Test without gunzip
     runs-on: ubuntu-latest
 
@@ -228,7 +228,7 @@ jobs:
           '
 
   test-install-alpine:
-    if: (github.event_name != 'pull_request' && github.event_name != 'pull_request_target') || (github.head_ref == 'trunk' && github.event.pull_request.head.repo.full_name == github.repository && github.base_ref == 'main')
+    if: (github.event_name != 'pull_request' && github.event_name != 'pull_request_target') || github.event.pull_request.head.repo.full_name == github.repository
     name: Test on Alpine Linux
     runs-on: ubuntu-latest
 
@@ -268,7 +268,7 @@ jobs:
           '
 
   test-install-fedora:
-    if: (github.event_name != 'pull_request' && github.event_name != 'pull_request_target') || (github.head_ref == 'trunk' && github.event.pull_request.head.repo.full_name == github.repository && github.base_ref == 'main')
+    if: (github.event_name != 'pull_request' && github.event_name != 'pull_request_target') || github.event.pull_request.head.repo.full_name == github.repository
     name: Test on Fedora
     runs-on: ubuntu-latest
 
@@ -304,7 +304,7 @@ jobs:
 
   # Test script syntax and edge cases
   test-script-quality:
-    if: (github.event_name != 'pull_request' && github.event_name != 'pull_request_target') || (github.head_ref == 'trunk' && github.event.pull_request.head.repo.full_name == github.repository && github.base_ref == 'main')
+    if: (github.event_name != 'pull_request' && github.event_name != 'pull_request_target') || github.event.pull_request.head.repo.full_name == github.repository
     name: Script Quality Checks
     runs-on: ubuntu-latest
 
@@ -352,7 +352,7 @@ jobs:
     needs: [test-install, test-install-alpine, test-install-fedora, test-no-gunzip, test-script-quality]
     runs-on: ubuntu-latest
     if: >-
-      ((github.event_name != 'pull_request' && github.event_name != 'pull_request_target') || (github.head_ref == 'trunk' && github.event.pull_request.head.repo.full_name == github.repository && github.base_ref == 'main')) &&
+      ((github.event_name != 'pull_request' && github.event_name != 'pull_request_target') || github.event.pull_request.head.repo.full_name == github.repository) &&
       (always())
 
     steps:
