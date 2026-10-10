@@ -301,6 +301,11 @@ agent-relay message dm send api-worker "Detailed task instructions"
 # injection and may interrupt active work. A send ID confirms enqueue only;
 # use `message inbox get_readers <id>` to confirm that the recipient consumed it.
 agent-relay message dm send api-worker "Please check Relay now." --mode steer
+# Attach files (repeatable --file) to a DM, a channel post, or a group DM.
+agent-relay message dm send api-worker "Repro screenshot" --file ./shot.png
+agent-relay message file upload ./shot.png --channel ops --text "Build is red"
+# Save an attachment you received (its file_id) and print the local path.
+agent-relay message file download <file_id>
 agent-relay message inbox check --limit 20
 agent-relay fleet release api-worker --reason "Work accepted"
 ```
@@ -311,6 +316,23 @@ set `RELAY_AGENT_TOKEN` to the token returned by
 `agent-relay agent register <lead-name>`. `fleet spawn --sandbox` needs a Cloud
 login (`agent-relay cloud login`) but does not need an agent token: when one is
 absent, it creates and removes a short-lived launcher identity automatically.
+
+A targeted spawn waits for the node to confirm the launch, for six minutes by
+default (`--confirm-timeout <ms>`, minimum 95000). Agents that take minutes to
+register are confirmed inside that window rather than reported as unconfirmed.
+If the window does expire, the error carries the invocation id: read that
+dispatch instead of spawning again, because a retry under the same name
+collides with a worker that may still be starting.
+
+```bash
+agent-relay fleet spawn-status inv_01J...
+```
+
+The reply's `placement.state` separates the outcomes: `ready` (launched and
+confirmed), `failed` (the node reported a terminal failure), `accepted`
+(launched, readiness unverified), and `unconfirmed_may_be_running` (the node
+still has not reported — not evidence that nothing started). Polling never
+dispatches another agent.
 
 Without placement options, `fleet spawn` connects to the local project's broker
 and passes the caller's exact directory, including a nested package, to the
@@ -605,3 +627,22 @@ Hosted equivalents live under `agent-relay cloud …`.
 - `@agent-relay/sdk`: messaging, delivery contracts, and actions.
 - `@agent-relay/harness-driver`: optional managed harness runtime.
 - `agent-relay`: CLI and MCP entry point.
+
+### Pending fleet spawns and name reuse
+
+An accepted spawn whose result is still unknown returns `spawn_unconfirmed` with
+`state: "pending"` (exit 8), plus its invocation ID and dispatch state when
+known and any available liveness evidence. Check
+`agent-relay fleet agent list --node <node>` before retrying. A heartbeat that
+lists a worker with the requested name is reported as evidence but keeps the
+spawn pending: heartbeats carry worker names, not invocation IDs, so that worker
+may have been running before this spawn. Heartbeat snapshots can change between
+listings; JSON output includes their timestamps and ages.
+
+If no worker is running and you intend to reclaim the name, run
+`agent-relay agent remove <name> --wait` before respawning. Waiting is opt-in;
+`--wait-timeout <ms>` defaults to 30000, followed by one bounded membership read.
+`fleet release <name> --delete-agent --wait` offers the same check and adds
+`removal` evidence to its JSON. A remaining registration exits 8; unavailable
+verification reads retain the asynchronous acknowledgement. A name collision
+can also mean cleanup from a previous unsuccessful spawn is still in flight.

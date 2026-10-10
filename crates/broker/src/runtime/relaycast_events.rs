@@ -171,7 +171,9 @@ pub(super) fn relaycast_spawn_spec_session_id(
         })
 }
 
-fn relaycast_harness_config(value: &Value) -> Result<Option<ResolvedHarnessConfig>, String> {
+pub(super) fn relaycast_harness_config(
+    value: &Value,
+) -> Result<Option<ResolvedHarnessConfig>, String> {
     let agent = value.get("agent");
     let harness_id = agent
         .and_then(|agent| {
@@ -798,6 +800,9 @@ pub(super) async fn spawn_worker_from_request(
         );
     }
     crate::worker::validate_muse_startup_prompt_for_spec(&spec, effective_task.as_deref())?;
+    // Measure the task as it will be injected, after the exit contract and
+    // skill prefix, and before registering or launching anything.
+    crate::worker::validate_pty_initial_task_size(&spec, effective_task.as_deref())?;
 
     // Pre-register an agent token for every spawned worker.
     // The Agent Relay MCP server needs RELAY_AGENT_TOKEN +
@@ -936,7 +941,12 @@ pub(super) async fn spawn_worker_from_request(
                             }
                             Some(token)
                         }
-                        Err(error) => anyhow::bail!("WS spawn registration failed: {error:?}"),
+                        Err(
+                            RegRetryOutcome::RetryableExhausted(error)
+                            | RegRetryOutcome::Fatal(error),
+                        ) => {
+                            anyhow::bail!("{}", format_worker_preregistration_error(&name, &error));
+                        }
                     }
                 }
             }
@@ -1126,6 +1136,19 @@ pub(super) async fn spawn_worker_from_request(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn duplicate_registration_keeps_already_exists_for_debug_log_classification() {
+        let error = ::relaycast::AgentRegistrationError::AlreadyExists {
+            agent_name: "worker-a".to_string(),
+        };
+        let message = format_worker_preregistration_error("worker-a", &error);
+        assert!(message.contains("already exists"), "{message}");
+        assert!(message.contains("worker-a"));
+        assert!(!message.contains("Fatal("));
+        assert!(!message.contains("AlreadyExists"));
+    }
+
     use crate::terminal_control::TerminalToCloud;
     use ::relaycast::WsEvent;
 
