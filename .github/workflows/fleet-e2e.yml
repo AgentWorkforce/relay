@@ -73,7 +73,7 @@ jobs:
         with:
           persist-credentials: false
           repository: AgentWorkforce/relaycast
-          ref: a5c7ac66f64a650274fbe2c60e3cd5d3c9b87dcd # relaycast#387: verified served-node spawn completion
+          ref: 716baa88dcafb91481b4bbd0e1d640352e416834 # relaycast#452: agent@machine addressing on POST /v1/dm
           path: relaycast-engine
 
       - name: Setup Node.js
