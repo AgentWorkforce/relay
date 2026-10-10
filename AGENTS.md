@@ -313,4 +313,3 @@ Your trajectory helps others understand:
 Future agents can query past trajectories to learn from your decisions.
 
 <!-- prpm:snippet:end @agent-workforce/trail-snippet@1.1.2 -->
-
