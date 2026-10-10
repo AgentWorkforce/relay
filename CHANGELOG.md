@@ -5,7 +5,13 @@ All notable changes to Agent Relay will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
+## [Unreleased - Minor]
+
+### Fixed
+
+- Broker-managed PTY messages now stay pending until the harness accepts them, instead of being acknowledged while still parked in the composer.
+- A PTY delivery the harness never accepts blocks further sends to that agent and is retried by pressing submit only, never by resending the body, for up to three total attempts before it is reported as failed.
+- Typing into an agent's terminal while a delivery is being retried takes over the terminal and cancels the retries.
 
 ## [13.2.0] - 2026-10-08
 
@@ -77,7 +83,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Fixed
 
 - Broker fleet control keeps a healthy node WebSocket open when Relaycast returns retryable `d1_pressure` for `node.register` or `inventory.sync`, retrying the same frame with bounded exponential backoff while the existing registration and application-liveness deadlines remain fail-closed.
-- Broker-managed PTY messages now remain pending until the harness accepts them; failed delivery blocks further sends, with up to two submit-only retries (three total attempts) instead of silently parked input. Codex recovery uses `End`, a distinct carriage return, and a guarded line-feed fallback without replaying the body; human input takes ownership and cancels recovery. Upgrade and restart brokers and PTY agents for the planned 13.2.0 rollout.
 - `--state-dir` on `node agent` commands, `node status`, and `node down` also accepts a fleet node directory whose broker state lives in `state/`.
 - An explicit `--state-dir` on `node agent` commands is no longer overridden by `RELAY_BROKER_URL` / `RELAY_BROKER_API_KEY`.
 - "No broker connection" errors name the path searched and whether it was the project default or `--state-dir`, instead of implying a running broker is down.
