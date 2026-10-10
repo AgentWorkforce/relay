@@ -11,6 +11,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - `agent-relay integration subscribe --to self` routes provider events to the broker worker's registered identity, allowing fleet workers to subscribe without desktop session detection.
 
+### Fixed
+
+- `agent-relay fleet spawn` explains how to reuse a retained agent name with `fleet release <name> --delete-agent --wait` when registration fails with `agent_already_exists`.
+
 ## [13.3.0] - 2026-10-10
 
 ### Added
