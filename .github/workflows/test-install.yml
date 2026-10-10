@@ -53,8 +53,8 @@ jobs:
             node: 'no-node'
             arch: x64
 
-          # Ubuntu - Old LTS (20.04)
-          - os: ubuntu-20.04
+          # Ubuntu - Old LTS (22.04; GitHub retired the 20.04 image, so jobs on it never start)
+          - os: ubuntu-22.04
             node: 'with-node'
             arch: x64
 
