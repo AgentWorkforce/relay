@@ -597,6 +597,25 @@ RELAYFILE_LOCAL_DIR="$PWD/.integrations" relayfile status
 RELAYFILE_LOCAL_DIR="$PWD/.integrations" relayfile writeback status
 ```
 
+Fleet workers can subscribe to provider feedback using their broker-assigned
+identity, including workers that the desktop session socket rejects with
+`not_a_relay_session`:
+
+```bash
+agent-relay integration subscribe github \
+  --resource '/github/repos/AgentWorkforce/relay/pulls/123/**' \
+  --to self --no-input
+```
+
+`--to self` resolves `RELAY_AGENT_NAME` and uses the existing server-side agent
+subscription channel. It requires a connected provider, a compatible Relayfile
+daemon, and workspace-owner credentials, supplied to broker workers through their
+environment. An agent token alone cannot provision subscriptions. This route does
+not depend on desktop Claude/Codex session discovery. From outside the worker,
+use `--to @worker-name` with the same workspace credentials. Events reach the
+worker through Relay's normal broker delivery; wait for pushed feedback instead
+of polling `gh`. `--to self` cannot be combined with `--spawn`.
+
 `local` remains as a deprecated hidden alias of `node` (it prints a one-time warning).
 
 Node workflow runs use Relayflows for YAML, TypeScript, and Python workflow files.
