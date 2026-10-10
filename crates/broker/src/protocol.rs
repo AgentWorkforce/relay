@@ -679,6 +679,12 @@ pub enum WorkerToBroker {
     DeliveryFailed {
         delivery_id: DeliveryId,
         event_id: EventId,
+        /// Terminal and never replayed. PTY injection adds
+        /// "prompt_unproven" (no composer was recognized in time),
+        /// "body remained parked after bounded submit-key recovery",
+        /// "harness acceptance could not be proven" (neither parked nor
+        /// accepted, so not evidence of loss) and "injection_too_large: …"
+        /// (rejected before any byte was written).
         reason: String,
     },
     WorkerStream {

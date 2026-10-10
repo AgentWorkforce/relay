@@ -907,6 +907,7 @@ impl WorkerRegistry {
             anyhow::bail!("agent '{}' already exists", spec.name);
         }
         validate_muse_startup_prompt_for_spec(&spec, initial_task.as_deref())?;
+        validate_pty_initial_task_size(&spec, initial_task.as_deref())?;
 
         tracing::info!(
             target = "broker::spawn",
@@ -2487,11 +2488,9 @@ pub(crate) fn validate_muse_startup_prompt(cli: &str, task: Option<&str>) -> Res
 /// Resolve the command that a PTY spec will actually launch before validating
 /// its Muse prompt. Explicit PTY harness configs own the executable; ordinary
 /// PTY specs use `spec.cli`.
-pub(crate) fn validate_muse_startup_prompt_for_spec(
-    spec: &AgentSpec,
-    task: Option<&str>,
-) -> Result<()> {
-    let cli = match spec.harness_config.as_ref() {
+/// The PTY command a spec will launch, if it is a PTY spawn.
+fn pty_cli_for_spec(spec: &AgentSpec) -> Result<Option<String>> {
+    Ok(match spec.harness_config.as_ref() {
         Some(ResolvedHarnessConfig::Pty(config)) => Some(
             parse_cli_command(&config.command)
                 .with_context(|| format!("invalid harness command '{}'", config.command))?
@@ -2506,9 +2505,31 @@ pub(crate) fn validate_muse_startup_prompt_for_spec(
             None => None,
         },
         _ => None,
-    };
-    match cli {
+    })
+}
+
+pub(crate) fn validate_muse_startup_prompt_for_spec(
+    spec: &AgentSpec,
+    task: Option<&str>,
+) -> Result<()> {
+    match pty_cli_for_spec(spec)? {
         Some(cli) => validate_muse_startup_prompt(&cli, task),
+        None => Ok(()),
+    }
+}
+
+/// Reject, before launch, a PTY initial task whose final (decorated) body
+/// cannot fit the injection envelope. Muse takes its task in argv, so only
+/// injected tasks are measured (relay#1893 review).
+pub(crate) fn validate_pty_initial_task_size(spec: &AgentSpec, task: Option<&str>) -> Result<()> {
+    let (Some(cli), Some(task)) = (pty_cli_for_spec(spec)?, task) else {
+        return Ok(());
+    };
+    if muse_startup_prompt(&cli.to_ascii_lowercase(), Some(task)).is_some() {
+        return Ok(());
+    }
+    match crate::injection_wire::task_too_large_error(task) {
+        Some(error) => anyhow::bail!(error),
         None => Ok(()),
     }
 }
@@ -4811,6 +4832,46 @@ sleep 30
             validate_muse_startup_prompt_for_spec(&spec, Some(&oversized)).is_err(),
             "inline Muse commands must not bypass argv prompt validation"
         );
+    }
+
+    #[test]
+    fn pty_initial_task_size_is_measured_only_for_injected_tasks() {
+        let spec = |cli: &str, runtime: AgentRuntime| AgentSpec {
+            name: WorkerName::from("size-check"),
+            runtime,
+            provider: None,
+            cli: Some(cli.to_string()),
+            session_id: None,
+            harness_config: None,
+            model: None,
+            cwd: None,
+            team: None,
+            shadow_of: None,
+            shadow_mode: None,
+            args: Vec::new(),
+            channels: Vec::new(),
+            restart_policy: None,
+        };
+        let fits = "x".repeat(crate::injection_wire::MAX_BODY_BYTES);
+        let over = "x".repeat(crate::injection_wire::MAX_BODY_BYTES + 1);
+        assert!(
+            validate_pty_initial_task_size(&spec("codex", AgentRuntime::Pty), Some(&fits)).is_ok()
+        );
+        let error =
+            validate_pty_initial_task_size(&spec("codex --yolo", AgentRuntime::Pty), Some(&over))
+                .expect_err("an injected task over the body cap is rejected")
+                .to_string();
+        assert!(error.starts_with("spawn_task_too_large: "), "{error}");
+        // Muse receives its task in argv, and native runtimes are not injected.
+        assert!(
+            validate_pty_initial_task_size(&spec("muse", AgentRuntime::Pty), Some(&over)).is_ok()
+        );
+        assert!(validate_pty_initial_task_size(
+            &spec("codex", AgentRuntime::Headless),
+            Some(&over)
+        )
+        .is_ok());
+        assert!(validate_pty_initial_task_size(&spec("codex", AgentRuntime::Pty), None).is_ok());
     }
 
     #[test]
