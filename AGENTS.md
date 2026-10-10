@@ -315,6 +315,7 @@ Future agents can query past trajectories to learn from your decisions.
 <!-- prpm:snippet:end @agent-workforce/trail-snippet@1.1.2 -->
 
 <!-- prpm:snippet:start @agent-relay/merge-train-snippet@1.0.1 -->
+
 ## Merging: `trunk` + the `mergeable` label
 
 CI suites do **not** run automatically on feature branches. They run only on
@@ -326,21 +327,24 @@ run on any branch. (Repos whose default branch is not
 agent batches ready PRs into `trunk`, gets that one PR green, and merges it.
 
 **When you open a PR**
+
 1. Branch from `trunk` and open the PR with **base `trunk`**, not `main`.
    A PR into `main` from any other branch fails the `Trunk guard` check.
 2. No CI runs on your PR, so verify locally before calling it ready: run the
    typecheck, tests and lint this repo uses, and list the exact commands and
    results in the PR body.
 
-**When the PR is ready**
-3. Add the label **`mergeable`** once all of these are true:
-   - The change is complete and the local checks above pass.
-   - Review feedback (human and bot) is addressed or answered.
-   - It is not a draft and does not depend on an unmerged PR.
+**When the PR is ready** 3. Add the label **`mergeable`** once all of these are true:
+
+- The change is complete and the local checks above pass.
+- Review feedback (human and bot) is addressed or answered.
+- It is not a draft and does not depend on an unmerged PR.
+
 4. Remove `mergeable` if the PR stops being ready (new work, a failing check, a
    blocking question). The label is read live from GitHub on every sweep.
 
 **What you must not do**
+
 - Do not merge your own PR, and never merge into or push to `trunk` or `main`
   directly.
 - Do not re-enable CI for feature branches or edit the `trunk` gates in
@@ -355,4 +359,5 @@ to rebase on `trunk`; do so and keep the label.
 
 > Interim: the sweep worker is not deployed yet. Until it is, a human or a
 > designated agent performs the merge-agent steps manually. Labelling is unchanged.
+
 <!-- prpm:snippet:end @agent-relay/merge-train-snippet@1.0.1 -->

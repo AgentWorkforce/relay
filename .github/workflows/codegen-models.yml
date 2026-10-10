@@ -4,8 +4,7 @@ on:
   push:
     paths:
       - 'packages/utils/cli-registry.yaml'
-    branches:
-      [main]
+    branches: [main]
   pull_request:
     paths:
       - 'packages/utils/cli-registry.yaml'
