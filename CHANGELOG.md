@@ -9,7 +9,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
-- Broker-managed PTY messages now stay pending until the harness accepts them instead of being acknowledged while still parked in the composer. A delivery that is never accepted blocks further sends to that agent, gets up to two submit-only retries without resending the body, and is then reported as failed; typing into the agent's terminal takes over and cancels the retries.
+- Broker-managed PTY messages now stay pending until the harness accepts them, instead of being acknowledged while still parked in the composer.
+- A PTY delivery the harness never accepts blocks further sends to that agent and is retried by pressing submit only, never by resending the body, for up to three total attempts before it is reported as failed.
+- Typing into an agent's terminal while a delivery is being retried takes over the terminal and cancels the retries.
 
 ## [13.2.0] - 2026-10-08
 

@@ -415,8 +415,10 @@ function sendFrame(child, frame) {
 
 function option(name, fallback) {
   const index = process.argv.indexOf(name);
-  const value = index >= 0 ? process.argv[index + 1] : undefined;
-  return value === undefined || value.startsWith('--') ? fallback : value;
+  if (index < 0) return fallback;
+  const value = process.argv[index + 1];
+  if (value === undefined || value.startsWith('--')) throw new Error(`${name} requires a value.`);
+  return value;
 }
 
 async function assertExecutable(candidate, name) {
