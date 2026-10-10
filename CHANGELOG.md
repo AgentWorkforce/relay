@@ -5,14 +5,17 @@ All notable changes to Agent Relay will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased - Patch]
+## [Unreleased - Minor]
 
 ### Added
 
+- `agent-relay integration subscribe --to self` routes provider events to the broker worker's registered identity, allowing fleet workers to subscribe without desktop session detection.
 - Broker events report PTY submit recovery: `delivery_unconfirmed` (the harness has not accepted a write yet, with `attempts` / `max_attempts`) and `delivery_resubmitted` (a submit-only retry, with `attempt` and `strategy`); `delivery_verified` adds `evidence` and `attempts`. `@agent-relay/harness-driver` and the Python and Swift SDK protocol types include both new events.
 
 ### Fixed
 
+- `agent-relay fleet spawn` explains how to reuse a retained agent name with `fleet release <name> --delete-agent --wait` when registration fails with `agent_already_exists`.
+- The installer's Quick Start now prints `agent-relay node up --background` and `agent-relay node down`, which exist, instead of the removed `agent-relay up` form that failed with "unknown command 'up'". An install pinned with `AGENT_RELAY_VERSION` to a release older than 9.2.2 still prints the top-level `up`/`down` forms that release has.
 - Broker-managed PTY messages now stay pending until the harness accepts them, instead of being acknowledged while still parked in the composer.
 - A PTY delivery the harness never accepts blocks further sends to that agent and is retried by pressing submit only, never by resending the body, for up to three total attempts before it is reported as failed.
 - Typing into an agent's terminal while a delivery is being retried takes over the terminal and cancels the retries.

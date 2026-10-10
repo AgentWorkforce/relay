@@ -249,6 +249,25 @@ function throwForTerminalSpawnFailure(invocation: Record<string, unknown>, name:
   throw classifySpawnFailure(message) ? nameTakenSpawnError(name, error) : error;
 }
 
+// Keep placement codes, receipts and cleanup behavior intact while explaining
+// why releasing a process alone does not make its Relaycast name reusable.
+async function runFleetSpawn(deps: SdkCommandDeps, fn: () => Promise<void>): Promise<void> {
+  await runSdk(deps, async () => {
+    try {
+      await fn();
+    } catch (error) {
+      if (error instanceof Error && /\bagent_already_exists\b/.test(error.message)) {
+        error.message +=
+          ' Fleet release keeps the Relaycast identity unless --delete-agent is passed.' +
+          ' To free a name you own, run `agent-relay fleet release <name> --delete-agent --wait`' +
+          ' in the same workspace, then retry spawning once it reports clearance. This permanently' +
+          ' deletes the identity and retires its provider bindings.';
+      }
+      throw error;
+    }
+  });
+}
+
 export interface FleetCommandDependencies {
   core: CoreDependencies;
   sdk: SdkCommandDeps;
@@ -568,7 +587,7 @@ export function registerFleetCommands(
         '360000'
       )
   ).action(async (cli: string, options: Record<string, unknown>) => {
-    await runSdk(deps.sdk, async () => {
+    await runFleetSpawn(deps.sdk, async () => {
       const clientOptions = sdkOptionsFromOpts(options);
       const name = requiredText(options.name, 'Worker name');
       const task = (await readTaskInput(options.task, options.taskFile, true, { cli }))!;
@@ -1370,7 +1389,7 @@ export function registerFleetCommands(
       .description('Release a spawned fleet agent')
       .argument('<name>', 'Worker agent name')
       .option('--reason <reason>', 'Release reason')
-      .option('--delete-agent', 'Permanently delete the agent after release')
+      .option('--delete-agent', 'Permanently delete the agent after release so its name can be reused')
       .option('--wait', 'With --delete-agent, wait for registration clearance', false)
       .option('--no-wait', 'Return after release is accepted')
       .option('--wait-timeout <ms>', 'Registration clearance timeout', '30000')
