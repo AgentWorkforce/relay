@@ -6,7 +6,9 @@ on:
 
 jobs:
   cancel:
-    if: github.event.pull_request.merged == true
+    if: >-
+      ((github.event_name != 'pull_request' && github.event_name != 'pull_request_target') || github.head_ref == 'trunk') &&
+      (github.event.pull_request.merged == true)
     runs-on: ubuntu-latest
     steps:
       - name: Cancel running workflows for this PR

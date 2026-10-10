@@ -21,13 +21,13 @@ env:
 
 jobs:
   changes:
-    if: (github.event_name != 'pull_request' && github.event_name != 'pull_request_target') || (github.head_ref == 'trunk' && github.event.pull_request.head.repo.full_name == github.repository && github.base_ref == 'main')
+    if: (github.event_name != 'pull_request' && github.event_name != 'pull_request_target') || github.head_ref == 'trunk'
     uses: ./.github/workflows/detect-changes.yml
 
   test:
     needs: changes
     if: >-
-      ((github.event_name != 'pull_request' && github.event_name != 'pull_request_target') || (github.head_ref == 'trunk' && github.event.pull_request.head.repo.full_name == github.repository && github.base_ref == 'main')) &&
+      ((github.event_name != 'pull_request' && github.event_name != 'pull_request_target') || github.head_ref == 'trunk') &&
       (needs.changes.outputs.node_changed == 'true')
     runs-on: ${{ matrix.os }}
     strategy:
@@ -65,7 +65,7 @@ jobs:
     name: Windows credential ACL validation
     needs: changes
     if: >-
-      ((github.event_name != 'pull_request' && github.event_name != 'pull_request_target') || (github.head_ref == 'trunk' && github.event.pull_request.head.repo.full_name == github.repository && github.base_ref == 'main')) &&
+      ((github.event_name != 'pull_request' && github.event_name != 'pull_request_target') || github.head_ref == 'trunk') &&
       (needs.changes.outputs.node_changed == 'true')
     runs-on: windows-latest
     steps:
@@ -98,7 +98,7 @@ jobs:
     name: Coverage (upload)
     needs: changes
     if: >-
-      ((github.event_name != 'pull_request' && github.event_name != 'pull_request_target') || (github.head_ref == 'trunk' && github.event.pull_request.head.repo.full_name == github.repository && github.base_ref == 'main')) &&
+      ((github.event_name != 'pull_request' && github.event_name != 'pull_request_target') || github.head_ref == 'trunk') &&
       (needs.changes.outputs.node_changed == 'true')
     runs-on: ubuntu-latest
     steps:
@@ -128,7 +128,7 @@ jobs:
   lint:
     needs: changes
     if: >-
-      ((github.event_name != 'pull_request' && github.event_name != 'pull_request_target') || (github.head_ref == 'trunk' && github.event.pull_request.head.repo.full_name == github.repository && github.base_ref == 'main')) &&
+      ((github.event_name != 'pull_request' && github.event_name != 'pull_request_target') || github.head_ref == 'trunk') &&
       (needs.changes.outputs.node_changed == 'true')
     runs-on: ubuntu-latest
     steps:
@@ -157,7 +157,7 @@ jobs:
     name: Swift SDK Tests
     needs: changes
     if: >-
-      ((github.event_name != 'pull_request' && github.event_name != 'pull_request_target') || (github.head_ref == 'trunk' && github.event.pull_request.head.repo.full_name == github.repository && github.base_ref == 'main')) &&
+      ((github.event_name != 'pull_request' && github.event_name != 'pull_request_target') || github.head_ref == 'trunk') &&
       (needs.changes.outputs.sdk_swift_changed == 'true')
     runs-on: macos-latest
     defaults:
