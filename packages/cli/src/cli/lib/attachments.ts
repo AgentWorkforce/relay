@@ -115,20 +115,23 @@ async function ensurePlainDefaultDirectory(fileId: string): Promise<{ path: stri
     } catch (error) {
       if ((error as NodeJS.ErrnoException).code !== 'EEXIST') throw error;
     }
-    const info = await lstat(currentPath).catch(() => undefined);
-    if (!info?.isDirectory() || info.isSymbolicLink()) {
-      throw new Error(`Cannot save attachment ${fileId}: default destination contains a symlink.`);
-    }
-    const resolved = await realpath(currentPath);
     const expected = path.join(currentReal, segment);
-    if (resolved !== expected) {
-      throw new Error(`Cannot save attachment ${fileId}: default destination escaped its root.`);
-    }
     if (process.platform !== 'win32') {
-      const directory = await open(
-        currentPath,
-        constants.O_RDONLY | constants.O_DIRECTORY | constants.O_NOFOLLOW
-      );
+      let directory;
+      try {
+        directory = await open(
+          currentPath,
+          constants.O_RDONLY | constants.O_DIRECTORY | constants.O_NOFOLLOW
+        );
+      } catch (error) {
+        const code = (error as NodeJS.ErrnoException).code;
+        if (code === 'ELOOP' || code === 'ENOTDIR') {
+          throw new Error(`Cannot save attachment ${fileId}: default destination contains a symlink.`, {
+            cause: error,
+          });
+        }
+        throw error;
+      }
       try {
         const [opened, visible, pinnedReal] = await Promise.all([
           directory.stat(),
@@ -150,11 +153,21 @@ async function ensurePlainDefaultDirectory(fileId: string): Promise<{ path: stri
         if ((privateInfo.mode & 0o077) !== 0) {
           throw new Error(`Cannot save attachment ${fileId}: default destination is not private.`);
         }
+        currentReal = pinnedReal;
       } finally {
         await directory.close();
       }
+    } else {
+      const info = await lstat(currentPath).catch(() => undefined);
+      if (!info?.isDirectory() || info.isSymbolicLink()) {
+        throw new Error(`Cannot save attachment ${fileId}: default destination contains a symlink.`);
+      }
+      const resolved = await realpath(currentPath);
+      if (resolved !== expected) {
+        throw new Error(`Cannot save attachment ${fileId}: default destination escaped its root.`);
+      }
+      currentReal = resolved;
     }
-    currentReal = resolved;
   }
   return { path: currentPath, real: currentReal };
 }
