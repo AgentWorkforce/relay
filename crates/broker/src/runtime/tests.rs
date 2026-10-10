@@ -4440,6 +4440,156 @@ async fn stale_recovery_progress_does_not_block_the_worker() {
     cleanup_worker_registry(fixture.runtime.workers).await;
 }
 
+fn delivery_verified_worker_event(
+    name: &str,
+    generation: Uuid,
+    delivery_id: &str,
+    event_id: &str,
+    verification: Option<&str>,
+) -> WorkerEvent {
+    let mut payload = json!({
+        "delivery_id": delivery_id,
+        "event_id": event_id,
+    });
+    if let Some(verification) = verification {
+        payload["verification"] = json!(verification);
+    }
+    WorkerEvent::Message {
+        name: WorkerName::from(name),
+        generation,
+        value: json!({ "type": "delivery_verified", "payload": payload }),
+    }
+}
+
+#[tokio::test]
+async fn terminal_failure_without_remaining_work_does_not_block_the_worker() {
+    let worker_name = "worker-a";
+    let registry = make_worker_registry_with_worker(worker_name).await;
+    let generation = registry.workers[worker_name].generation;
+    let delivery_id = DeliveryId::new("del_terminal_failure_only");
+    let pending = make_pending_delivery(delivery_id.as_str(), worker_name);
+    let event_id = pending.delivery.event_id.clone();
+    let mut fixture =
+        worker_event_runtime_fixture(registry, HashMap::from([(delivery_id.clone(), pending)]));
+
+    fixture
+        .runtime
+        .handle_worker_event(delivery_lifecycle_worker_event(
+            worker_name,
+            generation,
+            "delivery_failed",
+            delivery_id.as_str(),
+            event_id.as_str(),
+        ))
+        .await;
+
+    assert!(!fixture
+        .runtime
+        .pending_deliveries
+        .contains_key(&delivery_id));
+    assert_eq!(
+        fixture.runtime.workers.workers[worker_name].state,
+        AgentWorkState::Working,
+        "a dead-lettered delivery with no remaining work must not pin blocked_on_send"
+    );
+    let mut kinds = Vec::new();
+    while let Ok(frame) = fixture._sdk_out_rx.try_recv() {
+        if let Some(kind) = frame.payload.get("kind").and_then(Value::as_str) {
+            kinds.push(kind.to_string());
+        }
+    }
+    assert!(kinds.iter().any(|kind| kind == "delivery_failed"));
+    assert!(!kinds.iter().any(|kind| kind == "agent_blocked_on_send"));
+    cleanup_worker_registry(fixture.runtime.workers).await;
+}
+
+#[tokio::test]
+async fn terminal_failure_with_remaining_work_stays_blocked_on_send() {
+    let worker_name = "worker-a";
+    let registry = make_worker_registry_with_worker(worker_name).await;
+    let generation = registry.workers[worker_name].generation;
+    let failed_id = DeliveryId::new("del_terminal_failure_first");
+    let waiting_id = DeliveryId::new("del_terminal_failure_waiting");
+    let failed = make_pending_delivery(failed_id.as_str(), worker_name);
+    let waiting = make_pending_delivery(waiting_id.as_str(), worker_name);
+    let event_id = failed.delivery.event_id.clone();
+    let mut fixture = worker_event_runtime_fixture(
+        registry,
+        HashMap::from([(failed_id.clone(), failed), (waiting_id.clone(), waiting)]),
+    );
+
+    fixture
+        .runtime
+        .handle_worker_event(delivery_lifecycle_worker_event(
+            worker_name,
+            generation,
+            "delivery_failed",
+            failed_id.as_str(),
+            event_id.as_str(),
+        ))
+        .await;
+
+    assert_eq!(
+        fixture.runtime.workers.workers[worker_name].state,
+        AgentWorkState::BlockedOnSend
+    );
+    cleanup_worker_registry(fixture.runtime.workers).await;
+}
+
+#[tokio::test]
+async fn pty_delivery_verified_requires_harness_acceptance() {
+    let worker_name = "worker-a";
+    let registry = make_worker_registry_with_worker(worker_name).await;
+    let generation = registry.workers[worker_name].generation;
+    let delivery_id = DeliveryId::new("del_legacy_verification");
+    let pending = make_pending_delivery(delivery_id.as_str(), worker_name);
+    let event_id = pending.delivery.event_id.clone();
+    let mut fixture =
+        worker_event_runtime_fixture(registry, HashMap::from([(delivery_id.clone(), pending)]));
+
+    for legacy in [Some("echo"), Some("timeout_fallback"), None] {
+        fixture
+            .runtime
+            .handle_worker_event(delivery_verified_worker_event(
+                worker_name,
+                generation,
+                delivery_id.as_str(),
+                event_id.as_str(),
+                legacy,
+            ))
+            .await;
+        assert!(
+            fixture
+                .runtime
+                .pending_deliveries
+                .contains_key(&delivery_id),
+            "PTY verification {legacy:?} must not clear delivery custody"
+        );
+    }
+    while let Ok(frame) = fixture._sdk_out_rx.try_recv() {
+        assert_ne!(
+            frame.payload.get("kind").and_then(Value::as_str),
+            Some("message_delivery_confirmed")
+        );
+    }
+
+    fixture
+        .runtime
+        .handle_worker_event(delivery_verified_worker_event(
+            worker_name,
+            generation,
+            delivery_id.as_str(),
+            event_id.as_str(),
+            Some("harness_acceptance"),
+        ))
+        .await;
+    assert!(!fixture
+        .runtime
+        .pending_deliveries
+        .contains_key(&delivery_id));
+    cleanup_worker_registry(fixture.runtime.workers).await;
+}
+
 #[tokio::test]
 async fn submit_recovery_progress_defers_broker_delivery_retry() {
     let worker_name = "worker-a";
