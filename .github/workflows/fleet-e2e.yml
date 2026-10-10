@@ -9,13 +9,12 @@ name: Fleet E2E
 # engine build), which rust-cache amortises on warm runs. The 20-minute job
 # timeout is a cold-build ceiling, not the matrix runtime.
 
-# NOTE on branches: the fleet stack is developed on `feat/fleet-*` branches that
-# merge into each other before `main`, so the trigger must include them — gating
-# on `[main]` alone leaves this job inert for the entire feature stack (it would
-# only run after something reaches main). Update to `[main]` once the stack lands.
+# NOTE on branches: CI runs on pull requests into `main` from this repository
+# (see the job `if:`) and on pushes to `main`. Feature branches, including
+# `feat/fleet-*`, get it through their PR, not through push runs.
 on:
   push:
-    branches: [main, 'feat/fleet-**']
+    branches: [main]
     paths:
       - 'packages/fleet/**'
       - 'packages/cli/**'
@@ -54,6 +53,7 @@ env:
 
 jobs:
   fleet-e2e:
+    if: (github.event_name != 'pull_request' && github.event_name != 'pull_request_target') || github.event.pull_request.head.repo.full_name == github.repository
     name: Two-node fleet matrix
     runs-on: ubuntu-latest
     timeout-minutes: 20
