@@ -5510,6 +5510,7 @@ describe('fleet spawn-status', () => {
 
   it('mints and releases a temporary reader for spawn-status with workspace credentials', async () => {
     vi.stubEnv('RELAY_AGENT_TOKEN', '');
+    vi.stubEnv('RELAY_BASE_URL', 'https://relay.isolated.test');
     const register = vi.fn(async () => ({ token: 'at_reader' }));
     const release = vi.fn(async () => undefined);
     const getInvocation = vi.fn(async () => ({ invocationId: 'inv_late', status: 'failed' }));
@@ -5532,7 +5533,9 @@ describe('fleet spawn-status', () => {
       expect.objectContaining({ metadata: { purpose: 'fleet-spawn-status' } }),
       { strict: true }
     );
-    expect(createAgentRelay).toHaveBeenCalledWith(expect.objectContaining({ token: 'at_reader' }));
+    // The minted token reads alone, from the gateway that minted it: passing
+    // the workspace key too is rejected by createAgentRelay.
+    expect(createAgentRelay).toHaveBeenCalledWith({ token: 'at_reader', baseUrl: 'https://relay.isolated.test' });
     expect(release).toHaveBeenCalledWith(
       expect.objectContaining({ name: register.mock.calls[0]![0].name, deleteAgent: true })
     );

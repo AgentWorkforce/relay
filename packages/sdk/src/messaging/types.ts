@@ -598,6 +598,8 @@ export interface RelayActionInvocation {
   actionName: string;
   callerId?: string | null;
   callerName?: string | null;
+  handlerNodeId?: string | null;
+  dispatchedNodeId?: string | null;
   input?: Record<string, unknown>;
   output?: Record<string, unknown> | null;
   status: string;

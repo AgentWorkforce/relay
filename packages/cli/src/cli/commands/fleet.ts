@@ -459,7 +459,14 @@ export function registerFleetCommands(
           token = launcher.token;
           if (!token) throw new Error('The temporary fleet status launcher did not receive an agent token.');
         }
-        const relay = deps.sdk.createAgentRelay({ ...clientOptions, token });
+        // A minted launcher token must read from the gateway that minted it, and
+        // never alongside the workspace key that minted it (createAgentRelay
+        // rejects that pair), matching the spawn path's minted-token client.
+        const relay = deps.sdk.createAgentRelay(
+          launcherName
+            ? { token, baseUrl: resolveWorkspaceTransport(clientOptions).baseUrl }
+            : { ...clientOptions, token }
+        );
         const invocation = await relay.messaging.commands.getInvocation('spawn', invocationId);
         // Keep this read-only surface on the existing safe receipt projection.
         const receipt = sanitizedSpawnReceipt(invocation as unknown as Record<string, unknown>);
