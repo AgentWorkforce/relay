@@ -15,7 +15,7 @@ name: Fleet E2E
 # only run after something reaches main). Update to `[main]` once the stack lands.
 on:
   push:
-    branches: [main]
+    branches: [main, 'feat/fleet-**']
     paths:
       - 'packages/fleet/**'
       - 'packages/cli/**'
@@ -54,7 +54,6 @@ env:
 
 jobs:
   fleet-e2e:
-    if: (github.event_name != 'pull_request' && github.event_name != 'pull_request_target') || github.head_ref == 'trunk'
     name: Two-node fleet matrix
     runs-on: ubuntu-latest
     timeout-minutes: 20
