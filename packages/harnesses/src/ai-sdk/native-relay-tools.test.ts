@@ -59,6 +59,7 @@ describe('native Relay host tools', () => {
 });
 
 it.each([
+  ['send_dm', 'dm', { to: 'nativeClaude', text: 'ACK' }],
   ['post_message', 'send', { channel: 'events', text: 'ACK' }],
   ['reply_to_thread', 'reply', { message_id: 'parent', text: 'ACK' }],
 ] as const)('joins only a replay of the same native %s tool call', async (tool, method, args) => {
@@ -90,6 +91,7 @@ it.each([
 // tool result is still being submitted) reaches Relay again, so the write
 // carries a key derived from the tool call for Relay to deduplicate.
 it.each([
+  ['send_dm', 'dm', { to: 'nativeClaude', text: 'ACK' }, 'nativeClaude'],
   ['post_message', 'send', { channel: 'events', text: 'ACK' }, 'events'],
   ['reply_to_thread', 'reply', { message_id: 'parent', text: 'ACK' }, 'parent'],
 ] as const)('sends native %s with a tool-call idempotency key', async (tool, method, args, target) => {

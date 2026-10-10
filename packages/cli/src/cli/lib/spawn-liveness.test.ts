@@ -35,6 +35,10 @@ describe('spawn liveness resolution', () => {
     [node('other'), 'live_elsewhere'],
     [node('target', 36_001), 'stale'],
     [{ ...node(), lastHeartbeatAt: undefined }, 'stale'],
+    // A heartbeat stamped within the tolerated clock skew is still fresh, but
+    // one far in the future cannot be judged by this clock (relay#1930 review).
+    [node('target', -4_000), 'live'],
+    [node('target', -60_000), 'stale'],
     [{ ...node(), status: 'offline' }, 'absent'],
   ] as const)('requires fresh target-node evidence (%j)', async (record, evidence) => {
     const workspace = client([record]);
@@ -179,6 +183,18 @@ describe('spawn liveness resolution', () => {
     expect(await probeSpawnLiveness({ name: 'worker', createClient: () => workspace })).toMatchObject({
       evidence: 'unknown',
     });
+  });
+  // relay#1930 review (cubic): an available node whose heartbeat roster is
+  // missing or undecodable may still run the worker, so a 404 on the agent
+  // registration cannot prove it absent.
+  it.each([
+    ['an unsupported', []],
+    ['a malformed', [{ name: 'relay:live-agents:v1', metadata: { names: 'worker' } }]],
+  ] as const)('does not report absent beside %s heartbeat roster', async (_label, capabilities) => {
+    const workspace = client([{ ...node('other'), capabilities: [...capabilities] } as RelayNode]);
+    expect(
+      await probeSpawnLiveness({ name: 'worker', createClient: () => workspace, now: () => now })
+    ).toMatchObject({ evidence: 'unknown' });
   });
   it.each(['get', 'list'] as const)(
     'does not report absent when the node %s read failed',

@@ -1358,7 +1358,20 @@ describe('createAgentRelayMcpServer', () => {
     }
   );
 
-  it('classifies MCP registration collisions without exposing Rust debug text', async () => {
+  // relay#1930 review: the tool description must name the pending shape the
+  // handler actually returns (asserted above), not a `confirmed` field.
+  it('describes pending spawns by the shape the spawn tool returns', async () => {
+    const { mod, mocks } = await loadAgentRelayMcpModule();
+    mod.createAgentRelayMcpServer({ agentToken: 'at_live_fleet', agentName: 'orchestrator' });
+    const { description } = mocks.serverInstances[0].tools.get('spawn')!.config as { description: string };
+    expect(description).toContain('spawn_unconfirmed');
+    expect(description).toContain('state: "pending"');
+    expect(description).not.toContain('confirmed:false');
+  });
+
+  // The broker formats the collision readably; its Rust test asserts no
+  // `Fatal(...)` debug text, so this MCP test covers classification only.
+  it('classifies MCP registration collisions as spawn_name_taken', async () => {
     const { mod, mocks } = await loadAgentRelayMcpModule();
     mocks.agentRelayMessagingCommands.getInvocation.mockResolvedValueOnce({
       status: 'failed',

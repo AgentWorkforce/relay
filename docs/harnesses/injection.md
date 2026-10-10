@@ -12,10 +12,10 @@ for the session, independently of composer readiness. Devin also uses this wire.
 Codex initial tasks retain their existing chunked delivery path.
 
 The broker-wide ceiling is **16,384 UTF-8 bytes** for the formatted envelope. Bodies
-are capped at **14,336 bytes** (`fleet spawn` task input, the fleet spawn action
-before any launch, and broker PTY delivery), leaving 2 KiB for attribution and
-broker reminders so an accepted body still fits once formatted. Paced
-fallback input has an effective limit of **1,536 bytes including the envelope** at
+are capped at **14,336 bytes** for PTY agents (`fleet spawn` task input, the fleet
+spawn action before it launches a PTY agent, and broker PTY delivery); native and
+headless tasks are not held to it. That leaves 2 KiB for attribution and broker
+reminders so an accepted body still fits once formatted. Paced fallback input has an effective limit of **1,536 bytes including the envelope** at
 the default 5 ms pace. A slower `RELAY_INJECT_RATE_MS` lowers that limit to keep
 writing within 7.68 seconds. Unpaced fallback uses the global ceiling. Codex uses
 the smaller of the global ceiling and its deadline-derived limit. Rejections name
@@ -27,9 +27,10 @@ enforced only at the PTY boundary: `message post|reply|dm send` publish any size
 to Relaycast, since recipients may be native agents or history only.
 For longer briefs, create a file on the node and send a short instruction to read it.
 
-The input wire normalizes CRLF to LF and strips bare carriage returns and ESC
-characters, so they cannot submit the composer early or close a paste from
-inside its body. LF stays in the payload: inside a bracketed paste it is a
+The input wire normalizes CRLF to LF and strips every other control character
+except tab (bare carriage returns, ESC, `Ctrl-C` and the like), so a body cannot
+submit the composer early, close a paste, or interrupt or edit the composer
+line. LF stays in the payload: inside a bracketed paste it is a
 newline, but on the typed fallback wire a harness may treat it as Enter, so
 multiline tasks are only safe on paste-capable harnesses. Other UTF-8 content
 is preserved.

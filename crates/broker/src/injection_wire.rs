@@ -44,7 +44,15 @@ fn select_wire(cli: &str, capable: bool, disabled: bool) -> InjectionWire {
     }
 }
 pub(crate) fn injection_bytes(wire: InjectionWire, text: &str) -> Vec<u8> {
-    let text = text.replace("\r\n", "\n").replace(['\r', '\x1b'], "");
+    // A body is content, never keystrokes: drop every control character (C0,
+    // DEL, C1), so `\x03`, `\x15` or `\x7f` cannot interrupt, kill or edit
+    // the composer line, and `\r`/ESC cannot submit or close the paste. Line
+    // breaks and tabs are content and stay.
+    let text: String = text
+        .replace("\r\n", "\n")
+        .chars()
+        .filter(|&c| c == '\n' || c == '\t' || !c.is_control())
+        .collect();
     match wire {
         InjectionWire::Paste => format!("\x1b[200~{text}\x1b[201~").into_bytes(),
         InjectionWire::Typed => text.into_bytes(),
@@ -131,5 +139,18 @@ mod tests {
         assert_eq!(select_wire("claude", true, true), InjectionWire::Typed);
         assert_eq!(select_wire("other", false, false), InjectionWire::Typed);
         assert_eq!(injection_bytes(InjectionWire::Typed, "a\r\nb\rc"), b"a\nbc");
+    }
+    /// relay#1930 review: control bytes in a task are keypresses to a PTY.
+    #[test]
+    fn control_characters_are_dropped_but_line_breaks_and_tabs_stay() {
+        let body = "a\x03b\x04c\x15d\x7fe\u{9b}f\x00g\n\th";
+        assert_eq!(
+            injection_bytes(InjectionWire::Typed, body),
+            "abcdefg\n\th".as_bytes()
+        );
+        assert_eq!(
+            injection_bytes(InjectionWire::Paste, body),
+            "\x1b[200~abcdefg\n\th\x1b[201~".as_bytes()
+        );
     }
 }

@@ -94,9 +94,13 @@ export function createNativeRelayTools(options: NativeRelayToolOptions = {}): Ha
           additionalProperties: false,
         },
       },
-      execute: (value) => {
+      execute: (value, { toolCallId } = {}) => {
         const input = objectInput(value);
-        return agent.dm(requiredString(input, 'to'), requiredString(input, 'text'));
+        const to = requiredString(input, 'to');
+        const text = requiredString(input, 'text');
+        return write('send_dm', toolCallId, (options) =>
+          options ? agent.dm(to, text, options) : agent.dm(to, text)
+        );
       },
     },
     {

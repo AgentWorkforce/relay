@@ -21,6 +21,9 @@ describe('task input', () => {
       const file = join(dir, 'brief.md');
       await writeFile(file, '  héllo\r\nworld\n');
       expect(await readTaskInput(undefined, file, true)).toBe('  héllo\r\nworld\n');
+      // A leading BOM is file text like any other, as it would be via --task.
+      await writeFile(file, '﻿brief\n');
+      expect(await readTaskInput(undefined, file, true)).toBe('﻿brief\n');
       await writeFile(file, '  ');
       await expect(readTaskInput(undefined, file)).rejects.toThrow('empty');
       await expect(readTaskInput(undefined, join(dir, 'missing'))).rejects.toThrow();

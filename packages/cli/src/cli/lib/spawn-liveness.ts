@@ -116,6 +116,7 @@ export async function probeSpawnLiveness(options: {
 }): Promise<SpawnLiveness> {
   let readError: string | undefined;
   let rosterUnread = false;
+  let rosterIncomplete = false;
   const read = <T>(fn: () => Promise<T>) =>
     withDeadline(fn, () => new Error('Spawn evidence read timed out.'), 2_000);
   if (options.getInvocation) {
@@ -161,11 +162,12 @@ export async function probeSpawnLiveness(options: {
       let weaker: SpawnLiveness | undefined;
       const now = clock();
       for (const node of nodes) {
-        if (
-          !isAvailableFleetNode(node) ||
-          !readRemoteLiveAgents(node).agents.some((agent) => agent.name === options.name)
-        )
-          continue;
+        if (!isAvailableFleetNode(node)) continue;
+        const live = readRemoteLiveAgents(node);
+        // A node whose heartbeat roster is missing or undecodable may still be
+        // running the worker, so a later missing registration cannot prove absence.
+        if (!live.complete) rosterIncomplete = true;
+        if (!live.agents.some((agent) => agent.name === options.name)) continue;
         const age = heartbeatAgeMs(node, now);
         const evidence =
           age === null || age > MAX_LIVE_HEARTBEAT_AGE_MS
@@ -195,7 +197,7 @@ export async function probeSpawnLiveness(options: {
     } catch (error) {
       // `absent` claims no worker was observed. A missing registration only
       // proves that when the node roster was actually read.
-      if (isNotFoundError(error) && !rosterUnread)
+      if (isNotFoundError(error) && !rosterUnread && !rosterIncomplete)
         return { evidence: 'absent', ...(readError ? { readError } : {}) };
       if (!isNotFoundError(error)) readError = safeRelayErrorMessage(error);
     }

@@ -99,7 +99,7 @@ async function readTaskFile(path: string, limit: number, target: TaskTarget | un
     }
     if (length > limit) validateTaskBytes(length, target);
     try {
-      return new TextDecoder('utf-8', { fatal: true }).decode(buffer.subarray(0, length));
+      return new TextDecoder('utf-8', { fatal: true, ignoreBOM: true }).decode(buffer.subarray(0, length));
     } catch {
       throw new Error(`Task file ${path} is not valid UTF-8`);
     }

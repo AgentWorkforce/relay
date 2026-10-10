@@ -2351,32 +2351,10 @@ pub(crate) async fn run_pty_worker(cmd: PtyCommand) -> Result<()> {
                             mcp_reminder_throttle.note_sent(Instant::now());
                         }
                         if initial_codex_delivery(&resolved_cli, &inj.pending.delivery) {
-                            // Reject before any byte is written rather than after
-                            // guaranteeing a partial-write timeout: a body needing
-                            // more chunks than initial_codex_deadline's cap can
-                            // afford cannot reach Enter no matter how fast every
-                            // chunk renders (relay#1782 review). Reuses the
-                            // existing was_chunked && !confirmed path below --
-                            // delivery_failed, retry record removed, id retained
-                            // to reject a duplicate, body never replayed.
-                            let max_bytes = initial_codex_max_body_bytes();
-                            if injection.len() > max_bytes {
-                                tracing::warn!(
-                                    delivery_id = %inj.pending.delivery.delivery_id,
-                                    body_bytes = injection.len(),
-                                    max_bytes,
-                                    "initial Codex task exceeds chunked delivery's deadline-bounded size limit; rejecting before writing any byte"
-                                );
-                                inj.stage = InjectionStage::Finalize;
-                                initial_injection_cancel = Some(Arc::new(AtomicBool::new(false)));
-                                injection_ack = Some(Box::pin(async move {
-                                    Ok(Err(std::io::Error::other(
-                                        "initial Codex task exceeds the maximum size chunked delivery can complete within its deadline; body will not be written",
-                                    )))
-                                }));
-                                active_injection = Some(inj);
-                                continue;
-                            }
+                            // The size gate above already caps an initial Codex
+                            // body at `initial_codex_max_body_bytes`, so every body
+                            // reaching here can finish within its deadline
+                            // (relay#1782 review).
                             let before = pty.consumed_offset();
                             let end = chunk_end(&injection, 0);
                             let (first_ack, boundary) = match pty.submit_write_paced_with_output_boundary(
