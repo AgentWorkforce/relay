@@ -35,7 +35,6 @@ env:
 
 jobs:
   e2e-test:
-    if: (github.event_name != 'pull_request' && github.event_name != 'pull_request_target') || github.head_ref == 'trunk'
     name: E2E Integration Test
     runs-on: ${{ matrix.os }}
     strategy:

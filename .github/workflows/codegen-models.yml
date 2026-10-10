@@ -5,14 +5,14 @@ on:
     paths:
       - 'packages/utils/cli-registry.yaml'
     branches:
-      [main]
+      - main
+      - 'feature/**'
   pull_request:
     paths:
       - 'packages/utils/cli-registry.yaml'
 
 jobs:
   codegen:
-    if: (github.event_name != 'pull_request' && github.event_name != 'pull_request_target') || github.head_ref == 'trunk'
     runs-on: ubuntu-latest
     permissions:
       contents: write
