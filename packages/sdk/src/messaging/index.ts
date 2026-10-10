@@ -1,6 +1,7 @@
 export * from './types.js';
 export * from './session-ref.js';
 export * from './normalize.js';
+export * from './files.js';
 export { createEventFanIn, type EventFanInOptions, type RelayEventFanIn } from './event-fanin.js';
 export {
   createObserverEventSource,

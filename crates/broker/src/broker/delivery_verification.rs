@@ -8,8 +8,10 @@ use serde_json::{json, Value};
 
 use crate::{
     ids::{DeliveryId, EventId, MessageTarget, RequestId, WorkspaceAlias, WorkspaceId},
+    readiness::{cli_prompt_ready, GridReadinessSnapshot},
+    snapshot::Snapshot,
     util::ansi::strip_ansi,
-    worker::detection::ActivityDetector,
+    worker::detection::{is_codex_busy_status_line, ActivityDetector},
 };
 
 pub(crate) const ACTIVITY_WINDOW: Duration = Duration::from_secs(5);
@@ -26,6 +28,7 @@ pub(crate) enum DeliveryOutcome {
     /// Neither speeds up nor backs off the throttle, but breaks the
     /// consecutive-success streak so unverified deliveries never drive
     /// the delay down.
+    #[allow(dead_code)]
     Unverified,
     Failed,
 }
@@ -92,14 +95,16 @@ pub(crate) struct PendingActivity {
     pub detector: ActivityDetector,
 }
 
-/// Maximum number of injection attempts before accepting delivery via timeout.
-/// Set to 1 to avoid re-injecting the same message when echo detection fails -
-/// duplicate injections cause agents to process messages multiple times,
-/// multiplying Relaycast API calls and triggering rate limits.
-pub(crate) const MAX_VERIFICATION_ATTEMPTS: usize = 1;
+/// Maximum number of submit-key attempts for one already-written body.
+///
+/// A retry never writes the body again: it only nudges a composer that is
+/// still proven to contain this delivery. This preserves at-most-once turn
+/// creation while giving paste-aware TUIs a bounded recovery path.
+pub(crate) const MAX_VERIFICATION_ATTEMPTS: usize = 3;
 
 /// Time window to wait for echo verification before accepting delivery.
 pub(crate) const VERIFICATION_WINDOW: std::time::Duration = std::time::Duration::from_secs(5);
+pub(crate) const MAX_ACCEPTANCE_LIFETIME: std::time::Duration = std::time::Duration::from_secs(30);
 
 /// A pending delivery waiting for echo verification in PTY output.
 #[derive(Debug)]
@@ -113,14 +118,305 @@ pub(crate) struct PendingVerification {
     /// PTY reader and this event loop.
     pub output_boundary: u64,
     pub injected_at: std::time::Instant,
+    pub verification_started_at: std::time::Instant,
     pub attempts: usize,
     pub max_attempts: usize,
     pub request_id: Option<RequestId>,
+    #[allow(dead_code)]
     pub workspace_id: Option<WorkspaceId>,
+    #[allow(dead_code)]
     pub workspace_alias: Option<WorkspaceAlias>,
+    #[allow(dead_code)]
     pub from: String,
+    #[allow(dead_code)]
     pub body: String,
+    #[allow(dead_code)]
     pub target: MessageTarget,
+    /// The formatted body appeared in post-submission PTY output. This proves
+    /// terminal echo only; it does not prove the harness accepted a turn.
+    pub echo_seen: bool,
+    /// Post-submission output retained until a harness activity marker proves
+    /// the turn started. Kept separately from `VerificationOutput` so matching
+    /// remains stable after the global tail trims.
+    pub activity_buffer: String,
+    pub detector: ActivityDetector,
+}
+
+impl PendingVerification {
+    pub(crate) fn observe_raw_process_receipt(&mut self, output: &VerificationOutput, cli: &str) {
+        if self.echo_seen || !is_cat_process(cli) || self.body.is_empty() {
+            return;
+        }
+        let observed = strip_ansi(&output.since(self.output_boundary));
+        if observed.contains(&self.body) || observed.replace("\r\n", "\n").contains(&self.body) {
+            self.echo_seen = true;
+        }
+    }
+
+    /// A native TUI may wrap or repaint the injected text, so its raw PTY
+    /// output need not contain the formatted body as one contiguous string.
+    /// The injection gate starts from an empty composer and delivery stays
+    /// single-flight. Seeing this delivery's tail in the *current* composer
+    /// therefore proves the editor received it. Keep that fact when a later
+    /// submit clears the composer.
+    pub(crate) fn observe_visible_composer(&mut self, snapshot: &Snapshot, cli: &str) {
+        if self.echo_seen {
+            return;
+        }
+        let tail = expected_tail(&self.expected_echo);
+        if !tail.is_empty()
+            && current_composer(snapshot, cli)
+                .is_some_and(|composer| compact_render(&composer).contains(&tail))
+        {
+            self.echo_seen = true;
+            self.activity_buffer.clear();
+        }
+    }
+
+    pub(crate) fn observe(&mut self, output: &VerificationOutput, text: &str) {
+        let echo_now = pending_verification_echo_seen(output, self);
+        if !self.echo_seen && echo_now {
+            // Ignore activity that preceded the editor echo. A message may be
+            // injected while a previous turn is still rendering its own busy
+            // marker; that marker cannot prove this delivery was accepted.
+            self.echo_seen = true;
+            self.activity_buffer.clear();
+            let clean = strip_ansi(&output.since(self.output_boundary)).replace("\r\n", "\n");
+            let expected_echo = self.expected_echo.replace("\r\n", "\n");
+            if let Some(index) = clean.rfind(&expected_echo) {
+                self.activity_buffer
+                    .push_str(&clean[index + expected_echo.len()..]);
+            }
+        } else if self.echo_seen {
+            self.activity_buffer.push_str(text);
+        }
+        if self.activity_buffer.len() > ACTIVITY_BUFFER_MAX_BYTES {
+            let start = crate::util::ansi::floor_char_boundary(
+                &self.activity_buffer,
+                self.activity_buffer.len() - ACTIVITY_BUFFER_KEEP_BYTES,
+            );
+            self.activity_buffer = self.activity_buffer[start..].to_string();
+        }
+    }
+
+    pub(crate) fn accepted_activity(&self) -> Option<String> {
+        if !self.echo_seen || !self.detector.has_explicit_patterns() {
+            return None;
+        }
+        self.detector
+            .detect_activity(&self.activity_buffer, &self.expected_echo)
+    }
+
+    pub(crate) fn acceptance_expired(&self) -> bool {
+        self.verification_started_at.elapsed() >= MAX_ACCEPTANCE_LIFETIME
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum HarnessAcceptance {
+    Accepted(String),
+    Parked,
+    Inconclusive,
+}
+
+fn compact_render(text: &str) -> String {
+    text.chars()
+        .filter(|character| !character.is_whitespace())
+        .collect()
+}
+
+fn is_cat_process(cli: &str) -> bool {
+    cli.rsplit(['/', '\\'])
+        .next()
+        .is_some_and(|name| matches!(name.to_ascii_lowercase().as_str(), "cat" | "cat.exe"))
+}
+
+fn expected_tail(expected: &str) -> String {
+    let compact = compact_render(expected);
+    let keep = compact.len().min(96);
+    let start = crate::util::ansi::floor_char_boundary(&compact, compact.len() - keep);
+    compact[start..].to_string()
+}
+
+fn gemini_composer_row(line: &str) -> &str {
+    let trimmed = line.trim_start();
+    let Some(bordered) = trimmed.strip_prefix('│') else {
+        return trimmed;
+    };
+    let bordered = bordered.trim_start();
+    bordered
+        .trim_end()
+        .strip_suffix('│')
+        .map(str::trim_end)
+        .unwrap_or(bordered)
+}
+
+fn current_composer(snapshot: &Snapshot, cli: &str) -> Option<String> {
+    let plain = snapshot.to_plain_through_cursor();
+    let lines: Vec<_> = plain.lines().collect();
+    let end = snapshot.cursor.0.checked_sub(1)? as usize;
+    if end >= lines.len() {
+        return None;
+    }
+    let lower = cli.to_ascii_lowercase();
+    if lower.contains("gemini") {
+        if lines
+            .get(end)
+            .is_some_and(|line| cursor_row_is_activity(cli, line))
+        {
+            return None;
+        }
+        // Gemini renders its live input with a `> ` prefix (inside a `│`
+        // border on terminals that cannot use the background-colour frame).
+        // Anchor to that boundary instead of treating arbitrary transcript
+        // rows near the cursor as the composer. Keeping every row through the
+        // cursor also preserves long, wrapped drafts beyond four rows.
+        let start = lines.iter().take(end + 1).rposition(|line| {
+            let input = gemini_composer_row(line);
+            input == ">" || input.starts_with("> ")
+        })?;
+        return Some(
+            lines[start..=end]
+                .iter()
+                .map(|line| gemini_composer_row(line))
+                .collect::<Vec<_>>()
+                .join("\n"),
+        );
+    }
+    let is_prompt = |line: &&str| {
+        let trimmed = line.trim_start();
+        if lower.contains("codex") {
+            trimmed == "›"
+                || trimmed.starts_with("› ")
+                || trimmed == "codex>"
+                || trimmed.starts_with("codex> ")
+        } else if lower.contains("claude") {
+            trimmed == "❯"
+                || trimmed.starts_with("❯ ")
+                || trimmed == ">"
+                || trimmed.starts_with("> ")
+        } else if crate::readiness::is_devin_cli(cli) {
+            trimmed == "❭" || trimmed.starts_with("❭ ")
+        } else {
+            trimmed == ">"
+                || trimmed.starts_with("> ")
+                || trimmed == "$"
+                || trimmed.starts_with("$ ")
+                || trimmed == ">>>"
+                || trimmed.starts_with(">>> ")
+                || trimmed == "›"
+                || trimmed.starts_with("› ")
+                || trimmed == "❯"
+                || trimmed.starts_with("❯ ")
+        }
+    };
+    let start = lines.iter().take(end + 1).rposition(is_prompt)?;
+    let composer_lines = &lines[start..=end];
+    if composer_lines.len() > 1
+        && composer_lines
+            .last()
+            .is_some_and(|line| cursor_row_is_activity(cli, line))
+    {
+        // The latest prompt-looking line is part of the submitted transcript;
+        // a distinctive harness status row owns the cursor. Do not use the
+        // broader ActivityDetector patterns here because ordinary multiline
+        // draft text can contain Tool:, Write(, or shell prompts.
+        return None;
+    }
+    Some(composer_lines.join("\n"))
+}
+
+fn cursor_row_is_activity(cli: &str, line: &str) -> bool {
+    let lower_cli = cli.to_ascii_lowercase();
+    let trimmed = line.trim_start();
+    let lower_line = trimmed.to_ascii_lowercase();
+    if lower_cli.contains("codex") {
+        is_codex_busy_status_line(line)
+    } else if lower_cli.contains("claude") {
+        lower_line.contains("esc to interrupt")
+            || matches!(trimmed.chars().next(), Some('⠋' | '⠙' | '⠹'))
+    } else if crate::readiness::is_devin_cli(cli) {
+        trimmed.starts_with("Thinking ·") || trimmed.starts_with("Guide Devin while it works")
+    } else if lower_cli.contains("gemini") {
+        trimmed.starts_with("Generating")
+            || trimmed.starts_with("Action:")
+            || trimmed.starts_with("Executing")
+    } else {
+        false
+    }
+}
+
+fn codex_busy(screen: &str) -> bool {
+    screen.lines().any(is_codex_busy_status_line)
+}
+
+fn composer_is_idle(snapshot: &Snapshot, cli: &str) -> bool {
+    let screen = snapshot.to_plain();
+    if cli.to_ascii_lowercase().contains("codex") && codex_busy(&screen) {
+        return false;
+    }
+    let codex_placeholder_after_cursor = cli.to_ascii_lowercase().contains("codex")
+        && snapshot.cursor.1 == 3
+        && screen
+            .lines()
+            .nth(snapshot.cursor.0.saturating_sub(1) as usize)
+            .is_some_and(|line| line.trim_start() == "› Ask Codex to do anything");
+    cli_prompt_ready(
+        cli,
+        GridReadinessSnapshot {
+            screen: &screen,
+            cursor: Some(snapshot.cursor),
+        },
+    ) && (!snapshot.has_visible_text_at_or_after_cursor() || codex_placeholder_after_cursor)
+        && current_composer(snapshot, cli)
+            .map(|composer| {
+                let trimmed = composer.trim();
+                matches!(trimmed, "›" | "codex>" | "❯" | "❭" | ">" | "$" | ">>>")
+                    || trimmed.contains("Ask Codex to do anything")
+                    || trimmed.contains("Type your message or @path/to/file")
+                    || trimmed
+                        .contains("Ask Devin to build features, fix bugs, or work on your code")
+            })
+            .unwrap_or(false)
+}
+
+/// Distinguish terminal echo from actual harness acceptance.
+///
+/// Activity is definitive acceptance. A body is considered parked only when
+/// its tail is still in the live composer at the cursor. Once echo was seen,
+/// a proven empty composer is also acceptance. Every other state is
+/// inconclusive and must fail or wait — never blindly press a key. Harnesses
+/// without explicit activity markers fall back to echo-plus-body-departure:
+/// once their echoed body is no longer parked, the turn was accepted.
+pub(crate) fn assess_harness_acceptance(
+    cli: &str,
+    verification: &PendingVerification,
+    snapshot: &Snapshot,
+) -> HarnessAcceptance {
+    let tail = expected_tail(&verification.expected_echo);
+    let parked = !tail.is_empty()
+        && current_composer(snapshot, cli)
+            .map(|composer| compact_render(&composer).contains(&tail))
+            .unwrap_or(false);
+    if parked {
+        return HarnessAcceptance::Parked;
+    }
+    if let Some(pattern) = verification.accepted_activity() {
+        return HarnessAcceptance::Accepted(format!("activity:{pattern}"));
+    }
+    if verification.echo_seen && composer_is_idle(snapshot, cli) {
+        return HarnessAcceptance::Accepted("composer_cleared".to_string());
+    }
+    // `cat` is also a supported local PTY recipient. It has no composer or
+    // turn-start marker; its PTY echo confirms transport receipt. Keep native
+    // agent TUIs on the stronger gate.
+    if verification.echo_seen && is_cat_process(cli) {
+        return HarnessAcceptance::Accepted("process_echo".to_string());
+    }
+    if verification.echo_seen && !verification.detector.has_explicit_patterns() {
+        return HarnessAcceptance::Accepted("echo_left_composer".to_string());
+    }
+    HarnessAcceptance::Inconclusive
 }
 
 #[derive(Debug)]
@@ -190,14 +486,6 @@ impl VerificationOutput {
         }
     }
 
-    /// A missing head is evidence only if we retained the entire observation window.
-    pub(crate) fn retains_boundary(&self, boundary: u64) -> bool {
-        self.segments.front().is_none_or(|segment| {
-            segment.sequence <= boundary.saturating_add(1)
-                && segment.start_offset >= self.base_offset
-        })
-    }
-
     /// Retained output read after the supplied producer sequence.
     pub(crate) fn since(&self, boundary: u64) -> Cow<'_, str> {
         let Some(segment) = self
@@ -222,26 +510,14 @@ pub(crate) fn pending_verification_echo_seen(
     verification: &PendingVerification,
 ) -> bool {
     let observed = output.since(verification.output_boundary);
-    check_echo_in_output(&observed, &verification.expected_echo)
-}
-
-/// Return a verification whose echo arrived before the PTY write ack was
-/// processed, otherwise queue it for later output-driven verification.
-///
-/// Both wrap-mode and fleet PTY workers use this policy. Keeping the decision
-/// here ensures the two delivery paths cannot drift on the echo-before-ack
-/// race while still letting each caller perform its own confirmation effects.
-pub(crate) fn queue_or_take_confirmed_verification(
-    verification: PendingVerification,
-    output: &VerificationOutput,
-    pending_verifications: &mut std::collections::VecDeque<PendingVerification>,
-) -> Option<PendingVerification> {
-    if pending_verification_echo_seen(output, &verification) {
-        Some(verification)
-    } else {
-        pending_verifications.push_back(verification);
-        None
+    if check_echo_in_output(&observed, &verification.expected_echo) {
+        return true;
     }
+    // Native TUIs can wrap and indent every line of a long delivery. The
+    // receive-time boundary still excludes older turns; compare this body's
+    // compact tail when the full byte-for-byte echo is unavailable.
+    let tail = expected_tail(&verification.expected_echo);
+    !tail.is_empty() && compact_render(&strip_ansi(&observed)).contains(&tail)
 }
 
 /// Start activity detection with every post-submission byte already observed.
@@ -251,6 +527,7 @@ pub(crate) fn queue_or_take_confirmed_verification(
 /// acknowledgement later confirms the delivery, seeding this buffer prevents
 /// the already-observed activity from being lost merely because no more output
 /// follows.
+#[cfg(test)]
 pub(crate) fn pending_activity_from_confirmed_output(
     verification: &PendingVerification,
     output: &VerificationOutput,
@@ -270,6 +547,7 @@ pub(crate) fn pending_activity_from_confirmed_output(
 /// state for later output. The returned activity carries the matched pattern
 /// so each runtime can emit its own protocol event or log without duplicating
 /// this race-handling policy.
+#[cfg(test)]
 pub(crate) fn queue_or_take_detected_activity(
     verification: &PendingVerification,
     output: &VerificationOutput,
@@ -288,170 +566,32 @@ pub(crate) fn queue_or_take_detected_activity(
     }
 }
 
-/// One evidence ladder shared by fleet and wrap; timeout policy stays at the caller.
-///
-/// Only whole-payload evidence confirms a delivery. Endpoint anchors and a
-/// collapsed-paste marker are reported, because they tell an operator what the
-/// terminal actually showed, but neither establishes that the harness received
-/// every byte: anchors say nothing about the bytes between them, and a paste
-/// marker is emitted for any paste, including a truncated one (relay#1893
-/// review, P1 x2).
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum EchoVerdict {
-    /// The whole expected envelope appears verbatim in post-boundary output.
-    Exact,
-    /// The whole expected envelope appears once the TUI's wrapping whitespace
-    /// is removed from both sides. Equivalent to `Exact` as integrity evidence.
-    Normalized,
-    /// The tail anchor is present without the head anchor: the injection lost
-    /// its head, which is the truncation this verification exists to catch.
-    HeadMissing,
-    /// Both anchors are present but the payload between them is not, or the
-    /// echo is otherwise a strict subset. Evidence of a delivery, never
-    /// evidence of a complete one.
-    Incomplete,
-    /// The harness collapsed the paste into a `[Pasted text #N …]` marker, so
-    /// no content was echoed at all and nothing about it can be verified.
-    PasteSummary,
-    /// No echo evidence whatsoever.
-    Absent,
-}
-impl EchoVerdict {
-    /// Whether this verdict proves the harness received the whole payload.
-    pub(crate) fn confirmed(&self) -> bool {
-        matches!(self, Self::Exact | Self::Normalized)
-    }
-    pub(crate) fn label(&self) -> &'static str {
-        match self {
-            Self::Exact => "echo",
-            Self::Normalized => "echo_normalized",
-            Self::HeadMissing => "echo_head_missing",
-            Self::Incomplete => "echo_incomplete",
-            Self::PasteSummary => "paste_summary",
-            Self::Absent => "timeout_fallback",
-        }
-    }
-}
+/// The `delivery_verified` label a PTY worker reports once the harness has
+/// accepted the turn (activity, a cleared composer, or a raw process echo).
+pub(crate) const HARNESS_ACCEPTANCE: &str = "harness_acceptance";
+
+/// The `delivery_failed` reason a PTY worker reports when its acceptance window
+/// closed without evidence either way: the body is no longer visibly parked,
+/// but nothing proved the harness took the turn. Unlike a body still parked
+/// after recovery, this is not evidence that the input was lost.
+pub(crate) const HARNESS_ACCEPTANCE_UNPROVEN: &str = "harness acceptance could not be proven";
 
 /// Whether a `delivery_verified` label proves full receipt.
 ///
 /// The broker runtime sees deliveries only as the worker's wire label, so this
 /// is the one place that decides which labels a caller — notably the verified
 /// fleet spawn completion in `runtime::worker_events` — may treat as receipt.
-/// Kept in lockstep with [`EchoVerdict::confirmed`] by
-/// `verification_labels_agree_with_the_verdict_ladder`.
+/// Only harness acceptance does. `completed_replay` re-reports an earlier
+/// delivery and legacy labels (`echo`, `timeout_fallback`) come from workers
+/// whose echo matching could not tell a parked draft from a submitted turn.
 pub(crate) fn verification_label_confirms_receipt(label: &str) -> bool {
-    label == EchoVerdict::Exact.label() || label == EchoVerdict::Normalized.label()
+    label == HARNESS_ACCEPTANCE
 }
 
-/// What a verification timeout should report for a final verdict.
-#[derive(Debug, PartialEq, Eq)]
-pub(crate) enum VerificationTimeout {
-    /// Head loss proven against a fully retained observation window. Terminal.
-    HeadLoss,
-    /// Whole-payload evidence that the output arm did not get to act on.
-    /// Practically unreachable — that arm checks every pending verification on
-    /// each read — but a late confirmation is still a confirmation, so it must
-    /// not be downgraded to an unverified ack.
-    Confirmed { label: &'static str },
-    /// Acked without proof of full receipt. `label` is the wire `verification`
-    /// value; `reason` states what the observed output actually showed. The
-    /// label is never one `verification_label_confirms_receipt` accepts.
-    Unconfirmed { label: &'static str, reason: String },
-}
-
-/// Classify a timed-out verification.
-///
-/// `retains_boundary` must come from [`VerificationOutput::retains_boundary`]:
-/// a trimmed window cannot prove head loss, so a head-missing verdict without
-/// it degrades to an unconfirmed ack rather than failing a delivery that may
-/// well have landed.
-pub(crate) fn verification_timeout(
-    verdict: EchoVerdict,
-    retains_boundary: bool,
-    window: Duration,
-) -> VerificationTimeout {
-    match verdict {
-        EchoVerdict::HeadMissing if retains_boundary => VerificationTimeout::HeadLoss,
-        EchoVerdict::HeadMissing => VerificationTimeout::Unconfirmed {
-            label: EchoVerdict::Incomplete.label(),
-            reason: "echo tail observed without its head, and the observation window was trimmed"
-                .to_string(),
-        },
-        EchoVerdict::Exact | EchoVerdict::Normalized => VerificationTimeout::Confirmed {
-            label: verdict.label(),
-        },
-        EchoVerdict::Incomplete => VerificationTimeout::Unconfirmed {
-            label: verdict.label(),
-            reason:
-                "echo matched only its head and tail; the payload between them was not observed"
-                    .to_string(),
-        },
-        EchoVerdict::PasteSummary => VerificationTimeout::Unconfirmed {
-            label: verdict.label(),
-            reason: "harness collapsed the paste, so no content was echoed to verify".to_string(),
-        },
-        EchoVerdict::Absent => VerificationTimeout::Unconfirmed {
-            label: verdict.label(),
-            reason: format!("echo not detected within {}s window", window.as_secs()),
-        },
-    }
-}
-
-/// Whether `output` carries a `[Pasted text #N …]` collapsed-paste marker.
-fn has_paste_marker(output: &str) -> bool {
-    output.split("[Pasted text #").skip(1).any(|rest| {
-        rest.split_once(']')
-            .is_some_and(|(marker, _)| marker.starts_with(|c: char| c.is_ascii_digit()))
-    })
-}
-
-pub(crate) fn echo_verdict(output: &str, expected: &str) -> EchoVerdict {
-    let clean = strip_ansi(output);
-    if !expected.is_empty() && clean.contains(expected) {
-        return EchoVerdict::Exact;
-    }
-    let compact = |s: &str| s.chars().filter(|c| !c.is_whitespace()).collect::<String>();
-    let expected = expected
-        .find("Relay message from ")
-        .map_or(expected, |i| &expected[i..]);
-    let expected = compact(expected);
-    let observed = compact(&clean);
-    // A TUI wraps and re-indents what it echoes, so whitespace cannot be
-    // compared — but every other byte can, and only the whole payload confirms
-    // receipt. Anchors are then diagnosis, not confirmation: a present tail
-    // without its head is the reported truncation, and a present head and tail
-    // around an unobserved middle is simply incomplete.
-    if !expected.is_empty() && observed.contains(&expected) {
-        return EchoVerdict::Normalized;
-    }
-    // Short echoes need a whole-payload match; overlapping anchors cannot
-    // distinguish loss from a near-complete echo.
-    if expected.chars().count() >= 240 {
-        let head: String = expected.chars().take(120).collect();
-        let tail: String = expected
-            .chars()
-            .rev()
-            .take(120)
-            .collect::<Vec<_>>()
-            .into_iter()
-            .rev()
-            .collect();
-        if observed.contains(&tail) {
-            return if observed.contains(&head) {
-                EchoVerdict::Incomplete
-            } else {
-                EchoVerdict::HeadMissing
-            };
-        }
-    }
-    if has_paste_marker(&clean) {
-        return EchoVerdict::PasteSummary;
-    }
-    EchoVerdict::Absent
-}
+/// Check if the expected echo string appears in PTY output (after stripping ANSI).
 pub(crate) fn check_echo_in_output(output: &str, expected: &str) -> bool {
-    echo_verdict(output, expected).confirmed()
+    let clean = strip_ansi(output);
+    clean.contains(expected) || clean.replace("\r\n", "\n").contains(expected)
 }
 
 pub(crate) fn current_timestamp_ms() -> u64 {
@@ -493,158 +633,423 @@ pub(crate) fn delivery_injected_event_payload(
 mod tests {
     use super::*;
 
-    #[test]
-    fn trimmed_observation_cannot_prove_head_loss() {
-        let mut output = VerificationOutput::default();
-        output.push_str(&"x".repeat(VERIFICATION_OUTPUT_MAX_BYTES + 1));
-        assert!(!output.retains_boundary(0));
-        let boundary = output.boundary();
-        output.push_str("next delivery");
-        // Conservative: a partially retained first segment never proves loss.
-        assert!(!output.retains_boundary(boundary));
-    }
-
-    /// A long envelope and the pieces of it an adversarial or lossy TUI can
-    /// echo. `HEAD`/`TAIL` sentinels sit inside the anchors so a verdict can be
-    /// built from endpoints alone.
-    fn long_envelope() -> String {
-        format!(
-            "Reminder changes each time\nRelay message from broker [init_1]: HEAD{}TAIL",
-            "abc xyz ".repeat(1280)
-        )
-    }
-
-    #[test]
-    fn whole_payload_echoes_confirm_and_a_lost_head_fails() {
-        let expected = long_envelope();
-        assert_eq!(echo_verdict(&expected, &expected), EchoVerdict::Exact);
-        // Wrapping and re-indenting is all a TUI may do to a confirmed echo.
-        let wrapped = expected.replace(' ', "\r\n ");
-        assert_eq!(echo_verdict(&wrapped, &expected), EchoVerdict::Normalized);
-        assert!(echo_verdict(&wrapped, &expected).confirmed());
-        assert_eq!(
-            echo_verdict(&expected[expected.len() - 200..], &expected),
-            EchoVerdict::HeadMissing
-        );
-        assert_eq!(echo_verdict("Working…", &expected), EchoVerdict::Absent);
-        assert_eq!(echo_verdict("", &expected).label(), "timeout_fallback");
-    }
-
-    /// relay#1893 review, P1: matching endpoints certified a payload whose
-    /// middle was missing, and that verdict completed a verified fleet spawn.
-    #[test]
-    fn endpoint_anchors_never_confirm_a_payload_whose_middle_is_unobserved() {
-        let expected = long_envelope();
-        let anchor_head = &expected[..expected.find("HEAD").unwrap() + 300];
-        let anchor_tail = &expected[expected.len() - 300..];
-
-        // Missing middle: exactly the reviewer's `middle_lost` reproduction.
-        let missing_middle = format!("{anchor_head}{anchor_tail}");
-        assert_eq!(
-            echo_verdict(&missing_middle, &expected),
-            EchoVerdict::Incomplete
-        );
-        // Changed middle: every byte between the anchors is a substitution.
-        let changed_middle = format!("{anchor_head}{}{anchor_tail}", "q".repeat(9_000));
-        assert_eq!(
-            echo_verdict(&changed_middle, &expected),
-            EchoVerdict::Incomplete
-        );
-        // Reversed anchors: the endpoints are both present in the wrong order,
-        // so nothing about the payload's shape was actually observed.
-        let reversed = format!("{anchor_tail}{anchor_head}");
-        assert_eq!(echo_verdict(&reversed, &expected), EchoVerdict::Incomplete);
-        for observed in [missing_middle, changed_middle, reversed] {
-            assert!(
-                !echo_verdict(&observed, &expected).confirmed(),
-                "endpoint evidence must stay unconfirmed"
-            );
-            assert!(!check_echo_in_output(&observed, &expected));
+    fn codex_verification(expected: &str) -> PendingVerification {
+        PendingVerification {
+            delivery_id: "delivery-acceptance".into(),
+            event_id: "event-acceptance".into(),
+            expected_echo: expected.to_string(),
+            output_boundary: 0,
+            injected_at: Instant::now(),
+            verification_started_at: Instant::now(),
+            attempts: 1,
+            max_attempts: MAX_VERIFICATION_ATTEMPTS,
+            request_id: None,
+            workspace_id: None,
+            workspace_alias: None,
+            from: "Lead".to_string(),
+            body: "fix idle injection".to_string(),
+            target: "Worker".into(),
+            echo_seen: true,
+            activity_buffer: String::new(),
+            detector: ActivityDetector::for_cli("codex"),
         }
     }
 
-    /// relay#1893 review, P1: any pasted-text marker verified any delivery.
-    #[test]
-    fn a_collapsed_paste_marker_never_confirms_a_delivery() {
-        let expected = long_envelope();
-        for observed in [
-            // A full collapse: the harness echoed no content at all.
-            "[Pasted text #1 +120 lines]".to_string(),
-            // The reviewer's `paste_tail` reproduction: a partial paste's
-            // marker plus the payload's last bytes.
-            format!(
-                "[Pasted text #1 +3 lines]{}",
-                &expected[expected.len() - 40..]
-            ),
-            // An earlier, smaller paste's marker redrawn during this delivery.
-            "❯ [Pasted text #1 +2 lines] previous turn\n❯ ".to_string(),
-        ] {
-            let verdict = echo_verdict(&observed, &expected);
-            assert_eq!(verdict, EchoVerdict::PasteSummary);
-            assert!(
-                !verdict.confirmed(),
-                "a paste marker is not a receipt for {observed:?}"
-            );
-            assert!(!check_echo_in_output(&observed, &expected));
-        }
-    }
-
-    /// The runtime sees labels, not verdicts; the two must not drift apart.
-    #[test]
-    fn verification_labels_agree_with_the_verdict_ladder() {
-        for verdict in [
-            EchoVerdict::Exact,
-            EchoVerdict::Normalized,
-            EchoVerdict::HeadMissing,
-            EchoVerdict::Incomplete,
-            EchoVerdict::PasteSummary,
-            EchoVerdict::Absent,
-        ] {
-            assert_eq!(
-                verification_label_confirms_receipt(verdict.label()),
-                verdict.confirmed(),
-                "{:?} label and confirmation disagree",
-                verdict
-            );
-        }
-        // An absent or unknown label is never receipt.
-        assert!(!verification_label_confirms_receipt(""));
-        assert!(!verification_label_confirms_receipt("echo_anchors"));
-    }
-
-    #[test]
-    fn timeout_disposition_fails_only_on_proven_head_loss() {
-        let window = Duration::from_secs(5);
-        assert_eq!(
-            verification_timeout(EchoVerdict::HeadMissing, true, window),
-            VerificationTimeout::HeadLoss
+    #[cfg(unix)]
+    async fn codex_snapshot(screen: &str) -> (crate::pty::PtySession, Snapshot) {
+        let encoded = base64::Engine::encode(
+            &base64::engine::general_purpose::STANDARD,
+            screen.as_bytes(),
         );
-        // A trimmed window cannot prove head loss, so it cannot fail a delivery.
-        for (verdict, label) in [
-            (EchoVerdict::HeadMissing, "echo_incomplete"),
-            (EchoVerdict::Incomplete, "echo_incomplete"),
-            (EchoVerdict::PasteSummary, "paste_summary"),
-            (EchoVerdict::Absent, "timeout_fallback"),
-        ] {
-            let retains = verdict != EchoVerdict::HeadMissing;
-            match verification_timeout(verdict, retains, window) {
-                VerificationTimeout::Unconfirmed { label: got, reason } => {
-                    assert_eq!(got, label, "{verdict:?}");
-                    assert!(!reason.is_empty());
-                    assert!(!verification_label_confirms_receipt(got), "{verdict:?}");
-                }
-                other => panic!("{verdict:?} must not fail a delivery: {other:?}"),
+        let script = format!(
+            "stty raw -echo; printf '\\033[2J\\033[H'; printf '%s' '{encoded}' | base64 -d; sleep 3"
+        );
+        let (pty, mut rx) =
+            crate::pty::PtySession::spawn("/bin/sh", &["-c".into(), script], 24, 120).unwrap();
+        let expected_tail = screen
+            .split('\x1b')
+            .next()
+            .and_then(|visible| visible.chars().last())
+            .unwrap_or('›');
+        for _ in 0..100 {
+            let _ = tokio::time::timeout(Duration::from_millis(20), rx.recv()).await;
+            if pty.screen_text().contains(expected_tail) {
+                break;
             }
         }
-        // A late whole-payload echo keeps its confirmation rather than being
-        // downgraded to an unverified ack.
-        for verdict in [EchoVerdict::Exact, EchoVerdict::Normalized] {
-            assert_eq!(
-                verification_timeout(verdict, true, window),
-                VerificationTimeout::Confirmed {
-                    label: verdict.label()
-                }
-            );
+        tokio::time::sleep(Duration::from_millis(30)).await;
+        let snapshot = Snapshot::capture(&pty);
+        (pty, snapshot)
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn editor_echo_is_parked_until_codex_accepts_the_turn() {
+        let expected = "Relay message from Lead [evt]: fix idle injection";
+        let (pty, snapshot) = codex_snapshot(&format!("› {expected}")).await;
+        let verification = codex_verification(expected);
+
+        assert_eq!(
+            assess_harness_acceptance("codex", &verification, &snapshot),
+            HarnessAcceptance::Parked,
+            "visible composer text must never be mistaken for acceptance"
+        );
+        pty.shutdown().unwrap();
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn visible_wrapped_composer_tail_survives_codex_submit() {
+        let expected = "Relay message from Lead [evt]: Reply with exactly WRAPPED_CODEX_ACK";
+        let (parked_pty, parked) = codex_snapshot(
+            "› Relay message from Lead [evt]: Reply with exactly\n  WRAPPED_CODEX_ACK",
+        )
+        .await;
+        let mut verification = codex_verification(expected);
+        verification.echo_seen = false;
+        verification.observe_visible_composer(&parked, "codex");
+        assert!(verification.echo_seen);
+        assert_eq!(
+            assess_harness_acceptance("codex", &verification, &parked),
+            HarnessAcceptance::Parked,
+        );
+        parked_pty.shutdown().unwrap();
+
+        let (idle_pty, idle) = codex_snapshot("› Ask Codex to do anything").await;
+        assert_eq!(
+            assess_harness_acceptance("codex", &verification, &idle),
+            HarnessAcceptance::Accepted("composer_cleared".to_string()),
+        );
+        idle_pty.shutdown().unwrap();
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn cat_process_echo_confirms_local_pty_receipt() {
+        let (pty, snapshot) = codex_snapshot("LOCAL_WORK_PROOF").await;
+        let mut verification = codex_verification("LOCAL_WORK_PROOF");
+        verification.body = "LOCAL_WORK_PROOF".to_string();
+        verification.echo_seen = false;
+        assert_eq!(
+            assess_harness_acceptance("cat", &verification, &snapshot),
+            HarnessAcceptance::Inconclusive,
+        );
+        let mut output = VerificationOutput::default();
+        output.push_str("raw PTY echo: LOCAL_WORK_PROOF\r\n");
+        verification.observe_raw_process_receipt(&output, "/bin/cat");
+        assert!(verification.echo_seen);
+        assert_eq!(
+            assess_harness_acceptance("cat", &verification, &snapshot),
+            HarnessAcceptance::Accepted("process_echo".to_string()),
+        );
+        pty.shutdown().unwrap();
+    }
+
+    #[test]
+    fn pty_crlf_echo_matches_formatted_message() {
+        assert!(check_echo_in_output(
+            "Relay message from Lead:\r\n  LOCAL_WORK_PROOF",
+            "Relay message from Lead:\n  LOCAL_WORK_PROOF",
+        ));
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn codex_activity_and_cleared_composer_prove_acceptance() {
+        let expected = "Relay message from Lead [evt]: fix idle injection";
+        let (busy_pty, busy_snapshot) =
+            codex_snapshot(&format!("› {expected}\nWorking (1s • esc to interrupt)")).await;
+        let mut active = codex_verification(expected);
+        active
+            .activity_buffer
+            .push_str("Working (1s • esc to interrupt)");
+        assert!(matches!(
+            assess_harness_acceptance("codex", &active, &busy_snapshot),
+            HarnessAcceptance::Accepted(ref evidence) if evidence.starts_with("activity:")
+        ));
+        busy_pty.shutdown().unwrap();
+
+        let (idle_pty, idle_snapshot) = codex_snapshot("› Ask Codex to do anything").await;
+        let cleared = codex_verification(expected);
+        assert_eq!(
+            assess_harness_acceptance("codex", &cleared, &idle_snapshot),
+            HarnessAcceptance::Accepted("composer_cleared".to_string())
+        );
+        idle_pty.shutdown().unwrap();
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn codex_idle_placeholder_to_right_of_cursor_proves_cleared_composer() {
+        let expected = "Relay message from Lead [evt]: fix idle injection";
+        let (pty, snapshot) = codex_snapshot("› Ask Codex to do anything\x1b[1;3H").await;
+        assert_eq!(snapshot.cursor, (1, 3));
+        assert!(snapshot.has_visible_text_at_or_after_cursor());
+        let verification = codex_verification(expected);
+        assert_eq!(
+            assess_harness_acceptance("codex", &verification, &snapshot),
+            HarnessAcceptance::Accepted("composer_cleared".to_string())
+        );
+        pty.shutdown().unwrap();
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn generic_redraw_cannot_confirm_a_body_still_parked() {
+        let expected = "Relay message from Lead [evt]: fix idle injection";
+        let (pty, snapshot) = codex_snapshot(&format!("› {expected}")).await;
+        let mut verification = codex_verification(expected);
+        verification.detector = ActivityDetector::for_cli("muse");
+        verification
+            .activity_buffer
+            .push_str("composer repaint after echo");
+
+        assert_eq!(
+            assess_harness_acceptance("muse", &verification, &snapshot),
+            HarnessAcceptance::Parked,
+            "generic output must not outrank a visibly parked composer"
+        );
+        pty.shutdown().unwrap();
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn previous_turn_busy_redraw_cannot_confirm_new_parked_body() {
+        let expected = "Relay message from Lead [evt]: queued while busy";
+        let screen = format!("› previous request\nWorking (4s • esc to interrupt)\n› {expected}");
+        let (pty, snapshot) = codex_snapshot(&screen).await;
+        let mut verification = codex_verification(expected);
+        verification
+            .activity_buffer
+            .push_str("Working (5s • esc to interrupt)");
+
+        assert_eq!(
+            assess_harness_acceptance("codex", &verification, &snapshot),
+            HarnessAcceptance::Parked,
+            "a continuing marker from the previous turn cannot outrank the new live composer"
+        );
+        pty.shutdown().unwrap();
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn multiline_draft_activity_words_remain_parked() {
+        let expected = "Relay message from Lead [evt]: call Write(test)";
+        let screen = format!("❯ {expected}\nTool: still part of the draft");
+        let (pty, snapshot) = codex_snapshot(&screen).await;
+        let mut verification = codex_verification(expected);
+        verification.detector = ActivityDetector::for_cli("claude");
+        verification
+            .activity_buffer
+            .push_str("Tool: still part of the draft");
+
+        assert_eq!(
+            assess_harness_acceptance("claude", &verification, &snapshot),
+            HarnessAcceptance::Parked
+        );
+        pty.shutdown().unwrap();
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn claude_interrupt_status_is_activity_not_a_parked_transcript() {
+        let expected = "Relay message from Lead [evt]: fix busy Claude";
+        let screen = format!("❯ {expected}\nResponding… esc to interrupt");
+        let (pty, snapshot) = codex_snapshot(&screen).await;
+        let mut verification = codex_verification(expected);
+        verification.detector = ActivityDetector::for_cli("claude");
+        verification
+            .activity_buffer
+            .push_str("Responding… esc to interrupt");
+
+        assert!(matches!(
+            assess_harness_acceptance("claude", &verification, &snapshot),
+            HarnessAcceptance::Accepted(ref evidence) if evidence == "activity:esc to interrupt"
+        ));
+        pty.shutdown().unwrap();
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn gemini_composer_is_prompt_anchored_and_keeps_long_drafts() {
+        let expected = "a".repeat(120);
+        let wrapped = expected
+            .as_bytes()
+            .chunks(20)
+            .map(|chunk| std::str::from_utf8(chunk).unwrap())
+            .collect::<Vec<_>>()
+            .join("\n");
+        let (parked_pty, parked_snapshot) = codex_snapshot(&format!("> {wrapped}")).await;
+        let mut parked = codex_verification(&expected);
+        parked.detector = ActivityDetector::for_cli("gemini");
+        assert_eq!(
+            assess_harness_acceptance("gemini", &parked, &parked_snapshot),
+            HarnessAcceptance::Parked,
+            "Gemini drafts longer than four rows retain the complete recovery tail"
+        );
+        parked_pty.shutdown().unwrap();
+
+        let bordered = expected
+            .as_bytes()
+            .chunks(20)
+            .enumerate()
+            .map(|(index, chunk)| {
+                let prefix = if index == 0 { "> " } else { "  " };
+                format!("│ {prefix}{} │", std::str::from_utf8(chunk).unwrap())
+            })
+            .collect::<Vec<_>>()
+            .join("\n");
+        let (bordered_pty, bordered_snapshot) = codex_snapshot(&bordered).await;
+        let mut bordered_verification = codex_verification(&expected);
+        bordered_verification.detector = ActivityDetector::for_cli("gemini");
+        assert_eq!(
+            assess_harness_acceptance("gemini", &bordered_verification, &bordered_snapshot),
+            HarnessAcceptance::Parked,
+            "Gemini border glyphs must not split a wrapped recovery tail"
+        );
+        bordered_pty.shutdown().unwrap();
+
+        let (active_pty, active_snapshot) =
+            codex_snapshot(&format!("{expected}\nGenerating response")).await;
+        let mut active = codex_verification(&expected);
+        active.detector = ActivityDetector::for_cli("gemini");
+        active.activity_buffer.push_str("Generating response");
+        assert!(matches!(
+            assess_harness_acceptance("gemini", &active, &active_snapshot),
+            HarnessAcceptance::Accepted(ref evidence) if evidence == "activity:Generating"
+        ));
+        active_pty.shutdown().unwrap();
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn text_right_of_cursor_cannot_look_like_a_cleared_composer() {
+        let expected = "Relay message from Lead [evt]: hidden draft";
+        let screen = format!("› {expected}\x1b[1;3H");
+        let (pty, snapshot) = codex_snapshot(&screen).await;
+        let verification = codex_verification(expected);
+
+        assert_eq!(
+            assess_harness_acceptance("codex", &verification, &snapshot),
+            HarnessAcceptance::Inconclusive,
+            "right-side draft text prevents composer-cleared acceptance while recovery stays fail-closed"
+        );
+        pty.shutdown().unwrap();
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn generic_post_echo_output_accepts_after_body_leaves_composer() {
+        let expected = "Relay message from Lead [evt]: fix idle injection";
+        let (pty, snapshot) = codex_snapshot("Processing accepted turn").await;
+        let mut verification = codex_verification(expected);
+        verification.detector = ActivityDetector::for_cli("muse");
+        verification
+            .activity_buffer
+            .push_str("Processing accepted turn");
+
+        assert_eq!(
+            assess_harness_acceptance("muse", &verification, &snapshot),
+            HarnessAcceptance::Accepted("echo_left_composer".to_string())
+        );
+        pty.shutdown().unwrap();
+    }
+
+    #[test]
+    fn split_echo_preserves_same_chunk_acceptance_activity() {
+        let expected = "Relay message from Lead [evt]: split echo";
+        let mut verification = codex_verification(expected);
+        verification.echo_seen = false;
+        let mut output = VerificationOutput::default();
+        output.push_output(1, b"Relay message from Lead [evt]: split ");
+        verification.observe(&output, "Relay message from Lead [evt]: split ");
+        assert!(!verification.echo_seen);
+
+        output.push_output(2, "echo\nWorking (1s • esc to interrupt)".as_bytes());
+        verification.observe(&output, "echo\nWorking (1s • esc to interrupt)");
+
+        assert!(verification.echo_seen);
+        assert_eq!(
+            verification.accepted_activity(),
+            Some("Working+esc to interrupt".to_string())
+        );
+    }
+
+    #[test]
+    fn crlf_echo_preserves_same_chunk_acceptance_activity() {
+        let expected = "Relay message from Lead [evt]: line one\nline two";
+        let mut verification = codex_verification(expected);
+        verification.echo_seen = false;
+        let mut output = VerificationOutput::default();
+        let observed =
+            "Relay message from Lead [evt]: line one\r\nline two\r\nWorking (1s • esc to interrupt)";
+        output.push_output(1, observed.as_bytes());
+        verification.observe(&output, observed);
+
+        assert!(verification.echo_seen);
+        assert_eq!(
+            verification.accepted_activity(),
+            Some("Working+esc to interrupt".to_string())
+        );
+    }
+
+    #[test]
+    fn wrapped_tui_echo_is_scoped_to_delivery_output_boundary() {
+        let expected = "Relay message from Lead [evt]: Reply with exactly WRAPPED_CODEX_ACK";
+        let mut verification = codex_verification(expected);
+        verification.echo_seen = false;
+        verification.output_boundary = 1;
+        let mut output = VerificationOutput::default();
+        output.push_output(
+            1,
+            b"Relay message from Lead [evt]: Reply with exactly WRAPPED_CODEX_ACK",
+        );
+        assert!(!pending_verification_echo_seen(&output, &verification));
+        output.push_output(
+            2,
+            b"Relay message from Lead [evt]: Reply with exactly\r\n  WRAPPED_CODEX_ACK",
+        );
+        assert!(pending_verification_echo_seen(&output, &verification));
+    }
+
+    #[test]
+    fn acceptance_lifetime_is_not_reset_by_retry_windows() {
+        let mut verification = codex_verification("bounded delivery");
+        verification.verification_started_at = Instant::now() - MAX_ACCEPTANCE_LIFETIME;
+        verification.injected_at = Instant::now();
+        assert!(verification.acceptance_expired());
+    }
+
+    #[test]
+    fn check_echo_matches_injection_with_attachment_block() {
+        // The attachment block is part of the body, so the expected echo is
+        // the full multi-line injection exactly like any multi-line message.
+        let body = crate::attachments::append_attachment_block(
+            "see this",
+            Some("Attachments:\n- shot.png (image/png, 153.1 KB) saved to /w/.agent-relay/attachments/f1/shot.png"),
+        );
+        let expected =
+            crate::broker::injection_format::format_injection("Alice", "evt_1", &body, "Lead");
+        assert!(expected
+            .contains("Relay message from Alice [evt_1]: see this\n\nAttachments:\n- shot.png"));
+        let output = format!("prompt\n\x1b[32m{expected}\x1b[0m\n> ");
+        assert!(check_echo_in_output(&output, &expected));
+        // A truncated echo that stops before the block is not a match.
+        let header_only = format!("{}\n", expected.split("\n\nAttachments:").next().unwrap());
+        assert!(!check_echo_in_output(&header_only, &expected));
+    }
+
+    #[test]
+    fn only_harness_acceptance_confirms_receipt() {
+        assert!(verification_label_confirms_receipt(HARNESS_ACCEPTANCE));
+        for label in [
+            "",
+            "completed_replay",
+            "worker_confirmation",
+            "echo",
+            "timeout_fallback",
+        ] {
+            assert!(!verification_label_confirms_receipt(label), "{label}");
         }
     }
 
@@ -706,6 +1111,7 @@ mod tests {
             expected_echo: expected.to_string(),
             output_boundary,
             injected_at: Instant::now(),
+            verification_started_at: Instant::now(),
             attempts: 1,
             max_attempts: 1,
             request_id: None,
@@ -714,6 +1120,9 @@ mod tests {
             from: "Alice".to_string(),
             body: "same body".to_string(),
             target: "Worker".into(),
+            echo_seen: false,
+            activity_buffer: String::new(),
+            detector: ActivityDetector::for_cli("codex"),
         };
 
         assert!(!pending_verification_echo_seen(&output, &verification));
@@ -739,6 +1148,7 @@ mod tests {
             expected_echo: expected.to_string(),
             output_boundary,
             injected_at: Instant::now(),
+            verification_started_at: Instant::now(),
             attempts: 1,
             max_attempts: 1,
             request_id: None,
@@ -747,6 +1157,9 @@ mod tests {
             from: "Alice".to_string(),
             body: "same body".to_string(),
             target: "Worker".into(),
+            echo_seen: false,
+            activity_buffer: String::new(),
+            detector: ActivityDetector::for_cli("codex"),
         };
 
         output.push_output(2, expected.as_bytes());
@@ -793,6 +1206,7 @@ mod tests {
             expected_echo: expected.to_string(),
             output_boundary,
             injected_at: Instant::now(),
+            verification_started_at: Instant::now(),
             attempts: 1,
             max_attempts: 1,
             request_id: None,
@@ -801,6 +1215,9 @@ mod tests {
             from: "Lead".to_string(),
             body: "review this".to_string(),
             target: "Worker".into(),
+            echo_seen: false,
+            activity_buffer: String::new(),
+            detector: ActivityDetector::for_cli("claude"),
         };
 
         let mut pending_activities = std::collections::VecDeque::new();
@@ -830,6 +1247,7 @@ mod tests {
             expected_echo: expected.to_string(),
             output_boundary,
             injected_at: Instant::now(),
+            verification_started_at: Instant::now(),
             attempts: 1,
             max_attempts: 1,
             request_id: None,
@@ -838,6 +1256,9 @@ mod tests {
             from: "Lead".to_string(),
             body: "review this".to_string(),
             target: "Worker".into(),
+            echo_seen: false,
+            activity_buffer: String::new(),
+            detector: ActivityDetector::for_cli("claude"),
         };
         let mut pending_activities = std::collections::VecDeque::new();
 

@@ -614,19 +614,31 @@ export type BrokerEvent =
       delivery_id: string;
       event_id: string;
       /**
-       * What the PTY output proved about this delivery. Only 'echo' (the whole
-       * envelope verbatim) and 'echo_normalized' (the whole envelope once the
-       * TUI's wrapping whitespace is removed) confirm full receipt.
-       * 'echo_incomplete' (head and tail without the payload between them),
-       * 'paste_summary' (the harness collapsed the paste, so no content was
-       * echoed) and 'timeout_fallback' (no echo at all) are acks without proof
-       * of receipt. A tail without its head is a 'delivery_failed' with reason
-       * 'echo_head_missing'. Workers that predate this contract report only
-       * 'echo' (verbatim) and 'timeout_fallback'; treat any value not listed
-       * here as an ack without proof of receipt.
+       * 'harness_acceptance' for accepted PTY deliveries and 'completed_replay'
+       * for duplicate completed deliveries; legacy workers may report 'echo'
+       * or 'timeout_fallback'.
        */
       verification?: string;
       reason?: string;
+      evidence?: string | null;
+      attempts?: number | null;
+    }
+  | {
+      kind: 'delivery_unconfirmed';
+      name: string;
+      delivery_id: string;
+      event_id: string;
+      reason: string;
+      attempts: number;
+      max_attempts: number;
+    }
+  | {
+      kind: 'delivery_resubmitted';
+      name: string;
+      delivery_id: string;
+      event_id: string;
+      attempt: number;
+      strategy: string;
     }
   | {
       kind: 'delivery_failed';
@@ -850,15 +862,42 @@ export type WorkerToBroker =
   | {
       type: 'delivery_verified';
       /** See the `delivery_verified` broker event for `verification` values. */
-      payload: { delivery_id: string; event_id: string; verification?: string; reason?: string };
+      payload: {
+        delivery_id: string;
+        event_id: string;
+        verification?: string;
+        reason?: string;
+        evidence?: string;
+        attempts?: number;
+      };
+    }
+  | {
+      type: 'delivery_unconfirmed';
+      payload: {
+        delivery_id: string;
+        event_id: string;
+        reason: string;
+        attempts: number;
+        max_attempts: number;
+      };
+    }
+  | {
+      type: 'delivery_resubmitted';
+      payload: {
+        delivery_id: string;
+        event_id: string;
+        attempt: number;
+        strategy: string;
+      };
     }
   | {
       type: 'delivery_failed';
       /**
        * Terminal and never replayed. PTY injection adds 'prompt_unproven' (no
-       * composer was recognized in time), 'echo_head_missing' (the echo lost
-       * its head) and 'injection_too_large: …' (rejected before any byte was
-       * written).
+       * composer was recognized in time), 'body remained parked after bounded
+       * submit-key recovery', 'harness acceptance could not be proven'
+       * (neither parked nor accepted, so not evidence of loss) and
+       * 'injection_too_large: …' (rejected before any byte was written).
        */
       payload: { delivery_id: string; event_id: string; reason: string };
     }

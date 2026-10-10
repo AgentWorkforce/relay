@@ -13,6 +13,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `agent remove --wait` and `fleet release --delete-agent --wait` verify registration clearance before name reuse, with `--wait-timeout` and `--no-wait` controls. Fleet release adds `removal` evidence when waiting.
 - `fleet agent list` JSON includes node heartbeat timestamps and ages, with warnings for stale snapshots.
 - `fleet spawn`, `agent spawn`, and `node agent spawn` accept `--task-file` to read an initial brief from a local UTF-8 file. Fleet requires exactly one of `--task` and `--task-file`.
+- `agent-relay message dm send`, `message post` and `message dm send_group` take a repeatable `--file <path>` that uploads and attaches local files (for example screenshots); `message file upload` accepts `--to <agent>` for a DM.
+- `agent-relay message file download <file_id>` saves a received attachment (default `.agent-relay/attachments/<file_id>/`) and prints its path; `message file get <file_id>` shows it with a short-lived download URL.
+- The `agent-relay mcp` server adds `upload_file` (local path or base64) and `download_file`, and `send_group_dm` accepts `attachments`.
+- Agents spawned by the broker receive message attachments (up to 25 MiB each) as local files: the injected message ends with an `Attachments:` list giving each file's path under `.agent-relay/attachments/` in the agent's working directory, or an `agent-relay message file download <file_id>` command when a file could not be fetched. Messages that carry only attachments are now delivered too.
+- `@agent-relay/sdk` adds `files.upload` / `files.get` / `files.download` on `AgentRelay` and `RelaycastMessagingClient`, plus `uploadRelayFile` / `downloadRelayFile` helpers.
 
 ### Changed
 
@@ -31,7 +36,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Fleet registration collisions use readable `spawn_name_taken` guidance covering asynchronous removal and failed-spawn cleanup, instead of Rust `Fatal(AlreadyExists {...})` text.
 - Pending fleet spawns preserve provisioned sandboxes and distinguish live, stale, elsewhere, registered, absent, and unknown evidence before advising a retry.
 - Tasks and relay messages typed into an agent's terminal wait until the agent is ready for input and can no longer be submitted half-way through, and a message that is too large fails with an explicit error instead of being retried.
-- A confirmed `fleet spawn --task` (the default) succeeds only once the agent has visibly received the whole task. If the task cannot be delivered, the worker is released and the spawn fails with `spawn_task_failed`. If delivery cannot be confirmed, the spawn fails with `spawn_task_unconfirmed`, names the agent that is still running, and says not to retry. With `--no-confirm` the spawn reports as soon as the node accepts it, without waiting for the task to arrive.
+- A confirmed `fleet spawn --task` (the default) succeeds only once the agent's harness has visibly accepted the task (activity or a cleared composer, not merely the task echoed into the composer). If the task cannot be delivered, the worker is released and the spawn fails with `spawn_task_failed`. If delivery cannot be confirmed, the spawn fails with `spawn_task_unconfirmed`, names the agent that is still running, and says not to retry. With `--no-confirm` the spawn reports as soon as the node accepts it, without waiting for the task to arrive.
+- `agent-relay message file upload` now uploads and attaches the file; it always failed with "Invalid attachments: file ids must exist in workspace and be complete".
+- Broker-managed messages retry failed delivery up to three times, and later sends wait until delivery succeeds.
 
 ## [13.2.0] - 2026-10-08
 

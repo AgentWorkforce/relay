@@ -46,26 +46,21 @@ local `agent spawn` and `node agent spawn` accept either but require neither, an
 reject both together. The integration command's
 existing task option remains unchanged.
 
-Only a whole-payload echo confirms receipt: `echo` (verbatim) or
-`echo_normalized` (verbatim once the TUI's wrapping whitespace is removed from
-both sides). A tail without its head fails with `echo_head_missing`; the body is
-never automatically replayed. If the observation buffer has discarded the head,
-that is not treated as proof of truncation.
-
-Every other verdict is an ack that **does not prove byte-for-byte receipt**, and
-each says what was actually observed: `echo_incomplete` (head and tail without
-the payload between them — matching endpoints say nothing about the bytes
-between them), `paste_summary` (the harness collapsed the paste, so no content
-was echoed at all) and `timeout_fallback` (no echo), the last with a warning and
-a process-local fallback counter.
+Receipt is proven by harness acceptance, never by echo alone: a body visible in
+the composer is still a draft. A PTY delivery is `harness_acceptance` once the
+harness shows activity, clears its composer, or (for a plain process) echoes the
+body raw. A body still parked in the composer gets a bounded submit-key retry
+(`delivery_unconfirmed`, then `delivery_resubmitted`); the body itself is never
+replayed. If it stays parked, the delivery fails with "body remained parked after
+bounded submit-key recovery"; if the window closes with neither acceptance nor a
+parked body, it fails with "harness acceptance could not be proven", which is not
+evidence that the input was lost.
 
 Verified fleet PTY spawns with a task wait for its delivery verdict and for
-proven startup readiness, in either order. A failed task releases the worker and
-its fleet identity, then fails the spawn action with `spawn_task_failed`, so a
-corrected retry can reuse the name. A task acked without
-confirmed receipt resolves the action as `spawn_task_unconfirmed`, naming the
+proven startup readiness, in either order. Only `harness_acceptance` confirms
+the task. A failed task releases the worker and its fleet identity, then fails
+the spawn action with `spawn_task_failed`, so a corrected retry can reuse the
+name. A task acked without proof of acceptance, or whose acceptance could not be
+proven either way, resolves the action as `spawn_task_unconfirmed`, naming the
 live agent: the spawn must not be retried (that duplicates the agent), so resend
-the task or point the agent at a brief file. Wrap uses the same echo evidence and
-keeps its failed-throttle policy on absent echoes and on evidence of loss; a
-collapsed paste is recorded as unverified instead, since it indicates nothing
-about loss.
+the task or point the agent at a brief file.

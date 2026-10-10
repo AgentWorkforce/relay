@@ -21,6 +21,7 @@ import {
   relaycastWorkspaceTelemetryOptions,
   type RelaycastTelemetryOptions,
 } from '../relaycast-telemetry.js';
+import type { RelayFilesApiLike } from './files.js';
 import { currentReplaySessionRef, replayMessageMetadata, resolveReplaySessionRef } from './session-ref.js';
 import type {
   RelayCreateChannelInput,
@@ -163,6 +164,8 @@ export interface RelayAgentThinClient {
   inbox(options?: { limit?: number }): Promise<unknown>;
   markRead(messageId: string): Promise<unknown>;
   readers(messageId: string): Promise<unknown[]>;
+  /** Stored file attachments; use with `uploadRelayFile` / `downloadRelayFile`. */
+  readonly files?: RelayFilesApiLike;
   /** Relay action surface; absent on backends without action support. */
   readonly actions?: {
     invoke(name: string, input?: Record<string, unknown>): Promise<unknown>;
