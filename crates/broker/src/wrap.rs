@@ -315,10 +315,12 @@ fn wrap_injection_timer_allowed(has_pending_write_ack: bool, has_pending_accepta
     !has_pending_write_ack && !has_pending_acceptance
 }
 
-/// Human stdin that submits the composer (Enter) takes whatever it holds,
+/// A lone Enter keystroke submits the composer and takes whatever it holds,
 /// including a failed relay draft, so it releases the wrap failed-draft latch.
+/// A multiline or bracketed paste also carries CR/LF bytes but adds text to
+/// the composer rather than submitting it, so it never releases the latch.
 fn human_input_submits_composer(data: &[u8]) -> bool {
-    data.iter().any(|byte| matches!(byte, b'\r' | b'\n'))
+    !data.is_empty() && data.iter().all(|byte| matches!(byte, b'\r' | b'\n'))
 }
 
 // Readiness deferrals must not spend the bounded delivery retry budget.
@@ -2952,7 +2954,16 @@ sys.stdout.flush()"#;
     #[test]
     fn wrap_injection_timer_waits_for_write_ack_and_harness_acceptance() {
         assert!(super::human_input_submits_composer(b"\r"));
-        assert!(super::human_input_submits_composer(b"ok\n"));
+        assert!(super::human_input_submits_composer(b"\r\n"));
+        assert!(
+            !super::human_input_submits_composer(b"ok\n"),
+            "typed line plus newline is text"
+        );
+        assert!(
+            !super::human_input_submits_composer(b"\x1b[200~line one\rline two\x1b[201~"),
+            "a bracketed multiline paste is not a submit"
+        );
+        assert!(!super::human_input_submits_composer(b""));
         assert!(!super::human_input_submits_composer(b"typing"));
         assert!(wrap_injection_timer_allowed(false, false));
         assert!(!wrap_injection_timer_allowed(true, false));

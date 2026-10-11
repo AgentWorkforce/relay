@@ -593,6 +593,13 @@ pub(crate) fn assess_harness_acceptance(
             return HarnessAcceptance::Accepted(format!("activity:{pattern}"));
         }
     }
+    // A draft still visible at the cursor is StuckInComposer even when the
+    // through-cursor composer parse missed it (the cursor sits at the start or
+    // middle of the draft). Treating it as Unconfirmed would leave it unlatched
+    // and let the next delivery be typed onto it.
+    if draft_visible_at_cursor(snapshot, cli, &verification.expected_echo) {
+        return HarnessAcceptance::Parked;
+    }
     HarnessAcceptance::Inconclusive
 }
 
@@ -909,7 +916,7 @@ mod tests {
         verification.echo_seen = false;
         assert_eq!(
             assess_harness_acceptance("cat", &verification, &snapshot),
-            HarnessAcceptance::Inconclusive,
+            HarnessAcceptance::Parked,
         );
         let mut output = VerificationOutput::default();
         output.push_str("raw PTY echo: LOCAL_WORK_PROOF\r\n");
@@ -1139,18 +1146,20 @@ mod tests {
 
     #[cfg(unix)]
     #[tokio::test]
-    async fn text_right_of_cursor_cannot_look_like_a_cleared_composer() {
-        let expected = "Relay message from Lead [evt]: hidden draft";
-        let screen = format!("› {expected}\x1b[1;3H");
-        let (pty, snapshot) = codex_snapshot(&screen).await;
-        let verification = codex_verification(expected);
+    async fn a_visible_draft_with_the_cursor_at_its_start_or_middle_is_stuck() {
+        let expected = "Relay message from Lead [evt]: hidden draft that is still parked here";
+        for cursor in ["\x1b[1;3H", "\x1b[1;25H"] {
+            let screen = format!("› {expected}{cursor}");
+            let (pty, snapshot) = codex_snapshot(&screen).await;
+            let verification = codex_verification(expected);
 
-        assert_eq!(
-            assess_harness_acceptance("codex", &verification, &snapshot),
-            HarnessAcceptance::Inconclusive,
-            "right-side draft text prevents composer-cleared acceptance while recovery stays fail-closed"
-        );
-        pty.shutdown().unwrap();
+            assert_eq!(
+                assess_harness_acceptance("codex", &verification, &snapshot),
+                HarnessAcceptance::Parked,
+                "a draft still in the composer is StuckInComposer, never Unconfirmed ({cursor:?})"
+            );
+            pty.shutdown().unwrap();
+        }
     }
 
     #[cfg(unix)]
@@ -1186,7 +1195,7 @@ mod tests {
 
         assert_eq!(
             assess_harness_acceptance("muse", &verification, &snapshot),
-            HarnessAcceptance::Inconclusive,
+            HarnessAcceptance::Parked,
             "generic output must not confirm a body that still sits at the cursor"
         );
         pty.shutdown().unwrap();
@@ -1205,7 +1214,7 @@ mod tests {
 
         assert_eq!(
             assess_harness_acceptance("opencode", &verification, &snapshot),
-            HarnessAcceptance::Inconclusive,
+            HarnessAcceptance::Parked,
             "OpenCode transcript words must not confirm a typed-but-unsent body"
         );
         pty.shutdown().unwrap();
@@ -1255,7 +1264,7 @@ mod tests {
 
         assert_eq!(
             assess_harness_acceptance("muse", &verification, &snapshot),
-            HarnessAcceptance::Inconclusive,
+            HarnessAcceptance::Parked,
             "a tail far to the right of the cursor is still an unsent draft"
         );
         pty.shutdown().unwrap();
@@ -1278,7 +1287,7 @@ mod tests {
 
         assert_eq!(
             assess_harness_acceptance("muse", &verification, &snapshot),
-            HarnessAcceptance::Inconclusive,
+            HarnessAcceptance::Parked,
             "body text right of the cursor is an unsent draft even without its tail"
         );
         pty.shutdown().unwrap();
@@ -1286,7 +1295,7 @@ mod tests {
 
     #[cfg(unix)]
     #[tokio::test]
-    async fn bordered_draft_head_right_of_cursor_stays_inconclusive() {
+    async fn bordered_draft_head_right_of_cursor_is_stuck_in_the_composer() {
         // The cursor sits on a box border; the draft's head follows it and its
         // tail has scrolled out of view.
         let expected = format!(
@@ -1301,7 +1310,7 @@ mod tests {
 
         assert_eq!(
             assess_harness_acceptance("muse", &verification, &snapshot),
-            HarnessAcceptance::Inconclusive,
+            HarnessAcceptance::Parked,
             "border chrome around the cursor must not hide an unsent draft"
         );
         pty.shutdown().unwrap();
@@ -1309,7 +1318,7 @@ mod tests {
 
     #[cfg(unix)]
     #[tokio::test]
-    async fn symbolic_draft_head_right_of_cursor_stays_inconclusive() {
+    async fn symbolic_draft_head_right_of_cursor_is_stuck_in_the_composer() {
         // The visible head is punctuation only; the tail has scrolled away.
         let expected = format!("~~~ *** ### {} TAIL_SCROLLED_OFF", "y".repeat(160));
         let (pty, snapshot) = codex_snapshot("┃ ~~~ *** ### ┃\x1b[1;1H").await;
@@ -1319,7 +1328,7 @@ mod tests {
 
         assert_eq!(
             assess_harness_acceptance("muse", &verification, &snapshot),
-            HarnessAcceptance::Inconclusive,
+            HarnessAcceptance::Parked,
             "a draft head made of symbols is still body text"
         );
         pty.shutdown().unwrap();
