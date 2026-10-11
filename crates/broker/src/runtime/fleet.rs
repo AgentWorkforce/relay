@@ -249,31 +249,41 @@ pub(super) fn verified_spawn_ready_result(
     }
 }
 
-/// A live, ready agent whose initial task was never confirmed as fully
-/// received.
+/// A live, ready agent whose initial task was delivered but not confirmed.
 ///
-/// This is deliberately neither a success nor an ordinary failure. The spawn
-/// did happen — the agent is registered, ready and holding the node's only
-/// slot for that name — so the caller must not retry, or it duplicates the
-/// agent. But the task it was spawned to run cannot be shown to have arrived
-/// intact, and `spawned:true, ready:true` is exactly the proof `fleet spawn`
-/// uses to report success, so the only honest answer is an error that names
-/// the live agent and says what to do instead (relay#1893 review, P1).
+/// Per the #1959 acceptance policy, only a real delivery failure fails a
+/// verified spawn. An unconfirmed task (written, not visibly parked, but no
+/// harness evidence either way, or bound to no verdict at all) is a success:
+/// the agent is registered, ready and holding the name, so a retry would
+/// duplicate it. The result carries `warning.code = "spawn_task_unconfirmed"`
+/// so callers can tell it apart from a task the harness was seen to accept.
 pub(super) fn verified_spawn_task_unconfirmed_result(
     invocation_id: String,
     name: &WorkerName,
     verification: Option<&str>,
 ) -> ActionResult {
-    verified_spawn_failed_result(
+    ActionResult {
+        task: None,
+        v: FLEET_WIRE_VERSION,
+        id: None,
         invocation_id,
-        &format!(
-            "spawn_task_unconfirmed: agent '{name}' is live and ready, but full receipt of its \
-             initial task was not confirmed (verification: {}). Do not retry this spawn — it \
-             would duplicate the agent. Resend the task, or write the brief to a file and send a \
-             short pointer, then check the agent's transcript.",
-            verification.unwrap_or("none")
-        ),
-    )
+        result: ActionResultPayload::Output(ActionResultOutput {
+            output: json!({
+                "spawned": true,
+                "ready": true,
+                "name": name.as_str(),
+                "warning": {
+                    "code": "spawn_task_unconfirmed",
+                    "verification": verification.unwrap_or("none"),
+                    "message": format!(
+                        "agent '{name}' is live and ready and its initial task was delivered, but \
+                         the harness never confirmed accepting it. Do not retry this spawn; check \
+                         the agent's transcript."
+                    ),
+                },
+            }),
+        }),
+    }
 }
 
 /// Result for a verified spawn whose worker had already reported
@@ -2248,9 +2258,10 @@ pub(super) async fn enqueue_delivery_ack(
 /// confirmation of a specific PTY injection (relay#1310: the ack must not
 /// fire before the worker confirms the write landed). Called with the
 /// `delivery_id`/`event_id` from the worker's own internal `delivery_ack`
-/// event (`worker_events.rs`), which pty_worker.rs sends only after activity, a
-/// cleared composer, or the explicitly supported `cat` process echo exception
-/// proves harness acceptance — never at write-enqueue time.
+/// event (`worker_events.rs`), which pty_worker.rs sends only after activity
+/// or a cleared composer proves harness acceptance (or, for a plain `cat`
+/// recipient with no harness, after its PTY echo proves transport receipt) —
+/// never at write-enqueue time.
 ///
 /// Returns the `(agent, up_to_seq)` to send to the engine once resolved, or
 /// `None` when there is nothing withheld for `delivery_id` (already

@@ -59,6 +59,9 @@ try {
   process.stdin.on('data', (chunk) => {
     if (!ready) return;
     if (codexComposer) renderCodexComposer(chunk.toString());
+    // Like a real harness, Enter submits the turn and repaints the prompt, so
+    // the broker can see the composer clear and confirm acceptance.
+    else if (/[\r\n]/.test(chunk.toString())) process.stdout.write('\r\n❯ ');
     input += chunk.toString();
     // Require a delimiter after the nonce. PTY chunks can split anywhere, so
     // treating the current buffer end as a complete token could record a

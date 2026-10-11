@@ -1,6 +1,10 @@
 use std::collections::VecDeque;
 use std::future::Future;
 use std::pin::Pin;
+use std::sync::{
+    atomic::{AtomicBool, Ordering},
+    Arc,
+};
 use std::time::{Duration, Instant};
 
 use crate::{
@@ -23,9 +27,10 @@ use tokio::{sync::mpsc, time::MissedTickBehavior};
 
 use crate::broker::{
     delivery_verification::{
-        assess_harness_acceptance, DeliveryOutcome, HarnessAcceptance, PendingActivity,
-        PendingVerification, ThrottleState, VerificationOutput, ACTIVITY_BUFFER_KEEP_BYTES,
-        ACTIVITY_BUFFER_MAX_BYTES, ACTIVITY_WINDOW, MAX_VERIFICATION_ATTEMPTS, VERIFICATION_WINDOW,
+        assess_harness_acceptance, draft_visible_at_cursor, failed_draft_released, DeliveryOutcome,
+        HarnessAcceptance, PendingActivity, PendingVerification, ThrottleState, VerificationOutput,
+        ACTIVITY_BUFFER_KEEP_BYTES, ACTIVITY_BUFFER_MAX_BYTES, ACTIVITY_WINDOW,
+        MAX_VERIFICATION_ATTEMPTS, VERIFICATION_WINDOW,
     },
     injection_format::{format_injection_for_worker_with_workspace, McpReminderThrottle},
 };
@@ -132,21 +137,27 @@ pub(crate) fn injection_submit_followup_delay(cli: &str) -> Option<Duration> {
 /// Retry only the submit gesture for a body proven to remain in the live
 /// composer. Never write the body twice: an accepted first write whose activity
 /// marker was missed would otherwise create a duplicate turn.
+///
+/// `cancel` lets human input withdraw the gesture until it reaches the child:
+/// the drainer skips a not-yet-started key and withholds Codex's delayed CR.
 pub(crate) fn submit_injection_recovery(
     pty: &PtySession,
     resolved_cli: &str,
     completed_attempts: usize,
+    cancel: Arc<AtomicBool>,
 ) -> anyhow::Result<(tokio::sync::oneshot::Receiver<std::io::Result<()>>, u64)> {
     let lower = resolved_cli.to_ascii_lowercase();
     if lower.contains("codex") && completed_attempts == 1 {
         // Field recovery for Codex 0.150/0.160: a plain Enter left an idle
         // multiline composer parked, while End followed by a distinct CR and
         // later LF submitted it. First reproduce the non-destructive
-        // End half. The event loop schedules the delayed CR separately so a
-        // human write during that delay can cancel it before it reaches the
-        // composer. The final bounded attempt below sends LF only if the same
-        // delivery is still visibly parked.
-        return pty.submit_write_paced_with_output_boundary(b"\x1b[F".to_vec(), Duration::ZERO);
+        // End+Enter half; the final bounded attempt below sends LF only if the
+        // same delivery is still visibly parked.
+        return pty.submit_cancellable_write_with_output_boundary(
+            b"\x1b[F".to_vec(),
+            Some((Duration::from_secs(1), b"\r".to_vec())),
+            cancel,
+        );
     }
 
     let key = if completed_attempts >= 2 {
@@ -154,24 +165,22 @@ pub(crate) fn submit_injection_recovery(
     } else {
         b'\r'
     };
-    pty.submit_write_paced_with_output_boundary(vec![key], Duration::ZERO)
+    pty.submit_cancellable_write_with_output_boundary(vec![key], None, cancel)
 }
 
-/// Codex's first parked-composer retry uses a delayed CR after cursor-end.
-/// Keeping the delay outside the PTY compound-write queue lets the worker
-/// re-check human composer ownership before it submits the follow-up key.
-pub(crate) fn injection_recovery_followup_delay(
-    resolved_cli: &str,
-    completed_attempts: usize,
-) -> Option<Duration> {
-    (resolved_cli.to_ascii_lowercase().contains("codex") && completed_attempts == 1)
-        .then_some(Duration::from_secs(1))
+/// Cancel every queued submit-key recovery because a human now owns the input.
+pub(crate) fn cancel_recovery_writes(cancels: &mut Vec<Arc<AtomicBool>>) {
+    for cancel in cancels.drain(..) {
+        cancel.store(true, Ordering::Release);
+    }
 }
 
-pub(crate) fn submit_injection_recovery_followup(
-    pty: &PtySession,
-) -> anyhow::Result<(tokio::sync::oneshot::Receiver<std::io::Result<()>>, u64)> {
-    pty.submit_write_paced_with_output_boundary(b"\r".to_vec(), Duration::ZERO)
+/// Start a cancellable recovery, pruning flags whose writes already settled.
+pub(crate) fn new_recovery_cancel(cancels: &mut Vec<Arc<AtomicBool>>) -> Arc<AtomicBool> {
+    cancels.retain(|cancel| Arc::strong_count(cancel) > 1);
+    let cancel = Arc::new(AtomicBool::new(false));
+    cancels.push(cancel.clone());
+    cancel
 }
 
 /// Warn (without retrying) when a one-shot auto-response keystroke can't be
@@ -273,7 +282,6 @@ enum PendingWrapWrite {
         verification: PendingVerification,
         output_boundary: u64,
         human_input_generation: u64,
-        followup_after_ack: Option<Duration>,
     },
 }
 
@@ -284,9 +292,6 @@ type PendingWrapWriteAck = (
     std::result::Result<WrapWriteAck, tokio::time::error::Elapsed>,
 );
 type PendingWrapWriteAckFuture = Pin<Box<dyn Future<Output = PendingWrapWriteAck> + Send>>;
-type PendingWrapRecoveryFollowup = (PendingVerification, u64);
-type PendingWrapRecoveryFollowupFuture =
-    Pin<Box<dyn Future<Output = PendingWrapRecoveryFollowup> + Send>>;
 
 async fn await_wrap_write_ack(
     ack_rx: tokio::sync::oneshot::Receiver<std::io::Result<()>>,
@@ -308,6 +313,14 @@ fn wrap_write_ack_error(ack: WrapWriteAck) -> Option<String> {
 /// reminder is recorded before the next delivery decides whether to include it.
 fn wrap_injection_timer_allowed(has_pending_write_ack: bool, has_pending_acceptance: bool) -> bool {
     !has_pending_write_ack && !has_pending_acceptance
+}
+
+/// A lone Enter keystroke submits the composer and takes whatever it holds,
+/// including a failed relay draft, so it releases the wrap failed-draft latch.
+/// A multiline or bracketed paste also carries CR/LF bytes but adds text to
+/// the composer rather than submitting it, so it never releases the latch.
+fn human_input_submits_composer(data: &[u8]) -> bool {
+    !data.is_empty() && data.iter().all(|byte| matches!(byte, b'\r' | b'\n'))
 }
 
 // Readiness deferrals must not spend the bounded delivery retry budget.
@@ -1603,8 +1616,6 @@ pub(crate) async fn run_wrap(
     let mut pending_wrap_injections: VecDeque<PendingWrapInjection> = VecDeque::new();
     let mut pending_wrap_writes: FuturesUnordered<PendingWrapWriteAckFuture> =
         FuturesUnordered::new();
-    let mut pending_wrap_recovery_followups: FuturesUnordered<PendingWrapRecoveryFollowupFuture> =
-        FuturesUnordered::new();
     let mut mcp_reminder_throttle = McpReminderThrottle::new();
 
     // Echo verification state
@@ -1671,6 +1682,12 @@ pub(crate) async fn run_wrap(
     // is hit (at which point the child is not consuming input anyway).
     let mut stdin_pending: VecDeque<Vec<u8>> = VecDeque::new();
     let mut human_input_generation = 0u64;
+    let mut recovery_cancels: Vec<Arc<AtomicBool>> = Vec::new();
+    // Expected echo of a delivery whose body was written but never proven
+    // accepted. It may still be typed in the composer, so no later relay
+    // message is injected on top of it until the composer is provably idle or
+    // the human submits it.
+    let mut wrap_failed_draft: Option<String> = None;
     let mut stdin_retry_deadline: Option<tokio::time::Instant> = None;
     const STDIN_RETRY_INTERVAL: Duration = Duration::from_millis(4);
 
@@ -1687,6 +1704,14 @@ pub(crate) async fn run_wrap(
             // keystrokes are never dropped or reordered under back-pressure.
             Some(data) = stdin_rx.recv() => {
                 human_input_generation = human_input_generation.saturating_add(1);
+                cancel_recovery_writes(&mut recovery_cancels);
+                if wrap_failed_draft.is_some() && human_input_submits_composer(&data) {
+                    tracing::info!(
+                        target = "agent_relay::worker::wrap",
+                        "wrap: human submitted the composer; releasing the failed-draft latch"
+                    );
+                    wrap_failed_draft = None;
+                }
                 if !pending_verifications.is_empty() {
                     for verification in pending_verifications.drain(..) {
                         tracing::warn!(
@@ -2245,8 +2270,8 @@ pub(crate) async fn run_wrap(
 
             _ = pending_injection_interval.tick(),
                 if wrap_injection_timer_allowed(
-                    !pending_wrap_writes.is_empty() || !pending_wrap_recovery_followups.is_empty(),
-                    !pending_verifications.is_empty(),
+                    !pending_wrap_writes.is_empty(),
+                    !pending_verifications.is_empty() || wrap_failed_draft.is_some(),
                 ) => {
                 // Give backlogged human keystrokes priority onto the PTY FIFO
                 // over a new automated injection — see the auto-responder gate
@@ -2357,6 +2382,9 @@ pub(crate) async fn run_wrap(
                                 "wrap: human input followed the injection write; automatic verification cancelled"
                             );
                             throttle.record(DeliveryOutcome::Failed);
+                            if draft_visible_at_cursor(&Snapshot::capture(&pty), &resolved_cli, &injection) {
+                                wrap_failed_draft = Some(injection.clone());
+                            }
                             continue;
                         }
 
@@ -2414,7 +2442,6 @@ pub(crate) async fn run_wrap(
                         mut verification,
                         output_boundary,
                         human_input_generation: submitted_generation,
-                        followup_after_ack,
                     } => {
                         if submitted_generation != human_input_generation {
                             tracing::warn!(
@@ -2422,6 +2449,9 @@ pub(crate) async fn run_wrap(
                                 "wrap: human input followed submit-key recovery; further automatic recovery cancelled"
                             );
                             throttle.record(DeliveryOutcome::Failed);
+                            if draft_visible_at_cursor(&Snapshot::capture(&pty), &resolved_cli, &verification.expected_echo) {
+                                wrap_failed_draft = Some(verification.expected_echo.clone());
+                            }
                             continue;
                         }
 
@@ -2432,16 +2462,12 @@ pub(crate) async fn run_wrap(
                                 "wrap: submit-key recovery was not confirmed; body left untouched"
                             );
                             throttle.record(DeliveryOutcome::Failed);
+                            if draft_visible_at_cursor(&Snapshot::capture(&pty), &resolved_cli, &verification.expected_echo) {
+                                wrap_failed_draft = Some(verification.expected_echo.clone());
+                            }
                             continue;
                         }
 
-                        if let Some(delay) = followup_after_ack {
-                            pending_wrap_recovery_followups.push(Box::pin(async move {
-                                tokio::time::sleep(delay).await;
-                                (verification, submitted_generation)
-                            }));
-                            continue;
-                        }
 
                         tracing::debug!(
                             delivery_id = %verification.delivery_id,
@@ -2460,42 +2486,6 @@ pub(crate) async fn run_wrap(
                             &mut throttle,
                             &mut pending_verifications,
                         );
-                    }
-                }
-            }
-
-            Some((verification, submitted_generation)) = pending_wrap_recovery_followups.next(),
-                if !pending_wrap_recovery_followups.is_empty() => {
-                if submitted_generation != human_input_generation {
-                    tracing::warn!(
-                        event_id = %verification.event_id,
-                        "wrap: human input took ownership before delayed submit recovery"
-                    );
-                    throttle.record(DeliveryOutcome::Failed);
-                    continue;
-                }
-                match submit_injection_recovery_followup(&pty) {
-                    Ok((ack_rx, output_boundary)) => {
-                        let pending_write = PendingWrapWrite::Retry {
-                            verification,
-                            output_boundary,
-                            human_input_generation: submitted_generation,
-                            followup_after_ack: None,
-                        };
-                        pending_wrap_writes.push(Box::pin(async move {
-                            (
-                                pending_write,
-                                await_wrap_write_ack(ack_rx, WRAP_WRITE_ACK_TIMEOUT).await,
-                            )
-                        }));
-                    }
-                    Err(error) => {
-                        tracing::error!(
-                            event_id = %verification.event_id,
-                            error = %error,
-                            "wrap: failed to queue delayed submit recovery; body left untouched"
-                        );
-                        throttle.record(DeliveryOutcome::Failed);
                     }
                 }
             }
@@ -2529,7 +2519,6 @@ pub(crate) async fn run_wrap(
                                     && !pv.acceptance_expired()
                                     && stdin_pending.is_empty()
                                     && pending_wrap_writes.is_empty()
-                                    && pending_wrap_recovery_followups.is_empty()
                                     && crate::devin::can_inject(&resolved_cli, &pty) =>
                             {
                                 let completed_attempts = pv.attempts;
@@ -2546,16 +2535,13 @@ pub(crate) async fn run_wrap(
                                     &pty,
                                     &resolved_cli,
                                     completed_attempts,
+                                    new_recovery_cancel(&mut recovery_cancels),
                                 ) {
                                     Ok((ack_rx, output_boundary)) => {
                                         let pending_write = PendingWrapWrite::Retry {
                                             verification: pv,
                                             output_boundary,
                                             human_input_generation,
-                                            followup_after_ack: injection_recovery_followup_delay(
-                                                &resolved_cli,
-                                                completed_attempts,
-                                            ),
                                         };
                                         pending_wrap_writes.push(Box::pin(async move {
                                             (
@@ -2575,6 +2561,9 @@ pub(crate) async fn run_wrap(
                                             "wrap: failed to queue submit-key recovery; body left untouched"
                                         );
                                         throttle.record(DeliveryOutcome::Failed);
+                                        if draft_visible_at_cursor(&Snapshot::capture(&pty), &resolved_cli, &pv.expected_echo) {
+                                            wrap_failed_draft = Some(pv.expected_echo.clone());
+                                        }
                                     }
                                 }
                             }
@@ -2582,15 +2571,13 @@ pub(crate) async fn run_wrap(
                                 if !pv.acceptance_expired()
                                     && (!stdin_pending.is_empty()
                                         || !pending_wrap_writes.is_empty()
-                                        || !pending_wrap_recovery_followups.is_empty()
                                         || !crate::devin::can_inject(&resolved_cli, &pty)) =>
                             {
-                                // An in-flight writer or a temporarily busy
-                                // Devin prompt takes priority. Human input
-                                // already drains these verifications in the
-                                // stdin arm, so this deferral never resets the
-                                // total acceptance lifetime.
-                                pv.injected_at = Instant::now();
+                                // An in-flight writer or a briefly unready
+                                // Devin prompt takes priority. Deferring spends
+                                // no retry budget and never resets the total
+                                // acceptance lifetime.
+                                prepare_wrap_retry(&mut pv, false, Instant::now());
                                 pending_verifications.push_back(pv);
                             }
                             HarnessAcceptance::Parked => {
@@ -2600,18 +2587,33 @@ pub(crate) async fn run_wrap(
                                     "wrap: body remained parked after bounded submit-key recovery"
                                 );
                                 throttle.record(DeliveryOutcome::Failed);
+                                // Parked is the positive evidence.
+                                wrap_failed_draft = Some(pv.expected_echo.clone());
                             }
                             HarnessAcceptance::Inconclusive => {
-                                tracing::error!(
+                                tracing::info!(
                                     event_id = %pv.event_id,
                                     attempts = pv.attempts,
-                                    "wrap: harness acceptance could not be proven; body left untouched"
+                                    "wrap: delivery unconfirmed; delivered without harness evidence"
                                 );
-                                throttle.record(DeliveryOutcome::Failed);
+                                throttle.record(DeliveryOutcome::Unverified);
                             }
                         }
                     } else {
                         i += 1;
+                    }
+                }
+
+                if let Some(expected_echo) = wrap_failed_draft.as_deref() {
+                    if pending_verifications.is_empty()
+                        && pending_wrap_writes.is_empty()
+                        && failed_draft_released(&resolved_cli, expected_echo, &Snapshot::capture(&pty))
+                    {
+                        tracing::info!(
+                            target = "agent_relay::worker::wrap",
+                            "wrap: failed draft left the composer; resuming injection"
+                        );
+                        wrap_failed_draft = None;
                     }
                 }
 
@@ -2635,7 +2637,6 @@ pub(crate) async fn run_wrap(
                 if stdin_pending.is_empty()
                     && pending_verifications.is_empty()
                     && pending_wrap_writes.is_empty()
-                    && pending_wrap_recovery_followups.is_empty()
                 {
                     pty_auto.try_auto_enter(&pty);
                 }
@@ -2703,8 +2704,7 @@ mod tests {
     use super::{
         await_wrap_write_ack, buffer_and_drain_stdin, drain_stdin_buffer,
         injection_submit_followup_delay, submit_injection_body, submit_injection_recovery,
-        submit_injection_recovery_followup, wrap_injection_timer_allowed, wrap_write_ack_error,
-        STDIN_PENDING_MAX_CHUNKS,
+        wrap_injection_timer_allowed, wrap_write_ack_error, STDIN_PENDING_MAX_CHUNKS,
     };
     use crate::broker::delivery_verification::{PendingVerification, MAX_VERIFICATION_ATTEMPTS};
     use crate::ids::{DeliveryId, EventId, MessageTarget};
@@ -2791,30 +2791,15 @@ mod tests {
         let drain = tokio::spawn(async move { while rx.recv().await.is_some() {} });
         tokio::time::sleep(Duration::from_millis(100)).await;
 
-        let (first_ack, _) = submit_injection_recovery(&pty, "codex", 1).unwrap();
+        let (first_ack, _) =
+            submit_injection_recovery(&pty, "codex", 1, Default::default()).unwrap();
         tokio::time::timeout(Duration::from_secs(3), first_ack)
             .await
-            .expect("End recovery timed out")
+            .expect("End+CR recovery timed out")
             .expect("drainer exited")
-            .expect("End recovery failed");
-        for _ in 0..50 {
-            if std::fs::read(&log).is_ok_and(|bytes| bytes.len() == 3) {
-                break;
-            }
-            tokio::time::sleep(Duration::from_millis(20)).await;
-        }
-        assert_eq!(
-            std::fs::read(&log).unwrap(),
-            b"\x1b[F",
-            "the delayed CR must not share the cursor-positioning write"
-        );
-        let (followup_ack, _) = submit_injection_recovery_followup(&pty).unwrap();
-        tokio::time::timeout(Duration::from_secs(3), followup_ack)
-            .await
-            .expect("CR recovery timed out")
-            .expect("drainer exited")
-            .expect("CR recovery failed");
-        let (second_ack, _) = submit_injection_recovery(&pty, "codex", 2).unwrap();
+            .expect("End+CR recovery failed");
+        let (second_ack, _) =
+            submit_injection_recovery(&pty, "codex", 2, Default::default()).unwrap();
         tokio::time::timeout(Duration::from_secs(3), second_ack)
             .await
             .expect("LF recovery timed out")
@@ -2968,6 +2953,18 @@ sys.stdout.flush()"#;
 
     #[test]
     fn wrap_injection_timer_waits_for_write_ack_and_harness_acceptance() {
+        assert!(super::human_input_submits_composer(b"\r"));
+        assert!(super::human_input_submits_composer(b"\r\n"));
+        assert!(
+            !super::human_input_submits_composer(b"ok\n"),
+            "typed line plus newline is text"
+        );
+        assert!(
+            !super::human_input_submits_composer(b"\x1b[200~line one\rline two\x1b[201~"),
+            "a bracketed multiline paste is not a submit"
+        );
+        assert!(!super::human_input_submits_composer(b""));
+        assert!(!super::human_input_submits_composer(b"typing"));
         assert!(wrap_injection_timer_allowed(false, false));
         assert!(!wrap_injection_timer_allowed(true, false));
         assert!(!wrap_injection_timer_allowed(false, true));

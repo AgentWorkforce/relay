@@ -183,6 +183,61 @@ fn record_started_harness_pid(
     true
 }
 
+/// Validate a worker's `delivery_verified` frame before it clears custody.
+///
+/// PTY workers must name harness acceptance (or a replay of an already
+/// completed delivery). Legacy `echo` and `timeout_fallback` frames prove only
+/// that bytes reached the terminal, so they never confirm a delivery. Headless
+/// workers report process success without a verification field.
+fn accepted_delivery_verification(verification: Option<&str>, is_pty: bool) -> Option<&str> {
+    match verification {
+        Some("harness_acceptance" | "completed_replay") => verification,
+        Some("echo" | "timeout_fallback") => None,
+        Some(_) | None if is_pty => None,
+        Some(other) => Some(other),
+        None => Some("worker_confirmation"),
+    }
+}
+
+/// Worker state after a terminal `delivery_failed`, as `(state, published
+/// state, reason)`. The failed delivery is already dead-lettered, so the
+/// worker stays blocked only while another delivery for it awaits acceptance;
+/// otherwise later output and idle events must be able to move it on.
+fn state_after_terminal_delivery_failure(
+    pending_delivery_count: usize,
+) -> (AgentWorkState, &'static str, &'static str) {
+    if pending_delivery_count > 0 {
+        (AgentWorkState::BlockedOnSend, "stuck", "blocked_on_send")
+    } else {
+        (AgentWorkState::Working, "working", "delivery_failed")
+    }
+}
+
+#[cfg(test)]
+mod terminal_delivery_failure_state_tests {
+    use super::*;
+
+    #[test]
+    fn last_failed_delivery_publishes_a_non_stuck_state() {
+        assert_eq!(
+            state_after_terminal_delivery_failure(0),
+            (AgentWorkState::Working, "working", "delivery_failed"),
+            "a worker with no remaining deliveries must publish its way out of `stuck`"
+        );
+        assert_eq!(
+            state_after_terminal_delivery_failure(2),
+            (AgentWorkState::BlockedOnSend, "stuck", "blocked_on_send")
+        );
+    }
+}
+
+/// Whether a worker's `delivery_unconfirmed` frame is the terminal Unconfirmed
+/// outcome (delivered without harness evidence) rather than a mid-recovery
+/// progress report for a body still awaiting acceptance.
+fn is_terminal_unconfirmed(payload: &Value) -> bool {
+    payload.get("terminal").and_then(Value::as_bool) == Some(true)
+}
+
 fn worker_event_is_current(current_generation: Option<Uuid>, event_generation: Uuid) -> bool {
     current_generation == Some(event_generation)
 }
@@ -871,6 +926,66 @@ impl BrokerRuntime {
                                 .get("event_id")
                                 .and_then(Value::as_str)
                                 .unwrap_or("");
+                            // A terminal `delivery_unconfirmed` is the
+                            // Unconfirmed outcome: the body was delivered
+                            // (custody already released by the preceding
+                            // delivery_ack) without harness evidence. It is
+                            // never a blocked worker and never `stuck`.
+                            let terminal_unconfirmed = msg_type == "delivery_unconfirmed"
+                                && is_terminal_unconfirmed(payload);
+                            if terminal_unconfirmed {
+                                if let Some(pending) = pending_verified_spawns
+                                    .get_mut(&name)
+                                    .filter(|pending| pending.matches_task(generation, event_id))
+                                {
+                                    pending.record_task_verification(
+                                        false,
+                                        Some("harness_acceptance_unproven"),
+                                    );
+                                }
+                                let resolved = pending_verified_spawns
+                                    .get(&name)
+                                    .is_some_and(|pending| pending.can_report_ready(generation))
+                                    .then(|| pending_verified_spawns.remove(&name))
+                                    .flatten();
+                                if let Some(pending) = resolved {
+                                    let _ = fleet_control_tx
+                                        .send(FleetControlCommand::Send(
+                                            crate::fleet_wire::BrokerToRelaycast::ActionResult(
+                                                pending.completion(&name),
+                                            ),
+                                        ))
+                                        .await;
+                                }
+                                if let Some(handle) = workers.workers.get_mut(&name) {
+                                    handle.last_activity_at = Instant::now();
+                                    if handle.state == AgentWorkState::BlockedOnSend {
+                                        handle.state = AgentWorkState::Working;
+                                    }
+                                }
+                                tracing::info!(
+                                    target = "agent_relay::broker",
+                                    worker = %name,
+                                    delivery_id = %delivery_id,
+                                    event_id = %event_id,
+                                    "delivery unconfirmed: delivered without harness evidence"
+                                );
+                                let _ = send_event(
+                                    sdk_out_tx,
+                                    json!({
+                                        "kind": "delivery_unconfirmed",
+                                        "name": name,
+                                        "delivery_id": payload.get("delivery_id"),
+                                        "event_id": payload.get("event_id"),
+                                        "outcome": "unconfirmed",
+                                        "terminal": true,
+                                        "reason": payload.get("reason"),
+                                        "attempts": payload.get("attempts"),
+                                    }),
+                                )
+                                .await;
+                                return;
+                            }
                             let matching_pending = pending_deliveries
                                 .get_mut(delivery_id)
                                 .filter(|pending| pending.delivery.event_id.as_str() == event_id)
@@ -997,26 +1112,21 @@ impl BrokerRuntime {
                                     .await;
                             }
 
-                            // Modern PTY workers use "harness_acceptance":
-                            // editor echo alone is never delivery confirmation.
-                            let verification = label.unwrap_or("worker_confirmation");
                             let is_pty = workers
                                 .workers
                                 .get(&name)
                                 .is_some_and(|handle| handle.spec.runtime == AgentRuntime::Pty);
-                            let completed_replay = verification == "completed_replay";
-                            if is_pty
-                                && verification
-                                    != crate::broker::delivery_verification::HARNESS_ACCEPTANCE
-                                && !completed_replay
-                            {
+                            let Some(verification) = accepted_delivery_verification(
+                                payload.get("verification").and_then(Value::as_str),
+                                is_pty,
+                            ) else {
                                 tracing::warn!(
                                     target = "agent_relay::broker",
                                     worker = %name,
                                     delivery_id = %delivery_id,
                                     event_id = %event_id,
-                                    verification = %verification,
-                                    "ignoring PTY delivery verification without harness acceptance"
+                                    verification = ?payload.get("verification"),
+                                    "ignoring delivery_verified without harness-acceptance evidence"
                                 );
                                 let _ = send_event(
                                     sdk_out_tx,
@@ -1026,12 +1136,13 @@ impl BrokerRuntime {
                                         "delivery_id": delivery_id,
                                         "event_id": event_id,
                                         "reason": "PTY delivery verification did not prove harness acceptance",
-                                        "verification": verification,
+                                        "verification": payload.get("verification"),
                                     }),
                                 )
                                 .await;
                                 return;
-                            }
+                            };
+                            let completed_replay = verification == "completed_replay";
                             let reason = payload.get("reason").and_then(Value::as_str);
                             tracing::debug!(
                                 target = "agent_relay::broker",
@@ -1205,15 +1316,13 @@ impl BrokerRuntime {
                                     .values()
                                     .filter(|candidate| candidate.worker_name == name)
                                     .count();
+                                let (state, published_state, transition_reason) =
+                                    state_after_terminal_delivery_failure(pending_delivery_count);
                                 if let Some(handle) = workers.workers.get_mut(&name) {
                                     handle.last_activity_at = Instant::now();
-                                    handle.state = if pending_delivery_count > 0 {
-                                        AgentWorkState::BlockedOnSend
-                                    } else {
-                                        AgentWorkState::Working
-                                    };
+                                    handle.state = state;
                                 }
-                                if pending_delivery_count > 0 {
+                                if state == AgentWorkState::BlockedOnSend {
                                     let _ = send_broker_event(
                                         sdk_out_tx,
                                         BrokerEvent::AgentBlockedOnSend {
@@ -1223,22 +1332,17 @@ impl BrokerRuntime {
                                         },
                                     )
                                     .await;
-                                    publish_agent_state_transition(
-                                        ws_control_tx,
-                                        &name,
-                                        "stuck",
-                                        Some("blocked_on_send"),
-                                    )
-                                    .await;
-                                } else {
-                                    publish_agent_state_transition(
-                                        ws_control_tx,
-                                        &name,
-                                        "working",
-                                        Some("delivery_failed"),
-                                    )
-                                    .await;
                                 }
+                                // Always publish: an earlier delivery_unconfirmed
+                                // may have published `stuck`, and an in-memory
+                                // reset alone would leave that status visible.
+                                publish_agent_state_transition(
+                                    ws_control_tx,
+                                    &name,
+                                    published_state,
+                                    Some(transition_reason),
+                                )
+                                .await;
                                 let _ = emit_dropped_delivery_failures(
                                     sdk_out_tx,
                                     dead_letters,
