@@ -1,0 +1,21 @@
+{
+  "version": 1,
+  "id": "fleet-spawn-served-action-dispatch",
+  "kind": "bugfix",
+  "title": "Dispatch a targeted fleet spawn to the node's advertised spawn action",
+  "runner": {
+    "command": ["node", "tests/relayflows/cases/fleet-spawn-served-action-dispatch/run.mjs"]
+  },
+  "requirements": [],
+  "timeoutSeconds": 900,
+  "expected": {
+    "base": {
+      "outcome": "bug",
+      "signature": "targeted_served_spawn_rewritten_to_generic_spawn"
+    },
+    "head": {
+      "outcome": "fixed",
+      "signature": "targeted_served_spawn_invokes_advertised_action"
+    }
+  }
+}

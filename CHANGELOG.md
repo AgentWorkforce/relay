@@ -5,7 +5,11 @@ All notable changes to Agent Relay will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
+## [Unreleased - Patch]
+
+### Fixed
+
+- Targeted `fleet spawn` invokes a node's advertised spawn action directly, allowing served Grok workers to reach their provider.
 
 ## [13.4.0] - 2026-10-11
 
