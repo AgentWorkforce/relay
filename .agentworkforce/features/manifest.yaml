@@ -86,6 +86,13 @@ categories:
         location: packages/cli/src/cli/commands/core.ts
         verify_tier: 2
 
+      - id: node-claim
+        name: Claim Node Ownership
+        cli: relay node claim [--workspace <id|name>] [--api-url <url>] [--json]
+        description: Record the signed-in person as the owner of this machine's node in Agent Relay Cloud, using the node's own token (environment, running broker, or stored enrollment), so agents it spawns count as theirs
+        location: packages/cli/src/cli/commands/node.ts
+        verify_tier: 3
+
       - id: broker-deadletters
         name: Dead Letter Queue
         cli: relay node deadletters [--json]
