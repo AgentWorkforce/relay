@@ -346,14 +346,6 @@ The fix:
 
 Both the probe and the Node relay call both.
 
-**(c) "is ready." vs "is ready to help."**
-
-The join notice comes from Cloud (`relay-connect-worker` `room-lifecycle.ts`
-and `web/lib/mcp/connect-join-announcement.ts`), not from this package. Cloud
-`main` says "…joined this Relay Connect and is ready." in both places, and
-"ready to help" does not appear in any repo. We need the location where "ready
-to help" was seen before changing anything.
-
 ## Phases
 
 1. **Daemon and contract.**
