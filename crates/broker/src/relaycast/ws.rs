@@ -72,6 +72,31 @@ pub type RelaycastRegistrationError = AgentRegistrationError;
 pub type RegRetryOutcome = AgentRegistrationRetryOutcome;
 pub(crate) use relaycast::registration_retry_after_secs;
 
+/// Terminal verdict for a guarded owned-identity release: the remote
+/// identity is definitively not this generation's — it is already gone or
+/// was re-registered by a replacement. The guarded delete must not run (that
+/// is exactly what the token-hash guard prevents), and there is nothing
+/// left for the cleanup to delete, so callers treat this as a completed
+/// cleanup rather than a retryable failure.
+#[derive(Debug)]
+pub(crate) struct ReleaseIdentityConflict {
+    agent_name: String,
+    status: u16,
+    code: String,
+}
+
+impl std::fmt::Display for ReleaseIdentityConflict {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "remote identity for '{}' is not this generation's (HTTP {} {})",
+            self.agent_name, self.status, self.code
+        )
+    }
+}
+
+impl std::error::Error for ReleaseIdentityConflict {}
+
 /// Why the broker is asking `register_agent_token` for a token.
 ///
 /// The two intents diverge on how a name-collision-with-a-live-agent is
@@ -1391,6 +1416,27 @@ impl RelaycastHttpClient {
                     break 'cleanup (status, result);
                 };
                 if !status.is_success() {
+                    // A durable release conflict means the remote identity is
+                    // not this generation's to delete — gone already or held
+                    // by a replacement — so the cleanup's goal is met without
+                    // another write. Transient failures (429/503/d1_pressure,
+                    // timeouts) keep the generic retryable bail.
+                    let error_code = result["error"]["code"].as_str().unwrap_or_default();
+                    let not_ours = (status == reqwest::StatusCode::CONFLICT
+                        && matches!(
+                            error_code,
+                            "agent_release_generation_conflict" | "agent_identity_mismatch"
+                        ))
+                        || (status == reqwest::StatusCode::FORBIDDEN
+                            && error_code == "expected_token_hash_mismatch");
+                    if not_ours {
+                        return Err(ReleaseIdentityConflict {
+                            agent_name: agent_name.to_string(),
+                            status: status.as_u16(),
+                            code: error_code.to_string(),
+                        }
+                        .into());
+                    }
                     anyhow::bail!("owned identity cleanup rejected (HTTP {status}); retry/reconcile without deleting a replacement");
                 }
                 if result["data"]["status"] != "completed" {

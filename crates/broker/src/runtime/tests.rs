@@ -212,7 +212,7 @@ struct WorkerEventRuntimeFixture {
 }
 
 #[tokio::test]
-async fn owned_cleanup_exhaustion_signals_once_and_explicit_release_restarts() {
+async fn owned_cleanup_keeps_retrying_with_backoff_and_explicit_release_restarts() {
     use crate::listen_api::ListenApiRequest;
     use std::io::Write;
     use std::sync::Arc;
@@ -274,7 +274,8 @@ async fn owned_cleanup_exhaustion_signals_once_and_explicit_release_restarts() {
                 reply,
             })
             .await;
-        for attempt in 1..=5 {
+        let mut expected_delay = Duration::from_secs(5);
+        for attempt in 1..=7u32 {
             loop {
                 if let FleetControlCommand::DeregisterAgent { reply, .. } =
                     fixture.fleet_control_rx.recv().await.unwrap()
@@ -299,25 +300,29 @@ async fn owned_cleanup_exhaustion_signals_once_and_explicit_release_restarts() {
                 fixture.runtime.workers.identity_cleanups[&name].attempts,
                 attempt
             );
-            fixture
-                .runtime
-                .workers
-                .identity_cleanups
-                .get_mut(&name)
-                .unwrap()
-                .retry_at = Instant::now();
-            if attempt < 5 {
+            // Backoff doubles per failed attempt up to the 300s cap, jittered
+            // ±25% — retries must keep going past the old five-attempt cap so
+            // a sustained outage cannot leave the name blocked forever.
+            let delay = fixture.runtime.workers.identity_cleanups[&name]
+                .retry_at
+                .saturating_duration_since(Instant::now());
+            let low = expected_delay.mul_f64(0.7);
+            let high = expected_delay.mul_f64(1.3);
+            assert!(
+                delay >= low && delay <= high,
+                "attempt {attempt} retry delay {delay:?} outside [{low:?}, {high:?}]"
+            );
+            expected_delay = (expected_delay * 2).min(Duration::from_secs(300));
+            if attempt < 7 {
+                fixture
+                    .runtime
+                    .workers
+                    .identity_cleanups
+                    .get_mut(&name)
+                    .unwrap()
+                    .retry_at = Instant::now();
                 fixture.runtime.reconcile_identity_cleanups().await;
             }
-        }
-        for _ in 0..6 {
-            fixture.runtime.reconcile_identity_cleanups().await;
-        }
-        while let Ok(command) = fixture.fleet_control_rx.try_recv() {
-            assert!(
-                !matches!(command, FleetControlCommand::DeregisterAgent { .. }),
-                "exhaustion must stop automatic retries"
-            );
         }
         assert!(fixture
             .runtime
@@ -351,17 +356,227 @@ async fn owned_cleanup_exhaustion_signals_once_and_explicit_release_restarts() {
         assert_eq!(fixture.runtime.workers.identity_cleanups[&name].attempts, 1);
         let text = String::from_utf8(logs.lock().unwrap().clone()).unwrap();
         assert_eq!(
-            text.matches("owned identity cleanup retries exhausted")
+            text.matches("still unconfirmed after quick retries")
                 .count(),
             1
         );
         assert!(text.contains("ERROR"));
         assert!(text.contains("original-agent-id"));
         assert!(text.contains(&generation.to_string()));
-        assert!(text.contains("explicit generation-matched release retry"));
     }
     .with_subscriber(subscriber)
     .await;
+}
+
+#[tokio::test]
+async fn owned_cleanup_recovers_on_later_retry_and_frees_the_name() {
+    use crate::listen_api::ListenApiRequest;
+    use httpmock::{Method::POST, MockServer};
+    use tokio::sync::oneshot;
+    let server = MockServer::start();
+    let release = server.mock(|when, then| {
+        when.method(POST)
+            .path("/v1/agents/release")
+            .json_body_partial(json!({"name":"recovered", "delete_agent":true}).to_string());
+        then.status(200)
+            .json_body(json!({"ok":true,"data":{"status":"completed"}}));
+    });
+    let registry = make_worker_registry_with_worker("unrelated").await;
+    let mut fixture = worker_event_runtime_fixture(registry, HashMap::new());
+    let name = WorkerName::from("recovered");
+    let generation = Uuid::new_v4();
+    let http = RelaycastHttpClient::new(Some(server.base_url()), "rk_live_test", "broker", "codex");
+    http.seed_agent_token(&name, "owned-token");
+    fixture
+        .runtime
+        .workers
+        .owned_spawn_generations
+        .insert(name.clone(), (generation, http));
+    fixture
+        .runtime
+        .fleet_delivery_book
+        .bind_authoritative_identity(name.to_string(), "recovered-id".to_string());
+    let (reply, released) = oneshot::channel();
+    fixture
+        .runtime
+        .handle_api_request(ListenApiRequest::Release {
+            name: name.clone(),
+            reason: None,
+            expected_generation: Some(generation.to_string()),
+            delete_identity: true,
+            reply,
+        })
+        .await;
+    // First attempt loses its fleet acknowledgement; the cleanup must retain
+    // custody and retry rather than blocking the name.
+    loop {
+        if let FleetControlCommand::DeregisterAgent { reply, .. } =
+            fixture.fleet_control_rx.recv().await.unwrap()
+        {
+            reply.send(Err("fixture rejection".into())).unwrap();
+            break;
+        }
+    }
+    let before = Instant::now();
+    tokio::time::timeout(Duration::from_secs(2), async {
+        loop {
+            fixture.runtime.reconcile_identity_cleanups().await;
+            if fixture.runtime.workers.identity_cleanups[&name].retry_at > before {
+                break;
+            }
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .expect("cleanup rejection should be reconciled");
+    fixture
+        .runtime
+        .workers
+        .identity_cleanups
+        .get_mut(&name)
+        .unwrap()
+        .retry_at = Instant::now();
+    fixture.runtime.reconcile_identity_cleanups().await;
+    // Second attempt: acknowledgement succeeds, the guarded release
+    // completes, and the name is freed for reuse.
+    loop {
+        if let FleetControlCommand::DeregisterAgent { reply, .. } =
+            fixture.fleet_control_rx.recv().await.unwrap()
+        {
+            reply.send(Ok(())).unwrap();
+            break;
+        }
+    }
+    tokio::time::timeout(Duration::from_secs(2), async {
+        loop {
+            fixture.runtime.reconcile_identity_cleanups().await;
+            if !fixture
+                .runtime
+                .workers
+                .identity_cleanups
+                .contains_key(&name)
+            {
+                break;
+            }
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .expect("cleanup should complete on the retried attempt");
+    release.assert_hits(1);
+    assert!(!fixture
+        .runtime
+        .workers
+        .owned_spawn_generations
+        .contains_key(&name));
+    // The API caller keeps its immediate-error contract on the first failed
+    // attempt even though the retained retry later confirms the cleanup.
+    assert!(released.await.unwrap().is_err());
+    let mut respawn = fixture.runtime.workers.workers["unrelated"].spec.clone();
+    respawn.name = name.clone();
+    let spawn_error = fixture
+        .runtime
+        .workers
+        .spawn(respawn, None, None, None, false, None, None, None, None)
+        .await
+        .err()
+        .map(|error| error.to_string())
+        .unwrap_or_default();
+    assert!(
+        !spawn_error.contains("pending owned cleanup"),
+        "freed name must not be rejected: {spawn_error}"
+    );
+}
+
+#[tokio::test]
+async fn owned_cleanup_releases_custody_when_remote_identity_is_not_ours() {
+    use crate::listen_api::ListenApiRequest;
+    use httpmock::{Method::POST, MockServer};
+    use tokio::sync::oneshot;
+    let server = MockServer::start();
+    // The remote identity was already released or re-registered by a
+    // replacement: the guarded delete is rejected durably, so the cleanup
+    // completes instead of retrying a conflict that can never resolve.
+    let release = server.mock(|when, then| {
+        when.method(POST)
+            .path("/v1/agents/release")
+            .json_body_partial(json!({"name":"conflicted", "delete_agent":true}).to_string());
+        then.status(409).json_body(json!({
+            "ok": false,
+            "error": { "code": "agent_release_generation_conflict", "message": "generation changed" }
+        }));
+    });
+    let registry = make_worker_registry_with_worker("unrelated").await;
+    let mut fixture = worker_event_runtime_fixture(registry, HashMap::new());
+    let name = WorkerName::from("conflicted");
+    let generation = Uuid::new_v4();
+    let http = RelaycastHttpClient::new(Some(server.base_url()), "rk_live_test", "broker", "codex");
+    http.seed_agent_token(&name, "owned-token");
+    fixture
+        .runtime
+        .workers
+        .owned_spawn_generations
+        .insert(name.clone(), (generation, http));
+    fixture
+        .runtime
+        .fleet_delivery_book
+        .bind_authoritative_identity(name.to_string(), "conflicted-id".to_string());
+    let (reply, released) = oneshot::channel();
+    fixture
+        .runtime
+        .handle_api_request(ListenApiRequest::Release {
+            name: name.clone(),
+            reason: None,
+            expected_generation: Some(generation.to_string()),
+            delete_identity: true,
+            reply,
+        })
+        .await;
+    loop {
+        if let FleetControlCommand::DeregisterAgent { reply, .. } =
+            fixture.fleet_control_rx.recv().await.unwrap()
+        {
+            reply.send(Ok(())).unwrap();
+            break;
+        }
+    }
+    tokio::time::timeout(Duration::from_secs(2), async {
+        loop {
+            fixture.runtime.reconcile_identity_cleanups().await;
+            if !fixture
+                .runtime
+                .workers
+                .identity_cleanups
+                .contains_key(&name)
+            {
+                break;
+            }
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .expect("terminal release conflict should complete the cleanup");
+    release.assert_hits(1);
+    assert!(!fixture
+        .runtime
+        .workers
+        .owned_spawn_generations
+        .contains_key(&name));
+    assert!(released.await.unwrap().is_ok());
+    let mut respawn = fixture.runtime.workers.workers["unrelated"].spec.clone();
+    respawn.name = name.clone();
+    let spawn_error = fixture
+        .runtime
+        .workers
+        .spawn(respawn, None, None, None, false, None, None, None, None)
+        .await
+        .err()
+        .map(|error| error.to_string())
+        .unwrap_or_default();
+    assert!(
+        !spawn_error.contains("pending owned cleanup"),
+        "freed name must not be rejected: {spawn_error}"
+    );
 }
 
 #[tokio::test]
