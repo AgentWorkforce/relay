@@ -179,6 +179,16 @@ async function runNodeClaim(options: NodeClaimCommandOptions, deps: NodeCommandD
       storeError = err instanceof Error ? err.message : String(err);
     }
   }
+  // A stored enrollment speaks for the running node only when it is that node:
+  // claiming another node's token would leave the one actually serving here
+  // unclaimed while reporting success.
+  if (record && !explicitToken && running && !running.nodeToken && record.nodeId !== running.nodeId) {
+    fail(
+      `This machine is serving node ${running.nodeId}, which has not reported its token yet, and the stored enrollment is for node ${record.nodeId}. ` +
+        "Export that node's RELAY_NODE_TOKEN and run this again."
+    );
+    return;
+  }
   const nodeToken = explicitToken || running?.nodeToken || record?.nodeToken;
   if (!nodeToken) {
     fail(

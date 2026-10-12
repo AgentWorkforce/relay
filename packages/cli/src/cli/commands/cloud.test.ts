@@ -2091,8 +2091,13 @@ describe('claimFleetNodeOwnership', () => {
           nodeToken: 'nt_live_secret',
         }),
       },
-      { interactive: false }
+      { interactive: false, validateApiUrl: expect.any(Function) }
     );
+    // The token-bearing request refuses redirects (authorizedApiFetch sets
+    // redirect: 'error' with a validator) and a non-HTTPS refreshed host.
+    const options = d.authorizedApiFetch.mock.calls[1]![3] as { validateApiUrl: (url: string) => void };
+    expect(() => options.validateApiUrl('http://cloud.example.com')).toThrow(/not HTTPS/);
+    expect(() => options.validateApiUrl('https://cloud.test')).not.toThrow();
   });
 
   it('redacts a node token the server echoes back', async () => {

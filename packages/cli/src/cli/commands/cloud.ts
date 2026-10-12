@@ -471,6 +471,13 @@ async function mintFleetNodeEnrollment(
   }
 }
 
+/** Throws unless the URL is HTTPS (or plain HTTP to this machine). */
+function requireSecureCloudUrl(apiUrl: string): void {
+  if (!isSecureCloudUrl(apiUrl)) {
+    throw new Error('Refusing to send the node token to a Cloud URL that is not HTTPS.');
+  }
+}
+
 /** HTTPS, or plain HTTP to this machine only. */
 function isSecureCloudUrl(apiUrl: string): boolean {
   try {
@@ -519,7 +526,9 @@ export async function claimFleetNodeOwnership(
         method: 'POST',
         body: JSON.stringify({ workspaceId: resolved.cloudWorkspaceId, nodeToken: options.nodeToken }),
       },
-      { interactive: false }
+      // No redirects for the request that carries the token: a 307/308 would
+      // replay the body elsewhere. validateApiUrl also re-checks a refreshed host.
+      { interactive: false, validateApiUrl: requireSecureCloudUrl }
     );
     const payload = (await response.json().catch(() => null)) as unknown;
     if (!response.ok) {

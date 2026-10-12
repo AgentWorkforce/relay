@@ -915,6 +915,37 @@ describe('node claim', () => {
     expect(claimNodeOwnership).not.toHaveBeenCalled();
   });
 
+  it("never claims a stored enrollment's node for a different running node", async () => {
+    const claimNodeOwnership = vi.fn();
+    const harness = createNodeHarness({
+      resolveEnrollment: vi.fn(
+        () => enrollmentRecord
+      ) as unknown as NodeCommandDependencies['resolveEnrollment'],
+      readRunningNodeIdentity: vi.fn(async () => ({ nodeId: 'node_other' })),
+      claimNodeOwnership,
+    });
+    await expect(run(harness)).rejects.toBeInstanceOf(ExitSignal);
+    expect(claimNodeOwnership).not.toHaveBeenCalled();
+    expect(harness.error).toHaveBeenCalledWith(expect.stringContaining('serving node node_other'));
+  });
+
+  it('uses the stored enrollment when it is the running node, before its token is reported', async () => {
+    const claimNodeOwnership = vi.fn(async () => ({ nodeId: 'node_abc', claimed: true }));
+    const harness = createNodeHarness({
+      resolveEnrollment: vi.fn(
+        () => enrollmentRecord
+      ) as unknown as NodeCommandDependencies['resolveEnrollment'],
+      readRunningNodeIdentity: vi.fn(async () => ({ nodeId: 'node_abc' })),
+      claimNodeOwnership,
+    });
+    await run(harness);
+    expect(claimNodeOwnership).toHaveBeenCalledWith({
+      workspace: 'rw_123',
+      nodeToken: 'nt_secret',
+      apiUrl: undefined,
+    });
+  });
+
   it("reports Cloud's refusal and exits non-zero", async () => {
     const harness = createNodeHarness({
       resolveEnrollment: vi.fn(
