@@ -113,8 +113,18 @@ function errorDetails(error) {
     connect_join_timeout: ['Relay Connect join timed out; retry the same join safely.', 8],
     connect_unreachable: ['Relay Connect cannot reach Cloud or Relaycast; retry once.', 8],
     agent_token_invalid: ['Relay Connect is over; run leave once to clear the local registration.', 3],
-    not_a_relay_session: ['Run this command from a live Claude Code or Codex session.', 6],
+    not_a_relay_session: [
+      'Agent Relay is running but could not match this command to a live Claude Code or Codex session. Run it from the agent\'s own shell tool, not a separate terminal; if it already is, update Claude Code or Codex and retry.',
+      6,
+    ],
   };
+  if (code === 'session_file_unreadable') {
+    return {
+      message: safeText(error?.response?.error?.message, 'This session\'s file cannot be read; resume the session and retry.'),
+      exitCode: 6,
+      code,
+    };
+  }
   if (known[code]) return { message: known[code][0], exitCode: known[code][1], code };
   if (error instanceof UsageError || error instanceof InstallError) {
     return { message: safeText(error.message, 'Relay Connect failed.'), exitCode: error.exitCode || 1, code };
