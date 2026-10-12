@@ -1245,7 +1245,7 @@ describe('probe installer', () => {
     expect(clock).toBe(0);
   });
 
-  it('names the probe\'s last answer when readiness times out', async () => {
+  it("names the probe's last answer when readiness times out", async () => {
     let clock = 0;
     await expect(
       waitForLiveSocket({
@@ -1313,7 +1313,7 @@ describe('probe installer', () => {
     expect(seen).toEqual(['GET /setup/status', 'POST /connect/join']);
   });
 
-  it('passes the probe\'s explanation through for an unreadable session file', async () => {
+  it("passes the probe's explanation through for an unreadable session file", async () => {
     const { home } = await listen((_request, response) => {
       json(
         response,
