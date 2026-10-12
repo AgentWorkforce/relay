@@ -35,6 +35,7 @@ import {
   probeVersionSupported,
   quitRelayDesktop,
   requireExistingProbe,
+  requireVerifiedProbe,
   startDetachedProbe,
   swapMacApp,
   verifyChecksum,
@@ -1270,6 +1271,16 @@ describe('probe installer', () => {
         check: async () => null,
       })
     ).rejects.toThrow('(it never answered; see ~/.agentworkforce/desktop/headless.log).');
+  });
+
+  it('does not report an unverifiable probe as installed', () => {
+    // An old macOS probe that rejects the caller hides its version, so an
+    // explicit install must not call it ready (it may be below the minimum).
+    expect(() => requireVerifiedProbe({ socketPath: '/tmp/relay.sock', sessionRejected: true })).toThrow(
+      'cannot be checked from outside a Claude Code or Codex session'
+    );
+    const verified = { socketPath: '/tmp/relay.sock', version: '2026.10.31', installed: false };
+    expect(requireVerifiedProbe(verified)).toBe(verified);
   });
 
   it('finds a live probe that rejects the caller instead of installing another', async () => {

@@ -4,6 +4,7 @@ import { readFile } from 'node:fs/promises';
 import os from 'node:os';
 import {
   ensureProbe,
+  requireVerifiedProbe,
   InstallError,
   linuxProbeSessionUpdateHint,
   requireExistingProbe as findExistingProbe,
@@ -213,7 +214,7 @@ async function run(options) {
     return;
   }
   if (options.command === 'install') {
-    const result = await ensureProbe();
+    const result = requireVerifiedProbe(await ensureProbe());
     if (options.json) printJson(result.status);
     else
       process.stdout.write(`Agent Relay probe ready${result.installed ? ' (installed and started)' : ''}.\n`);

@@ -249,6 +249,21 @@ export function isSessionRejection(response) {
   return response?.ok === false && SESSION_REJECTIONS.has(response?.error?.code);
 }
 
+/**
+ * `connect install` promises a probe that meets the platform minimum. A probe
+ * that rejected the caller reported no version, so that cannot be checked
+ * from here; only a call from inside the agent session can read it.
+ */
+export function requireVerifiedProbe(result) {
+  if (result?.sessionRejected) {
+    throw new InstallError(
+      "Agent Relay is running, but its version cannot be checked from outside a Claude Code or Codex session. Run `npx -y @agent-relay/connect install` from the agent's own shell (in Claude Code, type it at the prompt prefixed with `!`) to verify or update it.",
+      6
+    );
+  }
+  return result;
+}
+
 /** Any well-formed probe answer to /setup/status, or null when nothing answered. */
 async function liveStatus(socketPath, timeoutMs = 5_000) {
   if (!socketPath) return null;

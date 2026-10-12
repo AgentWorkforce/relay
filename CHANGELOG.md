@@ -5,7 +5,11 @@ All notable changes to Agent Relay will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
+## [Unreleased - Patch]
+
+### Fixed
+
+- `npx @agent-relay/connect join` no longer waits 60 seconds and rolls back when the local probe is running but cannot match the command to a live Claude Code or Codex session (for example, when it was run from a separate terminal). It stops within about a second and says to run the command from the agent's own shell. A timeout that does happen now names the probe's last answer. `connect install` no longer reports such a probe as ready when its version cannot be checked.
 
 ## [13.4.0] - 2026-10-11
 
