@@ -2107,12 +2107,10 @@ describe('claimFleetNodeOwnership', () => {
 
   it('refuses to send the node token over plain HTTP', async () => {
     const plain = { apiUrl: 'http://cloud.example.com', accessToken: 'access' } as never;
-    const authorizedApiFetch = vi
-      .fn()
-      .mockResolvedValueOnce({
-        response: json(200, { cloudWorkspaceId: '50587328-441d-4acb-b8f3-dbe1b3c5de99' }),
-        auth: plain,
-      });
+    const authorizedApiFetch = vi.fn().mockResolvedValueOnce({
+      response: json(200, { cloudWorkspaceId: '50587328-441d-4acb-b8f3-dbe1b3c5de99' }),
+      auth: plain,
+    });
     const d = {
       authorizedApiFetch,
       ensureCloudSession: vi.fn(async () => ({ auth: plain })),
