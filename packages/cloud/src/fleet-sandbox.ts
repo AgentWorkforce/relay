@@ -1747,3 +1747,54 @@ export async function deleteCloudFleetSandbox(
   const payload = await readJson(response);
   if (!response.ok) throw endpointError('delete the fleet sandbox', response, payload);
 }
+
+export type AttachCloudFleetSandboxRelayfileInput = {
+  cloudWorkspaceId: string;
+  sandboxId: string;
+  /** Optional context subtrees; the server chooses a separate mount directory. */
+  paths?: string[];
+};
+
+export type CloudFleetSandboxRelayfileAttachment = {
+  sandboxId: string;
+  relayWorkspaceId: string;
+  relayfileMounted: true;
+  relayfileMountPath: string;
+};
+
+/** Attach optional live context to an existing sandbox without allocating or dispatching. */
+export async function attachCloudFleetSandboxRelayfile(
+  input: AttachCloudFleetSandboxRelayfileInput,
+  options: CloudFleetSandboxRequestOptions = {}
+): Promise<CloudFleetSandboxRelayfileAttachment> {
+  const cloudWorkspaceId = input.cloudWorkspaceId.trim();
+  const sandboxId = input.sandboxId.trim();
+  if (!CLOUD_WORKSPACE_ID_PATTERN.test(cloudWorkspaceId) || !CLOUD_SANDBOX_ID_PATTERN.test(sandboxId)) {
+    throw new Error('A Cloud workspace UUID and sbx_<UUID> sandbox ID are required.');
+  }
+  if (
+    input.paths &&
+    (input.paths.length === 0 || input.paths.some((path) => !path.startsWith('/') || !path.endsWith('/**')))
+  ) {
+    throw new Error('Relayfile context paths must be absolute subtrees ending in /**.');
+  }
+  const signal = boundedSignal(options, DEFAULT_ENSURE_TIMEOUT_MS);
+  const session = await ensureCloudSession({ apiUrl: options.apiUrl || defaultApiUrl(), interactive: false });
+  const { response } = await authorizedApiFetch(
+    session.auth,
+    `/api/v1/workspaces/${encodeURIComponent(cloudWorkspaceId)}/sandboxes/${encodeURIComponent(sandboxId)}/relayfile-mount`,
+    { method: 'POST', signal, body: JSON.stringify(input.paths ? { paths: input.paths } : {}) },
+    { interactive: false }
+  );
+  const payload = await readJson(response);
+  if (!response.ok) throw endpointError('attach Relayfile context', response, payload);
+  if (!isObject(payload) || payload.sandboxId !== sandboxId || payload.relayfileMounted !== true) {
+    throw new Error('Cloud did not confirm Relayfile attachment to the requested sandbox.');
+  }
+  return {
+    sandboxId,
+    relayfileMounted: true,
+    relayWorkspaceId: requiredString(payload, 'relayWorkspaceId', 'Relayfile attachment'),
+    relayfileMountPath: requiredString(payload, 'relayfileMountPath', 'Relayfile attachment'),
+  };
+}

@@ -17,6 +17,7 @@ import {
   DEV_CLOUD_API_URL,
   DEV_RELAYCAST_ORIGIN,
   deleteCloudFleetSandbox,
+  attachCloudFleetSandboxRelayfile,
   ensureCloudFleetSandbox,
   materializeCloudRelayfileRepository,
   normalizeRelaycastTarget,
@@ -83,6 +84,62 @@ describe('Cloud fleet sandbox client', () => {
 
   afterEach(() => {
     vi.restoreAllMocks();
+  });
+
+  it('attaches context once to the exact existing sandbox without choosing a checkout destination', async () => {
+    mocks.authorizedApiFetch.mockResolvedValue({
+      auth,
+      response: Response.json({
+        sandboxId: SANDBOX_ID,
+        relayWorkspaceId: 'rw_abc',
+        relayfileMounted: true,
+        relayfileMountPath: '/home/node/workspace',
+      }),
+    });
+    const result = await attachCloudFleetSandboxRelayfile({
+      cloudWorkspaceId: CLOUD_WORKSPACE_ID,
+      sandboxId: SANDBOX_ID,
+      paths: ['/linear/**'],
+    });
+    expect(result.relayfileMountPath).toBe('/home/node/workspace');
+    expect(mocks.authorizedApiFetch).toHaveBeenCalledExactlyOnceWith(
+      auth,
+      `/api/v1/workspaces/${CLOUD_WORKSPACE_ID}/sandboxes/${SANDBOX_ID}/relayfile-mount`,
+      expect.objectContaining({
+        method: 'POST',
+        body: JSON.stringify({ paths: ['/linear/**'] }),
+        signal: expect.any(AbortSignal),
+      }),
+      { interactive: false }
+    );
+  });
+
+  it.each([
+    { sandboxId: 'sbx_wrong', relayfileMounted: true },
+    { sandboxId: SANDBOX_ID, relayfileMounted: false },
+  ])('rejects an attachment response that does not prove the requested mount (%j)', async (payload) => {
+    mocks.authorizedApiFetch.mockResolvedValue({
+      auth,
+      response: Response.json({
+        relayWorkspaceId: 'rw_abc',
+        relayfileMountPath: '/home/node/workspace',
+        ...payload,
+      }),
+    });
+    await expect(
+      attachCloudFleetSandboxRelayfile({ cloudWorkspaceId: CLOUD_WORKSPACE_ID, sandboxId: SANDBOX_ID })
+    ).rejects.toThrow('did not confirm');
+  });
+
+  it('does not retry a failed optional attachment or allocate a replacement sandbox', async () => {
+    mocks.authorizedApiFetch.mockResolvedValue({
+      auth,
+      response: Response.json({ error: 'mount timed out' }, { status: 503 }),
+    });
+    await expect(
+      attachCloudFleetSandboxRelayfile({ cloudWorkspaceId: CLOUD_WORKSPACE_ID, sandboxId: SANDBOX_ID })
+    ).rejects.toThrow('mount timed out');
+    expect(mocks.authorizedApiFetch).toHaveBeenCalledTimes(1);
   });
 
   it('normalizes a closed Agent37 Relaycast target', () => {
