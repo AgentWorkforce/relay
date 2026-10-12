@@ -471,6 +471,19 @@ async function mintFleetNodeEnrollment(
   }
 }
 
+/** HTTPS, or plain HTTP to this machine only. */
+function isSecureCloudUrl(apiUrl: string): boolean {
+  try {
+    const url = new URL(apiUrl);
+    return (
+      url.protocol === 'https:' ||
+      (url.protocol === 'http:' && ['localhost', '127.0.0.1', '[::1]'].includes(url.hostname))
+    );
+  } catch {
+    return false;
+  }
+}
+
 /**
  * Record the signed-in person as the owner of the node a node token belongs
  * to (Cloud's `POST /api/v1/fleet/nodes/claim`). Cloud asks Relaycast which
@@ -493,6 +506,12 @@ export async function claimFleetNodeOwnership(
     });
     const selected = await resolveWorkspaceSelector(workspace, session.auth, deps);
     const resolved = await resolveCloudWorkspace(selected.workspaceId, selected.auth, deps);
+    // The node token is a credential: never send it over plaintext.
+    if (!isSecureCloudUrl(resolved.auth.apiUrl)) {
+      throw new Error(
+        `Refusing to send the node token to ${new URL(resolved.auth.apiUrl).origin} over plain HTTP. Log in to Cloud over HTTPS.`
+      );
+    }
     const { response } = await deps.authorizedApiFetch(
       resolved.auth,
       '/api/v1/fleet/nodes/claim',
@@ -504,8 +523,11 @@ export async function claimFleetNodeOwnership(
     );
     const payload = (await response.json().catch(() => null)) as unknown;
     if (!response.ok) {
-      // Cloud's messages name the problem and never echo the token.
-      const message = isObject(payload) && typeof payload.error === 'string' ? payload.error : undefined;
+      // Redacted before it can reach a terminal, whatever the server echoed.
+      const message =
+        isObject(payload) && typeof payload.error === 'string'
+          ? redactCredentialValues(payload.error.split(options.nodeToken).join('[redacted]'))
+          : undefined;
       if (response.status === 403 && !message) {
         throw new Error('Only an owner of the workspace can claim its nodes.');
       }

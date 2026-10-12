@@ -746,7 +746,8 @@ export async function resolveNodeIdentityFromSession(
 export async function readRunningBrokerNodeIdentity(dataDir: string): Promise<BrokerNodeIdentity | null> {
   const conn = readBrokerConnectionFromFs(fs, dataDir);
   if (!conn) return null;
-  return readBrokerNodeIdentity(conn).catch(() => null);
+  // A just-started broker reports its node id before its minted token.
+  return readBrokerNodeIdentity(conn, { awaitTokenMs: NODE_TOKEN_WAIT_MS }).catch(() => null);
 }
 
 async function readBrokerNodeIdentity(

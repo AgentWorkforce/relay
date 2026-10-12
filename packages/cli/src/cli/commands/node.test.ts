@@ -852,6 +852,69 @@ describe('node claim', () => {
     expect(harness.error).toHaveBeenCalledWith(expect.stringContaining('No node token found'));
   });
 
+  it("prefers the running broker's live token to a stored one a rotation may have replaced", async () => {
+    const claimNodeOwnership = vi.fn(async () => ({ nodeId: 'node_abc', claimed: true }));
+    const harness = createNodeHarness({
+      resolveEnrollment: vi.fn(
+        () => enrollmentRecord
+      ) as unknown as NodeCommandDependencies['resolveEnrollment'],
+      readRunningNodeIdentity: vi.fn(async () => ({ nodeId: 'node_abc', nodeToken: 'nt_rotated' })),
+      claimNodeOwnership,
+    });
+    await run(harness);
+    expect(claimNodeOwnership).toHaveBeenCalledWith({
+      workspace: 'rw_123',
+      nodeToken: 'nt_rotated',
+      apiUrl: undefined,
+    });
+  });
+
+  it('uses explicit RELAY_NODE_TOKEN and --workspace without reading an ambiguous enrollment store', async () => {
+    const resolveEnrollment = vi.fn(() => {
+      throw new Error('Multiple fleet enrollments match; pass a base URL.');
+    }) as unknown as NodeCommandDependencies['resolveEnrollment'];
+    const claimNodeOwnership = vi.fn(async () => ({ nodeId: 'sf-mini', claimed: true }));
+    const harness = createNodeHarness({
+      env: { RELAY_NODE_TOKEN: 'nt_env' },
+      resolveEnrollment,
+      claimNodeOwnership,
+    });
+    await run(harness, '--workspace', 'khaliq');
+    expect(resolveEnrollment).not.toHaveBeenCalled();
+    expect(claimNodeOwnership).toHaveBeenCalledWith({
+      workspace: 'khaliq',
+      nodeToken: 'nt_env',
+      apiUrl: undefined,
+    });
+  });
+
+  it("reports the store's ambiguity when nothing explicit or running can stand in", async () => {
+    const claimNodeOwnership = vi.fn();
+    const harness = createNodeHarness({
+      resolveEnrollment: vi.fn(() => {
+        throw new Error('Multiple fleet enrollments match; pass a base URL.');
+      }) as unknown as NodeCommandDependencies['resolveEnrollment'],
+      claimNodeOwnership,
+    });
+    await expect(run(harness)).rejects.toBeInstanceOf(ExitSignal);
+    expect(harness.error).toHaveBeenCalledWith('Multiple fleet enrollments match; pass a base URL.');
+    expect(claimNodeOwnership).not.toHaveBeenCalled();
+  });
+
+  it('treats a blank RELAY_NODE_TOKEN as a mistake, as node up does, never claiming another node', async () => {
+    const claimNodeOwnership = vi.fn();
+    const harness = createNodeHarness({
+      env: { RELAY_NODE_TOKEN: '  ' },
+      resolveEnrollment: vi.fn(
+        () => enrollmentRecord
+      ) as unknown as NodeCommandDependencies['resolveEnrollment'],
+      claimNodeOwnership,
+    });
+    await expect(run(harness)).rejects.toBeInstanceOf(ExitSignal);
+    expect(harness.error).toHaveBeenCalledWith(expect.stringContaining('RELAY_NODE_TOKEN is set but empty'));
+    expect(claimNodeOwnership).not.toHaveBeenCalled();
+  });
+
   it("reports Cloud's refusal and exits non-zero", async () => {
     const harness = createNodeHarness({
       resolveEnrollment: vi.fn(

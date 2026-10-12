@@ -152,31 +152,47 @@ type NodeClaimCommandOptions = { workspace?: string; apiUrl?: string; json?: boo
  */
 async function runNodeClaim(options: NodeClaimCommandOptions, deps: NodeCommandDependencies): Promise<void> {
   const env = deps.core.env;
+  const fail = (message: string) => {
+    deps.error(message);
+    deps.exit(1);
+  };
+  // Same rule as `node up`: a set RELAY_NODE_TOKEN is an explicit choice, so a
+  // blank one is a mistake to report, never a reason to claim some other node.
+  if (env.RELAY_NODE_TOKEN !== undefined && !env.RELAY_NODE_TOKEN.trim()) {
+    fail("RELAY_NODE_TOKEN is set but empty. Unset it, or set it to this node's token.");
+    return;
+  }
+  const explicitToken = env.RELAY_NODE_TOKEN?.trim();
+  const explicitWorkspace = options.workspace?.trim();
   const projectSession = deps.resolveProjectWorkspaceSession();
+  // The node this machine serves now: its live token beats a stored one, which
+  // a rotation may since have replaced.
+  const running = explicitToken ? null : await deps.readRunningNodeIdentity();
+  // The enrollment store is read only for what is still missing; explicit
+  // inputs never depend on it (it throws when several enrollments match).
   let record: ReturnType<typeof resolveActiveFleetNodeEnrollment> | undefined;
-  try {
-    record = resolveEnrollmentForProject(projectSession, deps);
-  } catch (err) {
-    deps.error(err instanceof Error ? err.message : String(err));
-    deps.exit(1);
-    return;
+  let storeError: string | undefined;
+  if (!(explicitToken || running?.nodeToken) || !explicitWorkspace) {
+    try {
+      record = resolveEnrollmentForProject(projectSession, deps);
+    } catch (err) {
+      storeError = err instanceof Error ? err.message : String(err);
+    }
   }
-  const running =
-    env.RELAY_NODE_TOKEN?.trim() || record?.nodeToken ? null : await deps.readRunningNodeIdentity();
-  const nodeToken = env.RELAY_NODE_TOKEN?.trim() || record?.nodeToken || running?.nodeToken;
+  const nodeToken = explicitToken || running?.nodeToken || record?.nodeToken;
   if (!nodeToken) {
-    deps.error(
-      "No node token found on this machine. Start the node with 'agent-relay node up' (or export RELAY_NODE_TOKEN) and run this again."
+    fail(
+      storeError ??
+        "No node token found on this machine. Start the node with 'agent-relay node up' (or export RELAY_NODE_TOKEN) and run this again."
     );
-    deps.exit(1);
     return;
   }
-  const workspace = options.workspace?.trim() || record?.relayWorkspaceId || projectSession?.workspaceId;
+  const workspace = explicitWorkspace || record?.relayWorkspaceId || projectSession?.workspaceId;
   if (!workspace) {
-    deps.error(
-      'Pass --workspace <id|name>: this node has no stored enrollment or project workspace to claim it in.'
+    fail(
+      storeError ??
+        'Pass --workspace <id|name>: this node has no stored enrollment or project workspace to claim it in.'
     );
-    deps.exit(1);
     return;
   }
   try {
