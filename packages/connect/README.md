@@ -14,8 +14,12 @@ Unsafe pointer or socket metadata fails closed.
 If an existing socket or Relay process may be restarting, the command retries
 liveness for up to 15 seconds. A probe that answers but cannot tie the command to a live
 Claude Code or Codex session counts as running: the command stops at once with
-that error instead of waiting or installing another probe. Run it from the
-agent's own shell tool. When no eligible probe is available, it
+that error instead of waiting or installing another probe. For
+`not_a_relay_session`, run the command from the agent's own shell tool (in
+Claude Code, type it at the prompt prefixed with `!` if a permission check
+blocks the agent from running it). For `session_file_unreadable`, follow the
+probe's explanation, or resume the session and retry. When no eligible probe
+is available, it
 downloads the current release from `AgentWorkforce/relay-desktop-releases`,
 verifies the adjacent SHA-256 file, and starts the probe without signing in.
 A responsive old standalone probe fails with an update-required error so the

@@ -1345,38 +1345,41 @@ describe('probe installer', () => {
     });
   });
 
-  it('keeps a fresh Linux install whose probe answers but cannot identify the caller', async () => {
-    const root = await mkdtemp(join(os.tmpdir(), 'connect-linux-unidentified-test-'));
-    cleanups.push(async () => rm(root, { recursive: true, force: true }));
-    const home = join(root, 'home');
-    const run = async (file: string, args: string[]) => {
-      if (file === 'tar') {
-        const destination = args[args.indexOf('-C') + 1];
-        const probe = join(destination, 'release/agent_relay/helpers/agent-relay-probe');
-        await mkdir(join(probe, '..'), { recursive: true });
-        await writeFile(probe, '#!/bin/sh\n');
-        await chmod(probe, 0o755);
-      }
-      return { code: 0, stdout: '', stderr: '' };
-    };
-    const result = await installLinux({
-      home,
-      arch: 'x64',
-      run,
-      start: async () => ({ pid: undefined, unref() {} }),
-      wait: (options: Record<string, unknown>) =>
-        waitForLiveSocket({
-          ...options,
-          sleep: async () => {},
-          pointer: async () => '/tmp/relay.sock',
-          check: async () => ({ ok: false, error: { code: 'not_a_relay_session' } }),
-        }),
-    });
-    expect(result).toMatchObject({ sessionRejected: true });
-    await expect(readlink(join(home, '.local/bin/agent-relay-probe'))).resolves.toContain(
-      join(home, '.local/lib/agent-relay/current')
-    );
-  });
+  it.each(['not_a_relay_session', 'session_file_unreadable'])(
+    'keeps a fresh Linux install whose probe answers %s',
+    async (rejectionCode) => {
+      const root = await mkdtemp(join(os.tmpdir(), 'connect-linux-unidentified-test-'));
+      cleanups.push(async () => rm(root, { recursive: true, force: true }));
+      const home = join(root, 'home');
+      const run = async (file: string, args: string[]) => {
+        if (file === 'tar') {
+          const destination = args[args.indexOf('-C') + 1];
+          const probe = join(destination, 'release/agent_relay/helpers/agent-relay-probe');
+          await mkdir(join(probe, '..'), { recursive: true });
+          await writeFile(probe, '#!/bin/sh\n');
+          await chmod(probe, 0o755);
+        }
+        return { code: 0, stdout: '', stderr: '' };
+      };
+      const result = await installLinux({
+        home,
+        arch: 'x64',
+        run,
+        start: async () => ({ pid: undefined, unref() {} }),
+        wait: (options: Record<string, unknown>) =>
+          waitForLiveSocket({
+            ...options,
+            sleep: async () => {},
+            pointer: async () => '/tmp/relay.sock',
+            check: async () => ({ ok: false, error: { code: rejectionCode } }),
+          }),
+      });
+      expect(result).toMatchObject({ sessionRejected: true });
+      await expect(readlink(join(home, '.local/bin/agent-relay-probe'))).resolves.toContain(
+        join(home, '.local/lib/agent-relay/current')
+      );
+    }
+  );
 
   it('enforces a timeout on each Unix-socket request', async () => {
     const { socketPath } = await listen(() => {
