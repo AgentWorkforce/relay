@@ -2053,7 +2053,10 @@ describe('claimFleetNodeOwnership', () => {
   function deps(claim: Response) {
     const authorizedApiFetch = vi
       .fn()
-      .mockResolvedValueOnce({ response: json(200, { cloudWorkspaceId: '50587328-441d-4acb-b8f3-dbe1b3c5de99' }), auth })
+      .mockResolvedValueOnce({
+        response: json(200, { cloudWorkspaceId: '50587328-441d-4acb-b8f3-dbe1b3c5de99' }),
+        auth,
+      })
       .mockResolvedValueOnce({ response: claim, auth });
     const ensureCloudSession = vi.fn(async () => ({ auth }));
     return { authorizedApiFetch, ensureCloudSession } as unknown as Pick<
@@ -2065,7 +2068,10 @@ describe('claimFleetNodeOwnership', () => {
   it("resolves the node's workspace and posts the node token to Cloud's claim route", async () => {
     const d = deps(json(200, { nodeId: 'sf-mini', claimed: true, owner: 'you' }));
     await expect(
-      claimFleetNodeOwnership({ workspace: 'rw_7ccfea89', nodeToken: 'nt_live_secret', apiUrl: 'https://cloud.test' }, d)
+      claimFleetNodeOwnership(
+        { workspace: 'rw_7ccfea89', nodeToken: 'nt_live_secret', apiUrl: 'https://cloud.test' },
+        d
+      )
     ).resolves.toEqual({ nodeId: 'sf-mini', claimed: true });
     expect(d.authorizedApiFetch).toHaveBeenNthCalledWith(
       1,
@@ -2080,7 +2086,10 @@ describe('claimFleetNodeOwnership', () => {
       '/api/v1/fleet/nodes/claim',
       {
         method: 'POST',
-        body: JSON.stringify({ workspaceId: '50587328-441d-4acb-b8f3-dbe1b3c5de99', nodeToken: 'nt_live_secret' }),
+        body: JSON.stringify({
+          workspaceId: '50587328-441d-4acb-b8f3-dbe1b3c5de99',
+          nodeToken: 'nt_live_secret',
+        }),
       },
       { interactive: false }
     );

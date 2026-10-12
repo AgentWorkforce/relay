@@ -51,7 +51,11 @@ export interface NodeCommandDependencies {
   /** The running local broker's node id and token, when a broker is up. */
   readRunningNodeIdentity: () => Promise<{ nodeId: string; nodeToken?: string } | null>;
   /** Records the signed-in person as the node's owner in Cloud. */
-  claimNodeOwnership: (input: { workspace: string; nodeToken: string; apiUrl?: string }) => Promise<{ nodeId: string; claimed: boolean }>;
+  claimNodeOwnership: (input: {
+    workspace: string;
+    nodeToken: string;
+    apiUrl?: string;
+  }) => Promise<{ nodeId: string; claimed: boolean }>;
   log: (...args: unknown[]) => void;
   warn: (...args: unknown[]) => void;
   error: (...args: unknown[]) => void;
@@ -118,7 +122,10 @@ export function registerNodeCommands(
     .description(
       "Record you as this node's owner in Agent Relay Cloud, so agents it spawns count as your own (for example, for automatic replies to your agents)"
     )
-    .option('--workspace <id|name>', 'Cloud workspace the node belongs to (defaults to its enrollment or this project)')
+    .option(
+      '--workspace <id|name>',
+      'Cloud workspace the node belongs to (defaults to its enrollment or this project)'
+    )
     .option('--api-url <url>', 'Cloud API URL')
     .option('--json', 'Print the result as JSON')
     .action(async (options: NodeClaimCommandOptions) => {
@@ -154,7 +161,8 @@ async function runNodeClaim(options: NodeClaimCommandOptions, deps: NodeCommandD
     deps.exit(1);
     return;
   }
-  const running = env.RELAY_NODE_TOKEN?.trim() || record?.nodeToken ? null : await deps.readRunningNodeIdentity();
+  const running =
+    env.RELAY_NODE_TOKEN?.trim() || record?.nodeToken ? null : await deps.readRunningNodeIdentity();
   const nodeToken = env.RELAY_NODE_TOKEN?.trim() || record?.nodeToken || running?.nodeToken;
   if (!nodeToken) {
     deps.error(
@@ -165,7 +173,9 @@ async function runNodeClaim(options: NodeClaimCommandOptions, deps: NodeCommandD
   }
   const workspace = options.workspace?.trim() || record?.relayWorkspaceId || projectSession?.workspaceId;
   if (!workspace) {
-    deps.error('Pass --workspace <id|name>: this node has no stored enrollment or project workspace to claim it in.');
+    deps.error(
+      'Pass --workspace <id|name>: this node has no stored enrollment or project workspace to claim it in.'
+    );
     deps.exit(1);
     return;
   }

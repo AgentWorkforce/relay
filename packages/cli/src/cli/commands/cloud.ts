@@ -509,7 +509,9 @@ export async function claimFleetNodeOwnership(
       if (response.status === 403 && !message) {
         throw new Error('Only an owner of the workspace can claim its nodes.');
       }
-      throw new Error(`Could not claim the node: ${message ?? `${response.status} ${response.statusText}`.trim()}`);
+      throw new Error(
+        `Could not claim the node: ${message ?? `${response.status} ${response.statusText}`.trim()}`
+      );
     }
     if (!isObject(payload) || typeof payload.nodeId !== 'string' || typeof payload.claimed !== 'boolean') {
       throw new Error('Cloud returned an invalid node claim response.');
