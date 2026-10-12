@@ -541,7 +541,7 @@ export async function claimFleetNodeOwnership(
     return { nodeId: payload.nodeId, claimed: payload.claimed };
   } catch (error) {
     if (isCloudLoginError(error)) {
-      throw new Error('Cloud login required. Run `agent-relay cloud login` and retry.');
+      throw new Error('Cloud login required. Run `agent-relay cloud login` and retry.', { cause: error });
     }
     throw error;
   }
