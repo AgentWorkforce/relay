@@ -221,7 +221,7 @@ function minimumProbeVersion(platform) {
   return platform === 'darwin' ? MINIMUM_MAC_PROBE_VERSION : MINIMUM_PROBE_VERSION;
 }
 
-function probeSupportedOnPlatform(existing, platform) {
+export function probeSupportedOnPlatform(existing, platform = process.platform) {
   if (!existing) return false;
   return existing.version
     ? probeVersionSupported(existing.version, minimumProbeVersion(platform))
@@ -685,7 +685,7 @@ export async function acquireInstallLock({
   }
 }
 
-function requireSupportedProbe(existing, platform = process.platform) {
+export function requireSupportedProbe(existing, platform = process.platform) {
   if (existing && !probeSupportedOnPlatform(existing, platform)) {
     const nextStep =
       platform === 'darwin' ? 'run `npx -y @agent-relay/connect install` and retry.' : 'update it and retry.';

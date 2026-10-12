@@ -86,8 +86,12 @@ async function runCli(home: string, args: string[], input = '') {
     if (error.code !== 'EEXIST') throw error;
   });
   return await new Promise<{ code: number | null; stdout: string; stderr: string }>((resolveRun) => {
+    // Never let the session running these tests be identified as the caller.
+    const env = Object.fromEntries(
+      Object.entries(process.env).filter(([key]) => !/^(CLAUDE|CODEX)/.test(key))
+    );
     const child = spawn(process.execPath, [launcher, ...args], {
-      env: { ...process.env, HOME: home },
+      env: { ...env, HOME: home },
       stdio: ['pipe', 'pipe', 'pipe'],
     });
     const stdout: Buffer[] = [];
@@ -1304,13 +1308,15 @@ describe('probe installer', () => {
     const started = Date.now();
     const result = await runCli(home, ['join', 'connect-test']);
     expect(Date.now() - started).toBeLessThan(5_000);
+    // The CLI names the session itself; with no session and a probe that
+    // cannot place it either, it stops with what it checked.
     expect(result).toEqual({
       code: 6,
       stdout: '',
       stderr:
-        "Agent Relay is running but could not match this command to a live Claude Code or Codex session. Run it from the agent's own shell tool, not a separate terminal; if it already is, update Claude Code or Codex and retry.\n",
+        'Run this from a live Claude Code or Codex session (no Codex thread id in the environment; no Claude Code session record for any parent process). In Claude Code, if a permission check blocks the command, run it yourself with the ! prefix.\n',
     });
-    expect(seen).toEqual(['GET /setup/status', 'POST /connect/join']);
+    expect(seen).toEqual(['GET /setup/status']);
   });
 
   it("passes the probe's explanation through for an unreadable session file", async () => {
