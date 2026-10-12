@@ -101,7 +101,8 @@ export class FakeConnectCloud {
     if (/^\/connect\/[^/]+$/.test(path)) {
       const { status, code } = this.availability;
       if (status === 200) this.send(response, 200, { ok: true, data: { active: true } });
-      else this.send(response, status, { ok: false, error: { code: code || 'connect_ended', message: 'gone' } });
+      else
+        this.send(response, status, { ok: false, error: { code: code || 'connect_ended', message: 'gone' } });
       return;
     }
     if (path === '/v1/deliveries?limit=50') {
@@ -117,7 +118,10 @@ export class FakeConnectCloud {
       return;
     }
     if (path === '/v1/dm') {
-      this.send(response, 200, { ok: true, data: { conversation_id: 'c1', message: { id: `m-${this.calls.length}` } } });
+      this.send(response, 200, {
+        ok: true,
+        data: { conversation_id: 'c1', message: { id: `m-${this.calls.length}` } },
+      });
       return;
     }
     if (path === '/v1/agents?status=all') {

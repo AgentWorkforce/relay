@@ -74,7 +74,9 @@ async function setup() {
 
 describe('Node relay Connect service', () => {
   it('formats injected text exactly like the probe', () => {
-    const parsed = parseDelivery(delivery('d1', 'Hello [there]', { message: { agent_name: 'host [x]', text: 'Hello [there]' } }))!;
+    const parsed = parseDelivery(
+      delivery('d1', 'Hello [there]', { message: { agent_name: 'host [x]', text: 'Hello [there]' } })
+    )!;
     expect(injectedText(parsed, '[reply: hint]')).toBe(
       `[Relay Connect — from host (x) · ref ${messageRef('msg-d1')}]\n[reply: hint]\n\nHello [there]`
     );
@@ -83,31 +85,49 @@ describe('Node relay Connect service', () => {
 
   it('joins once, persists the credential, and answers a repeat join locally', async () => {
     const { cloud, service, injector, statePath } = await setup();
-    const joined = await service.join(TARGET, { link: 'https://agentrelay.com/connect/conn-1/join', name: 'guest-one' });
-    expect(joined).toMatchObject({ connect_id: 'conn-1', agent_name: 'guest-one', role: 'guest', warnings: [] });
+    const joined = await service.join(TARGET, {
+      link: 'https://agentrelay.com/connect/conn-1/join',
+      name: 'guest-one',
+    });
+    expect(joined).toMatchObject({
+      connect_id: 'conn-1',
+      agent_name: 'guest-one',
+      role: 'guest',
+      warnings: [],
+    });
     expect(injector.prepared).toBe(1);
     const again = await service.join(TARGET, { link: 'conn-1' });
     expect(again.connect_id).toBe('conn-1');
     expect(cloud.callsTo('POST', '/cloud/connect/conn-1/join')).toHaveLength(1);
     const saved = JSON.parse(await readFile(statePath, 'utf8'));
     expect(saved.sessions[`claude:${TARGET.id}`].token).toBe('participant-token');
-    await expect(service.join(TARGET, { link: 'conn-2' })).rejects.toMatchObject({ code: 'connect_already_joined' });
+    await expect(service.join(TARGET, { link: 'conn-2' })).rejects.toMatchObject({
+      code: 'connect_already_joined',
+    });
   });
 
   it('reuses the join idempotency key after a 5xx and clears it after a 4xx', async () => {
     const { cloud, service } = await setup();
     cloud.joinStatus = 503;
     cloud.joinError = { code: 'connect_unavailable', message: 'down' };
-    await expect(service.join(TARGET, { link: 'conn-1' })).rejects.toMatchObject({ code: 'connect_unavailable' });
-    await expect(service.join(TARGET, { link: 'conn-1' })).rejects.toMatchObject({ code: 'connect_unavailable' });
-    const keys = cloud.callsTo('POST', '/cloud/connect/conn-1/join').map((call) => call.headers['idempotency-key']);
+    await expect(service.join(TARGET, { link: 'conn-1' })).rejects.toMatchObject({
+      code: 'connect_unavailable',
+    });
+    await expect(service.join(TARGET, { link: 'conn-1' })).rejects.toMatchObject({
+      code: 'connect_unavailable',
+    });
+    const keys = cloud
+      .callsTo('POST', '/cloud/connect/conn-1/join')
+      .map((call) => call.headers['idempotency-key']);
     expect(keys[0]).toBe(keys[1]);
     await expect(service.join(TARGET, { link: 'conn-1', name: 'other-name' })).rejects.toMatchObject({
       code: 'connect_join_pending',
     });
     cloud.joinStatus = 403;
     cloud.joinError = { code: 'connect_claim_invalid', message: 'bad claim' };
-    await expect(service.join(TARGET, { link: 'conn-1' })).rejects.toMatchObject({ code: 'connect_claim_invalid' });
+    await expect(service.join(TARGET, { link: 'conn-1' })).rejects.toMatchObject({
+      code: 'connect_claim_invalid',
+    });
     cloud.joinError = null;
     await service.join(TARGET, { link: 'conn-1' });
     const last = cloud.callsTo('POST', '/cloud/connect/conn-1/join').at(-1)!;
@@ -142,7 +162,10 @@ describe('Node relay Connect service', () => {
     await service.pollAll();
     const fail = cloud.callsTo('POST', '/v1/deliveries/d1/fail');
     expect(fail).toHaveLength(1);
-    expect(fail[0].body).toEqual({ error: 'In doubt; not resent — socket closed mid-write', retryable: false });
+    expect(fail[0].body).toEqual({
+      error: 'In doubt; not resent — socket closed mid-write',
+      retryable: false,
+    });
     cloud.deliveries[0].status = 'queued';
     await service.pollAll();
     expect(injector.injected).toHaveLength(1);
@@ -201,10 +224,14 @@ describe('Node relay Connect service', () => {
   it('sends with a per-recipient idempotency key and names each failure cause', async () => {
     const { cloud, service, logs } = await setup();
     await service.join(TARGET, { link: 'conn-1' });
-    await expect(service.send(TARGET, 'hi', { to: 'host-agent', requestKey: 'req-1' })).resolves.toMatchObject({
+    await expect(
+      service.send(TARGET, 'hi', { to: 'host-agent', requestKey: 'req-1' })
+    ).resolves.toMatchObject({
       sent: [{ to: 'host-agent' }],
     });
-    expect(cloud.callsTo('POST', '/v1/dm')[0].headers['idempotency-key']).toBe('connect-send:req-1:host-agent');
+    expect(cloud.callsTo('POST', '/v1/dm')[0].headers['idempotency-key']).toBe(
+      'connect-send:req-1:host-agent'
+    );
 
     cloud.apiErrors.set('POST /v1/dm', { status: 401, code: 'unauthorized' });
     await expect(service.send(TARGET, 'hi', { to: 'host-agent' })).rejects.toMatchObject({
@@ -216,12 +243,18 @@ describe('Node relay Connect service', () => {
       status: 502,
       code: 'connect_upstream_error',
     });
-    expect(logs.some((line) => line.includes('code=connect_auth_rejected') && line.includes('cause=http_401:unauthorized'))).toBe(true);
+    expect(
+      logs.some(
+        (line) => line.includes('code=connect_auth_rejected') && line.includes('cause=http_401:unauthorized')
+      )
+    ).toBe(true);
     expect(logs.join('\n')).not.toContain('participant-token');
 
     cloud.apiErrors.set('POST /v1/dm', { status: 401, code: 'unauthorized' });
     cloud.availability = { status: 410, code: 'connect_ended' };
-    await expect(service.send(TARGET, 'hi', { to: 'host-agent' })).rejects.toMatchObject({ code: 'connect_ended' });
+    await expect(service.send(TARGET, 'hi', { to: 'host-agent' })).rejects.toMatchObject({
+      code: 'connect_ended',
+    });
     await expect(service.status(TARGET)).rejects.toMatchObject({ code: 'connect_not_joined' });
   });
 
@@ -239,7 +272,9 @@ describe('Node relay Connect service', () => {
     const { cloud, service, statePath } = await setup();
     await service.join(TARGET, { link: 'conn-1' });
     await expect(service.leave(TARGET)).resolves.toEqual({ left: true, connect_id: 'conn-1' });
-    expect(cloud.callsTo('POST', '/cloud/connect/conn-1/leave')[0].headers.authorization).toBe('Bearer participant-token');
+    expect(cloud.callsTo('POST', '/cloud/connect/conn-1/leave')[0].headers.authorization).toBe(
+      'Bearer participant-token'
+    );
     // Cloud deleted the agent, so no Relaycast disconnect follows.
     expect(cloud.callsTo('POST', '/v1/agents/disconnect')).toHaveLength(0);
     const saved = JSON.parse(await readFile(statePath, 'utf8'));

@@ -154,7 +154,12 @@ const SYSTEM_CODEX = {
  * user's bin, nvm installs, Homebrew, then `PATH`; never a shim.
  * `system` replaces the fixed system locations (tests).
  */
-export function codexCandidates({ home = os.homedir(), env = process.env, platform = process.platform, system } = {}) {
+export function codexCandidates({
+  home = os.homedir(),
+  env = process.env,
+  platform = process.platform,
+  system,
+} = {}) {
   const apps = system ? [] : platform === 'darwin' ? SYSTEM_CODEX.darwin : [];
   const tail = system ?? SYSTEM_CODEX.shared;
   const mise = join(home, '.local/share/mise/installs/codex');
@@ -206,7 +211,7 @@ async function readThreadId(paths, id) {
   const found = await queryReadOnly(
     file,
     "select id from threads where id = ? collate nocase and archived = 0 and source in ('cli', 'vscode', 'exec') limit 1",
-    [id],
+    [id]
   );
   if (found.status !== 'ok') return undefined;
   return typeof found.rows[0]?.id === 'string' ? found.rows[0].id : null;
@@ -217,7 +222,7 @@ async function rolloutColumn(paths, id) {
   const found = await queryReadOnly(
     join(paths.sqliteHome, 'state_5.sqlite'),
     'select rollout_path as rollout_path from threads where id = ? collate nocase',
-    [id],
+    [id]
   );
   if (found.status !== 'ok') return null;
   const path = found.rows[0]?.rollout_path;
@@ -274,7 +279,7 @@ function queueWaiting(paths, thread, ref) {
     paths,
     'select id, payload_json from queued_items where thread_id = ? collate nocase and instr(payload_json, ?) > 0',
     [thread, `ref ${ref}]`],
-    (owned) => owned === ref,
+    (owned) => owned === ref
   );
 }
 
@@ -284,15 +289,19 @@ function relayWaiting(paths, thread) {
     paths,
     'select id, payload_json from queued_items where thread_id = ? collate nocase',
     [thread],
-    () => true,
+    () => true
   );
 }
 
 // MARK: Rollout (rollout.rs)
 
-const MARKERS = ['"task_started"', '"task_complete"', '"turn_aborted"', '"client_id"', '"item_completed"'].map(
-  (marker) => Buffer.from(marker),
-);
+const MARKERS = [
+  '"task_started"',
+  '"task_complete"',
+  '"turn_aborted"',
+  '"client_id"',
+  '"item_completed"',
+].map((marker) => Buffer.from(marker));
 
 class RolloutSummary {
   constructor() {
@@ -507,7 +516,7 @@ const LOCK = /(?:^|\/)thread-writer-locks\/([0-9a-fA-F-]{36})\.lock$/;
 /** The thread after the last `resume` in `argv`. */
 function resumeArgument(argv) {
   const index = argv.lastIndexOf('resume');
-  return index < 0 ? null : argv[index + 1] ?? null;
+  return index < 0 ? null : (argv[index + 1] ?? null);
 }
 
 /**
@@ -750,7 +759,7 @@ class IpcSession {
         reject(
           error?.code === 'ENOENT' || error?.code === 'ECONNREFUSED'
             ? new IpcError('not_running')
-            : new IpcError('io', error?.message ?? String(error)),
+            : new IpcError('io', error?.message ?? String(error))
         );
       };
       socket.once('error', onError);
@@ -762,7 +771,7 @@ class IpcSession {
           (error) => {
             session.close();
             reject(error);
-          },
+          }
         );
       });
     });
@@ -785,9 +794,7 @@ class IpcSession {
         reject(this.failure);
         return;
       }
-      this.socket.write(frame, (error) =>
-        error ? reject(new IpcError('io', error.message)) : resolve(),
-      );
+      this.socket.write(frame, (error) => (error ? reject(new IpcError('io', error.message)) : resolve()));
     });
   }
 
@@ -841,7 +848,7 @@ class IpcSession {
       'initializing-client',
       null,
       undefined,
-      INITIALIZE_TIMEOUT_MS,
+      INITIALIZE_TIMEOUT_MS
     );
     if (response.resultType === 'success' && response.clientId) {
       this.clientId = response.clientId;
@@ -856,7 +863,7 @@ class IpcSession {
     for (const thread of threads) {
       const id = randomUUID();
       await this.send(
-        ipcRequest('thread-owner-discovery', { hostId: 'local', conversationId: thread }, this.clientId, id),
+        ipcRequest('thread-owner-discovery', { hostId: 'local', conversationId: thread }, this.clientId, id)
       );
       byRequest.set(id, thread);
     }
@@ -892,7 +899,7 @@ class IpcSession {
       this.clientId,
       owner,
       START_TURN_TIMEOUT_MS,
-      START_TURN_TIMEOUT_MS + 2_000,
+      START_TURN_TIMEOUT_MS + 2_000
     );
     if (started.resultType !== 'success') {
       throw new IpcError('rejected', started.error ?? 'unknown error');
@@ -1030,7 +1037,7 @@ export function createCodexRouter({
       handedOff.delete(messageId);
       return outcome(
         'in_doubt',
-        'Codex accepted this handoff, but it is no longer queued and was not recorded',
+        'Codex accepted this handoff, but it is no longer queued and was not recorded'
       );
     }
     if (seen === undefined) {
@@ -1062,7 +1069,11 @@ export function createCodexRouter({
     // bundled Codex (processes.rs `conductor_executable`); not ported.
     const file = executable();
     if (!file || !(await supportsQueue(file))) return { error: 'not_installed' };
-    const result = await runIn(file, ['queue', '--thread', await spelled(thread), `--message=${text}`], QUEUE_TIMEOUT_MS);
+    const result = await runIn(
+      file,
+      ['queue', '--thread', await spelled(thread), `--message=${text}`],
+      QUEUE_TIMEOUT_MS
+    );
     if (result.timedOut) return { error: 'timed_out' };
     if (typeof result.code !== 'number') return { error: 'not_installed' };
     const parsed = queueOutcome(result.code, result.stdout ?? '', result.stderr ?? '');
@@ -1159,7 +1170,8 @@ export function createCodexRouter({
       if (!file) {
         return {
           ok: false,
-          reason: 'Codex cannot receive injected messages: no codex command line is installed and the Codex app is not running.',
+          reason:
+            'Codex cannot receive injected messages: no codex command line is installed and the Codex app is not running.',
         };
       }
       const version = await runIn(file, ['--version'], SUPPORT_TIMEOUT_MS);
@@ -1177,4 +1189,3 @@ export function createCodexRouter({
 export async function codexSqliteBackend() {
   return (await sqliteBackend()).kind;
 }
-

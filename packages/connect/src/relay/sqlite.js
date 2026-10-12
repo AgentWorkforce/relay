@@ -16,7 +16,7 @@ async function loadNodeSqlite() {
   // a guest's terminal, so only that warning is held back, only here.
   const original = process.emitWarning;
   process.emitWarning = function emitWarning(warning, ...rest) {
-    const text = typeof warning === 'string' ? warning : warning?.message ?? '';
+    const text = typeof warning === 'string' ? warning : (warning?.message ?? '');
     if (/sqlite/i.test(text)) return undefined;
     return original.call(this, warning, ...rest);
   };
@@ -33,7 +33,7 @@ async function loadNodeSqlite() {
 function run(file, args, timeout = 10_000) {
   return new Promise((resolve) => {
     execFile(file, args, { timeout, maxBuffer: 16 * 1024 * 1024 }, (error, stdout) =>
-      resolve(error ? null : String(stdout)),
+      resolve(error ? null : String(stdout))
     );
   });
 }

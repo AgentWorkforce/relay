@@ -1,17 +1,6 @@
 import { randomUUID } from 'node:crypto';
 import { constants, readdirSync, realpathSync, statSync } from 'node:fs';
-import {
-  chmod,
-  lstat,
-  mkdir,
-  open,
-  readdir,
-  readFile,
-  readlink,
-  rename,
-  rm,
-  stat,
-} from 'node:fs/promises';
+import { chmod, lstat, mkdir, open, readdir, readFile, readlink, rename, rm, stat } from 'node:fs/promises';
 import net from 'node:net';
 import os from 'node:os';
 import { basename, dirname, extname, join } from 'node:path';
@@ -277,9 +266,7 @@ async function readRegistry({ home, env, want = () => true, wantPid = () => true
       }
     }
   }
-  sessions.sort(
-    (a, b) => (b.updatedAtMs ?? -Infinity) - (a.updatedAtMs ?? -Infinity) || a.pid - b.pid,
-  );
+  sessions.sort((a, b) => (b.updatedAtMs ?? -Infinity) - (a.updatedAtMs ?? -Infinity) || a.pid - b.pid);
   return { sessions, unreadable, info };
 }
 
@@ -322,7 +309,7 @@ export async function claudeCallerSession({ home = os.homedir(), env = process.e
         own &&
         candidate.pid === entry.pid &&
         candidate.procStart !== null &&
-        claudeStartMatches(candidate.procStart, entry.start),
+        claudeStartMatches(candidate.procStart, entry.start)
     );
     if (session) {
       // Still the same process after the registry was read.
@@ -382,7 +369,7 @@ export function peerFrames(token, messageId, text) {
       priority: 'next',
       type: 'user',
       uuid: randomUUID().toUpperCase(),
-    })}\n`,
+    })}\n`
   );
   if (auth.length > MAX_LINE_BYTES) {
     return { error: "the session's inbox key is too long to send" };
@@ -413,10 +400,7 @@ function writeAll(socket, bytes, state) {
     };
     const onError = (error) => finish(error);
     const onClose = () => finish(state.error ?? new Error('the connection closed'));
-    const timer = setTimeout(
-      () => finish(new Error('timed out writing to the socket')),
-      SOCKET_TIMEOUT_MS,
-    );
+    const timer = setTimeout(() => finish(new Error('timed out writing to the socket')), SOCKET_TIMEOUT_MS);
     if (state.error || socket.destroyed) {
       finish(state.error ?? new Error('the connection closed'));
       return;
@@ -488,7 +472,7 @@ async function writeInbox(socketPath, frames, connect) {
     if (messageError) {
       return outcome(
         'in_doubt',
-        `the session's inbox connection broke while sending: ${messageError.message}`,
+        `the session's inbox connection broke while sending: ${messageError.message}`
       );
     }
     socket.end();
@@ -520,7 +504,7 @@ export async function injectClaude({
   if (session.peerProtocol !== KNOWN_PEER_PROTOCOL) {
     return outcome(
       'retry',
-      `that Claude Code session speaks peer protocol ${session.peerProtocol}, which this app does not know`,
+      `that Claude Code session speaks peer protocol ${session.peerProtocol}, which this app does not know`
     );
   }
   const token = await peerToken(session);
@@ -566,7 +550,7 @@ export function inboundValue(text) {
 
 function unreadableSettings(path) {
   const error = new Error(
-    `Your Claude settings file is not valid JSON, so it was left unchanged. Fix it or add "${INBOUND_KEY}": "${ACCEPT}" by hand.`,
+    `Your Claude settings file is not valid JSON, so it was left unchanged. Fix it or add "${INBOUND_KEY}": "${ACCEPT}" by hand.`
   );
   error.code = 'claude_settings_unreadable';
   error.path = path;
@@ -655,7 +639,7 @@ async function writeKeepingFile(path, existing, updated) {
 
 function managedError(file, value) {
   const error = new Error(
-    `Managed Claude settings do not allow direct delivery: ${file} sets "${INBOUND_KEY}" to ${JSON.stringify(value)}, so replies cannot be injected; ask your admin.`,
+    `Managed Claude settings do not allow direct delivery: ${file} sets "${INBOUND_KEY}" to ${JSON.stringify(value)}, so replies cannot be injected; ask your admin.`
   );
   error.code = 'claude_inbound_managed';
   error.path = file;
@@ -683,8 +667,7 @@ export async function ensureClaudeDirectDelivery({
   managedSettingsPath,
 } = {}) {
   const managedFile =
-    managedSettingsPath ??
-    (platform === 'darwin' ? MANAGED_SETTINGS.darwin : MANAGED_SETTINGS.other);
+    managedSettingsPath ?? (platform === 'darwin' ? MANAGED_SETTINGS.darwin : MANAGED_SETTINGS.other);
   const settingsFile = join(login ?? claudeHome({ home, env }), 'settings.json');
   const managed = async () => inboundValue(await readFile(managedFile, 'utf8').catch(() => null));
   const user = async () => inboundValue(await readFile(settingsFile, 'utf8').catch(() => null));

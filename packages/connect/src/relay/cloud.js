@@ -112,9 +112,16 @@ async function readBody(response) {
  * One JSON request. Resolves `{status, body}` for any HTTP answer; rejects a
  * RelayHttpError with `status: null` when nothing usable answered.
  */
-export async function requestJson(url, { method = 'GET', token, headers = {}, body, timeoutMs, fetchImpl = fetch } = {}) {
+export async function requestJson(
+  url,
+  { method = 'GET', token, headers = {}, body, timeoutMs, fetchImpl = fetch } = {}
+) {
   if (!sendable(url)) {
-    throw new RelayHttpError({ code: 'connect_unreachable', message: 'Refusing to send to this address.', cause: 'unsendable_url' });
+    throw new RelayHttpError({
+      code: 'connect_unreachable',
+      message: 'Refusing to send to this address.',
+      cause: 'unsendable_url',
+    });
   }
   const finalHeaders = {
     accept: 'application/json',
@@ -147,7 +154,8 @@ export async function requestJson(url, { method = 'GET', token, headers = {}, bo
     throw new RelayHttpError({
       code: 'connect_unreachable',
       message: 'The answer could not be read.',
-      cause: error?.code === 'oversized' ? 'oversized' : transportCause(error) === 'timeout' ? 'timeout' : 'read',
+      cause:
+        error?.code === 'oversized' ? 'oversized' : transportCause(error) === 'timeout' ? 'timeout' : 'read',
     });
   }
   let parsed = null;
@@ -158,14 +166,21 @@ export async function requestJson(url, { method = 'GET', token, headers = {}, bo
       parsed = null;
     }
   }
-  return { status: response.status, body: parsed, requestId: response.headers.get('x-request-id') || undefined };
+  return {
+    status: response.status,
+    body: parsed,
+    requestId: response.headers.get('x-request-id') || undefined,
+  };
 }
 
 function answerError(answer, fallbackCode, fallbackMessage) {
   const error = answer.body?.error || {};
   const code = typeof error.code === 'string' && error.code ? error.code : fallbackCode;
   const message =
-    typeof error.message === 'string' && error.message && error.message.length <= 300 && !error.message.includes('\n')
+    typeof error.message === 'string' &&
+    error.message &&
+    error.message.length <= 300 &&
+    !error.message.includes('\n')
       ? error.message
       : fallbackMessage;
   return new RelayHttpError({ status: answer.status, code, message, requestId: answer.requestId });
@@ -242,7 +257,10 @@ export async function cloudJoin({ connectId, name, hostClaim, idempotencyKey, en
 export async function cloudAvailability({ connectId, env, fetchImpl }) {
   let answer;
   try {
-    answer = await requestJson(`${cloudBase(env)}/connect/${connectId}`, { timeoutMs: CLOUD_TIMEOUT_MS, fetchImpl });
+    answer = await requestJson(`${cloudBase(env)}/connect/${connectId}`, {
+      timeoutMs: CLOUD_TIMEOUT_MS,
+      fetchImpl,
+    });
   } catch (error) {
     throw new RelayHttpError({
       status: 503,
@@ -254,7 +272,10 @@ export async function cloudAvailability({ connectId, env, fetchImpl }) {
   if (ok(answer)) return { active: true };
   const fallback = answer.status === 404 ? 'connect_not_found' : answer.status === 410 ? 'connect_ended' : '';
   const code = answer.body?.error?.code || fallback;
-  if ([404, 410].includes(answer.status) && ['connect_not_found', 'connect_ended', 'connect_expired'].includes(code)) {
+  if (
+    [404, 410].includes(answer.status) &&
+    ['connect_not_found', 'connect_ended', 'connect_expired'].includes(code)
+  ) {
     const messages = {
       connect_expired: 'This Connect has expired.',
       connect_not_found: 'This Connect was not found.',
@@ -291,11 +312,16 @@ export function relaycast({ baseUrl, token, fetchImpl }) {
       method,
       token,
       body,
-      headers: { 'x-relaycast-origin-client': 'agent-relay-connect', 'x-relaycast-origin-version': VERSION, ...headers },
+      headers: {
+        'x-relaycast-origin-client': 'agent-relay-connect',
+        'x-relaycast-origin-version': VERSION,
+        ...headers,
+      },
       timeoutMs,
       fetchImpl,
     });
-    if (!ok(answer)) throw answerError(answer, 'relaycast_error', `Relaycast answered HTTP ${answer.status}.`);
+    if (!ok(answer))
+      throw answerError(answer, 'relaycast_error', `Relaycast answered HTTP ${answer.status}.`);
     return inner(answer.body);
   };
   return {

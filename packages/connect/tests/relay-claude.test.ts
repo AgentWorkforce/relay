@@ -34,7 +34,13 @@ async function tempHome() {
   return { home, env, sessions };
 }
 
-type Record = { pid: number; sessionId?: string; procStart?: string | null; socket: string; peerProtocol?: number };
+type Record = {
+  pid: number;
+  sessionId?: string;
+  procStart?: string | null;
+  socket: string;
+  peerProtocol?: number;
+};
 
 async function writeRecord(sessions: string, record: Record, trailing = '') {
   const body = {
@@ -51,7 +57,13 @@ async function writeRecord(sessions: string, record: Record, trailing = '') {
   await writeFile(join(sessions, `${record.pid}.json`), JSON.stringify(body) + trailing);
 }
 
-async function writeKey(sessions: string, pid: number, hash: string, token: string, procStart: string | null) {
+async function writeKey(
+  sessions: string,
+  pid: number,
+  hash: string,
+  token: string,
+  procStart: string | null
+) {
   const path = join(sessions, `${pid}.${hash}.key`);
   await writeFile(path, JSON.stringify({ peerToken: token, procStart }));
   await chmod(path, 0o600);
@@ -107,7 +119,10 @@ class FailingSocket extends EventEmitter {
 
 describe('Claude Code sessions', () => {
   it('reads the first JSON value of a record and ignores trailing junk', () => {
-    expect(firstJsonValue('{"a":"}{","b":[1,{"c":2}]}\u0000\u0000}garbage')).toEqual({ a: '}{', b: [1, { c: 2 }] });
+    expect(firstJsonValue('{"a":"}{","b":[1,{"c":2}]}\u0000\u0000}garbage')).toEqual({
+      a: '}{',
+      b: [1, { c: 2 }],
+    });
     expect(firstJsonValue('  {"x":"a\\"b"} {"y":1}')).toEqual({ x: 'a"b' });
     expect(() => firstJsonValue('{"unterminated":')).toThrow();
     expect(() => firstJsonValue('')).toThrow();
@@ -128,15 +143,30 @@ describe('Claude Code sessions', () => {
     const { home, env, sessions } = await tempHome();
     const inbox = await fakeInbox(home);
     const start = (await processStart(process.pid))!;
-    await writeRecord(sessions, { pid: process.pid, procStart: start, socket: inbox.path }, '\u0000\u0000"}stray');
+    await writeRecord(
+      sessions,
+      { pid: process.pid, procStart: start, socket: inbox.path },
+      '\u0000\u0000"}stray'
+    );
     await writeKey(sessions, process.pid, 'aaaa', 'stale-token', 'Thu Jan  1 00:00:00 1970');
     await writeKey(sessions, process.pid, 'bbbb', 'live-token', start);
 
     const found = await findClaudeSession({ home, env, sessionId: SESSION });
-    expect(found).toMatchObject({ sessionId: SESSION, pid: process.pid, peerProtocol: 1, cwd: '/work/project' });
+    expect(found).toMatchObject({
+      sessionId: SESSION,
+      pid: process.pid,
+      peerProtocol: 1,
+      cwd: '/work/project',
+    });
     expect(await claudePreflight({ home, env, sessionId: SESSION })).toMatchObject({ ok: true });
 
-    const result = await injectClaude({ home, env, sessionId: SESSION, messageId: 'msg_1', text: 'hello\nthere' });
+    const result = await injectClaude({
+      home,
+      env,
+      sessionId: SESSION,
+      messageId: 'msg_1',
+      text: 'hello\nthere',
+    });
     expect(result.outcome).toBe('delivered');
     await new Promise((resolve) => setTimeout(resolve, 50));
     expect(inbox.connections).toHaveLength(1);
@@ -178,14 +208,18 @@ describe('Claude Code sessions', () => {
     const recycled = process.platform === 'linux' ? '1' : 'Thu Jan  1 00:00:01 1970';
     await writeRecord(sessions, { pid: process.pid, procStart: recycled, socket: inbox.path });
     expect((await injectClaude({ home, env, sessionId: SESSION, messageId: 'm', text: 'x' })).outcome).toBe(
-      'waiting',
+      'waiting'
     );
   });
 
   it('retries when the inbox key is missing, and refuses an id that is not a session id', async () => {
     const { home, env, sessions } = await tempHome();
     const inbox = await fakeInbox(home);
-    await writeRecord(sessions, { pid: process.pid, procStart: await processStart(process.pid), socket: inbox.path });
+    await writeRecord(sessions, {
+      pid: process.pid,
+      procStart: await processStart(process.pid),
+      socket: inbox.path,
+    });
     expect(await injectClaude({ home, env, sessionId: SESSION, messageId: 'm', text: 'x' })).toEqual({
       outcome: 'retry',
       detail: "could not read that Claude Code session's inbox key",
@@ -194,14 +228,21 @@ describe('Claude Code sessions', () => {
       ok: false,
       reason: "could not read that Claude Code session's inbox key",
     });
-    expect((await injectClaude({ home, env, sessionId: 'nope', messageId: 'm', text: 'x' })).outcome).toBe('refused');
+    expect((await injectClaude({ home, env, sessionId: 'nope', messageId: 'm', text: 'x' })).outcome).toBe(
+      'refused'
+    );
     expect(inbox.connections).toHaveLength(0);
   });
 
   it('retries an unknown peer protocol', async () => {
     const { home, env, sessions } = await tempHome();
     const start = (await processStart(process.pid))!;
-    await writeRecord(sessions, { pid: process.pid, procStart: start, socket: join(home, 'x.sock'), peerProtocol: 2 });
+    await writeRecord(sessions, {
+      pid: process.pid,
+      procStart: start,
+      socket: join(home, 'x.sock'),
+      peerProtocol: 2,
+    });
     await writeKey(sessions, process.pid, 'aaaa', 'token', start);
     const result = await injectClaude({ home, env, sessionId: SESSION, messageId: 'm', text: 'x' });
     expect(result.outcome).toBe('retry');
@@ -247,11 +288,20 @@ describe('Claude Code sessions', () => {
   it('names the session of the nearest ancestor with a matching record', async () => {
     const { home, env, sessions } = await tempHome();
     const parentStart = (await processStart(process.ppid))!;
-    await writeRecord(sessions, { pid: process.ppid, sessionId: OTHER_SESSION, procStart: parentStart, socket: '/x' });
+    await writeRecord(sessions, {
+      pid: process.ppid,
+      sessionId: OTHER_SESSION,
+      procStart: parentStart,
+      socket: '/x',
+    });
     expect(await claudeCallerSession({ home, env, pid: process.pid })).toBe(OTHER_SESSION);
 
     // A record of the calling process itself is nearer and wins.
-    await writeRecord(sessions, { pid: process.pid, procStart: await processStart(process.pid), socket: '/y' });
+    await writeRecord(sessions, {
+      pid: process.pid,
+      procStart: await processStart(process.pid),
+      socket: '/y',
+    });
     expect(await claudeCallerSession({ home, env, pid: process.pid })).toBe(SESSION);
 
     // A record without a start time can never be replied from.
@@ -274,7 +324,9 @@ describe('ensureClaudeDirectDelivery', () => {
     await chmod(settings, 0o600);
     const managedSettingsPath = join(home, 'managed-settings.json');
 
-    expect(await ensureClaudeDirectDelivery({ home, env, managedSettingsPath })).toMatchObject({ changed: true });
+    expect(await ensureClaudeDirectDelivery({ home, env, managedSettingsPath })).toMatchObject({
+      changed: true,
+    });
     const updated = JSON.parse(await readFile(settings, 'utf8'));
     expect(updated).toEqual({
       model: 'opus',
@@ -287,18 +339,27 @@ describe('ensureClaudeDirectDelivery', () => {
     expect((await stat(settings)).mode & 0o777).toBe(0o600);
     expect((await stat(backup)).mode & 0o777).toBe(0o600);
 
-    expect(await ensureClaudeDirectDelivery({ home, env, managedSettingsPath })).toMatchObject({ changed: false });
+    expect(await ensureClaudeDirectDelivery({ home, env, managedSettingsPath })).toMatchObject({
+      changed: false,
+    });
 
     await writeFile(settings, '{"crossSessionInbound": "hold", "model": "opus"}');
-    expect(await ensureClaudeDirectDelivery({ home, env, managedSettingsPath })).toMatchObject({ changed: true });
+    expect(await ensureClaudeDirectDelivery({ home, env, managedSettingsPath })).toMatchObject({
+      changed: true,
+    });
     expect(await readFile(backup, 'utf8')).toBe(original);
-    expect(JSON.parse(await readFile(settings, 'utf8'))).toEqual({ crossSessionInbound: 'accept', model: 'opus' });
+    expect(JSON.parse(await readFile(settings, 'utf8'))).toEqual({
+      crossSessionInbound: 'accept',
+      model: 'opus',
+    });
   });
 
   it('creates a private settings file where there is none, and refuses one that is not JSON', async () => {
     const { home, env } = await tempHome();
     const managedSettingsPath = join(home, 'managed-settings.json');
-    expect(await ensureClaudeDirectDelivery({ home, env, managedSettingsPath })).toMatchObject({ changed: true });
+    expect(await ensureClaudeDirectDelivery({ home, env, managedSettingsPath })).toMatchObject({
+      changed: true,
+    });
     const settings = join(home, '.claude/settings.json');
     expect(JSON.parse(await readFile(settings, 'utf8'))).toEqual({ crossSessionInbound: 'accept' });
     expect((await stat(settings)).mode & 0o777).toBe(0o600);
@@ -317,14 +378,18 @@ describe('ensureClaudeDirectDelivery', () => {
     const managedSettingsPath = join(home, 'managed-settings.json');
     await writeFile(managedSettingsPath, '{"crossSessionInbound": "hold"}');
 
-    const error = await ensureClaudeDirectDelivery({ home, env, managedSettingsPath }).catch((caught) => caught);
+    const error = await ensureClaudeDirectDelivery({ home, env, managedSettingsPath }).catch(
+      (caught) => caught
+    );
     expect(error).toBeInstanceOf(Error);
     expect(error.code).toBe('claude_inbound_managed');
     expect(error.message).toContain(managedSettingsPath);
     expect(await readFile(settings, 'utf8')).toBe('{"model": "opus"}');
 
     await writeFile(managedSettingsPath, '{"crossSessionInbound": "accept"}');
-    expect(await ensureClaudeDirectDelivery({ home, env, managedSettingsPath })).toMatchObject({ changed: false });
+    expect(await ensureClaudeDirectDelivery({ home, env, managedSettingsPath })).toMatchObject({
+      changed: false,
+    });
     expect(await readFile(settings, 'utf8')).toBe('{"model": "opus"}');
   });
 });

@@ -29,13 +29,20 @@ function shellQuote(value) {
 }
 
 /** The reply command shown above an injected message: this runtime's CLI, under this Node. */
-export function replyHintFor(sender, nodePath = process.execPath, cliPath = fileURLToPath(new URL('../cli.js', import.meta.url))) {
+export function replyHintFor(
+  sender,
+  nodePath = process.execPath,
+  cliPath = fileURLToPath(new URL('../cli.js', import.meta.url))
+) {
   return `[reply: printf '%s' 'your reply' | ${shellQuote(nodePath)} ${shellQuote(cliPath)} send --to ${shellQuote(sender)}]`;
 }
 
 function respond(response, status, payload) {
   const body = JSON.stringify(payload);
-  response.writeHead(status, { 'content-type': 'application/json', 'content-length': Buffer.byteLength(body) });
+  response.writeHead(status, {
+    'content-type': 'application/json',
+    'content-length': Buffer.byteLength(body),
+  });
   response.end(body);
 }
 
@@ -60,7 +67,11 @@ function readBody(request) {
 function targetOf(request) {
   const match = TARGET.exec(String(request.headers['x-agent-relay-target'] || ''));
   if (!match) {
-    throw new ConnectError(403, 'not_a_relay_session', 'This command is not running inside a supported live Agent Relay session.');
+    throw new ConnectError(
+      403,
+      'not_a_relay_session',
+      'This command is not running inside a supported live Agent Relay session.'
+    );
   }
   return { kind: match[1], id: match[2] };
 }
@@ -95,7 +106,13 @@ async function acquireLock(path) {
   return null;
 }
 
-export async function startDaemon({ home = os.homedir(), env = process.env, injector, fetchImpl, now = Date.now } = {}) {
+export async function startDaemon({
+  home = os.homedir(),
+  env = process.env,
+  injector,
+  fetchImpl,
+  now = Date.now,
+} = {}) {
   const paths = relayPaths(home);
   await privateDirectory(paths.root);
   await privateDirectory(paths.run);
@@ -111,7 +128,8 @@ export async function startDaemon({ home = os.homedir(), env = process.env, inje
   let lastActiveAt = now();
   const service = new ConnectService({
     state,
-    injector: injector || (await import('./injector.js')).createInjector({ home, env, platform: process.platform }),
+    injector:
+      injector || (await import('./injector.js')).createInjector({ home, env, platform: process.platform }),
     log,
     env,
     now,
@@ -161,7 +179,10 @@ export async function startDaemon({ home = os.homedir(), env = process.env, inje
       const url = new URL(request.url || '/', 'http://relay');
       const route = `${request.method} ${url.pathname}`;
       if (route === 'GET /health') {
-        respond(response, 200, { ok: true, data: { version: VERSION, pid: process.pid, sessions: state.sessions().length } });
+        respond(response, 200, {
+          ok: true,
+          data: { version: VERSION, pid: process.pid, sessions: state.sessions().length },
+        });
         return;
       }
       if (route === 'POST /shutdown') {
@@ -211,8 +232,10 @@ export async function startDaemon({ home = os.homedir(), env = process.env, inje
     } catch (error) {
       const status = error instanceof ConnectError ? error.status : 500;
       const code = error instanceof ConnectError ? error.code : 'relay_error';
-      const message = error instanceof ConnectError ? error.message : 'The relay could not handle this request.';
-      if (!(error instanceof ConnectError)) log(`relay connect route failed cause=${error?.code || error?.name || 'error'}`);
+      const message =
+        error instanceof ConnectError ? error.message : 'The relay could not handle this request.';
+      if (!(error instanceof ConnectError))
+        log(`relay connect route failed cause=${error?.code || error?.name || 'error'}`);
       respond(response, status, { ok: false, error: { code, message } });
     }
   });

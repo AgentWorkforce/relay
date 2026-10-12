@@ -43,7 +43,11 @@ describe('Node relay daemon', () => {
     const home = await tempHome();
     const cloud = await new FakeConnectCloud().start();
     cleanups.push(() => cloud.stop());
-    const daemon = await startDaemon({ home, env: { AGENT_RELAY_CONNECT_CLOUD_URL: cloud.base }, injector: fakeInjector });
+    const daemon = await startDaemon({
+      home,
+      env: { AGENT_RELAY_CONNECT_CLOUD_URL: cloud.base },
+      injector: fakeInjector,
+    });
     cleanups.push(() => daemon.stop());
 
     expect(((await stat(daemon.socket)).mode & 0o777).toString(8)).toBe('600');
@@ -66,7 +70,10 @@ describe('Node relay daemon', () => {
     });
     expect(joined).toMatchObject({ ok: true, data: { connect_id: 'conn-1', agent_name: 'guest-one' } });
 
-    const status = await requestJson(daemon.socket, { path: '/connect/status', headers: { 'x-agent-relay-target': TARGET } });
+    const status = await requestJson(daemon.socket, {
+      path: '/connect/status',
+      headers: { 'x-agent-relay-target': TARGET },
+    });
     expect(status).toMatchObject({ ok: true, data: { connect_id: 'conn-1' } });
 
     const busy = await requestJson(daemon.socket, { method: 'POST', path: '/shutdown' });
@@ -79,7 +86,11 @@ describe('Node relay daemon', () => {
       headers: { 'x-agent-relay-target': TARGET },
     });
     expect(sent).toMatchObject({ ok: true, data: { sent: [{ to: 'host-agent' }] } });
-    expect(cloud.callsTo('POST', '/v1/dm')[0].body).toEqual({ to: 'host-agent', text: 'hello host', mode: 'wait' });
+    expect(cloud.callsTo('POST', '/v1/dm')[0].body).toEqual({
+      to: 'host-agent',
+      text: 'hello host',
+      mode: 'wait',
+    });
 
     const state = JSON.parse(await readFile(relayPaths(home).state, 'utf8'));
     expect(Object.keys(state.sessions)).toEqual([TARGET]);
@@ -88,7 +99,9 @@ describe('Node relay daemon', () => {
   it('refuses a second instance and cleans up its socket and lock on stop', async () => {
     const home = await tempHome();
     const daemon = await startDaemon({ home, env: {}, injector: fakeInjector });
-    await expect(startDaemon({ home, env: {}, injector: fakeInjector })).rejects.toMatchObject({ code: 'already_running' });
+    await expect(startDaemon({ home, env: {}, injector: fakeInjector })).rejects.toMatchObject({
+      code: 'already_running',
+    });
     await daemon.stop();
     await expect(stat(daemon.socket)).rejects.toMatchObject({ code: 'ENOENT' });
     await expect(stat(relayPaths(home).lock)).rejects.toMatchObject({ code: 'ENOENT' });
@@ -125,7 +138,7 @@ describe('Node relay launcher', () => {
     };
   }
 
-  it('reports the daemon\'s own start error and the end of its log, without a blind wait', async () => {
+  it("reports the daemon's own start error and the end of its log, without a blind wait", async () => {
     const home = await tempHome();
     const paths = relayPaths(home);
     const started = Date.now();
@@ -139,7 +152,9 @@ describe('Node relay launcher', () => {
           );
         }) as never,
       })
-    ).rejects.toThrow(/could not start: EACCES on run dir\.\nLast lines of .*daemon\.log:\nboot line\nrelay connect failed to start/);
+    ).rejects.toThrow(
+      /could not start: EACCES on run dir\.\nLast lines of .*daemon\.log:\nboot line\nrelay connect failed to start/
+    );
     expect(Date.now() - started).toBeLessThan(3_000);
   });
 
@@ -153,7 +168,11 @@ describe('Node relay launcher', () => {
       })
     ).rejects.toBeInstanceOf(RelayStartError);
     await expect(
-      ensureRelay({ home, env: {}, spawnProcess: fakeChild((child) => child.emit('exit', null, 'SIGKILL')) as never })
+      ensureRelay({
+        home,
+        env: {},
+        spawnProcess: fakeChild((child) => child.emit('exit', null, 'SIGKILL')) as never,
+      })
     ).rejects.toThrow('it exited on SIGKILL before it was ready');
   });
 

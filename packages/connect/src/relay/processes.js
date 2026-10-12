@@ -27,7 +27,7 @@ function run(file, args) {
         timeout: COMMAND_TIMEOUT_MS,
         maxBuffer: 16 * 1024 * 1024,
       },
-      (error, stdout) => resolve(error ? null : String(stdout)),
+      (error, stdout) => resolve(error ? null : String(stdout))
     );
   });
 }
@@ -42,15 +42,17 @@ function validPid(pid) {
  */
 export function statFields(stat) {
   const end = stat.lastIndexOf(')');
-  return end < 0 ? [] : stat.slice(end + 1).trim().split(/\s+/);
+  return end < 0
+    ? []
+    : stat
+        .slice(end + 1)
+        .trim()
+        .split(/\s+/);
 }
 
 async function linuxInfo(pid) {
   try {
-    const [text, info] = await Promise.all([
-      readFile(`/proc/${pid}/stat`, 'utf8'),
-      stat(`/proc/${pid}`),
-    ]);
+    const [text, info] = await Promise.all([readFile(`/proc/${pid}/stat`, 'utf8'), stat(`/proc/${pid}`)]);
     const fields = statFields(text);
     const parent = Number.parseInt(fields[1] ?? '', 10);
     const start = fields[19];
@@ -159,7 +161,7 @@ export async function openFiles(pid) {
     const directory = `/proc/${pid}/fd`;
     const entries = await readdir(directory).catch(() => []);
     const targets = await Promise.all(
-      entries.map((entry) => readlink(`${directory}/${entry}`).catch(() => null)),
+      entries.map((entry) => readlink(`${directory}/${entry}`).catch(() => null))
     );
     return targets.filter((target) => typeof target === 'string' && target.startsWith('/'));
   }
@@ -232,7 +234,7 @@ export async function listProcesses() {
           } catch {
             return null;
           }
-        }),
+        })
     );
     return found.filter(Boolean);
   }

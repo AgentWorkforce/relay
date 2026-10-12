@@ -100,7 +100,9 @@ function handshake(child, timeoutMs) {
       resolve(result);
     };
     const timer = setTimeout(() => finish({ type: 'timeout' }), timeoutMs);
-    child.once('message', (message) => finish(message && typeof message === 'object' ? message : { type: 'invalid' }));
+    child.once('message', (message) =>
+      finish(message && typeof message === 'object' ? message : { type: 'invalid' })
+    );
     child.once('error', (error) => finish({ type: 'error', message: error.message }));
     child.once('exit', (code, signal) => finish({ type: 'exit', code, signal }));
   });
@@ -110,13 +112,20 @@ function handshake(child, timeoutMs) {
  * Resolves the daemon socket, starting the daemon when none answers. Failures
  * reject with the daemon's own reason and the end of its log.
  */
-export async function ensureRelay({ home = os.homedir(), env = process.env, timeoutMs = HANDSHAKE_TIMEOUT_MS, spawnProcess = spawn } = {}) {
+export async function ensureRelay({
+  home = os.homedir(),
+  env = process.env,
+  timeoutMs = HANDSHAKE_TIMEOUT_MS,
+  spawnProcess = spawn,
+} = {}) {
   const paths = relayPaths(home);
   const running = await relayHealth(paths.socket);
   if (running) {
     // An older idle relay steps aside for this version; a busy one keeps serving.
     if (!olderVersion(running.version, VERSION) || running.sessions > 0) return paths.socket;
-    await requestJson(paths.socket, { method: 'POST', path: '/shutdown', timeoutMs: 2_000 }).catch(() => null);
+    await requestJson(paths.socket, { method: 'POST', path: '/shutdown', timeoutMs: 2_000 }).catch(
+      () => null
+    );
     for (let attempt = 0; attempt < 20 && (await relayHealth(paths.socket, 500)); attempt += 1) {
       await new Promise((resolve) => setTimeout(resolve, 100));
     }

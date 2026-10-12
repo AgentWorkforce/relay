@@ -60,7 +60,10 @@ export function parseDelivery(item) {
   const messageId = str(item?.message_id);
   if (!id || !messageId) return null;
   const message = item.message || {};
-  const attachments = [...(Array.isArray(message.attachments) ? message.attachments : []), ...(Array.isArray(item.attachments) ? item.attachments : [])];
+  const attachments = [
+    ...(Array.isArray(message.attachments) ? message.attachments : []),
+    ...(Array.isArray(item.attachments) ? item.attachments : []),
+  ];
   return {
     id,
     messageId,
@@ -90,7 +93,11 @@ function withAttachments(body, attachments) {
   const seen = new Set();
   for (const attachment of attachments) {
     const name = oneLine(attachment?.filename || attachment?.name || attachment?.file_name || 'file');
-    const where = str(attachment?.url) || str(attachment?.download_url) || str(attachment?.file_id) || str(attachment?.id);
+    const where =
+      str(attachment?.url) ||
+      str(attachment?.download_url) ||
+      str(attachment?.file_id) ||
+      str(attachment?.id);
     const key = `${name}|${where}`;
     if (seen.has(key)) continue;
     seen.add(key);
@@ -153,7 +160,9 @@ export function statusPublic(session, roster) {
     participants: participantNames(session, roster).map((name) => ({
       agent_name: name,
       role: roles.get(name) ?? null,
-      online: roster ? roster.some((agent) => agent?.name === name && ['active', 'online'].includes(agent?.status)) : null,
+      online: roster
+        ? roster.some((agent) => agent?.name === name && ['active', 'online'].includes(agent?.status))
+        : null,
     })),
   };
 }
@@ -176,7 +185,16 @@ function closeNotice(session, code) {
  * `{outcome, detail}` where an outcome applies.
  */
 export class ConnectService {
-  constructor({ state, injector, log = () => {}, env = process.env, now = Date.now, fetchImpl, replyHint = () => '', onChange = () => {} }) {
+  constructor({
+    state,
+    injector,
+    log = () => {},
+    env = process.env,
+    now = Date.now,
+    fetchImpl,
+    replyHint = () => '',
+    onChange = () => {},
+  }) {
     this.state = state;
     this.injector = injector;
     this.log = log;
@@ -195,7 +213,9 @@ export class ConnectService {
   }
 
   logFailure(operation, connectId, code, cause) {
-    this.log(`relay connect ${operation} failed code=${code} connect_ref=${messageRef(connectId)} cause=${cause}`);
+    this.log(
+      `relay connect ${operation} failed code=${code} connect_ref=${messageRef(connectId)} cause=${cause}`
+    );
   }
 
   /** Serializes one credential's passes and route calls, like the probe's agent locks. */
@@ -227,7 +247,11 @@ export class ConnectService {
 
   async availability(session) {
     try {
-      return await cloudAvailability({ connectId: session.connect_id, env: this.env, fetchImpl: this.fetchImpl });
+      return await cloudAvailability({
+        connectId: session.connect_id,
+        env: this.env,
+        fetchImpl: this.fetchImpl,
+      });
     } catch (error) {
       this.logFailure('availability', session.connect_id, error.code, error.logCause);
       throw new ConnectError(error.status || 503, error.code, error.message);
@@ -236,7 +260,8 @@ export class ConnectService {
 
   async current(target) {
     const session = this.state.session(target);
-    if (!session) throw new ConnectError(404, 'connect_not_joined', 'This agent session has not joined a Relay Connect.');
+    if (!session)
+      throw new ConnectError(404, 'connect_not_joined', 'This agent session has not joined a Relay Connect.');
     if (expired(session, this.now())) {
       await this.close(session, 'connect_expired');
       throw new ConnectError(410, 'connect_expired', 'This Connect has expired.');
@@ -248,7 +273,8 @@ export class ConnectService {
 
   async join(target, fields) {
     const extra = Object.keys(fields || {}).filter((key) => !['link', 'name', 'host_claim'].includes(key));
-    if (extra.length) throw new ConnectError(400, 'invalid_request', 'Use link, optional name and optional host_claim.');
+    if (extra.length)
+      throw new ConnectError(400, 'invalid_request', 'Use link, optional name and optional host_claim.');
     const link = typeof fields.link === 'string' ? fields.link.trim() : '';
     if (!link) throw new ConnectError(400, 'invalid_request', 'A Relay Connect link or id is required.');
     const requestedId = connectIdFrom(link);
@@ -257,7 +283,11 @@ export class ConnectService {
     if (fields.name !== undefined && fields.name !== null) {
       name = typeof fields.name === 'string' ? fields.name.trim().toLowerCase() : '';
       if (!/^[a-z0-9]+(?:-[a-z0-9]+)*$/.test(name) || name.length < 2 || name.length > 48) {
-        throw new ConnectError(400, 'invalid_name', 'Names are 2-48 lowercase letters, numbers, or single hyphens.');
+        throw new ConnectError(
+          400,
+          'invalid_name',
+          'Names are 2-48 lowercase letters, numbers, or single hyphens.'
+        );
       }
     }
     let claim = null;
@@ -272,7 +302,12 @@ export class ConnectService {
     if (existing) {
       if (expired(existing, this.now())) await this.close(existing, 'connect_expired');
       else if (existing.connect_id === requestedId) return { ...joinPublic(existing), warnings: [] };
-      else throw new ConnectError(409, 'connect_already_joined', 'This agent session is already in a different Relay Connect.');
+      else
+        throw new ConnectError(
+          409,
+          'connect_already_joined',
+          'This agent session is already in a different Relay Connect.'
+        );
     }
 
     // Before Cloud: a session that cannot receive replies should not join.
@@ -290,14 +325,26 @@ export class ConnectService {
       `node-v1-${randomUUID()}`
     );
     if (!idempotencyKey) {
-      throw new ConnectError(409, 'connect_join_pending', 'A previous join has an unknown outcome. Retry with the same link, name, and host claim.');
+      throw new ConnectError(
+        409,
+        'connect_join_pending',
+        'A previous join has an unknown outcome. Retry with the same link, name, and host claim.'
+      );
     }
     let joined;
     try {
-      joined = await cloudJoin({ connectId: requestedId, name, hostClaim: claim, idempotencyKey, env: this.env, fetchImpl: this.fetchImpl });
+      joined = await cloudJoin({
+        connectId: requestedId,
+        name,
+        hostClaim: claim,
+        idempotencyKey,
+        env: this.env,
+        fetchImpl: this.fetchImpl,
+      });
     } catch (error) {
       const status = error.status ?? 503;
-      if (status >= 500 || error.code === 'connect_join_timeout') this.logFailure('join', requestedId, error.code, error.logCause);
+      if (status >= 500 || error.code === 'connect_join_timeout')
+        this.logFailure('join', requestedId, error.code, error.logCause);
       if (status < 500 && status !== 429) await this.state.clearJoinAttempt(target, idempotencyKey);
       throw new ConnectError(status, error.code, error.message);
     }
@@ -322,7 +369,8 @@ export class ConnectService {
       observed_participants: [],
       joined_at_ms: this.now(),
     };
-    if (expired(session, this.now())) throw new ConnectError(410, 'connect_expired', 'This Connect has expired.');
+    if (expired(session, this.now()))
+      throw new ConnectError(410, 'connect_expired', 'This Connect has expired.');
     try {
       await this.state.insertSession(session);
     } catch {
@@ -331,21 +379,26 @@ export class ConnectService {
     this.onChange();
     const warnings = [];
     if (this.injector.preflight) {
-      const check = await this.injector.preflight(target).catch((error) => ({ ok: false, reason: error.message }));
+      const check = await this.injector
+        .preflight(target)
+        .catch((error) => ({ ok: false, reason: error.message }));
       if (!check.ok) warnings.push(`Replies may not reach this session yet: ${check.reason}`);
     }
     return { ...joinPublic(session), warnings };
   }
 
   async send(target, text, { to, requestKey } = {}) {
-    if (typeof text !== 'string' || !text) throw new ConnectError(400, 'invalid_text', 'The message must be non-empty UTF-8 text.');
+    if (typeof text !== 'string' || !text)
+      throw new ConnectError(400, 'invalid_text', 'The message must be non-empty UTF-8 text.');
     const session = await this.current(target);
     const roster = await this.roster(session);
     const names = participantNames(session, roster);
     let recipients;
     if (to !== undefined && to !== null) {
-      if (to === session.agent_name) throw new ConnectError(400, 'invalid_recipient', 'Cannot send to this session itself.');
-      if (!names.includes(to)) throw new ConnectError(404, 'participant_not_found', 'That participant is not in this Connect.');
+      if (to === session.agent_name)
+        throw new ConnectError(400, 'invalid_recipient', 'Cannot send to this session itself.');
+      if (!names.includes(to))
+        throw new ConnectError(404, 'participant_not_found', 'That participant is not in this Connect.');
       recipients = [to];
     } else {
       recipients = names.filter((name) => name !== session.agent_name);
@@ -359,7 +412,8 @@ export class ConnectService {
         result = await client.dm(name, text, `connect-send:${key}:${name}`);
       } catch (error) {
         const failure = await this.sendFailure(session, name, error);
-        if (sent.length) failure.message = `${failure.message} Already sent to ${sent.map((s) => s.to).join(', ')}.`;
+        if (sent.length)
+          failure.message = `${failure.message} Already sent to ${sent.map((s) => s.to).join(', ')}.`;
         throw failure;
       }
       sent.push({ to: name, message_id: str(result?.message?.id) || str(result?.id) });
@@ -450,16 +504,31 @@ export class ConnectService {
       // agent offline. Both are best effort: leaving locally always succeeds.
       let cloudLeft = false;
       try {
-        await cloudLeave({ connectId: session.connect_id, token: session.token, env: this.env, fetchImpl: this.fetchImpl });
+        await cloudLeave({
+          connectId: session.connect_id,
+          token: session.token,
+          env: this.env,
+          fetchImpl: this.fetchImpl,
+        });
         cloudLeft = true;
       } catch (error) {
-        this.logFailure('leave', session.connect_id, error.code || 'connect_leave_failed', error.logCause || 'unknown');
+        this.logFailure(
+          'leave',
+          session.connect_id,
+          error.code || 'connect_leave_failed',
+          error.logCause || 'unknown'
+        );
       }
       if (!cloudLeft) {
         try {
           await this.client(session).disconnect();
         } catch (error) {
-          this.logFailure('disconnect', session.connect_id, error.code || 'relaycast_error', error.logCause || 'unknown');
+          this.logFailure(
+            'disconnect',
+            session.connect_id,
+            error.code || 'relaycast_error',
+            error.logCause || 'unknown'
+          );
         }
       }
       await this.state.removeSession(session.target, session.agent_id);
@@ -501,7 +570,9 @@ export class ConnectService {
       } catch (error) {
         result = { outcome: 'in_doubt', detail: error.message };
       }
-      const keep = ['retry', 'waiting'].includes(result.outcome) && this.now() - (notice.queued_at_ms || 0) < NOTICE_TTL_MS;
+      const keep =
+        ['retry', 'waiting'].includes(result.outcome) &&
+        this.now() - (notice.queued_at_ms || 0) < NOTICE_TTL_MS;
       if (!keep) await this.state.dropNotice(notice.id);
     }
   }
@@ -509,7 +580,11 @@ export class ConnectService {
   async settle(client, connectId, delivery, settled) {
     try {
       if (settled.kind === 'handled' && settled.outcome === 'delivered') await client.ack(delivery.id);
-      else await client.fail(delivery.id, settled.detail || (settled.kind === 'handled' ? 'in doubt, not resent' : 'refused by the session'));
+      else
+        await client.fail(
+          delivery.id,
+          settled.detail || (settled.kind === 'handled' ? 'in doubt, not resent' : 'refused by the session')
+        );
       this.observe(connectId, null);
     } catch (error) {
       this.observe(connectId, error);
@@ -581,7 +656,9 @@ export class ConnectService {
       }
       return;
     }
-    const deliveries = (Array.isArray(items) ? items : Array.isArray(items?.deliveries) ? items.deliveries : [])
+    const deliveries = (
+      Array.isArray(items) ? items : Array.isArray(items?.deliveries) ? items.deliveries : []
+    )
       .map(parseDelivery)
       .filter((delivery) => delivery && ['queued', 'delivered'].includes(delivery.status));
     const ttlMs = handoffTtlMs(this.env.AGENT_RELAY_CONNECT_HANDOFF_TIMEOUT_SECONDS);
@@ -607,7 +684,9 @@ export class ConnectService {
       try {
         await this.state.rememberPending(ledger, delivery.messageId);
       } catch (error) {
-        this.log(`relay connect ledger write failed connect_ref=${messageRef(connectId)} cause=${error.code || 'io'}`);
+        this.log(
+          `relay connect ledger write failed connect_ref=${messageRef(connectId)} cause=${error.code || 'io'}`
+        );
         break;
       }
       const action = this.state.pendingAction(ledger, ttlMs);
@@ -639,7 +718,12 @@ export class ConnectService {
     try {
       switch (result?.outcome) {
         case 'delivered':
-          await this.state.rememberHandled(ledger, delivery.messageId, 'delivered', 'Injected into the session.');
+          await this.state.rememberHandled(
+            ledger,
+            delivery.messageId,
+            'delivered',
+            'Injected into the session.'
+          );
           await this.ack(client, connectId, delivery.id);
           return false;
         case 'in_doubt': {
@@ -656,7 +740,13 @@ export class ConnectService {
         }
         case 'retry':
         case 'waiting': {
-          const detail = await this.state.rememberUnacceptedAttempt(ledger, delivery.messageId, result.outcome, reason, finalAttempt);
+          const detail = await this.state.rememberUnacceptedAttempt(
+            ledger,
+            delivery.messageId,
+            result.outcome,
+            reason,
+            finalAttempt
+          );
           if (detail) {
             await this.fail(client, connectId, delivery.id, detail);
             return false;
@@ -675,7 +765,9 @@ export class ConnectService {
         }
       }
     } catch (error) {
-      this.log(`relay connect ledger write failed connect_ref=${messageRef(connectId)} cause=${error.code || 'io'}`);
+      this.log(
+        `relay connect ledger write failed connect_ref=${messageRef(connectId)} cause=${error.code || 'io'}`
+      );
       return true;
     }
   }

@@ -136,7 +136,11 @@ function errorDetails(error) {
     };
   }
   if (error instanceof SessionNotFoundError || error instanceof RelayStartError) {
-    return { message: safeText(error.message.split('\n')[0]) + tailOf(error.message), exitCode: error.exitCode, code };
+    return {
+      message: safeText(error.message.split('\n')[0]) + tailOf(error.message),
+      exitCode: error.exitCode,
+      code,
+    };
   }
   if (known[code]) return { message: known[code][0], exitCode: known[code][1], code };
   if (error instanceof UsageError || error instanceof InstallError) {
@@ -182,7 +186,9 @@ function joinSummary(response, backend) {
     backend.kind === 'node'
       ? 'Claude Code note: Relay Connect sets "crossSessionInbound": "accept" in ~/.claude/settings.json so replies can be injected; the previous file is kept as settings.json.relay-desktop-backup.'
       : 'Claude Code note: the probe sets "crossSessionInbound": "accept" in ~/.claude/settings.json; undo it by POSTing {"enabled":false} to /setup/direct-delivery over the pointer socket (exact command in the package README).';
-  const warnings = Array.isArray(data.warnings) ? data.warnings.map((warning) => `Warning: ${safeText(warning)}`) : [];
+  const warnings = Array.isArray(data.warnings)
+    ? data.warnings.map((warning) => `Warning: ${safeText(warning)}`)
+    : [];
   const hostAgent = safeText(data.host?.agent_name);
   const hostPerson = safeText(data.host?.person, '');
   const host = hostPerson && hostPerson !== hostAgent ? `${hostPerson} (${hostAgent})` : hostAgent;

@@ -121,7 +121,9 @@ describe('message references', () => {
     const ref = messageRef('message-connect-1');
     expect(ref).toMatch(/^[0-9a-f]{12}$/);
     expect(messageRefInText(`[Relay Connect — from guest · ref ${ref}]\n\nPlease review this.`)).toBe(ref);
-    expect(messageRefInText(`[via Agent Relay — from @alice to @codex · message m1 · ref ${ref}]\r\nhi`)).toBe(ref);
+    expect(
+      messageRefInText(`[via Agent Relay — from @alice to @codex · message m1 · ref ${ref}]\r\nhi`)
+    ).toBe(ref);
     expect(messageRefInText(`hello [Relay Connect — from guest · ref ${ref}]`)).toBeNull();
     expect(messageRefInText(`[Relay Connect — from guest · ref ABCDEF123456]`)).toBeNull();
   });
@@ -148,10 +150,14 @@ describe('Codex router', () => {
       userMessage('t1', connectText('m1')),
     ]);
     const router = createCodexRouter({ home, env, now, systemCodex: [], terminalLive: () => true });
-    expect(await router.inject({ threadId: THREAD, messageId: 'm1', text: connectText('m1') })).toMatchObject({
-      outcome: 'delivered',
-    });
-    expect(await router.observe({ threadId: THREAD, messageId: 'm1', text: connectText('m1') })).toMatchObject({
+    expect(await router.inject({ threadId: THREAD, messageId: 'm1', text: connectText('m1') })).toMatchObject(
+      {
+        outcome: 'delivered',
+      }
+    );
+    expect(
+      await router.observe({ threadId: THREAD, messageId: 'm1', text: connectText('m1') })
+    ).toMatchObject({
       outcome: 'delivered',
     });
     expect(await log()).toEqual([]);
@@ -195,7 +201,9 @@ describe('Codex router', () => {
 
   it('confirms a queued message from the rollout, and waits behind a running turn', async () => {
     const { home, env, paths, clock, now } = await setup();
-    await writeRollout(paths.codexHome, THREAD, [{ type: 'event_msg', payload: { type: 'task_started', turn_id: 't1' } }]);
+    await writeRollout(paths.codexHome, THREAD, [
+      { type: 'event_msg', payload: { type: 'task_started', turn_id: 't1' } },
+    ]);
     const router = createCodexRouter({ home, env, now, systemCodex: [], terminalLive: () => true });
     const text = connectText('m3');
     expect(await router.inject({ threadId: THREAD, messageId: 'm3', text })).toEqual({
@@ -210,7 +218,9 @@ describe('Codex router', () => {
       userMessage('t2', text),
     ]);
     clock.now += 120_000;
-    expect(await router.observe({ threadId: THREAD, messageId: 'm3', text })).toMatchObject({ outcome: 'delivered' });
+    expect(await router.observe({ threadId: THREAD, messageId: 'm3', text })).toMatchObject({
+      outcome: 'delivered',
+    });
   });
 
   it('queues behind relay messages already waiting even when no terminal runs the thread', async () => {
@@ -218,7 +228,9 @@ describe('Codex router', () => {
     const router = createCodexRouter({ home, env, now, systemCodex: [], terminalLive: () => true });
     await router.inject({ threadId: THREAD, messageId: 'first', text: connectText('first') });
     const offline = createCodexRouter({ home, env, now, systemCodex: [], terminalLive: () => false });
-    expect(await offline.inject({ threadId: THREAD, messageId: 'second', text: connectText('second') })).toEqual({
+    expect(
+      await offline.inject({ threadId: THREAD, messageId: 'second', text: connectText('second') })
+    ).toEqual({
       outcome: 'accepted',
       detail: HANDED_NOT_RUNNING,
     });
@@ -232,13 +244,17 @@ describe('Codex router', () => {
       outcome: 'waiting',
       detail: NOT_RUNNING,
     });
-    await writeRollout(paths.codexHome, THREAD, [{ type: 'event_msg', payload: { type: 'task_started', turn_id: 't1' } }]);
+    await writeRollout(paths.codexHome, THREAD, [
+      { type: 'event_msg', payload: { type: 'task_started', turn_id: 't1' } },
+    ]);
     expect(await router.inject({ threadId: THREAD, messageId: 'm4', text: connectText('m4') })).toEqual({
       outcome: 'waiting',
       detail: BUSY,
     });
     expect((await log()).filter((args) => args[1] === '--thread')).toEqual([]);
-    expect((await router.inject({ threadId: 'not-a-thread', messageId: 'm', text: 'x' })).outcome).toBe('refused');
+    expect((await router.inject({ threadId: 'not-a-thread', messageId: 'm', text: 'x' })).outcome).toBe(
+      'refused'
+    );
   });
 
   it('starts a turn through the Codex app window that owns the thread', async () => {
@@ -263,7 +279,7 @@ describe('Codex router', () => {
             send(
               request.params.conversationId === THREAD
                 ? { type: 'response', requestId: id, resultType: 'success', handledByClientId: 'owner-1' }
-                : { type: 'response', requestId: id, resultType: 'error', error: 'no-client-found' },
+                : { type: 'response', requestId: id, resultType: 'error', error: 'no-client-found' }
             );
           } else if (request.method === 'thread-follower-start-turn') {
             send(
@@ -274,7 +290,7 @@ describe('Codex router', () => {
                     requestId: id,
                     resultType: 'success',
                     result: { result: { turn: { id: 'turn-1', status: 'inProgress' } } },
-                  },
+                  }
             );
           }
         }
@@ -285,7 +301,9 @@ describe('Codex router', () => {
 
     const router = createCodexRouter({ home, env, now, systemCodex: [], terminalLive: () => false });
     const text = connectText('m5');
-    expect(await router.inject({ threadId: THREAD, messageId: 'm5', text })).toMatchObject({ outcome: 'delivered' });
+    expect(await router.inject({ threadId: THREAD, messageId: 'm5', text })).toMatchObject({
+      outcome: 'delivered',
+    });
 
     const [initialize, decline, discovery, start] = seen;
     expect(initialize).toMatchObject({
@@ -295,7 +313,11 @@ describe('Codex router', () => {
       sourceClientId: 'initializing-client',
       params: { clientType: 'agent-relay-desktop' },
     });
-    expect(decline).toEqual({ type: 'client-discovery-response', requestId: 'd1', response: { canHandle: false } });
+    expect(decline).toEqual({
+      type: 'client-discovery-response',
+      requestId: 'd1',
+      response: { canHandle: false },
+    });
     expect(discovery).toMatchObject({
       method: 'thread-owner-discovery',
       version: 1,
@@ -329,7 +351,7 @@ describe('Codex router', () => {
     });
     const other = '7c9e6679-7425-40de-944b-e07fc1f90ae7';
     expect((await router.inject({ threadId: other, messageId: 'm7', text: connectText('m7') })).outcome).toBe(
-      'waiting',
+      'waiting'
     );
     expect(await router.preflight({ threadId: THREAD })).toMatchObject({ ok: true });
   });
@@ -351,10 +373,14 @@ describe('Codex router', () => {
     });
     const check = await outdated.preflight({ threadId: THREAD });
     expect(check.ok).toBe(false);
-    expect(check.reason).toBe(`Codex 0.98.0 (${join(old, 'codex')}) cannot receive injected messages; update Codex.`);
-    expect(await outdated.inject({ threadId: THREAD, messageId: 'm', text: connectText('m') })).toMatchObject({
-      outcome: 'waiting',
-    });
+    expect(check.reason).toBe(
+      `Codex 0.98.0 (${join(old, 'codex')}) cannot receive injected messages; update Codex.`
+    );
+    expect(await outdated.inject({ threadId: THREAD, messageId: 'm', text: connectText('m') })).toMatchObject(
+      {
+        outcome: 'waiting',
+      }
+    );
     const live = createCodexRouter({
       home,
       env: { ...env, RELAY_DESKTOP_CODEX: join(old, 'codex') },
@@ -372,16 +398,23 @@ describe('Codex router', () => {
 describe('Codex caller thread', () => {
   it('needs a UUID thread id that Codex knows', async () => {
     const { home, env, paths } = await setup();
-    expect(await codexCallerThread({ env, home })).toEqual({ threadId: null, reason: 'no Codex thread id in env' });
-    expect((await codexCallerThread({ env: { ...env, CODEX_THREAD_ID: 'my-session' }, home })).threadId).toBeNull();
+    expect(await codexCallerThread({ env, home })).toEqual({
+      threadId: null,
+      reason: 'no Codex thread id in env',
+    });
+    expect(
+      (await codexCallerThread({ env: { ...env, CODEX_THREAD_ID: 'my-session' }, home })).threadId
+    ).toBeNull();
     const missing = await codexCallerThread({ env: { ...env, CODEX_THREAD_ID: THREAD }, home });
     expect(missing.threadId).toBeNull();
     expect(missing.reason).toContain(THREAD);
 
     await writeRollout(paths.codexHome, THREAD, []);
-    expect(await codexCallerThread({ env: { ...env, CODEX_THREAD_ID: THREAD.toUpperCase() }, home })).toEqual({
-      threadId: THREAD,
-    });
+    expect(await codexCallerThread({ env: { ...env, CODEX_THREAD_ID: THREAD.toUpperCase() }, home })).toEqual(
+      {
+        threadId: THREAD,
+      }
+    );
 
     const other = '7c9e6679-7425-40de-944b-e07fc1f90ae7';
     const { DatabaseSync } = await import('node:sqlite');
@@ -389,7 +422,9 @@ describe('Codex caller thread', () => {
     db.exec('create table threads (id text, title text, archived integer, source text, rollout_path text)');
     db.prepare('insert into threads values (?, ?, 0, ?, ?)').run(other, 'Fix CI', 'cli', '');
     db.close();
-    expect(await codexCallerThread({ env: { ...env, CODEX_THREAD_ID: other }, home })).toEqual({ threadId: other });
+    expect(await codexCallerThread({ env: { ...env, CODEX_THREAD_ID: other }, home })).toEqual({
+      threadId: other,
+    });
   });
 });
 
@@ -417,7 +452,9 @@ describe('SQLite fallbacks', () => {
       expect(queued).toEqual({ outcome: 'accepted', detail: kind === 'none' ? RECORDING : NOT_CONSUMED });
       await writeRollout(paths.codexHome, THREAD, [userMessage('t1', text)]);
       clock.now += 60_000;
-      expect(await router.observe({ threadId: THREAD, messageId: 'm8', text })).toMatchObject({ outcome: 'delivered' });
+      expect(await router.observe({ threadId: THREAD, messageId: 'm8', text })).toMatchObject({
+        outcome: 'delivered',
+      });
     });
   }
 });
